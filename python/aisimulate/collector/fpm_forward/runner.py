@@ -38,6 +38,7 @@ from aisimulate.fpm_contract import (
     FPM_CELL_LABEL,
     FPM_ENGINE_BENCHMARK_OUTPUT_ENV,
     FPM_ENV_FILENAME,
+    FPM_FINALIZATION_TIMEOUT_ENV,
     FPM_MANIFEST_FILENAME,
     FPM_RESULTS_DIR,
     FPM_RUN_ID_ENV,
@@ -137,7 +138,7 @@ def _observe_runtime_memory(plan: FPMCollectionPlan, cell: FPMCell) -> bool:
     return (
         deployment is not None
         and deployment.resources.memory_source == "pending"
-        and deployment.backend_version == MEMORY_OBSERVER_VERSION
+        and getattr(plan, "runtime_backend_version", None) == MEMORY_OBSERVER_VERSION
     )
 
 
@@ -145,7 +146,7 @@ def _observe_runtime_execution(plan: FPMCollectionPlan, cell: FPMCell) -> bool:
     if getattr(plan, "runtime_instrumentation", None) is not None:
         return False
     return (
-        getattr(getattr(plan, "capability", None), "aic_database_version", None) in EXECUTION_SUPPORTED_VERSIONS
+        getattr(plan, "runtime_backend_version", None) in EXECUTION_SUPPORTED_VERSIONS
         and not cell.execution_identity[0]
     )
 
@@ -481,8 +482,10 @@ def _attempt_provenance_command(
     plan_sha256: str,
     attempt_id: str,
     expected_backend_version: str | None = None,
+    dynamo_version: str | None = None,
+    runtime_backend_version: str | None = None,
 ) -> list[str]:
-    """Record the observed runtime before checking a profile's pinned version."""
+    """Record runtime versions independently of the user-selected data label."""
 
     payload = json.dumps(
         {
@@ -491,6 +494,8 @@ def _attempt_provenance_command(
             "cell_id": cell_id,
             "plan_sha256": plan_sha256,
             "attempt_id": attempt_id,
+            **({"backend_version": expected_backend_version} if expected_backend_version is not None else {}),
+            **({"dynamo_version": dynamo_version} if dynamo_version is not None else {}),
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -501,19 +506,22 @@ def _attempt_provenance_command(
         "payload['runtime'] = {'backend': 'vllm', "
         "'backend_version': importlib.metadata.version('vllm')}; "
         f"path = pathlib.Path('{FPM_RESULTS_DIR}') / sys.argv[2]; "
+        "\ntry:\n"
+        "    payload['runtime']['dynamo_version'] = importlib.metadata.version('ai-dynamo')\n"
+        "except importlib.metadata.PackageNotFoundError:\n"
+        "    pass\n"
         "path.write_text(json.dumps(payload, sort_keys=True) + '\\n')"
     )
     version_args = []
-    if expected_backend_version is not None:
+    if runtime_backend_version is not None:
         script += (
             "\nactual = payload['runtime']['backend_version']\n"
             "if actual != sys.argv[3]:\n"
             "    raise RuntimeError("
-            "f'FPM profile runtime mismatch: actual={actual!r}, expected={sys.argv[3]!r}. '"
-            "'Use the pinned runtime, or create a new collection profile with '"
-            "f'backend_version={actual!r} and regenerate the collection plan in a new output directory.')\n"
+            "f'FPM observed runtime changed: actual={actual!r}, expected={sys.argv[3]!r}. '"
+            "'Resolve the collection runtime again in a new output directory.')\n"
         )
-        version_args.append(expected_backend_version)
+        version_args.append(runtime_backend_version)
     return ["python3", "-c", script, payload, COLLECTOR_PROVENANCE_FILENAME, *version_args]
 
 
@@ -735,6 +743,7 @@ class KubernetesCellRunner:
         plan_sha256: str,
         attempt_id: str,
         expected_backend_version: str | None = None,
+        runtime_backend_version: str | None = None,
     ) -> None:
         """Clear stale results and bind every Pod to this Collector attempt."""
 
@@ -743,6 +752,7 @@ class KubernetesCellRunner:
             plan_sha256=plan_sha256,
             attempt_id=attempt_id,
             expected_backend_version=expected_backend_version,
+            runtime_backend_version=runtime_backend_version,
         )
         for pod in pods:
             self._exec_checked(
@@ -1589,11 +1599,12 @@ def _configured_sampling_metadata(
 
 def _write_runtime_environment(cell_dir: Path, overrides: dict[str, Any]) -> None:
     # Generator owns run.sh and fpm_env.sh. Mirror only startup inputs through
-    # this Collector-owned file because Slurm does not start a Kubernetes Pod
-    # with extra_env, and run.sh's exports happen after the preflight process.
+    # this Collector-owned file: run.sh cannot export settings back to its
+    # parent runtime, and Slurm does not inherit a Kubernetes Pod environment.
     names = {
         *FPM_KV_WARMUP_DEFAULTS,
         READINESS_TIMEOUT_ENV,
+        FPM_FINALIZATION_TIMEOUT_ENV,
         "PYTHONPATH",
         "DYN_FPM_DSV41_REAL_KV",
         "DYN_FPM_INPUT_TEXT",
@@ -1630,6 +1641,9 @@ def _render_cell(
         generator_overrides,
         smoke=smoke,
     )
+    # A Dynamo release is provenance, not collection compatibility or template
+    # intent. Strip it before schema defaults can derive an image/backend from it.
+    overrides.pop("generator_dynamo_version", None)
     # The Generator owns deployment rendering, but its naive serving defaults
     # intentionally synthesize max batch/token/sequence limits from an SLA.
     # Native self-benchmarking must instead observe the limits resolved by the
@@ -1643,7 +1657,6 @@ def _render_cell(
         system_name=plan.system,
         backend_name=plan.backend,
         mode="agg",
-        generator_dynamo_version=overrides.get("generator_dynamo_version"),
         generator_overrides=overrides,
         preserve_engine_limits=True,
         # Render is a pure function of the frozen plan: model metadata comes
@@ -2338,6 +2351,10 @@ def _run_collection_impl(
                 if getattr(plan, "fpm_profile", None) is not None
                 else {}
             )
+            if getattr(plan, "backend_version", None) is not None:
+                profile_version["expected_backend_version"] = plan.backend_version
+            if getattr(plan, "runtime_backend_version", None) is not None:
+                profile_version["runtime_backend_version"] = plan.runtime_backend_version
             resource.prepare_attempt(
                 pods,
                 cell_id=cell.cell_id,

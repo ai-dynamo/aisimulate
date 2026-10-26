@@ -28,7 +28,7 @@ These flags are shared across modes (a few are sweep-only, as noted):
 - `--systems-paths`: System search paths (comma-separated). Use `default` for the built-in systems path; the first match wins for an identical system/backend/version. (`default`, `exp`, `generate`, `estimate`)
 - `--deployment-target`: Generated-artifact platform — `dynamo-j2` (default), `dynamo-python`, `llm-d-helm`, `llm-d-kustomize`, `fpm`, or `slurm`. See [Deployment Target Selection](#deployment-target-selection). (`default`, `exp`, `generate`, `estimate`)
 - `--engine-step-backend`: Engine-step latency backend. The compiled Rust engine is the only step executor; `rust` is the only accepted value (the deprecated `python` no-op was removed after its one-release window); any other value raises an error. Accepted by the five modes below (not `support`) but inert in `generate`, which performs no latency estimation. (`default`, `recommend`, `exp`, `generate`, `estimate`)
-- `--forward-model`: Forward-pass modeling mode — `op_level` (default; granular per-op modeling) or `fpm` (predicts from collected whole-model forward-pass data; requires `fpm_forward_perf` data for the exact model/system/backend/version and never extrapolates outside the collected domain). Evaluates on the compiled engine's native FPM operation. `fpm` predictions are only as accurate as the match between the deployed engine configuration and the collected data — in particular the CUDA-graph capture surface: regime cliffs are encoded in the data, not modeled, so a deployment whose capture config differs from the collection will mispredict. V1 accepts only vLLM identities the standard deployment path can reproduce: automatic MoE/attention backend selection with EPLB disabled. Pinned backend or EPLB identities are rejected until structured generator support lands. Not supported in the `afd` estimate mode. (`default`, `exp`, `generate`, `estimate`)
+- `--forward-model`: Forward-pass modeling mode — `op_level` (default; granular per-op modeling) or `fpm` (predicts from collected whole-model forward-pass data; requires `fpm_forward_perf` data for the exact model/system/backend/version and never extrapolates outside the collected domain). Evaluates on the compiled engine's native FPM operation. `fpm` predictions are only as accurate as the match between the deployed engine configuration and the collected data — in particular the CUDA-graph capture surface: regime cliffs are encoded in the data, not modeled, so a deployment whose capture config differs from the collection will mispredict. V1 accepts only vLLM identities the standard deployment path can reproduce: automatic MoE/attention backend selection with EPLB disabled. Pinned backend or EPLB identities are rejected until structured generator support lands. (`default`, `exp`, `generate`, `estimate`)
 
 Built-in FPM coverage currently includes:
 
@@ -151,7 +151,7 @@ aiconfigurator cli estimate --model-path Qwen/Qwen3-32B --system h200_sxm --tp-s
 - `--moe-ep-size` (alias `--ep`): MoE expert parallelism size (auto-inferred if omitted)
 - `--gemm-quant-mode`: GEMM quantization mode (auto-inferred from model config if omitted)
 - `--kvcache-quant-mode`: KV cache quantization mode (auto-inferred if omitted)
-- `--fmha-quant-mode`: FMHA quantization mode (auto-inferred if omitted). DeepSeek-V3 / Kimi-K2.5 context attention (MLA prefill) has no fp8 FMHA data — auto-inferred fp8 is downgraded to `bfloat16` for context-touching estimates (agg, prefill, static, static_ctx, AFD prefill), while decode/generation keeps fp8. Explicitly passing `fp8` for a context estimate is rejected with a clear error.
+- `--fmha-quant-mode`: FMHA quantization mode (auto-inferred if omitted). DeepSeek-V3 / Kimi-K2.5 context attention (MLA prefill) has no fp8 FMHA data — auto-inferred fp8 is downgraded to `bfloat16` for context-touching estimates (agg, prefill, static, static_ctx), while decode/generation keeps fp8. Explicitly passing `fp8` for a context estimate is rejected with a clear error.
 - `--moe-quant-mode`: MoE quantization mode (auto-inferred if omitted)
 - `--comm-quant-mode`: Communication quantization mode (auto-inferred; default `half`)
 - `--prefix`: Prefix cache length (subset of ISL already cached per request). Default: `0`
@@ -487,7 +487,7 @@ Image and video workloads must currently be estimated separately. Qwen3-VL dense
 
 Kimi K2.5 resizes to its processor's patch and side limits, then pads to the patch/merge stride. The bundled checkpoints use 16,384 image patches, 4,096 patches per video frame, and 512 patches per side before padding. Local and downloaded checkpoints may override these limits through `preprocessor_config.json` (legacy `media_proc_cfg` or native Transformers settings) and `video_preprocessor_config.json`. Native image and video side limits must match, with each independently defaulting to 512 patches per side when omitted; legacy `media_proc_cfg` uses a shared side limit. Video estimates support one processor chunk of up to four sampled frames per video, including when `--num-video-tokens` is supplied; longer videos are rejected until temporal chunk modeling is available. Kimi's projector remains replicated under encoder tensor parallelism.
 
-Visual encoder workloads are not supported by AFD mode. Video estimates are supported for functional estimation, but saving deployment artifacts for a video workload is rejected until the generator has a video benchmark schema; run without `--save-dir`.
+Video estimates are supported for functional estimation, but saving deployment artifacts for a video workload is rejected until the generator has a video benchmark schema; run without `--save-dir`.
 
 **Encoder disaggregation (EPD)** — serve the vision encoder from a dedicated encode-worker pool rate-matched against the LM workers (agg becomes E+agg, disagg becomes E+P+D). Requires image inputs; the LM workers are modeled language-only. Result rows carry `(e)workers`/`(e)tp`/`(e)bs` columns.
 
@@ -754,6 +754,14 @@ K8sConfig:
 
 `Workers.agg.extra_cli_args` must be a `list[str]`, and the final command must include `--benchmark-mode` with one of `agg`, `prefill`, or `decode`. This runtime option selects the FPM collection phase; it does not change the required single aggregated-worker deployment topology. `K8sConfig.extra_env` accepts concrete `{name, value}` entries only; `valueFrom`, `envFrom`, and Secret-derived values are not supported. The normal rule, mapping, and versioned-template pipeline still builds the base command before the extra arguments are appended. If both `--benchmark-output-path` and `DYN_FPM_BENCHMARK_OUTPUT_PATH` are supplied, they must be identical. If neither is supplied, the generator adds `/results/benchmark.json` to both the command and environment.
 
+When the FPM collector drives these artifacts, its runtime also accepts this `K8sConfig.extra_env` entry:
+
+| Environment entry name | Default | Accepted value and behavior |
+| --- | --- | --- |
+| `FPM_FINALIZATION_TIMEOUT_SECONDS` | `120` seconds | A literal string containing an integer from `1` through `3600`, such as `{name: FPM_FINALIZATION_TIMEOUT_SECONDS, value: "600"}`. Invalid values fail before engine startup. |
+
+The collector stages this setting in `collector-runtime-env.sh` for both Kubernetes and Slurm so the parent collection process receives it before launching `run.sh`. The deadline starts after all local rank timing files are complete and bounds waiting for the matching merged artifact and any advertised worker-probe sidecar. It cannot extend the overall collection deadline. On expiry, collection fails and retains raw timings for recovery. Running the generated engine script alone does not enforce this collector-owned deadline.
+
 `K8sConfig.fpm_shared_memory_size` controls the generated `/dev/shm` `emptyDir` limit, while `K8sConfig.fpm_resource_labels` adds labels to the workload and its Pods. Container memory, ephemeral-storage, and other requests or limits can be supplied under `K8sConfig.worker_extra_pod_spec.mainContainer.resources`; the Generator-resolved per-node GPU count cannot be changed there. Grove does not inject a scheduler or queue: clusters that use KAI Scheduler can set `worker_extra_pod_spec.schedulerName` and the `kai.scheduler/queue` resource label explicitly, while other clusters can supply their own scheduler settings through the same generic fields. Matching user-provided `results` or `dshm` volume-and-mount pairs are preserved instead of replaced.
 
 The generated artifact directory contains only:
@@ -790,7 +798,7 @@ The current vLLM versioned template tops out at `0.20.1`; newer vLLM versions (e
 - If `--generator-dynamo-version` is not provided, the default is the first entry in `backend_version_matrix.yaml` (currently `1.3.0`).
 - If `--generated-config-version` is provided, it overrides the generated backend version, but the default K8s image tag still follows the selected Dynamo version mapping.
 
-Use `--generator-config path/to/file.yaml` to provide ServiceConfig/K8sConfig/DynConfig/WorkerConfig/Workers.<role> sections, or add inline overrides via `--generator-set KEY=VALUE`. Examples:
+Use `--generator-config path/to/file.yaml` to provide `ServiceConfig`/`K8sConfig`/`DynConfig`/`WorkerConfig`/`Workers.<role>` sections, or add inline overrides via `--generator-set KEY=VALUE`. Examples:
 
 - `--generator-set ServiceConfig.model_path=Qwen/Qwen3-32B-FP8`
 - `--generator-set K8sConfig.k8s_namespace=dynamo \`
@@ -1164,15 +1172,16 @@ disagg_full:
   decode_max_batch_size: 512
 ```
 This is long; the basics:
-    - `serving_mode`: `agg` or `disagg` for this experiment.
-    - `total_gpus`: total GPU budget for the deployment.
-    - For `disagg`, the worker spec is per-role: set `prefill_*` / `decode_*` for `model_path`, `system_name`, `backend_name`, the `*_quant_mode` fields, and the `*_candidates` search lists. `decode_model_path` must equal `prefill_model_path` (hetero-disagg means different *systems*, not models).
-    - For `agg`, the same fields are top-level (`model_path`, `system_name`, `gemm_quant_mode`, `agg_tp_candidates`, ...) — see `agg_full` in the template.
-    - `backend_name`: `trtllm` (default), `vllm`, or `sglang`.
-    - `backend_version`, `isl`, `osl`, `ttft`, `tpot`: same meaning as in `default` mode (shared, top-level).
-    - Large-EP (wideEP) has no key: it is explored automatically whenever the performance database covers the model's MoE shape on the role's system/backend (MoE all-to-all dispatch/combine plus EP compute data). Restrict or force EP sizes with `*_moe_ep_candidates`. The deprecated keys (`enable_wideep`, `prefill_enable_wideep`, `decode_enable_wideep`, `moe_backend: deepep_moe`) are still accepted with a one-time warning and have no modeling effect. One search-default residue remains: on SGLang, a config that spells `enable_wideep` / `moe_backend: deepep_moe` still narrows the *default* `moe_tp` candidates to `[1]` (a resolved-config compatibility behavior) — an explicit `*_moe_tp_candidates` list always wins.
-    - `nextn` / `nextn_accepted`: MTP speculative decoding (never auto-enabled; `nextn_accepted` is required when the resolved `nextn > 0`).
-    - The replica/correction knobs (`num_gpu_per_replica`, `max_*_workers`, `*_latency_correction`, ...) are covered in [Advanced Tuning](#advanced-tuning). Typically the only thing you need to touch is the quantization.
+
+- `serving_mode`: `agg` or `disagg` for this experiment.
+- `total_gpus`: total GPU budget for the deployment.
+- For `disagg`, the worker spec is per-role: set `prefill_*` / `decode_*` for `model_path`, `system_name`, `backend_name`, the `*_quant_mode` fields, and the `*_candidates` search lists. `decode_model_path` must equal `prefill_model_path` (hetero-disagg means different *systems*, not models).
+- For `agg`, the same fields are top-level (`model_path`, `system_name`, `gemm_quant_mode`, `agg_tp_candidates`, ...) — see `agg_full` in the template.
+- `backend_name`: `trtllm` (default), `vllm`, or `sglang`.
+- `backend_version`, `isl`, `osl`, `ttft`, `tpot`: same meaning as in `default` mode (shared, top-level).
+- Large-EP (wideEP) has no key: it is explored automatically whenever the performance database covers the model's MoE shape on the role's system/backend (MoE all-to-all dispatch/combine plus EP compute data). Restrict or force EP sizes with `*_moe_ep_candidates`. The deprecated keys (`enable_wideep`, `prefill_enable_wideep`, `decode_enable_wideep`, `moe_backend: deepep_moe`) are still accepted with a one-time warning and have no modeling effect. One search-default residue remains: on SGLang, a config that spells `enable_wideep` / `moe_backend: deepep_moe` still narrows the *default* `moe_tp` candidates to `[1]` (a resolved-config compatibility behavior) — an explicit `*_moe_tp_candidates` list always wins.
+- `nextn` / `nextn_accepted`: MTP speculative decoding (never auto-enabled; `nextn_accepted` is required when the resolved `nextn > 0`).
+- The replica/correction knobs (`num_gpu_per_replica`, `max_*_workers`, `*_latency_correction`, ...) are covered in [Advanced Tuning](#advanced-tuning). Typically the only thing you need to touch is the quantization.
 
 Quantization override order: explicit `*_quant_mode` fields take precedence; any mode left unset is filled from the model's HF quantization metadata.
 

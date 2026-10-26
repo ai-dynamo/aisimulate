@@ -85,7 +85,7 @@ def test_spec_build_rejects_unlisted_versions_without_the_escape(monkeypatch):
     # Review blocker (2026-08): the shim used to fall back to the raw input
     # when resolution failed, smuggling ungated coordinates onto the wire.
     monkeypatch.delenv("AIC_ALLOW_UNLISTED_VERSIONS", raising=False)
-    with pytest.raises(ValueError, match="old-style raw version query"):
+    with pytest.raises(ValueError, match="is not a queryable version"):
         _spec_backend_version("0.22.0", None)
 
 
@@ -112,5 +112,5 @@ def test_engine_handle_compile_rejects_unlisted_versions(monkeypatch):
     from aisimulate_core.sdk.engine import compile_engine
 
     monkeypatch.delenv("AIC_ALLOW_UNLISTED_VERSIONS", raising=False)
-    with pytest.raises(ValueError, match="old-style raw version query"):
+    with pytest.raises(ValueError, match="is not a queryable version"):
         compile_engine(_MODEL, _SYSTEM, _BACKEND, "0.22.0")

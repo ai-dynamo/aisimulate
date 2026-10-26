@@ -273,11 +273,15 @@ def get_model(
     # The materialized graph and its cache identity own the same snapshot.
     # Callers may reuse and edit nested speculative inputs for another build.
     if model_config.speculation is not None:
+        from aisimulate_core.sdk.common import DSPARK_ARCHITECTURES
+
+        if model_config.speculation.kind == "mtp" and architecture in DSPARK_ARCHITECTURES:
+            raise InvalidEngineConfigurationError(
+                f"Explicit MTP modeling is unsupported for {architecture}: its legacy nextn graph models DSPARK"
+            )
         model_config = copy.copy(model_config)
         model_config.speculation = copy.deepcopy(model_config.speculation)
     spec_config = resolve_speculation(model_config)
-    _validate_decode_moe_profile(model_path, model_config, backend_name)
-    _validate_prefill_graph_profile(model_path, model_config, backend_name)
     model = cls.create(model_info, model_config, backend_name)
     # Backend-specific defaults below construction (e.g. the DCP merge
     # collective: a2a on sglang, ag_rs elsewhere) read the backend identity off
@@ -293,8 +297,6 @@ def get_model(
     # (the per-rank KV stripe still enters memory via _cp_kv_memory_divisor).
     if (model_config.dcp_size or 1) > 1 and forward_model != "fpm":
         model._apply_decode_context_parallel()
-    if model_config.prefill_graph_profile is not None:
-        model.apply_prefill_graph_profile()
     if model_config.moe_kernel_source is not None:
         for phase, phase_ops in (("context", model.context_ops), ("generation", model.generation_ops)):
             if not any(
@@ -308,92 +310,6 @@ def get_model(
     return model
 
 
-def _validate_prefill_graph_profile(model_path, model_config, backend_name):
-    if model_config.prefill_graph_profile is None:
-        return
-    import aisimulate_core._native as core
-    from aisimulate_core.sdk.common import (
-        CommQuantMode,
-        FMHAQuantMode,
-        GEMMQuantMode,
-        KVCacheQuantMode,
-        MoEQuantMode,
-    )
-    from aisimulate_core.sdk.errors import PrefillGraphProfileError
-
-    if model_config.moe_kernel_source is not None:
-        raise PrefillGraphProfileError("moe_kernel_source cannot override a prefill graph profile")
-    name, _ = core.prefill_graph_profile_identity()
-    if (
-        model_config.prefill_graph_profile != name
-        or model_path != "nvidia/GLM-5.2-NVFP4"
-        or backend_name != "sglang"
-        or model_config.moe_quant_mode != MoEQuantMode.nvfp4
-        or model_config.gemm_quant_mode != GEMMQuantMode.bfloat16
-        or model_config.fmha_quant_mode != FMHAQuantMode.bfloat16
-        or model_config.kvcache_quant_mode != KVCacheQuantMode.fp8
-        or model_config.comm_quant_mode != CommQuantMode.half
-        or (model_config.tp_size, model_config.moe_tp_size, model_config.moe_ep_size) != (4, 4, 1)
-        or (model_config.pp_size, model_config.attention_dp_size, model_config.cp_size) != (1, 1, 1)
-        or model_config.nextn != 0
-        or model_config.speculation is not None
-        or model_config.enable_eplb
-        or model_config.overwrite_num_layers != 0
-        or model_config.forward_model != "op_level"
-        or model_config.moe_backend is not None
-        or model_config.attention_backend is not None
-        or model_config.decode_workload_distribution is not None
-        or model_config.workload_distribution != "power_law"
-    ):
-        raise PrefillGraphProfileError(
-            "prefill_graph_profile requires the exact GLM-5.2-NVFP4 SGLang TP4/MoETP4/EP1/PP1/DP1/CP1, "
-            "BF16 GEMM/FMHA, FP8 KV, NVFP4 MoE, half communication, power_law routing and op_level; "
-            "alternate profiles, overrides and speculation are unsupported"
-        )
-
-
-def _validate_decode_moe_profile(model_path, model_config, backend_name):
-    """Reject an explicit pilot profile before an unsupported graph can ignore it."""
-    selected = model_config.decode_workload_distribution
-    if selected is None:
-        return
-    from aisimulate_core.sdk.common import (
-        CommQuantMode,
-        FMHAQuantMode,
-        GEMMQuantMode,
-        KVCacheQuantMode,
-        MoEQuantMode,
-    )
-    from aisimulate_core.sdk.errors import DecodeMoeProfileError
-
-    if model_config.moe_kernel_source is not None:
-        raise DecodeMoeProfileError("moe_kernel_source cannot override an observed decode profile")
-    if not isinstance(selected, str) or not selected.strip() or selected != selected.strip():
-        raise DecodeMoeProfileError("decode_workload_distribution must be a nonempty literal string")
-    if (
-        model_path != "nvidia/GLM-5.2-NVFP4"
-        or backend_name != "sglang"
-        or model_config.moe_quant_mode != MoEQuantMode.nvfp4
-        or model_config.gemm_quant_mode != GEMMQuantMode.bfloat16
-        or model_config.fmha_quant_mode != FMHAQuantMode.bfloat16
-        or model_config.kvcache_quant_mode != KVCacheQuantMode.fp8
-        or model_config.comm_quant_mode != CommQuantMode.half
-        or (model_config.tp_size, model_config.moe_tp_size, model_config.moe_ep_size) != (4, 4, 1)
-        or (model_config.pp_size, model_config.attention_dp_size, model_config.cp_size) != (1, 1, 1)
-        or model_config.nextn != 0
-        or model_config.speculation is not None
-        or model_config.enable_eplb
-        or model_config.overwrite_num_layers != 0
-        or model_config.forward_model != "op_level"
-        or model_config.moe_backend is not None
-    ):
-        raise DecodeMoeProfileError(
-            "decode_workload_distribution requires GLM-5.2-NVFP4 SGLang TP4/MoETP4/EP1/PP1/DP1/CP1, "
-            "BF16 GEMM/FMHA, FP8 KV, NVFP4 MoE, half communication, op_level and no speculation, "
-            "EPLB, layer override or alternate MoE backend"
-        )
-
-
 # Re-export concrete model classes for backward compatibility. Auto-discovery
 # above already imported them; we list them here for static analysis / IDE
 # support and so wildcard imports work.
@@ -404,6 +320,7 @@ from aisimulate_core.sdk.models.gemma4 import Gemma4MixModel
 from aisimulate_core.sdk.models.gpt import GPTModel
 from aisimulate_core.sdk.models.hybrid_moe import HybridMoEModel
 from aisimulate_core.sdk.models.llama import LLAMAModel
+from aisimulate_core.sdk.models.mistral3 import Mistral3Model
 from aisimulate_core.sdk.models.moe import MOEModel
 from aisimulate_core.sdk.models.nemotron_h import NemotronHModel
 from aisimulate_core.sdk.models.nemotron_nas import NemotronNas
@@ -420,6 +337,7 @@ __all__ = [
     "HybridMoEModel",
     "LLAMAModel",
     "MOEModel",
+    "Mistral3Model",
     "NemotronHModel",
     "NemotronNas",
     "Qwen3VLMoEModel",

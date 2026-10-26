@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Pure reductions and Slack rendering for the daily accuracy report."""
+"""Pure reductions and Slack rendering for the weekly accuracy report."""
 
 from __future__ import annotations
 
@@ -224,7 +224,7 @@ def messages(day, pipelines, snapshots, alerts, notes, recovered=()):
     if notes:
         summary += f" · {len(notes)} comparison note(s) in thread"
     lines = [
-        f":rainbow: *Accuracy Daily · {day}*",
+        f":rainbow: *Accuracy Weekly · {day}*",
         "> " + links + " · <https://ai-dynamo.org/aisimulate/e2e-accuracy/|E2E overview>"
         " · <https://ai-dynamo.org/aisimulate/fpm-accuracy/|FPM overview>",
     ]

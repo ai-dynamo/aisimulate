@@ -242,24 +242,6 @@ def test_qwen36_task_preserves_explicit_gemm_override():
     assert by_name["context_gdn_gate_ffn1_gemm"]._quant_mode == common.GEMMQuantMode.fp8_static
 
 
-def test_qwen36_afd_prefill_preserves_explicit_gemm_override():
-    task = Task(
-        serving_mode="afd",
-        model_path="nvidia/Qwen3.6-27B-NVFP4",
-        system_name="b200_sxm",
-        backend_name="trtllm",
-        total_gpus=16,
-        afd_combined_with_pd=True,
-        gemm_quant_mode=common.GEMMQuantMode.fp8_static,
-    )
-    model_config = task.sweep_afd_kwargs(database=None)["prefill_model_config"]
-    model = get_model(task.model_path, model_config, task.backend_name)
-    by_name = {op._name: op for op in model.context_ops + model.generation_ops}
-
-    assert model_config._gemm_quant_mode_is_explicit is True
-    assert by_name["context_gdn_gate_ffn1_gemm"]._quant_mode == common.GEMMQuantMode.fp8_static
-
-
 @pytest.mark.parametrize(
     "hf_id,ffn_name",
     [
@@ -387,3 +369,27 @@ def test_dsv4_nvfp4_experts_preserve_fp8_block_nonexpert_lane(hf_id):
         op._gemm_quant_mode for op in model.context_ops + model.generation_ops if hasattr(op, "_gemm_quant_mode")
     }
     assert module_modes == {common.GEMMQuantMode.fp8_block}
+
+
+@pytest.mark.parametrize("backend", ["vllm", "trtllm", "sglang"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_nemotron_super_omni_preserves_backend_and_explicit_moe_modes(backend, explicit):
+    from aisimulate_core.sdk.models.helpers import _apply_model_quant_defaults
+    from aisimulate_core.sdk.utils import _infer_quantization_fields
+
+    model_config = _model_config()
+    if explicit:
+        model_config.moe_quant_mode = common.MoEQuantMode.w4a16_nvfp4
+    raw_config = {
+        "architectures": ["NemotronH_Omni_Reasoning_V3"],
+        "llm_config": {
+            "quantization_config": {
+                "quant_algo": "MIXED_PRECISION",
+                "quantized_layers": {"backbone.layers.1.mixer.experts.0.up_proj": {"quant_algo": "W4A16_NVFP4"}},
+            }
+        },
+    }
+    raw_config.update(_infer_quantization_fields(raw_config))
+    _apply_model_quant_defaults(model_config, raw_config, "NemotronH_Omni_Reasoning_V3", backend)
+    expected = common.MoEQuantMode.nvfp4 if backend == "vllm" and not explicit else common.MoEQuantMode.w4a16_nvfp4
+    assert model_config.moe_quant_mode == expected

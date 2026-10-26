@@ -16,9 +16,9 @@
 //! DSA, DSV4) get one variant per phase so a single `query` method handles
 //! dispatch.
 
+use crate::operators::{Glm53AttentionOp, Glm53FfnOp, Glm53MhcOp, Glm53PrimitiveOp, Glm53RouterOp};
 use serde::{Deserialize, Serialize};
 
-use super::prefill_graph::{SglangPrefillAttentionSequenceOp, SglangPrefillCommNormBoundaryOp};
 use crate::common::error::AicError;
 use crate::operators::{
     ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp, Dsv4ModuleOp,
@@ -184,9 +184,13 @@ pub enum Op {
     Dsv41Engram(Dsv41EngramOp),
     Dsv41Stage(Dsv41StageOp),
     Dsv41Linear(Dsv41LinearOp),
-    // Append-only: the fixed prefill composite scopes (EngineSpec schema 22).
-    SglangPrefillAttentionSequence(SglangPrefillAttentionSequenceOp),
-    SglangPrefillCommNormBoundary(SglangPrefillCommNormBoundaryOp),
+    // Append-only: GLM-5.3-Flash composites follow the DeepSeek V4.1 variants.
+    Glm53Attention(Glm53AttentionOp),
+    Glm53Mhc(Glm53MhcOp),
+    Glm53Router(Glm53RouterOp),
+    Glm53Ffn(Glm53FfnOp),
+    Glm53Primitive(Glm53PrimitiveOp),
+    MeasuredComposite(crate::operators::measured_composite::MeasuredCompositeOp),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -281,6 +285,12 @@ impl Op {
             Op::Dsv41Engram(o) => o.weight_bytes(),
             Op::Dsv41Stage(o) => o.weight_bytes(),
             Op::Dsv41Linear(o) => o.weight_bytes(),
+            Op::Glm53Attention(o) => o.weight_bytes(),
+            Op::Glm53Mhc(o) => o.weight_bytes(),
+            Op::Glm53Router(o) => o.weight_bytes(),
+            Op::Glm53Ffn(o) => o.weight_bytes(),
+            Op::MeasuredComposite(o) => o.weight_bytes,
+            Op::Glm53Primitive(o) => o.weight_bytes(),
             Op::TokenScale(o) => o.op.weight_bytes(),
             Op::Gemm(o) => o.weights_bytes(),
             Op::Embedding(o) => o.weights_bytes(),
@@ -291,8 +301,6 @@ impl Op {
             Op::DsaContext(o) | Op::DsaGeneration(o) => o.weight_bytes(),
             Op::Dsv4Context(o) | Op::Dsv4Generation(o) => o.weight_bytes(),
             Op::FpmForward(o) => o.weight_bytes,
-            Op::SglangPrefillAttentionSequence(o) => o.weight_bytes,
-            Op::SglangPrefillCommNormBoundary(_) => 0.0,
             // Python FallbackOp.get_weights: primary wins when positive,
             // else the granular fallback chain sums.
             Op::Fallback(o) => {
@@ -343,6 +351,12 @@ impl Op {
             Op::Dsv41Engram(o) => &o.name,
             Op::Dsv41Stage(o) => &o.name,
             Op::Dsv41Linear(o) => &o.name,
+            Op::Glm53Attention(o) => &o.name,
+            Op::Glm53Mhc(o) => &o.name,
+            Op::Glm53Router(o) => &o.name,
+            Op::Glm53Ffn(o) => &o.name,
+            Op::MeasuredComposite(o) => &o.name,
+            Op::Glm53Primitive(o) => &o.name,
             Op::TokenScale(o) => o.op.name(),
             Op::Gemm(o) => &o.name,
             Op::Embedding(o) => &o.name,
@@ -373,8 +387,6 @@ impl Op {
             Op::WideEpContextMla(o) => &o.name,
             Op::WideEpGenerationMla(o) => &o.name,
             Op::FpmForward(o) => &o.name,
-            Op::SglangPrefillAttentionSequence(o) => &o.name,
-            Op::SglangPrefillCommNormBoundary(o) => &o.name,
             Op::Overlap(o) => &o.name,
             Op::Fallback(o) => &o.name,
             Op::Dsv4MegaMoe(o) => &o.name,
@@ -394,6 +406,12 @@ impl Op {
             Op::Dsv41Engram(o) => o.name = name,
             Op::Dsv41Stage(o) => o.name = name,
             Op::Dsv41Linear(o) => o.name = name,
+            Op::Glm53Attention(o) => o.name = name,
+            Op::Glm53Mhc(o) => o.name = name,
+            Op::Glm53Router(o) => o.name = name,
+            Op::Glm53Ffn(o) => o.name = name,
+            Op::MeasuredComposite(o) => o.name = name,
+            Op::Glm53Primitive(o) => o.name = name,
             Op::TokenScale(o) => o.op.set_name(name),
             Op::Gemm(o) => o.name = name,
             Op::Embedding(o) => o.name = name,
@@ -424,8 +442,6 @@ impl Op {
             Op::WideEpContextMla(o) => o.name = name,
             Op::WideEpGenerationMla(o) => o.name = name,
             Op::FpmForward(o) => o.name = name,
-            Op::SglangPrefillAttentionSequence(o) => o.name = name,
-            Op::SglangPrefillCommNormBoundary(o) => o.name = name,
             Op::Overlap(o) => o.name = name,
             Op::Fallback(o) => o.name = name,
             Op::Dsv4MegaMoe(o) => o.name = name,
@@ -439,6 +455,7 @@ impl Op {
     pub fn set_scale_factor(&mut self, scale_factor: f64) {
         match self {
             Op::TokenScale(o) => o.op.set_scale_factor(scale_factor),
+            Op::MeasuredComposite(o) => o.scale_factor = scale_factor,
             Op::Gemm(o) => o.scale_factor = scale_factor,
             Op::Embedding(o) => o.scale_factor = scale_factor,
             Op::Elementwise(o) => o.scale_factor = scale_factor,
@@ -467,7 +484,6 @@ impl Op {
             Op::Gdn(o) => o.scale_factor = scale_factor,
             Op::WideEpContextMla(o) => o.scale_factor = scale_factor,
             Op::WideEpGenerationMla(o) => o.scale_factor = scale_factor,
-            Op::SglangPrefillAttentionSequence(_) | Op::SglangPrefillCommNormBoundary(_) => {}
             Op::FpmForward(_) => {} // no scale_factor on this family (composite/whole-model)
             Op::Overlap(_) => {}    // no scale_factor on this family (composite/whole-model)
             Op::Fallback(_) => {}   // no scale_factor on this family (composite/whole-model)
@@ -477,7 +493,12 @@ impl Op {
             | Op::Dsv41Mhc(_)
             | Op::Dsv41Engram(_)
             | Op::Dsv41Stage(_)
-            | Op::Dsv41Linear(_) => {}
+            | Op::Dsv41Linear(_)
+            | Op::Glm53Attention(_)
+            | Op::Glm53Mhc(_)
+            | Op::Glm53Router(_)
+            | Op::Glm53Ffn(_)
+            | Op::Glm53Primitive(_) => {}
             Op::Dsv4MegaMoe(o) => o.scale_factor = scale_factor,
             Op::Kda(o) => o.scale_factor = scale_factor,
             Op::MoeAllToAll(o) => o.scale_factor = scale_factor,
@@ -511,14 +532,26 @@ impl Op {
     /// they're treated as non-attention in the mix-step composition
     /// (matching Python's intent: the module already represents the full
     /// fused attention+projection work and shouldn't be re-decomposed).
+    ///
+    /// GLM-5.3-Flash attention ops carry per-layer names (`attention_N`), so
+    /// they are classified by their explicit phase instead (see
+    /// [`Self::is_glm53_attention`]).
     pub fn is_context_attention(&self) -> bool {
-        self.name() == "context_attention"
+        self.is_glm53_attention(true) || self.name() == "context_attention"
     }
 
     /// True if this op's name matches Python's mix-step filter for the
-    /// generation-attention bucket (`"generation_attention"`).
+    /// generation-attention bucket (`"generation_attention"`), or it is a
+    /// generation-phase GLM-5.3-Flash attention op.
     pub fn is_generation_attention(&self) -> bool {
-        self.name() == "generation_attention"
+        self.is_glm53_attention(false) || self.name() == "generation_attention"
+    }
+
+    /// GLM-5.3-Flash per-layer attention of the given phase. Mixed steps must
+    /// query it at its own prefill or decode shape rather than in the shared
+    /// token-major pass.
+    fn is_glm53_attention(&self, context: bool) -> bool {
+        matches!(self, Op::Glm53Attention(o) if o.is_context == context)
     }
 
     /// Identifies the logits projection GEMM by name. Python special-cases
@@ -544,8 +577,12 @@ impl Op {
             Op::Dsv41Engram(op) => op.query(db, ctx.num_tokens),
             Op::Dsv41Stage(op) => op.query(db, ctx),
             Op::Dsv41Linear(op) => op.query(db, ctx.num_tokens),
-            Op::SglangPrefillAttentionSequence(op) => op.query(db, ctx),
-            Op::SglangPrefillCommNormBoundary(op) => op.query(db, ctx),
+            Op::Glm53Attention(op) => op.query(db, ctx),
+            Op::Glm53Mhc(op) => op.query(db, ctx),
+            Op::Glm53Router(op) => op.query(db, ctx.num_tokens),
+            Op::Glm53Ffn(op) => op.query(db, ctx),
+            Op::MeasuredComposite(op) => op.query(db, ctx),
+            Op::Glm53Primitive(op) => op.query(db, ctx),
             Op::TokenScale(op) => {
                 let scaled = RuntimeContext {
                     batch_size: op.scale_tokens(ctx.batch_size)?,

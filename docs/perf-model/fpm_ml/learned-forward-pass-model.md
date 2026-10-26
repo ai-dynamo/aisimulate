@@ -1,0 +1,908 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Learned forward-pass model from real-traffic FPM telemetry
+
+The learned forward-pass model predicts one engine iteration's wall time from
+the scheduled batch composition, starting from a tree ensemble trained on
+`ForwardPassMetrics` (FPM) records emitted by a real deployment. Construct it
+through `RustForwardPassPerfModel.best_available(config)` with explicit
+`estimation_mode="fpm_learned"`. It is outside the automatic estimator search.
+Learned adaptation defaults to `online`; frozen evaluation and hybrid-only
+calibration explicitly select `adaptation: frozen`.
+
+| Explicit estimator | Base estimate | Feedback behavior | Source |
+| --- | --- | --- | --- |
+| `op_level` | Compiled AIC engine | Optional correction | Supported model and performance database |
+| `fpm_regression` | Linear or spline fit | Online fitting per workload store | Admitted observations; can start untrained |
+| `fpm_learned`, `adaptation: frozen` | Fixed tree ensemble | Optional hybrid calibration | Inference artifact or checkpoint |
+| `fpm_learned`, `adaptation: online` (default) | Adaptive binned tree ensemble | Tree updates; correction defaults to disabled | Training or saved online checkpoint |
+| `fpm_learned`, `adaptation: causal_selector` | Selected frozen calibrated or adaptive expert | Both experts learn; prior error evidence selects the next prediction | Training checkpoint |
+
+The learned mode does not use the anchor-library collector or a kvwarm
+self-benchmark. Its only input is the telemetry the engine already produces.
+
+Frozen calibration, online tree adaptation and their causal selector are
+standalone telemetry APIs:
+pass complete `ForwardPassMetrics` for one iteration to the model returned by
+`best_available`. Engine replay, engine CLI prediction and Sweeper's current
+timing interfaces supply phase aggregates and cannot reconstruct the full
+learned feature vector. Python prediction and Sweeper reject learned mode during
+configuration validation; native replay rejects it before loading a source.
+This release does not populate missing
+rank or request features from mean phase values.
+
+The original PR 280 design rationale, model details, evaluation method and result
+tables are in [`design.md`](design.md). Online update equations, causal selection
+and hyperparameter semantics are in [the mathematical explanation](online-gbdt-and-causal-selection.md).
+
+## 1. Collect the FPM stream
+
+Run the deployment you want to model with Dynamo's FPM trace enabled on every
+worker:
+
+```bash
+export DYN_FPM_TRACE=1
+export DYN_FPM_MODE=full          # every iteration, not sampled
+export DYN_FPM_OUTPUT_PATH=/results/fpm   # one jsonl.gz per producer
+```
+
+Every scheduler iteration writes one record per attention-DP rank with the
+scheduled counts (`num_*_requests`, `sum_prefill_tokens`,
+`sum_prefill_kv_tokens`, `sum_decode_kv_tokens`, variances) and the observed
+`wall_time` (schedule to update-from-output, in seconds). Drive the deployment
+with the traffic you want the model to cover: production traffic, a trace
+replay (for example AA-RWLT over Claude Code traces), or an agentic generator
+(AgentX). Sweep the concurrency range you intend to simulate; a learned model
+is only reliable inside the batch/KV space it has seen.
+
+The trainer also accepts the event-plane sink format (one flat FPM JSON per
+line, as written by an `FpmEventSubscriber` sink) and the Dynamo trace envelope
+(`{"event": {"fpm": {...}}}`).
+
+Keep the engine posture fixed while collecting: async scheduling, CUDA-graph
+capture list, and max batched tokens all change `wall_time` and belong to the
+model's identity.
+
+`wall_time` means different things per backend. The vLLM producer
+(`InstrumentedScheduler`) measures each step from `schedule()` to
+`update_from_output()` on the host clock, one value per step. The SGLang
+producer reads a CUDA-event `DeviceTimer` around the forward, but it
+accumulates every *finished* interval at emission time and drops the record
+when nothing finished. With the overlap scheduler on, a step whose result
+processing does long host work (the last chunk of a request in
+disaggregated prefill hands the KV cache to the decode worker) lets the next
+forward finish first, so that record carries two forwards and the next record
+is lost (V4.1-Flash prefill: 18% of batches missing, a 2× bimodal step time,
+22% MAPE). **Collect SGLang FPM with `--disable-overlap-schedule`**; the
+non-overlap loop emits exactly one interval per batch and the measured GPU
+time is the same quantity a production overlap deployment spends per forward.
+The same requirement holds for the SGLang simulator's own collection hook.
+
+### Per-request fields
+
+Stock Dynamo FPM v1 (both backends) carries aggregates only. The per-request
+presets (`atomic5`, `atomic10`, `sglang18`, `hisim`) need two additive, aligned lists in
+`scheduled_requests`, one entry per scheduled request in any order (the
+consumer sorts; only the alignment of the two lists matters):
+
+```json
+"extend_lengths":  [16384, 1, 1],      // tokens computed for the request in this step
+"past_kv_lengths": [32768, 7100, 950]  // KV tokens already present before the step
+```
+
+Neither producer emits them natively yet. `aisimulate_core.fpm_hooks` adds
+them at runtime, in memory, when the producer modules are imported inside the
+engine process (including SGLang's spawned scheduler subprocesses); no engine
+source is modified and any stock Dynamo image produces the fields:
+
+```bash
+# in the engine container (both backends), before launching the worker
+export PYTHONPATH=$(python -c 'import aisimulate_core.fpm_hooks as h; print(h.hook_path())'):$PYTHONPATH
+python -m dynamo.sglang ...        # or: python -m dynamo.vllm ...
+# or, equivalently
+python -m aisimulate_core.fpm_hooks dynamo.sglang -- ...
+```
+
+What the hooks add (FPM `version` stays 1, the two fields are additive and
+ignored by aggregate-only consumers):
+
+- vLLM path: `InstrumentedScheduler._extract_scheduled` fills the lists from the
+  `SchedulerOutput` (`num_scheduled_tokens` → extend, `num_computed_tokens` → past).
+- SGLang: `_build_scheduled_request_metrics` fills them from the schedule-time
+  `batch.extend_lens` / `batch.prefix_lens` for prefill batches and from
+  `batch.seq_lens_cpu` for decode batches (the per-request attributes are already
+  reset when metrics are emitted).
+
+The hook is a no-op when a producer already carries the fields, and logs and
+skips (aggregate-only FPM) when the engine internals it wraps are missing.
+Streams recorded without the hooks train with `--features v1` only.
+
+Record the stream with Dynamo's own relay sink (`DYN_FPM_TRACE=1
+DYN_FPM_OUTPUT_PATH=...`, files `fpm-relay*.jsonl.gz`), which writes the raw
+payload. A consumer that decodes the msgpack with the *stock* typed
+`ForwardPassMetrics` struct silently drops the two extra keys: a custom ZMQ
+subscriber written that way produced aggregate-only files while the relay
+files next to it carried the lists, and a model trained on those files landed
+at 12–19% decode error instead of 2–3%. Check one record for `extend_lengths`
+before training.
+
+## 2. Train
+
+Where each step runs: collection happens inside the engine container (the
+Dynamo `sglang-runtime` / `vllm-runtime` image, nothing extra installed) and
+only writes FPM `jsonl.gz` files. Training reads those files on any CPU
+machine with the `aisimulate[learned]` extra installed (scikit-learn is used
+only here; a login node or laptop is fine: 2.7M decode steps fit in ~25 s on
+16 threads, loading the gzip stream takes longer than the fit). The output is
+a plain JSON artifact that the standalone Rust FPM model loads with no
+Python ML dependency.
+
+Training environment, pick one:
+
+- **Plain Python on the host** (login node, workstation, laptop):
+  `pip install "aisimulate[learned]"` or, from a checkout,
+  `uv sync --project python/aisimulate --extra learned`. This is what the
+  numbers in §4 were produced with (a venv on a cluster login node).
+- **A container, when the site only allows containerised jobs** (Slurm with
+  pyxis/enroot, Kubernetes): the Dynamo runtime images do **not** ship
+  scikit-learn (only numpy/scipy), so either `pip install scikit-learn` inside
+  the capture image, or use the NGC PyTorch image, which includes
+  scikit-learn:
+
+  ```bash
+  srun -N1 --container-image=nvcr.io#nvidia/pytorch:25.08-py3 \
+       --container-mounts=/path/to/traces:/traces,/path/to/aisimulate:/aisimulate \
+       bash -c 'pip install -q /aisimulate/python/aisimulate[learned] && \
+                python -m aisimulate_core.sdk.fpm_learned train --fpm /traces/decode/*.jsonl.gz \
+                  --worker-type decode --out /traces/decode_learned.json'
+  ```
+
+  No GPU is used; request a CPU partition if the site has one.
+- **Inside the capture container right after collection**: the same
+  `pip install scikit-learn` + `train` command, so collection and training can
+  be one Slurm job. The artifact is a small JSON file either way.
+
+```bash
+uv sync --project python/aisimulate --extra learned   # installs scikit-learn
+# or: pip install "aisimulate[learned]"
+python -m aisimulate_core.sdk.fpm_learned train \
+  --fpm decode_worker/*.jsonl.gz \
+  --worker-type decode \
+  --holdout-frac 0.2 \
+  --out models/decode_learned.json
+```
+
+- `--worker-type` binds the artifact to `prefill`, `decode`, or `aggregated`.
+  Aggregated engines get up to four stores (`pure_decode`,
+  `contains_locally_mixed`, `cross_rank_aggregated`, `pure_prefill`), selected
+  by the same rule the regression fallback uses.
+- `--join-ranks` defaults to `none`: every record is one iteration.
+  `counter` keys records by `(worker_id, counter_id)` and rejects repeated
+  keys, but refuses records from more than one `dp_rank` per key. Dynamo's
+  publisher assigns `counter_id` per rank and also advances it on idle
+  heartbeats, so stock attention-DP captures cannot be joined by it; that
+  needs a scheduler-synchronized step id from the producer.
+- Features are named quantities computed identically in `fpm_learned.py` and
+  `learned.rs` (135 names, three groups):
+  - 21 aggregate features from the FPM v1 counts/sums/variances (preset `v1`;
+    `fpm5` is the 17 of them that need no variance);
+  - the 18 per-request features of the SGLang simulator `MLTimePredictor`
+    (`req_*`: sum/max/min extend and past, cross terms, attention FLOPs proxy,
+    `is_decode`/`is_prefill`; preset `sglang18`);
+  - 32 HiSim-style request slots sorted by past KV descending, each
+    `(present, past, extend)` (preset `hisim`);
+  `design.md` §3.1 derives the atomic sets, the smallest subsets from which all 18
+  can be computed back: decode 5 (`atomic5`), prefill 10 (`atomic10`). They are
+  the trainer defaults. Decode 5 matches the 18 on every train/test pair
+  measured (not valid with speculative decoding); prefill 10 matches the 18
+  in-distribution and trails it only when extrapolating across workloads.
+  Fewer features do not make inference faster; the tree walk dominates.
+  The per-request groups need the `extend_lengths` / `past_kv_lengths`
+  producer fields described above. Lists must be aligned and cover every
+  scheduled request; the Rust validator rejects partial vectors, and an
+  artifact that uses `req_*` / `slot*` features **refuses** (error, not a
+  constant prediction) iterations that carry no consistent lists, because
+  the trees never saw those features missing during training.
+  `--features` takes a preset name or a comma-separated list. Defaults are the
+  atomic sets: `atomic5` for `--worker-type decode` (n, Σ past, max/min past,
+  Σ past²) and `atomic10` for prefill / aggregated (those plus Σ/max/min extend,
+  Σ extend·past, Σ extend²). `sglang18` is the full 18-feature set they were
+  derived from; use it for a prefill model that must extrapolate to traffic
+  unlike its training data. Aggregate-only streams must opt in with
+  `--features v1`. Data that carries only the five FPM v1 counts and sums
+  (`num_prefill_requests`, `sum_prefill_tokens`, `sum_prefill_kv_tokens`,
+  `num_decode_requests`, `sum_decode_kv_tokens`; e.g. FPM Gym) uses
+  `--features fpm5`: the 17 `v1` features that need no variance. It drops
+  `var_prefill_length`, `var_decode_kv_tokens` and the decode sum of squares
+  recovered from the variance, which a missing variance would fill as if
+  every request had the same length. Like `v1`, it cannot tell a batch of
+  equal requests from one long request plus short ones of the same total.
+- The model is a scikit-learn `HistGradientBoostingRegressor` on
+  `log(wall_ms)` per store, exported to plain JSON
+  (`schema = aic_fpm_learned_forward_perf`, version 1). No pickle is involved
+  and inference does not need scikit-learn. Early stopping is off unless
+  `--early-stopping` is passed (sklearn would otherwise enable it above 10k
+  rows with a hidden 10 % validation split); `metadata.trees_fitted` records
+  the trees per store.
+
+The command prints the train-set fit and a random-holdout report per store
+(MAPE, median and p95 APE), scored through the compiled Rust model, which is
+the only prediction path. The random holdout is a smoke check only:
+consecutive steps are correlated, so for a real accuracy number train on one
+set of files and score another with `evaluate --model ... --fpm ...` (for
+example a capture run with a different seed and different concurrency tiers,
+as in §4).
+
+### Export a seed for online fitting
+
+The usual inference JSON preserves the fitted predictor. To continue fitting its
+trees, export a seed checkpoint during training, when the exact fitted rows and
+bin mapper are available. An arbitrary inference JSON cannot reconstruct those
+inputs. Checkpoint export adds no observations and does not fit a different
+forest.
+
+The exporter requires a canonical identity JSON with the deployment's actual
+model, hardware, backend/version, topology and `worker_type`. For example, a
+minimal identity file for a decode deployment is:
+
+```json
+{
+  "model": "Qwen/Qwen3-32B",
+  "system": "h200_sxm",
+  "backend": "vllm",
+  "worker_type": "decode",
+  "tp": 1
+}
+```
+
+Use the measured deployment's complete identity, including explicit precision
+and topology controls where applicable. Rust normalizes the identity; the
+exporter does not invent a second set of defaults. The training `worker_type`
+must match it. Leave learned source paths out of this identity: the new seed
+does not exist yet. Estimator selection and fitting controls are excluded from
+the deployment identity, so the same identity can select the exported seed
+after training. Then train and export together:
+
+```bash
+python -m aisimulate_core.sdk.fpm_learned train \
+  --fpm decode_worker/*.jsonl.gz \
+  --worker-type decode \
+  --features fpm5 \
+  --out models/decode_learned.json \
+  --online-checkpoint-dir models/decode_online_seed \
+  --identity deployment_identity.json
+```
+
+`fpm5` is suitable for aggregate-only telemetry; retain the appropriate feature
+preset when per-request data is available. The Python API accepts the equivalent
+`train(..., online_checkpoint_dir="models/decode_online_seed", identity=identity)`
+arguments and still returns the ordinary inference artifact.
+
+Online seed export currently supports scikit-learn 1.9.1, scalar unweighted
+`squared_error` fitting, numeric features and `early_stopping=False`. It rejects
+unsupported versions, categorical features, monotonic/interaction constraints
+and feature subsampling. Normal inference-artifact training retains its existing
+behavior. The seed contains the exact fitted feature/target rows and row
+provenance, learned bin thresholds, predictor and fitting metadata, with file
+checksums. It uses `aisimulate_fpm_training_checkpoint` schema version 1. Export
+writes a new directory atomically and refuses to overwrite an existing path.
+
+The following settings are fitted or recorded when the seed is created; they
+are not independent online overrides:
+
+| Seed property | Training default | Role in online fitting |
+| --- | --- | --- |
+| `target` | `log_ms` | Squared loss on `log(latency_ms)`; `ms` uses the untransformed latency. The output transform must match. |
+| Ordered `features` | `atomic5` for decode, `atomic10` otherwise | Defines the feature ABI, fitted bins and grouping key. `fpm5` is an explicit aggregate-only option. |
+| `max_iter` | `600` | Maximum offline tree count; the actual fitted tree count is preserved online. |
+| `learning_rate` | `0.05` | Shrinkage applied once to each fitted leaf contribution. Distinct from online `update_step`. |
+| `max_leaf_nodes` | `31` | Offline tree budget. Online structural updates reuse each fitted tree's reserved capacity. |
+| `min_samples_leaf` | `5` | Minimum original observation count per child; grouped history preserves multiplicities. |
+| `min_store_rows` | `20` | Minimum rows for exporting a store. Online feedback does not synthesize missing seed stores. |
+| `random_state` | `0` | Offline fitting RNG; separate from the online split-sampling `seed`. |
+| `early_stopping` | `false` | Required for online checkpoint export so all declared fit rows belong to the fitted population. |
+| L2 penalty and maximum depth | Trainer's `0.0` and no depth limit | Recorded and validated; the online leaf objective and rebuilding respect them. |
+| Bin mapper and baseline | Learned during training | Preserved by online updates. Tree splits remain on the fitted bin thresholds. |
+
+## 3. Use it
+
+```python
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+config = ForwardPassPerfModelConfig(
+    model="Qwen/Qwen3-32B",
+    system="h200_sxm",
+    backend="vllm",
+    worker_type="decode",
+    estimation_mode="fpm_learned",
+    fallback_policy="deny",
+    estimator_config={
+        "fpm_learned": {
+            "artifact_path": "models/decode_learned.json",
+            "adaptation": "frozen",
+        },
+        "correction": {"enabled": True, "mode": "hybrid"},
+    },
+)
+model = RustForwardPassPerfModel.best_available(config)
+ms = model.estimate_forward_pass_time_ms([query_rank0])
+model.tune_with_fpms([[observed_rank0]])  # reveal the measured target afterward
+```
+
+For A-only or B-only frozen GBDT evaluation, train on the scenario's selected
+data, set `adaptation: frozen` and `correction.enabled: false`, and score held-out
+observations without feedback. Training parameters remain independent of the
+online update defaults.
+
+### Online correction
+
+With frozen adaptation, `estimate_forward_pass_time_ms` returns the learned
+prediction multiplied by a hybrid correction factor. Inside the configured fixed grid it uses the
+existing fixed local median, including the neutral factor 1.0 for empty or
+unready cells. Outside that grid it uses dynamic local correction with a
+recent-global fallback. Default fixed upper limits are 8,192 prefill tokens,
+512 decode requests, and 2,000,000 decode KV tokens; endpoints are inside.
+Hybrid selection uses these configured limits, not the dynamic bounds or
+whether either store is ready. Prediction queries do not admit feedback.
+
+Both policies receive the same feedback and uncorrected forest prediction.
+The fixed store keeps its original raw-coordinate geometry, admission, median,
+and eviction behavior, including rejection of out-of-grid observations. The
+dynamic store receives in-grid observations too. Each has an independent full
+capacity: the default hybrid retains up to 64 fixed slots plus 64 dynamic slots
+per inferred workload kind. This preserves the fixed history instead of
+dividing its capacity between policies. Only one forest prediction is computed.
+
+Within the dynamic policy, the default capacity of 64 retains 48 samples
+with balanced bucket eviction and a separate FIFO of the 16 most recent
+samples. The two sets can overlap. Samples expire after 128 admitted
+observations; the grid bounds only expand, even when an old extreme expires.
+Coordinates use `log1p` with 16 prefill bins or a 4-by-4 decode/mixed grid.
+Bounds start empty and are learned from feedback; loading an offline forest
+does not preload correction samples or require a new artifact format.
+
+Each sample stores the observed latency divided by the **uncorrected** forest
+prediction, clipped to `min_faster_correction_factor` /
+`max_slower_correction_factor` (default `[0.5, 2.0]`). A local bucket containing
+`n` samples blends its median ratio with the recent-global median in log space,
+using local weight `n / (n + 20)`. Empty buckets and queries outside the current
+bounds use the recent-global median. That fallback is `1.0` until it has
+`min_observations` samples (default 5). Local correction also requires that
+many retained primary samples. Geometry, eviction, and expiration change only
+after valid feedback is admitted. Callers control feedback cadence and should
+predict before supplying an observation's target.
+
+For a custom capacity `M`, the recent FIFO has
+`max(floor(M / 4), min_observations)` slots; the primary set receives the
+remaining slots. The maximum sample age is `2 * M` admissions. The recent-global
+fallback can therefore become ready for every valid capacity. If the remaining
+primary capacity is below `min_observations`, local factors stay disabled and
+all valid queries use the recent-global fallback once it is ready. For example,
+`M = 10` and `min_observations = 5` allocate five slots to each set; when
+`M = min_observations`, all slots go to the recent FIFO.
+
+Each observation admitted to the dynamic policy rebuilds its bucket medians
+and recent-global median.
+This takes `O(M log M)` time in the worst case and allocates `O(M)` temporary
+storage per update; retained calibration state is also `O(M)` per workload kind.
+The dynamic query reads cached factors in `O(log B)` time for `B` populated buckets,
+without scanning samples or allocating calibration storage. Hybrid performs
+both policies' admission work, then queries only the selected policy. Its
+in-grid query retains the fixed policy's local-median calculation and allocation;
+its out-of-grid query uses the cached dynamic factor. Keep the default
+capacity of 64 unless a larger sample history is needed, and measure update
+cost at the intended capacity and feedback cadence before increasing it.
+
+`auto` selects hybrid for learned forests and fixed for native AIC. Select
+`hybrid`, `fixed`, or `dynamic_local` explicitly to override this choice. To
+reproduce the previous fixed-grid behavior everywhere:
+
+```python
+fixed_config = config.to_dict()
+fixed_config["estimator_config"]["correction"]["mode"] = "fixed"
+model = RustForwardPassPerfModel.best_available(fixed_config)
+```
+
+Canonical native configurations expose the same selection as
+`estimator_config.correction.mode`. The `max_num_tokens`, `max_batch_size`, and
+`max_kv_tokens` options define the fixed grid and hybrid's switching boundary;
+they do not constrain the dynamic store's expanding bounds.
+
+To compare policies on your own frozen forest and held-out chronological
+observations, run:
+
+```bash
+python -m scripts.fpm_accuracy.compare_calibration --model model.json \
+  --input heldout.jsonl.gz --output comparison.json
+```
+
+Each input line wraps a rank list as `{"time_ms": 5000, "worker_id": "w0", "metrics": [...]}`.
+The utility predicts before feedback, uses independent model state per worker,
+and compares raw, fixed, dynamic, and hybrid predictions on common coverage.
+It reports iteration-weighted errors and does not retrain
+the supplied forest; use disjoint training and evaluation inputs. See `--help`
+for the timestamp, label, and sampling contract.
+
+Use `--every-events 100` instead of the default five-second cadence to admit
+every 100th event after predicting it. Add `--training-input training.jsonl.gz`
+to compare a fitted fixed grid as well. The training file uses the same wrapper
+format; its labels are ignored. Each fitted upper bound is
+`ceil(1.25 * training_maximum)` using the critical-rank coordinates, with a
+minimum bound of 1 for an unused axis. The report records maxima, bounds, and
+the training-file hash. These bounds are fixed before evaluation; the original
+fixed and hybrid arms and cohort labels still use the default limits.
+The caller must ensure the training and evaluation observations are disjoint.
+Fixed-grid eviction ties evict from the lexicographically greatest cell (see
+[online regression](../methods/online-regression.md)), so independently
+constructed fixed stores retain the same samples in every run.
+
+Iterations whose workload kind has no trained
+store return `None`; empty iterations return `0.0`. `diagnostics()["source"]`
+reports `learned` for a frozen forest until enabled calibration has a ready
+correction store, then `learned_with_correction`. With correction disabled it
+remains `learned`. Standalone online adaptation reports `learned_online`, and
+the combined selector reports `learned_causal_selector` even when its selected
+expert changes. See the [complete diagnostic source contract](../configuration.md#diagnostic-source-values)
+for native and regression values and the distinction from query coverage.
+Hybrid diagnostics sum the two histories and grids, counting observations
+retained in both once per history. Ready-bucket counts include overlapping
+regions, and correction-factor summaries include both grids and the dynamic
+fallback. These summarize retained state rather than query-weighted behavior.
+
+The returned canonical model accepts complete per-iteration FPM queries and
+feedback. Callers that only hold phase aggregates cannot use this interface
+without supplying the required iteration and request features.
+
+### Online tree adaptation
+
+Use the seed checkpoint and the same deployment identity to construct a
+standalone online forest. Exactly one of `artifact_path` and `checkpoint_path`
+may be supplied for explicit learned mode. Online adaptation requires the latter
+and disabled correction. Adaptation defaults to `online` and correction to
+disabled; the example makes these choices explicit:
+
+```python
+online_config = ForwardPassPerfModelConfig(
+    model="Qwen/Qwen3-32B",
+    system="h200_sxm",
+    backend="vllm",
+    worker_type="decode",
+    estimation_mode="fpm_learned",
+    fallback_policy="deny",
+    estimator_config={
+        "fpm_learned": {
+            "checkpoint_path": "models/decode_online_seed",
+            "adaptation": "online",
+            "recent_window": 64,
+            "update_every": 1,
+            "history_weight": 0.1,
+            "history_weight_ramp_observations": 32,
+            "history_bin_grouping": True,
+        },
+        "correction": {"enabled": False},
+    },
+)
+online = RustForwardPassPerfModel.best_available(online_config)
+
+# One iteration contains the synchronized active-rank metrics for one worker.
+predicted_ms = online.estimate_forward_pass_time_ms([query_rank0])
+online.tune_with_fpms([[observed_rank0]])
+print(online.learned_online_diagnostics())
+```
+
+The settings show the standalone defaults for recent retention and historical
+mass balance. Consult the
+[complete field table](configuration.md#learned-forest-and-online-fitting-controls)
+and [mathematical explanation](online-gbdt-and-causal-selection.md#online-binned-tree-adaptation) before
+changing the fitting policy. Omitted controls use Rust's defaults, including
+structural updates and lazy derivatives.
+
+Own one model instance per worker and fixed deployment identity. A `worker_id`
+inside telemetry does not select independent mutable state. Within an instance,
+the full rank list selects the learned workload store: pure prefill, pure
+decode, locally mixed, or cross-rank aggregated. Missing seed stores return
+`None`; they are not bootstrapped by passing more labels to this estimator.
+Idle iterations retain the existing zero-latency behavior.
+
+Always predict before admitting the same observation's target. Ordinary queries
+change neither the fitting population nor pending batches. Every valid feedback
+row enters its store's pending batch; `update_every` determines when a fitted
+forest is published. With values above 1, call `flush_updates()` to fit a final
+partial batch when that is intended. Immutable source history is retained in
+addition to the FIFO recent window. No caller-side Python fitting or second
+prediction formula participates in these updates.
+
+#### Save, export and resume
+
+Use a new destination for each online checkpoint:
+
+```python
+import json
+from pathlib import Path
+
+# This saves pending rows too; it does not flush them implicitly.
+online.save_online_checkpoint("models/decode_online_after_capture")
+
+# Export the published forest; fitting state and pending rows are excluded.
+Path("models/decode_adapted.json").write_text(
+    json.dumps(online.export_learned_artifact(), indent=2) + "\n"
+)
+
+resume_config = online.diagnostics()["provenance"]["config"]
+learned = resume_config["estimator_config"]["fpm_learned"]
+learned["checkpoint_path"] = "models/decode_online_after_capture"
+# The previous digest pinned the old source; the constructor pins this new one.
+learned.pop("source_sha256", None)
+resumed = RustForwardPassPerfModel.best_available(resume_config)
+```
+
+For a frozen model, `export_learned_artifact()` also exports only the forest and
+artifact metadata. It omits admitted calibration feedback and correction stores.
+Reloading that artifact starts with empty correction state and can produce
+different predictions from the calibrated model that exported it.
+
+Keep all deployment identity and online fitting controls unchanged when
+resuming. Canonical construction pins the source digest in the resolved
+configuration, and checkpoint loading verifies its manifest and referenced
+files. A digest mismatch, incompatible identity, changed continuation controls
+or unsupported checkpoint schema fails explicitly. Seed checkpoints use schema
+version 1; runtime checkpoints use version 5. Earlier research runtime versions
+1 through 4 are rejected rather than interpreted as the new state format.
+Saving to an existing path, including an empty directory, is rejected; a saved
+runtime state cannot be reconstructed from an inference artifact alone.
+
+Checkpoints and inference artifacts with `metadata.identity` validate the
+normalized deployment identity and report `identity_verified: true` in learned
+diagnostics. Legacy inference artifacts without identity metadata report
+`false`; the constructor still checks their worker role and content digest.
+The seed export's `identity` argument records identity in the checkpoint
+manifest and the artifact's `metadata.identity`. Passing `identity` without
+requesting an online seed also embeds it in the inference artifact; conflicting
+metadata is rejected. Inference export from a verified checkpoint retains this
+identity, including when its older artifact omitted the metadata.
+
+Diagnostics distinguish original historical observations from stored grouped
+representatives, retained recent rows, pending rows, publications and update
+work. Grouping can reduce history storage and traversal while preserving its
+logical support. It does not make memory bounded solely by `recent_window`:
+immutable history, the forest and fitting statistics remain resident. Evaluate
+host update cost separately from prediction accuracy and latency; lazy refresh
+still performs periodic full work and may fall back to eager fitting.
+
+### Hybrid calibration with a causal selector
+
+`adaptation: causal_selector` runs two experts from the same training seed.
+The stable expert keeps the source forest unchanged and applies PR493 hybrid
+calibration. The adaptive expert updates its own forest with the online fitting
+controls above. Both receive each admitted observation. The selector returns
+one expert's prediction using only errors measured on earlier admitted labels;
+it does not average their latencies.
+
+The stable expert provides a fixed reference for calibration ratios while the
+adaptive expert can change splits and leaf values. This separation matters:
+calibrating against an evolving forest would mix ratios measured against
+different predictors. Publishing an adaptive update never changes the stable
+forest or resets its calibration history.
+
+The following default profile uses 64 calibration slots per policy and query
+kind, sixteen correction buckets (4-by-4 for decode/mixed), factor bounds
+`[0.5, 2.0]`, and an eight-observation online window with 25% historical loss
+mass after an eight-observation support ramp. Online fitting runs after four
+admitted observations per store.
+Selector defaults are `alpha=0.4`, `warmup=5`, `margin=0.05`, and `persistence=1`.
+Only omitted fields take these defaults; explicit overrides are preserved.
+Validate the profile on disjoint chronological data for the deployment and
+feedback cadence where it will run.
+
+```python
+selector_config = ForwardPassPerfModelConfig(
+    model="Qwen/Qwen3-32B",
+    system="h200_sxm",
+    backend="vllm",
+    worker_type="decode",
+    estimation_mode="fpm_learned",
+    fallback_policy="deny",
+    estimator_config={
+        "fpm_learned": {
+            "checkpoint_path": "models/decode_online_seed",
+            "adaptation": "causal_selector",
+            "update_mode": "structural",
+            "recent_window": 8,
+            "update_every": 4,
+            "history_weight": 0.25,
+            "history_weight_ramp_observations": 8,
+            "history_bin_grouping": True,
+            "derivative_refresh": "lazy",
+            "eager_refresh_interval": 32,
+            "split_sampling_rate": 0.5,
+            "split_rank_tolerance": 0.01,
+        },
+        "correction": {
+            "enabled": True,
+            "mode": "hybrid",
+            "sampling": {"max_observations": 64, "bins_per_axis": [4, 4]},
+            "min_observations": 5,
+            "factor_bounds": {"min": 0.5, "max": 2.0},
+        },
+        "selector": {"alpha": 0.4, "warmup": 5, "margin": 0.05, "persistence": 1},
+    },
+)
+selected = RustForwardPassPerfModel.best_available(selector_config)
+
+# Complete one observation before processing the next iteration.
+predicted_ms = selected.estimate_forward_pass_time_ms([query_rank0])
+selected.tune_with_fpms([[observed_rank0]])
+print(selected.learned_selector_diagnostics())
+```
+
+Use one instance per worker and process observations in chronological order.
+`tune_with_fpms` computes both comparison predictions before admitting the
+label. The caller must estimate and then tune without intervening updates;
+this API has no saved prediction tickets for asynchronous or reordered labels.
+Prediction queries do not change the active expert, comparison counts or
+fitting state. The first five comparisons of a fresh key therefore use the
+stable expert with the defaults; the fifth label can select online for the
+next query. Calibration's five-observation readiness threshold is a separate
+control from the selector's five-comparison warmup.
+
+Evidence is local to `(worker instance, learned forest store, query kind)`.
+The four forest stores are `pure_prefill`, `pure_decode`,
+`contains_locally_mixed`, and `cross_rank_aggregated`. Query kinds are prefill,
+decode and mixed, inferred by the correction feature extractor from the
+critical rank. In an aggregated iteration these are different classifications:
+cross-rank prefill/decode work can use the cross-rank forest while the critical
+rank selects a prefill or decode calibration query. Each forest store owns
+independent correction histories for those three query kinds, and the selector
+keeps independent error evidence for all 12 possible pairs. The online forest
+still learns from all query kinds assigned to that forest store.
+
+The selector requires enabled hybrid correction and a training checkpoint.
+An inference artifact lacks the online training state; a standalone online
+runtime checkpoint lacks the stable calibration and selector histories.
+Neither is accepted as a combined source. A new construction starts with the
+seed forest, empty calibration and selector evidence, and stable selection.
+`save_online_checkpoint()` and `export_learned_artifact()` explicitly reject
+the combined model. Complete combined-state persistence is not yet supported;
+the standalone online save/resume example above applies only to `adaptation:
+online`.
+
+If an online fitting attempt fails after admitting a valid label, that label
+still advances selector evidence once and is offered to calibration once,
+subject to PR493's admission rules. For example, fixed calibration rejects
+out-of-grid samples and dynamic calibration rejects an overflowing or
+underflowed ratio before clipping. The unpublished forest and pending batch
+remain available for retry. Use `flush_updates()` to retry publication without
+re-counting the label, rather than submitting it again.
+An input rejected before admission changes neither calibration nor selector
+evidence. `learned_online_diagnostics()` reports fitting state, while
+`learned_selector_diagnostics()` reports each key's count, error averages,
+active expert, streak and switches. These counts have different meanings from
+retained calibration samples. The [mathematical explanation](online-gbdt-and-causal-selection.md#hybrid-calibration-with-a-causal-selector)
+defines the loss, switching inequalities and update order.
+
+## 4. Accuracy reference
+
+Per raw iteration, APE = |predicted − observed| / observed, step-weighted MAPE
+(median in parentheses). Real AgentX traffic (SemiAnalysis CC traces,
+`inferencex-agentx-mvp` scenario) on Dynamo 1P1D, one 4×GB300 node per role,
+TP4, vLLM runtime 1.4.0, `DYN_FPM_TRACE` full mode with per-request lists,
+features = the 18 per-request features (`sglang18`), one HGB per engine.
+Train and test are two independent capture runs (a capture run = one fresh Dynamo deployment on its own nodes, one aiperf seed, every concurrency tier once) with different seeds and different
+concurrency tiers (2026-09-18, dlcluster).
+
+| Deployment | Train tiers → test tiers | decode | prefill |
+| --- | --- | --- | --- |
+| Qwen3-32B-FP8, 262k YaRN ctx | c16/32/64 → c24/48/96 | 2.77% (1.02%) over 122k steps | 1.64% (0.55%) over 13k steps |
+| DeepSeek-V4-Flash, 262k ctx | c16/32/64/128 → c24/48/96/64 | 3.29% (1.01%) over 457k steps | 4.43% (4.32%) over 32k steps |
+
+All accuracy figures in this section use `HistGradientBoostingRegressor` with 400
+trees, learning rate 0.05, 31 leaves, 5 samples per leaf and scikit-learn's default
+`early_stopping='auto'` (prefill stores stop early, decode stores run all 400 trees).
+The CLI defaults differ: `--max-iter 600` and early stopping off.
+
+Leave-one-tier-out inside a single run lands at 1–4.5% for decode and
+1.2–3.7% for prefill on both deployments; the largest errors are the tiers
+outside the trained concurrency range (extrapolation).
+
+The DeepSeek-V4-Flash prefill number is a run-to-run offset, not scatter:
+predicted/observed sits at about 1.04 median with a narrow p10–p90 band, i.e.
+the test run's prefill engine ran ~4% faster than the training run. The
+online correction grid on top of the learned model (`tune_with_fpms`) is
+designed to absorb exactly this kind of constant factor.
+
+On aggregates-only features (`v1`) the same experiments land within about
+half a percentage point of `sglang18` on both deployments; the per-request
+features matter most where batches are large and heterogeneous.
+
+### DeepSeek-V4.1-Flash on the Dynamo SGLang runtime
+
+Same traffic and topology, SGLang runtime `1.6.0-deepseek-v4.1-flash-dev.1`
+(TP4/EP4, page size 256, mooncake disaggregation, 262k context), collected
+with `--disable-overlap-schedule` (see §1), `sglang18` features, train
+c16/32/64/128 (seed 42) → test c24/48/96 (seed 7), 2026-09-20:
+
+| Engine | Test tier | steps | MAPE (median) | p95 |
+| --- | --- | --- | --- | --- |
+| decode | c24 | 108k | 1.85% (1.41%) | 4.4% |
+| decode | c48 | 89k | 1.99% (1.53%) | 5.0% |
+| decode | all | 197k | 1.92% (1.47%) | 4.7% |
+| prefill | c24 | 973 | 2.67% (1.41%) | 8.1% |
+| prefill | c48 | 1,935 | 2.56% (1.33%) | 7.8% |
+| prefill | c96 | 765 | 0.83% (0.58%) | 2.0% |
+| prefill | all | 3,673 | 2.23% (1.00%) | 7.3% |
+
+Leave-one-tier-out inside the training run: decode 1.5% / 1.5% / 4.9%
+(c16 / c32 / c64), prefill 0.8–2.9%. `hisim` and `v1` land within 0.3 pp of
+`sglang18` on both engines. The test run lost its c96 decode tier and the
+train run its c128 prefill tier to a DeepGEMM prefill OOM at
+`mem-fraction-static 0.8`; lower it for long-context V4.1 captures.
+
+Why the overlap flag matters: an earlier pair collected with the overlap
+scheduler on gave 22% prefill MAPE (11% median) with a 2× bimodal step time
+for identical batch shapes and 18% of prefill batches missing from the FPM
+stream, the accumulator effect described in §1. With the flag, drops are 0%
+and identical-shape step times agree to 1%.
+
+A model trained on overlap-off data still predicts overlap-on decode steps
+(the GPU forward is the same quantity): scored against the overlap-on test
+run it gives 5.5% MAPE (5.6% median) with a p95 of 8.4%, i.e. a near
+constant offset that the online correction grid absorbs. The overlap-on
+prefill records themselves are unusable as truth because of the accumulator
+merge, so no prefill cross-mode number is quoted.
+
+### Workload coverage: AgentX, ShareGPT and LongBench on DeepSeek-V4.1-Flash
+
+Three workloads on the same deployment (DeepSeek-V4.1-Flash, Dynamo SGLang runtime, one 4×GB300 node per role, TP4/EP4, `--disable-overlap-schedule`, per-request lists via `aisimulate_core.fpm_hooks`):
+
+- **AgentX**: aiperf `inferencex-agentx-mvp`, SemiAnalysis CC traces (agent sessions, 262k context).
+- **ShareGPT**: aiperf `--public-dataset sharegpt` (chatbot conversations).
+- **LongBench**: single-turn long-document QA built from LongBench-v2 (503 real documents, 8k–2M words). Each prompt = a unique preamble line (so no cross-request prefix-cache hit is possible) + a document window of 8k–200k tokens on a fixed grid + the question and choices; `max_tokens` 1024; 4000 prompts in 8 files, one file per concurrency tier so no prompt is ever sent twice.
+
+A *capture run* is one fresh deployment on its own nodes with one aiperf seed, every concurrency tier run once for 1200 s. Input distributions as the engine saw them, from the FPM per-request lists of one capture run each (p5 / p50 / p95 / max):
+
+**Prefill**
+
+| Quantity | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| requests per step | 1 / 1 / 2 / 11 | 1 / 3 / 9 / 63 | 1 / 1 / 2 / 3 |
+| new tokens per request this step (extend, 16k chunking) | 333 / 3,743 / 16,384 / 16,384 | 40 / 326 / 796 / 1,934 | 1,719 / 16,384 / 16,384 / 16,384 |
+| KV already present per request (past) | 0 / 70,144 / 194,816 / 252,672 | 0 / 0 / 1,280 / 1,792 | 0 / 19,200 / 125,952 / 200,192 |
+| request ISL | 6,656 / 82,949 / 213,369 / 254,199 | 40 / 531 / 1,642 / 2,134 | 1,536 / 14,336 / 128,151 / 200,624 |
+| cross-request prefix-cache hit | 54% of requests; hit size p50 31k, p95 176k | ~none | none (by construction) |
+
+**Decode**
+
+| Quantity | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| requests per step (batch) | 1 / 7 / 30 / 43 | 26 / 58 / 243 / 256 | 2 / 5 / 10 / 26 |
+| context per request | 36,268 / 115,407 / 233,765 / 254,469 | 122 / 779 / 1,879 / 2,886 | 8,682 / 32,496 / 160,469 / 201,648 |
+| KV tokens per step | 129k / 909k / 3.8M / 4.9M | 17k / 49k / 215k / 270k | 128k / 288k / 400k / 511k |
+| output length | model-terminated (hundreds to thousands) | model-terminated (tens to hundreds) | capped at 1024 |
+
+**Data volume**
+
+| Workload | capture runs (seeds) | prefill steps | decode steps |
+| --- | --- | --- | --- |
+| AgentX | 4 (42 / 7 / 11 / 23) | 20.9k | 1,150k |
+| ShareGPT | 4 (42 / 7 / 11 / 23) | 38.2k | 520k |
+| LongBench | 2 (42 / 7) | 20.2k | 1,062k |
+
+Accuracy, step-weighted MAPE per raw iteration, rows = training data, columns = test set. Same-workload cells (diagonal and the pooled row): the workload's runs are cut into five consecutive time blocks per run and tier, blocks 1/2/4 train, 3/5 test, no shared step, so the test set is 40% of that workload. Cross-workload cells: trained on all runs of the row workload, tested on all runs of the column workload.
+
+**Decode**
+
+| Training data \ test set | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 2.34% | 14.14% | 3.03% |
+| ShareGPT only | 3.88% | 2.26% | 3.43% |
+| LongBench only | 2.91% | 22.45% | 1.84% |
+| all three pooled | 2.21% | 2.10% | 1.84% |
+
+**Prefill**
+
+| Training data \ test set | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 2.24% | 3.49% | 0.88% |
+| ShareGPT only | 26.23% | 2.55% | 43.17% |
+| LongBench only | 6.52% | 29.42% | 0.62% |
+| all three pooled | 2.28% | 2.56% | 0.57% |
+
+Each workload lacks a region another one has (ShareGPT never sees 16k chunks or large past; AgentX and LongBench never see decode batches above ~40; LongBench has no short requests and no prefix hits), so any single-workload model extrapolates badly on at least one other workload. The pooled model matches or beats every single-workload model on its own workload. None of the three covers large decode batches at long context; that region remains untested.
+
+### The same workloads on the vLLM backend
+
+DeepSeek-V4-Flash on `vllm-runtime:1.4.0` (V4.1 has no vLLM release yet), same GB300
+nodes, two capture runs per workload, per-request lists from the `_dynamo_vllm` hook,
+recorded with the Dynamo relay sink. Step-weighted MAPE, same layout as above:
+
+Decode
+
+| Training data \ test set | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 3.78% | 19.05% | 1.85% |
+| ShareGPT only | 4.20% | 1.52% | 2.44% |
+| LongBench only | 3.95% | 28.86% | 1.71% |
+| all three pooled | 3.40% | 1.54% | 1.70% |
+
+Prefill
+
+| Training data \ test set | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 3.11% | 7.99% | 5.85% |
+| ShareGPT only | 19.22% | 2.99% | 24.03% |
+| LongBench only | 5.06% | 7.46% | 2.43% |
+| all three pooled | 3.34% | 3.01% | 3.31% |
+
+vLLM `wall_time` is host time between `schedule()` calls (includes scheduler
+overhead; AgentX decode 3.8% vs 2.3% on SGLang), and its 4k prefill chunks make
+each prefill step shorter (LongBench prefill 2.4% vs 0.6%). The pooled model
+again matches every single-workload model on its own workload.
+
+## 5. Training and inference time
+
+Machine: an AI Hub login node, NVIDIA Grace CPU (Arm Neoverse V2, 96 cores, 370 GB RAM,
+aarch64). Training uses scikit-learn with 16 OpenMP threads; inference is the Rust tree
+walk in `learned.rs` on one core and does not use scikit-learn. Data: DeepSeek-V4.1-Flash
+SGLang AgentX captures, the seed-42 run trains, the seed-7 run is predicted.
+
+| step | data | time |
+| --- | --- | --- |
+| load + featurize (gzip JSON lines) | 302,603 decode steps | 4.4 s |
+| train decode model (400 trees, early stopping off) | 302,603 steps | 54 s |
+| train prefill model (same settings) | 5,245 steps | 20 s |
+| predict decode through the Python wrapper, one call per step | 196,585 steps | 3.78 s (19 µs / step, mean batch 10, max 35) |
+| predict prefill through the Python wrapper, one call per step | 3,803 steps | 0.08 s (22 µs / step, mean batch 1.2) |
+
+Per estimate, Rust call on a prebuilt struct (what the simulator pays) versus the Python
+wrapper, which serialises the FPM dict to JSON and parses it in Rust on every call:
+
+| step | Rust | Python wrapper |
+| --- | --- | --- |
+| decode, batch 1 | 3.4 µs | 11 µs |
+| decode, batch 256 | 5.6 µs | 59 µs |
+| prefill, 1 × 4096 tokens, no prefix | 6.3 µs | 14 µs |
+| prefill, 1 × 4096 tokens, 64k prefix | 4.5 µs | 12 µs |
+
+The Rust cost is a 400-tree walk of about 3.3 µs plus one pass over the per-request lists
+(about 8 ns per request); the rest of the Python column is JSON marshalling.
+
+Smaller models are 4–5× faster at the same accuracy (`design.md` §8.7–8.8, measured on the
+GB300 SGLang and vLLM captures): time per estimate scales with trees × leaves, and the
+same-workload accuracy is flat down to 50 trees of 7 leaves. Trained with the existing
+options:
+
+| role | features | `--max-iter` | `--learning-rate` | `--max-leaf-nodes` | Rust µs (was) | test MAPE (was) |
+| --- | --- | --- | --- | --- | --- | --- |
+| decode | `atomic5` (default) | 100 | 0.2 | 7 | 0.8–1.6 (3.4–5.5) | 3.3 % (4.0 %) |
+| prefill | `atomic10` (default) | 100 | 0.2 | 15 | 0.8–1.1 (4.5–6.3) | 5.0 % (5.1 %) |
+
+The five decode features are the ones with information on a decode step (every request
+extends by one token); not for speculative decoding. The ten prefill features are the
+atomic set (all 18 can be computed from them); they match the eighteen on every
+same-workload test. Only when the training traffic differs from the simulated one does
+the eighteen extrapolate better (a tree ensemble cannot rebuild n · Σe); use `sglang18`
+there. The full grid,
+the comparison with the native op-level model, multi-core scaling (the GBDT is read-only and
+scales linearly to 96 cores; 22 M decode estimates per second on a Grace node) and the
+pooled ten-run training time are in `design.md` §8. Artifacts are 100–450 KB of JSON.
+
+## Limitations
+
+- Learned mode uses explicit `estimation_mode: fpm_learned` through
+  `best_available(config)`. Its supported callers provide complete iteration
+  telemetry. Engine replay, engine CLI and Sweeper phase timing interfaces
+  reject learned execution because their aggregate inputs omit required
+  features. Speculative decoding is also unsupported by learned mode.
+
+- Stock Dynamo FPM v1 carries aggregates only (counts, sums, variances). The
+  per-request `extend_lengths` / `past_kv_lengths` lists are an additive
+  extension of the scheduler's `_extract_scheduled`; without them only the
+  `v1` preset carries signal.
+- The model extrapolates poorly outside the collected batch/KV range. Check
+  the holdout report and cover the intended operating range when collecting.
+- One artifact is one deployment identity (model, engine version, parallelism,
+  CUDA-graph list, scheduler settings). Record that identity in `metadata`
+  and retrain when it changes.

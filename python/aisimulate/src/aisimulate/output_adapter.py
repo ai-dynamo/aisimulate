@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import inspect
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
@@ -25,6 +26,20 @@ class RecommendationOutputCallbacks:
 
     on_candidate: Callable[[CandidateRecord], None] | None = None
     on_round: Callable[[int, list[Candidate]], None] | None = None
+    on_complete: Callable[[], None] | None = None
+    on_failure: Callable[[Exception], None] | None = None
+
+
+@dataclass(frozen=True)
+class RecommendationOutputContext:
+    """Run-level facts a live output adapter may need to turn candidates into artifacts.
+
+    ``workload`` is the validated Sweeper workload of the recommendation. The context is
+    only passed to ``subscribe`` when its signature accepts a ``context`` argument (or
+    ``**kwargs``), so adapters written as ``subscribe(config)`` keep working unchanged.
+    """
+
+    workload: Any
 
 
 @runtime_checkable
@@ -116,6 +131,21 @@ def resolve_output_adapters(
     return resolved
 
 
+def _subscribe_accepts_context(subscribe: Callable[..., Any], config: Any, context: Any) -> bool:
+    """True when ``subscribe(config, context=context)`` is a valid call.
+
+    Binds the real call shape rather than looking at parameter names, so legacy signatures such as
+    ``(config, context=None, /)``, ``(config, *context)`` or ``(context)`` keep receiving
+    ``subscribe(config)``. Binding never calls the adapter, so a ``TypeError`` raised by an adapter
+    body is never mistaken for a signature mismatch and retried.
+    """
+    try:
+        inspect.signature(subscribe).bind(config, context=context)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def _dispatch_callback(name: str, event: str, callback: Callable[..., None], *args: Any) -> None:
     try:
         callback(*args)
@@ -132,18 +162,27 @@ def resolve_output_callbacks(
     *,
     injected: Mapping[str, RecommendationOutputAdapter] | None = None,
     entry_points: Iterable[importlib.metadata.EntryPoint] | None = None,
+    context: RecommendationOutputContext | None = None,
 ) -> RecommendationOutputCallbacks:
     """Resolve live subscriptions from fresh worker-local adapter instances."""
 
     adapters = resolve_output_adapters(configs, injected=injected, entry_points=entry_points)
     candidate_callbacks: list[tuple[str, Callable[[CandidateRecord], None]]] = []
     round_callbacks: list[tuple[str, Callable[[int, list[Candidate]], None]]] = []
+    complete_callbacks: list[tuple[str, Callable[[], None]]] = []
+    failure_callbacks: list[tuple[str, Callable[[Exception], None]]] = []
     for name, adapter in adapters.items():
         subscribe = getattr(adapter, "subscribe", None)
         if subscribe is None:
             continue
         try:
-            callbacks = subscribe(configs[name])
+            if context is not None and _subscribe_accepts_context(subscribe, configs[name], context):
+                # Each subscriber gets a detached copy: the workload is the same object the search
+                # consumes, and the output adapters must not be able to change the simulation or
+                # each other's view of it.
+                callbacks = subscribe(configs[name], context=deepcopy(context))
+            else:
+                callbacks = subscribe(configs[name])
         except KeyboardInterrupt:
             raise
         except Exception as exc:
@@ -160,6 +199,10 @@ def resolve_output_callbacks(
             candidate_callbacks.append((name, callbacks.on_candidate))
         if callbacks.on_round is not None:
             round_callbacks.append((name, callbacks.on_round))
+        if callbacks.on_complete is not None:
+            complete_callbacks.append((name, callbacks.on_complete))
+        if callbacks.on_failure is not None:
+            failure_callbacks.append((name, callbacks.on_failure))
 
     def on_candidate(record: CandidateRecord) -> None:
         for name, callback in candidate_callbacks:
@@ -169,9 +212,28 @@ def resolve_output_callbacks(
         for name, callback in round_callbacks:
             _dispatch_callback(name, "on_round", callback, round_no, deepcopy(candidates))
 
+    def on_complete() -> None:
+        for name, callback in complete_callbacks:
+            _dispatch_callback(name, "on_complete", callback)
+
+    def on_failure(error: Exception) -> None:
+        failures: list[OutputAdapterExecutionError] = []
+        for name, callback in failure_callbacks:
+            try:
+                _dispatch_callback(name, "on_failure", callback, error)
+            except OutputAdapterExecutionError as exc:
+                failures.append(exc)
+        if len(failures) == 1:
+            raise failures[0]
+        if failures:
+            details = "; ".join(str(failure) for failure in failures)
+            raise ExceptionGroup(f"output adapter on_failure callbacks failed: {details}", failures)
+
     return RecommendationOutputCallbacks(
         on_candidate=on_candidate if candidate_callbacks else None,
         on_round=on_round if round_callbacks else None,
+        on_complete=on_complete if complete_callbacks else None,
+        on_failure=on_failure if failure_callbacks else None,
     )
 
 
@@ -213,6 +275,7 @@ __all__ = [
     "OutputAdapterResolutionError",
     "RecommendationOutputAdapter",
     "RecommendationOutputCallbacks",
+    "RecommendationOutputContext",
     "resolve_output_adapters",
     "resolve_output_callbacks",
     "validate_output_adapter",

@@ -15,6 +15,8 @@ from aisimulate.runner import (
     InvalidRunnerError,
 )
 from aisimulate.sweeper import (
+    AFDForegroundEngine,
+    AFDPhase,
     AFDTopology,
     BackendDeploymentSpec,
     ReplayOutputRequirements,
@@ -141,6 +143,29 @@ def test_pure_both_phase_afd_runs_without_native_aggregate_fallback():
     assert report.metadata["native_report"]["summary"] == report.metrics
     assert report.metadata["native_report"]["per_request"] == report.metadata["per_request"]
     assert "afd_report" in report.metadata
+
+
+def test_afd_runner_plans_one_pass_per_phase_and_counts_every_pass(monkeypatch):
+    planned_phases = []
+    execute_pass = AFDForegroundEngine.execute_pass
+
+    def recording_execute_pass(self, **kwargs):
+        planned_phases.append(kwargs["phase"])
+        return execute_pass(self, **kwargs)
+
+    monkeypatch.setattr(AFDForegroundEngine, "execute_pass", recording_execute_pass)
+    spec = _spec(_topology())
+    # Two decode layers give decode its own step and interval count.
+    spec.backend_deployment.performance_model_metadata["afd"]["measurements"][1]["num_layers"] = 2
+    report = EngineReplayRunnerFactory().create(0).run(spec)
+
+    assert planned_phases == [AFDPhase.PREFILL, AFDPhase.DECODE]
+    # Each of two batches runs one 3 ms prefill pass and two 5 ms decode passes.
+    assert report.metrics["duration_ms"] == pytest.approx(26.0)
+    assert report.metrics["mean_tpot_ms"] == pytest.approx(5.0)
+    assert report.metadata["afd_replay"]["afd_passes"] == 6
+    # Four stages for each layer and microbatch: 8 per prefill pass, 16 per decode pass.
+    assert report.metadata["afd_replay"]["afd_stage_intervals"] == 2 * (8 + 2 * 16)
 
 
 @pytest.mark.parametrize(
@@ -423,83 +448,6 @@ def test_aic_companion_fixed_timing_rejects_an_explicit_moe_source(phase, compan
 
     with pytest.raises(ValueError, match="moe_kernel_source.*not supported.*fixed AFD companion timing"):
         AICAFDCompanionPerformanceModel().measure(spec)
-
-
-@pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
-@pytest.mark.parametrize("alias", ["decode_workload_distribution", "aic_decode_workload_distribution"])
-def test_aic_companion_fixed_timing_rejects_an_active_decode_profile(phase, companion_role, alias):
-    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
-    engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
-    engine_args[alias] = "observed_glm52_nvfp4_decode_1ab2c747975e_v1"
-
-    with pytest.raises(ValueError, match="decode_workload_distribution.*not supported.*fixed AFD companion timing"):
-        EngineReplayRunnerFactory().create(0).run(spec)
-
-
-@pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
-@pytest.mark.parametrize("alias", ["decode_workload_distribution", "aic_decode_workload_distribution"])
-def test_aic_companion_fixed_timing_preserves_no_decode_profile(phase, companion_role, alias):
-    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
-    control = EngineReplayRunnerFactory().create(0).run(spec)
-    engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
-    engine_args[alias] = None
-
-    report = EngineReplayRunnerFactory().create(0).run(spec)
-
-    assert report.metrics == control.metrics
-    assert report.metadata["afd_replay"]["companion"] == control.metadata["afd_replay"]["companion"]
-
-
-@pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
-@pytest.mark.parametrize("alias", ["decode_workload_distribution", "aic_decode_workload_distribution"])
-@pytest.mark.parametrize("custom_timing", [False, True])
-def test_aic_companion_legacy_estimator_rejects_an_active_decode_profile(phase, companion_role, alias, custom_timing):
-    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
-    engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
-    engine_args.pop("timing_model")
-    if custom_timing:
-        engine_args["timing_model"] = {"type": "polynomial"}
-    engine_args.update(aic_model_path="test-model", aic_system="test-system")
-    engine_args[alias] = "observed_glm52_nvfp4_decode_1ab2c747975e_v1"
-    calls = []
-
-    def estimator(*args, **kwargs):
-        calls.append(kwargs)
-        return SimpleNamespace(raw={"ttft": 2.0, "tpot": 2.0})
-
-    with pytest.raises(
-        InvalidRunnerError, match="decode_workload_distribution.*not supported.*AFD companion legacy estimator"
-    ):
-        EngineReplayRunnerFactory(afd_companion_model=AICAFDCompanionPerformanceModel(estimator)).create(0).run(spec)
-    assert not calls
-
-
-@pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
-@pytest.mark.parametrize("alias", ["decode_workload_distribution", "aic_decode_workload_distribution"])
-@pytest.mark.parametrize("custom_timing", [False, True])
-def test_aic_companion_legacy_estimator_preserves_no_decode_profile(phase, companion_role, alias, custom_timing):
-    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
-    engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
-    engine_args.pop("timing_model")
-    if custom_timing:
-        engine_args["timing_model"] = {"type": "polynomial"}
-    engine_args.update(aic_model_path="test-model", aic_system="test-system")
-    calls = []
-
-    def estimator(*args, **kwargs):
-        calls.append(kwargs)
-        return SimpleNamespace(raw={"ttft": 2.0, "tpot": 2.0})
-
-    factory = EngineReplayRunnerFactory(afd_companion_model=AICAFDCompanionPerformanceModel(estimator))
-    control = factory.create(0).run(spec)
-    engine_args[alias] = None
-
-    report = factory.create(0).run(spec)
-
-    assert len(calls) == 2
-    assert calls[0] == calls[1]
-    assert report.metrics == control.metrics
-    assert report.metadata["afd_replay"]["companion"] == control.metadata["afd_replay"]["companion"]
 
 
 @pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])

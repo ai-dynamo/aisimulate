@@ -5,7 +5,6 @@ SPDX-License-Identifier: Apache-2.0
 
 # Scoped accuracy evidence
 
-- [Vera Rubin NVL72 GLM-5.2](vr-nvl72-glm52.md): matched forward-step pilot.
 - [DeepSeek-V4.1](deepseek-v41.md): independent per-profile calibration/heldout results.
 - [Replay evidence](replay-evidence.md): cache/AgentX validation and source boundaries.
 

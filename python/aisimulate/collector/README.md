@@ -155,6 +155,27 @@ python3 -m collector.fpm_forward \
   --plan-only
 ```
 
+For profile-based FPM collection, the profile's `backend_version` is the dataset
+identity label. It may be a custom string such as `my-vllm-patch-3` and need not
+match the installed vLLM package version. The collector retains the actual
+container version separately in `collector-provenance.json` under
+`runtime.backend_version`; runtime capability, benchmark-schema, topology and
+precision checks still apply. An optional Dynamo version is provenance only and
+does not select FPM templates or resolve the backend version. See the
+[onboarding version contract](../../../docs/perf-model/fpm-self-service/implementation.md#plan-preview-and-explicitly-execute)
+for guided setup, omitted-version detection inside the target image, and
+publication identity.
+
+The low-level entry point also accepts `--fpm-backend-version LABEL` for dataset
+identity and `--fpm-runtime-backend-version VERSION` for an independently observed
+package-version pin. Guided onboarding supplies that pin after its image
+preflight. The low-level collector does not launch this separate CPU preflight:
+without an observed pin it can collect timings and record actual package
+provenance, but it cannot select audited version-specific memory/execution hooks.
+Supply the observed pin or accepted runtime instrumentation when those hooks are
+required. The op-level collector's runtime manifest and version-routing rules
+below are unchanged.
+
 Generation-time admission may omit a topology only when a concrete AIC
 size-vs-capacity estimate proves its configured token envelope cannot fit.
 Missing performance data, bootstrap architectures, and structural estimator

@@ -413,7 +413,10 @@ engine cache block size can produce zero hits.
 
 ### AFD translation
 
-AIC AFD batch-size limits map to an explicit `engine.afd.a_batch_size`.
+The legacy compatibility CLI no longer supports `--estimate-mode afd` or
+`--serving-mode afd`; `--serving-mode all` now includes only agg and disagg.
+Use the unified `aisimulate recommend` and `aisimulate predict` commands for AFD.
+The former AIC AFD batch-size limits map to an explicit `engine.afd.a_batch_size`.
 `phase: decode` and `combined_with_pd: true` select decode-side AFD with a regular
 prefill companion. The total GPU budget includes attention, FFN, and companion
 pools. This is analytical fixed-length synthetic traffic, not event-level AFD.
@@ -560,12 +563,17 @@ metadata does not load the native extension.
 
 | Previous interface | Current interface | Required caller change |
 | --- | --- | --- |
-| Legacy `sweep_agg`, `sweep_disagg`, `sweep_afd` | `aisimulate.sweeper.Sweeper(...).run(config)` | All three remain callable as deprecated compatibility APIs. For new code, supply a runner factory and typed search configuration; workload/search semantics differ. See the [Sweeper guide](../sweeper/README.md). |
+| Legacy `sweep_agg`, `sweep_disagg` | `aisimulate.sweeper.Sweeper(...).run(config)` | Both remain callable as deprecated compatibility APIs. For new code, supply a runner factory and typed search configuration; workload/search semantics differ. See the [Sweeper guide](../sweeper/README.md). |
+| Legacy `sweep_afd`, `afd_pareto`, and AFD `Task` fields | Unified CLI with `engine.afd` | These legacy interfaces are removed. Use the [AFD workflow](#afd-translation). |
 | Flat Rust `build_aic_engine` adapter | `aisimulate_core::perfmodel::AicEngineBuilder` | Construct through the builder; the flat adapter is removed. |
 | Positional worker/options and separate estimator constructors | `RustForwardPassPerfModel.best_available(config)` / Rust `ForwardPassPerfModel::best_available(config)` | Pass one complete `ForwardPassPerfModelConfig`; use its Rust constructor or Python SDK config class. |
 | Flat `EngineConfig` plus `ForwardPassPerfOptions` | Canonical `ForwardPassPerfModelConfig` | Convert saved legacy values with the explicit migration helper below. |
 
 ### Saved performance-model configuration
+
+Saved agg/disagg `exp_config.yaml` files remain loadable: `Task.from_yaml()`
+ignores removed legacy `afd_*` fields with a deprecation warning.
+Other unknown keys remain errors.
 
 Use `ForwardPassPerfModelConfig.from_legacy_engine_config(old_config,
 worker_type, old_options, allow_regression=False)` to convert a saved flat
@@ -587,8 +595,6 @@ methods, including an explicit `auto`. An omitted field does not override a
 saved value. `ForwardPassPerfOptions.to_dict()` serializes only arguments
 explicitly supplied to that legacy options object, including explicit defaults.
 
-The migration adapter rejects any non-null `prefill_graph_profile`, `prefill_graph_profile_id`, or `decode_workload_distribution` field, including an orphan profile ID. These selectors require the canonical `ForwardPassPerfModelConfig.estimator_config.op_level` configuration; pass a saved canonical configuration directly to `RustForwardPassPerfModel.best_available` to preserve its profile identity and supported API restrictions. Profile-free legacy configurations continue to migrate normally.
-
 Previously saved CLI timing with `forward_model` retains explicit selection
 and deny. Newly authored requests without a selection use auto. `ForwardPassPerfOptions`
 is retained as a legacy migration value type; new construction has one complete
@@ -608,6 +614,30 @@ explains the retained workload routing and feature mathematics.
   supply `runtime_memory: None` when using declared memory. Runtime memory and
   the four legacy non-KV fields cannot coexist. See the
   [resource contract](../perf-model/memory.md).
+
+### Rust AgentX snapshot options
+
+The snapshot-import extension changes the public Rust
+`aisimulate_core::replay::loadgen::AgenticSnapshotOptions` source API. Replace
+seed-only literals such as `AgenticSnapshotOptions { seed }` with
+`AgenticSnapshotOptions::seeded(seed)`; the constructor leaves imported
+selections and the corpus cursor unset. Code importing exact selections must
+provide those two optional fields together.
+
+The options now own imported selections and are no longer `Copy`. Move the
+options into their consumer, borrow them where the API permits, or explicitly
+`.clone()` when the same selection must be consumed more than once. Floating-point
+cuts also mean the type retains `PartialEq` but no longer implements `Eq`; update
+generic bounds accordingly. These changes break Rust source compatibility, not
+legacy seed-only JSON:
+`{"seed": 42}` still deserializes and serializes without optional fields.
+
+Before the next stable `aisimulate-core` publication, the release owner must
+record this source API break in the release notes, select a compatible release
+version, and coordinate downstream caller migration and exact-artifact tests.
+This migration note neither changes package versions nor certifies downstream
+compatibility; nightly availability and the stable-release checklist remain
+separate steps under the [release contract](../ci/release.md#nightly-ci-and-fpe-qualification).
 
 ### Release and downstream contracts
 

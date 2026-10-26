@@ -56,6 +56,18 @@ def test_identical_rows_produce_no_diffs(tmp_path: Path) -> None:
     assert result.rows_compared == 2
 
 
+@pytest.mark.parametrize("side", ["old", "new"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_duplicate_identity_rejected_on_either_side(tmp_path: Path, side: str, reverse: bool) -> None:
+    duplicates = [_row(), _row(status="DATA_MISS", value_ms="")]
+    if reverse:
+        duplicates.reverse()
+    old = duplicates if side == "old" else [_row()]
+    new = duplicates if side == "new" else [_row()]
+    with pytest.raises(ValueError, match="duplicate snapshot identity"):
+        _compare(tmp_path, old, new)
+
+
 def test_ok_to_miss_is_regression(tmp_path: Path) -> None:
     result = _compare(tmp_path, [_row()], [_row(status="DATA_MISS", value_ms="")])
     assert [d.category for d in result.diffs] == ["REGRESSION"]

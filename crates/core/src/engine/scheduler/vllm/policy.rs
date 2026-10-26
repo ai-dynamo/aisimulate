@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Copyright contributors to the vLLM project.
+// Modified Rust simulation of vLLM b3563fc65ae0f5359802593d78e7ea097e1fed31
+// scheduling contracts; immutable sources and license: THIRD_PARTY_NOTICES.md.
 
 //! Engine-specific policy for the shared vLLM/TRT-LLM scheduler core.
 //!
@@ -8,7 +11,7 @@
 //! admission/reservation, and preemption. Prefix accounting and no-evict
 //! headroom are implementation details of those hooks, not separate schedulers.
 
-use crate::engine::common::protocols::{PrefillCost, SchedulingPolicy};
+use crate::engine::common::protocols::{PrefillCost, SchedulingPolicy, WorkerType};
 use crate::engine::kv_manager::{AllocationRequirement, DestinationReservationMode, G1Manager};
 #[cfg(test)]
 use crate::engine::kv_manager::{apply_mtp_prefix_recompute, apply_prefix_recompute};
@@ -138,18 +141,24 @@ pub(super) enum DestinationAdmissionDecision {
     Wait,
 }
 
+/// `state_blocks` is the transferred recurrent state reserved with the prompt.
 pub(super) fn destination_capacity_error<S: PolicySequence>(
     policy: SchedulingPolicy,
     sequence: &S,
     num_gpu_blocks: usize,
+    state_blocks: usize,
 ) -> Option<&'static str> {
     let (exceeds, message) = match policy {
         SchedulingPolicy::Vllm => (
-            sequence.current_known_blocks() > num_gpu_blocks,
-            "destination prompt exceeds the KV pool capacity",
+            sequence.current_known_blocks().saturating_add(state_blocks) > num_gpu_blocks,
+            if state_blocks == 0 {
+                "destination prompt exceeds the KV pool capacity"
+            } else {
+                "destination prompt and state exceed the KV pool capacity"
+            },
         ),
         SchedulingPolicy::TrtllmGuaranteedNoEvict => (
-            sequence.to_completion_blocks() > num_gpu_blocks,
+            sequence.to_completion_blocks().saturating_add(state_blocks) > num_gpu_blocks,
             "TRT-LLM destination request exceeds the to-completion KV pool capacity",
         ),
     };
@@ -224,8 +233,7 @@ pub(super) fn decide_waiting_admission<'a, S: PolicySequence + 'a>(
         kv_manager,
         0,
         0,
-        0,
-        0,
+        || 0,
         raw_prefill_cost,
     )
 }
@@ -235,8 +243,9 @@ pub(super) fn decide_waiting_admission<'a, S: PolicySequence + 'a>(
 /// A framework-native host tier probes after the authoritative G1 lookup but
 /// before G1 allocation. Passing that observed cost through this boundary
 /// avoids a second lookup changing recency or hiding a lifecycle divergence.
-/// Held and activated-waiting block counts describe completion headroom
-/// already promised to decode destinations. Policy decides whether it counts.
+/// `handoff_reserved_blocks` yields the completion tails already promised to
+/// non-running decode destinations. Only TRT-LLM no-evict evaluates it; vLLM
+/// stays optimistic/preemptible.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decide_waiting_admission_with_cost<'a, S: PolicySequence + 'a>(
     config: WaitingAdmissionConfig,
@@ -246,8 +255,7 @@ pub(super) fn decide_waiting_admission_with_cost<'a, S: PolicySequence + 'a>(
     kv_manager: &G1Manager,
     reserved_request_blocks: usize,
     inflight_prefill_reserved_blocks: usize,
-    held_completion_blocks: usize,
-    activated_waiting_completion_blocks: usize,
+    handoff_reserved_blocks: impl FnOnce() -> usize,
     raw_prefill_cost: PrefillCost,
 ) -> AdmissionDecision {
     let WaitingAdmissionConfig {
@@ -281,18 +289,13 @@ pub(super) fn decide_waiting_admission_with_cost<'a, S: PolicySequence + 'a>(
         !generation_complete(sequence, None),
         raw_prefill_cost,
     );
-    let handoff_reserved_blocks = handoff_completion_headroom(
-        policy,
-        held_completion_blocks,
-        activated_waiting_completion_blocks,
-    );
     let available = match policy {
         SchedulingPolicy::Vllm => num_gpu_blocks
             .saturating_sub(kv_manager.num_active_blocks())
             .saturating_sub(inflight_prefill_reserved_blocks),
         SchedulingPolicy::TrtllmGuaranteedNoEvict => {
             available_blocks(running, num_gpu_blocks, block_size, kv_manager)
-                .saturating_sub(handoff_reserved_blocks)
+                .saturating_sub(handoff_reserved_blocks())
         }
     };
     let needed = match policy {
@@ -321,56 +324,34 @@ pub(super) fn decide_waiting_admission_with_cost<'a, S: PolicySequence + 'a>(
 /// vLLM keeps its optimistic/preemptible destination path and may reuse a
 /// resident decode prefix. TRT-LLM `GUARANTEED_NO_EVICT` generation-init
 /// requests receive no prefix credit: the candidate needs its full
-/// to-completion footprint, while prompt blocks and completion tails already
-/// promised to other handoffs remain unavailable.
+/// to-completion footprint, while prompt blocks and the completion tails that
+/// `handoff_reserved_blocks` yields for other handoffs remain unavailable.
 pub(super) fn decide_destination_admission<'a, S: PolicySequence + 'a>(
     config: DestinationAdmissionConfig,
-    sequence: &S,
+    to_completion_blocks: usize,
     running: impl Iterator<Item = &'a S>,
     kv_manager: &G1Manager,
-    held_completion_blocks: usize,
-    activated_waiting_completion_blocks: usize,
+    handoff_reserved_blocks: impl FnOnce() -> usize,
 ) -> DestinationAdmissionDecision {
     match config.policy {
         SchedulingPolicy::Vllm => DestinationAdmissionDecision::Reserve {
             mode: DestinationReservationMode::ReuseResidentPrefix,
         },
         SchedulingPolicy::TrtllmGuaranteedNoEvict => {
-            let handoff_reserved_blocks = handoff_completion_headroom(
-                config.policy,
-                held_completion_blocks,
-                activated_waiting_completion_blocks,
-            );
             let available = available_blocks(
                 running,
                 config.num_gpu_blocks,
                 config.block_size,
                 kv_manager,
             )
-            .saturating_sub(handoff_reserved_blocks);
-            if sequence.to_completion_blocks() > available {
+            .saturating_sub(handoff_reserved_blocks());
+            if to_completion_blocks > available {
                 DestinationAdmissionDecision::Wait
             } else {
                 DestinationAdmissionDecision::Reserve {
                     mode: DestinationReservationMode::FreshOnly,
                 }
             }
-        }
-    }
-}
-
-/// Completion tail already promised to non-running destination handoffs.
-/// vLLM remains optimistic/preemptible; TRT-LLM no-evict admission must keep
-/// both held and activated-waiting tails unavailable.
-fn handoff_completion_headroom(
-    policy: SchedulingPolicy,
-    held_completion_blocks: usize,
-    activated_waiting_completion_blocks: usize,
-) -> usize {
-    match policy {
-        SchedulingPolicy::Vllm => 0,
-        SchedulingPolicy::TrtllmGuaranteedNoEvict => {
-            held_completion_blocks.saturating_add(activated_waiting_completion_blocks)
         }
     }
 }
@@ -429,6 +410,51 @@ fn available_blocks<'a, S: PolicySequence + 'a>(
 
 pub(super) fn allows_preemption(policy: SchedulingPolicy) -> bool {
     policy == SchedulingPolicy::Vllm
+}
+
+/// vLLM verifies draft tokens in the same token budget as known tokens. Fresh
+/// and recomputing requests have no drafts until their first output is sampled.
+pub(super) fn scheduled_draft_tokens(
+    policy: SchedulingPolicy,
+    worker_type: WorkerType,
+    drafts_ready: bool,
+    nextn: Option<usize>,
+    sequence_len: usize,
+    max_model_len: Option<usize>,
+) -> usize {
+    if policy == SchedulingPolicy::Vllm && worker_type != WorkerType::Prefill && drafts_ready {
+        // Native scheduling keeps one position for the sampled base token.
+        // Reaching the model limit can therefore narrow a verification round
+        // before it spends the shared batch-token budget.
+        let context_room = max_model_len
+            .map(|limit| limit.saturating_sub(sequence_len).saturating_sub(1))
+            .unwrap_or(usize::MAX);
+        nextn.unwrap_or(0).min(context_room)
+    } else {
+        0
+    }
+}
+
+/// Keep TRT-LLM's existing SD approximation separate from native vLLM's
+/// verification width, including a truncated round at the token-budget edge.
+pub(super) fn speculative_burst_limit(
+    policy: SchedulingPolicy,
+    worker_type: WorkerType,
+    nextn: usize,
+    scheduled_drafts: usize,
+) -> usize {
+    match (policy, worker_type) {
+        (_, WorkerType::Prefill) => 1,
+        (SchedulingPolicy::Vllm, _) => scheduled_drafts + 1,
+        (SchedulingPolicy::TrtllmGuaranteedNoEvict, _) => nextn + 1,
+    }
+}
+
+pub(super) fn first_token_uses_prefill_forward(
+    policy: SchedulingPolicy,
+    speculative: bool,
+) -> bool {
+    !speculative || policy == SchedulingPolicy::Vllm
 }
 
 /// TRT-LLM enqueue normalization: a no-evict request's `prompt + output` can

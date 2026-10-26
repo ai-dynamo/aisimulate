@@ -16,6 +16,7 @@ from aisimulate_core.sdk import (
     RustForwardPassPerfModel,
 )
 
+from ..estimator_readiness import unready_estimator_message
 from .config import ENGINE_MODEL_CONTROL_FIELDS, SearchSpace
 from .deploy import _role_hardware_sku
 from .replay import ForwardPassEstimatorSpec
@@ -106,6 +107,8 @@ class ForwardPassEstimatorResolver:
             systems_paths=resolve_systems_paths(self._search_space.systems_paths_for(role)),
             fallback_policy=controls.get("fallback_policy", self._search_space.fallback_policy),
             estimator_config=estimator_config,
+            # A language worker hosting the vision tower prices encoder calls too.
+            encoder_parallel=(sample.get(f"{role}_vision") or {}).get("encoder_parallel"),
         )
 
     def _resolve(self, request: ForwardPassPerfModelConfig, role: str) -> ForwardPassEstimatorSpec:
@@ -150,7 +153,7 @@ class ForwardPassEstimatorResolver:
         resolved_config = dict(provenance["config"])
         if diagnostics.get("readiness") != "ready":
             raise ForwardPassEstimatorResolutionError(
-                f"estimator for {role} is not ready; regression requires training observations"
+                f"estimator for {role} is not ready: {unready_estimator_message(diagnostics)}"
             )
         if not resolved_config.get("backend_version"):
             raise ForwardPassEstimatorResolutionError(

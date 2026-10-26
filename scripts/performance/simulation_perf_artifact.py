@@ -42,6 +42,9 @@ def record(directory: Path, side: str, revision: str, source: Path) -> None:
         },
         "build_seconds": int(os.environ["BUILD_SECONDS"]),
     }
+    manifest["dynamo"] = json.loads((directory / "dynamo-build.json").read_text())
+    for path in [*directory.glob("ai_dynamo*.whl"), *directory.glob("dynamo-*")]:
+        manifest["files"][path.name] = sha256(path)
     (directory / "provenance.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 
@@ -50,8 +53,23 @@ def verify(directory: Path, side: str, revision: str) -> dict:
     if manifest["side"] != side or manifest["source_sha"] != revision:
         raise ValueError(f"{side}: artifact revision or role mismatch")
     wheels = list(directory.glob("aisimulate-*.whl"))
-    if len(wheels) != 1 or set(manifest["files"]) != {wheels[0].name, "requirements.txt"}:
-        raise ValueError(f"{side}: expected one wheel and its locked requirements")
+    runtime = list(directory.glob("ai_dynamo_runtime-*.whl"))
+    adapter = list(directory.glob("ai_dynamo-*.whl"))
+    if len(wheels) != 1 or len(runtime) != 1 or len(adapter) != 1:
+        raise ValueError(f"{side}: expected AISimulate, Dynamo runtime and adapter wheels")
+    expected_wheels = {wheels[0].name, runtime[0].name, adapter[0].name}
+    if {path.name for path in directory.glob("*.whl")} != expected_wheels:
+        raise ValueError(f"{side}: unexpected wheel in artifact")
+    expected = {
+        *expected_wheels,
+        "requirements.txt",
+        "dynamo-requirements.txt",
+        "dynamo-build.json",
+        "dynamo-build.patch",
+        "dynamo-Cargo.lock",
+    }
+    if set(manifest["files"]) != expected or manifest["dynamo"]["aisimulate_sha"] != revision:
+        raise ValueError(f"{side}: incomplete artifact or wrong embedded AISimulate revision")
     for name, checksum in manifest["files"].items():
         if sha256(directory / name) != checksum:
             raise ValueError(f"{side}: checksum mismatch for {name}")
@@ -78,6 +96,10 @@ def main() -> None:
         head = verify(args.head_dir, "head", args.head_sha)
         if base["build"] != head["build"]:
             raise ValueError("base and head build settings differ")
+        if base["dynamo"]["source_sha"] != head["dynamo"]["source_sha"]:
+            raise ValueError("base and head Dynamo revisions differ")
+        if base["files"]["dynamo-requirements.txt"] != head["files"]["dynamo-requirements.txt"]:
+            raise ValueError("base and head Dynamo requirements differ")
         if base["build"]["python"] != platform.python_version():
             raise ValueError("comparison Python differs from build Python")
 

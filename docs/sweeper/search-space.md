@@ -99,6 +99,27 @@ smallest preset class shown in the table. Use `null` for an inactive knob only w
 allows it; see the [Planner interval rules](../replay/dynamo.md).
 A mapping is one atomic candidate choice; values inside it are not independently combined.
 
+Explicit parallelism presets may include hybrid attention TP/DP and MoE EP
+shapes outside the default automatic search menu, such as vLLM TP2/DP4/EP8.
+Every role's parallel dimensions and replica count must be positive integers;
+zero, negative, boolean, fractional, string, and null values are rejected before
+candidate construction. Fixed KV capacity does not make a zero-width shape valid.
+Presets must satisfy
+backend topology rules, the GPU budget, runner support,
+and KV capacity. The default menu continues to use its existing pure patterns.
+Explicit pins are also independent of the automatic menu's 16-GPU worker limit.
+Mixed MoE tensor/expert parallelism is allowed where the backend topology rules
+permit it (TensorRT-LLM/SGLang); vLLM still rejects mixed MoE TP/EP. Admission
+checks topology and memory, not complete timing-data coverage. Candidate evaluation
+still rejects a pin if the selected estimator lacks the required timing data.
+
+Explicit parallelism presets are validated strictly. If a candidate exceeds
+`optimization.constraints.max_candidate_gpus`, recommendation stops before search
+and reports the candidate, its `used_gpus`, and the configured limit. Remove that
+preset or increase the budget; an over-budget candidate is not a KV-capacity error.
+The diagnostic names `gpu_budget` for Sweeper SDK users and its `recommend`
+equivalent, `optimization.constraints.max_candidate_gpus`.
+
 For any preset-capable object in `recommend`, `preset` has these forms:
 
 ```yaml
@@ -276,6 +297,21 @@ The selected mapping supplies the concrete six YAML fields. Trial metadata recor
 features, actual snapped features, projection distance, whether a categorical mode was projected, and
 the final complete parallel configuration.
 
+## Role-specific context limits
+
+`engine.workers.prefill.context_length` and
+`engine.workers.decode.context_length` map to SDK search-space fields
+`prefill_context_length` and `decode_context_length`. Both are fixed positive
+integers. Each role's KV-feasibility check uses its override, then shared
+`context_length`, then the resolved model maximum. Heterogeneous P/D workers
+and AFD companions use their own role's limit.
+
+Candidate serialization and generated worker payloads preserve explicit role
+or shared limits. When neither is set, the payload leaves `max_model_len`
+unset even though feasibility filtering used the model maximum. See
+[worker context limits](../replay/engine/workers.md#context-limits) for public
+configuration and synthetic workload validation.
+
 <a id="pinned-parallel-configurations"></a>
 
 ## SDK: Pinned Parallel Configurations
@@ -411,6 +447,15 @@ which always enforces them. Goodput objectives, a goodput rate floor,
 capture are unsupported. EPD cannot combine with AFD. See
 [Replay's analytical boundaries](../replay/engine/analytical.md) and the
 [existing EPD example](../../examples/cli/epd-recommend.yaml).
+`engine.workers.encoder.mode: native` lifts the fixed-concurrency,
+variable-load, aggregate-SLA, goodput, per-request and op-level restrictions; see
+[native encoder pools](../replay/engine/analytical.md#native-encoder-pools).
+
+An encoder pool may be searched over
+`mode: {choices: [aggregated, disaggregated]}` in one run; a host-aware worker
+(`host_loop`, `frontend` or `host_profile`) requires a concrete `mode`. Encoding
+on the worker is exclusive with an encoder pool, so comparing the two takes
+separate runs.
 
 <a id="removed-kvbm-fields"></a>
 

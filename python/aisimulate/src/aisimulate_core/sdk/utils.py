@@ -7,6 +7,9 @@
 # https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/video_processing_kimi_k25.py
 # https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25_vit.py
 # https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/layers/quantization/modelopt.py
+# Mistral3 projector topology is adapted and modified for performance modeling
+# from vLLM (Apache-2.0), copyright contributors to the vLLM project:
+# https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/model_executor/models/mistral3.py
 
 import importlib.resources as pkg_resources
 import json
@@ -39,8 +42,10 @@ logger = logging.getLogger(__name__)
 
 _NEMOTRONH_LAYER_BLOCK_PATTERN = {
     "mamba": "M",
+    "linear_attention": "M",
     "moe": "E",
     "attention": "*",
+    "full_attention": "*",
     "mlp": "-",
     "dense": "-",
     "ffn": "-",
@@ -530,18 +535,52 @@ def _parse_nemotron_block_configs(block_configs: list[dict]) -> list[BlockConfig
     return grouped_configs if grouped_configs else None
 
 
+# Qwen3-VL checkpoints ship `preprocessor_config.json` with
+# `size: {shortest_edge: 65536, longest_edge: 16777216}` (verified on
+# Qwen/Qwen3-VL-8B-Instruct@0c351dd and Qwen/Qwen3-VL-2B-Instruct@89644892);
+# `smart_resize` rescales images outside that pixel budget before patchify.
+QWEN3_VL_PIXEL_BOUNDS = (65536, 16777216)
+
+
+def _qwen_pixel_bounds(processor_cfg: dict | None) -> tuple[int, int]:
+    """Pixel budget of ``Qwen2VLImageProcessor``: ``size.shortest_edge`` /
+    ``size.longest_edge``, overridden by legacy ``min_pixels`` / ``max_pixels``.
+
+    ``None`` is a bundled checkpoint on the pinned Qwen3-VL budget; a loaded
+    checkpoint without a budget falls back to it with a warning.
+    """
+    if processor_cfg is None:
+        return QWEN3_VL_PIXEL_BOUNDS
+    size = processor_cfg.get("size", {})
+    if not isinstance(size, dict):
+        raise ValueError("Qwen preprocessor size must be an object")
+    bounds = (
+        processor_cfg.get("min_pixels", size.get("shortest_edge")),
+        processor_cfg.get("max_pixels", size.get("longest_edge")),
+    )
+    if bounds == (None, None):
+        logger.warning("preprocessor_config.json has no pixel budget; assuming Qwen3-VL's %s", QWEN3_VL_PIXEL_BOUNDS)
+        return QWEN3_VL_PIXEL_BOUNDS
+    if any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in bounds):
+        raise ValueError(f"Qwen preprocessor pixel budget must be positive integers, got {bounds!r}")
+    return bounds
+
+
 def _parse_qwen_vision_encoder_config(
     vision_cfg: dict | None,
     *,
     expected_out_hidden_size: int,
     supports_deepstack: bool,
     partial_rotary_factor: float,
+    pixel_bounds: tuple[int, int] = (0, 0),
 ) -> VisionEncoderConfig | None:
     """Parse the shared Qwen ViT and its architecture-specific merger count.
 
     Qwen3-VL may project intermediate deepstack features in addition to the
     final tower output. Qwen3.5 inherits that ViT implementation but deletes
     the deepstack mergers, so it always has exactly one PatchMerger instance.
+    ``pixel_bounds`` is the processor's ``(min_pixels, max_pixels)`` budget;
+    zero leaves a bound unknown.
     """
     if not vision_cfg:
         return None
@@ -571,6 +610,8 @@ def _parse_qwen_vision_encoder_config(
         projector_n_instances=1 + len(deepstack_visual_indexes),
         partial_rotary_factor=partial_rotary_factor,
         in_channels=int(vision_cfg.get("in_channels", 3)),
+        min_pixels=int(pixel_bounds[0]),
+        max_pixels=int(pixel_bounds[1]),
     )
 
 
@@ -868,6 +909,11 @@ def _parse_hf_config_json(config: dict) -> dict:
     """
     architecture = config["architectures"][0]
     vision_cfg = config.get("vision_config")
+    vision_feature_layer = config.get("vision_feature_layer", -1)
+    # Captured before the text_config flatten below drops top-level keys.
+    # Mistral3/Pixtral keeps spatial_merge_size at the top level (Qwen3-VL
+    # nests it inside vision_config).
+    top_level_spatial_merge_size = config.get("spatial_merge_size") if vision_cfg else None
     vision_soft_tokens_per_image = config.get("vision_soft_tokens_per_image")
     processor_cfg = config.get("preprocessor_config")
     root_quant_cfg = config.get("quantization_config")
@@ -943,7 +989,7 @@ def _parse_hf_config_json(config: dict) -> dict:
 
     # Handle NemotronH-specific configuration (only fields unique to NemotronH)
     extra_params = None
-    if architecture == "NemotronHForCausalLM":
+    if ARCHITECTURE_TO_MODEL_FAMILY[architecture] == "NEMOTRONH":
         hybrid_override_pattern = _derive_nemotronh_hybrid_pattern(config)
         extra_params = common.NemotronHConfig(
             hybrid_override_pattern=hybrid_override_pattern,
@@ -1190,6 +1236,9 @@ def _parse_hf_config_json(config: dict) -> dict:
             "index_n_heads": config["index_n_heads"],
             "index_topk": config["index_topk"],
         }
+    elif architecture == "Glm5NextForConditionalGeneration":
+        extra_params = common.Glm53FlashConfig.from_text_config(config)
+        d = extra_params.qk_nope_head_dim
     elif architecture == "DeepseekV41ForCausalLM":
         extra_params = common.DeepSeekV41Config.from_text_config(config)
     elif architecture == "DeepseekV4ForCausalLM":
@@ -1478,10 +1527,71 @@ def _parse_hf_config_json(config: dict) -> dict:
             # Preserve the existing Qwen3-VL rotary-table gate. The shared
             # builder treats any positive value as full-head vision RoPE.
             partial_rotary_factor=0.5,
+            pixel_bounds=_qwen_pixel_bounds(processor_cfg),
         )
         if extra_params is not None:
             logger.info(
                 "Qwen3VL vision encoder config: depth=%d, hidden=%d, patch=%d, spatial_merge=%d",
+                extra_params.depth,
+                extra_params.hidden_size,
+                extra_params.patch_size,
+                extra_params.spatial_merge_size,
+            )
+    elif architecture == "Mistral3ForConditionalGeneration":
+        if vision_cfg is not None:
+            if not isinstance(vision_cfg, dict) or not vision_cfg:
+                raise ValueError("Mistral3 vision_config must be a non-empty object")
+            if type(vision_feature_layer) is not int or vision_feature_layer != -1:
+                raise ValueError("Mistral3 modeling supports only vision_feature_layer=-1")
+            image_size = vision_cfg.get("image_size")
+            if type(image_size) is not int or image_size <= 0:
+                raise ValueError("Mistral3 vision_config needs a positive integer image_size")
+            patch_size = vision_cfg.get("patch_size")
+            if type(patch_size) is not int or patch_size <= 0:
+                raise ValueError("Mistral3 vision_config needs a positive integer patch_size")
+            # spatial_merge_size sizes both the patch merger and the image-token
+            # counts; a silent default would mispredict, so require a positive
+            # integer (reject missing/None, bool, non-int, and <= 0).
+            merge = top_level_spatial_merge_size
+            if not isinstance(merge, int) or isinstance(merge, bool) or merge <= 0:
+                raise ValueError(
+                    "Mistral3 config needs a positive integer top-level 'spatial_merge_size' to size "
+                    f"the Pixtral patch merger and per-image token counts; got {merge!r}."
+                )
+            vit_hidden = vision_cfg["hidden_size"]
+            # After the text_config flatten, hidden_size is the LLM hidden dim,
+            # which is the projector's output dimension.
+            text_hidden = hidden_size
+            # PatchMerger fuses spatial_merge_size² patches per token, so the
+            # projector's first GEMM takes vit_hidden * spatial_merge_size² in:
+            #   patch_merger:  merger_dim -> vit_hidden
+            #   linear_1:      vit_hidden -> text_hidden
+            #   linear_2:      text_hidden -> text_hidden
+            merger_dim = vit_hidden * merge**2
+            # ViT FFN is SwiGLU (hidden_act="silu"); gated_mlp=True adds the
+            # separate gate projection the plain up/down builder omits. The
+            # model selects the activation after linear_1 only. The pre-merger
+            # RMSNorm remains an unmodeled ElementWise term.
+            extra_params = VisionEncoderConfig(
+                depth=vision_cfg["num_hidden_layers"],
+                hidden_size=vit_hidden,
+                num_heads=vision_cfg["num_attention_heads"],
+                intermediate_size=vision_cfg["intermediate_size"],
+                patch_size=patch_size,
+                temporal_patch_size=1,
+                spatial_merge_size=merge,
+                encoder_type="pixtral",
+                resize_mode="pixtral",
+                image_size=image_size,
+                out_hidden_size=text_hidden,
+                projector_dims=((merger_dim, vit_hidden), (vit_hidden, text_hidden), (text_hidden, text_hidden)),
+                projector_n_instances=1,
+                projector_merger_replicated=True,
+                partial_rotary_factor=0.5,
+                gated_mlp=True,
+            )
+            logger.info(
+                "Mistral3 (Pixtral) vision encoder config: depth=%d, hidden=%d, patch=%d, spatial_merge=%d",
                 extra_params.depth,
                 extra_params.hidden_size,
                 extra_params.patch_size,
@@ -1881,22 +1991,19 @@ def get_model_config_from_model_path(model_path: str) -> dict:
         Quantization metadata retains its original root or text_config scope.
     """
     raw_config = _load_model_config_from_model_path(model_path)
-    if (
-        raw_config.get("architectures")
-        in (
-            ["KimiK25ForConditionalGeneration"],
-            ["KimiK3ForConditionalGeneration"],
-        )
-        and model_path not in DefaultHFModels
-    ):
-        # Only Kimi consumes these processor files. Bundled checkpoints use
-        # the pinned processor defaults; local/downloaded checkpoints may
-        # override them with the original media_proc_cfg or native HF layout.
+    architecture = (raw_config.get("architectures") or [None])[0]
+    kimi = architecture in ("KimiK25ForConditionalGeneration", "KimiK3ForConditionalGeneration")
+    qwen_vl = architecture in ("Qwen3VLForConditionalGeneration", "Qwen3VLMoeForConditionalGeneration")
+    if (kimi or qwen_vl) and model_path not in DefaultHFModels:
+        # Only Kimi and Qwen3-VL consume these processor files. Bundled
+        # checkpoints use the pinned processor defaults; local/downloaded
+        # checkpoints may override them with the original media_proc_cfg or
+        # native HF layout. Qwen's per-clip video budget is not modeled.
         processor = {}
-        for filename, key in (
-            ("preprocessor_config.json", None),
-            ("video_preprocessor_config.json", "video_processor"),
-        ):
+        files = [("preprocessor_config.json", None)]
+        if kimi:
+            files.append(("video_preprocessor_config.json", "video_processor"))
+        for filename, key in files:
             if os.path.isdir(model_path):
                 path = Path(model_path) / filename
                 data = _load_json_with_infinity(path) if path.is_file() else None
@@ -1904,7 +2011,8 @@ def get_model_config_from_model_path(model_path: str) -> dict:
                 data = _download_hf_json(model_path, filename, raise_on_404=False)
             if data is not None:
                 if not isinstance(data, dict):
-                    raise ValueError(f"Kimi {filename} must be an object")
+                    family = "Kimi" if kimi else "Qwen3-VL"
+                    raise ValueError(f"{family} {filename} must be an object")
                 if key is None:
                     processor.update(data)
                 else:

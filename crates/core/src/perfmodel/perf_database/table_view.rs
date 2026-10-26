@@ -2326,14 +2326,6 @@ fn merge_dsv4_split(parts: Vec<Option<ViewNode>>) -> Option<ViewNode> {
 /// machines missing that family's data).
 pub const TABLE_VIEW_ATTRIBUTES: &[(&str, &[&str])] = &[
     ("_gemm_data", &["gemm_perf.parquet"]),
-    (
-        "_sglang_prefill_attention_sequence_data",
-        &["sglang_prefill_attention_sequence_perf.parquet"],
-    ),
-    (
-        "_sglang_prefill_comm_norm_boundary_data",
-        &["sglang_prefill_comm_norm_boundary_perf.parquet"],
-    ),
     ("_compute_scale_data", &["computescale_perf.parquet"]),
     ("_scale_matrix_data", &["scale_matrix_perf.parquet"]),
     (
@@ -2460,20 +2452,6 @@ pub const TABLE_VIEW_ATTRIBUTES: &[(&str, &[&str])] = &[
 /// sparse sub-tables are addressed as
 /// `"_dsv4_sparse_kernel_data.<paged_mqa_logits|hca_attn|csa_attn>"`.
 pub fn table_view_json(tables: &PerfTables, attribute: &str) -> Result<Option<String>, AicError> {
-    if matches!(
-        attribute,
-        "_sglang_prefill_attention_sequence_data" | "_sglang_prefill_comm_norm_boundary_data"
-    ) {
-        if tables.system != "vr_nvl72"
-            || tables.backend != "sglang"
-            || tables.version != super::prefill_graph::VERSION
-        {
-            return Ok(None);
-        }
-        return tables
-            .prefill_graph
-            .raw_view(attribute == "_sglang_prefill_attention_sequence_data");
-    }
     let src = |basename: &str| {
         tables
             .source_resolver

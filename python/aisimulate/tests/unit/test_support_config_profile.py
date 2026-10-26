@@ -66,6 +66,35 @@ def _runtime(**updates):
     return {"kv_cache_dtype": "bfloat16", "fmha_quant_mode": "bfloat16", "comm_quant_mode": "half", **updates}
 
 
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("recurrent", [False, True])
+def test_mixed_attention_diagnosis_precedes_ordinary_head_dimensions(tmp_path, nested, recurrent):
+    raw = {
+        "architectures": ["Glm5NextForConditionalGeneration"],
+        "num_hidden_layers": 2,
+        "layer_types": ["linear_attention", "deepseek_sparse_attention"],
+        "head_dim": 0,
+    }
+    if recurrent:
+        raw.pop("layer_types")
+        raw["mamba_d_state"] = 16
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"text_config": raw} if nested else raw))
+    with pytest.raises(
+        ValueError,
+        match="unsupported recurrent/hybrid state" if recurrent else "unsupported mixed or recurrent attention layout",
+    ) as error:
+        load_model_config(path)
+    assert "head_dim" not in str(error.value)
+
+
+def test_explicit_decoder_layout_is_not_overridden_by_inkling_wrapper(tmp_path):
+    decoder = _config(tmp_path).raw
+    config = _config(tmp_path, architectures=["InklingForConditionalGeneration"], text_config=decoder)
+    assert config.decoder_architecture == "LlamaForCausalLM"
+    assert config.suggestions["architecture"] == "LlamaForCausalLM"
+
+
 def test_config_hash_and_identity_are_content_facts_not_checkpoint_revision(tmp_path):
     config = _config(tmp_path, _name_or_path="source/repository", auto_map={"AutoConfig": "do_not_execute.Config"})
     assert config.sha256 == hashlib.sha256((tmp_path / "config.json").read_bytes()).hexdigest()

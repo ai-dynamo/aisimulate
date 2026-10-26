@@ -17,7 +17,8 @@ class SiliconRow:
     """
 
     # joined key
-    config_id: int
+    # HF API observations use a local content ID; dumps retain upstream numeric IDs.
+    config_id: int | str
     isl: int
     osl: int
     conc: int
@@ -68,7 +69,7 @@ class DropRecord:
 
     stage: str
     reason: str
-    config_id: int
+    config_id: int | str
     isl: int | None = None
     osl: int | None = None
     conc: int | None = None

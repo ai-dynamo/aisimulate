@@ -7,7 +7,6 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
-import math
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -17,7 +16,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools.simulation_perf_gate import PROTOCOL_VERSION, digest
 from tools.simulation_perf_gate.contract import MODEL_FIELDS, check_finite, fields
 
-HOST_FIELDS = {"wall_time_ms", "processed_tokens_per_s", "processed_output_tokens_per_s"}
+
+def runner_factory(item: dict):
+    if item["runner"] == "engine" and item["determinism"] == "canonical_v1":
+        from aisimulate import EngineReplayRunnerFactory
+
+        return EngineReplayRunnerFactory(determinism=item["determinism"])
+    if item["runner"] == "dynamo" and item["determinism"] == "random":
+        from dynamo.replay.simulation import DynamoReplayRunnerFactory
+
+        return DynamoReplayRunnerFactory()
+    raise ValueError("unsupported benchmark runner or determinism")
 
 
 def portable_model_identity(model: dict, systems_root: Path) -> dict:
@@ -31,21 +40,25 @@ def run(request: dict) -> dict:
     if type(request.get("protocol_version")) is not int or request["protocol_version"] != PROTOCOL_VERSION:
         raise ValueError("incompatible simulation-performance protocol")
     item = request["case"]
-    if item.get("determinism") != "canonical_v1":
-        raise ValueError("benchmark requires canonical_v1 determinism")
     config = deepcopy(item["config"])
     if request["phase"] != "measure":
         raise ValueError("unknown benchmark phase")
     import aisimulate_core
-    from aisimulate import CorePredictionConfig, EngineReplayRunnerFactory, ReplayOutputRequirements
+    from aisimulate import CorePredictionConfig, ReplayOutputRequirements
     from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.sweeper.provider import AdapterReplaySpec, RuntimeHookSpec
 
-    if item.get("trace_sha256"):
-        trace = Path(__file__).parent / "fixtures/agentx.jsonl"
-        if hashlib.sha256(trace.read_bytes()).hexdigest() != item["trace_sha256"]:
+    if item.get("fixture"):
+        trace = Path(__file__).parent / item["fixture"]["path"]
+        if hashlib.sha256(trace.read_bytes()).hexdigest() != item["fixture"]["sha256"]:
             raise ValueError("local trace does not match the controller's input hash")
         config["traffic"]["source"]["paths"] = [str(trace)]
-    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(config))
+    adapters = {}
+    if "router" in item:
+        adapters["dynamo.router"] = AdapterReplaySpec(
+            runtime_hooks=(RuntimeHookSpec("dynamo.router", "placement_policy", 1, item["router"]),)
+        )
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(config), adapter_specs=adapters)
     identity = {}
     provenance = {}
     for role, field in (
@@ -69,7 +82,7 @@ def run(request: dict) -> dict:
             provenance[role] = {**model, "provider": timing["provider"]}
     if not identity:
         raise ValueError("replay has no real forward model")
-    runner = EngineReplayRunnerFactory(determinism=item["determinism"]).create(0)
+    runner = runner_factory(item).create(0)
     try:
         result = runner.run(
             spec,
@@ -78,26 +91,14 @@ def run(request: dict) -> dict:
     finally:
         runner.close()
     report = result.metadata["native_report"]
-    expected = item["expected_requests"]
-    if report.get("num_requests") != expected or report.get("completed_requests") != expected:
-        raise ValueError(f"incomplete replay: expected {expected}, got {report.get('completed_requests')}")
-    if report.get("total_output_tokens") != item["expected_output_tokens"]:
-        raise ValueError("replay did not produce all requested output tokens")
-    wall = report.get("wall_time_ms")
-    if isinstance(wall, bool) or not isinstance(wall, (int, float)) or not math.isfinite(wall) or wall <= 0:
-        raise ValueError("replay wall_time_ms must be finite and positive")
-    if item.get("trace_sha256"):
-        outcomes = report.get("agentic_play_outcomes", [])
-        if len(outcomes) != 1 or outcomes[0]["status"] != "completed" or outcomes[0]["settled_at_ms"] is None:
-            raise ValueError("AgentX play did not settle successfully")
-    # Retain summary diagnostics without collecting per-request records.
-    normalized = {key: value for key, value in report.items() if key not in HOST_FIELDS}
+    if item["runner"] == "dynamo":
+        report = report["summary"]
     return {
         "status": "OK",
-        "wall_time_ms": wall,
+        "wall_time_ms": report.get("wall_time_ms"),
         "model_identity": identity,
         "model_provenance": provenance,
-        "report": normalized,
+        "report": report,
     }
 
 

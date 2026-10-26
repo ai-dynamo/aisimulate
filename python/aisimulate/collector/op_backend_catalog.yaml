@@ -109,6 +109,11 @@ families:
   - family: dsv41
     op_files: [dsv41_module_perf]
 
+  # GLM-5.3-Flash NoPE sparse-MLA + IndexPool attention module rows (one
+  # canonical Glm53Attention geometry key per shape; exact-runtime reader).
+  - family: glm53_attention
+    op_files: [glm53_attention_module_perf]
+
   - family: sparse_attention
     op_files:
       - dsa_context_module_perf
@@ -126,7 +131,6 @@ families:
       - glm5_dsa_attn_module_perf
       - glm5_mqa_logits_module_perf
       - glm5_topk_module_perf
-      - sglang_prefill_attention_sequence_perf
 
   - family: moe
     op_files:
@@ -211,4 +215,3 @@ families:
       - trtllm_alltoall_perf
       - wideep_deepep_ll_perf
       - wideep_deepep_normal_perf
-      - sglang_prefill_comm_norm_boundary_perf

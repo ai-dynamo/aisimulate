@@ -88,8 +88,6 @@ _DATABASE_VERSION_METADATA_FILES = {
     INCOMPLETE_MARKER,
     REUSE_YAML_MARKER,
     COLLECTION_META_MARKER,
-    # The graph-profile contract is validated separately by the native loader.
-    "sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1.profile.json",
 }
 
 
@@ -197,6 +195,14 @@ def _version_sort_tuple(version_str: str) -> tuple:
 
 _QUERY_VERSIONS_BASENAME = "query_versions.yaml"
 _SLOT_ALIASES = ("current", "previous", "next")
+
+
+class UnlistedQueryVersionError(ValueError):
+    """A requested backend version exists outside the queryable slots.
+
+    A ValueError subclass so existing callers keep working; wrappers use the
+    type to surface the slot guidance unchanged instead of re-labelling it.
+    """
 
 
 @functools.cache
@@ -338,13 +344,17 @@ def resolve_query_version(
     # production use; the fixture-discipline follow-up retires it.
     if os.environ.get("AIC_ALLOW_UNLISTED_VERSIONS", "").lower() in ("1", "true", "yes"):
         return version
-    raise ValueError(
-        f"{backend}/{version!r} looks like an old-style raw version query; "
-        f"{system} now resolves versions through queryable slots. "
-        f"New way: use an alias ('current'/'previous'/'next') or one of the "
-        f"slot versions {slots}. "
-        f"Old way (raw data-coordinate access, data outside these slots is "
-        f"not maintained to the queryable bar): re-run with the environment "
+    accepted = ", ".join(f"{slot} = {slots[slot]}" for slot in _SLOT_ALIASES if slot in slots)
+    raise UnlistedQueryVersionError(
+        f"{backend} version {version!r} is not a queryable version on {system}. "
+        f"Accepted versions for {system}/{backend}: {accepted}. "
+        f"Fix: set the backend version to one of these or to an alias, "
+        f"for example `backend_version: current` in an aisimulate config, or "
+        f"`--backend-version current` for aiconfigurator cli. "
+        f"Support-matrix rows at other versions record performance-data "
+        f"coverage, not versions that predict or recommend accept. "
+        f"To query {version!r} anyway (data outside these versions is not "
+        f"maintained to the queryable bar), re-run with the environment "
         f"variable AIC_ALLOW_UNLISTED_VERSIONS=1, or pass "
         f"allow_unlisted_version=True in SDK code."
     )
@@ -384,6 +394,28 @@ def is_hopper_system(system_name: str | None) -> bool:
         return False
     spec = load_system_spec(system_name)
     return int(spec.get("gpu", {}).get("sm_version", -1)) == 90
+
+
+def _gpu_is_xpu(gpu: object, label: str) -> bool:
+    # XPU specs omit sm_version; NVIDIA specs carry it.
+    if not isinstance(gpu, dict):
+        raise ValueError(f"Cannot resolve GPU spec for {label}")
+    return "sm_version" not in gpu
+
+
+def is_xpu_system(system_name: str | None) -> bool:
+    """True for XPU systems. NVIDIA specs carry ``sm_version``; XPU specs do not."""
+    if not system_name:
+        return False
+    return _gpu_is_xpu(load_system_spec(system_name).get("gpu"), f"system {system_name!r}")
+
+
+def is_xpu_system_spec(system_spec: object) -> bool:
+    """Classify an already-loaded spec — avoids re-loading with a different
+    systems_paths than the database used."""
+    if not system_spec:
+        return False
+    return _gpu_is_xpu(system_spec.get("gpu"), "the loaded system spec")
 
 
 def build_no_databases_message() -> str:

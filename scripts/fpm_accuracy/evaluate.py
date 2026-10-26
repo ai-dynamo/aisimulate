@@ -13,10 +13,12 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from scripts.fpm_accuracy.dashboard.measurement_heatmaps import _axis_values, _bin_index, measurement_workload_heatmaps
+from scripts.fpm_accuracy.dashboard.workloads import workload_details, workload_summary
 from scripts.fpm_accuracy.exceptions import DependencyError
 from scripts.fpm_accuracy.hf.models import MeasurementCase
 from scripts.fpm_accuracy.models.aic_predictors import AicFpmPredictor, AicRegressionPredictor
 from scripts.fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, PredictorContext
+from scripts.fpm_accuracy.models.learned_predictor import LearnedFpm5Predictor, training_observation_ids
 from scripts.fpm_accuracy.models.worker_regression import (
     WorkerRegressionPredictor,
     infer_worker_roles,
@@ -24,7 +26,7 @@ from scripts.fpm_accuracy.models.worker_regression import (
 from scripts.notifications.accuracy_digest import encode_points
 
 WORKLOADS = ("all", "prefill", "decode", "mixed")
-METHODS = ("warmup", "nowarmup", "regression")
+METHODS = ("warmup", "nowarmup", "regression", "learned")
 
 
 @dataclass
@@ -78,7 +80,8 @@ def score(
     status = "evaluated"
     predictor = None
     construction_failed = False
-    no_input = method != "regression" and artifact is None
+    no_input = method not in ("regression", "learned") and artifact is None
+    training_ids: frozenset[str] = frozenset()
     if no_input:
         status = "no_fpm_input"
     else:
@@ -91,6 +94,11 @@ def score(
             if method == "regression":
                 roles = infer_worker_roles(item.iteration for item in case.observations)
                 predictor = WorkerRegressionPredictor(context, roles, factory)
+            elif method == "learned":
+                training_ids = training_observation_ids(case.observations)
+                predictor = LearnedFpm5Predictor.fit(
+                    context, [item.iteration for item in case.observations if item.observation_id in training_ids]
+                )
             else:
                 predictor = factory("aic-fpm", context)
         except Exception as exc:
@@ -110,7 +118,7 @@ def score(
             predicted = None
             error = construction_failed
             tuning_error = False
-            if predictor is not None:
+            if predictor is not None and observation.observation_id not in training_ids:
                 try:
                     predicted = predictor.predict(observation.prediction_input()).value_ms
                     if predicted is not None and (not math.isfinite(predicted) or predicted < 0):
@@ -193,6 +201,7 @@ def evaluate_case(
     details: list | None = None,
 ) -> dict:
     config = case.configuration
+    collection = workload_details(case)
     ids = [item.observation_id for item in case.observations]
     orders = [item.order for item in case.observations]
     if len(ids) != len(set(ids)) or orders != sorted(set(orders)):
@@ -219,12 +228,16 @@ def evaluate_case(
                 if variants
                 else score(case, mode, factory=factory, include_points=comparison is not None, heatmaps=heatmaps)
             )
+        results["learned"] = score(
+            case, "learned", factory=factory, include_points=comparison is not None, heatmaps=heatmaps
+        )
     if details is not None:
         details.append(
             {
                 "configuration_id": config.configuration_id,
                 "snapshot_id": config.snapshot_id,
                 "membership_sha256": case.measurement_membership_sha256,
+                "collection": collection,
                 "workload_heatmaps": {key: value.model_dump(mode="json") for key, value in heatmaps.items()},
                 "methods": {
                     method: [
@@ -262,5 +275,6 @@ def evaluate_case(
         "skipped_count": sum(issue.count for issue in case.issues),
         "configuration_manifest": config.manifest_path,
         "measurement_manifest": config.measurements.manifest_path,
+        "collection": workload_summary(collection),
         "results": results,
     }

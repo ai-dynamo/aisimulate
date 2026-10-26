@@ -1,10 +1,18 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
 
 //! Behavioral model of the SGLang scheduler loop (`Scheduler.get_next_batch_to_run`,
 //! `update_running_batch`, `ScheduleBatch.retract_decode`) as of sgl-project/sglang v0.5.6.post2
 //! (`5c8bd8b5`, `python/sglang/srt/managers/scheduler.py`, `schedule_batch.py`). Re-implemented in
-//! Rust from the observed semantics; no SGLang source is copied.
+//! Rust from the observed semantics; no SGLang source is copied. The overlap-iteration wiring
+//! hosted here (the `HostLoop` drain, `inflight_source`, the prefix-cache commits deferred until
+//! the forward's result is observed, and the pricing of vision-cache misses) was verified against
+//! v0.5.19 (`0bcd822`); batch selection and the prefill/decode interval keep the `5c8bd8b5` pin.
+//! The decode retraction order and its post-release eviction (`retract_decode`, `release_req`)
+//! were verified against v0.5.20 (`94602c9c`).
 //!
 //! The optional prefill/decode interval follows the scheduling contract at
 //! https://github.com/sgl-project/sglang/blob/20621aa14bda7726a8a968f326198eac61717fef/python/sglang/srt/managers/scheduler.py
@@ -30,16 +38,19 @@ use crate::engine::common::utils::prefill_handoff_transfer_timing;
 use crate::engine::kv_manager::SglangKvManager;
 use crate::engine::kv_manager::sglang_backend::SglangDestinationReservation;
 use crate::engine::trace::TraceCollector;
-use crate::engine::{HandoffId, modeled_duration_ms};
+use crate::engine::{HandoffId, TtftMilestone, modeled_duration_ms};
 
 use super::config::SglangConfig;
 use super::decode::{
-    cache_materialized_prefix, cleanup_completed_request, simulate_decode_step_with_sampler,
-    simulate_prefill_first_tokens,
+    cache_materialized_prefix, cache_prefix_through, cleanup_completed_request,
+    simulate_decode_step_with_sampler, simulate_prefill_first_tokens,
 };
+use super::frontend::FrontendRuntime;
+use super::host_loop::{ForwardOutputs, HostLoop};
 use super::policy::apply_schedule_policy;
-use super::prefill::get_new_batch_prefill;
+use super::prefill::{PrefillFpmItem, get_new_batch_prefill};
 use super::request::{SglangRequest, WaitingQueue};
+use super::vision::VisionCache;
 use crate::engine::scheduler::{
     ActiveHandoffRequests, AdmissionInvariant, AdmissionStage, CapturedKvEventBuffer,
     DestinationHolds, EnginePassResult, KvEventVisibility, MockerMetrics, PendingDestinations,
@@ -47,6 +58,9 @@ use crate::engine::scheduler::{
     SchedulerLifecycleEvent, SourceCompletion, SourceHolds, build_fpm_snapshot,
     capture_kv_event_sink,
 };
+
+/// SGLang publishes queued events every 40 decode forwards.
+const DECODE_LOG_INTERVAL: usize = 40;
 
 pub(crate) struct SglangCore {
     pub(super) config: SglangConfig,
@@ -68,10 +82,25 @@ pub(crate) struct SglangCore {
     #[cfg(test)]
     destination_reservation_attempts: usize,
     lifecycle_events: Vec<SchedulerLifecycleEvent>,
+    /// Scheduler-thread timeline; `Some` makes a pass one loop iteration whose
+    /// outputs are observed by the next pass.
+    host: Option<HostLoop>,
+    /// Worker pools a request crosses before it reaches the scheduler inbox.
+    frontend: Option<FrontendRuntime>,
+    /// Prefill-rank requests whose extend finished under the host loop but whose
+    /// result the scheduler has not observed yet (`disagg_prefill_inflight_queue`):
+    /// they leave the batch at once and are handed off when the next iteration
+    /// observes that forward.
+    inflight_source: Vec<SglangRequest>,
+    /// Device time of the forward the last pass launched under the host loop.
+    last_forward_ms: Option<f64>,
+    /// Encoder outputs retained across prefill batches.
+    vision_cache: VisionCache,
     prefill_rounds_remaining: usize,
     group_pass_prepared: bool,
     prefill_in_pass: bool,
     model_work_in_pass: bool,
+    decode_forwards: usize,
     interval_idle_in_pass: bool,
 }
 
@@ -186,6 +215,9 @@ impl SglangCore {
         kv_event_publishers: KvEventPublishers,
     ) -> Self {
         let config = SglangConfig::from_args(&args);
+        let host = config.host_loop.then(HostLoop::new);
+        let frontend = config.frontend.clone().map(FrontendRuntime::new);
+        let vision_cache = VisionCache::new(config.vlm_cache_bytes);
         let total_tokens = args.num_gpu_blocks * args.block_size;
         let speculative_sampler = args.aic_nextn.map(|nextn| {
             let rates =
@@ -222,10 +254,16 @@ impl SglangCore {
             group_pass_prepared: false,
             prefill_in_pass: false,
             model_work_in_pass: false,
+            decode_forwards: 0,
             interval_idle_in_pass: false,
             #[cfg(test)]
             destination_reservation_attempts: 0,
             lifecycle_events: Vec::new(),
+            host,
+            frontend,
+            inflight_source: Vec::new(),
+            last_forward_ms: None,
+            vision_cache,
         }
     }
 
@@ -253,22 +291,51 @@ impl SglangCore {
         Ok(self.apply_command_effects(command, true)?.result)
     }
 
+    #[cfg(test)]
     pub(crate) fn apply_command_effects(
         &mut self,
         command: SchedulerCommand,
         allow_destination_admission: bool,
+    ) -> anyhow::Result<SchedulerCommandEffects> {
+        self.apply_command_effects_at(command, allow_destination_admission, None)
+    }
+
+    /// Apply a command at `now_ms`; `None` keeps the frontend clock where it is.
+    pub(crate) fn apply_command_effects_at(
+        &mut self,
+        command: SchedulerCommand,
+        allow_destination_admission: bool,
+        now_ms: Option<f64>,
+    ) -> anyhow::Result<SchedulerCommandEffects> {
+        let effects = self.dispatch_command(command, allow_destination_admission, now_ms);
+        self.publish_kv_events_if_idle();
+        effects
+    }
+
+    fn publish_kv_events_if_idle(&mut self) {
+        if self.running.is_empty() {
+            self.kv_manager.flush_events();
+        }
+    }
+
+    fn dispatch_command(
+        &mut self,
+        command: SchedulerCommand,
+        allow_destination_admission: bool,
+        now_ms: Option<f64>,
     ) -> anyhow::Result<SchedulerCommandEffects> {
         match command {
             SchedulerCommand::Submit(mut request) => {
                 let uuid = request.uuid.unwrap_or_else(Uuid::new_v4);
                 request.uuid = Some(uuid);
                 self.validate_request_id(uuid)?;
+                validate_image_spans(&request)?;
                 Ok(SchedulerCommandEffects::new(
-                    SchedulerCommandResult::Submitted(self.submit(request)?),
+                    SchedulerCommandResult::Submitted(self.submit(request, now_ms)?),
                 ))
             }
             SchedulerCommand::CancelRequest { request_id } => {
-                let retired = self.cancel_active_request(request_id);
+                let retired = self.cancel_active_request(request_id, now_ms);
                 let result = if retired {
                     SchedulerCommandResult::Applied
                 } else {
@@ -292,9 +359,10 @@ impl SglangCore {
                 let uuid = request.uuid.unwrap_or_else(Uuid::new_v4);
                 request.uuid = Some(uuid);
                 self.validate_request_id(uuid)?;
+                validate_image_spans(&request)?;
                 self.source_holds.register(uuid, handoff_id)?;
                 let submitted = self
-                    .submit(request)
+                    .submit(request, now_ms)
                     .expect("prevalidated handoff request must submit");
                 Ok(SchedulerCommandEffects::new(
                     SchedulerCommandResult::Submitted(submitted),
@@ -315,7 +383,7 @@ impl SglangCore {
                 })
             }
             SchedulerCommand::CancelSource { handoff_id } => {
-                let (applied, retired) = self.cancel_source(handoff_id);
+                let (applied, retired) = self.cancel_source(handoff_id, now_ms);
                 let result = if applied {
                     SchedulerCommandResult::Applied
                 } else {
@@ -335,6 +403,7 @@ impl SglangCore {
                 let uuid = request.uuid.unwrap_or_else(Uuid::new_v4);
                 request.uuid = Some(uuid);
                 self.validate_request_id(uuid)?;
+                validate_image_spans(&request)?;
                 self.pending_destinations.validate(uuid, handoff_id)?;
                 self.destination_holds.validate(uuid, handoff_id)?;
                 if self
@@ -374,15 +443,11 @@ impl SglangCore {
                 let Some((_, reservation)) = self.destination_holds.remove(handoff_id) else {
                     return Ok(SchedulerCommandEffects::new(SchedulerCommandResult::Noop));
                 };
-                let available_before = self.kv_manager.cache().available_tokens();
                 let request = reservation.activate(&mut self.kv_manager, self.config.block_size);
                 self.active_destination_handoffs
                     .insert(handoff_id, request.uuid);
                 self.active_request_ids.insert(request.uuid);
                 self.prebuilt_ready.push_back(request);
-                if self.kv_manager.cache().available_tokens() > available_before {
-                    self.bump_capacity_generation();
-                }
                 Ok(self.effects_after_capacity_change(SchedulerCommandResult::Applied))
             }
             SchedulerCommand::CancelDestination { handoff_id } => {
@@ -403,7 +468,7 @@ impl SglangCore {
                 else {
                     return Ok(SchedulerCommandEffects::new(SchedulerCommandResult::Noop));
                 };
-                self.cancel_active_request(request_id);
+                self.cancel_active_request(request_id, None);
                 Ok(self
                     .effects_after_capacity_change(SchedulerCommandResult::Applied)
                     .retire(request_id))
@@ -440,6 +505,7 @@ impl SglangCore {
         let reservation = self
             .kv_manager
             .reserve_destination_lease(request.kv_lease.page_hashes(), request.prompt_len());
+        self.publish_kv_events_if_idle();
         self.pending_destinations.mark_front_attempted(generation);
         let Some(kv) = reservation else {
             return Vec::new();
@@ -474,7 +540,22 @@ impl SglangCore {
         self.active_request_ids.contains(&uuid)
     }
 
-    fn submit(&mut self, request: DirectRequest) -> anyhow::Result<Uuid> {
+    /// Requests `active_request_ids` indexes: queued, running, inflight, delivered
+    /// to the host loop, or still inside the frontend pools.
+    #[cfg(test)]
+    fn indexed_request_ids(&self) -> FxHashSet<Uuid> {
+        self.waiting
+            .iter()
+            .chain(&self.prebuilt_ready)
+            .chain(&self.running)
+            .chain(&self.inflight_source)
+            .map(|request| request.uuid)
+            .chain(self.host.iter().flat_map(HostLoop::request_ids))
+            .chain(self.frontend.iter().flat_map(FrontendRuntime::request_ids))
+            .collect()
+    }
+
+    fn submit(&mut self, request: DirectRequest, now_ms: Option<f64>) -> anyhow::Result<Uuid> {
         let request = self.build_request(request);
         if self.request_is_active(request.uuid) {
             anyhow::bail!("request {} is already active", request.uuid);
@@ -482,8 +563,50 @@ impl SglangCore {
         request.debug_assert_invariants(self.config.block_size);
         let uuid = request.uuid;
         self.active_request_ids.insert(uuid);
-        self.waiting.push_back(request);
+        match (&mut self.frontend, &mut self.host) {
+            (Some(frontend), _) => {
+                let now_ms = now_ms.unwrap_or_else(|| frontend.now_ms());
+                frontend.submit(request, now_ms);
+                // Zero-duration stages can finish at admission. Deliver their
+                // milestones and inbox entries before another same-time command.
+                self.deliver_frontend(now_ms);
+            }
+            // The scheduler thread receives it at the top of its next iteration.
+            (None, Some(host)) => host.submit(request),
+            (None, None) => self.waiting.push_back(request),
+        }
         Ok(uuid)
+    }
+
+    /// Move requests that left the frontend by `now_ms` into the scheduler inbox.
+    fn deliver_frontend(&mut self, now_ms: f64) {
+        let Some(frontend) = &mut self.frontend else {
+            return;
+        };
+        let host = self
+            .host
+            .as_mut()
+            .expect("frontend pools require the host loop");
+        for (request, ready_ms) in frontend.advance(now_ms) {
+            self.lifecycle_events
+                .push(SchedulerLifecycleEvent::TtftMilestone {
+                    request_id: request.uuid,
+                    stage: TtftMilestone::FrontendReady,
+                    at_ms: ready_ms,
+                });
+            host.submit(request);
+        }
+    }
+
+    /// Earliest frontend completion that would deliver a request.
+    pub(crate) fn next_internal_deadline_ms(&self) -> Option<f64> {
+        self.frontend
+            .as_ref()
+            .and_then(FrontendRuntime::next_deadline_ms)
+    }
+
+    pub(crate) fn process_internal_work(&mut self, now_ms: f64) {
+        self.deliver_frontend(now_ms);
     }
 
     fn build_request(&self, request: DirectRequest) -> SglangRequest {
@@ -510,13 +633,22 @@ impl SglangCore {
         request
     }
 
-    fn complete_source(&mut self, request: SglangRequest) {
+    fn complete_source(&mut self, mut request: SglangRequest) {
         let uuid = request.uuid;
         self.active_request_ids.remove(&uuid);
+        // SGLang v0.5.20 `process_batch_result_disagg_prefill` caches the completed
+        // prompt's full pages before the request waits for its KV transfer; the hold
+        // keeps the partial tail page and the path lock until release.
+        let cached_before = request.cached_tokens();
+        if self.source_holds.contains_request(uuid) {
+            cache_materialized_prefix(&mut request, &mut self.kv_manager, &self.config);
+        }
+        let published = request.cached_tokens() > cached_before;
         let transfer_timing = prefill_handoff_transfer_timing(
             request.prompt_len(),
             self.config.kv_transfer_bandwidth,
             self.config.kv_transfer_bytes_per_token,
+            0,
             self.config.kv_transfer_timing_mode,
         );
         let payload = HeldSglangPrefill { request };
@@ -536,7 +668,8 @@ impl SglangCore {
             }
         };
         self.active_destination_handoffs.remove_request(uuid);
-        if released {
+        // A newly cached prefix can also let a pending destination reserve fewer pages.
+        if released || published {
             self.bump_capacity_generation();
         }
     }
@@ -554,7 +687,13 @@ impl SglangCore {
         }
     }
 
-    fn cancel_source(&mut self, handoff_id: HandoffId) -> (bool, Option<Uuid>) {
+    /// Cancel a handoff source at `now_ms`: a pending request leaves its frontend
+    /// pool at the command's instant, not at the pool's last settled clock.
+    fn cancel_source(
+        &mut self,
+        handoff_id: HandoffId,
+        now_ms: Option<f64>,
+    ) -> (bool, Option<Uuid>) {
         match self.source_holds.remove(handoff_id) {
             RemovedSource::Held(payload) => {
                 let request_id = payload.request.uuid;
@@ -563,14 +702,17 @@ impl SglangCore {
                 (true, Some(request_id))
             }
             RemovedSource::Pending { request_id } => {
-                self.cancel_active_request(request_id);
+                self.cancel_active_request(request_id, now_ms);
                 (true, Some(request_id))
             }
             RemovedSource::Missing => (false, None),
         }
     }
 
-    fn cancel_active_request(&mut self, request_id: Uuid) -> bool {
+    fn cancel_active_request(&mut self, request_id: Uuid, now_ms: Option<f64>) -> bool {
+        let frontend_now_ms =
+            now_ms.or_else(|| self.frontend.as_ref().map(FrontendRuntime::now_ms));
+        let mut was_running = false;
         let request = if let Some(index) = self
             .waiting
             .iter()
@@ -582,26 +724,64 @@ impl SglangCore {
             .iter()
             .position(|request| request.uuid == request_id)
         {
-            self.prebuilt_ready.remove(index)
+            // SGLang releases a transferred request aborted from its waiting queue
+            // through the inserting `release_kv_cache` path.
+            self.prebuilt_ready.remove(index).map(|mut request| {
+                cache_materialized_prefix(&mut request, &mut self.kv_manager, &self.config);
+                request
+            })
         } else if let Some(index) = self
             .running
             .iter()
             .position(|request| request.uuid == request_id)
         {
+            was_running = true;
             Some(self.running.remove(index))
+        } else if let Some(index) = self
+            .inflight_source
+            .iter()
+            .position(|request| request.uuid == request_id)
+        {
+            Some(self.inflight_source.remove(index))
+        } else if let Some(request) = self
+            .host
+            .as_mut()
+            .and_then(|host| host.take_request(request_id))
+        {
+            Some(request)
         } else {
-            None
+            self.frontend
+                .as_mut()
+                .zip(frontend_now_ms)
+                .and_then(|(frontend, now_ms)| frontend.cancel(request_id, now_ms))
         };
         let Some(mut request) = request else {
             return false;
         };
         self.active_request_ids.remove(&request_id);
+        if let Some(host) = &mut self.host {
+            // The forward in flight may have produced this request's outputs and
+            // prefix commits; the scheduler never observes them now.
+            host.discard_request(request_id);
+        }
         if let Some(oracle) = &self.belady {
             oracle.retire_requests([request_id]);
         }
-        let capacity_improved = self.kv_manager.abort(std::mem::take(&mut request.kv_lease));
         self.source_holds.remove_request(request_id);
         self.active_destination_handoffs.remove_request(request_id);
+        if was_running && let Some(host) = &mut self.host {
+            let Some(ready) = host.defer_cancelled_request(request) else {
+                return true;
+            };
+            request = ready;
+        }
+        let capacity_improved = if was_running {
+            let releases_kv = request.kv_lease.is_active();
+            cleanup_completed_request(&mut request, &mut self.kv_manager, self.config.block_size);
+            releases_kv
+        } else {
+            self.kv_manager.abort(std::mem::take(&mut request.kv_lease))
+        };
         if capacity_improved {
             self.bump_capacity_generation();
         }
@@ -629,11 +809,17 @@ impl SglangCore {
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.waiting.is_empty() && self.prebuilt_ready.is_empty() && self.running.is_empty()
+        self.waiting.is_empty()
+            && self.prebuilt_ready.is_empty()
+            && self.running.is_empty()
+            && self.inflight_source.is_empty()
+            && self.host.as_ref().is_none_or(HostLoop::is_idle)
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn is_drained(&self) -> bool {
+    /// Whether the scheduler owns nothing to run, observe, or hand off. Requests
+    /// still inside the frontend pools do not count: they wake the core through
+    /// its internal deadline rather than through a pass.
+    fn scheduler_is_drained(&self) -> bool {
         self.is_empty()
             && self.prefill_rounds_remaining == 0
             && self.source_holds.is_empty()
@@ -642,8 +828,16 @@ impl SglangCore {
             && self.active_destination_handoffs.is_empty()
     }
 
+    pub(crate) fn is_ready(&self) -> bool {
+        !self.scheduler_is_drained()
+    }
+
+    pub(crate) fn is_drained(&self) -> bool {
+        self.scheduler_is_drained() && self.frontend.as_ref().is_none_or(FrontendRuntime::is_empty)
+    }
+
     pub(crate) fn waiting_for_external_command(&self) -> bool {
-        self.is_empty() && self.prefill_rounds_remaining == 0 && !self.is_drained()
+        self.is_empty() && self.prefill_rounds_remaining == 0 && !self.scheduler_is_drained()
     }
 
     pub(crate) fn prepare_group_pass(&mut self) {
@@ -651,6 +845,12 @@ impl SglangCore {
         self.prefill_in_pass = false;
         self.model_work_in_pass = false;
         self.interval_idle_in_pass = false;
+    }
+
+    /// Device time of the forward this pass launched under the host loop; `None`
+    /// when a pass ends with its own forward.
+    pub(crate) fn last_forward_ms(&self) -> Option<f64> {
+        self.last_forward_ms
     }
 
     pub(crate) fn prefill_in_pass(&self) -> bool {
@@ -813,8 +1013,28 @@ impl SglangCore {
         let defer_prefill = self.prefill_rounds_remaining > 0;
         let remaining_after_round = self.prefill_rounds_remaining.saturating_sub(1);
         let new_token_ratio_before = self.new_token_ratio;
-        // Keep rejected requests alive until the pass succeeds so a provider
-        // failure can restore both their queue position and terminal bookkeeping.
+        // Requests that finished in the previous forward stay in this pass's batch;
+        // they leave once that forward's result is observed at the end of this pass.
+        let observed_terminals = self
+            .running
+            .iter()
+            .filter(|request| request.pending_terminal)
+            .chain(&self.inflight_source)
+            .map(|request| request.uuid)
+            .collect::<Vec<_>>();
+        self.deliver_frontend(now_ms);
+        if let Some(host) = &mut self.host {
+            for request in host.take_received() {
+                self.lifecycle_events
+                    .push(SchedulerLifecycleEvent::TtftMilestone {
+                        request_id: request.uuid,
+                        stage: TtftMilestone::Received,
+                        at_ms: now_ms,
+                    });
+                self.waiting.push_back(request);
+            }
+        }
+        // Overlength requests leave the queue now and report rejection after this pass's tokens.
         let mut rejected = Vec::new();
         if let Some(limit) = self.config.max_model_len
             && self
@@ -823,51 +1043,15 @@ impl SglangCore {
                 .maximum_length()
                 .is_some_and(|length| length >= limit as u64)
         {
-            for index in 0..self.waiting.len() {
+            for _ in 0..self.waiting.len() {
                 let request = self.waiting.pop_front().expect("waiting request retained");
                 if request.prompt_len() < limit {
                     self.waiting.push_back(request);
                 } else {
-                    rejected.push((index, request));
+                    rejected.push(request);
                 }
             }
         }
-        // Preserve admission around validation, prediction and duration conversion.
-        // The built-in polynomial remains infallible; external providers may fail
-        // after accepting geometry. Lease checkpoints are not independent owners.
-        let admission_checkpoint = (!self.waiting.is_empty()
-            && self.config.perf_model.prefill_pass_can_fail())
-        .then(|| {
-            // FIFO admission only touches an admitted prefix and possibly its
-            // first blocked request. LPM may reorder the small queue it scores;
-            // keep the complete rollback image in that bounded case.
-            let checkpoint_len = if self.config.schedule_policy
-                == super::config::SchedulePolicy::Lpm
-                && self.waiting.len() <= super::config::LPM_FALLBACK_THRESHOLD
-            {
-                self.waiting.len()
-            } else {
-                self.config
-                    .max_running_requests
-                    .saturating_sub(self.running.len())
-                    .saturating_add(1)
-            };
-            let waiting = self
-                .waiting
-                .iter()
-                .take(checkpoint_len)
-                .map(|request| {
-                    (
-                        request.uuid,
-                        request.materialized_tokens,
-                        request.allocated_tokens,
-                        request.kv_lease.admission_checkpoint(),
-                    )
-                })
-                .collect::<Vec<_>>();
-            (self.kv_manager.begin_admission(), waiting)
-        });
-        let running_before_admission = self.running.len();
         let mut admissions = self.promote_prebuilt_ready();
         let materialized_waiting = !self.prebuilt_ready.is_empty();
         apply_schedule_policy(&mut self.waiting, &self.kv_manager, &self.config);
@@ -889,77 +1073,60 @@ impl SglangCore {
         };
 
         let batch_size = admit.can_run.len();
-        let mean_isl = admit.total_isl.checked_div(batch_size).unwrap_or(0);
-        let mean_prefix = admit.total_prefix.checked_div(batch_size).unwrap_or(0);
-        let prefill_time = (|| {
-            self.config.perf_model.validate_prefill_batch(
-                &admit
-                    .prefill_fpm
-                    .iter()
-                    .map(|item| (item.tokens_computed, item.prefix_tokens))
-                    .collect::<Vec<_>>(),
-            )?;
-            simulate_prefill_duration(batch_size, mean_isl, mean_prefix, &self.config, true)
-        })();
-        let prefill_time = match prefill_time {
-            Ok(duration) => {
-                if let Some((checkpoint, _)) = admission_checkpoint {
-                    self.kv_manager.commit_admission(checkpoint);
-                }
-                duration
-            }
-            Err(error) => {
-                // A retry is still part of the caller's prepared group round;
-                // it must not consume the prefill interval a second time.
-                self.group_pass_prepared = grouped;
-                if let Some((checkpoint, waiting)) = admission_checkpoint {
-                    self.kv_manager.rollback_admission(checkpoint);
-                    let checkpoint_ids: FxHashSet<_> =
-                        waiting.iter().map(|entry| entry.0).collect();
-                    let mut requests = rustc_hash::FxHashMap::default();
-                    let mut untouched = Vec::new();
-                    for request in self.waiting.drain(..).chain(admit.can_run) {
-                        if checkpoint_ids.contains(&request.uuid) {
-                            requests.insert(request.uuid, request);
-                        } else {
-                            untouched.push(request);
-                        }
-                    }
-                    for (uuid, materialized, allocated, lease) in waiting {
-                        let mut request =
-                            requests.remove(&uuid).expect("admission request retained");
-                        request.kv_lease.restore_admission(lease);
-                        request.materialized_tokens = materialized;
-                        request.allocated_tokens = allocated;
-                        request.debug_assert_invariants(self.config.block_size);
-                        self.waiting.push_back(request);
-                    }
-                    debug_assert!(requests.is_empty());
-                    for request in untouched {
-                        self.waiting.push_back(request);
-                    }
-                }
-                for request in self.running.drain(running_before_admission..).rev() {
-                    self.prebuilt_ready.push_front(request);
-                }
-                for (index, request) in rejected {
-                    self.waiting.insert(index.min(self.waiting.len()), request);
-                }
-                self.active_request_ids = self
-                    .waiting
-                    .iter()
-                    .chain(&self.prebuilt_ready)
-                    .chain(&self.running)
-                    .map(|request| request.uuid)
-                    .collect();
-                return Err(error);
-            }
+        self.config.perf_model.validate_prefill_batch(
+            &admit
+                .prefill_fpm
+                .iter()
+                .filter(|item| item.tokens_computed > 0)
+                .map(|item| (item.tokens_computed, item.prefix_tokens))
+                .collect::<Vec<_>>(),
+        )?;
+        // The forward encodes the cache-miss images whose placeholders overlap this
+        // pass's chunks before the language-model prefill runs over the batch. A
+        // decode rank prefills again only after a retraction; its images were
+        // encoded on the prefill rank, so it prices no tower, as it prices no
+        // prefill (`simulate_prefill_duration`).
+        let vision_misses = if self.config.worker_type == WorkerType::Decode {
+            Vec::new()
+        } else {
+            self.vision_cache
+                .misses(
+                    admit
+                        .can_run
+                        .iter()
+                        .zip(&admit.prefill_fpm)
+                        .map(|(request, item)| {
+                            (
+                                request.images.as_slice(),
+                                item.prefix_tokens,
+                                item.prefix_tokens + item.tokens_computed,
+                            )
+                        }),
+                )
         };
+        let vision_ms = modeled_duration_ms(
+            self.config.perf_model.predict_vision_time(&vision_misses)?,
+            self.config.speedup_ratio,
+        )?;
+        let prefill_time = simulate_prefill_duration(&admit.prefill_fpm, &self.config, true)?;
+        self.vision_cache.store(&vision_misses);
+
+        // Ghost members still form a batch: `filter_batch` has not seen them finish.
+        let forward = self.host.is_some() && (batch_size > 0 || !self.running.is_empty());
+        let selected_ms = now_ms;
 
         admissions.append(&mut admit.admissions);
         for admission in &admissions {
             if let Some(collector) = collector.as_deref_mut() {
-                collector.on_admit(admission.uuid, now_ms, admission.reused_input_tokens);
+                collector.on_admit(admission.uuid, selected_ms, admission.reused_input_tokens);
+            }
+            if self.host.is_some() {
+                self.lifecycle_events
+                    .push(SchedulerLifecycleEvent::TtftMilestone {
+                        request_id: admission.uuid,
+                        stage: TtftMilestone::Selected,
+                        at_ms: selected_ms,
+                    });
             }
         }
 
@@ -984,11 +1151,13 @@ impl SglangCore {
         }
 
         let previously_running = self.running.len();
+        let mut prefill_completed = Vec::new();
         for mut req in admit.can_run {
             if req.materialized_tokens < req.current_sequence_len() {
                 cache_materialized_prefix(&mut req, &mut self.kv_manager, &self.config);
                 self.waiting.push_front(req);
             } else {
+                prefill_completed.push(req.uuid);
                 self.running.push(req);
             }
         }
@@ -1008,20 +1177,22 @@ impl SglangCore {
         };
 
         // Capture scheduled decode data before the decode step modifies running. A prefill-first
-        // pass is a pure prefill forward: nothing is scheduled for decode.
+        // pass is a pure prefill forward: nothing is scheduled for decode. Under the host loop
+        // a finished request is still a row of this batch until the next iteration observes
+        // it, so the metrics carry the same rows the timing provider is charged for.
         let scheduled_decode_lens: Vec<u64> = if prefill_pass {
             Vec::new()
         } else {
             self.running
                 .iter()
-                .filter(|req| req.remaining_output_tokens() > 0)
+                .filter(|req| req.pending_terminal || req.remaining_output_tokens() > 0)
                 .map(|req| req.current_sequence_len() as u64)
                 .collect()
         };
         self.interval_idle_in_pass = defer_prefill && scheduled_decode_lens.is_empty();
 
-        let decode_start_ms = now_ms + prefill_time.as_secs_f64() * 1000.0;
-        let decode = if prefill_pass {
+        let decode_start_ms = selected_ms + vision_ms + prefill_time.as_secs_f64() * 1000.0;
+        let mut decode = if prefill_pass {
             simulate_prefill_first_tokens(
                 &mut self.running,
                 &mut self.kv_manager,
@@ -1037,23 +1208,7 @@ impl SglangCore {
                 decode_start_ms,
                 true,
             )
-        };
-        let mut decode = match decode {
-            Ok(decode) => decode,
-            Err(error) => {
-                for (index, request) in rejected {
-                    self.waiting.insert(index.min(self.waiting.len()), request);
-                }
-                self.active_request_ids = self
-                    .waiting
-                    .iter()
-                    .chain(&self.prebuilt_ready)
-                    .chain(&self.running)
-                    .map(|request| request.uuid)
-                    .collect();
-                return Err(error);
-            }
-        };
+        }?;
         if !prefill_pass {
             // The decode step can retract requests before executing the batch.
             committed_requests.extend(
@@ -1066,6 +1221,15 @@ impl SglangCore {
             committed_requests.sort_unstable();
             committed_requests.dedup();
         }
+        if let Some(host) = &mut self.host {
+            // `retract_decode` marks a request before the previous forward's result is
+            // processed, and `process_batch_result` then skips it (`is_retracted`): the
+            // token that forward sampled for it is neither delivered nor kept.
+            for request in &mut decode.requests {
+                let dropped = host.discard_request(request.uuid);
+                request.discard_output_tokens(dropped, self.config.block_size);
+            }
+        }
         self.model_work_in_pass = self.prefill_in_pass
             || (!prefill_pass && decode.output_signals.iter().any(|s| s.token_id.is_some()));
         if !stalled.is_empty() {
@@ -1074,16 +1238,116 @@ impl SglangCore {
             self.running = stalled;
         }
 
+        if self.host.is_some() && self.config.worker_type == WorkerType::Prefill {
+            // `process_batch_result_disagg_prefill` moves a finished extend to the
+            // inflight queue: it is not a member of the next batch.
+            self.inflight_source.extend(
+                self.running
+                    .extract_if(.., |request| request.pending_terminal),
+            );
+        }
         for request in decode.completed_requests.drain(..) {
             self.complete_source(request);
         }
+        self.last_forward_ms = None;
+        let (end_ms, mut output_signals, observed_forward) = match &mut self.host {
+            Some(host) => {
+                debug_assert!(
+                    forward || decode.output_signals.is_empty(),
+                    "an iteration without a batch launches no forward"
+                );
+                let forward_ms = forward.then_some(decode.end_ms - selected_ms);
+                let (timing, observed) = host.plan(
+                    selected_ms,
+                    forward_ms.map(|forward_ms| {
+                        (
+                            forward_ms,
+                            ForwardOutputs {
+                                prefill: prefill_pass,
+                                output_signals: std::mem::take(&mut decode.output_signals),
+                                cache_commits: std::mem::take(&mut decode.cache_commits),
+                                ..Default::default()
+                            },
+                        )
+                    }),
+                );
+                self.last_forward_ms = Some(forward_ms.unwrap_or(0.0));
+                debug_assert!(
+                    observed.is_some() || observed_terminals.is_empty(),
+                    "ghost members imply a batch in flight"
+                );
+                if let Some(gpu_end_ms) = timing.gpu_end_ms {
+                    for request_id in prefill_completed {
+                        self.lifecycle_events
+                            .push(SchedulerLifecycleEvent::TtftMilestone {
+                                request_id,
+                                stage: TtftMilestone::PrefillComplete,
+                                at_ms: gpu_end_ms,
+                            });
+                    }
+                }
+                let observed_forward = observed.as_ref().map(|outputs| outputs.prefill);
+                let observed = observed.unwrap_or_default();
+                // `maybe_cache_unfinished_req`: the observed forward's prefixes enter the
+                // radix cache now, after this iteration's batch was selected. The commits
+                // are in batch order, which `running` keeps unless this pass retracted and
+                // reordered it, so search on from the last match, wrapping around.
+                // A retracted or cancelled request's commits were discarded with its outputs.
+                let mut cursor = 0;
+                let len = self.running.len();
+                for (request_id, tokens) in observed.cache_commits {
+                    let Some(index) = (cursor..len)
+                        .chain(0..cursor)
+                        .find(|&index| self.running[index].uuid == request_id)
+                    else {
+                        continue;
+                    };
+                    cursor = index;
+                    cache_prefix_through(
+                        &mut self.running[index],
+                        &mut self.kv_manager,
+                        &self.config,
+                        tokens,
+                    );
+                }
+                for mut request in observed.cancelled_requests {
+                    let releases_kv = request.kv_lease.is_active();
+                    cleanup_completed_request(
+                        &mut request,
+                        &mut self.kv_manager,
+                        self.config.block_size,
+                    );
+                    if releases_kv {
+                        self.bump_capacity_generation();
+                    }
+                }
+                let mut terminals = self
+                    .running
+                    .extract_if(.., |request| observed_terminals.contains(&request.uuid))
+                    .collect::<Vec<_>>();
+                terminals.extend(
+                    self.inflight_source
+                        .extract_if(.., |request| observed_terminals.contains(&request.uuid)),
+                );
+                for request in terminals {
+                    self.complete_source(request);
+                }
+                (timing.end_ms, observed.output_signals, observed_forward)
+            }
+            None => (
+                decode.end_ms,
+                std::mem::take(&mut decode.output_signals),
+                self.model_work_in_pass.then_some(prefill_pass),
+            ),
+        };
         if let Some(oracle) = &self.belady {
-            oracle.retire_requests(rejected.iter().map(|(_, request)| request.uuid));
+            oracle.retire_requests(rejected.iter().map(|request| request.uuid));
         }
-        for (_, request) in rejected {
+        // Rejections never ran a forward: their signals are visible in this pass.
+        for request in rejected {
             self.active_request_ids.remove(&request.uuid);
             self.source_holds.remove_request(request.uuid);
-            decode.output_signals.push(OutputSignal {
+            output_signals.push(OutputSignal {
                 uuid: request.uuid,
                 token_id: None,
                 completed: true,
@@ -1094,9 +1358,9 @@ impl SglangCore {
         }
 
         if let Some(collector) = collector {
-            for signal in &decode.output_signals {
+            for signal in &output_signals {
                 if signal.token_id.is_some() {
-                    collector.on_token(signal.uuid, decode.end_ms);
+                    collector.on_token(signal.uuid, end_ms);
                 }
             }
         }
@@ -1116,6 +1380,20 @@ impl SglangCore {
             // The ratio decays in `update_running_batch`, i.e. only on decode passes.
             self.new_token_ratio = (self.new_token_ratio - self.config.new_token_ratio_decay_step)
                 .max(self.config.min_new_token_ratio);
+        }
+
+        // Overlap launches the next batch before observing the previous one. Publication
+        // follows the observed result, so a prefill prompt is not delayed by a decode launch.
+        if observed_forward == Some(false) {
+            self.decode_forwards += 1;
+        }
+        if observed_forward == Some(true)
+            || (observed_forward == Some(false)
+                && self.decode_forwards.is_multiple_of(DECODE_LOG_INTERVAL))
+        {
+            self.kv_manager.flush_events();
+        } else {
+            self.publish_kv_events_if_idle();
         }
 
         // Build FPM snapshot now that all state has settled.
@@ -1169,14 +1447,7 @@ impl SglangCore {
                 &fpm,
                 &self.reference_queued_fpm(),
             );
-            let ids: FxHashSet<_> = self
-                .waiting
-                .iter()
-                .chain(&self.prebuilt_ready)
-                .chain(&self.running)
-                .map(|r| r.uuid)
-                .collect();
-            assert_eq!(self.active_request_ids, ids);
+            assert_eq!(self.active_request_ids, self.indexed_request_ids());
         }
 
         debug_assert_sglang_scheduler_state(&self.waiting, &self.running, self.config.block_size);
@@ -1186,7 +1457,7 @@ impl SglangCore {
         }
         Ok(EnginePassResult {
             committed_requests,
-            end_ms: decode.end_ms,
+            end_ms,
             same_timestamp_retry: if defer_prefill {
                 crate::engine::generalized::SameTimestampRetry::Countdown {
                     remaining: remaining_after_round,
@@ -1197,12 +1468,11 @@ impl SglangCore {
                 crate::engine::generalized::SameTimestampRetry::Exhausted
             },
             #[cfg(test)]
-            completed_requests: decode
-                .output_signals
+            completed_requests: output_signals
                 .iter()
                 .filter(|signal| signal.completed)
                 .count(),
-            output_signals: decode.output_signals,
+            output_signals,
             admissions,
             pressure_events: decode.pressure_events,
             lifecycle_events: std::mem::take(&mut self.lifecycle_events),
@@ -1225,12 +1495,19 @@ impl SglangCore {
         actual_used.div_ceil(self.config.block_size) as u64
     }
 
+    /// SGLang v0.5.20 `get_new_prebuilt_batch`: transferred requests fill the free
+    /// running slots, and `process_prebuilt` caches each selected prompt, so it
+    /// becomes reusable only once its request runs.
     fn promote_prebuilt_ready(&mut self) -> Vec<crate::engine::scheduler::AdmissionEvent> {
         let mut admissions = Vec::new();
+        let mut published = false;
         while self.running.len() < self.config.max_running_requests {
-            let Some(request) = self.prebuilt_ready.pop_front() else {
+            let Some(mut request) = self.prebuilt_ready.pop_front() else {
                 break;
             };
+            let cached_before = request.cached_tokens();
+            cache_materialized_prefix(&mut request, &mut self.kv_manager, &self.config);
+            published |= request.cached_tokens() > cached_before;
             admissions.push(crate::engine::scheduler::AdmissionEvent {
                 uuid: request.uuid,
                 reused_input_tokens: 0,
@@ -1238,24 +1515,52 @@ impl SglangCore {
             });
             self.running.push(request);
         }
+        if published {
+            // A newly cached prefix can let a pending destination reserve fewer pages.
+            self.bump_capacity_generation();
+        }
         admissions
     }
 }
 
+/// Reject image placeholders that are empty, inverted or extend past the prompt.
+fn validate_image_spans(request: &DirectRequest) -> anyhow::Result<()> {
+    let prompt_len = request.tokens.len();
+    anyhow::ensure!(
+        request
+            .images
+            .iter()
+            .all(|image| image.token_start < image.token_end && image.token_end <= prompt_len),
+        "image placeholders must lie inside the prompt"
+    );
+    Ok(())
+}
+
+/// Price the members that compute prefill tokens. A fully cached, zero-output
+/// request joins the batch without forward work, as in its FPM snapshot.
 fn simulate_prefill_duration(
-    batch_size: usize,
-    mean_isl: usize,
-    mean_prefix: usize,
+    prefill: &[PrefillFpmItem],
     config: &SglangConfig,
     apply_speedup: bool,
 ) -> anyhow::Result<Duration> {
-    if batch_size == 0 || config.worker_type == WorkerType::Decode {
+    if config.worker_type == WorkerType::Decode {
         return Ok(Duration::ZERO);
     }
 
-    let prefill_time = config
-        .perf_model
-        .predict_prefill_time(batch_size, mean_isl, mean_prefix)?;
+    let (batch_size, new_tokens, prefix_tokens) = prefill
+        .iter()
+        .filter(|item| item.tokens_computed > 0)
+        .fold((0, 0, 0), |(batch, new, prefix), item| {
+            (
+                batch + 1,
+                new + item.tokens_computed,
+                prefix + item.prefix_tokens,
+            )
+        });
+    let prefill_time =
+        config
+            .perf_model
+            .predict_prefill_time(batch_size, new_tokens, prefix_tokens)?;
     let speedup_ratio = if apply_speedup {
         config.speedup_ratio
     } else {

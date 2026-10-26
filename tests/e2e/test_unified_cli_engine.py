@@ -146,9 +146,24 @@ def test_engine_cli_case_matrix_is_complete() -> None:
     assert tuple(path.name for path in _RECOMMEND_CASES) == _EXPECTED_RECOMMEND_CASES
 
 
+# Inferred state geometry: model, fixed blocks fitting one state-bearing request, expected report.
+_AUTO_STATE = {
+    "auto-k3": (
+        "moonshotai/Kimi-K3",
+        6,
+        {"bytes_per_request": 61046784, "block_size": 768, "kv_bytes_per_token": 27648},
+    ),
+    "auto-dsv4": (
+        "deepseek-ai/DeepSeek-V4-Flash",
+        40,
+        {"bytes_per_request": 26058240, "block_size": 256, "kv_bytes_per_token": 3915},
+    ),
+}
+
+
 @pytest.mark.parametrize(
     "state_enabled,expected_duration_ms",
-    [(False, 2.0), (True, 4.0), ("auto-k3", 4.0)],
+    [(False, 2.0), (True, 4.0), ("auto-k3", 4.0), ("auto-dsv4", 4.0)],
 )
 def test_manual_state_cache_runs_through_native_engine(
     tmp_path: Path, state_enabled: bool | str, expected_duration_ms: float
@@ -183,13 +198,14 @@ traffic:
         payload = yaml.safe_load(config.read_text(encoding="utf-8"))
         del payload["engine"]["workers"]["aggregated"]["kv_cache"]["state_cache"]
         config.write_text(yaml.safe_dump(payload), encoding="utf-8")
-    if state_enabled == "auto-k3":
+    if state_enabled in _AUTO_STATE:
+        model, blocks, _ = _AUTO_STATE[state_enabled]
         payload = yaml.safe_load(config.read_text(encoding="utf-8"))
-        payload["engine"]["model"] = "moonshotai/Kimi-K3"
+        payload["engine"]["model"] = model
         worker = payload["engine"]["workers"]["aggregated"]
         worker["parallelism"] = {"tensor": 8}
         worker["kv_cache"].update(
-            block_size=None, bytes_per_token="auto", state_cache={}, capacity={"type": "fixed", "blocks": 6}
+            block_size=None, bytes_per_token="auto", state_cache={}, capacity={"type": "fixed", "blocks": blocks}
         )
         config.write_text(yaml.safe_dump(payload), encoding="utf-8")
     output = tmp_path / "state-cache"
@@ -212,16 +228,60 @@ traffic:
     assert report.get("summary", report)["completed_requests"] == 4
     if state_enabled:
         state = report["state_cache"]["aggregated"]
-        assert state["source"] == ("inferred" if state_enabled == "auto-k3" else "overridden")
+        assert state["source"] == ("inferred" if state_enabled in _AUTO_STATE else "overridden")
     else:
         assert "state_cache" not in report
-    if state_enabled == "auto-k3":
-        assert state["bytes_per_request"] == 61046784
-        assert state["block_size"] == 768
-        assert state["kv_bytes_per_token"] == 27648
-    # Six blocks fit two token-only requests, but only one with its state allocation.
+    if state_enabled in _AUTO_STATE:
+        expected = _AUTO_STATE[state_enabled][2]
+        assert {key: state[key] for key in expected} == expected
+    # The budget fits two token-only requests, but only one with its state allocation.
     assert summary["duration_ms"] == pytest.approx(expected_duration_ms)
     assert report.get("summary", report)["duration_ms"] == pytest.approx(expected_duration_ms)
+
+
+def test_pd_state_cache_runs_through_native_engine(tmp_path: Path) -> None:
+    worker = {
+        "parallelism": {"tensor": 8},
+        "scheduler": {"max_batched_tokens": 256, "max_sequences": 2},
+        "kv_cache": {"bytes_per_token": "auto", "state_cache": {}, "capacity": {"type": "fixed", "blocks": 6}},
+        "timing": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1},
+    }
+    payload = {
+        "engine": {
+            "mode": "disaggregated",
+            "backend": "vllm",
+            "model": "moonshotai/Kimi-K3",
+            "hardware": "h200_sxm",
+            "context_length": 2048,
+            "kv_transfer": {"bandwidth_gb_per_second": 50},
+            "workers": {"prefill": worker, "decode": json.loads(json.dumps(worker))},
+        },
+        "traffic": {
+            "source": {"type": "synthetic", "input_tokens": 128, "output_tokens": 2},
+            "load": {"type": "concurrency", "concurrency": 2},
+            "stop": {"requests": 4},
+        },
+    }
+    config = tmp_path / "pd-state-cache.yaml"
+    config.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    output = tmp_path / "pd-state-cache"
+    result = _run_cli(
+        "predict",
+        "--stack",
+        "engine",
+        "--config",
+        str(config),
+        "--output-dir",
+        str(output),
+        "--format",
+        "json",
+        timeout=30.0,
+    )
+    assert json.loads(result.stdout)["completed_requests"] == 4
+    report = json.loads((output / "prediction.json").read_text(encoding="utf-8"))
+    for role in ("prefill", "decode"):
+        state = report["state_cache"][role]
+        assert (state["source"], state["bytes_per_request"]) == ("inferred", 61046784)
 
 
 @pytest.mark.parametrize("config_path", _PREDICT_CASES, ids=lambda path: path.stem)

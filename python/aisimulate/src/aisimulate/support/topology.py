@@ -247,7 +247,14 @@ def _assess(
     grouped = resolved.get("cache_layout") == "grouped"
     no_grouped_cache_budget = grouped and known >= hardware.memory_budget_bytes
     complete_memory_estimate = resolved.keys() >= set(_NON_KV_BYTES)
-    if grouped and draft.profile is not None and complete_memory_estimate and known < hardware.memory_budget_bytes:
+    version_ready = selected.identity.framework_version is not None
+    if (
+        grouped
+        and draft.profile is not None
+        and complete_memory_estimate
+        and version_ready
+        and known < hardware.memory_budget_bytes
+    ):
         try:
             from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
@@ -286,7 +293,9 @@ def _assess(
     elif "kv_bytes_per_token" in resolved:
         known += resolved["kv_bytes_per_token"] * (request.search.context_length + 1)
     complete_resources = (
-        draft.profile is not None and complete_memory_estimate if grouped else resolved.keys() >= _RANK_BYTES
+        draft.profile is not None and complete_memory_estimate and version_ready
+        if grouped
+        else resolved.keys() >= _RANK_BYTES
     )
     estimated = known if complete_resources else None
     if known > hardware.memory_budget_bytes or no_grouped_cache_budget:

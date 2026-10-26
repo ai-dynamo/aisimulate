@@ -12,13 +12,15 @@ use crate::engine::KvEventData;
 use crate::engine::common::protocols::{
     DirectRequest, EngineType, KvEventPublishers, MockEngineArgs, PrefillCost, SchedulingPolicy,
 };
-use crate::engine::kv_manager::{G1Manager, NativeAllocation};
+use crate::engine::kv_manager::{DestinationReservationMode, G1Manager, NativeAllocation};
 use crate::engine::scheduler::vllm::request::RequestKvState;
 use crate::engine::scheduler::vllm::{RequestStatus, VllmCore};
 
 use super::{
-    AdmissionDecision, WaitingAdmissionConfig, apply_mtp_prefix_recompute, apply_prefix_recompute,
-    decide_waiting_admission, should_reject_for_model_len,
+    AdmissionDecision, DestinationAdmissionConfig, DestinationAdmissionDecision, PolicySequence,
+    WaitingAdmissionConfig, apply_mtp_prefix_recompute, apply_prefix_recompute,
+    decide_destination_admission, decide_waiting_admission, decide_waiting_admission_with_cost,
+    should_reject_for_model_len,
 };
 
 mod vllm {
@@ -392,6 +394,98 @@ mod vllm {
             &manager,
         );
         assert!(matches!(decision, AdmissionDecision::Wait));
+    }
+
+    #[test]
+    fn vllm_admission_never_evaluates_handoff_headroom() {
+        let manager = kv_manager(4);
+        let sequence = native_sequence(Uuid::from_u128(780), 0..4, 4, false);
+        let headroom =
+            || -> usize { unreachable!("vLLM admission must not read handoff headroom") };
+
+        let waiting = decide_waiting_admission_with_cost(
+            WaitingAdmissionConfig {
+                policy: SchedulingPolicy::Vllm,
+                num_gpu_blocks: 4,
+                block_size: 4,
+                mtp_enabled: false,
+            },
+            &sequence,
+            true,
+            std::iter::empty(),
+            &manager,
+            0,
+            0,
+            headroom,
+            sequence.prefill_cost(&manager),
+        );
+        assert!(matches!(waiting, AdmissionDecision::Admit { .. }));
+
+        let destination = decide_destination_admission(
+            DestinationAdmissionConfig {
+                policy: SchedulingPolicy::Vllm,
+                num_gpu_blocks: 4,
+                block_size: 4,
+            },
+            sequence.to_completion_blocks(),
+            std::iter::empty::<&RequestKvState>(),
+            &manager,
+            headroom,
+        );
+        assert!(matches!(
+            destination,
+            DestinationAdmissionDecision::Reserve {
+                mode: DestinationReservationMode::ReuseResidentPrefix
+            }
+        ));
+    }
+
+    #[test]
+    fn trtllm_admission_subtracts_handoff_headroom() {
+        // Four free blocks; the candidate needs two through completion.
+        let manager = kv_manager(4);
+        let sequence = native_sequence(Uuid::from_u128(781), 0..4, 4, false);
+        let waiting = |headroom: usize| {
+            decide_waiting_admission_with_cost(
+                WaitingAdmissionConfig {
+                    policy: SchedulingPolicy::TrtllmGuaranteedNoEvict,
+                    num_gpu_blocks: 4,
+                    block_size: 4,
+                    mtp_enabled: false,
+                },
+                &sequence,
+                true,
+                std::iter::empty(),
+                &manager,
+                0,
+                0,
+                || headroom,
+                sequence.prefill_cost(&manager),
+            )
+        };
+        assert!(matches!(waiting(2), AdmissionDecision::Admit { .. }));
+        assert!(matches!(waiting(3), AdmissionDecision::Wait));
+
+        let destination = |headroom: usize| {
+            decide_destination_admission(
+                DestinationAdmissionConfig {
+                    policy: SchedulingPolicy::TrtllmGuaranteedNoEvict,
+                    num_gpu_blocks: 4,
+                    block_size: 4,
+                },
+                sequence.to_completion_blocks(),
+                std::iter::empty::<&RequestKvState>(),
+                &manager,
+                || headroom,
+            )
+        };
+        assert!(matches!(
+            destination(2),
+            DestinationAdmissionDecision::Reserve {
+                mode: DestinationReservationMode::FreshOnly
+            }
+        ));
+        assert!(matches!(destination(3), DestinationAdmissionDecision::Wait));
     }
 
     #[test]
@@ -881,12 +975,14 @@ mod vllm {
 
         let mut collector = crate::engine::trace::TraceCollector::default();
         let pass = core.execute_pass(&mut collector, 0.0);
-
-        assert_eq!(pass.output_signals.len(), 3);
+        assert_eq!(pass.output_signals.len(), 1);
+        assert!(!pass.output_signals[0].completed);
+        let pass = core.execute_pass(&mut collector, pass.end_ms);
+        assert_eq!(pass.output_signals.len(), 2);
         assert!(
             pass.output_signals
                 .iter()
-                .take(2)
+                .take(1)
                 .all(|signal| !signal.completed)
         );
         let terminal = pass.output_signals.last().unwrap();
@@ -940,6 +1036,9 @@ mod trtllm {
             output_token_ids: None,
             uuid: Some(uuid),
             arrival_timestamp_ms: None,
+            session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
     }
 

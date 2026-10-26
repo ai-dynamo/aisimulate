@@ -31,6 +31,8 @@ The overview and model picker include only models with successful AISim
 predictions under the active filters. Mixed-success models retain their failed
 operating points. The Models card counts visible models; overall predictor
 accuracy and coverage retain the full evaluated cohort, including hidden models.
+The overview summary shows model, predictor-point, and GPU counts plus overall
+accuracy; configuration evidence does not add separate summary cards.
 The operating-point table keeps each predictor beside its latency errors and
 shows configuration evidence (`verified` or `estimated`) plus separate replay
 and AIC statuses. Run links and chart metrics are also exported for the resolved
@@ -94,6 +96,38 @@ AISim point. Re-export from the original prediction records to populate these
 charts; rebuilding the UI around a normalized-only summary cannot restore them.
 Gym imports without matching branch-qualified producer evidence remain historical
 snapshots and must not be labeled as newly evaluated public branch results.
+
+HF input validation rejects duplicate benchmark IDs, including identical records,
+before writing campaign inputs. Declared observation counts cannot hide deduplication.
+
+## MTP decoding
+
+HF campaigns use `hf-current-view-config-v2` to include STP and MTP. Historical
+HF v1 campaigns remain STP-only. Reviewed full-row bindings preserve existing
+launcher/runtime evidence and DB-wide server-log reuse counts. New or changed
+observations without an acceptance-window binding remain explicitly unresolved;
+a benchmark endpoint alone does not prove that a log belongs to one workload.
+
+DB-backed campaigns use `gym-resolved-config-v3` to include NVIDIA single-turn MTP
+measurements alongside STP. **Decoding: All / STP / MTP** filters both views,
+recomputes point-level MAPE and coverage, and persists as `?spec=mtp` or
+`?spec=none`. Older snapshots remain readable; they need a new evaluation to
+populate MTP curves. Both publication and browser validation accept the v3 policy,
+including campaigns with `source_unresolved` exclusions. Publishing this UI alone
+does not generate predictions.
+
+MTP topology labels identify speculative decoding. The point configuration shows
+`mtp_depth`, `mtp_accepted_draft_tokens` (excluding the base token), and
+`mtp_acceptance_source`: observed counters, estimated logged interval means, or
+explicit synthetic acceptance. Rounded interval means require estimated mode.
+Synthetic acceptance is a configured workload assumption, not observed acceptance.
+The legacy AIC estimate adapter is marked unsupported for MTP; its unavailable
+values do not enter MAPE. AISim uses op-level target verification and draft timing.
+
+Missing acceptance, ambiguous/shared logs, unsupported models, and replay errors
+remain in campaign accounting. Unresolved inputs are excluded from charts and
+reported under **About this comparison**; evaluated replay failures remain gaps.
+Acceptance is never inferred from latency or replaced with a verification threshold.
 
 ## Local research results
 
@@ -257,32 +291,40 @@ checkout and committed snapshots unchanged.
 
 ### Measurement and prediction policy
 
-- Each pipeline resolves the newest published `db-dump/YYYY-MM-DD` release once,
-  excluding drafts, prereleases, and unrelated releases. It verifies `SHA256SUMS`
-  against GitHub's asset digest and requires every dump part to match the checksum
-  list. Missing or inconsistent assets fail the run instead of using older data.
-- All branches download the same resolved `e2e-accuracy-dataset` manifest artifact,
-  retained for 90 days. The campaign records its release tag and manifest hash.
-  Rerunning only failed jobs reuses that manifest; rerunning the whole workflow
-  resolves latest again. No new GPU measurements are collected.
-- `.github/e2e-accuracy-dataset.json` remains a pinned local reproduction fixture
-  and supplies the selection policy, maximum measurement age, and minimum disk
-  space. CI replaces its release and parts with the resolved snapshot and requires
-  at least the compressed dump size plus 10 GB of free disk space.
-- The downloader verifies every part and retries a failed part up to three total
-  attempts without redownloading verified parts. It decompresses the public PostgreSQL archive,
-  and reads only `configs`, `benchmark_results`, and `workflow_runs` via COPY text.
-  It never executes SQL from the dump. The September 14 release downloads about
-  25 GB and requires at least 35 GB of free temporary disk. Decompression streams
-  directly into the serial `pg_restore` reader, avoiding an expanded dump on disk.
-  The extracted measurement tables are shared through a seven-day Actions artifact
-  so the four prediction jobs do not repeat the large download and decompression.
-  Dump archives and child logs stay on the runner. Raw tables never reach Pages.
-- Policy `gym-resolved-config-v2` applies gym's source filters, row deduplication,
-  image coherence, and 180-day configuration freshness window. It includes P/D
-  and multinode measurements. Every source row is selected or counted as excluded.
-  Historical `latest-complete-config-run-v1` artifacts retain their original
-  30-day, successful-run, single-node policy; they are never relabeled as v2.
+- Each pipeline resolves private `ai-dynamo/aisim-infx-cache` main to a full HF
+  commit once, using the `HF_READ_AISIM_INFX_CACHE` Actions secret. All branches
+  reuse its 90-day `e2e-accuracy-dataset` manifest artifact. Failed-job retries
+  reuse that pin; a complete rerun resolves main again. The upstream cache is
+  refreshed weekly by the separate GitLab worker. No GPU measurements are collected.
+- `.github/e2e-accuracy-dataset.json` is a pinned local reproduction fixture and
+  supplies the selection policy and maximum measurement age. The HF reader fetches
+  `catalog/e2e/inferencex.json`, its verified snapshot manifest and only the listed
+  observation Parquet files. It validates byte hashes, sizes, schemas, row counts
+  and record identities. Raw API archives and metric Parquet files are not needed.
+- Policy `hf-current-view-config-v2` explicitly identifies the API current-view
+  cohort. It uses the existing source filters, row deduplication, image coherence
+  and 180-day configuration freshness rules, including P/D and multinode rows.
+  It is not the historical dump cohort; aggregate changes across this boundary
+  do not establish prediction improvements or regressions.
+- API rows lack upstream database configuration IDs. The adapter derives stable
+  local `hf:<sha256>` identities from the recorded configuration fields. These
+  IDs never stand in for upstream IDs when matching archived runtime evidence.
+  Producer lookups retry connection failures and HTTP 5xx up to three attempts,
+  with 1s/2s backoff. HTTP 403/429 retries require a valid `Retry-After` of at most
+  60s and honor that delay; other authorization failures fail immediately.
+  Exact producer run/attempt URLs are resolved through GitHub's attempt API for
+  their immutable source SHA. Missing/deleted provenance remains unresolved and
+  subject to normal source exclusions; curve-owner IDs and latest attempts are
+  never substituted. The reader does not call the live InferenceX data API.
+- Each branch prepares local `tables.json` once for its four prediction shards.
+  Measurements, shard results, checkpoints and preview evidence are encrypted
+  with authenticated AES-256-GCM before upload to this public repository, retained
+  for seven days and decrypted only in consuming jobs. See the
+  [artifact recovery instructions](../../docs/ci/accuracy.md#e2e-accuracy-campaigns).
+  HF downloads and plaintext inputs remain in runner temporary storage.
+- Historical `gym-resolved-config-v2` and `latest-complete-config-run-v1` artifacts
+  keep their original policies. The old dump reader remains available for local
+  reproduction of schema-v1 manifests; scheduled CI uses schema v2 and HF only.
 - The repository-only [source resolver](../../scripts/e2e_accuracy/source/README.md)
   joins immutable workflow revisions, reads pinned launchers without executing
   them, verifies reviewed framework defaults, and resolves checkpoint metadata.
@@ -310,7 +352,7 @@ checkout and committed snapshots unchanged.
   killed/timed-out workers, or no successful replay fail qualification.
 - Full resolved inputs stay in each runner's evidence directory (also retained
   for previews). Completed outcomes are flushed to `results.jsonl` immediately
-  and uploaded as internal checkpoints even on failure. Complete shard bundles
+  and uploaded as encrypted checkpoints even on failure. Complete shard bundles
   retain per-point metrics and provenance for aggregation. These Actions artifacts
   are not Pages publication inputs; no generated results are committed.
 - For a sharded campaign, `cohort_sha256` hashes the ordered list of the four
@@ -609,8 +651,11 @@ change predictions, cohort selection, or accuracy metrics.
   panel. Cancelled or skipped qualification jobs do not report update failures.
 - Models with successful AISim predictions stay selectable when all their points
   are excluded from MAPE. Verified and estimated configuration MAPE remain separate
-  and follow the current filters.
+  in exported data; evidence labels appear in operating-point details.
 - Chart points support keyboard activation. Shift+Enter on a legend button isolates
   that series; ordinary activation toggles it. Charts expose their interactive points
   to assistive technology.
 - Pages CI runs the E2E Chromium smoke test alongside the FPE and FPM checks.
+
+The browser smoke check verifies that MTP summary values survive a page reload,
+as well as the selected filter.

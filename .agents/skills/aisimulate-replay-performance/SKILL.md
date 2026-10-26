@@ -37,10 +37,12 @@ to AISimulate-owned engine replay; route Dynamo-owned runtime work to its own wo
   deterministic same-timestamp order, and stable ties. Preserve ownership, capacity,
   eviction, preemption, and handoff semantics. Do not drop, duplicate, or leave work
   incomplete to improve a timing result.
-- Preserve transactional state transitions. Establish rollback before the first mutation,
-  including mutations in lookups or matching helpers. A failed operation must restore
-  all affected state and permit a correct retry. Publish events only at commit and
-  preserve commit order; rollback must not leave externally visible events.
+- Keep engine commands atomic. A command error is a recoverable rejection, so establish
+  atomicity before the first mutation, including mutations in lookups or matching helpers;
+  a failed command must leave no state change or visible event and permit a correct retry.
+  Passes, pass completion and internal work are fail-stop: `GeneralizedMockerEngine`
+  poisons itself on any such error, even at DP=1, so do not add rollback for them without
+  a demonstrated semantic need. Publish events in commit order.
 - Define mutation isolation when sharing state. Keep validation at public boundaries;
   internal reuse requires established invariants. Preserve diagnostics and error behavior.
   When output or lifecycle behavior can change, read the existing

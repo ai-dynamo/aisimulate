@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, VecDeque};
@@ -86,6 +89,7 @@ impl QueueUntilWorkerPlacement {
                 scheduler_id,
                 reported_overlap_tokens: 0,
                 cache_sample: None,
+                kv_hints: None,
                 placement_replica_id: None,
             })
             .collect()
@@ -110,6 +114,7 @@ impl PlacementPolicy<ReplayRequestPayload> for QueueUntilWorkerPlacement {
                 scheduler_id,
                 reported_overlap_tokens: 0,
                 cache_sample: None,
+                kv_hints: None,
                 placement_replica_id: None,
             }),
             None => {
@@ -259,17 +264,20 @@ impl TestDisaggConfig {
             kv_eviction_policy: crate::engine::KvEvictionPolicy::Lru,
             dp_size: 1,
             tensor_parallel_size: 1,
+            prefill_context_parallel_size: 1,
             num_gpu_blocks_is_explicit: None,
             rank: MockEngineArgs::default(),
             prefill: Some(ReplayRoleConfig {
                 dp_size: self.prefill_dp_size,
                 tensor_parallel_size: 1,
+                prefill_context_parallel_size: 1,
                 num_gpu_blocks_is_explicit: None,
                 rank: self.prefill_args.clone(),
             }),
             decode: Some(ReplayRoleConfig {
                 dp_size: self.decode_dp_size,
                 tensor_parallel_size: 1,
+                prefill_context_parallel_size: 1,
                 num_gpu_blocks_is_explicit: None,
                 rank: self.decode_args.clone(),
             }),
@@ -437,6 +445,30 @@ fn trtllm_disaggregation_runs_source_first_handoff_to_completion() {
     assert!(conformance.destination_drained);
 }
 
+#[test]
+fn sglang_destination_stores_nothing_before_running_admission() {
+    let mut config = sglang_disagg_config();
+    config.num_prefill_workers = 1;
+    config.num_decode_workers = 1;
+    let runtime =
+        new_handoff_conformance(&config, VecDeque::from([request(1, 128, 2, 0.0)])).unwrap();
+
+    let conformance = runtime.run_handoff_conformance(EngineType::Sglang).unwrap();
+
+    assert_eq!(conformance.order, HandoffOrder::DestinationFirst);
+    assert_eq!(
+        conformance.lifecycle,
+        crate::replay::expected_normalized_handoff(HandoffOrder::DestinationFirst)
+    );
+    assert_eq!(
+        conformance.destination_stored,
+        crate::replay::NormalizedStoredTiming::default()
+    );
+    assert_eq!(conformance.completed_requests, 1);
+    assert!(conformance.source_drained);
+    assert!(conformance.destination_drained);
+}
+
 fn request(
     uuid: u128,
     prompt_tokens: usize,
@@ -465,6 +497,7 @@ fn simultaneous_handoffs_follow_arrival_order_across_replays() {
                 0.0,
                 None,
                 None,
+                false,
                 &mut collector,
             )
             .unwrap();
@@ -2215,6 +2248,44 @@ fn handoff_delay_is_applied_once_to_decode_visible_ttft() {
 }
 
 #[test]
+fn prefill_bandwidth_without_transfer_bytes_is_rejected() {
+    let mut config = disagg_config_with_handoff_delay();
+    config.prefill_args.kv_transfer_bytes_per_token = None;
+    let error = config
+        .runtime_config(false)
+        .err()
+        .expect("missing transfer bytes");
+    assert!(
+        error
+            .to_string()
+            .contains("kv_transfer_bandwidth requires kv_transfer_bytes_per_token"),
+        "{error}"
+    );
+}
+
+#[test]
+fn state_cache_handoff_adds_one_state_copy_to_transfer_time() {
+    let handoff_ms = |state: bool| {
+        let mut config = disagg_config_with_handoff_delay();
+        config.num_prefill_workers = 1;
+        config.num_decode_workers = 1;
+        if state {
+            for args in [&mut config.prefill_args, &mut config.decode_args] {
+                args.kv_cache_bytes_per_token = Some(1_000_000);
+                args.state_cache = Some(crate::engine::StateCacheConfig {
+                    bytes_per_request: 8_000_000,
+                });
+            }
+        }
+        let (_, stats) = run_trace_collect(&config, vec![request(1, 128, 2, 0.0)], None, 1.0);
+        stats.handoff_ms[&Uuid::from_u128(1)]
+    };
+    // One 8 MB state at 1 GB/s on top of 128 tokens x 1 MB.
+    let delta = handoff_ms(true) - handoff_ms(false);
+    assert!((delta - 8.0).abs() < 1e-6, "delta={delta}");
+}
+
+#[test]
 fn destination_missing_timing_uses_isolated_destination_cache_state() {
     for engine_type in [EngineType::Vllm, EngineType::Sglang] {
         for (seed_tokens, measured_tokens, expected_missing_ms) in [
@@ -3078,7 +3149,7 @@ mod agentic_pd_qualification {
 
     fn prepared(graph: AgenticTrace, lanes: usize) -> PreparedAgenticSnapshots {
         let prepared = graph
-            .prepare_snapshots(lanes, AgenticSnapshotOptions { seed: 42 })
+            .prepare_snapshots(lanes, AgenticSnapshotOptions::seeded(42))
             .unwrap();
         PreparedAgenticSnapshots::from_plays(
             (0..lanes)

@@ -27,6 +27,7 @@ CORE_SDK_LEAF_MODULES = [
     "backends.sglang_backend",
     "backends.trtllm_backend",
     "backends.vllm_backend",
+    "backends.vllm_backend_xpu",
     "common",
     "deepseek_v41",
     "config",
@@ -38,10 +39,14 @@ CORE_SDK_LEAF_MODULES = [
     "fpm_config",
     "fpm_dataset",
     "fpm_identity",
+    "fpm_learned",
     "fpm_model_metadata",
+    "glm53flash",
     "inference_summary",
-    "memory",
-    "state_memory",
+    "memory.deepseek_v4",
+    "memory.kimi_k3",
+    "memory.kv_cache",
+    "memory.state",
     "models.base",
     "models.blocks.moe",
     "models.blocks.vit",
@@ -50,12 +55,14 @@ CORE_SDK_LEAF_MODULES = [
     "models.deepseek_v4",
     "models.deepseek_v41",
     "models.gemma4",
+    "models.glm53flash",
     "models.gpt",
     "models.helpers",
     "models.hybrid_moe",
     "models.kimi_k3",
     "models.llama",
     "models.minimax_m3",
+    "models.mistral3",
     "models.moe",
     "models.muse_glimmer",
     "models.nemotron_h",
@@ -80,7 +87,6 @@ CORE_SDK_LEAF_MODULES = [
     "operations.moe_comm",
     "operations.msa",
     "operations.overlap",
-    "operations.prefill_graph",
     "operations.util_empirical",
     "perf_database",
     # perf_interp.* retired with the Python per-call query stack (#1357 PR-5):
@@ -266,7 +272,7 @@ def test_fpm_profile_alias_instances_load_and_compile(namespace: str, tmp_path: 
     assert compiled
 
 
-@pytest.mark.parametrize("package_suffix", ["models", "operations", "speculation"])
+@pytest.mark.parametrize("package_suffix", ["memory", "models", "operations", "speculation"])
 def test_legacy_package_reexports_canonical_public_surface(package_suffix: str) -> None:
     """Package facades preserve child wrappers and export canonical objects."""
     legacy_package = importlib.import_module(f"aisimulate.sdk.{package_suffix}")
@@ -300,6 +306,17 @@ def test_legacy_package_patch_updates_canonical_package(package_suffix: str, att
         assert getattr(canonical_package, attribute) is mocked
 
     assert getattr(canonical_package, attribute) is not mocked
+
+
+@pytest.mark.parametrize("namespace", ["aisimulate.sdk", "aisimulate_core.sdk"])
+def test_memory_package_patch_reaches_kv_cache(namespace: str) -> None:
+    """Patching a KV-capacity name on the package must reach kv_cache's callers."""
+    kv_cache = importlib.import_module("aisimulate_core.sdk.memory.kv_cache")
+
+    with patch(f"{namespace}.memory.get_model") as mocked:
+        assert kv_cache.get_model is mocked
+
+    assert kv_cache.get_model is not mocked
 
 
 def test_operations_baseline_exports_survive() -> None:

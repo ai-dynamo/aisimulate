@@ -126,6 +126,10 @@ def validate_saved_plan(payload: dict[str, Any]) -> None:
             canonical["fpm_profile"] = payload["fpm_profile"]
         if "runtime_memory_policy" in payload:
             canonical["runtime_memory_policy"] = payload["runtime_memory_policy"]
+        if "runtime_backend_version" in payload:
+            canonical["runtime_backend_version"] = payload["runtime_backend_version"]
+        if "backend_version" in payload:
+            canonical["backend_version"] = payload["backend_version"]
         if "runtime_observation" in payload:
             canonical["runtime_observation"] = payload["runtime_observation"]
         for item in payload["cells"]:
@@ -171,6 +175,8 @@ class SavedCollectionIdentity:
     options: _SavedOptions
     capability: _SavedCapability
     cells: tuple[FPMCell, ...]
+    backend_version: str | None = None
+    runtime_backend_version: str | None = None
 
 
 def saved_plan_identity(payload: dict[str, Any]) -> SavedCollectionIdentity:
@@ -189,6 +195,8 @@ def saved_plan_identity(payload: dict[str, Any]) -> SavedCollectionIdentity:
         system=payload["system"],
         sha256=payload["sha256"],
         generator_config_sha256=payload["generator_config_sha256"],
+        backend_version=payload.get("backend_version"),
+        runtime_backend_version=payload.get("runtime_backend_version"),
         options=_SavedOptions(
             warmup_iterations=payload["options"]["global_warmup_iterations"],
             benchmark_points_json=json.dumps(points["payload"]) if points is not None else None,
@@ -632,9 +640,14 @@ def resolve_runtime_resources(
             "cell_id": cell.cell_id,
             "plan_sha256": expected_plan_sha256,
             "attempt_id": expected_attempt_id,
-            "runtime": {"backend": "vllm", "backend_version": expected_backend_version},
         }
-        if provenance != expected_provenance or payload.get("collector_provenance") != provenance:
+        runtime = provenance.get("runtime", {})
+        if (
+            any(provenance.get(key) != value for key, value in expected_provenance.items())
+            or runtime.get("backend") != "vllm"
+            or runtime.get("backend_version") != expected_backend_version
+            or payload.get("collector_provenance") != provenance
+        ):
             raise ValueError(f"runtime memory evidence belongs to a different plan, attempt, cell, or runtime: {path}")
         if payload.get("backend_version") != expected_backend_version:
             raise ValueError(f"runtime memory backend version mismatch: {path}")

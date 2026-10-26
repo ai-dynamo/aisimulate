@@ -5,6 +5,11 @@ This tool measures the CPU time for
 with its merge base on the same worker. The check is advisory: regressions make
 the check red, but repository rules do not require it.
 
+Derived reports use `comparison.json` schema version 2: the unused
+`cells[].skipped` field and the `comparison.csv` column `skip_reason` were
+removed. The raw-results schema and worker protocol are unchanged. Legacy
+raw records with a `skip_reason` still produce an invalid comparison.
+
 The workflow starts on every trusted `pull-request/*` push. A small
 GitHub-hosted selection job checks the complete PR change set against
 `scripts/performance/select_forward_perf.py` before starting the benchmark runner. This

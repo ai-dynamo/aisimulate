@@ -130,6 +130,11 @@ impl G1Manager {
         self.inner.requires_write_preparation()
     }
 
+    /// Blocks one recurrent state occupies; zero without a state cache.
+    pub(crate) fn state_blocks_per_request(&self) -> usize {
+        self.inner.state_cache_blocks()
+    }
+
     pub(crate) fn begin_step(&mut self) {
         self.inner.begin_step();
     }

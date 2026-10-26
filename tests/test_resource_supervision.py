@@ -660,6 +660,112 @@ if __name__ == "__main__":
     assert json.loads(result.stdout) == {"feasible": 1, "status": "completed"}
 
 
+def test_supervised_recommendation_joins_publisher_before_final_writer(tmp_path):
+    import subprocess
+
+    events = tmp_path / "lifecycle-events.txt"
+    output = tmp_path / "output"
+    script = tmp_path / "lifecycle.py"
+    script.write_text("""
+import sys
+import threading
+from pathlib import Path
+
+import yaml
+
+from aisimulate.config import CoreRecommendationConfig
+from aisimulate.output_adapter import (
+    OUTPUT_ADAPTER_API_VERSION,
+    RecommendationOutputCallbacks,
+    write_output_adapters,
+)
+from aisimulate.runner import EngineReplayRunnerFactory
+from aisimulate.supervision import supervised_recommendation
+
+
+class LifecycleProbeAdapter:
+    name = "lifecycle-probe"
+    api_version = OUTPUT_ADAPTER_API_VERSION
+
+    @staticmethod
+    def append(path, event):
+        with Path(path).open("a", encoding="utf-8") as target:
+            target.write(event + "\\n")
+
+    def subscribe(self, config):
+        events = config["events"]
+        stop = threading.Event()
+        publisher = threading.Thread(target=stop.wait, args=(10,), daemon=False)
+        publisher.start()
+        self.append(events, "publisher_started")
+
+        def finish(event):
+            self.append(events, event)
+            stop.set()
+            publisher.join(timeout=2)
+            if publisher.is_alive():
+                raise RuntimeError("publisher did not stop")
+            self.append(events, "publisher_joined")
+
+        return RecommendationOutputCallbacks(
+            on_complete=lambda: finish("complete"),
+            on_failure=lambda error: finish("failure"),
+        )
+
+    def write(self, config, *, result, output_dir):
+        del result
+        events = Path(config["events"])
+        if events.read_text(encoding="utf-8").splitlines()[-1] != "publisher_joined":
+            raise RuntimeError("final writer ran before publisher shutdown")
+        self.append(events, "final_write")
+        artifact = Path("lifecycle-probe.txt")
+        (output_dir / artifact).write_text("complete\\n", encoding="utf-8")
+        return [artifact]
+
+
+if __name__ == "__main__":
+    events = Path(sys.argv[1])
+    output = Path(sys.argv[2])
+    output.mkdir()
+    path = Path("tests/e2e/configs/unified_cli/recommend/engine/01-default-preset-throughput.yaml")
+    raw = yaml.safe_load(path.read_text())
+    raw["optimizer"].update(max_trials=1, parallelism=1)
+    config = CoreRecommendationConfig.model_validate(raw)
+    output_configs = {"lifecycle-probe": {"events": str(events)}}
+    result = supervised_recommendation(
+        config,
+        {
+            "stack": "engine",
+            "runner_factory": EngineReplayRunnerFactory(),
+            "output_configs": output_configs,
+            "output_adapters": {"lifecycle-probe": LifecycleProbeAdapter()},
+            "show_progress": False,
+        },
+    )
+    write_output_adapters(
+        {"lifecycle-probe": LifecycleProbeAdapter()},
+        output_configs,
+        result=result,
+        output_dir=output,
+    )
+""")
+
+    result = subprocess.run(
+        [sys.executable, str(script), str(events), str(output)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert events.read_text(encoding="utf-8").splitlines() == [
+        "publisher_started",
+        "complete",
+        "publisher_joined",
+        "final_write",
+    ]
+
+
 def test_supervisor_argument_and_output_setup_do_not_import_runtime():
     import subprocess
 
@@ -683,3 +789,142 @@ assert loaded_core <= allowed_core, loaded_core - allowed_core
         check=True,
         timeout=15,
     )
+
+
+_TINY_MODEL = Path(__file__).parent / "e2e/configs/unified_cli/fixtures/tiny-model"
+
+
+def _small_cli_config(tmp_path, command):
+    raw = {
+        "engine": {
+            "mode": "aggregated",
+            "model": str(_TINY_MODEL),
+            "hardware": "h200_sxm",
+            "context_length": 1024,
+            "workers": {
+                "aggregated": {
+                    "kv_cache": {"capacity": {"type": "fixed", "blocks": 128}},
+                    "timing": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1},
+                }
+            },
+        },
+        "traffic": {
+            "source": {"type": "synthetic", "input_tokens": 8, "output_tokens": 2},
+            "load": {"type": "concurrency", "concurrency": 2},
+            "stop": {"requests": 4},
+        },
+    }
+    if command == "recommend":
+        raw["optimization"] = {"target": "throughput", "constraints": {"max_candidate_gpus": 1}}
+        raw["optimizer"] = {"algorithm": "random", "max_trials": 1, "parallelism": 1, "seed": 1}
+    config = tmp_path / f"{command}.yaml"
+    config.write_text(yaml.safe_dump(raw))
+    return config
+
+
+def _output_bytes(output):
+    return {str(path.relative_to(output)): path.read_bytes() for path in output.rglob("*") if path.is_file()}
+
+
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+@pytest.mark.parametrize(
+    "extra,error",
+    [
+        (["--set", "foo.bar=1"], "unknown top-level section 'foo'"),
+        (["--set", "foo=1"], "unknown top-level section 'foo'"),
+        (["--set", "trafic.stop.requests=2"], "unknown top-level section 'trafic' (did you mean 'traffic'?)"),
+        (["--stack", "missing-stack"], "missing-stack"),
+    ],
+)
+def test_invalid_rerun_with_overwrite_keeps_previous_results_byte_identical(tmp_path, command, extra, error):
+    import subprocess
+
+    config = _small_cli_config(tmp_path, command)
+    output = tmp_path / "output"
+    base = [sys.executable, "-m", "aisimulate", command, "--config", str(config), "--output-dir", str(output)]
+    first = subprocess.run([*base, "--format", "json"], capture_output=True, text=True, timeout=60)
+    assert first.returncode == 0, first.stderr
+    (output / "notes.txt").write_text("unrelated file")
+    before = _output_bytes(output)
+    expected = "prediction.json" if command == "predict" else "recommendations/0001.yaml"
+    assert expected in before
+    assert "execution-events.jsonl" in before
+
+    rerun = subprocess.run([*base, *extra, "--overwrite"], capture_output=True, text=True, timeout=60)
+    assert rerun.returncode == 2, rerun.stderr
+    assert _output_bytes(output) == before
+    assert error in rerun.stderr
+
+
+def test_invalid_predict_rerun_with_recommendation_section_keeps_previous_results(tmp_path):
+    # _require_known_sections skips recommendation-only sections and leaves the
+    # predict restriction to split_config_sections, which must still run before the clear.
+    import subprocess
+
+    config = _small_cli_config(tmp_path, "predict")
+    output = tmp_path / "output"
+    base = [sys.executable, "-m", "aisimulate", "predict", "--config", str(config), "--output-dir", str(output)]
+    first = subprocess.run([*base, "--format", "json"], capture_output=True, text=True, timeout=60)
+    assert first.returncode == 0, first.stderr
+    before = _output_bytes(output)
+    assert "prediction.json" in before
+
+    raw = yaml.safe_load(config.read_text())
+    raw["optimization"] = {"target": "throughput"}
+    config.write_text(yaml.safe_dump(raw))
+
+    rerun = subprocess.run([*base, "--overwrite"], capture_output=True, text=True, timeout=60)
+    assert rerun.returncode == 2, rerun.stderr
+    assert _output_bytes(output) == before
+    assert "predict does not accept ['optimization']" in rerun.stderr
+
+
+def test_unavailable_output_adapter_with_overwrite_keeps_previous_results(tmp_path):
+    import subprocess
+
+    config = tmp_path / "recommend.yaml"
+    raw = yaml.safe_load(_small_cli_config(tmp_path, "recommend").read_text())
+    raw["artifact"] = {"name": "example"}
+    config.write_text(yaml.safe_dump(raw))
+    output = tmp_path / "output"
+    (output / "recommendations").mkdir(parents=True)
+    original = {
+        "recommendation.json": b"old result",
+        "recommendation.csv": b"old candidates",
+        "execution-events.jsonl": b"old events\n",
+        "recommendations/0001.yaml": b"old config",
+    }
+    for filename, contents in original.items():
+        (output / filename).write_bytes(contents)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "aisimulate",
+            "recommend",
+            "--config",
+            str(config),
+            "--output",
+            "artifact",
+            "--output-dir",
+            str(output),
+            "--overwrite",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 2, result.stderr
+    assert "output adapter 'artifact' is unavailable" in result.stderr
+    assert _output_bytes(output) == original
+
+
+def test_supervisor_entry_point_groups_match_their_resolvers():
+    from aisimulate import supervision
+    from aisimulate.output_adapter import OUTPUT_ADAPTER_ENTRY_POINT_GROUP
+    from aisimulate.stack import RUNNER_FACTORY_ENTRY_POINT_GROUP, resolve_runner_factory
+
+    assert supervision._STACK_GROUP == RUNNER_FACTORY_ENTRY_POINT_GROUP
+    assert supervision._OUTPUT_ADAPTER_GROUP == OUTPUT_ADAPTER_ENTRY_POINT_GROUP
+    for stack in supervision._BUILTIN_STACKS:
+        resolve_runner_factory(stack, entry_points=[])

@@ -55,9 +55,11 @@ areas:
       - python/aisimulate/src/aisimulate/traffic.py
       - tests/test_cli_config.py
       - tests/test_epd_cli.py
+      - tests/test_vl_cli.py
       - examples/cli/
       - tests/test_stack_discovery.py
       - tests/test_output_adapter_discovery.py
+      - tests/test_output_adapter_context.py
       - tests/test_power_diagnostics.py
       - tests/test_unified_cli.py
       - tests/test_ngram_cli.py
@@ -71,6 +73,8 @@ areas:
       - tests/test_g3_offload_cli.py
       - tests/test_shared_g2_cli.py
       - tests/test_agentx_g2.py
+      - tests/test_agentx_snapshot_export.py
+      - tests/test_agentx_live_warmup.py
       - tests/test_runner.py
       - tests/test_traffic.py
       - tests/e2e/
@@ -104,6 +108,7 @@ areas:
       - tests/test_fpm_accuracy_workflow.mjs
       - tests/test_e2e_accuracy_ui.mjs
       - tests/test_e2e_accuracy_nightly.py
+      - tests/test_e2e_hf_measurements.py
       - tests/test_e2e_accuracy_workflow.mjs
       - tests/test_source_compliance.py
 
@@ -134,6 +139,10 @@ shared:
     owners: [replay, mocker, maintainers]
   - glob: .claude/skills/aisimulate-replay-performance
     owners: [replay, mocker, maintainers]
+  - glob: .agents/skills/aisimulate-agentx-gap-debug/
+    owners: [replay, forward-pass-engine, maintainers]
+  - glob: .claude/skills/aisimulate-agentx-gap-debug
+    owners: [replay, forward-pass-engine, maintainers]
   - glob: python/aisimulate/tools/simulation_perf_gate/
     owners: [replay, forward-pass-engine, infra, maintainers]
   - glob: pages/
@@ -169,6 +178,8 @@ shared:
   - glob: tests/test_e2e_accuracy_ui.mjs
     owners: [forward-pass-engine, infra, maintainers]
   - glob: tests/test_e2e_accuracy_nightly.py
+    owners: [forward-pass-engine, replay, infra, maintainers]
+  - glob: tests/test_e2e_hf_measurements.py
     owners: [forward-pass-engine, replay, infra, maintainers]
   - glob: tests/e2e_accuracy_source/
     owners: [forward-pass-engine, replay, infra, maintainers]
@@ -216,11 +227,17 @@ shared:
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_epd_cli.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_vl_cli.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: python/aisimulate/src/aisimulate/vl/
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: examples/cli/
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_stack_discovery.py
     owners: [replay, sweeper, maintainers]
   - glob: tests/test_output_adapter_discovery.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_output_adapter_context.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: python/aisimulate/src/aisimulate/resources.py
     owners: [replay, sweeper, maintainers]
@@ -267,6 +284,10 @@ shared:
   - glob: tests/test_shared_g2_cli.py
     owners: [replay, maintainers]
   - glob: tests/test_agentx_g2.py
+    owners: [replay, maintainers]
+  - glob: tests/test_agentx_snapshot_export.py
+    owners: [replay, maintainers]
+  - glob: tests/test_agentx_live_warmup.py
     owners: [replay, maintainers]
   - glob: tests/test_runner.py
     owners: [replay, maintainers]

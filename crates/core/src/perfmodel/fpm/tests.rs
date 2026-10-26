@@ -12,8 +12,9 @@ use super::model::{
 };
 use super::options::{validate_options, validate_regression_options};
 use super::{
-    ForwardPassMetrics, ForwardPassPerfModel, ForwardPassPerfOptions, ForwardPassPerfReadiness,
-    ForwardPassPerfSource, ForwardPassRegressionWorkloadKind, ForwardPassWorkerType,
+    CorrectionMode, ForwardPassMetrics, ForwardPassPerfModel, ForwardPassPerfOptions,
+    ForwardPassPerfReadiness, ForwardPassPerfSource, ForwardPassRegressionWorkloadKind,
+    ForwardPassWorkerType, LEARNED_SCHEMA_VERSION,
 };
 use crate::common::enums::{FmhaQuantMode, GemmQuantMode, KvCacheQuantMode};
 use crate::operators::op::Op;
@@ -131,8 +132,6 @@ fn fixture_engine_config() -> EngineConfig {
         forward_model: None,
         fpm_parquet_path: None,
         decoder_replay: false,
-        prefill_graph_profile: None,
-        prefill_graph_profile_id: None,
         moe_kernel_source: None,
         kv_block_size: None,
         parallel: ParallelMapping {
@@ -2454,4 +2453,768 @@ fn canonical_static_phase_diagnostics_are_available_only_for_native_models() {
             .is_err()
     );
     assert!(regression.static_phase_latency(4, 512, 4, true).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Learned (offline-trained tree ensemble) mode
+// ---------------------------------------------------------------------------
+
+/// Hand-built decode artifact: one stump on `num_decode_requests` (<= 4.5 →
+/// log(10ms), else log(20ms)) plus a constant second tree, target log_ms.
+fn learned_decode_artifact_json() -> String {
+    serde_json::json!({
+        "schema": "aic_fpm_learned_forward_perf",
+        "schema_version": 1,
+        "worker_type": "decode",
+        "target": "log_ms",
+        "features": ["num_decode_requests", "sum_decode_kv_tokens"],
+        "stores": {
+            "pure_decode": {
+                "baseline": 0.0,
+                "trees": [
+                    {"left": [1, -1, -1], "right": [2, -1, -1], "feature": [0, -1, -1],
+                     "threshold": [4.5, 0.0, 0.0],
+                     "value": [0.0, 10.0_f64.ln(), 20.0_f64.ln()],
+                     "missing_left": [true, true, true]},
+                    {"left": [-1], "right": [-1], "feature": [-1], "threshold": [0.0],
+                     "value": [0.0]}
+                ]
+            }
+        },
+        "metadata": {"trainer": "unit-test"}
+    })
+    .to_string()
+}
+
+#[test]
+fn learned_model_predicts_from_artifact_json() {
+    let model = ForwardPassPerfModel::from_learned(
+        &learned_decode_artifact_json(),
+        ForwardPassPerfOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        model.learned_feature_names().unwrap(),
+        &[
+            "num_decode_requests".to_string(),
+            "sum_decode_kv_tokens".to_string()
+        ]
+    );
+    assert_eq!(model.learned_metadata().unwrap()["trainer"], "unit-test");
+
+    let small = model
+        .estimate_forward_pass_time_ms(&[decode_fpm(2, 1000, 0.0)])
+        .unwrap()
+        .unwrap();
+    let large = model
+        .estimate_forward_pass_time_ms(&[decode_fpm(8, 1000, 0.0)])
+        .unwrap()
+        .unwrap();
+    assert_close(small, 10.0);
+    assert_close(large, 20.0);
+
+    // Empty scheduled work estimates zero, like the other modes.
+    let empty = model
+        .estimate_forward_pass_time_ms(&[ForwardPassMetrics::default()])
+        .unwrap();
+    assert_eq!(empty, Some(0.0));
+
+    let diagnostics = model.diagnostics();
+    assert_eq!(diagnostics.source, ForwardPassPerfSource::Learned);
+    assert_eq!(diagnostics.readiness, ForwardPassPerfReadiness::Ready);
+    assert_eq!(diagnostics.retained_observations, 0);
+    let stores = model.regression_store_diagnostics();
+    assert_eq!(stores.len(), 1);
+    assert_eq!(
+        stores[0].workload_kind,
+        ForwardPassRegressionWorkloadKind::PureDecode
+    );
+    assert!(stores[0].ready);
+}
+
+#[test]
+fn learned_model_multi_rank_uses_iteration_sums() {
+    let model = ForwardPassPerfModel::from_learned(
+        &learned_decode_artifact_json(),
+        ForwardPassPerfOptions::default(),
+    )
+    .unwrap();
+    // Two ranks with 3 requests each: num_decode_requests sums to 6 > 4.5.
+    let iteration = [decode_fpm(3, 500, 0.0), decode_fpm(3, 700, 0.0)];
+    let ms = model
+        .estimate_forward_pass_time_ms(&iteration)
+        .unwrap()
+        .unwrap();
+    assert_close(ms, 20.0);
+}
+
+#[test]
+fn learned_model_rejects_prefill_work_on_decode_worker() {
+    let model = ForwardPassPerfModel::from_learned(
+        &learned_decode_artifact_json(),
+        ForwardPassPerfOptions::default(),
+    )
+    .unwrap();
+    let err = model
+        .estimate_forward_pass_time_ms(&[prefill_fpm(128, 0.0)])
+        .unwrap_err();
+    assert!(matches!(err, AicError::InvalidForwardPassMetrics(_)));
+}
+
+#[test]
+fn learned_model_applies_online_correction_after_tuning() {
+    let options = ForwardPassPerfOptions {
+        min_observations: 2,
+        ..ForwardPassPerfOptions::default()
+    };
+    let mut model =
+        ForwardPassPerfModel::from_learned(&learned_decode_artifact_json(), options).unwrap();
+    // Observed 15 ms where the learned model says 10 ms → 1.5x correction.
+    model
+        .tune_with_fpms(&[
+            vec![decode_fpm(2, 1000, 0.015)],
+            vec![decode_fpm(2, 1200, 0.015)],
+        ])
+        .unwrap();
+    let corrected = model
+        .estimate_forward_pass_time_ms(&[decode_fpm(2, 1100, 0.0)])
+        .unwrap()
+        .unwrap();
+    assert_close(corrected, 15.0);
+    assert_eq!(
+        model.diagnostics().source,
+        ForwardPassPerfSource::LearnedWithCorrection
+    );
+    assert_close(model.max_correction_factor().unwrap(), 1.5);
+}
+
+#[test]
+fn learned_auto_uses_hybrid_and_explicit_modes_override_it() {
+    for mode in [
+        CorrectionMode::Auto,
+        CorrectionMode::Fixed,
+        CorrectionMode::DynamicLocal,
+        CorrectionMode::Hybrid,
+    ] {
+        let mut model = ForwardPassPerfModel::from_learned(
+            &learned_decode_artifact_json(),
+            ForwardPassPerfOptions {
+                correction_mode: mode,
+                max_batch_size: 4,
+                max_kv_tokens: 1000,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // The fixture predicts 20 ms above four requests; 30 ms feedback gives
+        // a 1.5 factor outside fixed bounds. Fixed must ignore these observations.
+        model
+            .tune_with_fpms(&vec![vec![decode_fpm(8, 1000, 0.030)]; 5])
+            .unwrap();
+        for (batch, kv, raw_ms, inside) in [
+            (4, 1000, 10.0, true),
+            (5, 1000, 20.0, false),
+            (4, 1001, 10.0, false),
+        ] {
+            let corrected =
+                mode == CorrectionMode::DynamicLocal || (!inside && mode != CorrectionMode::Fixed);
+            let expected = if corrected { raw_ms * 1.5 } else { raw_ms };
+            assert_close(
+                model
+                    .estimate_forward_pass_time_ms(&[decode_fpm(batch, kv, 0.0)])
+                    .unwrap()
+                    .unwrap(),
+                expected,
+            );
+        }
+        // Repeated tuning uses the uncorrected 10 ms base, not the already
+        // corrected prediction. Fixed/hybrid's boundary cell must settle at 5 ms.
+        for _ in 0..10 {
+            model
+                .tune_with_fpms(&[vec![decode_fpm(4, 1000, 0.005)]])
+                .unwrap();
+        }
+        if mode != CorrectionMode::DynamicLocal {
+            assert_close(
+                model
+                    .estimate_forward_pass_time_ms(&[decode_fpm(4, 1000, 0.0)])
+                    .unwrap()
+                    .unwrap(),
+                5.0,
+            );
+        }
+    }
+}
+
+#[test]
+fn native_auto_keeps_fixed_correction_and_explicit_modes_override_it() {
+    for mode in [
+        CorrectionMode::Auto,
+        CorrectionMode::Fixed,
+        CorrectionMode::DynamicLocal,
+        CorrectionMode::Hybrid,
+    ] {
+        let mut model = native_model(ForwardPassPerfOptions {
+            correction_mode: mode,
+            max_num_tokens: 10,
+            ..Default::default()
+        });
+        let query = prefill_fpm(20, 0.0);
+        let raw_ms = model
+            .estimate_forward_pass_time_ms(std::slice::from_ref(&query))
+            .unwrap()
+            .unwrap();
+        model
+            .tune_with_fpms(&vec![vec![prefill_fpm(20, raw_ms * 1.5 / 1000.0)]; 5])
+            .unwrap();
+        let expected = if matches!(mode, CorrectionMode::Auto | CorrectionMode::Fixed) {
+            raw_ms
+        } else {
+            raw_ms * 1.5
+        };
+        assert_close(
+            model
+                .estimate_forward_pass_time_ms(&[query])
+                .unwrap()
+                .unwrap(),
+            expected,
+        );
+    }
+}
+
+#[test]
+fn learned_artifact_feature_list_is_unique_and_bounded() {
+    use super::learned::{FEATURE_COUNT, feature_names};
+    let artifact = |features: Vec<String>| {
+        serde_json::json!({
+            "schema": "aic_fpm_learned_forward_perf", "schema_version": 1,
+            "worker_type": "decode", "target": "ms",
+            "features": features,
+            "stores": {"pure_decode": {"baseline": 5.0, "trees": []}},
+            "metadata": {}
+        })
+        .to_string()
+    };
+    // Every known feature once: FEATURE_COUNT entries fill the buffer exactly.
+    let all = feature_names();
+    assert_eq!(all.len(), FEATURE_COUNT);
+    let model = ForwardPassPerfModel::from_learned(
+        &artifact(all.clone()),
+        ForwardPassPerfOptions::default(),
+    )
+    .unwrap();
+    let mut fpm = decode_fpm(2, 200, 0.0);
+    fpm.scheduled_requests.extend_lengths = Some(vec![1, 1]);
+    fpm.scheduled_requests.past_kv_lengths = Some(vec![100, 100]);
+    assert_eq!(
+        model.estimate_forward_pass_time_ms(&[fpm]).unwrap(),
+        Some(5.0)
+    );
+    // FEATURE_COUNT + 1 entries can only be reached with a repeat: rejected at
+    // load instead of overflowing the prediction buffer.
+    let mut overfull = all.clone();
+    overfull.push(all[0].clone());
+    let err =
+        ForwardPassPerfModel::from_learned(&artifact(overfull), ForwardPassPerfOptions::default())
+            .unwrap_err();
+    assert!(err.to_string().contains("duplicate feature"), "{err}");
+    // A short list with a repeat is rejected too.
+    let repeated = vec![all[1].clone(), all[2].clone(), all[1].clone()];
+    let err =
+        ForwardPassPerfModel::from_learned(&artifact(repeated), ForwardPassPerfOptions::default())
+            .unwrap_err();
+    assert!(err.to_string().contains("duplicate feature"), "{err}");
+}
+
+#[test]
+fn learned_model_rejects_bad_artifacts() {
+    let options = ForwardPassPerfOptions::default();
+    let mut bad: serde_json::Value = serde_json::from_str(&learned_decode_artifact_json()).unwrap();
+    bad["features"][1] = serde_json::json!("not_a_feature");
+    let err = ForwardPassPerfModel::from_learned(&bad.to_string(), options.clone()).unwrap_err();
+    assert!(err.to_string().contains("unknown feature"), "{err}");
+
+    let mut wrong_store: serde_json::Value =
+        serde_json::from_str(&learned_decode_artifact_json()).unwrap();
+    let store = wrong_store["stores"]["pure_decode"].take();
+    wrong_store["stores"] = serde_json::json!({"pure_prefill": store});
+    let err =
+        ForwardPassPerfModel::from_learned(&wrong_store.to_string(), options.clone()).unwrap_err();
+    assert!(
+        err.to_string().contains("not valid for worker_type"),
+        "{err}"
+    );
+
+    let mut cyclic: serde_json::Value =
+        serde_json::from_str(&learned_decode_artifact_json()).unwrap();
+    cyclic["stores"]["pure_decode"]["trees"][0]["left"][0] = serde_json::json!(0);
+    let err = ForwardPassPerfModel::from_learned(&cyclic.to_string(), options.clone()).unwrap_err();
+    assert!(err.to_string().contains("larger indices"), "{err}");
+
+    let err =
+        ForwardPassPerfModel::from_learned("/definitely/missing/model.json", options).unwrap_err();
+    assert!(matches!(err, AicError::Io { .. }));
+}
+
+#[test]
+fn learned_model_rejects_unsupported_artifact_versions_at_constructor() {
+    let options = ForwardPassPerfOptions::default();
+    let base: serde_json::Value = serde_json::from_str(&learned_decode_artifact_json()).unwrap();
+
+    let mut wrong_schema = base.clone();
+    wrong_schema["schema"] = serde_json::json!("some_other_schema");
+    assert!(
+        ForwardPassPerfModel::from_learned(&wrong_schema.to_string(), options.clone()).is_err()
+    );
+
+    let mut version_zero = base.clone();
+    version_zero["schema_version"] = serde_json::json!(0);
+    assert!(
+        ForwardPassPerfModel::from_learned(&version_zero.to_string(), options.clone()).is_err()
+    );
+
+    let mut future = base.clone();
+    future["schema_version"] = serde_json::json!(LEARNED_SCHEMA_VERSION + 1);
+    assert!(ForwardPassPerfModel::from_learned(&future.to_string(), options.clone()).is_err());
+
+    let mut missing = base.clone();
+    missing.as_object_mut().unwrap().remove("schema_version");
+    assert!(ForwardPassPerfModel::from_learned(&missing.to_string(), options.clone()).is_err());
+
+    // The unmodified artifact still loads, so the rejections above are about the mutations.
+    assert!(ForwardPassPerfModel::from_learned(&base.to_string(), options).is_ok());
+}
+
+#[test]
+fn learned_prediction_ignores_regression_only_weights() {
+    // Regression-only weights are irrelevant to the learned model; even an
+    // explicit non-finite value must not reject learned predictions.
+    let mut options = ForwardPassPerfOptions::default();
+    options.regression_ffn_token_weight = f64::NAN;
+    options.regression_attention_kv_weight = -1.0;
+    let model =
+        ForwardPassPerfModel::from_learned(&learned_decode_artifact_json(), options).unwrap();
+    let default_model = ForwardPassPerfModel::from_learned(
+        &learned_decode_artifact_json(),
+        ForwardPassPerfOptions::default(),
+    )
+    .unwrap();
+    for (nd, kv) in [(2_u32, 1000_u32), (8, 1000), (16, 50_000)] {
+        let a = model
+            .estimate_forward_pass_time_ms(&[decode_fpm(nd, kv, 0.0)])
+            .unwrap()
+            .unwrap();
+        let b = default_model
+            .estimate_forward_pass_time_ms(&[decode_fpm(nd, kv, 0.0)])
+            .unwrap()
+            .unwrap();
+        assert_close(a, b);
+    }
+}
+
+#[test]
+fn per_request_lists_must_match_request_counts() {
+    let model = ForwardPassPerfModel::from_learned(
+        &learned_decode_artifact_json(),
+        ForwardPassPerfOptions::default(),
+    )
+    .unwrap();
+    // Aligned lists with one entry per scheduled request are accepted.
+    let mut ok = decode_fpm(3, 3000, 0.0);
+    ok.scheduled_requests.extend_lengths = Some(vec![1, 1, 1]);
+    ok.scheduled_requests.past_kv_lengths = Some(vec![1000, 1000, 1000]);
+    assert!(
+        model
+            .estimate_forward_pass_time_ms(&[ok])
+            .unwrap()
+            .is_some()
+    );
+    // A partial vector describes a subset of the batch: rejected instead of silently routed to NaN.
+    let mut partial = decode_fpm(3, 3000, 0.0);
+    partial.scheduled_requests.extend_lengths = Some(vec![1, 1]);
+    partial.scheduled_requests.past_kv_lengths = Some(vec![1000, 1000]);
+    let err = model.estimate_forward_pass_time_ms(&[partial]).unwrap_err();
+    assert!(err.to_string().contains("request feature lists"), "{err}");
+    // Speculative decoding extends decode requests by more than one token; the
+    // shared validator must not reject that (it only checks alignment).
+    let mut spec = decode_fpm(3, 3000, 0.0);
+    spec.scheduled_requests.extend_lengths = Some(vec![4, 4, 4]);
+    spec.scheduled_requests.past_kv_lengths = Some(vec![1000, 1000, 1000]);
+    assert!(
+        model
+            .estimate_forward_pass_time_ms(&[spec])
+            .unwrap()
+            .is_some()
+    );
+    // Only one of the two lists is present: rejected as well.
+    let mut lopsided = decode_fpm(3, 3000, 0.0);
+    lopsided.scheduled_requests.past_kv_lengths = Some(vec![1000, 1000, 1000]);
+    assert!(model.estimate_forward_pass_time_ms(&[lopsided]).is_err());
+}
+
+#[test]
+fn learned_feature_vector_matches_named_formulas() {
+    use super::learned::IterationFeatureVector;
+    let iteration = [
+        ForwardPassMetrics {
+            scheduled_requests: ScheduledRequestMetrics {
+                num_prefill_requests: 2,
+                sum_prefill_tokens: 200,
+                sum_prefill_kv_tokens: 1000,
+                var_prefill_length: 9.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ForwardPassMetrics {
+            scheduled_requests: ScheduledRequestMetrics {
+                num_decode_requests: 4,
+                sum_decode_kv_tokens: 400,
+                var_decode_kv_tokens: 100.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ForwardPassMetrics::default(),
+    ];
+    let v = IterationFeatureVector::from_metrics(&iteration);
+    assert_close(v.get("num_active_ranks").unwrap(), 2.0);
+    assert_close(v.get("num_prefill_requests").unwrap(), 2.0);
+    assert_close(v.get("mean_prefill_chunk").unwrap(), 100.0);
+    assert_close(v.get("mean_prefill_kv").unwrap(), 500.0);
+    // pkv*ptok/np + ptok^2/(2np) + ptok/2 = 100000 + 10000 + 100
+    assert_close(v.get("prefill_attention_pairs").unwrap(), 110_100.0);
+    assert_close(v.get("num_decode_requests").unwrap(), 4.0);
+    assert_close(v.get("mean_decode_kv").unwrap(), 100.0);
+    // n*var + n*mean^2 = 400 + 40000
+    assert_close(v.get("sum_decode_kv_squared").unwrap(), 40_400.0);
+    assert_close(v.get("max_rank_decode_kv_tokens").unwrap(), 400.0);
+    assert_close(v.get("var_prefill_length").unwrap(), 9.0);
+    assert_close(
+        v.get("log1p_sum_decode_kv_tokens").unwrap(),
+        400.0_f64.ln_1p(),
+    );
+}
+
+#[test]
+fn learned_feature_vector_per_request_and_slots() {
+    use super::learned::{IterationFeatureVector, SLOT_COUNT, feature_names};
+    let iteration = [ForwardPassMetrics {
+        scheduled_requests: ScheduledRequestMetrics {
+            num_decode_requests: 3,
+            sum_decode_kv_tokens: 600,
+            extend_lengths: Some(vec![1, 1, 1]),
+            past_kv_lengths: Some(vec![100, 300, 200]),
+            ..Default::default()
+        },
+        ..Default::default()
+    }];
+    let v = IterationFeatureVector::from_metrics(&iteration);
+    assert_eq!(v.values.len(), feature_names().len());
+    assert_close(v.get("req_batch_size").unwrap(), 3.0);
+    assert_close(v.get("req_max_past").unwrap(), 300.0);
+    assert_close(v.get("req_min_past").unwrap(), 100.0);
+    assert_close(v.get("req_sum_extend_x_past").unwrap(), 600.0);
+    assert_close(v.get("req_sum_attn_flops").unwrap(), 601.5);
+    assert_close(v.get("req_is_decode").unwrap(), 1.0);
+    assert_close(v.get("slot0_past").unwrap(), 300.0);
+    assert_close(v.get("slot2_past").unwrap(), 100.0);
+    assert_close(v.get("slot3_present").unwrap(), 0.0);
+    assert_close(
+        v.get(&format!("slot{}_extend", SLOT_COUNT - 1)).unwrap(),
+        0.0,
+    );
+    assert!(v.get("slot32_past").is_none());
+
+    // Aggregates-only producer: request features are NaN, slots empty.
+    let legacy = IterationFeatureVector::from_metrics(&[decode_fpm(3, 600, 0.0)]);
+    assert!(legacy.get("req_batch_size").unwrap().is_nan());
+    assert_close(legacy.get("slot0_present").unwrap(), 0.0);
+    assert_close(legacy.get("num_decode_requests").unwrap(), 3.0);
+}
+
+#[test]
+fn learned_model_reads_hisim_slot_features() {
+    // Stump on slot0_past (the largest past in the batch after the descending sort).
+    let artifact = serde_json::json!({
+        "schema": "aic_fpm_learned_forward_perf", "schema_version": 1,
+        "worker_type": "decode", "target": "ms",
+        "features": ["req_batch_size", "slot0_present", "slot0_past", "slot0_extend"],
+        "stores": {"pure_decode": {"baseline": 0.0, "trees": [
+            {"left": [1, -1, -1], "right": [2, -1, -1], "feature": [2, -1, -1],
+             "threshold": [100.0, 0.0, 0.0], "value": [0.0, 10.0, 20.0],
+             "missing_left": [false, false, false]}]}},
+        "metadata": {}
+    })
+    .to_string();
+    let model =
+        ForwardPassPerfModel::from_learned(&artifact, ForwardPassPerfOptions::default()).unwrap();
+    let mut small = decode_fpm(2, 120, 0.0);
+    small.scheduled_requests.extend_lengths = Some(vec![1, 1]);
+    small.scheduled_requests.past_kv_lengths = Some(vec![40, 80]);
+    assert_eq!(
+        model.estimate_forward_pass_time_ms(&[small]).unwrap(),
+        Some(10.0)
+    );
+    let mut large = decode_fpm(2, 200, 0.0);
+    large.scheduled_requests.extend_lengths = Some(vec![1, 1]);
+    // batch order does not matter: the slots are filled by past descending
+    large.scheduled_requests.past_kv_lengths = Some(vec![50, 150]);
+    assert_eq!(
+        model.estimate_forward_pass_time_ms(&[large]).unwrap(),
+        Some(20.0)
+    );
+}
+
+#[test]
+fn learned_model_returns_none_for_kind_without_store() {
+    // An aggregated worker whose artifact only has a pure_decode store: a
+    // prefill iteration is a valid workload kind with no trained store.
+    let artifact = serde_json::json!({
+        "schema": "aic_fpm_learned_forward_perf", "schema_version": 1,
+        "worker_type": "aggregated", "target": "ms",
+        "features": ["num_decode_requests"],
+        "stores": {"pure_decode": {"baseline": 5.0, "trees": []}},
+        "metadata": {}
+    })
+    .to_string();
+    let model =
+        ForwardPassPerfModel::from_learned(&artifact, ForwardPassPerfOptions::default()).unwrap();
+    assert_eq!(
+        model
+            .estimate_forward_pass_time_ms(&[decode_fpm(3, 300, 0.0)])
+            .unwrap(),
+        Some(5.0)
+    );
+    assert_eq!(
+        model
+            .estimate_forward_pass_time_ms(&[prefill_fpm(512, 0.0)])
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn learned_model_refuses_request_features_without_lists() {
+    // Stump on req_max_past. With aligned lists the learned route applies; an
+    // iteration without lists (or with lists contradicting the aggregates) is
+    // refused instead of silently routed through missing_left to a constant.
+    let artifact = serde_json::json!({
+        "schema": "aic_fpm_learned_forward_perf", "schema_version": 1,
+        "worker_type": "decode", "target": "ms", "features": ["req_max_past"],
+        "stores": {"pure_decode": {"baseline": 0.0, "trees": [
+            {"left": [1, -1, -1], "right": [2, -1, -1], "feature": [0, -1, -1],
+             "threshold": [150.0, 0.0, 0.0], "value": [0.0, 10.0, 20.0],
+             "missing_left": [false, false, false]}]}},
+        "metadata": {}
+    })
+    .to_string();
+    let model =
+        ForwardPassPerfModel::from_learned(&artifact, ForwardPassPerfOptions::default()).unwrap();
+    let with_lists = ForwardPassMetrics {
+        scheduled_requests: ScheduledRequestMetrics {
+            num_decode_requests: 2,
+            sum_decode_kv_tokens: 200,
+            extend_lengths: Some(vec![1, 1]),
+            past_kv_lengths: Some(vec![120, 80]),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    assert_close(
+        model
+            .estimate_forward_pass_time_ms(&[with_lists])
+            .unwrap()
+            .unwrap(),
+        10.0,
+    );
+    let err = model
+        .estimate_forward_pass_time_ms(&[decode_fpm(2, 200, 0.0)])
+        .unwrap_err();
+    assert!(err.to_string().contains("per-request features"), "{err}");
+    // Decode lengths read one token late (past = kv + 1 per request) stay within the slack.
+    let mut late = decode_fpm(2, 200, 0.0);
+    late.scheduled_requests.extend_lengths = Some(vec![1, 1]);
+    late.scheduled_requests.past_kv_lengths = Some(vec![121, 81]);
+    assert!(
+        model
+            .estimate_forward_pass_time_ms(&[late])
+            .unwrap()
+            .is_some()
+    );
+    // Lists whose past total exceeds every aggregate bound are treated as absent.
+    let mut contradictory = decode_fpm(2, 200, 0.0);
+    contradictory.scheduled_requests.extend_lengths = Some(vec![1, 1]);
+    contradictory.scheduled_requests.past_kv_lengths = Some(vec![5000, 5000]);
+    assert!(
+        model
+            .estimate_forward_pass_time_ms(&[contradictory])
+            .is_err()
+    );
+    // Idle iterations still estimate zero without consulting the trees.
+    assert_eq!(
+        model
+            .estimate_forward_pass_time_ms(&[ForwardPassMetrics::default()])
+            .unwrap(),
+        Some(0.0)
+    );
+    // Artifacts without a metadata key expose an empty object, not null.
+    assert!(model.learned_metadata().unwrap().is_object());
+}
+
+fn canonical_learned_fixture(path: &std::path::Path) -> crate::ForwardPassPerfModelConfig {
+    let mut config = crate::ForwardPassPerfModelConfig::new(
+        "test/model",
+        "test-gpu",
+        BackendKind::Vllm,
+        ForwardPassWorkerType::Decode,
+    );
+    config.backend_version = Some("test-version".into());
+    config.estimation_mode = crate::EstimationMode::FpmLearned;
+    config.estimator_config.fpm_learned.artifact_path = Some(path.to_owned());
+    config.estimator_config.fpm_learned.adaptation = crate::LearnedAdaptation::Frozen;
+    config
+}
+
+#[test]
+fn canonical_learned_freezes_forest_and_preserves_resolved_content_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("forest.json");
+    std::fs::write(&path, learned_decode_artifact_json()).unwrap();
+    let mut config = canonical_learned_fixture(&path);
+    config.estimator_config.correction.enabled = false;
+    let mut model = ForwardPassPerfModel::best_available(config).unwrap();
+    let resolved = model.provenance().unwrap().config.clone();
+    assert_eq!(
+        resolved.estimator_config.correction.mode,
+        CorrectionMode::Hybrid
+    );
+    assert_eq!(
+        resolved
+            .estimator_config
+            .fpm_learned
+            .source_sha256
+            .as_ref()
+            .unwrap()
+            .len(),
+        64
+    );
+    assert!(
+        resolved
+            .estimator_config
+            .fpm_learned
+            .artifact_path
+            .as_ref()
+            .unwrap()
+            .is_absolute()
+    );
+    assert_eq!(
+        model.learned_online_diagnostics().unwrap()["identity_verified"],
+        false
+    );
+    let before = model
+        .estimate_forward_pass_time_ms(&[decode_fpm(2, 1000, 0.0)])
+        .unwrap();
+    model
+        .tune_with_fpms(&vec![vec![decode_fpm(2, 1000, 0.050)]; 8])
+        .unwrap();
+    assert_eq!(
+        model
+            .estimate_forward_pass_time_ms(&[decode_fpm(2, 1000, 0.0)])
+            .unwrap(),
+        before
+    );
+    assert_eq!(model.diagnostics().retained_observations, 0);
+    let reloaded = ForwardPassPerfModel::best_available(
+        serde_json::from_str(&serde_json::to_string(&resolved).unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(reloaded.provenance().unwrap().config, resolved);
+    assert!(model.flush_updates().is_err());
+    assert!(
+        model
+            .save_online_checkpoint(dir.path().join("snapshot"))
+            .is_err()
+    );
+    std::fs::write(&path, format!("{}\n", learned_decode_artifact_json())).unwrap();
+    assert!(
+        ForwardPassPerfModel::best_available(resolved)
+            .unwrap_err()
+            .to_string()
+            .contains("source_sha256")
+    );
+}
+
+#[test]
+fn canonical_learned_validates_optional_metadata_and_never_falls_back_on_bad_artifacts() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("forest.json");
+    let config = canonical_learned_fixture(&path);
+    let mut artifact: serde_json::Value =
+        serde_json::from_str(&learned_decode_artifact_json()).unwrap();
+    artifact["metadata"]["identity"] =
+        super::learned_online::canonical_learned_identity(&config).unwrap();
+    std::fs::write(&path, artifact.to_string()).unwrap();
+    let model = ForwardPassPerfModel::best_available(config.clone()).unwrap();
+    assert_eq!(
+        model.learned_online_diagnostics().unwrap()["identity_verified"],
+        true
+    );
+    let mut wrong = config.clone();
+    wrong.system = "another-gpu".into();
+    assert!(
+        ForwardPassPerfModel::best_available(wrong)
+            .unwrap_err()
+            .to_string()
+            .contains("metadata.identity")
+    );
+    std::fs::write(&path, "not a JSON forest").unwrap();
+    assert!(ForwardPassPerfModel::best_available(config).is_err());
+}
+
+#[test]
+fn canonical_learned_selection_is_explicit_and_online_rejects_cascaded_correction() {
+    let mut config = crate::ForwardPassPerfModelConfig::new(
+        "test/model",
+        "test-gpu",
+        BackendKind::Vllm,
+        ForwardPassWorkerType::Decode,
+    );
+    assert_eq!(
+        config.candidate_modes(),
+        vec![
+            crate::EstimationMode::OpLevel,
+            crate::EstimationMode::FpmInterpolation,
+            crate::EstimationMode::FpmRegression
+        ]
+    );
+    config.estimation_mode = crate::EstimationMode::FpmLearned;
+    config.fallback_policy = crate::ForwardPassFallbackPolicy::Allow;
+    assert!(
+        ForwardPassPerfModel::best_available(config.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("fallback_policy='deny'")
+    );
+    config.fallback_policy = crate::ForwardPassFallbackPolicy::Deny;
+    assert_eq!(
+        config.candidate_modes(),
+        vec![crate::EstimationMode::FpmLearned]
+    );
+    config.estimator_config.fpm_learned.adaptation = super::LearnedAdaptation::Online;
+    config.estimator_config.fpm_learned.checkpoint_path = Some("unused-checkpoint".into());
+    assert!(
+        ForwardPassPerfModel::best_available(config.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("correction.enabled=false")
+    );
+    config.estimator_config.correction.enabled = false;
+    config.estimator_config.fpm_learned.artifact_path = Some("unused-artifact".into());
+    assert!(
+        ForwardPassPerfModel::best_available(config)
+            .unwrap_err()
+            .to_string()
+            .contains("exactly one")
+    );
 }

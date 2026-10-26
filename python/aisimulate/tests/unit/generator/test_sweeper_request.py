@@ -146,7 +146,7 @@ def test_agg_candidate_lowers_evaluated_engine_limits_and_deployment_overrides()
 
 def test_disagg_candidate_preserves_dynamo_adapter_configs_and_concurrency():
     request = from_sweeper_candidate(
-        _disagg_candidate(),
+        _disagg_candidate(prefill_context_length=64000, decode_context_length=128000),
         workload={"isl": 8192, "osl": 1024},
         model_facts=ModelFacts(is_moe=True, architecture="DeepseekV3ForCausalLM"),
     )
@@ -155,7 +155,9 @@ def test_disagg_candidate_preserves_dynamo_adapter_configs_and_concurrency():
     assert params["WorkerConfig"]["prefill_workers"] == 4
     assert params["WorkerConfig"]["decode_workers"] == 1
     assert params["params"]["prefill"]["max_batch_size"] == 4
+    assert params["params"]["prefill"]["max_seq_len"] == 64000
     assert params["params"]["decode"]["max_batch_size"] == 512
+    assert params["params"]["decode"]["max_seq_len"] == 128000
     assert params["params"]["decode"]["kv_cache_free_gpu_memory_fraction"] == 0.85
     assert params["BenchConfig"]["estimated_concurrency"] == 256
     assert params["DynConfig"]["enable_router"] is True
@@ -312,6 +314,31 @@ def test_disagg_candidate_renders_role_specific_vllm_gpu_memory_utilization():
     assert _cli_flag_value(artifacts["cli_args_prefill"], "--gpu-memory-utilization") == "0.9"
     assert _cli_flag_value(artifacts["cli_args_decode"], "--gpu-memory-utilization") == "0.85"
     assert artifacts["k8s_deploy.yaml"].count("--gpu-memory-utilization") == 2
+
+
+@pytest.mark.parametrize("version", ["1.3.0rc14", "1.3.0rc29"])
+def test_trtllm_candidate_enables_kv_transfer_without_changing_evaluated_limits(version):
+    candidate = _disagg_candidate(backend_version=version)
+    request = from_sweeper_candidate(
+        candidate,
+        workload={"isl": 8192, "osl": 1024},
+        model_facts=ModelFacts(is_moe=True, architecture="DeepseekV3ForCausalLM"),
+    )
+
+    artifacts = generate_from_request(request)
+
+    for role in ("prefill", "decode"):
+        engine = yaml.safe_load(artifacts[f"extra_engine_args_{role}.yaml"])
+        assert engine["cache_transceiver_config"]["backend"] == "DEFAULT"
+        assert engine["cache_transceiver_config"]["max_tokens_in_buffer"] > 0
+        assert engine["max_batch_size"] == candidate["config"][f"{role}_max_num_seqs"]
+        assert engine["max_num_tokens"] == candidate["config"][f"{role}_max_num_batched_tokens"]
+        assert engine["max_seq_len"] == candidate["config"]["context_length"]
+        assert (
+            engine["kv_cache_config"]["free_gpu_memory_fraction"]
+            == candidate["config"][f"{role}_gpu_memory_utilization"]
+        )
+    assert artifacts["k8s_deploy.yaml"].count("cache_transceiver_config:") == 2
 
 
 @pytest.mark.parametrize(

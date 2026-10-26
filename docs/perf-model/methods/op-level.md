@@ -33,6 +33,152 @@ Data-source inheritance and empirical transfer are different. A row inherited
 from an approved measured donor is still collected data. An estimated
 cross-shape or cross-precision transfer must retain its transfer provenance.
 
+## External execution profiles
+
+An externally stored profile can supply a qualified operation graph and exact
+measured composite scopes without adding its measurements or runtime identity
+to the package. It uses the same `RustForwardPassPerfModel.best_available`
+constructor and Rust operation executor as ordinary op-level prediction.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `estimator_config.op_level.execution_profile` | Unset | Opt in to a qualified external graph for one phase. |
+| `execution_profile.path` | Required when selected | Absolute path to the external JSON profile. |
+| `execution_profile.sha256` | Required when selected | Lowercase SHA-256 of the exact profile bytes; preserved in saved configuration and provenance. |
+
+Set `estimation_mode: op_level`, `fallback_policy: deny`, `database_mode: SILICON`,
+`enable_shared_layer: false`, and `estimator_config.correction.enabled: false`.
+Choose `worker_type: prefill` or `decode`, an explicit backend version and a
+single PP/attention-DP/CP/DCP rank. Keep `encoder_parallel` unset: these profiles
+qualify the language-model phase only. Speculation, decoder replay, automatic
+estimator selection and shared-source inheritance are not supported.
+Supply the external hardware and performance-data root through `systems_paths`.
+
+The version-1 profile JSON has these required fields:
+
+| Field | Contract |
+| --- | --- |
+| `schema_version` | `1`. |
+| `basis` | The complete ordinary compiled `EngineSpec` used to qualify the profile. Both operation lists and every engine identity field must match the current compiler output; only `engine.systems_path` is excluded from comparison. |
+| `worker_type` | `prefill` or `decode`, matching the caller. |
+| `ops` | Replacement operations for that phase, in execution order, using the existing externally tagged operation format. Resident weight bytes must match the original phase. |
+| `retained_files` | Bundle-relative `path`, lowercase `sha256`, and `size_bytes` for every required hardware YAML, source/version metadata file and retained operation table. |
+
+Profile authors can inspect an ordinary `compile_engine` result using the
+internal `_native.engine_spec_json_from_bincode(bytes)` helper. This is an
+authoring aid, not a separate prediction constructor. Compile that basis
+against the retained inventory: a systems root that holds exactly the files
+listed in `retained_files`. The compiler reads the tables present in its root
+(for example, attention `lane_order` grows with the kernel sources it
+discovers), so a basis compiled from a fuller collection root does not match
+the consumer's compile from the prepared root, and admission fails naming the
+first differing field. Compiler/schema changes that alter the basis require
+requalification and a new profile pin.
+
+`MeasuredComposite` is an exact, latency-only operation with `name`, `system`,
+`backend`, `version`, `is_context`, `weight_bytes`, `scale_factor`, and `cells`.
+Each cell contains `shape` and `latency_ms`. Sort cells by their unique shape:
+
+- Prefill: `[batch, total_input_length - prefix, prefix]`, where input length
+  and cached prefix are per request; the second entry is the new token count.
+- Decode: `[batch, total_past_kv_tokens / batch + 1, 0]`, where the second entry
+  is the per-request attention length (past KV plus the current token).
+
+Latencies and repetition factors must be finite and positive. The operator
+multiplies the measured scope latency by its repetition factor. It performs
+no interpolation, extrapolation, correction, or SOL substitution. Missing
+cells fail explicitly. Exact measured results report `silicon` source and zero
+energy to indicate missing energy evidence. Existing operations keep their
+own lookup rules. Profiles may use `Overlap` for parallel operation groups;
+fallback graphs, speculative token scaling, whole-forward, vision and other
+nested stage wrappers are rejected.
+
+Construction verifies the profile pin, compares the actual compiled basis,
+and copies verified retained-file bytes into engine-owned storage. Configuration
+normalization checks the selection and supported controls without opening the
+profile; its contents and worker phase are checked at construction. Lazy table
+reads use that snapshot, including on their first query. Changed files fail a
+new construction; they cannot change an existing model. Bundle paths cannot
+escape the root or traverse symlinks; hardware `data_dir`, backend versions and
+`misc.nccl_version`/`misc.oneccl_version` must remain bundle-relative. Missing retained inputs fail normally
+during database loading or readiness checks.
+
+Use `predict_prefill_latency(batch, total_input_length, prefix)` or
+`predict_decode_latency_total(batch, total_past_kv_tokens)` for the selected
+phase. Decode requires equal past-KV lengths across the batch and supports one
+decode forward step per query. Multi-step decode trajectories are rejected even
+when every intermediate measured cell is present. The other phase,
+mixed steps and aggregate telemetry fail explicitly. These profiles do not
+qualify scheduler-inclusive Replay, Planner sizing, or end-to-end serving
+accuracy. Broader support requires separately qualified execution and data.
+
+Profile files, saved configurations and diagnostics can reveal runtime
+identities or private paths. Keep them with their source dataset; the package
+does not upload or download profiles automatically.
+
+### Shared dataset layout and local preparation
+
+Public and private repositories use the same additive `catalog/dataset.json`
+contract (`aisim-dataset-index/v1`). Category entries reference hashed indexes;
+`aisim-category-index/v1` lists configuration identities and hashed manifests.
+Repository identity and authentication do not change the schema. Existing FPM
+catalogs remain accessible through an explicit `legacy-fpm` reference; their
+measurement protocols and historical paths are preserved.
+
+Operation tables live under
+`data/op-latency/<hardware>/<operation-family>/<framework>/<version>/`.
+They retain their original Parquet bytes, columns, units and collection metadata.
+Model-specific execution profiles and hardware descriptions live under
+`metadata/`; original input evidence belongs under `provenance/`. Predictions,
+comparisons and gap reports remain outside the dataset.
+
+An `aisim-artifact-manifest/v1` operation manifest records:
+
+| Field | Contract |
+| --- | --- |
+| `category`, `purpose` | `op-latency`, with `operation-tables` or `execution-profile`. |
+| `configuration_id`, `identity` | SHA-256 of the versioned canonical category, purpose and effective identity; preserve unknown fields as null with an unresolved source discriminator. Operation-table identities have no model partition. |
+| `requested_settings` | Original requested settings, or null; never substitute these for observed effective settings. |
+| `artifacts` | Stable ID, repository-relative path, role, format, schema identifier, SHA-256, bytes and Parquet row count. Optional `runtime_path` maps an input to the local systems directory. |
+| `provenance`, `evidence_gaps` | Original identities/revisions, collection evidence and explicit missing or unsupported facts. |
+
+Use the shared Python API with an already downloaded local selection:
+
+```python
+from pathlib import Path
+from aisimulate_core.datasets import check_manifest, prepare_execution_profile
+from aisimulate_core.sdk import RustForwardPassPerfModel
+
+root = Path("/local/pinned-dataset")
+manifest = "metadata/execution-profiles/example/prefill.manifest.json"
+check_manifest(root, manifest)
+config = prepare_execution_profile(root, manifest, Path("/local/prepared-prefill"))
+model = RustForwardPassPerfModel.best_available(config)
+```
+
+The output directory must not exist. Preparation verifies the declared files,
+row counts, configuration identity and the profile's exact retained-input
+inventory. The manifest's `hardware`, `framework` and `framework_version` must
+match the predictor configuration's `system`, `backend` and `backend_version`.
+The model identity may use a model ID while the predictor references a local
+model directory. Preparation copies unchanged inputs into the runtime layout,
+then calls the canonical constructor to compare the compiled baseline and validate the retained
+runtime inputs before returning the configuration with absolute local data paths.
+Malformed profiles and incomplete required inputs fail preparation and remove
+the partial output. Tables used only by replaced baseline operations are not
+required, provided the basis was compiled without them (see above). Shape
+coverage remains a query-time check.
+
+Preparation requires a bundled model ID or an existing local model directory;
+unbundled remote IDs fail with an instruction to provide local model metadata.
+It never changes profile or measurement bytes, accesses the network, runs stored
+scripts or makes a prediction. The caller keeps the prepared directory and any
+referenced local model directory for saved-config reloads; preparation does not
+copy model metadata. `check_dataset(root)`
+also verifies shared catalog references; existing FPM protocol validation is
+still separate. This adapter does not change the default operation database or
+implement the broader E2E/Operation DB migration in issue #435.
+
 ## Empirical utilization and transfers
 
 The native [utilization estimator](../../../crates/core/src/perfmodel/operators/util_empirical.rs)
@@ -96,28 +242,3 @@ breakdowns carry explicit reasons. The [FPE matrix](../support-matrix.md)
 tests strict native coverage; it does not certify the HYBRID ladder or silicon
 accuracy. See [DSA CP](context-parallel-dsa.md), [DeepEP-LL](deepep-ll.md),
 and [execution limitations](../limitations.md) for specialized boundaries.
-
-## Qualified graph-prefill profile
-
-`estimator_config.op_level.prefill_graph_profile:
-sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1` selects an exact measured graph-prefill
-composition for `nvidia/GLM-5.2-NVFP4` on `vr_nvl72`, SGLang
-`0.5.18+nvinternal.rubin.0.8full.66997102`, TP4/EP1, NVFP4 experts, BF16
-projections, and FP8 KV. This is a scoped four-GPU profile, not whole-rack
-qualification. Use the canonical name and save the resolved immutable profile
-hash in estimator provenance.
-
-This profile serves `predict_prefill_latency(bs, isl, prefix)` only. `isl` is
-full input length including prefix; the admitted `(bs, isl, prefix)` points are
-`(1,1024,0)`, `(2,1024,0)`, `(1,2048,1024)`, `(1,8192,0)`, `(2,8192,0)`,
-`(1,16384,0)`, and `(1,32768,16384)`. Inputs are nonnegative u32-compatible
-ordinary integers, and overflowing products fail before lookup. There is no
-interpolation or borrowing of another profile's rows.
-
-Aggregate telemetry lacks the exact per-request new/past lengths required here,
-so this profile rejects generic forward-step estimation, tuning, static
-energy/SOL diagnostics, and Replay-provider construction. There is no CLI
-scheduler selection for it. Decode uses a separate ordinary op-level estimator
-with no prefill graph profile; selecting this profile does not qualify decode.
-See the [collector and provenance](../../../python/aisimulate/collector/sglang_rubin/README.md)
-and [accuracy evidence](../../../benchmarks/evidence/accuracy/).

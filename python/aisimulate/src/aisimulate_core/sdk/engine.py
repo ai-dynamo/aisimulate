@@ -48,6 +48,7 @@ import os
 from typing import Any
 
 import aisimulate_core
+from aisimulate_core.sdk import common
 from aisimulate_core.sdk.config import validate_parallel_size
 from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config, validate_moe_controls
 from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
@@ -58,7 +59,6 @@ from aisimulate_core.sdk.fpm_profile import (
     load_fpm_profile,
 )
 from aisimulate_core.sdk.models import get_model
-from aisimulate_core.sdk.models.deepseek_v32 import _generation_ops_for_engine
 from aisimulate_core.sdk.models.helpers import resolve_dsv4_moe_arch, resolve_sglang_mla_compute
 from aisimulate_core.sdk.operations import FPMForwardOp
 from aisimulate_core.sdk.operations.base import Operation
@@ -148,14 +148,15 @@ from aisimulate_core.sdk.rust_engine_step import (
 # - 20 (DeepSeek-V4.1 FPM): FpmForwardOp gained original_fmha_quant_mode
 #   for selector diagnostics; legacy JSON defaults do not cover bincode.
 # - 21 (AIC-1781): exact moe_kernel_source identity in EngineConfig and MoeOp.
-# - 22 (GLM-5.2 VR200 pilot): exact observed-MoE selection, prefill graph
-#   identity and two appended composite operators extend the schema-21 layout.
-#   The pilot and AIC-1781 concurrently claimed 21; reject both older layouts.
 # - 23 (DCP identity): optional recorded dcp_size in ParallelMapping.
 # - 24 (typed FPM DCP): dcp_size moves out of the op matching tuple.
 # - 25 (FPM decoupling): merge the SOL/direct selector into the typed DCP layout.
 # - 26 (decode context parallelism): Generation/Context attention, MLA, DSA
 #   and MLAModule ops gained a tail-appended `dcp_size` (positional bincode).
+# - 28 (GLM-5.3-Flash): measured GLM-5.3-Flash op layouts.
+# - 29 (native VL): optional `vision` section (encoder layout plus the patch,
+#   transformer and output op groups) appended after the op lists. Claimed 21
+#   concurrently with AIC-1781; renumbered after GLM-5.3-Flash at the merge.
 # Single owner: the Rust crate constant. Python re-exports it for
 # diagnostics/tests instead of declaring a twin to keep in sync.
 ENGINE_SPEC_SCHEMA_VERSION = aisimulate_core.engine_spec_schema_version()
@@ -392,20 +393,6 @@ def _engine_config_dict(
         "tolerate_dirless_version": bool(getattr(database, "dirless_next_load", False)),
         "extra": {},
     }
-    selected = getattr(cfg, "prefill_graph_profile", None)
-    if selected is not None:
-        from aisimulate_core._native import prefill_graph_profile_identity
-
-        engine["prefill_graph_profile"] = selected
-        engine["prefill_graph_profile_id"] = prefill_graph_profile_identity()[1]
-        engine["forward_model"] = cfg.forward_model
-        # A supplied Python view must agree with the disabled Rust policy;
-        # an override cannot undo shared rows already loaded into that view.
-        if engine["enable_shared_layer"] or _shared_layer_flag(database):
-            from aisimulate_core.sdk.errors import PrefillGraphProfileError
-
-            raise PrefillGraphProfileError("prefill_graph_profile does not allow shared-source inheritance")
-        engine["enable_shared_layer"] = False
     # SpeculativeConfig (flattened, Option<>): emit nextn at the top level
     # when MTP is active. When inactive, omit it so the
     # flattened Option deserializes to None.
@@ -494,39 +481,37 @@ def compile_engine(
     shared_layer: bool | None = None,
     transfer_policy: str | list[str] | None = None,
     strict_provenance: bool | None = None,
-    decode_workload_distribution: str | None = None,
-    prefill_graph_profile: str | None = None,
     fpm_parquet_path: str | None = None,
+    encoder_parallel: str | None = None,
 ) -> bytes:
     """Compile a model into bincoded ``EngineSpec`` bytes.
 
     Signature matches the kwargs the Rust ``AicEngineBuilder`` passes. Reuses
     ``cli/api._build_model_config`` + ``sdk/models.get_model`` (quant inferred
-    inside ``get_model``) to build the model, then walks ``encoder_ops`` (vision
-    decomposed), ``context_ops`` and ``generation_ops`` into OpSpecs and returns
-    the bytes produced by the Rust ``engine_spec_bincode_from_json`` pyfunction.
+    inside ``get_model``) to build the model, then walks ``context_ops`` and
+    ``generation_ops`` into OpSpecs and returns the bytes produced by the Rust
+    ``engine_spec_bincode_from_json`` pyfunction. ``encoder_parallel`` (``"tp"``
+    or ``"dp"``) additionally compiles the model's vision tower with that layout
+    so the engine can price encoder calls; it requires a VL model.
 
     ``fpm_profile`` supplies independent decoder metadata and rank-local
     resource bounds. This is internal compilation plumbing: the canonical
     Rust constructor supplies an already resolved ``sol`` or ``direct`` method.
     Profile precision is authoritative on either route, with
     conflicting caller overrides rejected. ``cp_size`` completes the profile
-    identity; profiles currently support only CP1/PP1 and no speculation.
+    identity; profiles support CP1/PP1, with explicitly identified speculative
+    rounds confined to direct interpolation.
 
-    ``decode_workload_distribution=None`` preserves the default model and latency
-    behavior. The observed GLM-5.2 NVFP4 pilot profile selects only generation MoE
-    on the exact Vera Rubin NVL72 SGLang runtime, TP4/MoETP4/EP1, BF16 GEMM/FMHA, FP8 KV and
-    half communication. Its measured physical nodes are 1, 8 and 32; intermediate
-    logical batches are exploratory and queries outside 1..32 fail. Missing or
-    mismatched approved profile data raises ``DecodeMoeProfileError``.
-
-    Engine schema 26 adds decode context parallelism on top of the schema-25
-    FPM interpolation selector, typed DCP and exact-profile policy on MoE
-    operators. Older binary specs require
-    recompilation; default representations are therefore not byte-identical.
+    Engine schema 29 adds the optional vision section on top of the schema-28
+    layout, which carries the GLM-5.3-Flash measured ops (28), decode context
+    parallelism (26), the FPM interpolation selector (25) and typed DCP (24).
+    Older binary specs require recompilation; default representations are
+    therefore not byte-identical.
     """
     if not isinstance(decoder_replay, bool):
         raise InvalidEngineConfigurationError("decoder_replay must be a boolean")
+    if encoder_parallel not in (None, "tp", "dp"):
+        raise InvalidEngineConfigurationError("encoder_parallel must be 'tp', 'dp', or None")
     if decoder_replay and (model_path != DEEPSEEK_V41_MODEL_PATH or backend != "sglang"):
         raise InvalidEngineConfigurationError(
             f"decoder_replay requires model={DEEPSEEK_V41_MODEL_PATH!r} and backend='sglang'"
@@ -572,13 +557,11 @@ def compile_engine(
     interpolation = fpm_interpolation
     deployment = None
     if profile is not None:
-        if any(value is not None for value in (moe_kernel_source, decode_workload_distribution, prefill_graph_profile)):
-            raise InvalidEngineConfigurationError(
-                "FPM profiles do not support moe_kernel_source, decode_workload_distribution or prefill_graph_profile"
-            )
+        if moe_kernel_source is not None:
+            raise InvalidEngineConfigurationError("FPM profiles do not support moe_kernel_source")
         if dcp_size is not None:
             raise InvalidEngineConfigurationError("fpm_profile does not describe recorded DCP identity")
-        if nextn or speculation is not None:
+        if speculation is not None:
             raise InvalidEngineConfigurationError("FPM profiles support plain autoregressive decoder-only execution")
         literal_version = _literal_backend_version(system, backend, backend_version, systems_path, None)
         deployment = profile.select(
@@ -594,6 +577,13 @@ def compile_engine(
             moe_ep_size=moe_ep_size,
             cp_size=cp_size,
         )
+        if deployment.execution_profile is None:
+            if nextn:
+                raise InvalidEngineConfigurationError(
+                    "FPM profiles support plain autoregressive decoder-only execution"
+                )
+        elif forward_model != "fpm" or interpolation != "direct":
+            raise InvalidEngineConfigurationError("speculative-round FPM profiles require direct FPM compilation")
         deployment.validate_overrides(
             gemm_quant_mode=gemm_quant_mode,
             moe_quant_mode=moe_quant_mode,
@@ -616,6 +606,8 @@ def compile_engine(
         except (ValueError, TypeError, KeyError) as exc:
             raise InvalidEngineConfigurationError(str(exc)) from exc
         if forward_model == "fpm" and interpolation == "direct":
+            if encoder_parallel is not None:
+                raise InvalidEngineConfigurationError("direct FPM interpolation does not support encoder_parallel")
             spec_json = _direct_fpm_spec_json(
                 profile,
                 deployment,
@@ -629,6 +621,7 @@ def compile_engine(
                 fpm_fmha_quant_mode=fpm_fmha_quant_mode,
                 worker_type=worker_type,
                 fpm_options=fpm_config.options,
+                nextn=nextn,
             )
             return bytes(aisimulate_core.engine_spec_bincode_from_json(spec_json))
         gemm_quant_mode = deployment.gemm_quant_mode
@@ -640,12 +633,6 @@ def compile_engine(
 
     # `_build_model_config` resolves MoE parallelism defaults internally and
     # does not take a model_path (quant inference is done inside `get_model`).
-    if prefill_graph_profile is not None:
-        from aisimulate_core.sdk.errors import PrefillGraphProfileError
-
-        if shared_layer:
-            raise PrefillGraphProfileError("prefill_graph_profile does not allow shared-source inheritance")
-        shared_layer = False
     from aisimulate_core.sdk.speculation import SpeculationConfig
 
     if backend == "vllm" and attention_backend == "FLASHINFER_MLA":
@@ -676,14 +663,13 @@ def compile_engine(
             comm_quant_mode=comm_quant_mode,
             forward_model=forward_model,
             attention_backend=attention_backend,
-            decode_workload_distribution=decode_workload_distribution,
-            prefill_graph_profile=prefill_graph_profile,
             moe_kernel_source=moe_kernel_source,
             moe_backend=moe_backend,
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,
             cp_size=cp_size,
             speculation=resolved_speculation,
+            **({"enable_encoder_dp": encoder_parallel == "dp"} if encoder_parallel is not None else {}),
         )
         model_config.fpm_config = fpm_config
         # Apply MTP BEFORE get_model so the walked op lists carry the
@@ -746,6 +732,7 @@ def compile_engine(
         transfer_policy=transfer_policy,
         strict_provenance=strict_provenance,
         fpm_parquet_path=fpm_parquet_path,
+        encoder_parallel=encoder_parallel,
     )
 
     if profile is not None:
@@ -775,11 +762,15 @@ def _direct_fpm_spec_json(
     fpm_fmha_quant_mode: str | None = None,
     worker_type: str = "aggregated",
     fpm_options: dict | None = None,
+    nextn: int = 0,
 ) -> str:
     """Build whole-forward timing operations from metadata, without a graph."""
     if _database_mode_name(None, database_mode) != "SILICON":
         raise ValueError("direct FPM interpolation requires database_mode='SILICON'; it has no analytical SOL model")
     identity = deployment.match_identity()
+    execution = deployment.execution_profile
+    if execution is not None:
+        identity += list(deployment.execution_identity(profile.model_revision))
     if fpm_fmha_quant_mode is not None:
         if fpm_fmha_quant_mode not in {"bfloat16", "fp8", "fp8_block"}:
             raise ValueError("fpm_fmha_quant_mode must be bfloat16, fp8, or fp8_block")
@@ -818,6 +809,12 @@ def _direct_fpm_spec_json(
             "estimator_config": json.dumps({"fpm_interpolation": controls}),
         },
     }
+    if execution is not None:
+        engine["nextn"] = nextn
+        engine["extra"]["fpm_execution_profile"] = json.dumps(
+            {"model_revision": profile.model_revision, "execution_profile": execution.model_dump(mode="json")},
+            sort_keys=True,
+        )
 
     def phase_op(phase: str) -> dict:
         return {
@@ -919,24 +916,16 @@ def build_engine_spec_json(
     transfer_policy: str | list[str] | None = None,
     strict_provenance: bool | None = None,
     fpm_parquet_path: str | None = None,
+    encoder_parallel: str | None = None,
 ) -> str:
     """Walk a built model's op lists into an ``EngineSpec`` JSON string.
 
     Separated from ``compile_engine`` so the op-transfer round-trip test can
     inspect the JSON (and the decoded ops) without going through bincode.
+    ``encoder_parallel`` adds the ``vision`` section: the model's encoder ops
+    grouped by the token count they run on, under the layout the model was
+    built with.
     """
-    # Vision encoder ops are intentionally NOT emitted into the spec.
-    #
-    # The compile path threads no image configuration (num_images_per_request,
-    # image_height/width, num_image_tokens), so the compiled engine cannot
-    # reproduce `BaseBackend._run_encoder`'s token-count math (eff_batch, eff_s,
-    # pre/post-merge counts) needed to query the vision ops with correct shapes.
-    # Python's `run_static` already treats any request without image dimensions
-    # as text-only and skips the encoder entirely (base_backend `_run_encoder`
-    # early-return). Emitting the encoder ops here would make the compiled engine
-    # query them unconditionally (with wrong shapes), diverging from the Python
-    # reference for VL models. Vision modeling in the compiled path is deferred
-    # until runtime image config is threaded through compile_engine (#1567).
     identity = _engine_config_dict(
         model=model,
         model_path=model_path,
@@ -963,8 +952,35 @@ def build_engine_spec_json(
     architecture = getattr(model, "architecture", None)
     _resolve_attention_lane_orders(model.context_ops, database, override, architecture)
     _resolve_attention_lane_orders(model.generation_ops, database, override, architecture)
+
+    # Vision encoder ops stay out of the context/generation walks: the language
+    # phases never run them, and Python's `run_static` treats requests without
+    # image dimensions as text-only. When a caller asks for the tower
+    # (`encoder_parallel`), the ops travel in their own section grouped by the
+    # token class they run on; image shapes are supplied at query time, so no
+    # image configuration is compiled in.
     context_ops = json.loads(_ops_json(model.context_ops))
-    generation_ops = json.loads(_ops_json(_generation_ops_for_engine(model, identity)))
+    generation_ops = json.loads(_ops_json(model.generation_ops))
+    vision = None
+    if encoder_parallel is not None:
+        from aisimulate_core.sdk.models.blocks.vit import encoder_shape_class
+
+        encoder_ops = getattr(model, "encoder_ops", None) or []
+        if not encoder_ops or not isinstance(getattr(model, "encoder_config", None), common.VisionEncoderConfig):
+            raise InvalidEngineConfigurationError(f"{model_path} has no vision encoder to compile")
+        if bool(getattr(model.config, "enable_encoder_dp", False)) != (encoder_parallel == "dp"):
+            raise InvalidEngineConfigurationError("the model was not built with the requested encoder_parallel")
+        if encoder_parallel == "dp" and model.architecture == "Llama4ForConditionalGeneration":
+            # sglang v0.5.19 reads `mm_enable_dp_encoder` only in its Qwen-VL, GLM, InternVL, Kimi
+            # and MiMo towers; Llama 4's vision tower is always tensor-parallel.
+            raise InvalidEngineConfigurationError("Llama 4's vision tower is tensor-parallel only in SGLang 0.5.19")
+        groups: dict[str, list] = {"patch": [], "transformer": [], "output": []}
+        for op in encoder_ops:
+            groups[encoder_shape_class(op._name)].append(op)
+        vision = {
+            "encoder_parallel": encoder_parallel,
+            **{f"{name}_ops": json.loads(_ops_json(ops)) for name, ops in groups.items()},
+        }
 
     spec = {
         "schema_version": ENGINE_SPEC_SCHEMA_VERSION,
@@ -972,16 +988,9 @@ def build_engine_spec_json(
         "context_ops": context_ops,
         "generation_ops": generation_ops,
     }
+    if vision is not None:
+        spec["vision"] = vision
     result = json.dumps(spec)
-    if any(
-        getattr(getattr(model, "config", None), field, None) is not None
-        for field in ("decode_workload_distribution", "prefill_graph_profile")
-    ):
-        # The native engine owns the exact profile/source policy on both this
-        # preflight and later reload. No Python latency lookup or formula.
-        aisimulate_core.AicEngine.from_spec(
-            bytes(aisimulate_core.engine_spec_bincode_from_json(result)), systems_path=systems_path
-        )
     return result
 
 
@@ -1272,21 +1281,8 @@ class EngineHandle:
             int(stride),
         )
 
-    @property
-    def prefill_graph_profile(self) -> dict | None:
-        """A fresh, read-only-by-copy view of the compiled immutable profile."""
-        raw = self._engine.prefill_graph_profile_json
-        return None if raw is None else json.loads(raw)
-
     def predict_prefill_latency(self, bs: int, isl: int, prefix: int = 0) -> float:
         """Forward-step milliseconds. ``isl`` includes the cached ``prefix``."""
-        if self._engine.prefill_graph_profile_id is not None:
-            from aisimulate_core.sdk.errors import PrefillGraphProfileError
-
-            if any(type(value) is not int or not 0 <= value <= 0xFFFFFFFF for value in (bs, isl, prefix)):
-                raise PrefillGraphProfileError("bs, total isl and prefix must be exact integers within u32")
-            # Native Rust performs checked subtraction, exact shape admission and multiplication.
-            return self._engine.predict_prefill_latency(bs, isl, prefix)
         return self._engine.predict_prefill_latency(int(bs), int(isl), int(prefix))
 
     def predict_decode_latency(self, bs: int, isl: int, osl: int = 2) -> float:

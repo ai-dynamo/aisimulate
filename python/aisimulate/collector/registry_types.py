@@ -82,8 +82,6 @@ class PerfFile(str, Enum):
     NCCL = "nccl_perf.txt"
     CUSTOM_ALLREDUCE = "custom_allreduce_perf.txt"
     TRTLLM_ALLTOALL = "trtllm_alltoall_perf.txt"
-    SGLANG_PREFILL_ATTENTION_SEQUENCE = "sglang_prefill_attention_sequence_perf.txt"
-    SGLANG_PREFILL_COMM_NORM_BOUNDARY = "sglang_prefill_comm_norm_boundary_perf.txt"
 
 
 @dataclass(frozen=True, slots=True)

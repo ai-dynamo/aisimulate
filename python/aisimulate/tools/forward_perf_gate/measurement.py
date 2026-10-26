@@ -38,10 +38,7 @@ class BenchmarkCase:
 
 
 @contextlib.contextmanager
-def redirect_output(enabled: bool):
-    if not enabled:
-        yield
-        return
+def redirect_output():
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         yield
 
@@ -49,21 +46,16 @@ def redirect_output(enabled: bool):
 def build_session(
     case: BenchmarkCase,
     *,
-    suppress_loader_output: bool,
-    database_mode: str | None = None,
-    shared_layer: bool | None = None,
+    database_mode: str,
 ) -> tuple[InferenceSession, config.RuntimeConfig]:
-    with redirect_output(suppress_loader_output):
-        if database_mode is None:
-            database = perf_database.get_database(case.system_name, case.backend_name, case.backend_version)
-        else:
-            database = perf_database.get_database_view(
-                case.system_name,
-                case.backend_name,
-                case.backend_version,
-                database_mode=database_mode,
-                shared_layer=shared_layer,
-            )
+    with redirect_output():
+        database = perf_database.get_database_view(
+            case.system_name,
+            case.backend_name,
+            case.backend_version,
+            database_mode=database_mode,
+            shared_layer=True,
+        )
         if database is None:
             raise PerfDataNotAvailableError(
                 f"failed to load perf database for {case.system_name}/{case.backend_name}/{case.backend_version}"
@@ -90,12 +82,6 @@ def build_session(
 def clear_caches(case: BenchmarkCase) -> None:
     """Reset prediction state through the public database eviction contract."""
     perf_database.unload_database(case.system_name, case.backend_name, case.backend_version)
-
-
-def ensure_rust_library_present() -> None:
-    # The compiled engine ships as the maturin-built ``aisimulate_core``
-    # extension; importing it is the availability check.
-    import aisimulate_core  # noqa: F401
 
 
 def percentile(samples: list[float], value: float) -> float:
@@ -189,15 +175,8 @@ def phase_call(
 def measure_session_setup_ms(
     case: BenchmarkCase,
     *,
-    suppress_loader_output: bool,
-    database_mode: str | None = None,
-    shared_layer: bool | None = None,
+    database_mode: str,
 ) -> tuple[float, InferenceSession, config.RuntimeConfig]:
     start = _perf_counter_ns()
-    session, runtime_config = build_session(
-        case,
-        suppress_loader_output=suppress_loader_output,
-        database_mode=database_mode,
-        shared_layer=shared_layer,
-    )
+    session, runtime_config = build_session(case, database_mode=database_mode)
     return (_perf_counter_ns() - start) / 1_000_000.0, session, runtime_config

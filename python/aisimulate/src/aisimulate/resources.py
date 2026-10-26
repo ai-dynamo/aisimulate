@@ -10,15 +10,18 @@ capacity. They are conservative planning estimates, not promises about peak RSS.
 from __future__ import annotations
 
 import bisect
+import gzip
 import heapq
 import itertools
 import json
 import math
 import os
+import threading
+from collections import OrderedDict
 from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +62,10 @@ class ResourceLimitError(RuntimeError):
     def __init__(self, message: str, *, plan: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.plan = plan or {"status": "resource_limited", "reason": message}
+
+
+class _SerialAdmissionRequired(ResourceLimitError):
+    """An unknown peak prevents a multi-candidate wave, regardless of headroom."""
 
 
 def _read_text(path: Path) -> str | None:
@@ -213,9 +220,7 @@ def workload_bounds(config: Any) -> dict[str, Any]:
             "trace_format": source["format"],
             "trace_block_size": source.get("block_size"),
             "agentic_lanes": load.get("agentic_lanes", 1),
-            **({"agentic_snapshot": load["agentic_snapshot"]} if "agentic_snapshot" in load else {}),
-            **({"agentic_warmup": True} if load.get("agentic_warmup") else {}),
-            **({"agentic_profile": load["agentic_profile"]} if "agentic_profile" in load else {}),
+            **{key: load[key] for key in ("agentic_snapshot", "agentic_warmup", "agentic_profile") if key in load},
         }
     session = source["type"] == "synthetic-session"
     count = stop.get("sessions" if session else "requests")
@@ -287,13 +292,13 @@ def _weka_active_inputs(intervals: list[tuple[float, float, int, int | None]]) -
     return min(total, peak)
 
 
-def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes: int | None) -> ResourceEstimate:
+def _inspect_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes: int | None) -> ResourceEstimate:
     """Account for the native Weka import and replay phases, without token arrays.
 
     These are planning allowances, not a hard RSS guarantee. Import materializes
     one play at a time before building the cached corpus graph. Replay retains
     compact hashes and planned outputs; full prompts exist for active requests.
-    See docs/local-resources.md for the consumer contracts and calibration.
+    See docs/reference/local-resources.md for the consumer contracts and calibration.
     """
     baseline = 256 * MIB
     buffer_size = 64 * 1024
@@ -330,7 +335,8 @@ def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes
                 intervals: list[list[tuple[float, float, int, int | None]]] = []
                 document_start = 0
                 with path.open("rb") as stream:
-                    for prefix, event, value in ijson.parse(stream, multiple_values=True, buf_size=buffer_size):
+                    events = ijson.parse(stream, multiple_values=True, buf_size=buffer_size)
+                    for prefix, event, value in events:
                         if event == "start_map":
                             if prefix == "":
                                 document_start = max(0, stream.tell() - buffer_size)
@@ -390,10 +396,26 @@ def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes
                             outputs += sum(r["out"] for r in requests)
                             active_inputs += sum(_weka_active_inputs(scope) for scope in intervals)
                         elif event == "start_array" and frames and frames[-1][1] is not None:
-                            map_prefix = frames[-1][0]
+                            map_prefix, frame = frames[-1]
                             if prefix == (map_prefix + "." if map_prefix else "") + "requests":
                                 scopes.append((prefix, len(intervals)))
                                 intervals.append([])
+                            elif "hash_count" in frame and prefix == map_prefix + ".hash_ids":
+                                # Hashes dominate large traces; avoid dispatch and prefix allocation per hash.
+                                count = frame["hash_count"]
+                                for _, hash_event, hash_value in events:
+                                    if hash_event == "end_array":
+                                        break
+                                    if (
+                                        hash_event != "number"
+                                        or type(hash_value) is not int
+                                        or not 0 <= hash_value < 2**64
+                                    ):
+                                        raise ValueError("Weka hash_ids must contain unsigned 64-bit integers")
+                                    if not count:
+                                        frame["first_hash"] = hash_value
+                                    count += 1
+                                frame["hash_count"] = count
                         elif event == "end_array" and scopes and prefix == scopes[-1][0]:
                             scopes.pop()
                         elif frames and frames[-1][1] is not None and event not in {"map_key", "end_array"}:
@@ -419,8 +441,9 @@ def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes
     copies = (lanes + plays - 1) // plays if snapshot else 1
     replay = copies * (32 * hashes + 32 * outputs + 32768 * records + 16 * active_inputs)
     if snapshot:
-        # Immutable snapshot context owns a graph, u32 hash ranks and outputs.
-        replay += 12 * hashes + 4 * outputs + 2048 * records
+        # Immutable snapshot context owns the graph, whose hash IDs are play-local
+        # u32 ranks, and the output plans.
+        replay += 4 * hashes + 4 * outputs + 2048 * records
     if workload.get("agentic_warmup"):
         # Preparation and profile token payloads do not overlap across the
         # quiescent barrier; retain their extra evidence/identity allowance.
@@ -430,6 +453,56 @@ def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes
     # inputs, not an unavoidable allocation or an admission lower bound.
     lower = max(8 * hashes, 4 * outputs)
     peak = max(lower, baseline + max(import_peak, replay))
+    return ResourceEstimate(
+        "weka-materialized-v1",
+        None,
+        4 * active_inputs,
+        lower,
+        peak,
+        "Weka per-play import and native replay estimate; normalized hashes, planned outputs and active prompts; "
+        "runtime trace validation still required",
+    )
+
+
+def _weka_scan_key(workload: Mapping[str, Any]) -> tuple[Any, ...] | None:
+    files = _trace_files(workload, "weka")
+    if files is None:
+        return None
+    return (
+        workload.get("trace_block_size"),
+        int(workload.get("agentic_lanes") or 1),
+        workload.get("agentic_snapshot") is not None,
+        bool(workload.get("agentic_warmup")),
+        _trace_scan_identity(files),
+    )
+
+
+def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes: int | None) -> ResourceEstimate:
+    """Reuse completed inspection while applying profile admission to current headroom."""
+    unqualified = lambda reason: ResourceEstimate("weka-unqualified-v1", None, 0, 0, None, reason)
+    try:
+        key = _weka_scan_key(workload)
+        if key is None:
+            return unqualified("trace symlinks have no stable resource identity")
+        with _TRACE_SCAN_CACHE_LOCK:
+            estimate = _WEKA_SCAN_CACHE.get(key)
+            if estimate is not None:
+                _WEKA_SCAN_CACHE.move_to_end(key)
+        if estimate is None:
+            estimate = _inspect_weka_trace(workload, inspection_budget_bytes=inspection_budget_bytes)
+        if _weka_scan_key(workload) != key:
+            return unqualified("Weka source changed during metadata inspection")
+        # Empty, invalid and inspection-limited scans have no complete allocation bound.
+        if estimate.allocation_model != "weka-materialized-v1" or not estimate.lower_bound_bytes:
+            return estimate
+        peak, lower = estimate.estimated_peak_bytes, estimate.lower_bound_bytes
+        if inspection_budget_bytes is None or peak <= inspection_budget_bytes:
+            with _TRACE_SCAN_CACHE_LOCK:
+                _WEKA_SCAN_CACHE[key] = estimate
+                while len(_WEKA_SCAN_CACHE) > _TRACE_SCAN_CACHE_SIZE:
+                    _WEKA_SCAN_CACHE.popitem(last=False)
+    except (OSError, ValueError, TypeError, KeyError, OverflowError) as exc:
+        return unqualified(f"cannot inspect Weka metadata: {exc}")
     if workload.get("agentic_profile") is not None:
         if inspection_budget_bytes is not None and peak > inspection_budget_bytes:
             return ResourceEstimate(
@@ -449,34 +522,375 @@ def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes
             "agentic profile retains evidence beyond the initial corpus; total memory has no qualified static bound "
             "and requires supervised serial execution",
         )
+    return estimate
+
+
+OBSERVED_TRACE_MODEL = "trace-observed-peak-v1"
+# Reserve this multiple of the largest peak a completed replay of the same trace
+# reached. It is admission policy, not a model of native allocations.
+OBSERVED_PEAK_MARGIN = 1.5
+_TRACE_FORMATS = frozenset(
+    {"mooncake", "mooncake-delta", "agentic_mooncake", "applied_compute_agentic", "dynamo", "weka"}
+)
+
+
+def _token_length(value: Any) -> int:
+    if type(value) is not int or value < 0:
+        raise ValueError("trace token lengths must be nonnegative integers")
+    return value
+
+
+@dataclass
+class _TraceCounters:
+    """Keep scalar counters only; never retain request or token arrays."""
+
+    # Dynamo, Agentic Mooncake and Weka loaders hold every u64 source hash
+    # array at once. Mooncake-family loaders convert each row as it is read.
+    retains_source_hashes: bool
+    # Mooncake-delta setup replaces each turn's hashes with its synthesized prompt.
+    materializes_inputs: bool = False
+    hashes: int = 0
+    authored_outputs: int = 0
+    outputs: int = 0
+    largest_input: int = 0
+    total_input: int = 0
+    requests: int = 0
+
+    @property
+    def lower_bound(self) -> int:
+        loaded = 8 * self.hashes + 4 * self.authored_outputs if self.retains_source_hashes else 0
+        if self.materializes_inputs:
+            prepared = max(4 * self.hashes, 4 * (self.total_input + self.outputs))
+        else:
+            prepared = 4 * (self.hashes + self.outputs)
+        return max(loaded, prepared, 4 * self.largest_input)
+
+
+class _InspectionStopped(Exception):
+    """The running lower bound already exceeds the supplied headroom."""
+
+    def __init__(self, counters: _TraceCounters) -> None:
+        super().__init__()
+        self.counters = counters
+
+
+def _observed_peak_estimate(counters: _TraceCounters) -> ResourceEstimate:
     return ResourceEstimate(
-        "weka-materialized-v1",
+        OBSERVED_TRACE_MODEL,
+        counters.requests or None,
+        0,
+        counters.lower_bound,
         None,
-        4 * active_inputs,
-        lower,
-        peak,
-        "Weka per-play import and native replay estimate; normalized hashes, planned outputs and active prompts; "
-        "runtime trace validation still required",
+        "trace arrays and the largest prompt provide only a lower bound; the peak is measured from completed "
+        "replays of the same trace and requires supervised serial execution until observed",
     )
+
+
+def _check_headroom(counters: _TraceCounters, limit: int | None) -> None:
+    if limit is not None and counters.lower_bound > limit:
+        raise _InspectionStopped(counters)
+
+
+_MOONCAKE_INPUTS = frozenset({"input_length", "input_tokens"})
+_MOONCAKE_OUTPUTS = frozenset({"output_length", "output_tokens"})
+
+
+def _scan_mooncake(events: Any, counters: _TraceCounters, state: dict[str, Any], limit: int | None) -> None:
+    """Count Mooncake, Mooncake-delta and Agentic Mooncake rows by their top-level fields."""
+    # Mooncake loaders size an omitted prompt from its hashes; Agentic Mooncake requires it.
+    block_size = state["omitted_input_block_size"]
+    hashes = authored = 0
+    row = False
+    row_input = None
+    for prefix, event, value in events:
+        if prefix == "hash_ids.item":
+            if event == "number":
+                hashes += 1
+        elif prefix == "hash_ids":
+            row = True
+        elif prefix == "output_token_ids.item":
+            if event == "number":
+                authored += 1
+        elif prefix == "":
+            if event == "start_map":
+                row = False
+                row_input = None
+            elif event == "end_map":
+                length = hashes * block_size if row_input is None else row_input
+                counters.largest_input = max(counters.largest_input, length)
+                counters.total_input += length
+                counters.hashes += hashes
+                counters.authored_outputs += authored
+                hashes = authored = 0
+                counters.requests += int(row)
+                _check_headroom(counters, limit)
+        elif prefix in _MOONCAKE_INPUTS:
+            row_input = _token_length(value)
+            row = True
+        elif prefix in _MOONCAKE_OUTPUTS:
+            counters.outputs += _token_length(value)
+            row = True
+
+
+def _scan_applied_compute(events: Any, counters: _TraceCounters, state: dict[str, Any], limit: int | None) -> None:
+    """Count sessions without the synthetic hashes the loader derives from lengths.
+
+    Each turn's prompt adds the previous response and tool output, so the final
+    turn carries the session's largest prompt.
+    """
+    prompt = 0
+    for prefix, event, value in events:
+        if prefix == "assistant_response_length.item":
+            length = _token_length(value)
+            counters.outputs += length
+            prompt += length
+        elif prefix == "tool_call_output_length.item" or prefix == "input_prompt_length":
+            prompt += _token_length(value)
+        elif prefix == "final_assistant_response_length":
+            counters.outputs += _token_length(value)
+        elif prefix == "num_turns":
+            counters.requests += _token_length(value) + 1
+        elif prefix == "":
+            if event == "start_map":
+                prompt = 0
+            elif event == "end_map":
+                counters.largest_input = max(counters.largest_input, prompt)
+                _check_headroom(counters, limit)
+
+
+_DYNAMO_HASHES = "request.replay.input_sequence_hashes.item"
+_WRAPPED_DYNAMO_HASHES = "event." + _DYNAMO_HASHES
+_DYNAMO_FIELDS = frozenset({"event_type", "request.output_tokens", "request.replay.input_length"})
+
+
+def _scan_dynamo(events: Any, counters: _TraceCounters, state: dict[str, Any], limit: int | None) -> None:
+    """Count Dynamo request_end events, accepting a direct event or an outer event wrapper.
+
+    The first request event selects standard or agentic mode for every file.
+    Later requests must keep that mode.
+    """
+    agentic = state.get("agentic")
+    direct: dict[str, Any] | None = None
+    wrapper: dict[str, Any] = {}
+    wrapped = False
+    direct_hashes = wrapper_hashes = 0
+    for prefix, event, value in events:
+        if prefix == _DYNAMO_HASHES:
+            if event == "number":
+                direct_hashes += 1
+            continue
+        if prefix == _WRAPPED_DYNAMO_HASHES:
+            if event == "number":
+                wrapper_hashes += 1
+            continue
+        if prefix == "":
+            if event == "start_map":
+                direct, wrapper, wrapped = {}, {}, False
+                direct_hashes = wrapper_hashes = 0
+            elif event == "end_map" and direct is not None:
+                row, row_hashes = (wrapper, wrapper_hashes) if wrapped else (direct, direct_hashes)
+                if row.get("event_type") != "request_end":
+                    continue
+                contextual = row.get("agent_context", False)
+                if agentic is not None and contextual != agentic:
+                    raise ResourceLimitError("Dynamo request trace cannot mix requests with and without agent_context")
+                agentic = state["agentic"] = contextual
+                counters.hashes += row_hashes
+                counters.outputs += _token_length(row.get("request.output_tokens"))
+                counters.largest_input = max(
+                    counters.largest_input, _token_length(row.get("request.replay.input_length"))
+                )
+                counters.requests += 1
+                _check_headroom(counters, limit)
+            continue
+        if prefix == "event":
+            wrapped = True
+            continue
+        if direct is None:
+            continue
+        if prefix.startswith("event."):
+            row, key = wrapper, prefix[6:]
+        else:
+            row, key = direct, prefix
+        if key in _DYNAMO_FIELDS:
+            row[key] = value
+        elif key == "agent_context" and event in {"start_map", "null"}:
+            row[key] = event == "start_map"
+
+
+def _scan_weka(events: Any, counters: _TraceCounters, state: dict[str, Any], limit: int | None) -> None:
+    """Count WekaEntry and WekaInnerEntry requests with generated hashes for each prompt."""
+    block_size = state["block_size"]
+    rows: dict[str, dict[str, Any]] = {}
+    for prefix, event, value in events:
+        if prefix.endswith(".hash_ids.item"):
+            continue
+        if prefix == "block_size" and event == "number" and value != block_size:
+            raise ValueError("Weka corpus mixes block sizes")
+        # Totals, provenance, and the subagent marker itself are not requests.
+        if prefix in {"requests.item", "requests.item.requests.item"}:
+            if event == "start_map":
+                rows[prefix] = {}
+            elif event == "end_map":
+                row = rows.pop(prefix)
+                if row.get("type") not in {"n", "s"}:
+                    continue
+                length = _token_length(row.get("in"))
+                counters.hashes += (length + block_size - 1) // block_size
+                counters.outputs += _token_length(row.get("out"))
+                counters.largest_input = max(counters.largest_input, length)
+                counters.requests += 1
+                _check_headroom(counters, limit)
+        else:
+            base, _, key = prefix.rpartition(".")
+            if key in {"type", "in", "out"} and base in rows:
+                rows[base][key] = value
+
+
+def _weka_block_size(path: Path) -> int:
+    # serde accepts any field order. Read the first play's block size before
+    # counting requests, without retaining preceding input lengths or arrays.
+    with path.open("rb") as stream:
+        for prefix, event, value in ijson.parse(stream, multiple_values=True, buf_size=64 * 1024):
+            if prefix == "block_size":
+                block_size = _token_length(value)
+                if block_size > 0:
+                    return block_size
+                break
+    raise ValueError("Weka trace requires a positive block_size")
+
+
+_TRACE_SCANNERS = {
+    "mooncake": _scan_mooncake,
+    "mooncake-delta": _scan_mooncake,
+    "agentic_mooncake": _scan_mooncake,
+    "applied_compute_agentic": _scan_applied_compute,
+    "dynamo": _scan_dynamo,
+    "weka": _scan_weka,
+}
+
+
+def _trace_files(workload: Mapping[str, Any], format_name: str) -> list[Path] | None:
+    """Return inspected files in scan order, or None when a symlink hides the resource identity."""
+    files = []
+    for raw_path in workload.get("trace_paths") or [workload["trace_path"]]:
+        source = Path(raw_path)
+        for path in source.rglob("*") if source.is_dir() else (source,):
+            if path.is_symlink():
+                return None
+            if not path.is_file() or (format_name == "weka" and path.suffix.lower() not in {".json", ".jsonl"}):
+                continue
+            files.append(path)
+    return files
+
+
+def _scan_finite_trace(
+    files: list[Path], format_name: str, configured_block_size: int, inspection_budget_bytes: int | None
+) -> _TraceCounters:
+    counters = _TraceCounters(
+        retains_source_hashes=format_name in {"agentic_mooncake", "dynamo", "weka"},
+        materializes_inputs=format_name == "mooncake-delta",
+    )
+    limit = None if inspection_budget_bytes is None else inspection_budget_bytes - WORKER_BASELINE_BYTES
+    scan = _TRACE_SCANNERS[format_name]
+    state: dict[str, Any] = {
+        "omitted_input_block_size": configured_block_size if format_name in {"mooncake", "mooncake-delta"} else 0
+    }
+    for path in files:
+        if format_name == "weka" and "block_size" not in state:
+            state["block_size"] = _weka_block_size(path)
+        # Streaming holds individual scalars, never request or token arrays.
+        with gzip.open(path, "rb") if format_name == "dynamo" and path.suffix == ".gz" else path.open("rb") as stream:
+            scan(ijson.parse(stream, multiple_values=True, buf_size=64 * 1024), counters, state, limit)
+    return counters
+
+
+def _trace_scan_identity(files: list[Path]) -> tuple[Any, ...]:
+    return tuple(
+        (str(path.absolute()), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        for path, stat in ((path, path.stat()) for path in files)
+    )
+
+
+_TRACE_SCAN_CACHE_SIZE = 16
+_TRACE_SCAN_CACHE: OrderedDict[tuple[Any, ...], _TraceCounters] = OrderedDict()
+_WEKA_SCAN_CACHE: OrderedDict[tuple[Any, ...], ResourceEstimate] = OrderedDict()
+_TRACE_SCAN_CACHE_LOCK = threading.Lock()
+
+
+def _clear_trace_scan_cache() -> None:
+    with _TRACE_SCAN_CACHE_LOCK:
+        _TRACE_SCAN_CACHE.clear()
+        _WEKA_SCAN_CACHE.clear()
+
+
+def _estimate_finite_trace(
+    workload: Mapping[str, Any], *, format_name: str, inspection_budget_bytes: int | None
+) -> ResourceEstimate:
+    """Bound a finite replay from one cached streaming pass; its peak is observed at runtime."""
+    unqualified = lambda reason: ResourceEstimate("trace-unqualified-v1", None, 0, 0, None, reason)
+    try:
+        files = _trace_files(workload, format_name)
+        if files is None:
+            return unqualified("trace symlinks have no stable resource identity")
+        # Completed counters depend only on file contents, so admission and the
+        # per-run guard share one pass. Headroom is compared live on every call.
+        key = (
+            "trace-scan-v1",
+            format_name,
+            workload.get("trace_block_size"),
+            _trace_scan_identity(files),
+        )
+        with _TRACE_SCAN_CACHE_LOCK:
+            counters = _TRACE_SCAN_CACHE.get(key)
+            if counters is not None:
+                _TRACE_SCAN_CACHE.move_to_end(key)
+        if counters is None:
+            block_size = int(workload.get("trace_block_size") or 512)
+            counters = _scan_finite_trace(files, format_name, block_size, inspection_budget_bytes)
+            if counters.requests:
+                with _TRACE_SCAN_CACHE_LOCK:
+                    _TRACE_SCAN_CACHE[key] = counters
+                    while len(_TRACE_SCAN_CACHE) > _TRACE_SCAN_CACHE_SIZE:
+                        _TRACE_SCAN_CACHE.popitem(last=False)
+    except _InspectionStopped as stopped:
+        # Remaining rows were not inspected; never cache this partial bound.
+        return _observed_peak_estimate(stopped.counters)
+    except (OSError, EOFError, ValueError, ijson.JSONError) as exc:
+        return unqualified(f"cannot inspect trace metadata: {exc}")
+    if not counters.requests:
+        return unqualified("trace metadata contains no recognized request token lengths")
+    return _observed_peak_estimate(counters)
 
 
 def _estimate_trace(
     workload: Mapping[str, Any], *, stack: str, inspection_budget_bytes: int | None = None
 ) -> ResourceEstimate:
     """Stream JSON/JSONL metadata without materializing request or token arrays."""
-    unqualified = lambda reason: ResourceEstimate("trace-unqualified-v1", None, 0, 0, None, reason)
     format_name = workload.get("trace_format", "mooncake")
     if format_name == "weka" and stack == "engine":
+        # Native Weka has a peak model, including snapshot and warmup storage.
         return _estimate_weka_trace(workload, inspection_budget_bytes=inspection_budget_bytes)
-    if stack not in {"engine", "dynamo"} or format_name not in {
-        "mooncake",
-        "mooncake-delta",
-        "agentic_mooncake",
-        "applied_compute_agentic",
-        "dynamo",
-        "weka",
-    }:
-        return unqualified("trace format or runner has no qualified allocation model")
+    if stack not in {"engine", "dynamo"} or format_name not in _TRACE_FORMATS:
+        return ResourceEstimate(
+            "trace-unqualified-v1", None, 0, 0, None, "trace format or runner has no qualified allocation model"
+        )
+    if (
+        workload.get("agentic_profile") is not None
+        or workload.get("agentic_snapshot") is not None
+        or workload.get("agentic_warmup")
+    ):
+        return _estimate_trace_legacy(
+            workload, format_name=format_name, inspection_budget_bytes=inspection_budget_bytes
+        )
+    return _estimate_finite_trace(workload, format_name=format_name, inspection_budget_bytes=inspection_budget_bytes)
+
+
+def _estimate_trace_legacy(
+    workload: Mapping[str, Any], *, format_name: str, inspection_budget_bytes: int | None
+) -> ResourceEstimate:
+    """Keep the conservative storage estimate for snapshot, warmup and profile replays."""
+    unqualified = lambda reason: ResourceEstimate("trace-unqualified-v1", None, 0, 0, None, reason)
     length_keys = {
         "in",
         "out",
@@ -493,6 +907,7 @@ def _estimate_trace(
         "system_tokens",
     }
     token_keys = {"input_token_ids", "output_token_ids", "prompt_token_ids"}
+    record_keys = length_keys | token_keys
     hash_keys = {"hash_ids", "input_sequence_hashes"}
     total_bytes = tokens = hashes = records = turns = 0
     block_size = int(workload.get("trace_block_size") or 512)
@@ -517,17 +932,18 @@ def _estimate_trace(
                         storage_estimate,
                         "trace storage estimate exceeds live headroom before metadata parsing",
                     )
-                # Stream documents and arrays. A parser scalar still occupies
-                # memory, so reject oversized storage estimates before reading.
-                # Runtime supervision also covers files growing after stat().
+                # Stream documents and arrays. The parser still holds individual
+                # scalar values in memory.
                 maps: list[bool] = []
-                with path.open("rb") as stream:
+                with (
+                    gzip.open(path, "rb") if format_name == "dynamo" and path.suffix == ".gz" else path.open("rb")
+                ) as stream:
                     for prefix, event, value in ijson.parse(stream, multiple_values=True, buf_size=64 * 1024):
                         if event == "start_map":
                             maps.append(False)
                         elif event == "end_map":
                             records += int(maps.pop())
-                        elif event == "map_key" and value in length_keys | token_keys:
+                        elif event == "map_key" and value in record_keys:
                             maps[-1] = True
                         else:
                             parts = prefix.rsplit(".", 2)
@@ -545,7 +961,7 @@ def _estimate_trace(
                             elif key == "num_turns" and event == "number":
                                 turns += int(value) + 1
                     total_bytes += stream.tell()
-    except (OSError, ValueError, ijson.JSONError) as exc:
+    except (OSError, EOFError, ValueError, ijson.JSONError) as exc:
         return unqualified(f"cannot inspect trace metadata: {exc}")
     if records == 0:
         return unqualified("trace metadata contains no recognized request token lengths")
@@ -626,6 +1042,14 @@ def estimate_workload(
     return ResourceEstimate(model, count, tokens, lower, peak)
 
 
+def _reserved_bytes(peak: int | None, lower: int, *, external: bool) -> int:
+    if peak is not None:
+        return peak
+    # Adapter v1 lower bounds may already contain process memory. Built-in
+    # unknown bounds describe arrays separately from the worker baseline.
+    return max(WORKER_BASELINE_BYTES, lower) if external else WORKER_BASELINE_BYTES + lower
+
+
 def build_plan(
     workload: Mapping[str, Any],
     *,
@@ -662,12 +1086,19 @@ def build_plan(
     if peak is not None and (type(peak) is not int or peak <= 0 or peak < estimate.lower_bound_bytes):
         raise ResourceLimitError("runner returned an invalid host resource estimate")
     workers = min(requested_parallelism, budget["cpu_limit"], free // peak) if peak else 0
-    if (
-        peak is None
-        and os.environ.get("_AISIMULATE_SUPERVISED_BUDGET")
-        and free >= max(WORKER_BASELINE_BYTES, estimate.lower_bound_bytes)
-    ):
-        workers = 1  # Unqualified estimates require serial, continuously monitored execution.
+    reason = "" if workers else "candidate exceeds the host memory budget"
+    if peak is None:
+        if free < _reserved_bytes(peak, estimate.lower_bound_bytes, external=callable(estimator)):
+            reason = (
+                "candidate estimate exceeds available host memory"
+                if callable(estimator)
+                else "candidate lower bound plus worker baseline exceeds available host memory"
+            )
+        elif not os.environ.get("_AISIMULATE_SUPERVISED_BUDGET"):
+            reason = f"unknown peak requires supervised serial execution: {estimate.reason}"
+        else:
+            workers = 1  # Unqualified estimates require serial, continuously monitored execution.
+            reason = estimate.reason
     return {
         "schema_version": 1,
         "status": "admitted" if workers else "resource_limited",
@@ -677,7 +1108,7 @@ def build_plan(
         "estimate": asdict(estimate),
         "requested_parallelism": requested_parallelism,
         "effective_parallelism": workers,
-        "reason": estimate.reason if peak is None else ("" if workers else "candidate exceeds the host memory budget"),
+        "reason": reason,
     }
 
 
@@ -743,11 +1174,28 @@ def _child_memory_bytes() -> int:
         raise ResourceLimitError(f"cannot inspect owned execution processes: {exc}") from exc
 
 
+def _trace_identity(workload: Mapping[str, Any]) -> tuple[Any, ...] | None:
+    """Identify a finite trace replay whose peak a completed replay can measure."""
+    paths = workload.get("trace_paths") or ([workload["trace_path"]] if workload.get("trace_path") else None)
+    # Snapshots, warmup and profiles retain state beyond the finite corpus.
+    if (
+        not paths
+        or workload.get("agentic_profile") is not None
+        or workload.get("agentic_snapshot") is not None
+        or workload.get("agentic_warmup")
+    ):
+        return None
+    return workload.get("trace_format", "mooncake"), workload.get("trace_block_size"), tuple(map(str, paths))
+
+
 @dataclass(frozen=True)
 class GuardedRunnerFactory:
     factory: Any
     stack: str
     policy: ResourceConfig
+    # Coordinator-local peaks from completed replays, keyed by trace identity.
+    # Workers receive a pickled copy and never consult it.
+    observed_peaks: dict[tuple[Any, ...], int] = field(default_factory=dict, compare=False, repr=False)
 
     def capabilities(self):
         return self.factory.capabilities()
@@ -755,11 +1203,32 @@ class GuardedRunnerFactory:
     def create(self, worker_id):
         return GuardedRunner(self.factory.create(worker_id), self.stack, self.policy, self.factory)
 
+    def record_peak(self, spec: Any, peak_bytes: int) -> None:
+        """Remember the largest RSS that a completed replay of this trace reached."""
+        key = _trace_identity(spec.workload)
+        if key is not None and peak_bytes > 0:
+            self.observed_peaks[key] = max(peak_bytes, self.observed_peaks.get(key, 0))
+
+    def observed_peak(self, spec: Any) -> int | None:
+        key = _trace_identity(spec.workload)
+        return None if key is None else self.observed_peaks.get(key)
+
+    def _observed_reservation(self, spec: Any, estimate: Mapping[str, Any]) -> int | None:
+        # Candidates differ in engine shape, not in their trace; the margin and
+        # live-pressure halving cover a later candidate that needs more.
+        observed = self.observed_peak(spec) if estimate["allocation_model"] == OBSERVED_TRACE_MODEL else None
+        if observed is None:
+            return None
+        return max(WORKER_BASELINE_BYTES + estimate["lower_bound_bytes"], math.ceil(observed * OBSERVED_PEAK_MARGIN))
+
     def admit_wave(self, specs: list[Any]) -> dict[str, Any]:
         """Reserve the sum of a whole wave before creating any of its workers."""
         host = discover_host()
-        plans = [
-            build_plan(
+        external = callable(getattr(self.factory, "estimate_host_resources", None))
+        plans = []
+        reservations = []
+        for spec in specs:
+            plan = build_plan(
                 spec.workload,
                 stack=self.stack,
                 policy=self.policy,
@@ -767,10 +1236,22 @@ class GuardedRunnerFactory:
                 factory=self.factory,
                 concurrency=spec.concurrency,
             )
-            for spec in specs
-        ]
-        for plan in plans:
+            plans.append(plan)
+            estimate = plan["estimate"]
+            observed = self._observed_reservation(spec, estimate)
+            if estimate["estimated_peak_bytes"] is None and observed is None and len(specs) > 1:
+                raise _SerialAdmissionRequired(
+                    "candidate wave requires supervised serial execution",
+                    plan={"status": "resource_limited", "workers": len(specs), "candidates": plans},
+                )
             require_plan(plan)
+            # The observed margin only sizes parallel waves. A lone candidate is
+            # admitted like the unobserved probe, so it is never refused for it.
+            reservations.append(
+                observed
+                if observed is not None and len(specs) > 1
+                else _reserved_bytes(estimate["estimated_peak_bytes"], estimate["lower_bound_bytes"], external=external)
+            )
         budget = resolve_budget(self.policy, host)
         budget["coordinator_memory_bytes"] += _child_memory_bytes()
         available = max(
@@ -780,15 +1261,12 @@ class GuardedRunnerFactory:
                 host.available_memory_bytes - budget["reserved_host_memory_bytes"] - COORDINATOR_RESERVE_BYTES,
             ),
         )
-        peaks = [plan["estimate"]["estimated_peak_bytes"] for plan in plans]
-        required = sum(peak or WORKER_BASELINE_BYTES for peak in peaks)
-        admitted = (
-            required <= available
-            and len(specs) <= budget["cpu_limit"]
-            and (all(peak is not None for peak in peaks) or len(specs) == 1)
-        )
+        required = sum(reservations)
+        admitted = required <= available and len(specs) <= budget["cpu_limit"]
         plan = {
             "status": "admitted" if admitted else "resource_limited",
+            "reserved_bytes": reservations,
+            "observed_peak_bytes": [self.observed_peak(spec) for spec in specs],
             "required_bytes": required,
             "available_bytes": available,
             "workers": len(specs),

@@ -140,7 +140,8 @@ and [nightly run 36305697606](https://github.com/ai-dynamo/aisimulate/actions/ru
 Dynamo's September 30 build source is
 [`777977d5ee0e70128c3dbe83c27fd22a74120874`](https://github.com/ai-dynamo/dynamo/commit/777977d5ee0e70128c3dbe83c27fd22a74120874).
 This is a README simulation qualification, not a claim that Dynamo's entire
-nightly pipeline passed. The daily README lane retests the installed artifacts.
+nightly pipeline passed. Full CI README checks retest the installed artifacts
+when relevant files change.
 
 Keep this environment separate from a current AISimulate source checkout.
 Dynamo pins an exact AISimulate nightly; substituting TOT violates that package

@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
 
 //! Replay-owned prefill/decode handoff ordering and virtual-transfer state.
 
@@ -171,8 +174,11 @@ impl NormalizedHandoffConformance {
         {
             bail!("normalized handoff output/completion counts do not match the fixture");
         }
+        // SGLang caches a transferred prompt when the request is selected into a
+        // running batch, after activation; the other backends store it on activation.
+        let stores_on_activation = self.engine_type != Backend::Sglang;
         if self.destination_stored.before_activation != 0
-            || self.destination_stored.on_activation == 0
+            || (self.destination_stored.on_activation != 0) != stores_on_activation
             || self
                 .destination_stored
                 .repeated_activation_hashes_after_activation
@@ -648,6 +654,7 @@ mod tests {
             mode: TransferTimingMode::DestinationMissing,
             full_prompt_tokens: 10,
             kv_bytes_per_token: None,
+            state_bytes: 0,
             bandwidth_gb_s: None,
         };
         assert_eq!(start_transfer_delay(missing, 7.5), 7.5);
@@ -667,6 +674,7 @@ mod tests {
             mode: TransferTimingMode::FullPrompt,
             full_prompt_tokens: 10,
             kv_bytes_per_token: Some(1024),
+            state_bytes: 0,
             bandwidth_gb_s: Some(-1.0),
         };
         assert!(validate_transfer_timing(timing).is_err());

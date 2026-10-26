@@ -16,6 +16,12 @@ from .resources import ResourceLimitError
 from .supervision import mark_shutdown, runtime_budget
 
 
+def _exception_message(exc: Exception) -> str:
+    lines = [f"{type(exc).__name__}: {exc}"]
+    lines.extend(getattr(exc, "__notes__", ()))
+    return "\n".join(lines)
+
+
 def main() -> int:
     budget = runtime_budget()
     if budget is None:
@@ -52,7 +58,7 @@ def main() -> int:
         (root / "result.json").write_text(result.to_json(), encoding="utf-8")
         return 0
     except Exception as exc:
-        (root / "error.json").write_text(json.dumps({"message": f"{type(exc).__name__}: {exc}"}))
+        (root / "error.json").write_text(json.dumps({"message": _exception_message(exc)}))
         return 3 if isinstance(exc, ResourceLimitError) else 1
 
 

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use rand::rngs::StdRng;
@@ -22,6 +23,7 @@ use super::types::{
     SyntheticTraceSpec, Trace, TraceFileFormat, TurnTrace, effective_replay_key,
 };
 use super::{SYNTHETIC_OUTPUT_SEED, planned_output_token_ids};
+use crate::engine::ImageSpec;
 use crate::replay::protocol::DirectRequest;
 
 #[derive(Debug, Deserialize)]
@@ -110,6 +112,11 @@ pub fn load_agentic_mooncake(path: &Path, legacy_trace_block_size: usize) -> Res
             )
         })?);
     }
+    let anonymous_requests: std::collections::HashSet<_> = raw_rows
+        .iter()
+        .filter(|row| row.session_id.is_none())
+        .map(|row| row.request_id.clone())
+        .collect();
     let recorded_starts = raw_rows
         .iter()
         .filter_map(|raw| raw.timestamp.map(|start| (raw.request_id.clone(), start)))
@@ -190,10 +197,13 @@ pub fn load_agentic_mooncake(path: &Path, legacy_trace_block_size: usize) -> Res
     // Dependent requests execute relative to completion, but snapshots need
     // their original starts. Legacy rows do not record completion timestamps.
     for node in &mut graph.nodes {
+        node.synthetic_session_id = anonymous_requests.contains(&node.request_id);
         node.recorded_interval_ms = recorded_starts
             .get(&node.request_id)
             .map(|&start| (start, None));
     }
+    graph.graph_digest =
+        canonical_agentic_graph_digest(graph.block_size, &mut graph.nodes, &graph.hash_values)?;
     Ok(graph)
 }
 
@@ -253,6 +263,8 @@ pub(super) fn assign_dependency_component_play_ids(rows: &mut [AgenticMooncakeRo
     }
 }
 
+const HASH_ID_OVERFLOW: &str = "trace contains more unique hash IDs than u32 can represent";
+
 #[derive(Debug, Default)]
 struct HashIdInterner {
     canonical_ids: FxHashMap<u64, u32>,
@@ -260,10 +272,25 @@ struct HashIdInterner {
 
 impl HashIdInterner {
     fn intern_all(&mut self, hash_ids: Vec<u64>) -> Result<Vec<u32>> {
-        hash_ids
-            .into_iter()
-            .map(|hash_id| self.intern(hash_id))
-            .collect()
+        // Collecting through `Result` loses the size hint; keep exact capacity.
+        let mut interned = Vec::with_capacity(hash_ids.len());
+        for hash_id in hash_ids {
+            interned.push(self.intern(hash_id)?);
+        }
+        Ok(interned)
+    }
+
+    fn len(&self) -> usize {
+        self.canonical_ids.len()
+    }
+
+    /// Source hash for each assigned ID, indexed by ID.
+    fn into_values(self) -> Vec<u64> {
+        let mut values = vec![0; self.canonical_ids.len()];
+        for (hash_id, canonical_id) in self.canonical_ids {
+            values[canonical_id as usize] = hash_id;
+        }
+        values
     }
 
     fn intern(&mut self, hash_id: u64) -> Result<u32> {
@@ -271,13 +298,63 @@ impl HashIdInterner {
         match self.canonical_ids.entry(hash_id) {
             std::collections::hash_map::Entry::Occupied(entry) => Ok(*entry.get()),
             std::collections::hash_map::Entry::Vacant(entry) => {
-                let canonical_id = u32::try_from(next_id)
-                    .context("trace contains more unique hash IDs than u32 can represent")?;
+                let canonical_id = u32::try_from(next_id).context(HASH_ID_OVERFLOW)?;
                 entry.insert(canonical_id);
                 Ok(canonical_id)
             }
         }
     }
+}
+
+/// A run of generated blocks that recurs across prompts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum SharedBlocks {
+    /// A prefix group's shared prompt prefix.
+    Group(u64),
+    /// One image identity's placeholder tokens.
+    Image(u64),
+}
+
+/// Dense block IDs for generated prompts, in first-seen order. Shared runs keep
+/// their block IDs here; every other block takes the next ID without a map
+/// entry.
+#[derive(Debug, Default)]
+pub(super) struct SyntheticHashIds {
+    pub(super) next_id: usize,
+    /// Each shared run's block IDs, by offset into the run.
+    shared: FxHashMap<SharedBlocks, Vec<u32>>,
+}
+
+impl SyntheticHashIds {
+    /// Appends new IDs until `hash_ids` holds `len` blocks.
+    pub(super) fn fill_unique(&mut self, hash_ids: &mut Vec<u32>, len: usize) -> Result<()> {
+        fill_new_hash_ids(&mut self.next_id, hash_ids, len)
+    }
+
+    /// Appends the first `len` blocks of a shared run, numbering blocks the run
+    /// has not used before.
+    pub(super) fn extend_shared(
+        &mut self,
+        hash_ids: &mut Vec<u32>,
+        run: SharedBlocks,
+        len: usize,
+    ) -> Result<()> {
+        let ids = self.shared.entry(run).or_default();
+        fill_new_hash_ids(&mut self.next_id, ids, len)?;
+        hash_ids.extend_from_slice(&ids[..len]);
+        Ok(())
+    }
+}
+
+fn fill_new_hash_ids(next_id: &mut usize, hash_ids: &mut Vec<u32>, len: usize) -> Result<()> {
+    let end = next_id
+        .checked_add(len.saturating_sub(hash_ids.len()))
+        // IDs run up to `u32::MAX` inclusive, as in `HashIdInterner`.
+        .filter(|&end| end <= 1 << 32)
+        .context(HASH_ID_OVERFLOW)?;
+    hash_ids.extend((*next_id..end).map(|id| id as u32));
+    *next_id = end;
+    Ok(())
 }
 
 pub fn validate_trace_files(format: TraceFileFormat, paths: &[PathBuf]) -> Result<()> {
@@ -303,15 +380,24 @@ pub(super) fn validate_synthesizable_prompt(
     hash_ids: &[u32],
     trace_block_size: usize,
 ) -> Result<()> {
+    validate_synthesizable_prompt_len(input_length, hash_ids.len(), trace_block_size)
+}
+
+/// Validation only depends on how many hash IDs a prompt has, so prompts that
+/// are built at dispatch can be checked without building them.
+pub(super) fn validate_synthesizable_prompt_len(
+    input_length: usize,
+    hash_id_count: usize,
+    trace_block_size: usize,
+) -> Result<()> {
     if trace_block_size == 0 {
         bail!("trace_block_size must be greater than 0");
     }
-    let synthesizable_capacity = hash_ids
-        .len()
+    let synthesizable_capacity = hash_id_count
         .checked_mul(trace_block_size)
         .context("synthesized prompt capacity overflow")?;
     let required_hash_ids = input_length.div_ceil(trace_block_size);
-    if hash_ids.len() < required_hash_ids {
+    if hash_id_count < required_hash_ids {
         bail!(
             "input_length {} exceeds synthesized capacity {}",
             input_length,
@@ -393,11 +479,13 @@ impl TurnTrace {
             dp_rank: 0,
             preferred_dp_rank: None,
             preferred_prefill_dp_rank: None,
+            kv_hints: None,
             arrival_timestamp_ms,
             priority: self.priority,
             strict_priority: self.strict_priority,
             policy_class: self.policy_class.clone(),
             replay_context: None,
+            images: self.images.clone(),
         })
     }
 
@@ -561,6 +649,7 @@ impl MooncakeTraceBuilder {
             strict_priority,
             policy_class,
             synthetic_session_id: raw_session_id.is_none(),
+            images: Vec::new(),
         });
         if let Some(timestamp_ms) = timestamp_ms {
             self.last_timestamps[session_index] = Some(timestamp_ms);
@@ -650,8 +739,7 @@ impl Trace {
             .with_context(|| format!("failed to open trace file {}", path.display()))?;
         let reader = BufReader::new(file);
         let mut sessions = Vec::new();
-        let mut hash_id_interner = HashIdInterner::default();
-        let mut next_unique_hash = 1_u64;
+        let mut synthetic_ids = SyntheticHashIds::default();
 
         for (line_idx, line) in reader.lines().enumerate() {
             let line = line.with_context(|| {
@@ -700,24 +788,19 @@ impl Trace {
                 );
             }
 
-            let group_id = if shared_prefix_ratio > 0.0 && num_prefix_groups > 0 {
-                Some(line_idx % num_prefix_groups)
-            } else {
-                None
-            };
             let mut current_input_length = raw.input_prompt_length;
+            let initial_blocks = current_input_length.div_ceil(trace_block_size);
             let mut hash_ids = Vec::new();
-            let shared_initial_blocks = ((current_input_length.div_ceil(trace_block_size) as f64)
-                * shared_prefix_ratio)
-                .round() as usize;
-            extend_applied_compute_agentic_hash_ids(
-                &mut hash_ids,
-                current_input_length,
-                trace_block_size,
-                shared_initial_blocks,
-                group_id,
-                &mut next_unique_hash,
-            )?;
+            if shared_prefix_ratio > 0.0 && num_prefix_groups > 0 {
+                let shared_initial_blocks =
+                    ((initial_blocks as f64) * shared_prefix_ratio).round() as usize;
+                synthetic_ids.extend_shared(
+                    &mut hash_ids,
+                    SharedBlocks::Group((line_idx % num_prefix_groups) as u64),
+                    shared_initial_blocks,
+                )?;
+            }
+            synthetic_ids.fill_unique(&mut hash_ids, initial_blocks)?;
 
             let mut turns = Vec::with_capacity(raw.num_turns + 1);
             let mut next_turn_delay_ms = 0.0;
@@ -734,7 +817,7 @@ impl Trace {
                 turns.push(TurnTrace {
                     input_length: current_input_length,
                     max_output_tokens: raw.assistant_response_length[turn_idx],
-                    hash_ids: hash_id_interner.intern_all(hash_ids.clone())?,
+                    hash_ids: hash_ids.clone(),
                     delay_after_previous_ms: next_turn_delay_ms,
                     ..Default::default()
                 });
@@ -748,13 +831,9 @@ impl Trace {
                             line_idx + 1
                         )
                     })?;
-                extend_applied_compute_agentic_hash_ids(
+                synthetic_ids.fill_unique(
                     &mut hash_ids,
-                    current_input_length,
-                    trace_block_size,
-                    shared_initial_blocks,
-                    group_id,
-                    &mut next_unique_hash,
+                    current_input_length.div_ceil(trace_block_size),
                 )?;
                 next_turn_delay_ms = tool_call_latency * 1000.0;
             }
@@ -762,7 +841,7 @@ impl Trace {
             turns.push(TurnTrace {
                 input_length: current_input_length,
                 max_output_tokens: raw.final_assistant_response_length,
-                hash_ids: hash_id_interner.intern_all(hash_ids)?,
+                hash_ids,
                 delay_after_previous_ms: next_turn_delay_ms,
                 ..Default::default()
             });
@@ -807,15 +886,60 @@ impl Trace {
                 spec.block_size
             );
         }
+        if let Some(images) = spec.images {
+            // Placeholder spans are token-granular, and a text prefix behind
+            // per-request images is never a shared prompt prefix in the engine.
+            ensure!(
+                spec.block_size == 1,
+                "image workloads require a one-token synthetic trace block_size, got {}",
+                spec.block_size
+            );
+            ensure!(
+                images.count > 0
+                    && images.visual_tokens > 0
+                    && images.encoder.sequences > 0
+                    && images.encoder.patch_tokens > 0,
+                "image workloads require positive image count, visual tokens and patches"
+            );
+            ensure!(
+                images.identity_pool != Some(0),
+                "image identity_pool must be positive"
+            );
+            ensure!(
+                images.visual_tokens <= 1 << 20,
+                "image visual_tokens must not exceed 2^20"
+            );
+            let identities = match images.identity_pool {
+                Some(pool) => pool,
+                None => spec
+                    .num_sessions
+                    .checked_mul(spec.turns_per_session)
+                    .and_then(|turns| turns.checked_mul(images.count))
+                    .ok_or_else(|| anyhow!("image identity count overflow; set identity_pool"))?
+                    as u64,
+            };
+            ensure!(
+                identities <= 1 << 28,
+                "image identities must not exceed 2^28; set identity_pool"
+            );
+            ensure!(
+                spec.cached_prefix_tokens == 0 && spec.shared_prefix_ratio == 0.0,
+                "image workloads cannot combine cached or shared text prefixes"
+            );
+        }
 
         let mut rng = StdRng::seed_from_u64(spec.seed);
+        let mut next_image = 0_u64;
         let mut sessions = Vec::with_capacity(spec.num_sessions);
         let first_arrivals = spec
             .first_turn_arrivals
             .timestamps(spec.num_sessions, spec.arrival_seed)?;
 
-        let mut next_unique_hash = 1_u64;
-        let mut hash_id_interner = HashIdInterner::default();
+        // Every turn starts with the cached prefix, so it takes the first IDs.
+        let mut synthetic_ids = SyntheticHashIds::default();
+        let cached_prefix_blocks = spec.cached_prefix_tokens / spec.block_size;
+        let mut cached_prefix = Vec::with_capacity(cached_prefix_blocks);
+        synthetic_ids.fill_unique(&mut cached_prefix, cached_prefix_blocks)?;
         for (session_idx, first_arrival_timestamp_ms) in first_arrivals.into_iter().enumerate() {
             let group_id = if spec.num_prefix_groups > 0 && spec.shared_prefix_ratio > 0.0 {
                 Some(rng.random_range(0..spec.num_prefix_groups) as u64)
@@ -824,47 +948,44 @@ impl Trace {
             };
             let mut turns = Vec::with_capacity(spec.turns_per_session);
             for turn_idx in 0..spec.turns_per_session {
-                let input_length = sample_length(&spec.input_tokens, 1, &mut rng);
+                let text_length = sample_length(&spec.input_tokens, 1, &mut rng);
                 let max_output_tokens = sample_length(&spec.output_tokens, 1, &mut rng);
-                if spec.cached_prefix_tokens > input_length {
+                if spec.cached_prefix_tokens > text_length {
                     bail!(
                         "cached_prefix_tokens {} exceeds sampled synthetic input length {}",
                         spec.cached_prefix_tokens,
-                        input_length
+                        text_length
                     );
                 }
+                let (images, mut hash_ids) =
+                    synthetic_turn_images(&spec, &mut next_image, &mut synthetic_ids)?;
+                let input_length =
+                    text_length + images.iter().map(ImageSpec::visual_tokens).sum::<usize>();
                 let num_blocks = input_length.div_ceil(spec.block_size);
                 let grouped_prefix_blocks =
                     ((num_blocks as f64) * spec.shared_prefix_ratio).round() as usize;
                 let grouped_prefix_blocks = grouped_prefix_blocks.min(num_blocks);
-                let cached_prefix_blocks = spec.cached_prefix_tokens / spec.block_size;
-                let mut hash_ids = Vec::with_capacity(num_blocks);
-
-                for block_idx in 0..cached_prefix_blocks {
-                    hash_ids.push(0xCA_C0_0000_0000_0000 | block_idx as u64);
+                hash_ids.reserve(num_blocks.saturating_sub(hash_ids.len()));
+                hash_ids.extend_from_slice(&cached_prefix);
+                if let Some(group_id) = group_id {
+                    synthetic_ids.extend_shared(
+                        &mut hash_ids,
+                        SharedBlocks::Group(group_id),
+                        grouped_prefix_blocks.saturating_sub(cached_prefix_blocks),
+                    )?;
                 }
-                for block_idx in cached_prefix_blocks..grouped_prefix_blocks {
-                    if let Some(group_id) = group_id {
-                        hash_ids.push(0xD00D_0000_0000_0000 | (group_id << 32) | block_idx as u64);
-                    }
-                }
-
-                while hash_ids.len() < num_blocks {
-                    hash_ids.push(next_unique_hash);
-                    next_unique_hash = next_unique_hash
-                        .checked_add(1)
-                        .expect("synthetic hash id overflow");
-                }
+                synthetic_ids.fill_unique(&mut hash_ids, num_blocks)?;
 
                 turns.push(TurnTrace {
                     input_length,
                     max_output_tokens,
-                    hash_ids: hash_id_interner.intern_all(hash_ids)?,
+                    hash_ids,
                     delay_after_previous_ms: if turn_idx == 0 {
                         0.0
                     } else {
                         sample_delay_ms(&spec.inter_turn_delays, &mut rng)?
                     },
+                    images,
                     ..Default::default()
                 });
             }
@@ -1277,6 +1398,8 @@ struct AgenticTraceBuilder {
     header: AgenticMooncakeHeader,
     nodes: Vec<AgenticNode>,
     request_ids: std::collections::HashSet<String>,
+    // Provisional row-order IDs; `finish` renumbers them in graph order.
+    hash_ids: HashIdInterner,
 }
 
 /// Incremental builder for an already-versioned agentic request stream.
@@ -1337,6 +1460,7 @@ impl AgenticTraceBuilder {
             header,
             nodes: Vec::new(),
             request_ids: std::collections::HashSet::new(),
+            hash_ids: HashIdInterner::default(),
         })
     }
 
@@ -1458,12 +1582,18 @@ impl AgenticTraceBuilder {
                 line_idx,
             )
         });
+        let hash_ids = self.hash_ids.intern_all(hash_ids)?;
+        // Graph IDs stay below u32::MAX, as the driver's numbering always has.
+        if self.hash_ids.len() > u32::MAX as usize {
+            bail!(HASH_ID_OVERFLOW);
+        }
         self.nodes.push(AgenticNode {
             replay_key,
             request_id: raw.request_id,
             play_id: raw.play_id,
             source_play_ordinal: raw.source_play_ordinal,
             session_id: raw.session_id,
+            synthetic_session_id: false,
             model: raw.model,
             input_length,
             max_output_tokens: output_length,
@@ -1585,7 +1715,9 @@ impl AgenticTraceBuilder {
         } else {
             plays.sort_by(|left, right| left.play_id.cmp(&right.play_id));
         }
-        let graph_digest = canonical_agentic_graph_digest(self.header.block_size, &mut self.nodes)?;
+        let hash_values = renumber_hash_ids(&mut self.nodes, self.hash_ids);
+        let graph_digest =
+            canonical_agentic_graph_digest(self.header.block_size, &mut self.nodes, &hash_values)?;
 
         Ok(AgenticTrace {
             block_size: self.header.block_size,
@@ -1593,8 +1725,27 @@ impl AgenticTraceBuilder {
             graph_digest,
             nodes: self.nodes,
             plays,
+            hash_values,
         })
     }
+}
+
+/// Renumbers provisional hash IDs first-seen over the sorted nodes, the
+/// numbering agentic prompts have always used, and returns each new ID's
+/// source hash.
+fn renumber_hash_ids(nodes: &mut [AgenticNode], interner: HashIdInterner) -> Arc<[u64]> {
+    let provisional = interner.into_values();
+    let mut renumbered = vec![u32::MAX; provisional.len()];
+    let mut hash_values = Vec::with_capacity(provisional.len());
+    for hash_id in nodes.iter_mut().flat_map(|node| node.hash_ids.iter_mut()) {
+        let slot = &mut renumbered[*hash_id as usize];
+        if *slot == u32::MAX {
+            *slot = hash_values.len() as u32;
+            hash_values.push(provisional[*hash_id as usize]);
+        }
+        *hash_id = *slot;
+    }
+    hash_values.into()
 }
 
 impl AgenticTrace {
@@ -1681,8 +1832,9 @@ impl AgenticTrace {
         for node in &mut self.nodes {
             node.not_before_ms -= min_timestamp_ms;
         }
-        self.graph_digest = canonical_agentic_graph_digest(self.block_size, &mut self.nodes)
-            .expect("validated agentic graph remains serializable after normalization");
+        self.graph_digest =
+            canonical_agentic_graph_digest(self.block_size, &mut self.nodes, &self.hash_values)
+                .expect("validated agentic graph remains serializable after normalization");
         self
     }
 
@@ -1697,7 +1849,8 @@ impl AgenticTrace {
                 dependency.delay_ms /= ratio;
             }
         }
-        self.graph_digest = canonical_agentic_graph_digest(self.block_size, &mut self.nodes)?;
+        self.graph_digest =
+            canonical_agentic_graph_digest(self.block_size, &mut self.nodes, &self.hash_values)?;
         Ok(self)
     }
 
@@ -1772,7 +1925,11 @@ fn validate_agentic_trace_is_acyclic(
     )
 }
 
-fn canonical_agentic_graph_digest(block_size: usize, nodes: &mut [AgenticNode]) -> Result<String> {
+fn canonical_agentic_graph_digest(
+    block_size: usize,
+    nodes: &mut [AgenticNode],
+    hash_values: &[u64],
+) -> Result<String> {
     struct Blake3Writer<'a>(&'a mut blake3::Hasher);
 
     impl std::io::Write for Blake3Writer<'_> {
@@ -1789,7 +1946,111 @@ fn canonical_agentic_graph_digest(block_size: usize, nodes: &mut [AgenticNode]) 
     #[derive(Serialize)]
     struct CanonicalGraph<'a> {
         block_size: usize,
+        nodes: CanonicalNodes<'a>,
+    }
+
+    struct CanonicalNodes<'a> {
         nodes: &'a [AgenticNode],
+        hash_values: &'a [u64],
+    }
+
+    impl Serialize for CanonicalNodes<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.collect_seq(
+                self.nodes
+                    .iter()
+                    .map(|node| CanonicalNode::new(node, self.hash_values)),
+            )
+        }
+    }
+
+    // The digest contract is `AgenticNode`'s serialized form with source hash
+    // values in place of graph-local IDs: same fields, order and attributes.
+    #[derive(Serialize)]
+    struct CanonicalNode<'a> {
+        request_id: &'a str,
+        play_id: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        source_play_ordinal: Option<usize>,
+        session_id: &'a str,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        synthetic_session_id: bool,
+        model: &'a str,
+        input_length: usize,
+        max_output_tokens: usize,
+        output_token_ids: &'a Option<Vec<u32>>,
+        replay_key: &'a Option<String>,
+        hash_ids: SourceHashes<'a>,
+        not_before_ms: f64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recorded_api_time_ms: Option<f64>,
+        priority: i32,
+        strict_priority: u32,
+        policy_class: &'a Option<String>,
+        dependencies: &'a [AgenticDependency],
+    }
+
+    impl<'a> CanonicalNode<'a> {
+        fn new(node: &'a AgenticNode, hash_values: &'a [u64]) -> Self {
+            // Exhaustive so that a new node field must be placed in the digest.
+            let AgenticNode {
+                request_id,
+                play_id,
+                source_play_ordinal,
+                session_id,
+                synthetic_session_id,
+                model,
+                input_length,
+                max_output_tokens,
+                output_token_ids,
+                replay_key,
+                hash_ids,
+                not_before_ms,
+                recorded_api_time_ms,
+                recorded_interval_ms: _,
+                priority,
+                strict_priority,
+                policy_class,
+                dependencies,
+            } = node;
+            Self {
+                request_id,
+                play_id,
+                source_play_ordinal: *source_play_ordinal,
+                session_id,
+                synthetic_session_id: *synthetic_session_id,
+                model,
+                input_length: *input_length,
+                max_output_tokens: *max_output_tokens,
+                output_token_ids,
+                replay_key,
+                hash_ids: SourceHashes {
+                    hash_ids,
+                    hash_values,
+                },
+                not_before_ms: *not_before_ms,
+                recorded_api_time_ms: *recorded_api_time_ms,
+                priority: *priority,
+                strict_priority: *strict_priority,
+                policy_class,
+                dependencies,
+            }
+        }
+    }
+
+    struct SourceHashes<'a> {
+        hash_ids: &'a [u32],
+        hash_values: &'a [u64],
+    }
+
+    impl Serialize for SourceHashes<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.collect_seq(
+                self.hash_ids
+                    .iter()
+                    .map(|&hash_id| self.hash_values[hash_id as usize]),
+            )
+        }
     }
 
     for node in nodes.iter_mut() {
@@ -1804,7 +2065,10 @@ fn canonical_agentic_graph_digest(block_size: usize, nodes: &mut [AgenticNode]) 
     let mut hasher = blake3::Hasher::new();
     serde_json::to_writer(
         Blake3Writer(&mut hasher),
-        &CanonicalGraph { block_size, nodes },
+        &CanonicalGraph {
+            block_size,
+            nodes: CanonicalNodes { nodes, hash_values },
+        },
     )?;
     Ok(hasher.finalize().to_hex().to_string())
 }
@@ -1825,29 +2089,43 @@ fn relation_rank(relation: AgenticDependencyRelation) -> u8 {
     }
 }
 
-fn extend_applied_compute_agentic_hash_ids(
-    hash_ids: &mut Vec<u64>,
-    input_length: usize,
-    trace_block_size: usize,
-    shared_initial_blocks: usize,
-    group_id: Option<usize>,
-    next_unique_hash: &mut u64,
-) -> Result<()> {
-    let target_blocks = input_length.div_ceil(trace_block_size);
-    while hash_ids.len() < target_blocks {
-        let block_idx = hash_ids.len();
-        if block_idx < shared_initial_blocks
-            && let Some(group_id) = group_id
-        {
-            hash_ids.push(0xA63E_0000_0000_0000 | ((group_id as u64) << 32) | block_idx as u64);
-            continue;
-        }
-        hash_ids.push(*next_unique_hash);
-        *next_unique_hash = next_unique_hash
-            .checked_add(1)
-            .ok_or_else(|| anyhow!("synthetic hash id overflow"))?;
+/// Lay out one turn's image placeholders ahead of its text and return them with
+/// the per-token hash IDs of their placeholder blocks.
+///
+/// Images precede the text like a chat request whose image parts come before
+/// its text part. Identities repeat only inside a configured reuse pool, so two
+/// requests carrying the same image at the same position share prompt tokens
+/// and may reuse each other's KV prefix, exactly as SGLang's padded input IDs do.
+fn synthetic_turn_images(
+    spec: &SyntheticTraceSpec,
+    next_image: &mut u64,
+    synthetic_ids: &mut SyntheticHashIds,
+) -> Result<(Vec<ImageSpec>, Vec<u32>)> {
+    let Some(images) = spec.images else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let mut specs = Vec::with_capacity(images.count);
+    let mut hash_ids = Vec::with_capacity(images.count * images.visual_tokens);
+    let mut token_start = 0;
+    for _ in 0..images.count {
+        let ordinal = *next_image;
+        *next_image += 1;
+        let identity = images.identity_pool.map_or(ordinal, |pool| ordinal % pool);
+        synthetic_ids.extend_shared(
+            &mut hash_ids,
+            SharedBlocks::Image(identity),
+            images.visual_tokens,
+        )?;
+        specs.push(ImageSpec {
+            identity,
+            token_start,
+            token_end: token_start + images.visual_tokens,
+            encoder: images.encoder,
+            embedding_bytes: images.embedding_bytes,
+        });
+        token_start += images.visual_tokens;
     }
-    Ok(())
+    Ok((specs, hash_ids))
 }
 
 fn sample_delay_ms(spec: &DelaySpec, rng: &mut StdRng) -> Result<f64> {

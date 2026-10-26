@@ -23,15 +23,13 @@ The suite compares the live Rust engine against **golden fixtures** for:
   (`cli_estimate` has no cp knob)
 - `agg`: public `cli_estimate(mode="agg")`
 - `disagg`: public `cli_estimate(mode="disagg")`
-- `afd`: public `cli_estimate(mode="afd")` (ttft/tpot; the AFD session's
-  per-op values cross the op-list evaluate FFI)
 
 The case matrix: `SMOKE_CASES` x 4 surfaces, `POWER_CASES` (energy/power
 coverage) x 4, `CP_CASES` (mixed only), `DSV4_CP_CASES` (cp_static_ctx +
 mixed), `HYBRID_CASES` x 4 at a 1e-4 rtol, `SOL_CASES` (static+mixed) at
-1e-4, the two #1456 site-transfer tie-break anchors
-(`TIE_AGG_CASES`/`TIE_DISAGG_CASES`), and `AFD_CASES` — plus the
-typed-error/provenance contract tests and the anti-vacuous golden guards.
+1e-4, and the two #1456 site-transfer tie-break anchors
+(`TIE_AGG_CASES`/`TIE_DISAGG_CASES`) — plus the typed-error/provenance
+contract tests and the anti-vacuous golden guards.
 If an assertion fails, the message prints the golden value, Rust value,
 absolute delta, percent delta, tolerance, and status for each metric.
 
@@ -97,6 +95,103 @@ requirement, pinned thread caps, byte-reproducible output, and
 all-payloads-before-any-write. `TestGoldenComparisonGuards` proves the
 comparison itself still bites.
 
+### GLM-5.3-Flash Ops data and the fleet `next` slot
+
+Packaging the GLM-5.3-Flash Ops tables makes SGLang 0.5.20 and vLLM 0.31.0
+the derived fleet `next` versions. The two Kimi-K3 B300 cases follow `next`,
+so they now read the B300 SGLang 0.5.20 tables collected for GLM. The
+change comes from `gemm_perf` and `custom_allreduce_perf`: with only the
+GEMM table present, static context and generation change by +1.819 and
+-0.607 ms; with only the all-reduce table, by -0.913 and -0.213 ms. With
+only the 0.5.20 KDA, MoE, mHC or GLM attention table present, the records
+are unchanged. Only the failing static and
+disaggregated records were refreshed, from
+`9a08d1557462c02a6cc8552360afee89538a0540` with a matching native build:
+
+| Metric (ms), both cases | Before | After |
+| --- | ---: | ---: |
+| Static context | 87.881 | 88.761 |
+| Static generation | 13.912 | 13.091 |
+| Static total | 101.793 | 101.852 |
+| Disaggregated TTFT | 174.004 | 175.747 |
+| Disaggregated TPOT | 16.936 | 16.319 |
+| Disaggregated request | 190.940 | 192.066 |
+
+The aggregate references pass unchanged and the mixed records keep their
+`PerfDataNotAvailableError`. The four Qwen3.8-Max GB300 cases pin SGLang
+0.5.17 and vLLM 0.27.1, which are no longer queryable versions. They set
+`allow_unlisted_version=True` and keep their references unchanged; the
+parity tests and `pin_goldens.py` both admit that version through
+`_surface_metrics`.
+
+```bash
+python/aisimulate/.venv/bin/python crates/core/parity_tests/perfmodel/pin_goldens.py \
+  --refresh kimi-k3-b300-sglang-next-nospec::static \
+  kimi-k3-b300-sglang-next-nospec::disagg \
+  kimi-k3-b300-sglang-next-dspark-nextn7::static \
+  kimi-k3-b300-sglang-next-dspark-nextn7::disagg
+```
+
+To reproduce the attribution, start from this PR with its native extension
+built and with the pre-refresh `goldens/engine_step.json` from
+`9a08d1557462c02a6cc8552360afee89538a0540` checked out. Move every
+`data/b300_sxm/<family>/sglang/0.5.20` directory (`gemm`, `moe`, `kda`, `mhc`,
+`comm`, `glm53_attention`) out of the systems tree. Then restore one family
+at a time and run:
+
+```bash
+python/aisimulate/.venv/bin/python -m pytest -c python/aisimulate/pytest.ini -q -p no:timeout \
+  crates/core/parity_tests/perfmodel/test_engine_step_parity.py \
+  -k 'kimi-k3-b300-sglang-next-nospec and (TestRustEngineStepStaticParity or TestRustEngineStepDisaggParity)'
+```
+
+With no 0.5.20 families present, the static and disaggregated records pass
+against the old references. With only `gemm` or only `comm` present, both
+records drift. `gemm` alone moves disaggregated TTFT/TPOT by +2.07%/−2.01%,
+and `comm` alone moves them by −1.04%/−1.64%; the two together give the
+refreshed values above. With only `kda`, `moe`, `mhc` or `glm53_attention`
+present, both records pass.
+
+### B60 graph-timing data promotion in PR #329
+
+The `qwen3-30b-a3b-b60-vllm-scan-coverage` case follows the `current`
+version slot, which moves from vLLM 0.26.0 to 0.28.0. Its static, mixed,
+aggregate and disaggregated references were selectively refreshed from
+`8f6faf712d0d6288b31aa41714a4ddb2fa590095` with a matching native build.
+The aggregate reference also includes the new XPU backend's scheduling model.
+
+| Metric (ms) | Before | After |
+| --- | ---: | ---: |
+| Static context | 164.960 | 133.227 |
+| Static generation | 38.997 | 9.784 |
+| Mixed step | 168.776 | 135.781 |
+| Aggregate TTFT | 233.073 | 231.165 |
+| Aggregate TPOT | 168.776 | 131.905 |
+| Disaggregated TTFT | 326.621 | 263.788 |
+| Disaggregated TPOT | 33.115 | 19.844 |
+
+Selecting 0.26.0 explicitly on the PR reproduces the base revision's static
+per-operation latencies. With 0.28.0, generation MoE changes from 21.219994
+to 3.039994 ms, attention from 5.025209 to 2.485675 ms, and each MoE
+dispatch phase from 3.638394 to 1.008275 ms. The new measurements account
+for the static shift; these references do not independently establish
+whole-model B60 silicon accuracy.
+
+From a clean checkout of the source revision, with its native extension built
+and development dependencies installed, regenerate only these four records:
+
+```bash
+PYTHONPATH=python/aisimulate/src:python/aisimulate \
+python/aisimulate/.venv/bin/python crates/core/parity_tests/perfmodel/pin_goldens.py \
+  --refresh qwen3-30b-a3b-b60-vllm-scan-coverage::static \
+  qwen3-30b-a3b-b60-vllm-scan-coverage::mixed \
+  qwen3-30b-a3b-b60-vllm-scan-coverage::agg \
+  qwen3-30b-a3b-b60-vllm-scan-coverage::disagg
+```
+
+The fixture records the source revision in `post_freeze_pins`. Other cases,
+the test matrix and tolerances are unchanged.
+
 ### FP8-block correction in PR #244
 
 The selective refresh from `0a51476b6ab90bc0e475bd41d4b1c7abbef07b95`
@@ -123,7 +218,7 @@ These are prediction-regression baselines, not whole-model silicon validation.
 
 ### B200 SGLang dense-prefix correction in PR #303
 
-Four existing B200 cases change because `deepseek_v32._dense_mlp_groups` now honors `first_k_dense_replace=3` and the checkpoint's packed-linear quantization exclusions. Previously those three dense layers were counted as MoE layers. DeepSeek-V3.2 now has 58 MoE plus three FP8-block dense layers (61 total); both GLM-5 cases have 75 MoE plus three BF16 dense layers (78 total). GLM-5.2 also has 75 MoE plus three dense layers, with its excluded packed gate/up and down projections using BF16 instead of inheriting the global NVFP4 GEMM mode. The Vera Rubin NVL72-only decode composition does not cause these B200 changes.
+Four existing B200 cases change because `deepseek_v32._dense_mlp_groups` now honors `first_k_dense_replace=3` and the checkpoint's packed-linear quantization exclusions. Previously those three dense layers were counted as MoE layers. DeepSeek-V3.2 now has 58 MoE plus three FP8-block dense layers (61 total); both GLM-5 cases have 75 MoE plus three BF16 dense layers (78 total). GLM-5.2 also has 75 MoE plus three dense layers, with its excluded packed gate/up and down projections using BF16 instead of inheriting the global NVFP4 GEMM mode.
 
 The following deltas are `head 91687c4 - base 1267d0f`, in milliseconds, rounded to six decimal places. Full-precision reference values remain in `goldens/engine_step.json` and its base revision.
 
@@ -152,6 +247,35 @@ python/aisimulate/.venv/bin/python -m pytest -q -p no:timeout \
 ```
 
 The selective reference-generation command is `pin_goldens.py --refresh deepseek-v32-b200-sglang-isl1024-osl2 glm5-b200-sglang-empirical glm5-b200-sglang-isl16384-osl2 glm52-b200-sglang-isl1024-osl2` using the script in this directory and a clean, isolated checkout with a matching native build. It obtains each metric from the same `_surface_metrics(case, surface)` Rust-backed consumers as the tests. Keep error records unchanged when a surface still raises; these B200 regressions do not establish additional GPU accuracy coverage.
+
+### GLM-5.3-Flash mixed-step attention phases in PR #323
+
+`Glm53Attention` operations are named per layer (`attention_N`), so the
+mixed-step attention filters did not recognize them. Context attention rode
+the shared pass at the combined context-plus-decode shape, and generation
+attention was omitted. The filters now classify these operations by
+`is_context`. Only the two GLM SOL `mixed` records were refreshed with
+`pin_goldens.py --refresh` (ISL 4096, prefix 2048, one decode request). Both
+now include decode attention, and context attention is queried at the
+prefill shape. `glm53flash-fp8-gb300-vllm-tp2-sol` changes from 37.865342 to
+38.665549 ms. `glm53flash-nvfp4-gb300-sglang-tp4-sol` changes from 22.443503
+to 22.869943 ms. Static records and all other models are unchanged.
+
+### GLM-5.3-Flash router precision in PR #323
+
+The GLM gate projection is a BF16 x BF16 tensor-core GEMM with FP32 logits in
+both pinned runtimes (vLLM `GateLinear`, SGLang `MoEGate`). Its SOL previously
+used scalar FP32 throughput with FP32 weight and input traffic. It now uses
+BF16 tensor throughput, BF16 weight and input bytes, and FP32 output bytes.
+The four GLM SOL records were refreshed with `pin_goldens.py --refresh`; the
+offline checkpoint registration in the same PR does not change them.
+
+| Case ID | Mixed step | Static context | Static generation | Static total |
+| --- | --- | --- | --- | --- |
+| `glm53flash-fp8-gb300-vllm-tp2-sol` | 38.665549 -> 36.240498 | 37.856 -> 35.432 | 1.553 -> 1.540 | 39.409 -> 36.972 |
+| `glm53flash-nvfp4-gb300-sglang-tp4-sol` | 22.869943 -> 20.444891 | 22.435 -> 20.011 | 0.738 -> 0.726 | 23.173 -> 20.737 |
+
+Values are in milliseconds. All other records are unchanged.
 
 ## Engine-Step Benchmark
 

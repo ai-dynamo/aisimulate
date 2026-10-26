@@ -116,6 +116,7 @@ def enumerate_worker_shapes(
     enable_wideep: bool = False,
     moe_backend: str | None = None,
     allow_moe_pure_tp: bool = True,
+    allow_hybrid: bool = False,
 ) -> list[ParallelShape]:
     """Legal per-worker shapes at exactly ``gpus_per_worker`` GPUs (``pp`` = 1).
 
@@ -128,6 +129,8 @@ def enumerate_worker_shapes(
     Dense models scan plain TP and are unaffected. Backend EP-only filters still apply.
     """
     g = gpus_per_worker
+    if isinstance(g, bool) or not isinstance(g, int) or g <= 0:
+        return []
     if not is_moe:
         # dense: plain TP, no attention-dp, no experts.
         return [ParallelShape(tp=g, dp=1, moe_tp=1, moe_ep=1)]
@@ -175,7 +178,7 @@ def enumerate_worker_shapes(
                     # shape. It is the degenerate form of every pure strategy and
                     # must remain available for MoE models that fit on one GPU.
                     is_single_gpu = tp == dp == moe_tp == moe_ep == 1
-                    if not (is_single_gpu or is_tep or is_dep or is_moe_tp):
+                    if not allow_hybrid and not (is_single_gpu or is_tep or is_dep or is_moe_tp):
                         continue
                     shapes.append(ParallelShape(tp=tp, dp=dp, moe_tp=moe_tp, moe_ep=moe_ep))
     return shapes

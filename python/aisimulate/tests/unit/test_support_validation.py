@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,8 @@ import yaml
 
 from aisimulate import main as cli
 from aisimulate import supervision
+from aisimulate.config.common import ResourceConfig
+from aisimulate.resources import discover_host, resolve_budget
 from aisimulate.support.plan import create_plan
 from aisimulate.support.schema import SupportRequest
 
@@ -174,6 +177,15 @@ def validation_case(tmp_path, monkeypatch, request):
     ]
     # Exercise the public CLI compiler/runner/native runtime in-process so the
     # no-analytical-graph assertion above also covers estimator construction.
+    # Model the supervisor's budget for the derived Agentic Mooncake replay.
+    # Runtime memory monitoring and cleanup are covered by supervision tests.
+    budget = resolve_budget(ResourceConfig(), discover_host())
+    budget.update(
+        supervisor_pid=os.getpid(),
+        events_path=str(tmp_path / "execution-events.jsonl"),
+        ready_path=str(tmp_path / "execution-ready"),
+    )
+    monkeypatch.setenv("_AISIMULATE_SUPERVISED_BUDGET", json.dumps(budget))
     monkeypatch.setattr(supervision, "main", cli.main)
     return args, request, plan, trace, output
 

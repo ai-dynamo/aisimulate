@@ -1,0 +1,45 @@
+{
+  "fixture_generator": "1eb72e69e1990c24519db9a3024169f714cf4c11857a5d6d846bf69450451653",
+  "fixture_generator_runtime": "fb9cc16f6313ff89a600ef2f4c65f22ef5d1aafac3c387ec867662ce894bb375",
+  "probe": "0682db6ed3f06e07c5c505f26bdadebfa906a475b0e9a20848ed1b3b177db2fd",
+  "baseline_probe": "17ece52c533307e4047899eb23284d58ab9b5c808563c84a7d840a94a7004465",
+  "candidate_probe": "5b7d0c4fb769d309feafb08d905a1b41e98e033e4e53b88bd8d2349096fe622e",
+  "baseline_commit": "45b2c98a0f040d90e83cd5c1ff51c108f0cd8223",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "platform": "macOS-26.7.1-arm64-arm-64bit-Mach-O",
+  "fixture_generator_package_versions": {
+    "sklearn": "1.9.1"
+  },
+  "candidate_commit": "1de653c9ef28788a877a660cb81cb3379edb8c6a",
+  "candidate_tree": "0988584f2a4c0f20c0f634d5d278afc7c1d56498",
+  "candidate_native_sha256": "7a17d7fcf7f8342455d702d8bdf8bee048b615eef4a70e1d1add41f7fd929574",
+  "cpu": "Apple M5 Pro",
+  "logical_cpus": 18,
+  "physical_memory_bytes": 51539607552,
+  "cpu_affinity": null,
+  "python": "3.12.13",
+  "fixture_files": {
+    "fixture/queries.json": "2808768bec8bb2d7a821b1233cbda7e04eadc422ca036115ca6b4c8c34641013",
+    "fixture/seed/manifest.json": "5207bd626a06f16c831e16cc56f9d1fe496b0bfa4e9d874635414ba4bf44f9c9",
+    "fixture/seed/model.json": "d041c093e222ca64b026d9f8518daca9ec37dec42e4b440aeb2bab0e405bbaf4",
+    "fixture/seed/pure_decode.rows.parquet": "dcc7a93519a1ef65f13ce7afb528e40a48218febb44af8b8e1bbf62d6f5caf11",
+    "small-fixture/queries.json": "2808768bec8bb2d7a821b1233cbda7e04eadc422ca036115ca6b4c8c34641013",
+    "small-fixture/seed/manifest.json": "45e1a2ae2a6e8d34db9002bb53185b9d9bdec6274386f886a1c356eebd1f3e98",
+    "small-fixture/seed/model.json": "35853ed18b086f911527773e7e5f7eef852680101d9abb84bc9cf98a8267686a",
+    "small-fixture/seed/pure_decode.rows.parquet": "725ca4b60c2655cc876c44dcf8b329f2ea9f7c181b32119510e69bc45fc1d34d"
+  },
+  "source_files": {
+    "Cargo.toml": "b5d74d946b92a49d1e4bf0b60ac6b0d4f7ddde57e099dbaba03346d96d01c71a",
+    "Cargo.lock": "b8ba470a555be37b373d0f0098260ae3339a7667ade6a7ab50e228328dbadfed",
+    "crates/core/Cargo.toml": "d1e10113d62f95288fd6c4d0a4f6d3f93b1646abf36a6d433b577fb0df5d9569",
+    "crates/core/src/perfmodel/fpm/learned_online.rs": "7fcebe61b5d33e82bf1b2f04955de719ef9e8141d7af624baa5920eb08e25fdb"
+  },
+  "build_log_sha256": {
+    "baseline-build.log": "759a6c9fa0c8648ac00678aa3eec3ebaa2c67f5d37b488e9831f7869964218d1",
+    "candidate-probe-build.log": "9ebd86974f30560a3aa587fa692afbb8b70e2fe615b67a31d9c3890aaea2dace",
+    "native-build.log": "0dc87c9123c04ff912b0a796c7a5e90b070ec888e67c40e2d9d8f4f7103aaeb0"
+  },
+  "executed_controller_sha256": "86c9b63c6a7b5f0dbabe29ce1e60d64b81c3f304696619e43c855545f7f27208",
+  "checked_in_controller_sha256": "c5b0c9bfa3df7798f0430b147b04573ce9623cde4cba5fc3d9b520bf520941d5",
+  "controller_change": "Ruff formatting only; parsed Python AST matches the executed controller."
+}

@@ -19,7 +19,7 @@ import shutil
 import subprocess
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from aisimulate.fpm_contract import FPM_BENCHMARK_RESULT_GLOB
@@ -291,6 +291,7 @@ class SlurmCellRunner:
         plan_sha256: str,
         attempt_id: str,
         expected_backend_version: str | None = None,
+        runtime_backend_version: str | None = None,
     ) -> None:
         from .runner import _attempt_provenance_command
 
@@ -299,6 +300,7 @@ class SlurmCellRunner:
             plan_sha256=plan_sha256,
             attempt_id=attempt_id,
             expected_backend_version=expected_backend_version,
+            runtime_backend_version=runtime_backend_version,
         )
         for unit in pods:
             self._exec(unit, command, timeout=300)
@@ -326,7 +328,9 @@ class SlurmCellRunner:
         pool = ThreadPoolExecutor(max_workers=len(pods))
         try:
             futures = [pool.submit(scope.run, run, pod) for pod in pods]
-            for future in futures:
+            # A later node can fail while an earlier one is still waiting for
+            # rendezvous. Observe that failure before joining the live peer.
+            for future in as_completed(futures):
                 future.result()
         except BaseException as error:
             # Worker threads do not receive the main thread's interrupt.

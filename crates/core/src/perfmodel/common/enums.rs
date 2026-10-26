@@ -17,8 +17,28 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// Inference backend.
+/// How a VL model's vision tower is laid out over the tensor-parallel group.
 ///
+/// Mirrors `ModelConfig.enable_encoder_dp` in the Python model layer: `Tp`
+/// shards the tower's heads and MLP over the group so every rank encodes every
+/// image (SGLang's default), `Dp` gives every rank a whole tower and a ceil
+/// share of the images (`--mm-enable-dp-encoder`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EncoderParallel {
+    Tp,
+    Dp,
+}
+
+impl EncoderParallel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Tp => "tp",
+            Self::Dp => "dp",
+        }
+    }
+}
+
 /// Mirrors `common.BackendName`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -549,6 +569,7 @@ pub enum ModelFamily {
     Qwen3Vl,
     Qwen3VlMoe,
     DeepSeekV41,
+    Glm53Flash,
 }
 
 impl ModelFamily {
@@ -563,6 +584,7 @@ impl ModelFamily {
             Self::DeepSeekV32 => "DEEPSEEKV32",
             Self::DeepSeekV4 => "DEEPSEEKV4",
             Self::DeepSeekV41 => "DEEPSEEKV41",
+            Self::Glm53Flash => "GLM53FLASH",
             Self::KimiK25 => "KIMIK25",
             Self::NemotronNas => "NEMOTRONNAS",
             Self::NemotronH => "NEMOTRONH",
@@ -625,8 +647,6 @@ pub enum PerfDataFilename {
     Dsv4MegamoeModule,
     MoeA2a,
     MoeExpertCompute,
-    SglangPrefillAttentionSequence,
-    SglangPrefillCommNormBoundary,
 }
 
 impl PerfDataFilename {
@@ -668,10 +688,6 @@ impl PerfDataFilename {
             Self::Dsv4MegamoeModule => "dsv4_megamoe_module_perf.parquet",
             Self::MoeA2a => "moe_a2a_perf.parquet",
             Self::MoeExpertCompute => "moe_expert_compute_perf.parquet",
-            Self::SglangPrefillAttentionSequence => {
-                "sglang_prefill_attention_sequence_perf.parquet"
-            }
-            Self::SglangPrefillCommNormBoundary => "sglang_prefill_comm_norm_boundary_perf.parquet",
         }
     }
 }
@@ -808,47 +824,5 @@ mod tests {
             PerfDataFilename::Dsv4HcaGenerationModule.as_str(),
             "dsv4_hca_generation_module_perf.parquet"
         );
-        assert_eq!(
-            PerfDataFilename::SglangPrefillAttentionSequence.as_str(),
-            "sglang_prefill_attention_sequence_perf.parquet"
-        );
-        assert_eq!(
-            PerfDataFilename::SglangPrefillCommNormBoundary.as_str(),
-            "sglang_prefill_comm_norm_boundary_perf.parquet"
-        );
-    }
-
-    #[cfg(feature = "python")]
-    #[test]
-    fn prefill_data_filenames_match_live_python_enum() {
-        use pyo3::prelude::*;
-
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
-            let filenames = py
-                .import("aisimulate_core.sdk.common")
-                .unwrap()
-                .getattr("PerfDataFilename")
-                .unwrap();
-            for (rust, name) in [
-                (
-                    PerfDataFilename::SglangPrefillAttentionSequence,
-                    "sglang_prefill_attention_sequence",
-                ),
-                (
-                    PerfDataFilename::SglangPrefillCommNormBoundary,
-                    "sglang_prefill_comm_norm_boundary",
-                ),
-            ] {
-                let python: String = filenames
-                    .getattr(name)
-                    .unwrap()
-                    .getattr("value")
-                    .unwrap()
-                    .extract()
-                    .unwrap();
-                assert_eq!(rust.as_str(), python, "PerfDataFilename.{name}");
-            }
-        });
     }
 }

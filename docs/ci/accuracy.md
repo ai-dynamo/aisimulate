@@ -28,8 +28,10 @@ than the retired implementation rollout document.
 
 The independent [E2E Accuracy Matrix](../../.github/workflows/e2e-accuracy.yml)
 evaluates the scheduled main SHA and every discovered `release/*` head against
-the latest published InferenceX database dump. The resolver freezes one manifest
-with verified part checksums for all branches and retains it as a 90-day artifact.
+the private `ai-dynamo/aisim-infx-cache` HF dataset. The resolver freezes one full
+HF commit for all branches and retains the manifest as a 90-day artifact.
+`HF_READ_AISIM_INFX_CACHE` is a read-only Actions secret passed explicitly to the
+reusable workflow. The cache refreshes weekly; prediction campaigns remain daily.
 A branch matrix runs at most two campaigns
 at once, with separate wheels, artifacts, and provenance. Main reuses a qualified
 amd64 wheel for its exact SHA when available, even while nightly staging waits for
@@ -38,25 +40,34 @@ AISimulate replay and bundled legacy AIC baseline use their branch's wheel. Manu
 runs evaluate one explicit `main` or `release/*` SHA from the trusted main workflow.
 
 Campaign jobs use the configured `CI_JOB_CONTAINER_IMAGE`, Python 3.12, and
-`sudo` to install the PostgreSQL 18 client from the official PGDG repository,
-plus `zstd` and `libgomp1`. The runner executes container steps as a non-root
-user, so a bare PostgreSQL image cannot install these dependencies with `apt-get`.
+`sudo` to install `libgomp1`. The HF reader downloads only the source index,
+snapshot manifest and observation Parquet files at the pinned commit. It verifies
+artifact sizes, hashes, schemas and identities before producing local tables.
 The evaluated wheel's baseline CLI and config adapter are selected from its own
 package layout: `aiconfigurator.*` on 0.12 releases or `aisimulate.*` after the
 namespace migration. Ambiguous wheels with both baseline APIs are rejected.
 Baseline provenance records the selected API, adapter, and actual console entry point;
 the public summary retains that entry point. Wheel byte checks and imports run before downloading measurements.
-The client reads the dump without starting a database server. Artifact upload
+No PostgreSQL client or database dump is needed. Artifact upload
 uses the output directory so the runner container hook remaps the full path.
 
 Each branch prepares measurements once and runs four independent prediction
 shards, with two CPU workers per shard and `fail-fast: false`. Results and
-incremental checkpoints are retained as internal Actions artifacts for seven days.
+incremental checkpoints are encrypted before upload and retained for seven days.
+Actions artifacts in a public repository are not private. AES-256-GCM encryption
+uses a key derived from the HF secret and workflow identity; it authenticates each
+relative filename. Source rows and resolved evidence are never uploaded in plaintext.
 `gh run rerun RUN_ID --failed` reuses successful shard artifacts from that run;
 only failed partitions repeat. A separate qualification job verifies full coverage
 and matching provenance before combining per-point results. Preview runs also
 retain resolved source evidence per shard. Actual concurrency depends on runner
 capacity (up to eight shard jobs across the two admitted branches).
+
+To inspect an encrypted artifact locally, set `HF_TOKEN` to the token used by
+that run, plus `GITHUB_REPOSITORY=ai-dynamo/aisimulate` and its `GITHUB_RUN_ID`.
+Run `python scripts/e2e_accuracy/private_artifacts.py open DOWNLOADED_DIR OUTPUT_DIR`
+in the campaign environment. Token rotation requires a new complete workflow run;
+old ciphertext cannot be opened with the replacement token.
 
 Complete campaigns upload sanitized `e2e-accuracy-web-<branch-key>` artifacts.
 Pages validates the branch's successful qualification job in the artifact's exact
@@ -69,15 +80,16 @@ snapshot until that release has a qualified campaign. See the
 [accuracy campaign contract](../../pages/e2e-accuracy/README.md)
 for pinned scheduler settings, measurement selection, and provenance.
 
-### Daily accuracy Slack report
+### Weekly accuracy Slack report
 
-[Accuracy Slack Daily](../../.github/workflows/accuracy-digest.yml) combines the day's
+[Accuracy Slack Weekly](../../.github/workflows/accuracy-digest.yml) combines the day's
 scheduled E2E and FPM results in one message in **#swdl-dynamo-aisim-daily**.
 Failures and comparable regressions appear in that message; separate per-model
 and per-GPU E2E tables appear in the main message; FPM coverage and comparison
-details remain in its thread. Delivery waits for both pipelines,
-with a 09:00 America/Los_Angeles fallback. It is opt-in and has a default dry-run
-mode plus an explicit test-send mode. See [setup, comparisons, and testing](#daily-accuracy-report).
+details remain in its thread. Delivery runs on Mondays at 09:00
+America/Los_Angeles using that day's results. E2E and FPM evaluations stay daily.
+It is opt-in and has a default dry-run mode plus an explicit test-send mode.
+See [setup, comparisons, and testing](#weekly-accuracy-report).
 
 
 ## FPM accuracy
@@ -89,6 +101,13 @@ on CPU. Branch results remain in Actions artifacts for 90 days. Pages validates
 and publishes successful branch results independently; failed refreshes retain
 the prior qualified result. Accuracy is advisory, outside PR prediction campaigns
 and release staging gates. See [FPM details](../../pages/fpm-accuracy/README.md).
+
+Manual dispatch accepts optional `hf_revision`, a full 40-character dataset commit.
+Use it to evaluate a migrated dataset branch with compatible preview consumers
+before promoting either change to main. Scheduled runs continue to resolve HF main.
+The workflow verifies the requested revision through HF and records the resolved
+commit in every artifact. Publish compatible consumers before moving HF main to a
+new manifest contract; historical evaluation artifacts are never rewritten.
 
 
 ## FPE support qualification
@@ -315,14 +334,14 @@ and malformed metadata, calendar-date boundaries, and unchanged matrix rows.
 Use `--browser-executable /path/to/chrome` to reuse an installed browser, or
 `--screenshot /path/to/preview.png` to capture the real page before test fixtures.
 
-## Daily accuracy report
+## Weekly accuracy report
 
-`Accuracy Slack Daily` posts one daily top-level message to
+`Accuracy Slack Weekly` posts one weekly top-level message to
 **#swdl-dynamo-aisim-daily** (`C0BULBSTXJ6`). Alerts and results share that message;
 E2E per-model and per-GPU tables are included in the main message. No mentions are
 sent. The bot does not accept commands or start evaluations.
 
-The message title is `:rainbow: *Accuracy Daily · YYYY-MM-DD*`, with a rainbow
+The message title is `:rainbow: *Accuracy Weekly · YYYY-MM-DD*`, with a rainbow
 emoji and bold text, without a timezone suffix. Immediately below it, a quote
 block shows run links with duration and attempt, overview links, and short
 alert/recovery summaries. The alert count and comparison-note count appear at
@@ -333,21 +352,22 @@ the end of the main message.
 - Select today's scheduled E2E and FPM runs by their creation date in
   `America/Los_Angeles`. A rerun uses its latest attempt; successful branch
   artifacts retained from an earlier attempt are validated against that attempt.
-- Send when both runs finish, including failures/cancellations. Completion of
-  either producer wakes the notifier. A scheduled fallback checks at 09:00 local
-  time (UTC 16:00 in summer, 17:00 in winter) and reports missing/unfinished runs.
-  GitHub schedules can be delayed; 09:00 is the intended cutoff, not a wall-clock SLA.
+- Send on Mondays at 09:00 America/Los_Angeles, including failures/cancellations
+  and missing/unfinished runs. Producer completion no longer triggers the
+  notifier on other days. GitHub schedules can be delayed; 09:00 is the intended
+  time, not a wall-clock SLA.
 - Each main message includes both pipeline links. An unstarted pipeline links to
   its workflow. Failed jobs include their job links and failing step names.
 - Include every branch evaluated in those runs. Do not substitute yesterday's
-  data for a missing branch. Manual campaigns never enter production daily reports.
+  data for a missing branch. Manual campaigns never enter production weekly reports.
 - After delivery, late completions do not update the frozen report or create
-  another daily message. Subsequent daily reports can announce recovery.
+  another message that day. Subsequent weekly reports can announce recovery.
 - Serialize notifier runs. Identify production messages using Slack metadata
   keyed by repository and local date. Persist the frozen report before posting;
   on retry, restore it and send only missing thread parts. Rechecks at 30-minute
-  intervals through 18:30 UTC can resume an interrupted delivery. Do not delete
-  the bot's messages or its retained report artifacts; they are delivery records.
+  intervals through Monday 11:30 America/Los_Angeles can resume an interrupted
+  delivery. Do not delete the bot's messages or its retained report artifacts;
+  they are delivery records.
 - History/thread reads use GET query parameters and omit empty pagination cursors.
 - Slack timeouts and `ok:false` fail the notification job. An uncertain POST is
   not blindly retried: the next run checks Slack history/thread metadata first.
@@ -387,7 +407,7 @@ For each branch:
   separately, even if total coverage is unchanged because other points improved.
 - Keep the pre-alert baseline while the regression persists. Do not silently
   accept yesterday's regression as today's normal. Successful comparable results
-  against that baseline can be marked recovered in a later daily message.
+  against that baseline can be marked recovered in a later weekly message.
 - Initial prediction failures are shown as attention notes; without prior evidence
   they are not labeled new regressions. A green pipeline does not imply every
   prediction succeeded.
@@ -436,7 +456,7 @@ monospaced tables, and named links. This is not GitHub-flavored Markdown; tables
 are rendered inside code blocks rather than as Markdown table syntax.
 
 Both test and production use this same channel. Test messages are labeled
-`[TEST]` and use separate metadata, so they do not consume the daily production
+`[TEST]` and use separate metadata, so they do not consume the weekly production
 slot or update its baseline. Automatic delivery is disabled unless explicitly
 enabled. GitHub permissions are read-only (`contents:read`, `actions:read`).
 The notifier checks out its own trusted workflow revision; it never executes
@@ -445,7 +465,7 @@ preview/test alone permits same-repository producer runs from a non-main branch.
 
 ## Dry run and one real Slack test
 
-Open **Actions → Accuracy Slack Daily → Run workflow**. Choose `dry-run`
+Open **Actions → Accuracy Slack Weekly → Run workflow**. Choose `dry-run`
 (the default), and provide completed `e2e_run_id` and `fpm_run_id` values. Manual
 accuracy runs are allowed here. For example:
 
@@ -478,7 +498,7 @@ This sends a real `[TEST]` parent message plus its detail thread to the daily
 channel. Check desktop/mobile table readability, links, and per-model/per-GPU
 sections, then set `SLACK_ACCURACY_ENABLED=true`. Test sending is restricted to
 `main`; a branch dry run receives no Slack token. No manual mode sends a
-production daily report.
+production weekly report.
 
 A workflow dry run does not rerun predictors. Use the deterministic tests in
 `tests/fpm_accuracy/test_digest.py` to exercise regressions, coverage losses,

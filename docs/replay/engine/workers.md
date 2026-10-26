@@ -31,6 +31,7 @@ engine:
 | Knob | Default | Recommend | Rules |
 |---|---|---|---|
 | `workers.<role>.hardware` | `engine.hardware` | fixed | `prefill` and `decode` in disaggregated mode only. One concrete system identifier; `auto` is rejected. |
+| `workers.<role>.context_length` | `engine.context_length` | fixed | Positive token limit. Recommendation accepts it for `prefill` and `decode`; aggregated recommendations use `engine.context_length`. See [Context limits](#context-limits). |
 | `workers.<role>.startup_seconds` | `0` | fixed | Nonnegative. Delay before a worker added during the run becomes ready. Initial workers are ready at time zero. |
 | `workers.<role>.parallelism.preset` | Not applicable | `default` | Recommend only. `default` searches the generated parallelism space; a list pins candidate shapes; `false` or `{}` disables presets so the individual fields below define the space. See [search space](../../sweeper/search-space.md). |
 | `workers.<role>.parallelism.replicas` | `1` | Searched | Number of workers in this role. |
@@ -45,10 +46,35 @@ engine:
 | `workers.<role>.scheduler.max_sequences` | `256`; `1` for `prefill` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; others: `{choices: [256, 512, 1024]}` | Positive. Maximum running requests on one attention-DP rank. |
 | `workers.<role>.scheduler.prefill_schedule_interval` | `1` | predict only | vLLM only. See [vLLM prefill schedule interval](#vllm-prefill-schedule-interval). |
 | `workers.<role>.scheduler.prefill_decode_interval` | `0` | predict only | SGLang only. See [SGLang prefill/decode interval](#sglang-prefilldecode-interval). |
+| `workers.{aggregated,prefill}.host_loop` | `false` | fixed | SGLang only; `aggregated` in aggregated mode, `prefill` in disaggregated mode. Each pass is one overlap-scheduler iteration. Implied by `frontend` and `host_profile`. See [SGLang host loop, frontend and vision](#sglang-host-loop-frontend-and-vision). |
+| `workers.{aggregated,prefill}.frontend` | Unset | fixed | Ordered `stages`, each `{workers, service_ms, concurrency_scale}`, plus optional `measured_for` (model, frontend, feature transport and image shape the stages were measured on). Exclusive with `host_profile`. Unset together with `host_profile`, a worker with images encodes them on the GPU and prices no frontend stage, so its TTFT starts at the scheduler. |
+| `workers.{aggregated,prefill}.host_profile` | Unset | fixed | `{path, frontend}` with `frontend` `python` (SGLang's default HTTP server with its `TokenizerManager`) or `rust` (the embedded Rust server, `SGLANG_RUST_SERVER=1`, whose Rust extensions are built from an SGLang source tree). Frontend stages from a host cost table written by `python -m aisimulate.vl.collect`; a relative `path` resolves against the working directory of `collect` and `predict` alike. The table describes SGLang's CPU image-processor path (`--image-processor-backend pil`); SGLang 0.5.19's default `auto` on a GPU host runs the fast torchvision processor on the serving GPU, which is not priced, so a deployment matches its table only when launched with that flag. No table is read or measured unless this field is set. |
+| `workers.{aggregated,prefill}.vision.cache_mib` | `100` | fixed | Non-negative MiB; `0` disables the embedding cache. SGLang multimodal embedding cache (`SGLANG_VLM_CACHE_SIZE_MB`) for images encoded on the worker. |
+| `workers.{aggregated,prefill}.vision.encoder_parallel` | `tp` | fixed | `tp` shards the vision tower over the tensor-parallel group; `dp` (`--mm-enable-dp-encoder`) replicates it and splits the images. Sets encoder timing, collectives and per-rank tower weights. Adds no ranks; see the four parallelism knobs under [Compatibility and scope](sglang-vl-host-loop.md#compatibility-and-scope). |
 | `engine.enable_chunked_prefill` | Backend default (on) | fixed | Boolean. Applies to aggregated and prefill roles; `false` is rejected for SGLang and for AFD. |
 
 A backend-specific scheduler field set to a non-default value on another
 backend fails validation.
+
+## Context limits
+
+Each worker's `context_length` overrides `engine.context_length` for that role.
+Prediction supports the override on aggregated, prefill and decode workers;
+aggregated recommendations must use the shared engine field.
+Saved candidate YAML keeps inherited limits unset on the worker, so editing
+`engine.context_length` still updates every worker without an explicit override.
+
+For synthetic recommendation traffic, an explicit prefill limit must cover the
+input tokens plus one generated token. An explicit decode limit must cover input
+plus output tokens. The default synthetic workload applies when traffic is omitted.
+Trace traffic is checked by runtime admission, not this fixed-length validator.
+
+Sweeper uses the role limit, then the shared limit, then the model's maximum
+context for KV-feasibility filtering. Generated worker payloads use the role
+or shared limit; if both are unset, `max_model_len` remains unset. The model
+fallback used for filtering is not copied into that payload. AFD companion
+workers follow the same rule for their role. These are serving limits, not
+measured performance data.
 
 ## Parallelism
 
@@ -63,6 +89,13 @@ replicas × pipeline × tensor × attention_data × prefill_context
 GPUs. `moe_tensor`, `moe_expert` and `decode_context` partition those GPUs
 differently and do not add more. A deployment's GPU count is the sum over its
 roles. In `recommend`, `optimization.constraints` bounds this sum.
+
+Engine replay reports each role's GPUs per worker as
+`tensor × attention_data × prefill_context` (pipeline parallelism is not supported
+by engine replay). GPU-hours sum each role's worker-seconds times this count,
+divided by 3600. Aggregated workers use the `decode_gpus_per_worker` and
+`decode_worker_seconds` report fields. Neither DCP nor MoE EP adds another
+multiplier.
 
 `prefill_context` and `decode_context` are modeled only for some model and
 backend combinations, and an aggregated worker may set at most one of them above
@@ -102,7 +135,9 @@ you raise it.
 > **SGLang note.** The SGLang scheduler currently takes its per-pass prefill
 > budget from SGLang's default `chunked_prefill_size` (8192 tokens, divided by
 > `attention_data`), not from `max_batched_tokens`. Changing
-> `max_batched_tokens` does not change SGLang replay results.
+> `max_batched_tokens` does not change SGLang replay results, except when
+> `host_loop` is enabled or images are encoded on the worker (without a
+> separate encoder pool). In those cases it is the worker's `chunked_prefill_size`.
 
 With chunked prefill (the default), a long prompt is split across passes that
 each respect the token budget. With `enable_chunked_prefill: false` on vLLM, a
@@ -181,6 +216,65 @@ collective overhead, and idle sleeping. In speculative DP attention, SGLang can
 force a peer rank idle while another rank prefills; Replay still lets that peer
 decode in the same round. Behavior follows SGLang at commit
 [`20621aa`](https://github.com/sgl-project/sglang/blob/20621aa14bda7726a8a968f326198eac61717fef/python/sglang/srt/managers/scheduler.py#L1211).
+
+<a id="sglang-host-loop-frontend-and-vision"></a>
+
+### SGLang host loop, frontend and vision
+
+`host_loop: true` models each pass of an SGLang aggregated or prefill worker as
+one iteration of the overlap scheduler loop (`event_loop_overlap`): requests are
+received at iteration boundaries and a forward's outputs become visible one
+iteration later. `frontend` or `host_profile` adds the request path ahead of
+the scheduler as pools of black-box stages and implies `host_loop`; `vision`
+sizes the embedding cache and lays out the vision tower for images encoded on
+the worker. In disaggregated mode the fields go on `workers.prefill` and
+`workers.decode` stays a plain worker.
+
+```yaml
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 128
+    output_tokens: 32
+    images: {height: 1024, width: 1024, count: 1, encoding: png, identity: unique}
+  load: {type: concurrency, concurrency: 4}
+  stop: {requests: 32}
+engine:
+  model: Qwen/Qwen3-VL-8B-Instruct
+  hardware: h200_sxm
+  backend: sglang
+  workers:
+    aggregated:
+      scheduler: {max_batched_tokens: 8192, max_sequences: 64}
+      host_profile: {path: ./host-costs.json, frontend: python}
+      vision: {cache_mib: 100, encoder_parallel: tp}
+```
+
+```bash
+python -m aisimulate.vl.collect --config prediction.yaml --sglang-python <serving venv python>
+aisimulate predict --stack engine --config prediction.yaml
+```
+
+`collect` times the real SGLang frontend objects on the serving host (no GPU
+needed) and adds one row per feature transport the frontend serves, keyed by
+model, frontend, feature transport and image shape, to the table at
+`host_profile.path`; a prediction whose workload has no row fails and prints
+the `collect` command that adds it. Requires
+`backend: sglang`, `pipeline: 1`, `attention_data: 1` and context parallelism
+(`prefill_context`, `decode_context`) at `1`; images encoded on the
+worker also require default timing. Image traffic takes either this path or an
+encoder pool ([EPD](analytical.md#epd)), never both. The reported stage means
+and per-request milestones are listed in the
+[CLI reference](../../reference/cli.md#standard-output); mechanics and
+approximations are on [SGLang VL host loop](sglang-vl-host-loop.md).
+
+`collect` runs from an interpreter with aisimulate installed (Python 3.11 to
+3.13) and launches the measurement in the serving venv named by
+`--sglang-python`; the two are separate environments whenever the serving
+venv's Python is older than aisimulate supports. `engine.backend_version`
+selects the packaged GPU performance data, while the table is measured with the
+serving host's sglang 0.5.19, on which the frontend stages are defined; the two
+pins are independent.
 
 ### Backend scheduling differences
 

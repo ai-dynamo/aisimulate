@@ -1,18 +1,22 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
 
 //! SGLang KV manager — wraps [`RadixCache`] with request-level lifecycle
 //! operations and KV event publishing.
 
 use crate::engine::belady::BeladyOracle;
-use crate::engine::cache::radix_cache::{KvPageId, NodeId, RadixCache};
+use crate::engine::cache::radix_cache::{KvPageId, NodeId, PrefixMatchHint, RadixCache};
 use crate::engine::common::hashing::{
     LocalBlockHash, SequenceHash, compute_block_hash_for_seq, compute_next_seq_hash,
 };
 use crate::engine::common::kv_cache_trace;
 use crate::engine::common::protocols::KvEventPublishers;
 use crate::engine::{KvBlock, KvEvent, KvEventData, KvEventTier, StoredBlocks};
-use rustc_hash::FxHashMap;
+use fixedbitset::FixedBitSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Move-only ownership of a request's SGLang KV state.
 ///
@@ -29,44 +33,14 @@ pub(crate) struct RadixRequestLease {
     /// `cached_tokens`, this never grows with the request's own chunks or outputs.
     admission_reused_tokens: usize,
     page_hashes: Vec<LocalBlockHash>,
+    /// Resume point of this request's last admission match. A KV-blocked queue head repeats the
+    /// same whole-prompt match on every pass.
+    admission_match_hint: Option<PrefixMatchHint>,
     last_node: Option<NodeId>,
-}
-
-/// Metadata used only with the matching KV-manager admission checkpoint.
-pub(crate) struct RadixLeaseCheckpoint {
-    pages_len: usize,
-    materialized_tokens: usize,
-    cached_tokens: usize,
-    admission_reused_tokens: usize,
-    page_hashes_len: usize,
-    last_node: Option<NodeId>,
+    pub(crate) session_id: Option<String>,
 }
 
 impl RadixRequestLease {
-    pub(crate) fn admission_checkpoint(&self) -> RadixLeaseCheckpoint {
-        RadixLeaseCheckpoint {
-            pages_len: self.pages.len(),
-            materialized_tokens: self.materialized_tokens,
-            cached_tokens: self.cached_tokens,
-            admission_reused_tokens: self.admission_reused_tokens,
-            page_hashes_len: self.page_hashes.len(),
-            last_node: self.last_node,
-        }
-    }
-
-    /// Restore only after the matching manager checkpoint has been rolled back.
-    /// Admission only appends pages or fills an empty, inactive lease; it never
-    /// changes the existing page IDs. Prefix canonicalization happens after commit.
-    pub(crate) fn restore_admission(&mut self, checkpoint: RadixLeaseCheckpoint) {
-        debug_assert!(self.pages.len() >= checkpoint.pages_len);
-        self.pages.truncate(checkpoint.pages_len);
-        self.materialized_tokens = checkpoint.materialized_tokens;
-        self.cached_tokens = checkpoint.cached_tokens;
-        self.admission_reused_tokens = checkpoint.admission_reused_tokens;
-        self.page_hashes.truncate(checkpoint.page_hashes_len);
-        self.last_node = checkpoint.last_node;
-    }
-
     #[cfg(test)]
     pub(crate) fn pages(&self) -> &[KvPageId] {
         &self.pages
@@ -116,6 +90,11 @@ impl RadixRequestLease {
         ));
     }
 
+    /// Forget the hashes of pages past `complete_pages` after the sequence shrank.
+    pub(crate) fn truncate_page_hashes(&mut self, complete_pages: usize) {
+        self.page_hashes.truncate(complete_pages);
+    }
+
     fn page_hashes_through(&self, token_count: usize, page_size: usize) -> &[LocalBlockHash] {
         &self.page_hashes[..token_count / page_size]
     }
@@ -142,7 +121,9 @@ impl RadixRequestLease {
             cached_tokens,
             admission_reused_tokens: cached_tokens,
             page_hashes: Vec::new(),
+            admission_match_hint: None,
             last_node: Some(last_node),
+            session_id: None,
         }
     }
 }
@@ -164,36 +145,18 @@ pub struct SglangKvManager {
     next_event_id: u64,
     /// Maps each dense physical page ID to the block hash assigned during
     /// Stored events, so Removed events can use the same block hash.
-    /// Sized at construction when event publishing is enabled.
-    page_to_block_hash: Vec<Option<SequenceHash>>,
+    /// Sized at construction when event publishing is enabled; a slot holds a
+    /// hash only while its `page_hash_present` bit is set.
+    page_to_block_hash: Vec<SequenceHash>,
+    page_hash_present: FixedBitSet,
     /// Tracks how many live pool slots currently advertise the same logical
     /// block hash so router events reflect logical block visibility, not
-    /// transient slot ownership.
-    block_hash_refcounts: FxHashMap<SequenceHash, usize>,
-    pending_admission: Option<PendingAdmission>,
-}
-
-#[must_use = "admission must be committed or rolled back"]
-pub(crate) struct SglangAdmission(());
-
-struct PendingAdmission {
-    checkpoint: Option<SglangAdmissionCheckpoint>,
-    events: Vec<KvEvent>,
-}
-
-struct SglangAdmissionCheckpoint {
-    cache: RadixCache,
-    next_event_id: u64,
-    event_undo: Vec<KvEventUndo>,
-}
-
-/// Previous values for one page publication or removal. Repeated changes to
-/// the same page or logical hash are undone in reverse mutation order.
-struct KvEventUndo {
-    page_slot: usize,
-    previous_page_hash: Option<SequenceHash>,
-    block_hash: SequenceHash,
-    previous_refcount: Option<usize>,
+    /// transient slot ownership. Slots beyond the first, which exist only while
+    /// concurrent requests hold duplicate pages, are counted in `extra_hash_refs`.
+    live_hashes: FxHashSet<SequenceHash>,
+    extra_hash_refs: FxHashMap<SequenceHash, usize>,
+    /// Committed cache events, coalesced until the scheduler reaches a publish boundary.
+    queued_events: Vec<KvEvent>,
 }
 
 pub struct DecodeTokenReservation {
@@ -272,10 +235,10 @@ impl SglangKvManager {
         } else {
             KvEventPublishers::default()
         };
-        let page_to_block_hash = if kv_event_publishers.is_empty() {
-            Vec::new()
+        let event_pages = if kv_event_publishers.is_empty() {
+            0
         } else {
-            vec![None; total_tokens / page_size]
+            total_tokens / page_size
         };
         Self {
             cache: RadixCache::new(total_tokens, page_size),
@@ -284,9 +247,11 @@ impl SglangKvManager {
             kv_event_publishers,
             dp_rank,
             next_event_id: 0,
-            page_to_block_hash,
-            block_hash_refcounts: FxHashMap::default(),
-            pending_admission: None,
+            page_to_block_hash: vec![0; event_pages],
+            page_hash_present: FixedBitSet::with_capacity(event_pages),
+            live_hashes: FxHashSet::default(),
+            extra_hash_refs: FxHashMap::default(),
+            queued_events: Vec::new(),
         }
     }
 
@@ -295,96 +260,100 @@ impl SglangKvManager {
         self.page_to_block_hash.len()
     }
 
+    #[cfg(test)]
+    fn refcount_snapshot(&self) -> std::collections::BTreeMap<SequenceHash, usize> {
+        self.live_hashes
+            .iter()
+            .map(|&hash| {
+                (
+                    hash,
+                    1 + self.extra_hash_refs.get(&hash).copied().unwrap_or(0),
+                )
+            })
+            .collect()
+    }
+
+    fn page_hash(&self, slot: usize) -> Option<SequenceHash> {
+        self.page_hash_present
+            .contains(slot)
+            .then(|| self.page_to_block_hash[slot])
+    }
+
+    fn set_page_hash(&mut self, slot: usize, hash: Option<SequenceHash>) {
+        if let Some(hash) = hash {
+            self.page_to_block_hash[slot] = hash;
+        }
+        self.page_hash_present.set(slot, hash.is_some());
+    }
+
+    /// Count one more slot advertising `hash`; returns whether `hash` became live.
+    fn acquire_hash(&mut self, hash: SequenceHash) -> bool {
+        if self.live_hashes.insert(hash) {
+            return true;
+        }
+        *self.extra_hash_refs.entry(hash).or_default() += 1;
+        false
+    }
+
+    /// Count one slot fewer advertising `hash`; returns whether that was its last slot.
+    fn release_hash(&mut self, hash: SequenceHash) -> bool {
+        if !self.extra_hash_refs.is_empty()
+            && let Some(extra) = self.extra_hash_refs.get_mut(&hash)
+        {
+            *extra -= 1;
+            if *extra == 0 {
+                self.extra_hash_refs.remove(&hash);
+            }
+            return false;
+        }
+        self.live_hashes.remove(&hash)
+    }
+
     pub fn cache(&self) -> &RadixCache {
         &self.cache
+    }
+
+    /// Read-only match of a waiting request's first `pages` page hashes
+    /// (`Req.init_next_round_input`), resumed from the lease's previous match.
+    pub(crate) fn admission_prefix_match(
+        &self,
+        lease: &mut RadixRequestLease,
+        pages: usize,
+    ) -> usize {
+        let page_keys = &lease.page_hashes[..pages];
+        let matched = self
+            .cache
+            .prefix_match_hashes_len_hinted(page_keys, &mut lease.admission_match_hint);
+        debug_assert_eq!(matched, self.cache.prefix_match_hashes_len(page_keys));
+        matched
     }
 
     pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
         self.cache.set_belady_oracle(oracle);
     }
 
-    /// Hold speculative events until the timing provider accepts the admitted batch.
-    pub(crate) fn begin_admission(&mut self) -> SglangAdmission {
-        assert!(self.pending_admission.is_none(), "nested KV admission");
-        self.pending_admission = Some(PendingAdmission {
-            checkpoint: None,
-            events: Vec::new(),
-        });
-        SglangAdmission(())
-    }
-
-    /// Admission can reject all waiting requests without changing the cache.
-    /// Snapshot only before the first allocation or extension can mutate it.
-    /// Any new mutating path inside admission must checkpoint before its first change.
-    /// Each forward page-hash or refcount mutation must also call
-    /// `record_bookkeeping_undo` before changing either value.
-    fn checkpoint_admission(&mut self) {
-        let Some(admission) = self.pending_admission.as_mut() else {
-            return;
-        };
-        if admission.checkpoint.is_some() {
-            return;
-        }
-        admission.checkpoint = Some(SglangAdmissionCheckpoint {
-            cache: self.cache.admission_checkpoint(),
-            next_event_id: self.next_event_id,
-            event_undo: Vec::new(),
-        });
-    }
-
-    /// Record previous values before each forward bookkeeping mutation during admission.
-    /// Unlike the cache checkpoint, this must include repeated changes to the same entry.
-    fn record_bookkeeping_undo(&mut self, page_slot: usize, block_hash: SequenceHash) {
-        let Some(admission) = self.pending_admission.as_mut() else {
-            return;
-        };
-        let checkpoint = admission
-            .checkpoint
-            .as_mut()
-            .expect("KV checkpoint before mutation");
-        checkpoint.event_undo.push(KvEventUndo {
-            page_slot,
-            previous_page_hash: self.page_to_block_hash[page_slot],
-            block_hash,
-            previous_refcount: self.block_hash_refcounts.get(&block_hash).copied(),
-        });
-    }
-
-    pub(crate) fn commit_admission(&mut self, _admission: SglangAdmission) {
-        let admission = self.pending_admission.take().expect("active KV admission");
-        for event in admission.events {
-            self.publish_event(event);
-        }
-    }
-
-    pub(crate) fn rollback_admission(&mut self, _admission: SglangAdmission) {
-        let admission = self.pending_admission.take().expect("active KV admission");
-        if let Some(checkpoint) = admission.checkpoint {
-            self.cache = checkpoint.cache;
-            self.next_event_id = checkpoint.next_event_id;
-            for undo in checkpoint.event_undo.into_iter().rev() {
-                self.page_to_block_hash[undo.page_slot] = undo.previous_page_hash;
-                if let Some(refcount) = undo.previous_refcount {
-                    self.block_hash_refcounts.insert(undo.block_hash, refcount);
-                } else {
-                    self.block_hash_refcounts.remove(&undo.block_hash);
-                }
-            }
-        } else {
-            debug_assert!(
-                admission.events.is_empty(),
-                "events without a KV checkpoint"
-            );
-        }
-        self.log_trace("admission_rollback", 0);
-    }
-
     fn publish_event(&mut self, event: KvEvent) {
-        if let Some(admission) = self.pending_admission.as_mut() {
-            debug_assert!(admission.checkpoint.is_some(), "event before KV checkpoint");
-            admission.events.push(event);
-        } else if let Err(error) = self.kv_event_publishers.publish(event, None) {
-            tracing::warn!("Failed to publish SGLang KV event: {error}");
+        self.enqueue_event(event);
+    }
+
+    fn enqueue_event(&mut self, event: KvEvent) {
+        let unmerged = match self.queued_events.last_mut() {
+            Some(tail) => merge_into_tail(tail, event),
+            None => Some(event),
+        };
+        if let Some(event) = unmerged {
+            self.queued_events.push(event);
+        }
+    }
+
+    /// Hand every queued event to the publishers, numbering them in publish order.
+    pub(crate) fn flush_events(&mut self) {
+        for mut event in std::mem::take(&mut self.queued_events) {
+            event.event_id = self.next_event_id;
+            self.next_event_id += 1;
+            if let Err(error) = self.kv_event_publishers.publish(event, None) {
+                tracing::warn!("Failed to publish SGLang KV event: {error}");
+            }
         }
     }
 
@@ -423,11 +392,6 @@ impl SglangKvManager {
         let materialized_hashes = lease.page_hashes_through(token_ids.len(), page_size);
         let matchable_hashes =
             &materialized_hashes[..(max_prefix_tokens.min(token_ids.len()) / page_size)];
-        // Prefix matching can split, touch and lock radix nodes even when the
-        // following capacity check rejects the allocation.
-        if self.enable_prefix_caching {
-            self.checkpoint_admission();
-        }
         let (prefix_len, last_node) = self.match_prefix_hashes_and_lock(matchable_hashes);
         let required_pages = token_ids.len().div_ceil(page_size) - prefix_len / page_size;
         let required_tokens = required_pages * page_size;
@@ -439,10 +403,6 @@ impl SglangKvManager {
         if required_tokens > reservable {
             self.cache.dec_lock_ref(last_node);
             return None;
-        }
-        // Without prefix caching, matching and the capacity check are read-only.
-        if !self.enable_prefix_caching {
-            self.checkpoint_admission();
         }
         let available = self.cache.available_tokens();
         if required_tokens > available {
@@ -458,8 +418,7 @@ impl SglangKvManager {
         pages.append(&mut new_pages);
         let allocated_tokens = available_before - self.cache.available_tokens();
 
-        // Observer-visible KV events are complete-block only.
-        self.publish_stored_hashes(materialized_hashes, &pages, prefix_len, token_ids);
+        // Allocated pages become router-visible only after insertion into the radix tree.
 
         self.log_trace("allocation", allocated_tokens);
 
@@ -512,7 +471,6 @@ impl SglangKvManager {
         if required_tokens > reservable {
             return None;
         }
-        self.checkpoint_admission();
         let available = self.cache.available_tokens();
         if required_tokens > available {
             self.evict(required_tokens - available);
@@ -524,12 +482,6 @@ impl SglangKvManager {
         lease.ensure_page_hashes(token_ids, page_size);
         let allocated_tokens = available_before - self.cache.available_tokens();
 
-        self.publish_stored_hashes(
-            lease.page_hashes_through(token_ids.len(), page_size),
-            &lease.pages,
-            prefix_len,
-            token_ids,
-        );
         self.log_trace("allocation", allocated_tokens);
         Some(prefix_len)
     }
@@ -564,6 +516,7 @@ impl SglangKvManager {
             last_node,
             lease.cached_tokens,
             token_ids,
+            lease.session_id.as_deref(),
         );
         lease.last_node = Some(new_last_node);
         lease.cached_tokens = complete_len;
@@ -619,6 +572,7 @@ impl SglangKvManager {
             last_node,
             lease.cached_tokens,
             token_ids,
+            lease.session_id.as_deref(),
         );
     }
 
@@ -646,9 +600,10 @@ impl SglangKvManager {
         last_node: NodeId,
         first_new_token: usize,
         token_ids: &[u32],
+        session_id: Option<&str>,
     ) {
         let complete_len = page_hashes.len() * self.cache.page_size();
-        self.publish_stored_hashes(page_hashes, pages, first_new_token, token_ids);
+        self.publish_stored_hashes(page_hashes, pages, first_new_token, token_ids, session_id);
         let new_last_node =
             self.cache
                 .insert_page_hashes_from_node(last_node, first_new_token, page_hashes, pages);
@@ -671,6 +626,7 @@ impl SglangKvManager {
         last_node: NodeId,
         first_new_token: usize,
         token_ids: &[u32],
+        session_id: Option<&str>,
     ) -> NodeId {
         let block_size = self.cache.page_size();
         let complete_len = page_hashes.len() * block_size;
@@ -682,7 +638,7 @@ impl SglangKvManager {
             pages.len()
         );
 
-        self.publish_stored_hashes(page_hashes, pages, first_new_token, token_ids);
+        self.publish_stored_hashes(page_hashes, pages, first_new_token, token_ids, session_id);
         let new_last_node =
             self.cache
                 .insert_page_hashes_from_node(last_node, first_new_token, page_hashes, pages);
@@ -690,7 +646,7 @@ impl SglangKvManager {
         // An interleaved insert can retain different physical pages for the same prefix.
         // Move the active request to canonical pages before releasing its duplicates.
         // Acquire the extended path before releasing the old prefix so
-        // destination activation never leaves valid transferred KV unprotected.
+        // publishing a transferred prompt never leaves its valid KV unprotected.
         if new_last_node != last_node {
             self.cache.inc_lock_ref(new_last_node);
         }
@@ -750,13 +706,15 @@ impl SglangKvManager {
         })
     }
 
+    /// Hand the transferred prompt to its request without caching it: SGLang
+    /// inserts it into the radix tree only when the request is selected into a
+    /// running batch, so until then only the matched prefix stays locked.
     pub(crate) fn activate_destination_lease(
         &mut self,
         reservation: SglangDestinationReservation,
         token_ids: &[u32],
         lease: &mut RadixRequestLease,
     ) -> usize {
-        let token_count = token_ids.len();
         let SglangDestinationReservation {
             prefix_len,
             mut prefix_pages,
@@ -767,25 +725,11 @@ impl SglangKvManager {
             allocated_tokens: _,
         } = reservation;
         prefix_pages.append(&mut unpublished_pages);
-        let (new_last_node, cached_tokens) = if self.enable_prefix_caching {
-            (
-                self.cache_unfinished_hashes(
-                    lease.page_hashes_through(token_count, self.cache.page_size()),
-                    &mut prefix_pages,
-                    last_node,
-                    prefix_len,
-                    token_ids,
-                ),
-                token_count / self.cache.page_size() * self.cache.page_size(),
-            )
-        } else {
-            (last_node, 0)
-        };
         self.log_trace("activate_destination", missing_tokens);
         lease.pages = prefix_pages;
-        lease.materialized_tokens = token_count;
-        lease.cached_tokens = cached_tokens;
-        lease.last_node = Some(new_last_node);
+        lease.materialized_tokens = token_ids.len();
+        lease.cached_tokens = prefix_len;
+        lease.last_node = Some(last_node);
         prefix_len
     }
 
@@ -1065,6 +1009,7 @@ impl SglangKvManager {
         pages: &[KvPageId],
         first_new_token: usize,
         token_ids: &[u32],
+        session_id: Option<&str>,
     ) -> usize {
         if self.kv_event_publishers.is_empty() {
             return 0;
@@ -1089,7 +1034,7 @@ impl SglangKvManager {
 
         let first_page = first_new_token / block_size;
         let Some(first_unpublished_page) = (first_page..complete_pages)
-            .find(|&page_idx| self.page_to_block_hash[pages[page_idx].index()].is_none())
+            .find(|&page_idx| self.page_hash(pages[page_idx].index()).is_none())
         else {
             return 0;
         };
@@ -1103,27 +1048,26 @@ impl SglangKvManager {
             let page_idx = first_unpublished_page + block_idx;
             let page = pages[page_idx];
             let page_slot = page.index();
-            if self.page_to_block_hash[page_slot].is_some() {
+            if self.page_hash(page_slot).is_some() {
                 continue;
             }
 
             let block_parent_hash = if page_idx == 0 {
                 None
             } else {
-                self.page_to_block_hash[pages[page_idx - 1].index()]
+                self.page_hash(pages[page_idx - 1].index())
             };
             let block_hash = match block_parent_hash {
                 Some(parent_hash) => compute_next_seq_hash(parent_hash, tokens_hash),
                 None => tokens_hash.0,
             };
 
-            self.record_bookkeeping_undo(page_slot, block_hash);
-            self.page_to_block_hash[page_slot] = Some(block_hash);
-            let refcount = self.block_hash_refcounts.entry(block_hash).or_default();
-            *refcount += 1;
-            if *refcount == 1 && !publishing {
+            let newly_live = self.acquire_hash(block_hash);
+            self.set_page_hash(page_slot, Some(block_hash));
+            if newly_live && !publishing {
                 publishing = true;
                 parent_hash = block_parent_hash;
+                blocks.reserve_exact(local_hashes.len() - block_idx);
             }
             if publishing {
                 blocks.push(KvBlock {
@@ -1142,17 +1086,16 @@ impl SglangKvManager {
         }
 
         let event = KvEvent {
-            event_id: self.next_event_id,
+            event_id: 0,
             data: KvEventData::Stored(StoredBlocks {
                 parent_hash,
                 start_position: None,
                 blocks,
+                session_id: session_id.map(str::to_owned),
             }),
             dp_rank: self.dp_rank,
             tier: KvEventTier::Device,
         };
-        self.next_event_id += 1;
-
         self.publish_event(event);
 
         hashed_blocks
@@ -1165,23 +1108,16 @@ impl SglangKvManager {
 
         let mut block_hashes = Vec::new();
         for (page_idx, &page) in evicted_pages.iter().enumerate() {
-            let Some(block_hash) = self.page_to_block_hash[page.index()] else {
+            let Some(block_hash) = self.page_hash(page.index()) else {
                 continue;
             };
-            self.record_bookkeeping_undo(page.index(), block_hash);
-            self.page_to_block_hash[page.index()] = None;
-            if let std::collections::hash_map::Entry::Occupied(mut entry) =
-                self.block_hash_refcounts.entry(block_hash)
-            {
-                if *entry.get() > 1 {
-                    *entry.get_mut() -= 1;
-                } else {
-                    entry.remove();
-                    if block_hashes.is_empty() {
-                        block_hashes.reserve_exact(evicted_pages.len() - page_idx);
-                    }
-                    block_hashes.push(block_hash);
+            let last_copy = self.release_hash(block_hash);
+            self.set_page_hash(page.index(), None);
+            if last_copy {
+                if block_hashes.is_empty() {
+                    block_hashes.reserve_exact(evicted_pages.len() - page_idx);
                 }
+                block_hashes.push(block_hash);
             }
         }
 
@@ -1190,14 +1126,40 @@ impl SglangKvManager {
         }
 
         let event = KvEvent {
-            event_id: self.next_event_id,
+            event_id: 0,
             data: KvEventData::Removed { block_hashes },
             dp_rank: self.dp_rank,
             tier: KvEventTier::Device,
         };
-        self.next_event_id += 1;
-
         self.publish_event(event);
+    }
+}
+
+/// Merge `event` into `tail` where SGLang's radix cache event queue would, and
+/// return it unchanged otherwise.
+fn merge_into_tail(tail: &mut KvEvent, event: KvEvent) -> Option<KvEvent> {
+    if tail.dp_rank != event.dp_rank || tail.tier != event.tier {
+        return Some(event);
+    }
+    match (&mut tail.data, event.data) {
+        (
+            KvEventData::Removed {
+                block_hashes: tail_hashes,
+            },
+            KvEventData::Removed { block_hashes },
+        ) => {
+            tail_hashes.extend(block_hashes);
+            None
+        }
+        (KvEventData::Stored(tail_stored), KvEventData::Stored(stored))
+            if tail_stored.session_id == stored.session_id
+                && tail_stored.blocks.last().map(|block| block.block_hash)
+                    == stored.parent_hash =>
+        {
+            tail_stored.blocks.extend(stored.blocks);
+            None
+        }
+        (_, data) => Some(KvEvent { data, ..event }),
     }
 }
 
@@ -1242,39 +1204,6 @@ mod tests {
             self.events.lock().unwrap().push(event);
             Ok(())
         }
-    }
-
-    #[test]
-    fn prefix_disabled_admission_checkpoints_only_allocations_that_fit() {
-        let mut mgr = SglangKvManager::new_with_prefix_caching(
-            8,
-            4,
-            KvEventPublishers::default(),
-            0,
-            false,
-            false,
-        );
-        let mut lease = RadixRequestLease::default();
-        let before = lease.admission_checkpoint();
-        let admission = mgr.begin_admission();
-        assert_eq!(mgr.allocate_for_request_lease(&[1; 9], &mut lease), None);
-        assert!(mgr.pending_admission.as_ref().unwrap().checkpoint.is_none());
-        mgr.rollback_admission(admission);
-        lease.restore_admission(before);
-        assert_eq!(mgr.cache.available_tokens(), 8);
-        assert!(!lease.is_active());
-        assert!(lease.pages.is_empty());
-
-        let before = lease.admission_checkpoint();
-        let admission = mgr.begin_admission();
-        assert_eq!(mgr.allocate_for_request_lease(&[1; 8], &mut lease), Some(0));
-        assert!(mgr.pending_admission.as_ref().unwrap().checkpoint.is_some());
-        assert_eq!(mgr.cache.available_tokens(), 0);
-        mgr.rollback_admission(admission);
-        lease.restore_admission(before);
-        assert_eq!(mgr.cache.available_tokens(), 8);
-        assert!(!lease.is_active());
-        assert!(lease.pages.is_empty());
     }
 
     #[test]
@@ -1437,7 +1366,7 @@ mod tests {
     }
 
     #[test]
-    fn destination_activation_bounds_hashes_to_materialized_tokens() {
+    fn destination_publication_bounds_hashes_to_materialized_tokens() {
         for emit_token_ids in [false, true] {
             let sink = Arc::new(MockSink::new());
             let mut mgr = SglangKvManager::new_with_prefix_caching(
@@ -1459,7 +1388,15 @@ mod tests {
                 mgr.activate_destination_lease(reservation, &tokens[..4], &mut lease),
                 0
             );
+            // Activation keeps the transferred page private until the request runs.
+            assert!(sink.clone_events().is_empty());
+            assert_eq!(lease.page_count(), 1);
+            assert_eq!(lease.cached_tokens(), 0);
+            assert_eq!(mgr.cache().prefix_match_len(&tokens), 0);
 
+            mgr.extend_cached_prefix(&tokens[..4], &mut lease);
+
+            mgr.flush_events();
             let events = sink.clone_events();
             let [
                 KvEvent {
@@ -1468,7 +1405,7 @@ mod tests {
                 },
             ] = events.as_slice()
             else {
-                panic!("expected one activation store");
+                panic!("expected one publication store");
             };
             assert_eq!(stored.blocks.len(), 1);
             assert_eq!(stored.blocks[0].tokens_hash, lease.page_hashes()[0].0);
@@ -1631,8 +1568,10 @@ mod tests {
             let tokens = [1, 2, 3, 4, 5, 6, 7, 8, 9];
             let mut alloc = mgr.allocate_for_request(&tokens[..4]).unwrap();
             mgr.extend_cached_prefix(&tokens[..4], &mut alloc.lease);
+            mgr.flush_events();
             mgr.extend_allocation(&tokens, &mut alloc.lease).unwrap();
             mgr.finish(&tokens, alloc.lease);
+            mgr.flush_events();
             let events = sink.clone_events();
             let stored = events
                 .iter()
@@ -1658,6 +1597,7 @@ mod tests {
             mgr.evict(8);
             let reused = mgr.allocate_for_request(&tokens[..4]).unwrap();
             mgr.finish(&tokens[..4], reused.lease);
+            mgr.flush_events();
             let events = sink.clone_events();
             let KvEventData::Stored(stored) = &events.last().unwrap().data else {
                 panic!("expected a store after eviction");
@@ -1683,7 +1623,48 @@ mod tests {
         let tokens = [1, 2, 3, 4];
         let hashes = compute_block_hash_for_seq(&tokens, 4);
         let pages = mgr.cache_mut().page_pool.allocate_pages(1).unwrap();
-        mgr.publish_stored_hashes(&hashes, &pages, 0, &tokens[..3]);
+        mgr.publish_stored_hashes(&hashes, &pages, 0, &tokens[..3], None);
+    }
+
+    #[rstest::rstest]
+    fn queued_stores_coalesce_only_with_the_same_session(
+        #[values(false, true)] same_session: bool,
+    ) {
+        let sink = Arc::new(MockSink::new());
+        let mut mgr = SglangKvManager::new(8, 2, KvEventPublishers::new(Some(sink.clone())), 3);
+        let tokens = [1, 2, 3, 4];
+        let mut first = mgr.allocate_for_request(&tokens[..2]).unwrap();
+        first.lease.session_id = Some("first".into());
+        mgr.finish(&tokens[..2], first.lease);
+        let mut second = mgr.allocate_for_request(&tokens).unwrap();
+        second.lease.session_id = Some(if same_session { "first" } else { "second" }.into());
+        mgr.finish(&tokens, second.lease);
+        assert_eq!(sink.event_count(), 0);
+        mgr.flush_events();
+        let events = sink.clone_events();
+        assert_eq!(events.len(), if same_session { 1 } else { 2 });
+        assert!(
+            events
+                .iter()
+                .enumerate()
+                .all(|(i, event)| event.event_id == i as u64 && event.dp_rank == 3)
+        );
+        let stores = events
+            .iter()
+            .map(|event| match &event.data {
+                KvEventData::Stored(stored) => stored,
+                _ => panic!("expected stored event"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(stores[0].session_id.as_deref(), Some("first"));
+        if same_session {
+            assert_eq!(stores[0].blocks.len(), 2);
+        } else {
+            assert_eq!(stores[1].session_id.as_deref(), Some("second"));
+            assert_eq!(stores[1].parent_hash, Some(stores[0].blocks[0].block_hash));
+        }
+        mgr.flush_events();
+        assert_eq!(sink.event_count(), events.len());
     }
 
     #[test]
@@ -1692,13 +1673,18 @@ mod tests {
         let mut mgr = SglangKvManager::new(100, 1, KvEventPublishers::new(Some(sink.clone())), 0);
 
         let r = mgr.allocate_for_request(&[1, 2, 3]).unwrap();
-        assert_eq!(sink.event_count(), 1); // BlockStored for 3 new pages
+        mgr.flush_events();
+        assert_eq!(sink.event_count(), 0); // Allocation does not insert into the tree.
 
         mgr.finish(&[1, 2, 3], r.lease);
+        mgr.flush_events();
+        assert_eq!(sink.event_count(), 1);
 
         // Second request with full cache hit → no new events
         let r2 = mgr.allocate_for_request(&[1, 2, 3]).unwrap();
         assert_eq!(r2.prefix_len, 3);
+        mgr.finish(&[1, 2, 3], r2.lease);
+        mgr.flush_events();
         assert_eq!(sink.event_count(), 1); // no new event
     }
 
@@ -1709,11 +1695,13 @@ mod tests {
 
         let first = mgr.allocate_for_request(&[1]).unwrap();
         let page = first.lease.pages()[0];
-        assert!(mgr.abort(first.lease));
+        mgr.finish(&[1], first.lease);
 
         let second = mgr.allocate_for_request(&[2]).unwrap();
         assert_eq!(second.lease.pages(), &[page]);
 
+        mgr.finish(&[2], second.lease);
+        mgr.flush_events();
         let events = sink.clone_events();
         assert_eq!(events.len(), 3);
         assert_eq!(events[0].event_id, 0);
@@ -1736,90 +1724,78 @@ mod tests {
     }
 
     #[test]
-    fn admission_undo_preserves_eviction_page_reuse_and_event_order() {
-        for commit in [false, true] {
-            let sink = Arc::new(MockSink::new());
-            let mut mgr = SglangKvManager::new(1, 1, KvEventPublishers::new(Some(sink.clone())), 0);
-            let first = mgr.allocate_for_request(&[1]).unwrap();
-            let page = first.lease.pages()[0];
-            mgr.finish(&[1], first.lease);
-            let pages_before = mgr.page_to_block_hash.clone();
-            let counts_before = mgr.block_hash_refcounts.clone();
+    fn eviction_page_reuse_keeps_event_order() {
+        let sink = Arc::new(MockSink::new());
+        let mut mgr = SglangKvManager::new(1, 1, KvEventPublishers::new(Some(sink.clone())), 0);
+        let first = mgr.allocate_for_request(&[1]).unwrap();
+        let page = first.lease.pages()[0];
+        mgr.finish(&[1], first.lease);
 
-            let admission = mgr.begin_admission();
-            let second = mgr.allocate_for_request(&[2]).unwrap();
-            assert_eq!(second.lease.pages(), &[page]); // Eviction reuses the page.
-            assert!(mgr.abort(second.lease));
-            let third = mgr.allocate_for_request(&[3]).unwrap();
-            assert_eq!(third.lease.pages(), &[page]); // Mutate the same slot again.
-            assert_eq!(sink.event_count(), 1); // Nothing speculative is published.
+        let second = mgr.allocate_for_request(&[2]).unwrap();
+        assert_eq!(second.lease.pages(), &[page]); // Eviction reuses the page.
+        mgr.finish(&[2], second.lease);
+        let mut third = mgr.allocate_for_request(&[3]).unwrap();
+        assert_eq!(third.lease.pages(), &[page]); // Mutate the same slot again.
 
-            if commit {
-                mgr.commit_admission(admission);
-                let events = sink.clone_events();
-                assert_eq!(events.len(), 5);
-                for (index, event) in events.iter().enumerate() {
-                    assert_eq!(event.event_id, index as u64);
-                    assert_eq!(matches!(event.data, KvEventData::Stored(_)), index % 2 == 0);
-                }
-                let final_hash = mgr.page_to_block_hash[page.index()].unwrap();
-                assert_eq!(
-                    mgr.block_hash_refcounts,
-                    FxHashMap::from_iter([(final_hash, 1)])
-                );
-                let KvEventData::Stored(stored) = &events[4].data else {
-                    unreachable!()
-                };
-                assert_eq!(stored.blocks[0].block_hash, final_hash);
-                mgr.abort(third.lease);
-            } else {
-                mgr.rollback_admission(admission);
-                assert_eq!(mgr.page_to_block_hash, pages_before);
-                assert_eq!(mgr.block_hash_refcounts, counts_before);
-                assert_eq!(mgr.cache().prefix_match_len(&[1]), 1);
-                assert_eq!(mgr.next_event_id, 1);
-                assert_eq!(sink.event_count(), 1);
-                let retry = mgr.allocate_for_request(&[2]).unwrap();
-                assert_eq!(retry.lease.pages(), &[page]);
-                assert_eq!(sink.clone_events()[1].event_id, 1);
-                mgr.abort(retry.lease);
-            }
+        mgr.extend_cached_prefix(&[3], &mut third.lease);
+        mgr.flush_events();
+        let events = sink.clone_events();
+        assert_eq!(events.len(), 5);
+        for (index, event) in events.iter().enumerate() {
+            assert_eq!(event.event_id, index as u64);
+            assert_eq!(matches!(event.data, KvEventData::Stored(_)), index % 2 == 0);
         }
+        let final_hash = mgr.page_hash(page.index()).unwrap();
+        assert_eq!(
+            mgr.refcount_snapshot(),
+            std::collections::BTreeMap::from([(final_hash, 1)])
+        );
+        let KvEventData::Stored(stored) = &events[4].data else {
+            unreachable!()
+        };
+        assert_eq!(stored.blocks[0].block_hash, final_hash);
+        mgr.abort(third.lease);
     }
 
     #[test]
-    fn admission_undo_restores_duplicate_refcounts() {
+    fn empty_and_noop_event_batches_do_not_publish() {
         let sink = Arc::new(MockSink::new());
-        let mut mgr = SglangKvManager::new(2, 1, KvEventPublishers::new(Some(sink.clone())), 0);
-        let pages_before = mgr.page_to_block_hash.clone();
-        let admission = mgr.begin_admission();
-        let first = mgr.allocate_for_request(&[1]).unwrap();
-        let second = mgr.allocate_for_request(&[1]).unwrap();
-        let hash = mgr.page_to_block_hash[first.lease.pages()[0].index()].unwrap();
-        assert_eq!(mgr.block_hash_refcounts[&hash], 2);
-        mgr.abort(first.lease);
-        assert_eq!(mgr.block_hash_refcounts[&hash], 1);
-        mgr.abort(second.lease);
-        assert!(!mgr.block_hash_refcounts.contains_key(&hash));
-        mgr.rollback_admission(admission);
-        assert_eq!(mgr.page_to_block_hash, pages_before);
-        assert!(mgr.block_hash_refcounts.is_empty());
-        assert_eq!(mgr.cache().available_tokens(), 2);
-        assert_eq!(mgr.next_event_id, 0);
-        assert_eq!(sink.event_count(), 0);
-
-        let first = mgr.allocate_for_request(&[1]).unwrap();
-        let pages_before = mgr.page_to_block_hash.clone();
-        let admission = mgr.begin_admission();
-        let second = mgr.allocate_for_request(&[1]).unwrap();
-        assert_eq!(mgr.block_hash_refcounts[&hash], 2);
-        mgr.rollback_admission(admission);
-        assert_eq!(mgr.page_to_block_hash, pages_before);
-        assert_eq!(mgr.block_hash_refcounts[&hash], 1);
+        let mut mgr = SglangKvManager::new(4, 2, KvEventPublishers::new(Some(sink.clone())), 0);
+        let tokens = [1, 2, 3]; // One published page plus one unpublished partial page.
+        let first = mgr.allocate_for_request(&tokens).unwrap();
+        let hashes = compute_block_hash_for_seq(&tokens, 2);
+        assert_eq!(
+            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 0, &tokens, None),
+            1
+        );
+        mgr.flush_events();
+        assert_eq!(mgr.publish_stored_hashes(&[], &[], 0, &[], None), 0);
+        assert_eq!(
+            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 0, &tokens, None),
+            0
+        );
+        assert_eq!(
+            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 2, &tokens, None),
+            0
+        );
+        mgr.publish_removed_pages(&[]);
+        mgr.publish_removed_pages(&first.lease.pages()[1..]);
+        mgr.flush_events();
+        assert_eq!(mgr.next_event_id, 1);
         assert_eq!(sink.event_count(), 1);
-        drop(second); // The speculative lease was invalidated by rollback.
         mgr.abort(first.lease);
-        assert_eq!(sink.event_count(), 2);
+    }
+
+    #[test]
+    fn hash_refcounts_track_more_than_two_copies() {
+        let sink = Arc::new(MockSink::new());
+        let mut mgr = SglangKvManager::new(4, 1, KvEventPublishers::new(Some(sink)), 0);
+        let newly_live: Vec<_> = (0..3).map(|_| mgr.acquire_hash(7)).collect();
+        assert_eq!(newly_live, [true, false, false]);
+        assert_eq!(mgr.refcount_snapshot()[&7], 3);
+        let last_copy: Vec<_> = (0..4).map(|_| mgr.release_hash(7)).collect();
+        assert_eq!(last_copy, [false, false, true, false]);
+        assert!(mgr.refcount_snapshot().is_empty());
     }
 
     #[test]
@@ -1830,6 +1806,7 @@ mod tests {
         let r = mgr.allocate_for_request(&[1, 2, 3, 4, 5, 6]).unwrap();
         mgr.finish(&[1, 2, 3, 4, 5, 6], r.lease);
 
+        mgr.flush_events();
         let events = sink.clone_events();
         assert_eq!(events.len(), 1);
         let KvEventData::Stored(store) = &events[0].data else {
@@ -1852,18 +1829,26 @@ mod tests {
         let lease = lease_with_hashes(&tokens, 4);
 
         assert_eq!(
-            mgr.publish_stored_hashes(lease.page_hashes_through(4, 4), &pages[..1], 0, &tokens),
+            mgr.publish_stored_hashes(
+                lease.page_hashes_through(4, 4),
+                &pages[..1],
+                0,
+                &tokens,
+                None
+            ),
+            1
+        );
+        mgr.flush_events();
+        assert_eq!(
+            mgr.publish_stored_hashes(lease.page_hashes_through(8, 4), &pages, 0, &tokens, None),
             1
         );
         assert_eq!(
-            mgr.publish_stored_hashes(lease.page_hashes_through(8, 4), &pages, 0, &tokens),
-            1
-        );
-        assert_eq!(
-            mgr.publish_stored_hashes(lease.page_hashes_through(8, 4), &pages, 0, &tokens),
+            mgr.publish_stored_hashes(lease.page_hashes_through(8, 4), &pages, 0, &tokens, None),
             0
         );
 
+        mgr.flush_events();
         let events = sink.clone_events();
         assert_eq!(events.len(), 2);
         let KvEventData::Stored(first) = &events[0].data else {
@@ -1885,6 +1870,7 @@ mod tests {
 
         let mut alloc = mgr.allocate_for_request(&tokens[..2]).unwrap();
         mgr.extend_cached_prefix(&tokens[..2], &mut alloc.lease);
+        mgr.flush_events();
         assert_eq!(sink.event_count(), 1);
 
         assert!(
@@ -1892,6 +1878,7 @@ mod tests {
                 .is_some()
         );
         mgr.extend_cached_prefix(&tokens[..4], &mut alloc.lease);
+        mgr.flush_events();
         let events = sink.clone_events();
         assert_eq!(events.len(), 2);
         let KvEventData::Stored(first_store) = &events[1].data else {
@@ -1905,6 +1892,7 @@ mod tests {
 
         assert!(mgr.extend_allocation(&tokens, &mut alloc.lease).is_some());
         mgr.finish(&tokens, alloc.lease);
+        mgr.flush_events();
         let events = sink.clone_events();
         assert_eq!(events.len(), 3);
         let KvEventData::Stored(final_store) = &events[2].data else {
@@ -1925,6 +1913,17 @@ mod tests {
         let req1 = mgr.allocate_for_request(&[1, 2, 3]).unwrap();
         let req2 = mgr.allocate_for_request(&[1, 2, 3]).unwrap();
 
+        let hashes = compute_block_hash_for_seq(&[1, 2, 3], 1);
+        // Two private copies may publish the same logical blocks before canonicalization.
+        assert_eq!(
+            mgr.publish_stored_hashes(&hashes, req1.lease.pages(), 0, &[1, 2, 3], None),
+            3
+        );
+        assert_eq!(
+            mgr.publish_stored_hashes(&hashes, req2.lease.pages(), 0, &[1, 2, 3], None),
+            3
+        );
+        mgr.flush_events();
         let events = sink.clone_events();
         assert_eq!(events.len(), 1);
         let KvEventData::Stored(store) = &events[0].data else {
@@ -1933,9 +1932,11 @@ mod tests {
         assert_eq!(store.blocks.len(), 3);
 
         mgr.free_pages(&req1.lease.pages);
+        mgr.flush_events();
         assert_eq!(sink.event_count(), 1);
 
         mgr.free_pages(&req2.lease.pages);
+        mgr.flush_events();
         let events = sink.clone_events();
         assert_eq!(events.len(), 2);
         let KvEventData::Removed { block_hashes } = &events[1].data else {
@@ -1965,7 +1966,14 @@ mod tests {
         let page_hashes = alloc.lease.page_hashes().to_vec();
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            mgr.cache_unfinished_hashes(&page_hashes, &mut alloc.lease.pages, last_node, 2, &tokens)
+            mgr.cache_unfinished_hashes(
+                &page_hashes,
+                &mut alloc.lease.pages,
+                last_node,
+                2,
+                &tokens,
+                None,
+            )
         }));
 
         assert!(result.is_err());
@@ -1984,7 +1992,14 @@ mod tests {
         let page_hashes = alloc.lease.page_hashes().to_vec();
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            mgr.cache_unfinished_hashes(&page_hashes, &mut alloc.lease.pages, last_node, 0, &tokens)
+            mgr.cache_unfinished_hashes(
+                &page_hashes,
+                &mut alloc.lease.pages,
+                last_node,
+                0,
+                &tokens,
+                None,
+            )
         }));
 
         assert!(result.is_err());
@@ -2062,9 +2077,13 @@ mod tests {
 
         let mut alloc1 = mgr.allocate_for_request(&tokens[..chunk1_len]).unwrap();
         mgr.extend_cached_prefix(&tokens[..chunk1_len], &mut alloc1.lease);
+        mgr.flush_events();
 
         let alloc2 = mgr.allocate_for_request(&tokens[..chunk2_len]).unwrap();
+        let reused = alloc2.prefix_len;
+        mgr.finish(&tokens, alloc2.lease);
         assert!(mgr.abort(alloc1.lease));
+        mgr.flush_events();
 
         let events = sink.events.lock().unwrap();
         assert_eq!(events.len(), 2, "expected two stored events");
@@ -2097,7 +2116,7 @@ mod tests {
             "second chunk should only emit new blocks"
         );
         assert_eq!(
-            alloc2.prefix_len, chunk1_len,
+            reused, chunk1_len,
             "second chunk should reuse the cached partial prefix"
         );
     }

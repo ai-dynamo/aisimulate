@@ -237,7 +237,6 @@ fn version_dir_data_stems(version_path: &Path) -> std::io::Result<BTreeSet<Strin
                     | COLLECTION_META_MARKER
                     | INCOMPLETE_MARKER
                     | SHARED_LAYER_REUSE_MARKER
-                    | super::prefill_graph::PROFILE_FILE
             )
             || !entry.path().is_file()
         {
@@ -1436,23 +1435,6 @@ impl SourceResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_known_graph_contract_is_exempt_from_table_coverage() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::write(
-            root.path()
-                .join("sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1.profile.json"),
-            "{}",
-        )
-        .unwrap();
-        assert!(version_dir_data_stems(root.path()).unwrap().is_empty());
-        std::fs::write(root.path().join("another.profile.json"), "{}").unwrap();
-        assert_eq!(
-            version_dir_data_stems(root.path()).unwrap(),
-            BTreeSet::from(["another.profile".to_owned()])
-        );
-    }
 
     fn write(path: &Path, content: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

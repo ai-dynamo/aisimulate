@@ -16,7 +16,7 @@ Unsupported measurement protocols remain visible as unsupported
 configurations; missing protocol identities and corrupt inputs still fail closed. `evaluate.py` reduces each shared measurement stream directly into
 overview and per-variant heatmap aggregates. Optional notification evidence retains observation-order hashes
 and compressed percentage-error sequences separately from public Pages artifacts; it does not retain
-raw measured or predicted latencies. See [daily reporting](../../docs/ci/accuracy.md#daily-accuracy-report).
+raw measured or predicted latencies. See [weekly reporting](../../docs/ci/accuracy.md#weekly-accuracy-report).
 The public `skipped_count` combines excluded and unavailable source observations;
 the Overview labels this count “excluded or unavailable.” It does not mean
 that all of these observations were deliberately filtered out.
@@ -67,7 +67,15 @@ full-catalog selector validation, including historical bindings.
 Schema v7 FPM pairs retain hash, row-count, base-configuration, and internal
 sidecar/Parquet consistency validation. Selector flags must be booleans, the
 model-config hash must be a lowercase SHA-256 (or the producer's empty legacy
-identity), and other execution fields must be nonblank strings. This does not
+identity), and other execution fields must be nonblank strings. Optional v7
+collection selectors (`measurement_policy`, `state_protocol`, `timing_boundary`,
+`measurement_repeats`, `warmup_repeats`, `sglang_allocator_max_split_size_mb`,
+and `sglang_allocator_policy_sha256`) are also checked against every Parquet row
+when present. A matching first row does not admit mismatched later rows.
+Repeat counts and allocator size must be integers: warmups may be
+zero, while measurements and allocator size must be positive. The allocator
+policy hash must be a nonempty lowercase SHA-256. Unknown selector fields still
+fail closed; older v7 pairs need not include these optional fields. This does not
 establish a binding to an authoritative execution identity in the selected
 configuration. Every v7 pair is therefore rejected by native staging, even if
 its sidecar and rows agree. Supporting v7 prediction requires that binding and
@@ -124,3 +132,27 @@ produced once per pinned campaign by `scripts/fpm_accuracy/prepare_fpm_measureme
 That script traverses current HF snapshots, matching branch accuracy.
 Archived source snapshots do not gate fresh current measurement publication. See the public
 [dashboard README](../../pages/fpm-accuracy/README.md) for storage and rollout.
+
+## Columnar measurements and collection metadata
+
+The reader accepts catalog v5/v6, configuration v3/v4, and measurement v4/v5.
+Storage format is explicit and separate from the semantic measurement protocol.
+Versioned Parquet representations decode into the same rank/grouping validators
+as legacy JSON/CSV. Integer nanoseconds, nulls, rank order, and logical source
+record IDs survive conversion. `ordering_index` preserves the previous file
+ordering for equal timestamps; Parquet row groups do not define observations.
+Grouped, benchmark, and reduced-record readers use the stored `source_row`,
+including noncontiguous IDs, when binding observations to collection runs.
+Reduced records keep optional source provenance nullable; a missing source file
+or original row is not an empty supplied value. Supplied empty filenames and
+nonpositive original row numbers still fail validation. Synthetic reduced-record
+counters retain their evaluation order independently of logical record IDs.
+Visualization-only diagnostic grouping uses the same format dispatch and logical
+record references, including duplicate-rank exclusions for unsynchronized streams.
+
+Measurement v5 `collection_runs` binds metadata to truth file IDs and disjoint
+half-open logical record ranges (one-based; `null` selects the whole file).
+Overrides and accepted observation membership restrict which runs enter public
+summary/detail v2 assets. Missing metadata in historical evaluations remains
+Unknown. Request metrics are separate Parquet evidence; only compact chart JSON
+is served publicly. No source request IDs or prompt text enter chart assets.

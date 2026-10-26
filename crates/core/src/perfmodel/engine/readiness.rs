@@ -7,7 +7,10 @@
 use std::collections::HashMap;
 
 use crate::AicError;
-use crate::common::enums::{DatabaseMode, GemmQuantMode, MoeQuantMode, TransferKind};
+use crate::common::enums::{
+    ComputeDtype, DatabaseMode, GemmQuantMode, KvCacheQuantMode, MoeQuantMode, QuantMapping,
+    TransferKind,
+};
 use crate::config::PerfSource;
 use crate::operators::Op;
 use crate::operators::fpm_forward::{FpmForwardOp, FpmInterpolation, FpmPhase};
@@ -29,6 +32,25 @@ pub(super) fn validate<'a>(
 }
 
 pub(super) fn validate_fpm(db: &PerfDatabase, fpm: &FpmForwardOp) -> Result<(), AicError> {
+    // FPM profiles may have no original SOL ops. Check the preserved compute
+    // identity before selecting a measured cell, independently of data presence.
+    for (field, value) in crate::perf_database::fpm_forward::FPM_CELL_MATCH_COLUMNS
+        .iter()
+        .zip(&fpm.match_identity)
+    {
+        let quant = match *field {
+            "gemm_quant_mode" => serde_json::from_value::<GemmQuantMode>(value.clone().into())
+                .ok()
+                .map(GemmQuantMode::mapping),
+            "moe_quant_mode" => serde_json::from_value::<MoeQuantMode>(value.clone().into())
+                .ok()
+                .map(MoeQuantMode::mapping),
+            _ => None,
+        };
+        if let Some(quant) = quant {
+            validate_compute_capability(db, quant)?;
+        }
+    }
     let cell = db
         .fpm_forward
         .select_cell(&fpm.match_identity, &fpm.model_path, fpm.dcp_size)?;
@@ -46,6 +68,186 @@ pub(super) fn validate_fpm(db: &PerfDatabase, fpm: &FpmForwardOp) -> Result<(), 
             fpm.model_path,
             db.data_root.display(),
         )));
+    }
+    Ok(())
+}
+
+fn validate_compute_capability(db: &PerfDatabase, quant: QuantMapping) -> Result<(), AicError> {
+    // FP8 tensor-core compute starts at SM89 (Ada). Weight-only formats
+    // that dequantize to BF16 must not be rejected by their storage name.
+    // https://docs.nvidia.com/cuda/archive/12.9.0/ada-tuning-guide/index.html
+    if quant.compute_dtype == Some(ComputeDtype::Fp8)
+        && let Some(sm) = db.system_spec.gpu.sm_version
+        && sm < 89
+    {
+        return Err(AicError::InvalidEngineConfig(format!(
+            "GPU {} (SM{sm}) does not support FP8 tensor-core compute required by quant mode '{}'. \
+             AISimulate does not model FP8 weight-only (Marlin) execution on pre-SM89 GPUs. \
+             Use a BF16 checkpoint on this GPU, or select an FP8-capable GPU such as h100_sxm or h200_sxm \
+             with matching backend performance data.",
+            db.system, quant.name,
+        )));
+    }
+    Ok(())
+}
+
+/// Hopper FP8 KV requires a runtime that implements the GLM IndexPool path.
+/// vLLM 0.32.0 fixes the SM90 FlashInfer plan dtype (#55222, c37f86e5721f),
+/// and SGLang 0.5.22 enables CUDA TileLang FP8 KV (#42957, 9336681310c7).
+/// The latter requires TileLang for both DSA prefill and decode. These are
+/// runtime restrictions, not a hardware prohibition or measured-data coverage.
+/// Sources: https://github.com/vllm-project/vllm/pull/55222
+///          https://github.com/sgl-project/sglang/pull/42957
+fn validate_glm53_kv_capability(
+    db: &PerfDatabase,
+    op: &crate::operators::glm53flash::Glm53AttentionOp,
+) -> Result<(), AicError> {
+    if op.layer_kind == "sparse_mla"
+        && op.kv_cache_dtype == KvCacheQuantMode::Fp8
+        && let Some(sm) = db.system_spec.gpu.sm_version
+        && (90..100).contains(&sm)
+    {
+        let minimum = match op.backend.as_str() {
+            "vllm" => "0.32.0",
+            "sglang" => "0.5.22",
+            _ => return Ok(()),
+        };
+        if db
+            .version
+            .parse::<pep440_rs::Version>()
+            .is_ok_and(|version| version >= minimum.parse::<pep440_rs::Version>().unwrap())
+        {
+            return Ok(());
+        }
+        return Err(AicError::InvalidEngineConfig(format!(
+            "GLM-5.3-Flash on GPU {} (SM{sm}) cannot use FP8 sparse-MLA KV with {}: the \
+             requested backend_version={} requires {} >= {}. Select a supported runtime \
+             (SGLang requires TileLang DSA prefill and decode), or pass \
+             kvcache_quant_mode=\"bfloat16\".",
+            db.system, op.backend, db.version, op.backend, minimum,
+        )));
+    }
+    Ok(())
+}
+
+/// Sources of one GLM-consumed table, refusing any borrowed file. The
+/// generic readers merge every resolved source into one table, so with the
+/// shared layer on a nearest-earlier or cross-backend file could answer a
+/// GLM lookup with another runtime's row, labelled silicon.
+fn glm53_exact_sources(
+    db: &PerfDatabase,
+    name: &str,
+) -> Result<Vec<crate::perf_database::source_resolution::PrioritizedSource>, AicError> {
+    let sources = db
+        .source_resolver
+        .prioritized_sources_for(name, &db.data_root)?;
+    if let Some(borrowed) = sources.iter().find(|source| {
+        !matches!(source.channel, "primary" | "declared_reuse") && source.source.path().is_file()
+    }) {
+        return Err(AicError::PerfDatabase(format!(
+            "GLM-5.3-Flash SILICON reads {name} only from the exact runtime {}/{}, but \
+             the shared layer also loads {} ({} channel, version {}); set \
+             enable_shared_layer=False",
+            db.backend,
+            db.version,
+            borrowed.source.path().display(),
+            borrowed.channel,
+            borrowed.version,
+        )));
+    }
+    Ok(sources)
+}
+
+/// Generic tables a GLM-5.3-Flash op reads in SILICON.
+fn glm53_tables(op: &Op, tables: &mut std::collections::BTreeSet<&'static str>) {
+    use Op::*;
+    let measured = match op {
+        Glm53Mhc(_) => {
+            tables.insert("mhc_module_perf.parquet");
+            return;
+        }
+        Glm53Attention(o) => &o.measured,
+        Glm53Ffn(o) => &o.measured,
+        Glm53Primitive(o) => &o.measured,
+        TokenScale(o) => return glm53_tables(&o.op, tables),
+        Overlap(o) => {
+            for child in o.group_a.iter().chain(&o.group_b) {
+                glm53_tables(child, tables);
+            }
+            return;
+        }
+        Fallback(o) => {
+            glm53_tables(&o.primary, tables);
+            for child in &o.fallback {
+                glm53_tables(child, tables);
+            }
+            return;
+        }
+        _ => return,
+    };
+    for child in measured {
+        match child {
+            Gemm(_) => tables.insert("gemm_perf.parquet"),
+            Moe(_) => tables.insert("moe_perf.parquet"),
+            Kda(_) => tables.insert("kda_perf.parquet"),
+            Mhc(_) => tables.insert("mhc_module_perf.parquet"),
+            CustomAllReduce(comm) if comm.tp_size > 1 => {
+                tables.insert("custom_allreduce_perf.parquet")
+            }
+            _ => false,
+        };
+    }
+}
+
+/// Engine-construction guard shared by every entry point (forward-pass model,
+/// `EngineHandle`, `InferenceSession`, CLI) in every database mode: applies
+/// the SM90 GLM-5.3-Flash sparse-KV rule to every attention op, including
+/// ops nested in token-scale, overlap, fallback, FPM (`sol_ops`) and DSV4.1
+/// stage wrappers. No table is read.
+pub(super) fn validate_glm53_kv<'a>(
+    db: &PerfDatabase,
+    ops: impl Iterator<Item = &'a Op>,
+) -> Result<(), AicError> {
+    fn visit(db: &PerfDatabase, op: &Op) -> Result<(), AicError> {
+        match op {
+            Op::Glm53Attention(attention) => validate_glm53_kv_capability(db, attention),
+            Op::TokenScale(o) => visit(db, &o.op),
+            Op::Overlap(o) => o
+                .group_a
+                .iter()
+                .chain(&o.group_b)
+                .try_for_each(|c| visit(db, c)),
+            Op::Fallback(o) => {
+                visit(db, &o.primary)?;
+                o.fallback.iter().try_for_each(|c| visit(db, c))
+            }
+            // The FPM rewrite keeps the original phase graph as its SOL
+            // anchor, and DSV4.1 stages hold child ops; both are traversed.
+            Op::FpmForward(o) => o.sol_ops.iter().try_for_each(|c| visit(db, c)),
+            Op::Dsv41Stage(o) => o.children.iter().try_for_each(|c| visit(db, c)),
+            _ => Ok(()),
+        }
+    }
+    ops.into_iter().try_for_each(|op| visit(db, op))
+}
+
+/// Engine-construction guard shared by every entry point (forward-pass model,
+/// `InferenceSession`, CLI): a SILICON engine containing GLM-5.3-Flash ops
+/// must not load any of their tables from a borrowed source. Other models
+/// and other modes are untouched.
+pub(super) fn validate_glm53_sources<'a>(
+    db: &PerfDatabase,
+    ops: impl Iterator<Item = &'a Op>,
+) -> Result<(), AicError> {
+    if db.database_mode != DatabaseMode::Silicon {
+        return Ok(());
+    }
+    let mut tables = std::collections::BTreeSet::new();
+    for op in ops {
+        glm53_tables(op, &mut tables);
+    }
+    for name in tables {
+        glm53_exact_sources(db, name)?;
     }
     Ok(())
 }
@@ -128,8 +330,163 @@ impl Availability<'_> {
         )))
     }
 
+    /// GLM tables must come from the exact requested runtime: the primary
+    /// file of this system/backend/version or an explicitly declared
+    /// `reuse.yaml` donor. Nearest-earlier siblings and cross-backend fill
+    /// are not admitted for GLM SILICON: the generic readers merge every
+    /// resolved source into one table, so a borrowed source (shared layer
+    /// on) is rejected by [`glm53_exact_sources`].
+    fn exact(&mut self, name: &str) -> Result<(), AicError> {
+        let key = format!("exact:{name}");
+        if let Some(found) = self.tables.get(&key) {
+            return if *found {
+                Ok(())
+            } else {
+                Err(self.exact_miss(name))
+            };
+        }
+        let sources = glm53_exact_sources(self.db, name)?;
+        let mut found = false;
+        for source in sources {
+            if !matches!(source.channel, "primary" | "declared_reuse")
+                || !source.source.path().is_file()
+            {
+                continue;
+            }
+            let reader = PerfReader::open(source.source.path())?;
+            let kernel = reader.col_optional("kernel_source");
+            for row in reader.rows()? {
+                if kernel_source_ok(source.source.kernel_sources(), kernel, &row?)? {
+                    found = true;
+                    break;
+                }
+            }
+            if found {
+                break;
+            }
+        }
+        self.tables.insert(key, found);
+        if found {
+            Ok(())
+        } else {
+            Err(self.exact_miss(name))
+        }
+    }
+
+    fn exact_miss(&self, name: &str) -> AicError {
+        AicError::PerfDatabase(format!(
+            "GLM-5.3-Flash SILICON requires {name} measured on the exact runtime {}/{} \
+             (primary or declared reuse.yaml donor) under {}; earlier-version and \
+             cross-backend tables are not admitted",
+            self.db.backend,
+            self.db.version,
+            self.db.data_root.display(),
+        ))
+    }
+
+    fn glm53_silicon(&mut self, op: &Op) -> Result<(), AicError> {
+        use Op::*;
+        let (name, measured) = match op {
+            Glm53Attention(o) if o.layer_kind == "sparse_mla" => {
+                use crate::perf_database::glm53flash::BASENAME;
+                if !self
+                    .db
+                    .glm53_attention
+                    .primary_path()
+                    .is_some_and(|path| path.is_file())
+                {
+                    return Err(self.exact_miss(BASENAME));
+                }
+                // Load and validate the table, then require this op's exact
+                // geometry so a missing TP/checkpoint/phase fails here rather
+                // than on the first step.
+                return if self.db.glm53_attention.covers(o)? {
+                    Ok(())
+                } else {
+                    Err(AicError::PerfDatabase(format!(
+                        "GLM-5.3-Flash SILICON has no {BASENAME} rows for {} \
+                         (tp_size={}, checkpoint_format={}, is_context={}) on the exact \
+                         runtime {}/{} under {}",
+                        o.name,
+                        o.tp_size,
+                        o.checkpoint_format,
+                        o.is_context,
+                        self.db.backend,
+                        self.db.version,
+                        self.db.data_root.display(),
+                    )))
+                };
+            }
+            // mHC reads GLM-tagged mhc_module_perf rows directly (GLM role
+            // semantics); another model's rows of the same shape never count.
+            Glm53Mhc(o) => {
+                use crate::operators::glm53flash::MHC_ARCHITECTURE;
+                self.exact("mhc_module_perf.parquet")?;
+                return if self.db.mhc.has_architecture_rows(
+                    MHC_ARCHITECTURE,
+                    &o.role,
+                    o.hc_mult,
+                    o.hidden_size,
+                )? {
+                    Ok(())
+                } else {
+                    Err(AicError::PerfDatabase(format!(
+                        "GLM-5.3-Flash SILICON has no {MHC_ARCHITECTURE} mhc_module_perf rows \
+                         for role {} (hc_mult={}, hidden_size={}) on the exact runtime {}/{} \
+                         under {}",
+                        o.role,
+                        o.hc_mult,
+                        o.hidden_size,
+                        self.db.backend,
+                        self.db.version,
+                        self.db.data_root.display(),
+                    )))
+                };
+            }
+            Glm53Attention(o) => (&o.name, &o.measured),
+            Glm53Ffn(o) => (&o.name, &o.measured),
+            Glm53Primitive(o) => (&o.name, &o.measured),
+            _ => {
+                return Err(AicError::PerfDatabase(format!(
+                    "{} is a GLM-5.3-Flash analytical child without measured data",
+                    op.name()
+                )));
+            }
+        };
+        if measured.is_empty() {
+            return Err(AicError::PerfDatabase(format!(
+                "GLM-5.3-Flash {name} has no measured generic composition"
+            )));
+        }
+        for child in measured {
+            self.op(child)?;
+            match child {
+                Gemm(_) => self.exact("gemm_perf.parquet")?,
+                Moe(_) => self.exact("moe_perf.parquet")?,
+                Kda(_) => self.exact("kda_perf.parquet")?,
+                Mhc(_) => self.exact("mhc_module_perf.parquet")?,
+                CustomAllReduce(comm) if comm.tp_size > 1 => {
+                    self.exact("custom_allreduce_perf.parquet")?
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     fn op(&mut self, op: &Op) -> Result<(), AicError> {
         use Op::*;
+        let quant = match op {
+            Gemm(gemm) => Some(gemm.quant_mode.mapping()),
+            Moe(moe) => Some(moe.quant_mode.mapping()),
+            _ => None,
+        };
+        if let Some(quant) = quant {
+            validate_compute_capability(self.db, quant)?;
+        }
+        if let Glm53Attention(attention) = op {
+            validate_glm53_kv_capability(self.db, attention)?;
+        }
         // CSA context parallelism consumes both sparse correction tables even
         // when its base module uses the analytic SOL. HCA never consumes them.
         if let Dsv4Context(module) = op
@@ -144,15 +501,6 @@ impl Availability<'_> {
             DatabaseMode::Sol | DatabaseMode::SolFull
         );
         match op {
-            SglangPrefillAttentionSequence(_) | SglangPrefillCommNormBoundary(_) => {
-                const KEY: &str = "\0prefill_graph_profile";
-                if !self.tables.contains_key(KEY) {
-                    self.db.prefill_graph.validate()?;
-                    self.db.prefill_graph.validate_sources(self.db)?;
-                    self.tables.insert(KEY.to_owned(), true);
-                }
-                return Ok(());
-            }
             Dsv41Stage(stage) => {
                 for child in &stage.children {
                     self.op(child)?;
@@ -248,6 +596,10 @@ impl Availability<'_> {
             // State-space kernels explicitly fall back to their analytic SOL
             // on missing tables in every database mode.
             Mamba2(_) | Gdn(_) | Kda(_) => Ok(()),
+            MeasuredComposite(op) => {
+                op.validate()?;
+                op.validate_database(self.db)
+            }
             Mhc(_) => self.any(&["mhc_module_perf.parquet"]),
             WideEpContextMla(_) => self.any(&["wideep_context_mla_perf.parquet"]),
             WideEpGenerationMla(_) => self.any(&["wideep_generation_mla_perf.parquet"]),
@@ -338,6 +690,15 @@ impl Availability<'_> {
             }
             Embedding(_) | Elementwise(_) | P2P(_) | CustomAllReduce(_) | Nccl(_)
             | MoeDispatch(_) => Ok(()),
+            Glm53Attention(_) | Glm53Mhc(_) | Glm53Router(_) | Glm53Ffn(_) | Glm53Primitive(_) => {
+                match self.db.database_mode {
+                    DatabaseMode::Silicon => self.glm53_silicon(op),
+                    DatabaseMode::Empirical => Err(AicError::EmpiricalNotImplemented(
+                        "GLM-5.3-Flash has no empirical anchor".into(),
+                    )),
+                    _ => Ok(()),
+                }
+            }
             Dsv41Attention(_) | Dsv41Mhc(_) | Dsv41Engram(_) | Dsv41Linear(_) => {
                 match self.db.database_mode {
                     DatabaseMode::Silicon => self.any(&["dsv41_module_perf.parquet"]),
@@ -348,13 +709,7 @@ impl Availability<'_> {
                     _ => Ok(()),
                 }
             }
-            Overlap(_)
-            | Fallback(_)
-            | TokenScale(_)
-            | FpmForward(_)
-            | Dsv41Stage(_)
-            | SglangPrefillAttentionSequence(_)
-            | SglangPrefillCommNormBoundary(_) => Ok(()),
+            Overlap(_) | Fallback(_) | TokenScale(_) | FpmForward(_) | Dsv41Stage(_) => Ok(()),
         }
     }
 }
@@ -397,51 +752,6 @@ mod tests {
             .validate_forward_pass_readiness(crate::ForwardPassWorkerType::Aggregated)
     }
 
-    #[test]
-    fn prefill_validation_is_reused_only_within_one_successful_readiness_pass() {
-        use crate::perf_database::prefill_graph::{PrefillGraphTable, VERSION};
-
-        let root = std::env::var_os("AISIMULATE_PREFILL_GRAPH_SYSTEMS")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                crate::perfmodel::repo_relative("python/aisimulate/src/aisimulate_core/systems")
-                    .unwrap()
-            });
-        let source = PrefillGraphTable::new(&root).snapshot().unwrap();
-        let db = PerfDatabase::load(source.path(), "vr_nvl72", "sglang", VERSION).unwrap();
-        let ops: Vec<Op> = serde_json::from_str(include_str!(
-            "../operators/testdata/glm52_prefill_graph_context.json"
-        ))
-        .unwrap();
-        let gemm = source
-            .path()
-            .join("data/vr_nvl72/gemm/sglang")
-            .join(VERSION)
-            .join("gemm_perf.parquet");
-        let approved = std::fs::read(&gemm).unwrap();
-        let mut check = Availability {
-            db: &db,
-            tables: HashMap::new(),
-        };
-        std::fs::write(&gemm, b"incomplete collection").unwrap();
-        let error = check.op(&ops[0]).unwrap_err();
-        assert!(error.to_string().contains("retained input changed"));
-        std::fs::write(&gemm, &approved).unwrap();
-        check.op(&ops[0]).unwrap();
-
-        // Later composites reuse this pass's successful validation. Neither a
-        // fresh pass nor the final admission snapshot can reuse that result.
-        std::fs::write(&gemm, b"changed after readiness").unwrap();
-        check.op(&ops[1]).unwrap();
-        check.op(&ops[2]).unwrap();
-        let error = validate(&db, ops[..3].iter()).unwrap_err();
-        assert!(error.to_string().contains("retained input changed"));
-        let error = db.prefill_graph.snapshot().unwrap_err();
-        assert!(error.to_string().contains("retained input changed"));
-        std::fs::write(&gemm, approved).unwrap();
-        validate(&db, ops[..3].iter()).unwrap();
-    }
-
     fn dsv4_op(kind: &str, context: bool, cp: u32) -> Op {
         let module: Dsv4ModuleOp = serde_json::from_value(serde_json::json!({
             "name": "attention", "scale_factor": 1.0, "attn_kind": kind,
@@ -460,6 +770,533 @@ mod tests {
     fn table(path: &std::path::Path) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         write_parquet(path, &[Col::Str("kernel_source", vec!["fixture"])]);
+    }
+
+    #[test]
+    fn fp8_compute_capability_is_checked_before_tables_and_sol() {
+        let root = systems();
+        for mode in [DatabaseMode::Silicon, DatabaseMode::Sol] {
+            for sm in [Some(80), Some(86), Some(89), Some(90), None] {
+                let path = root.path().join("b200_sxm.yaml");
+                let mut spec: serde_yaml::Value =
+                    serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                spec["gpu"]["sm_version"] = serde_yaml::to_value(sm).unwrap();
+                std::fs::write(path, serde_yaml::to_string(&spec).unwrap()).unwrap();
+                let db = PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.24.0")
+                    .unwrap()
+                    .with_mode(mode, TransferPolicy::ALL);
+                let op = Op::Gemm(GemmOp::new("gemm", 16, 16, GemmQuantMode::Fp8Block));
+                let result = validate(&db, [&op].into_iter());
+                if sm.is_some_and(|value| value < 89) {
+                    assert!(matches!(result, Err(AicError::InvalidEngineConfig(_))));
+                } else {
+                    assert!(!matches!(result, Err(AicError::InvalidEngineConfig(_))));
+                }
+                let op = Op::Gemm(GemmOp::new("gemm", 16, 16, GemmQuantMode::W4a16Nvfp4));
+                assert!(!matches!(
+                    validate(&db, [&op].into_iter()),
+                    Err(AicError::InvalidEngineConfig(_))
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn a100_fpm_precision_is_checked_before_table_readiness() {
+        use crate::perf_database::fpm_forward::tests::default_identity;
+        let root = systems();
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../python/aisimulate/src/aisimulate_core/systems/a100_sxm.yaml");
+        std::fs::copy(source, root.path().join("a100_sxm.yaml")).unwrap();
+        std::fs::create_dir_all(root.path().join("data/a100_sxm/vllm/0.24.0")).unwrap();
+        let db = PerfDatabase::load(root.path(), "a100_sxm", "vllm", "0.24.0").unwrap();
+        for (gemm, moe, rejected) in [
+            ("fp8_block", "bfloat16", true),
+            ("bfloat16", "fp8", true),
+            ("w4a16_nvfp4", "w4a16_nvfp4", false),
+            ("bfloat16", "bfloat16", false),
+        ] {
+            let mut identity = default_identity(4);
+            identity[0] = gemm.into();
+            identity[1] = moe.into();
+            let op = FpmForwardOp {
+                name: "fpm_forward_decode".into(),
+                phase: FpmPhase::Decode,
+                model_path: "org/model-a".into(),
+                match_identity: identity,
+                weight_bytes: 0.0,
+                verify_width: 1,
+                interpolation: FpmInterpolation::Direct,
+                sol_ops: vec![],
+                original_fmha_quant_mode: None,
+                dcp_size: None,
+            };
+            let error = validate_fpm(&db, &op).unwrap_err();
+            assert_eq!(matches!(error, AicError::InvalidEngineConfig(_)), rejected);
+            if rejected {
+                assert!(
+                    error
+                        .to_string()
+                        .contains("GPU a100_sxm (SM80) does not support FP8")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn glm53_hopper_fp8_kv_admission_tracks_runtime_fixes() {
+        let root = systems();
+        let path = root.path().join("b200_sxm.yaml");
+        let mut spec: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        spec["gpu"]["sm_version"] = serde_yaml::to_value(90).unwrap();
+        std::fs::write(path, serde_yaml::to_string(&spec).unwrap()).unwrap();
+
+        // Stable upstream release boundaries; prereleases of the first fixed
+        // version and unknown labels do not establish that the fix is present.
+        for (backend, version, supported) in [
+            ("vllm", "0.31.0", false),
+            ("vllm", "0.32.0rc1", false),
+            ("vllm", "0.32.0", true),
+            ("vllm", "0.32.0+cu130", true),
+            ("vllm", "0.33.0", true),
+            ("sglang", "0.5.20", false),
+            ("sglang", "0.5.21", false),
+            ("sglang", "0.5.22.dev1", false),
+            ("sglang", "0.5.22", true),
+            ("sglang", "0.5.22.post1", true),
+            ("sglang", "main", false),
+        ] {
+            for mode in [
+                DatabaseMode::Silicon,
+                DatabaseMode::Hybrid,
+                DatabaseMode::Sol,
+            ] {
+                let mut db = PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.24.0")
+                    .unwrap()
+                    .with_mode(mode, TransferPolicy::ALL);
+                db.tables_mut().version = version.into();
+                let mut sparse = crate::operators::glm53flash::tests::attention("sparse_mla");
+                sparse.backend = backend.into();
+                sparse.checkpoint_format = "fp8".into();
+                let op = Op::TokenScale(crate::operators::op::TokenScaleOp {
+                    op: Box::new(Op::Glm53Attention(sparse.clone())),
+                    numerator: 1,
+                    denominator: 1,
+                });
+                let result = validate_glm53_kv(&db, [&op].into_iter());
+                assert_eq!(result.is_ok(), supported, "{backend} {version}: {result:?}");
+                if supported {
+                    let ready = validate(&db, [&op].into_iter());
+                    if mode == DatabaseMode::Silicon {
+                        // Reopening the runtime path must not supply missing
+                        // measurements or silently switch the FP8 identity.
+                        assert!(matches!(ready, Err(AicError::PerfDatabase(_))), "{ready:?}");
+                    } else {
+                        ready.unwrap();
+                    }
+                }
+                sparse.kv_cache_dtype = KvCacheQuantMode::Bfloat16;
+                validate_glm53_kv_capability(&db, &sparse).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn glm53_fp8_sparse_kv_is_rejected_on_sm90_in_every_mode() {
+        let root = systems();
+        for (sm, rejected) in [
+            (Some(90), true),
+            (Some(100), false),
+            (Some(103), false),
+            (None, false),
+        ] {
+            let path = root.path().join("b200_sxm.yaml");
+            let mut spec: serde_yaml::Value =
+                serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            spec["gpu"]["sm_version"] = serde_yaml::to_value(sm).unwrap();
+            std::fs::write(path, serde_yaml::to_string(&spec).unwrap()).unwrap();
+            for mode in [
+                DatabaseMode::Silicon,
+                DatabaseMode::Hybrid,
+                DatabaseMode::Sol,
+            ] {
+                let mut db = PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.24.0")
+                    .unwrap()
+                    .with_mode(mode, TransferPolicy::ALL);
+                for backend in ["vllm", "sglang"] {
+                    db.tables_mut().version = match backend {
+                        "vllm" => "0.31.0",
+                        _ => "0.5.20",
+                    }
+                    .into();
+                    let mut sparse = crate::operators::glm53flash::tests::attention("sparse_mla");
+                    sparse.backend = backend.into();
+                    sparse.checkpoint_format = "fp8".into();
+                    let mut bf16 = sparse.clone();
+                    bf16.kv_cache_dtype = KvCacheQuantMode::Bfloat16;
+                    let kda = crate::operators::glm53flash::tests::attention("kda");
+                    let fp8 = Op::Glm53Attention(sparse);
+                    let result = validate(&db, [&fp8].into_iter());
+                    let wrapped = Op::TokenScale(crate::operators::op::TokenScaleOp {
+                        op: Box::new(fp8.clone()),
+                        numerator: 1,
+                        denominator: 1,
+                    });
+                    let nested = validate(&db, [&wrapped].into_iter());
+                    if rejected {
+                        for error in [result.unwrap_err(), nested.unwrap_err()] {
+                            assert!(matches!(error, AicError::InvalidEngineConfig(_)), "{error}");
+                            let text = error.to_string();
+                            assert!(text.contains("SM90") && text.contains("bfloat16"), "{text}");
+                        }
+                    } else {
+                        assert!(!matches!(result, Err(AicError::InvalidEngineConfig(_))));
+                        assert!(!matches!(nested, Err(AicError::InvalidEngineConfig(_))));
+                    }
+                    // BF16 latent KV and KDA layers are never refused here.
+                    for op in [Op::Glm53Attention(bf16), Op::Glm53Attention(kda.clone())] {
+                        assert!(!matches!(
+                            validate(&db, [&op].into_iter()),
+                            Err(AicError::InvalidEngineConfig(_))
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn glm53_fp8_sparse_kv_is_rejected_by_every_engine_build_on_sm90() {
+        // Engine::build is shared by EngineHandle, InferenceSession and the
+        // forward-pass model, so the rule holds without readiness validation.
+        let root = systems();
+        for (sm, rejected) in [(Some(90), true), (Some(100), false), (None, false)] {
+            let path = root.path().join("b200_sxm.yaml");
+            let mut spec: serde_yaml::Value =
+                serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            spec["gpu"]["sm_version"] = serde_yaml::to_value(sm).unwrap();
+            std::fs::write(path, serde_yaml::to_string(&spec).unwrap()).unwrap();
+            for mode in [DatabaseMode::Hybrid, DatabaseMode::Sol] {
+                let build = |kv| {
+                    let db = PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.24.0")
+                        .unwrap()
+                        .with_mode(mode, TransferPolicy::ALL);
+                    let config = serde_json::from_value(serde_json::json!({
+                        "schema_version": crate::ENGINE_CONFIG_SCHEMA_VERSION,
+                        "model_name": "glm-fixture",
+                        "system_name": "b200_sxm", "backend": "vllm", "backend_version": "0.24.0",
+                        "tp_size": 2, "pp_size": 1, "database_mode": mode,
+                    }))
+                    .unwrap();
+                    let mut sparse = crate::operators::glm53flash::tests::attention("sparse_mla");
+                    sparse.checkpoint_format = "fp8".into();
+                    sparse.kv_cache_dtype = kv;
+                    let mut decode = sparse.clone();
+                    decode.is_context = false;
+                    // Generation op nested in a token-scale wrapper.
+                    let generation = Op::TokenScale(crate::operators::op::TokenScaleOp {
+                        op: Box::new(Op::Glm53Attention(decode)),
+                        numerator: 1,
+                        denominator: 1,
+                    });
+                    Engine::build(
+                        EngineSpec::new(config, vec![Op::Glm53Attention(sparse)], vec![generation]),
+                        Arc::new(db),
+                    )
+                };
+                match build(KvCacheQuantMode::Fp8) {
+                    Err(error) => {
+                        assert!(rejected, "{sm:?} {mode:?}: {error}");
+                        assert!(matches!(error, AicError::InvalidEngineConfig(_)), "{error}");
+                        assert!(error.to_string().contains("bfloat16"), "{error}");
+                    }
+                    Ok(_) => assert!(!rejected, "{sm:?} {mode:?}"),
+                }
+                build(KvCacheQuantMode::Bfloat16).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn glm53_fp8_sparse_kv_nested_in_fpm_sol_ops_is_rejected_at_engine_build_on_sm90() {
+        use crate::perf_database::fpm_forward::tests::default_identity;
+        let root = systems();
+        let path = root.path().join("b200_sxm.yaml");
+        let mut spec: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        spec["gpu"]["sm_version"] = serde_yaml::to_value(Some(90)).unwrap();
+        std::fs::write(path, serde_yaml::to_string(&spec).unwrap()).unwrap();
+        let build = |kv| {
+            let db = PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.24.0")
+                .unwrap()
+                .with_mode(DatabaseMode::Sol, TransferPolicy::ALL);
+            let config = serde_json::from_value(serde_json::json!({
+                "schema_version": crate::ENGINE_CONFIG_SCHEMA_VERSION,
+                "model_name": "glm-fixture",
+                "system_name": "b200_sxm", "backend": "vllm", "backend_version": "0.24.0",
+                "tp_size": 2, "pp_size": 1, "database_mode": DatabaseMode::Sol,
+            }))
+            .unwrap();
+            let mut sparse = crate::operators::glm53flash::tests::attention("sparse_mla");
+            sparse.checkpoint_format = "fp8".into();
+            sparse.kv_cache_dtype = kv;
+            let fpm = |phase: FpmPhase, sparse: crate::operators::glm53flash::Glm53AttentionOp| {
+                Op::FpmForward(FpmForwardOp {
+                    name: format!("fpm_forward_{}", phase.as_str()),
+                    phase,
+                    model_path: "org/model-a".into(),
+                    match_identity: default_identity(2),
+                    weight_bytes: 0.0,
+                    verify_width: 1,
+                    interpolation: FpmInterpolation::Sol,
+                    sol_ops: vec![Op::TokenScale(crate::operators::op::TokenScaleOp {
+                        op: Box::new(Op::Glm53Attention(sparse)),
+                        numerator: 1,
+                        denominator: 1,
+                    })],
+                    original_fmha_quant_mode: None,
+                    dcp_size: None,
+                })
+            };
+            let mut decode = sparse.clone();
+            decode.is_context = false;
+            Engine::build(
+                EngineSpec::new(
+                    config,
+                    vec![fpm(FpmPhase::Prefill, sparse)],
+                    vec![fpm(FpmPhase::Decode, decode)],
+                ),
+                Arc::new(db),
+            )
+        };
+        let error = build(KvCacheQuantMode::Fp8)
+            .err()
+            .expect("SM90 FP8 KV in sol_ops");
+        assert!(matches!(error, AicError::InvalidEngineConfig(_)), "{error}");
+        let text = error.to_string();
+        for needle in ["SM90", "sparse-MLA KV", "bfloat16"] {
+            assert!(text.contains(needle), "{needle}: {text}");
+        }
+        build(KvCacheQuantMode::Bfloat16).expect("BF16 KV in sol_ops builds on SM90");
+    }
+
+    #[test]
+    fn glm53_silicon_admits_only_exact_runtime_generic_tables() {
+        const RUNTIME: &str = "0.31.0";
+        let root = systems();
+        let data = root.path().join("data/b200_sxm");
+        // Earlier runtime rows exist; the requested GLM runtime has only GEMM.
+        table(&data.join("mhc/vllm/0.24.0/mhc_module_perf.parquet"));
+        table(&data.join("glm53_attention/vllm/0.24.0/glm53_attention_module_perf.parquet"));
+        table(&data.join(format!("gemm/vllm/{RUNTIME}/gemm_perf.parquet")));
+        let mhc: Op = serde_json::from_value(serde_json::json!({"Glm53Mhc": {
+            "name": "mhc_pre_attn_1", "role": "pre", "backend": "vllm",
+            "checkpoint_format": "fp8", "tp_size": 2, "is_context": true,
+            "hidden_size": 4096, "hc_mult": 4, "sinkhorn_iters": 20,
+        }}))
+        .unwrap();
+        let mut sparse_op = crate::operators::glm53flash::tests::attention("sparse_mla");
+        sparse_op.checkpoint_format = "fp8".into();
+        let sparse = Op::Glm53Attention(sparse_op.clone());
+        let load_shared = |mode, shared| {
+            PerfDatabase::load_resolved(
+                root.path(),
+                "b200_sxm",
+                "vllm",
+                RUNTIME,
+                shared,
+                false,
+                false,
+            )
+            .unwrap()
+            .with_mode(mode, TransferPolicy::ALL)
+        };
+        let load = |mode| load_shared(mode, true);
+        for op in [&mhc, &sparse] {
+            let error = validate(&load(DatabaseMode::Silicon), [op].into_iter()).unwrap_err();
+            assert!(error.to_string().contains("exact runtime"), "{error}");
+            // HYBRID stays constructible; its fallbacks are labelled per query.
+            validate(&load(DatabaseMode::Hybrid), [op].into_iter()).unwrap();
+            validate(&load(DatabaseMode::Sol), [op].into_iter()).unwrap();
+        }
+        let mhc_table = data.join(format!("mhc/vllm/{RUNTIME}/mhc_module_perf.parquet"));
+        std::fs::create_dir_all(mhc_table.parent().unwrap()).unwrap();
+        let mhc_rows = |architecture| {
+            [
+                Col::Str("architecture", vec![architecture; 2]),
+                Col::Str("op_name", vec!["pre"; 2]),
+                Col::I64("num_tokens", vec![16, 1024]),
+                Col::I64("hc_mult", vec![4; 2]),
+                Col::I64("hidden_size", vec![4096; 2]),
+                Col::F64("latency", vec![0.02, 0.04]),
+                Col::Str("kernel_source", vec!["fixture"; 2]),
+            ]
+        };
+        // Same-shape rows from another model are not GLM mHC evidence.
+        write_parquet(&mhc_table, &mhc_rows("DeepseekV4ForCausalLM"));
+        let error = validate(
+            &load_shared(DatabaseMode::Silicon, false),
+            [&mhc].into_iter(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("for role pre"), "{error}");
+        write_parquet(
+            &mhc_table,
+            &mhc_rows(crate::operators::glm53flash::MHC_ARCHITECTURE),
+        );
+        let attention_table = data.join(format!(
+            "glm53_attention/vllm/{RUNTIME}/glm53_attention_module_perf.parquet"
+        ));
+        // A present but invalid GLM attention table fails readiness through
+        // the loader's validation instead of passing on row count.
+        table(&attention_table);
+        let error = validate(
+            &load_shared(DatabaseMode::Silicon, false),
+            [&sparse].into_iter(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, AicError::InvalidPerfData(_)), "{error}");
+        write_parquet(
+            &attention_table,
+            &crate::perf_database::glm53flash::tests::rows(
+                &sparse_op,
+                &[(1, 0, 512, 1.0), (1, 0, 4096, 6.0)],
+                "n/a",
+            ),
+        );
+        // Valid rows for another geometry do not cover a TP4 or decode op.
+        let mut tp4 = sparse_op.clone();
+        tp4.tp_size = 4;
+        tp4.num_heads = 16;
+        let mut decode = sparse_op.clone();
+        decode.is_context = false;
+        for uncovered in [tp4, decode] {
+            let error = validate(
+                &load_shared(DatabaseMode::Silicon, false),
+                [&Op::Glm53Attention(uncovered)].into_iter(),
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("rows for") && error.to_string().contains("exact"),
+                "{error}"
+            );
+        }
+        // The exact tables exist, but the shared layer would merge the
+        // earlier runtime's mHC rows into the same reader.
+        let error = validate(&load(DatabaseMode::Silicon), [&mhc].into_iter()).unwrap_err();
+        assert!(
+            error.to_string().contains("enable_shared_layer=False"),
+            "{error}"
+        );
+        validate(
+            &load_shared(DatabaseMode::Silicon, false),
+            [&mhc, &sparse].into_iter(),
+        )
+        .unwrap();
+        // A GLM boundary without a generic composition cannot be SILICON.
+        let bare = Op::Glm53Attention(crate::operators::glm53flash::tests::attention("kda"));
+        let error = validate(
+            &load_shared(DatabaseMode::Silicon, false),
+            [&bare].into_iter(),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("no measured generic composition"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn glm53_silicon_rejects_shared_layer_rows_from_another_runtime() {
+        // Review probe: vLLM 0.31.0 has only a `post` mHC row and 0.30.0 a
+        // 14 ms `pre` row with the same (hc_mult, hidden_size) key. With the
+        // shared layer on, the generic reader answers GLM `pre` with the
+        // borrowed row (7 ms per site, labelled silicon); readiness must
+        // refuse that database, and without sharing the lookup must miss.
+        use crate::operators::glm53flash::tests::{ctx, mhc_site};
+        let root = tempfile::tempdir().unwrap();
+        let systems = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../python/aisimulate/src/aisimulate_core/systems");
+        std::fs::copy(systems.join("gb300.yaml"), root.path().join("gb300.yaml")).unwrap();
+        let data = root.path().join("data/gb300/mhc/vllm");
+        for (version, role, latency) in [("0.31.0", "post", 0.03), ("0.30.0", "pre", 14.0)] {
+            let dir = data.join(version);
+            std::fs::create_dir_all(&dir).unwrap();
+            write_parquet(
+                &dir.join("mhc_module_perf.parquet"),
+                &[
+                    Col::Str(
+                        "architecture",
+                        vec![crate::operators::glm53flash::MHC_ARCHITECTURE; 2],
+                    ),
+                    Col::Str("op_name", vec![role; 2]),
+                    Col::I64("num_tokens", vec![16, 1024]),
+                    Col::I64("hc_mult", vec![4; 2]),
+                    Col::I64("hidden_size", vec![4096; 2]),
+                    Col::F64("latency", vec![latency; 2]),
+                    Col::Str("kernel_source", vec!["fixture"; 2]),
+                ],
+            );
+        }
+        let load = |shared| {
+            PerfDatabase::load_resolved(
+                root.path(),
+                "gb300",
+                "vllm",
+                "0.31.0",
+                shared,
+                false,
+                false,
+            )
+            .unwrap()
+            .with_mode(DatabaseMode::Silicon, TransferPolicy::ALL)
+        };
+        let mut pre = mhc_site("pre");
+        pre.backend = "vllm".into();
+        let c = ctx(1024, 1, 0, false);
+        let shared = load(true);
+        let borrowed = pre.query(&shared, &c).unwrap();
+        assert_eq!(borrowed.latency_ms, 7.0);
+        let op = Op::Glm53Mhc(pre.clone());
+        let error = validate(&shared, [&op].into_iter()).unwrap_err();
+        assert!(
+            error.to_string().contains("enable_shared_layer=False"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("0.30.0"), "{error}");
+        let exact = load(false);
+        // Without sharing, the exact runtime has no GLM `pre` row: readiness
+        // and the lookup both miss.
+        let error = validate(&exact, [&op].into_iter()).unwrap_err();
+        assert!(error.to_string().contains("for role pre"), "{error}");
+        assert!(pre.query(&exact, &c).is_err());
+        // Every public entry point (forward-pass model, InferenceSession, CLI)
+        // builds its engine through Engine::build, which enforces the same
+        // restriction before any query.
+        let build = |db: PerfDatabase| {
+            let config = serde_json::from_value(serde_json::json!({
+                "schema_version": crate::ENGINE_CONFIG_SCHEMA_VERSION,
+                "model_name": "glm53-borrowed-mhc", "system_name": "gb300", "backend": "vllm",
+                "backend_version": "0.31.0", "tp_size": 2, "pp_size": 1,
+                "database_mode": DatabaseMode::Silicon,
+            }))
+            .unwrap();
+            Engine::build(
+                EngineSpec::new(config, vec![op.clone()], vec![]),
+                Arc::new(db),
+            )
+        };
+        let error = build(load(true)).err().unwrap();
+        assert!(
+            error.to_string().contains("enable_shared_layer=False"),
+            "{error}"
+        );
+        build(load(false)).unwrap();
+        let hybrid = load(true).with_mode(DatabaseMode::Hybrid, TransferPolicy::ALL);
+        validate_glm53_sources(&hybrid, [&op].into_iter()).unwrap();
     }
 
     #[test]

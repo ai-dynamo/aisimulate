@@ -8,6 +8,62 @@ use uuid::Uuid;
 
 use super::{HandoffId, HandoffTransferTiming};
 
+/// Encoder work behind one image, as the checkpoint's processor lays it out.
+///
+/// An image becomes `sequences` independent encoder sequences (tiles, or one
+/// for a dynamic-resolution tower) that attention never crosses; the token
+/// counts are per sequence. The placeholder span an image occupies in the
+/// prompt can exceed `sequences * output_tokens` by structural tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EncoderShape {
+    pub sequences: u32,
+    /// Patch-embedding tokens per sequence.
+    pub patch_tokens: u32,
+    /// Transformer tokens per sequence (patches plus any CLS token).
+    pub transformer_tokens: u32,
+    /// Merged output tokens per sequence.
+    pub output_tokens: u32,
+}
+
+/// One image placeholder span and the encoder shape behind it.
+///
+/// `token_start..token_end` is the half-open placeholder interval inside the
+/// prompt; its length is the image's visual token count. `identity` keys the
+/// vision embedding cache and repeats only when the workload reuses an image.
+/// `embedding_bytes` is the encoder output retained by the embedding cache.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageSpec {
+    pub identity: u64,
+    pub token_start: usize,
+    pub token_end: usize,
+    pub encoder: EncoderShape,
+    pub embedding_bytes: u64,
+}
+
+impl ImageSpec {
+    /// Placeholder tokens occupied by this image.
+    pub fn visual_tokens(&self) -> usize {
+        self.token_end - self.token_start
+    }
+
+    /// Whether the placeholder interval intersects the half-open `start..end`.
+    pub fn overlaps(&self, start: usize, end: usize) -> bool {
+        self.token_start < end && start < self.token_end
+    }
+}
+
+/// Rank named by a router's `kv.fetch` hint as the holder of a prompt prefix.
+///
+/// It stands in for the hint's `source_control_endpoint`, which identifies one
+/// worker and attention-DP rank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct KvHintSource {
+    /// Logical worker owning the source rank.
+    pub worker_id: u64,
+    /// Attention-DP rank within that worker.
+    pub dp_rank: u32,
+}
+
 /// Runtime-neutral request accepted by the rank engine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {
@@ -22,6 +78,16 @@ pub struct Request {
     /// output position, so reusing a request ID reproduces the same stream.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_token_ids: Option<Vec<u32>>,
+    /// Optional session attribution; does not affect scheduling or cache identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Image placeholders inside `tokens`, in prompt order; empty for text-only requests.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageSpec>,
+    /// Optional router hint naming another rank that may hold a prefix of
+    /// `tokens`. Never the receiving rank itself. Engines without KVCR ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv_hint: Option<KvHintSource>,
 }
 
 /// Commands supported by the standalone scheduler.
@@ -88,6 +154,26 @@ pub enum LifecycleEvent {
         request_id: Uuid,
         transferable_prompt_tokens: usize,
     },
+    /// A host-aware scheduler reached a scheduler-thread stage for one request.
+    TtftMilestone {
+        request_id: Uuid,
+        stage: TtftMilestone,
+        at_ms: f64,
+    },
+}
+
+/// Scheduler-thread stages reported by a host-aware scheduler for one request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TtftMilestone {
+    /// Left the frontend worker pools; delivered to the scheduler process.
+    FrontendReady,
+    /// Drained from the scheduler inbox at an iteration start.
+    Received,
+    /// Selected into its first batch.
+    Selected,
+    /// The forward that finished its prompt completed on the device.
+    PrefillComplete,
 }
 
 /// One runtime-neutral KV block identity.
@@ -118,6 +204,9 @@ pub struct StoredBlocks {
     pub start_position: Option<usize>,
     /// Blocks in sequence order.
     pub blocks: Vec<KvBlock>,
+    /// Session of the request making these blocks visible, not exclusive ownership.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// Runtime-neutral KV event payload.
@@ -365,4 +454,38 @@ pub struct PassCompletionEffects {
 pub struct PendingPass {
     pub(crate) started_at_ms: f64,
     pub(crate) effects: PassCompletionEffects,
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn optional_session_metadata_is_json_compatible() {
+        let request_json = serde_json::json!({"request_id": Uuid::nil(), "tokens": [1, 2], "max_output_tokens": 1});
+        let mut request: Request = serde_json::from_value(request_json).unwrap();
+        assert!(request.session_id.is_none());
+        assert!(
+            serde_json::to_value(&request)
+                .unwrap()
+                .get("session_id")
+                .is_none()
+        );
+        request.session_id = Some("session".into());
+        assert_eq!(
+            serde_json::from_value::<Request>(serde_json::to_value(&request).unwrap()).unwrap(),
+            request
+        );
+        let legacy = serde_json::json!({"event_id": 1, "dp_rank": 0, "data": {"stored": {"parent_hash": null, "blocks": []}}});
+        let mut event: KvEvent = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&event).unwrap(), legacy);
+        let KvEventData::Stored(stored) = &mut event.data else {
+            panic!("expected store");
+        };
+        stored.session_id = Some("session".into());
+        assert_eq!(
+            serde_json::from_value::<KvEvent>(serde_json::to_value(&event).unwrap()).unwrap(),
+            event
+        );
+    }
 }

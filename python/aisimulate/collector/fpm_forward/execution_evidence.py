@@ -358,7 +358,8 @@ def inspect_execution_evidence(
         missing.append(str(error))
     except (ValueError, TypeError) as error:
         failures.append(str(error))
-    if collection.backend_version != plan.capability.aic_database_version:
+    actual_pin = getattr(plan, "runtime_backend_version", None)
+    if actual_pin is not None and collection.backend_version != actual_pin:
         failures.append("observed backend version differs from the frozen plan")
     if collection.backend_version not in EXECUTION_SUPPORTED_VERSIONS:
         missing.append(f"execution configuration inspection is unaudited for {collection.backend_version}")

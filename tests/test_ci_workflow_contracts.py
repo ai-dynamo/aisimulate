@@ -113,7 +113,7 @@ def test_forward_perf_selects_before_allocating_the_benchmark_runner():
     assert set(workflow["on"]) == {"push", "workflow_dispatch"}
     selector = workflow["jobs"]["select"]
     compare = workflow["jobs"]["compare"]
-    assert selector["runs-on"] == "ubuntu-latest"
+    assert selector["runs-on"] == "ubuntu-24.04"
     assert "python scripts/performance/select_forward_perf.py" in _run_commands(selector)
     assert compare["needs"] == "select"
     assert compare["if"] == "needs.select.outputs.run_comparison == 'true'"
@@ -138,7 +138,10 @@ def test_forward_perf_validates_the_pr_controller_without_replacing_the_base_com
     assert "!cancelled()" in head["if"]
     assert "steps.build.outcome == 'success'" in head["if"]
     assert "steps.revisions.outputs.validate_head_controller == 'true'" in head["if"]
-    assert next(step for step in steps if step.get("id") == "build")["name"] == "Build and install both revisions"
+    build = next(step for step in steps if step.get("id") == "build")
+    assert build["name"] == "Build and install both revisions"
+    for destination in ("${BASE_DIST}", "${HEAD_DIST}"):
+        assert f'python -m maturin build --release --locked --out "{destination}"' in build["run"]
     expected = base["run"].replace('"${BASE_VENV}/bin/python"', '"${HEAD_VENV}/bin/python"', 1)
     expected = expected.replace(
         "${BASE_SRC}/python/aisimulate/tools/forward_perf_gate/run.py",
@@ -790,6 +793,17 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
         step.get("with", {}).get("name") == "application-test-wheel-${{ matrix.arch }}"
         for step in jobs["application-wheel"]["steps"]
     )
+
+
+def test_readme_checks_remain_in_full_ci_without_standalone_daily_jobs() -> None:
+    jobs = _workflow("ci.yml")["jobs"]
+    assert "readme_commands" in COMPONENTS
+    assert jobs["readme-commands"]["uses"] == "./.github/workflows/readme-checks.yml"
+    assert "readme-commands" in jobs["readiness"]["needs"]
+    assert set(_workflow("readme-checks.yml")["on"]) == {"workflow_call"}
+    for name in ("readme-daily.yml", "readme-report.yml"):
+        assert not (WORKFLOW_ROOT / name).exists()
+        assert all(name not in path.read_text() for path in WORKFLOW_ROOT.glob("*.yml"))
 
 
 def test_full_ci_aggregate_checks_every_declared_dependency() -> None:
@@ -3064,7 +3078,7 @@ def test_simulation_performance_rollout_and_revision_contract():
     assert "workflow_dispatch" in workflow["on"]
     assert "if" not in selector
     assert workflow["concurrency"]["group"].startswith("simulation-performance-")
-    assert selector["runs-on"] == "ubuntu-latest"
+    assert selector["runs-on"] == "ubuntu-24.04"
     assert "python scripts/performance/select_simulation_perf.py" in _run_commands(selector)
     comparison = workflow["jobs"]["compare"]
     assert comparison["if"] == "needs.select.outputs.run_comparison == 'true'"
@@ -3078,6 +3092,15 @@ def test_simulation_performance_rollout_and_revision_contract():
         {"side": "base", "sha": "${{ needs.select.outputs.base_sha }}"},
         {"side": "head", "sha": "${{ needs.select.outputs.head_sha }}"},
     ]
+    build_commands = _run_commands(build)
+    callback_check = "scripts/performance/check_dynamo_callback.py source dynamo"
+    assert (
+        build_commands.index("build_simulation_dynamo.py source dynamo")
+        < build_commands.index('"${RUNNER_TEMP}"/wheel/aisimulate-*.whl')
+        < build_commands.index(callback_check)
+        < build_commands.index("simulation_perf_artifact.py record")
+    )
+    assert '"${RUNNER_TEMP}/callback-venv/bin/python"' in build_commands
     downloads = [
         step["with"]["name"] for step in comparison["steps"] if "actions/download-artifact@" in step.get("uses", "")
     ]
@@ -3109,6 +3132,11 @@ def test_simulation_performance_rollout_and_revision_contract():
         ("python/aisimulate/src/aisimulate/compiler.py", True),
         ("python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/gemm/vllm/0.24.0/gemm_perf.parquet", True),
         ("python/aisimulate/tools/simulation_perf_gate/fixtures/agentx.jsonl", True),
+        ("scripts/performance/build_simulation_dynamo.py", True),
+        ("scripts/performance/check_dynamo_callback.py", True),
+        ("scripts/performance/dynamo_callback_contract.rs", True),
+        ("scripts/performance/simulation_dynamo_requirements.in", True),
+        ("scripts/performance/simulation_dynamo_requirements.txt", True),
         ("python/aisimulate/uv.lock", True),
         ("python/aisimulate/tools/simulation_perf_gate/README.md", False),
         ("python/aisimulate/tools/forward_perf_gate/run.py", False),
@@ -3135,6 +3163,8 @@ def test_simulation_performance_selects_complete_pr_files(path, expected):
         ("contract.py", True),
         ("worker.py", True),
         ("fixtures/agentx.jsonl", True),
+        ("fixtures/agentx.json", True),
+        ("fixtures/another-trace.jsonl", True),
         ("README.md", False),
         ("QUALIFICATION.md", False),
         ("fixtures/README.md", False),
@@ -3173,7 +3203,9 @@ def test_simulation_perf_controller_change_detection(tmp_path, path, expected):
     assert output.read_text() == f"validate_head_controller={str(expected).lower()}\n"
 
 
-@pytest.mark.parametrize("scenario", ["normal", "self", "missing_base", "missing_head", "mixed", "malformed"])
+@pytest.mark.parametrize(
+    "scenario", ["normal", "self", "missing_base", "missing_head", "mixed", "older_base", "malformed"]
+)
 def test_simulation_perf_revision_preparation(tmp_path, scenario):
     steps = _workflow("simulation-performance.yml")["jobs"]["select"]["steps"]
     script = next(step["run"] for step in steps if step.get("id") == "revisions")
@@ -3192,8 +3224,9 @@ def test_simulation_perf_revision_preparation(tmp_path, scenario):
         (gate / "worker.py").write_text("fixture\n")
     elif scenario == "missing_head":
         (gate / "worker.py").unlink()
-    elif scenario in {"mixed", "malformed"}:
-        (gate / "__init__.py").write_text("PROTOCOL_VERSION = " + ("2" if scenario == "mixed" else "None") + "\n")
+    elif scenario in {"mixed", "older_base", "malformed"}:
+        version = {"mixed": "2", "older_base": "5", "malformed": "None"}[scenario]
+        (gate / "__init__.py").write_text("PROTOCOL_VERSION = " + version + "\n")
     _git(tmp_path, "add", ".")
     head = _commit_file(tmp_path, "head", "head\n")
     output, summary = tmp_path / "output", tmp_path / "summary"
@@ -3219,8 +3252,9 @@ def test_simulation_perf_revision_preparation(tmp_path, scenario):
         assert outputs["validate_head_controller"] == "false"
     else:
         assert outputs["run_comparison"] == "false"
-        assert result.returncode == (0 if scenario == "missing_base" else 1)
-        assert ("was not benchmarked" if scenario == "missing_base" else "INVALID_COMPARISON") in summary.read_text()
+        skipped = scenario in {"missing_base", "older_base"}
+        assert result.returncode == (0 if skipped else 1)
+        assert ("was not benchmarked" if skipped else "INVALID_COMPARISON") in summary.read_text()
 
 
 @pytest.mark.parametrize("self_compare,fail_first,count", [(False, False, 1), (True, False, 3), (True, True, 3)])
@@ -3271,7 +3305,663 @@ def test_simulation_perf_invocations(tmp_path, self_compare, fail_first, count):
         )
 
 
-@pytest.mark.parametrize("fault", [None, "revision", "side", "wheel", "requirements", "extra_wheel"])
+_REQUEST_API = (
+    "pub struct RequestId(u64);\n\n"
+    "/// Runtime-neutral request.\n"
+    "#[derive(Debug, Clone)]\n"
+    "pub struct Request {\n"
+    "    /// Stable request identity.\n"
+    "    pub request_id: Uuid,\n"
+    "    pub tokens: Vec<u32>,\n"
+    "    pub max_output_tokens: usize,\n"
+    '    #[serde(default, skip_serializing_if = "Option::is_none")]\n'
+    "    pub output_token_ids: Option<Vec<u32>>,\n"
+    "{extra}}\n\n"
+    "pub enum Command {\n    Submit(Request),\n}\n"
+    "pub enum LifecycleEvent { SourceHeld {}, DestinationReserved {} }\n"
+)
+_PLACEMENT_API = (
+    "pub struct PlacementCacheSample {\n    pub isl_blocks: u32,\n}\n\n"
+    "pub struct Placement {\n"
+    "    pub request_id: Uuid,\n"
+    "    pub scheduler_id: usize,\n"
+    "    pub reported_overlap_tokens: usize,\n"
+    "    pub cache_sample: Option<PlacementCacheSample>,\n"
+    "    /// Placement-policy replica.\n"
+    "    pub placement_replica_id: Option<usize>,\n"
+    "{extra}}\n\n"
+    "pub trait PlacementPolicy<Request> {}\n"
+)
+_LIFECYCLE_LITERAL = (
+    "    pub(super) fn lifecycle_event(&self, event: LifecycleEvent) -> Result<SchedulerLifecycleEvent> {\n"
+    "        Ok(match event {\n"
+    "            LifecycleEvent::SourceHeld { handoff_id, request_id, transfer_timing } => todo!(),\n"
+    "            LifecycleEvent::DestinationReserved { handoff_id, request_id, transferable_prompt_tokens }"
+    " => todo!(),\n"
+    "        })\n"
+    "    }\n"
+)
+_REQUEST_LITERAL = (
+    "    pub(super) fn native_request(&self, request: DirectRequest) -> Request {\n"
+    "        let request_id = request.uuid.unwrap_or_else(Uuid::new_v4);\n"
+    "        Request {\n"
+    "            request_id,\n"
+    "            tokens: request.tokens,\n"
+    "            max_output_tokens: request.max_output_tokens,\n"
+    "            output_token_ids: request.output_token_ids,\n"
+    "        }\n"
+    "    }\n"
+) + _LIFECYCLE_LITERAL
+_PLACEMENT_LITERAL = (
+    "fn other() -> Placement {\n    todo!()\n}\n\n"
+    "    fn placement(&self, admission: WorkerAdmission) -> Placement {\n"
+    "        Placement {\n"
+    "            request_id: admission.uuid,\n"
+    "            scheduler_id: admission.worker_idx,\n"
+    "            placement_replica_id: None,\n"
+    "            reported_overlap_tokens: admission.overlap_blocks as usize\n"
+    "                * self.router.block_size as usize,\n"
+    "            cache_sample: Some(PlacementCacheSample {\n"
+    "                isl_blocks: admission.isl_blocks,\n"
+    "            }),\n"
+    "        }\n"
+    "    }\n"
+)
+_MARKER = "// Modified by AISimulate CI: Dynamo does not set these optional fields yet.\n"
+
+
+def _literal_fixture(tmp_path, monkeypatch, request_extra="", placement_extra="", request_literal=_REQUEST_LITERAL):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    core, dynamo = tmp_path / "core", tmp_path / "dynamo"
+    sources = {}
+    sites = []
+    for site, api, extra, literal in zip(
+        builder.OPTIONAL_FIELD_LITERALS[:2],
+        (_REQUEST_API, _PLACEMENT_API),
+        (request_extra, placement_extra),
+        (request_literal, _PLACEMENT_LITERAL),
+        strict=True,
+    ):
+        (core / site.api).parent.mkdir(parents=True, exist_ok=True)
+        (core / site.api).write_text(api.replace("{extra}", extra))
+        path = dynamo / site.path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(literal)
+        sources[site.path] = literal
+        sites.append(site._replace(sha256=hashlib.sha256(literal.encode()).hexdigest()))
+    monkeypatch.setattr(builder, "OPTIONAL_FIELD_LITERALS", tuple(sites))
+    return builder, core, dynamo, sources
+
+
+@pytest.mark.parametrize(
+    ("request_extra", "placement_extra", "inserted"),
+    [
+        ("", "", {}),
+        (
+            "    /// Optional session attribution.\n"
+            '    #[serde(default, skip_serializing_if = "Option::is_none")]\n'
+            "    pub session_id: Option<String>,\n",
+            "",
+            {"Request": ["session_id"]},
+        ),
+        (
+            "    pub kv_hint: Option<KvHintSource>,\n    pub session_id: Option<String>,\n",
+            "    /// Receiving-engine hints.\n    pub kv_hints: std::option::Option<HashMap<String, Vec<u32>>>,\n",
+            {"Request": ["kv_hint", "session_id"], "Placement": ["kv_hints"]},
+        ),
+        (
+            '    /// Closes a `}` block; see "}" too.\n    pub session_id: Option<String>,\n',
+            "",
+            {"Request": ["session_id"]},
+        ),
+    ],
+)
+def test_simulation_dynamo_optional_literal_fields(tmp_path, monkeypatch, request_extra, placement_extra, inserted):
+    builder, core, dynamo, sources = _literal_fixture(tmp_path, monkeypatch, request_extra, placement_extra)
+    records = builder.patch_optional_literal_fields(core, dynamo)
+    expected = {
+        "Request": _REQUEST_LITERAL.replace(
+            "            output_token_ids: request.output_token_ids,\n        }\n",
+            "            output_token_ids: request.output_token_ids,\n"
+            + "".join(
+                f"            {line}"
+                for line in [_MARKER] + [f"{name}: None,\n" for name in inserted.get("Request", [])]
+            )
+            + "        }\n",
+        )
+        if "Request" in inserted
+        else _REQUEST_LITERAL,
+        "Placement": _PLACEMENT_LITERAL.replace(
+            "            }),\n        }\n",
+            "            }),\n"
+            + "".join(
+                f"            {line}"
+                for line in [_MARKER] + [f"{name}: None,\n" for name in inserted.get("Placement", [])]
+            )
+            + "        }\n",
+        )
+        if "Placement" in inserted
+        else _PLACEMENT_LITERAL,
+    }
+    assert records == [
+        {
+            "path": site.path,
+            "struct": site.struct,
+            "before_sha256": hashlib.sha256(sources[site.path].encode()).hexdigest(),
+            "inserted_fields": inserted.get(site.struct, []),
+            "after_sha256": hashlib.sha256(expected[site.struct].encode()).hexdigest(),
+        }
+        for site in builder.OPTIONAL_FIELD_LITERALS
+    ]
+    for site in builder.OPTIONAL_FIELD_LITERALS:
+        assert (dynamo / site.path).read_text() == expected[site.struct]
+
+
+_SESSION = "    pub session_id: Option<String>,\n"
+
+
+def test_simulation_dynamo_text_only_request_against_current_api(tmp_path, monkeypatch):
+    builder, _, dynamo, sources = _literal_fixture(tmp_path, monkeypatch)
+
+    records = builder.patch_optional_literal_fields(REPOSITORY_ROOT / "crates/core", dynamo)
+
+    request, placement = builder.OPTIONAL_FIELD_LITERALS
+    expected = sources[request.path].replace(
+        "        }\n",
+        f"            {_MARKER}"
+        "            session_id: None,\n"
+        "            kv_hint: None,\n"
+        "            // Modified by AISimulate CI: the pinned Dynamo request is text-only.\n"
+        "            images: {\n"
+        "                assert!(\n"
+        "                    request.images.is_empty(),\n"
+        '                    "pinned Dynamo CI adapter supports text-only requests",\n'
+        "                );\n"
+        "                Vec::new()\n"
+        "            },\n"
+        "        }\n",
+    )
+    expected = expected.replace(
+        "        Ok(match event {\n",
+        "        Ok(match event {\n"
+        "            // Modified by AISimulate CI: host-loop/frontend events are unsupported.\n"
+        "            LifecycleEvent::TtftMilestone { request_id, stage, at_ms } => {\n"
+        "                return Err(anyhow!(\n"
+        '                    "pinned Dynamo CI adapter does not support TTFT milestone {stage:?}'
+        ' for {request_id} at {at_ms}ms"\n'
+        "                ));\n"
+        "            }\n",
+    )
+    assert (dynamo / request.path).read_text() == expected
+    assert records[0] == {
+        "path": request.path,
+        "struct": "Request",
+        "before_sha256": request.sha256,
+        "inserted_fields": ["session_id", "images", "kv_hint"],
+        "rejected_lifecycle_events": ["TtftMilestone"],
+        "after_sha256": hashlib.sha256(expected.encode()).hexdigest(),
+    }
+    expected_placement = sources[placement.path].replace(
+        "            }),\n        }\n",
+        "            }),\n" + f"            {_MARKER}" + "            kv_hints: None,\n        }\n",
+    )
+    assert (dynamo / placement.path).read_text() == expected_placement
+    assert records[1]["inserted_fields"] == ["kv_hints"]
+
+
+# Each case would otherwise insert `session_id: None`; no file may be written.
+@pytest.mark.parametrize(
+    ("request_extra", "placement_extra", "request_literal", "bad_sha", "error"),
+    [
+        (_SESSION + "    pub priority: u8,\n", "", _REQUEST_LITERAL, False, r"must set .*\['priority'\]"),
+        (
+            _SESSION + "    pub images: Vec<ImageSpec>,\n    pub priority: u8,\n",
+            "",
+            _REQUEST_LITERAL,
+            False,
+            r"must set .*\['priority'\]",
+        ),
+        (_SESSION + "    pub images: Vec<u32>,\n", "", _REQUEST_LITERAL, False, r"must set .*\['images'\]"),
+        (_SESSION + "    images: Vec<ImageSpec>,\n", "", _REQUEST_LITERAL, False, r"must set .*\['images'\]"),
+        (
+            _SESSION + "    pub(crate) images: Vec<ImageSpec>,\n",
+            "",
+            _REQUEST_LITERAL,
+            False,
+            r"must set .*\['images'\]",
+        ),
+        (_SESSION, "    pub images: Vec<ImageSpec>,\n", _REQUEST_LITERAL, False, r"must set .*\['images'\]"),
+        (_SESSION, "    pub(crate) note: Option<u8>,\n", _REQUEST_LITERAL, False, r"must set .*\['note'\]"),
+        (
+            _SESSION,
+            "",
+            _REQUEST_LITERAL.replace("            request_id,\n", "            request_id,\n            legacy: 0,\n"),
+            False,
+            r"no longer has: \['legacy'\]",
+        ),
+        (_SESSION, "", _REQUEST_LITERAL, True, "kv_router/mod.rs differs from reviewed source"),
+        (
+            _SESSION + "    pub images: Vec<ImageSpec>,\n",
+            "",
+            _REQUEST_LITERAL,
+            True,
+            "kv_router/mod.rs differs from reviewed source",
+        ),
+        (
+            _SESSION + '    #[cfg(target_os = "windows")]\n    pub hint: Option<u8>,\n',
+            "",
+            _REQUEST_LITERAL,
+            False,
+            r"conditional \(`cfg`\) fields",
+        ),
+    ],
+)
+def test_simulation_dynamo_optional_literal_fields_fail_closed(
+    tmp_path, monkeypatch, request_extra, placement_extra, request_literal, bad_sha, error
+):
+    builder, core, dynamo, sources = _literal_fixture(
+        tmp_path, monkeypatch, request_extra, placement_extra, request_literal
+    )
+    if bad_sha:
+        request, placement = builder.OPTIONAL_FIELD_LITERALS
+        monkeypatch.setattr(builder, "OPTIONAL_FIELD_LITERALS", (request, placement._replace(sha256="0" * 64)))
+    with pytest.raises(ValueError, match=error):
+        builder.patch_optional_literal_fields(core, dynamo)
+    for path, text in sources.items():
+        assert (dynamo / path).read_text() == text
+
+
+def test_simulation_dynamo_speculation_depth_patch_records_exact_change(tmp_path, monkeypatch):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    dynamo = tmp_path / "dynamo"
+    path = dynamo / builder.SPECULATION_DEPTH_PATH
+    path.parent.mkdir(parents=True)
+    prefix, suffix = b"// Surrounding adapter code stays unchanged.\n", b"\n// End of adapter.\n"
+    original = prefix + builder.SPECULATION_DEPTH_OLD.encode() + suffix
+    expected = prefix + builder.SPECULATION_DEPTH_NEW.encode() + suffix
+    path.write_bytes(original)
+    monkeypatch.setattr(builder, "SPECULATION_DEPTH_SHA256", hashlib.sha256(original).hexdigest())
+
+    record = builder.patch_speculation_depth(dynamo)
+
+    assert path.read_bytes() == expected
+    assert record == {
+        "path": builder.SPECULATION_DEPTH_PATH,
+        "before_sha256": hashlib.sha256(original).hexdigest(),
+        "after_sha256": hashlib.sha256(expected).hexdigest(),
+    }
+
+
+@pytest.mark.parametrize("fault", ["hash", "missing_anchor", "duplicate_anchor"])
+def test_simulation_dynamo_speculation_depth_patch_fails_without_writing(tmp_path, monkeypatch, fault):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    dynamo = tmp_path / "dynamo"
+    path = dynamo / builder.SPECULATION_DEPTH_PATH
+    path.parent.mkdir(parents=True)
+    anchor_count = {"hash": 1, "missing_anchor": 0, "duplicate_anchor": 2}[fault]
+    original = b"// Fixture adapter.\n" + builder.SPECULATION_DEPTH_OLD.encode() * anchor_count
+    path.write_bytes(original)
+    reviewed_sha = "0" * 64 if fault == "hash" else hashlib.sha256(original).hexdigest()
+    monkeypatch.setattr(builder, "SPECULATION_DEPTH_SHA256", reviewed_sha)
+
+    def unexpected_write(*args, **kwargs):
+        pytest.fail("failed compatibility validation must not write source files")
+
+    monkeypatch.setattr(Path, "write_bytes", unexpected_write)
+    monkeypatch.setattr(Path, "write_text", unexpected_write)
+    error = "reviewed source" if fault == "hash" else "anchor"
+    with pytest.raises(ValueError, match=error):
+        builder.patch_speculation_depth(dynamo)
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("field_type", [None, "u32", "usize"])
+@pytest.mark.parametrize("drift", [None, "source", "anchors", "role"])
+def test_simulation_dynamo_replay_cp_compatibility(tmp_path, monkeypatch, field_type, drift):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    core, dynamo = tmp_path / "core", tmp_path / "dynamo"
+    api = core / "src/replay/engine.rs"
+    api.parent.mkdir(parents=True)
+    field = f"pub prefill_context_parallel_size: {field_type}," if field_type else ""
+    api.write_text(
+        f"pub struct ReplayEngineConfig {{{field}}}\n"
+        f"pub struct ReplayRoleConfig {{{field if drift != 'role' else 'pub prefill_context_parallel_size: bool,'}}}\n"
+    )
+    config = core / "src/engine/config.rs"
+    config.parent.mkdir(parents=True)
+    config.write_text("pub struct SglangConfig {pub schedule_policy: SglangSchedulePolicy,}")
+    adapter = dynamo / "lib/mocker/src/engine_adapter.rs"
+    adapter.parent.mkdir(parents=True)
+    source = (
+        "// synthetic adapter fixture\n    let sglang = SglangConfig {\n        schedule_policy,\n    };\n"
+    ) + "        num_gpu_blocks_is_explicit: Some(true),\n" * (3 if drift == "anchors" else 4)
+    adapter.write_text(source + ("// changed\n" if drift == "source" else ""))
+    monkeypatch.setattr(builder, "REPLAY_ADAPTER_SHA256", hashlib.sha256(source.encode()).hexdigest())
+    original = adapter.read_bytes()
+    if field_type == "usize" or drift in {"source", "role"} or (field_type and drift == "anchors"):
+        with pytest.raises(ValueError):
+            builder.patch_replay_engine_config(core, dynamo)
+        assert adapter.read_bytes() == original
+    else:
+        record = builder.patch_replay_engine_config(core, dynamo)
+        assert record["api_has_prefill_context_parallel_size"] == bool(field_type)
+        assert adapter.read_text().count("prefill_context_parallel_size: 1,") == (4 if field_type else 0)
+        assert record["after_sha256"] == hashlib.sha256(adapter.read_bytes()).hexdigest()
+        if field_type is None:
+            assert adapter.read_bytes() == original
+
+
+@pytest.mark.parametrize("encoder_type", [None, "Option<EncoderSpec>", "Option<OtherEncoder>", "EncoderSpec"])
+@pytest.mark.parametrize("drift", [None, "source", "new_field"])
+def test_simulation_dynamo_replay_specs_remain_text_only(tmp_path, monkeypatch, encoder_type, drift):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    core, dynamo = tmp_path / "core", tmp_path / "dynamo"
+    api = core / "src/replay/spec.rs"
+    api.parent.mkdir(parents=True)
+    extra = f"pub encoder: {encoder_type}," if encoder_type else ""
+    if drift == "new_field":
+        extra += "pub future_control: Option<bool>,"
+    api.write_text(f"pub struct ReplaySpec {{pub version: u32, {extra}}}")
+    sites, originals = [], {}
+    for site in (site for site in builder.OPTIONAL_FIELD_LITERALS if site.struct == "ReplaySpec"):
+        source = site.anchor + ") -> Result<ReplaySpec> {\n    ReplaySpec {\n        version: 1,\n    }\n}\n"
+        path = dynamo / site.path
+        path.parent.mkdir(parents=True)
+        path.write_text(source)
+        originals[path] = source
+        sites.append(site._replace(sha256=hashlib.sha256(source.encode()).hexdigest()))
+    monkeypatch.setattr(builder, "OPTIONAL_FIELD_LITERALS", tuple(sites))
+    if drift == "source":
+        path.write_text(source + "// changed\n")
+        originals[path] = path.read_text()
+    if encoder_type not in (None, "Option<EncoderSpec>") or drift:
+        with pytest.raises(ValueError):
+            builder.patch_optional_literal_fields(core, dynamo)
+        assert all(path.read_text() == original for path, original in originals.items())
+    else:
+        records = builder.patch_optional_literal_fields(core, dynamo)
+        assert len(records) == 2
+        for record in records:
+            assert record["inserted_fields"] == (["encoder"] if encoder_type else [])
+            patched = (dynamo / record["path"]).read_text()
+            assert ("encoder: None," in patched) == bool(encoder_type)
+            assert record["after_sha256"] == hashlib.sha256(patched.encode()).hexdigest()
+
+
+_SYNTHETIC_TRACE_LITERAL = """fn build_synthetic_workload() -> anyhow::Result<RsTrace> {
+    RsTrace::synthetic(SyntheticTraceSpec {
+        block_size,
+        num_sessions: request_count,
+        turns_per_session,
+        input_tokens: LengthSpec {
+            mean: input_tokens,
+            stddev: 0.0,
+        },
+        output_tokens: LengthSpec {
+            mean: output_tokens,
+            stddev: 0.0,
+        },
+        shared_prefix_ratio,
+        cached_prefix_tokens: 0,
+        num_prefix_groups,
+        first_turn_arrivals,
+        inter_turn_delays: if inter_turn_delay_ms == 0.0 {
+            DelaySpec::None
+        } else {
+            DelaySpec::ConstantMs(inter_turn_delay_ms)
+        },
+        seed: 42,
+        arrival_seed,
+    })
+}
+"""
+
+
+@pytest.mark.parametrize(
+    "image_field",
+    [
+        "",
+        "pub images: Option<SyntheticImages>,",
+        "pub images: Option<OtherImages>,",
+        "images: Option<SyntheticImages>,",
+    ],
+)
+@pytest.mark.parametrize("drift", [None, "source", "new_field"])
+def test_simulation_dynamo_synthetic_trace_remains_text_only(tmp_path, monkeypatch, image_field, drift):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    site = next(site for site in builder.OPTIONAL_FIELD_LITERALS if site.struct == "SyntheticTraceSpec")
+    core, dynamo = tmp_path / "core", tmp_path / "dynamo"
+    api = core / site.api
+    api.parent.mkdir(parents=True)
+    fields = image_field + ("pub future_control: Option<bool>," if drift == "new_field" else "")
+    api.write_text(
+        (REPOSITORY_ROOT / "crates/core" / site.api).read_text().replace("pub images: Option<SyntheticImages>,", fields)
+    )
+    path = dynamo / site.path
+    path.parent.mkdir(parents=True)
+    path.write_text(_SYNTHETIC_TRACE_LITERAL + ("// changed\n" if drift == "source" else ""))
+    original = path.read_text()
+    site = site._replace(sha256=hashlib.sha256(_SYNTHETIC_TRACE_LITERAL.encode()).hexdigest())
+    monkeypatch.setattr(builder, "OPTIONAL_FIELD_LITERALS", (site,))
+    if image_field not in ("", "pub images: Option<SyntheticImages>,") or drift:
+        with pytest.raises(ValueError, match="reviewed source|unreviewed AISimulate SyntheticTraceSpec"):
+            builder.patch_optional_literal_fields(core, dynamo)
+        assert path.read_text() == original
+    else:
+        [record] = builder.patch_optional_literal_fields(core, dynamo)
+        assert record["inserted_fields"] == (["images"] if image_field else [])
+        expected = (
+            original.replace(
+                "        arrival_seed,\n",
+                "        arrival_seed,\n"
+                "        // Modified by AISimulate CI: retain the pinned text-only replay configuration.\n"
+                "        images: None,\n",
+            )
+            if image_field
+            else original
+        )
+        assert path.read_text() == expected
+        assert record["after_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("fields", ["", "pub host_loop: bool, pub vlm_cache_bytes: u64,"])
+@pytest.mark.parametrize("drift", [None, "type", "new_field"])
+def test_simulation_dynamo_sglang_config_preserves_text_defaults(tmp_path, monkeypatch, fields, drift):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    core, dynamo = tmp_path / "core", tmp_path / "dynamo"
+    replay_api = core / "src/replay/engine.rs"
+    replay_api.parent.mkdir(parents=True)
+    replay_api.write_text("pub struct ReplayEngineConfig {} pub struct ReplayRoleConfig {}")
+    config = core / "src/engine/config.rs"
+    config.parent.mkdir(parents=True)
+    if drift == "type":
+        fields += "pub vlm_cache_bytes: usize,"
+    elif drift == "new_field":
+        fields += "pub future_control: Option<bool>,"
+    config.write_text(f"pub struct SglangConfig {{pub schedule_policy: SglangSchedulePolicy, {fields}}}")
+    adapter = dynamo / "lib/mocker/src/engine_adapter.rs"
+    adapter.parent.mkdir(parents=True)
+    source = "    let sglang = SglangConfig {\n        schedule_policy,\n    };\n"
+    adapter.write_text(source)
+    monkeypatch.setattr(builder, "REPLAY_ADAPTER_SHA256", hashlib.sha256(source.encode()).hexdigest())
+    if drift:
+        with pytest.raises(ValueError, match="unreviewed AISimulate SglangConfig"):
+            builder.patch_replay_engine_config(core, dynamo)
+        assert adapter.read_text() == source
+    else:
+        record = builder.patch_replay_engine_config(core, dynamo)
+        assert record["inserted_sglang_fields"] == (["host_loop", "vlm_cache_bytes"] if fields else [])
+        if fields:
+            assert "host_loop: false," in adapter.read_text()
+            assert "vlm_cache_bytes: SglangConfig::default().vlm_cache_bytes," in adapter.read_text()
+        else:
+            assert adapter.read_text() == source
+        assert record["after_sha256"] == hashlib.sha256(adapter.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "",
+        "TtftMilestone { request_id: Uuid, stage: TtftMilestone, at_ms: f64, },",
+        "TtftMilestone { request_id: Uuid, stage: TtftMilestone, at_ms: u64, },",
+        "OtherEvent { request_id: Uuid },",
+    ],
+)
+def test_simulation_dynamo_lifecycle_rejects_unsupported_host_events(extra):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    api = "pub enum LifecycleEvent { SourceHeld {}, DestinationReserved {}, " + extra + "}"
+    if "u64" in extra or "OtherEvent" in extra:
+        with pytest.raises(ValueError, match="unreviewed AISimulate lifecycle API"):
+            builder._patch_ttft_lifecycle(_LIFECYCLE_LITERAL, api)
+    else:
+        patched, rejected = builder._patch_ttft_lifecycle(_LIFECYCLE_LITERAL, api)
+        assert rejected == (["TtftMilestone"] if extra else [])
+        if extra:
+            assert "LifecycleEvent::TtftMilestone { request_id, stage, at_ms } =>" in patched
+            assert "return Err(anyhow!(" in patched
+            assert "does not support TTFT milestone" in patched
+            assert "_ =>" not in patched
+        else:
+            assert patched == _LIFECYCLE_LITERAL
+
+
+@pytest.mark.parametrize("wrong_core", [False, True])
+def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wrong_core):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    source, dynamo, output = (tmp_path / name for name in ("source", "dynamo", "output"))
+    core = source / "crates/core/Cargo.toml"
+    core.parent.mkdir(parents=True)
+    core.write_text('[package]\nname = "aisimulate-core"\nversion = "0.13.0"\n')
+    bindings = dynamo / "lib/bindings/python"
+    bindings.mkdir(parents=True)
+    output.mkdir()
+    for manifest in (dynamo / "Cargo.toml", bindings / "Cargo.toml"):
+        manifest.write_text('[dependencies]\naisimulate-core = "0.13.0"\n')
+    lock = bindings / "Cargo.lock"
+    old_lock = b'[[package]]\nname = "parquet"\nversion = "55.2.0"\n'
+    resolved_lock = old_lock.replace(b"55.2.0", b"59.0.0")
+    lock.write_bytes(old_lock)
+    built = []
+    patched = []
+    compatibility = {"api_has_state_bytes": True, "token_only_state_bytes": 0}
+    literal_compatibility = [{"struct": "Request", "inserted_fields": ["session_id"]}]
+    speculation_compatibility = {
+        "path": builder.SPECULATION_DEPTH_PATH,
+        "before_sha256": "a" * 64,
+        "after_sha256": "b" * 64,
+    }
+
+    def patch_handoff_timing(actual_core, actual_dynamo):
+        assert actual_core == core.parent and actual_dynamo == dynamo
+        patched.append(("handoff", actual_core, actual_dynamo))
+        return compatibility
+
+    def patch_optional_literal_fields(actual_core, actual_dynamo):
+        assert actual_core == core.parent and actual_dynamo == dynamo
+        patched.append(("literals", actual_core, actual_dynamo))
+        return literal_compatibility
+
+    def patch_speculation_depth(actual_dynamo):
+        assert actual_dynamo == dynamo
+        patched.append(("speculation", actual_dynamo))
+        return speculation_compatibility
+
+    def patch_replay_engine_config(actual_core, actual_dynamo):
+        assert actual_core == core.parent and actual_dynamo == dynamo
+        patched.append(("replay", actual_core, actual_dynamo))
+        return {"prefill_context_parallel_size": 1}
+
+    def check_output(args, **kwargs):
+        if args[:2] == ["cargo", "metadata"]:
+            assert patched == [
+                ("handoff", core.parent, dynamo),
+                ("literals", core.parent, dynamo),
+                ("speculation", dynamo),
+                ("replay", core.parent, dynamo),
+            ]
+            assert "--locked" not in args
+            assert kwargs["cwd"] == bindings
+            assert lock.read_bytes() == old_lock
+            for manifest in (dynamo / "Cargo.toml", bindings / "Cargo.toml"):
+                assert tomllib.loads(manifest.read_text())["dependencies"]["aisimulate-core"]["path"] == str(
+                    core.parent
+                )
+            lock.write_bytes(resolved_lock)
+            return json.dumps(
+                {
+                    "packages": [
+                        {"name": "aisimulate-core", "manifest_path": str(core) + (".wrong" if wrong_core else "")}
+                    ]
+                }
+            )
+        if args[-2:] == ["rev-parse", "HEAD"]:
+            return builder.DYNAMO_REVISION if args[2] == str(dynamo) else "a" * 40
+        assert args == ["git", "-C", str(dynamo), "diff", "HEAD"]
+        return b"dependency patch\n"
+
+    def run(args, **kwargs):
+        assert kwargs["check"]
+        if args[0] == "git":
+            assert args == ["git", "-C", str(dynamo), "diff", "--exit-code", "HEAD"]
+            return
+        assert lock.read_bytes() == resolved_lock
+        if "maturin" in args:
+            assert "--locked" in args
+            assert kwargs["cwd"] == bindings
+        else:
+            assert args[:2] == ["uv", "build"]
+        built.append(args)
+
+    monkeypatch.setattr(builder.subprocess, "check_output", check_output)
+    monkeypatch.setattr(builder.subprocess, "run", run)
+    monkeypatch.setattr(builder, "patch_handoff_timing", patch_handoff_timing)
+    monkeypatch.setattr(builder, "patch_optional_literal_fields", patch_optional_literal_fields)
+    monkeypatch.setattr(builder, "patch_speculation_depth", patch_speculation_depth)
+    monkeypatch.setattr(builder, "patch_replay_engine_config", patch_replay_engine_config)
+    if wrong_core:
+        with pytest.raises(ValueError, match="different AISimulate core"):
+            builder.build(source, dynamo, output)
+        assert not built
+        assert not list(output.iterdir())
+    else:
+        builder.build(source, dynamo, output)
+        assert len(built) == 2
+        assert (output / "dynamo-Cargo.lock").read_bytes() == resolved_lock
+        provenance = json.loads((output / "dynamo-build.json").read_text())
+        assert provenance["aisimulate_sha"] == "a" * 40
+        assert provenance["handoff_compatibility"] == compatibility
+        assert provenance["literal_compatibility"] == literal_compatibility
+        assert provenance["speculation_compatibility"] == speculation_compatibility
+        assert provenance["replay_compatibility"] == {"prefill_context_parallel_size": 1}
+        assert (output / "dynamo-build.patch").read_bytes() == b"dependency patch\n"
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "revision",
+        "side",
+        "wheel",
+        "requirements",
+        "extra_wheel",
+        "unverified_wheel",
+        "embedded_core",
+        "dynamo_wheel",
+        "missing_lock",
+        "changed_lock",
+    ],
+)
 def test_simulation_perf_artifact_verification(tmp_path, fault):
     from scripts.performance.simulation_perf_artifact import sha256, verify
 
@@ -3279,10 +3969,24 @@ def test_simulation_perf_artifact_verification(tmp_path, fault):
     wheel.write_bytes(b"built wheel")
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("locked\n")
+    additional = [
+        tmp_path / name
+        for name in (
+            "ai_dynamo_runtime-test.whl",
+            "ai_dynamo-test.whl",
+            "dynamo-requirements.txt",
+            "dynamo-build.json",
+            "dynamo-build.patch",
+            "dynamo-Cargo.lock",
+        )
+    ]
+    for path in additional:
+        path.write_text("build record\n")
     manifest = {
         "side": "base",
         "source_sha": "a" * 40,
-        "files": {path.name: sha256(path) for path in (wheel, requirements)},
+        "files": {path.name: sha256(path) for path in (wheel, requirements, *additional)},
+        "dynamo": {"aisimulate_sha": "a" * 40},
     }
     if fault == "revision":
         manifest["source_sha"] = "b" * 40
@@ -3294,6 +3998,17 @@ def test_simulation_perf_artifact_verification(tmp_path, fault):
         requirements.write_text("wrong dependencies\n")
     elif fault == "extra_wheel":
         (tmp_path / "aisimulate-other.whl").write_bytes(b"another wheel")
+    elif fault == "unverified_wheel":
+        (tmp_path / "unexpected_package-1.0-py3-none-any.whl").write_bytes(b"unverified wheel")
+    elif fault == "embedded_core":
+        manifest["dynamo"]["aisimulate_sha"] = "b" * 40
+    elif fault == "dynamo_wheel":
+        additional[0].write_bytes(b"wrong Dynamo wheel")
+    elif fault == "missing_lock":
+        (tmp_path / "dynamo-Cargo.lock").unlink()
+        del manifest["files"]["dynamo-Cargo.lock"]
+    elif fault == "changed_lock":
+        (tmp_path / "dynamo-Cargo.lock").write_text("different dependency graph\n")
     (tmp_path / "provenance.json").write_text(json.dumps(manifest))
     if fault:
         with pytest.raises(ValueError):

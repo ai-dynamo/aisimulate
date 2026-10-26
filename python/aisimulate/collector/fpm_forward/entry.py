@@ -108,10 +108,7 @@ def _load_generator_overrides(args: argparse.Namespace) -> dict[str, Any]:
     if args.generator_dynamo_version:
         payload["generator_dynamo_version"] = args.generator_dynamo_version
     if args.generated_config_version:
-        raise ValueError(
-            "FPM resolves generated_config_version from the target Dynamo version; "
-            "do not set --generated-config-version"
-        )
+        raise ValueError("FPM uses the default benchmark templates; do not set --generated-config-version")
     k8s: dict[str, Any] = {}
     if args.namespace:
         k8s["k8s_namespace"] = args.namespace
@@ -178,7 +175,14 @@ def resolve_inputs(args: argparse.Namespace, case_plan) -> ResolvedFPMInputs:
         has_model_cases=bool(case_plan.model_cases_paths),
         model_config_path=getattr(args, "fpm_model_config", None),
         fpm_profile=fpm_profile,
-        collector_config={},
+        collector_config={
+            "runtime_backend_version": getattr(args, "fpm_runtime_backend_version", None),
+            **(
+                {"aic_database_version": args.fpm_backend_version}
+                if getattr(args, "fpm_backend_version", None) is not None
+                else {}
+            ),
+        },
         generator_overrides=generator_overrides,
         **runtime_inputs,
     )

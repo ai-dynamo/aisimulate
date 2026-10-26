@@ -572,7 +572,10 @@ def _build_sflow_variables(
         )
 
         if backend == "sglang":
-            graph_bs = " ".join(_extract_multi_option_values(cli_args, "--cuda-graph-bs"))
+            graph_bs = " ".join(
+                _extract_multi_option_values(cli_args, "--cuda-graph-bs-decode")
+                or _extract_multi_option_values(cli_args, "--cuda-graph-bs")
+            )
             vars_out.append(
                 _var(
                     f"{prefix}_CUDA_GRAPH_BS",
@@ -638,7 +641,7 @@ def _bind_sglang_cli_args(cli_args: str, prefix: str) -> str:
         "--mem-fraction-static": f"$[[ variables.{prefix}_FREE_GPU_MEMORY_FRACTION ]]",
         "--kv-cache-dtype": "$[[ variables.KV_CACHE_DTYPE ]]",
         "--cuda-graph-bs": f"$[[ variables.{prefix}_CUDA_GRAPH_BS ]]",
-        "--cuda-graph-max-bs": f"$[[ variables.{prefix}_BATCH_SIZE ]]",
+        "--cuda-graph-bs-decode": f"$[[ variables.{prefix}_CUDA_GRAPH_BS ]]",
         "--speculative-algorithm": f"$[[ variables.{prefix}_SPECULATIVE_ALGORITHM ]]",
     }
     attention_var = f"$[[ variables.{prefix}_ENABLE_ATTENTION_DP ]]"
@@ -678,7 +681,7 @@ def _bind_sglang_cli_args(cli_args: str, prefix: str) -> str:
             out.append(token)
             present_flags.add(token)
             if idx + 1 < len(tokens) and not tokens[idx + 1].startswith("--"):
-                if token == "--cuda-graph-bs":
+                if token in {"--cuda-graph-bs", "--cuda-graph-bs-decode"}:
                     while idx + 1 < len(tokens) and not tokens[idx + 1].startswith("--"):
                         idx += 1
                 else:

@@ -19,7 +19,7 @@ Maintainers and agents: CI executes the bash/yaml examples in this README.
 - Validate structure before committing (requires psutil and PyYAML):
   python scripts/readme/check_readme_commands.py --validate
   This checks parsing/manifest consistency; CI also executes the commands.
-See docs/ci.md and scripts/readme/check_readme_commands.py for execution details.
+See docs/ci/README.md and scripts/readme/check_readme_commands.py for execution details.
 -->
 
 # AISimulate
@@ -31,6 +31,7 @@ configurations offline, without bringing up a GPU serving cluster.
 [Website](https://ai-dynamo.org/aisimulate/) ·
 [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/) ·
 [FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/) ·
+[FPM Dataset](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset) ·
 [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/) ·
 [Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
 
@@ -43,6 +44,12 @@ See the [migration guide](docs/aic-backward-compatibility/migration.md) for comm
 The performance-modeling methodology is described in
 [AIConfigurator: Lightning-Fast Configuration Optimization for Multi-Framework
 LLM Serving](https://arxiv.org/abs/2601.06288).
+
+Versioned FPM libraries and measurement evidence are available in the
+[Hugging Face FPM dataset](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset).
+Pin a full dataset commit SHA, select the matching runtime configuration, and
+verify the recorded file hashes. To contribute data, follow the dataset
+[developer guide and schema contracts](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset#developer-guide-contribute-a-dataset).
 
 ## Install
 
@@ -82,7 +89,7 @@ aisimulate predict --help
 ```
 
 This pair exercises the nightly AISimulate wheel, not the current source checkout.
-The daily README workflow records installed versions and runs both Dynamo
+The Full CI README checks record installed versions and run both Dynamo
 prediction and recommendation; `--help` alone does not validate the adapters.
 
 **Planner needs additional dependencies.** Install the requirements from the
@@ -126,6 +133,12 @@ aisimulate predict \
   --config prediction.yaml \
   --output-dir ./aisimulate-prediction
 ```
+
+### Python prediction API
+
+Use the same `prediction.yaml` with the
+[Python prediction API](docs/core-api.md#python-prediction-api).
+See the API reference for the runnable example, arguments and results.
 
 ### Dynamo-integrated prediction
 
@@ -202,6 +215,12 @@ aisimulate recommend \
   --config recommendation.yaml \
   --output-dir ./aisimulate-recommendation
 ```
+
+### Python recommendation API
+
+Use the same `recommendation.yaml` with the
+[Python recommendation API](docs/core-api.md#python-recommendation-api).
+See the API reference for the runnable example, arguments and results.
 
 ### Dynamo-integrated recommendation
 
@@ -310,6 +329,7 @@ Use the focused SDK documentation instead of treating CLI internals as public
 APIs:
 
 - [Estimator/FPE Python and Rust SDK](docs/perf-model/api/python.md)
+- [Prediction and recommendation Python APIs](docs/core-api.md#python-prediction-api)
 - [FPM self-service: onboard a model on target hardware](docs/perf-model/fpm-self-service/README.md)
 - [FPM self-service implementation and CLI reference](docs/perf-model/fpm-self-service/implementation.md)
 - [FPM self-service examples](docs/perf-model/fpm-self-service/examples.md)
@@ -447,8 +467,6 @@ python -m pip check
 
 After pulling native Rust changes, rebuild the editable installation with
 `uv pip install --reinstall-package aisimulate -e ./python/aisimulate`.
-A missing `_runtime` attribute such as `SglangPrefillAttentionSequence` usually
-means the Python source and compiled extension are from different revisions.
 Run the command in the environment that owns your `aiconfigurator` executable.
 
 Current performance profiles are checked-in Parquet files, so normal builds

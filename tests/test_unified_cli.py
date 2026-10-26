@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
+import math
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -12,11 +14,18 @@ import pytest
 import yaml
 
 import aisimulate.main as cli
-from aisimulate.output import prepare_output_directory
+from aisimulate.config.cli import CorePredictionConfig
+from aisimulate.output import (
+    format_prediction_stdout,
+    prepare_output_directory,
+    write_prediction_report,
+    write_prediction_stdout,
+)
 from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, resolve_output_adapters
+from aisimulate.predict import PredictionExecutionError, PredictionResult, run_prediction
 from aisimulate.sweeper.config import Candidate
 from aisimulate.sweeper.provider import AdapterReplaySpec, AdapterSearchPlan
-from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
+from aisimulate.sweeper.replay import ReplayOutputRequirements, ReplayReport, RunnerCapabilities
 
 
 class _RecommendationResult:
@@ -286,6 +295,242 @@ def test_predict_is_the_single_concrete_cli(tmp_path, monkeypatch, capsys) -> No
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
 
 
+def _prediction_config() -> CorePredictionConfig:
+    return CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                "model": "example/model",
+                "hardware": "h200_sxm",
+                "context_length": 4096,
+                "workers": {"aggregated": {}},
+            }
+        }
+    )
+
+
+def test_run_prediction_returns_structured_result() -> None:
+    # The library entry point (sibling of run_recommendation) that the predict
+    # CLI delegates to: compile -> run -> summarize on an injected runner.
+    runner = _Runner()
+    result = run_prediction(_prediction_config(), stack="engine", runner_factory=_Factory(runner))
+
+    assert isinstance(result, PredictionResult)
+    assert result.summary["completed_requests"] == 1
+    # summary is merged back into the native report.
+    assert result.native["summary"]["completed_requests"] == 1
+    assert result.replay_spec is runner.spec
+    # execution_mode defaults to offline; a non-EPD run defaults to raw report only.
+    assert runner.spec.execution_mode == "offline"
+    assert runner.output_requirements.include_raw_report is True
+    assert runner.output_requirements.capture_per_request is False
+    assert runner.closed is True
+
+
+@pytest.mark.parametrize("output_format", ["table", "json"])
+@pytest.mark.parametrize("roles", [("aggregated",), ("prefill", "decode")])
+@pytest.mark.parametrize(
+    "raw,override,role_override,mode,capacity_source,expected_source",
+    [
+        ({"quant_algo": "fp8"}, None, None, "fp8", "native", "aisimulate_policy"),
+        ({"quant_algo": "fp8", "kv_cache_quant_algo": None}, None, None, "fp8", "native", "aisimulate_policy"),
+        ({"kv_cache_quant_algo": "fp8"}, None, None, "fp8", "native", "checkpoint"),
+        ({"kv_cache_quant_algo": "none"}, None, None, "bfloat16", "native", "checkpoint"),
+        ({"kv_cache_quant_algo": "bfloat16"}, None, None, "fp8", "native", "aisimulate_policy"),
+        ({"quant_algo": "fp8"}, "bfloat16", None, "bfloat16", "native", "user_override"),
+        ({}, "bfloat16", "fp8", "fp8", "native", "user_override"),
+        ({}, None, None, "fp8", "profile", "fpm_profile"),
+        ({}, None, None, None, "naive_fallback", None),
+    ],
+)
+def test_predict_discloses_kv_precision_without_detail(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    output_format,
+    roles,
+    raw,
+    override,
+    role_override,
+    mode,
+    capacity_source,
+    expected_source,
+):
+    modes = {role: override if role_override and role != roles[-1] else mode for role in roles}
+
+    class MemoryRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            if self.output_requirements.capture_memory_diagnostics:
+                report.metadata["native_report"]["memory_diagnostics"] = {
+                    role: {"source": capacity_source, **({"kvcache_quant_mode": dtype} if dtype else {})}
+                    for role, dtype in modes.items()
+                }
+            return report
+
+    runner = MemoryRunner()
+
+    class MemoryFactory(_Factory):
+        def capabilities(self):
+            return RunnerCapabilities(
+                supported_backend_topologies=(("vllm", "agg"), ("vllm", "disagg")),
+                supported_engine_model_controls=("kvcache_quant_mode",),
+            )
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: MemoryFactory(runner))
+    monkeypatch.setattr("aisimulate.predict.get_model_config_from_model_path", lambda _: {"raw_config": raw})
+    config = _prediction_config().model_dump(mode="json", exclude_none=True)
+    worker = config["engine"]["workers"]["aggregated"]
+    config["engine"]["workers"] = {role: deepcopy(worker) for role in roles}
+    config["engine"]["mode"] = "aggregated" if roles == ("aggregated",) else "disaggregated"
+    if override is not None:
+        config["engine"]["kvcache_quant_mode"] = override
+    if role_override is not None:
+        config["engine"]["workers"][roles[-1]]["timing"]["kvcache_quant_mode"] = role_override
+    path = tmp_path / "prediction.yaml"
+    path.write_text(yaml.safe_dump(config))
+    output = tmp_path / "out"
+    assert cli.main(["predict", "-c", str(path), "--format", output_format, "--output-dir", str(output)]) == 0
+    stdout = capsys.readouterr().out
+    saved = json.loads((output / "prediction.json").read_text())
+    assert "memory_diagnostics" not in saved
+    if mode is None:
+        assert "kv_cache_precision" not in saved["summary"]
+        assert "kv_cache_precision" not in stdout
+        assert "KV cache (" not in stdout
+        return
+    expected = {role: {"dtype": dtype, "source": expected_source} for role, dtype in modes.items()}
+    assert saved["summary"]["kv_cache_precision"] == expected
+    if output_format == "json":
+        assert json.loads(stdout)["kv_cache_precision"] == expected
+    else:
+        for role, dtype in modes.items():
+            assert f"KV cache ({role}): {dtype} (source: {expected_source})" in stdout
+
+
+@pytest.mark.parametrize(
+    "requirements,retain_raw,retain_memory",
+    [
+        (None, True, False),
+        (ReplayOutputRequirements(include_raw_report=False), False, False),
+        (ReplayOutputRequirements(include_raw_report=True), True, False),
+        (ReplayOutputRequirements(capture_memory_diagnostics=True), True, True),
+        (ReplayOutputRequirements(capture_per_request=True), True, False),
+        (ReplayOutputRequirements(capture_performance_diagnostics=True), True, False),
+    ],
+)
+def test_run_prediction_retains_only_requested_diagnostics(requirements, retain_raw, retain_memory):
+    class MemoryRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            native = report.metadata["native_report"]
+            native["raw_only_field"] = "native data"
+            if self.output_requirements.capture_memory_diagnostics:
+                native["memory_diagnostics"] = {"aggregated": {"source": "profile", "kvcache_quant_mode": "fp8"}}
+            return report
+
+    runner = MemoryRunner()
+    result = run_prediction(
+        _prediction_config(), stack="engine", runner_factory=_Factory(runner), output_requirements=requirements
+    )
+    assert result.summary["kv_cache_precision"] == {"aggregated": {"dtype": "fp8", "source": "fpm_profile"}}
+    assert ("native_report" in result.report.metadata) == retain_raw
+    assert ("raw_only_field" in result.native) == retain_raw
+    assert ("memory_diagnostics" in result.native) == retain_memory
+    if retain_raw:
+        assert ("memory_diagnostics" in result.report.metadata["native_report"]) == retain_memory
+    else:
+        assert result.native == {"summary": result.summary}
+        for key, value in result.report.metrics.items():
+            assert result.summary[key] == value
+
+
+@pytest.mark.parametrize(
+    "detail,expected",
+    [
+        ("MoE data missing for test shape", "missing performance data: MoE data missing for test shape"),
+        ("perf file is an unresolved git-lfs pointer; run git lfs pull", "RuntimeError: perf database error:"),
+    ],
+)
+def test_predict_reports_missing_data_after_shared_api_execution(tmp_path, monkeypatch, capsys, detail, expected):
+    class FailingRunner(_Runner):
+        def run(self, spec, *, output_requirements=None):
+            error = RuntimeError(f"perf database error: {detail}")
+            error.fpm_query_coverage = {"schema_version": 1, "queries": []}
+            raise error
+
+    runner = FailingRunner()
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(runner))
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(yaml.safe_dump(_prediction_config().model_dump(mode="json", exclude_none=True)))
+    output = tmp_path / "out"
+
+    assert cli.main(["predict", "--config", str(config_path), "--output-dir", str(output)]) == 1
+    assert f"aisimulate predict failed: {expected}" in capsys.readouterr().err
+    assert runner.closed
+    coverage = json.loads((output / "fpm-coverage.json").read_text())
+    assert coverage["status"] == "incomplete"
+    assert coverage["error"] == f"perf database error: {detail}"
+
+
+@pytest.mark.parametrize("output_format", ["table", "json"])
+@pytest.mark.parametrize("completed", [0, 1])
+def test_predict_marks_zero_completion_invalid(tmp_path, monkeypatch, capsys, output_format, completed):
+    class CompletionRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            values = {
+                "completed_requests": completed,
+                "mean_ttft_ms": 0.0,
+                "output_throughput_tok_s": 0.0,
+                "processed_tokens_per_s": 12.0,
+                "processed_output_tokens_per_s": 4.0,
+                "throughput_sample_count": 7,
+            }
+            report.metrics.update(values)
+            report.metadata["native_report"]["summary"].update(values)
+            return report
+
+    runner = CompletionRunner()
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(runner))
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(yaml.safe_dump(_prediction_config().model_dump(mode="json", exclude_none=True)))
+    output = tmp_path / "out"
+    code = cli.main(["predict", "-c", str(config_path), "--output-dir", str(output), "--format", output_format])
+    assert code == (1 if completed == 0 else 0)
+    saved = json.loads((output / "prediction.json").read_text())["summary"]
+    stdout, stderr = capsys.readouterr()
+    if completed == 0:
+        assert saved["prediction_status"] == "invalid"
+        assert saved["stop_reason"] == "no_completed_requests"
+        assert saved["mean_ttft_ms"] is None
+        assert saved["output_throughput_tok_s"] is None
+        assert saved["processed_tokens_per_s"] is None
+        assert saved["processed_output_tokens_per_s"] is None
+        assert saved["throughput_sample_count"] == 7
+        assert "KV capacity" in stderr
+        if output_format == "json":
+            assert json.loads(stdout)["stop_reason"] == "no_completed_requests"
+        else:
+            assert "INVALID prediction" in stdout
+    else:
+        assert "prediction_status" not in saved
+        assert saved["mean_ttft_ms"] == 0.0
+    assert runner.closed
+
+
+def test_run_prediction_wraps_runner_failure() -> None:
+    class _FailingRunner(_Runner):
+        def run(self, spec, *, output_requirements=None):
+            self.spec = spec
+            raise RuntimeError("boom")
+
+    runner = _FailingRunner()
+    with pytest.raises(PredictionExecutionError, match="RuntimeError: boom"):
+        run_prediction(_prediction_config(), stack="engine", runner_factory=_Factory(runner))
+    # The runner is closed even when the run raises.
+    assert runner.closed is True
+
+
 def test_predict_online_is_forwarded_through_replay_spec(tmp_path, monkeypatch, capsys) -> None:
     config_path = tmp_path / "prediction.yaml"
     config_path.write_text(
@@ -434,12 +679,217 @@ def test_predict_online_rejects_runner_without_online_capability(tmp_path, monke
             }
         )
     )
+    output = tmp_path / "out"
+    output.mkdir()
+    previous = output / "prediction.json"
+    previous.write_text('{"previous": true}\n')
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
 
     with pytest.raises(SystemExit, match="2"):
-        cli.main(["predict", "--online", "--config", str(config_path)])
+        cli.main(
+            [
+                "predict",
+                "--online",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(output),
+                "--overwrite",
+            ]
+        )
 
     assert "runner does not support execution mode 'online'" in capsys.readouterr().err
+    assert json.loads(previous.read_text()) == {"previous": True}
+
+
+def test_predict_adapter_compilation_failure_preserves_previous_output(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    output = tmp_path / "out"
+    output.mkdir()
+    previous = output / "prediction.json"
+    previous.write_text('{"previous": true}\n')
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
+    monkeypatch.setattr(
+        cli,
+        "resolve_config_adapters",
+        lambda names: {"engine.placement": _PlacementAdapter()},
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        cli.main(
+            [
+                "predict",
+                "--config",
+                str(config_path),
+                "--set",
+                "placement.policy=unsupported",
+                "--output-dir",
+                str(output),
+                "--overwrite",
+            ]
+        )
+
+    assert json.loads(previous.read_text()) == {"previous": True}
+
+
+def test_predict_supervision_brackets_runner_lifecycle(tmp_path, monkeypatch) -> None:
+    from aisimulate import supervision
+
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    events = []
+
+    class TrackedRunner(_Runner):
+        def run(self, spec, *, output_requirements=None):
+            events.append("run")
+            return super().run(spec, output_requirements=output_requirements)
+
+        def close(self):
+            events.append("close")
+            super().close()
+
+    class TrackedFactory(_Factory):
+        def create(self, worker_id):
+            events.append("create")
+            return super().create(worker_id)
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: TrackedFactory(TrackedRunner()))
+    monkeypatch.setattr(supervision, "mark_execution_ready", lambda: events.append("ready"))
+    monkeypatch.setattr(supervision, "mark_shutdown", lambda: events.append("shutdown"))
+
+    assert cli.main(["predict", "--config", str(config_path), "--output-dir", str(tmp_path / "out")]) == 0
+
+    assert events == ["create", "ready", "run", "shutdown", "close", "ready"]
+
+
+def test_predict_writes_successful_fpm_coverage(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    coverage = {"schema_version": 1, "status": "covered"}
+
+    class CoverageRunner(_Runner):
+        def run(self, spec, *, output_requirements=None):
+            report = super().run(spec, output_requirements=output_requirements)
+            native = {**report.metadata["native_report"], "fpm_query_coverage": coverage}
+            return ReplayReport(metrics=report.metrics, metadata={**report.metadata, "native_report": native})
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(CoverageRunner()))
+    output = tmp_path / "out"
+
+    assert cli.main(["predict", "--config", str(config_path), "--output-dir", str(output)]) == 0
+
+    assert json.loads((output / "fpm-coverage.json").read_text()) == coverage
+
+
+@pytest.mark.parametrize("close_fails", [False, True])
+def test_predict_writes_incomplete_fpm_coverage_on_failure(tmp_path, monkeypatch, close_fails) -> None:
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    coverage = {"schema_version": 1, "status": "uncovered"}
+
+    class CoverageFailureRunner(_Runner):
+        def run(self, spec, *, output_requirements=None):
+            error = RuntimeError("missing timing point")
+            error.fpm_query_coverage = json.dumps(coverage)
+            raise error
+
+        def close(self):
+            super().close()
+            if close_fails:
+                raise RuntimeError("close failed")
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(CoverageFailureRunner()))
+    output = tmp_path / "out"
+
+    assert cli.main(["predict", "--config", str(config_path), "--output-dir", str(output)]) == 1
+
+    saved = json.loads((output / "fpm-coverage.json").read_text())
+    assert saved == {
+        **coverage,
+        "status": "incomplete",
+        "error": "missing timing point",
+    }
+
+
+@pytest.mark.parametrize("coverage_value", ["{malformed", {"schema_version": 1}])
+def test_predict_failure_preserves_primary_error_when_coverage_persistence_fails(
+    tmp_path, monkeypatch, capsys, coverage_value
+) -> None:
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+
+    class FailingRunner(_Runner):
+        def run(self, spec, *, output_requirements=None):
+            error = RuntimeError("primary runner failure")
+            error.fpm_query_coverage = coverage_value
+            raise error
+
+    if isinstance(coverage_value, dict):
+
+        def fail_write(*_args, **_kwargs):
+            raise OSError("disk")
+
+        monkeypatch.setattr(cli, "write_fpm_coverage", fail_write)
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(FailingRunner()))
+
+    assert cli.main(["predict", "--config", str(config_path), "--output-dir", str(tmp_path / "out")]) == 1
+    assert "primary runner failure" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("command", ["predict", "recommend"])
@@ -1236,7 +1686,7 @@ def test_recommendation_writes_an_empty_result_before_returning_failure(
     monkeypatch.setattr(
         cli.CoreRecommendationConfig,
         "model_validate",
-        staticmethod(lambda raw: object()),
+        staticmethod(lambda raw: SimpleNamespace(traffic=None)),
     )
     monkeypatch.setattr(cli, "_resolve_section_adapters", lambda sections, stack: {})
     result = _RecommendationResult([], failed=1)
@@ -1444,7 +1894,7 @@ def test_detail_selected_json_and_skips_match_saved_report(tmp_path, monkeypatch
     expected = {"all": {"summary", "time", "energy", "source"}, "time,time": {"time"}, "memory": set()}[selector]
     assert set(details["sections"]) == expected
     assert ("memory" in details["skipped"]) == (selector != "time,time")
-    assert runner.output_requirements.capture_memory_diagnostics == (selector != "time,time")
+    assert runner.output_requirements.capture_memory_diagnostics
     if "time" in expected:
         assert details["sections"]["time"]["serving_metrics"] == {
             "mean_ttft_ms": 2.0,
@@ -1520,7 +1970,8 @@ def test_detail_schema_rejects_incomplete_or_unsupported_sections(section):
         validate({"schema_version": "1.0", "sections": section, "skipped": {}}, _detail_schema())
 
 
-def test_detail_partial_memory_preserves_unavailable_role_reason():
+@pytest.mark.parametrize("kv_mode", ["fp8", "bfloat16"])
+def test_detail_partial_memory_preserves_unavailable_role_reason(kv_mode):
     from jsonschema import ValidationError, validate
 
     from aisimulate.detail import build_prediction_details, format_prediction_details
@@ -1530,6 +1981,7 @@ def test_detail_partial_memory_preserves_unavailable_role_reason():
         "scope": "capacity_estimate_per_rank",
         "stage": "before_native_capacity_adjustments",
         "source": "native",
+        "kvcache_quant_mode": kv_mode,
         "total_gpu_capacity_bytes": 4096,
         "total_kv_size_bytes": 1024,
         "total_kv_size_tokens": 128,
@@ -1551,6 +2003,7 @@ def test_detail_partial_memory_preserves_unavailable_role_reason():
     validate(result, _detail_schema())
     assert result["sections"]["memory"]["status"] == "partial"
     assert "explicit KV blocks" in format_prediction_details(result)
+    assert f"kvcache_quant_mode: {kv_mode}" in format_prediction_details(result)
     assert result["skipped"] == {}
     result["sections"]["memory"]["status"] = "available"
     with pytest.raises(ValidationError):
@@ -1941,3 +2394,151 @@ def test_cli_reports_invalid_adapter_diagnostic_field(tmp_path, monkeypatch, cap
         )
     assert error.value.code == 2
     assert "performance_diagnostics.latency_unit must be present" in capsys.readouterr().err
+
+
+def test_invalid_analytical_epd_table_includes_banner():
+    summary = {
+        "metric_semantics": "analytical_epd_overlay",
+        "prediction_status": "invalid",
+        "stop_reason": "no_completed_requests",
+        "diagnostic": "No requests completed.",
+    }
+    output = format_prediction_stdout(summary, "table")
+    assert output.startswith("INVALID prediction (no_completed_requests): No requests completed.\n")
+    assert "AISimulate analytical EPD" in output
+
+
+def test_recommend_emits_explicit_hybrid_pin_with_native_capacity(tmp_path):
+    shape = {"replicas": 1, "tensor": 2, "pipeline": 1, "attention_data": 4, "moe_tensor": 1, "moe_expert": 8}
+    config = {
+        "engine": {
+            "mode": "aggregated",
+            "model": "zai-org/GLM-5.2-FP8",
+            "hardware": "h200_sxm",
+            "backend": "vllm",
+            "backend_version": "0.24.0",
+            "context_length": 8192,
+            "workers": {
+                "aggregated": {
+                    "parallelism": {"preset": [shape]},
+                    "scheduler": {"max_batched_tokens": 8192, "max_sequences": 512},
+                }
+            },
+        },
+        "traffic": {
+            "source": {"type": "synthetic", "input_tokens": 32, "output_tokens": 4},
+            "load": {"type": "concurrency", "concurrency": 2},
+            "stop": {"requests": 6},
+        },
+        "evaluation": {"sla": {"ttft_ms": 2000, "itl_ms": 50}},
+        "optimization": {"target": "min_gpus", "constraints": {"max_candidate_gpus": 8}},
+        "optimizer": {"algorithm": "random", "max_trials": 1, "parallelism": 1, "seed": 42},
+    }
+    path = tmp_path / "recommend.yaml"
+    path.write_text(yaml.safe_dump(config))
+    output = tmp_path / "out"
+    assert cli.main(["recommend", "-c", str(path), "--output-dir", str(output)]) == 0
+    report = json.loads((output / "recommendation.json").read_text())
+    assert report["counts"]["feasible"] == 1
+    saved = yaml.safe_load((output / "recommendations" / "0001.yaml").read_text())
+    assert saved["engine"]["workers"]["aggregated"]["parallelism"] == shape
+
+
+@pytest.mark.parametrize("output_format", ["table", "json"])
+@pytest.mark.parametrize("available", [False, True])
+def test_predict_reports_effective_timing_provenance_without_details(
+    tmp_path, monkeypatch, capsys, output_format, available
+):
+    provenance = {
+        "aggregated": {
+            "estimator": "op_level",
+            "timing_source": "aic",
+            "data_version": "0.24.0",
+            "data_version_unavailable_reason": None,
+        }
+    }
+
+    class ProvenanceRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            assert not self.output_requirements.capture_performance_diagnostics
+            if available:
+                report.metadata["prediction_provenance"] = provenance
+            return report
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(ProvenanceRunner()))
+    path = tmp_path / "prediction.yaml"
+    path.write_text(yaml.safe_dump(_prediction_config().model_dump(mode="json", exclude_none=True)))
+    output = tmp_path / "out"
+    assert cli.main(["predict", "-c", str(path), "--format", output_format, "--output-dir", str(output)]) == 0
+    stdout = capsys.readouterr().out
+    saved = json.loads((output / "prediction.json").read_text())["summary"]["prediction_provenance"]
+    if available:
+        assert saved == provenance
+    else:
+        assert "runner did not report" in saved["runner"]["unavailable_reason"]
+    if output_format == "json":
+        assert json.loads(stdout)["prediction_provenance"] == saved
+    elif available:
+        assert "Timing (aggregated): estimator=op_level; source=aic; data_version=0.24.0" in stdout
+    else:
+        assert "Timing (runner): unavailable (runner did not report" in stdout
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    [
+        [],
+        "bad",
+        {"aggregated": None},
+        {"aggregated": {}},
+        {"aggregated": {"estimator": "op_level", "timing_source": "aic"}},
+        {"aggregated": {"unavailable_reason": True}},
+    ],
+)
+def test_predict_rejects_malformed_runner_provenance_before_output(tmp_path, monkeypatch, capsys, provenance):
+    class MalformedRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            report.metadata["prediction_provenance"] = provenance
+            return report
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(MalformedRunner()))
+    path = tmp_path / "prediction.yaml"
+    path.write_text(yaml.safe_dump(_prediction_config().model_dump(mode="json", exclude_none=True)))
+    output = tmp_path / "out"
+    assert cli.main(["predict", "-c", str(path), "--output-dir", str(output)]) == 1
+    assert "runner prediction_provenance" in capsys.readouterr().err
+    assert not (output / "prediction.json").exists()
+
+
+@pytest.mark.parametrize("with_details", [False, True])
+def test_streamed_prediction_outputs_match_one_shot_json(tmp_path, with_details) -> None:
+    record = {
+        "request_id": 'ä-ид \u2603 "q"',
+        "ttft_ms": 1e-05,
+        "e2e_latency_ms": 1e16,
+        "itl_ms": math.nan,
+        "metadata": {"z": [1, 2.5], "a": {}},
+        "routing_history": [],
+    }
+    summary = {"completed_requests": 2, "per_request": [record, {**record, "ttft_ms": None}]}
+    details = {"sections": {"summary": {"metrics": summary}}} if with_details else None
+    power = {"energy_j": 3.5}
+
+    # stdout: old path was json.dumps of the payload, compact with sorted keys.
+    stdout = io.StringIO()
+    write_prediction_stdout(stdout, summary, "json", details=details, power_diagnostics=power)
+    payload = {"summary": summary, "power_diagnostics": power, **({"details": details} if details else {})}
+    assert stdout.getvalue() == json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+    # prediction.json: old path was json.dumps(indent=2, sort_keys=True) + "\n".
+    native = {**summary, "power_diagnostics": power, **({"details": details} if details else {})}
+    path = write_prediction_report(tmp_path, native)
+    assert path.read_bytes() == (json.dumps(native, indent=2, sort_keys=True) + "\n").encode()
+
+
+def test_failed_prediction_report_leaves_no_file(tmp_path):
+    with pytest.raises(TypeError):
+        write_prediction_report(tmp_path, {"bad": object()})
+    assert list(tmp_path.iterdir()) == []

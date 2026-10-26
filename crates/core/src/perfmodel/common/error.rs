@@ -36,12 +36,6 @@ pub enum AicError {
     ModelConfig(String),
     #[error("perf database error: {0}")]
     PerfDatabase(String),
-    /// An explicit profile cannot be replaced by a generic perf-data fallback.
-    #[error("decode MoE profile error: {0}")]
-    DecodeMoeProfile(String),
-    /// Exact prefill profiles never fall back on unsupported input or missing data.
-    #[error("prefill graph profile error: {0}")]
-    PrefillGraphProfile(String),
     /// Malformed or incompatible measured data is never a coverage miss.
     /// HYBRID and regression fallbacks must propagate this error.
     #[error("invalid performance data: {0}")]

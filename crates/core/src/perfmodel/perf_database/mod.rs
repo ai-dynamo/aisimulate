@@ -194,6 +194,7 @@ pub mod dsv41;
 pub mod dsv4_megamoe;
 pub mod fpm_forward;
 pub mod gemm;
+pub mod glm53flash;
 mod interpolation;
 pub mod mhc;
 pub mod mla;
@@ -204,7 +205,6 @@ mod moe_index;
 pub mod msa;
 pub mod parquet_loader;
 pub mod perf_interp;
-pub mod prefill_graph;
 pub mod source_resolution;
 pub mod state_space;
 pub mod table_view;
@@ -220,6 +220,7 @@ pub use dsv4_megamoe::Dsv4MegaMoeTable;
 pub use dsv41::Dsv41Table;
 pub use fpm_forward::FpmForwardTable;
 pub use gemm::GemmTable;
+pub use glm53flash::Glm53AttentionTable;
 pub use mhc::MhcTable;
 pub use mla::MlaTable;
 pub use moe::MoeTable;
@@ -253,16 +254,14 @@ pub struct PerfTables {
     pub msa: MsaTable,
     pub dsv4: Dsv4Table,
     pub dsv41: Dsv41Table,
+    /// GLM-5.3-Flash sparse-MLA attention module (exact runtime only).
+    pub glm53_attention: Glm53AttentionTable,
     pub dsv4_megamoe: Dsv4MegaMoeTable,
     pub mhc: MhcTable,
     pub trtllm_alltoall: TrtllmAlltoallTable,
     pub wideep_mla: WideEpMlaTable,
     pub state_space: StateSpaceTable,
     pub fpm_forward: FpmForwardTable,
-    pub prefill_graph: prefill_graph::PrefillGraphTable,
-    /// Selected graph profiles read only their validated private copy. Keep it
-    /// alive with the tables, including every derived database view.
-    prefill_graph_snapshot: Option<tempfile::TempDir>,
     /// The load's source resolver, retained so the table views
     /// (`table_view.rs`) can resolve any basename on demand through the same
     /// channel logic the query tables used.
@@ -537,11 +536,14 @@ impl PerfDatabase {
                 oneccl_root,
                 &resolver,
             )?,
-            dsa: DsaTable::with_sources(data_root.clone(), &resolver)?,
+            dsa: DsaTable::with_sources(data_root.clone(), &resolver)?.with_backend(backend),
             dsv4: Dsv4Table::with_sources(data_root.clone(), &resolver)?,
             // Exact backend/version only: V41 module provenance must not be
             // inherited from legacy or sibling runtime measurements.
             dsv41: Dsv41Table::with_sources(&data_root, &resolver)?,
+            // Exact backend/version only, like V41: GLM attention is never
+            // borrowed from sibling runtimes.
+            glm53_attention: Glm53AttentionTable::with_sources(&data_root, &resolver)?,
             // Single-primary by design: the MegaMoE loader reads one unified
             // path and never the shared-layer source list (see
             // `dsv4_megamoe.rs`) — but that one path IS family-first
@@ -576,8 +578,6 @@ impl PerfDatabase {
                 )?,
                 None => FpmForwardTable::new(data_root.clone(), system, backend, version),
             },
-            prefill_graph: prefill_graph::PrefillGraphTable::new(systems_root),
-            prefill_graph_snapshot: None,
             system_spec: spec,
             // Kept for the table-view folds (`table_view.rs`), which resolve
             // every basename themselves — including the wideep/deepep files
@@ -586,22 +586,6 @@ impl PerfDatabase {
             data_root,
         };
         Ok(Self::from_tables(Arc::new(tables)))
-    }
-
-    /// Bind a selected profile to fresh tables over its validated input copy.
-    /// This bypasses both process-wide table sharing and future lazy reads from
-    /// the caller's mutable source tree; ordinary databases keep their cache.
-    pub(crate) fn snapshot_prefill_graph(&self) -> Result<Self, AicError> {
-        self.prefill_graph.validate_sources(self)?;
-        let snapshot = self.prefill_graph.snapshot()?;
-        let mut db = Self::load(snapshot.path(), &self.system, &self.backend, &self.version)
-            .map_err(prefill_graph::error)?
-            .with_mode(self.database_mode, self.transfer_policy);
-        db.prefill_graph.validate_sources(&db)?;
-        Arc::get_mut(&mut db.tables)
-            .expect("new snapshot tables are uniquely owned")
-            .prefill_graph_snapshot = Some(snapshot);
-        Ok(db)
     }
 
     /// Like [`PerfDatabase::load_with_sources`], but shares the loaded

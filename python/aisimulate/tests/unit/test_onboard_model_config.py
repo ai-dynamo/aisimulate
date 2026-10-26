@@ -1165,8 +1165,9 @@ def test_scripted_identity_failure_lists_all_missing_identity_without_input(tmp_
 
     assert result.value.code == 2
     errors = capsys.readouterr().err
-    for option in ("--model-revision", "--framework-version", "--gpu", "--interconnect"):
+    for option in ("--model-revision", "--gpu", "--interconnect"):
         assert option in errors
+    assert "--framework-version" not in errors
     assert "--resource-overrides" in errors
     assert "identity" in errors.lower()
     assert not output.parent.exists()
@@ -1228,7 +1229,7 @@ def test_guided_final_profile_identity_correction_preserves_resource_answers(
     assert len(prompts) == len(answers)
     if missing_precision:
         assert "fmha_quant_mode" in prompts[0]
-    assert ("Pinned model revision" if option == "model_revision" else "Pinned vLLM version") in prompts[-2]
+    assert ("Pinned model revision" if option == "model_revision" else "Backend data version label") in prompts[-2]
     request = SupportRequest.from_yaml(output)
     assert getattr(request.identity, option) == _IDENTITY[option]
     assert request.profile_deployment().fmha_quant_mode == "bfloat16"

@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Copyright contributors to the vLLM project.
+// Modified Rust simulation of vLLM b3563fc65ae0f5359802593d78e7ea097e1fed31
+// scheduling contracts; immutable sources and license: THIRD_PARTY_NOTICES.md.
 
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -57,8 +60,19 @@ impl SpeculativeDecodeSampler {
     /// Sample verification acceptance including the base token. Callers clamp
     /// emitted output separately so telemetry retains pre-truncation acceptance.
     pub(crate) fn sample_accepted_tokens(&mut self) -> usize {
+        self.sample_accepted_tokens_up_to(usize::MAX)
+    }
+
+    /// Verification cannot accept drafts that were excluded by the scheduler's
+    /// token budget. Do not consume RNG draws for those unscheduled positions.
+    pub(crate) fn sample_accepted_tokens_up_to(&mut self, max_tokens: usize) -> usize {
+        debug_assert!(max_tokens > 0);
         let mut output_tokens = 1;
-        for rate in &self.conditional_accept_rates {
+        for rate in self
+            .conditional_accept_rates
+            .iter()
+            .take(max_tokens.saturating_sub(1))
+        {
             if !self.rng.random_bool(*rate) {
                 break;
             }
@@ -85,6 +99,20 @@ mod tests {
     fn sampling_stops_at_first_rejection() {
         let mut sampler = SpeculativeDecodeSampler::new(vec![1.0, 0.0, 1.0], 42);
         assert_eq!(sampler.sample_accepted_tokens(), 2);
+    }
+
+    #[test]
+    fn unscheduled_drafts_do_not_advance_the_rng() {
+        let rates = vec![0.7, 0.5, 0.2];
+        let mut clipped = SpeculativeDecodeSampler::new(rates.clone(), 42);
+        let mut untouched = SpeculativeDecodeSampler::new(rates, 42);
+        assert_eq!(clipped.sample_accepted_tokens_up_to(1), 1);
+        assert_eq!(
+            clipped.sample_accepted_tokens(),
+            untouched.sample_accepted_tokens()
+        );
+        let mut full_accept = SpeculativeDecodeSampler::new(vec![1.0; 3], 42);
+        assert_eq!(full_accept.sample_accepted_tokens_up_to(2), 2);
     }
 
     #[test]

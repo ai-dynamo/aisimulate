@@ -35,9 +35,11 @@ The same controls are preserved by prediction, recommendation, saved YAML,
 Sweeper workloads, and the native JSON execution boundary.
 
 The built-in engine supports offline vLLM and SGLang with aggregated or separate
-prefill/decode workers, HBM-only KV cache, and speculative decoding disabled.
+prefill/decode workers and HBM-only KV cache, including speculative decoding
+with explicit acceptance assumptions and a compatible timing model.
 vLLM also supports local or shared [G2 host offload](../engine/kv-cache.md#agentic-g2) on a static
-single aggregated worker or 1P1D, with attention DP=1 on every role.
+single aggregated worker or 1P1D, with attention DP=1 on every role and
+speculative decoding disabled.
 Weka, Agentic Mooncake, and agentic Dynamo traces share this path. Online execution,
 other backends, and Dynamo-owned routing need their own qualified integration.
 
@@ -87,10 +89,11 @@ is zero.
 The report keeps the admission cutoff separately. A configured one-hour run can
 have a request observation interval shorter or longer than one hour.
 
-The warmup policy is to repeat saved primer inputs and keep
-the original snapshot frontier. The referenced AgentX executor advances its live
-trajectory during warmup. Initial snapshot sampling also retains AISimulate's
-existing deterministic algorithm. These differences remain explicit; this is
+The default warmup policy repeats saved primer inputs and keeps the original
+snapshot frontier. The opt-in [live trajectory policy](warmup.md#live-trajectory-policy)
+advances the dependency graph during warmup and preserves its surviving frontier.
+Initial sampling retains AISimulate's existing deterministic algorithm unless
+reference cuts and the shared sequential cursor are explicitly imported. This is
 functional qualification of profile control, not complete AgentX parity or
 hardware performance accuracy. Long profiles retain lifecycle evidence and can
 use more host memory than a finite corpus replay. Resource admission still checks

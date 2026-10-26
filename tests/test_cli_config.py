@@ -10,6 +10,9 @@ from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.config.common import split_config_sections
 from aisimulate.config.engine import (
     EngineRecommendationConfig,
+    EstimatorPolicyConfig,
+    HostWorkerPredictionConfig,
+    TimingConfig,
     WorkerPredictionConfig,
     WorkersPredictionConfig,
 )
@@ -26,6 +29,61 @@ def _engine() -> dict:
         "hardware": "h200_sxm",
         "workers": {"aggregated": {}},
     }
+
+
+@pytest.mark.parametrize("config_type", [CorePredictionConfig, CoreRecommendationConfig])
+@pytest.mark.parametrize("role", [None, "aggregated", "prefill", "decode"])
+def test_engine_configuration_rejects_learned_timing_before_loading_source(config_type, role):
+    engine = _engine()
+    policy = {
+        "estimation_mode": "fpm_learned",
+        "estimator_config": {"fpm_learned": {"artifact_path": "/missing/learned-seed.json"}},
+    }
+    if role is None:
+        engine.update(policy)
+    elif role == "aggregated":
+        engine["workers"][role]["timing"] = policy
+    else:
+        engine["mode"] = "disaggregated"
+        engine["workers"] = {"prefill": {}, "decode": {}}
+        engine["workers"][role]["timing"] = policy
+    with pytest.raises(ValidationError, match="engine replay's phase-only timing"):
+        config_type.model_validate({"engine": engine})
+
+
+@pytest.mark.parametrize("schema_mode", ["validation", "serialization"])
+@pytest.mark.parametrize("config_type", [TimingConfig, EstimatorPolicyConfig])
+def test_replay_estimation_schema_advertises_supported_modes(config_type, schema_mode):
+    field = config_type.model_json_schema(mode=schema_mode)["properties"]["estimation_mode"]
+    alternatives = field.get("anyOf", [field])
+    supported = {"auto", "op_level", "fpm_interpolation", "fpm_regression"}
+    assert [set(option["enum"]) for option in alternatives if "enum" in option] == [supported]
+    assert {option["type"] for option in alternatives} == (
+        {"string", "null"} if config_type is TimingConfig else {"string"}
+    )
+    assert field["default"] == (None if config_type is TimingConfig else "auto")
+
+    for mode in supported:
+        config = config_type(estimation_mode=mode)
+        assert config_type.model_validate_json(config.model_dump_json()).estimation_mode == mode
+    if config_type is TimingConfig:
+        assert config_type(estimation_mode=None).estimation_mode is None
+    else:
+        with pytest.raises(ValidationError, match="estimation_mode"):
+            config_type(estimation_mode=None)
+
+
+@pytest.mark.parametrize(
+    "estimator_config",
+    [
+        None,
+        {"fpm_learned": {"artifact_path": "/missing/learned-seed.json"}},
+        {"fpm_learned": {"checkpoint_path": "/missing/learned-checkpoint"}},
+    ],
+)
+def test_timing_config_rejects_learned_with_actionable_error_before_loading_source(estimator_config):
+    with pytest.raises(ValidationError, match="engine replay's phase-only timing"):
+        TimingConfig(estimation_mode="fpm_learned", estimator_config=estimator_config)
 
 
 @pytest.mark.parametrize(
@@ -126,6 +184,8 @@ def test_prediction_scheduler_defaults_are_role_aware() -> None:
     assert programmatic.decode is not None
     assert programmatic.prefill.scheduler.max_sequences == 1
     assert programmatic.decode.scheduler.max_sequences == 256
+    hosted = WorkersPredictionConfig(prefill=HostWorkerPredictionConfig(host_loop=True))
+    assert hosted.prefill is not None and hosted.prefill.host_loop is True
 
 
 def test_prediction_rejects_nonpositive_prefill_schedule_interval() -> None:
@@ -1021,6 +1081,8 @@ def test_recommendation_candidate_yaml_round_trips_forward_model(path, mode, res
 
     raw = _fpm_recommendation().model_dump(mode="python", exclude_none=True)
     worker = raw["engine"]["workers"].pop("aggregated")
+    if mode != "aggregated":
+        worker.pop("host_loop", None)  # the SGLang host loop belongs to the aggregated worker only
     roles = {"aggregated": "agg"} if mode == "aggregated" else {"prefill": "prefill", "decode": "decode"}
     raw["engine"]["mode"] = mode
     for public_role in roles:
@@ -1235,13 +1297,18 @@ def test_worker_hardware_rejects_non_pd_modes(recommend, mode, role):
         ({"prefill": "gb200", "decode": "gb200"}, ("gb200", "gb200")),
     ],
 )
-def test_pd_hardware_survives_search_candidate_yaml_and_predict(overrides, expected):
+@pytest.mark.parametrize("role_context", [False, True])
+def test_pd_hardware_survives_search_candidate_yaml_and_predict(overrides, expected, role_context):
     import yaml
 
     from aisimulate.compiler import prediction_to_replay_spec
     from aisimulate.sweeper.parallel_enum import DisaggParallelConfig
 
-    source = CoreRecommendationConfig.model_validate(_pd_hardware_config(recommend=True, **overrides))
+    raw = _pd_hardware_config(recommend=True, **overrides)
+    for role, limit in (("prefill", 64_000), ("decode", 128_000)):
+        if role_context:
+            raw["engine"]["workers"][role]["context_length"] = limit
+    source = CoreRecommendationConfig.model_validate(raw)
     smart = recommendation_to_sweeper(source)
     assert tuple(smart.search_space.hardware_sku_for(role) for role in ("prefill", "decode")) == expected
     parallel = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
@@ -1269,10 +1336,19 @@ def test_pd_hardware_survives_search_candidate_yaml_and_predict(overrides, expec
     compiled = prediction_to_replay_spec(concrete).backend_deployment
     assert concrete.engine.hardware == "h200_sxm"
     for role, hardware in zip(("prefill", "decode"), expected, strict=True):
+        context_length = (64_000 if role == "prefill" else 128_000) if role_context else 4096
+        assert ("context_length" in mapping["engine"]["workers"][role]) == role_context
+        assert getattr(compiled, f"{role}_engine_args")["max_model_len"] == context_length
+        assert getattr(deployment, f"{role}_engine_args")["max_model_len"] == context_length
         assert ("hardware" in mapping["engine"]["workers"][role]) == (role in overrides)
         assert getattr(compiled, f"{role}_engine_args")["timing_model"]["config"]["system"] == hardware
         assert compiled.performance_model_metadata[role]["config"]["system"] == hardware
         assert getattr(deployment, f"{role}_engine_args")["aic_system"] == hardware
+
+    mapping["engine"]["context_length"] = 8192
+    updated = prediction_to_replay_spec(CorePredictionConfig.model_validate(mapping)).backend_deployment
+    for role, limit in (("prefill", 64_000), ("decode", 128_000)):
+        assert getattr(updated, f"{role}_engine_args")["max_model_len"] == (limit if role_context else 8192)
 
 
 def test_pd_hardware_mixed_modes_and_auto_fallback():
@@ -1556,18 +1632,30 @@ def test_vllm_disaggregated_pcp_plus_dcp_prefill_pairs_with_a_dividing_decode_dc
 
 @pytest.mark.parametrize("seed", [0, 42, 2**64 - 1])
 @pytest.mark.parametrize("warmup", [False, True])
-def test_agentic_snapshot_seed_compiles_for_prediction_and_recommendation(seed: int, warmup: bool) -> None:
+@pytest.mark.parametrize("imported", [False, True])
+def test_agentic_snapshot_seed_compiles_for_prediction_and_recommendation(
+    seed: int, warmup: bool, imported: bool
+) -> None:
     from aisimulate.compiler import prediction_to_replay_spec
     from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
     from aisimulate.recommend import _recommendation_workload
     from aisimulate.sweeper.config import Workload
 
+    snapshot = {"seed": seed}
+    if imported:
+        snapshot.update(
+            initial_selections=[
+                {"source_play_id": "reference-a", "t_star_ms": 40.56078627883167},
+                {"source_play_id": "reference-b", "t_star_ms": 50.0},
+            ],
+            corpus_cursor=3,
+        )
     traffic = {
         "source": {"type": "trace", "format": "weka", "paths": ["corpus"]},
         "load": {
             "type": "trace_timestamps",
             "agentic_lanes": 2,
-            "agentic_snapshot": {"seed": seed},
+            "agentic_snapshot": snapshot,
             "agentic_warmup": warmup,
         },
     }
@@ -1577,12 +1665,12 @@ def test_agentic_snapshot_seed_compiles_for_prediction_and_recommendation(seed: 
         {"engine": _engine() | {"context_length": 1024}, "traffic": traffic}
     )
     workload = prediction_to_replay_spec(prediction).workload
-    assert workload["agentic_snapshot"] == {"seed": seed}
+    assert workload["agentic_snapshot"] == snapshot
     assert workload.get("agentic_warmup", False) is warmup
     recommended = _recommendation_workload(traffic)
-    assert recommended["agentic_snapshot"] == {"seed": seed}
+    assert recommended["agentic_snapshot"] == snapshot
     assert recommended.get("agentic_warmup", False) is warmup
-    assert Workload.model_validate(recommended).model_dump()["agentic_snapshot"] == {"seed": seed}
+    assert Workload.model_validate(recommended).model_dump()["agentic_snapshot"] == snapshot
     assert Workload.model_validate(recommended).agentic_warmup is warmup
 
 
@@ -1642,6 +1730,77 @@ def test_agentic_snapshot_is_opt_in() -> None:
     assert "agentic_warmup" not in prediction_to_replay_spec(config).workload
     assert config.traffic.load.agentic_profile is None
     assert "agentic_profile" not in prediction_to_replay_spec(config).workload
+
+
+def test_imported_agentic_snapshot_round_trips_without_changing_legacy_serialization():
+    from aisimulate.config.traffic import AgenticSnapshotOptions, TrafficPredictionConfig
+
+    snapshot = {
+        "seed": 42,
+        "initial_selections": [{"source_play_id": "reference-play", "t_star_ms": 40.56078627883167}],
+        "corpus_cursor": 2,
+    }
+    config = TrafficPredictionConfig.model_validate(
+        {
+            "source": {"type": "trace", "paths": ["corpus.jsonl"], "format": "weka"},
+            "load": {"type": "trace_timestamps", "agentic_lanes": 1, "agentic_snapshot": snapshot},
+        }
+    )
+    assert config.load.agentic_snapshot.model_dump() == snapshot
+    assert (
+        AgenticSnapshotOptions.model_validate(snapshot).model_dump_json()
+        == config.load.agentic_snapshot.model_dump_json()
+    )
+    assert AgenticSnapshotOptions(seed=42).model_dump() == {"seed": 42}
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        {"seed": 42, "initial_selections": []},
+        {"seed": 42, "corpus_cursor": 1},
+        {"seed": 42, "initial_selections": [{"source_play_id": "a", "t_star_ms": 5.0}]},
+        {"seed": 42, "initial_selections": [{"source_play_id": "", "t_star_ms": 5.0}], "corpus_cursor": 1},
+        {"seed": 42, "initial_selections": [{"source_play_id": "a", "t_star_ms": float("nan")}], "corpus_cursor": 1},
+        {"seed": 42, "initial_selections": [{"source_play_id": "a", "t_star_ms": -1.0}], "corpus_cursor": 1},
+        {"seed": 42, "initial_selections": [{"source_play_id": "a", "t_star_ms": 5.0}], "corpus_cursor": 0},
+        {"seed": 42, "initial_selections": [{"source_play_id": "a", "t_star_ms": 5.0}], "corpus_cursor": True},
+    ],
+)
+def test_imported_agentic_snapshot_rejects_invalid_metadata(snapshot):
+    from aisimulate.config.traffic import AgenticSnapshotOptions
+
+    with pytest.raises(ValidationError):
+        AgenticSnapshotOptions.model_validate(snapshot)
+
+
+@pytest.mark.parametrize("selection_count", [1, 3])
+def test_imported_agentic_snapshot_requires_one_selection_per_lane(selection_count: int) -> None:
+    from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
+    from aisimulate.sweeper.config import Workload
+
+    snapshot = {
+        "seed": 42,
+        "initial_selections": [
+            {"source_play_id": f"reference-{index}", "t_star_ms": 50.0} for index in range(selection_count)
+        ],
+        "corpus_cursor": selection_count,
+    }
+    load = {"type": "trace_timestamps", "agentic_lanes": 2, "agentic_snapshot": snapshot}
+    for schema in (TrafficPredictionConfig, TrafficRecommendationConfig):
+        with pytest.raises(ValidationError, match="exactly one selection per lane"):
+            schema.model_validate({"source": {"type": "trace", "format": "weka", "paths": ["corpus"]}, "load": load})
+    with pytest.raises(ValidationError, match="exactly one selection per lane"):
+        Workload.model_validate(
+            {
+                "source_type": "trace",
+                "trace_path": "corpus",
+                "trace_format": "weka",
+                "load_type": "trace_timestamps",
+                "agentic_lanes": 2,
+                "agentic_snapshot": snapshot,
+            }
+        )
 
 
 @pytest.mark.parametrize("warmup", [False, True])
@@ -1795,14 +1954,26 @@ def test_agentic_warmup_requires_snapshot_and_lanes(missing: str) -> None:
         )
 
 
-def test_new_default_selection_survives_serialization_without_becoming_legacy_op_level():
-    config = CorePredictionConfig.model_validate({"engine": _engine()})
+@pytest.mark.parametrize("mode", [None, "auto", "op_level", "fpm_interpolation", "fpm_regression"])
+def test_estimation_selection_survives_serialization_and_compilation(mode):
+    from aisimulate.compiler import prediction_to_replay_spec
+
+    engine = {
+        **_engine(),
+        "context_length": 2048,
+        "workers": {"aggregated": {"kv_cache": {"capacity": {"type": "fixed", "blocks": 256}}}},
+    }
+    if mode is not None:
+        engine["estimation_mode"] = mode
+    config = CorePredictionConfig.model_validate({"engine": engine})
     serialized = config.model_dump(mode="json", exclude_none=True)
     timing = serialized["engine"]["workers"]["aggregated"]["timing"]
     assert "forward_model" not in timing
     reloaded = CorePredictionConfig.model_validate(serialized)
-    assert reloaded.engine.estimation_mode == "auto"
+    assert reloaded.engine.estimation_mode == (mode or "auto")
     assert reloaded.engine.workers.aggregated.timing.estimation_mode is None
+    deployment = prediction_to_replay_spec(reloaded).backend_deployment
+    assert deployment.agg_engine_args["timing_model"]["config"]["estimation_mode"] == (mode or "auto")
 
 
 @pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
@@ -2026,3 +2197,39 @@ def test_execution_options_reject_mixed_worker_timing(custom_role):
     engine["workers"][custom_role] = {"timing": {"type": "polynomial"}}
     with pytest.raises(ValidationError, match="default timing in every role"):
         CorePredictionConfig.model_validate({"engine": engine})
+
+
+@pytest.mark.parametrize("context_length", ["max", 4096])
+def test_recommendation_declares_default_context_budget(monkeypatch, caplog, context_length):
+    from aisimulate.recommend import _run_recommendation
+    from aisimulate.sweeper.search import Sweeper
+
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "engine": {
+                "model": "Qwen/Qwen3-32B",
+                "hardware": "h200_sxm",
+                "mode": "aggregated",
+                "backend": "trtllm",
+                "context_length": context_length,
+                "workers": {"aggregated": {}},
+            },
+            "traffic": {
+                "source": {"type": "synthetic"},
+                "load": {"type": "concurrency", "concurrency": 8},
+                "stop": {"requests": 16},
+            },
+            "optimization": {"target": "throughput_per_gpu", "constraints": {"max_candidate_gpus": 8}},
+        }
+    )
+    monkeypatch.setattr(Sweeper, "run", lambda self, smart, **kwargs: smart)
+    caplog.set_level("WARNING", logger="aisimulate.recommend")
+
+    smart = _run_recommendation(config, stack="engine", runner_factory=None, show_progress=False)
+
+    declared = "engine.context_length is 'max'; using the model maximum of"
+    if context_length == "max":
+        assert f"{declared} {smart.search_space.context_length} tokens" in caplog.text
+        assert "are excluded from the search" in caplog.text
+    else:
+        assert declared not in caplog.text

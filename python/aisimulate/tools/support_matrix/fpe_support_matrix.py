@@ -501,10 +501,27 @@ def _exception_chain(error: BaseException) -> list[BaseException]:
 def classify_failure(error: BaseException, *, stage: str) -> str:
     """Map native/Python failures to stable, conservative matrix categories."""
     chain = _exception_chain(error)
+    # A known runtime-version limitation is not an unexpected engine failure.
+    # Keep the complete diagnostic and build stage narrow: query errors and
+    # changed native diagnostics must still block qualification.
+    hopper_kv_rejection = (
+        r"invalid engine config: GLM-5\.3-Flash on GPU [\w.-]+ \(SM9\d\) "
+        r"cannot use FP8 sparse-MLA KV with (vllm|sglang): the "
+        r"requested backend_version=\S+ requires \1 >= (0\.32\.0|0\.5\.22)\. "
+        r"Select a supported runtime \(SGLang requires TileLang DSA prefill and decode\), "
+        r'or pass kvcache_quant_mode="bfloat16"\.'
+    )
+    if stage == "build":
+        for item in chain:
+            if not isinstance(item, ValueError):
+                continue
+            match = re.fullmatch(hopper_kv_rejection, str(item).strip())
+            if match and match.groups() in {("vllm", "0.32.0"), ("sglang", "0.5.22")}:
+                return STATUS_FRAMEWORK_INCOMPATIBLE
     # Explicit SDK preflights from moe_comm_resolver and models/base, moe,
-    # hybrid_moe, gemma4, deepseek_v41. Match type and complete diagnostic only while building;
+    # hybrid_moe, gemma4, deepseek_v41, glm53flash. Match type and complete diagnostic only while building;
     # unrelated or query-time failures must retain their blocking category.
-    topology_rejections = (
+    sdk_rejections = (
         (
             ValueError,
             r"Cross-node EP requires pure expert parallelism \(moe_tp_size=1\); "
@@ -526,11 +543,25 @@ def classify_failure(error: BaseException, *, stage: str) -> str:
             ValueError,
             r"DeepSeek-V4\.1 EP must divide experts; TP must divide index heads and output groups",
         ),
+        (
+            NotImplementedError,
+            r"GLM-5\.3-Flash requires TP1/2/4/8 attention with DP=PP=CP=1 and MoE TP x EP = TP; "
+            r"data-parallel attention is not supported",
+        ),
+        (
+            NotImplementedError,
+            r"GLM-5\.3-Flash vLLM expert parallelism requires MoE TP=1 and EP=TP",
+        ),
+        (
+            NotImplementedError,
+            r"GLM-5\.3-Flash requires its checkpoint's native FP8/NVFP4 precision partition",
+        ),
+        (NotImplementedError, r"GLM-5\.3-Flash currently supports vLLM and SGLang"),
     )
     if stage == "build" and any(
         isinstance(item, error_type) and re.fullmatch(pattern, str(item).strip())
         for item in chain
-        for error_type, pattern in topology_rejections
+        for error_type, pattern in sdk_rejections
     ):
         return STATUS_SDK_UNREPRESENTABLE
     names = " ".join(type(item).__name__ for item in chain).lower()

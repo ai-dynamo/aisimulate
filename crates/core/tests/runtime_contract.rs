@@ -9,12 +9,13 @@ use std::sync::{Arc, Mutex};
 use aisimulate_core::engine::{Backend, EngineConfig, TimingModel, TimingModelConfig};
 use aisimulate_core::replay::loadgen::ReplayRequestPayload;
 use aisimulate_core::replay::{
-    AggregatedRoundRobinPlacement, NoEngineEvents, NoReplayMetadata, Placement, PlacementEffects,
-    PlacementPolicy, PoolRoundRobinPlacement, ProviderSpec, ReplayAdapters, ReplayCaptureOptions,
-    ReplayComposition, ReplayDeterminism, ReplayEngineConfig, ReplayEngineFactory, ReplayError,
-    ReplayRequest, ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot, ReplaySpec,
-    ReplayTelemetryObserver, ReplayTelemetrySampleKind, ReplayTelemetrySnapshot, ReplayTopology,
-    Replayer, WorkerLifecycleTransitionKind, WorkerPool, WorkerPoolSpec, WorkerTopology,
+    AggregatedRoundRobinPlacement, AuthoredKvHints, NoEngineEvents, NoReplayMetadata, Placement,
+    PlacementEffects, PlacementPolicy, PoolRoundRobinPlacement, ProviderSpec, ReplayAdapters,
+    ReplayCaptureOptions, ReplayComposition, ReplayDeterminism, ReplayEngineConfig,
+    ReplayEngineFactory, ReplayError, ReplayRequest, ReplayScalingDecision, ReplayScalingPolicy,
+    ReplayScalingSnapshot, ReplaySpec, ReplayTelemetryObserver, ReplayTelemetrySampleKind,
+    ReplayTelemetrySnapshot, ReplayTopology, Replayer, WorkerLifecycleTransitionKind, WorkerPool,
+    WorkerPoolSpec, WorkerTopology,
 };
 use uuid::Uuid;
 
@@ -33,6 +34,7 @@ fn request(
         output_token_ids: None,
         dp_rank: None,
         prefill_dp_rank: None,
+        kv_hints: None,
         session_id: None,
         turn_index: None,
         metadata: serde_json::Value::Null,
@@ -58,6 +60,7 @@ fn aggregated_spec(
     };
     ReplaySpec {
         version: 1,
+        encoder: None,
         topology: ReplayTopology::Aggregated {
             workers: WorkerPoolSpec {
                 initial_workers: workers,
@@ -178,7 +181,7 @@ fn replay_accept_length_counts_decode_work_before_output_truncation() {
             (Some("1,1"), vec![1], [0, 0], None),
             (Some("1,1"), vec![4], [1, 1], Some(3.0)),
             (Some("1,1"), vec![7], [2, 2], Some(3.0)),
-            (Some("1,1"), vec![8], [2, 3], Some(3.0)),
+            (Some("1,1"), vec![8], [3, 3], Some(3.0)),
             (Some("1,0"), vec![7], [3, 3], Some(2.0)),
             (Some("0,0"), vec![7], [6, 6], Some(1.0)),
         ] {
@@ -273,11 +276,20 @@ fn replay_accept_length_survives_rank_aggregation_and_prefill_handoffs() {
             assert_eq!(report.request_counts.total_output_tokens, 8);
             let samples = samples.lock().unwrap();
             let mut forwards = 0;
+            // This fixed 5 ms sample window contains both 2 ms decode rounds
+            // for each handoff. vLLM starts with one draft-free base token,
+            // then accepts three tokens, so its per-forward mean is (1+3)/2.
+            // SGLang's existing handoff behavior remains three per forward.
+            let expected_acceptance = if backend == Backend::Vllm && disaggregated {
+                2.0
+            } else {
+                3.0
+            };
             for sample in samples.iter() {
                 let traffic = &sample.traffic;
                 assert_eq!(
                     traffic.avg_accept_length,
-                    (traffic.accept_length_forward_count > 0).then_some(3.0),
+                    (traffic.accept_length_forward_count > 0).then_some(expected_acceptance),
                     "{backend:?}, dp={dp_size}, pd={disaggregated}"
                 );
                 forwards += traffic.accept_length_forward_count;
@@ -961,6 +973,39 @@ fn authored_rank_is_validated_by_the_default_aggregated_runtime() {
 }
 
 #[test]
+fn authored_kv_hint_in_a_replay_spec_does_not_change_the_report() {
+    let run = |kv_hints: Option<AuthoredKvHints>| {
+        let requests = (0..4)
+            .map(|index| ReplayRequest {
+                kv_hints,
+                ..request(&format!("request-{index}"), f64::from(index) * 5.0, 8, 3)
+            })
+            .collect();
+        let mut spec = aggregated_spec(Backend::Vllm, 2, 0.0, requests);
+        spec.engine["dp_size"] = serde_json::json!(2);
+        let mut report = Replayer::new(spec, ReplayEngineFactory::new())
+            .unwrap()
+            .with_capture_options(canonical_options())
+            .run()
+            .unwrap();
+        report.throughput.wall_time_ms = 0.0;
+        // The compact summary omits per-request records, so compare them too.
+        (
+            serde_json::to_value(&report).unwrap(),
+            serde_json::to_value(&report.per_request).unwrap(),
+        )
+    };
+
+    // Without `kvcr` no engine acts on a hint, so a valid hint changes nothing.
+    let hinted = run(Some(AuthoredKvHints {
+        source_worker: 1,
+        source_dp_rank: 0,
+    }));
+    assert_eq!(hinted, run(None));
+    assert_eq!(hinted.0["completed_requests"], 4);
+}
+
+#[test]
 fn max_sim_time_is_a_soft_cap_for_the_aggregated_runtime() {
     let requests = (0..5)
         .map(|index| {
@@ -1028,6 +1073,7 @@ impl ReleaseOnTopologyCallbacks {
                     scheduler_id,
                     reported_overlap_tokens: 0,
                     cache_sample: None,
+                    kv_hints: None,
                     placement_replica_id: None,
                 }]
             })

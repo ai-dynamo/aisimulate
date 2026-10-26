@@ -7,6 +7,7 @@ import pytest
 
 import aisimulate.sweeper.kv_estimate as kv_estimate_mod
 from aisimulate.sweeper.kv_estimate import (
+    IllegalParallelShape,
     NoPerfDatabase,
     estimate_kv_tokens,
     feasible_shape_tokens,
@@ -54,8 +55,19 @@ def test_estimate_kv_tokens_propagates_other_errors(monkeypatch):
 
     monkeypatch.setattr(kv_estimate_mod, "estimate_kv_cache", boom)
     sh = ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1)
-    with pytest.raises(ValueError, match="incompatible"):
+    with pytest.raises(ValueError, match="incompatible") as excinfo:
         estimate_kv_tokens(sh, **_COMMON)
+    assert not isinstance(excinfo.value, IllegalParallelShape)
+
+
+def test_feasible_shape_tokens_propagates_other_errors(monkeypatch):
+    def boom(*a, **k):
+        raise ValueError("incompatible memory fraction")
+
+    monkeypatch.setattr(kv_estimate_mod, "estimate_kv_cache", boom)
+    with pytest.raises(ValueError, match="incompatible") as excinfo:
+        feasible_shape_tokens([ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=2)], max_seq_len=1024, **_COMMON)
+    assert not isinstance(excinfo.value, IllegalParallelShape)
 
 
 def test_feasible_shape_tokens_filters_short_and_oom_and_dedups(monkeypatch):
@@ -84,6 +96,45 @@ def test_feasible_shape_tokens_filters_short_and_oom_and_dedups(monkeypatch):
     assert set(feasible) == {big}
     assert feasible[big] == 40000
     assert calls == [4, 2, 1]  # one estimate per distinct shape
+
+
+def _reject_tp16(model_path, system, backend, *, tp_size, **kwargs):
+    # Mirrors the memory estimator wrapping the model builder's head-split assertion.
+    if tp_size == 16:
+        try:
+            raise AssertionError("num_heads 40 should be divisible by tp_size 16 ")
+        except AssertionError as cause:
+            raise ValueError(
+                "unsupported model/backend/GPU for KV-cache estimation: "
+                f"model={model_path}, backend={backend}, gpu_sku={system}: {cause}"
+            ) from cause
+    return {"total_kv_size_tokens": tp_size * 10000}
+
+
+def test_estimate_kv_tokens_flags_tp_that_does_not_split_heads(monkeypatch):
+    monkeypatch.setattr(kv_estimate_mod, "estimate_kv_cache", _reject_tp16)
+    with pytest.raises(IllegalParallelShape, match=r"^num_heads 40 should be divisible by tp_size 16$"):
+        estimate_kv_tokens(ParallelShape(tp=16, dp=1, moe_tp=1, moe_ep=16), **_COMMON)
+
+
+def test_feasible_shape_tokens_skips_and_logs_illegal_tp(monkeypatch, caplog):
+    monkeypatch.setattr(kv_estimate_mod, "estimate_kv_cache", _reject_tp16)
+    caplog.set_level("WARNING", logger="aisimulate.sweeper.kv_estimate")
+    tp8 = ParallelShape(tp=8, dp=1, moe_tp=1, moe_ep=8)
+    tp16 = ParallelShape(tp=16, dp=1, moe_tp=1, moe_ep=16)
+    tp2 = ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=2)  # 20000 tokens, short of 25000
+
+    feasible = feasible_shape_tokens([tp8, tp16, tp2], max_seq_len=25000, **_COMMON)
+
+    assert feasible == {tp8: 80000}
+    assert (
+        "Skipped 1 parallel shape(s) that m cannot be split into (backend=trtllm): "
+        "tp=16 dp=1 moe_tp=1 moe_ep=16: num_heads 40 should be divisible by tp_size 16"
+    ) in caplog.text
+    assert (
+        "Excluded 1 parallel shape(s) whose KV cache cannot hold one 25000-token sequence "
+        "(context length; backend=trtllm): tp=2 dp=1 moe_tp=1 moe_ep=2"
+    ) in caplog.text
 
 
 def test_feasible_shape_tokens_resolves_version_when_missing(monkeypatch):

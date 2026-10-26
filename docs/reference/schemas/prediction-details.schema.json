@@ -585,6 +585,9 @@
           "type": "integer",
           "minimum": 0
         },
+        "kvcache_quant_mode": {
+          "enum": ["bfloat16", "int8", "fp8"]
+        },
         "total_kv_size_tokens": {
           "type": "integer",
           "minimum": 0
@@ -620,6 +623,11 @@
                 "comm_overhead_bytes": {
                   "type": "integer",
                   "minimum": 0
+                },
+                "reserved_bytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Fixed rank-local non-KV reservations, including the VL embedding cache. May be omitted by older reports."
                 },
                 "cuda_graph_reserved_bytes": {
                   "type": "integer",
@@ -1409,7 +1417,8 @@
             "exact_lookup",
             "within_curve_interpolation",
             "cross_kv_interpolation",
-            "cross_batch_interpolation"
+            "cross_batch_interpolation",
+            "kv_first_interpolation"
           ]
         },
         "latency_ms": {

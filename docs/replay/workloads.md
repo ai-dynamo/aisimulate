@@ -52,7 +52,7 @@ the current SA convention.
 | `traffic.source.type` | `synthetic` | `x` | `-` | `synthetic`, `synthetic-session`, or `trace`. |
 | `traffic.source.input_tokens` | `1024` | `x` | `-` | Positive; `synthetic` only. |
 | `traffic.source.output_tokens` | `128` | `x` | `-` | Positive; `synthetic` only. |
-| `traffic.source.images` | Unset | `x` | `-` | Fixed positive `height`, `width`, `count` (default 1); synthetic analytical EPD only; requires `engine.workers.encoder`. |
+| `traffic.source.images` | Unset | `x` | `-` | Fixed positive `height`, `width`, `count` (default 1), `encoding` (`png` or `jpeg`), `identity` (`unique` or `{pool: N}`) and optional `min_pixels`/`max_pixels` (the served processor's rescale budget; defaults to the checkpoint's); synthetic only. Requires `engine.workers.encoder` or an aggregated or prefill SGLang worker (native VL replay); the pixel budget is honored by native VL replay and native encoder pools, not by the analytical overlay. |
 | `traffic.source.new_input_tokens_per_turn` | `1024` | `x` | `-` | Positive; `synthetic-session` only. |
 | `traffic.source.output_tokens_per_turn` | `128` | `x` | `-` | Positive; `synthetic-session` only. |
 | `traffic.source.session.turns` | `4` | `x` | `-` | At least `2`. |
@@ -71,8 +71,11 @@ the current SA convention.
 | `traffic.load.fraction` | `null` | `-` | `-` | Positive finite number; `kv_capacity_fraction` only and may exceed `1`. |
 | `traffic.load.speedup` | `1` | `-` | `-` | Positive; trace timestamp load only. |
 | `traffic.load.agentic_lanes` | `null` | `x` | `-` | Positive integer; `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay only. |
-| `traffic.load.agentic_snapshot` | `null` (unset) | `x` | `-` | Optional object `{seed: u64}`; required `seed` is an unsigned 64-bit integer (`0` through `2^64 - 1`). Requires `traffic.load.type: trace_timestamps` and positive `agentic_lanes`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. See [snapshot](#agentic-snapshot). |
+| `traffic.load.agentic_snapshot` | `null` (unset) | `x` | `-` | Optional object with required unsigned 64-bit `seed` (`0` through `2^64 - 1`). Requires `traffic.load.type: trace_timestamps` and positive `agentic_lanes`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. See [snapshot](#agentic-snapshot). |
+| `traffic.load.agentic_snapshot.initial_selections` | unset | `x` | `-` | Exact initial `{source_play_id, t_star_ms}` selections in lane order, one per lane, in the loaded graph's clock (Weka: per-play relative milliseconds). Requires `corpus_cursor`. Unset retains the original seed-based sampler. |
+| `traffic.load.agentic_snapshot.corpus_cursor` | unset | `x` | `-` | Unsigned 64-bit next sequential corpus draw, including any skipped initial draws. Requires `initial_selections` and must be at least the lane count. Recycled plays start at turn zero. |
 | `traffic.load.agentic_warmup` | `false` | `x` | `-` | Optional boolean; `true` requires `agentic_snapshot` and positive `agentic_lanes`. Primes caches before measurement; see [warmup](#agentic-warmup). |
+| `traffic.load.agentic_warmup_policy` | `repeated_prefixes` | `x` | `-` | `repeated_prefixes` preserves the original frontier; `live_trajectory_v1` advances the live dependency graph during ten additional one-token requests per lane. The live policy requires `agentic_warmup: true` and `agentic_profile`; initially offline `--stack engine` only. |
 | `traffic.load.agentic_profile` | `null` (unset) | `x` | `-` | Optional object; `{}` enables continuous lane replenishment with the defaults below. Requires `trace_timestamps`, positive `agentic_lanes`, and `agentic_snapshot`; cannot be combined with `traffic.stop.max_virtual_time_seconds`. Unset preserves finite replay. See [continuous profile](#agentic-profile). |
 | `traffic.load.agentic_profile.duration_seconds` | `3600` when enabled | `x` | `-` | Positive finite admission duration, starting at the preparation barrier or simulation start without warmup. No new workload requests or replacement plays are issued after the deadline. |
 | `traffic.load.agentic_profile.response_grace_seconds` | `30` when enabled | `x` | `-` | Nonnegative finite time for already submitted requests to respond after the admission deadline; remaining client requests are then canceled. |
@@ -104,6 +107,9 @@ traffic:
 ```
 
 `synthetic` generates independent single requests. It does not accept a `session` mapping.
+`images` adds the same fixed images to every request; the deployment encodes them
+with an [encoder pool](engine/analytical.md#epd) or on an
+[SGLang worker](engine/sglang-vl-host-loop.md).
 
 <a id="synthetic-session-source"></a>
 
@@ -198,6 +204,20 @@ agentic traces it scales root-node timestamps and the combined dependency delay 
 `speedup` is deliberately rejected with `load.type: concurrency`: concurrency replaces authored
 first-arrival pacing, and inter-turn or dependency delays remain unscaled.
 
+<a id="same-timestamp-admission"></a>
+
+### Same-timestamp admission
+
+Rows with the same timestamp are admitted in file order. More exactly, requests that become ready at
+the same virtual time reach placement ordered by the file position of their session's first row, then
+by turn. Placement and each engine's scheduler then see them in that order. Nothing reorders a burst
+by prompt length, so a long prompt early in a burst is scheduled before the short prompts behind it.
+
+A serving engine tokenizes each request before its scheduler sees it, and longer prompts take
+longer. To model this, set [`engine.tokenization`](engine/README.md#tokenization). Depending on how
+many requests the engine tokenizes at once, a burst then reaches the engine either spread out in
+arrival order, or with short prompts ahead of long ones.
+
 <a id="trace-format-compatibility"></a>
 
 ## Trace Format Compatibility
@@ -261,7 +281,7 @@ traffic:
 | Control | Without it | With it |
 | --- | --- | --- |
 | `agentic_lanes` | Every play starts at its authored timestamp. | At most `N` plays run at once. |
-| `agentic_snapshot` | Each play starts at turn zero. | Each lane starts from a sampled point inside its play. |
+| `agentic_snapshot` | Each play starts at turn zero. | Each lane starts from a sampled or imported exact cut inside its play. |
 | `agentic_warmup` | Measurement starts with cold caches. | Caches are primed before measurement starts. |
 | `agentic_profile` | The run ends when the selected plays finish. | Lanes keep taking new plays until a deadline. |
 
@@ -319,11 +339,91 @@ A snapshot is cut at request boundaries. It does not model partial decode
 progress or restore an engine checkpoint: without warmup, the caches start
 empty.
 
+For a reference run, matching the seed alone is insufficient: AISimulate's
+versioned BLAKE3 sampler is not AIPerf's NumPy sampler. Import the actual cuts
+and next sequential corpus position instead:
+
+```yaml
+agentic_snapshot:
+  seed: 42
+  initial_selections:
+    - source_play_id: "<source_play_id from the normalized corpus>"
+      t_star_ms: 40560.78627883167
+  corpus_cursor: 1
+```
+
+`initial_selections` and `corpus_cursor` must be supplied together, with exactly
+one selection per lane and a cursor at least as large as the selection count.
+Selections are in lane order. Each source ID must exist in the exact input
+corpus and each cut must lie within that play's request-start bounds. Cuts
+are in the **loaded graph's clock**, before `speedup`: Weka subtracts the
+earliest request timestamp in each complete play, including child streams,
+whereas Agentic Mooncake retains its recorded source clock. Branch/spawn marker
+times are not request starts and do not define the origin. The importer does
+not guess a clock basis or convert untagged cuts; they are never re-sampled or
+silently replaced. Repeated source plays still get distinct lane/cache
+identities. Preserve the source corpus bytes/order, reference revision and
+selection artifact alongside the replay configuration.
+
+The sequential cursor counts source draws, not completed requests or unique
+plays; it can exceed the initial lane count when the reference skipped a
+source. After a tree drains, the shared cursor selects the next source play
+and starts it at turn zero, with a fresh cache identity. This matches the
+sequential-sampler recycling contract of
+[AIPerf `754356e9`](https://github.com/SemiAnalysisAI/aiperf/blob/754356e9a39acc6cc6afb242d123bb57c3fb6f75/src/aiperf/timing/strategies/agentic_replay.py).
+Random/shuffle recycling is not implemented by this import. Initial cuts do
+not import an engine checkpoint, tokenizer/chat-template bytes, or a
+post-warmup frontier; the warmup policy below remains unchanged.
+
+To produce selections without manually computing cuts, run the optional exporter
+in the **pinned AIPerf environment** (its existing dependencies are required):
+
+```bash
+python scripts/prediction_regression/export_agentx_snapshots.py \
+  --aiperf-source /path/to/aiperf-at-754356e9 \
+  --metadata reference-dataset-metadata.json \
+  --source-play-map source-play-map.json --trace-format weka \
+  --lanes 15 --seed 42 --output snapshot-options.json
+```
+
+`reference-dataset-metadata.json` is the reference loader's
+`DatasetMetadata.model_dump_json()` output, with every conversation, branch,
+and timestamp retained. `source-play-map.json` maps each root
+`conversation_id` from that metadata to its normalized AISimulate
+`source_play_id` (as recorded in `agentic_snapshots`). The root order in the
+metadata must match the replay corpus order and each root mapping must identify
+the corresponding source play; do not sort either input. The importer validates
+IDs and cut bounds, but cannot infer or verify reference corpus order from a
+cursor alone. A wrong mapping/order is not a valid parity comparison.
+The required `--trace-format` selects the target loader clock explicitly:
+`weka` subtracts the minimum request start across each selected reference tree;
+`agentic_mooncake` leaves source-clock cuts unchanged. It uses the pinned
+metadata's millisecond turn timestamps, not seconds or branch markers. The
+reference and replay loaders must represent the same complete request tree
+and nested timestamp interpretation. Missing children, ambiguous trees or
+missing/nonfinite request timestamps in a selected tree fail explicitly;
+do not invent an origin for an unmappable corpus. Existing exports made before
+this conversion fix must be regenerated for nonzero-origin Weka plays, even
+if their old cut happens to fall within the normalized bounds.
+
+Paste the emitted JSON object under `traffic.load.agentic_snapshot`. Keep the
+automatically written `snapshot-options.json.provenance.json` beside it: it
+records the pinned revision, metadata/map/output SHA-256 hashes, root order,
+clock basis and each lane's raw cut, origin and converted cut. Both output
+paths must be new. For importable JSON on stdout, omit `--output` and provide
+`--provenance-out snapshot-provenance.json`; the sidecar is persisted before
+anything is printed to stdout.
+The exporter verifies the source revision and clean source tree, invokes the
+reference `TrajectorySource` directly. It fails on unsupported samplers, timestamp-less trajectories,
+or incomplete lane selection. Neither AIPerf nor NumPy becomes an AISimulate
+runtime dependency.
+
 <a id="agentic-warmup"></a>
 
 ### Warmup
 
-`agentic_warmup: true` fills the caches before measurement, in three stages:
+`agentic_warmup: true` fills the caches before measurement. The default
+`agentic_warmup_policy: repeated_prefixes` has three stages:
 
 | Stage | Requests | Output |
 | --- | --- | --- |
@@ -342,6 +442,36 @@ Warmup repeats the saved prefixes and does not advance the plays. Primed
 prefixes can still be evicted or placed on another worker, so warmup does not
 guarantee cache hits. See [agentic warmup](agentic/warmup.md) for the full
 preparation, barrier and reporting contract.
+
+For AgentX-style live advancement, select the versioned policy explicitly:
+
+```yaml
+agentic_lanes: 15
+agentic_snapshot: {seed: 42}  # import reference selections for matching cuts
+agentic_warmup: true
+agentic_warmup_policy: live_trajectory_v1
+agentic_profile: {duration_seconds: 3600}
+```
+
+This policy primes predecessor streams with globally aligned lead times, capped
+by `agentic_profile.global_idle_cap_seconds`. After all primers settle, it runs
+the actual dependency graph with zero authored idle delay and one output token
+per request. Primers do not consume the additional quota of ten admitted
+requests per lane. Spawns, joins, rootless children and sequential corpus
+recycling continue during warmup; an exhausted lane pauses without discarding
+its next request. At the all-settled barrier, the surviving frontier resumes
+with original output lengths and source-clock offsets. One global minimum is
+subtracted from eligible frontier offsets, preserving cross-lane spacing;
+waiting at the barrier does not consume those delays.
+
+Successful profiles exclude preparation-only requests and retired plays from
+counts and latency distributions. Active partially warmed plays retain their
+identities and get a formal measurement origin at the barrier. An aborted live
+warmup has an empty formal cohort; its request ledger remains in
+`agentic_phases`. See [live trajectory warmup](agentic/warmup.md#live-trajectory-policy)
+for qualification boundaries. Unsupported CLI stacks are rejected before
+`--overwrite` prepares the output directory; external SDK adapters must
+explicitly advertise `supports_agentic_live_warmup` and forward the policy.
 
 <a id="agentic-profile"></a>
 
@@ -389,7 +519,7 @@ aisimulate predict --config examples/cli/agentic-profile.yaml \
 
 | Section | Contents |
 | --- | --- |
-| `agentic_snapshots` | Seed, sampled cut, history and remaining timers for each initial lane |
+| `agentic_snapshots` | Seed, sampled or imported exact cut, history and remaining timers for each initial lane |
 | `agentic_phases` | Preparation requests, barrier state and time (`profile_start_ms`) |
 | `agentic_play_outcomes` | Each play's terminal status (`completed`, `failed` or `incomplete`) and times |
 | `agentic_profile` | Resolved profile options, deadline, recycled plays, canceled and never-issued requests, unsettled server work |

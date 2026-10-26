@@ -113,9 +113,8 @@ def test_stable_function_signatures() -> None:
         "database_mode: 'str | None' = None, shared_layer: 'bool | None' = None, "
         "transfer_policy: 'str | list[str] | None' = None, "
         "strict_provenance: 'bool | None' = None, "
-        "decode_workload_distribution: 'str | None' = None, "
-        "prefill_graph_profile: 'str | None' = None, "
-        "fpm_parquet_path: 'str | None' = None) -> 'bytes'"
+        "fpm_parquet_path: 'str | None' = None, "
+        "encoder_parallel: 'str | None' = None) -> 'bytes'"
     )
     assert "scheduler_block_size" in inspect.signature(estimate_num_gpu_blocks).parameters
     assert "memory_fraction_kind" in inspect.signature(estimate_kv_cache).parameters
@@ -481,34 +480,34 @@ def test_distribution_carries_typing_contract() -> None:
 
 
 @pytest.mark.unit
-def test_prefill_graph_identity_stub_matches_native_contract() -> None:
-    native = importlib.import_module("aisimulate_core._native")
+@pytest.mark.parametrize(
+    "method_name,annotations,return_type",
+    [
+        ("learned_identity", {"config_json": "str"}, "str"),
+        ("learned_online_diagnostics", {}, "str | None"),
+        ("learned_selector_diagnostics", {}, "str | None"),
+        ("flush_updates", {}, "None"),
+        ("export_learned_artifact", {}, "str"),
+        ("save_online_checkpoint", {"path": "str"}, "None"),
+    ],
+)
+def test_learned_model_stubs_match_native_contract(method_name, annotations, return_type) -> None:
     root = importlib.resources.files("aisimulate_core")
     stub = ast.parse((root / "_native.pyi").read_text(encoding="utf-8"))
-    function = next(
-        (
-            node
-            for node in stub.body
-            if isinstance(node, ast.FunctionDef) and node.name == "prefill_graph_profile_identity"
-        ),
+    model = next(
+        node for node in stub.body if isinstance(node, ast.ClassDef) and node.name == "RustForwardPassPerfModel"
+    )
+    method = next(
+        (node for node in model.body if isinstance(node, ast.FunctionDef) and node.name == method_name),
         None,
     )
-    assert function is not None, "The shipped native stub omits prefill_graph_profile_identity"
-    assert function.args.args == function.args.posonlyargs == function.args.kwonlyargs == []
-    assert not inspect.signature(native.prefill_graph_profile_identity).parameters
-    assert ast.unparse(function.returns) == "tuple[str, str]"
-    identity = native.prefill_graph_profile_identity()
-    assert isinstance(identity, tuple) and len(identity) == 2
-    assert all(isinstance(value, str) for value in identity)
-
-    engine = next(node for node in stub.body if isinstance(node, ast.ClassDef) and node.name == "AicEngine")
-    for name in ("prefill_graph_profile_id", "prefill_graph_profile_json"):
-        prop = next((node for node in engine.body if isinstance(node, ast.FunctionDef) and node.name == name), None)
-        assert prop is not None, f"The shipped AicEngine stub omits {name}"
-        assert [ast.unparse(decorator) for decorator in prop.decorator_list] == ["property"]
-        assert [argument.arg for argument in prop.args.args] == ["self"]
-        assert ast.unparse(prop.returns) == "str | None"
-        assert inspect.isdatadescriptor(getattr(native.AicEngine, name))
+    assert method is not None, f"The shipped RustForwardPassPerfModel stub omits {method_name}"
+    parameters = inspect.signature(getattr(aisimulate_core.RustForwardPassPerfModel, method_name)).parameters
+    assert [argument.arg for argument in method.args.args] == list(parameters)
+    assert {
+        argument.arg: ast.unparse(argument.annotation) for argument in method.args.args if argument.arg != "self"
+    } == (annotations)
+    assert ast.unparse(method.returns) == return_type
 
 
 @pytest.mark.unit
@@ -627,6 +626,6 @@ assert not {"aisimulate.config.engine", "vllm"}.intersection(sys.modules)
 def test_state_memory_public_paths_share_one_implementation() -> None:
     from aisimulate import capacity
     from aisimulate.sdk.memory import estimate_state_cache as legacy
-    from aisimulate_core.sdk.state_memory import estimate_state_cache as canonical
+    from aisimulate_core.sdk.memory.state import estimate_state_cache as canonical
 
     assert sdk.estimate_state_cache is estimate_state_cache is legacy is capacity.estimate_state_cache is canonical
