@@ -1,0 +1,22 @@
+{
+  "pipeline": 76758344,
+  "job": 510044171,
+  "slurm_job": 5312770,
+  "planned": 336,
+  "passed": 336,
+  "failed": 0,
+  "unattempted": 0,
+  "rows": 336,
+  "duplicate_identities": 0,
+  "invalid_latencies": 0,
+  "historical": {
+    "planned": 336,
+    "passed": 336,
+    "failed": 0
+  },
+  "collector_sha": "8a411395d3161f1320a9de0e8670deacb40b314c",
+  "runner_sha": "3715eaf11590df65a6d4ec7c67d56f45ff76fd19",
+  "parquet_sha256": "1ce0fc784c13f516e46ad0ff316292e96cf9a0d78c9062e91aa331b2351f1f4a",
+  "numerical_evidence": "2385040 four prior native numerical probes passed",
+  "status": "ARTIFACT_VALIDATED_CONSUMER_PUBLICATION_PENDING"
+}

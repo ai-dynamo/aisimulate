@@ -10,13 +10,19 @@ runtime:
   source_commit: db9527a46873454610df6dbedf79a36d6bf1a7f6
 tables:
   mla_bmm_perf:
-    rows: 300
-    status: partial
+    rows: 636
+    status: complete
     collections:
     - collector_ref: 079052e6f73984fd73540de724d0d99b4de34442
       collector_hash: sha256:d348a29c0cf84be5566cb8c062cf50579d55220627816d3789a75d9c8d4d6569
       case_plan_hash: sha256:3928a5f969ae055ba17244c0d53b504e8253870ffcbf60696731071ddb98e1e5
       collected_at: '2026-10-26'
       rows: 300
+      status: complete
+    - collector_ref: 8a411395d3161f1320a9de0e8670deacb40b314c
+      collector_hash: sha256:725d431513050fc1830a2b176b1931c4bb1ae0d12c014554fd57d6004f633222
+      case_plan_hash: sha256:faeaa20a84179b59df5283aa9a238572a431f4f16f8521470519147073fe4b53
+      collected_at: '2026-10-26'
+      rows: 336
       status: complete
 provenance: local

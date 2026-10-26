@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Check exact pre-BMM rows through Python orchestration and native op queries."""
+"""Check exact pre/post-BMM rows through Python orchestration and native op queries."""
 
 import json
 import math
@@ -26,7 +26,10 @@ def main():
     identities = set()
     observations = []
     for row in rows:
-        assert row["op_name"] == "mla_gen_pre" and row["bmm_dtype"] == "bfloat16", row
+        assert (
+            row["op_name"] in ("mla_gen_pre", "mla_gen_post")
+            and row["bmm_dtype"] == "bfloat16"
+        ), row
         identity = (
             row["op_name"],
             row["bmm_dtype"],
@@ -36,7 +39,11 @@ def main():
         assert identity not in identities, identity
         identities.add(identity)
         operation = MLABmm(
-            "pre", 1.0, row["num_heads"], common.GEMMQuantMode.bfloat16, True
+            row["op_name"].removeprefix("mla_gen_"),
+            1.0,
+            row["num_heads"],
+            common.GEMMQuantMode.bfloat16,
+            row["op_name"] == "mla_gen_pre",
         )
         python_value = float(
             operation._engine_query(database, batch_size=row["num_tokens"])
@@ -62,12 +69,14 @@ def main():
         observations.append(
             {"identity": identity, "latency_ms": native_value, "source": str(native[3])}
         )
-    assert len(rows) == 300
+    assert len(rows) == 636
+    assert sum(row["op_name"] == "mla_gen_pre" for row in rows) == 300
+    assert sum(row["op_name"] == "mla_gen_post" for row in rows) == 336
     result = {
         "version": "0.31.0",
         "system": "b200_sxm",
         "shared_layer": False,
-        "planned": 300,
+        "planned": 636,
         "passed": len(observations),
         "failed": 0,
         "interfaces": [
@@ -77,7 +86,7 @@ def main():
         "legacy_note": "The public legacy query method has been removed from this main revision; both retained interfaces use the native engine.",
         "observations": observations,
     }
-    Path(__file__).with_name("prebmm-consumer-validation.json").write_text(
+    Path(__file__).with_name("bmm-consumer-validation.json").write_text(
         json.dumps(result, indent=2) + "\n"
     )
     print(
