@@ -237,9 +237,13 @@ collector.vllm.collect_computescale:
   - collector/cases/base_ops/compute_scale.yaml
   - collector/cases/base_ops/gemm.yaml
   - __model_cases__
-collector.vllm.collect_mla_bmm:
+collector.vllm.collect_mla_bmm_v1:
   - collector/cases/base_ops/mla_bmm_gen_pre.yaml
   - collector/cases/base_ops/mla_bmm_gen_post.yaml
+  - __model_cases__
+collector.vllm.collect_mla_bmm_v2:
+  - collector/vllm/collect_mla_bmm_v1.py
+  - collector/cases/base_ops/mla_bmm_gen_pre.yaml
   - __model_cases__
 collector.vllm.collect_kda:
   - collector/cases/base_ops/kda.yaml

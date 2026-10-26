@@ -25,7 +25,8 @@ vLLM MLA-BMM queries fell back to the trtllm tables (the SDK's
 # job 1968047. The NVIDIA bf16 BMM contract and input geometry are unchanged.
 __compat__ = "vllm>=0.25.0,<=0.27.0,!=0.25.1,!=0.26.0"
 
-import pkg_resources
+from importlib.metadata import version
+
 import torch
 from collector.case_generator import get_mla_bmm_case_specs
 from collector.helper import benchmark_with_power, log_perf
@@ -62,7 +63,7 @@ def _log_row(*, op_name, dtype, num_tokens, num_heads, results, perf_filename, d
             }
         ],
         framework="VLLM",
-        version=pkg_resources.get_distribution("vllm").version,
+        version=version("vllm"),
         device_name=torch.cuda.get_device_name(device),
         op_name=op_name,
         kernel_source="vllm_torch_bmm",
@@ -72,7 +73,9 @@ def _log_row(*, op_name, dtype, num_tokens, num_heads, results, perf_filename, d
         raise RuntimeError(f"Failed to persist vLLM MLA BMM performance row to {perf_filename}")
 
 
-def run_mla_gen_pre(num_tokens, num_heads, dtype, num_warmups, num_runs, *, perf_filename, device="cuda:0"):
+def run_mla_gen_pre(
+    num_tokens, num_heads, dtype, num_warmups, num_runs, *, perf_filename, device="cuda:0", _token_major_output=False
+):
     torch.cuda.set_device(device)
     torch.set_default_device(device)
     assert dtype == "bfloat16", "NVIDIA vLLM MLA pre-BMM is bf16 torch.bmm only"
@@ -84,7 +87,11 @@ def run_mla_gen_pre(num_tokens, num_heads, dtype, num_warmups, num_runs, *, perf
     # mla.py:569 shapes.
     q_nope = torch.randn((num_tokens, num_heads, qk_nope_head_dim), device=device, dtype=torch.bfloat16)
     w_uk_t = torch.randn((num_heads, qk_nope_head_dim, kv_lora_rank), device=device, dtype=torch.bfloat16)
-    out = torch.empty((num_heads, num_tokens, kv_lora_rank), device=device, dtype=torch.bfloat16)
+    if _token_major_output:
+        # vLLM db9527a4 mla_attention.py:1098 writes into a token-major buffer.
+        out = torch.empty((num_tokens, num_heads, kv_lora_rank), device=device, dtype=torch.bfloat16).transpose(0, 1)
+    else:
+        out = torch.empty((num_heads, num_tokens, kv_lora_rank), device=device, dtype=torch.bfloat16)
 
     def kernel_func():
         torch.bmm(q_nope.transpose(0, 1), w_uk_t, out=out)

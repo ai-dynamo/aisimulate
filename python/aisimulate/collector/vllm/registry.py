@@ -9,7 +9,7 @@ Only add a versioned route when the manifest intentionally supports multiple
 live framework APIs for the same op.
 """
 
-from collector.registry_types import OpEntry, PerfFile
+from collector.registry_types import OpEntry, PerfFile, VersionRoute
 
 REGISTRY: list[OpEntry] = [
     OpEntry(
@@ -56,14 +56,17 @@ REGISTRY: list[OpEntry] = [
     ),
     OpEntry(
         op="mla_bmm_gen_pre",
-        module="collector.vllm.collect_mla_bmm",
+        versions=(
+            VersionRoute("0.31.0", "collector.vllm.collect_mla_bmm_v2"),
+            VersionRoute("0.0.0", "collector.vllm.collect_mla_bmm_v1"),
+        ),
         get_func="get_mla_gen_pre_test_cases",
         run_func="run_mla_gen_pre",
         perf_filename=PerfFile.MLA_BMM,
     ),
     OpEntry(
         op="mla_bmm_gen_post",
-        module="collector.vllm.collect_mla_bmm",
+        versions=(VersionRoute("0.0.0", "collector.vllm.collect_mla_bmm_v1"),),
         get_func="get_mla_gen_post_test_cases",
         run_func="run_mla_gen_post",
         perf_filename=PerfFile.MLA_BMM,
