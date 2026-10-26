@@ -128,6 +128,20 @@ MSA prefill reads the same bytes at identity scale. See
 and [fused cache conversion](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/csrc/libtorch_stable/fused_minimax_m3_qknorm_rope_kv_insert_kernel.cu#L215).
 Projection weight-scale initialization and native backend selection are unchanged.
 
+vLLM 0.31 MiniMax-M3 MoE uses the native packed `swigluoai_uninterleave`
+activation with checkpoint clamp/alpha/beta (defaults 7, 1.702, 1). GPT-OSS
+keeps its interleaved activation. The NVFP4 checkpoint uses
+`ModelOptMixedPrecisionConfig` with an actual routed-expert prefix, so native
+resolution constructs `ModelOptNvFp4FusedMoE`; a dummy prefix would miss the
+per-layer mapping. The native selector still chooses the kernel. See
+[MiniMax serving arguments](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/models/minimax_m3/nvidia/model.py#L253),
+[activation defaults](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/transformers_utils/configs/minimax_m3.py#L36),
+and [mixed-precision resolution](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/model_executor/layers/quantization/modelopt.py#L1789).
+This changes no case arguments, precision keys, token sweep or output columns.
+Earlier MiniMax timings using the interleaved/no-clamp contract are not serving
+measurements and need fresh qualification. Older vLLM constructor behavior is
+unchanged; the new path still requires native numerical and smoke validation.
+
 # Preparation
 
 SGLang 0.5.14 standalone MLA rows distinguish kernel compute from KV storage.

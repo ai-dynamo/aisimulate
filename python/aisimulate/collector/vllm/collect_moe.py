@@ -230,6 +230,34 @@ def _uses_modelopt_nvfp4_checkpoint(model_name: str) -> bool:
     )
 
 
+def _uses_minimax_m3_031(model_name: str) -> bool:
+    # These registered aliases have a VL wrapper; their text_config omits
+    # model_type. Scope this serving audit to the inspected 0.31 release.
+    return vllm_version.split("+", 1)[0] == "0.31.0" and model_name in {
+        "MiniMaxAI/MiniMax-M3",
+        "nvidia/MiniMax-M3-NVFP4",
+    }
+
+
+def _minimax_m3_nvfp4_checkpoint(model_name: str) -> tuple[dict, str]:
+    """Keep the native mixed-precision resolver and an actual expert prefix."""
+    checkpoint = _load_checkpoint_quantization_config(model_name)
+    entries = {
+        key: value
+        for key, value in checkpoint.get("quantized_layers", {}).items()
+        if ".block_sparse_moe.experts." in key
+    }
+    if (
+        checkpoint.get("quant_method") != "modelopt"
+        or checkpoint.get("quant_algo") != "MIXED_PRECISION"
+        or not entries
+        or any(value.get("quant_algo") != "NVFP4" or value.get("group_size") != 16 for value in entries.values())
+    ):
+        raise ValueError(f"MiniMax-M3 NVFP4 requires checkpoint-native ModelOpt NVFP4/group16 experts: {model_name}")
+    prefix = next(iter(entries)).split(".experts.", 1)[0] + ".experts"
+    return checkpoint, prefix
+
+
 def _resolve_moe_runtime_config(model_name: str, module_config: dict) -> dict:
     """Resolve the FusedMoE arguments used by vLLM 0.24 model code."""
     model_config = _load_model_moe_config(model_name)
@@ -240,6 +268,12 @@ def _resolve_moe_runtime_config(model_name: str, module_config: dict) -> dict:
         or model_config.get("hidden_activation")
         or "silu"
     )
+    native_minimax_m3 = _uses_minimax_m3_031(model_name)
+    if native_minimax_m3:
+        # vLLM db9527a, models/minimax_m3/nvidia/model.py:253-265:
+        # packed [gate; up] (not GPT-OSS interleaved), with native clamp/betas.
+        # Missing fields use MiniMaxM3TextConfig defaults (:36-41).
+        activation = "swigluoai_uninterleave"
 
     use_grouped_topk = model_type in {
         "deepseek_v3",
@@ -360,9 +394,17 @@ def _resolve_moe_runtime_config(model_name: str, module_config: dict) -> dict:
         # filters the NVFP4 backends (oracle/nvfp4.py:205-219) and gates the
         # TRT-LLM FP8 experts (trtllm_fp8_moe.py:86-112).
         "swiglu_limit": (
-            model_config.get("swiglu_limit")
-            if model_type in ("deepseek_v4", "deepseek_ref", "glm5_next_text")
-            else None
+            model_config.get("swiglu_limit", 7.0) if native_minimax_m3 else model_config.get("swiglu_limit")
+        )
+        if native_minimax_m3 or model_type in ("deepseek_v4", "deepseek_ref", "glm5_next_text")
+        else None,
+        **(
+            {
+                "swiglu_alpha": model_config.get("swiglu_alpha", 1.702),
+                "swiglu_beta": model_config.get("swiglu_beta", 1.0),
+            }
+            if native_minimax_m3
+            else {}
         ),
         "use_grouped_topk": use_grouped_topk,
         "num_expert_group": num_expert_group,
@@ -570,6 +612,7 @@ def run_moe_torch(
     )
     router_logits_dtype = torch.float32 if runtime_config["router_logits_float32"] else None
     custom_routing_function = None
+    moe_prefix = "collector_moe"
     if runtime_config["custom_routing"] == "llama4":
         from vllm.model_executor.models.llama4 import Llama4MoE
 
@@ -655,6 +698,14 @@ def run_moe_torch(
             activation_scheme="dynamic",
             weight_block_size=[128, 128],
         )
+    elif moe_type == "nvfp4" and _uses_minimax_m3_031(model_name):
+        # db9527a modelopt.py:1655-1700,1788-1792 resolves the real expert
+        # prefix to ModelOptNvFp4FusedMoE. A collector_dummy prefix would
+        # miss the checkpoint mapping and incorrectly become unquantized.
+        from vllm.model_executor.layers.quantization.modelopt import ModelOptMixedPrecisionConfig
+
+        checkpoint, moe_prefix = _minimax_m3_nvfp4_checkpoint(model_name)
+        quant_config = ModelOptMixedPrecisionConfig.from_config(checkpoint)
     elif moe_type == "nvfp4" and _uses_modelopt_nvfp4_checkpoint(model_name):
         # Serving loads this checkpoint with ModelOptNvFp4Config
         # (ModelOptNvFp4FusedMoE, modelopt.py:819-851 @v0.31.0). It shares the
@@ -803,7 +854,7 @@ def run_moe_torch(
             tp_size=logical_parallel_size,
             dp_size=1,
             pcp_size=1,
-            prefix="collector_moe",
+            prefix=moe_prefix,
             custom_routing_function=custom_routing_function,
             scoring_func=runtime_config["scoring_func"],
             routed_scaling_factor=runtime_config["routed_scaling_factor"],
@@ -814,6 +865,7 @@ def run_moe_torch(
             activation=runtime_config["activation"],
             router_logits_dtype=router_logits_dtype,
             apply_routed_scale_to_output=runtime_config["apply_routed_scale_to_output"],
+            **{key: runtime_config[key] for key in ("swiglu_alpha", "swiglu_beta") if key in runtime_config},
             **situ_kwargs,
         )
         moe_module.to(device)
