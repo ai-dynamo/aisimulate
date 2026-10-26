@@ -84,7 +84,9 @@ vLLM 0.31 recurrent qualification uses the same pinned source:
   raises rather than substituting another kernel. Preview callback behavior is
   retained. The Kimi entry point admits B200 0.31 context and nonspeculative
   generation with SD convolution state, BF16 inputs and FP32 recurrence.
-  Callbacks fix gate bound −5 and omit RecoverSSM/checkpoint export. The native
+  Target prefill reserves null cache slot 0 and assigns real requests slots
+  1..batch, as required by the native convolution; preview slot allocation is
+  unchanged. Callbacks fix gate bound −5 and omit RecoverSSM/checkpoint export. The native
   layout probe rejects DS; other hardware and verify remain unaudited for this
   target route and raise explicit failures. Preview and GLM routes are unchanged.
   Existing labels retain their meaning: native decode includes convolution and

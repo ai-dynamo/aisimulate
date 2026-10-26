@@ -608,3 +608,47 @@ def test_kimi031_registered_structural_keys_remain_distinct_from_glm():
         )
     assert len(keys["kimi"]) == len(keys["glm"]) == 4
     assert keys["kimi"].isdisjoint(keys["glm"])
+
+
+@pytest.mark.parametrize("target", [False, True])
+def test_kimi_prefill_target_reserves_native_null_slot(target):
+    # Native v0.31 causal_conv1d returns immediately for cache index0. Execute
+    # the collector's allocation statements so a zero-based regression fails.
+    from collector.version_resolver import _check_compat
+
+    tree = ast.parse(SOURCE_PATH.read_text())
+    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_kda_context_benchmark")
+    names = {"target_runtime", "first_slot", "idx", "has_init"}
+    assignments = [
+        n
+        for n in ast.walk(function)
+        if isinstance(n, ast.Assign)
+        and len(n.targets) == 1
+        and any(isinstance(t, ast.Name) and t.id in names for t in n.targets)
+    ]
+    assignments.sort(key=lambda n: n.lineno)
+    namespace = {
+        "_check_compat": _check_compat,
+        "vllm_version": "0.31.0" if target else "0.1.dev19262",
+        "batch_size": 1,
+        "device": "cuda:0",
+        "torch": SimpleNamespace(
+            int32="int32", bool="bool", arange=lambda a, b, **kw: list(range(a, b)), zeros=lambda n, **kw: [False] * n
+        ),
+    }
+    exec(compile(ast.Module(body=assignments, type_ignores=[]), str(SOURCE_PATH), "exec"), namespace)
+    assert namespace["idx"] == ([1] if target else [0])
+    if target:
+        assert all(slot != 0 for slot in namespace["idx"]), "Native null-slot branch skips all B1 work"
+    target_branch = next(
+        n
+        for n in ast.walk(function)
+        if isinstance(n, ast.If) and isinstance(n.test, ast.Name) and n.test.id == "target_runtime"
+    )
+    cache_allocations = [
+        n
+        for n in ast.walk(ast.Module(body=target_branch.body, type_ignores=[]))
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "zeros"
+    ]
+    assert len(cache_allocations) == 2
+    assert all(ast.unparse(n.args[0]) == "batch_size + 1" for n in cache_allocations)
