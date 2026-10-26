@@ -1076,3 +1076,31 @@ eager/graph BF16 at five sizes. Native numerical and dispatch evidence must pass
 on every rank. Smoke output is qualification evidence, never full coverage or
 automatic publication. Use a separate `full` run after reviewing the smoke.
 CPU build/CI success does not establish GPU correctness or performance.
+
+### B200 campaign composition and original MSA seeds
+
+The campaign branch composes the native postload W4A16 precision guard
+(`843e3e2`), actual-leaf BF16 input-weighting guard (`ed5d5016`), its getter
+stub fix (`d67e3ce06`), and Arrow schema-preserving finalization (`6ca136f`).
+The guards reject only the demonstrated unsupported MoE contracts before timing;
+MiniMax integration, case grids, and benchmark timing remain unchanged.
+
+For the 184 MSA seed measurements, keep the original `9b4de9d` source mapping,
+CSV, checkpoint, and provenance JSON unchanged. Compared with campaign `362953b`,
+only `_merge_perf_rows` changes in the shared helper: finalization retains the
+original Arrow identity schema and metadata through pandas conversion. MSA native
+setup, dispatch, timing, runtime manifest, and generated case identities are
+unchanged. The collector content hash still changes because `helper.py` is in
+its shared closure:
+
+- Original measurement closure: `cf179f90ba916ebb5cb162896b4458facad46fb66eb289fbd759779a5e0a9797`.
+- Campaign `362953b` closure: `e2eb81ce4bf514c4188e02bea3a75f6d1adb5135513e51515d3650bc1f0493c4`.
+- Composed MSA closure: `5ad4823f1b772fb554491f065579653ad7c40581a5a672b410ecafc65d69306a`.
+
+Checkpoint loading checks schema, framework, module, callback, framework version,
+and SM version; it does not establish source equivalence from these fields alone.
+The source comparison above supports scoped seed continuation with the same
+runtime, while new finalization metadata must report the new closure honestly.
+Retain the per-case original-source mapping and all 44 recorded failures; do not
+rewrite seed sidecars or claim these 184 measurements were collected by the new
+source. Existing requests pinned to `362953b` with pandas 2.3.3 remain unchanged.
