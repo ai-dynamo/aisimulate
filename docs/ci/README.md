@@ -245,6 +245,13 @@ marked it N/A.
 | Prediction Regression | Collect old/new static, scheduling, and silicon-reference snapshots; fail when a previously working case stops working |
 | Release Artifact Contract | Build the wheel and crate; verify installed versions, allowed distributions, compatibility imports, dependencies, and CLI entry points on both architectures |
 
+The changed-operation manifest parses collector registries without importing framework
+code. For versioned entries, it includes every literal `VersionRoute` module and its
+hash closure, even when the manifest currently pins an older route. Changes to route
+thresholds or ordering also produce `collector_code`. This conservative family-level
+check prevents older or newly registered collectors from being missed. Unknown or
+dynamic route syntax fails explicitly; it is not treated as unchanged.
+
 ### Numerical and installed-package evidence
 
 [Native numerical checks](../../scripts/prediction_regression/check_prediction_numerics.py) exercise
