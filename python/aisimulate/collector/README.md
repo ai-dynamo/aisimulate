@@ -154,6 +154,21 @@ The stock compressed-tensors CUTLASS MXFP4 path quantizes activations to MXFP4
 label. B200 Kimi-K3 native SiTU needs a separate approved precision contract;
 do not force Marlin or publish W4A4 timings as W4A16 to bypass this failure.
 
+The vLLM 0.31.0 collector also rejects an actual selected
+`TrtLlmBf16ExpertsMonolithic` leaf when the model requires
+`apply_router_weight_on_input=True`. Native Llama4 BF16 diagnostics on B200
+showed output weighting instead of the declared input weighting. The guard
+runs after per-token native leaf selection and raises before timing; queued
+cases remain explicit failures. Other leaves and output-weighted models retain
+their paths. It does not force a fallback or change the model contract.
+The source evidence is vLLM
+[`db9527a` BF16 apply](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/model_executor/layers/fused_moe/experts/trtllm_bf16_moe.py#L257)
+(drops the input-weight flag) and FlashInfer
+[`946200de` BF16 launcher](https://github.com/flashinfer-ai/flashinfer/blob/946200de1ae94fc93fdd0926f0a13afd1fa7f0f1/csrc/trtllm_fused_moe_kernel_launcher.cu#L5304)
+(passes false). A native repair and numerical requalification are required
+before retiring this version-scoped guard; unchanged class names alone are
+not evidence that an upgraded implementation still has the defect.
+
 SGLang 0.5.14 standalone MLA rows distinguish kernel compute from KV storage.
 On B200/B300, `trtllm_mla` quantizes Q/K/V internally when the KV cache is FP8,
 so those rows use `mla_dtype=fp8, kv_cache_dtype=fp8`. On H200, the absorbed
