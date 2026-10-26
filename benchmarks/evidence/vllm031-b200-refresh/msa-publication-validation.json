@@ -1,0 +1,42 @@
+{
+  "raw_files_sha256": {
+    "msa_context_module_perf.parquet": "52818df30cbec459f5d84f7d52a5061a8d2c8f5b217cd9826cc77da75aa2e898",
+    "collection_meta.yaml": "273b27124340f2a09aed441ac18eedc7359f08b1a7d2aeb867ae01d410b0195d"
+  },
+  "published_files_sha256": {
+    "msa_context_module_perf.parquet": "52818df30cbec459f5d84f7d52a5061a8d2c8f5b217cd9826cc77da75aa2e898",
+    "collection_meta.yaml": "84aed10a85fcbcc7943caa6c99332bc81136861576abe1bad308a73a66ac45ed"
+  },
+  "unchanged_prior_files_sha256": {
+    "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/quantize/vllm/0.31.0/collection_meta.yaml": "75d1b90ef3da12c0d68d0a06b5551ea299ff06ac971b99337c3bfacc69e82a61",
+    "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/quantize/vllm/0.31.0/scale_matrix_perf.parquet": "61985fe2e286399464addc390d3c8535c4d2740cff9497b3f59b6458b54c10b2",
+    "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/quantize/vllm/0.31.0/computescale_perf.parquet": "48a22931abb0b084d9ffc93fae6133b765b135059897410f5611f48db7ef66f6",
+    "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/mla_bmm/vllm/0.31.0/collection_meta.yaml": "bb5b2b9deeaaadae35f6147fa0efa3530cb05082789d9f82b9947a1765491c12",
+    "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/mla_bmm/vllm/0.31.0/mla_bmm_perf.parquet": "9dc581b21ee9b4bfa8c6d6795a07aa3b3e5932a9c5ef5a69b8625b265fc6293e",
+    "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/linear_attention/vllm/0.31.0/collection_meta.yaml": "ded3cf4e9dbe91cb18feff3ad709c1f201f3b4fad4a009654deae0c7b131b061",
+    "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/linear_attention/vllm/0.31.0/gdn_perf.parquet": "77894627b71687fc023726295c49d4f6702968c9c29b32fa82a55fb4048006d8",
+    "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/gemm/vllm/0.31.0/collection_meta.yaml": "ca80533eeb2e97e146fbc0e9af06453c2f8ef3c90ff4469bab4366d19bfeac7b",
+    "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/gemm/vllm/0.31.0/gemm_perf.parquet": "265827609d7c201992f4963160cae06c3948f2d19d495082417095cc211b04f5"
+  },
+  "metadata_change": "Only table status complete->partial for original17568case scope. Aggregate collector_ref is finalization identity; measured source groups remain in attached seed provenance and checkpoint. No historical collection events fabricated.",
+  "source_group_counts": [
+    184,
+    6330,
+    7478
+  ],
+  "acceptance": "b200-msa-continuation-510808560-review.json",
+  "original_cases": 17568,
+  "passed": 13992,
+  "explained_failed": 1400,
+  "source_blocked_unattempted": 2176,
+  "original_case_ids_sha256": "0c0eb77211b384d8ba3772ae5604e8e3a95182d4743e12f8e68b03f676e1596a",
+  "expected_key_set_hashes_json_sorted": {
+    "original": "8a9392b4ac5efed41439aee38708a631ec92ff27ce0ac4711d26daa54d44bd5f",
+    "selected": "3143a65297dda05025f77eb6d1fdee3529e4ec500daa6227ba30822e28306c4b",
+    "seed_done": "d1ba6ccb85548aa0e6b66dc1201392ddd00902cc9cfa4cb509e1a2673af2da35",
+    "seed_failed": "242d5bd4c9c03a62b8dcf14b79dcb2047e00adcc04220453240ff0a41a0c2277",
+    "remaining": "8e0dbcb17b30a3f9d42fe15e762e0aeebc689ccd548d2d581a74f0ec6ed62b24",
+    "excluded": "e1261f6e4424568c68e6be581d70135ca371b26569fcd3c1ce836e4938dbc357",
+    "blocked_unattempted": "09aacbfe54e161f833a4cc4cad75118fcbf5faea7954e43b2c2696434ac4270c"
+  }
+}

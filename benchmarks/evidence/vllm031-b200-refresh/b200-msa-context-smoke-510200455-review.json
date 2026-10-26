@@ -1,0 +1,300 @@
+{
+  "pipeline_id": 76779940,
+  "gitlab_job_id": 510200455,
+  "slurm_job_id": 5314418,
+  "decision": "All12 requested measurements retained and eligible for postprocessing; job failed only at finalization. No GPU rerun required for this smoke.",
+  "status": "collection_passed_finalization_failed",
+  "accounting": {
+    "planned": 12,
+    "attempted": 12,
+    "passed": 12,
+    "failed": 0,
+    "unattempted": 0,
+    "csv_rows": 12,
+    "unique_identities": 12,
+    "parquet_files": 0
+  },
+  "runtime": {
+    "collector_sha": "ea74b2678209939be4d9ab9323635f13faabdace",
+    "collector_sha_evidence": "GitLab trace records detached checkout ea74b267; request specifies full immutable SHA. collector_git_version.txt contains Git executable version only, not source identity.",
+    "runner_sha": "932f69168edc4e149f013cb729f502c88b88356b",
+    "image_index_digest": "sha256:3fb023cc987cc7c2bca7ca14c1e0aff5ae06bd9431bf07773731ce7e8a682460",
+    "image_evidence": "Exact digest appears in runner image selection and Docker invocation; this artifact does not independently dump image binary hashes.",
+    "manifest_sha256": "7e72f1e62a667c0ab2f3f6eb115f9e4539aa1bceacb0a024c95ea84db95eb593",
+    "manifest_evidence": "campaign_inputs forwards and verifies required hash before collection.",
+    "framework_preflight": {
+      "framework": "vllm",
+      "installed_version": "0.31.0",
+      "expected_version": "0.31.0",
+      "architecture": "x86_64",
+      "requested_ops": [
+        "msa_context_module"
+      ]
+    },
+    "gpu_csv": "NVIDIA B200",
+    "checkpoint_sm": 100
+  },
+  "selection": {
+    "exact_request_match": true,
+    "checkpoint_done_attempted_match": true,
+    "kv_cache_types": [
+      "bfloat16",
+      "fp8"
+    ],
+    "gemm_types": [
+      "bfloat16",
+      "fp8_block",
+      "nvfp4"
+    ],
+    "compute_dtype": "bfloat16",
+    "geometries": [
+      {
+        "sequence": 8192,
+        "batch": 4,
+        "heads": 128,
+        "prefix": 0,
+        "tokens": 32768
+      },
+      {
+        "sequence": 10240,
+        "batch": 4,
+        "heads": 64,
+        "prefix": 128,
+        "tokens": 40960
+      }
+    ],
+    "cases_per_precision_group": 2,
+    "model": "MiniMaxAI/MiniMax-M3",
+    "tp": 1,
+    "exclusions": []
+  },
+  "latency_validation": {
+    "finite_positive": true,
+    "minimum_ms": 11.0637,
+    "maximum_ms": 20.3117,
+    "duplicate_identities": 0,
+    "units": "ms from native collector log and CSV contract"
+  },
+  "records": [
+    {
+      "case": [
+        8192,
+        4,
+        128,
+        "bfloat16",
+        "bfloat16",
+        "bfloat16",
+        "MiniMaxAI/MiniMax-M3",
+        0
+      ],
+      "latency_ms": 20.3117,
+      "kernel_source": "MiniMaxM3SparseMSAImpl",
+      "status": "measured"
+    },
+    {
+      "case": [
+        10240,
+        4,
+        64,
+        "bfloat16",
+        "bfloat16",
+        "bfloat16",
+        "MiniMaxAI/MiniMax-M3",
+        128
+      ],
+      "latency_ms": 13.2282,
+      "kernel_source": "MiniMaxM3SparseMSAImpl",
+      "status": "measured"
+    },
+    {
+      "case": [
+        8192,
+        4,
+        128,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "MiniMaxAI/MiniMax-M3",
+        0
+      ],
+      "latency_ms": 20.2954,
+      "kernel_source": "MiniMaxM3SparseMSAImpl",
+      "status": "measured"
+    },
+    {
+      "case": [
+        10240,
+        4,
+        64,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "MiniMaxAI/MiniMax-M3",
+        128
+      ],
+      "latency_ms": 13.3145,
+      "kernel_source": "MiniMaxM3SparseMSAImpl",
+      "status": "measured"
+    },
+    {
+      "case": [
+        8192,
+        4,
+        128,
+        "bfloat16",
+        "bfloat16",
+        "fp8_block",
+        "MiniMaxAI/MiniMax-M3",
+        0
+      ],
+      "latency_ms": 18.0085,
+      "kernel_source": "MiniMaxM3SparseMSAImpl",
+      "status": "measured"
+    },
+    {
+      "case": [
+        10240,
+        4,
+        64,
+        "bfloat16",
+        "bfloat16",
+        "fp8_block",
+        "MiniMaxAI/MiniMax-M3",
+        128
+      ],
+      "latency_ms": 12.0253,
+      "kernel_source": "MiniMaxM3SparseMSAImpl",
+      "status": "measured"
+    },
+    {
+      "case": [
+        8192,
+        4,
+        128,
+        "fp8",
+        "bfloat16",
+        "fp8_block",
+        "MiniMaxAI/MiniMax-M3",
+        0
+      ],
+      "latency_ms": 18.0286,
+      "kernel_source": "MiniMaxM3SparseMSAImpl",
+      "status": "measured"
+    },
+    {
+      "case": [
+        10240,
+        4,
+        64,
+        "fp8",
+        "bfloat16",
+        "fp8_block",
+        "MiniMaxAI/MiniMax-M3",
+        128
+      ],
+      "latency_ms": 12.1008,
+      "kernel_source": "MiniMaxM3SparseMSAImpl",
+      "status": "measured"
+    },
+    {
+      "case": [
+        8192,
+        4,
+        128,
+        "bfloat16",
+        "bfloat16",
+        "nvfp4",
+        "MiniMaxAI/MiniMax-M3",
+        0
+      ],
+      "latency_ms": 16.3373,
+      "kernel_source": "MiniMaxM3SparseMSAImpl",
+      "status": "measured"
+    },
+    {
+      "case": [
+        10240,
+        4,
+        64,
+        "bfloat16",
+        "bfloat16",
+        "nvfp4",
+        "MiniMaxAI/MiniMax-M3",
+        128
+      ],
+      "latency_ms": 11.0637,
+      "kernel_source": "MiniMaxM3SparseMSAImpl",
+      "status": "measured"
+    },
+    {
+      "case": [
+        8192,
+        4,
+        128,
+        "fp8",
+        "bfloat16",
+        "nvfp4",
+        "MiniMaxAI/MiniMax-M3",
+        0
+      ],
+      "latency_ms": 16.4517,
+      "kernel_source": "MiniMaxM3SparseMSAImpl",
+      "status": "measured"
+    },
+    {
+      "case": [
+        10240,
+        4,
+        64,
+        "fp8",
+        "bfloat16",
+        "nvfp4",
+        "MiniMaxAI/MiniMax-M3",
+        128
+      ],
+      "latency_ms": 11.1142,
+      "kernel_source": "MiniMaxM3SparseMSAImpl",
+      "status": "measured"
+    }
+  ],
+  "failure": {
+    "stage": "CSV staging finalization / first-write dedup",
+    "type": "ModuleNotFoundError",
+    "message": "No module named 'pandas'",
+    "call_chain": [
+      "finalize_selected",
+      "_finalize_perf_file_batch",
+      "_prepare_perf_file",
+      "_merge_perf_rows"
+    ],
+    "source": "python/aisimulate/collector/helper.py:2579 at ea74b2678209939be4d9ab9323635f13faabdace",
+    "native_collection_errors": 0,
+    "preserved": [
+      "msa_context_module_perf.txt",
+      "collector_checkpoint/vllm/vllm.msa_context_module.json",
+      "collector.log",
+      "collector_errors.log",
+      "collection_summary_vllm.json",
+      "runtime_preflight.json"
+    ],
+    "not_produced": [
+      "msa_context_module_perf.parquet",
+      "collection_meta.yaml"
+    ],
+    "repair": "Parent owns hash-pinned pandas/bootstrap preflight. Finalize preserved CSV using unchanged identity dedup policy; do not rerun GPU for this smoke."
+  },
+  "qualification_limits": [
+    "Smoke execution and row integrity only; no new numerical correctness or latency accuracy claim. Prior independent MSA numerical gates remain separate.",
+    "Two safe boundary geometries across six precision groups do not prove the full16704 safe-context or13248 generation grids.",
+    "Original full-run184 successful rows and44 observed failures remain separately preserved. The820 source-blocked unattempted cases are not relabeled observed failures.",
+    "No Parquet readability/publication/final metadata success claimed."
+  ],
+  "artifacts": {
+    "b200-msa-context-scoped-smoke-artifacts-510200455.zip": "760d629ef31a3245970ac5f5f6be248fae0b27de63c5a808f444978b2e2e24d7",
+    "b200-msa-context-scoped-smoke-job.log": "b568a43b3ca56ed9b45ae3dd1abfd51a1e7ee0477d0338e3f72781c4202188b7",
+    "b200-vllm031-msa-context-scoped-smoke-request.json": "6e830ac84a32470e6a1a248d3c2373432d699903b26426b223b2073a07c67274",
+    "b200-msa-context-scoped-smoke-artifacts-510200455/raw/result/msa_context_module_perf.txt": "2fa91db06a924983ee82446e0a2643248393be7669eb5c28fbe6e84628086fa7",
+    "b200-msa-context-scoped-smoke-artifacts-510200455/raw/result/runtime_preflight.json": "9a19af1672274e8139434b97e7c3e028e323eec63a2cfc113190ec68ad9f5c16",
+    "b200-msa-context-scoped-smoke-artifacts-510200455/raw/result/collector_checkpoint/vllm/vllm.msa_context_module.json": "278755cc6750d3729dbff5f3421a4ab9724220aba72c8cca70f634da063291b7"
+  }
+}

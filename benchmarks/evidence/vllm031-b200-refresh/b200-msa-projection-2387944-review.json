@@ -1,0 +1,270 @@
+{
+  "job": 2387944,
+  "decision": "Bounded MSA quantized projection gates passed; proceed to scoped production smoke, not blanket all-shape or performance approval",
+  "source_sha": "9b4de9dbc3fa721af0a3965d16f04d3c5dce89bf",
+  "vllm_sha": "db9527a46873454610df6dbedf79a36d6bf1a7f6",
+  "runtime": {
+    "vllm": "0.31.0",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "collector_sha": "9b4de9dbc3fa721af0a3965d16f04d3c5dce89bf",
+    "imported_collector": "/workspace/repos/aisimulate-dynamo16-9b4de9db/python/aisimulate/collector/vllm/collect_msa_module.py",
+    "vllm_build_commit": "db9527a46873454610df6dbedf79a36d6bf1a7f6",
+    "cuda": "13.0",
+    "flashinfer": "0.7.0.post1"
+  },
+  "accounting": {
+    "bindings": {
+      "planned": 8,
+      "attempted": 8,
+      "passed": 8,
+      "failed": 0,
+      "unattempted": 0
+    },
+    "projections": {
+      "planned": 8,
+      "attempted": 8,
+      "passed": 8,
+      "failed": 0,
+      "unattempted": 0
+    }
+  },
+  "strict_graph_captures": 16,
+  "strict_graph_replays": 48,
+  "source_and_harness_checks": true,
+  "cpu_review_method": "Reloaded saved GPU operands and eager/replay outputs, verified hashes, independently decoded E2M1/E4M3 and UE8M0 scales, reconstructed effective GEMM on CPU. vLLM parameter-loader pickle metadata was replaced by inert objects; no native code executed.",
+  "bindings": [
+    {
+      "index": 0,
+      "op": "msa_generation_module",
+      "gemm": "fp8_block",
+      "main_kv": "bfloat16",
+      "graph_replays": 3,
+      "exact_cache_output_parity": true,
+      "native_scales_preserved": true,
+      "projection_binding_shared_across_kv": true
+    },
+    {
+      "index": 1,
+      "op": "msa_context_module",
+      "gemm": "fp8_block",
+      "main_kv": "bfloat16",
+      "graph_replays": 3,
+      "exact_cache_output_parity": true,
+      "native_scales_preserved": true,
+      "projection_binding_shared_across_kv": true
+    },
+    {
+      "index": 2,
+      "op": "msa_generation_module",
+      "gemm": "fp8_block",
+      "main_kv": "fp8",
+      "graph_replays": 3,
+      "exact_cache_output_parity": true,
+      "native_scales_preserved": true,
+      "projection_binding_shared_across_kv": true
+    },
+    {
+      "index": 3,
+      "op": "msa_context_module",
+      "gemm": "fp8_block",
+      "main_kv": "fp8",
+      "graph_replays": 3,
+      "exact_cache_output_parity": true,
+      "native_scales_preserved": true,
+      "projection_binding_shared_across_kv": true
+    },
+    {
+      "index": 4,
+      "op": "msa_generation_module",
+      "gemm": "nvfp4",
+      "main_kv": "bfloat16",
+      "graph_replays": 3,
+      "exact_cache_output_parity": true,
+      "native_scales_preserved": true,
+      "projection_binding_shared_across_kv": true
+    },
+    {
+      "index": 5,
+      "op": "msa_context_module",
+      "gemm": "nvfp4",
+      "main_kv": "bfloat16",
+      "graph_replays": 3,
+      "exact_cache_output_parity": true,
+      "native_scales_preserved": true,
+      "projection_binding_shared_across_kv": true
+    },
+    {
+      "index": 6,
+      "op": "msa_generation_module",
+      "gemm": "nvfp4",
+      "main_kv": "fp8",
+      "graph_replays": 3,
+      "exact_cache_output_parity": true,
+      "native_scales_preserved": true,
+      "projection_binding_shared_across_kv": true
+    },
+    {
+      "index": 7,
+      "op": "msa_context_module",
+      "gemm": "nvfp4",
+      "main_kv": "fp8",
+      "graph_replays": 3,
+      "exact_cache_output_parity": true,
+      "native_scales_preserved": true,
+      "projection_binding_shared_across_kv": true
+    }
+  ],
+  "projection_checks": [
+    {
+      "id": "fp8_block-context-o_proj",
+      "cpu_reconstructed": true,
+      "max_absolute_error": 0.03125,
+      "normalized_mean_absolute_error": 6.33819610129649e-08,
+      "reference_std": 3.3866050243377686,
+      "nonzero_fraction": 1.0,
+      "graph_replays_exact_to_eager": 3,
+      "stored_reference_max_difference": 0.0,
+      "method": "Fp8LinearMethod",
+      "kernel": "DeepGemmFp8BlockScaledMMKernel"
+    },
+    {
+      "id": "fp8_block-context-qkv_proj",
+      "cpu_reconstructed": true,
+      "max_absolute_error": 0.0625,
+      "normalized_mean_absolute_error": 2.3655287861856777e-07,
+      "reference_std": 5.876499652862549,
+      "nonzero_fraction": 1.0,
+      "graph_replays_exact_to_eager": 3,
+      "stored_reference_max_difference": 0.03125,
+      "method": "Fp8LinearMethod",
+      "kernel": "DeepGemmFp8BlockScaledMMKernel"
+    },
+    {
+      "id": "fp8_block-generation-o_proj",
+      "cpu_reconstructed": true,
+      "max_absolute_error": 7.62939453125e-06,
+      "normalized_mean_absolute_error": 4.70711192246398e-10,
+      "reference_std": 3.317396879196167,
+      "nonzero_fraction": 1.0,
+      "graph_replays_exact_to_eager": 3,
+      "stored_reference_max_difference": 0.0,
+      "method": "Fp8LinearMethod",
+      "kernel": "DeepGemmFp8BlockScaledMMKernel"
+    },
+    {
+      "id": "fp8_block-generation-qkv_proj",
+      "cpu_reconstructed": true,
+      "max_absolute_error": 0.0,
+      "normalized_mean_absolute_error": 0.0,
+      "reference_std": 5.8275065422058105,
+      "nonzero_fraction": 1.0,
+      "graph_replays_exact_to_eager": 3,
+      "stored_reference_max_difference": 0.0,
+      "method": "Fp8LinearMethod",
+      "kernel": "DeepGemmFp8BlockScaledMMKernel"
+    },
+    {
+      "id": "nvfp4-context-o_proj",
+      "cpu_reconstructed": true,
+      "max_absolute_error": 0.0,
+      "normalized_mean_absolute_error": 0.0,
+      "reference_std": 3.3986928462982178,
+      "nonzero_fraction": 1.0,
+      "graph_replays_exact_to_eager": 3,
+      "stored_reference_max_difference": 0.0,
+      "method": "ModelOptLinearMethod",
+      "kernel": "FlashInferCuteDslNvFp4LinearKernel"
+    },
+    {
+      "id": "nvfp4-context-qkv_proj",
+      "cpu_reconstructed": true,
+      "max_absolute_error": 0.0,
+      "normalized_mean_absolute_error": 0.0,
+      "reference_std": 5.88174295425415,
+      "nonzero_fraction": 1.0,
+      "graph_replays_exact_to_eager": 3,
+      "stored_reference_max_difference": 0.0,
+      "method": "ModelOptLinearMethod",
+      "kernel": "FlashInferCuteDslNvFp4LinearKernel"
+    },
+    {
+      "id": "nvfp4-generation-o_proj",
+      "cpu_reconstructed": true,
+      "max_absolute_error": 0.0,
+      "normalized_mean_absolute_error": 0.0,
+      "reference_std": 3.4660186767578125,
+      "nonzero_fraction": 1.0,
+      "graph_replays_exact_to_eager": 3,
+      "stored_reference_max_difference": 0.0,
+      "method": "ModelOptLinearMethod",
+      "kernel": "FlashInferCuteDslNvFp4LinearKernel"
+    },
+    {
+      "id": "nvfp4-generation-qkv_proj",
+      "cpu_reconstructed": true,
+      "max_absolute_error": 0.0,
+      "normalized_mean_absolute_error": 0.0,
+      "reference_std": 5.938863277435303,
+      "nonzero_fraction": 1.0,
+      "graph_replays_exact_to_eager": 3,
+      "stored_reference_max_difference": 0.0,
+      "method": "ModelOptLinearMethod",
+      "kernel": "FlashInferCuteDslNvFp4LinearKernel"
+    }
+  ],
+  "union": [
+    {
+      "job": 2387110,
+      "scope": "BF16 main KV native attention numerical gates"
+    },
+    {
+      "job": 2387310,
+      "scope": "Native fused preprocessing and cache insertion BF16 gates"
+    },
+    {
+      "job": 2387592,
+      "scope": "FP8 main KV varied attention/fused/cache numerical gates, BF16 projections"
+    },
+    {
+      "job": 2387944,
+      "scope": "8 original module bindings +8 varied FP8block/ModelOptNVFP4 projection checks, sharing only byte-identical projection descriptors across KV dtypes"
+    }
+  ],
+  "qualified_precision_cache_groups": [
+    [
+      "bfloat16",
+      "bfloat16"
+    ],
+    [
+      "bfloat16",
+      "fp8"
+    ],
+    [
+      "fp8_block",
+      "bfloat16"
+    ],
+    [
+      "fp8_block",
+      "fp8"
+    ],
+    [
+      "nvfp4",
+      "bfloat16"
+    ],
+    [
+      "nvfp4",
+      "fp8"
+    ]
+  ],
+  "remaining_gates": [
+    "Exact production native smoke for all6 precision/cache groups, preserving full callback token/case context and source9b4.",
+    "Full production context17568 plus generation13248 callbacks (30816 combined), followed by coverage/data/consumer validation.",
+    "Additional native paths, dimensions or calibration discovered by production require focused follow-up; these fixtures coverB1H16 decode4096 and context128/prefix128."
+  ],
+  "limitations": [
+    "No end-to-end prediction accuracy or performance reuse approval.",
+    "Original constant/zero module projection outputs demonstrate binding and graph parity only; arithmetic acceptance comes from separate nonconstant effective-format projections.",
+    "FP8 CPU/GPU accumulation can differ by one BF16 rounding unit (storedreference maxdifference.03125); all actual outputs pass unchanged normalizedMAE<.001. NVFP4 outputs exactly match independent decoded operands, unchanged rtol/atol.1."
+  ]
+}

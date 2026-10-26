@@ -1,0 +1,229 @@
+{
+  "decision": "PASS: exact selected-scope collection integrity and provenance. No publication or numerical scope expansion.",
+  "job": 510808560,
+  "parent_pipeline": 76851330,
+  "child_pipeline": 76851457,
+  "slurm_job": 5320935,
+  "counts": {
+    "original": 17568,
+    "selected_done": 13992,
+    "new_callbacks_done": 7478,
+    "new_callback_failures": 0,
+    "new_unattempted": 0,
+    "seed_done_preserved": 6514,
+    "inherited_failed_preserved": 1400,
+    "excluded_unattempted": 2176,
+    "excluded_total": 3576,
+    "parquet_rows": 13992,
+    "raw_retained_rows": 13992,
+    "unique_identity_rows": 13992,
+    "duplicate_identities": 0,
+    "invalid_latencies": 0,
+    "seed_changed_rows": 0,
+    "parquet_raw_latency_mismatches": 0,
+    "native_completion_lines_for_new_keys": 7478,
+    "checkpoint_pending_attempted_after_finalization": 0,
+    "retained_pending_attempted_before_finalization": 15392
+  },
+  "source": {
+    "collector_sha": "4b14219a22891ec643fe1a18c4ed0141cc98a36e",
+    "runner_sha": "4c7fff85c8e8fa420afe1ad332fd3692b6ae1128",
+    "runtime_manifest_sha256": "7e72f1e62a667c0ab2f3f6eb115f9e4539aa1bceacb0a024c95ea84db95eb593",
+    "closure_hash_recomputed": "sha256:e2eb81ce4bf514c4188e02bea3a75f6d1adb5135513e51515d3650bc1f0493c4",
+    "case_plan_hash_recomputed": "sha256:f719cd74c30eb8d1eac7a30129a0411e88b3b9d43d6dbd15795011f88d5e2f9c",
+    "runtime": {
+      "framework": "vllm",
+      "version": "0.31.0",
+      "image": "vllm/vllm-openai",
+      "image_digest": "sha256:3fb023cc987cc7c2bca7ca14c1e0aff5ae06bd9431bf07773731ce7e8a682460",
+      "source_commit": "db9527a46873454610df6dbedf79a36d6bf1a7f6"
+    }
+  },
+  "groups": [
+    {
+      "kv_cache_dtype": "bfloat16",
+      "gemm_type": "bfloat16",
+      "done": 2332,
+      "new_done": 0,
+      "seed_done": 2332,
+      "inherited_failed": 496,
+      "new_failed": 0
+    },
+    {
+      "kv_cache_dtype": "fp8",
+      "gemm_type": "bfloat16",
+      "done": 2332,
+      "new_done": 0,
+      "seed_done": 2332,
+      "inherited_failed": 452,
+      "new_failed": 0
+    },
+    {
+      "kv_cache_dtype": "bfloat16",
+      "gemm_type": "fp8_block",
+      "done": 2332,
+      "new_done": 482,
+      "seed_done": 1850,
+      "inherited_failed": 452,
+      "new_failed": 0
+    },
+    {
+      "kv_cache_dtype": "fp8",
+      "gemm_type": "fp8_block",
+      "done": 2332,
+      "new_done": 2332,
+      "seed_done": 0,
+      "inherited_failed": 0,
+      "new_failed": 0
+    },
+    {
+      "kv_cache_dtype": "bfloat16",
+      "gemm_type": "nvfp4",
+      "done": 2332,
+      "new_done": 2332,
+      "seed_done": 0,
+      "inherited_failed": 0,
+      "new_failed": 0
+    },
+    {
+      "kv_cache_dtype": "fp8",
+      "gemm_type": "nvfp4",
+      "done": 2332,
+      "new_done": 2332,
+      "seed_done": 0,
+      "inherited_failed": 0,
+      "new_failed": 0
+    }
+  ],
+  "latency_ms": {
+    "minimum": 0.0212,
+    "maximum": 28.4238
+  },
+  "arrow_schema": "framework: string\nversion: string\ndevice: string\nop_name: string\nkernel_source: string\nmodel: string\narchitecture: string\nmla_dtype: string\nkv_cache_dtype: string\ngemm_type: string\nnum_heads: int64\nbatch_size: int64\nisl: int64\ntp_size: int64\nstep: int64\nlatency: double",
+  "metadata": {
+    "schema_version": 1,
+    "runtime": {
+      "framework": "vllm",
+      "version": "0.31.0",
+      "image": "vllm/vllm-openai",
+      "image_digest": "sha256:3fb023cc987cc7c2bca7ca14c1e0aff5ae06bd9431bf07773731ce7e8a682460",
+      "source_commit": "db9527a46873454610df6dbedf79a36d6bf1a7f6"
+    },
+    "tables": {
+      "msa_context_module_perf": {
+        "collector_ref": "4b14219a22891ec643fe1a18c4ed0141cc98a36e",
+        "collector_hash": "sha256:e2eb81ce4bf514c4188e02bea3a75f6d1adb5135513e51515d3650bc1f0493c4",
+        "case_plan_hash": "sha256:f719cd74c30eb8d1eac7a30129a0411e88b3b9d43d6dbd15795011f88d5e2f9c",
+        "collected_at": "2026-10-26",
+        "rows": 13992,
+        "status": "complete"
+      }
+    }
+  },
+  "runtime_preflight": {
+    "framework": "vllm",
+    "installed_version": "0.31.0",
+    "expected_version": "0.31.0",
+    "architecture": "x86_64",
+    "requested_ops": [
+      "msa_context_module"
+    ]
+  },
+  "serialization_preflight": {
+    "pandas": "2.3.3",
+    "pyarrow": "24.0.0",
+    "numpy": "2.2.6",
+    "python-dateutil": "2.9.0.post0",
+    "six": "1.17.0",
+    "pytz": "2025.2",
+    "tzdata": "2026.1"
+  },
+  "errors": {
+    "summary": {
+      "backend": "vllm",
+      "version": "0.31.0",
+      "timestamp": "2026-10-26T21:54:52.553933",
+      "total_errors": 1,
+      "errors_by_module": {
+        "vllm.msa_context_module": 1
+      },
+      "errors_by_type": {
+        "UnresolvedFailures": 1
+      },
+      "errors_by_group": {}
+    },
+    "errors": [
+      {
+        "module": "vllm.msa_context_module",
+        "task_id": "resume_unresolved",
+        "error_type": "UnresolvedFailures",
+        "error_message": "checkpoint holds 1400 unresolved failed tasks",
+        "classification": "unresolved_from_checkpoint",
+        "timestamp": "2026-10-26T21:54:52.549177"
+      }
+    ]
+  },
+  "transaction_review": {
+    "active_journals_absent": true,
+    "retained_journal_prepared_parquet_hash_matches_final": true,
+    "retained_source_hash_matches_raw_csv": true,
+    "retained_pending_sidecar_equals_final_bytes": true,
+    "checkpoint_tmp_same_done_failed": true,
+    "checkpoint_tmp_attempted": 15392,
+    "raw_to_parquet_log": "0 existing +13992 new ->13992 rows;0 identity replacements",
+    "export_copy_hashes_match": true
+  },
+  "row_source_groups": [
+    {
+      "job": 510058975,
+      "collector_sha": "9b4de9dbc3fa721af0a3965d16f04d3c5dce89bf",
+      "rows": 184
+    },
+    {
+      "job": 510388495,
+      "collector_sha": "362953bc2bde1fb5edb206338f2cac7dc815d7f8",
+      "rows": 6330
+    },
+    {
+      "job": 510808560,
+      "collector_sha": "4b14219a22891ec643fe1a18c4ed0141cc98a36e",
+      "rows": 7478
+    }
+  ],
+  "failure_baseline": {
+    "job510058975_score_address": 44,
+    "job510388495_native_csr_ratio": 1356,
+    "exact_seed_failed_set_unchanged": true
+  },
+  "evidence_sha256": {
+    "b200-msa-csr-continuation-artifacts-510808560/raw/result/..collection_meta.pending.yaml.retained": "273b27124340f2a09aed441ac18eedc7359f08b1a7d2aeb867ae01d410b0195d",
+    "b200-msa-csr-continuation-artifacts-510808560/raw/result/..collection_meta.transaction.json.retained": "998ad97ed7b76f540f2e9ddd37bb752b6e154ea1fb160d3a42c0d9b017e295ab",
+    "b200-msa-csr-continuation-artifacts-510808560/raw/result/..perf-finalization.transaction.json.retained": "8f1b485c36e6ade664c640a54c2f7c98b6d43bfe85452a43336040b374d96b99",
+    "b200-msa-csr-continuation-artifacts-510808560/raw/result/.msa_context_module_perf.txt.retained": "eff7316423b0c7305b4d65e3dfb4ba5f4f0f99d76e5d7ecaa70dabd090eaefb3",
+    "b200-msa-csr-continuation-artifacts-510808560/raw/result/README.md": "3817a57c7284a85830fbb67f160b8014b1d2281308748ba655e98fbbf194987a",
+    "b200-msa-csr-continuation-artifacts-510808560/raw/result/collection_meta.yaml": "273b27124340f2a09aed441ac18eedc7359f08b1a7d2aeb867ae01d410b0195d",
+    "b200-msa-csr-continuation-artifacts-510808560/raw/result/collector_checkpoint/vllm/.vllm.msa_context_module.json.tmp": "d1ddbd0b589dbda5bf4f7125e3760088631ac33c319887da391e9575c9730bf1",
+    "b200-msa-csr-continuation-artifacts-510808560/raw/result/collector_checkpoint/vllm/vllm.msa_context_module.json": "1fa70e9992b2a2b7ad2bc9d19b333d1854281275486918312f0ff8b21da193ab",
+    "b200-msa-csr-continuation-artifacts-510808560/raw/result/collector_git_version.txt": "25f3602b5caaf92437be1e76b53698e8d73f14a6c71c2e91c8d5875f923ab29f",
+    "b200-msa-csr-continuation-artifacts-510808560/raw/result/msa_context_csr_exclusion_filters.json": "8bf8958eef66d31df1e1af2c063c48ceac587c9620ef815a405f0c01854ed98a",
+    "b200-msa-csr-continuation-artifacts-510808560/raw/result/msa_context_module_20261026_210438/collection_summary_vllm.json": "e699751058c22423729f0c1c65d51d2da775ab8f24dd724accbaaec4a8e3fc62",
+    "b200-msa-csr-continuation-artifacts-510808560/raw/result/msa_context_module_20261026_210438/collector.log": "ae779171a9e1328f1726f03719f1841d56219e2867150c350650f7e85afaba5b",
+    "b200-msa-csr-continuation-artifacts-510808560/raw/result/msa_context_module_20261026_210438/collector_errors.log": "993899f2964ff03c392a1fe45f3d86c2a64234882ed3884ece59b2618ee69ab5",
+    "b200-msa-csr-continuation-artifacts-510808560/raw/result/msa_context_module_20261026_210438/errors_vllm.msa_context_module.json": "600bb8464f50af1151e37bab91fedc60a509bf473f705e2db7691e3da8ba0f5a",
+    "b200-msa-csr-continuation-artifacts-510808560/raw/result/msa_context_module_perf.parquet": "52818df30cbec459f5d84f7d52a5061a8d2c8f5b217cd9826cc77da75aa2e898",
+    "b200-msa-csr-continuation-artifacts-510808560/raw/result/msa_context_module_perf.parquet.mergelock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "b200-msa-csr-continuation-artifacts-510808560/raw/result/msa_context_seed_parent_provenance.json": "ee92a5d13067f9cbbf898485c6ef89d797b22c94329a0993b66ced45dea2509f",
+    "b200-msa-csr-continuation-artifacts-510808560/raw/result/msa_context_seed_provenance.json": "19838d2f5aec04b1219ed66241ded8b6786ca0056fc43cdf6210ee650ca1df47",
+    "b200-msa-csr-continuation-artifacts-510808560/raw/result/runtime_preflight.json": "9a19af1672274e8139434b97e7c3e028e323eec63a2cfc113190ec68ad9f5c16",
+    "b200-msa-csr-continuation-artifacts-510808560/raw/result/serialization_preflight.json": "9b4d4d9044f556e3defaf7f3cf1559f6b43f883c3ca1af28054597c83e897ae9",
+    "b200-msa-csr-continuation-artifacts-510808560.zip": "69a1062e4d6e54db5679e943551f4321c068a9ccaf96ab8950cf58edcad3da14",
+    "b200-msa-csr-continuation-artifacts-510808560/data_collection/result.tar.gz": "db85329941ddecb4500507c76ee5cf346ac5983332ae1b5e55f4386c70a8cc21",
+    "b200-msa-csr-continuation-job.log": "73afe86cf0e979b207f14f9b57eafc67631b676fc078a9686ef97fb1de355bf6"
+  },
+  "limits": [
+    "No new numerical qualification from timing completion. Existing native numerical gates keep their bounded scope.",
+    "No continuous per-case clock/power telemetry; nvidia-smi startup snapshot and native timing logs do not establish constant clocks.",
+    "Schema1 aggregate collector_ref describes finalization, not the original source of all13992 measurements. Preserve the two seed provenance files and per-row source groups in any future publication.",
+    "The1400 inherited failed keys and2176 excluded unattempted blockers remain gaps in the original17568 inventory. No default promotion or automatic publisher action."
+  ]
+}

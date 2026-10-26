@@ -1,0 +1,202 @@
+{
+  "job": 2387592,
+  "status": "passed bounded FP8-main-cache BF16-projection gate",
+  "counts": {
+    "planned": 4,
+    "attempted": 4,
+    "passed": 4,
+    "failed": 0,
+    "unattempted": 0
+  },
+  "runtime": {
+    "vllm": "0.31.0",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "collector_sha": "8cbc7c01eff267f2e2a9cd66593ea9addc0cb8bc",
+    "imported_collector": "/workspace/repos/aisimulate-dynamo16-8cbc7c01/python/aisimulate/collector/vllm/collect_msa_module.py",
+    "vllm_build_commit": "db9527a46873454610df6dbedf79a36d6bf1a7f6"
+  },
+  "source_closure": "Archived checker validates all seven plan-pinned Python sources before case execution; checker/helper/plan and fixture hashes independently checked here.",
+  "measurement_rows": 0,
+  "cases": [
+    {
+      "index": 0,
+      "args": [
+        128,
+        1,
+        16,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "MiniMaxAI/MiniMax-M3",
+        0
+      ],
+      "scales": {
+        "q": {
+          "device": 1.0,
+          "host": 1.0
+        },
+        "k": {
+          "device": 1.0,
+          "host": 1.0
+        },
+        "v": {
+          "device": 1.0,
+          "host": 1.0
+        },
+        "prob": {
+          "device": 1.0,
+          "host": 1.0
+        }
+      },
+      "graph_captures": 2,
+      "graph_replays": 6,
+      "replay_cache_parity_checks": 6,
+      "original_and_varied_fused_checks": 3,
+      "maximum_K_code_difference": 1,
+      "V_and_untouched_cache_exact": true,
+      "max_reported_attention_mean_abs": 0.00010943823144771159,
+      "max_reported_attention_abs": 0.0078125,
+      "cpu_varied_attention_mean_abs": 0.00010943875531665981,
+      "cpu_varied_attention_max_abs": 0.0078125,
+      "cpu_selected_page_oracle_passed": true,
+      "ranking_exclusion_exercised": false,
+      "fixture_sha256": "cbe01276c457df8db1c573ad3c8f5c4376d2cf5b17bbbeabd81d3ded1df117a3"
+    },
+    {
+      "index": 1,
+      "args": [
+        128,
+        1,
+        16,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "MiniMaxAI/MiniMax-M3",
+        128
+      ],
+      "scales": {
+        "q": {
+          "device": 1.0,
+          "host": 1.0
+        },
+        "k": {
+          "device": 1.0,
+          "host": 1.0
+        },
+        "v": {
+          "device": 1.0,
+          "host": 1.0
+        },
+        "prob": {
+          "device": 1.0,
+          "host": 1.0
+        }
+      },
+      "graph_captures": 2,
+      "graph_replays": 6,
+      "replay_cache_parity_checks": 6,
+      "original_and_varied_fused_checks": 3,
+      "maximum_K_code_difference": 1,
+      "V_and_untouched_cache_exact": true,
+      "max_reported_attention_mean_abs": 6.881190347485244e-05,
+      "max_reported_attention_abs": 0.001953125,
+      "cpu_varied_attention_mean_abs": 6.881169974803925e-05,
+      "cpu_varied_attention_max_abs": 0.001953125,
+      "cpu_selected_page_oracle_passed": true,
+      "ranking_exclusion_exercised": false,
+      "fixture_sha256": "56a68e1946d3825d51be4b2c91a091b1516053325714864f9fa2f25fcddb6271"
+    },
+    {
+      "index": 2,
+      "args": [
+        128,
+        1,
+        16,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "MiniMaxAI/MiniMax-M3"
+      ],
+      "scales": {
+        "q": {
+          "device": 1.0,
+          "host": 1.0
+        },
+        "k": {
+          "device": 1.0,
+          "host": 1.0
+        },
+        "v": {
+          "device": 1.0,
+          "host": 1.0
+        },
+        "prob": {
+          "device": 1.0,
+          "host": 1.0
+        }
+      },
+      "graph_captures": 2,
+      "graph_replays": 6,
+      "replay_cache_parity_checks": 6,
+      "original_and_varied_fused_checks": 3,
+      "maximum_K_code_difference": 1,
+      "V_and_untouched_cache_exact": true,
+      "max_reported_attention_mean_abs": 3.0206108931452036e-05,
+      "max_reported_attention_abs": 0.000244140625,
+      "cpu_varied_attention_mean_abs": 3.0206108931452036e-05,
+      "cpu_varied_attention_max_abs": 0.000244140625,
+      "cpu_selected_page_oracle_passed": true,
+      "ranking_exclusion_exercised": false,
+      "fixture_sha256": "119b1d28b4b5c0b4366c11dd8ecdc3c8f5d60079432e7681629e50ed35a7100c"
+    },
+    {
+      "index": 3,
+      "args": [
+        4096,
+        1,
+        16,
+        "fp8",
+        "bfloat16",
+        "bfloat16",
+        "MiniMaxAI/MiniMax-M3"
+      ],
+      "scales": {
+        "q": {
+          "device": 1.0,
+          "host": 1.0
+        },
+        "k": {
+          "device": 1.0,
+          "host": 1.0
+        },
+        "v": {
+          "device": 1.0,
+          "host": 1.0
+        },
+        "prob": {
+          "device": 1.0,
+          "host": 1.0
+        }
+      },
+      "graph_captures": 2,
+      "graph_replays": 6,
+      "replay_cache_parity_checks": 6,
+      "original_and_varied_fused_checks": 3,
+      "maximum_K_code_difference": 1,
+      "V_and_untouched_cache_exact": true,
+      "max_reported_attention_mean_abs": 8.832896128296852e-06,
+      "max_reported_attention_abs": 6.103515625e-05,
+      "cpu_varied_attention_mean_abs": 8.840346708893776e-06,
+      "cpu_varied_attention_max_abs": 6.103515625e-05,
+      "cpu_selected_page_oracle_passed": true,
+      "ranking_exclusion_exercised": true,
+      "fixture_sha256": "e08818d3a7e90f04ecd4b0df2062613aed33f29f5869fc25dff3cba1a49fe9e5"
+    }
+  ],
+  "remaining_coverage": [
+    "Projection GEMM correctness, normalization/rotary end-to-end model behavior and other quantization groups are not proven.",
+    "Four native heads16/batch1 cases only; no all-shape or full-collection approval.",
+    "Unity scales only, BF16 index cache, native default MSA prefill/Triton decode; no alternate CUTLASS decode."
+  ]
+}

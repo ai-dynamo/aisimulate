@@ -1,0 +1,354 @@
+{
+  "job_id": 2388381,
+  "decision": "Confirmed native score-stage failure; signed 32-bit score addressing is the source-backed cause. No official-runtime patch or performance qualification.",
+  "accounting": {
+    "planned": 3,
+    "attempted": 3,
+    "score_completed": 2,
+    "failed": 1,
+    "unattempted": 0,
+    "timing_rows": 0,
+    "graph_captures": 0
+  },
+  "collector_sha": "9b4de9dbc3fa721af0a3965d16f04d3c5dce89bf",
+  "vllm_sha": "db9527a46873454610df6dbedf79a36d6bf1a7f6",
+  "msa_sha": "f355c37eb4e1413f21ee2ad8bbad25079e6bef9d",
+  "archive_sha256": "31d3e9ab0de86948ba93c5f20985cba1f550ca89ebb2a506f5f594efe7bd3508",
+  "artifact_sha256": {
+    "b200-msa-score-boundary-diagnostic.py": "50c70479fc5a6f54b82c7ffd6f8ba83323dd56d9de565678506aacc574595ed2",
+    "b200-msa-score-boundary-diagnostic-plan.json": "c7e57fabab43d41c02f784e8faeab8ee223c59efbf7410b2f69f50f145b4edb7",
+    "b200-msa-numerical.py": "c5438acc71612ebd40b4b8bcc3acf0407c7fe0dae3bba48075a28b2cf4f151ec"
+  },
+  "cases": [
+    {
+      "index": 0,
+      "args": [
+        8192,
+        4,
+        128,
+        "bfloat16",
+        "bfloat16",
+        "bfloat16",
+        "MiniMaxAI/MiniMax-M3",
+        0
+      ],
+      "status": "score_completed",
+      "stage": "score_completed",
+      "accounting": {
+        "planned": 1,
+        "attempted": 1,
+        "passed": 1,
+        "failed": 0,
+        "unattempted": 0
+      },
+      "scheduler": {
+        "max_num_batched_tokens": 131072,
+        "max_num_seqs": 4,
+        "enable_chunked_prefill": true
+      },
+      "native_call": {
+        "q_shape": [
+          32768,
+          8,
+          128
+        ],
+        "q_stride": [
+          1024,
+          128,
+          1
+        ],
+        "k_shape": [
+          257,
+          1,
+          128,
+          128
+        ],
+        "k_stride": [
+          16384,
+          16384,
+          128,
+          1
+        ],
+        "score": {
+          "shape": [
+            32768,
+            8,
+            8192
+          ],
+          "stride": [
+            65536,
+            8192,
+            1
+          ],
+          "last_logical_element_offset": 2147483647,
+          "exceeds_signed_int32": false,
+          "first_token_whose_base_exceeds_signed_int32": 32768
+        },
+        "score_dtype": "torch.float32",
+        "score_storage_bytes": 34359738368,
+        "pack_factor": 1,
+        "max_k_tiles": 8192,
+        "qo_segment_lens": [
+          8192,
+          8192,
+          8192,
+          8192
+        ],
+        "kv_segment_lens": [
+          8192,
+          8192,
+          8192,
+          8192
+        ]
+      },
+      "native_metadata": {
+        "model.layers.0.self_attn.attn": "MiniMaxM3SparseMetadata",
+        "model.layers.0.self_attn.attn.index_cache": "MiniMaxM3IndexerMSAMetadata"
+      },
+      "raw_path": "results/dynamo16-refresh/b200-gemm-spot-2388381/run/msa-score-boundary/case-0.json",
+      "raw_sha256": "f26363457851fb469c17623870dc74e73605b802aaf16826927812532d65e7cd"
+    },
+    {
+      "index": 1,
+      "args": [
+        10240,
+        4,
+        128,
+        "bfloat16",
+        "bfloat16",
+        "bfloat16",
+        "MiniMaxAI/MiniMax-M3",
+        0
+      ],
+      "status": "failed",
+      "stage": "native_score_call",
+      "accounting": {
+        "planned": 1,
+        "attempted": 1,
+        "passed": 0,
+        "failed": 1,
+        "unattempted": 0
+      },
+      "scheduler": {
+        "max_num_batched_tokens": 131072,
+        "max_num_seqs": 4,
+        "enable_chunked_prefill": true
+      },
+      "native_call": {
+        "q_shape": [
+          40960,
+          8,
+          128
+        ],
+        "q_stride": [
+          1024,
+          128,
+          1
+        ],
+        "k_shape": [
+          321,
+          1,
+          128,
+          128
+        ],
+        "k_stride": [
+          16384,
+          16384,
+          128,
+          1
+        ],
+        "score": {
+          "shape": [
+            40960,
+            8,
+            8192
+          ],
+          "stride": [
+            65536,
+            8192,
+            1
+          ],
+          "last_logical_element_offset": 2684354559,
+          "exceeds_signed_int32": true,
+          "first_token_whose_base_exceeds_signed_int32": 32768
+        },
+        "score_dtype": "torch.float32",
+        "score_storage_bytes": 34359738368,
+        "pack_factor": 1,
+        "max_k_tiles": 8192,
+        "qo_segment_lens": [
+          10240,
+          10240,
+          10240,
+          10240
+        ],
+        "kv_segment_lens": [
+          10240,
+          10240,
+          10240,
+          10240
+        ]
+      },
+      "native_metadata": {
+        "model.layers.0.self_attn.attn": "MiniMaxM3SparseMetadata",
+        "model.layers.0.self_attn.attn.index_cache": "MiniMaxM3IndexerMSAMetadata"
+      },
+      "raw_path": "results/dynamo16-refresh/b200-gemm-spot-2388381/run/msa-score-boundary/case-1.json",
+      "raw_sha256": "9a51c9ca5c5310d80a4ecba95eeaec61123b115188c6a366a97f940203f7b657"
+    },
+    {
+      "index": 2,
+      "args": [
+        10240,
+        4,
+        64,
+        "bfloat16",
+        "bfloat16",
+        "bfloat16",
+        "MiniMaxAI/MiniMax-M3",
+        0
+      ],
+      "status": "score_completed",
+      "stage": "score_completed",
+      "accounting": {
+        "planned": 1,
+        "attempted": 1,
+        "passed": 1,
+        "failed": 0,
+        "unattempted": 0
+      },
+      "scheduler": {
+        "max_num_batched_tokens": 131072,
+        "max_num_seqs": 4,
+        "enable_chunked_prefill": true
+      },
+      "native_call": {
+        "q_shape": [
+          40960,
+          4,
+          128
+        ],
+        "q_stride": [
+          512,
+          128,
+          1
+        ],
+        "k_shape": [
+          321,
+          1,
+          128,
+          128
+        ],
+        "k_stride": [
+          16384,
+          16384,
+          128,
+          1
+        ],
+        "score": {
+          "shape": [
+            40960,
+            4,
+            8192
+          ],
+          "stride": [
+            32768,
+            8192,
+            1
+          ],
+          "last_logical_element_offset": 1342177279,
+          "exceeds_signed_int32": false,
+          "first_token_whose_base_exceeds_signed_int32": 65536
+        },
+        "score_dtype": "torch.float32",
+        "score_storage_bytes": 17179869184,
+        "pack_factor": 1,
+        "max_k_tiles": 8192,
+        "qo_segment_lens": [
+          10240,
+          10240,
+          10240,
+          10240
+        ],
+        "kv_segment_lens": [
+          10240,
+          10240,
+          10240,
+          10240
+        ]
+      },
+      "native_metadata": {
+        "model.layers.0.self_attn.attn": "MiniMaxM3SparseMetadata",
+        "model.layers.0.self_attn.attn.index_cache": "MiniMaxM3IndexerMSAMetadata"
+      },
+      "raw_path": "results/dynamo16-refresh/b200-gemm-spot-2388381/run/msa-score-boundary/case-2.json",
+      "raw_sha256": "aa699180fba54fb437f4fe619ec40ce7e6164107c08524767dcd3636feb45222"
+    }
+  ],
+  "native_failure": {
+    "variant": "0_1_1_2_1_0_0",
+    "dtype": "BF16",
+    "query_tile_size": 256,
+    "single_warp_group": false,
+    "mode": "OnlyScore",
+    "page_size": 128,
+    "split_kv": false,
+    "pack_factor": 1,
+    "cuda_status": 719,
+    "reported_error": "unspecified launch failure",
+    "prior_cache_writer_synchronization": "passed",
+    "first_failing_stage": "native_score_call",
+    "topk_invoked": false
+  },
+  "serving_parity": {
+    "native_metadata_and_layout": "Unmodified native builder/plan/cache writer; observed segments, score allocation, stride and tensor dimensions match declared case. Scores fit allocated storage.",
+    "default_b200_batched_tokens": 16384,
+    "throughput_batched_tokens": 32768,
+    "collector_explicit_batched_tokens": 131072,
+    "explicit_configuration_admitted": true,
+    "scheduling_difference": "The collector directly measures declared callbacks; serving normally chunks to its configured token budget. Explicit larger budgets are admitted.",
+    "geometry_scope": "Head128/8 index heads is the declared generic module sweep, not the original checkpoint64Q/4KV geometry. Head64 control with same40960 tokens succeeds.",
+    "proof_limit": "No direct dump of GPU page-table contents or SASS was collected. Attribution combines original native builders, successful prior-writer sync, observed geometry, native stage isolation, stride control and reachable signed32 address source."
+  },
+  "production_accounting": {
+    "context_planned": 17568,
+    "generation_planned": 13248,
+    "context_done_provisional": 184,
+    "context_failed_observed": 44,
+    "context_unattempted": 17340,
+    "context_source_risk": 864,
+    "context_source_risk_observed_failed": 44,
+    "context_source_risk_unattempted": 820,
+    "context_outside_source_risk": 16704,
+    "context_outside_source_risk_done_provisional": 184,
+    "context_outside_source_risk_remaining": 16520,
+    "source_risk_by_query_heads": {
+      "128": 300,
+      "96": 288,
+      "64": 144,
+      "48": 132
+    },
+    "source_risk_each_precision_group": 144,
+    "generation_attempted": 0
+  },
+  "source_risk_predicate": "For these retained prefill plans: total_query_tokens * index_heads * 8192 > 2**31. This marks native signed-offset risk, not864 GPU-observed failures.",
+  "collection_policy": [
+    "Keep official vLLM0.31 runtime and original case identities unchanged. Do not rerun the44 known failing cases without a native fix.",
+    "Keep864 source-risk cases explicit:44 observed failures and820 source-blocked/unattempted. Do not convert them to successful skips, reuse, or synthetic rows.",
+    "Parent may run separate exact-case requests for16704 context cases outside this address-risk predicate and13248 generation cases after ordinary targeted smoke gates. These counts are collection candidates, not guaranteed support. Preserve original17568/13248 denominators.",
+    "The184 original successful rows remain compatible provisional evidence under the unchanged runtime. Resume only with unchanged source/runtime/case contracts and validated checkpoint reconciliation; never count the diagnostic as new timing data.",
+    "Stop on any new clustered failure; being outside this specific address risk does not establish all native limits or arithmetic correctness."
+  ],
+  "upstream_recommendation": [
+    "Widen native MaxScore layout/address arithmetic to64 bits, including fused/correction and packed direct-address sites. Preserve all layouts, tile counts, workload and kernel dispatch.",
+    "An upstream or explicitly named patched runtime must have separate source/build identity. JIT uses existing variant binaries without header freshness checks: use a new empty MINFER_FMHA_CACHE_DIR before import and record compiled binary hashes.",
+    "Validate boundary/stride controls plus complete module correctness and timings before collecting patched-runtime data. Never label those values as the original official image."
+  ],
+  "immutable_sources": [
+    "https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/models/minimax_m3/nvidia/indexer_msa.py#L126",
+    "https://github.com/vllm-project/MSA/blob/f355c37eb4e1413f21ee2ad8bbad25079e6bef9d/python/fmha_sm100/csrc/include/sm100_fmha_fwd_epilogue_tma_warpspecialized.hpp#L107",
+    "https://github.com/vllm-project/MSA/blob/f355c37eb4e1413f21ee2ad8bbad25079e6bef9d/python/fmha_sm100/csrc/include/sm100_fmha_fwd_mainloop_tma_warpspecialized.hpp#L1286",
+    "https://github.com/vllm-project/MSA/blob/f355c37eb4e1413f21ee2ad8bbad25079e6bef9d/python/fmha_sm100/csrc/include/sm100_fmha_fwd_mainloop_tma_warpspecialized.hpp#L1834",
+    "https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/engine/arg_utils.py#L2858"
+  ]
+}

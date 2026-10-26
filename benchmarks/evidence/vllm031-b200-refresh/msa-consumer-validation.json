@@ -1,0 +1,18 @@
+{
+  "system": "b200_sxm",
+  "framework": "vllm",
+  "version": "0.31.0",
+  "shared_layer": false,
+  "measured": 13992,
+  "original_cases": 17568,
+  "explained_failed": 1400,
+  "source_blocked_unattempted": 2176,
+  "measurement_source_rows": [
+    184,
+    6330,
+    7478
+  ],
+  "python_queries": 13992,
+  "native_queries": 13992,
+  "scope": "Exact op-level consumer checks; both interfaces share the compiled engine."
+}
