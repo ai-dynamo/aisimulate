@@ -2,20 +2,20 @@
   "system": "b200_sxm",
   "framework": "vllm",
   "version": "0.31.0",
-  "parquet_sha256": "dc4fc90b468518aa7f9ad0e6c5b6cc1cc32ecc512601522a58aedc3ec98202df",
+  "parquet_sha256": "265827609d7c201992f4963160cae06c3948f2d19d495082417095cc211b04f5",
   "shared_layer": false,
-  "passed": 111951,
+  "passed": 113557,
   "failed": 0,
-  "unique_consumer_identities": 111951,
+  "unique_consumer_identities": 113557,
   "counts": {
     "bfloat16/torch.nn.functional.linear": 37518,
     "fp8_block/DeepGemmFp8BlockScaledMMKernel": 31080,
     "fp8_block/CutlassFp8BlockScaledMMKernel": 5328,
-    "fp8/CutlassFP8ScaledMMLinearKernel": 507,
+    "fp8/CutlassFP8ScaledMMLinearKernel": 2113,
     "nvfp4/FlashInferCuteDslNvFp4LinearKernel": 37518
   },
   "sources": {
-    "silicon": 111951
+    "silicon": 113557
   },
   "sol_floor_counts": {
     "bfloat16": 39
@@ -118,10 +118,10 @@
   ],
   "legacy_note": "Public legacy query was removed; the retained Python orchestration delegates to the native engine.",
   "coverage": {
-    "selected": 113061,
-    "measured": 111951,
+    "selected": 114667,
+    "measured": 113557,
     "historical_framework_failures": 1110,
     "unattempted": 0
   },
-  "table_status": "partial: FP8 M>=2 and explicitly excluded GLM-specific cases remain outside this publication"
+  "table_status": "partial: 35405 distinct FP8 reuse keys and explicitly excluded GLM-specific cases remain outside fresh publication; 1110 historical block-FP8 gaps remain"
 }

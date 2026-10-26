@@ -1,0 +1,60 @@
+{
+  "parent_pipeline": 76772820,
+  "child_pipeline": 76772889,
+  "job": 510144247,
+  "slurm_job": 5313767,
+  "allocation_seconds": 117,
+  "allocated_gpu_hours": 0.0325,
+  "runner_source": "932f69168edc4e149f013cb729f502c88b88356b",
+  "collector_source": "8a411395d3161f1320a9de0e8670deacb40b314c",
+  "runtime": {
+    "framework": "vllm",
+    "version": "0.31.0",
+    "image": "vllm/vllm-openai",
+    "image_digest": "sha256:3fb023cc987cc7c2bca7ca14c1e0aff5ae06bd9431bf07773731ce7e8a682460",
+    "source_commit": "db9527a46873454610df6dbedf79a36d6bf1a7f6"
+  },
+  "case_plan_hash": "sha256:a736afff75ab094a5aa3a61c24a47e006bf9557c4145004c199ecffd6b9b4502",
+  "collector_hash": "sha256:6d4803ec62128aa4dcba359579e531392d9f8c56281523c2e89bcdd889895770",
+  "runtime_manifest_sha256": "7e72f1e62a667c0ab2f3f6eb115f9e4539aa1bceacb0a024c95ea84db95eb593",
+  "artifact_sha256": "5cfe4136e660169c0127148f2ec3c56ecdbe43a8ef565e57eeb5145bcaab0c68",
+  "parquet_sha256": "8480f6ae974ba29565cdae2d2916efbe6dab334c3fdbe199845ff9a9e47b4394",
+  "counts": {
+    "planned": 1606,
+    "passed": 1606,
+    "failed": 0,
+    "unattempted": 0,
+    "rows": 1606,
+    "duplicates": 0,
+    "invalid_latencies": 0
+  },
+  "kernel_counts": {
+    "CutlassFP8ScaledMMLinearKernel": 1606
+  },
+  "historical_coverage": {
+    "0.25.0": {
+      "matched_rows": 1606,
+      "missing_rows": 0,
+      "parquet_sha256": "ed7c42ae8477ff754b1450ac9a1177eaba8950d27371a2101796b04e0d7e9f1f"
+    },
+    "0.27.1": {
+      "matched_rows": 0,
+      "missing_rows": 1606,
+      "parquet_sha256": "e574270a362a422a963bafd25f41135a2163f560967ff769b6fb53310fb55081"
+    }
+  },
+  "failure_comparison": "0/1606 target versus0/1606 historically passing0.25FP8 keys; no unexplainedfailures. Originalpipeline76768546 attemptedzero and isnotaddedto denominator.",
+  "numerical_gate": {
+    "job": 2386315,
+    "cases": 66,
+    "result": "eager and graphpassed; existing frozen evidence"
+  },
+  "timing_decision": "66x3 older-donor probes median17.88percent/p9547.69percent requirefresh",
+  "checks": {
+    "requested_filters_equal_checkpoint_equal_unique_rows": true,
+    "case_plan_hash_rebuilt": true,
+    "runtime_pins_verified": true,
+    "errors_empty": true
+  },
+  "publication": "pendingdraftPRappendandconsumerchecks"
+}

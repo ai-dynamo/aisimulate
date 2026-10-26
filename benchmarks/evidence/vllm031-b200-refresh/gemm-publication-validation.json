@@ -1,7 +1,7 @@
 {
-  "merged_parquet_sha256": "dc4fc90b468518aa7f9ad0e6c5b6cc1cc32ecc512601522a58aedc3ec98202df",
-  "merged_rows": 111951,
-  "concatenation": "Existing canonical 74433 rows followed by all 37518 NVFP4 rows; no cross-event duplicate identities; no source rows modified.",
+  "merged_parquet_sha256": "265827609d7c201992f4963160cae06c3948f2d19d495082417095cc211b04f5",
+  "merged_rows": 113557,
+  "concatenation": "Initial canonical 74433, then NVFP4 37518, then exact older-baseline FP8 1606 rows. Original order and values preserved; events have disjoint identities.",
   "events": [
     {
       "rows": 74433,
@@ -12,9 +12,14 @@
       "rows": 37518,
       "parquet_sha256": "8b5b51b84c23923f598d0025ba438e5a35326446aee067a9a9cd1cf7bf171df4",
       "ordered_rows_sha256": "946b56344182f1b49a59263ebac77c04f0f28d150653cb0cae68f1e8c099a2e8"
+    },
+    {
+      "rows": 1606,
+      "parquet_sha256": "8480f6ae974ba29565cdae2d2916efbe6dab334c3fdbe199845ff9a9e47b4394",
+      "ordered_rows_sha256": "53f486524e24ec75181865acb1a96fe109373e31efcf300b94f130ecb8b617a4"
     }
   ],
   "row_fingerprint_format": "SHA256 of json.dumps(rows,sort_keys=True,separators=(comma,colon)), UTF-8",
   "status": "partial",
-  "remaining": "FP8 M>=2 not yet published; 740 GLM-specific cases per dtype were explicitly excluded from these campaign requests; 1110 historical block-FP8 failures remain."
+  "remaining": "35405 distinct FP8 M>=2 keys are a separate reuse scope, not fresh rows in this table. Explicitly deferred GLM cases and 1110 historical block-FP8 failures remain."
 }
