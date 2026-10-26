@@ -1,9 +1,11 @@
-# B200 MSA context resume seed
+# B200 MSA context CSR continuation seed
 
-These are preserved original-image results from GitLab pipeline76760660/job510058975, AISim source9b4de9dbc3fa721af0a3965d16f04d3c5dce89bf. The seed contains184 raw measured rows and the byte-exact checkpoint:184 done,44 failed. No generation results are included.
+This is a derived recovery seed, not a new measurement run. It preserves 6,514 unique original CSV rows: 184 measured by job 510058975 under source 9b4de9d and 6,330 by job 510388495 under source 362953. The original official runtime is unchanged. Parent and current provenance files retain exact identities, source hashes and failures.
 
-`msa_context_seed_provenance.json` maps every original row and failure to its source/runtime. The frozen image and manifest are unchanged. MSA measurement/dispatch code is byte-identical; the newer helper only repairs first-finalization duplicate recovery.
+The checkpoint has 6,514 done, 1,400 failed and 7,914 attempted. Six done keys were recovered only after matching complete raw records and native completion lines; four also needed their missing attempted IDs. No failed key was removed. Original job artifacts are unchanged.
 
-Resume only with the reviewed16,704-case context selection outside the confirmed native score-address limit. It restores184 successes and attempts16,520 remaining cases. Preserve all44 failed records. The collector may end with `UnresolvedFailures` even if every newly attempted case passes; this is retained failure evidence, not permission to retry or erase those cases. The original17,568-case context ledger also retains820 unattempted cases blocked by the same native address limit.
+The original context denominator stays 17,568. The exact exclusion file accounts for 864 native score-address cases and 2,712 Q>1 H12/H24 native CSR-ratio cases. The requested scope is 13,992; 6,514 already measured rows leave 7,478 callbacks. Q=1 H12/H24 remains admitted. Do not change backend, KV-head count or model identity to bypass native limits.
 
-This research seed is not a complete production dataset. Do not promote defaults or publish it independently. Keep generated data and per-case attempt accounting separate; the seed provenance must accompany resumed artifacts and any draft data publication.
+Use this seed only with the identical collector/runtime bytes and the reviewed exclusion list. Keep the original 44 score-address and 1,356 CSR failures. The existing UnresolvedFailures result is expected even if all newly selected work succeeds; never erase failures to force a green job. The other 820 score-address and 1,356 CSR cases are unattempted blockers, not observed failures.
+
+The seed contains raw results, not finalized production data. It does not qualify all shapes numerically or authorize data publication/default promotion. No old sidecar is invented. New aggregate finalizer provenance must retain this per-case old-source mapping.
