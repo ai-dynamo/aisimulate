@@ -428,6 +428,15 @@ use the same page table. This avoids overwriting attention KV with compressor
 state. See the native [allocator](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/worker/utils.py#L395)
 and [group placement](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/kv_cache_utils.py#L1669).
 
+Isolated FlashMLA HCA preserves the full model's CSA indexer layout constraint
+([native declaration](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/attention/backends/mla/indexer.py#L254)).
+Without that constraint, the isolated layer selects layer-outer `LBNHC`, and
+native page unification rejects its unequal MLA pages before execution.
+The adapter includes the native indexer's layout declaration when resolving
+HCA's layout; it does not instantiate an indexer or change attention dispatch.
+Explicit incompatible layouts still fail. CPU tests check HCA/CSA preference
+and rejection; numerical GPU qualification remains required after this fix.
+
 Standalone paged MQA retains its FP8 packed-cache inputs and native DeepGEMM
 wrapper call, whose target signature remains compatible. All six operations
 require fresh target measurements and a GPU smoke gate. CPU checks verify page
