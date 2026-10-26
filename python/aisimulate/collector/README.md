@@ -119,6 +119,15 @@ and [default decode selection](https://github.com/vllm-project/vllm/blob/db9527a
 These adapters enable GPU qualification; older MSA timing data remains subject
 to the refresh audit.
 
+MSA dummy-weight initialization preserves the native attention Q/K/V/probability
+scale buffers and their host values. These are runtime attention scales, not
+projection weight scales. The target fused FP8 cache writer uses identity scale;
+changing device scales alone would make Triton decode rescale stored K/V while
+MSA prefill reads the same bytes at identity scale. See
+[native scale initialization](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/model_executor/layers/attention/attention.py#L133)
+and [fused cache conversion](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/csrc/libtorch_stable/fused_minimax_m3_qknorm_rope_kv_insert_kernel.cu#L215).
+Projection weight-scale initialization and native backend selection are unchanged.
+
 # Preparation
 
 The vLLM 0.31.0 MoE collector probes the callable `FusedMoEFactory` for native

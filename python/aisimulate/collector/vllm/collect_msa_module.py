@@ -464,6 +464,11 @@ def _create_msa_attention_module(
         for name, tensor in list(attn_module.named_parameters()) + list(attn_module.named_buffers()):
             if tensor.is_meta:
                 continue
+            # Native MSA attention scales must retain their device/host values:
+            # model.py:499-501 and attention.py:133-154 @ vLLM db9527a4.
+            # The fused FP8 writer uses identity scale; these are not weight scales.
+            if name in {"_q_scale", "_k_scale", "_v_scale", "_prob_scale"}:
+                continue
             if tensor.dtype in (torch.float8_e4m3fn, torch.float8_e5m2, torch.uint8):
                 tensor.data.zero_()
             elif tensor.dtype == torch.float32 and "scale" in name:
