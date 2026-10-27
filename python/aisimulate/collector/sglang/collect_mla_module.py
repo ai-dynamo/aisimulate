@@ -485,6 +485,7 @@ def _model_native_gemm_quant(model_id: str) -> str | None:
     Returns one of ``"nvfp4"`` / ``"fp8_block"`` / ``None``. Raises
     ``ValueError`` for a ``MIXED_PRECISION`` export without an NVFP4 lane:
     SGLang resolves it to ``w4afp8``, which this collector has no path for.
+    It also raises when a ``self_attn`` lane is listed: the ``bfloat16`` DSA label assumes BF16 attention.
     """
     base = os.path.join(_MODEL_CONFIG_DIR, model_id.replace("/", "--"))
     quant_file = f"{base}_hf_quant_config.json"
@@ -513,10 +514,11 @@ def _model_native_gemm_quant(model_id: str) -> str | None:
         except Exception:
             pass
     # ModelOpt MIXED_PRECISION export: one quantization lane per module in ``quantized_layers``.
-    # Citations are file:line@release-tag under python/sglang/srt/. SGLang parses the ``config.json``
-    # ``quantization_config`` when present, else the ``hf_quant_config.json`` ``quantization`` section, and
-    # treats it as ModelOpt only when ``quant_method`` is absent or "modelopt"
-    # (configs/model_config.py:1034-1044, 1117-1123@v0.5.14).
+    # Citations are file:line@release-tag under python/sglang/srt/. SGLang gates the ``config.json``
+    # ``quantization_config`` on ``quant_method`` (configs/model_config.py:1034-1044@v0.5.14), reads
+    # ``compression_config`` next (:1044-1046), and parses ``hf_quant_config.json`` as ModelOpt unconditionally
+    # (:1117-1123). The gate is applied to both sections here because ModelOpt writes no other ``quant_method``
+    # into that file.
     # * 0.5.14, the pin: every MIXED_PRECISION export except NemotronH parses as ``w4afp8``
     #   (configs/model_config.py:1145-1151@v0.5.14). ``modelopt_fp4`` is then rejected inside ServerArgs, so a
     #   targeted case fails loudly: the compatibility map allows only ``modelopt`` and the check raises
@@ -530,13 +532,19 @@ def _model_native_gemm_quant(model_id: str) -> str | None:
     # So SGLang's lane test decides here: an NVFP4 lane returns "nvfp4" (the SM guard and the ``modelopt_fp4``
     # loader mapping apply). Without one SGLang resolves the export to ``w4afp8`` (NemotronH aside at 0.5.14), a
     # path this collector lacks, so the helper raises.
-    # Re-verify these lines at every SGLang version bump.
+    # Re-verify these lines at every SGLang version bump. Past 0.5.14 SGLang stops rejecting ``modelopt_fp4`` and
+    # overrides it to ``modelopt_mixed``, so this path goes from a loud failure to live data: re-derive the
+    # ``bfloat16`` label premise (no attention lane), the ``ModelOptMixedPrecisionConfig`` methods for unlisted
+    # modules and the KV cache, the section precedence including ``compression_config``, the ``quant_method`` gate,
+    # the exact match and the lane tuple, the NemotronH exception and the ``w4afp8`` fallback.
     quant_cfg = None
+    section = "config.json quantization_config"
     try:
         if os.path.exists(config_file):
             with open(config_file) as f:
                 quant_cfg = json.load(f).get("quantization_config")
         if quant_cfg is None and os.path.exists(quant_file):
+            section = "hf_quant_config.json quantization"
             with open(quant_file) as f:
                 quant_cfg = json.load(f).get("quantization")
     except Exception:
@@ -546,16 +554,25 @@ def _model_native_gemm_quant(model_id: str) -> str | None:
         and quant_cfg.get("quant_method", "modelopt") == "modelopt"
         and quant_cfg.get("quant_algo") == "MIXED_PRECISION"
     ):
-        lanes = (quant_cfg.get("quantized_layers") or {}).values()
+        lanes_map = quant_cfg.get("quantized_layers") or {}
+        attention_lanes = sorted(
+            name for name, lane in lanes_map.items() if isinstance(lane, dict) and "self_attn" in str(name)
+        )
+        if attention_lanes:
+            raise ValueError(
+                f"{model_id} is a ModelOpt MIXED_PRECISION export that quantizes attention modules "
+                f"({attention_lanes[:3]}): the DSA module label assumes BF16 attention projections "
+                "and cannot describe it"
+            )
         has_fp4_lane = any(
             str(lane.get("quant_algo", "")).upper() in {"NVFP4", "W4A16_NVFP4"}
-            for lane in lanes
+            for lane in lanes_map.values()
             if isinstance(lane, dict)
         )
         if has_fp4_lane:
             return "nvfp4"
         raise ValueError(
-            f"{model_id} is a ModelOpt MIXED_PRECISION export with no NVFP4 lane: "
+            f"{model_id} is a ModelOpt MIXED_PRECISION export with no NVFP4 lane in its {section}: "
             "SGLang resolves such an export to w4afp8, which this collector has no path for"
         )
     return None

@@ -144,6 +144,17 @@ class TestMixedPrecisionExport:
         _write_hf_quant(tmp_path, _mixed_hf_quant(GLM53_LANES))
         assert mod._model_native_gemm_quant(MODEL_ID) == "nvfp4"
 
+    def test_hf_quant_config_is_read_when_config_json_has_no_quantization_config(self, mod, tmp_path):
+        # Shape of nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4: config.json carries no
+        # quantization section and hf_quant_config.json holds the mixed export.
+        lanes = {
+            "backbone.layers.0.mixer.in_proj": {"quant_algo": "FP8"},
+            "backbone.layers.1.mixer.experts.0.down_proj": {"quant_algo": "W4A16_NVFP4", "group_size": 16},
+        }
+        _write_config(tmp_path)
+        _write_hf_quant(tmp_path, _mixed_hf_quant(lanes))
+        assert mod._model_native_gemm_quant(MODEL_ID) == "nvfp4"
+
     @pytest.mark.parametrize("fp4_lane", ["NVFP4", "nvfp4", "W4A16_NVFP4", "w4a16_nvfp4"])
     def test_fp8_and_fp4_lanes_select_the_nvfp4_loader(self, mod, tmp_path, fp4_lane):
         lanes = {
@@ -167,8 +178,41 @@ class TestMixedPrecisionExport:
         with pytest.raises(ValueError, match=rf"{MODEL_ID}.*w4afp8"):
             mod._model_native_gemm_quant(MODEL_ID)
 
+    def test_fp8_only_raise_names_the_config_json_section(self, mod, tmp_path):
+        # SGLang reads the config.json section and never looks at the NVFP4 lanes that
+        # hf_quant_config.json lists, so the message has to say which section was read.
+        fp8_lanes = {"model.layers.0.mlp.gate_proj": {"quant_algo": "FP8"}}
+        _write_hf_quant(tmp_path, _mixed_hf_quant(GLM53_LANES))
+        _write_config(tmp_path, _mixed_config(fp8_lanes))
+        with pytest.raises(ValueError, match=r"no NVFP4 lane in its config\.json quantization_config:"):
+            mod._model_native_gemm_quant(MODEL_ID)
+
+    def test_fp8_only_raise_names_the_hf_quant_config_section(self, mod, tmp_path):
+        fp8_lanes = {"model.layers.0.mlp.gate_proj": {"quant_algo": "FP8"}}
+        _write_hf_quant(tmp_path, _mixed_hf_quant(fp8_lanes))
+        with pytest.raises(ValueError, match=r"no NVFP4 lane in its hf_quant_config\.json quantization:"):
+            mod._model_native_gemm_quant(MODEL_ID)
+
+    def test_export_that_quantizes_attention_raises(self, mod, tmp_path):
+        # The bfloat16 DSA label assumes the attention projections are unquantized, so an export
+        # that lists a self_attn lane has no valid label.
+        lanes = {**GLM53_LANES, "model.layers.3.self_attn.q_b_proj": {"quant_algo": "NVFP4", "group_size": 16}}
+        _write_mixed_export(tmp_path, lanes)
+        with pytest.raises(ValueError, match=rf"{MODEL_ID}.*quantizes attention modules.*self_attn\.q_b_proj"):
+            mod._model_native_gemm_quant(MODEL_ID)
+
     def test_quant_method_other_than_modelopt_is_not_the_mixed_recipe(self, mod, tmp_path):
         _write_config(tmp_path, _mixed_config(GLM53_LANES, quant_method="compressed-tensors"))
+        assert mod._model_native_gemm_quant(MODEL_ID) is None
+
+    @pytest.mark.parametrize("section", ["config.json", "hf_quant_config.json"])
+    def test_lower_case_quant_algo_is_not_the_mixed_recipe(self, mod, tmp_path, section):
+        # SGLang compares quant_algo to "MIXED_PRECISION" exactly (configs/model_config.py:1145@v0.5.14,
+        # :1153@v0.5.15), so a lower-case value is not the mixed recipe to the framework either.
+        if section == "config.json":
+            _write_config(tmp_path, _mixed_config(GLM53_LANES, quant_algo="mixed_precision"))
+        else:
+            _write_hf_quant(tmp_path, {**_mixed_hf_quant(GLM53_LANES), "quant_algo": "mixed_precision"})
         assert mod._model_native_gemm_quant(MODEL_ID) is None
 
     def test_config_json_section_takes_precedence_over_hf_quant_config(self, mod, tmp_path):
@@ -235,9 +279,8 @@ class TestUnchangedExports:
 
 
 def test_bundled_glm53_nvfp4_export_selects_the_nvfp4_loader():
-    # Reads the bundled files, not tmp_path. On this branch the bundle is still the
-    # pure-NVFP4 copy (top-level quant_algo NVFP4), so this passes with and without the
-    # mixed-recipe rule. Once the bundle is the MIXED_PRECISION export, it passes only
-    # through that rule.
+    # Reads the bundled files, not tmp_path. The check passes on the pure-NVFP4 copy
+    # (top-level quant_algo NVFP4) through the top-level branch, and on the MIXED_PRECISION
+    # export only through the mixed rule.
     mod = _import_module()
     assert mod._model_native_gemm_quant("nvidia/GLM-5.3-NVFP4") == "nvfp4"
