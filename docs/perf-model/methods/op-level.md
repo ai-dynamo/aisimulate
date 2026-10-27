@@ -142,7 +142,8 @@ Version 1 retains its direct homogeneous prefill/decode queries and single-step
 decode behavior. It does not accept common forward-pass or mixed queries. For
 `predict_decode_latency_total(batch, total_past_kv_tokens)`, version 1 queries
 `[batch, total_past_kv_tokens / batch + 1, 0]`. Existing profile bytes and pins keep
-that meaning.
+that meaning. Saved model snapshots preserve the selected profile version and
+its query behavior when restored.
 
 Version 2 uses the ordinary common-API coordinate, without the extra token.
 For example, `predict_decode_latency_total(2, 8)` queries `[2, 5, 0]` in version 1

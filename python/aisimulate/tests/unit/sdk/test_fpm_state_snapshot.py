@@ -391,6 +391,12 @@ def test_execution_profile_is_copied_and_perf_data_packed(profile, tmp_path, pro
     path.unlink()
     restored = RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "packed")
     assert restored.predict_prefill_latency(1, 4, 0) == 6.0
+    query = [{"version": 1, "scheduled_requests": {"num_prefill_requests": 1, "sum_prefill_tokens": 4}}]
+    if profile_version == 1:
+        with pytest.raises(ValueError, match="schema_version 2"):
+            restored.estimate_forward_pass_time_ms(query)
+    else:
+        assert restored.estimate_forward_pass_time_ms(query) == 6.0
     assert restored.readiness_report() == model.readiness_report()
 
 
