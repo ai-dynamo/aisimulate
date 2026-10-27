@@ -462,9 +462,12 @@ loaded; restart the process to save a model of the current data. Pass
 to copy exactly the fingerprinted entries into the snapshot, pointing
 `systems_paths` (and `fpm_parquet_path`) at the copy. A `data_dir` outside
 the systems root can be referenced but not packed. A packed snapshot holds a
-copy of the system's whole data directory, so its size follows that data. All
-other inputs, including learned forests and online checkpoints, are always
-copied, so a packed snapshot needs no other file.
+copy of the system's whole data directory, so its size follows that data.
+Learned forests and online checkpoints are always copied. The model
+configuration is not: native restoration reads `model` again, from a
+configuration bundled with the package, a local directory or Hugging Face, so
+a packed native snapshot still needs it, and restoration fails if it compiles
+a different engine specification from the saved one.
 
 Snapshots record absolute paths and restore only from the directory they
 were saved to: `best_available(file=path)` raises `ValueError` unless `path`

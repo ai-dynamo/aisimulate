@@ -773,7 +773,9 @@ fn restore_verified(
     }
 
     // Verify referenced performance data before any of it is loaded: a
-    // changed file must report the fingerprint, not a loader failure.
+    // changed file must report the fingerprint, not a loader failure. Tables
+    // load lazily on first query, so no later hash here would cover every
+    // read; `to_file` hashes again and rejects data changed after this check.
     let parquet = base
         .estimator_config
         .fpm_interpolation
