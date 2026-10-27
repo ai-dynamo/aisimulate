@@ -3,7 +3,7 @@
 
 //! On-disk format of forward-pass model state snapshots.
 //!
-//! [`ForwardPassPerfModel::to_file`](crate::ForwardPassPerfModel::to_file)
+//! [`ForwardPassPerfModel::save_state_snapshot`](crate::ForwardPassPerfModel::save_state_snapshot)
 //! atomically writes a new directory:
 //!
 //! ```text

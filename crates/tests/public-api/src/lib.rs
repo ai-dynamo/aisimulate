@@ -1059,7 +1059,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let directory = root.path().join("snapshot");
         let pinned = model
-            .to_file(&directory, &StateSnapshotOptions::default())
+            .save_state_snapshot(&directory, &StateSnapshotOptions::default())
             .unwrap();
         let snapshot: &StateSnapshotConfig =
             pinned.estimator_config.state_snapshot.as_ref().unwrap();

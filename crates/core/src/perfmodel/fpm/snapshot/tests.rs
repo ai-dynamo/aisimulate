@@ -273,7 +273,7 @@ fn check_round_trip(
         "warm-up must change estimates, or the round trip cannot detect lost state",
     );
     let pinned = original
-        .to_file(root.join("saved"), &StateSnapshotOptions::default())
+        .save_state_snapshot(root.join("saved"), &StateSnapshotOptions::default())
         .unwrap();
     assert_eq!(
         serde_json::from_slice::<ForwardPassPerfModelConfig>(
@@ -300,7 +300,7 @@ fn check_round_trip(
     assert_eq!(observables(&frozen, queries), expected);
     // Re-saving a restored model reproduces the state bytes exactly.
     frozen
-        .to_file(root.join("resaved"), &StateSnapshotOptions::default())
+        .save_state_snapshot(root.join("resaved"), &StateSnapshotOptions::default())
         .unwrap();
     assert_state_files(&root.join("resaved"), &before);
 
@@ -325,13 +325,13 @@ fn check_round_trip(
         observables(&original, queries)
     );
     original
-        .to_file(
+        .save_state_snapshot(
             root.join("original-final"),
             &StateSnapshotOptions::default(),
         )
         .unwrap();
     resumed
-        .to_file(root.join("resumed-final"), &StateSnapshotOptions::default())
+        .save_state_snapshot(root.join("resumed-final"), &StateSnapshotOptions::default())
         .unwrap();
     assert_state_files(
         &root.join("resumed-final"),
@@ -620,7 +620,7 @@ fn native_snapshot_rejects_changed_perf_data_and_engine_spec() {
         .tune_with_fpms(&native_stream(&model, 31, 20))
         .unwrap();
     let pinned = model
-        .to_file(dir.path().join("snap"), &StateSnapshotOptions::default())
+        .save_state_snapshot(dir.path().join("snap"), &StateSnapshotOptions::default())
         .unwrap();
     let load = native_load_with(fixture_engine());
     load(pinned.clone()).unwrap();
@@ -708,7 +708,7 @@ fn packed_perf_db_is_self_contained_and_verified() {
         .tune_with_fpms(&native_stream(&model, 41, 30))
         .unwrap();
     let pinned = model
-        .to_file(
+        .save_state_snapshot(
             dir.path().join("packed"),
             &StateSnapshotOptions {
                 include_perf_db: true,
@@ -767,13 +767,13 @@ fn external_fpm_data_is_fingerprinted_at_load_and_packed() {
         .tune_with_fpms(&native_stream(&model, 43, 40))
         .unwrap();
     let reference = model
-        .to_file(
+        .save_state_snapshot(
             dir.path().join("reference"),
             &StateSnapshotOptions::default(),
         )
         .unwrap();
     let packed = model
-        .to_file(
+        .save_state_snapshot(
             dir.path().join("packed"),
             &StateSnapshotOptions {
                 include_perf_db: true,
@@ -824,7 +824,7 @@ fn external_fpm_data_is_fingerprinted_at_load_and_packed() {
             "{error}"
         );
         let error = model
-            .to_file(
+            .save_state_snapshot(
                 dir.path().join("after-change"),
                 &StateSnapshotOptions::default(),
             )
@@ -853,7 +853,7 @@ fn external_fpm_data_is_fingerprinted_at_load_and_packed() {
     let mut bare = ForwardPassPerfModel::from_engine(fixture_engine(), Default::default());
     bare.provenance = model.provenance.clone();
     let error = bare
-        .to_file(dir.path().join("bare"), &StateSnapshotOptions::default())
+        .save_state_snapshot(dir.path().join("bare"), &StateSnapshotOptions::default())
         .unwrap_err();
     assert!(
         error
@@ -1373,7 +1373,7 @@ fn saved_regression(dir: &Path) -> ForwardPassPerfModelConfig {
         .tune_with_fpms(&stream(AGG, 101, 80, true, false))
         .unwrap();
     model
-        .to_file(dir.join("snap"), &StateSnapshotOptions::default())
+        .save_state_snapshot(dir.join("snap"), &StateSnapshotOptions::default())
         .unwrap()
 }
 
@@ -1756,7 +1756,7 @@ fn fuzz_state(
                 let _ = model.tune_with_fpms(next);
                 let _ = predictions(&model, queries);
                 let _ = (model.readiness_report(), model.diagnostics());
-                let _ = model.to_file(&trial, &StateSnapshotOptions::default());
+                let _ = model.save_state_snapshot(&trial, &StateSnapshotOptions::default());
                 true
             }));
             match outcome {
@@ -1780,7 +1780,7 @@ fn tuned_snapshot(
 ) -> ForwardPassPerfModelConfig {
     model.tune_with_fpms(warm).unwrap();
     model
-        .to_file(dir.join(name), &StateSnapshotOptions::default())
+        .save_state_snapshot(dir.join(name), &StateSnapshotOptions::default())
         .unwrap()
 }
 
@@ -1957,7 +1957,7 @@ fn corrupted_online_checkpoint_behind_repinned_digests_never_panics() {
                 let _ = model.flush_updates();
                 let _ = predictions(&model, &queries);
                 let _ = model.learned_online_diagnostics();
-                let _ = model.to_file(&trial, &StateSnapshotOptions::default());
+                let _ = model.save_state_snapshot(&trial, &StateSnapshotOptions::default());
                 true
             }));
             match outcome {
@@ -2132,7 +2132,7 @@ fn state_invariant_violations_are_rejected_before_they_can_panic() {
     std::fs::write(&forest, forest_artifact(AGG, None, None)).unwrap();
     let learned = best(learned_frozen_config(AGG, &forest, CorrectionMode::Fixed)).unwrap();
     learned
-        .to_file(
+        .save_state_snapshot(
             artifact.path().join("learned"),
             &StateSnapshotOptions::default(),
         )
@@ -2161,7 +2161,7 @@ fn correction_spline_and_selector_invariants_are_rejected() {
         .tune_with_fpms(&stream(DECODE, 111, 30, false, false))
         .unwrap();
     let pinned = model
-        .to_file(dir.path().join("hybrid"), &StateSnapshotOptions::default())
+        .save_state_snapshot(dir.path().join("hybrid"), &StateSnapshotOptions::default())
         .unwrap();
     let decode_dynamic = |value: &mut serde_json::Value| -> serde_json::Value {
         value["state"]["Learned"]["corrections"]["decode"]["Hybrid"]["dynamic"].clone()
@@ -2235,7 +2235,7 @@ fn correction_spline_and_selector_invariants_are_rejected() {
         .tune_with_fpms(&stream(DECODE, 121, 60, false, false))
         .unwrap();
     let pinned = spline
-        .to_file(dir.path().join("spline"), &StateSnapshotOptions::default())
+        .save_state_snapshot(dir.path().join("spline"), &StateSnapshotOptions::default())
         .unwrap();
     fn spline_store(value: &mut serde_json::Value) -> &mut serde_json::Value {
         &mut value["state"]["Regression"]["stores"]["stores"][0][1]["Spline"]
@@ -2298,7 +2298,7 @@ fn correction_spline_and_selector_invariants_are_rejected() {
         .tune_with_fpms(&stream(DECODE, 131, 12, false, false))
         .unwrap();
     let pinned = selector
-        .to_file(
+        .save_state_snapshot(
             dir.path().join("selector"),
             &StateSnapshotOptions::default(),
         )
@@ -2337,7 +2337,7 @@ fn learned_files_are_pinned_and_snapshot_destinations_are_never_replaced() {
     let model = best(config).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let pinned = model
-        .to_file(dir.path().join("snap"), &StateSnapshotOptions::default())
+        .save_state_snapshot(dir.path().join("snap"), &StateSnapshotOptions::default())
         .unwrap();
     let root = dir.path().join("snap");
     let stable = root.join(STABLE_ARTIFACT_FILE);
@@ -2350,13 +2350,13 @@ fn learned_files_are_pinned_and_snapshot_destinations_are_never_replaced() {
 
     // An existing destination, even empty, is an error and is left intact.
     let error = model
-        .to_file(&root, &StateSnapshotOptions::default())
+        .save_state_snapshot(&root, &StateSnapshotOptions::default())
         .unwrap_err();
     assert!(error.to_string().contains("already exists"), "{error}");
     std::fs::create_dir(dir.path().join("empty")).unwrap();
     assert!(
         model
-            .to_file(dir.path().join("empty"), &StateSnapshotOptions::default())
+            .save_state_snapshot(dir.path().join("empty"), &StateSnapshotOptions::default())
             .is_err()
     );
     // Failed saves leave no staging directories behind.
@@ -2368,7 +2368,7 @@ fn learned_files_are_pinned_and_snapshot_destinations_are_never_replaced() {
     assert!(leftovers.is_empty(), "{leftovers:?}");
     // Native models need provenance to be restorable.
     let error = ForwardPassPerfModel::from_engine(fixture_engine(), Default::default())
-        .to_file(
+        .save_state_snapshot(
             dir.path().join("no-provenance"),
             &StateSnapshotOptions::default(),
         )
@@ -2483,7 +2483,7 @@ fn topology_and_inspection_expose_the_pinned_identity_without_loading() {
         })
     );
     model
-        .to_file(dir.path().join("snap"), &StateSnapshotOptions::default())
+        .save_state_snapshot(dir.path().join("snap"), &StateSnapshotOptions::default())
         .unwrap();
     let summary = ForwardPassPerfModel::inspect_state_snapshot(dir.path().join("snap")).unwrap();
     assert_eq!(summary.kind, StateSnapshotKind::Native);
@@ -2514,7 +2514,7 @@ fn saved_configuration_survives_json_and_float_round_trips() {
         .tune_with_fpms(&stream(AGG, 171, 40, false, false))
         .unwrap();
     let pinned = model
-        .to_file(dir.path().join("snap"), &StateSnapshotOptions::default())
+        .save_state_snapshot(dir.path().join("snap"), &StateSnapshotOptions::default())
         .unwrap();
     let text = serde_json::to_string(&pinned).unwrap();
     let reloaded: ForwardPassPerfModelConfig = serde_json::from_str(&text).unwrap();
@@ -2735,7 +2735,7 @@ fn state_layout_v1_matches_an_independent_decoder() {
         .tune_with_fpms(&stream(DECODE, 181, 70, false, false))
         .unwrap();
     regression
-        .to_file(
+        .save_state_snapshot(
             dir.path().join("regression"),
             &StateSnapshotOptions::default(),
         )
@@ -2782,7 +2782,7 @@ fn state_layout_v1_matches_an_independent_decoder() {
             .unwrap();
         let path = dir.path().join(expected);
         learned
-            .to_file(&path, &StateSnapshotOptions::default())
+            .save_state_snapshot(&path, &StateSnapshotOptions::default())
             .unwrap();
         let layout_v1::State::Learned { corrections } = decode_v1(&path.join(STATE_FILE)).state
         else {
@@ -2818,7 +2818,7 @@ fn state_layout_v1_matches_an_independent_decoder() {
         .tune_with_fpms(&stream(DECODE, 201, 9, false, false))
         .unwrap();
     selector
-        .to_file(
+        .save_state_snapshot(
             dir.path().join("selector"),
             &StateSnapshotOptions::default(),
         )

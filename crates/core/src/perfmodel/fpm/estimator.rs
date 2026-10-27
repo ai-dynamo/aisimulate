@@ -22,7 +22,7 @@ pub struct EstimatorConfig {
     #[serde(skip_serializing_if = "SelectorConfig::is_default")]
     pub selector: SelectorConfig,
     pub correction: CorrectionConfig,
-    /// Restore tuned state written by `ForwardPassPerfModel::to_file`.
+    /// Restore tuned state written by `ForwardPassPerfModel::save_state_snapshot`.
     /// Absent for ordinary construction and omitted from serialization.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state_snapshot: Option<StateSnapshotConfig>,
@@ -32,7 +32,7 @@ pub struct EstimatorConfig {
 /// [`ForwardPassPerfModel::best_available`](crate::ForwardPassPerfModel::best_available).
 ///
 /// `path` names a directory written by
-/// [`ForwardPassPerfModel::to_file`](crate::ForwardPassPerfModel::to_file).
+/// [`ForwardPassPerfModel::save_state_snapshot`](crate::ForwardPassPerfModel::save_state_snapshot).
 /// Normalization makes it absolute (lexically normalized, symlinks kept) and
 /// pins `sha256` to the exact bytes of
 /// `<path>/manifest.json`; a supplied digest that differs is an error. The
@@ -85,7 +85,7 @@ impl StateSnapshotConfig {
     /// Anchor the directory and bind the manifest bytes before caller caches
     /// use the resolved configuration. Relative paths resolve against the
     /// working directory and are normalized lexically, without resolving
-    /// symlinks, matching the path `to_file` records. The manifest read is
+    /// symlinks, matching the path `save_state_snapshot` records. The manifest read is
     /// bounded.
     pub(crate) fn resolve_source(&mut self) -> Result<(), AicError> {
         use sha2::{Digest, Sha256};

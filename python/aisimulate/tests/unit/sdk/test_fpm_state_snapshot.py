@@ -123,11 +123,11 @@ def _continue(config: dict) -> dict:
     return config
 
 
-def test_to_file_round_trips_through_file_config_and_dataclass(tmp_path):
+def test_state_snapshot_round_trips_through_directory_config_and_dataclass(tmp_path):
     model = RustForwardPassPerfModel.best_available(_regression_config())
     model.tune_with_fpms(_stream(1, 120))
     queries = _queries()
-    pinned = model.to_file(tmp_path / "snap")
+    pinned = model.save_state_snapshot(tmp_path / "snap")
     assert pinned == json.loads((tmp_path / "snap" / "config.json").read_text())
     snapshot = pinned["estimator_config"]["state_snapshot"]
     # Pinned paths are absolute and lexically normalized; symlinks are kept.
@@ -135,7 +135,7 @@ def test_to_file_round_trips_through_file_config_and_dataclass(tmp_path):
     assert snapshot["on_tune"] == "reject"
     assert len(snapshot["sha256"]) == 64
     for restored in (
-        RustForwardPassPerfModel.best_available(file=tmp_path / "snap"),
+        RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "snap"),
         RustForwardPassPerfModel.best_available(pinned),
         RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**pinned)),
     ):
@@ -148,15 +148,15 @@ def test_to_file_round_trips_through_file_config_and_dataclass(tmp_path):
     with pytest.raises(TypeError, match="exactly one"):
         RustForwardPassPerfModel.best_available()
     with pytest.raises(TypeError, match="exactly one"):
-        RustForwardPassPerfModel.best_available(pinned, file=tmp_path / "snap")
+        RustForwardPassPerfModel.best_available(pinned, state_snapshot=tmp_path / "snap")
     with pytest.raises(ValueError, match="already exists"):
-        model.to_file(tmp_path / "snap")
+        model.save_state_snapshot(tmp_path / "snap")
 
 
 def test_snapshot_mismatches_fail_instead_of_selecting_another_model(tmp_path):
     model = RustForwardPassPerfModel.best_available(_regression_config())
     model.tune_with_fpms(_stream(3, 40))
-    pinned = model.to_file(tmp_path / "snap")
+    pinned = model.save_state_snapshot(tmp_path / "snap")
     changed = json.loads(json.dumps(pinned))
     changed["estimator_config"]["fpm_regression"]["min_observations"] = 6
     with pytest.raises(ValueError, match="pinned identity at estimator_config.fpm_regression.min_observations"):
@@ -172,7 +172,7 @@ def test_snapshot_mismatches_fail_instead_of_selecting_another_model(tmp_path):
         RustForwardPassPerfModel.best_available(stale)
     (tmp_path / "snap" / "state.bin").write_bytes(b"corrupt")
     with pytest.raises(ValueError, match="state.bin does not match its manifest"):
-        RustForwardPassPerfModel.best_available(file=tmp_path / "snap")
+        RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "snap")
 
 
 _CHILD = """
@@ -188,7 +188,7 @@ for query in request["queries"]:
     value = model.estimate_forward_pass_time_ms(query)
     bits.append(None if value is None else struct.pack(">d", value).hex())
 if request["save"]:
-    model.to_file(request["save"])
+    model.save_state_snapshot(request["save"])
 print(json.dumps({"bits": bits, "readiness": model.readiness_report()}))
 """
 
@@ -211,7 +211,7 @@ def _digest(path: Path) -> str:
 def test_continued_tuning_in_another_process_matches_the_uninterrupted_model(tmp_path, worker):
     model = RustForwardPassPerfModel.best_available(_regression_config(worker))
     model.tune_with_fpms(_stream(5, 90, worker))
-    pinned = model.to_file(tmp_path / "snap")
+    pinned = model.save_state_snapshot(tmp_path / "snap")
     queries = _queries(worker)
     next_stream = _stream(6, 60, worker)
     chunks = [next_stream[index : index + 7] for index in range(0, len(next_stream), 7)]
@@ -220,7 +220,7 @@ def test_continued_tuning_in_another_process_matches_the_uninterrupted_model(tmp
         model.tune_with_fpms(chunk)
     assert child["bits"] == _bits(model, queries)
     assert child["readiness"] == model.readiness_report()
-    model.to_file(tmp_path / "parent")
+    model.save_state_snapshot(tmp_path / "parent")
     assert _digest(tmp_path / "child" / "state.bin") == _digest(tmp_path / "parent" / "state.bin")
     # A cold model fed only the continuation differs, so equality is evidence.
     cold = RustForwardPassPerfModel.best_available(_regression_config(worker))
@@ -250,11 +250,11 @@ def test_from_learned_snapshot_restores_without_identity(tmp_path):
     model = RustForwardPassPerfModel.from_learned(artifact, {"min_observations": 2})
     model.tune_with_fpms(_stream(7, 30, "decode"))
     queries = _queries("decode")
-    model.to_file(tmp_path / "snap")
+    model.save_state_snapshot(tmp_path / "snap")
     summary = RustForwardPassPerfModel.inspect_state_snapshot(tmp_path / "snap")
     assert summary["kind"] == "learned_without_identity"
     assert summary["identity"] is None and summary["topology"] is None
-    restored = RustForwardPassPerfModel.best_available(file=tmp_path / "snap")
+    restored = RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "snap")
     assert _bits(restored, queries) == _bits(model, queries)
     assert restored.deployment_topology() is None
 
@@ -288,14 +288,14 @@ def test_readiness_topology_and_launch_compatibility_without_loading(tmp_path):
     topology = model.deployment_topology()
     assert (topology["worker_type"], topology["tp"], topology["attention_dp"]) == ("aggregated", 1, 1)
     assert topology["correction_limits"] is None
-    model.to_file(tmp_path / "snap")
+    model.save_state_snapshot(tmp_path / "snap")
     summary = RustForwardPassPerfModel.inspect_state_snapshot(tmp_path / "snap")
     assert summary["kind"] == "regression"
     assert summary["readiness"] == report
     assert summary["topology"] == topology
     # The same Rust rules engine launch enforces, reported as a list.
     assert RustForwardPassPerfModel.config_engine_launch_mismatches(
-        {"dp_size": 8, "tensor_parallel_size": 2}, file=tmp_path / "snap"
+        {"dp_size": 8, "tensor_parallel_size": 2}, state_snapshot=tmp_path / "snap"
     ) == ["tensor_parallel_size conflicts with canonical tp", "dp_size conflicts with canonical attention_dp"]
     assert model.engine_launch_mismatches({"engine": {"worker_type": "decode"}}) == [
         "AIS worker_type must match engine role"
@@ -341,20 +341,20 @@ def test_native_snapshot_pins_engine_and_perf_data_across_processes(tmp_path):
     cold = RustForwardPassPerfModel.best_available(config)
     model.tune_with_fpms(_native_stream(cold, 11, 48))
     queries = _queries()
-    reference = model.to_file(tmp_path / "reference")
-    packed = model.to_file(tmp_path / "packed", include_perf_db=True)
+    reference = model.save_state_snapshot(tmp_path / "reference")
+    packed = model.save_state_snapshot(tmp_path / "packed", include_perf_db=True)
     assert packed["systems_paths"] == [os.path.abspath(tmp_path / "packed" / "perf_db" / "systems")]
     assert reference["systems_paths"] == [os.path.abspath(root)]
     expected = _bits(model, queries)
     # A fresh interpreter recompiles the engine; its spec digest must match.
     assert _child(packed, [], queries, None)["bits"] == expected
-    assert _bits(RustForwardPassPerfModel.best_available(file=tmp_path / "reference"), queries) == expected
+    assert _bits(RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "reference"), queries) == expected
     # Changing referenced data invalidates only the reference snapshot.
     data = next((root / "data" / "h200_sxm").rglob("*.parquet"))
     data.write_bytes(data.read_bytes() + b"\0")
     with pytest.raises(ValueError, match="fingerprint"):
-        RustForwardPassPerfModel.best_available(file=tmp_path / "reference")
-    assert _bits(RustForwardPassPerfModel.best_available(file=tmp_path / "packed"), queries) == expected
+        RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "reference")
+    assert _bits(RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "packed"), queries) == expected
 
 
 def test_execution_profile_is_copied_and_perf_data_packed(profile, tmp_path):  # noqa: F811
@@ -362,7 +362,7 @@ def test_execution_profile_is_copied_and_perf_data_packed(profile, tmp_path):  #
     model = RustForwardPassPerfModel.best_available(config)
     # Synthetic oracle from the profile fixture: three repetitions of 2 ms.
     assert model.predict_prefill_latency(1, 4, 0) == 6.0
-    pinned = model.to_file(tmp_path / "packed", include_perf_db=True)
+    pinned = model.save_state_snapshot(tmp_path / "packed", include_perf_db=True)
     selection = pinned["estimator_config"]["op_level"]["execution_profile"]
     assert selection == {
         "path": os.path.abspath(tmp_path / "packed" / "execution_profile.json"),
@@ -374,32 +374,32 @@ def test_execution_profile_is_copied_and_perf_data_packed(profile, tmp_path):  #
         str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()
     )
     path.unlink()
-    restored = RustForwardPassPerfModel.best_available(file=tmp_path / "packed")
+    restored = RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "packed")
     assert restored.predict_prefill_latency(1, 4, 0) == 6.0
     assert restored.readiness_report() == model.readiness_report()
 
 
-def test_file_must_name_the_pinned_directory_and_io_errors_are_os_errors(tmp_path):
+def test_state_snapshot_must_name_the_pinned_directory_and_io_errors_are_os_errors(tmp_path):
     from aisimulate_core.sdk.errors import PerfDataNotAvailableError
 
     model = RustForwardPassPerfModel.best_available(_regression_config())
     model.tune_with_fpms(_stream(13, 40))
-    pinned = model.to_file(tmp_path / "snap")
+    pinned = model.save_state_snapshot(tmp_path / "snap")
     queries = _queries()
     # Restoration reads the pinned path, so a copy must not silently restore it.
     shutil.copytree(tmp_path / "snap", tmp_path / "copy")
     with pytest.raises(ValueError, match="pinned to .*snap"):
-        RustForwardPassPerfModel.best_available(file=tmp_path / "copy")
+        RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "copy")
     # Another name for the same directory is the same snapshot.
     (tmp_path / "alias").symlink_to(tmp_path / "snap", target_is_directory=True)
-    restored = RustForwardPassPerfModel.best_available(file=tmp_path / "alias")
+    restored = RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "alias")
     assert _bits(restored, queries) == _bits(model, queries)
-    # Missing snapshots raise the same OSError subclass through file= and
+    # Missing snapshots raise the same OSError subclass through state_snapshot= and
     # config=, never the skippable missing-performance-data class.
     missing = json.loads(json.dumps(pinned))
     missing["estimator_config"]["state_snapshot"]["path"] = str(tmp_path / "missing")
     for call in (
-        lambda: RustForwardPassPerfModel.best_available(file=tmp_path / "missing"),
+        lambda: RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "missing"),
         lambda: RustForwardPassPerfModel.best_available(missing),
         lambda: RustForwardPassPerfModel.inspect_state_snapshot(tmp_path / "missing"),
     ):
@@ -408,7 +408,7 @@ def test_file_must_name_the_pinned_directory_and_io_errors_are_os_errors(tmp_pat
         assert not isinstance(caught.value, PerfDataNotAvailableError)
     (tmp_path / "not-a-directory").write_text("")
     with pytest.raises(OSError) as caught:
-        model.to_file(tmp_path / "not-a-directory" / "snap")
+        model.save_state_snapshot(tmp_path / "not-a-directory" / "snap")
     assert not isinstance(caught.value, (PerfDataNotAvailableError, ValueError))
 
 
@@ -462,15 +462,15 @@ def test_fpm_interpolation_snapshots_restore_continue_and_pack_external_data(tmp
     model.tune_with_fpms(_interpolation_stream(cold, 11, 60, 0.8))
     saved = _bits(model, queries)
     assert saved != untuned
-    pinned = model.to_file(tmp_path / "snap")
-    packed = model.to_file(tmp_path / "packed", include_perf_db=True)
+    pinned = model.save_state_snapshot(tmp_path / "snap")
+    packed = model.save_state_snapshot(tmp_path / "packed", include_perf_db=True)
     source = config.to_dict()["estimator_config"]["fpm_interpolation"]["fpm_parquet_path"]
     packed_parquet = packed["estimator_config"]["fpm_interpolation"]["fpm_parquet_path"]
     assert packed_parquet == os.path.join(os.path.abspath(tmp_path / "packed"), "perf_db", "fpm", Path(source).name)
     assert Path(packed_parquet).with_suffix(".metadata.json").is_file()
     assert pinned["estimator_config"]["fpm_interpolation"]["fpm_parquet_path"] == source
 
-    frozen = RustForwardPassPerfModel.best_available(file=tmp_path / "snap")
+    frozen = RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "snap")
     assert _bits(frozen, queries) == saved
     assert _state(frozen) == _state(model)
 
@@ -484,7 +484,7 @@ def test_fpm_interpolation_snapshots_restore_continue_and_pack_external_data(tmp
         cold.tune_with_fpms(chunk)
     assert child["bits"] == _bits(model, queries)
     assert child["readiness"] == model.readiness_report()
-    model.to_file(tmp_path / "parent")
+    model.save_state_snapshot(tmp_path / "parent")
     assert _digest(tmp_path / "child" / "state.bin") == _digest(tmp_path / "parent" / "state.bin")
     assert _bits(cold, queries) != _bits(model, queries)
 
@@ -494,9 +494,9 @@ def test_fpm_interpolation_snapshots_restore_continue_and_pack_external_data(tmp
     with open(source, "ab") as handle:
         handle.write(b"\0")
     with pytest.raises(ValueError, match="differs from the snapshot fingerprint"):
-        RustForwardPassPerfModel.best_available(file=tmp_path / "snap")
+        RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "snap")
     with pytest.raises(ValueError, match="changed after this process loaded it"):
-        model.to_file(tmp_path / "after-change")
+        model.save_state_snapshot(tmp_path / "after-change")
     assert not (tmp_path / "after-change").exists()
     assert _child(packed, [], queries, None)["bits"] == saved
 
@@ -507,15 +507,15 @@ def test_perf_data_fingerprint_is_taken_when_this_process_loads_it(tmp_path):
     cold = RustForwardPassPerfModel.best_available(config)
     model.tune_with_fpms(_interpolation_stream(cold, 21, 30, 0.8))
     queries = _interpolation_queries()
-    before = model.to_file(tmp_path / "before")
+    before = model.save_state_snapshot(tmp_path / "before")
     # A semantically neutral edit to the sidecar still changes the inputs.
     source = config.to_dict()["estimator_config"]["fpm_interpolation"]["fpm_parquet_path"]
     sidecar = Path(source).with_suffix(".metadata.json")
     sidecar.write_text(sidecar.read_text() + "\n")
     with pytest.raises(ValueError, match="changed after this process loaded it"):
-        model.to_file(tmp_path / "after")
+        model.save_state_snapshot(tmp_path / "after")
     with pytest.raises(ValueError, match="differs from the snapshot fingerprint"):
-        RustForwardPassPerfModel.best_available(file=tmp_path / "before")
+        RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "before")
     # A fresh process loads the changed data, so its own fingerprint can save.
     stream = _interpolation_stream(cold, 22, 14, 0.8)
     child = _child(config.to_dict(), [stream], queries, tmp_path / "fresh")
@@ -721,7 +721,7 @@ def test_every_kind_continues_in_another_process_like_the_uninterrupted_model(tm
     if kind in ("online", "causal_selector"):
         stores = model.learned_online_diagnostics()["stores"].values()
         assert sum(store["rebuilt_nodes"] for store in stores) > 0
-    pinned = model.to_file(tmp_path / "snap")
+    pinned = model.save_state_snapshot(tmp_path / "snap")
     chunks = [next_stream[index : index + 7] for index in range(0, len(next_stream), 7)]
     child = _child(_continue(pinned), chunks, queries, tmp_path / "child")
     for chunk in chunks:
@@ -729,7 +729,7 @@ def test_every_kind_continues_in_another_process_like_the_uninterrupted_model(tm
         cold.tune_with_fpms(chunk)
     assert child["bits"] == _bits(model, queries)
     assert child["readiness"] == model.readiness_report()
-    model.to_file(tmp_path / "parent")
+    model.save_state_snapshot(tmp_path / "parent")
     compared = [name for name in _STATE_FILES if (tmp_path / "parent" / name).exists()]
     assert compared and compared == [name for name in _STATE_FILES if (tmp_path / "child" / name).exists()]
     for name in compared:

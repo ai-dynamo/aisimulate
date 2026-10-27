@@ -246,8 +246,8 @@ fields report their nested paths. The supported namespaces are:
   [learned configuration field tables](fpm_ml/configuration.md).
 - `selector`: expert selection controls for learned
   `adaptation: causal_selector`, documented on the same learned configuration page.
-- `state_snapshot`: restores a model saved by `to_file`, including its tuned
-  state. See [state snapshots](#state-snapshots).
+- `state_snapshot`: restores a model saved by `save_state_snapshot`,
+  including its tuned state. See [state snapshots](#state-snapshots).
 - `correction`: `enabled` (false for standalone online learned mode, true otherwise),
   `mode` (`auto`), independent `sampling`, `min_observations`
   (5), `factor_bounds` (min 0.5, max 2.0), and the existing `max_num_tokens`
@@ -378,25 +378,25 @@ For direct measurement coverage see [Whole-forward FPM](methods/whole-forward.md
 ### State snapshots
 
 Configuration describes a cold model. To keep what a model has learned from
-`tune_with_fpms()`, save it with `model.to_file(path)` (Rust:
-`ForwardPassPerfModel::to_file(path, &StateSnapshotOptions)`). Saving
-atomically writes a new directory and returns the pinned canonical
-configuration, which is also written to `path/config.json`. Restore through the
-same constructor: `RustForwardPassPerfModel.best_available(file=path)` reads
-that file, and passing the returned configuration is equivalent. There is no
+`tune_with_fpms()`, save it with `model.save_state_snapshot(path)` (Rust:
+`ForwardPassPerfModel::save_state_snapshot(path, &StateSnapshotOptions)`).
+Saving atomically writes a new directory and returns the pinned canonical
+configuration, which is also written to `path/config.json`. Restore through
+the same constructor: `RustForwardPassPerfModel.best_available(state_snapshot=path)`
+reads that file, and passing the returned configuration is equivalent. There is no
 separate loader; `best_available` restores whenever
 `estimator_config.state_snapshot` is present.
 
 ```python
-config = model.to_file("/tmp/decode-snapshot")
-frozen = RustForwardPassPerfModel.best_available(file="/tmp/decode-snapshot")
+config = model.save_state_snapshot("/tmp/decode-snapshot")
+frozen = RustForwardPassPerfModel.best_available(state_snapshot="/tmp/decode-snapshot")
 config["estimator_config"]["state_snapshot"]["on_tune"] = "continue"
 resumed = RustForwardPassPerfModel.best_available(config)
 ```
 
 | Field | Default | Behavior |
 | --- | --- | --- |
-| `estimator_config.state_snapshot.path` | required | Snapshot directory written by `to_file`. Normalization makes it absolute against the working directory and removes `.` and `..` lexically; symbolic links are kept, so a stable mount alias stays valid. |
+| `estimator_config.state_snapshot.path` | required | Snapshot directory written by `save_state_snapshot`. Normalization makes it absolute against the working directory and removes `.` and `..` lexically; symbolic links are kept, so a stable mount alias stays valid. |
 | `estimator_config.state_snapshot.sha256` | `null` | SHA-256 of `path/manifest.json`. Normalization fills it; a supplied value that differs is an error. |
 | `estimator_config.state_snapshot.on_tune` | `reject` | `reject` makes `tune_with_fpms()` and `flush_updates()` return an error. `continue` resumes tuning from the saved state exactly as the saving model would have continued. |
 
@@ -456,8 +456,8 @@ fingerprint too. Like the resolvers, the fingerprint follows symbolic links,
 records an unresolvable link without reading it, and skips dot-prefixed and
 non-UTF-8 names. A native model fingerprints its data when the process first
 loads that systems root; later constructions reuse that result.
-`to_file` fingerprints the data again and fails if it changed since it was
-loaded; restart the process to save a model of the current data. Pass
+`save_state_snapshot` fingerprints the data again and fails if it changed
+since it was loaded; restart the process to save a model of the current data. Pass
 `include_perf_db=True` (Rust: `StateSnapshotOptions { include_perf_db: true }`)
 to copy exactly the fingerprinted entries into the snapshot, pointing
 `systems_paths` (and `fpm_parquet_path`) at the copy. A `data_dir` outside
@@ -470,8 +470,8 @@ a packed native snapshot still needs it, and restoration fails if it compiles
 a different engine specification from the saved one.
 
 Snapshot configurations pin absolute paths. Restoration reads the pinned
-`state_snapshot.path`, so `best_available(file=path)` raises `ValueError`
-unless `path` is the directory the snapshot was saved to (compared with
+`state_snapshot.path`, so `best_available(state_snapshot=path)` raises
+`ValueError` unless `path` is the directory the snapshot was saved to (compared with
 `os.path.samefile`) rather than silently restoring the original. A
 configuration is not compared with that location. Edited to name a copy, a
 snapshot with a deployment identity restores the copy after verifying it
@@ -482,7 +482,7 @@ its artifact path from `state_snapshot.path`, so it rejects the edit unless
 `fpm_learned.artifact_path` names the copy too. Save a new snapshot instead of
 moving one. Snapshot
 I/O failures raise an `OSError` subclass (for example `FileNotFoundError` for
-a missing snapshot) through both `file=` and a configuration, never the
+a missing snapshot) through both `state_snapshot=` and a configuration, never the
 skippable `PerfDataNotAvailableError`. A manifest from another release
 reports its versions even when it has fields this release does not know.
 Online learner state, including the causal selector's adaptive expert, is
@@ -503,7 +503,7 @@ and why not (`insufficient_data`, `no_usable_fit` or `untrained_forest_store`),
 plus every correction store's readiness; native estimators are always ready.
 `model.deployment_topology()` reports the identity's worker role, parallelism,
 speculation, KV block size and fixed correction limits.
-`RustForwardPassPerfModel.config_engine_launch_mismatches(engine_args, file=path)`
+`RustForwardPassPerfModel.config_engine_launch_mismatches(engine_args, state_snapshot=path)`
 and `model.engine_launch_mismatches(engine_args)` apply the engine launch rules
 (for example `dp_size` against `attention_dp`) to the canonical launch arguments
 with the snapshot as the timing model and return every rule that fails; an

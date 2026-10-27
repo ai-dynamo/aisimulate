@@ -2355,10 +2355,15 @@ impl PyForwardPassPerfModel {
     /// Write the complete tuned state to a new directory and return the
     /// pinned canonical configuration JSON that restores it.
     #[pyo3(signature = (path, include_perf_db=false))]
-    fn to_file(&self, py: Python<'_>, path: &str, include_perf_db: bool) -> PyResult<String> {
+    fn save_state_snapshot(
+        &self,
+        py: Python<'_>,
+        path: &str,
+        include_perf_db: bool,
+    ) -> PyResult<String> {
         let options = crate::StateSnapshotOptions { include_perf_db };
         let config = py
-            .allow_threads(|| self.inner.to_file(path, &options))
+            .allow_threads(|| self.inner.save_state_snapshot(path, &options))
             .map_err(aic_to_py)?;
         serde_json::to_string(&config).map_err(|error| PyValueError::new_err(error.to_string()))
     }

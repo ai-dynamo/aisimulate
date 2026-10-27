@@ -160,11 +160,11 @@ class ForwardPassPerfModelConfig:
     phase-only replay, prediction and Sweeper callers reject learned modes.
     ``learned_selector_diagnostics()`` exposes the per-key evidence. Combined
     artifact export and standalone online checkpoint saving are unsupported;
-    ``RustForwardPassPerfModel.to_file`` saves every model kind, including the
-    combined selector.
+    ``RustForwardPassPerfModel.save_state_snapshot`` saves every model kind,
+    including the combined selector.
 
     ``estimator_config["state_snapshot"]`` restores a model saved by
-    ``to_file``: ``{"path": ..., "sha256": ..., "on_tune": "reject"}``. Rust
+    ``save_state_snapshot``: ``{"path": ..., "sha256": ..., "on_tune": "reject"}``. Rust
     resolves ``path``, pins ``sha256`` to the snapshot manifest and requires
     the rest of the configuration to equal the saved identity, an explicit
     ``estimation_mode`` and ``fallback_policy="deny"``. ``on_tune="reject"``
@@ -355,7 +355,7 @@ class RustForwardPassPerfModel:
     during spline startup or outside the retained feature bounds. Spline
     predictions require an available linear prediction for the same query.
     Saving the resolved configuration preserves settings, not samples or learned
-    state; ``to_file`` saves the complete state for exact restoration.
+    state; ``save_state_snapshot`` saves the complete state for exact restoration.
 
     Queued request fields are accepted for schema compatibility but ignored by
     this AIC forward-pass model. ``estimate_forward_pass_time_ms()`` treats FPM
@@ -412,7 +412,7 @@ class RustForwardPassPerfModel:
         cls,
         config: ForwardPassPerfModelConfig | Mapping[str, Any] | None = None,
         *,
-        file: str | os.PathLike[str] | None = None,
+        state_snapshot: str | os.PathLike[str] | None = None,
     ) -> RustForwardPassPerfModel:
         """Construct one estimator from the canonical role-bound configuration.
 
@@ -422,13 +422,14 @@ class RustForwardPassPerfModel:
         Nested estimator controls, including an explicit ``None`` rebuild
         interval, are preserved in resolved configuration and provenance.
 
-        Pass exactly one of ``config`` and ``file``. ``file`` names a snapshot
-        directory written by :meth:`to_file`; its ``config.json`` is passed to
-        the same Rust constructor unchanged, so ``best_available(file=path)``
+        Pass exactly one of ``config`` and ``state_snapshot``.
+        ``state_snapshot`` names a snapshot directory written by
+        :meth:`save_state_snapshot`; its ``config.json`` is passed to the same
+        Rust constructor unchanged, so ``best_available(state_snapshot=path)``
         and ``best_available(config=json.load(open(path / "config.json")))``
         are equivalent. Snapshots are pinned to the path they were saved to:
-        ``file`` must be that directory (compared with ``os.path.samefile``),
-        otherwise ``ValueError`` is raised. A configuration with
+        ``state_snapshot`` must be that directory (compared with
+        ``os.path.samefile``), otherwise ``ValueError`` is raised. A configuration with
         ``estimator_config.state_snapshot`` restores the saved model and fails
         on any mismatch instead of selecting another estimator. Snapshot I/O
         failures raise ``OSError`` subclasses such as ``FileNotFoundError``,
@@ -436,14 +437,14 @@ class RustForwardPassPerfModel:
         """
         import aisimulate_core
 
-        if (config is None) == (file is None):
-            raise TypeError("best_available requires exactly one of config or file")
-        if file is not None:
-            config = _snapshot_config(file)
+        if (config is None) == (state_snapshot is None):
+            raise TypeError("best_available requires exactly one of config or state_snapshot")
+        if state_snapshot is not None:
+            config = _snapshot_config(state_snapshot)
         return cls(aisimulate_core.RustForwardPassPerfModel.best_available(_forward_pass_config_json(config)))
 
     @staticmethod
-    def inspect_state_snapshot(file: str | os.PathLike[str]) -> dict[str, Any]:
+    def inspect_state_snapshot(path: str | os.PathLike[str]) -> dict[str, Any]:
         """Read a snapshot's manifest summary without restoring the model.
 
         Returns ``kind``, ``manifest_sha256``, ``aisimulate_core_version``,
@@ -455,30 +456,30 @@ class RustForwardPassPerfModel:
         """
         import aisimulate_core
 
-        return json.loads(aisimulate_core.RustForwardPassPerfModel.inspect_state_snapshot(os.fspath(file)))
+        return json.loads(aisimulate_core.RustForwardPassPerfModel.inspect_state_snapshot(os.fspath(path)))
 
     @staticmethod
     def config_engine_launch_mismatches(
         engine_args: Mapping[str, Any],
         *,
         config: ForwardPassPerfModelConfig | Mapping[str, Any] | None = None,
-        file: str | os.PathLike[str] | None = None,
+        state_snapshot: str | os.PathLike[str] | None = None,
     ) -> list[str]:
         """List engine-launch rules that reject a configuration as an engine's timing model.
 
         ``engine_args`` uses the canonical engine launch shape (``engine``,
         ``dp_size``, ``tensor_parallel_size``, ...). Its timing model is
-        replaced by ``config`` (or a snapshot's ``config.json`` via ``file``)
-        and checked with the same Rust rules engine launch enforces, such as
+        replaced by ``config`` (or a snapshot's ``config.json`` via
+        ``state_snapshot``) and checked with the same Rust rules engine launch enforces, such as
         ``dp_size`` against ``attention_dp``. An empty list means the launch
         accepts the combination; malformed inputs raise ``ValueError``.
         """
         import aisimulate_core
 
-        if (config is None) == (file is None):
-            raise TypeError("config_engine_launch_mismatches requires exactly one of config or file")
-        if file is not None:
-            config = _snapshot_config(file)
+        if (config is None) == (state_snapshot is None):
+            raise TypeError("config_engine_launch_mismatches requires exactly one of config or state_snapshot")
+        if state_snapshot is not None:
+            config = _snapshot_config(state_snapshot)
         payload = config.to_dict() if isinstance(config, ForwardPassPerfModelConfig) else dict(config)
         return aisimulate_core.RustForwardPassPerfModel.engine_launch_mismatches(
             _json_dumps(payload), _json_dumps(dict(engine_args))
@@ -600,15 +601,16 @@ class RustForwardPassPerfModel:
         fitting with retained state.
 
         Combined selectors reject this operation: one forest cannot represent
-        both experts, calibration, and selection evidence. ``to_file`` saves them.
+        both experts, calibration, and selection evidence.
+        ``save_state_snapshot`` saves them.
         """
         return json.loads(self._inner.export_learned_artifact())
 
-    def to_file(self, path: str | os.PathLike[str], *, include_perf_db: bool = False) -> dict[str, Any]:
+    def save_state_snapshot(self, path: str | os.PathLike[str], *, include_perf_db: bool = False) -> dict[str, Any]:
         """Atomically save the complete tuned state to the new directory ``path``.
 
         Returns the pinned canonical configuration, also written to
-        ``path/config.json``; pass it, or ``file=path``, to
+        ``path/config.json``; pass it, or ``state_snapshot=path``, to
         :meth:`best_available` to restore a model that predicts bit-identically.
         The returned ``estimator_config.state_snapshot.on_tune`` is
         ``"reject"``; set it to ``"continue"`` to resume tuning exactly where
@@ -624,7 +626,7 @@ class RustForwardPassPerfModel:
         configuration carries placeholder identity fields and is restored
         without identity checks. I/O failures raise ``OSError`` subclasses.
         """
-        return json.loads(self._inner.to_file(os.fspath(path), include_perf_db))
+        return json.loads(self._inner.save_state_snapshot(os.fspath(path), include_perf_db))
 
     def readiness_report(self) -> dict[str, Any]:
         """Return per-store estimation and correction readiness for every estimator kind.
@@ -670,7 +672,7 @@ class RustForwardPassPerfModel:
         Reload with ``best_available`` and ``fpm_learned.checkpoint_path``.
         Configuration alone does not contain admitted observations. The target
         directory must not already exist, even if empty.
-        Combined selectors reject this operation; save them with ``to_file``.
+        Combined selectors reject this operation; save them with ``save_state_snapshot``.
         """
         self._inner.save_online_checkpoint(os.fspath(path))
 
@@ -843,13 +845,13 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
 
 
-def _snapshot_config(file: str | os.PathLike[str]) -> dict[str, Any]:
-    """Read a snapshot's pinned configuration and require ``file`` to be its pinned directory.
+def _snapshot_config(state_snapshot: str | os.PathLike[str]) -> dict[str, Any]:
+    """Read a snapshot's pinned configuration and require ``state_snapshot`` to be its pinned directory.
 
-    Restoration reads the pinned path, not ``file``, so a moved or copied
-    snapshot directory would otherwise silently restore the original.
+    Restoration reads the pinned path, not ``state_snapshot``, so a moved or
+    copied snapshot directory would otherwise silently restore the original.
     """
-    directory = os.fspath(file)
+    directory = os.fspath(state_snapshot)
     with open(os.path.join(directory, "config.json"), encoding="utf-8") as handle:
         config = json.load(handle)
     estimator = config.get("estimator_config") if isinstance(config, dict) else None

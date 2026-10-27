@@ -31,7 +31,7 @@ use super::super::snapshot::{
 };
 use super::*;
 
-/// Options for [`ForwardPassPerfModel::to_file`].
+/// Options for [`ForwardPassPerfModel::save_state_snapshot`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StateSnapshotOptions {
@@ -185,7 +185,7 @@ fn identity_mismatch(
 
 impl ForwardPassPerfModel {
     /// API:
-    /// `model.to_file(path, options) -> Result<ForwardPassPerfModelConfig, AicError>`
+    /// `model.save_state_snapshot(path, options) -> Result<ForwardPassPerfModelConfig, AicError>`
     ///
     /// Description: atomically write this model's complete tuned state to the
     /// new directory `path` and return the pinned canonical configuration
@@ -209,7 +209,7 @@ impl ForwardPassPerfModel {
     /// [`Self::from_learned`] have no deployment identity: their snapshot
     /// configuration carries placeholder identity fields and restoration
     /// checks only estimator controls and file digests.
-    pub fn to_file(
+    pub fn save_state_snapshot(
         &self,
         path: impl AsRef<Path>,
         options: &StateSnapshotOptions,
@@ -775,7 +775,7 @@ fn restore_verified(
     // Verify referenced performance data before any of it is loaded: a
     // changed file must report the fingerprint, not a loader failure. Tables
     // load lazily on first query, so no later hash here would cover every
-    // read; `to_file` hashes again and rejects data changed after this check.
+    // read; `save_state_snapshot` hashes again and rejects data changed after this check.
     let parquet = base
         .estimator_config
         .fpm_interpolation

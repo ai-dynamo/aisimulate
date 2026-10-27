@@ -495,8 +495,8 @@ runtime checkpoint does not contain the combined histories and is rejected.
 `save_online_checkpoint()` and `export_learned_artifact()` reject combined
 models because neither format preserves both experts, every correction store
 and every selector key together. A
-[state snapshot](../configuration.md#state-snapshots) does: `to_file()` saves the
-frozen expert, the adaptive expert with its runtime checkpoint (including
+[state snapshot](../configuration.md#state-snapshots) does:
+`save_state_snapshot()` saves the frozen expert, the adaptive expert with its runtime checkpoint (including
 pending rows), every calibration store and all twelve selector keys, and
 `best_available` restores them together. Restoration validates the evidence
 against the selector configuration and the forest stores. Restored models
