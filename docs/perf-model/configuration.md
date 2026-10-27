@@ -406,7 +406,7 @@ snapshot owns are redirected into it:
 
 | Saved model | Snapshot contents |
 | --- | --- |
-| Native `op_level` or `fpm_interpolation` | Correction stores (fixed, dynamic local or hybrid). The engine is recompiled from the configuration; the manifest records the compiled engine-specification digest from construction and a performance-data fingerprint. An `op_level.execution_profile` file is copied. |
+| Native `op_level` or `fpm_interpolation` | Correction stores (fixed, dynamic local or hybrid). The engine is recompiled from the configuration; the manifest records the compiled engine-specification digest from construction and a performance-data fingerprint. A configured `op_level.execution_profile` file is copied. |
 | `fpm_regression` | Every workload store: retained samples, fits, incremental statistics, lazy-update and spline search clocks. |
 | `fpm_learned`, `frozen` | The forest (an artifact's exact bytes, or the checkpoint's forest exported unchanged) and correction stores. |
 | `fpm_learned`, `online` | An online runtime checkpoint with the current forest, retained and pending rows and fitting state. |
@@ -469,10 +469,15 @@ configuration bundled with the package, a local directory or Hugging Face, so
 a packed native snapshot still needs it, and restoration fails if it compiles
 a different engine specification from the saved one.
 
-Snapshots record absolute paths and restore only from the directory they
-were saved to: `best_available(file=path)` raises `ValueError` unless `path`
-is that directory (compared with `os.path.samefile`), and a moved copy fails
-its pinned file checks. Save a new snapshot instead of moving one. Snapshot
+Snapshot configurations pin absolute paths. Restoration reads the pinned
+`state_snapshot.path`, so `best_available(file=path)` raises `ValueError`
+unless `path` is the directory the snapshot was saved to (compared with
+`os.path.samefile`) rather than silently restoring the original. A
+configuration is not compared with that location: one edited to name a copy
+restores the copy after verifying it against its manifest, but its other
+pinned paths (packed performance data, an execution profile, learned
+artifacts and checkpoints) still name the original directory. Save a new
+snapshot instead of moving one. Snapshot
 I/O failures raise an `OSError` subclass (for example `FileNotFoundError` for
 a missing snapshot) through both `file=` and a configuration, never the
 skippable `PerfDataNotAvailableError`. A manifest from another release
