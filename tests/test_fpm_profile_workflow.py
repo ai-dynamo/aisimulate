@@ -206,7 +206,10 @@ def test_prediction_materializes_rank_local_capacity_without_a_model(profile, ti
     assert reserved["num_gpu_blocks"] < lowered["num_gpu_blocks"]
 
 
-def test_speculative_round_prediction_preserves_progress_identity_and_observed_capacity(profile, timing_systems):
+@pytest.mark.parametrize("cache_layout", ["linear", "unmodeled", "mamba_align"])
+def test_speculative_round_prediction_preserves_progress_identity_and_observed_capacity(
+    profile, timing_systems, cache_layout
+):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -230,7 +233,11 @@ def test_speculative_round_prediction_preserves_progress_identity_and_observed_c
     profile["deployments"][0]["execution_profile"] = execution
     deployment = load_fpm_profile(profile).deployments[0]
     execution_identity = dict(
-        zip(EXECUTION_COLUMNS, deployment.execution_identity(profile["model_revision"]), strict=True)
+        zip(
+            EXECUTION_COLUMNS,
+            deployment.execution_identity(profile["model_revision"]),
+            strict=True,
+        )
     )
     path = Path(timing_systems) / "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet"
     rows = [row for row in pq.read_table(path).to_pylist() if row["dp"] == 1]
@@ -254,10 +261,101 @@ def test_speculative_round_prediction_preserves_progress_identity_and_observed_c
         parquet_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
     )
     path.with_suffix(".metadata.json").write_text(json.dumps(metadata))
+    if cache_layout == "unmodeled":
+        from aisimulate_core.sdk import RustForwardPassPerfModel
+
+        resources = profile["deployments"][0]["resources"]
+        resources["cache_layout"] = "unmodeled"
+        resources.pop("kv_bytes_per_token")
+        restored = load_fpm_profile(profile)
+        assert not restored.deployments[0].resources.memory_ready
+        config = dict(
+            model=profile["model"],
+            fpm_profile=profile,
+            system="h200_sxm",
+            backend="vllm",
+            backend_version="0.25.1",
+            worker_type="aggregated",
+            tp=2,
+            moe_tp_size=2,
+            moe_ep_size=1,
+            nextn=3,
+            systems_paths=[timing_systems],
+            estimation_mode="fpm_interpolation",
+            fallback_policy="deny",
+            estimator_config={"fpm_interpolation": {"method": "direct"}},
+        )
+        model = RustForwardPassPerfModel.best_available(config)
+        # The fixture declares every complete decode round as exactly 11 ms.
+        assert model.estimate_forward_pass_time_ms(
+            {
+                "scheduled_requests": {
+                    "num_decode_requests": 1,
+                    "sum_decode_kv_tokens": 1,
+                }
+            }
+        ) == pytest.approx(11.0)
+        with pytest.raises(ValueError, match="unmodeled FPM cache"):
+            restored.deployments[0].resources.require_memory()
+        with pytest.raises((ValueError, RuntimeError), match="unmodeled FPM cache"):
+            RustForwardPassPerfModel.estimate_cache_budget(
+                config,
+                dict(
+                    total_gpu_capacity_bytes=80 * 1024**3,
+                    memory_fraction_kind="of_total",
+                    memory_fraction_value=0.9,
+                    max_num_tokens=8192,
+                    max_batch_size=8,
+                ),
+            )
+        spec = prediction_to_replay_spec(
+            CorePredictionConfig.model_validate(
+                {
+                    "engine": {
+                        **_engine(profile),
+                        "systems_paths": [timing_systems],
+                        "nextn": 3,
+                        "nextn_accepted": 1.78,
+                    },
+                    "traffic": {
+                        "source": {
+                            "type": "synthetic",
+                            "input_tokens": 1,
+                            "output_tokens": 7,
+                        },
+                        "load": {"type": "concurrency", "concurrency": 1},
+                        "stop": {"requests": 2},
+                    },
+                }
+            )
+        )
+        with pytest.raises(ValueError, match="unmodeled FPM cache"):
+            materialize_aic_num_gpu_blocks(spec.backend_deployment.agg_engine_args)
+        with pytest.raises((ValueError, RuntimeError), match="unmodeled FPM cache"):
+            EngineReplayRunnerFactory(runtime=_runtime).create(0).run(spec)
+        return
+    if cache_layout == "mamba_align":
+        resources = profile["deployments"][0]["resources"]
+        resources.pop("kv_bytes_per_token")
+        resources.update(
+            cache_layout="mamba_align",
+            mamba_cache={
+                "state_storage": "full_state",
+                "block_size_tokens": 64,
+                "page_size_bytes": 32768,
+                "state_groups": 2,
+                "prefix_match_unit": 16,
+                "num_speculative_states": 3,
+            },
+        )
+    expected_blocks = 32767 if cache_layout == "mamba_align" else 32768
+    engine = _engine(profile)
+    if cache_layout == "mamba_align":
+        engine["workers"]["aggregated"]["kv_cache"] = {"block_size": 64}
     public = CorePredictionConfig.model_validate(
         {
             "engine": {
-                **_engine(profile),
+                **engine,
                 "systems_paths": [timing_systems],
                 "context_length": 4096,
                 "nextn": 3,
@@ -277,12 +375,12 @@ def test_speculative_round_prediction_preserves_progress_identity_and_observed_c
         spec.backend_deployment.agg_engine_args, memory_diagnostics=diagnostics
     )
     # Observed 1 GiB / 512 bytes per token / 64 tokens per block; no draft or graph charge is added.
-    assert materialized["num_gpu_blocks"] == 32768
+    assert materialized["num_gpu_blocks"] == expected_blocks
     assert diagnostics["total_kv_size_bytes"] == 1024**3
     assert diagnostics["memory_breakdown"] is None
     canonical_only = deepcopy(spec.backend_deployment.agg_engine_args)
     canonical_only.pop("aic_nextn")
-    assert materialize_aic_num_gpu_blocks(canonical_only)["num_gpu_blocks"] == 32768
+    assert materialize_aic_num_gpu_blocks(canonical_only)["num_gpu_blocks"] == expected_blocks
     for legacy_name in ("aic_nextn", "nextn"):
         conflicting_depth = deepcopy(canonical_only)
         conflicting_depth[legacy_name] = 2
@@ -298,13 +396,23 @@ def test_speculative_round_prediction_preserves_progress_identity_and_observed_c
     report = (
         EngineReplayRunnerFactory(runtime=NativeCapture())
         .create(0)
-        .run(spec, output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_per_request=True))
+        .run(
+            spec,
+            output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_per_request=True),
+        )
     )
     rank = seen[0]["spec"]["engine"]["rank"]
+    if cache_layout == "mamba_align":
+        assert rank["state_cache"] == {"bytes_per_request": 65536, "num_speculative_states": 3}
+        assert rank["prefix_match_unit"] == 16
     assert rank["aic_nextn"] == 3
     # 1.78 accepted drafts plus the mandatory base token means 2.78 output tokens per round.
-    assert [float(rate) for rate in rank["aic_nextn_accept_rates"].split(",")] == [1.0, 0.78, 0.0]
-    assert rank["num_gpu_blocks"] == 32768
+    assert [float(rate) for rate in rank["aic_nextn_accept_rates"].split(",")] == [
+        1.0,
+        0.78,
+        0.0,
+    ]
+    assert rank["num_gpu_blocks"] == expected_blocks
     assert rank["timing_model"]["config"]["fpm_profile"]["deployments"][0]["execution_profile"] == execution
     assert report.metrics["completed_requests"] == 2
     assert report.metrics["mean_ttft_ms"] == pytest.approx(7.0)
@@ -1427,3 +1535,98 @@ def test_recommendation_names_profile_context_budget(profile, timing_systems, mo
 
     assert "engine.context_length is 'max'; using the FPM profile context length of 4096 tokens" in caplog.text
     assert "model maximum" not in caplog.text
+
+
+def test_observed_mamba_pool_reaches_native_replay(profile, timing_systems):
+    from aisimulate.runner import EngineReplayRunnerFactory
+
+    profile["deployments"] = profile["deployments"][:1]
+    profile["deployments"][0]["resources"] = {
+        "cache_layout": "mamba_align",
+        "mamba_cache": {
+            "state_storage": "full_state",
+            "block_size_tokens": 8,
+            "page_size_bytes": 64,
+            "state_groups": 5,
+            "prefix_match_unit": 2,
+            "num_speculative_states": 0,
+        },
+        "runtime_memory": {
+            "kv_cache_bytes": 6400,
+            "gpu_memory_utilization": 0.9,
+            "max_model_len": 4096,
+            "provenance": "synthetic shared pool",
+        },
+        "max_num_tokens": 1024,
+        "max_batch_size": 4,
+        "provenance": "synthetic shared pool",
+    }
+    worker = _worker()
+    worker["kv_cache"] = {"block_size": 8}
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                **_engine(profile),
+                "systems_paths": [timing_systems],
+                "workers": {"aggregated": worker},
+            },
+            "traffic": {
+                "source": {"type": "synthetic", "input_tokens": 1, "output_tokens": 2},
+                "load": {"type": "concurrency", "concurrency": 1},
+                "stop": {"requests": 1},
+            },
+        }
+    )
+    spec = prediction_to_replay_spec(config)
+    lowered = materialize_aic_num_gpu_blocks(spec.backend_deployment.agg_engine_args)
+    assert lowered["num_gpu_blocks"] == 99
+    assert lowered["state_cache"] == {"bytes_per_request": 320}
+    assert lowered["kv_cache_bytes_per_token"] == 8
+    assert lowered["prefix_match_unit"] == 2
+    result = EngineReplayRunnerFactory().create(0).run(spec)
+    assert result.metrics["completed_requests"] == 1
+    recommendation = {**_engine(profile), "mode": "aggregated"}
+    recommendation["workers"]["aggregated"]["parallelism"] = {"preset": "default"}
+    with pytest.raises(ValidationError, match="recommendation search is unsupported"):
+        CoreRecommendationConfig.model_validate({"engine": recommendation, "optimization": {}})
+
+
+@pytest.mark.parametrize(
+    "geometry",
+    [
+        {"state_storage": "replayssm"},
+        {"state_storage": "recoverssm"},
+        {"prefix_match_unit": 3},
+        {"page_size_bytes": 65},
+        {"state_groups": 0},
+        {"num_speculative_states": -1},
+    ],
+)
+def test_mamba_profile_rejects_inconsistent_physical_geometry(profile, geometry):
+    from aisimulate_core.fpm_profile import FpmModelProfile
+
+    resources = profile["deployments"][0]["resources"]
+    resources.clear()
+    resources.update(
+        cache_layout="mamba_align",
+        mamba_cache={
+            "state_storage": "full_state",
+            "block_size_tokens": 8,
+            "page_size_bytes": 64,
+            "state_groups": 5,
+            "prefix_match_unit": 2,
+            "num_speculative_states": 0,
+            **geometry,
+        },
+        runtime_memory={
+            "kv_cache_bytes": 6400,
+            "gpu_memory_utilization": 0.9,
+            "max_model_len": 4096,
+            "provenance": "synthetic shared pool",
+        },
+        max_num_tokens=1024,
+        max_batch_size=4,
+        provenance="synthetic shared pool",
+    )
+    with pytest.raises(ValidationError):
+        FpmModelProfile.model_validate(profile)

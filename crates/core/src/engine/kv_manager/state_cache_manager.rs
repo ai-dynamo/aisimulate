@@ -6,6 +6,8 @@
 //! Default align retention is modified from vLLM (Apache-2.0).
 //! Copyright contributors to the vLLM project.
 //! https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/single_type_kv_cache_manager.py
+//! Speculative scratch ownership also adapts MambaManager at vLLM
+//! db9527a46873454610df6dbedf79a36d6bf1a7f6 (same source path and license).
 //! See the root THIRD_PARTY_NOTICES.md.
 //!
 //! Completed boundaries publish the existing working blocks: registration costs
@@ -24,6 +26,7 @@ use rustc_hash::FxHashSet;
 #[derive(Debug, Default)]
 pub(crate) struct StateRequest {
     pub(crate) working: Vec<BlockCopyId>,
+    pub(crate) speculative: Vec<BlockCopyId>,
     pub(crate) computed_tokens: usize,
     // Align mode rotates the working allocation when the destination slot
     // changes. The previous slot remains a real input until the next pass.
@@ -42,6 +45,7 @@ pub(crate) struct StateRequest {
 
 pub(crate) struct StateCacheManager {
     pub(crate) blocks_per_state: usize,
+    pub(crate) speculative_blocks: usize,
     pub(crate) mtp_enabled: bool,
     pub(crate) align_block_size: Option<usize>,
     // Preserve insertion order for deterministic LRU release. A cancelled
@@ -56,6 +60,7 @@ impl StateCacheManager {
         assert!(blocks_per_state > 0);
         Self {
             blocks_per_state,
+            speculative_blocks: 0,
             mtp_enabled,
             align_block_size: None,
             step_copy_holds: Vec::new(),
@@ -291,6 +296,9 @@ impl StateCacheManager {
                 pool.release(id);
             }
             state.snapshot_owned = false;
+        }
+        for id in state.speculative.drain(..) {
+            pool.release(id);
         }
         for id in state.working.drain(..) {
             pool.release(id);

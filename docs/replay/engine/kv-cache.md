@@ -378,6 +378,7 @@ This gives eight 1024-byte blocks. Each request's state takes two blocks
 | Knob | Default | Rules |
 |---|---|---|
 | `state_cache.bytes_per_request` | Inferred | State bytes per request per rank. When set, `block_size` and numeric `bytes_per_token` must also be set. |
+| `state_cache.num_speculative_states` | Unset | Explicit full-state scratch copies per request. Must match positive `nextn`. Requires numeric state bytes and token geometry. |
 | `state_cache.mamba_cache_dtype` | `auto` | Kimi K3 only. `auto` (model dtype), `float16` or `float32`. Used when bytes are inferred. |
 | `state_cache.indexer_cache_dtype` | `auto` | DeepSeek V4 only. `auto` (vLLM's FP8), `fp8` or `mxfp4`; vLLM supports `mxfp4` only on Blackwell datacenter GPUs. Used when bytes are inferred. |
 | `prefix_match_unit` | Unset (`block_size`) | Positive divisor of `block_size`. Lets prefixes match at a finer granularity than the physical block. |
@@ -428,13 +429,24 @@ transfers the state for the whole prompt and does not model the recompute.
 Supported: aggregated and P/D vLLM, fixed `capacity`, `predict --stack engine`;
 inferred geometry for Kimi K3 and DeepSeek V4 at PP=1.
 Speculative decoding supports `prefix_match_unit` equal to `block_size`.
-Sub-block matching with speculation remains unsupported.
+For sub-block matching, supply `state_cache.num_speculative_states` equal to
+positive `nextn`. Each scratch copy consumes the same padded pages as the
+working state. The pool must fit these copies plus one token page.
+Omitting the field preserves the existing state model.
+This explicit mode models full-state scratch storage, not ReplaySSM or
+RecoverSSM rings or temporary records.
 
-Rejected: `recommend`, G2/G3 offload, and speculative decoding with sub-block
-`prefix_match_unit`.
+Rejected: `recommend`, G2/G3 offload, and speculative sub-block matching without
+an explicit full-state scratch count.
 
 ## Other cache modes
 
+- **Observed Mamba pools.** An FPM profile can supply `cache_layout: mamba_align`
+  with `mamba_cache.state_storage: full_state`. It records one attention group,
+  padded Mamba groups, and one shared physical pool. Use the recorded block
+  size and scheduler limits, aggregated vLLM, and default capacity. The profile
+  supplies state reservations. Manual geometry, offload, and P/D are rejected.
+  See [memory accounting](../../perf-model/memory.md#observed-mamba-align-pools).
 - **Grouped caches.** Some whole-forward (FPM) profiles describe several KV
   groups, such as sliding-window and full attention, sharing one byte budget.
   Replay then allocates each group separately. Grouped caches require cold

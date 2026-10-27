@@ -1550,6 +1550,7 @@ def _materialize_engine_role(
         }
         memory_diagnostics[role] = role_memory
     capacity_materialized = False
+    state_cache_from_profile = False
     num_gpu_blocks_is_explicit = False
     # A nested canonical timing config carries the CP knobs too; check them
     # against parallel_config BEFORE capacity materialization resolves them
@@ -1602,6 +1603,7 @@ def _materialize_engine_role(
                 role_config,
                 **({"memory_diagnostics": role_memory} if role_memory is not None else {}),
             )
+            state_cache_from_profile = role_config.get("state_cache") is not None
             if role_memory is not None and "total_gpu_capacity_bytes" in role_memory:
                 role_memory["status"] = "available"
                 if "num_gpu_blocks" in role_memory:
@@ -1680,7 +1682,7 @@ def _materialize_engine_role(
         # role mappings may use the same shorthand.
         rank = role_config
 
-    state_cache = _manual_state_cache(rank, deployment_backend, role)
+    state_cache = None if state_cache_from_profile else _manual_state_cache(rank, deployment_backend, role)
     if state_cache is not None:
         num_gpu_blocks_is_explicit = True
         rank["state_cache"] = state_cache.model_dump(mode="json", exclude_none=True)
@@ -2043,10 +2045,13 @@ def _manual_state_cache(rank: Mapping[str, JSONValue], backend: str, role: str) 
     if raw is None:
         return None
     state_cache = StateCacheConfig.model_validate(raw)
+    if state_cache.num_speculative_states is not None and state_cache.num_speculative_states != rank.get("aic_nextn"):
+        raise ValueError("state_cache.num_speculative_states must match positive aic_nextn")
     if (
         rank.get("prefix_match_unit") is not None
         and rank["prefix_match_unit"] != rank.get("block_size")
         and rank.get("aic_nextn") is not None
+        and state_cache.num_speculative_states is None
     ):
         raise ValueError("sub-block prefix_match_unit does not support speculative decoding")
     if backend != "vllm" or role not in ("aggregated", "prefill", "decode"):
@@ -2073,7 +2078,12 @@ def _manual_state_cache(rank: Mapping[str, JSONValue], backend: str, role: str) 
         value = rank.get(name)
         if not isinstance(value, int) or isinstance(value, bool) or not 0 < value <= (1 << 64) - 1:
             raise ValueError(f"state_cache requires explicit positive {name} within u64")
-    if rank["num_gpu_blocks"] < state_cache.state_blocks(rank["block_size"], rank["kv_cache_bytes_per_token"]) + 1:
+    if (
+        rank["num_gpu_blocks"]
+        < state_cache.state_blocks(rank["block_size"], rank["kv_cache_bytes_per_token"])
+        * (1 + (state_cache.num_speculative_states or 0))
+        + 1
+    ):
         raise ValueError("state_cache capacity must fit one token block and one request state")
     return state_cache
 

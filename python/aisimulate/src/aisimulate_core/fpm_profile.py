@@ -61,6 +61,27 @@ class FpmRuntimeMemoryProfile(_ProfileModel):
     provenance: _Nonempty
 
 
+class FpmMambaCache(_ProfileModel):
+    """One attention group and padded Mamba groups share the observed pool."""
+
+    state_storage: Literal["full_state"]
+    block_size_tokens: Annotated[int, Field(ge=2, le=2**32 - 1)]
+    page_size_bytes: Annotated[int, Field(gt=0, le=2**53)]
+    state_groups: Annotated[int, Field(gt=0, le=2**32 - 1)]
+    prefix_match_unit: Annotated[int, Field(gt=0, le=2**32 - 1)]
+    num_speculative_states: Annotated[int, Field(ge=0, le=5)]
+
+    @model_validator(mode="after")
+    def _geometry(self):
+        if (
+            self.block_size_tokens % self.prefix_match_unit
+            or self.page_size_bytes % self.block_size_tokens
+            or self.page_size_bytes * self.state_groups > 2**53
+        ):
+            raise ValueError("invalid observed Mamba shared-pool geometry")
+        return self
+
+
 class FpmResourceProfile(_ProfileModel):
     """Rank-local cache geometry and optional memory evidence.
 
@@ -76,8 +97,9 @@ class FpmResourceProfile(_ProfileModel):
     comm_overhead_bytes: _Bytes | None = None
     runtime_memory: FpmRuntimeMemoryProfile | None = None
     kv_bytes_per_token: Annotated[int, Field(gt=0, le=2**53)] | None = None
-    cache_layout: Literal["linear", "grouped"]
+    cache_layout: Literal["linear", "grouped", "unmodeled", "mamba_align"]
     cache_groups: list[FpmCacheGroup] = Field(default_factory=list)
+    mamba_cache: FpmMambaCache | None = None
     max_num_tokens: _PositiveInt
     max_batch_size: _PositiveInt
     provenance: _Nonempty
@@ -89,7 +111,18 @@ class FpmResourceProfile(_ProfileModel):
             raise ValueError("total non-KV resource bytes must not exceed 2**53")
         if self.runtime_memory is not None and any(value is not None for value in declared):
             raise ValueError("runtime_memory cannot be combined with declared non-KV resource bytes")
-        if self.cache_layout == "linear":
+        if (self.mamba_cache is not None) != (self.cache_layout == "mamba_align"):
+            raise ValueError("mamba_cache requires cache_layout=mamba_align")
+        if self.cache_layout == "mamba_align":
+            if self.runtime_memory is None or self.kv_bytes_per_token is not None or self.cache_groups:
+                raise ValueError("Mamba shared pool requires runtime memory without scalar or grouped geometry")
+            page = self.mamba_cache.page_size_bytes
+            if self.runtime_memory.kv_cache_bytes % page or self.runtime_memory.kv_cache_bytes <= page:
+                raise ValueError("Mamba pool must contain whole physical pages and a reserved null page")
+        elif self.cache_layout == "unmodeled":
+            if self.runtime_memory is None or self.kv_bytes_per_token is not None or self.cache_groups:
+                raise ValueError("unmodeled cache requires runtime_memory without scalar or grouped cache geometry")
+        elif self.cache_layout == "linear":
             if self.kv_bytes_per_token is None or self.cache_groups:
                 raise ValueError("linear cache requires kv_bytes_per_token and no cache_groups")
         elif self.kv_bytes_per_token is not None or not self.cache_groups:
@@ -112,6 +145,7 @@ class FpmResourceProfile(_ProfileModel):
             "runtime_overhead_bytes",
             "comm_overhead_bytes",
             "runtime_memory",
+            "mamba_cache",
         ):
             if getattr(self, name) is None:
                 result.pop(name, None)
@@ -128,9 +162,14 @@ class FpmResourceProfile(_ProfileModel):
 
     @property
     def memory_ready(self) -> bool:
-        return self.memory_source != "pending"
+        return self.memory_source != "pending" and self.cache_layout != "unmodeled"
 
     def require_memory(self) -> None:
+        if self.cache_layout == "unmodeled":
+            raise ValueError(
+                "unmodeled FPM cache supports timing queries only; "
+                "cache sizing and replay require a supported cache layout"
+            )
         if not self.memory_ready:
             raise ValueError(
                 "FPM memory is pending runtime profiling; collect and finalize runtime memory or provide "

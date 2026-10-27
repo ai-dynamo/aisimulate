@@ -446,6 +446,9 @@ impl VllmKvManager {
                 )
                 .expect("validated state cache geometry");
             self.enable_state_cache(blocks, mtp_enabled);
+            self.state_cache.as_mut().unwrap().speculative_blocks = blocks
+                .checked_mul(config.num_speculative_states.unwrap_or(0))
+                .expect("validated speculative state capacity");
         }
     }
 
@@ -502,6 +505,7 @@ impl VllmKvManager {
             if known_tokens == 0
                 || token_blocks
                     .saturating_add(state.blocks_per_state.saturating_mul(copies))
+                    .saturating_add(state.speculative_blocks)
                     .saturating_add(usize::from(
                         !cost.cached_tokens.is_multiple_of(self.block_size),
                     ))
@@ -531,6 +535,7 @@ impl VllmKvManager {
         slot_tokens
             .div_ceil(self.block_size)
             .saturating_add(state.blocks_per_state)
+            .saturating_add(state.speculative_blocks)
             .saturating_add(self.state_write_blocks(lease, computed_tokens))
             .saturating_add(
                 lease
@@ -593,6 +598,29 @@ impl VllmKvManager {
         }
     }
 
+    // MTP resumes one hash unit before the matching attention tail. A longer
+    // matching token page proves that earlier prefix without a second alias.
+    fn partial_token_key(&self, lease: &BlockRequestLease, tokens: usize) -> Option<CacheKey> {
+        let unit = self.prefix_match_unit?;
+        let end = if self.state_cache.as_ref()?.speculative_blocks > 0 {
+            tokens.div_ceil(self.block_size) * self.block_size
+        } else {
+            tokens
+        };
+        (tokens..=end).step_by(unit).find_map(|position| {
+            let hash = if position.is_multiple_of(self.block_size) {
+                lease
+                    .entries
+                    .get(position / self.block_size - 1)?
+                    .identity
+                    .sequence_hash?
+            } else {
+                lease.state_hash(position, self.block_size)?
+            };
+            self.pool.prefix_hit(hash).map(|_| CacheKey::Token(hash))
+        })
+    }
+
     fn state_restore_overhead(&self, lease: &BlockRequestLease, cached_tokens: usize) -> usize {
         let Some(manager) = &self.state_cache else {
             return 0;
@@ -608,10 +636,13 @@ impl VllmKvManager {
                     states
                         + usize::from(
                             !cached_tokens.is_multiple_of(self.block_size)
-                                && self.pool.prefix_hit(hash).is_some_and(|hit| !hit.is_active),
+                                && self
+                                    .partial_token_key(lease, cached_tokens)
+                                    .and_then(|key| self.pool.key_hit(key))
+                                    .is_some_and(|hit| !hit.is_active),
                         )
                 });
-        manager.blocks_per_state + inactive_source_blocks
+        manager.blocks_per_state + manager.speculative_blocks + inactive_source_blocks
     }
 
     /// Atomically allocate the native lease through `cumulative_tokens`.
@@ -762,14 +793,17 @@ impl VllmKvManager {
                 "authorized state checkpoint disappeared"
             );
             if partial_source {
-                keys.push(CacheKey::Token(prefix));
+                keys.push(
+                    self.partial_token_key(lease, reusable_tokens)
+                        .expect("authorized attention tail disappeared"),
+                );
             }
             keys.extend(manager.keys(prefix));
         }
         let write_blocks = self.state_write_blocks(lease, cumulative_tokens);
         let fresh = write_blocks + new_tokens - reused_tokens
             + if new_work {
-                manager.blocks_per_state
+                manager.blocks_per_state + manager.speculative_blocks
             } else {
                 0
             };
@@ -799,6 +833,9 @@ impl VllmKvManager {
         if new_work {
             let state = lease.state.get_or_insert_with(Default::default);
             state.working = (0..manager.blocks_per_state)
+                .map(|_| self.pool.allocate_private(&mut outcome.reservation))
+                .collect();
+            state.speculative = (0..manager.speculative_blocks)
                 .map(|_| self.pool.allocate_private(&mut outcome.reservation))
                 .collect();
             state.computed_tokens = reusable_tokens;
@@ -835,7 +872,8 @@ impl VllmKvManager {
             value: write_blocks
                 + new_tokens
                 + if new_work {
-                    self.state_cache_blocks()
+                    let manager = self.state_cache.as_ref().unwrap();
+                    manager.blocks_per_state + manager.speculative_blocks
                 } else {
                     0
                 },
@@ -1035,6 +1073,26 @@ impl VllmKvManager {
         if let Some(stores) = stores {
             self.publish_store_sequence(stores, lease.session_id.as_deref());
         }
+        if let Some(unit) = self.prefix_match_unit
+            && self
+                .state_cache
+                .as_ref()
+                .is_some_and(|manager| manager.speculative_blocks > 0)
+            && self.enable_prefix_caching
+            && sequence.enable_prefix_caching()
+        {
+            let tail = sequence.num_input_tokens() / unit * unit;
+            if tail > 0
+                && tail <= computed_after
+                && !tail.is_multiple_of(self.block_size)
+                && let Some(hash) = lease.state_hash(tail, self.block_size)
+            {
+                let copy = lease.entries[tail / self.block_size]
+                    .copy
+                    .expect("computed attention tail");
+                self.pool.cache_token_prefix(copy, hash);
+            }
+        }
         let computed_state_hash = lease.state_hash(computed_after, self.block_size);
         if let (Some(manager), Some(state)) = (&mut self.state_cache, &mut lease.state) {
             // Modified default-retention behavior from vLLM v0.29.0:
@@ -1042,15 +1100,31 @@ impl VllmKvManager {
             // Copyright contributors to the vLLM project. Apache-2.0.
             let prompt = sequence.num_input_tokens();
             let unit = self.prefix_match_unit.unwrap_or(self.block_size);
-            let tail = prompt / unit * unit;
+            let tail = (prompt / unit * unit).saturating_sub(if manager.speculative_blocks > 0 {
+                unit
+            } else {
+                0
+            });
             let is_partial_tail = self.prefix_match_unit.is_some()
                 && computed_after == tail
                 && !computed_after.is_multiple_of(self.block_size);
             // Default retention keeps the final full replay boundary below
             // the prompt, not every executed chunk or decode boundary.
-            let replay_full = prompt.saturating_sub(1) / self.block_size * self.block_size;
+            let replay_full = if manager.speculative_blocks > 0 {
+                (prompt / self.block_size * self.block_size).saturating_sub(self.block_size)
+            } else {
+                prompt.saturating_sub(1) / self.block_size * self.block_size
+            };
+            // A block-aligned resend cannot match the final prompt block.
+            let resend_full = if manager.speculative_blocks > 0 {
+                (prompt.saturating_sub(1) / self.block_size * self.block_size)
+                    .saturating_sub(self.block_size)
+            } else {
+                replay_full
+            };
             let cacheable_boundary = self.prefix_match_unit.is_none()
                 || computed_after == replay_full
+                || computed_after == resend_full
                 || is_partial_tail;
             let hash = (publish_state
                 && cacheable_boundary
@@ -1060,13 +1134,14 @@ impl VllmKvManager {
                 && computed_after.is_multiple_of(unit))
             .then_some(computed_state_hash)
             .flatten();
-            if let Some(hash) = hash {
-                if !computed_after.is_multiple_of(self.block_size) {
-                    let copy = lease.entries[computed_after / self.block_size]
-                        .copy
-                        .expect("computed partial KV page");
-                    self.pool.cache_token_prefix(copy, hash);
-                }
+            if let Some(hash) = hash
+                && manager.speculative_blocks == 0
+                && !computed_after.is_multiple_of(self.block_size)
+            {
+                let copy = lease.entries[computed_after / self.block_size]
+                    .copy
+                    .expect("computed partial KV page");
+                self.pool.cache_token_prefix(copy, hash);
             }
             manager.commit(&mut self.pool, state, computed_after, hash);
         }
@@ -1101,7 +1176,9 @@ impl VllmKvManager {
             .min(lease.entries.len());
         // Token reuse is unchanged. The transferred state always takes fresh
         // blocks: vLLM's NIXL path sends it even after a local token hit.
-        let state_blocks = self.state_cache_blocks();
+        let state_blocks = self.state_cache.as_ref().map_or(0, |manager| {
+            manager.blocks_per_state + manager.speculative_blocks
+        });
         let outcome = match mode {
             super::DestinationReservationMode::ReuseResidentPrefix => {
                 let prefix_candidates = lease.entries[..prompt_blocks]
@@ -1312,6 +1389,9 @@ impl VllmKvManager {
             state.working = (0..manager.blocks_per_state)
                 .map(|_| self.pool.allocate_private(&mut reservation.pool))
                 .collect();
+            state.speculative = (0..manager.speculative_blocks)
+                .map(|_| self.pool.allocate_private(&mut reservation.pool))
+                .collect();
             state.computed_tokens = prompt;
             if self.prefix_match_unit.is_some() {
                 state.working_slot = Some(prompt.saturating_sub(1) / self.block_size);
@@ -1515,6 +1595,7 @@ impl VllmKvManager {
             };
         if let (Some(unit), Some(manager)) = (self.prefix_match_unit, &self.state_cache) {
             if self.enable_prefix_caching && sequence.enable_prefix_caching() {
+                // vLLM applies the logits cap before the speculative hash-unit drop.
                 let limit = if sequence.generated_tokens() < sequence.max_output_tokens() {
                     sequence.len().saturating_sub(1)
                 } else {
@@ -1526,6 +1607,22 @@ impl VllmKvManager {
                         .saturating_mul(self.block_size)
                         .saturating_sub(1),
                 );
+                let limit = if manager.speculative_blocks > 0 {
+                    let attention_hit = (1..=limit / unit)
+                        .rev()
+                        .map(|i| i * unit)
+                        .find(|&tokens| {
+                            (tokens.is_multiple_of(self.block_size)
+                                && tokens <= overlap_blocks * self.block_size)
+                                || lease
+                                    .state_hash(tokens, self.block_size)
+                                    .is_some_and(|hash| self.pool.prefix_hit(hash).is_some())
+                        })
+                        .unwrap_or(0);
+                    attention_hit.saturating_sub(unit)
+                } else {
+                    limit
+                };
                 let cached_tokens = (1..=limit / unit)
                     .rev()
                     .map(|i| i * unit)
@@ -1535,7 +1632,7 @@ impl VllmKvManager {
                             .is_some_and(|hash| {
                                 manager.has_snapshot(&self.pool, hash)
                                     && (tokens.is_multiple_of(self.block_size)
-                                        || self.pool.prefix_hit(hash).is_some())
+                                        || self.partial_token_key(lease, tokens).is_some())
                             })
                     })
                     .unwrap_or(0);

@@ -554,6 +554,9 @@ impl NativeHostOffloadConfig {
 pub struct StateCacheConfig {
     /// Bytes occupied by one physical working state or snapshot.
     pub bytes_per_request: usize,
+    /// Private scratch states retained for speculative verification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_speculative_states: Option<usize>,
 }
 
 impl StateCacheConfig {
@@ -936,15 +939,28 @@ impl EngineConfig {
             ensure!(
                 self.prefix_match_unit.is_none()
                     || self.prefix_match_unit == Some(self.block_size)
-                    || self.aic_nextn.is_none(),
+                    || self.aic_nextn.is_none()
+                    || state_cache.num_speculative_states.is_some(),
                 "sub-block prefix_match_unit does not support speculative decoding"
             );
             let bytes_per_token = self
                 .kv_cache_bytes_per_token
                 .ok_or_else(|| anyhow::anyhow!("state_cache requires kv_cache_bytes_per_token"))?;
             let state_blocks = state_cache.state_blocks(self.block_size, bytes_per_token)?;
+            if let Some(depth) = state_cache.num_speculative_states {
+                ensure!(
+                    depth > 0 && self.aic_nextn == Some(depth),
+                    "state_cache.num_speculative_states must match positive aic_nextn"
+                );
+            }
             let minimum = state_blocks
-                .checked_add(1)
+                .checked_mul(
+                    state_cache
+                        .num_speculative_states
+                        .unwrap_or(0)
+                        .saturating_add(1),
+                )
+                .and_then(|blocks| blocks.checked_add(1))
                 .ok_or_else(|| anyhow::anyhow!("state_cache minimum capacity overflowed"))?;
             ensure!(
                 self.num_gpu_blocks >= minimum,
@@ -1409,6 +1425,7 @@ mod tests {
         assert_eq!(
             StateCacheConfig {
                 bytes_per_request: usize::MAX,
+                num_speculative_states: None,
             }
             .state_blocks(2, 1)
             .unwrap(),

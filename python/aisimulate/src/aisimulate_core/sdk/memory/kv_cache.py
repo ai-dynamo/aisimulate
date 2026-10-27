@@ -1538,6 +1538,8 @@ def estimate_num_gpu_blocks(
         encoder_parallel=encoder_parallel,
     )
 
+    if estimate.get("cache_layout") == "mamba_align":
+        raise ValueError("Mamba FPM cache requires replay_cache from estimate_kv_cache, including state reservations")
     if estimate.get("cache_layout") == "grouped":
         raise ValueError(
             "grouped FPM caches require cache_groups and the byte budget from estimate_kv_cache; "

@@ -191,3 +191,11 @@ assert_lightweight()
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "--model" in result.stdout
+
+
+def test_mamba_cache_compatibility_exports_share_the_core_schema():
+    from aisimulate.fpm_profile import FpmMambaCache
+    from aisimulate_core.fpm_profile import FpmMambaCache as CoreCache
+    from aisimulate_core.sdk.fpm_profile import FpmMambaCache as SdkCache
+
+    assert FpmMambaCache is CoreCache is SdkCache

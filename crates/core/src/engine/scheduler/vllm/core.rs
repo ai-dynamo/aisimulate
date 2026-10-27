@@ -2620,11 +2620,25 @@ impl VllmCore {
             }
         }
         // Match the state cache's replay boundary, including prompts that end on a full block.
-        let last_full = prompt.saturating_sub(1) / alignment * alignment;
-        let tail = prompt / unit * unit;
+        let native_mtp = self
+            .args
+            .state_cache
+            .is_some_and(|state| state.num_speculative_states.is_some());
+        let last_full = if native_mtp {
+            (prompt / alignment * alignment).saturating_sub(alignment)
+        } else {
+            prompt.saturating_sub(1) / alignment * alignment
+        };
+        let resend_full = if native_mtp {
+            (prompt.saturating_sub(1) / alignment * alignment).saturating_sub(alignment)
+        } else {
+            last_full
+        };
+        let tail = (prompt / unit * unit).saturating_sub(if native_mtp { unit } else { 0 });
         let next = start.checked_add(alignment - start % alignment);
         for stop in [
             next.filter(|_| !start.is_multiple_of(alignment)),
+            Some(resend_full),
             Some(last_full),
             (last_full < tail && tail < prompt).then_some(tail),
         ]
@@ -3729,6 +3743,7 @@ mod state_cache_tests {
             .kv_cache_bytes_per_token(Some(16))
             .state_cache(Some(StateCacheConfig {
                 bytes_per_request: 64,
+                num_speculative_states: None,
             }))
             .build()
             .unwrap()
@@ -3770,6 +3785,74 @@ mod state_cache_tests {
                 .reused_input_tokens,
             12
         );
+    }
+
+    #[test]
+    fn full_state_mtp_preserves_vllm_resend_boundaries() {
+        // Source-derived fixtures: vLLM db9527a46873454610df6dbedf79a36d6bf1a7f6,
+        // KVCacheCoordinator.get_replay_boundaries plus attention/Mamba lookup.
+        // The logits cap precedes the MTP drop; partial tails exclude page boundaries.
+        for depth in 1..=3 {
+            for (unit, cases) in [
+                (
+                    2,
+                    [
+                        (15, 12),
+                        (16, 0),
+                        (17, 14),
+                        (18, 8),
+                        (19, 8),
+                        (24, 8),
+                        (25, 22),
+                        (32, 16),
+                        (33, 30),
+                    ],
+                ),
+                (
+                    8,
+                    [
+                        (15, 0),
+                        (16, 0),
+                        (17, 8),
+                        (18, 8),
+                        (19, 8),
+                        (24, 8),
+                        (25, 16),
+                        (32, 16),
+                        (33, 24),
+                    ],
+                ),
+            ] {
+                for (prompt, expected) in cases {
+                    let mut config = args(128, true, Some(depth));
+                    config.block_size = 8;
+                    config.prefix_match_unit = Some(unit);
+                    config.state_cache.as_mut().unwrap().num_speculative_states = Some(depth);
+                    let mut core = VllmCore::new(config);
+                    submit(&mut core, 93_040, prompt, 16);
+                    for _ in 0..32 {
+                        if core.state.requests.is_empty() {
+                            break;
+                        }
+                        step(&mut core);
+                    }
+                    assert!(core.state.requests.is_empty());
+                    assert_eq!(core.kv_manager.num_active_blocks(), 0);
+                    let second = submit(&mut core, 93_041, prompt, 1);
+                    let pass = step(&mut core);
+                    let reused = pass
+                        .admissions
+                        .iter()
+                        .find(|a| a.uuid == second)
+                        .unwrap()
+                        .reused_input_tokens;
+                    assert_eq!(
+                        reused, expected,
+                        "depth={depth}, unit={unit}, prompt={prompt}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -3944,6 +4027,7 @@ mod state_cache_tests {
         config.block_size = 64;
         config.state_cache = Some(StateCacheConfig {
             bytes_per_request: 1500,
+            num_speculative_states: None,
         });
         let mut core = VllmCore::new(config);
         let ids = (0..3)
