@@ -2024,6 +2024,7 @@ class TestAttentionProjectionExclusions:
         "model_path,excluded",
         [
             ("nvidia/GLM-5.2-NVFP4", frozenset({"q", "kv", "o", "indexer"})),
+            ("nvidia/GLM-5.3-NVFP4", frozenset({"q", "kv", "o", "indexer"})),
             ("nvidia/DeepSeek-V3.2-NVFP4", frozenset({"q", "kv", "indexer"})),
         ],
     )
@@ -2034,6 +2035,22 @@ class TestAttentionProjectionExclusions:
             backend_name=backend,
         )
         assert model.extra_params["dsa_attn_quant_exclusions"] == excluded
+
+    @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+    @pytest.mark.parametrize(
+        "gemm_quant_mode",
+        [None, common.GEMMQuantMode.nvfp4],
+        ids=["resolved-from-export", "explicit-nvfp4"],
+    )
+    def test_actual_glm53_checkpoint_runs_shared_experts_in_bfloat16(self, backend, gemm_quant_mode):
+        # The MIXED_PRECISION export lists its routed experts and its FP8 dense MLP projections only. It leaves the
+        # shared experts out, so they stay in BF16 whatever the global GEMM mode is.
+        model = models.get_model(
+            "nvidia/GLM-5.3-NVFP4",
+            config.ModelConfig(tp_size=8, moe_tp_size=1, moe_ep_size=8, gemm_quant_mode=gemm_quant_mode),
+            backend_name=backend,
+        )
+        assert model.extra_params["dsa_shared_expert_quant_mode"] == common.GEMMQuantMode.bfloat16
 
 
 class TestBundledModelConfigsOffline:
@@ -2118,6 +2135,69 @@ class TestBundledModelConfigsOffline:
         assert model_config.moe_quant_mode == common.MoEQuantMode.nvfp4
         assert model_config.kvcache_quant_mode == common.KVCacheQuantMode.bfloat16
         assert model_config.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+
+    def test_glm53_nvfp4_bundle_resolves_mixed_precision_modes(self, monkeypatch):
+        """nvidia/GLM-5.3-NVFP4 end-to-end: the bundled MIXED_PRECISION export lists its FP8
+        dense MLP projections and its NVFP4 routed experts, and nothing else. It resolves
+        gemm=fp8_static (the FP8 dense lane), moe=nvfp4, kv=fp8, and the attention projections,
+        the indexer and the shared experts stay in BF16."""
+        import aisimulate.sdk.utils as sdk_utils
+
+        def _no_network(*a, **k):
+            raise AssertionError("network path reached")
+
+        monkeypatch.setattr(sdk_utils, "_download_hf_config", _no_network, raising=False)
+        sdk_utils.get_model_config_from_model_path.cache_clear()
+        sdk_utils._load_model_config_from_model_path.cache_clear()
+        try:
+            cfg = sdk_utils.get_model_config_from_model_path("nvidia/GLM-5.3-NVFP4")
+            raw = cfg["raw_config"]
+            assert raw["quant_algo"] == "mixed_precision"
+            assert raw["kv_cache_quant_algo"] == "fp8"
+            assert len(raw["hf_quant_config"]["quantization"]["quantized_layers"]) == 87
+            # The top-level head_dim of the export (64) is not the attention width: d takes qk_nope_head_dim.
+            assert (raw["head_dim"], cfg["d"]) == (64, 192)
+
+            model_config = config.ModelConfig(tp_size=4, moe_tp_size=1, moe_ep_size=4)
+            model = get_model("nvidia/GLM-5.3-NVFP4", model_config, backend_name="sglang")
+            assert model_config.gemm_quant_mode == common.GEMMQuantMode.fp8_static
+            assert model_config.moe_quant_mode == common.MoEQuantMode.nvfp4
+            assert model_config.kvcache_quant_mode == common.KVCacheQuantMode.fp8
+            assert model.extra_params["dsa_attn_quant_exclusions"] == frozenset({"q", "kv", "o", "indexer"})
+            assert model.extra_params["dsa_shared_expert_quant_mode"] == common.GEMMQuantMode.bfloat16
+            assert model.extra_params["dsa_dense_mlp_groups"] == [
+                (3, common.GEMMQuantMode.fp8_static, common.GEMMQuantMode.fp8_static)
+            ]
+        finally:
+            sdk_utils.get_model_config_from_model_path.cache_clear()
+            sdk_utils._load_model_config_from_model_path.cache_clear()
+
+    @pytest.mark.parametrize(
+        "backend,version",
+        [("sglang", "0.5.14"), ("vllm", "0.24.0"), ("trtllm", "1.3.0rc20")],
+    )
+    def test_glm53_nvfp4_real_bundle_predicts_on_b200(self, backend, version):
+        """The packaged export predicts static prefill and decode in SILICON mode on b200_sxm.
+
+        The prediction regression gate reports a PerfDataNotAvailableError as DATA_MISS. Here it fails the
+        test. The DSA attention rows at bfloat16 and the expert rows at nvfp4 must resolve on every backend,
+        and so must the dense GEMM rows at fp8 that SGLang requests for the first three layers. vLLM and
+        TensorRT-LLM price those layers like the MoE layers and request no fp8 GEMM rows. The call sequence
+        is the gate's own (tools/prediction_regression_gate/collect_static.py).
+        """
+        from aisimulate.sdk.backends.factory import get_backend
+        from aisimulate.sdk.inference_session import InferenceSession
+        from aisimulate.sdk.perf_database import get_database_view
+
+        database = get_database_view("b200_sxm", backend, version, database_mode="SILICON", shared_layer=False)
+        # The gate's default quantization variant at tp4/ep4: every mode comes from the checkpoint.
+        model_config = build_model_config(4, 1, 1, 1, 4, None, None, None, None, None)
+        model = get_model("nvidia/GLM-5.3-NVFP4", model_config, backend)
+        session = InferenceSession(model, database, get_backend(backend))
+        for mode, batch_size, isl, osl in (("static_ctx", 1, 1024, 8), ("static_gen", 32, 1024, 256)):
+            runtime_config = config.RuntimeConfig(batch_size=batch_size, isl=isl, osl=osl, engine_step_backend="rust")
+            latency = session.run_static_latency_only(runtime_config=runtime_config, mode=mode, stride=32)
+            assert latency > 0, (backend, mode)
 
     def test_qwen38max_loads_from_bundle_with_gdn_and_moe_fields(self, monkeypatch):
         import aisimulate.sdk.utils as sdk_utils
