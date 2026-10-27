@@ -1162,39 +1162,39 @@
   "post_freeze_pins": {
     "gpt-oss-20b-b200-trtllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "bf00c56e0950f2de8c4e9e13ac3f733aefdc319d"
+      "git_head": "346390a44af11c7c70f6b49a9e19bef8b19d50a4"
     },
     "kimi-k25-b200-sglang-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "bf00c56e0950f2de8c4e9e13ac3f733aefdc319d"
+      "git_head": "346390a44af11c7c70f6b49a9e19bef8b19d50a4"
     },
     "kimi-k25-b200-vllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "bf00c56e0950f2de8c4e9e13ac3f733aefdc319d"
+      "git_head": "346390a44af11c7c70f6b49a9e19bef8b19d50a4"
     },
     "minimax-m25-b200-sglang-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "bf00c56e0950f2de8c4e9e13ac3f733aefdc319d"
+      "git_head": "346390a44af11c7c70f6b49a9e19bef8b19d50a4"
     },
     "minimax-m25-b200-vllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "bf00c56e0950f2de8c4e9e13ac3f733aefdc319d"
+      "git_head": "346390a44af11c7c70f6b49a9e19bef8b19d50a4"
     },
     "minimax-m25-b200-vllm-sampled-prefix": {
       "engine": "rust",
-      "git_head": "bf00c56e0950f2de8c4e9e13ac3f733aefdc319d"
+      "git_head": "346390a44af11c7c70f6b49a9e19bef8b19d50a4"
     },
     "minimax-m27-b200-vllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "bf00c56e0950f2de8c4e9e13ac3f733aefdc319d"
+      "git_head": "346390a44af11c7c70f6b49a9e19bef8b19d50a4"
     },
     "nemotron-nas-b200-trtllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "bf00c56e0950f2de8c4e9e13ac3f733aefdc319d"
+      "git_head": "346390a44af11c7c70f6b49a9e19bef8b19d50a4"
     },
     "qwen3-30b-a3b-b200-vllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "bf00c56e0950f2de8c4e9e13ac3f733aefdc319d"
+      "git_head": "346390a44af11c7c70f6b49a9e19bef8b19d50a4"
     }
   }
 }
