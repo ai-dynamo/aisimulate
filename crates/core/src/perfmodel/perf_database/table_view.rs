@@ -823,6 +823,8 @@ pub fn view_mamba2(sources: &[PerfSource]) -> Result<Option<ViewNode>, AicError>
                 .row
                 .u32_optional(r.col_optional("token_width"))?
                 .unwrap_or(1);
+            let (dtype, sr, rounds, width) =
+                super::state_space::mamba2_identity(&kernel_source, dtype, sr, rounds, width);
             model_key.push_str(&format!("|{dtype}|{}|{rounds}|{width}", u8::from(sr)));
         }
         let latency = ctx.row.f64(r.col("latency")?)?;
