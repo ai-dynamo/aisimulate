@@ -12,9 +12,13 @@ import types
 from contextlib import contextmanager
 
 import pytest
-
 from collector import helper
-from collector.helper import FLASHINFER_AUTOTUNE_ENV, flashinfer_autotuned
+from collector.helper import (
+    FLASHINFER_AUTOTUNE_BUDGET_ENV,
+    FLASHINFER_AUTOTUNE_ENV,
+    FlashInferTuneBudget,
+    flashinfer_autotuned,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -24,6 +28,13 @@ class _FakeTuner:
 
     def __init__(self):
         self.profiling_cache = {}
+        # FlashInfer's own per-tactic profiling budget (AutoTuner.__init__ defaults).
+        self.warmup = 3
+        self.repeat = 10
+        self.stream_delay_micro_secs = 5000
+
+    def budget(self):
+        return (self.warmup, self.repeat, self.stream_delay_micro_secs)
 
     @classmethod
     def get(cls):
@@ -58,6 +69,7 @@ def fake_flashinfer(monkeypatch):
     monkeypatch.setitem(sys.modules, "flashinfer", package)
     monkeypatch.setitem(sys.modules, "flashinfer.autotuner", module)
     monkeypatch.delenv(FLASHINFER_AUTOTUNE_ENV, raising=False)
+    monkeypatch.delenv(FLASHINFER_AUTOTUNE_BUDGET_ENV, raising=False)
     return types.SimpleNamespace(events=events, active=active, tuner=_FakeTuner)
 
 
@@ -67,14 +79,19 @@ def test_tunes_once_at_the_exact_token_count_then_times_under_lookup_only(fake_f
     def tune_fn():
         # The tuning forward runs inside tune_mode=True with the exact bucket and
         # stands in for the autotuner filling its cache.
-        seen.append(tuple(fake_flashinfer.active))
+        seen.append((tuple(fake_flashinfer.active), fake_flashinfer.tuner.get().budget()))
         fake_flashinfer.tuner.get().profiling_cache[("moe", 320)] = "tactic"
 
     with flashinfer_autotuned(320, tune_fn, label="vllm_trtllm_nvfp4") as tuned:
         assert tuned is True
         assert fake_flashinfer.active == [(False, (320,))]
+        # The reduced budget applies to the tuning pass only; the timed body sees
+        # FlashInfer's own values again.
+        assert fake_flashinfer.tuner.get().budget() == (3, 10, 5000)
 
-    assert seen == [((True, (320,)),)]
+    # Tuned under the collector's default budget: 1 warm-up, 3 timed, 1 ms delay.
+    assert seen == [(((True, (320,)),), (1, 3, 1000))]
+    assert fake_flashinfer.tuner.get().budget() == (3, 10, 5000)
     assert fake_flashinfer.events == [
         ("enter", True, (320,)),
         ("exit", True, (320,)),
@@ -82,7 +99,47 @@ def test_tunes_once_at_the_exact_token_count_then_times_under_lookup_only(fake_f
         ("exit", False, (320,)),
     ]
     out = capsys.readouterr().out
-    assert "FlashInfer autotune: 1 new tactic entries at num_tokens=320 vllm_trtllm_nvfp4" in out
+    assert "FlashInfer autotune: 1 new tactic entries at num_tokens=320 vllm_trtllm_nvfp4 [" in out
+    assert "s, warmup=1 repeat=3 delay_us=1000]" in out
+
+
+def test_budget_env_overrides_or_keeps_flashinfer_defaults(fake_flashinfer, monkeypatch, capsys):
+    tuner = fake_flashinfer.tuner.get()
+    seen = []
+
+    monkeypatch.setenv(FLASHINFER_AUTOTUNE_BUDGET_ENV, "2, 5, 2000")
+    with flashinfer_autotuned(64, lambda: seen.append(tuner.budget())):
+        pass
+    assert seen == [(2, 5, 2000)]
+    assert tuner.budget() == (3, 10, 5000)
+    assert "warmup=2 repeat=5 delay_us=2000]" in capsys.readouterr().out
+
+    monkeypatch.setenv(FLASHINFER_AUTOTUNE_BUDGET_ENV, "flashinfer")
+    with flashinfer_autotuned(64, lambda: seen.append(tuner.budget())):
+        pass
+    assert seen[-1] == (3, 10, 5000)
+    assert "flashinfer defaults]" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("raw", ["3,10", "a,b,c", "1,0,1000", "-1,3,1000", "1,3,-5"])
+def test_budget_env_rejects_malformed_values(monkeypatch, raw):
+    monkeypatch.setenv(FLASHINFER_AUTOTUNE_BUDGET_ENV, raw)
+    with pytest.raises(ValueError, match=FLASHINFER_AUTOTUNE_BUDGET_ENV):
+        helper.flashinfer_autotune_budget()
+
+
+def test_budget_default_and_restore_when_tune_fn_raises(fake_flashinfer, monkeypatch):
+    monkeypatch.delenv(FLASHINFER_AUTOTUNE_BUDGET_ENV, raising=False)
+    assert helper.flashinfer_autotune_budget() == FlashInferTuneBudget(1, 3, 1000)
+    tuner = fake_flashinfer.tuner.get()
+
+    def boom():
+        raise RuntimeError("tuning forward failed")
+
+    with pytest.raises(RuntimeError, match="tuning forward failed"), flashinfer_autotuned(8, boom):
+        pass
+    assert tuner.budget() == (3, 10, 5000)
+    assert fake_flashinfer.active == []
 
 
 def test_env_switch_restores_the_untuned_measurement(fake_flashinfer, monkeypatch):

@@ -469,10 +469,85 @@ def power_monitoring_only(device, measure_power: bool | None = None):
 # Set to 0/false to time FlashInfer-backed kernels on FlashInfer's untuned default
 # tactic (the pre-2026-10-27 behavior). Default on.
 FLASHINFER_AUTOTUNE_ENV = "COLLECTOR_FLASHINFER_AUTOTUNE"
+FLASHINFER_AUTOTUNE_BUDGET_ENV = "COLLECTOR_FLASHINFER_AUTOTUNE_BUDGET"
+FLASHINFER_AUTOTUNE_BUDGET_FLASHINFER = "flashinfer"
+
+
+@dataclass(frozen=True)
+class FlashInferTuneBudget:
+    """Per-tactic profiling budget applied to FlashInfer's autotuner during the tuning pass.
+
+    FlashInfer profiles every candidate tactic with ``warmup`` untimed launches, ``repeat``
+    timed launches and a ``stream_delay_us`` delay kernel in front of the timed block (its
+    defaults: 3 / 10 / 5000, enough to rank tactics for a server that tunes once per
+    process). The collector tunes once per (shape, EP, num_tokens), so that budget is the
+    dominant cost of a FlashInfer-backed sweep (the 2026-10-27 b200 probe: +3.6 s per
+    row, 28x the untuned collection time). The collector only needs the *ranking* -- the
+    final measurement is still ``benchmark_with_power``'s own warm-ups and runs -- and the
+    tactics that matter differ by 2x, so a smaller budget ranks them just as well while
+    near-ties stay inside collector noise.
+    """
+
+    warmup: int = 1
+    repeat: int = 3
+    stream_delay_us: int = 1000
+
+    def __str__(self) -> str:
+        return f"warmup={self.warmup} repeat={self.repeat} delay_us={self.stream_delay_us}"
 
 
 def flashinfer_autotune_enabled() -> bool:
     return _parse_bool_env(FLASHINFER_AUTOTUNE_ENV, default=True)
+
+
+def flashinfer_autotune_budget() -> FlashInferTuneBudget | None:
+    """``COLLECTOR_FLASHINFER_AUTOTUNE_BUDGET``: ``"warmup,repeat,delay_us"`` (default
+    ``"1,3,1000"``), or ``"flashinfer"`` to leave FlashInfer's own 3/10/5000 untouched
+    (returns ``None``)."""
+    raw = os.environ.get(FLASHINFER_AUTOTUNE_BUDGET_ENV, "").strip()
+    if not raw:
+        return FlashInferTuneBudget()
+    if raw.lower() == FLASHINFER_AUTOTUNE_BUDGET_FLASHINFER:
+        return None
+    parts = [part.strip() for part in raw.split(",")]
+    try:
+        warmup, repeat, delay_us = (int(part) for part in parts)
+    except ValueError:
+        raise ValueError(
+            f"{FLASHINFER_AUTOTUNE_BUDGET_ENV}={raw!r}: expected 'warmup,repeat,delay_us' "
+            f"(three integers) or '{FLASHINFER_AUTOTUNE_BUDGET_FLASHINFER}'"
+        ) from None
+    if warmup < 0 or repeat < 1 or delay_us < 0:
+        raise ValueError(
+            f"{FLASHINFER_AUTOTUNE_BUDGET_ENV}={raw!r}: warmup and delay_us must be >= 0, repeat >= 1"
+        )
+    return FlashInferTuneBudget(warmup, repeat, delay_us)
+
+
+_FLASHINFER_TUNER_BUDGET_ATTRS = (
+    ("warmup", "warmup"),
+    ("repeat", "repeat"),
+    ("stream_delay_us", "stream_delay_micro_secs"),
+)
+
+
+@contextmanager
+def _flashinfer_tuner_budget(tuner, budget: FlashInferTuneBudget | None):
+    """Apply ``budget`` to the ``AutoTuner`` singleton's plain profiling attributes for the
+    duration of the block, restoring whatever was there afterwards."""
+    if budget is None:
+        yield
+        return
+    saved = {}
+    for field_name, attr in _FLASHINFER_TUNER_BUDGET_ATTRS:
+        if hasattr(tuner, attr):
+            saved[attr] = getattr(tuner, attr)
+            setattr(tuner, attr, getattr(budget, field_name))
+    try:
+        yield
+    finally:
+        for attr, value in saved.items():
+            setattr(tuner, attr, value)
 
 
 def _flashinfer_autotune_api():
@@ -504,6 +579,11 @@ def flashinfer_autotuned(num_tokens: int, tune_fn: Callable[[], None], *, label:
     entries just profiled, nothing is profiled inside the body (CUDA-graph capture safe),
     and an op the tuner has no entry for keeps FlashInfer's fallback exactly as before.
 
+    The tuning pass runs under :func:`flashinfer_autotune_budget` (default 1 warm-up, 3
+    timed launches, 1 ms delay per tactic instead of FlashInfer's 3 / 10 / 5 ms; see
+    :class:`FlashInferTuneBudget`), restored afterwards. The log line records the pass's
+    wall time and budget so a probe can read the tuning cost per token point.
+
     Yields ``True`` when a tuning pass ran, ``False`` when FlashInfer is not importable or
     ``COLLECTOR_FLASHINFER_AUTOTUNE`` is off (then the body runs untouched and ``tune_fn``
     is not called). Non-FlashInfer kernels inside the body are unaffected either way.
@@ -512,17 +592,24 @@ def flashinfer_autotuned(num_tokens: int, tune_fn: Callable[[], None], *, label:
     if autotune is None or not flashinfer_autotune_enabled():
         yield False
         return
+    budget = flashinfer_autotune_budget()
     tuner = auto_tuner_cls.get()
     cache = getattr(tuner, "profiling_cache", None)
     entries_before = len(cache) if hasattr(cache, "__len__") else None
     buckets = (int(num_tokens),)
-    with autotune(True, tuning_buckets=buckets):
+    started = time.perf_counter()
+    with _flashinfer_tuner_budget(tuner, budget), autotune(True, tuning_buckets=buckets):
         tune_fn()
+    elapsed = time.perf_counter() - started
+    budget_desc = str(budget) if budget is not None else "flashinfer defaults"
     if entries_before is not None:
-        new_entries = len(cache) - entries_before
-        print(f"FlashInfer autotune: {new_entries} new tactic entries at num_tokens={num_tokens} {label}".rstrip())
+        outcome = f"{len(cache) - entries_before} new tactic entries"
     else:
-        print(f"FlashInfer autotune: tuning pass done at num_tokens={num_tokens} {label}".rstrip())
+        outcome = "tuning pass done"
+    print(
+        f"FlashInfer autotune: {outcome} at num_tokens={num_tokens} {label}".rstrip()
+        + f" [{elapsed:.2f}s, {budget_desc}]"
+    )
     with autotune(False, tuning_buckets=buckets):
         yield True
 
