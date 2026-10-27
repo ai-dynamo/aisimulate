@@ -580,6 +580,16 @@ mod tests {
     }
 
     #[test]
+    fn a_saturated_pool_is_shared_per_transfer() {
+        // The pool binds before either client link, so all ten transfers get
+        // 2 GB/s: client 1 moves 18 GB/s and client 0 moves 2 GB/s, as under
+        // the previous min(client / n_client, pool / n_total) rule.
+        let mut jobs = vec![job(0, 0, Direction::Read, 0.0, (32.0, 20.0))];
+        jobs.extend((1..10).map(|id| job(id, 1, Direction::Read, 0.0, (32.0, 20.0))));
+        assert_eq!(fair_rates(&jobs, 0.0), [2.0 * MB; 10]);
+    }
+
+    #[test]
     fn a_saturated_pool_is_shared_equally() {
         let jobs = (0..4)
             .map(|id| job(id, id, Direction::Read, 0.0, (32.0, 80.0)))

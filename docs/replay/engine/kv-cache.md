@@ -184,11 +184,12 @@ aisimulate predict --stack engine --config host-offload-prediction.yaml --captur
 For example, two replicas with `attention_data: 2` and `num_host_blocks: 4096`
 get four private 4096-block caches with `dp_rank_local`, or one 4096-block
 cache with `cluster_shared`. In a shared pool, transfers in the same direction
-share bandwidth max-min fairly: four ranks at 32 GB/s under an 80 GB/s pool each
-move at 20 GB/s while all four transfer. Pool bandwidth a rank cannot use
-because its own limit binds goes to the other ranks: with one rank running nine
-transfers and another running one, both at 32 GB/s, each rank moves 32 GB/s in
-total.
+share bandwidth max-min fairly per transfer, not per rank: four ranks at
+32 GB/s under an 80 GB/s pool each move at 20 GB/s while all four transfer.
+Pool bandwidth a rank cannot use because its own limit binds goes to the other
+ranks: with one rank running nine transfers and another running one, both at
+32 GB/s, each rank moves 32 GB/s in total. Under a 20 GB/s pool the same ten
+transfers each get 2 GB/s, so the busier rank moves 18 GB/s.
 
 `cluster_shared` models a deployment-wide host cache such as Mooncake Store or
 LMCache. vLLM's native offload has no equivalent, so it has no native parity
