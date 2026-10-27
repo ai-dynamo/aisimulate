@@ -359,6 +359,14 @@ struct AicTimingConfig {
     #[serde(default)]
     moe_kernel_source: Option<String>,
     #[serde(default)]
+    mamba_backend: Option<String>,
+    #[serde(default)]
+    mamba_ssm_cache_dtype: Option<String>,
+    #[serde(default)]
+    mamba_stochastic_rounding: Option<bool>,
+    #[serde(default)]
+    mamba_philox_rounds: Option<u32>,
+    #[serde(default)]
     moe_backend: Option<String>,
     #[serde(default)]
     enable_eplb: bool,
@@ -458,6 +466,10 @@ impl AicTimingConfig {
             enable_eplb: self.enable_eplb,
             wideep_num_slots: self.wideep_num_slots,
             moe_kernel_source: self.moe_kernel_source.clone(),
+            mamba_backend: self.mamba_backend.clone(),
+            mamba_ssm_cache_dtype: self.mamba_ssm_cache_dtype.clone(),
+            mamba_stochastic_rounding: self.mamba_stochastic_rounding,
+            mamba_philox_rounds: self.mamba_philox_rounds,
             enable_shared_layer: self.enable_shared_layer,
             strict_provenance: self.strict_provenance,
             encoder_parallel: self.encoder_parallel,
@@ -4866,6 +4878,10 @@ mod tests {
             enable_eplb: false,
             wideep_num_slots: None,
             moe_kernel_source: None,
+            mamba_backend: None,
+            mamba_ssm_cache_dtype: None,
+            mamba_stochastic_rounding: None,
+            mamba_philox_rounds: None,
             enable_shared_layer: None,
             strict_provenance: false,
             systems_path: None,
