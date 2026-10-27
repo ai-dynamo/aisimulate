@@ -123,15 +123,28 @@ struct BincodeWireRef<'a> {
 }
 
 impl EngineSpec {
-    /// SHA-256 of this spec's bincode wire encoding with its storage
-    /// locations (`systems_path`, `fpm_parquet_path`) cleared. Their contents
-    /// are fingerprinted separately, so a relocated copy of the same data
-    /// compiles to the same digest.
+    /// SHA-256 of this spec's bincode wire encoding with every storage
+    /// location cleared: `systems_path`, `fpm_parquet_path` and the copy of
+    /// the FPM parquet path inside the `extra["estimator_config"]` controls
+    /// the Python compiler embeds. Their contents are fingerprinted
+    /// separately, so a relocated copy of the same data compiles to the same
+    /// digest.
     pub(crate) fn content_sha256(&self) -> Result<String, AicError> {
         use sha2::{Digest, Sha256};
         let mut engine = self.engine.clone();
         engine.systems_path = None;
         engine.fpm_parquet_path = None;
+        if let Some(controls) = engine.extra.get_mut("estimator_config") {
+            let mut value: serde_json::Value = serde_json::from_str(controls)
+                .map_err(|e| AicError::EngineSpec(format!("extra.estimator_config: {e}")))?;
+            if let Some(settings) = value
+                .get_mut("fpm_interpolation")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                settings.remove("fpm_parquet_path");
+            }
+            *controls = value.to_string();
+        }
         let engine_json = serde_json::to_string(&engine)
             .map_err(|e| AicError::EngineSpec(format!("engine JSON encode: {e}")))?;
         let mut digest = Sha256::new();
@@ -1113,6 +1126,38 @@ mod tests {
             let decoded: OpSpec = bincode::deserialize(&bytes).expect("deserialize op");
             assert_eq!(op, decoded, "round-trip mismatch for {:?}", op);
         }
+    }
+
+    #[test]
+    fn content_digest_ignores_every_data_location() {
+        let spec = |systems: &str, parquet: &str, method: &str| {
+            let mut engine = sample_engine_config();
+            engine.systems_path = Some(systems.into());
+            engine.fpm_parquet_path = Some(parquet.into());
+            engine.extra.insert(
+                "estimator_config".into(),
+                serde_json::json!({"fpm_interpolation": {
+                    "fpm_parquet_path": parquet,
+                    "method": method,
+                }})
+                .to_string(),
+            );
+            EngineSpec::new(engine, all_op_variants(), Vec::new())
+                .content_sha256()
+                .unwrap()
+        };
+        let base = spec("/a/systems", "/a/fpm.parquet", "direct");
+        assert_eq!(spec("/b/systems", "/b/other.parquet", "direct"), base);
+        assert_ne!(spec("/a/systems", "/a/fpm.parquet", "sol"), base);
+        let mut engine = sample_engine_config();
+        engine
+            .extra
+            .insert("estimator_config".into(), "{not json".into());
+        assert!(
+            EngineSpec::new(engine, Vec::new(), Vec::new())
+                .content_sha256()
+                .is_err()
+        );
     }
 
     #[test]

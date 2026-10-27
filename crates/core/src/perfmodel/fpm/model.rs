@@ -462,6 +462,10 @@ enum ForwardPassPerfMode {
         /// op lists + perf-database tree.
         engine: Arc<Engine>,
         corrections: WorkloadStores<CorrectionBuckets>,
+        /// Performance-data fingerprint recorded when this process first
+        /// loaded the engine's systems root; `None` for engines built
+        /// directly from a spec.
+        data_fingerprint: Option<super::snapshot::perf_db::LoadedFingerprint>,
     },
     Regression {
         worker_type: ForwardPassWorkerType,
@@ -490,6 +494,7 @@ impl ForwardPassPerfModel {
             mode: ForwardPassPerfMode::Native {
                 engine,
                 corrections: WorkloadStores::with_options(&options),
+                data_fingerprint: None,
             },
             options,
             last_warning: None,
@@ -797,7 +802,7 @@ impl ForwardPassPerfModel {
             let mut candidate = config.clone();
             candidate.estimation_mode = mode;
             match build_native_candidate(&candidate) {
-                Ok((engine, root)) => {
+                Ok((engine, root, fingerprint)) => {
                     candidate.backend_version = Some(engine.database().version.clone());
                     candidate.database_mode = engine.database().database_mode;
                     candidate.transfer_policy =
@@ -808,6 +813,7 @@ impl ForwardPassPerfModel {
                         Arc::new(engine),
                         candidate.estimator_config.correction_options(),
                     );
+                    model.set_data_fingerprint(fingerprint);
                     model.is_correction_enabled = candidate.estimator_config.correction.enabled;
                     model.query_coverage = candidate
                         .estimator_config
@@ -876,6 +882,7 @@ impl ForwardPassPerfModel {
             ForwardPassPerfMode::Native {
                 engine,
                 corrections,
+                ..
             } => {
                 let Some(feature) = IterationFeatures::from_metrics(metrics_by_rank)? else {
                     return Ok(Some(0.0));
@@ -943,6 +950,7 @@ impl ForwardPassPerfModel {
         if let ForwardPassPerfMode::Native {
             engine,
             corrections,
+            ..
         } = &self.mode
         {
             let Some(feature) = IterationFeatures::from_metrics(metrics_by_rank)? else {
@@ -1021,6 +1029,7 @@ impl ForwardPassPerfModel {
                 ForwardPassPerfMode::Native {
                     engine,
                     corrections,
+                    ..
                 } => {
                     if !*is_correction_enabled {
                         let _ = IterationFeatures::from_metrics(metrics_by_rank)?;
@@ -1799,6 +1808,28 @@ impl ForwardPassPerfModel {
             .sum())
     }
 
+    /// Attach the load-time performance-data fingerprint of a native model.
+    pub(crate) fn set_data_fingerprint(
+        &mut self,
+        fingerprint: super::snapshot::perf_db::LoadedFingerprint,
+    ) {
+        if let ForwardPassPerfMode::Native {
+            data_fingerprint, ..
+        } = &mut self.mode
+        {
+            *data_fingerprint = Some(fingerprint);
+        }
+    }
+
+    pub(crate) fn data_fingerprint(&self) -> Option<&super::snapshot::perf_db::LoadedFingerprint> {
+        match &self.mode {
+            ForwardPassPerfMode::Native {
+                data_fingerprint, ..
+            } => data_fingerprint.as_ref(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn native_engine(&self) -> Option<Arc<Engine>> {
         match &self.mode {
             ForwardPassPerfMode::Native { engine, .. } => Some(Arc::clone(engine)),
@@ -1837,10 +1868,14 @@ impl ForwardPassPerfModel {
     }
 }
 
+/// A compiled native engine, its systems root and that root's load-time
+/// performance-data fingerprint.
+type NativeCandidate = (Engine, PathBuf, super::snapshot::perf_db::LoadedFingerprint);
+
 #[cfg(feature = "python")]
 fn build_native_candidate(
     config: &ForwardPassPerfModelConfig,
-) -> Result<(Engine, PathBuf), AicError> {
+) -> Result<NativeCandidate, AicError> {
     if config.estimation_mode == EstimationMode::FpmInterpolation
         && (config.enable_eplb
             || config.moe_kernel_source.is_some()
@@ -1863,12 +1898,20 @@ fn build_native_candidate(
         ));
     }
     let mut last_error = None;
+    let fpm_parquet = config
+        .estimator_config
+        .fpm_interpolation
+        .fpm_parquet_path
+        .as_deref();
     for root in resolve_systems_roots(config)? {
+        // Fingerprint before the engine reads anything, once per process and
+        // root, so a snapshot can prove which data the model loaded.
+        let fingerprint = super::snapshot::perf_db::loaded(&root, &config.system, fpm_parquet);
         match build_engine_via_python(config, &root).and_then(|engine| {
             engine.validate_forward_pass_readiness(config.worker_type)?;
             Ok(engine)
         }) {
-            Ok(engine) => return Ok((engine, root)),
+            Ok(engine) => return Ok((engine, root, fingerprint)),
             Err(err) if can_fallback_to_regression(&err) => last_error = Some(err),
             Err(err) => return Err(err),
         }
@@ -1879,7 +1922,7 @@ fn build_native_candidate(
 #[cfg(not(feature = "python"))]
 fn build_native_candidate(
     _config: &ForwardPassPerfModelConfig,
-) -> Result<(Engine, PathBuf), AicError> {
+) -> Result<NativeCandidate, AicError> {
     Err(AicError::UnsupportedModel(
         "native engine construction requires the python feature".into(),
     ))

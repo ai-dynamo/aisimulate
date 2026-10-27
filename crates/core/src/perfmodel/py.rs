@@ -99,12 +99,29 @@ fn sdk_error_type(
 /// * `AicError::SolNotImplemented` raises
 ///   `aisimulate_core.sdk.errors.SolNotImplementedError` (the analytic SOL
 ///   path has no implementation for a required operator);
+/// * `AicError::StateSnapshotIo` raises the built-in `OSError` subclass for
+///   its I/O kind (`FileNotFoundError`, `PermissionError`,
+///   `FileExistsError`, otherwise `OSError`), never the skippable
+///   missing-data class;
 /// * everything else stays `PyValueError`.
 ///
 /// The sdk import is lazy and failure-tolerant: in pure-Rust test contexts
 /// (cargo test without the sdk on `sys.path`) the conversion degrades to
 /// `PyValueError` with the same message.
 pub(crate) fn aic_to_py(e: AicError) -> PyErr {
+    if let AicError::StateSnapshotIo { source, .. } = &e {
+        let message = e.to_string();
+        return match source.kind() {
+            std::io::ErrorKind::NotFound => pyo3::exceptions::PyFileNotFoundError::new_err(message),
+            std::io::ErrorKind::PermissionDenied => {
+                pyo3::exceptions::PyPermissionError::new_err(message)
+            }
+            std::io::ErrorKind::AlreadyExists => {
+                pyo3::exceptions::PyFileExistsError::new_err(message)
+            }
+            _ => pyo3::exceptions::PyOSError::new_err(message),
+        };
+    }
     let sdk_class: Option<(&'static GILOnceCell<Py<PyType>>, &str)> = if e.is_missing_perf_data() {
         Some((&PERF_DATA_NOT_AVAILABLE_ERROR, "PerfDataNotAvailableError"))
     } else if matches!(e, AicError::EmpiricalNotImplemented(_)) {
@@ -3029,6 +3046,21 @@ mod tests {
             // Non-typed variants stay ValueError regardless of the sdk.
             let other = aic_to_py(AicError::InvalidEngineConfig("bad".to_string()));
             assert_eq!(other.get_type(py).name().unwrap().to_string(), "ValueError");
+
+            // Snapshot I/O maps to built-in OSError subclasses by kind.
+            for (kind, name) in [
+                (std::io::ErrorKind::NotFound, "FileNotFoundError"),
+                (std::io::ErrorKind::PermissionDenied, "PermissionError"),
+                (std::io::ErrorKind::AlreadyExists, "FileExistsError"),
+                (std::io::ErrorKind::InvalidData, "OSError"),
+            ] {
+                let error = aic_to_py(AicError::StateSnapshotIo {
+                    path: PathBuf::from("/snapshot"),
+                    source: std::io::Error::new(kind, "io"),
+                });
+                assert_eq!(error.get_type(py).name().unwrap().to_string(), name);
+                assert!(error.value(py).to_string().contains("/snapshot"));
+            }
 
             // The message survives the mapping.
             let msg_err = aic_to_py(AicError::PerfDatabase("missing table xyz".to_string()));

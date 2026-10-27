@@ -33,7 +33,8 @@ pub struct EstimatorConfig {
 ///
 /// `path` names a directory written by
 /// [`ForwardPassPerfModel::to_file`](crate::ForwardPassPerfModel::to_file).
-/// Normalization makes it canonical and pins `sha256` to the exact bytes of
+/// Normalization makes it absolute (lexically normalized, symlinks kept) and
+/// pins `sha256` to the exact bytes of
 /// `<path>/manifest.json`; a supplied digest that differs is an error. The
 /// rest of the configuration must equal the identity recorded in that
 /// manifest. Restoration requires an explicit `estimation_mode` and
@@ -83,19 +84,13 @@ impl StateSnapshotConfig {
 
     /// Anchor the directory and bind the manifest bytes before caller caches
     /// use the resolved configuration. Relative paths resolve against the
-    /// working directory; the result is canonical, matching the absolute
-    /// path `to_file` records.
+    /// working directory and are normalized lexically, without resolving
+    /// symlinks, matching the path `to_file` records. The manifest read is
+    /// bounded.
     pub(crate) fn resolve_source(&mut self) -> Result<(), AicError> {
         use sha2::{Digest, Sha256};
-        self.path = std::fs::canonicalize(&self.path).map_err(|source| AicError::Io {
-            path: self.path.clone(),
-            source,
-        })?;
-        let manifest = self.path.join("manifest.json");
-        let bytes = std::fs::read(&manifest).map_err(|source| AicError::Io {
-            path: manifest,
-            source,
-        })?;
+        self.path = super::snapshot::normalized_absolute(&self.path)?;
+        let bytes = super::snapshot::read_manifest_bytes(&self.path)?;
         let actual = format!("{:x}", Sha256::digest(&bytes));
         if self
             .sha256

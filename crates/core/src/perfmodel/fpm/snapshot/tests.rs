@@ -20,9 +20,9 @@ use parquet::schema::parser::parse_message_type;
 use super::*;
 use crate::fpm::tests::TEST_MODEL;
 use crate::{
-    BackendKind, LearnedAdaptation, LearnedDerivativeRefresh, LearnedUpdateMode, LinearFitConfig,
-    RegressionFeatureAxis, RegressionFitKind, RegressionUpdatePolicy, ScheduledRequestMetrics,
-    SplineFitConfig, SplineSearchConfig,
+    BackendKind, FpmLearnedConfig, LearnedAdaptation, LearnedDerivativeRefresh, LearnedUpdateMode,
+    LinearFitConfig, RegressionFeatureAxis, RegressionFitKind, RegressionUpdatePolicy,
+    ScheduledRequestMetrics, SplineFitConfig, SplineSearchConfig,
 };
 
 type Iteration = Vec<ForwardPassMetrics>;
@@ -183,9 +183,11 @@ fn without_provenance(mut diagnostics: ForwardPassPerfDiagnostics) -> ForwardPas
     diagnostics
 }
 
-/// Online learner diagnostics without `training_state_bytes`, an allocation
+/// Online learner diagnostics without the two fields that are not state, as
+/// for existing online checkpoints: `training_state_bytes`, an allocation
 /// estimate from vector capacities that differs between a grown and a freshly
-/// decoded learner (as for existing online checkpoints) but is not state.
+/// decoded learner, and `history_grouping_ms`, the wall-clock time this
+/// process spent grouping history rows at load (skipped by serde).
 fn online_diagnostics(model: &ForwardPassPerfModel) -> Option<serde_json::Value> {
     let mut value = model.learned_online_diagnostics()?;
     if let Some(object) = value.as_object_mut() {
@@ -195,6 +197,7 @@ fn online_diagnostics(model: &ForwardPassPerfModel) -> Option<serde_json::Value>
         for store in stores.values_mut() {
             if let Some(store) = store.as_object_mut() {
                 store.remove("training_state_bytes");
+                store.remove("history_grouping_ms");
             }
         }
     }
@@ -260,7 +263,15 @@ fn check_round_trip(
 ) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
+    let untuned = predictions(&cold, queries);
     original.tune_with_fpms(warm).unwrap();
+    // Cold controls compare estimates only: diagnostics such as sample counts
+    // differ trivially and would make a vacuous control pass.
+    assert_ne!(
+        predictions(&original, queries),
+        untuned,
+        "warm-up must change estimates, or the round trip cannot detect lost state",
+    );
     let pinned = original
         .to_file(root.join("saved"), &StateSnapshotOptions::default())
         .unwrap();
@@ -304,9 +315,10 @@ fn check_round_trip(
         );
     }
     assert_ne!(
-        observables(&cold, queries),
-        observables(&original, queries),
-        "the cold control must differ, or this comparison cannot detect lost state",
+        predictions(&cold, queries),
+        predictions(&original, queries),
+        "a cold model fed only the continuation must estimate differently, or this \
+         comparison cannot detect lost state",
     );
     assert_eq!(
         observables(&resumed, queries),
@@ -504,6 +516,17 @@ fn native_select(
             config.estimator_config.correction_options(),
         );
         model.is_correction_enabled = config.estimator_config.correction.enabled;
+        if let Some(root) = config.systems_paths.first() {
+            model.set_data_fingerprint(perf_db::loaded(
+                root,
+                &config.system,
+                config
+                    .estimator_config
+                    .fpm_interpolation
+                    .fpm_parquet_path
+                    .as_deref(),
+            ));
+        }
         model.provenance = Some(ForwardPassPerfProvenance {
             selected_systems_root: config.systems_paths.first().cloned(),
             requested_estimation_mode: config.estimation_mode,
@@ -571,7 +594,7 @@ fn native_corrections_round_trip_for_fixed_dynamic_and_hybrid_policies() {
         let manifest = Manifest::parse(&std::fs::read(saved.join(MANIFEST_FILE)).unwrap()).unwrap();
         let native = manifest.native.unwrap();
         assert_eq!(native.engine_spec_sha256, fixture_engine().spec_sha256());
-        assert!(!native.perf_db.packed);
+        assert!(!native.packed);
         // Hardware YAML, the shared manifest and both data files; not profiles/.
         assert_eq!(native.perf_db.file_count, 4);
         if mode == CorrectionMode::Hybrid {
@@ -634,6 +657,7 @@ fn native_snapshot_rejects_changed_perf_data_and_engine_spec() {
     ] {
         let path = root.join(path);
         let original = std::fs::read(&path).ok();
+        let new_parent = (!path.parent().unwrap().exists()).then(|| path.parent().unwrap());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         match contents {
             Some(bytes) => std::fs::write(&path, bytes).unwrap(),
@@ -644,15 +668,35 @@ fn native_snapshot_rejects_changed_perf_data_and_engine_spec() {
             error
                 .to_string()
                 .contains("differs from the snapshot fingerprint")
-                || matches!(error, AicError::Io { .. }),
+                || matches!(error, AicError::StateSnapshotIo { .. }),
             "{error}"
         );
         match original {
             Some(bytes) => std::fs::write(&path, bytes).unwrap(),
             None => std::fs::remove_file(&path).unwrap(),
         }
+        if let Some(parent) = new_parent {
+            // An empty version directory still changes source resolution.
+            assert!(load(pinned.clone()).is_err());
+            std::fs::remove_dir(parent).unwrap();
+        }
     }
-    load(pinned).unwrap();
+    load(pinned.clone()).unwrap();
+
+    // This process loaded the root before the change below, so even a
+    // snapshot of the data now on disk cannot restore here.
+    std::fs::write(root.join("perf_data_reuse_manifest.yaml"), "reuse: [x]\n").unwrap();
+    let current = perf_db::fingerprint(&root, "b200_sxm", None).unwrap();
+    let repinned = repin(&pinned, |manifest| {
+        manifest["native"]["perf_db"] = serde_json::to_value(&current).unwrap();
+    });
+    let error = load(repinned).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("before it changed; restore in a new process"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -674,7 +718,7 @@ fn packed_perf_db_is_self_contained_and_verified() {
     let packed = dir.path().join("packed").join(perf_db::PACKED_SYSTEMS_DIR);
     assert_eq!(
         pinned.systems_paths,
-        vec![std::fs::canonicalize(&packed).unwrap()]
+        vec![snapshot::normalized_absolute(&packed).unwrap()]
     );
     assert!(
         packed
@@ -698,6 +742,125 @@ fn packed_perf_db_is_self_contained_and_verified() {
     .unwrap();
     let error = load(pinned).unwrap_err();
     assert!(error.to_string().contains("fingerprint"), "{error}");
+}
+
+/// FPM interpolation with an external parquet and no data directory: the
+/// fingerprint records the absent directory and the parquet with its
+/// sidecar, packing copies both, and data that changes after the model
+/// loaded it can no longer be saved.
+#[test]
+fn external_fpm_data_is_fingerprinted_at_load_and_packed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("systems");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("b200_sxm.yaml"), "data_dir: data/b200_sxm\n").unwrap();
+    let parquet = dir.path().join("measured/fpm.parquet");
+    std::fs::create_dir_all(parquet.parent().unwrap()).unwrap();
+    std::fs::write(&parquet, b"rows").unwrap();
+    std::fs::write(parquet.with_extension("metadata.json"), b"{}").unwrap();
+    let mut config = native_config(&root, CorrectionMode::Hybrid);
+    config.estimation_mode = EstimationMode::FpmInterpolation;
+    config.estimator_config.fpm_interpolation.fpm_parquet_path = Some(parquet.clone());
+    let select = native_select(fixture_engine());
+    let mut model = select(config.resolve().unwrap(), None).unwrap();
+    model
+        .tune_with_fpms(&native_stream(&model, 43, 40))
+        .unwrap();
+    let reference = model
+        .to_file(
+            dir.path().join("reference"),
+            &StateSnapshotOptions::default(),
+        )
+        .unwrap();
+    let packed = model
+        .to_file(
+            dir.path().join("packed"),
+            &StateSnapshotOptions {
+                include_perf_db: true,
+            },
+        )
+        .unwrap();
+    let packed_parquet = dir
+        .path()
+        .join("packed")
+        .join(perf_db::PACKED_FPM_DIR)
+        .join("fpm.parquet");
+    assert_eq!(
+        packed.estimator_config.fpm_interpolation.fpm_parquet_path,
+        Some(packed_parquet.clone())
+    );
+    assert!(packed_parquet.with_extension("metadata.json").is_file());
+    assert_eq!(
+        reference
+            .estimator_config
+            .fpm_interpolation
+            .fpm_parquet_path,
+        Some(parquet.clone())
+    );
+    let manifest =
+        Manifest::parse(&std::fs::read(dir.path().join("reference").join(MANIFEST_FILE)).unwrap())
+            .unwrap();
+    let native = manifest.native.unwrap();
+    assert_eq!(native.perf_db.file_count, 1);
+    assert!(native.perf_db.fpm_parquet.unwrap().sidecar_sha256.is_some());
+    let load = native_load_with(fixture_engine());
+    let queries = queries(AGG, false);
+    let expected = predictions(&model, &queries);
+    assert_eq!(
+        predictions(&load(reference.clone()).unwrap(), &queries),
+        expected
+    );
+
+    // Changing the parquet or its sidecar after load invalidates the
+    // reference snapshot and any further save from this process.
+    for path in [parquet.clone(), parquet.with_extension("metadata.json")] {
+        let original = std::fs::read(&path).unwrap();
+        std::fs::write(&path, b"changed").unwrap();
+        let error = load(reference.clone()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("differs from the snapshot fingerprint"),
+            "{error}"
+        );
+        let error = model
+            .to_file(
+                dir.path().join("after-change"),
+                &StateSnapshotOptions::default(),
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("changed after this process loaded it"),
+            "{error}"
+        );
+        assert!(!dir.path().join("after-change").exists());
+        // The packed copy is independent of the source.
+        assert_eq!(
+            predictions(&load(packed.clone()).unwrap(), &queries),
+            expected
+        );
+        std::fs::write(&path, original).unwrap();
+    }
+    // Creating the data directory changes source resolution.
+    std::fs::create_dir_all(root.join("data/b200_sxm")).unwrap();
+    assert!(load(reference.clone()).is_err());
+    std::fs::remove_dir(root.join("data/b200_sxm")).unwrap();
+    assert_eq!(predictions(&load(reference).unwrap(), &queries), expected);
+
+    // A model without a load-time fingerprint cannot be saved.
+    let mut bare = ForwardPassPerfModel::from_engine(fixture_engine(), Default::default());
+    bare.provenance = model.provenance.clone();
+    let error = bare
+        .to_file(dir.path().join("bare"), &StateSnapshotOptions::default())
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("no load-time performance-data fingerprint"),
+        "{error}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -812,6 +975,22 @@ fn frozen_forest_corrections_round_trip_and_copy_the_artifact() {
     }
 }
 
+#[test]
+fn frozen_forest_fixed_corrections_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let artifact = dir.path().join("forest.json");
+    std::fs::write(&artifact, forest_artifact(AGG, None, None)).unwrap();
+    let config = learned_frozen_config(AGG, &artifact, CorrectionMode::Fixed);
+    check_round_trip(
+        best(config.clone()).unwrap(),
+        &stream(AGG, 53, 70, true, false),
+        &stream(AGG, 54, 30, true, false),
+        &queries(AGG, false),
+        &best,
+        best(config).unwrap(),
+    );
+}
+
 /// A real one-feature training checkpoint (constant seed forest fitted to two
 /// rows), extended from the causal-selector test fixture.
 fn training_checkpoint(
@@ -903,6 +1082,120 @@ fn training_checkpoint(
     (dir, config)
 }
 
+fn write_rows(path: &Path, wall_ms: &[f64], features: &[&[f64]]) {
+    let columns: String = (0..features.len())
+        .map(|index| format!(" REQUIRED DOUBLE x{index};"))
+        .collect();
+    let schema = Arc::new(
+        parse_message_type(&format!(
+            "message seed {{ REQUIRED INT64 row_id (UINT_64); REQUIRED DOUBLE y; REQUIRED DOUBLE wall_time_ms;{columns} }}"
+        ))
+        .unwrap(),
+    );
+    let mut writer = SerializedFileWriter::new(
+        std::fs::File::create(path).unwrap(),
+        schema,
+        Arc::new(WriterProperties::builder().build()),
+    )
+    .unwrap();
+    let mut group = writer.next_row_group().unwrap();
+    let mut column = group.next_column().unwrap().unwrap();
+    let ids: Vec<i64> = (0..wall_ms.len() as i64).collect();
+    column
+        .typed::<Int64Type>()
+        .write_batch(&ids, None, None)
+        .unwrap();
+    column.close().unwrap();
+    for values in [wall_ms, wall_ms]
+        .into_iter()
+        .chain(features.iter().copied())
+    {
+        let mut column = group.next_column().unwrap().unwrap();
+        column
+            .typed::<DoubleType>()
+            .write_batch(values, None, None)
+            .unwrap();
+        column.close().unwrap();
+    }
+    group.close().unwrap();
+    writer.close().unwrap();
+}
+
+/// A two-feature checkpoint for public default learner settings. Its seed
+/// tree splits on the decode-request count, which does not explain the seed
+/// rows (latency follows KV tokens), so a structural refresh can replace it.
+fn structural_checkpoint(
+    role: ForwardPassWorkerType,
+    adaptation: LearnedAdaptation,
+) -> (tempfile::TempDir, ForwardPassPerfModelConfig) {
+    let dir = tempfile::tempdir().unwrap();
+    // Deserialize the public schema so every omitted control takes its default.
+    let config: ForwardPassPerfModelConfig = serde_json::from_value(serde_json::json!({
+        "model": "structural-test", "system": "test-gpu", "backend": "vllm",
+        "worker_type": role, "estimation_mode": "fpm_learned",
+        "estimator_config": {
+            "correction": {"enabled": adaptation != LearnedAdaptation::Online},
+            "fpm_learned": {"checkpoint_path": dir.path(), "adaptation": adaptation},
+        },
+    }))
+    .unwrap();
+    let rows = dir.path().join("rows.parquet");
+    write_rows(
+        &rows,
+        &[3.0, 9.0, 3.0, 9.0],
+        &[
+            &[8.0, 8.0, 256.0, 256.0],
+            &[20_000.0, 400_000.0, 20_000.0, 400_000.0],
+        ],
+    );
+    let hash = |path: &Path| snapshot::sha256_hex(&std::fs::read(path).unwrap());
+    let store = serde_json::json!({"baseline": 0.0, "trees": [{
+        "left": [1, -1, -1], "right": [2, -1, -1], "feature": [0, -1, -1],
+        "threshold": [64.5, 0.0, 0.0], "value": [0.0, 6.0, 6.0],
+        "missing_left": [true, true, true]
+    }]});
+    let seed_store = serde_json::json!({
+        "rows_file": "rows.parquet", "rows_sha256": hash(&rows), "row_count": 4,
+        "bin_thresholds": [[64.5], [100_000.5]], "n_bins_non_missing": [2, 2],
+        "missing_values_bin_idx": 255, "loss": "squared_error", "learning_rate": 1.0,
+        "l2_regularization": 0.0, "min_samples_leaf": 1, "max_depth": null,
+        "max_leaf_nodes": 2
+    });
+    let mut stores = serde_json::Map::new();
+    let mut seeds = serde_json::Map::new();
+    for kind in workload_kinds_for(role) {
+        let name: String = serde_json::to_value(kind).unwrap().as_str().unwrap().into();
+        stores.insert(name.clone(), store.clone());
+        seeds.insert(name, seed_store.clone());
+    }
+    let features = ["num_decode_requests", "sum_decode_kv_tokens"];
+    let identity = canonical_learned_identity(&config).unwrap();
+    let artifact = serde_json::json!({
+        "schema": "aic_fpm_learned_forward_perf", "schema_version": 1,
+        "worker_type": role, "target": "ms", "features": features,
+        "stores": stores, "metadata": {"identity": identity}
+    });
+    let artifact_path = dir.path().join("model.json");
+    std::fs::write(&artifact_path, artifact.to_string()).unwrap();
+    let manifest = serde_json::json!({
+        "schema": "aisimulate_fpm_training_checkpoint", "schema_version": 1,
+        "artifact_file": "model.json", "artifact_sha256": hash(&artifact_path),
+        "identity": identity, "features": features, "target": "ms",
+        "shrinkage": "included_in_leaf_values", "stores": seeds
+    });
+    std::fs::write(dir.path().join("manifest.json"), manifest.to_string()).unwrap();
+    (dir, config)
+}
+
+fn rebuilt_nodes(model: &ForwardPassPerfModel) -> u64 {
+    model.learned_online_diagnostics().unwrap()["stores"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|store| store["rebuilt_nodes"].as_u64().unwrap())
+        .sum()
+}
+
 /// The online learner fits only once a batch fills, so chunked feedback in
 /// the continuation phase exercises pending rows across the save boundary.
 fn learned_stream(worker: ForwardPassWorkerType, seed: u64, count: usize) -> Vec<Iteration> {
@@ -972,6 +1265,59 @@ fn causal_selector_round_trips_both_experts_calibration_and_every_selector_key()
                 .file(&format!("{ONLINE_CHECKPOINT_DIR}/manifest.json"))
                 .is_some()
         );
+    }
+}
+
+#[test]
+fn online_and_causal_selector_round_trip_with_default_learner_settings() {
+    // Default eager refreshes run every 32 batches per store (batches of one
+    // online row, four for the selector's online expert), so the warm-up is
+    // long enough for structural rebuilds before the save. The continuation
+    // stays shorter than the recent window (64 rows online, 8 for the
+    // selector's expert) so the cold control cannot converge to the same
+    // window and its estimates must differ.
+    for (adaptation, warm, next) in [
+        (LearnedAdaptation::Online, 40, 23),
+        (LearnedAdaptation::CausalSelector, 140, 6),
+    ] {
+        for role in [DECODE, AGG] {
+            let (_dir, config) = structural_checkpoint(role, adaptation);
+            // The fixture must exercise the public defaults for its adaptation.
+            let mut expected = FpmLearnedConfig {
+                adaptation,
+                ..FpmLearnedConfig::default()
+            };
+            if adaptation == LearnedAdaptation::CausalSelector {
+                expected.recent_window = 8;
+                expected.history_weight = Some(0.25);
+                expected.history_weight_ramp_observations = 8;
+                expected.update_every = 4;
+            }
+            let mut actual = config.estimator_config.fpm_learned.clone();
+            actual.checkpoint_path = None;
+            assert_eq!(actual, expected);
+            let fresh = best(config.clone()).unwrap();
+            let stores = if role == AGG { 4 } else { 1 };
+            let saved = check_round_trip(
+                fresh,
+                &learned_stream(role, 93, stores * warm),
+                &learned_stream(role, 94, stores * next),
+                &queries(role, false),
+                &best,
+                best(config).unwrap(),
+            );
+            let restored = best(
+                serde_json::from_slice(
+                    &std::fs::read(saved.path().join("saved").join(CONFIG_FILE)).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert!(
+                rebuilt_nodes(&restored) > 0,
+                "{adaptation:?} {role:?}: the warm-up must include a structural rebuild"
+            );
+        }
     }
 }
 
@@ -1150,7 +1496,11 @@ fn snapshot_configuration_requires_explicit_strict_selection_and_matching_digest
         .as_mut()
         .unwrap()
         .path = dir.path().join("missing");
-    assert!(matches!(best(config).unwrap_err(), AicError::Io { .. }));
+    // Snapshot I/O is never reported as missing performance data.
+    assert!(matches!(
+        best(config).unwrap_err(),
+        AicError::StateSnapshotIo { source, .. } if source.kind() == std::io::ErrorKind::NotFound
+    ));
 
     // A manifest changed after normalization is caught by restoration itself.
     let (resolved, registered) = pinned.clone().resolve_with_registration().unwrap();
@@ -1213,6 +1563,34 @@ fn incompatible_versions_and_manifest_shapes_are_rejected() {
         ),
         (
             Box::new(|m: &mut serde_json::Value| m["future_field"] = true.into()),
+            "unknown field",
+        ),
+        // A newer release may add fields; its versions are reported first.
+        (
+            Box::new(|m: &mut serde_json::Value| {
+                m["schema_version"] = 2.into();
+                m["future_field"] = true.into();
+                m["kind"] = "future_kind".into();
+            }),
+            "unsupported manifest schema aisimulate_fpm_state_snapshot version 2",
+        ),
+        (
+            Box::new(|m: &mut serde_json::Value| {
+                m["state_layout_version"] = 2.into();
+                m["files"][0]["future_field"] = true.into();
+            }),
+            "state layout version 2 is not supported",
+        ),
+        (
+            Box::new(|m: &mut serde_json::Value| {
+                m["producer"]["aisimulate_core_version"] = "99.0.0".into();
+                m["producer"]["future_field"] = true.into();
+                m["future_field"] = true.into();
+            }),
+            "written by aisimulate-core 99.0.0",
+        ),
+        (
+            Box::new(|m: &mut serde_json::Value| m["producer"]["future_field"] = true.into()),
             "unknown field",
         ),
         (
@@ -1301,28 +1679,302 @@ fn corrupt_truncated_or_oversized_state_is_rejected_without_panicking() {
         replace_state(&pinned, &original[..original.len() / 2]),
         "corrupt or truncated state.bin",
     );
-    // Flipped bytes behind re-pinned digests must yield an error or a model
-    // that still serves queries; none may panic. (Digests, not invariants,
-    // detect value changes that keep every invariant.)
-    let model = best(replace_state(&pinned, &original)).unwrap();
-    let queries = queries(AGG, false);
-    let expected = predictions(&model, &queries);
-    let mut rejected = 0;
-    for index in (0..original.len()).step_by(original.len() / 97 + 1) {
-        let mut bytes = original.clone();
-        bytes[index] ^= 0x5a;
-        match best(replace_state(&pinned, &bytes)) {
-            Ok(model) => {
-                let _ = predictions(&model, &queries);
+    // Oversized inputs are rejected from their recorded or actual size, before
+    // any of their bytes are read or allocated (sparse files, no disk use).
+    let recorded = |size: u64| {
+        repin(&pinned, |manifest| {
+            for file in manifest["files"].as_array_mut().unwrap() {
+                if file["path"] == STATE_FILE {
+                    file["size_bytes"] = size.into();
+                }
             }
-            Err(_) => rejected += 1,
+        })
+    };
+    expect_error(recorded(u64::MAX), "above the 4294967296-byte limit");
+    let oversized = snapshot::MAX_STATE_BYTES + 1;
+    std::fs::File::options()
+        .write(true)
+        .open(root.join(STATE_FILE))
+        .unwrap()
+        .set_len(oversized)
+        .unwrap();
+    expect_error(recorded(oversized), "above the 4294967296-byte limit");
+    std::fs::write(root.join(STATE_FILE), &original).unwrap();
+    let manifest = std::fs::read(root.join(MANIFEST_FILE)).unwrap();
+    let file = std::fs::File::options()
+        .append(true)
+        .open(root.join(MANIFEST_FILE))
+        .unwrap();
+    file.set_len(snapshot::MAX_MANIFEST_BYTES + 1).unwrap();
+    expect_error(pinned.clone(), "exceeds 67108864 bytes");
+    std::fs::write(root.join(MANIFEST_FILE), &manifest).unwrap();
+    // A declared length far beyond the bytes fails without allocating it.
+    let mut huge = 1u32.to_le_bytes().to_vec();
+    for variant in 0..4u32 {
+        huge.truncate(4);
+        huge.extend(variant.to_le_bytes());
+        huge.extend([0xff; 32]);
+        assert!(snapshot::decode_state::<StateFile>(&huge).is_err());
+    }
+    // The original bytes, re-pinned, still restore.
+    best(replace_state(&pinned, &original)).unwrap();
+}
+
+/// Flip bytes of `state.bin` behind re-pinned digests and restore with
+/// `on_tune: continue`. Each outcome must be an error or a model that keeps
+/// serving: query, tune, query, report and re-save, all without panicking.
+/// Digests, not invariants, detect value changes that keep every invariant.
+fn fuzz_state(
+    label: &str,
+    pinned: &ForwardPassPerfModelConfig,
+    load: Loader<'_>,
+    next: &[Iteration],
+    queries: &[Iteration],
+) {
+    let root = pinned
+        .estimator_config
+        .state_snapshot
+        .as_ref()
+        .unwrap()
+        .path
+        .clone();
+    let original = std::fs::read(root.join(STATE_FILE)).unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let (mut rejected, mut accepted, mut panics) = (0, 0, Vec::new());
+    let step = original.len() / 48 + 1;
+    for index in (0..original.len()).step_by(step) {
+        for mask in [0x5a_u8, 0x80] {
+            let mut bytes = original.clone();
+            bytes[index] ^= mask;
+            let config = continue_config(replace_state(pinned, &bytes));
+            let trial = out.path().join(format!("{index}-{mask}"));
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let Ok(mut model) = load(config) else {
+                    return false;
+                };
+                let _ = predictions(&model, queries);
+                let _ = model.tune_with_fpms(next);
+                let _ = predictions(&model, queries);
+                let _ = (model.readiness_report(), model.diagnostics());
+                let _ = model.to_file(&trial, &StateSnapshotOptions::default());
+                true
+            }));
+            match outcome {
+                Ok(false) => rejected += 1,
+                Ok(true) => accepted += 1,
+                Err(_) => panics.push(format!("byte {index} ^ {mask:#04x}")),
+            }
         }
     }
-    assert!(rejected > 0);
-    assert_eq!(
-        predictions(&best(replace_state(&pinned, &original)).unwrap(), &queries),
-        expected
-    );
+    replace_state(pinned, &original);
+    assert!(panics.is_empty(), "{label}: panics at {panics:?}");
+    assert!(rejected > 0, "{label}: no corruption reached a check");
+    assert!(rejected + accepted > 0);
+}
+
+fn tuned_snapshot(
+    mut model: ForwardPassPerfModel,
+    warm: &[Iteration],
+    dir: &Path,
+    name: &str,
+) -> ForwardPassPerfModelConfig {
+    model.tune_with_fpms(warm).unwrap();
+    model
+        .to_file(dir.join(name), &StateSnapshotOptions::default())
+        .unwrap()
+}
+
+#[test]
+fn corrupted_state_of_every_kind_fails_closed_or_keeps_serving_in_continue_mode() {
+    use RegressionFeatureAxis::*;
+    let dir = tempfile::tempdir().unwrap();
+    type Edit = Box<dyn Fn(&mut ForwardPassPerfModelConfig)>;
+    let error_threshold: Edit = Box::new(|config| {
+        config.estimator_config.fpm_regression.fit.linear = Some(LinearFitConfig {
+            update_policy: RegressionUpdatePolicy::ErrorThreshold {
+                relative_tolerance: 0.02,
+                absolute_tolerance_ms: 0.01,
+                window: 6,
+                trigger: 2,
+                cooldown: 3,
+                startup_observations: 4,
+            },
+            ..LinearFitConfig::default()
+        });
+    });
+    let selected: Edit = Box::new(|config| {
+        config.estimator_config.fpm_regression.fit.linear = Some(LinearFitConfig {
+            feature_axes: vec![Attention, Moe, Count, Extend, Past, MaxPast],
+            ..LinearFitConfig::default()
+        });
+    });
+    let periodic: Edit = Box::new(|config| {
+        config.estimator_config.fpm_regression.fit.kind = RegressionFitKind::Spline;
+        config.estimator_config.fpm_regression.fit.spline = Some(SplineFitConfig {
+            knots_per_axis: 3,
+            search: SplineSearchConfig::periodic(16),
+        });
+    });
+    let adaptive: Edit = Box::new(|config| {
+        config.estimator_config.fpm_regression.fit.kind = RegressionFitKind::Spline;
+        config.estimator_config.fpm_regression.fit.spline = Some(SplineFitConfig {
+            knots_per_axis: 2,
+            search: SplineSearchConfig::adaptive(8, 2, 0.01, 0.0, 8),
+        });
+    });
+    let regressions: Vec<(&str, ForwardPassWorkerType, bool, Edit)> = vec![
+        ("linear", AGG, false, Box::new(|_| {})),
+        ("error_threshold", AGG, false, error_threshold),
+        ("selected", DECODE, true, selected),
+        ("spline_periodic", DECODE, false, periodic),
+        ("spline_adaptive", AGG, false, adaptive),
+    ];
+    for (label, worker, requests, edit) in regressions {
+        let config = regression_config(worker, edit);
+        let warm = stream(worker, 11, 90, false, requests);
+        let pinned = tuned_snapshot(best(config).unwrap(), &warm, dir.path(), label);
+        let next = stream(worker, 12, 12, true, requests);
+        fuzz_state(label, &pinned, &best, &next, &queries(worker, requests));
+    }
+
+    let root = fake_systems_root(dir.path());
+    let load = native_load_with(fixture_engine());
+    for mode in [
+        CorrectionMode::Fixed,
+        CorrectionMode::DynamicLocal,
+        CorrectionMode::Hybrid,
+    ] {
+        let model = native_model(&root, mode);
+        let (warm, next) = (native_stream(&model, 21, 60), native_stream(&model, 22, 12));
+        let name = format!("native-{mode:?}");
+        let pinned = tuned_snapshot(model, &warm, dir.path(), &name);
+        fuzz_state(&name, &pinned, &load, &next, &queries(AGG, false));
+    }
+
+    let artifact = dir.path().join("forest.json");
+    std::fs::write(&artifact, forest_artifact(AGG, None, None)).unwrap();
+    for mode in [
+        CorrectionMode::Fixed,
+        CorrectionMode::DynamicLocal,
+        CorrectionMode::Hybrid,
+    ] {
+        let config = learned_frozen_config(AGG, &artifact, mode);
+        let name = format!("learned-{mode:?}");
+        let warm = stream(AGG, 51, 70, true, false);
+        let pinned = tuned_snapshot(best(config).unwrap(), &warm, dir.path(), &name);
+        let next = stream(AGG, 52, 12, true, false);
+        fuzz_state(&name, &pinned, &best, &next, &queries(AGG, false));
+    }
+
+    for (adaptation, role) in [
+        (LearnedAdaptation::Online, AGG),
+        (LearnedAdaptation::CausalSelector, DECODE),
+    ] {
+        let (_checkpoint, config) = training_checkpoint(role, adaptation);
+        let name = format!("{adaptation:?}-{role:?}");
+        let warm = learned_stream(role, 81, 33);
+        let pinned = tuned_snapshot(best(config).unwrap(), &warm, dir.path(), &name);
+        let next = learned_stream(role, 82, 8);
+        fuzz_state(&name, &pinned, &best, &next, &queries(role, false));
+    }
+
+    let model = ForwardPassPerfModel::from_learned(
+        artifact.to_str().unwrap(),
+        ForwardPassPerfOptions {
+            min_observations: 3,
+            ..ForwardPassPerfOptions::default()
+        },
+    )
+    .unwrap();
+    let warm = stream(AGG, 91, 50, true, false);
+    let pinned = tuned_snapshot(model, &warm, dir.path(), "from_learned");
+    let next = stream(AGG, 92, 12, true, false);
+    fuzz_state("from_learned", &pinned, &best, &next, &queries(AGG, false));
+}
+
+/// The online learner keeps its own checkpoint inside the snapshot. Corrupt
+/// its state behind every re-pinned digest (online manifest, snapshot file
+/// record, pinned `source_sha256`, manifest digest) and continue tuning.
+#[test]
+fn corrupted_online_checkpoint_behind_repinned_digests_never_panics() {
+    for (adaptation, role) in [
+        (LearnedAdaptation::Online, AGG),
+        (LearnedAdaptation::CausalSelector, DECODE),
+    ] {
+        let (_checkpoint, config) = training_checkpoint(role, adaptation);
+        let dir = tempfile::tempdir().unwrap();
+        let pinned = tuned_snapshot(
+            best(config).unwrap(),
+            &learned_stream(role, 501, 23),
+            dir.path(),
+            "snap",
+        );
+        let root = dir.path().join("snap");
+        let state_path = root.join(ONLINE_CHECKPOINT_DIR).join("state.bin");
+        let manifest_path = root.join(ONLINE_CHECKPOINT_DIR).join("manifest.json");
+        let original = std::fs::read(&state_path).unwrap();
+        let online_manifest = read_json(&manifest_path);
+        let snapshot_manifest = read_json(&root.join(MANIFEST_FILE));
+        let next = learned_stream(role, 502, 9);
+        let queries = queries(role, false);
+        let out = tempfile::tempdir().unwrap();
+        let (mut rejected, mut panics) = (0, Vec::new());
+        for index in (0..original.len()).step_by(original.len() / 40 + 1) {
+            let mut bytes = original.clone();
+            bytes[index] ^= 0x5a;
+            std::fs::write(&state_path, &bytes).unwrap();
+            let mut online = online_manifest.clone();
+            online["state_sha256"] = snapshot::sha256_hex(&bytes).into();
+            let online_bytes = serde_json::to_vec(&online).unwrap();
+            std::fs::write(&manifest_path, &online_bytes).unwrap();
+            let online_sha = snapshot::sha256_hex(&online_bytes);
+            let mut manifest = snapshot_manifest.clone();
+            for file in manifest["files"].as_array_mut().unwrap() {
+                if file["path"] == format!("{ONLINE_CHECKPOINT_DIR}/manifest.json") {
+                    file["sha256"] = online_sha.clone().into();
+                    file["size_bytes"] = online_bytes.len().into();
+                }
+            }
+            manifest["identity"]["estimator_config"]["fpm_learned"]["source_sha256"] =
+                online_sha.clone().into();
+            let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+            std::fs::write(root.join(MANIFEST_FILE), &manifest_bytes).unwrap();
+            let mut config = continue_config(pinned.clone());
+            config.estimator_config.fpm_learned.source_sha256 = Some(online_sha);
+            config
+                .estimator_config
+                .state_snapshot
+                .as_mut()
+                .unwrap()
+                .sha256 = Some(snapshot::sha256_hex(&manifest_bytes));
+            let trial = out.path().join(index.to_string());
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let Ok(mut model) = best(config) else {
+                    return false;
+                };
+                let _ = predictions(&model, &queries);
+                let _ = model.tune_with_fpms(&next);
+                let _ = model.flush_updates();
+                let _ = predictions(&model, &queries);
+                let _ = model.learned_online_diagnostics();
+                let _ = model.to_file(&trial, &StateSnapshotOptions::default());
+                true
+            }));
+            match outcome {
+                Ok(false) => rejected += 1,
+                Ok(true) => {}
+                Err(_) => panics.push(index),
+            }
+        }
+        assert!(
+            panics.is_empty(),
+            "{adaptation:?}: panics at bytes {panics:?}"
+        );
+        assert!(
+            rejected > 0,
+            "{adaptation:?}: re-pinning never reached the decoder"
+        );
+    }
 }
 
 #[test]

@@ -1038,8 +1038,9 @@ mod tests {
     fn state_snapshots_save_and_restore_through_the_canonical_constructor() {
         use aisimulate_core::engine::EngineLaunchConfig;
         use aisimulate_core::{
-            ForwardPassReadinessReport, STATE_SNAPSHOT_LAYOUT_VERSION, ScheduledRequestMetrics,
-            StateSnapshotConfig, StateSnapshotKind, StateSnapshotOptions, StateSnapshotTuning,
+            ForwardPassReadinessReport, ScheduledRequestMetrics, StateSnapshotConfig,
+            StateSnapshotKind, StateSnapshotOptions, StateSnapshotTuning,
+            STATE_SNAPSHOT_LAYOUT_VERSION,
         };
         let fpm = |decode: u32, kv: u32, wall_ms: f64| ForwardPassMetrics {
             wall_time: wall_ms / 1000.0,
@@ -1063,7 +1064,8 @@ mod tests {
         let pinned = model
             .to_file(&directory, &StateSnapshotOptions::default())
             .unwrap();
-        let snapshot: &StateSnapshotConfig = pinned.estimator_config.state_snapshot.as_ref().unwrap();
+        let snapshot: &StateSnapshotConfig =
+            pinned.estimator_config.state_snapshot.as_ref().unwrap();
         assert_eq!(snapshot.on_tune, StateSnapshotTuning::Reject);
         let mut restored = ForwardPassPerfModel::best_available(pinned.clone()).unwrap();
         let query = [fpm(9, 40_000, 0.0)];
@@ -1089,7 +1091,10 @@ mod tests {
             &pinned,
         )
         .unwrap();
-        assert_eq!(mismatches, ["dp_size conflicts with canonical attention_dp"]);
+        assert_eq!(
+            mismatches,
+            ["dp_size conflicts with canonical attention_dp"]
+        );
         std::fs::remove_dir_all(&directory).unwrap();
     }
 }

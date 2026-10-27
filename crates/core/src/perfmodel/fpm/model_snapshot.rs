@@ -202,8 +202,10 @@ impl ForwardPassPerfModel {
     /// `on_tune: reject`. Set `on_tune: continue` to resume tuning.
     ///
     /// Native estimators record the compiled engine-spec digest from
-    /// construction and a fingerprint of their performance data; restoring
-    /// recompiles and rejects any difference. Models from
+    /// construction and the fingerprint of their performance data taken when
+    /// this process first loaded it; saving fails if that data changed since,
+    /// and restoring recompiles and rejects any difference. Snapshot I/O
+    /// failures are [`AicError::StateSnapshotIo`], never missing data. Models from
     /// [`Self::from_learned`] have no deployment identity: their snapshot
     /// configuration carries placeholder identity fields and restoration
     /// checks only estimator controls and file digests.
@@ -212,7 +214,16 @@ impl ForwardPassPerfModel {
         path: impl AsRef<Path>,
         options: &StateSnapshotOptions,
     ) -> Result<ForwardPassPerfModelConfig, AicError> {
-        let mut stage = Stage::new(path.as_ref())?;
+        self.write_snapshot(path.as_ref(), options)
+            .map_err(snapshot::as_snapshot_io)
+    }
+
+    fn write_snapshot(
+        &self,
+        path: &Path,
+        options: &StateSnapshotOptions,
+    ) -> Result<ForwardPassPerfModelConfig, AicError> {
+        let mut stage = Stage::new(path)?;
         let destination = stage.destination().to_path_buf();
         let kind = self.snapshot_kind();
         let mut native = None;
@@ -239,12 +250,30 @@ impl ForwardPassPerfModel {
                     .fpm_interpolation
                     .fpm_parquet_path
                     .clone();
-                let fingerprint = perf_db::fingerprint(
-                    &root,
-                    &identity.system,
-                    parquet.as_deref(),
-                    options.include_perf_db,
-                )?;
+                // The fingerprint describes the data this process loaded; a
+                // save after the data changed would pair tuned state with
+                // data it was never tuned on.
+                let loaded = match self.data_fingerprint().map(|loaded| loaded.as_ref()) {
+                    Some(Ok(loaded)) => loaded.clone(),
+                    Some(Err(error)) => {
+                        return Err(invalid(format!(
+                            "the performance data under {} could not be fingerprinted when it was loaded: {error}",
+                            root.display()
+                        )));
+                    }
+                    None => {
+                        return Err(invalid(
+                            "the native model has no load-time performance-data fingerprint; build it with best_available",
+                        ));
+                    }
+                };
+                let current = perf_db::fingerprint(&root, &identity.system, parquet.as_deref())?;
+                if current != loaded {
+                    return Err(invalid(format!(
+                        "performance data under {} changed after this process loaded it; restart from the current data before saving",
+                        root.display()
+                    )));
+                }
                 if options.include_perf_db {
                     let (packed_root, packed_parquet) =
                         perf_db::pack(&stage, &root, &identity.system, parquet.as_deref())?;
@@ -254,13 +283,9 @@ impl ForwardPassPerfModel {
                             .staging()
                             .join(path.strip_prefix(&destination).expect("packed path"))
                     });
-                    let copied = perf_db::fingerprint(
-                        &staged,
-                        &identity.system,
-                        staged_parquet.as_deref(),
-                        true,
-                    )?;
-                    if copied != fingerprint {
+                    let copied =
+                        perf_db::fingerprint(&staged, &identity.system, staged_parquet.as_deref())?;
+                    if copied != loaded {
                         return Err(invalid("packed performance data differs from its source"));
                     }
                     identity.systems_paths = vec![packed_root];
@@ -285,7 +310,8 @@ impl ForwardPassPerfModel {
                 }
                 native = Some(NativeRecord {
                     engine_spec_sha256: engine.spec_sha256().to_owned(),
-                    perf_db: fingerprint,
+                    perf_db: loaded,
+                    packed: options.include_perf_db,
                 });
             }
             ForwardPassPerfMode::Regression { .. } => {}
@@ -664,6 +690,14 @@ pub(super) fn restore(
     registered: Option<bool>,
     select: Select<'_>,
 ) -> Result<ForwardPassPerfModel, AicError> {
+    restore_verified(config, registered, select).map_err(snapshot::as_snapshot_io)
+}
+
+fn restore_verified(
+    config: ForwardPassPerfModelConfig,
+    registered: Option<bool>,
+    select: Select<'_>,
+) -> Result<ForwardPassPerfModel, AicError> {
     let source = config
         .estimator_config
         .state_snapshot
@@ -720,11 +754,13 @@ pub(super) fn restore(
     // Verify every pinned file before any of it is used.
     let mut stable_bytes = None;
     let mut state_bytes = None;
+    let mut learned_bytes = None;
     for record in &manifest.files {
         let bytes = snapshot::read_recorded(&root, record)?;
         match record.path.as_str() {
             STATE_FILE => state_bytes = Some(bytes),
             STABLE_ARTIFACT_FILE => stable_bytes = Some(bytes),
+            LEARNED_ARTIFACT_FILE => learned_bytes = Some(bytes),
             _ => {}
         }
     }
@@ -736,6 +772,31 @@ pub(super) fn restore(
         ));
     }
 
+    // Verify referenced performance data before any of it is loaded: a
+    // changed file must report the fingerprint, not a loader failure.
+    let parquet = base
+        .estimator_config
+        .fpm_interpolation
+        .fpm_parquet_path
+        .as_deref();
+    let native_root = match (&manifest.native, base.systems_paths.as_slice()) {
+        (None, _) => None,
+        (Some(native), [root]) => {
+            if perf_db::fingerprint(root, &base.system, parquet)? != native.perf_db {
+                return Err(invalid(format!(
+                    "performance data under {} differs from the snapshot fingerprint",
+                    root.display()
+                )));
+            }
+            Some(root.clone())
+        }
+        (Some(_), _) => {
+            return Err(invalid(
+                "a native snapshot configuration must pin exactly one systems path",
+            ));
+        }
+    };
+
     let mut model = match manifest.kind {
         StateSnapshotKind::LearnedWithoutIdentity => {
             let options = manifest
@@ -743,10 +804,16 @@ pub(super) fn restore(
                 .as_ref()
                 .and_then(|learned| learned.options.clone())
                 .expect("checked above");
-            let artifact = root.join(LEARNED_ARTIFACT_FILE);
-            let artifact = artifact
-                .to_str()
-                .ok_or_else(|| invalid("snapshot path must be valid UTF-8"))?;
+            // Build from the verified bytes; reopening the path would let a
+            // concurrent writer substitute an unverified artifact.
+            let artifact = learned_bytes
+                .as_deref()
+                .ok_or_else(|| invalid("manifest does not list the learned artifact"))?;
+            let artifact = std::str::from_utf8(artifact)
+                .map_err(|error| invalid(format!("learned artifact is not UTF-8: {error}")))?;
+            if !artifact.trim_start().starts_with('{') {
+                return Err(invalid("learned artifact is not a JSON object"));
+            }
             ForwardPassPerfModel::from_learned(artifact, options)?
         }
         StateSnapshotKind::CausalSelector => causal_selector_base(
@@ -776,24 +843,22 @@ pub(super) fn restore(
                 "the recompiled engine specification differs from the saved model's",
             ));
         }
-        let root = model
+        let selected = model
             .provenance
             .as_ref()
-            .and_then(|provenance| provenance.selected_systems_root.clone())
-            .ok_or_else(|| invalid("native model has no selected systems root"))?;
-        let fingerprint = perf_db::fingerprint(
-            &root,
-            &base.system,
-            base.estimator_config
-                .fpm_interpolation
-                .fpm_parquet_path
-                .as_deref(),
-            native.perf_db.packed,
-        )?;
-        if fingerprint != native.perf_db {
+            .and_then(|provenance| provenance.selected_systems_root.clone());
+        if selected != native_root {
+            return Err(invalid("native model selected a different systems root"));
+        }
+        // This process may have loaded the root before its data changed;
+        // only data it loaded unchanged can carry the saved state.
+        let loaded = model
+            .data_fingerprint()
+            .and_then(|loaded| loaded.as_ref().as_ref().ok());
+        if loaded != Some(&native.perf_db) {
             return Err(invalid(format!(
-                "performance data under {} differs from the snapshot fingerprint",
-                root.display()
+                "this process loaded performance data under {} before it changed; restore in a new process",
+                selected.as_deref().unwrap_or(Path::new("?")).display()
             )));
         }
     }

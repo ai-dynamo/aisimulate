@@ -55,8 +55,8 @@ pub(crate) const EXECUTION_PROFILE_FILE: &str = "execution_profile.json";
 /// Upper bound on manifest and state reads. Online learner state is stored in
 /// its own checkpoint, so `state.bin` holds only regression, correction and
 /// selector state.
-const MAX_STATE_BYTES: u64 = 1 << 32;
-const MAX_MANIFEST_BYTES: u64 = 64 << 20;
+pub(crate) const MAX_STATE_BYTES: u64 = 1 << 32;
+pub(crate) const MAX_MANIFEST_BYTES: u64 = 64 << 20;
 
 pub(crate) fn invalid(message: impl std::fmt::Display) -> AicError {
     AicError::InvalidEngineConfig(format!("state snapshot: {message}"))
@@ -114,7 +114,11 @@ pub(crate) struct NativeRecord {
     /// SHA-256 of the compiled engine specification recorded when the saving
     /// model was constructed, excluding its storage root.
     pub engine_spec_sha256: String,
+    /// Fingerprint the saving model recorded when it loaded its performance
+    /// data, confirmed unchanged at save time.
     pub perf_db: perf_db::PerfDbFingerprint,
+    /// Whether the fingerprinted data was copied into the snapshot.
+    pub packed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -160,34 +164,82 @@ pub(crate) struct Manifest {
     pub files: Vec<FileRecord>,
 }
 
-impl Manifest {
-    /// Parse pinned manifest bytes and require this binary's format versions.
-    pub(crate) fn parse(bytes: &[u8]) -> Result<Self, AicError> {
-        let manifest: Self = serde_json::from_slice(bytes)
+/// Version fields read leniently before the strict parse, so a manifest from
+/// another release reports its version instead of an unknown field.
+#[derive(Deserialize)]
+struct ManifestHeader {
+    schema: Option<serde_json::Value>,
+    schema_version: Option<serde_json::Value>,
+    state_layout_version: Option<serde_json::Value>,
+    producer: Option<serde_json::Value>,
+}
+
+impl ManifestHeader {
+    fn check(bytes: &[u8]) -> Result<(), AicError> {
+        let header: Self = serde_json::from_slice(bytes)
             .map_err(|error| invalid(format!("invalid manifest.json: {error}")))?;
-        if manifest.schema != SCHEMA || manifest.schema_version != SCHEMA_VERSION {
+        let show = |value: &serde_json::Value| match value {
+            serde_json::Value::String(text) => text.clone(),
+            serde_json::Value::Null => "missing".to_owned(),
+            other => other.to_string(),
+        };
+        let text = |value: &Option<serde_json::Value>| {
+            value.as_ref().map_or_else(|| "missing".to_owned(), show)
+        };
+        if header.schema.as_ref().and_then(serde_json::Value::as_str) != Some(SCHEMA)
+            || header
+                .schema_version
+                .as_ref()
+                .and_then(serde_json::Value::as_u64)
+                != Some(u64::from(SCHEMA_VERSION))
+        {
             return Err(invalid(format!(
-                "unsupported manifest schema {:?} version {}",
-                manifest.schema, manifest.schema_version
+                "unsupported manifest schema {} version {}",
+                text(&header.schema),
+                text(&header.schema_version)
             )));
         }
-        if manifest.state_layout_version != STATE_SNAPSHOT_LAYOUT_VERSION {
+        if header
+            .state_layout_version
+            .as_ref()
+            .and_then(serde_json::Value::as_u64)
+            != Some(u64::from(STATE_SNAPSHOT_LAYOUT_VERSION))
+        {
             return Err(invalid(format!(
                 "state layout version {} is not supported by this binary (expected {STATE_SNAPSHOT_LAYOUT_VERSION})",
-                manifest.state_layout_version
+                text(&header.state_layout_version)
             )));
         }
         let current = Producer::current();
-        if manifest.producer != current {
+        let producer = header.producer.unwrap_or_default();
+        let field = |name: &str| producer.get(name).cloned().unwrap_or_default();
+        if field("aisimulate_core_version") != current.aisimulate_core_version.as_str()
+            || field("engine_spec_schema_version") != current.engine_spec_schema_version
+            || field("state_encoding") != current.state_encoding.as_str()
+        {
             return Err(invalid(format!(
                 "snapshot was written by aisimulate-core {} (engine spec schema {}, encoding {}); this binary is {} ({}, {})",
-                manifest.producer.aisimulate_core_version,
-                manifest.producer.engine_spec_schema_version,
-                manifest.producer.state_encoding,
+                show(&field("aisimulate_core_version")),
+                show(&field("engine_spec_schema_version")),
+                show(&field("state_encoding")),
                 current.aisimulate_core_version,
                 current.engine_spec_schema_version,
                 current.state_encoding,
             )));
+        }
+        Ok(())
+    }
+}
+
+impl Manifest {
+    /// Parse pinned manifest bytes and require this binary's format versions.
+    /// Versions are checked before unknown fields, which a newer producer may add.
+    pub(crate) fn parse(bytes: &[u8]) -> Result<Self, AicError> {
+        ManifestHeader::check(bytes)?;
+        let manifest: Self = serde_json::from_slice(bytes)
+            .map_err(|error| invalid(format!("invalid manifest.json: {error}")))?;
+        if manifest.producer != Producer::current() {
+            return Err(invalid("manifest producer fields are malformed"));
         }
         if (manifest.kind == StateSnapshotKind::LearnedWithoutIdentity)
             != manifest.identity.is_none()
@@ -219,11 +271,40 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// Report I/O failures from a snapshot save or restore, including those
+/// raised by shared loaders, as snapshot I/O rather than missing data.
+pub(crate) fn as_snapshot_io(error: AicError) -> AicError {
+    match error {
+        AicError::Io { path, source } => AicError::StateSnapshotIo { path, source },
+        other => other,
+    }
+}
+
 pub(crate) fn io_error(path: &Path, source: std::io::Error) -> AicError {
-    AicError::Io {
+    AicError::StateSnapshotIo {
         path: path.to_path_buf(),
         source,
     }
+}
+
+/// Absolute, lexically normalized path: `.` is removed and `..` removes the
+/// preceding component, like Python's `os.path.abspath`. Symlinks are kept,
+/// so a stable symlinked mount records the same path on every host.
+pub(crate) fn normalized_absolute(path: &Path) -> Result<PathBuf, AicError> {
+    let absolute = std::path::absolute(path).map_err(|error| io_error(path, error))?;
+    let mut out = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if out.parent().is_some() {
+                    out.pop();
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    Ok(out)
 }
 
 /// Snapshot-relative paths contain only normal components.
@@ -243,7 +324,7 @@ pub(crate) fn relative_path(path: &str) -> Result<&Path, AicError> {
 pub(crate) fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>, AicError> {
     let file = File::open(path).map_err(|error| io_error(path, error))?;
     let mut bytes = Vec::new();
-    file.take(limit + 1)
+    file.take(limit.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|error| io_error(path, error))?;
     if bytes.len() as u64 > limit {
@@ -259,7 +340,21 @@ pub(crate) fn read_manifest_bytes(root: &Path) -> Result<Vec<u8>, AicError> {
 /// Read a manifest-listed file and verify its recorded size and digest.
 pub(crate) fn read_recorded(root: &Path, record: &FileRecord) -> Result<Vec<u8>, AicError> {
     let path = root.join(relative_path(&record.path)?);
-    let bytes = read_limited(&path, MAX_STATE_BYTES.max(record.size_bytes))?;
+    if record.size_bytes > MAX_STATE_BYTES {
+        return Err(invalid(format!(
+            "{} is recorded as {} bytes, above the {MAX_STATE_BYTES}-byte limit",
+            record.path, record.size_bytes
+        )));
+    }
+    // Never read more than the record claims plus one byte, which is enough
+    // to detect a longer file.
+    let mut bytes = Vec::new();
+    File::open(&path)
+        .and_then(|file| {
+            file.take(record.size_bytes.saturating_add(1))
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|error| io_error(&path, error))?;
     if bytes.len() as u64 != record.size_bytes || sha256_hex(&bytes) != record.sha256 {
         return Err(invalid(format!(
             "{} does not match its manifest size or SHA-256",
@@ -291,7 +386,8 @@ pub(crate) fn decode_state<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result
         .map_err(|error| invalid(format!("corrupt or truncated state.bin: {error}")))
 }
 
-/// Staging directory for one snapshot. Files are synced before publication;
+/// Staging directory for one snapshot. Every staged file and directory is
+/// synced before the rename that publishes it, and the parent afterwards;
 /// dropping an unpublished stage removes it.
 pub(crate) struct Stage {
     dir: tempfile::TempDir,
@@ -300,11 +396,10 @@ pub(crate) struct Stage {
 }
 
 impl Stage {
-    /// The destination must not exist. Its parent is created and canonicalized
-    /// so recorded absolute paths contain no `..`, `.` or symlink components.
+    /// The destination must not exist. It is recorded as a normalized
+    /// absolute path (see [`normalized_absolute`]); its parent is created.
     pub(crate) fn new(destination: &Path) -> Result<Self, AicError> {
-        let absolute =
-            std::path::absolute(destination).map_err(|error| io_error(destination, error))?;
+        let absolute = normalized_absolute(destination)?;
         let name = absolute
             .file_name()
             .filter(|name| !name.is_empty() && *name != "." && *name != "..")
@@ -314,7 +409,7 @@ impl Stage {
             .parent()
             .ok_or_else(|| invalid(format!("{} has no parent directory", destination.display())))?;
         std::fs::create_dir_all(parent).map_err(|error| io_error(parent, error))?;
-        let parent = std::fs::canonicalize(parent).map_err(|error| io_error(parent, error))?;
+        let parent = parent.to_path_buf();
         let destination = parent.join(name);
         if destination.to_str().is_none() {
             return Err(invalid("snapshot path must be valid UTF-8"));
@@ -387,8 +482,9 @@ impl Stage {
         files
     }
 
-    /// Reserve the destination, then move the complete stage into it.
+    /// Reserve the destination, then move the complete, synced stage into it.
     pub(crate) fn publish(self) -> Result<(), AicError> {
+        sync_tree(self.dir.path())?;
         let staging = self.dir.keep();
         let destination = &self.destination;
         if let Err(error) = std::fs::create_dir(destination) {
@@ -408,4 +504,23 @@ impl Stage {
         }
         Ok(())
     }
+}
+
+/// Flush every file and directory below `root`, then `root` itself, so
+/// copied and delegated files are durable before the publishing rename.
+fn sync_tree(root: &Path) -> Result<(), AicError> {
+    for entry in std::fs::read_dir(root).map_err(|error| io_error(root, error))? {
+        let path = entry.map_err(|error| io_error(root, error))?.path();
+        let metadata = std::fs::symlink_metadata(&path).map_err(|error| io_error(&path, error))?;
+        if metadata.is_dir() {
+            sync_tree(&path)?;
+        } else if metadata.is_file() {
+            File::open(&path)
+                .and_then(|file| file.sync_all())
+                .map_err(|error| io_error(&path, error))?;
+        }
+    }
+    File::open(root)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| io_error(root, error))
 }
