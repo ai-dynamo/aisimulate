@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 import types
 from contextlib import contextmanager
+from typing import ClassVar
 
 import pytest
 
@@ -329,3 +330,74 @@ def test_per_tactic_profiling_failures_are_counted_from_the_tuner_statistics(fak
     assert f"tactics failed while profiling: {op}=2" in warning[0]
     assert "routing_custom.cu:1045" in warning[0]
     assert "Skipped 2 unsupported tactic(s)" in warning[0]
+
+
+def test_newly_enumerated_tactic_tables_are_printed_per_instance_key(fake_flashinfer, monkeypatch, capsys):
+    """Probe 77139257 (b200 sglang 0.5.21, 2026-10-28): the Nemotron relu2 nvfp4 cases wrote one
+    cache entry each after a 0.02-0.9 s pass and still measured the untuned latency -- the
+    autotuner may simply have had one candidate. Print the launcher-enumerated tactic list
+    per instance key (intermediate size, activation, ... included) for every key the pass
+    added, reading FlashInfer's already-built module only (no JIT build from here)."""
+
+    class _Runner:
+        valid_tactics_dict: ClassVar[dict] = {("E2m1", 8, 7168, 2048, 256, "Swiglu", 768): [(64, 0), (64, 1), (128, 0)]}
+
+    calls = []
+
+    class _Impl:
+        currsize = 0
+
+        @staticmethod
+        def cache_info():
+            return types.SimpleNamespace(currsize=_Impl.currsize)
+
+    def get_module():
+        calls.append("get")
+        return types.SimpleNamespace(MoERunner=_Runner)
+
+    core = types.ModuleType("flashinfer.fused_moe.core")
+    core._get_trtllm_moe_sm100_module_impl = _Impl
+    core.get_trtllm_moe_sm100_module = get_module
+    fused = types.ModuleType("flashinfer.fused_moe")
+    fused.core = core
+    sys.modules["flashinfer"].fused_moe = fused
+    monkeypatch.setitem(sys.modules, "flashinfer.fused_moe", fused)
+    monkeypatch.setitem(sys.modules, "flashinfer.fused_moe.core", core)
+
+    # Module not built yet: nothing is read and the factory is not called.
+    with flashinfer_autotuned(8, lambda: None, label="cold"):
+        pass
+    assert calls == []
+    assert "FlashInfer autotune tactics" not in capsys.readouterr().out
+
+    def tune_fn():
+        _Impl.currsize = 1  # the forward built the module ...
+        _Runner.valid_tactics_dict[("E2m1", 6, 2688, 1920, 128, "Relu2", 768)] = [(64, 3)]  # ... and enumerated
+
+    with flashinfer_autotuned(768, tune_fn, label="sglang_flashinfer_trtllm_moe"):
+        pass
+    out = capsys.readouterr().out
+    lines = [line for line in out.splitlines() if line.startswith("FlashInfer autotune tactics")]
+    # The module came up during this pass, so every key it holds is new to the snapshot:
+    # the control shape's three tactics and the single Relu2 candidate.
+    assert len(lines) == 2
+    assert (
+        "FlashInfer autotune tactics at num_tokens=768 sglang_flashinfer_trtllm_moe: trtllm_sm100 "
+        "('E2m1', 8, 7168, 2048, 256, 'Swiglu', 768) -> 3 tactics [(64, 0), (64, 1), (128, 0)]"
+    ) in lines
+    assert (
+        "FlashInfer autotune tactics at num_tokens=768 sglang_flashinfer_trtllm_moe: trtllm_sm100 "
+        "('E2m1', 6, 2688, 1920, 128, 'Relu2', 768) -> 1 tactics [(64, 3)]"
+    ) in lines
+
+    # Next pass: only keys added since the snapshot are reported.
+    def tune_fn_ep4():
+        _Runner.valid_tactics_dict[("E2m1", 6, 2688, 1920, 32, "Relu2", 768)] = [(64, 3)]
+
+    with flashinfer_autotuned(768, tune_fn_ep4, label="sglang_flashinfer_trtllm_moe"):
+        pass
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("FlashInfer autotune tactics")]
+    assert lines == [
+        "FlashInfer autotune tactics at num_tokens=768 sglang_flashinfer_trtllm_moe: trtllm_sm100 "
+        "('E2m1', 6, 2688, 1920, 32, 'Relu2', 768) -> 1 tactics [(64, 3)]"
+    ]

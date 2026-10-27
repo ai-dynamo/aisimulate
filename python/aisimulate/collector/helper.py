@@ -684,6 +684,49 @@ def _flashinfer_failed_tactic_counts(tuner) -> dict[str, int]:
         return {}
 
 
+def _flashinfer_moe_tactic_tables() -> dict[str, dict]:
+    """``{module: MoERunner.valid_tactics_dict}`` for the FlashInfer trtllm-gen MoE modules
+    already built in this process. The class-level dict caches, per instance key
+    ``(dtype_act, dtype_weights, fp8_quant, top_k, hidden, intermediate, local_experts,
+    activation, shuffled, layout, per_token, num_tokens, lora)``, the tactic list the C++
+    launcher enumerated -- exactly what the autotuner had to choose from. Only modules whose
+    ``functools.cache`` is populated are read, so nothing is JIT-built here."""
+    tables: dict[str, dict] = {}
+    try:
+        import flashinfer.fused_moe.core as fi_core
+    except Exception:  # optional dependency
+        return tables
+    impl = getattr(fi_core, "_get_trtllm_moe_sm100_module_impl", None)
+    cache_info = getattr(impl, "cache_info", None)
+    try:
+        if cache_info is not None and cache_info().currsize > 0:
+            table = getattr(fi_core.get_trtllm_moe_sm100_module().MoERunner, "valid_tactics_dict", None)
+            if isinstance(table, dict):
+                tables["trtllm_sm100"] = table
+    except Exception:  # diagnostics only
+        pass
+    return tables
+
+
+def _flashinfer_new_tactic_entries(before: dict[str, set]) -> list[str]:
+    """Human-readable ``module key -> N tactics [...]`` lines for tactic-table keys that
+    appeared since ``before`` (a ``{module: set(keys)}`` snapshot)."""
+    lines = []
+    for module, table in _flashinfer_moe_tactic_tables().items():
+        for key in table:
+            if key in before.get(module, set()):
+                continue
+            tactics = table[key]
+            try:
+                shown = [tuple(int(x) for x in t) if isinstance(t, (list, tuple)) else t for t in list(tactics)[:8]]
+                count = len(tactics)
+            except Exception:  # diagnostics only
+                shown, count = [repr(tactics)[:200]], -1
+            more = f" (+{count - 8} more)" if count > 8 else ""
+            lines.append(f"{module} {key!r} -> {count} tactics {shown}{more}")
+    return lines
+
+
 def _flashinfer_autotune_api():
     """FlashInfer's ``autotune`` context manager and ``AutoTuner`` class, or ``(None, None)``."""
     try:
@@ -738,6 +781,7 @@ def flashinfer_autotuned(num_tokens: int, tune_fn: Callable[[], None], *, label:
     tune_error: BaseException | None = None
     tuner_log: list[str] = []
     failed_before = _flashinfer_failed_tactic_counts(tuner)
+    tactic_keys_before = {module: set(table) for module, table in _flashinfer_moe_tactic_tables().items()}
     try:
         with (
             _flashinfer_tuner_log_capture() as tuner_log,
@@ -774,6 +818,11 @@ def flashinfer_autotuned(num_tokens: int, tune_fn: Callable[[], None], *, label:
     # with no visible trace (b300 sglang 0.5.21 Nemotron-3-Nano nvfp4 relu2 shape,
     # 2026-10-28: unchanged against the untuned table while every other shape moved).
     # Surface FlashInfer's own DEBUG explanation next to the case.
+    # What the tuner had to choose from: the launcher-enumerated tactic list per instance
+    # key (shows the intermediate size / activation the kernel really saw and whether the
+    # candidate set was a single tactic, i.e. tuned == untuned by construction).
+    for line in _flashinfer_new_tactic_entries(tactic_keys_before):
+        print(f"FlashInfer autotune tactics at num_tokens={num_tokens} {label}".rstrip() + f": {line}")
     diagnostics = _flashinfer_tuner_diagnostics(tuner_log)
     failed_after = _flashinfer_failed_tactic_counts(tuner)
     newly_failed = {k: n - failed_before.get(k, 0) for k, n in failed_after.items() if n > failed_before.get(k, 0)}
