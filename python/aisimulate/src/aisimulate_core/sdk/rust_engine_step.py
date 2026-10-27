@@ -426,9 +426,13 @@ class RustForwardPassPerfModel:
         directory written by :meth:`to_file`; its ``config.json`` is passed to
         the same Rust constructor unchanged, so ``best_available(file=path)``
         and ``best_available(config=json.load(open(path / "config.json")))``
-        are equivalent. A configuration with
+        are equivalent. Snapshots are pinned to the path they were saved to:
+        ``file`` must be that directory (compared with ``os.path.samefile``),
+        otherwise ``ValueError`` is raised. A configuration with
         ``estimator_config.state_snapshot`` restores the saved model and fails
-        on any mismatch instead of selecting another estimator.
+        on any mismatch instead of selecting another estimator. Snapshot I/O
+        failures raise ``OSError`` subclasses such as ``FileNotFoundError``,
+        never ``PerfDataNotAvailableError``.
         """
         import aisimulate_core
 
@@ -611,12 +615,14 @@ class RustForwardPassPerfModel:
         this model stopped. ``path`` must not exist. Saving never fits pending
         online rows or changes this model.
 
-        Native estimators reference their performance data by content
-        fingerprint unless ``include_perf_db=True`` packs a copy into the
-        snapshot. Learned forests, online checkpoints and causal-selector
-        experts are always copied. ``from_learned`` models have no deployment
-        identity, so their snapshot configuration carries placeholder
-        identity fields and is restored without identity checks.
+        Native estimators reference their performance data by the content
+        fingerprint taken when this process first loaded it, unless
+        ``include_perf_db=True`` packs a copy into the snapshot; saving fails
+        with ``ValueError`` if that data changed since. Learned forests, online
+        checkpoints and causal-selector experts are always copied.
+        ``from_learned`` models have no deployment identity, so their snapshot
+        configuration carries placeholder identity fields and is restored
+        without identity checks. I/O failures raise ``OSError`` subclasses.
         """
         return json.loads(self._inner.to_file(os.fspath(path), include_perf_db))
 
@@ -838,9 +844,29 @@ def _json_dumps(value: Any) -> str:
 
 
 def _snapshot_config(file: str | os.PathLike[str]) -> dict[str, Any]:
-    """Read a snapshot's pinned configuration without interpreting it."""
-    with open(os.path.join(os.fspath(file), "config.json"), encoding="utf-8") as handle:
-        return json.load(handle)
+    """Read a snapshot's pinned configuration and require ``file`` to be its pinned directory.
+
+    Restoration reads the pinned path, not ``file``, so a moved or copied
+    snapshot directory would otherwise silently restore the original.
+    """
+    directory = os.fspath(file)
+    with open(os.path.join(directory, "config.json"), encoding="utf-8") as handle:
+        config = json.load(handle)
+    estimator = config.get("estimator_config") if isinstance(config, dict) else None
+    snapshot = estimator.get("state_snapshot") if isinstance(estimator, dict) else None
+    pinned = snapshot.get("path") if isinstance(snapshot, dict) else None
+    if not isinstance(pinned, str):
+        raise ValueError(f"{os.path.join(directory, 'config.json')} does not pin a state snapshot")
+    try:
+        same = os.path.samefile(directory, pinned)
+    except FileNotFoundError:
+        same = False
+    if not same:
+        raise ValueError(
+            f"state snapshot {directory} is pinned to {pinned}; snapshots are pinned to the path "
+            "they were saved to and cannot be restored after being moved or copied"
+        )
+    return config
 
 
 def _forward_pass_config_json(config: ForwardPassPerfModelConfig | Mapping[str, Any]) -> str:
