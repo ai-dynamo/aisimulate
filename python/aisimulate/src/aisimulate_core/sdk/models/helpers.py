@@ -162,6 +162,83 @@ def attention_modules_excluded_from_quant(raw_config: dict) -> bool:
     return bool(attention_projection_exclusions(raw_config))
 
 
+def mixed_precision_quantized_paths(raw_config: dict) -> frozenset[str] | None:
+    """Lower-cased module paths that a ``MIXED_PRECISION`` export lists as quantized.
+
+    In a ``MIXED_PRECISION`` export the positive lists are the record of what is quantized, and a
+    module they do not cover is unquantized.
+
+    The paths come from the ``quantized_layers`` keys of the retained ``hf_quant_config``, the
+    ``quantized_layers`` keys of the language ``quantization_config`` and the ``targets`` of every
+    ``config_groups`` entry. An entry counts as a module path when it contains a dot. Class names
+    such as ``Linear`` are dropped.
+
+    Returns ``None`` when the export is not ``MIXED_PRECISION`` or when it lists no module path. The
+    exclusion globs from :func:`quant_exclude_patterns` are then the only record of what is
+    unquantized.
+    """
+    if raw_config.get("quant_algo") != "mixed_precision":
+        return None
+
+    hf_quant_config = raw_config.get("hf_quant_config")
+    hf_quant_config = hf_quant_config if isinstance(hf_quant_config, dict) else {}
+    hf_quant = hf_quant_config.get("quantization")
+    hf_quant = hf_quant if isinstance(hf_quant, dict) else {}
+    quant_config = _get_language_quantization_config(raw_config)
+    quant_config = quant_config if isinstance(quant_config, dict) else {}
+    config_groups = quant_config.get("config_groups")
+    config_groups = config_groups if isinstance(config_groups, dict) else {}
+
+    entries: list[object] = []
+    for quantized_layers in (hf_quant.get("quantized_layers"), quant_config.get("quantized_layers")):
+        if isinstance(quantized_layers, dict):
+            entries.extend(quantized_layers)
+    for group in config_groups.values():
+        targets = group.get("targets") if isinstance(group, dict) else None
+        if isinstance(targets, list):
+            entries.extend(targets)
+
+    lowered = (str(entry).lower() for entry in entries)
+    paths = frozenset(path for path in lowered if "." in path)
+    return paths or None
+
+
+def mixed_precision_covers(paths: frozenset[str], module_path: str) -> bool:
+    """Whether ``module_path``, or a module above it, is in ``paths``.
+
+    Matching is by dotted component, never by string prefix. ``a.b`` covers ``a.b.c`` but not
+    ``a.bc``. The module path is lower-cased first, as the listed paths are.
+    """
+    path = module_path.lower()
+    while path:
+        if path in paths:
+            return True
+        path = path.rpartition(".")[0]
+    return False
+
+
+def mixed_precision_attention_exclusions(paths: frozenset[str]) -> frozenset[str]:
+    """Which attention projection groups the listed paths leave unquantized.
+
+    Returns a subset of :data:`ATTENTION_PROJECTION_GROUPS`, like
+    :func:`attention_projection_exclusions`. A listed ``self_attn`` path that names a projection
+    covers that group. A listed ``self_attn`` path that names no projection is a whole-block entry
+    and covers every group. A group that no listed path covers is excluded.
+    """
+    covered: set[str] = set()
+    for path in paths:
+        if "self_attn" not in path:
+            continue
+        named = {group for group, markers in _PROJECTION_MODULE_PATHS.items() if any(m in path for m in markers)}
+        covered |= named or set(ATTENTION_PROJECTION_GROUPS)
+    return frozenset(ATTENTION_PROJECTION_GROUPS) - covered
+
+
+def mixed_precision_shared_experts_quantized(paths: frozenset[str]) -> bool:
+    """Whether the export lists a shared-expert module as quantized."""
+    return any("shared_expert" in path for path in paths)
+
+
 def attention_op_keys(
     model_family: str,
     backend_name: str,
