@@ -90,6 +90,7 @@ from collector.case_generator import (
 from collector.helper import (
     balanced_logits,
     benchmark_with_power,
+    flashinfer_autotuned,
     get_sm_version,
     log_perf,
     power_law_logits_v3,
@@ -836,8 +837,11 @@ def run_moe_torch(
                     forward_context.moe_layer_index = 0
                     moe_module(hidden_states, router_logits)
 
+            # FlashInfer-backed experts (trtllm-gen nvfp4/mxfp4, cutlass, cutedsl) are
+            # timed on the autotuned tactic like serving; see helper.flashinfer_autotuned.
             with (
                 set_forward_context({}, vllm_config),
+                flashinfer_autotuned(num_tokens, run_single_iteration, label=source),
                 benchmark_with_power(
                     device=device,
                     kernel_func=run_single_iteration,

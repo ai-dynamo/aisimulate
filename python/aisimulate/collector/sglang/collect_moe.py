@@ -245,6 +245,7 @@ try:
         balanced_logits,
         benchmark_with_power,
         build_rank0_local_workload,
+        flashinfer_autotuned,
         get_sm_version,
         log_perf,
         power_law_logits_v3,
@@ -267,6 +268,7 @@ except ModuleNotFoundError:
         balanced_logits,
         benchmark_with_power,
         build_rank0_local_workload,
+        flashinfer_autotuned,
         get_sm_version,
         log_perf,
         power_law_logits_v3,
@@ -1101,13 +1103,18 @@ def _benchmark_framework_quantized_moe(
                 for router_logits in logits:
                     moe_layer(hidden_states, topk_layer(hidden_states, router_logits))
 
-            with benchmark_with_power(
-                device=device,
-                kernel_func=kernel_func,
-                num_warmups=5,
-                num_runs=10,
-                repeat_n=1,
-            ) as results:
+            # FlashInfer-backed runners (flashinfer_trtllm / _mxfp4 / _cutlass / _cutedsl)
+            # are timed on the autotuned tactic like serving; see helper.flashinfer_autotuned.
+            with (
+                flashinfer_autotuned(num_tokens, kernel_func, label=kernel_source),
+                benchmark_with_power(
+                    device=device,
+                    kernel_func=kernel_func,
+                    num_warmups=5,
+                    num_runs=10,
+                    repeat_n=1,
+                ) as results,
+            ):
                 pass
             return results["latency_ms"] / len(logits), results["power_stats"], kernel_source
     finally:

@@ -466,6 +466,67 @@ def power_monitoring_only(device, measure_power: bool | None = None):
         pass
 
 
+# Set to 0/false to time FlashInfer-backed kernels on FlashInfer's untuned default
+# tactic (the pre-2026-10-27 behavior). Default on.
+FLASHINFER_AUTOTUNE_ENV = "COLLECTOR_FLASHINFER_AUTOTUNE"
+
+
+def flashinfer_autotune_enabled() -> bool:
+    return _parse_bool_env(FLASHINFER_AUTOTUNE_ENV, default=True)
+
+
+def _flashinfer_autotune_api():
+    """FlashInfer's ``autotune`` context manager and ``AutoTuner`` class, or ``(None, None)``."""
+    try:
+        from flashinfer.autotuner import AutoTuner, autotune
+    except ImportError:
+        return None, None
+    return autotune, AutoTuner
+
+
+@contextmanager
+def flashinfer_autotuned(num_tokens: int, tune_fn: Callable[[], None], *, label: str = ""):
+    """Time FlashInfer-backed kernels on the tactic FlashInfer's autotuner picks, as serving does.
+
+    vLLM (``enable_flashinfer_autotune``, default on for Blackwell) and SGLang (warm-up
+    autotune, plus the extend bucket since sglang #32556) both run FlashInfer kernels on
+    autotuned tactics. Without this context the collector times FlashInfer's *untuned*
+    fallback: tile = clamp(next_pow2(num_tokens * top_k / local_num_experts), 8, 128) and
+    the first config of an unstable ``std::sort`` over the kernel manifest -- a value that
+    moved between FlashInfer 0.6.12 and 0.6.18 (flashinfer #6838) and broke every SM100
+    nvfp4 MoE EP sweep whose average tokens per local expert exceeded 128 (vLLM 0.30.0 /
+    SGLang 0.5.21 campaign tables, 2026-10-27).
+
+    ``tune_fn()`` runs once inside ``autotune(True, tuning_buckets=(num_tokens,))`` so
+    every FlashInfer op it reaches is profiled at exactly this token count (with the
+    caller's real routing, so the EP-local expert load is what gets tuned). The ``with``
+    body then runs under ``autotune(False, ...)`` with the same bucket: lookups hit the
+    entries just profiled, nothing is profiled inside the body (CUDA-graph capture safe),
+    and an op the tuner has no entry for keeps FlashInfer's fallback exactly as before.
+
+    Yields ``True`` when a tuning pass ran, ``False`` when FlashInfer is not importable or
+    ``COLLECTOR_FLASHINFER_AUTOTUNE`` is off (then the body runs untouched and ``tune_fn``
+    is not called). Non-FlashInfer kernels inside the body are unaffected either way.
+    """
+    autotune, auto_tuner_cls = _flashinfer_autotune_api()
+    if autotune is None or not flashinfer_autotune_enabled():
+        yield False
+        return
+    tuner = auto_tuner_cls.get()
+    cache = getattr(tuner, "profiling_cache", None)
+    entries_before = len(cache) if hasattr(cache, "__len__") else None
+    buckets = (int(num_tokens),)
+    with autotune(True, tuning_buckets=buckets):
+        tune_fn()
+    if entries_before is not None:
+        new_entries = len(cache) - entries_before
+        print(f"FlashInfer autotune: {new_entries} new tactic entries at num_tokens={num_tokens} {label}".rstrip())
+    else:
+        print(f"FlashInfer autotune: tuning pass done at num_tokens={num_tokens} {label}".rstrip())
+    with autotune(False, tuning_buckets=buckets):
+        yield True
+
+
 def setup_signal_handlers(worker_id):
     """Setup signal handlers to log crashes."""
     import traceback as _tb
