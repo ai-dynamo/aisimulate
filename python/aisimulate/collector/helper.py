@@ -588,7 +588,13 @@ def _flashinfer_tuner_budget(tuner, budget: FlashInferTuneBudget | None):
 
 
 _FLASHINFER_TUNER_DIAG_MARKERS = (
+    # MoERunner.get_valid_tactics: C++ enumeration error swallowed, [] returned (DEBUG).
     "failed to get valid tactics",
+    # Per-tactic profiling failure: "Failed when profiling <runner> <tactic> ... Error
+    # occurred: <exc>" (DEBUG) and the "Skipped N unsupported tactic(s)" summary (INFO).
+    "error occurred",
+    "unsupported tactic",
+    # Nothing profiled at all: the op is served by the fallback tactic.
     "no valid tactic",
     "fallback",
     "oom",
@@ -651,15 +657,31 @@ def _flashinfer_tuner_log_capture():
 
 
 def _flashinfer_tuner_diagnostics(messages: Iterable[str]) -> list[str]:
-    """Autotuner messages that explain a tactic *not* being profiled: the per-runner
-    ``get_valid_tactics`` failure (``core.py`` swallows the C++ exception and returns ``[]``
-    at DEBUG), empty tactic sets, fallback selection and OOM."""
-    out = []
+    """Autotuner messages that explain a tactic *not* being profiled or chosen: the
+    per-runner ``get_valid_tactics`` failure (``core.py`` swallows the C++ exception and
+    returns ``[]`` at DEBUG), per-tactic profiling failures (every candidate runs the full
+    op, routing kernel included, on synthetic inputs; a failing one is marked inf at DEBUG),
+    empty tactic sets, fallback selection and OOM. Duplicates are collapsed."""
+    out: list[str] = []
+    seen: set[str] = set()
     for msg in messages:
         low = msg.lower()
-        if any(marker in low for marker in _FLASHINFER_TUNER_DIAG_MARKERS):
-            out.append(" ".join(msg.split())[:400])
+        if not any(marker in low for marker in _FLASHINFER_TUNER_DIAG_MARKERS):
+            continue
+        text = " ".join(msg.split())[:400]
+        if text not in seen:
+            seen.add(text)
+            out.append(text)
     return out
+
+
+def _flashinfer_failed_tactic_counts(tuner) -> dict[str, int]:
+    """``{op::runner: failed tactic count}`` from the tuner's statistics (empty if absent)."""
+    try:
+        failed = tuner.stats.failed_tactics
+        return {str(k): len(v) for k, v in failed.items()}
+    except Exception:  # diagnostics only
+        return {}
 
 
 def _flashinfer_autotune_api():
@@ -715,6 +737,7 @@ def flashinfer_autotuned(num_tokens: int, tune_fn: Callable[[], None], *, label:
     started = time.perf_counter()
     tune_error: BaseException | None = None
     tuner_log: list[str] = []
+    failed_before = _flashinfer_failed_tactic_counts(tuner)
     try:
         with (
             _flashinfer_tuner_log_capture() as tuner_log,
@@ -752,13 +775,18 @@ def flashinfer_autotuned(num_tokens: int, tune_fn: Callable[[], None], *, label:
     # 2026-10-28: unchanged against the untuned table while every other shape moved).
     # Surface FlashInfer's own DEBUG explanation next to the case.
     diagnostics = _flashinfer_tuner_diagnostics(tuner_log)
-    if diagnostics:
-        shown = "; ".join(diagnostics[:4])
-        more = f" (+{len(diagnostics) - 4} more)" if len(diagnostics) > 4 else ""
-        print(
-            f"FlashInfer autotune WARNING at num_tokens={num_tokens} {label}".rstrip()
-            + f": {len(diagnostics)} autotuner fallback/failure messages: {shown}{more}"
-        )
+    failed_after = _flashinfer_failed_tactic_counts(tuner)
+    newly_failed = {k: n - failed_before.get(k, 0) for k, n in failed_after.items() if n > failed_before.get(k, 0)}
+    if diagnostics or newly_failed:
+        parts = []
+        if newly_failed:
+            parts.append(
+                "tactics failed while profiling: " + ", ".join(f"{k}={n}" for k, n in sorted(newly_failed.items()))
+            )
+        if diagnostics:
+            more = f" (+{len(diagnostics) - 4} more)" if len(diagnostics) > 4 else ""
+            parts.append(f"{len(diagnostics)} autotuner messages: " + "; ".join(diagnostics[:4]) + more)
+        print(f"FlashInfer autotune WARNING at num_tokens={num_tokens} {label}".rstrip() + ": " + " | ".join(parts))
     with autotune(False, tuning_buckets=buckets):
         yield True
 

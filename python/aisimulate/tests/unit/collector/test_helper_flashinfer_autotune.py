@@ -275,6 +275,7 @@ def test_autotuner_fallback_messages_are_surfaced_and_logging_is_restored(fake_f
             )
             fi_logger.debug("[Autotuner]: profiling runner MoERunner tactic (128, 3)")
             fi_logger.debug("[AutoTuner]: Using fallback tactic for trtllm_fp4_block_scale_moe")
+            fi_logger.debug("[AutoTuner]: Using fallback tactic for trtllm_fp4_block_scale_moe")  # duplicate
 
         with flashinfer_autotuned(768, tune_fn, label="sglang_flashinfer_trtllm_moe"):
             pass
@@ -292,7 +293,39 @@ def test_autotuner_fallback_messages_are_surfaced_and_logging_is_restored(fake_f
     assert "FlashInfer autotune: 0 new tactic entries at num_tokens=768 sglang_flashinfer_trtllm_moe [" in out
     warning = [line for line in out.splitlines() if line.startswith("FlashInfer autotune WARNING")]
     assert len(warning) == 1
-    assert "num_tokens=768 sglang_flashinfer_trtllm_moe: 2 autotuner fallback/failure messages" in warning[0]
+    assert "num_tokens=768 sglang_flashinfer_trtllm_moe: 2 autotuner messages" in warning[0]
     assert "No kernel found for the given options: mActType 6 tile 192" in warning[0]
-    assert "Using fallback tactic" in warning[0]
+    assert warning[0].count("Using fallback tactic") == 1
     assert "profiling runner" not in warning[0]
+    assert "tactics failed while profiling" not in warning[0]
+
+
+def test_per_tactic_profiling_failures_are_counted_from_the_tuner_statistics(fake_flashinfer, capsys):
+    """Every candidate tactic runs the whole op on synthetic inputs; when e.g. the routing
+    kernel faults on them FlashInfer marks the tactic inf at DEBUG, records it in
+    ``stats.failed_tactics`` and -- if none survives -- serves the fallback. The pass
+    reports the new failures from the statistics even when no log line matched."""
+    import logging
+
+    tuner = fake_flashinfer.tuner.get()
+    op = "flashinfer::trtllm_fp4_block_scale_moe::MoERunner"
+    tuner.stats = types.SimpleNamespace(failed_tactics={op: {(8, 1)}})
+    fi_logger = logging.getLogger("flashinfer")
+
+    def tune_fn():
+        tuner.stats.failed_tactics[op].update({(16, 2), (32, 5)})
+        fi_logger.debug(
+            "[Autotuner]: Failed when profiling MoERunner (16, 2), shapes=[...]. Error occurred: "
+            "CUDA error in trtllm_fused_moe_routing_custom.cu:1045: an illegal memory access"
+        )
+        fi_logger.info("[Autotuner]: Skipped 2 unsupported tactic(s) for trtllm_fp4_block_scale_moe")
+
+    with flashinfer_autotuned(3072, tune_fn, label="sglang_flashinfer_trtllm_moe"):
+        pass
+
+    out = capsys.readouterr().out
+    warning = [line for line in out.splitlines() if line.startswith("FlashInfer autotune WARNING")]
+    assert len(warning) == 1
+    assert f"tactics failed while profiling: {op}=2" in warning[0]
+    assert "routing_custom.cu:1045" in warning[0]
+    assert "Skipped 2 unsupported tactic(s)" in warning[0]
