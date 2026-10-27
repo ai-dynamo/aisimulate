@@ -89,7 +89,9 @@ impl EngineLaunchConfig {
     /// controls derive from it exactly as at launch. Returns every launch rule
     /// that would reject the combination, in the order launch validation
     /// checks them; an empty list means the launch would accept it.
-    /// Malformed arguments or an invalid `config` are errors, not mismatches.
+    /// Malformed arguments, launch inputs that are invalid on their own (such
+    /// as a zero `dp_size` or a memory fraction above one) and an invalid
+    /// `config` are errors carrying launch's own message, not mismatches.
     pub fn timing_config_mismatches(
         mut engine_args: Value,
         config: &ForwardPassPerfModelConfig,
@@ -108,7 +110,7 @@ impl EngineLaunchConfig {
                 json!({"type": "external", "provider": "ais", "config": config}),
             );
         let launch = Self::parse_value(engine_args)?;
-        launch.engine.validate()?;
+        launch.validate_inputs()?;
         launch.timing_identity_mismatches(config)
     }
 
@@ -206,6 +208,18 @@ impl EngineLaunchConfig {
     }
 
     pub fn validate(&self) -> Result<()> {
+        self.validate_inputs()?;
+        if let Some(config) = self.performance_config()? {
+            if let Some(first) = self.timing_identity_mismatches(&config)?.into_iter().next() {
+                anyhow::bail!(first);
+            }
+        }
+        Ok(())
+    }
+
+    /// Launch checks of each input on its own, before the rules relating the
+    /// timing identity to the engine.
+    fn validate_inputs(&self) -> Result<()> {
         self.engine.validate()?;
         ensure!(self.dp_size > 0, "dp_size must be positive");
         ensure!(
@@ -236,9 +250,9 @@ impl EngineLaunchConfig {
         }
         if let Some(config) = self.performance_config()? {
             config.validate()?;
-            if let Some(first) = self.timing_identity_mismatches(&config)?.into_iter().next() {
-                anyhow::bail!(first);
-            }
+        }
+        if let Some(nextn) = self.aic_nextn {
+            normalize_conditional_accept_rates(nextn, self.aic_nextn_accept_rates.as_deref())?;
         }
         Ok(())
     }
@@ -320,5 +334,48 @@ mod tests {
             EngineLaunchConfig::timing_config_mismatches(json!({"dp_size": "two"}), &timing())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn timing_config_mismatches_reject_invalid_launch_inputs_with_launch_messages() {
+        let mut config = timing();
+        config.tp = 2;
+        config.attention_dp = 2;
+        for (args, message) in [
+            (json!({"dp_size": 0}), "dp_size must be positive"),
+            (
+                json!({"tensor_parallel_size": 0}),
+                "tensor_parallel_size must be positive",
+            ),
+            (
+                json!({"gpu_memory_utilization": 2.0}),
+                "gpu_memory_utilization must be finite and in [0, 1]",
+            ),
+            (
+                json!({"startup_time": -1.0}),
+                "startup_time must be finite and non-negative",
+            ),
+        ] {
+            let error = EngineLaunchConfig::timing_config_mismatches(args.clone(), &config)
+                .expect_err(message);
+            assert!(format!("{error:#}").contains(message), "{error:#}");
+            // Launch rejects the same arguments with the same message.
+            let mut launch = args;
+            launch["engine"] =
+                json!({"timing_model": {"type": "external", "provider": "ais", "config": config}});
+            let error = EngineLaunchConfig::from_value(launch).unwrap_err();
+            assert!(format!("{error:#}").contains(message), "{error:#}");
+        }
+        // Accepted inputs return no mismatches, and launch accepts them.
+        let args = json!({"gpu_memory_utilization": 0.9, "startup_time": 0.0});
+        assert!(
+            EngineLaunchConfig::timing_config_mismatches(args.clone(), &config)
+                .unwrap()
+                .is_empty()
+        );
+        let mut launch = args;
+        launch["engine"] =
+            json!({"timing_model": {"type": "external", "provider": "ais", "config": config}});
+        EngineLaunchConfig::from_value(launch).unwrap();
     }
 }
