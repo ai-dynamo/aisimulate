@@ -134,6 +134,10 @@ New rows add four columns to the existing Mamba2 shape:
 | `philox_rounds` | Philox rounds when stochastic rounding is enabled | Ignored when disabled |
 | `token_width` | Target tokens per request in one decode pass | `1` |
 
+Convolution keys ignore SSM dtype and rounding settings. Prefill scan keys
+ignore rounding settings. Decode recurrence keys retain all four fields.
+Raw rows preserve the collection configuration.
+
 Legacy rows remain separate from precision-qualified rows. Legacy decode retains
 its previous analytical estimate because those operators lack rank-local state
 identity. The new state-traffic formula applies only to qualified operators.
@@ -149,7 +153,9 @@ prefill: `vllm_causal_conv1d_fn`, `vllm_causal_conv1d_update`, and
 and both the initial-state gather and final-state store. It does not measure prefix-cache scheduling or
 intermediate checkpoint allocation. Decode rotates recurrent states beyond L2
 capacity. GPU qualification must compare tensor strides and cache behavior
-against serving before these rows become calibration evidence.
+against serving before these rows become calibration evidence. This lane uses
+`use_replayssm=false` and SD convolution storage. ReplaySSM and DS convolution
+storage require separate collection and query support.
 
 The vLLM registry marks this collector unverified. A normal collection reports
 that status and skips it. Remove the marker only after a GPU qualification run.
@@ -169,7 +175,7 @@ Before adding measurements, make sure that the following evidence agrees:
 
 1. Record the checkpoint hash, runtime image digest, framework source revision,
    GPU model, and placement with each collection.
-2. Compare the selected MoE method and kernel against the serving runtime.
+2. Compare kernel methods, tensor layouts, and disabled ReplaySSM against serving.
 3. Run prefill and decode smoke cases for TP1/2/4/8 and MTP0/1/2/3.
 4. Finalize through the collector so that parquet and provenance stay together.
 5. Query every measured shape and compare held-out shapes with fresh measurements.
