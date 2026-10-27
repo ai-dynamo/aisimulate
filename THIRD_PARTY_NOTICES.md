@@ -1259,7 +1259,6 @@ and does not relicense model weights, producer code or their upstream projects.
 - Copyright 2012–2026 Plotly, Inc.; MIT license preserved in the bundled header
   and `pages/fpm-accuracy/assets/PLOTLY-LICENSE.txt`. The Pages build copies both.
 
-
 ## vLLM Kimi KDA state sizing
 
 `src/aisimulate_core/sdk/memory/kimi_k3.py` and the cache-dtype controls in
@@ -1644,3 +1643,28 @@ The modified behavior and synthetic tests in `crates/core/src/engine/kv_manager/
 Running-request cancellation retains its KV lease until the in-flight forward
 is observed, adapting `Scheduler.abort_request` and result-time
 `release_kv_cache` from the same pinned scheduler and batch-result sources.
+
+## vLLM Nemotron-H Mamba and mixed-precision collection
+
+The vLLM Mamba collector and its regression tests adapt the call contracts from
+vLLM v0.31.0, commit `db9527a46873454610df6dbedf79a36d6bf1a7f6`.
+The source files are `vllm/model_executor/layers/mamba/mamba_mixer2.py`,
+`vllm/model_executor/layers/mamba/ops/ssu_dispatch.py`,
+`vllm/model_executor/layers/mamba/ops/causal_conv1d.py`,
+`vllm/model_executor/layers/mamba/ops/ssd_combined.py`,
+`vllm/v1/attention/backends/mamba2_attn.py`, and
+`vllm/v1/attention/backends/utils.py`.
+The MoE loader and precision resolver adapt metadata handling from
+`vllm/model_executor/model_loader/weight_utils.py` and
+`vllm/model_executor/layers/quantization/modelopt.py` at the same revision.
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0.
+The immutable license is available at
+https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/LICENSE.
+Source: https://github.com/vllm-project/vllm/tree/db9527a46873454610df6dbedf79a36d6bf1a7f6
+
+Derived files: `python/aisimulate/collector/vllm/collect_mamba2.py`,
+`python/aisimulate/collector/vllm/collect_moe.py`,
+`python/aisimulate/src/aisimulate_core/sdk/models/nemotron_h.py`, and their regression tests.
+Modified for synthetic operation collection and precision-aware prediction.
+Upstream implementation files are not vendored.

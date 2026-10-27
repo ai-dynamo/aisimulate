@@ -1137,6 +1137,10 @@ mod tests {
             head_dim: 64,
             n_groups: 8,
             chunk_size: 256,
+            state_dtype: "float32".into(),
+            stochastic_rounding: false,
+            philox_rounds: 10,
+            token_width: 1,
         });
 
         let err = op_sol_latency_ms(&op, &d, 64.0, 1.0, 1.0, 0.0).unwrap_err();

@@ -43,6 +43,15 @@ def _int_tuple(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in text.split("|"))
 
 
+def _mamba_tuple(text: str) -> tuple:
+    parts = text.split("|")
+    if len(parts) == 7:
+        return _int_tuple(text)
+    if len(parts) != 11:
+        raise ValueError(f"Invalid Mamba timing key: {text}")
+    return (*map(int, parts[:7]), parts[7], bool(int(parts[8])), int(parts[9]), int(parts[10]))
+
+
 _GEMM_Q = _enum(common.GEMMQuantMode)
 _MOE_Q = _enum(common.MoEQuantMode)
 _FMHA_Q = _enum(common.FMHAQuantMode)
@@ -108,7 +117,7 @@ VIEW_KEY_LAYERS: dict[str, tuple[KeyConverter, ...]] = {
         _int,
         _int,
     ),
-    "_mamba2_data": (_str, _str, _int_tuple, _int, _int),
+    "_mamba2_data": (_str, _str, _mamba_tuple, _int, _int),
     "_gdn_data": (_str, _str, _int_tuple, _int, _int),
     "_kda_data": (_str, _str, _int_tuple, _int, _int),
 }

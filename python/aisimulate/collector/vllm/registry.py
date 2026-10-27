@@ -170,6 +170,15 @@ REGISTRY: list[OpEntry] = [
         perf_filename=PerfFile.MHC_MODULE,
     ),
     OpEntry(
+        op="mamba2",
+        module="collector.vllm.collect_mamba2",
+        get_func="get_mamba2_test_cases",
+        run_func="run_mamba2",
+        perf_filename=PerfFile.MAMBA2,
+        # Remove only after the pinned vLLM GPU qualification succeeds.
+        unverified=True,
+    ),
+    OpEntry(
         op="gdn",
         module="collector.vllm.collect_gdn",
         get_func="get_gdn_test_cases",

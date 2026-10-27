@@ -776,15 +776,7 @@ pub fn view_generation_mla_module(sources: &[PerfSource]) -> Result<Option<ViewN
     Ok(found.map(|_| root))
 }
 
-/// Ensure a (possibly empty) branch exists at `path` — mirrors Python
-/// defaultdict "vivification" that some loaders rely on (deliberately or,
-/// in mamba2's generation case, as a preserved bug).
-fn vivify_branch(root: &mut ViewNode, path: &[String]) {
-    root.descend(path);
-}
-
-/// Tuple keys (mamba-family model keys) are encoded `a|b|c`; the Python
-/// rehydration layer splits them back into int tuples.
+/// Encode an integer shape tuple for the Python table view.
 fn tuple_key(parts: &[u32]) -> String {
     parts
         .iter()
@@ -793,13 +785,7 @@ fn tuple_key(parts: &[u32]) -> String {
         .join("|")
 }
 
-/// `operations/mamba.py::load_mamba2_data` —
-/// `[kernel_source][phase][model_key]` then `[b][s]` for context rows.
-/// Generation rows reproduce the Python loader's preserved defect: the
-/// conflict probe vivifies `[b]` on a defaultdict and therefore NEVER raises,
-/// so the entry is never stored — each generation row leaves an EMPTY dict at
-/// `[model_key][b]`. Mamba2 is deprecated (removed in PR-7); the view mirrors
-/// the actual Python table bit for bit rather than silently fixing it.
+/// Mamba2 raw rows with populated context and generation leaves.
 pub fn view_mamba2(sources: &[PerfSource]) -> Result<Option<ViewNode>, AicError> {
     let mut root = ViewNode::branch();
     let found = fold_sources(sources, |ctx| {
@@ -808,7 +794,7 @@ pub fn view_mamba2(sources: &[PerfSource]) -> Result<Option<ViewNode>, AicError>
         let phase = str_cell_or_empty(ctx, "phase")?;
         let b = ctx.row.u32(r.col("batch_size")?)?;
         let s = ctx.row.u32(r.col("seq_len")?)?;
-        let model_key = tuple_key(&[
+        let mut model_key = tuple_key(&[
             ctx.row.u32(r.col("d_model")?)?,
             ctx.row.u32(r.col("d_state")?)?,
             ctx.row.u32(r.col("d_conv")?)?,
@@ -817,13 +803,35 @@ pub fn view_mamba2(sources: &[PerfSource]) -> Result<Option<ViewNode>, AicError>
             ctx.row.u32(r.col("n_groups")?)?,
             ctx.row.u32(r.col("chunk_size")?)?,
         ]);
+        if r.col_optional("state_dtype").is_some() {
+            let dtype = ctx
+                .row
+                .str_optional(r.col_optional("state_dtype"))?
+                .unwrap_or("unrecorded");
+            let sr = match r.col_optional("stochastic_rounding") {
+                Some(c) => ctx.row.bool(c)?,
+                None => false,
+            };
+            let rounds = if sr {
+                ctx.row
+                    .u32_optional(r.col_optional("philox_rounds"))?
+                    .unwrap_or(10)
+            } else {
+                0
+            };
+            let width = ctx
+                .row
+                .u32_optional(r.col_optional("token_width"))?
+                .unwrap_or(1);
+            model_key.push_str(&format!("|{dtype}|{}|{rounds}|{width}", u8::from(sr)));
+        }
         let latency = ctx.row.f64(r.col("latency")?)?;
         let leaf = classic_leaf(latency, ctx.power()?);
         if phase == "context" {
             let path = [kernel_source, phase, model_key, b.to_string()];
             root.insert_first_wins(&path, &s.to_string(), leaf);
         } else {
-            vivify_branch(&mut root, &[kernel_source, phase, model_key, b.to_string()]);
+            root.insert_first_wins(&[kernel_source, phase, model_key], &b.to_string(), leaf);
         }
         Ok(())
     })?;

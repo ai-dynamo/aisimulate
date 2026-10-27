@@ -1706,7 +1706,10 @@ impl Engine {
         for op in &self.context_ops {
             // Only target operations share a forward across prefill and
             // verification. The draft has its own phase-specific graph.
-            if op.is_context_attention() || op.name().starts_with("draft_") {
+            if op.is_context_attention()
+                || op.name().starts_with("draft_")
+                || op.is_qualified_mamba()
+            {
                 continue;
             }
             let result = query_context_op(
@@ -1722,7 +1725,7 @@ impl Engine {
             on_op(MixedPass::SharedNonAttention, op, result);
         }
 
-        // ---- Pass 2: context attention at the prefill shape ----
+        // ---- Pass 2: context attention and qualified Mamba at the prefill shape ----
         // Python: batch = ceil(ctx/isl), effective_isl = isl - prefix, then
         // latency["context_attention"] / ceil(isl/ctx). With ctx_tokens == 0
         // Python's `np.ceil(isl/0)` is +inf and the division yields 0 — skip.
@@ -1738,7 +1741,10 @@ impl Engine {
             let scale2 = isl.div_ceil(ctx_tokens) as f64;
             let mut attn = 0.0;
             for op in &self.context_ops {
-                if !op.is_context_attention() && !op.name().starts_with("draft_") {
+                if !op.is_context_attention()
+                    && !op.name().starts_with("draft_")
+                    && !op.is_qualified_mamba()
+                {
                     continue;
                 }
                 // Draft prefill uses the same whole-prefill amortization
@@ -1764,7 +1770,7 @@ impl Engine {
             context_attention = attn / scale2;
         }
 
-        // ---- Pass 3: decode attention ----
+        // ---- Pass 3: decode attention and qualified Mamba ----
         let mut decode_attention = 0.0_f64;
         if gen_tokens > 0 {
             let bs = gen_tokens.saturating_mul(self.nextn.saturating_add(1));
@@ -1772,7 +1778,10 @@ impl Engine {
             // isl_pass3 = isl + osl//2 and a single step (osl=2, i=0).
             let s = isl + osl / 2 + 1;
             for op in &self.generation_ops {
-                if !op.is_generation_attention() && !op.name().starts_with("draft_") {
+                if !op.is_generation_attention()
+                    && !op.name().starts_with("draft_")
+                    && !op.is_qualified_mamba()
+                {
                     continue;
                 }
                 // The draft's TokenScale maps this verification-width
@@ -3302,6 +3311,10 @@ pub(crate) mod tests {
             fpm_parquet_path: None,
             decoder_replay: false,
             moe_kernel_source: None,
+            mamba_backend: None,
+            mamba_ssm_cache_dtype: None,
+            mamba_stochastic_rounding: None,
+            mamba_philox_rounds: None,
             kv_block_size: None,
             parallel: ParallelMapping {
                 tp_size: 8,
@@ -3433,6 +3446,65 @@ pub(crate) mod tests {
             generation_ops(),
         );
         Engine::build(spec, Arc::new(db)).unwrap()
+    }
+
+    #[test]
+    fn qualified_mamba_mixed_steps_preserve_prefill_and_decode_shapes() {
+        let mut engine = build_engine(Some(3));
+        let make_op = |prefill: bool| {
+            Op::Mamba2(crate::operators::Mamba2Op {
+                name: if prefill {
+                    "context_ssm"
+                } else {
+                    "generation_ssm"
+                }
+                .into(),
+                scale_factor: 1.0,
+                kernel_source: if prefill {
+                    "vllm_mamba_chunk_scan_combined_varlen"
+                } else {
+                    "vllm_flashinfer_selective_state_update"
+                }
+                .into(),
+                phase: if prefill { "context" } else { "generation" }.into(),
+                d_model: 4096,
+                d_state: 128,
+                d_conv: 4,
+                nheads: 64,
+                head_dim: 64,
+                n_groups: 4,
+                chunk_size: 128,
+                state_dtype: "float16".into(),
+                stochastic_rounding: true,
+                philox_rounds: 5,
+                token_width: if prefill { 1 } else { 4 },
+            })
+        };
+        engine.context_ops = vec![make_op(true)];
+        engine.generation_ops = vec![make_op(false)];
+        // One 16-token prefill: 296,960 activation bytes + two 1 MiB states.
+        // Two width-four decodes: 148,480 activation bytes + ten 1 MiB states.
+        let expected = 13_028_352.0 / engine.db.system_spec.gpu.mem_bw * 1000.0;
+        let mixed = engine
+            .mixed_step_latency(16, 2, 16, 1, 0, 1.0, 1.0)
+            .unwrap();
+        assert!((mixed - expected).abs() < 1e-12);
+        let decode = engine.decode_step_latency(2, 16, 1, 1.0).unwrap();
+        assert!((decode - 10_634_240.0 / engine.db.system_spec.gpu.mem_bw * 1000.0).abs() < 1e-12);
+        let telemetry = get_mix_step_ops(
+            &engine.context_ops,
+            &engine.generation_ops,
+            &engine.db,
+            16,
+            8,
+            16,
+            0,
+            0,
+            16,
+            8,
+        )
+        .unwrap();
+        assert!((telemetry - expected).abs() < 1e-12);
     }
 
     fn runtime(batch_size: u32, isl: u32, osl: u32) -> RuntimeConfig {
@@ -6516,6 +6588,10 @@ pub(crate) mod tests {
             head_dim: 64,
             n_groups: 8,
             chunk_size: 256,
+            state_dtype: "float32".into(),
+            stochastic_rounding: false,
+            philox_rounds: 10,
+            token_width: 1,
         })];
         let ops_json = serde_json::to_string(&ops).unwrap();
         let err = engine

@@ -205,6 +205,10 @@ class ForwardPassPerfModelConfig:
     estimator_config: dict[str, Any] = dataclass_field(default_factory=dict)
     attention_backend: str | None = None
     moe_kernel_source: str | None = dataclass_field(default=None, kw_only=True)
+    mamba_backend: str | None = dataclass_field(default=None, kw_only=True)
+    mamba_ssm_cache_dtype: str | None = dataclass_field(default=None, kw_only=True)
+    mamba_stochastic_rounding: bool | None = dataclass_field(default=None, kw_only=True)
+    mamba_philox_rounds: int | None = dataclass_field(default=None, kw_only=True)
     enable_shared_layer: bool | None = None
     strict_provenance: bool = False
     moe_backend: str | None = None
@@ -236,8 +240,15 @@ class ForwardPassPerfModelConfig:
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
-        if self.encoder_parallel is None:
-            payload.pop("encoder_parallel")
+        for field in (
+            "encoder_parallel",
+            "mamba_backend",
+            "mamba_ssm_cache_dtype",
+            "mamba_stochastic_rounding",
+            "mamba_philox_rounds",
+        ):
+            if payload[field] is None:
+                payload.pop(field)
         payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(self.transfer_policy)
         if self.estimation_mode not in {"fpm_regression", "fpm_learned"} or self.systems_paths:
             payload["systems_paths"] = _resolve_forward_pass_systems_paths(self.systems_paths)
@@ -1731,6 +1742,10 @@ def _engine_config_json(model: Any, database: Any) -> str:
         # silently answer with the other mode's engine.
         "forward_model": getattr(model, "forward_model", "op_level"),
         "moe_kernel_source": getattr(model_config, "moe_kernel_source", None),
+        "mamba_backend": getattr(model_config, "mamba_backend", None),
+        "mamba_ssm_cache_dtype": getattr(model_config, "mamba_ssm_cache_dtype", None),
+        "mamba_stochastic_rounding": getattr(model_config, "mamba_stochastic_rounding", None),
+        "mamba_philox_rounds": getattr(model_config, "mamba_philox_rounds", None),
         # Same identity built against different systems roots reads different
         # perf trees; the root is part of the engine identity.
         "systems_root": str(getattr(database, "systems_root", "") or ""),
@@ -1776,6 +1791,10 @@ def _engine_config_json(model: Any, database: Any) -> str:
                         "moe_backend": getattr(model_config, "moe_backend", None),
                         "attention_backend": getattr(model_config, "attention_backend", None),
                         "moe_kernel_source": getattr(model_config, "moe_kernel_source", None),
+                        "mamba_backend": getattr(model_config, "mamba_backend", None),
+                        "mamba_ssm_cache_dtype": getattr(model_config, "mamba_ssm_cache_dtype", None),
+                        "mamba_stochastic_rounding": getattr(model_config, "mamba_stochastic_rounding", None),
+                        "mamba_philox_rounds": getattr(model_config, "mamba_philox_rounds", None),
                         # enable_wideep is gone from the identity: the deprecated
                         # flag is constant False on every Task-built ModelConfig;
                         # moe_comm_backend + num_gpus_per_node below carry the

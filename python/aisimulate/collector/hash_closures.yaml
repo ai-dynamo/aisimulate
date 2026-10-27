@@ -284,6 +284,9 @@ collector.vllm.collect_mla_module_027:
   # collector/vllm/collect_mla_module.py — identical case reads.
   - collector/cases/base_ops/mla_module.yaml
   - __model_cases__
+collector.vllm.collect_mamba2:
+  - collector/cases/base_ops/mamba2.yaml
+  - __model_cases__
 collector.vllm.collect_moe:
   - collector/vllm/utils.py
   - collector/cases/base_ops/moe.yaml

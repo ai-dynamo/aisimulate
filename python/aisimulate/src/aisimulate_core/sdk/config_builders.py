@@ -46,6 +46,10 @@ def build_model_config(
     wideep_num_slots: int | None = None,
     *,
     moe_kernel_source: str | None = None,
+    mamba_backend: str | None = None,
+    mamba_ssm_cache_dtype: str = "float32",
+    mamba_stochastic_rounding: bool = False,
+    mamba_philox_rounds: int = 10,
     cp_size: int = 1,
     dcp_size: int | None = None,
     fpm_fmha_quant_mode: str | None = None,
@@ -78,6 +82,10 @@ def build_model_config(
         enable_eplb=enable_eplb,
         wideep_num_slots=wideep_num_slots,
         moe_kernel_source=moe_kernel_source,
+        mamba_backend=mamba_backend,
+        mamba_ssm_cache_dtype=mamba_ssm_cache_dtype,
+        mamba_stochastic_rounding=mamba_stochastic_rounding,
+        mamba_philox_rounds=mamba_philox_rounds,
         speculation=speculation,
     )
 
