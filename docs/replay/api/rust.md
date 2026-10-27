@@ -39,11 +39,11 @@ with `TimingModel::predict_mixed_decode_ms(prefill, batch_size, ...)`, which
 takes the pass's `PrefillTotals` and otherwise the arguments of
 `predict_decode_ms`. A provider that prices such a pass as one forward returns
 the decode share, so the pass costs its one-pass estimate; the default `None`
-prices a separate decode pass with `predict_decode_ms`. The AIC provider
-returns the share for whole-model FPM interpolation.
+prices a separate decode pass with `predict_decode_ms`. The built-in `ais`
+provider returns the share for whole-model FPM interpolation.
 `TimingModel::predict_vision_ms(&[VisionShape])`
 prices one vision-encoder batch; the default returns `None`, and a rank with
-image work then rejects it rather than treating the encoder as free. The AIC
+image work then rejects it rather than treating the encoder as free. The `ais`
 provider answers from the `EngineSpec` `vision` section compiled under
 `encoder_parallel`.
 
