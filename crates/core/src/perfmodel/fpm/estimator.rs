@@ -22,6 +22,88 @@ pub struct EstimatorConfig {
     #[serde(skip_serializing_if = "SelectorConfig::is_default")]
     pub selector: SelectorConfig,
     pub correction: CorrectionConfig,
+    /// Restore tuned state written by `ForwardPassPerfModel::save_state_snapshot`.
+    /// Absent for ordinary construction and omitted from serialization.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_snapshot: Option<StateSnapshotConfig>,
+}
+
+/// Saved model state restored by
+/// [`ForwardPassPerfModel::best_available`](crate::ForwardPassPerfModel::best_available).
+///
+/// `path` names a directory written by
+/// [`ForwardPassPerfModel::save_state_snapshot`](crate::ForwardPassPerfModel::save_state_snapshot).
+/// Normalization makes it absolute (lexically normalized, symlinks kept) and
+/// pins `sha256` to the exact bytes of
+/// `<path>/manifest.json`; a supplied digest that differs is an error. The
+/// rest of the configuration must equal the identity recorded in that
+/// manifest. Restoration requires an explicit `estimation_mode` and
+/// `fallback_policy: deny`, so a snapshot failure never selects another model.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StateSnapshotConfig {
+    pub path: PathBuf,
+    /// Lowercase or uppercase hexadecimal SHA-256 of `<path>/manifest.json`.
+    #[serde(default)]
+    pub sha256: Option<String>,
+    #[serde(default)]
+    pub on_tune: StateSnapshotTuning,
+}
+
+/// Whether a restored model accepts further feedback.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StateSnapshotTuning {
+    /// `tune_with_fpms` and `flush_updates` return an error; the restored
+    /// state is read-only.
+    #[default]
+    Reject,
+    /// Feedback continues from the restored state exactly as it would have
+    /// continued in the saving model.
+    Continue,
+}
+
+impl StateSnapshotConfig {
+    pub(crate) fn validate(&self) -> Result<(), AicError> {
+        let invalid = |reason: &str| {
+            AicError::InvalidEngineConfig(format!("estimator_config.state_snapshot: {reason}"))
+        };
+        if self.path.as_os_str().is_empty() {
+            return Err(invalid("path cannot be empty"));
+        }
+        if self.path.to_str().is_none() {
+            return Err(invalid("path must be valid UTF-8"));
+        }
+        if self.sha256.as_ref().is_some_and(|digest| {
+            digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit())
+        }) {
+            return Err(invalid("sha256 must contain 64 hexadecimal characters"));
+        }
+        Ok(())
+    }
+
+    /// Anchor the directory and bind the manifest bytes before caller caches
+    /// use the resolved configuration. Relative paths resolve against the
+    /// working directory and are normalized lexically, without resolving
+    /// symlinks, matching the path `save_state_snapshot` records. The manifest read is
+    /// bounded.
+    pub(crate) fn resolve_source(&mut self) -> Result<(), AicError> {
+        use sha2::{Digest, Sha256};
+        self.path = super::snapshot::normalized_absolute(&self.path)?;
+        let bytes = super::snapshot::read_manifest_bytes(&self.path)?;
+        let actual = format!("{:x}", Sha256::digest(&bytes));
+        if self
+            .sha256
+            .as_ref()
+            .is_some_and(|expected| !expected.eq_ignore_ascii_case(&actual))
+        {
+            return Err(AicError::InvalidEngineConfig(
+                "estimator_config.state_snapshot.sha256 does not match manifest.json".into(),
+            ));
+        }
+        self.sha256 = Some(actual);
+        Ok(())
+    }
 }
 
 /// How a learned model adapts after construction.
@@ -1063,6 +1145,9 @@ impl EstimatorConfig {
     pub(crate) fn validate(&self) -> Result<(), AicError> {
         self.fpm_learned.validate()?;
         self.selector.validate()?;
+        if let Some(snapshot) = &self.state_snapshot {
+            snapshot.validate()?;
+        }
         self.fpm_regression.sampling.validate()?;
         validate_rebuild_interval(self.fpm_regression.fit.rebuild_interval)?;
         self.validate_linear()?;

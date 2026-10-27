@@ -559,6 +559,10 @@ struct AicTimingModel {
     engine: Py<PyAny>,
     diagnostic_model: Option<Arc<ForwardPassPerfModel>>,
     fpm_model: Option<Arc<ForwardPassPerfModel>>,
+    /// The canonical model when it corrects native estimates, as a restored
+    /// tuned snapshot does. Kept apart from the diagnostic handle so the
+    /// correction applies whether or not evidence is captured.
+    corrections: Option<Arc<ForwardPassPerfModel>>,
     decoder_replay: bool,
     phase_provider: AicPhaseProvider,
     use_fpm_decode_totals: bool,
@@ -677,6 +681,9 @@ impl AicTimingModel {
         Ok(Self {
             engine,
             fpm_model: use_fpm_decode_totals.then(|| Arc::clone(&model)),
+            corrections: model
+                .corrects_native_estimates()
+                .then(|| Arc::clone(&model)),
             diagnostic_model: Some(model),
             decoder_replay: config.decoder_replay,
             phase_provider,
@@ -885,6 +892,138 @@ impl AicTimingModel {
         }
         Ok(latency_ms)
     }
+
+    /// The canonical model's online correction for one phase. Replay prices
+    /// phases from the native engine, so a tuned model's correction, such as
+    /// a restored snapshot's, is applied here exactly as its own estimates
+    /// apply it, with or without captured evidence. Phases have one workload
+    /// kind, so only the pure prefill and pure decode corrections apply.
+    fn phase_correction(
+        &self,
+        scheduled: impl FnOnce() -> Result<crate::ScheduledRequestMetrics>,
+    ) -> Result<f64> {
+        let Some(model) = &self.corrections else {
+            return Ok(1.0);
+        };
+        let metrics = crate::ForwardPassMetrics {
+            scheduled_requests: scheduled()?,
+            ..Default::default()
+        };
+        Ok(model.native_correction_factor(&[metrics])?)
+    }
+
+    fn prefill_correction(
+        &self,
+        batch_size: usize,
+        new_tokens: usize,
+        kv_read_tokens: usize,
+    ) -> Result<f64> {
+        self.phase_correction(|| {
+            Ok(crate::ScheduledRequestMetrics {
+                num_prefill_requests: checked_u32(batch_size, "prefill batch size")?,
+                sum_prefill_tokens: checked_u32(new_tokens, "total prefill tokens")?,
+                sum_prefill_kv_tokens: checked_u32(kv_read_tokens, "total prefill KV tokens")?,
+                ..Default::default()
+            })
+        })
+    }
+
+    fn decode_correction(
+        &self,
+        batch_size: usize,
+        total_past_kv_tokens: impl FnOnce() -> Result<usize>,
+    ) -> Result<f64> {
+        self.phase_correction(|| {
+            Ok(crate::ScheduledRequestMetrics {
+                num_decode_requests: checked_u32(batch_size, "decode batch size")?,
+                sum_decode_kv_tokens: checked_u32(total_past_kv_tokens()?, "total past KV tokens")?,
+                ..Default::default()
+            })
+        })
+    }
+
+    /// Prefill at per-request mean shapes with `correction` applied.
+    fn native_prefill_ms(
+        &self,
+        batch_size: usize,
+        mean_isl: usize,
+        mean_prefix: usize,
+        correction: f64,
+    ) -> Result<f64> {
+        let batch_size = checked_u32(batch_size, "prefill batch size")?;
+        let mean_isl = checked_u32(mean_isl, "mean input length")?;
+        let mean_prefix = checked_u32(mean_prefix, "mean prefix length")?;
+        if !self.use_fpm_decode_totals {
+            let evidence = Self::corrected_phase(
+                self.predict_phase_evidence(batch_size, mean_isl, 1, mean_prefix, "static_ctx")?,
+                correction,
+            )?;
+            let latency_ms = evidence.as_phase().latency_ms;
+            self.record_evidence(&evidence, true)?;
+            return Ok(latency_ms);
+        }
+        if let Some(model) = &self.diagnostic_model {
+            return self.record_fpm_estimate(
+                (FpmEvidencePhase::Prefill, batch_size, mean_isl, mean_prefix),
+                corrected_estimate(
+                    model.static_prefill_detailed(batch_size, mean_isl, mean_prefix)?,
+                    correction,
+                ),
+            );
+        }
+        if let Some(model) = &self.fpm_model {
+            return model
+                .predict_prefill_latency(batch_size, mean_isl, mean_prefix)
+                .map(|native| native * correction)
+                .context("AIC prefill prediction failed");
+        }
+        Python::with_gil(|py| {
+            self.engine
+                .bind(py)
+                .call_method1(
+                    "predict_prefill_latency",
+                    (batch_size, mean_isl, mean_prefix),
+                )?
+                .extract::<f64>()
+        })
+        .map(|native| native * correction)
+        .map_err(|error| anyhow!("AIC prefill prediction failed: {error}"))
+    }
+
+    /// Operation evidence of a phase stretched by `correction`.
+    fn corrected_phase(
+        evidence: Arc<ValidatedTimingPhase>,
+        correction: f64,
+    ) -> Result<Arc<ValidatedTimingPhase>> {
+        if correction == 1.0 {
+            return Ok(evidence);
+        }
+        Ok(Arc::new(evidence.scaled(correction)?))
+    }
+}
+
+/// Past KV tokens of a decode step, excluding each request's current token.
+fn total_past_kv_tokens(
+    batch_size: usize,
+    active_kv_tokens: usize,
+    total_kv_tokens: usize,
+) -> Result<usize> {
+    Ok(active_kv_tokens
+        .checked_sub(batch_size)
+        .context("active decode tokens must include one current token per request")?
+        .min(total_kv_tokens))
+}
+
+/// A static FPM estimate with a tuned model's online correction applied.
+fn corrected_estimate(
+    mut estimate: crate::ForwardPassEstimate,
+    correction: f64,
+) -> crate::ForwardPassEstimate {
+    if correction != 1.0 {
+        estimate.correction_factor = Some(correction);
+        estimate.latency_ms = estimate.native_latency_ms.map(|native| native * correction);
+    }
+    estimate
 }
 
 fn phase_evidence_from_native_entries(
@@ -963,37 +1102,21 @@ impl TimingModel for AicTimingModel {
         mean_isl: usize,
         mean_prefix: usize,
     ) -> Result<f64> {
-        let batch_size = checked_u32(batch_size, "prefill batch size")?;
-        let mean_isl = checked_u32(mean_isl, "mean input length")?;
-        let mean_prefix = checked_u32(mean_prefix, "mean prefix length")?;
-        if !self.use_fpm_decode_totals {
-            let evidence =
-                self.predict_phase_evidence(batch_size, mean_isl, 1, mean_prefix, "static_ctx")?;
-            let latency_ms = evidence.as_phase().latency_ms;
-            self.record_evidence(&evidence, true)?;
-            return Ok(latency_ms);
-        }
-        if let Some(model) = &self.diagnostic_model {
-            return self.record_fpm_estimate(
-                (FpmEvidencePhase::Prefill, batch_size, mean_isl, mean_prefix),
-                model.static_prefill_detailed(batch_size, mean_isl, mean_prefix)?,
-            );
-        }
-        if let Some(model) = &self.fpm_model {
-            return model
-                .predict_prefill_latency(batch_size, mean_isl, mean_prefix)
-                .context("AIC prefill prediction failed");
-        }
-        Python::with_gil(|py| {
-            self.engine
-                .bind(py)
-                .call_method1(
-                    "predict_prefill_latency",
-                    (batch_size, mean_isl, mean_prefix),
-                )?
-                .extract::<f64>()
-        })
-        .map_err(|error| anyhow!("AIC prefill prediction failed: {error}"))
+        let correction = if self.corrections.is_some() {
+            let tokens = |per_request: usize| {
+                per_request
+                    .checked_mul(batch_size)
+                    .context("prefill token total overflowed")
+            };
+            self.prefill_correction(
+                batch_size,
+                tokens(mean_isl.saturating_sub(mean_prefix))?,
+                tokens(mean_prefix)?,
+            )?
+        } else {
+            1.0
+        };
+        self.native_prefill_ms(batch_size, mean_isl, mean_prefix, correction)
     }
 
     fn predict_prefill_totals_ms(
@@ -1002,11 +1125,12 @@ impl TimingModel for AicTimingModel {
         new_tokens: usize,
         prefix_tokens: usize,
     ) -> Result<f64> {
+        let correction = self.prefill_correction(batch_size, new_tokens, prefix_tokens)?;
         if !self.use_fpm_decode_totals {
             // Operation graphs price per-request shapes.
             let (mean_isl, mean_prefix) =
                 crate::engine::mean_prefill_shape(batch_size, new_tokens, prefix_tokens);
-            return self.predict_prefill_ms(batch_size, mean_isl, mean_prefix);
+            return self.native_prefill_ms(batch_size, mean_isl, mean_prefix, correction);
         }
         let batch_size = checked_u32(batch_size, "prefill batch size")?;
         let total_prefill_tokens = checked_u32(new_tokens, "total prefill tokens")?;
@@ -1019,11 +1143,14 @@ impl TimingModel for AicTimingModel {
                     total_prefill_tokens,
                     total_kv_read_tokens,
                 ),
-                model.static_prefill_detailed_total(
-                    batch_size,
-                    total_prefill_tokens,
-                    total_kv_read_tokens,
-                )?,
+                corrected_estimate(
+                    model.static_prefill_detailed_total(
+                        batch_size,
+                        total_prefill_tokens,
+                        total_kv_read_tokens,
+                    )?,
+                    correction,
+                ),
             );
         }
         if let Some(model) = &self.fpm_model {
@@ -1033,6 +1160,7 @@ impl TimingModel for AicTimingModel {
                     total_prefill_tokens,
                     total_kv_read_tokens,
                 )
+                .map(|native| native * correction)
                 .context("AIC prefill prediction failed");
         }
         Python::with_gil(|py| {
@@ -1044,6 +1172,7 @@ impl TimingModel for AicTimingModel {
                 )?
                 .extract::<f64>()
         })
+        .map(|native| native * correction)
         .map_err(|error| anyhow!("AIC prefill prediction failed: {error}"))
     }
 
@@ -1055,8 +1184,12 @@ impl TimingModel for AicTimingModel {
         total_kv_tokens: usize,
     ) -> Result<f64> {
         if self.use_fpm_decode_totals {
-            let (batch_size, total_past_kv_tokens) =
-                fpm_decode_totals(batch_size, active_kv_tokens, total_kv_tokens)?;
+            let total_past_kv_tokens =
+                total_past_kv_tokens(batch_size, active_kv_tokens, total_kv_tokens)?;
+            let correction = self.decode_correction(batch_size, || Ok(total_past_kv_tokens))?;
+            let batch_size = checked_u32(batch_size, "decode batch size")?;
+            let total_past_kv_tokens = checked_u32(total_past_kv_tokens, "total past KV tokens")?;
+            // The detailed estimate applies the same correction itself.
             if let Some(model) = &self.diagnostic_model {
                 let estimate =
                     model.estimate_forward_pass_detailed(&[crate::ForwardPassMetrics {
@@ -1080,6 +1213,7 @@ impl TimingModel for AicTimingModel {
             if let Some(model) = &self.fpm_model {
                 return model
                     .predict_decode_latency_total(batch_size, total_past_kv_tokens)
+                    .map(|native| native * correction)
                     .context("AIC decode prediction failed");
             }
             return Python::with_gil(|py| {
@@ -1091,9 +1225,13 @@ impl TimingModel for AicTimingModel {
                     )?
                     .extract::<f64>()
             })
+            .map(|native| native * correction)
             .map_err(|error| anyhow!("AIC decode prediction failed: {error}"));
         }
 
+        let correction = self.decode_correction(batch_size, || {
+            total_past_kv_tokens(batch_size, active_kv_tokens, total_kv_tokens)
+        })?;
         let batch_size = checked_u32(batch_size, "decode batch size")?;
         // Both scheduler implementations include the current input token in
         // their sequence length before sampling the next token. The op API's
@@ -1102,7 +1240,10 @@ impl TimingModel for AicTimingModel {
             .checked_sub(1)
             .context("mean decode context must include the current input token")?;
         let mean_past_kv = checked_u32(mean_past_kv, "mean past KV length")?;
-        let evidence = self.predict_phase_evidence(batch_size, mean_past_kv, 2, 0, "static_gen")?;
+        let evidence = Self::corrected_phase(
+            self.predict_phase_evidence(batch_size, mean_past_kv, 2, 0, "static_gen")?,
+            correction,
+        )?;
         let latency_ms = evidence.as_phase().latency_ms;
         self.record_evidence(&evidence, false)?;
         Ok(latency_ms)
@@ -1122,8 +1263,10 @@ impl TimingModel for AicTimingModel {
         if !self.use_fpm_decode_totals {
             return Ok(None);
         }
-        let (batch_size, total_past_kv_tokens) =
-            fpm_decode_totals(batch_size, active_kv_tokens, total_kv_tokens)?;
+        let total_past_kv_tokens =
+            total_past_kv_tokens(batch_size, active_kv_tokens, total_kv_tokens)?;
+        let batch_size = checked_u32(batch_size, "decode batch size")?;
+        let total_past_kv_tokens = checked_u32(total_past_kv_tokens, "total past KV tokens")?;
         if let Some(model) = &self.diagnostic_model {
             let Some(estimate) =
                 model.mixed_decode_detailed_total(batch_size, total_past_kv_tokens)?
@@ -1217,24 +1360,6 @@ impl TimingModel for AicTimingModel {
 
 fn checked_u32(value: usize, name: &str) -> Result<u32> {
     u32::try_from(value).with_context(|| format!("{name} {value} exceeds AIC's u32 limit"))
-}
-
-/// FPM decode coordinates of a scheduler decode batch: its requests and their
-/// past KV, which excludes each request's current token and stays within the
-/// scheduler's KV bound.
-fn fpm_decode_totals(
-    batch_size: usize,
-    active_kv_tokens: usize,
-    total_kv_tokens: usize,
-) -> Result<(u32, u32)> {
-    let total_past_kv_tokens = active_kv_tokens
-        .checked_sub(batch_size)
-        .context("active decode tokens must include one current token per request")?
-        .min(total_kv_tokens);
-    Ok((
-        checked_u32(batch_size, "decode batch size")?,
-        checked_u32(total_past_kv_tokens, "total past KV tokens")?,
-    ))
 }
 
 fn aic_capacity_kwargs<'py>(
@@ -4224,6 +4349,7 @@ mod tests {
             engine,
             diagnostic_model: None,
             fpm_model: None,
+            corrections: None,
             decoder_replay: false,
             phase_provider: AicPhaseProvider::Python,
             use_fpm_decode_totals,
@@ -5525,6 +5651,152 @@ mod tests {
             format!("{error:#}").contains("total_prefill_tokens=18"),
             "{error:#}"
         );
+    }
+
+    /// A native FPM model tuned so prefill of 3 requests (16 new tokens, 8 KV
+    /// read) and decode of 1 request (8 past KV) observe 1.5x native latency.
+    fn tuned_fpm_model(dir: &std::path::Path) -> Arc<ForwardPassPerfModel> {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        use crate::perfmodel::engine::runtime::tests::build_fpm_engine_with_rows;
+        use crate::perfmodel::fpm::ForwardPassPerfOptions;
+        let row =
+            |workload_kind, batch_size, total_prefill_tokens, total_kv_read_tokens, latency_ms| {
+                RowSpec {
+                    workload_kind,
+                    batch_size,
+                    total_prefill_tokens,
+                    total_kv_read_tokens,
+                    latency_ms,
+                    ..RowSpec::default()
+                }
+            };
+        let rows = [
+            row("prefill", 1, 1, 0, 2.0),
+            row("prefill", 3, 16, 8, 5.0),
+            row("decode", 1, 0, 8, 3.0),
+        ];
+        let mut model = ForwardPassPerfModel::from_engine(
+            Arc::new(build_fpm_engine_with_rows(dir, &rows).unwrap()),
+            ForwardPassPerfOptions::default(),
+        );
+        let observed = |scheduled_requests, native_ms: f64| {
+            vec![crate::ForwardPassMetrics {
+                wall_time: native_ms * 1.5 / 1000.0,
+                scheduled_requests,
+                ..Default::default()
+            }]
+        };
+        let prefill = crate::ScheduledRequestMetrics {
+            num_prefill_requests: 3,
+            sum_prefill_tokens: 16,
+            sum_prefill_kv_tokens: 8,
+            ..Default::default()
+        };
+        let decode = crate::ScheduledRequestMetrics {
+            num_decode_requests: 1,
+            sum_decode_kv_tokens: 8,
+            ..Default::default()
+        };
+        let iterations: Vec<_> = (0..8)
+            .flat_map(|_| {
+                [
+                    observed(prefill.clone(), 5.0),
+                    observed(decode.clone(), 3.0),
+                ]
+            })
+            .collect();
+        model.tune_with_fpms(&iterations).unwrap();
+        assert!(model.corrects_native_estimates());
+        Arc::new(model)
+    }
+
+    fn corrected_estimate_ms(
+        model: &ForwardPassPerfModel,
+        scheduled_requests: crate::ScheduledRequestMetrics,
+    ) -> f64 {
+        model
+            .estimate_forward_pass_time_ms(&[crate::ForwardPassMetrics {
+                scheduled_requests,
+                ..Default::default()
+            }])
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn replay_applies_a_tuned_models_corrections_with_and_without_capture() {
+        pyo3::prepare_freethreaded_python();
+        let tmp = tempfile::tempdir().unwrap();
+        let model = tuned_fpm_model(tmp.path());
+        let prefill = crate::ScheduledRequestMetrics {
+            num_prefill_requests: 3,
+            sum_prefill_tokens: 16,
+            sum_prefill_kv_tokens: 8,
+            ..Default::default()
+        };
+        let decode = crate::ScheduledRequestMetrics {
+            num_decode_requests: 1,
+            sum_decode_kv_tokens: 8,
+            ..Default::default()
+        };
+        let expected = (
+            corrected_estimate_ms(&model, prefill),
+            corrected_estimate_ms(&model, decode),
+        );
+        // The uncorrected engine prices these coordinates at 5 ms and 3 ms.
+        assert!(expected.0 > 5.0 && expected.1 > 3.0, "{expected:?}");
+
+        // Whole-model FPM: the same corrected timing with and without capture.
+        let engine = Python::with_gil(|py| Py::new(py, PrefillCoordinateProbe).unwrap().into_any());
+        let mut timing = python_timing_model(engine, true);
+        timing.fpm_model = Some(Arc::clone(&model));
+        timing.corrections = Some(Arc::clone(&model));
+        let phases = |timing: &AicTimingModel| {
+            (
+                timing.predict_prefill_totals_ms(3, 16, 8).unwrap(),
+                timing.predict_decode_ms(1, 9, 9, 1024).unwrap(),
+            )
+        };
+        assert_eq!(phases(&timing), expected);
+        timing.diagnostic_model = Some(Arc::clone(&model));
+        assert_eq!(phases(&timing), expected);
+        let evidence = timing.fpm_evidence_summary().unwrap();
+        assert_eq!(
+            (evidence.prefill.latency_ms, evidence.decode.latency_ms),
+            expected
+        );
+
+        // Operation graphs: phase latency, evidence and energy scale together,
+        // so power is unchanged.
+        let op_engine = || {
+            Python::with_gil(|py| {
+                Py::new(py, PerOpEvidenceProbe::default())
+                    .unwrap()
+                    .into_any()
+            })
+        };
+        let native = python_timing_model(op_engine(), false);
+        let mut corrected = python_timing_model(op_engine(), false);
+        corrected.corrections = Some(Arc::clone(&model));
+        for timing in [&native, &corrected] {
+            timing.predict_prefill_totals_ms(3, 16, 8).unwrap();
+            timing.predict_decode_ms(1, 9, 9, 1024).unwrap();
+        }
+        let (native, corrected) = (
+            native.evidence_summary().unwrap(),
+            corrected.evidence_summary().unwrap(),
+        );
+        for (native, corrected, factor) in [
+            (&native.prefill, &corrected.prefill, expected.0 / 5.0),
+            (&native.decode, &corrected.decode, expected.1 / 3.0),
+        ] {
+            let power = |phase: &TimingPhaseEvidence| phase.energy_wms.unwrap() / phase.latency_ms;
+            assert!((corrected.latency_ms / native.latency_ms - factor).abs() < 1e-12);
+            assert!((power(corrected) / power(native) - 1.0).abs() < 1e-12);
+            assert!(
+                (corrected.covered_latency_ms / native.covered_latency_ms - factor).abs() < 1e-12
+            );
+        }
     }
 
     #[test]

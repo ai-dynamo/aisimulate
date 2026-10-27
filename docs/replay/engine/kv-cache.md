@@ -335,6 +335,11 @@ A run stopped by `traffic.stop.max_virtual_time_seconds` (native
 `max_sim_time_ms`) can miss pulls that landed during a pass still running at
 the cutoff; a run that completes counts every pull.
 
+Ranks without incoming pulls skip shared KVCR deadline lookups. Other KVCR
+bookkeeping still queries shared pool state from per-rank calls. Large worker
+or attention-DP pools can substantially increase replay wall time. Further
+overhead reductions are deferred; they must preserve CanonicalV1 replay output bytes.
+
 ### Supported
 
 KVCR supports vLLM aggregated workers with any `attention_data`, and pulls

@@ -328,6 +328,35 @@ impl ValidatedTimingPhase {
         TimingPhaseEvidence::try_from_operations(operations).map(Self)
     }
 
+    /// This phase stretched by an online correction `factor`: operation
+    /// latencies and energies scale with it and the totals are reduced again,
+    /// so power is unchanged. SOL compares the same work and stays the
+    /// unscaled physical baseline.
+    #[cfg(feature = "python")]
+    pub(crate) fn scaled(&self, factor: f64) -> Result<Self> {
+        ensure!(
+            factor.is_finite() && factor >= 0.0,
+            "online correction factor must be finite and non-negative, got {factor}"
+        );
+        let mut phase = self.0.clone();
+        phase.latency_ms *= factor;
+        phase.covered_latency_ms *= factor;
+        phase.energy_wms = phase.energy_wms.map(|energy| energy * factor);
+        for operation in &mut phase.operations {
+            operation.latency_ms *= factor;
+            operation.covered_latency_ms *= factor;
+            operation.energy_wms = operation.energy_wms.map(|energy| energy * factor);
+        }
+        phase.reconcile_operation_totals();
+        ensure!(
+            phase.latency_ms.is_finite()
+                && phase.covered_latency_ms.is_finite()
+                && phase.energy_wms.is_none_or(f64::is_finite),
+            "online correction factor {factor} overflowed timing evidence"
+        );
+        Ok(Self(phase))
+    }
+
     pub(crate) fn as_phase(&self) -> &TimingPhaseEvidence {
         &self.0
     }

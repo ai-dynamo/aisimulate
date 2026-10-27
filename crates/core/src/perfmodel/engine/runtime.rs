@@ -375,6 +375,9 @@ pub struct Engine {
     /// Vision tower ops and their layout over the `tp_size` ranks, when compiled.
     vision: Option<VisionSpec>,
     tp_size: u32,
+    /// [`EngineSpec::content_sha256`] of the spec this engine was built from.
+    /// The engine keeps no spec bytes, so state snapshots record this value.
+    spec_sha256: String,
 }
 
 impl std::fmt::Debug for Engine {
@@ -450,7 +453,9 @@ impl Engine {
             &db,
             spec.context_ops.iter().chain(&spec.generation_ops),
         )?;
+        let spec_sha256 = spec.content_sha256()?;
         Ok(Engine {
+            spec_sha256,
             context_plan: OpListPlan::new(&spec.context_ops),
             generation_plan: OpListPlan::new(&spec.generation_ops),
             context_ops: spec.context_ops,
@@ -866,6 +871,11 @@ impl Engine {
                         .filter(|_| worker_type != crate::ForwardPassWorkerType::Prefill),
                 ),
         )
+    }
+
+    /// Content digest of the compiled spec, excluding storage locations.
+    pub(crate) fn spec_sha256(&self) -> &str {
+        &self.spec_sha256
     }
 
     /// Shared perf database handle.

@@ -146,7 +146,7 @@ def test_glm_cli_plans_without_model_classes_or_any_timing_data(
         assert decision["activation_envelope"]["scope"] == "rank_local"
 
 
-def test_unknown_architecture_requires_supported_layers_before_rendering(tmp_path, no_models_or_timing_data):
+def test_unknown_architecture_gets_a_template_only_with_supported_layers(tmp_path, no_models_or_timing_data):
     profile = _profile()
     config = load_model_config(profile["model"]).payload
     config["architectures"] = ["UnregisteredMoeForCausalLM"]
@@ -154,11 +154,19 @@ def test_unknown_architecture_requires_supported_layers_before_rendering(tmp_pat
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config))
 
-    with pytest.raises(ValueError, match="FPM attention templates cannot represent"):
-        _plan(profile, model_config_path=str(path), has_model_cases=False)
+    # A renamed DSA checkpoint does not qualify an unknown architecture for a DSA template. Its sparse-attention
+    # layers are a cache layout config.json cannot describe, so with the profile the native runtime measures it.
+    native = _plan(profile, model_config_path=str(path), has_model_cases=False)
+    assert native.capability.template_id == capabilities.GENERIC_RUNTIME_TEMPLATE_ID
+    assert native.capability.attention_source == "native_runtime"
+    layers = config["num_hidden_layers"]
+    assert f"(layer_types deepseek_sparse_attention x{layers})" in native.capability.support_reason
+    cell_dir = tmp_path / "native"
+    cell_dir.mkdir()
+    runner._render_cell(native, native.cells[0], cell_dir, {})
+    assert "--model private-org/new-model" in (cell_dir / "run.sh").read_text()
 
-    # A renamed DSA checkpoint does not qualify an unknown architecture. Use an
-    # explicit full-attention layout for the generic MLA bootstrap control.
+    # Use an explicit full-attention layout for the generic MLA bootstrap control.
     config["layer_types"] = ["full_attention"] * config["num_hidden_layers"]
     path.write_text(json.dumps(config))
     plan = _plan(

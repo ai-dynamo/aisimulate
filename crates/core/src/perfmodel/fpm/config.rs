@@ -324,7 +324,18 @@ impl ForwardPassPerfModelConfig {
 
     /// Retain registry availability for native candidate selection without
     /// adding transient registry facts to the serialized request.
-    pub(crate) fn resolve_with_registration(mut self) -> Result<(Self, Option<bool>), AicError> {
+    pub(crate) fn resolve_with_registration(self) -> Result<(Self, Option<bool>), AicError> {
+        // Normalization already reads snapshot members (learned artifacts and
+        // checkpoints), so their I/O failures are snapshot I/O, never missing
+        // performance data, exactly as during restoration.
+        if self.estimator_config.state_snapshot.is_some() {
+            self.normalize().map_err(super::snapshot::as_snapshot_io)
+        } else {
+            self.normalize()
+        }
+    }
+
+    fn normalize(mut self) -> Result<(Self, Option<bool>), AicError> {
         self.estimator_config.resolve_defaults();
         if self.estimation_mode == EstimationMode::FpmLearned
             && self.estimator_config.correction.mode == super::CorrectionMode::Auto
@@ -334,6 +345,9 @@ impl ForwardPassPerfModelConfig {
         self.validate()?;
         if self.estimation_mode == EstimationMode::FpmLearned {
             self.estimator_config.fpm_learned.resolve_source()?;
+        }
+        if let Some(snapshot) = self.estimator_config.state_snapshot.as_mut() {
+            snapshot.resolve_source()?;
         }
         if let Some(speculation) = &self.speculation {
             #[cfg(feature = "python")]
@@ -413,6 +427,16 @@ impl ForwardPassPerfModelConfig {
 
     pub(crate) fn validate(&self) -> Result<(), AicError> {
         crate::perfmodel::execution_profile::validate_config(self)?;
+        if self.estimator_config.state_snapshot.is_some()
+            && (self.estimation_mode == EstimationMode::Auto
+                || self.fallback_policy != ForwardPassFallbackPolicy::Deny)
+        {
+            // A snapshot pins one saved model. Neither automatic search nor
+            // fallback may turn a failed restoration into a different model.
+            return Err(invalid_config(
+                "estimator_config.state_snapshot requires an explicit estimation_mode and fallback_policy='deny'",
+            ));
+        }
         let learned = &self.estimator_config.fpm_learned;
         if self.estimator_config.selector != super::SelectorConfig::default()
             && (self.estimation_mode != EstimationMode::FpmLearned
