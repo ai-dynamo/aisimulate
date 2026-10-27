@@ -29,35 +29,80 @@ pub(super) fn conversation_lineage(
             }
         }
     }
-    let mut resolved = BTreeMap::new();
+    let roots = ancestry_roots(&parents, || {});
+    nodes
+        .iter()
+        .map(|node| {
+            let key = (node.play_id.as_str(), node.session_id.as_str());
+            roots[&key].map(|root| AgenticConversationLineage {
+                schema: AGENTIC_CONVERSATION_LINEAGE_SCHEMA_V1.into(),
+                root_conversation_id: root.into(),
+                parent_conversation_id: parents[&key].first().map(|parent| (*parent).into()),
+            })
+        })
+        .collect()
+}
+
+fn ancestry_roots<'a>(
+    parents: &BTreeMap<(&'a str, &'a str), BTreeSet<&'a str>>,
+    mut on_walk: impl FnMut(),
+) -> BTreeMap<(&'a str, &'a str), Option<&'a str>> {
+    let mut roots = BTreeMap::new();
     for &(play, conversation) in parents.keys() {
         let mut ancestry = BTreeSet::new();
         let mut cursor = conversation;
-        let mut root = None;
-        while ancestry.insert(cursor) {
+        let root = loop {
+            if let Some(root) = roots.get(&(play, cursor)) {
+                break *root;
+            }
+            if !ancestry.insert(cursor) {
+                break None;
+            }
+            on_walk();
             let candidates = &parents[&(play, cursor)];
             match candidates.len() {
-                0 => {
-                    root = Some(cursor);
-                    break;
-                }
+                0 => break Some(cursor),
                 1 => cursor = candidates.first().copied().expect("one parent"),
-                _ => break,
+                _ => break None,
             }
+        };
+        // Cache every visited conversation, including ambiguous or cyclic ancestry.
+        for conversation in ancestry {
+            roots.insert((play, conversation), root);
         }
-        resolved.insert(
-            (play, conversation),
-            root.map(|root| AgenticConversationLineage {
-                schema: AGENTIC_CONVERSATION_LINEAGE_SCHEMA_V1.into(),
-                root_conversation_id: root.into(),
-                parent_conversation_id: parents[&(play, conversation)]
-                    .first()
-                    .map(|parent| (*parent).into()),
-            }),
-        );
     }
-    nodes
-        .iter()
-        .map(|node| resolved[&(node.play_id.as_str(), node.session_id.as_str())].clone())
-        .collect()
+    roots
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_chains_visit_each_conversation_once_including_unresolved_ancestry() {
+        let ids = (0..50_000).map(|i| format!("{i:05}")).collect::<Vec<_>>();
+        let mut parents = ids
+            .windows(2)
+            .map(|pair| {
+                (
+                    ("play", pair[0].as_str()),
+                    BTreeSet::from([pair[1].as_str()]),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let last = ids.last().unwrap().as_str();
+        for root_parents in [
+            BTreeSet::new(),
+            BTreeSet::from([ids[0].as_str()]),
+            BTreeSet::from([ids[0].as_str(), ids[1].as_str()]),
+        ] {
+            let expected = root_parents.is_empty().then_some(last);
+            parents.insert(("play", last), root_parents);
+            let mut walks = 0;
+            let roots = ancestry_roots(&parents, || walks += 1);
+            assert_eq!(walks, ids.len());
+            assert_eq!(roots.len(), ids.len());
+            assert!(roots.values().all(|root| *root == expected));
+        }
+    }
 }
