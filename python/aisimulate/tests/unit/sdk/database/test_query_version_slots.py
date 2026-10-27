@@ -164,4 +164,3 @@ def test_next_resolves_to_current_when_nothing_newer_has_data(systems_root):
     assert pdb.resolve_query_version("h200_sxm", "sglang", "next", root) == "0.5.14"
     # Override baselines still expose no next.
     assert "next" not in pdb.get_version_slots("a100_sxm", "trtllm", root)
-
