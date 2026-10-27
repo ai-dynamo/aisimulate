@@ -711,12 +711,10 @@ DefaultHFModels = {
     # and the BF16 weights under -BF16 (the reverse of the GLM-5.2 naming;
     # no zai-org/GLM-5.3-FP8 repository exists). The zai-org bundles are
     # unmodified copies of zai-org/GLM-5.3@ba32f8c1 and
-    # zai-org/GLM-5.3-BF16@abf42e6c (see THIRD_PARTY_NOTICES.md). The
-    # nvidia/GLM-5.3-NVFP4 bundle is still the GLM-5.2-NVFP4 bundle
-    # (byte-identical config and hf_quant_config): the published checkpoint
-    # is a ModelOpt MIXED_PRECISION export that marks its BF16 attention and
-    # shared experts only by omission, which the exclusion resolver does not
-    # read yet.
+    # zai-org/GLM-5.3-BF16@abf42e6c, and the nvidia bundle of
+    # nvidia/GLM-5.3-NVFP4@e3b8f9f2, a ModelOpt MIXED_PRECISION export whose
+    # target lists the DSA family reads (see THIRD_PARTY_NOTICES.md and
+    # models/helpers.py).
     "zai-org/GLM-5.3",
     "zai-org/GLM-5.3-BF16",
     "nvidia/GLM-5.3-NVFP4",

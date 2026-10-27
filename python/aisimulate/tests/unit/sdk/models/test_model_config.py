@@ -2207,10 +2207,8 @@ class TestBundledModelConfigsOffline:
             # Z.AI publishes the FP8-block release under the plain name and the
             # BF16 weights under the -BF16 suffix (GLM-5.2 used the reverse
             # convention, and no zai-org/GLM-5.3-FP8 repository exists). The
-            # nvidia/GLM-5.3-NVFP4 bundle is not covered here: its ModelOpt
-            # MIXED_PRECISION export marks the BF16 attention and shared
-            # experts only by omission, which the exclusion resolver does not
-            # read yet, so that bundle still carries the GLM-5.2-NVFP4 layout.
+            # nvidia/GLM-5.3-NVFP4 bundle is covered by
+            # test_glm53_nvfp4_bundle_resolves_mixed_precision_modes above.
             # The FP8 checkpoint declares no KV scheme; its fp8 KV mode is the
             # backend default for fp8_block, not a checkpoint fact, so it is
             # not asserted here.
