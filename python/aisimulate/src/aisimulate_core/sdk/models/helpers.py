@@ -168,14 +168,16 @@ def mixed_precision_quantized_paths(raw_config: dict) -> frozenset[str] | None:
     In a ``MIXED_PRECISION`` export the positive lists are the record of what is quantized, and a
     module they do not cover is unquantized.
 
-    The paths come from the ``quantized_layers`` keys of the retained ``hf_quant_config``, the
+    The entries come from the ``quantized_layers`` keys of the retained ``hf_quant_config``, the
     ``quantized_layers`` keys of the language ``quantization_config`` and the ``targets`` of every
-    ``config_groups`` entry. An entry counts as a module path when it contains a dot. Class names
-    such as ``Linear`` are dropped.
+    ``config_groups`` entry. Only string entries count. An entry is a module path unless it starts
+    with an upper-case letter (a class name such as ``Linear``), starts with ``re:`` (a regex
+    target) or contains ``*`` (a glob). Those three kinds are dropped. A root module such as
+    ``lm_head`` has no dot and is kept.
 
-    Returns ``None`` when the export is not ``MIXED_PRECISION`` or when it lists no module path. The
-    exclusion globs from :func:`quant_exclude_patterns` are then the only record of what is
-    unquantized.
+    Returns ``None`` when the export is not ``MIXED_PRECISION`` or when no kept entry contains a
+    dot. The exclusion globs from :func:`quant_exclude_patterns` are then the only record of what
+    is unquantized.
     """
     if raw_config.get("quant_algo") != "mixed_precision":
         return None
@@ -192,15 +194,18 @@ def mixed_precision_quantized_paths(raw_config: dict) -> frozenset[str] | None:
     entries: list[object] = []
     for quantized_layers in (hf_quant.get("quantized_layers"), quant_config.get("quantized_layers")):
         if isinstance(quantized_layers, dict):
-            entries.extend(quantized_layers)
+            entries.extend(quantized_layers.keys())
     for group in config_groups.values():
         targets = group.get("targets") if isinstance(group, dict) else None
         if isinstance(targets, list):
             entries.extend(targets)
 
-    lowered = (str(entry).lower() for entry in entries)
-    paths = frozenset(path for path in lowered if "." in path)
-    return paths or None
+    module_paths = [
+        entry.lower()
+        for entry in entries
+        if isinstance(entry, str) and not (entry[:1].isupper() or entry.startswith("re:") or "*" in entry)
+    ]
+    return frozenset(module_paths) if any("." in path for path in module_paths) else None
 
 
 def mixed_precision_covers(paths: frozenset[str], module_path: str) -> bool:
@@ -221,16 +226,25 @@ def mixed_precision_attention_exclusions(paths: frozenset[str]) -> frozenset[str
     """Which attention projection groups the listed paths leave unquantized.
 
     Returns a subset of :data:`ATTENTION_PROJECTION_GROUPS`, like
-    :func:`attention_projection_exclusions`. A listed ``self_attn`` path that names a projection
-    covers that group. A listed ``self_attn`` path that names no projection is a whole-block entry
-    and covers every group. A group that no listed path covers is excluded.
+    :func:`attention_projection_exclusions`. Only a listed path that contains ``self_attn`` counts.
+    Take the part of that path after ``self_attn``. When the part is empty, the path is the whole
+    attention block and covers every group. Otherwise the path covers a group when the part equals
+    a projection name of the group or is a dotted ancestor of one. For example ``indexer`` covers
+    the indexer group, because ``indexer.wq_b`` is one of its projection names. A child that is not
+    a projection, such as ``q_a_layernorm`` or ``indexer.k_norm``, covers nothing. A group that no
+    listed path covers is excluded.
     """
     covered: set[str] = set()
     for path in paths:
         if "self_attn" not in path:
             continue
-        named = {group for group, markers in _PROJECTION_MODULE_PATHS.items() if any(m in path for m in markers)}
-        covered |= named or set(ATTENTION_PROJECTION_GROUPS)
+        tail = path.rpartition("self_attn")[2].removeprefix(".")
+        if not tail:
+            covered.update(ATTENTION_PROJECTION_GROUPS)
+            continue
+        for group, projections in _PROJECTION_MODULE_PATHS.items():
+            if any(name == tail or name.startswith(f"{tail}.") for name in projections):
+                covered.add(group)
     return frozenset(ATTENTION_PROJECTION_GROUPS) - covered
 
 
