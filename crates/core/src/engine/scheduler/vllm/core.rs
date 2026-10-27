@@ -2283,7 +2283,6 @@ impl VllmCore {
             batch_total_prefix,
             self.args.worker_type,
         );
-        let prefill_time = predict_prefill_duration(prefill, &self.args)?;
         if let Some(oracle) = &self.belady_oracle
             && !admissions.is_empty()
         {
@@ -2301,11 +2300,12 @@ impl VllmCore {
                     .filter(|uuid| scheduled.contains_key(uuid)),
             );
         }
-        let decode_start_ms = compute_start_ms + prefill_time.as_secs_f64() * 1000.0;
         let mut decode_acceptance = DecodeAcceptance::default();
-        let (decode_time, mut output_signals) = self.emit_ready_tokens(
+        // The forward is priced once its decode work is known, since a pass
+        // that computes prefill and decode together may be one forward.
+        let (forward_time, mut output_signals) = self.emit_ready_tokens(
             collector,
-            decode_start_ms,
+            compute_start_ms,
             now_ms,
             &scheduled,
             prefill,
@@ -2323,7 +2323,7 @@ impl VllmCore {
                 cached_tokens: None,
             });
         }
-        let end_ms = decode_start_ms + decode_time.as_secs_f64() * 1000.0;
+        let end_ms = forward_time.end_ms(compute_start_ms);
         if (!scheduled.is_empty() || !output_signals.is_empty())
             && let Some(adapter) = self.native_host_offload.as_mut()
         {
@@ -2922,35 +2922,51 @@ impl VllmCore {
         }
     }
 
-    /// Decode time of `decode_count` requests whose sequences total
-    /// `total_length` tokens. In a pass that also prices `prefill`, both run
-    /// in one forward, so a provider that composes such a pass charges only
-    /// the decode share instead of a second, separate decode pass.
-    fn decode_duration(
+    /// The forward of a pass that computes `prefill` and decodes
+    /// `decode_count` requests whose sequences total `total_length` tokens.
+    /// When it computes both, a provider that prices them as one forward
+    /// prices the whole pass; otherwise the decode work is a separate decode
+    /// pass after the prefill.
+    fn forward_time(
         &self,
         prefill: Option<PrefillTotals>,
         decode_count: usize,
         total_length: usize,
-    ) -> anyhow::Result<Duration> {
+    ) -> anyhow::Result<ForwardTime> {
+        if decode_count == 0 {
+            return Ok(ForwardTime {
+                prefill: predict_prefill_duration(prefill, &self.args)?,
+                decode: Duration::ZERO,
+            });
+        }
         let active_kv_tokens = total_length;
         let total_kv_tokens = self.decode_kv_context_bound(active_kv_tokens);
         let context_length = total_length / decode_count;
-        let decode_ms = match prefill {
-            Some(prefill) => self.args.perf_model.predict_mixed_decode_time(
+        if let Some(prefill) = prefill
+            && let Some(pass) = self.args.perf_model.predict_mixed_pass_time(
                 prefill,
                 decode_count,
                 active_kv_tokens,
                 context_length,
                 total_kv_tokens,
-            )?,
-            None => self.args.perf_model.predict_decode_time(
-                decode_count,
-                active_kv_tokens,
-                context_length,
-                total_kv_tokens,
-            )?,
-        };
-        scale_decode_time(decode_ms, &self.args)
+            )?
+        {
+            return Ok(ForwardTime {
+                prefill: scale_prefill_time(pass.prefill_ms, &self.args)?,
+                decode: scale_decode_time(pass.decode_ms, &self.args)?,
+            });
+        }
+        let prefill = predict_prefill_duration(prefill, &self.args)?;
+        let decode_ms = self.args.perf_model.predict_decode_time(
+            decode_count,
+            active_kv_tokens,
+            context_length,
+            total_kv_tokens,
+        )?;
+        Ok(ForwardTime {
+            prefill,
+            decode: scale_decode_time(decode_ms, &self.args)?,
+        })
     }
 
     fn is_first_token_from_prefill(
@@ -2975,12 +2991,12 @@ impl VllmCore {
     fn emit_ready_tokens(
         &mut self,
         mut collector: Option<&mut TraceCollector>,
-        decode_start_ms: f64,
+        compute_start_ms: f64,
         pressure_at_ms: f64,
         scheduled: &FxHashMap<Uuid, ScheduledWork>,
         prefill: Option<PrefillTotals>,
         decode_acceptance: &mut DecodeAcceptance,
-    ) -> anyhow::Result<(Duration, Vec<OutputSignal>)> {
+    ) -> anyhow::Result<(ForwardTime, Vec<OutputSignal>)> {
         let mut ready = Vec::with_capacity(self.state.running.len());
         let mut already_complete = Vec::new();
         let mut total_length = 0usize;
@@ -3035,7 +3051,7 @@ impl VllmCore {
             if !output_signals.is_empty() {
                 self.state.compact_running();
             }
-            return Ok((Duration::ZERO, output_signals));
+            return Ok((self.forward_time(prefill, 0, 0)?, output_signals));
         }
 
         if self.speculative_sampler.is_some() {
@@ -3043,7 +3059,7 @@ impl VllmCore {
                 return self.emit_speculative_ready_tokens(
                     ready,
                     collector,
-                    decode_start_ms,
+                    compute_start_ms,
                     pressure_at_ms,
                     scheduled,
                     prefill,
@@ -3052,30 +3068,30 @@ impl VllmCore {
             }
 
             self.state.compact_running();
-            let (decode_time, mut speculative_signals) = self.emit_speculative_ready_tokens(
+            let (forward_time, mut speculative_signals) = self.emit_speculative_ready_tokens(
                 ready,
                 collector,
-                decode_start_ms,
+                compute_start_ms,
                 pressure_at_ms,
                 scheduled,
                 prefill,
                 decode_acceptance,
             )?;
             output_signals.append(&mut speculative_signals);
-            return Ok((decode_time, output_signals));
+            return Ok((forward_time, output_signals));
         }
 
         // For prefill workers, the first decode token is produced as part of
         // the prefill forward pass — no separate decode iteration needed.
         // All signals remain visible at the common pass boundary, including
         // first tokens when ongoing decoders add work to a mixed pass.
-        let (decode_time, decode_end_ms) =
-            if self.args.worker_type == WorkerType::Prefill || decode_count == 0 {
-                (Duration::ZERO, decode_start_ms)
-            } else {
-                let dt = self.decode_duration(prefill, decode_count, total_length)?;
-                (dt, decode_start_ms + dt.as_secs_f64() * 1000.0)
-            };
+        let decode_count = if self.args.worker_type == WorkerType::Prefill {
+            0
+        } else {
+            decode_count
+        };
+        let forward_time = self.forward_time(prefill, decode_count, total_length)?;
+        let pass_end_ms = forward_time.end_ms(compute_start_ms);
 
         let mut running_changed = !output_signals.is_empty();
         for uuid in ready {
@@ -3126,7 +3142,7 @@ impl VllmCore {
                 running_changed = true;
             }
             if let Some(collector) = collector.as_deref_mut() {
-                collector.on_token(uuid, decode_end_ms);
+                collector.on_token(uuid, pass_end_ms);
             }
             output_signals.push(output_signal);
         }
@@ -3135,13 +3151,13 @@ impl VllmCore {
             if running_changed {
                 self.state.compact_running();
             }
-            return Ok((Duration::ZERO, output_signals));
+            return Ok((forward_time, output_signals));
         }
 
         if running_changed {
             self.state.compact_running();
         }
-        Ok((decode_time, output_signals))
+        Ok((forward_time, output_signals))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3149,12 +3165,12 @@ impl VllmCore {
         &mut self,
         mut ready: Vec<Uuid>,
         collector: Option<&mut TraceCollector>,
-        decode_start_ms: f64,
+        compute_start_ms: f64,
         pressure_at_ms: f64,
         scheduled: &FxHashMap<Uuid, ScheduledWork>,
         prefill: Option<PrefillTotals>,
         decode_acceptance: &mut DecodeAcceptance,
-    ) -> anyhow::Result<(Duration, Vec<OutputSignal>)> {
+    ) -> anyhow::Result<(ForwardTime, Vec<OutputSignal>)> {
         let nextn = self
             .args
             .aic_nextn
@@ -3211,7 +3227,7 @@ impl VllmCore {
                 self.state.compact_running();
             }
             if ready.is_empty() {
-                return Ok((Duration::ZERO, rejected_signals));
+                return Ok((self.forward_time(prefill, 0, 0)?, rejected_signals));
             }
 
             match self.kv_manager.reserve_decode_blocks(required_blocks) {
@@ -3223,7 +3239,7 @@ impl VllmCore {
                 if running_changed {
                     self.state.compact_running();
                 }
-                return Ok((Duration::ZERO, rejected_signals));
+                return Ok((self.forward_time(prefill, 0, 0)?, rejected_signals));
             };
             running_changed = true;
 
@@ -3240,7 +3256,7 @@ impl VllmCore {
             }
             if ready.is_empty() {
                 self.state.compact_running();
-                return Ok((Duration::ZERO, rejected_signals));
+                return Ok((self.forward_time(prefill, 0, 0)?, rejected_signals));
             }
         };
 
@@ -3251,13 +3267,13 @@ impl VllmCore {
             .fold((0, 0), |(count, total), (_, request)| {
                 (count + 1, total + request.sequence.len())
             });
-        let (decode_time, decode_end_ms) =
-            if worker_type == WorkerType::Prefill || decode_count == 0 {
-                (Duration::ZERO, decode_start_ms)
-            } else {
-                let duration = self.decode_duration(prefill, decode_count, total_length)?;
-                (duration, decode_start_ms + duration.as_secs_f64() * 1000.0)
-            };
+        let decode_count = if worker_type == WorkerType::Prefill {
+            0
+        } else {
+            decode_count
+        };
+        let forward_time = self.forward_time(prefill, decode_count, total_length)?;
+        let pass_end_ms = forward_time.end_ms(compute_start_ms);
 
         let sampled_bursts = {
             let sampler = self
@@ -3395,7 +3411,7 @@ impl VllmCore {
 
         if let Some(collector) = collector {
             for signal in &output_signals {
-                collector.on_token(signal.uuid, decode_end_ms);
+                collector.on_token(signal.uuid, pass_end_ms);
             }
         }
 
@@ -3403,7 +3419,21 @@ impl VllmCore {
             self.state.compact_running();
         }
         output_signals.extend(rejected_signals);
-        Ok((decode_time, output_signals))
+        Ok((forward_time, output_signals))
+    }
+}
+
+/// A pass's forward time: its prefill, then the decode work it adds.
+#[derive(Clone, Copy, Debug)]
+struct ForwardTime {
+    prefill: Duration,
+    decode: Duration,
+}
+
+impl ForwardTime {
+    /// End of the forward started at `start_ms`, adding prefill, then decode.
+    fn end_ms(self, start_ms: f64) -> f64 {
+        start_ms + self.prefill.as_secs_f64() * 1000.0 + self.decode.as_secs_f64() * 1000.0
     }
 }
 
@@ -3440,6 +3470,10 @@ fn predict_prefill_duration(
         prefill.new_tokens,
         prefill.prefix_tokens,
     )?;
+    scale_prefill_time(prefill_ms, args)
+}
+
+fn scale_prefill_time(prefill_ms: f64, args: &MockEngineArgs) -> anyhow::Result<Duration> {
     let modeled_ms = modeled_duration_ms(prefill_ms, args.speedup_ratio)?;
     Ok(Duration::from_secs_f64(modeled_ms / 1_000.0))
 }

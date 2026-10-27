@@ -55,8 +55,8 @@ pub use protocol::{
 pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;
 pub use timing::{
-    PrefillTotals, TimingEvidenceSource, TimingEvidenceSummary, TimingModel, TimingModelConfig,
-    TimingOperationEvidence, TimingPhaseEvidence, VisionShape,
+    MixedPassMs, PrefillTotals, TimingEvidenceSource, TimingEvidenceSummary, TimingModel,
+    TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence, VisionShape,
 };
 #[cfg(feature = "python")]
 pub(crate) use timing::{TimingEvidenceAccumulator, ValidatedTimingPhase, mean_prefill_shape};

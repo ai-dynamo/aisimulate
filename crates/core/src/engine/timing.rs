@@ -781,6 +781,15 @@ pub struct PrefillTotals {
     pub prefix_tokens: usize,
 }
 
+/// One forward pass that computes prefill and decode work together, in
+/// milliseconds: the prefill latency and the latency the decode batch adds.
+/// Their sum is the provider's estimate of the whole pass.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MixedPassMs {
+    pub prefill_ms: f64,
+    pub decode_ms: f64,
+}
+
 /// Runtime latency model injected at the engine boundary.
 ///
 /// Implementations may call AIC, interpolate profiler data, or use another
@@ -831,22 +840,23 @@ pub trait TimingModel: Send + Sync {
         total_kv_tokens: usize,
     ) -> Result<f64>;
 
-    /// Predict the latency, in milliseconds, that a decode batch adds to a
-    /// forward pass that also computes `prefill`. Arguments after `prefill`
-    /// describe the decode batch as in [`Self::predict_decode_ms`].
+    /// Predict one forward pass that computes `prefill` together with a decode
+    /// batch. Arguments after `prefill` describe the decode batch as in
+    /// [`Self::predict_decode_ms`].
     ///
-    /// A provider that prices a mixed pass as one forward returns its decode
-    /// share, so that the prefill latency plus this share is its one-pass
-    /// estimate. The default `None` means the provider has no such
-    /// composition; schedulers then price a separate decode pass.
-    fn predict_mixed_decode_ms(
+    /// A provider that prices such a pass as one forward returns its prefill
+    /// latency and the latency the decode batch adds, which sum to its
+    /// estimate of that pass. The default `None` means the provider has no
+    /// such composition; schedulers then price the prefill with
+    /// [`Self::predict_prefill_totals_ms`] and a separate decode pass.
+    fn predict_mixed_pass_ms(
         &self,
         _prefill: PrefillTotals,
         _batch_size: usize,
         _active_kv_tokens: usize,
         _mean_context_length: usize,
         _total_kv_tokens: usize,
-    ) -> Result<Option<f64>> {
+    ) -> Result<Option<MixedPassMs>> {
         Ok(None)
     }
 
