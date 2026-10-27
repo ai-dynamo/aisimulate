@@ -2067,6 +2067,28 @@ class TestBundledModelConfigsOffline:
         assert raw.get("hf_quant_config"), "bundled hf_quant_config not attached"
         sdk_utils._load_model_config_from_model_path.cache_clear()
 
+    def test_dsa_bundles_parse_the_head_dim_from_the_attention_geometry(self, monkeypatch):
+        """The DSA head dimension is qk_nope_head_dim, whatever the top-level head_dim says.
+
+        DeepSeek-V3.2 declares no head_dim, so the generic hidden_size // heads
+        fallback would give 56. zai-org/GLM-5 declares a stray head_dim of 64.
+        """
+        import aisimulate.sdk.utils as sdk_utils
+
+        def _no_network(*a, **k):
+            raise AssertionError("network path reached")
+
+        monkeypatch.setattr(sdk_utils, "_download_hf_config", _no_network, raising=False)
+        sdk_utils.get_model_config_from_model_path.cache_clear()
+        sdk_utils._load_model_config_from_model_path.cache_clear()
+        glm52 = sdk_utils.get_model_config_from_model_path("nvidia/GLM-5.2-NVFP4")
+        dsv32 = sdk_utils.get_model_config_from_model_path("nvidia/DeepSeek-V3.2-NVFP4")
+        assert (glm52["d"], dsv32["d"]) == (192, 128)
+        glm5 = sdk_utils.get_model_config_from_model_path("zai-org/GLM-5")
+        assert (glm5["raw_config"]["head_dim"], glm5["d"]) == (64, 192)
+        sdk_utils.get_model_config_from_model_path.cache_clear()
+        sdk_utils._load_model_config_from_model_path.cache_clear()
+
     def test_minimax_m3_nvfp4_bundle_resolves_mixed_precision_modes(self, monkeypatch):
         """nvidia/MiniMax-M3-NVFP4 end-to-end: bundled MIXED_PRECISION metadata
         resolves gemm=fp8_block (MXFP8 approximation, owner decision 2026-08-09),

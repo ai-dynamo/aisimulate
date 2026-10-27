@@ -1236,6 +1236,9 @@ def _parse_hf_config_json(config: dict) -> dict:
             "index_n_heads": config["index_n_heads"],
             "index_topk": config["index_topk"],
         }
+        # The top-level head_dim of a ModelOpt export is not the attention width (64 in nvidia/GLM-5.3-NVFP4),
+        # and the op graph reads the geometry from extra_params, so d takes qk_nope_head_dim.
+        d = config["qk_nope_head_dim"]
     elif architecture == "Glm5NextForConditionalGeneration":
         extra_params = common.Glm53FlashConfig.from_text_config(config)
         d = extra_params.qk_nope_head_dim
