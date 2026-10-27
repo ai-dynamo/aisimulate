@@ -1515,6 +1515,38 @@ fn snapshot_configuration_requires_explicit_strict_selection_and_matching_digest
 }
 
 #[test]
+fn missing_learned_members_are_snapshot_io_before_restoration() {
+    // Configuration normalization reads these members before restoration.
+    let dir = tempfile::tempdir().unwrap();
+    let artifact = dir.path().join("forest.json");
+    std::fs::write(&artifact, forest_artifact(AGG, None, None)).unwrap();
+    let frozen = best(learned_frozen_config(
+        AGG,
+        &artifact,
+        CorrectionMode::Hybrid,
+    ))
+    .unwrap()
+    .save_state_snapshot(dir.path().join("frozen"), &StateSnapshotOptions::default())
+    .unwrap();
+    let (_checkpoint, online) = training_checkpoint(AGG, LearnedAdaptation::Online);
+    let online = best(online)
+        .unwrap()
+        .save_state_snapshot(dir.path().join("online"), &StateSnapshotOptions::default())
+        .unwrap();
+    for (config, member) in [
+        (frozen, LEARNED_ARTIFACT_FILE.to_owned()),
+        (online, format!("{ONLINE_CHECKPOINT_DIR}/manifest.json")),
+    ] {
+        let root = config.estimator_config.state_snapshot.clone().unwrap().path;
+        std::fs::remove_file(root.join(member)).unwrap();
+        assert!(matches!(
+            best(config).unwrap_err(),
+            AicError::StateSnapshotIo { source, .. } if source.kind() == std::io::ErrorKind::NotFound
+        ));
+    }
+}
+
+#[test]
 fn identity_and_estimator_control_mismatches_are_rejected_with_their_location() {
     let dir = tempfile::tempdir().unwrap();
     let pinned = saved_regression(dir.path());

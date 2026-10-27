@@ -257,6 +257,18 @@ def test_from_learned_snapshot_restores_without_identity(tmp_path):
     restored = RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "snap")
     assert _bits(restored, queries) == _bits(model, queries)
     assert restored.deployment_topology() is None
+    # A missing learned member is a broken snapshot, not unavailable performance data.
+    from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+
+    broken = model.save_state_snapshot(tmp_path / "broken")
+    (tmp_path / "broken" / "learned" / "artifact.json").unlink()
+    for call in (
+        lambda: RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "broken"),
+        lambda: RustForwardPassPerfModel.best_available(broken),
+    ):
+        with pytest.raises(FileNotFoundError) as caught:
+            call()
+        assert not isinstance(caught.value, PerfDataNotAvailableError)
 
 
 def test_readiness_topology_and_launch_compatibility_without_loading(tmp_path):
@@ -377,6 +389,68 @@ def test_execution_profile_is_copied_and_perf_data_packed(profile, tmp_path):  #
     restored = RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "packed")
     assert restored.predict_prefill_latency(1, 4, 0) == 6.0
     assert restored.readiness_report() == model.readiness_report()
+
+
+def _op_level_config(root: Path) -> ForwardPassPerfModelConfig:
+    return ForwardPassPerfModelConfig(
+        model="Qwen/Qwen3-32B",
+        system="h200_sxm",
+        backend="vllm",
+        worker_type="aggregated",
+        estimation_mode="op_level",
+        systems_paths=(str(root),),
+    )
+
+
+def _scale_gemm_latency(root: Path, factor: float) -> None:
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
+    for path in (root / "data" / "h200_sxm" / "gemm" / "vllm").rglob("gemm_perf.parquet"):
+        table = pq.read_table(path)
+        column = table.schema.get_field_index("latency")
+        pq.write_table(table.set_column(column, "latency", pc.multiply(table["latency"], factor)), path)
+
+
+@pytest.mark.integration
+def test_native_models_never_adopt_tables_parsed_before_their_fingerprint(tmp_path):
+    from aisimulate_core.sdk.engine import EngineHandle
+
+    queries = _queries()
+    roots = [_systems_copy(tmp_path / name, "h200_sxm") for name in ("saved", "restored")]
+    before = _child(_op_level_config(roots[0]).to_dict(), [], queries, None)["bits"]
+    # Engines in this process parse the original tables, then the data changes.
+    engines = [EngineHandle.compile("Qwen/Qwen3-32B", "h200_sxm", "vllm", systems_path=str(root)) for root in roots]
+    for engine, root in zip(engines, roots, strict=True):
+        engine.predict_prefill_latency(1, 4096)
+        _scale_gemm_latency(root, 2.0)
+    # A model constructed now fingerprints and reads the changed data.
+    model = RustForwardPassPerfModel.best_available(_op_level_config(roots[0]))
+    expected = _bits(model, queries)
+    assert expected != before
+    pinned = model.save_state_snapshot(tmp_path / "saved-snapshot")
+    assert _child(pinned, [], queries, None)["bits"] == expected
+    # Restoring here a snapshot saved from the changed data elsewhere reads it too.
+    saved = _child(_op_level_config(roots[1]).to_dict(), [], queries, tmp_path / "restored-snapshot")
+    assert saved["bits"] == expected
+    restored = RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "restored-snapshot")
+    assert _bits(restored, queries) == expected
+
+
+@pytest.mark.integration
+def test_data_dir_with_parent_components_restores_by_reference_but_cannot_be_packed(tmp_path):
+    root = _systems_copy(tmp_path / "systems", "h200_sxm")
+    (root / "data" / "b200_sxm").mkdir()
+    yaml = root / "h200_sxm.yaml"
+    yaml.write_text(yaml.read_text().replace("data_dir: data/h200_sxm", "data_dir: data/b200_sxm/../h200_sxm", 1))
+    model = RustForwardPassPerfModel.best_available(_op_level_config(root))
+    queries = _queries()
+    reference = model.save_state_snapshot(tmp_path / "reference")
+    assert _child(reference, [], queries, None)["bits"] == _bits(model, queries)
+    # The packed YAML is copied unchanged, and packing does not copy `data/b200_sxm`.
+    with pytest.raises(ValueError, match="plain directory names"):
+        model.save_state_snapshot(tmp_path / "packed", include_perf_db=True)
+    assert not (tmp_path / "packed").exists()
 
 
 def test_state_snapshot_must_name_the_pinned_directory_and_io_errors_are_os_errors(tmp_path):

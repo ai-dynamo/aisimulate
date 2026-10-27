@@ -324,7 +324,18 @@ impl ForwardPassPerfModelConfig {
 
     /// Retain registry availability for native candidate selection without
     /// adding transient registry facts to the serialized request.
-    pub(crate) fn resolve_with_registration(mut self) -> Result<(Self, Option<bool>), AicError> {
+    pub(crate) fn resolve_with_registration(self) -> Result<(Self, Option<bool>), AicError> {
+        // Normalization already reads snapshot members (learned artifacts and
+        // checkpoints), so their I/O failures are snapshot I/O, never missing
+        // performance data, exactly as during restoration.
+        if self.estimator_config.state_snapshot.is_some() {
+            self.normalize().map_err(super::snapshot::as_snapshot_io)
+        } else {
+            self.normalize()
+        }
+    }
+
+    fn normalize(mut self) -> Result<(Self, Option<bool>), AicError> {
         self.estimator_config.resolve_defaults();
         if self.estimation_mode == EstimationMode::FpmLearned
             && self.estimator_config.correction.mode == super::CorrectionMode::Auto

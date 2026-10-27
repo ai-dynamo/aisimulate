@@ -455,13 +455,18 @@ so additions, removals and new empty version directories invalidate the
 fingerprint too. Like the resolvers, the fingerprint follows symbolic links,
 records an unresolvable link without reading it, and skips dot-prefixed and
 non-UTF-8 names. A native model fingerprints its data when the process first
-loads that systems root; later constructions reuse that result.
+loads that systems root; later constructions reuse that result. Performance
+tables that another engine in the process parsed before then are not shared
+with the model, so it reads the fingerprinted data; restoration does the same
+after its check.
 `save_state_snapshot` fingerprints the data again and fails if it changed
 since it was loaded; restart the process to save a model of the current data. Pass
 `include_perf_db=True` (Rust: `StateSnapshotOptions { include_perf_db: true }`)
 to copy exactly the fingerprinted entries into the snapshot, pointing
-`systems_paths` (and `fpm_parquet_path`) at the copy. A `data_dir` outside
-the systems root can be referenced but not packed. A packed snapshot holds a
+`systems_paths` (and `fpm_parquet_path`) at the copy. The hardware YAML is
+copied unchanged, so packing requires its `data_dir` to be a relative path of
+plain directory names; a `data_dir` with `..` components, an absolute path or
+one outside the systems root can be referenced but not packed. A packed snapshot holds a
 copy of the system's whole data directory, so its size follows that data.
 Learned forests and online checkpoints are always copied. The model
 configuration is not: native restoration reads `model` again, from a
@@ -482,8 +487,9 @@ its artifact path from `state_snapshot.path`, so it rejects the edit unless
 `fpm_learned.artifact_path` names the copy too. Save a new snapshot instead of
 moving one. Snapshot
 I/O failures raise an `OSError` subclass (for example `FileNotFoundError` for
-a missing snapshot) through both `state_snapshot=` and a configuration, never the
-skippable `PerfDataNotAvailableError`. A manifest from another release
+a missing snapshot or a missing learned artifact or checkpoint inside it)
+through both `state_snapshot=` and a configuration, never the skippable
+`PerfDataNotAvailableError`. A manifest from another release
 reports its versions even when it has fields this release does not know.
 Online learner state, including the causal selector's adaptive expert, is
 always saved in full, so its size grows with the forest and its retained

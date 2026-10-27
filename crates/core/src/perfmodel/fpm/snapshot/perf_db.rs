@@ -29,8 +29,10 @@
 //!
 //! Estimators record the fingerprint when they first load a root in a
 //! process ([`loaded`]); saving recomputes it and fails if the data changed
-//! since. Packing copies exactly the fingerprinted entries, preserving
-//! relative paths, so a packed root resolves tables exactly like the original.
+//! since. Tables that other engines parsed before the fingerprint stop being
+//! shared then, because the shared table memo is keyed by paths, not content.
+//! Packing copies exactly the fingerprinted entries, preserving relative
+//! paths, so a packed root resolves tables exactly like the original.
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -40,6 +42,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Stage, invalid, io_error, normalized_absolute, sha256_hex};
 use crate::AicError;
+use crate::perfmodel::perf_database::unshare_tables;
 
 pub(crate) const METHOD: &str = "systems_tree_sha256_v1";
 pub(crate) const PACKED_SYSTEMS_DIR: &str = "perf_db/systems";
@@ -96,9 +99,6 @@ impl Entry {
 
 struct Inventory {
     data_dir: String,
-    /// Normalized data directory relative to the root; `None` when it
-    /// resolves outside the root.
-    data_inside: Option<PathBuf>,
     entries: Vec<Entry>,
 }
 
@@ -217,11 +217,14 @@ fn inventory(root: &Path, system: &str) -> Result<Inventory, AicError> {
             });
         }
     }
-    // The loader joins data_dir onto the root, so `./x`, `x/../y` and
-    // absolute paths are all accepted.
+    // The loader joins data_dir onto the root verbatim and lets the OS
+    // resolve it, so `./x`, `x/../y` and absolute paths are all accepted and
+    // `..` follows symlinks. Read that exact path; label it by its lexical
+    // normal form.
     let root_normal = normalized_absolute(root)?;
-    let data_path = normalized_absolute(&root_normal.join(&data_dir))?;
-    let data_inside = data_path
+    let data_path = root.join(&data_dir);
+    let data_normal = normalized_absolute(&data_path)?;
+    let data_inside = data_normal
         .strip_prefix(&root_normal)
         .ok()
         .filter(|relative| {
@@ -237,7 +240,7 @@ fn inventory(root: &Path, system: &str) -> Result<Inventory, AicError> {
             )));
         }
         Some(relative) => relative.to_str().map(str::to_owned),
-        None => data_path.to_str().map(|path| format!("abs:{path}")),
+        None => data_normal.to_str().map(|path| format!("abs:{path}")),
     }
     .ok_or_else(|| invalid("performance data directory must be valid UTF-8"))?;
     match std::fs::metadata(&data_path) {
@@ -263,11 +266,7 @@ fn inventory(root: &Path, system: &str) -> Result<Inventory, AicError> {
         }
     }
     entries.sort_by(|a, b| a.label.cmp(&b.label));
-    Ok(Inventory {
-        data_dir,
-        data_inside,
-        entries,
-    })
+    Ok(Inventory { data_dir, entries })
 }
 
 fn external_fpm(path: Option<&Path>) -> Result<Option<ExternalFpmData>, AicError> {
@@ -349,15 +348,22 @@ fn loaded_cell(
 /// result afterwards, like the shared table memo reuses loaded tables. Data
 /// that changes later is caught when saving recomputes the fingerprint.
 /// Failures are recorded, not returned: they only prevent saving.
+///
+/// Tables another engine parsed before this fingerprint are no longer shared,
+/// so the estimator loading next reads what was fingerprinted.
 pub(crate) fn loaded(root: &Path, system: &str, fpm_parquet: Option<&Path>) -> LoadedFingerprint {
     Arc::clone(loaded_cell(root, system, fpm_parquet).get_or_init(|| {
-        Arc::new(fingerprint(root, system, fpm_parquet).map_err(|error| error.to_string()))
+        let fingerprint = fingerprint(root, system, fpm_parquet).map_err(|error| error.to_string());
+        unshare_tables(root, system);
+        Arc::new(fingerprint)
     }))
 }
 
 /// Fingerprint `root` as it is now, before a restore loads it. When this
 /// process has not loaded the root yet, the result is also its load-time
 /// fingerprint, so the load that follows does not hash the same data again.
+/// Tables parsed before this check are no longer shared, so the restored
+/// estimator reads the data that matched the snapshot.
 pub(crate) fn current(
     root: &Path,
     system: &str,
@@ -365,6 +371,7 @@ pub(crate) fn current(
 ) -> Result<PerfDbFingerprint, AicError> {
     let cell = loaded_cell(root, system, fpm_parquet);
     let current = fingerprint(root, system, fpm_parquet)?;
+    unshare_tables(root, system);
     cell.get_or_init(|| Arc::new(Ok(current.clone())));
     Ok(current)
 }
@@ -379,9 +386,17 @@ pub(crate) fn pack(
     fpm_parquet: Option<&Path>,
 ) -> Result<(PathBuf, Option<PathBuf>), AicError> {
     let inventory = inventory(root, system)?;
-    if inventory.data_inside.is_none() {
+    // The packed hardware YAML is a byte-exact copy, and entries are packed
+    // at their normalized paths. The copied data_dir therefore names the
+    // packed data only when it is spelled as plain names: `..` would need
+    // the directories it passes through, and an absolute path would keep
+    // naming the original data.
+    let plain = Path::new(&inventory.data_dir)
+        .components()
+        .all(|component| matches!(component, Component::Normal(_) | Component::CurDir));
+    if !plain {
         return Err(invalid(format!(
-            "cannot pack performance data: {system}.yaml data_dir {:?} resolves outside the systems root {}; save without include_perf_db to reference it",
+            "cannot pack performance data: {system}.yaml data_dir {:?} in {} must be a relative path of plain directory names, without `..` or an absolute root; save without include_perf_db to reference it",
             inventory.data_dir,
             root.display()
         )));
@@ -521,38 +536,76 @@ mod tests {
         let root = dir.path().join("systems");
         systems(&root);
         let base = fingerprint(&root, "h200_sxm", None).unwrap();
+        let stage = Stage::new(&dir.path().join("snapshot")).unwrap();
+        let pack_error = |root: &Path| {
+            pack(&stage, root, "h200_sxm", None)
+                .unwrap_err()
+                .to_string()
+        };
+        let yaml = |data_dir: &str| {
+            std::fs::write(
+                root.join("h200_sxm.yaml"),
+                format!("data_dir: {data_dir}\n"),
+            )
+            .unwrap()
+        };
         for spelled in ["./data/h200_sxm", "data/b200_sxm/../h200_sxm"] {
-            std::fs::write(root.join("h200_sxm.yaml"), format!("data_dir: {spelled}\n")).unwrap();
+            yaml(spelled);
             let same = fingerprint(&root, "h200_sxm", None).unwrap();
             assert_eq!((same.sha256.len(), same.file_count), (64, 2));
         }
+        // The copied YAML must name the packed data: `..` needs the
+        // directories it passes through, which packing does not copy.
+        assert!(pack_error(&root).contains("plain directory names"));
+        // An absolute spelling of the same directory would keep naming the
+        // original data.
+        yaml(root.join("data/h200_sxm").to_str().unwrap());
+        assert!(pack_error(&root).contains("plain directory names"));
         // A data directory outside the root is fingerprinted by absolute path
         // but cannot be packed.
         let outside = dir.path().join("elsewhere");
         std::fs::create_dir_all(outside.join("vllm/1.0")).unwrap();
         std::fs::write(outside.join("vllm/1.0/gemm_perf.parquet"), b"a").unwrap();
-        std::fs::write(
-            root.join("h200_sxm.yaml"),
-            format!("data_dir: {}\n", outside.display()),
-        )
-        .unwrap();
+        yaml(outside.to_str().unwrap());
         let absolute = fingerprint(&root, "h200_sxm", None).unwrap();
         assert_ne!(absolute.sha256, base.sha256);
-        let stage = Stage::new(&dir.path().join("snapshot")).unwrap();
-        let error = pack(&stage, &root, "h200_sxm", None).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("resolves outside the systems root"),
-            "{error}"
-        );
+        assert!(pack_error(&root).contains("plain directory names"));
         // A missing data directory is a recorded absence, not an error: an
         // external FPM parquet needs no operation tables.
-        std::fs::write(root.join("h200_sxm.yaml"), "data_dir: data/missing\n").unwrap();
+        yaml("data/missing");
         let absent = fingerprint(&root, "h200_sxm", None).unwrap();
         assert_eq!(absent.file_count, 1);
         std::fs::create_dir_all(root.join("data/missing")).unwrap();
         assert_ne!(fingerprint(&root, "h200_sxm", None).unwrap(), absent);
+        // So is an intermediate directory that `..` passes through.
+        yaml("data/missing/../h200_sxm");
+        assert_eq!(fingerprint(&root, "h200_sxm", None).unwrap().file_count, 2);
+        std::fs::remove_dir(root.join("data/missing")).unwrap();
+        assert_eq!(fingerprint(&root, "h200_sxm", None).unwrap().file_count, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn data_dir_follows_symlinks_before_parent_components_like_the_loader() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("systems");
+        systems(&root);
+        // `data/link/..` is the link target's parent, not `data`.
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(other.join("link_target")).unwrap();
+        std::fs::create_dir_all(other.join("h200_sxm/vllm/1.0")).unwrap();
+        std::fs::write(other.join("h200_sxm/vllm/1.0/gemm_perf.parquet"), b"z").unwrap();
+        std::os::unix::fs::symlink(other.join("link_target"), root.join("data/link")).unwrap();
+        std::fs::write(
+            root.join("h200_sxm.yaml"),
+            "data_dir: data/link/../h200_sxm\n",
+        )
+        .unwrap();
+        let linked = fingerprint(&root, "h200_sxm", None).unwrap();
+        std::fs::write(root.join("data/h200_sxm/vllm/1.0/gemm_perf.parquet"), b"x").unwrap();
+        assert_eq!(fingerprint(&root, "h200_sxm", None).unwrap(), linked);
+        std::fs::write(other.join("h200_sxm/vllm/1.0/gemm_perf.parquet"), b"y").unwrap();
+        assert_ne!(fingerprint(&root, "h200_sxm", None).unwrap(), linked);
     }
 
     #[cfg(unix)]
