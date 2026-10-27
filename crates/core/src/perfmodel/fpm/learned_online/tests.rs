@@ -45,6 +45,13 @@ fn controls(mode: LearnedUpdateMode, refresh: LearnedDerivativeRefresh) -> FpmLe
         derivative_refresh: refresh,
         update_every: 1,
         recent_window: 8,
+        // Numerical oracles below exercise unit-weight fitting independently
+        // of the public gym recipe.
+        history_weight: None,
+        history_weight_ramp_observations: 0,
+        history_bin_grouping: false,
+        split_sampling_rate: 1.0,
+        split_rank_tolerance: 0.0,
         ..FpmLearnedConfig::default()
     }
 }

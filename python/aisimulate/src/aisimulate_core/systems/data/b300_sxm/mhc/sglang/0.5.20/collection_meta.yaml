@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+provenance: collected
+runtime:
+  framework: sglang
+  version: 0.5.20
+  image: lmsysorg/sglang:v0.5.20
+  image_digest: sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f
+  source_commit: 94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+tables:
+  mhc_module_perf:
+    # GLM-5.3-Flash mHC (hidden 4096, hc_mult 4), replicated per TP rank (no TP axis).
+    # b300_sxm (SM103, computelab), 8 GPUs/node, stock image amd64 child sha256:b27fce60bc5494c118c4910702812bcfa8cee67abcdd1ff8b0902f21647552f4 (no overlay) run via pyxis; launcher audits/glm53flash-multigpu/tools/ops/launcher; collector source 00d2e3196a20f44d1514f23419acdd59409139e5; Slurm job(s) 4956283.
+    # data_sha256: 8119653e068d43299932c39290a6e70da439768eec92fc6f0265679966c59773
+    collector_ref: 00d2e3196a20f44d1514f23419acdd59409139e5
+    collector_hash: sha256:8327a3b2caada16edc16b9d0c31987ec33d5aaa6a6760be90bc0b97a0a72c798
+    case_plan_hash: sha256:d266067a94a873cfe1968721b81239017bbdeffd277f1d63692fb53c4dacdadd
+    collected_at: '2026-10-13'
+    rows: 140
+    status: complete

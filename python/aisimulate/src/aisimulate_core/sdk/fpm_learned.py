@@ -30,9 +30,10 @@ Workflow (Python trains, Rust predicts):
    tree ensemble per regression workload store on ``log(wall_ms)``, and
    writes the ``aic_fpm_learned_forward_perf`` artifact.
 3. ``RustForwardPassPerfModel.best_available(config)`` with explicit
-   ``estimation_mode="fpm_learned"`` loads the artifact. Optional training
-   checkpoints retain exact rows and bins for native online updates through
-   ``tune_with_fpms``.
+   ``estimation_mode="fpm_learned"`` and
+   ``estimator_config.fpm_learned.adaptation="frozen"`` loads the artifact.
+   Training checkpoints retain exact rows and bins for native online updates
+   through ``tune_with_fpms``; online adaptation is the default when omitted.
 
 The feature ABI is the ordered ``features`` list in the artifact; every name
 must be one of :data:`FEATURE_NAMES` and is computed identically here and in

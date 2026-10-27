@@ -125,6 +125,88 @@ def test_unsupported_topology_and_precision_fail_explicitly():
         type(info["extra_params"]).from_text_config(config)
 
 
+def _ffn_specs(model):
+    return [body["Glm53Ffn"] for op in model.context_ops if "Glm53Ffn" in (body := json.loads(op._spec_json()))]
+
+
+# vLLM enable_expert_parallel shards experts over the whole TP group (MoE
+# TP=1); SGLang --ep-size also allows MoE TP = TP / EP.
+_EP_LAYOUTS = [
+    ("vllm", 2, 1, 2),
+    ("vllm", 4, 1, 4),
+    ("vllm", 8, 1, 8),
+    ("sglang", 2, 1, 2),
+    ("sglang", 4, 1, 4),
+    ("sglang", 4, 2, 2),
+    ("sglang", 8, 1, 8),
+    ("sglang", 8, 2, 4),
+]
+
+
+@pytest.mark.parametrize("path", MODEL_REVISIONS)
+@pytest.mark.parametrize(("backend", "tp", "moe_tp", "moe_ep"), _EP_LAYOUTS)
+def test_expert_parallel_shards_only_routed_experts(path, backend, tp, moe_tp, moe_ep):
+    ep = get_model(path, ModelConfig(tp_size=tp, moe_tp_size=moe_tp, moe_ep_size=moe_ep), backend)
+    base = build(path, backend, tp)
+    for ep_ffn, tp_ffn in zip(_ffn_specs(ep), _ffn_specs(base), strict=True):
+        if ep_ffn["is_dense"]:
+            assert ep_ffn == tp_ffn
+            continue
+        moes = [child["Moe"] for child in ep_ffn["children"] + ep_ffn["measured"] if "Moe" in child]
+        assert len(moes) == 2 and moes[0] == moes[1]
+        assert (moes[0]["moe_tp_size"], moes[0]["moe_ep_size"], moes[0]["attention_dp_size"]) == (moe_tp, moe_ep, 1)
+        assert moes[0]["num_experts"] // moe_ep == 288 // moe_ep
+        # Shared expert, router and activation keep the attention-TP geometry.
+        assert [c for c in ep_ffn["children"] if "Moe" not in c] == [c for c in tp_ffn["children"] if "Moe" not in c]
+        assert [c for c in ep_ffn["measured"] if "Moe" not in c] == [c for c in tp_ffn["measured"] if "Moe" not in c]
+
+    # The only difference from pure TP is the routed MoE layout: attention,
+    # KV, mHC and the TP all-reduce collectives are unchanged, and no
+    # dispatch/all-to-all op is added.
+    def strip(model):
+        out = []
+        for op in model.context_ops + model.generation_ops:
+            body = json.loads(op._spec_json())
+            if "Glm53Ffn" in body and not body["Glm53Ffn"]["is_dense"]:
+                continue
+            out.append(body)
+        return out
+
+    assert strip(ep) == strip(base)
+    assert not any(
+        kind.startswith("MoeDispatch") or kind.startswith("MoeA2a")
+        for op in ep.context_ops
+        for kind in json.loads(op._spec_json())
+    )
+    # MoE TP x EP = TP: each rank still holds 1/TP of the routed weights.
+    assert ep.get_resident_weights_bytes() == base.get_resident_weights_bytes()
+    assert ep.get_kvcache_bytes_per_sequence(4096) == base.get_kvcache_bytes_per_sequence(4096)
+
+
+def test_expert_parallel_topology_rejections():
+    path = "zai-org/GLM-5.3-Flash"
+
+    def ep(backend="sglang", tp=4, moe_tp=1, moe_ep=4, **kwargs):
+        return get_model(path, ModelConfig(tp_size=tp, moe_tp_size=moe_tp, moe_ep_size=moe_ep, **kwargs), backend)
+
+    # Data-parallel attention needs AG/RS (and vLLM SP-MoE) modelling.
+    for backend in ("vllm", "sglang"):
+        with pytest.raises(NotImplementedError, match="data-parallel attention is not supported"):
+            ep(backend, tp=2, moe_tp=1, moe_ep=4, attention_dp_size=2)
+        with pytest.raises(NotImplementedError, match="DP=PP=CP=1"):
+            ep(backend, pp_size=2)
+    # MoE width must equal the attention TP group.
+    for moe_tp, moe_ep in ((1, 2), (1, 8), (2, 4)):
+        with pytest.raises(ValueError, match="moe_tp_size"):
+            ep(tp=4, moe_tp=moe_tp, moe_ep=moe_ep)
+    # vLLM has no MoE TP x EP hybrid without DP.
+    with pytest.raises(NotImplementedError, match="MoE TP=1 and EP=TP"):
+        ep("vllm", tp=4, moe_tp=2, moe_ep=2)
+    for backend in ("deepep_moe", "megamoe"):
+        with pytest.raises(NotImplementedError, match="DeepEP/megamoe/wideep"):
+            ep(moe_backend=backend)
+
+
 @pytest.mark.parametrize(("path", "fmt"), [("zai-org/GLM-5.3-Flash", "fp8"), ("nvidia/GLM-5.3-Flash-NVFP4", "nvfp4")])
 def test_pinned_checkpoint_quantization_layouts_are_recognized(path, fmt):
     assert _checkpoint_format(get_model_config_from_model_path(path)["raw_config"]["quantization_config"]) == fmt
@@ -206,42 +288,54 @@ def test_canonical_sol_constructor_and_saved_identity(path, backend):
         model.close()
 
 
-@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+_HOPPER_FP8_RUNTIMES = [("vllm", "0.32.0"), ("sglang", "0.5.22")]
+
+
+@pytest.mark.parametrize(("backend", "version"), _HOPPER_FP8_RUNTIMES)
 @pytest.mark.parametrize("system", ["h100_sxm", "h200_sxm"])
-def test_sol_tp8_fp8_is_constructible_on_hopper(backend, system):
+@pytest.mark.parametrize("kv", ["fp8", "bfloat16"])
+def test_sol_tp8_preserves_hopper_kv_identity_with_fixed_runtimes(backend, version, system, kv, monkeypatch):
     # TP8 is the FP8 deployment for 80/141 GiB Hopper GPUs (the payload
     # inventory exceeds TP4 headroom on H100). SOL needs only the system spec.
-    # The pinned SM90 runtimes serve only BF16 KV, so the served identity is
-    # requested explicitly.
+    # Fixed runtime versions admit both KV identities without coercing FP8
+    # to BF16; the selected identity must survive a saved-config round trip.
+    # These runtimes are not yet packaged query-version slots: use the public
+    # opt-in without claiming a maintained measured-data baseline.
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     config = ForwardPassPerfModelConfig(
         model="zai-org/GLM-5.3-Flash",
         system=system,
         backend=backend,
+        backend_version=version,
         worker_type="aggregated",
         tp=8,
         moe_tp_size=8,
         moe_ep_size=1,
-        kvcache_quant_mode="bfloat16",
+        kvcache_quant_mode=kv,
         database_mode="SOL",
         estimation_mode="op_level",
         fallback_policy="deny",
     )
     model = RustForwardPassPerfModel.best_available(config)
     try:
-        assert model.diagnostics()["provenance"]["config"]["tp"] == 8
-        assert model.diagnostics()["provenance"]["config"]["kvcache_quant_mode"] == "bfloat16"
+        resolved = model.diagnostics()["provenance"]["config"]
+        saved = ForwardPassPerfModelConfig(**resolved).to_dict()
+        assert resolved["tp"] == 8
+        assert saved["backend_version"] == resolved["backend_version"] == version
+        assert saved["kvcache_quant_mode"] == resolved["kvcache_quant_mode"] == kv
         assert model.static_phase_latency(batch_size=4, input_tokens=8192, output_tokens=2, prefill=True) > 0
         assert model.static_phase_latency(batch_size=32, input_tokens=4096, output_tokens=2, prefill=False) > 0
     finally:
         model.close()
 
 
-def _hopper_sol(system, backend, tp, kv=None):
+def _hopper_sol(system, backend, tp, kv=None, backend_version=None):
     kwargs = {} if kv is None else {"kvcache_quant_mode": kv}
     config = ForwardPassPerfModelConfig(
         model="zai-org/GLM-5.3-Flash",
         system=system,
         backend=backend,
+        backend_version=backend_version,
         worker_type="aggregated",
         tp=tp,
         moe_tp_size=tp,
@@ -253,35 +347,57 @@ def _hopper_sol(system, backend, tp, kv=None):
     )
     model = RustForwardPassPerfModel.best_available(config)
     try:
+        resolved = model.diagnostics()["provenance"]["config"]
+        assert resolved["kvcache_quant_mode"] == kv
+        if backend_version is not None:
+            assert resolved["backend_version"] == backend_version
         return model.static_phase_latency(batch_size=32, input_tokens=4096, output_tokens=2, prefill=False)
     finally:
         model.close()
 
 
-@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize(("backend", "version"), [("vllm", "0.31.0"), ("sglang", "0.5.20")])
 @pytest.mark.parametrize("tp", [4, 8])
 @pytest.mark.parametrize("system", ["h100_sxm", "h200_sxm"])
-def test_fp8_sparse_kv_is_rejected_on_hopper(system, tp, backend):
-    # The stock SM90 runtimes serve GLM-5.3-Flash with BF16 KV only, so an
-    # explicit FP8 request and the FP8 default both fail at construction
-    # (previously SOL priced them, e.g. 8.2 ms at B32/4096/2 on H100 TP8).
+def test_fp8_sparse_kv_is_rejected_on_hopper_with_older_runtimes(system, tp, backend, version):
+    # The pinned older runtimes lack the Hopper FP8 KV fixes; selecting a
+    # newer runtime must not silently change the behavior of these versions.
     for kv in ("fp8", None):
         with pytest.raises(Exception, match=r"SM90.*bfloat16"):
-            _hopper_sol(system, backend, tp, kv)
-    assert _hopper_sol(system, backend, tp, "bfloat16") > 0
+            _hopper_sol(system, backend, tp, kv, version)
+    assert _hopper_sol(system, backend, tp, "bfloat16", version) > 0
 
 
-@pytest.mark.parametrize("backend", ["vllm", "sglang"])
-def test_fp8_sparse_kv_is_rejected_on_hopper_by_compiled_engine_handles(backend):
+@pytest.mark.parametrize(("backend", "version"), _HOPPER_FP8_RUNTIMES)
+@pytest.mark.parametrize("tp", [4, 8])
+@pytest.mark.parametrize("system", ["h100_sxm", "h200_sxm"])
+def test_fixed_hopper_runtimes_default_to_fp8_and_price_bf16_separately(system, tp, backend, version, monkeypatch):
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    fp8 = _hopper_sol(system, backend, tp, "fp8", version)
+    assert fp8 > 0
+    assert _hopper_sol(system, backend, tp, backend_version=version) == fp8
+    assert _hopper_sol(system, backend, tp, "bfloat16", version) > fp8
+
+
+@pytest.mark.parametrize(
+    ("backend", "version", "supports_fp8"),
+    [("vllm", "0.31.0", False), ("sglang", "0.5.20", False)]
+    + [(backend, version, True) for backend, version in _HOPPER_FP8_RUNTIMES],
+)
+def test_hopper_kv_capability_is_versioned_in_compiled_engine_handles(backend, version, supports_fp8, monkeypatch):
     # EngineHandle (and InferenceSession, which wraps it) build the engine
-    # without forward-pass readiness; the SM90 rule holds there too.
+    # without forward-pass readiness; the runtime-version rule holds there too.
     from aisimulate_core.sdk.engine import EngineHandle
+
+    if supports_fp8:
+        monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
 
     def compile_handle(kv):
         return EngineHandle.compile(
             "zai-org/GLM-5.3-Flash",
             "h100_sxm",
             backend,
+            backend_version=version,
             tp_size=8,
             moe_tp_size=8,
             moe_ep_size=1,
@@ -289,9 +405,13 @@ def test_fp8_sparse_kv_is_rejected_on_hopper_by_compiled_engine_handles(backend)
             database_mode="SOL",
         )
 
-    with pytest.raises(Exception, match=r"SM90.*bfloat16"):
-        compile_handle("fp8")
-    assert compile_handle("bfloat16").predict_decode_latency(32, 4096, 2) > 0
+    bf16 = compile_handle("bfloat16").predict_decode_latency(32, 4096, 2)
+    assert bf16 > 0
+    if supports_fp8:
+        assert 0 < compile_handle("fp8").predict_decode_latency(32, 4096, 2) < bf16
+    else:
+        with pytest.raises(Exception, match=r"SM90.*bfloat16"):
+            compile_handle("fp8")
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
@@ -354,10 +474,12 @@ def test_sglang_bf16_kv_sol_reads_more_latent_bytes_and_keeps_fp8_unchanged():
     assert latency("bfloat16", True) >= latency("fp8", True)
 
 
-@pytest.mark.parametrize(("system", "kv"), [("h200_sxm", "bfloat16"), ("h100_sxm", "bfloat16"), ("b300_sxm", "fp8")])
-def test_external_root_tp8_sparse_rows_follow_the_kv_identity(tmp_path, system, kv):
+@pytest.mark.parametrize(("backend", "version"), _HOPPER_FP8_RUNTIMES)
+@pytest.mark.parametrize("system", ["h200_sxm", "h100_sxm", "b300_sxm"])
+@pytest.mark.parametrize("kv", ["bfloat16", "fp8"])
+def test_external_root_tp8_sparse_rows_follow_the_kv_identity(tmp_path, system, kv, backend, version):
     # A staged external systems root (system YAML + exact-runtime GLM attention
-    # table) serves an SGLang TP8 deployment; the sparse rows are keyed by the
+    # table) serves a TP8 deployment; the sparse rows are keyed by the
     # deployment's KV dtype, so the other KV identity is never matched.
     import shutil
 
@@ -367,7 +489,7 @@ def test_external_root_tp8_sparse_rows_follow_the_kv_identity(tmp_path, system, 
     root = tmp_path / "systems"
     root.mkdir()
     shutil.copy(Path(aisimulate_core.__file__).parent / "systems" / f"{system}.yaml", root / f"{system}.yaml")
-    model = build("zai-org/GLM-5.3-Flash", "sglang", tp=8, kvcache_quant_mode=common.KVCacheQuantMode[kv])
+    model = build("zai-org/GLM-5.3-Flash", backend, tp=8, kvcache_quant_mode=common.KVCacheQuantMode[kv])
     body = next(
         spec["Glm53Attention"]
         for spec in (json.loads(op._spec_json()) for op in model.context_ops)
@@ -376,7 +498,7 @@ def test_external_root_tp8_sparse_rows_follow_the_kv_identity(tmp_path, system, 
     geometry = json.dumps(
         {k: v for k, v in body.items() if k not in ("name", "measured")}, sort_keys=True, separators=(",", ":")
     )
-    directory = root / f"data/{system}/glm53_attention/sglang/0.5.20"
+    directory = root / f"data/{system}/glm53_attention/{backend}/{version}"
     directory.mkdir(parents=True)
     sha = "a" * 64
     pq.write_table(
@@ -406,8 +528,8 @@ def test_external_root_tp8_sparse_rows_follow_the_kv_identity(tmp_path, system, 
         config = ForwardPassPerfModelConfig(
             model="zai-org/GLM-5.3-Flash",
             system=system,
-            backend="sglang",
-            backend_version="0.5.20",
+            backend=backend,
+            backend_version=version,
             worker_type="aggregated",
             tp=8,
             moe_tp_size=8,
@@ -426,12 +548,8 @@ def test_external_root_tp8_sparse_rows_follow_the_kv_identity(tmp_path, system, 
             perf.close()
 
     assert sources(kv) == {"silicon"}
-    if kv == "bfloat16":
-        # SM90: FP8 KV is not a served identity and is refused at construction.
-        with pytest.raises(ValueError, match="SM90"):
-            sources("fp8")
-    else:
-        assert sources("bfloat16") == {"sol"}
+    # Capability does not authorize using a measurement of the other KV dtype.
+    assert sources("fp8" if kv == "bfloat16" else "bfloat16") == {"sol"}
 
 
 def _config(database_mode, backend="vllm", **kwargs):
@@ -456,6 +574,21 @@ def test_silicon_requires_exact_runtime_glm_tables():
     # and never borrow earlier-version rows for the GLM-specific families.
     with pytest.raises(PerfDataNotAvailableError, match="exact runtime"):
         RustForwardPassPerfModel.best_available(_config("SILICON"))
+
+
+@pytest.mark.parametrize(("backend", "version"), _HOPPER_FP8_RUNTIMES)
+@pytest.mark.parametrize("system", ["h100_sxm", "h200_sxm"])
+def test_fixed_hopper_fp8_runtimes_still_require_exact_silicon_tables(system, backend, version, monkeypatch):
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    config = _config("SILICON", backend, backend_version=version, kvcache_quant_mode="fp8").to_dict()
+    config.update(system=system, tp=8, moe_tp_size=8)
+    # Enabling the runtime's FP8 capability does not make analytical estimates
+    # or rows from an older runtime eligible for strict measured prediction.
+    # No data directory is packaged for either new runtime, so loading fails
+    # before the per-table exact-runtime readiness check.
+    with pytest.raises(PerfDataNotAvailableError, match="perf data directory not found") as error:
+        RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**config))
+    assert f"system={system}, backend={backend}, version={version}" in str(error.value)
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
@@ -542,6 +675,49 @@ def test_sol_is_unchanged_by_measured_composition(backend, prefill_ms, decode_ms
         model.close()
 
 
+# Accepted EP layouts at TP4: vLLM runs pure EP only (enable_expert_parallel
+# forces MoE TP 1); SGLang also runs the hybrid MoE TP x EP split.
+_EP_E2E_LAYOUTS = [("vllm", 1, 4), ("sglang", 1, 4), ("sglang", 2, 2)]
+_SPARSE_FFNS = {f"ffn_{layer}" for layer in range(3, 45)}
+
+
+def _tp4_phase_ops(database_mode, backend, moe_tp, moe_ep, prefill):
+    config = _config(database_mode, backend).to_dict() | dict(tp=4, moe_tp_size=moe_tp, moe_ep_size=moe_ep)
+    model = RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**config))
+    try:
+        args = dict(batch_size=1, context_length=2048) if prefill else dict(batch_size=32, context_length=2048)
+        return {op["name"]: op for op in model.static_phase_diagnostics(prefill=prefill, **args)}
+    finally:
+        model.close()
+
+
+@pytest.mark.parametrize(("backend", "moe_tp", "moe_ep"), _EP_E2E_LAYOUTS)
+def test_ep_sol_differs_from_tp4_only_in_routed_experts(backend, moe_tp, moe_ep):
+    for prefill in (True, False):
+        tp4, ep = _tp4_phase_ops("SOL", backend, 4, 1, prefill), _tp4_phase_ops("SOL", backend, moe_tp, moe_ep, prefill)
+        assert tp4.keys() == ep.keys()
+        changed = {name for name in tp4 if tp4[name]["latency_ms"] != ep[name]["latency_ms"]}
+        # Attention, mHC, dense FFN and every TP all-reduce/gather are identical.
+        assert changed <= _SPARSE_FFNS and changed
+        assert all(ep[name]["source"] == "sol" for name in ep)
+
+
+@pytest.mark.parametrize(("backend", "moe_tp", "moe_ep"), _EP_E2E_LAYOUTS)
+def test_ep_hybrid_labels_routed_ffn_fallback(backend, moe_tp, moe_ep):
+    # The default-version GB300 tables carry no GLM MoE rows for any layout, so
+    # HYBRID composes the routed FFN from estimated children and labels it
+    # "mixed", never "silicon". Everything outside the sparse FFNs is
+    # layout-independent and matches TP4 exactly.
+    for prefill in (True, False):
+        tp4 = _tp4_phase_ops("HYBRID", backend, 4, 1, prefill)
+        ep = _tp4_phase_ops("HYBRID", backend, moe_tp, moe_ep, prefill)
+        assert tp4.keys() == ep.keys()
+        assert {ep[name]["source"] for name in _SPARSE_FFNS} == {"mixed"}
+        assert all(ep[name]["latency_ms"] > 0 for name in _SPARSE_FFNS)
+        for name in tp4.keys() - _SPARSE_FFNS:
+            assert (ep[name]["latency_ms"], ep[name]["source"]) == (tp4[name]["latency_ms"], tp4[name]["source"]), name
+
+
 def test_kda_kernels_match_collected_kda_rows():
     # collect_kda.py contract: merged-qkv conv on both backends; SGLang
     # decode avoids the packed kernel because GLM sets a gate lower bound.
@@ -599,7 +775,7 @@ def test_tp1_fits_one_gb300_only_with_the_nvfp4_checkpoint(backend, version, tmp
 def test_vllm_bf16_kv_on_hopper_is_priced_like_sglang_bf16(system):
     # Stock vLLM 0.31.0 on SM90 serves BF16 KV only. Its cache payload equals
     # SGLang BF16 (512 x 2 B latent per token per sparse layer, index keys and
-    # pool tails unchanged); FP8 (Blackwell) keeps 512 B per token.
+    # pool tails unchanged); FP8 keeps 512 B per token on capable runtimes.
     bf16 = common.KVCacheQuantMode.bfloat16
     vllm = build("zai-org/GLM-5.3-Flash", "vllm", tp=8, kvcache_quant_mode=bf16)
     sglang = build("zai-org/GLM-5.3-Flash", "sglang", tp=8, kvcache_quant_mode=bf16)
@@ -615,6 +791,7 @@ def test_vllm_bf16_kv_on_hopper_is_priced_like_sglang_bf16(system):
             model="zai-org/GLM-5.3-Flash",
             system=system,
             backend="vllm",
+            backend_version="0.31.0",
             worker_type="aggregated",
             tp=8,
             moe_tp_size=8,
@@ -632,7 +809,7 @@ def test_vllm_bf16_kv_on_hopper_is_priced_like_sglang_bf16(system):
             model.close()
 
     assert latency("bfloat16") > 0
-    # FP8 KV is not a served SM90 identity: refused at construction, never priced.
+    # vLLM 0.31.0 lacks the FP8 KV fix; it still requires BF16 on Hopper.
     with pytest.raises(ValueError, match="SM90"):
         latency("fp8")
 

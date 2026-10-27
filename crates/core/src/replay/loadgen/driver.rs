@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Live warmup is a modified native re-implementation of NVIDIA AIPerf's
-// Apache-2.0 agentic_replay.py at SemiAnalysisAI/aiperf commit
-// 754356e9a39acc6cc6afb242d123bb57c3fb6f75; see THIRD_PARTY_NOTICES.md.
+// Live warmup and the continuous-profile release rules are modified native
+// re-implementations of NVIDIA AIPerf's Apache-2.0 agentic_replay.py,
+// branch_orchestrator.py, replay_dependencies.py and loop_scheduler.py at
+// SemiAnalysisAI/aiperf commit 754356e9a39acc6cc6afb242d123bb57c3fb6f75; see
+// THIRD_PARTY_NOTICES.md.
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -27,9 +29,9 @@ use super::trace::{
     validate_synthesizable_prompt_len,
 };
 use super::types::{
-    AgenticDependencyRelation, AgenticDependencyTrigger, AgenticGraphIdentity, AgenticPlayOutcome,
-    AgenticPlayStatus, AgenticTrace, AgenticTrajectorySnapshot, CompactReadyTurn, ReadyTurn,
-    ReplayRequestHashes, ReplayRequestPayload, Trace,
+    AgenticDependency, AgenticDependencyRelation, AgenticDependencyTrigger, AgenticGraphIdentity,
+    AgenticPlayOutcome, AgenticPlayStatus, AgenticTrace, AgenticTrajectorySnapshot,
+    CompactReadyTurn, ReadyTurn, ReplayRequestHashes, ReplayRequestPayload, Trace,
 };
 use super::{
     AgenticPlaySnapshot, AgenticReplayContext, AgenticSnapshotEvidence, PreparedAgenticSnapshots,
@@ -181,6 +183,29 @@ enum AgenticNodeState {
 struct AgenticDependentEdge {
     target_node: usize,
     delay_ms: f64,
+}
+
+/// Whether a request is released by pending work in its play rather than by a
+/// saved source-clock timer. Its sequence and spawn edges decide when it has
+/// any: AIPerf keeps the recorded timer only for a stream whose causal
+/// predecessor already ran, even while a join or replay barrier still gates it.
+/// Without causal edges, as for the first request of a detected chain, any
+/// pending barrier or join stands in for the spawn.
+fn waits_on_live_work(
+    dependencies: &[AgenticDependency],
+    pending: impl Fn(&AgenticDependency) -> bool,
+) -> bool {
+    let causal = |edge: &&AgenticDependency| {
+        matches!(
+            edge.relation,
+            AgenticDependencyRelation::Sequence | AgenticDependencyRelation::Spawn
+        )
+    };
+    if dependencies.iter().any(|edge| causal(&edge)) {
+        dependencies.iter().filter(causal).any(pending)
+    } else {
+        dependencies.iter().any(pending)
+    }
 }
 
 #[derive(Debug)]
@@ -932,16 +957,19 @@ impl WorkloadDriver {
                 .checked_add(1)
                 .context("play ordinal overflow")?;
         }
+        let cursor = context.initial_corpus_cursor();
+        let play_count = state.plays.len();
+        self.release_live_dependents_by_events()?;
         self.agentic_profile = Some(AgenticProfileState {
             options,
             start_ms: None,
             last_advanced_ms: 0.0,
             cutoff: false,
-            cursor: context.initial_corpus_cursor(),
+            cursor,
             active_plays,
             next_ordinals,
             replacements_at_ms: (None, 0),
-            tree_idle_since_ms: vec![None; state.plays.len()],
+            tree_idle_since_ms: vec![None; play_count],
             global_idle_since_ms: None,
             issued_requests: 0,
             successful_responses: 0,
@@ -1151,6 +1179,7 @@ impl WorkloadDriver {
             self.include_replay_hashes,
             self.agentic_speedup,
         )?;
+        appended.release_live_dependents_by_events()?;
         if self.live_warmup_active() {
             appended.compress_live_warmup_timers(0.0);
         }
@@ -1264,7 +1293,14 @@ impl WorkloadDriver {
             .copied()
             .filter(|play| only_play.is_none_or(|only| *play == only))
             .flat_map(|play| state.plays[play].nodes.iter().copied())
-            .filter_map(|index| self.sessions[index].next_ready_at_ms.map(|at| (index, at)))
+            .filter_map(|index| match self.sessions[index].next_ready_at_ms {
+                Some(at) => Some((index, at)),
+                // A blocked request's elapsed predecessor delays, such as a
+                // join's own replay deadline, are pending timers too.
+                None => (state.node_states[index] == AgenticNodeState::Blocked
+                    && state.ready_after_ms[index] > now_ms)
+                    .then_some((index, state.ready_after_ms[index])),
+            })
             .collect::<Vec<_>>();
         let Some(first) = pending.iter().map(|(_, at)| *at).min_by(f64::total_cmp) else {
             return false;
@@ -1275,13 +1311,15 @@ impl WorkloadDriver {
         }
         for (index, at) in &pending {
             let shifted = now_ms + (*at - first);
-            self.sessions[*index].next_ready_at_ms = Some(shifted);
             state.ready_after_ms[*index] = shifted;
-            self.ready_sessions.push(ReadySession {
-                ready_at_ms: shifted,
-                session_index: *index,
-                turn_index: 0,
-            });
+            if self.sessions[*index].next_ready_at_ms.is_some() {
+                self.sessions[*index].next_ready_at_ms = Some(shifted);
+                self.ready_sessions.push(ReadySession {
+                    ready_at_ms: shifted,
+                    session_index: *index,
+                    turn_index: 0,
+                });
+            }
         }
         self.agentic_profile
             .as_mut()
@@ -1536,6 +1574,51 @@ impl WorkloadDriver {
         Ok(changed)
     }
 
+    /// AIPerf releases a request that waits on live work in its play only from
+    /// that work's dispatch or completion plus the recorded delay; saved
+    /// source-clock timers belong to the frontier. Drop the saved timer of every
+    /// request that waits on live work. History before a snapshot cut counts as
+    /// complete, as at AIPerf's profiling boundary.
+    fn release_live_dependents_by_events(&mut self) -> Result<()> {
+        let SchedulingPolicy::Agentic(state) = &mut self.policy else {
+            unreachable!()
+        };
+        let context = self
+            .agentic_replay_context
+            .as_ref()
+            .context("agentic profile requires seeded snapshots")?;
+        let mut dependents = Vec::new();
+        let mut live = FxHashSet::default();
+        for play in &state.plays {
+            live.clear();
+            for &index in &play.nodes {
+                live.insert(
+                    self.sessions[index].turns[0]
+                        .request_id
+                        .as_deref()
+                        .context("agentic profile requires source request IDs")?,
+                );
+            }
+            for &index in &play.nodes {
+                let PromptTokens::Snapshot { source_index, .. } =
+                    self.sessions[index].turns[0].prompt_tokens
+                else {
+                    bail!("agentic profile requires immutable snapshot prompts");
+                };
+                if waits_on_live_work(&context.graph.nodes[source_index].dependencies, |edge| {
+                    live.contains(edge.request_id.as_str())
+                }) {
+                    dependents.push(index);
+                }
+            }
+        }
+        // Validation is complete; dependents are blocked and not yet scheduled.
+        for index in dependents {
+            state.ready_after_ms[index] = 0.0;
+        }
+        Ok(())
+    }
+
     // Reconstruct source-clock offsets, not warmup wall time. This is computed
     // before reset_measurements so any error leaves the phase retryable.
     fn live_handoff_times(&self, now_ms: f64, fresh_origin: bool) -> Result<Vec<(usize, f64)>> {
@@ -1583,26 +1666,15 @@ impl WorkloadDriver {
             // but future continuations and unspawned children must create their
             // timers from actual dependency events, including after idle caps.
             if *node == AgenticNodeState::Blocked
-                && context.graph.nodes[source_index]
-                    .dependencies
-                    .iter()
-                    .filter(|edge| {
-                        matches!(
-                            edge.relation,
-                            AgenticDependencyRelation::Sequence | AgenticDependencyRelation::Spawn
-                        )
-                    })
-                    .any(|edge| {
-                        states_by_request
-                            .get(&(state.node_to_play[index], edge.request_id.as_str()))
-                            .is_some_and(|source| {
-                                matches!(
-                                    source,
-                                    AgenticNodeState::Blocked | AgenticNodeState::Ready
-                                ) || (edge.trigger == AgenticDependencyTrigger::Completion
+                && waits_on_live_work(&context.graph.nodes[source_index].dependencies, |edge| {
+                    states_by_request
+                        .get(&(state.node_to_play[index], edge.request_id.as_str()))
+                        .is_some_and(|source| {
+                            matches!(source, AgenticNodeState::Blocked | AgenticNodeState::Ready)
+                                || (edge.trigger == AgenticDependencyTrigger::Completion
                                     && *source == AgenticNodeState::Emitted)
-                            })
-                    })
+                        })
+                })
             {
                 continue;
             }
@@ -5502,11 +5574,10 @@ mod tests {
         }
     }
 
-    fn profile_driver(
+    fn profile_snapshots(
         rows: Vec<super::super::AgenticMooncakeRow>,
         lanes: usize,
-        options: AgenticProfileOptions,
-    ) -> WorkloadDriver {
+    ) -> PreparedAgenticSnapshots {
         use super::super::{
             AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticHashIdScope,
             AgenticMooncakeHeader, AgenticSnapshotOptions, ValidatedAgenticGraph,
@@ -5525,9 +5596,17 @@ mod tests {
             rows,
         )
         .unwrap();
-        let prepared = graph
+        graph
             .prepare_snapshots(lanes, AgenticSnapshotOptions::seeded(42))
-            .unwrap();
+            .unwrap()
+    }
+
+    fn profile_driver(
+        rows: Vec<super::super::AgenticMooncakeRow>,
+        lanes: usize,
+        options: AgenticProfileOptions,
+    ) -> WorkloadDriver {
+        let prepared = profile_snapshots(rows, lanes);
         // Tests start at the source origin, independently of initial cut sampling.
         let plays = (0..lanes)
             .map(|lane| prepared.context().prepare_play_from_start(lane, 0).unwrap())
@@ -5700,6 +5779,262 @@ mod tests {
             driver.agentic_profile_report().unwrap().idle_shifts[0]
                 .play_id
                 .is_some()
+        );
+    }
+
+    /// One source play whose recorded API calls were slower than replay: each
+    /// authored offset lies after the time its dependencies allow.
+    fn aiperf_release_rows(spawn_delay_ms: f64, join_delay_ms: f64) -> Vec<AgenticMooncakeRow> {
+        use AgenticDependencyRelation::{Join, Sequence, Spawn};
+        use AgenticDependencyTrigger::Completion;
+        let row = |id: &str, start_ms, api_ms, dependencies| AgenticMooncakeRow {
+            recorded_api_time_ms: Some(api_ms),
+            dependencies,
+            ..profile_row(id, "play", start_ms)
+        };
+        let mut child = row(
+            "c0",
+            52_000.0,
+            40_000.0,
+            vec![dependency("r1", Completion, spawn_delay_ms, Spawn)],
+        );
+        child.session_id = "session-child".into();
+        vec![
+            row("r0", 0.0, 10_000.0, Vec::new()),
+            row(
+                "r1",
+                40_000.0,
+                10_000.0,
+                vec![dependency("r0", Completion, 30_000.0, Sequence)],
+            ),
+            child,
+            row(
+                "r2",
+                100_000.0,
+                1_000.0,
+                vec![
+                    dependency("r1", Completion, 50_000.0, Sequence),
+                    dependency("c0", Completion, join_delay_ms, Join),
+                ],
+            ),
+        ]
+    }
+
+    fn cut_driver(
+        rows: Vec<AgenticMooncakeRow>,
+        cut_ms: f64,
+        profile: Option<AgenticProfileOptions>,
+    ) -> WorkloadDriver {
+        let prepared = profile_snapshots(rows, 1);
+        let play = prepared.context().prepare_play(0, 0, Some(cut_ms)).unwrap();
+        let mut driver = WorkloadDriver::new_agentic_snapshots(
+            PreparedAgenticSnapshots::from_plays(vec![play]).unwrap(),
+            64,
+            true,
+            1.0,
+        )
+        .unwrap();
+        if let Some(options) = profile {
+            driver.enable_agentic_profile(options).unwrap();
+        }
+        driver
+    }
+
+    fn dispatch_only(driver: &mut WorkloadDriver, at_ms: f64, request_id: &str) -> Uuid {
+        driver.advance_agentic_profile(at_ms).unwrap();
+        let ready = driver.pop_ready(at_ms, usize::MAX);
+        assert_eq!(
+            ready
+                .iter()
+                .map(|turn| turn.authored_request_id.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            vec![request_id]
+        );
+        ready[0].request_uuid
+    }
+
+    fn complete(driver: &mut WorkloadDriver, request_uuid: Uuid, at_ms: f64) {
+        driver
+            .on_causal_terminal(request_uuid, at_ms, ReplayTerminalStatus::Completed)
+            .unwrap();
+    }
+
+    fn uncapped_profile() -> AgenticProfileOptions {
+        AgenticProfileOptions {
+            duration_seconds: 1_000.0,
+            tree_idle_cap_seconds: 1_000.0,
+            global_idle_cap_seconds: 1_000.0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn profile_releases_dependents_from_events_not_authored_offsets() {
+        let mut driver = cut_driver(
+            aiperf_release_rows(2_000.0, 8_000.0),
+            0.0,
+            Some(uncapped_profile()),
+        );
+        let r0 = dispatch_only(&mut driver, 0.0, "r0");
+        complete(&mut driver, r0, 1_000.0);
+        // Completion plus think time, not the authored 40 s offset.
+        assert_eq!(driver.next_ready_time_ms(), Some(31_000.0));
+        let r1 = dispatch_only(&mut driver, 31_000.0, "r1");
+        complete(&mut driver, r1, 32_000.0);
+        // The child spawns from its parent's completion, not at 52 s.
+        assert_eq!(driver.next_ready_time_ms(), Some(34_000.0));
+        let c0 = dispatch_only(&mut driver, 34_000.0, "c0");
+        complete(&mut driver, c0, 35_000.0);
+        // The join waits for the parent's own deadline, not the authored 100 s.
+        assert_eq!(driver.next_ready_time_ms(), Some(82_000.0));
+        dispatch_only(&mut driver, 82_000.0, "r2");
+
+        // Without a profile, authored offsets still bound every release.
+        let mut driver = cut_driver(aiperf_release_rows(2_000.0, 8_000.0), 0.0, None);
+        let r0 = dispatch_only(&mut driver, 0.0, "r0");
+        complete(&mut driver, r0, 1_000.0);
+        assert_eq!(driver.next_ready_time_ms(), Some(40_000.0));
+    }
+
+    #[test]
+    fn profile_starts_a_barrier_anchored_chain_from_its_predecessor() {
+        use AgenticDependencyRelation::{ReplayBarrier, Sequence};
+        use AgenticDependencyTrigger::Completion;
+        // A detected chain's first request has no spawn edge: only a replay
+        // barrier on the request it followed. AIPerf spawns it from that
+        // request; the parent's next turn still waits for its own deadline.
+        let mut chain = profile_row("w0", "play", 300_000.0);
+        chain.session_id = "session-chain".into();
+        chain.dependencies = vec![dependency("r0", Completion, 0.0, ReplayBarrier)];
+        let mut next = profile_row("r1", "play", 410_000.0);
+        next.dependencies = vec![
+            dependency("r0", Completion, 400_000.0, Sequence),
+            dependency("w0", Completion, 0.0, ReplayBarrier),
+        ];
+        let rows = || vec![profile_row("r0", "play", 0.0), chain.clone(), next.clone()];
+        let mut driver = cut_driver(rows(), 0.0, Some(uncapped_profile()));
+        let r0 = dispatch_only(&mut driver, 0.0, "r0");
+        complete(&mut driver, r0, 1_000.0);
+        let w0 = dispatch_only(&mut driver, 1_000.0, "w0");
+        complete(&mut driver, w0, 2_000.0);
+        assert_eq!(driver.next_ready_time_ms(), Some(401_000.0));
+
+        let mut driver = cut_driver(rows(), 0.0, None);
+        let r0 = dispatch_only(&mut driver, 0.0, "r0");
+        complete(&mut driver, r0, 1_000.0);
+        assert_eq!(driver.next_ready_time_ms(), Some(300_000.0));
+    }
+
+    #[test]
+    fn profile_snapshot_frontier_keeps_its_recorded_timer() {
+        // Cut after r0 starts: r1 resumes at its recorded offset from the cut,
+        // while r2 and the child wait only on r1's actual completion.
+        let mut driver = cut_driver(
+            aiperf_release_rows(2_000.0, 8_000.0),
+            5_000.0,
+            Some(uncapped_profile()),
+        );
+        assert_eq!(driver.next_ready_time_ms(), Some(35_000.0));
+        let r1 = dispatch_only(&mut driver, 35_000.0, "r1");
+        complete(&mut driver, r1, 36_000.0);
+        assert_eq!(driver.next_ready_time_ms(), Some(38_000.0));
+    }
+
+    #[test]
+    fn profile_idle_guard_shifts_blocked_join_deadlines_with_ready_timers() {
+        let mut driver = cut_driver(
+            aiperf_release_rows(20_000.0, 0.0),
+            0.0,
+            Some(AgenticProfileOptions {
+                global_idle_cap_seconds: 10.0,
+                ..uncapped_profile()
+            }),
+        );
+        let r0 = dispatch_only(&mut driver, 0.0, "r0");
+        complete(&mut driver, r0, 1_000.0);
+        // r0 completes at 1 s: the 30 s think time is capped to 10 s idle.
+        assert!(driver.advance_agentic_profile(11_000.0).unwrap());
+        let r1 = dispatch_only(&mut driver, 11_000.0, "r1");
+        complete(&mut driver, r1, 12_000.0);
+        // Idle again with two pending timers: the child at 32 s and r2's own
+        // join deadline at 62 s. Both advance by the same 10 s.
+        assert!(driver.advance_agentic_profile(22_000.0).unwrap());
+        let c0 = dispatch_only(&mut driver, 22_000.0, "c0");
+        complete(&mut driver, c0, 57_000.0);
+        assert_eq!(driver.next_ready_time_ms(), Some(57_000.0));
+        let shifts = driver.agentic_profile_report().unwrap().idle_shifts;
+        assert_eq!(
+            shifts
+                .iter()
+                .map(|shift| (shift.shifted_by_ms, shift.timer_count))
+                .collect::<Vec<_>>(),
+            vec![(20_000.0, 1), (10_000.0, 2)]
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::barrier_tree(AgenticDependencyRelation::ReplayBarrier, true)]
+    #[case::barrier_global(AgenticDependencyRelation::ReplayBarrier, false)]
+    #[case::join_tree(AgenticDependencyRelation::Join, true)]
+    #[case::join_global(AgenticDependencyRelation::Join, false)]
+    fn profile_idle_guards_advance_past_blocked_deadlines(
+        #[case] gate: AgenticDependencyRelation,
+        #[case] tree_guard: bool,
+    ) {
+        use AgenticDependencyRelation::{Join, ReplayBarrier, Sequence, Spawn};
+        use AgenticDependencyTrigger::Completion;
+        // r1's own delay ends before w1's timer, but r1 also waits for w1.
+        // AIPerf arms r1's timer and checks the barrier or join when it fires.
+        let mut w0 = profile_row("w0", "play", 1_000.0);
+        w0.session_id = "session-chain".into();
+        let start = if gate == Join { Spawn } else { ReplayBarrier };
+        w0.dependencies = vec![dependency("r0", Completion, 0.0, start)];
+        let mut w1 = profile_row("w1", "play", 40_000.0);
+        w1.session_id = "session-chain".into();
+        w1.dependencies = vec![dependency("w0", Completion, 38_000.0, Sequence)];
+        let mut r1 = profile_row("r1", "play", 41_000.0);
+        r1.dependencies = vec![
+            dependency("r0", Completion, 19_000.0, Sequence),
+            dependency("w1", Completion, 0.0, gate),
+        ];
+        let cap = |capped: bool| if capped { 10.0 } else { 1_000.0 };
+        let mut driver = cut_driver(
+            vec![profile_row("r0", "play", 0.0), w0, w1, r1],
+            0.0,
+            Some(AgenticProfileOptions {
+                tree_idle_cap_seconds: cap(tree_guard),
+                global_idle_cap_seconds: cap(!tree_guard),
+                ..uncapped_profile()
+            }),
+        );
+        let r0 = dispatch_only(&mut driver, 0.0, "r0");
+        complete(&mut driver, r0, 1_000.0);
+        let w0 = dispatch_only(&mut driver, 1_000.0, "w0");
+        complete(&mut driver, w0, 2_000.0);
+        // Idle from 2 s with r1's deadline at 20 s and w1's timer at 40 s.
+        // The first same-time pass lands on r1, which cannot dispatch, so the
+        // guard is due again at once and the second pass lands on w1.
+        assert!(driver.advance_agentic_profile(12_000.0).unwrap());
+        assert_eq!(driver.next_ready_time_ms(), Some(12_000.0));
+        assert!(driver.advance_agentic_profile(12_000.0).unwrap());
+        let w1 = dispatch_only(&mut driver, 12_000.0, "w1");
+        complete(&mut driver, w1, 13_000.0);
+        dispatch_only(&mut driver, 13_000.0, "r1");
+        let shifts = driver.agentic_profile_report().unwrap().idle_shifts;
+        assert_eq!(
+            shifts
+                .iter()
+                .map(|shift| (
+                    shift.at_ms,
+                    shift.shifted_by_ms,
+                    shift.timer_count,
+                    shift.play_id.is_some()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (12_000.0, 8_000.0, 2, tree_guard),
+                (12_000.0, 20_000.0, 1, tree_guard)
+            ]
         );
     }
 

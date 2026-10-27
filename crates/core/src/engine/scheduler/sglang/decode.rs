@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
 
+use std::cmp::Reverse;
 use std::time::Duration;
 
 use uuid::Uuid;
@@ -18,7 +22,8 @@ use super::config::{SglangConfig, floor_to_block};
 use super::request::SglangRequest;
 
 /// SGLang `SGLANG_RETRACT_DECODE_STEPS`: decode steps worth of KV reserved per surviving request
-/// when `retract_decode` re-estimates `new_token_ratio`.
+/// when `retract_decode` re-estimates `new_token_ratio`, and the per-request token reserve that
+/// `release_req` evicts cached pages toward after each retraction.
 pub(super) const RETRACT_DECODE_STEPS: usize = 20;
 
 #[derive(Default)]
@@ -105,7 +110,9 @@ fn allocate_ghost_slot(
 
 /// Make the prefix a forward materialized visible to admission. Under the host
 /// loop the scheduler learns it only when it observes that forward's result
-/// (`maybe_cache_unfinished_req`), so the commit is recorded, not applied.
+/// (`maybe_cache_unfinished_req`), so the commit is recorded, not applied. A
+/// request's cached prefix only grows until then, so a commit that adds no page
+/// now adds none when observed and is not recorded.
 fn commit_materialized_prefix(
     req: &mut SglangRequest,
     kv_manager: &mut SglangKvManager,
@@ -113,7 +120,9 @@ fn commit_materialized_prefix(
     deferred: &mut Vec<(Uuid, usize)>,
 ) {
     if config.host_loop {
-        deferred.push((req.uuid, req.materialized_tokens));
+        if uncached_aligned_prefix(req, config, req.materialized_tokens).is_some() {
+            deferred.push((req.uuid, req.materialized_tokens));
+        }
     } else {
         cache_materialized_prefix(req, kv_manager, config);
     }
@@ -152,10 +161,9 @@ pub(super) fn cache_prefix_through(
     config: &SglangConfig,
     tokens: usize,
 ) {
-    let aligned_tokens = floor_to_block(tokens.min(req.materialized_tokens), config.block_size);
-    if aligned_tokens == 0 || aligned_tokens <= req.cached_tokens() {
+    let Some(aligned_tokens) = uncached_aligned_prefix(req, config, tokens) else {
         return;
-    }
+    };
 
     if !req.kv_lease.is_active() {
         panic!(
@@ -167,6 +175,20 @@ pub(super) fn cache_prefix_through(
     let sequence = &req.sequence_tokens[..aligned_tokens];
     kv_manager.extend_cached_prefix(sequence, &mut req.kv_lease);
     req.debug_assert_invariants(config.block_size);
+}
+
+/// The page-aligned length through `tokens` to cache, when it extends the
+/// request's cached prefix.
+fn uncached_aligned_prefix(
+    req: &SglangRequest,
+    config: &SglangConfig,
+    tokens: usize,
+) -> Option<usize> {
+    if !config.enable_prefix_caching {
+        return None;
+    }
+    let aligned_tokens = floor_to_block(tokens.min(req.materialized_tokens), config.block_size);
+    (aligned_tokens > req.cached_tokens()).then_some(aligned_tokens)
 }
 
 #[cfg(test)]
@@ -218,12 +240,13 @@ fn check_decode_mem_for_burst(
             break;
         }
 
-        let Some((idx, _)) = running
-            .iter()
-            .enumerate()
-            .filter(|(_, req)| !req.pending_terminal)
-            .min_by_key(|(_, req)| req.output_len())
-        else {
+        // `retract_decode` stably sorts the batch once, longest output first and then shortest
+        // prompt first, retracts from the end, and keeps the survivors in that order. Ghost rows
+        // are sorted with the batch but never retracted.
+        if retracted.is_empty() && running.iter().any(|req| !req.pending_terminal) {
+            running.sort_by_key(|req| (Reverse(req.output_len()), req.prompt_len()));
+        }
+        let Some(idx) = running.iter().rposition(|req| !req.pending_terminal) else {
             break;
         };
 
@@ -247,6 +270,13 @@ fn check_decode_mem_for_burst(
             logical_available_blocks_before: Some(logical_available_blocks_before),
             required_blocks_before: Some(required_blocks_before),
         });
+        // `release_req` evicts cached pages toward a reserve for the remaining requests. Only the
+        // next step's demand decides whether to retract another request.
+        let reserve = running.len() * RETRACT_DECODE_STEPS;
+        let available = kv_manager.cache().available_tokens();
+        if available < reserve {
+            kv_manager.evict(reserve - available);
+        }
         retracted.push(req);
     }
 
@@ -358,7 +388,6 @@ fn prefill_first_tokens(
         newly_completed.push(running.remove(idx));
     }
     newly_completed.reverse();
-    completed_requests.extend(newly_completed);
 
     // The rest need a slot for the first output token; a row that finished on it takes its ghost
     // slot in the next decode step. Make room by evicting cached pages only.
@@ -371,12 +400,19 @@ fn prefill_first_tokens(
     if available < needed {
         kv_manager.evict(needed - available);
     }
+    // Prefill commits its prompt even when the first decode slots cannot be reserved.
+    // Overlap mode defers these commits until the forward result is observed.
+    for req in running.iter_mut().chain(newly_completed.iter_mut()) {
+        commit_materialized_prefix(req, kv_manager, config, &mut cache_commits);
+    }
+    completed_requests.extend(newly_completed);
     let reserved_pages = needed / config.block_size;
     let Some(mut reservation) = kv_manager.reserve_decode_pages(reserved_pages) else {
         return DecodeResult {
             completed_requests,
             output_signals,
             end_ms: current_time_ms,
+            cache_commits,
             ..DecodeResult::default()
         };
     };
@@ -391,7 +427,6 @@ fn prefill_first_tokens(
         }
         let token_id = req.next_output_token();
         req.append_output_token(token_id, config.block_size);
-        commit_materialized_prefix(req, kv_manager, config, &mut cache_commits);
         req.debug_assert_invariants(config.block_size);
         output_signals.push(OutputSignal {
             uuid: req.uuid,
@@ -624,7 +659,7 @@ fn simulate_step(
 
     output_signals.reserve(running.len());
     let mut completed_indices = Vec::new();
-    let mut cache_commits = Vec::new();
+    let cache_commits = Vec::new();
     let mut decode_acceptance = DecodeAcceptance::default();
 
     for (idx, req) in running.iter_mut().enumerate() {
@@ -685,7 +720,7 @@ fn simulate_step(
                 break;
             }
 
-            commit_materialized_prefix(req, kv_manager, config, &mut cache_commits);
+            // Decode output becomes reusable only when the request finishes.
             req.debug_assert_invariants(config.block_size);
         }
     }

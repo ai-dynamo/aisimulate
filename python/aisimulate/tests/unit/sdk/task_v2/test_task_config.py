@@ -2050,6 +2050,26 @@ def test_validate_disagg_fp8_static_is_data_driven_per_role():
         t.validate()
 
 
+@pytest.mark.parametrize("mode", ["afd", "bogus", None])
+def test_construction_rejects_unsupported_serving_mode_before_model_resolution(monkeypatch, mode):
+    def unexpected_model_resolution(_self):
+        pytest.fail("unsupported serving_mode reached model identity resolution")
+
+    monkeypatch.setattr(Task, "_resolve_model_identity", unexpected_model_resolution)
+    with pytest.raises(ValueError, match=f"Invalid serving_mode: {mode!r}") as caught:
+        Task(serving_mode=mode, model_path="Qwen/Qwen3-32B", system_name="h200_sxm")
+    assert ("aisimulate recommend" in str(caught.value)) is (mode == "afd")
+
+
+def test_from_yaml_rejects_null_serving_mode_before_model_resolution(monkeypatch):
+    def unexpected_model_resolution(_self):
+        pytest.fail("null serving_mode reached model identity resolution")
+
+    monkeypatch.setattr(Task, "_resolve_model_identity", unexpected_model_resolution)
+    with pytest.raises(ValueError, match="Invalid serving_mode: None"):
+        Task.from_yaml({"serving_mode": None, "model_path": "Qwen/Qwen3-32B", "system_name": "h200_sxm"})
+
+
 def test_validate_invalid_serving_mode_raises():
     t = Task(serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="h200_sxm")
     t.serving_mode = "weird"  # type: ignore[assignment]
@@ -2237,8 +2257,8 @@ def test_validate_fp8_static_not_transfer_admitted_in_hybrid():
     the overhead tables have no transfer ladder, so HYBRID must NOT admit it via
     profile transfer on combos without quantize data — validate keeps failing
     fast instead of the sweep dying late in query_compute_scale."""
-    # Vehicle: b60/vllm 0.20.0 (frozen-baseline current slot) ships fp8 GEMM
-    # data but no quantize family. vllm/b200 stopped qualifying when 0.24
+    # Vehicle: b60/vllm 0.28.0 (current slot) ships fp8 GEMM data but no
+    # quantize family at any version. vllm/b200 stopped qualifying when 0.24
     # collected computescale, and sglang is no vehicle at all — its fp8_static
     # is native (no overhead-table subtraction), so it lists the mode as
     # supported without quantize data.
@@ -2247,7 +2267,7 @@ def test_validate_fp8_static_not_transfer_admitted_in_hybrid():
         model_path="Qwen/Qwen3-32B",
         system_name="b60",
         backend_name="vllm",
-        backend_version="0.20.0",
+        backend_version="0.28.0",
         database_mode="HYBRID",
     )
     t.gemm_quant_mode = common.GEMMQuantMode.fp8_static

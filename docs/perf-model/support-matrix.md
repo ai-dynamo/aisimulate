@@ -25,6 +25,13 @@ adaptation and correction requirements are documented in
 [learned configuration](fpm_ml/configuration.md#selection-and-supported-execution).
 Explicit invalid configuration is not converted into a fallback estimator.
 
+Nemotron Super 3.5 checkpoints that declare `NemotronH_Omni_Reasoning_V3`
+use the NemotronH text model. AISimulate reads the nested `llm_config` and
+accepts `linear_attention` and `full_attention` layer names. Inferred
+`W4A16_NVFP4` MoE precision selects the vLLM `nvfp4` execution lane.
+Explicit precision overrides retain their values. This recognition does not
+add vision modeling or measured timing coverage.
+
 ## Published FPE matrix
 
 The [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/)
@@ -46,11 +53,17 @@ checkpoint precision, or backends outside vLLM/SGLang are `SDK_UNREPRESENTABLE`.
 The backend rejection describes AISimulate's modeling coverage; it does not
 establish that the backend itself cannot run the model.
 These rows retain their diagnostics and phases,
-with no latency or `PASS` status. Only the recognized `NotImplementedError`
-diagnostics receive these categories. Unexpected build errors and query-time
+with no latency or `PASS` status. Only recognized build-time diagnostics
+receive these categories. Unexpected build errors and query-time
 failures still block nightly qualification. Matching currently uses the exact
-exception type and message. Other restrictions (nextn/decoder replay,
-megamoe/wideep, and non-FP8 KV) and changed diagnostics remain blocking until
+exception type and message. The native build-time GLM-5.3-Flash Hopper FP8-KV
+rejection for vLLM before 0.32.0 or SGLang before 0.5.22 is
+`FRAMEWORK_INCOMPATIBLE`; this is a runtime-version limitation, not a hardware
+prohibition. Newer runtimes remain subject to exact-runtime performance-data
+coverage. See the [KV runtime requirements](../glm53flash-native-contract.md)
+for SGLang's required TileLang launch flags. Other restrictions
+(nextn/decoder replay, megamoe/wideep, and unsupported KV dtypes) and changed
+diagnostics remain blocking until
 explicitly classified; adding those probe axes requires extending coverage.
 
 The site's branch selector identifies the tested main or release snapshot.
@@ -71,6 +84,13 @@ CLI, set `engine.backend_version: current` or a version the error names.
 `AIC_ALLOW_UNLISTED_VERSIONS=1` lifts the version check for raw data access,
 but it does not qualify that version for the CLI and later stages can still
 fail.
+
+Older, unlisted data versions can still fill missing shapes in a queryable
+version. For example, B60 vLLM `previous` (0.26.0) needs the retained 0.20.0
+GEMM table for `k=16384` and `k=32768`; its primary grid stops at `k=12288`.
+The 0.28.0 measurements cannot fill those gaps because automatic fallback
+only uses earlier versions. Keep this older table until the supported versions
+have replacement coverage. Primary measurements still take precedence.
 
 ## Accuracy and replay
 

@@ -41,6 +41,7 @@ from aisimulate.sweeper import AFDLayerTimes, AFDTopology, BackendDeploymentSpec
 from aisimulate.sweeper.replay import ReplayOutputRequirements
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 from aisimulate_core.sdk.engine import EngineHandle, compile_engine
+from aisimulate_core.sdk.errors import PerfDataNotAvailableError
 from aisimulate_core.sdk.fpm_config import FpmCompileConfig
 from aisimulate_core.sdk.operations.fpm_forward import _CELL_MATCH_COLUMNS
 
@@ -401,6 +402,22 @@ def test_public_glm_fpm_predicts_unaligned_prefixes(tmp_path):
             assert predictor.estimate_forward_pass_time_ms(_prefix_metrics(1, 32, prefix)) == 15.0
     finally:
         predictor.close()
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_public_glm_fpm_refuses_expert_parallel_without_an_ep_cell(tmp_path, backend):
+    # Only a pure-TP4 cell exists. EP4 with TP4 attention has the same
+    # attention TP but a different MoE identity: it must find no cell instead
+    # of borrowing the TP4 measurements.
+    config, _, _ = _median_pair_request(tmp_path, backend, tp=4)
+    tp4 = RustForwardPassPerfModel.best_available(config)
+    try:
+        assert tp4.estimate_forward_pass_time_ms(_median_metrics("decode", 512)) == 7.125
+    finally:
+        tp4.close()
+    ep4 = ForwardPassPerfModelConfig(**(config.to_dict() | {"moe_tp_size": 1, "moe_ep_size": 4}))
+    with pytest.raises(PerfDataNotAvailableError, match=r'No FPM cell matches .*moe_tp="1", moe_ep="4"'):
+        RustForwardPassPerfModel.best_available(ep4)
 
 
 def _median_metrics(phase, tokens):
