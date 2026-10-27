@@ -176,6 +176,14 @@ def test_declared_rename_rejects_a_new_side_that_lacks_an_introduced_identifier(
         _compare_relabeled(tmp_path, PRE_RENAME, incomplete, relabels=RENAME)
 
 
+def test_declared_rename_rejects_a_new_side_that_lacks_a_renamed_identifier(tmp_path: Path) -> None:
+    # org/m is a source and a target at once: the new snapshot carries the BF16 rows but lost the
+    # rows of the plain identifier, so the FP8 checkpoint would go uncompared as ROWS_REMOVED.
+    incomplete = [POST_RENAME[1]]
+    with pytest.raises(ValueError, match=r"incomplete.*\['org/m'\]"):
+        _compare_relabeled(tmp_path, PRE_RENAME, incomplete, relabels=RENAME)
+
+
 def test_relabels_must_be_one_to_one(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="one-to-one"):
         _compare_relabeled(tmp_path, PRE_RENAME, POST_RENAME, relabels={"org/a": "org/m", "org/b": "org/m"})
