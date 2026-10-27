@@ -54,13 +54,13 @@ qualify the language-model phase only. Speculation, decoder replay, automatic
 estimator selection and shared-source inheritance are not supported.
 Supply the external hardware and performance-data root through `systems_paths`.
 
-The version-1 profile JSON has these fields:
+New profiles use version 2. The profile JSON has these fields:
 
 | Field | Contract |
 | --- | --- |
-| `schema_version` | `1`. |
+| `schema_version` | `2` for the common forward-pass API; `1` retains the legacy direct-phase contract. |
 | `basis` | The complete ordinary compiled `EngineSpec` used to qualify the profile. Both operation lists and every engine identity field must match the current compiler output; only `engine.systems_path` is excluded from comparison. |
-| `worker_type` | `prefill`, `decode`, or `aggregated`, matching the caller. |
+| `worker_type` | `prefill`, `decode`, or `aggregated`, matching the caller. `aggregated` requires version 2. |
 | `ops` | Replacement operations for the selected phase, or the prefill graph for `aggregated`, in execution order, using the existing externally tagged operation format. Resident weight bytes must match the original phase. |
 | `generation_ops` | Required for `aggregated`; absent for other roles. Replacement decode graph, with resident weight bytes matching the original decode graph. |
 | `retained_files` | Bundle-relative `path`, lowercase `sha256`, and `size_bytes` for every required hardware YAML, source/version metadata file and retained operation table. |
@@ -110,8 +110,8 @@ during database loading or readiness checks.
 
 The model returned by `RustForwardPassPerfModel.best_available(config)` accepts
 `estimate_forward_pass_time_ms(metrics_by_rank)` and
-`estimate_forward_pass_detailed(metrics_by_rank)`. External graphs use the same
-prefill, decode, and mixed-step calculations as built-in graphs. Mean lengths,
+`estimate_forward_pass_detailed(metrics_by_rank)` with version-2 profiles. External
+graphs use the same prefill, decode, and mixed-step calculations as built-in graphs. Mean lengths,
 variance handling, rank aggregation, and queued-metric handling are unchanged.
 Equivalent graphs, measurements, configuration, and metrics produce the same
 estimate regardless of the input source.
@@ -120,16 +120,40 @@ An aggregated profile supplies both `ops` (prefill) and `generation_ops` (decode
 Mixed steps use the existing operation filtering and composition: shared
 non-attention work at the combined token count, then each phase's attention at
 its own shape. There is no additional composition setting. `MeasuredComposite`
-uses the same filtering as other operations; replacing a whole phase with one
-scope does not expose its internal attention/non-attention split. Every measured
-scope queried by the existing calculation still needs an exact cell. Missing
+uses the same filtering as other operations. Graphs containing measured scopes
+must expose separate top-level attention operations for both phases, using the
+existing `context_attention` and `generation_attention` filters. Attention inside
+an `Overlap` group cannot supply that split. Opaque whole-phase graphs remain
+usable for pure-phase queries; mixed queries fail explicitly instead of silently
+omitting decode work. This structural check applies equally to raw engine graphs
+and external profiles; it does not validate the measurements against silicon.
+Every measured scope queried by the existing calculation still needs an exact cell. Missing
 cells fail through the common interface without changing the selected fallback
 policy. A single-phase profile rejects queries requiring the other phase.
 
-Direct phase, trajectory, and static mixed-step APIs retain their existing
-calculations and require the relevant phase graphs and measurement coverage.
+With version 2, direct phase, trajectory, and static mixed-step APIs retain their
+existing calculations and require the relevant phase graphs and measurement coverage.
 Dataset preparation accepts all three worker roles through the same
 `prepare_execution_profile` function and manifest schema.
+
+### Migrating version-1 profiles
+
+Version 1 retains its direct homogeneous prefill/decode queries and single-step
+decode behavior. It does not accept common forward-pass or mixed queries. For
+`predict_decode_latency_total(batch, total_past_kv_tokens)`, version 1 queries
+`[batch, total_past_kv_tokens / batch + 1, 0]`. Existing profile bytes and pins keep
+that meaning.
+
+Version 2 uses the ordinary common-API coordinate, without the extra token.
+For example, `predict_decode_latency_total(2, 8)` queries `[2, 5, 0]` in version 1
+and `[2, 4, 0]` in version 2. The direct static one-step call with input length 4
+continues to query `[2, 5, 0]` in both versions, matching the existing static API.
+
+To migrate, requalify the graph and measured cells for the intended query API,
+set `schema_version: 2`, and regenerate the profile SHA-256 and the dataset's
+artifact hashes. Preparation never rewrites cells or upgrades a pinned profile
+automatically. Do not shift every cell blindly: the existing static and common
+APIs use different coordinates.
 
 Profile files, saved configurations and diagnostics can reveal runtime
 identities or private paths. Keep them with their source dataset; the package

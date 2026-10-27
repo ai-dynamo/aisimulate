@@ -197,6 +197,7 @@ def test_prepared_aggregated_profile_predicts_mixed_step_offline(dataset):
     profile = json.loads((root / "metadata/profile.json").read_bytes())
     config = json.loads((root / "metadata/config.json").read_bytes())
     config["worker_type"] = profile["worker_type"] = "aggregated"
+    profile["schema_version"] = 2
     template = profile["ops"][0]["MeasuredComposite"]
 
     def scope(name, context, shape, latency, weights):

@@ -369,6 +369,8 @@ pub struct Engine {
     nextn: u32,
     pub(crate) profile_snapshot: Option<tempfile::TempDir>,
     profile_phase: Option<ForwardPassWorkerType>,
+    legacy_profile: bool,
+    mixed_ops_supported: bool,
     /// Measured target+draft round identity. This is parsed once from the
     /// existing EngineConfig.extra map, not a new serialized Op field.
     fpm_execution_profile: Option<FpmExecutionBinding>,
@@ -389,6 +391,58 @@ impl std::fmt::Debug for Engine {
 }
 
 impl Engine {
+    fn require_common_profile(&self) -> Result<(), AicError> {
+        if self.legacy_profile {
+            return Err(crate::operators::measured_composite::invalid(
+                "common forward-pass and mixed queries require execution profile schema_version 2; requalify the query coordinates and update the profile pin",
+            ));
+        }
+        Ok(())
+    }
+
+    fn check_mixed_ops(&self) -> Result<(), AicError> {
+        if !self.mixed_ops_supported {
+            return Err(crate::operators::measured_composite::invalid(
+                "mixed measured scopes require separate top-level phase attention operations; opaque whole-phase scopes or nested attention cannot be composed",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Measured scopes must expose the split used by the existing mixed filters.
+    /// Compute this once for all input sources; pure-phase queries remain valid.
+    fn supports_mixed_ops(context: &[Op], generation: &[Op]) -> bool {
+        fn inspect(ops: &[Op], context: bool, nested: bool) -> (bool, bool) {
+            let mut measured = false;
+            let mut invalid_attention = false;
+            for op in ops {
+                measured |= matches!(op, Op::MeasuredComposite(_));
+                invalid_attention |= if nested {
+                    op.is_context_attention() || op.is_generation_attention()
+                } else if context {
+                    op.is_generation_attention()
+                } else {
+                    op.is_context_attention()
+                };
+                if let Op::Overlap(group) = op {
+                    for children in [&group.group_a, &group.group_b] {
+                        let (child_measured, child_invalid) = inspect(children, context, true);
+                        measured |= child_measured;
+                        invalid_attention |= child_invalid;
+                    }
+                }
+            }
+            (measured, invalid_attention)
+        }
+        let (ctx_measured, ctx_invalid) = inspect(context, true, false);
+        let (gen_measured, gen_invalid) = inspect(generation, false, false);
+        !(ctx_measured || gen_measured)
+            || (!ctx_invalid
+                && !gen_invalid
+                && context.iter().any(Op::is_context_attention)
+                && generation.iter().any(Op::is_generation_attention))
+    }
+
     fn check_profile_phase(&self, prefill: bool) -> Result<(), AicError> {
         if self.profile_phase.is_some_and(|phase| match phase {
             ForwardPassWorkerType::Prefill => !prefill,
@@ -447,6 +501,22 @@ impl Engine {
             spec.context_ops.iter().chain(&spec.generation_ops),
         )?;
         Ok(Engine {
+            legacy_profile: spec.engine.extra.contains_key("execution_profile_phase")
+                && match spec
+                    .engine
+                    .extra
+                    .get("execution_profile_schema_version")
+                    .map(String::as_str)
+                {
+                    None | Some("1") => true,
+                    Some("2") => false,
+                    _ => {
+                        return Err(crate::operators::measured_composite::invalid(
+                            "unsupported profile schema version",
+                        ));
+                    }
+                },
+            mixed_ops_supported: Self::supports_mixed_ops(&spec.context_ops, &spec.generation_ops),
             context_plan: OpListPlan::new(&spec.context_ops),
             generation_plan: OpListPlan::new(&spec.generation_ops),
             context_ops: spec.context_ops,
@@ -1036,6 +1106,11 @@ impl Engine {
         mut on_op: impl FnMut(usize, &Op, PerformanceResult),
     ) -> Result<f64, AicError> {
         self.check_profile_phase(false)?;
+        if self.legacy_profile && runtime.osl > 2 {
+            return Err(crate::operators::measured_composite::invalid(
+                "v1 execution profiles support at most one decode step per query",
+            ));
+        }
         self.reject_full_round_surface("static generation trajectories")?;
         let bs = runtime
             .batch_size
@@ -1232,6 +1307,14 @@ impl Engine {
                 Ok(latency_ms)
             }
             _ => {
+                if self.legacy_profile
+                    && (total_prefill_tokens % batch_size != 0
+                        || total_kv_read_tokens % batch_size != 0)
+                {
+                    return Err(crate::operators::measured_composite::invalid(
+                        "v1 prefill profile requires a homogeneous batch",
+                    ));
+                }
                 let total_isl = total_prefill_tokens
                     .checked_add(total_kv_read_tokens)
                     .ok_or_else(|| {
@@ -1283,6 +1366,15 @@ impl Engine {
         total_past_kv_tokens: u32,
         coverage: Option<&mut FpmQueryCoverage>,
     ) -> Result<f64, AicError> {
+        if self.legacy_profile {
+            self.check_profile_phase(false)?;
+            if batch_size == 0 || total_past_kv_tokens % batch_size != 0 {
+                return Err(crate::operators::measured_composite::invalid(
+                    "v1 decode profile requires a positive homogeneous batch",
+                ));
+            }
+            return self.predict_decode_latency(batch_size, total_past_kv_tokens / batch_size, 2);
+        }
         self.forward_pass_time_ms_with_coverage(
             &[ForwardPassMetrics {
                 scheduled_requests: crate::ScheduledRequestMetrics {
@@ -1405,6 +1497,10 @@ impl Engine {
         gen_seq_imbalance_correction_scale: f64,
         mut on_op: impl FnMut(MixedPass, &Op, PerformanceResult),
     ) -> Result<[f64; 4], AicError> {
+        self.require_common_profile()?;
+        if ctx_tokens > 0 && gen_tokens > 0 {
+            self.check_mixed_ops()?;
+        }
         if ctx_tokens > 0 {
             self.check_profile_phase(true)?;
         }
@@ -2597,6 +2693,7 @@ impl Engine {
         capture: bool,
         mut coverage: Option<&mut FpmQueryCoverage>,
     ) -> Result<crate::ForwardPassEstimate, AicError> {
+        self.require_common_profile()?;
         if metrics_by_rank.is_empty() {
             return Err(AicError::InvalidForwardPassMetrics(
                 "at least one attention-DP rank metric required".to_string(),
@@ -2834,6 +2931,7 @@ impl Engine {
             // `_get_mix_step_latency`. `sum_prefill_kv_tokens` is exactly the
             // combined-prefix value the pass-1 non-attention call needs; pass
             // it through unchanged.
+            self.check_mixed_ops()?;
             let n_prefill = sched.num_prefill_requests.max(1);
             let new_tokens_per_req = sched.sum_prefill_tokens / n_prefill;
             let prefix_per_req = sched.sum_prefill_kv_tokens / n_prefill;
@@ -3143,6 +3241,9 @@ pub(crate) mod tests {
             "execution_profile_phase".into(),
             if prefill { "prefill" } else { "decode" }.into(),
         );
+        config
+            .extra
+            .insert("execution_profile_schema_version".into(), "2".into());
         let values: &[f64] = if complete {
             &[2.0, 5.0, 7.0, 11.0]
         } else {
@@ -3214,6 +3315,9 @@ pub(crate) mod tests {
         config
             .extra
             .insert("execution_profile_phase".into(), "aggregated".into());
+        config
+            .extra
+            .insert("execution_profile_schema_version".into(), "2".into());
         let scope = |name: &str, context: bool, shape, latency_ms| {
             Op::MeasuredComposite(MeasuredCompositeOp {
                 name: name.into(),
@@ -3265,6 +3369,58 @@ pub(crate) mod tests {
                 .latency_ms,
             Some(42.0)
         );
+    }
+
+    #[test]
+    fn measured_scope_mixed_queries_require_attention_decomposition() {
+        let context = measured_profile_engine(true, true);
+        let generation = measured_profile_engine(false, true);
+        // Apply the same composition boundary to a raw EngineSpec, without a profile.
+        let engine = Engine::build(
+            EngineSpec::new(
+                fixture_engine_config(None),
+                context.context_ops,
+                generation.generation_ops,
+            ),
+            context.db,
+        )
+        .unwrap();
+        let metrics = ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_prefill_requests: 2,
+                sum_prefill_tokens: 10,
+                num_decode_requests: 2,
+                sum_decode_kv_tokens: 10,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        for error in [
+            engine.forward_pass_time_ms(&[metrics]).unwrap_err(),
+            engine
+                .mixed_step_latency(10, 2, 5, 2, 0, 1.0, 1.0)
+                .unwrap_err(),
+        ] {
+            assert!(
+                error.to_string().contains("top-level phase attention"),
+                "{error}"
+            );
+        }
+        let mut context_ops = engine.context_ops.clone();
+        let mut generation_ops = engine.generation_ops.clone();
+        if let Op::MeasuredComposite(op) = &mut context_ops[0] {
+            op.name = "context_attention".into();
+        }
+        if let Op::MeasuredComposite(op) = &mut generation_ops[0] {
+            op.name = "generation_attention".into();
+        }
+        assert!(Engine::supports_mixed_ops(&context_ops, &generation_ops));
+        let nested = vec![Op::Overlap(crate::operators::op::OverlapOp {
+            name: "nested".into(),
+            group_a: context_ops,
+            group_b: vec![],
+        })];
+        assert!(!Engine::supports_mixed_ops(&nested, &generation_ops));
     }
 
     #[test]

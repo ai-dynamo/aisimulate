@@ -125,7 +125,7 @@ impl ExecutionProfileSelection {
             return Err(invalid("profile SHA-256 does not match its pin"));
         }
         let profile: ExecutionProfile = serde_json::from_slice(&bytes).map_err(invalid)?;
-        if profile.schema_version != 1
+        if !matches!(profile.schema_version, 1 | 2)
             || profile.basis.schema_version != crate::ENGINE_SPEC_SCHEMA_VERSION
             || profile.ops.is_empty()
             || profile.retained_files.is_empty()
@@ -135,6 +135,9 @@ impl ExecutionProfileSelection {
             ));
         }
         if profile.worker_type == ForwardPassWorkerType::Aggregated {
+            if profile.schema_version == 1 {
+                return Err(invalid("aggregated profiles require schema_version 2"));
+            }
             if profile.generation_ops.as_ref().is_none_or(Vec::is_empty) {
                 return Err(invalid("aggregated profiles require generation_ops"));
             }
@@ -263,6 +266,10 @@ impl ExecutionProfileSelection {
         spec.engine
             .extra
             .insert("execution_profile_sha256".into(), self.sha256.clone());
+        spec.engine.extra.insert(
+            "execution_profile_schema_version".into(),
+            profile.schema_version.to_string(),
+        );
         spec.engine.systems_path = Some(snapshot.path().to_path_buf());
         Ok((spec, snapshot))
     }

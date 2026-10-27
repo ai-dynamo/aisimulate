@@ -74,7 +74,7 @@ def profile(tmp_path, monkeypatch):
         ],
     }
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "basis": json.loads(_native.engine_spec_json_from_bincode(spec_bytes)),
         "worker_type": "prefill",
         "ops": [{"MeasuredComposite": measured}],
@@ -274,6 +274,53 @@ def test_decode_profile_and_separate_profile_identity(profile):
         decode.predict_prefill_latency(1, 4, 0)
 
 
+def test_legacy_decode_profile_preserves_pinned_coordinate(profile):
+    config, payload, publish, _, _ = profile
+    payload["schema_version"] = 1
+    payload["worker_type"] = config["worker_type"] = "decode"
+    op = payload["ops"][0]["MeasuredComposite"]
+    op.update(name="generation_measured_scope", is_context=False, scale_factor=1.0)
+    op["cells"] = [
+        {"shape": [2, 4, 0], "latency_ms": 10.0},
+        {"shape": [2, 5, 0], "latency_ms": 20.0},
+    ]
+    for cells in [op["cells"], op["cells"][1:]]:
+        payload["schema_version"] = 1
+        op["cells"] = cells
+        publish()
+        model = RustForwardPassPerfModel.best_available(config)
+        # v1 total decode has always queried past KV / batch + 1.
+        assert model.predict_decode_latency_total(2, 8) == 20.0
+        assert model.static_phase_latency(batch_size=2, input_tokens=4, output_tokens=2, prefill=False) == 20.0
+        with pytest.raises(ValueError, match="homogeneous"):
+            model.predict_decode_latency_total(2, 9)
+        with pytest.raises(ValueError, match="one decode step"):
+            model.static_phase_latency(batch_size=2, input_tokens=4, output_tokens=3, prefill=False)
+        saved = model.diagnostics()["provenance"]["config"]
+        assert RustForwardPassPerfModel.best_available(saved).predict_decode_latency_total(2, 8) == 20.0
+        with pytest.raises(ValueError, match="schema_version 2"):
+            model.estimate_forward_pass_time_ms(
+                [{"scheduled_requests": {"num_decode_requests": 2, "sum_decode_kv_tokens": 8}}]
+            )
+        # Moving to the shared coordinate is explicit and changes the content pin.
+        payload["schema_version"] = 2
+        publish()
+        assert (
+            config["estimator_config"]["op_level"]["execution_profile"]["sha256"]
+            != saved["estimator_config"]["op_level"]["execution_profile"]["sha256"]
+        )
+        migrated = RustForwardPassPerfModel.best_available(config)
+        metrics = [{"scheduled_requests": {"num_decode_requests": 2, "sum_decode_kv_tokens": 8}}]
+        if len(cells) == 2:
+            assert migrated.predict_decode_latency_total(2, 8) == 10.0
+            assert migrated.estimate_forward_pass_time_ms(metrics) == 10.0
+        else:
+            with pytest.raises(ValueError, match="no exact cell"):
+                migrated.predict_decode_latency_total(2, 8)
+        assert migrated.static_phase_latency(batch_size=2, input_tokens=4, output_tokens=2, prefill=False) == 20.0
+        assert model.predict_decode_latency_total(2, 8) == 20.0
+
+
 def test_measured_scope_bincode_roundtrip(profile):
     _, payload, _, _, _ = profile
     spec = copy.deepcopy(payload["basis"])
@@ -435,10 +482,40 @@ def test_aggregated_profile_common_api_and_phase_queries(aggregated_profile):
         model.estimate_forward_pass_time_ms([{"scheduled_requests": prefill | decode | {"sum_decode_kv_tokens": 12}}])
 
 
+@pytest.mark.parametrize("decode_latency", [70.0, 7000.0])
+def test_opaque_mixed_scopes_fail_instead_of_omitting_decode(aggregated_profile, decode_latency):
+    config, payload, publish, _, _ = aggregated_profile
+    prefill = payload["ops"][0]["MeasuredComposite"]
+    prefill.update(name="whole_prefill", scale_factor=1.0, cells=[{"shape": [1, 12, 0], "latency_ms": 100.0}])
+    decode = payload["generation_ops"][0]["MeasuredComposite"]
+    decode.update(name="whole_decode", scale_factor=1.0, cells=[{"shape": [2, 5, 0], "latency_ms": decode_latency}])
+    payload["ops"] = [{"MeasuredComposite": prefill}]
+    payload["generation_ops"] = [{"MeasuredComposite": decode}]
+    publish()
+    model = RustForwardPassPerfModel.best_available(config)
+    assert model.predict_prefill_latency(1, 12, 0) == 100.0
+    assert model.predict_decode_latency_total(2, 10) == decode_latency
+    for kv in [10, 12]:
+        metrics = [
+            {
+                "scheduled_requests": {
+                    "num_prefill_requests": 2,
+                    "sum_prefill_tokens": 10,
+                    "num_decode_requests": 2,
+                    "sum_decode_kv_tokens": kv,
+                }
+            }
+        ]
+        for query in [model.estimate_forward_pass_time_ms, model.estimate_forward_pass_detailed]:
+            with pytest.raises(ValueError, match="top-level phase attention"):
+                query(metrics)
+
+
 @pytest.mark.parametrize(
     "change,pattern",
     [
         ("missing_decode", "require generation_ops"),
+        ("legacy_schema", "schema_version 2"),
         ("wrong_phase", "identity or phase"),
         ("weights", "resident weights"),
         ("single_phase", "require an aggregated profile"),
@@ -446,7 +523,9 @@ def test_aggregated_profile_common_api_and_phase_queries(aggregated_profile):
 )
 def test_aggregated_profile_validates_phase_inputs(aggregated_profile, change, pattern):
     config, payload, publish, _, _ = aggregated_profile
-    if change == "missing_decode":
+    if change == "legacy_schema":
+        payload["schema_version"] = 1
+    elif change == "missing_decode":
         del payload["generation_ops"]
     elif change == "wrong_phase":
         payload["generation_ops"][1]["MeasuredComposite"]["is_context"] = True
@@ -501,7 +580,7 @@ def test_external_inputs_preserve_builtin_predictions(tmp_path, monkeypatch, rol
         )
     )
     payload = dict(
-        schema_version=1,
+        schema_version=2,
         basis=basis,
         worker_type=role,
         ops=basis["generation_ops" if role == "decode" else "context_ops"],
@@ -695,6 +774,7 @@ def test_native_per_op_decode_reports_missing_trajectory_cells(profile, metadata
     _, payload, _, root, _ = profile
     spec = copy.deepcopy(payload["basis"])
     spec["engine"]["extra"]["execution_profile_phase"] = "decode"
+    spec["engine"]["extra"]["execution_profile_schema_version"] = "2"
     op = copy.deepcopy(payload["ops"][0]["MeasuredComposite"])
     op.update(name="generation_measured_scope", is_context=False, cells=[{"shape": [2, 5, 0], "latency_ms": 2.0}])
     spec["generation_ops"] = [{"MeasuredComposite": op}]
