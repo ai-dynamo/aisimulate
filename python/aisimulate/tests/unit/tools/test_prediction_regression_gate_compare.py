@@ -8,7 +8,7 @@ import csv
 from pathlib import Path
 
 import pytest
-from tools.prediction_regression_gate import compare
+from tools.prediction_regression_gate import compare, grid
 
 pytestmark = pytest.mark.unit
 
@@ -110,6 +110,75 @@ def test_summarize_and_report(tmp_path: Path) -> None:
     compare.write_report([result], report)
     lines = report.read_text().splitlines()
     assert len(lines) == 2 and "REGRESSION" in lines[1]
+
+
+# ---------------------------------------------------------------------------
+# Declared model relabels
+# ---------------------------------------------------------------------------
+
+# The plain identifier moves from the BF16 checkpoint to the FP8 one, which
+# lacks data on this combo; the BF16 checkpoint moves to a suffixed name.
+RENAME = {"org/m-FP8": "org/m", "org/m": "org/m-BF16"}
+PRE_RENAME = [_row(model="org/m-FP8", status="DATA_MISS", value_ms=""), _row(model="org/m", value_ms="10.000000")]
+POST_RENAME = [_row(model="org/m", status="DATA_MISS", value_ms=""), _row(model="org/m-BF16", value_ms="10.000000")]
+
+
+def _compare_relabeled(tmp_path: Path, old_rows: list[dict], new_rows: list[dict], relabels: dict[str, str]):
+    old = _write(tmp_path / "old.csv", old_rows)
+    new = _write(tmp_path / "new.csv", new_rows)
+    return compare.compare_combo("sys/backend/1.0.csv", old, new, relabels=relabels)
+
+
+def test_rename_without_declaration_reads_as_regression(tmp_path: Path) -> None:
+    result = _compare_relabeled(tmp_path, PRE_RENAME, POST_RENAME, relabels={})
+    assert sorted(d.category for d in result.diffs) == ["REGRESSION", "ROWS_ADDED", "ROWS_REMOVED"]
+
+
+def test_declared_rename_compares_each_model_under_its_new_identifier(tmp_path: Path) -> None:
+    result = _compare_relabeled(tmp_path, PRE_RENAME, POST_RENAME, relabels=RENAME)
+    assert [(d.category, d.key, d.detail) for d in result.diffs] == [
+        ("RELABELED", ("org/m",), "1 old rows compared as org/m-BF16"),
+        ("RELABELED", ("org/m-FP8",), "1 old rows compared as org/m"),
+    ]
+    assert result.rows_compared == 2
+    assert not any(d.category in compare.BLOCKING_CATEGORIES for d in result.diffs)
+
+
+def test_declared_rename_still_blocks_a_real_regression(tmp_path: Path) -> None:
+    broken = [POST_RENAME[0], _row(model="org/m-BF16", status="INVALID", value_ms="", err="ValueError")]
+    result = _compare_relabeled(tmp_path, PRE_RENAME, broken, relabels=RENAME)
+    regressions = [d for d in result.diffs if d.category == "REGRESSION"]
+    assert [d.key[0] for d in regressions] == ["org/m-BF16"]
+
+
+@pytest.mark.parametrize(
+    "old_rows",
+    [
+        pytest.param(POST_RENAME, id="rename-already-on-base"),
+        pytest.param([*PRE_RENAME, _row(model="org/m-BF16")], id="introduced-identifier-already-on-base"),
+    ],
+)
+def test_declared_rename_is_inert_unless_old_side_predates_it(tmp_path: Path, old_rows: list[dict]) -> None:
+    result = _compare_relabeled(tmp_path, old_rows, POST_RENAME, relabels=RENAME)
+    assert "RELABELED" not in {d.category for d in result.diffs}
+
+
+def test_declared_rename_is_inert_while_new_side_keeps_a_retired_identifier(tmp_path: Path) -> None:
+    result = _compare_relabeled(tmp_path, PRE_RENAME, PRE_RENAME, relabels=RENAME)
+    assert result.diffs == []
+
+
+def test_relabels_must_be_one_to_one(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="one-to-one"):
+        _compare_relabeled(tmp_path, PRE_RENAME, POST_RENAME, relabels={"org/a": "org/m", "org/b": "org/m"})
+
+
+def test_shipped_relabels_match_the_bundled_model_list() -> None:
+    bundled = set(grid.bundled_models())
+    targets = set(compare.MODEL_RELABELS.values())
+    assert len(targets) == len(compare.MODEL_RELABELS)
+    assert targets <= bundled
+    assert not (compare.MODEL_RELABELS.keys() - targets) & bundled
 
 
 # ---------------------------------------------------------------------------

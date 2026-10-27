@@ -37,7 +37,7 @@ from tools.accuracy_tracking.run_silicon import SILICON_FILENAME
 from tools.prediction_regression_gate import compare
 from tools.prediction_regression_gate.run_tier2 import TIER2_FILENAME
 
-CATEGORY_ORDER = ("REGRESSION", "STATUS_CHANGE", "DRIFT", "GAIN", "ROWS_ADDED", "ROWS_REMOVED")
+CATEGORY_ORDER = ("REGRESSION", "STATUS_CHANGE", "DRIFT", "GAIN", "ROWS_ADDED", "ROWS_REMOVED", "RELABELED")
 MAX_INLINE_DIFFS = 50
 
 
