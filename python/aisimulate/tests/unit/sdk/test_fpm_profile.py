@@ -273,6 +273,8 @@ def test_unknown_profile_auto_compiles_without_operations(profile_dict, direct_c
     assert json.loads(spec["engine"]["extra"]["fpm_profile"]) == profile.model_dump(mode="json")
     assert json.loads(spec["engine"]["extra"]["estimator_config"])["fpm_interpolation"]["method"] == "direct"
     assert spec["engine"]["activation_dtype"] == "fp8"
+    assert "nextn" not in spec["engine"]
+    assert "fpm_execution_profile" not in spec["engine"]["extra"]
     for key, phase in (("context_ops", "prefill"), ("generation_ops", "decode")):
         assert len(spec[key]) == 1
         op = spec[key][0]["FpmForward"]
@@ -370,6 +372,23 @@ def test_profile_compilation_rejects_op_level_controls_before_graph_construction
             fpm_profile=profile_dict,
             fpm_interpolation="direct",
             **{control: "explicit-selection"},
+        )
+
+
+def test_direct_compilation_rejects_encoder_parallel(profile_dict, direct_compile):
+    with pytest.raises(ValueError, match="does not support encoder_parallel"):
+        engine.compile_engine(
+            "test/unknown-decoder",
+            "test_gpu",
+            "vllm",
+            "0.25.1",
+            tp_size=2,
+            moe_tp_size=2,
+            moe_ep_size=1,
+            forward_model="fpm",
+            fpm_profile=profile_dict,
+            fpm_interpolation="direct",
+            encoder_parallel="tp",
         )
 
 
@@ -812,6 +831,139 @@ def runtime_profile(profile_dict):
     return profile_dict
 
 
+@pytest.fixture
+def speculative_profile(runtime_profile, monkeypatch):
+    runtime_profile["model_revision"] = "1" * 40
+    runtime_profile["deployments"][0]["execution_profile"] = {
+        "kind": "speculative_round",
+        "method": "eagle3",
+        "num_draft_tokens": 3,
+        "draft_model": "test/draft",
+        "draft_revision": "2" * 40,
+        "timing_scope": "model_step_cuda",
+    }
+
+    def download(model, filename, *, revision):
+        assert (model, filename, revision) == (runtime_profile["model"], "config.json", "1" * 40)
+        return {"architectures": [runtime_profile["architecture"]]}
+
+    monkeypatch.setattr(utils, "_download_hf_json", download)
+    return runtime_profile
+
+
+def test_speculative_round_direct_spec_preserves_identity_and_raw_batch_width(speculative_profile, direct_compile):
+    spec = direct_compile(speculative_profile, fpm_interpolation="direct", nextn=3)
+    profile = load_fpm_profile(speculative_profile)
+    deployment = profile.deployments[0]
+    binding = {
+        "model_revision": profile.model_revision,
+        "execution_profile": deployment.execution_profile.model_dump(mode="json"),
+    }
+    assert spec["engine"]["nextn"] == 3
+    assert json.loads(spec["engine"]["extra"]["fpm_execution_profile"]) == binding
+    saved = json.loads(spec["engine"]["extra"]["fpm_profile"])
+    assert _normalize(_request(saved, "direct", nextn=3))["fpm_profile"] == saved
+    expected_identity = deployment.match_identity() + list(deployment.execution_identity(profile.model_revision))
+    assert len(expected_identity) == 19
+    for phase in ("context_ops", "generation_ops"):
+        assert len(spec[phase]) == 1
+        op = spec[phase][0]["FpmForward"]
+        assert op["match_identity"] == expected_identity
+        assert op["verify_width"] == 1  # Full-round curves already use request count, not verify-token count.
+        assert op["interpolation"] == "direct"
+        assert op["sol_ops"] == []
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"nextn": 0},
+        {"nextn": 2},
+        {"estimation_mode": "auto"},
+        {"fallback_policy": "allow"},
+        {"nextn": 0, "speculation": {"kind": "mtp", "params": {"depth": 3}}},
+        {"nextn": 0, "speculation": {"kind": "ngram", "params": {"num_speculative_tokens": 3}}},
+    ],
+)
+def test_speculative_round_profile_rejects_implicit_or_mismatched_execution(speculative_profile, overrides):
+    config = _request(speculative_profile, "direct", nextn=3)
+    config.update(overrides)
+    with pytest.raises(ValueError):
+        _normalize(config)
+
+
+def test_speculative_round_memory_forwards_depth_and_uses_observed_pool(
+    speculative_profile, profile_memory, monkeypatch
+):
+    calls = []
+    estimate = RustForwardPassPerfModel.estimate_cache_budget
+
+    def observe(config, request):
+        calls.append(copy.deepcopy(config))
+        return estimate(config, request)
+
+    monkeypatch.setattr(RustForwardPassPerfModel, "estimate_cache_budget", observe)
+    monkeypatch.setattr(memory.KVCacheEstimator, "_estimate_from_breakdown", _fail_graph)
+    result = profile_memory(nextn=3, context_length=1024, gpu_memory_capacity_bytes_override=2000)
+    assert calls[0]["nextn"] == 3
+    assert calls[0]["estimation_mode"] == "fpm_interpolation"
+    assert calls[0]["fallback_policy"] == "deny"
+    assert calls[0]["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+    assert (
+        calls[0]["fpm_profile"]["deployments"][0]["execution_profile"]
+        == (speculative_profile["deployments"][0]["execution_profile"])
+    )
+    assert result["total_kv_size_bytes"] == 600  # Recorded pool, independent of the 2000-byte device bound.
+    assert result["total_kv_size_tokens"] == 60  # The fixture records ten bytes per token.
+    assert result["memory_breakdown"] is None
+    with pytest.raises(ValueError):
+        profile_memory(nextn=0, context_length=1024, allow_naive_fallback=True)
+
+
+def test_speculative_round_memory_rejects_declared_budget_without_analytical_fallback(
+    speculative_profile, profile_memory, monkeypatch
+):
+    resources = speculative_profile["deployments"][0]["resources"]
+    resources.pop("runtime_memory")
+    resources.update(weights_bytes=100, activations_bytes=20, runtime_overhead_bytes=30, comm_overhead_bytes=50)
+    monkeypatch.setattr(memory.KVCacheEstimator, "_estimate_from_breakdown", _fail_graph)
+    monkeypatch.setattr(memory.NaiveKVCacheEstimator, "from_model_path", _fail_graph)
+    with pytest.raises(ValueError, match="runtime|observed"):
+        profile_memory(nextn=3, context_length=1024, allow_naive_fallback=True)
+
+
+@pytest.mark.parametrize("entry", [memory.estimate_kv_cache, memory.estimate_num_gpu_blocks])
+@pytest.mark.parametrize("dcp", [None, 1, 2])
+def test_speculative_round_standalone_memory_preserves_dcp(speculative_profile, profile_memory, entry, dcp):
+    kwargs = dict(
+        max_num_tokens=8192,
+        max_batch_size=256,
+        memory_fraction_kind="of_total",
+        memory_fraction_value=0.8,
+        tp_size=2,
+        moe_tp_size=2,
+        nextn=3,
+        fpm_profile=speculative_profile,
+        context_length=1024,
+        allow_naive_fallback=True,
+    )
+    if dcp is not None:
+        kwargs["dcp_size"] = dcp
+    if entry is memory.estimate_num_gpu_blocks:
+        kwargs["scheduler_block_size"] = 16
+
+    def estimate():
+        return entry("test/unknown-decoder", "test_gpu", "vllm", "0.25.1", **kwargs)
+
+    if dcp == 2:
+        with pytest.raises(ValueError, match="DCP"):
+            estimate()
+    elif entry is memory.estimate_kv_cache:
+        assert estimate()["total_kv_size_tokens"] == 60  # Observed 600-byte pool / 10 bytes per token.
+    else:
+        assert estimate() == 3  # floor(60 tokens / 16 tokens per block), not another draft deduction.
+
+
 def test_runtime_memory_selects_exact_role_capacity_and_scheduler(runtime_profile, profile_memory):
     prefill = runtime_profile["deployments"][0]
     prefill["worker_type"] = "prefill"
@@ -900,6 +1052,8 @@ def test_runtime_grouped_memory_keeps_layout_and_transient_pages(grouped_profile
         ({"memory_fraction_value": 0.9}, "gpu_memory_utilization"),
         ({"context_length": 2049}, "max_model_len"),
         ({"cuda_graph_reserved_bytes": 1}, "graph reservations"),
+        ({"reserved_bytes": 100}, "model build path only"),
+        ({"colocated_encoder": True, "encoder_parallel": "tp"}, "model build path only"),
         ({"gpu_memory_capacity_bytes_override": 599}, "smaller than"),
         ({"gpu_memory_capacity_bytes_override": 749}, "smaller than"),
     ],
@@ -1831,11 +1985,17 @@ def test_coverage_wrappers_preserve_existing_engine_queries_on_external_cells(
             1, 1 + prefix, prefix
         )
         assert covered.predict_prefill_latency(1, 1 + prefix, prefix) == latency
+        assert (
+            covered.predict_prefill_latency_total(1, 1, prefix)
+            == original.predict_prefill_latency_total(1, 1, prefix)
+            == latency
+        )
+    assert covered.predict_prefill_latency_total(0, 0, 0) == original.predict_prefill_latency_total(0, 0, 0) == 0.0
     assert covered.predict_decode_latency_total(1, 1) == original.predict_decode_latency_total(1, 1) == 3.0
     assert covered.predict_decode_latency_total(0, 0) == original.predict_decode_latency_total(0, 0) == 0.0
     assert covered.fpm_decode_kv_ceiling() == original.fpm_decode_kv_ceiling()
     report = covered.fpm_query_coverage()
-    assert report["queries"] == {"measured": 5, "interpolated": 0, "unsupported": 0}
+    assert report["queries"] == {"measured": 7, "interpolated": 0, "unsupported": 0}
 
 
 @pytest.mark.parametrize("fallback", ["deny", "allow"])

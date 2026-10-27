@@ -86,6 +86,7 @@ impl QueueUntilWorkerPlacement {
                 scheduler_id,
                 reported_overlap_tokens: 0,
                 cache_sample: None,
+                kv_hints: None,
                 placement_replica_id: None,
             })
             .collect()
@@ -110,6 +111,7 @@ impl PlacementPolicy<ReplayRequestPayload> for QueueUntilWorkerPlacement {
                 scheduler_id,
                 reported_overlap_tokens: 0,
                 cache_sample: None,
+                kv_hints: None,
                 placement_replica_id: None,
             }),
             None => {
@@ -468,6 +470,7 @@ fn simultaneous_handoffs_follow_arrival_order_across_replays() {
                 0.0,
                 None,
                 None,
+                false,
                 &mut collector,
             )
             .unwrap();
@@ -3119,7 +3122,7 @@ mod agentic_pd_qualification {
 
     fn prepared(graph: AgenticTrace, lanes: usize) -> PreparedAgenticSnapshots {
         let prepared = graph
-            .prepare_snapshots(lanes, AgenticSnapshotOptions { seed: 42 })
+            .prepare_snapshots(lanes, AgenticSnapshotOptions::seeded(42))
             .unwrap();
         PreparedAgenticSnapshots::from_plays(
             (0..lanes)

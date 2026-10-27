@@ -49,8 +49,10 @@ def process_experiment_result(
     Returns:
         tuple:
             - best_config_df: Best configuration dataframe.
-            - best_throughput: Comparison score: throughput, or inverse GPU
-              count for a full-target load match; capped fallback uses throughput.
+            - best_throughput: Comparison score: inverse GPU count for compliant
+              full-target load matches and unbudgeted sizing, including diagnostics;
+              throughput for default picking, GPU-capped results, and SLA diagnostics
+              under a GPU budget.
             - pareto_frontier_df: Pareto frontier dataframe.
             - x_axis_col: X-axis column name.
             - best_latencies: Dict with ``ttft``, ``tpot``, ``request_latency``
@@ -63,7 +65,7 @@ def process_experiment_result(
     target_request_latency = task.request_latency
     use_request_latency = target_request_latency is not None and target_request_latency > 0
     serving_mode = task.serving_mode
-    total_gpus = task.effective_total_gpus if serving_mode == "afd" else (task.total_gpus or 0)
+    total_gpus = task.total_gpus or 0
 
     x_axis_col = "request_latency" if use_request_latency else "tokens/s/user"
 
@@ -216,16 +218,15 @@ def merge_experiment_results_by_mode(
     """
     agg_exps = [name for name, task in tasks.items() if task.serving_mode == "agg"]
     disagg_exps = [name for name, task in tasks.items() if task.serving_mode == "disagg"]
-    afd_exps = [name for name, task in tasks.items() if task.serving_mode == "afd"]
 
     merged_best_configs = {}
     merged_best_throughputs = {}
     merged_pareto_fronts = {}
     merged_pareto_x_axis = {}
 
-    # AFD results use their own ColumnsAFD schema; merge each serving mode
-    # within its own bucket instead of concatenating across schemas.
-    for mode_name, mode_exps in (("agg", agg_exps), ("disagg", disagg_exps), ("afd", afd_exps)):
+    # agg and disagg results use different column schemas; merge each serving
+    # mode within its own bucket instead of concatenating across schemas.
+    for mode_name, mode_exps in (("agg", agg_exps), ("disagg", disagg_exps)):
         if not mode_exps:
             continue
         mode_merged = _merge_into_top_n(

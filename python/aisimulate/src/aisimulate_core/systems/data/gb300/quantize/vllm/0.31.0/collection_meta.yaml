@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+provenance: collected
+runtime:
+  framework: vllm
+  version: 0.31.0
+  image: vllm/vllm-openai:v0.31.0
+  image_digest: sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3
+  source_commit: db9527a46873454610df6dbedf79a36d6bf1a7f6
+tables:
+  computescale_perf:
+    # collect.py --keep-csv, finalized offline: collect.py's provenance transaction rejects the
+    # scale_matrix_perf.txt side output (not a registry PerfFile) and aborts finalization.
+    # GB300 (SM103, ocijhb), 4 GPUs/node, stock image arm64 child sha256:3f7dd5b777d34d1724456ce71f87385dca288c3bb23029ab27dee358f5d2b971 (no overlay) run via pyxis; launcher audits/glm53flash-v031-recollect/opsmig/launcher; Slurm job(s) 896353.
+    # data_sha256: d0e3cfcee7561f06dde0c55fb01ff399e70105c3465cba2e30afffc1c6ec5bc7
+    collector_ref: bdfc9eb527babc2d3c506ed65a42294e8e563f02
+    collector_hash: sha256:7fcc2ecc76599aade2985301e8e6c1cb8acab8ee3227d2c31ea0493745665b09
+    case_plan_hash: sha256:c05b66890cefde80cbaf812ebbaf14f1a667100196051f871c9e43d65c35cd65
+    collected_at: '2026-10-08'
+    rows: 1628
+    status: complete
+  scale_matrix_perf:
+    # collect.py --keep-csv, finalized offline: collect.py's provenance transaction rejects the
+    # scale_matrix_perf.txt side output (not a registry PerfFile) and aborts finalization.
+    # GB300 (SM103, ocijhb), 4 GPUs/node, stock image arm64 child sha256:3f7dd5b777d34d1724456ce71f87385dca288c3bb23029ab27dee358f5d2b971 (no overlay) run via pyxis; launcher audits/glm53flash-v031-recollect/opsmig/launcher; Slurm job(s) 896353.
+    # data_sha256: 511a1921d0709370f3cc9440bbb6dfe8e8cb283235f11c92164977d24a1dd00e
+    collector_ref: bdfc9eb527babc2d3c506ed65a42294e8e563f02
+    collector_hash: sha256:7fcc2ecc76599aade2985301e8e6c1cb8acab8ee3227d2c31ea0493745665b09
+    case_plan_hash: sha256:c05b66890cefde80cbaf812ebbaf14f1a667100196051f871c9e43d65c35cd65
+    collected_at: '2026-10-08'
+    rows: 1628
+    status: complete

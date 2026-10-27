@@ -48,7 +48,22 @@ print(model.diagnostics()["provenance"])
 
 ### Engine identity controls
 
+Canonical JSON/YAML requires string values for text fields. Numeric-looking YAML
+identities must be quoted to preserve their exact spelling:
+
+| Field | Default | Input requirement |
+| --- | --- | --- |
+| `model` | Required | String model name or path; write a numeric identifier as `model: "123"`. |
+| `backend_version` | `null` | Optional string version; write `backend_version: "0.10"` to preserve the trailing zero. |
+
+This is an intentional compatibility change for direct Rust YAML parsing:
+earlier parsing accepted numeric scalars for string fields, while canonical
+normalization now rejects them. Quote numeric, Boolean, or null-like values
+when they represent text. An actual `backend_version: null` still means unset.
+
 The canonical configuration also carries quantization overrides and `attention_backend`, `moe_backend`, `moe_kernel_source` (default absent), `enable_eplb` (default `false`), and `wideep_num_slots` (default absent). These controls reach model construction, KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend or kernel-source selection require an MoE model. Collected FPM interpolation cannot represent EPLB, slots, MoE backend, or kernel-source overrides; it rejects an explicit incompatible request and is skipped during automatic selection for those identities.
+
+`encoder_parallel` (default absent) compiles a VL model's vision tower in the given layout, `tp` (sharded over the tensor-parallel group) or `dp` (replicated, images split across ranks), so the estimator can price encoder calls. It requires a model with a vision encoder, is omitted from the serialized payload when unset, and is part of the estimator identity, cache keys and provenance. Llama 4 rejects `dp`.
 
 `moe_kernel_source` selects an exact, nonblank collected `kernel_source` label for fused MoE compute. It is distinct from the existing `moe_backend` graph/backend control; source labels are not backend aliases and are preserved without trimming. `None` keeps the existing default source-selection policy, including eligible low-latency NVFP4 selection. `SILICON` reads only the requested source's table; `EMPIRICAL` derives its estimate from that same source; `HYBRID` may fall back to empirical estimation within that source, but does not substitute a different source. Missing source data remains an error. An explicit `moe_torch_flow_min_latency` requires gated NVFP4 and at most 128 tokens after attention-DP gathering. Pure-roofline `SOL` remains table-independent and does not claim measured support for the requested source.
 
@@ -66,15 +81,29 @@ simulator workload assumption, supplied separately by the unified CLI as
 
 `estimation_mode` defaults to `auto`; `fallback_policy` defaults to `deny`.
 Auto always searches `op_level`, `fpm_interpolation`, then `fpm_regression`,
-including when fallback is denied. For an explicit mode, deny permits only
-that estimator; allow tries the requested estimator first, then the remaining
-estimators in the same global priority order. Each native mode tries the
-ordered `systems_paths` before moving to another estimator. Omitted roots preserve
-configured SDK discovery (or the systems-path environment override when the SDK
-uses its packaged default); an explicit `default` entry selects the packaged root.
+including when fallback is denied. For an explicit choice of one of those three
+modes, deny permits only that estimator; allow tries the requested estimator
+first, then the remaining estimators in the same global priority order. Each
+native mode tries the ordered `systems_paths` before moving to another estimator.
+Omitted roots preserve configured SDK discovery (or the systems-path environment
+override when the SDK uses its packaged default); an explicit `default` entry
+selects the packaged root.
 The resolved paths are shared by preflight, construction and capacity estimation.
 Selection occurs
 at construction; queries do not silently switch estimators on a data-domain error.
+
+`fpm_learned` requires explicit selection and `fallback_policy: deny`; it is
+never an automatic or fallback candidate. Supply exactly one of
+`estimator_config.fpm_learned.artifact_path` and `checkpoint_path`. Online
+adaptation is the default; set `adaptation: frozen` explicitly for a fixed forest.
+Frozen adaptation accepts either source, online adaptation requires a training or
+runtime checkpoint, and `causal_selector` requires a training seed checkpoint.
+Learned models support the standalone canonical API with complete per-iteration
+`ForwardPassMetrics` for prediction and feedback. Replay, engine CLI prediction
+and recommendation, and Sweeper timing use phase aggregates that cannot supply
+these features, so they reject learned mode before loading its source. See
+[learned configuration](fpm_ml/configuration.md#selection-and-supported-execution)
+for source identity checks, adaptation controls and correction requirements.
 
 Invalid caller configuration does not trigger fallback. A constructed regression
 may be unready: nonempty queries return `None` until their selected workload
@@ -86,6 +115,27 @@ The returned provenance records the requested and selected modes, failed
 selection attempts, effective backend version, data policy, selected root,
 and complete estimator configuration. Its resolved config pins the selected
 mode with deny so saved replay input repeats that selection.
+
+### Diagnostic source values
+
+`model.diagnostics()["source"]` identifies the selected model and its current
+calibration state. The Rust API serializes the same values that the Python SDK
+returns:
+
+| Value | Meaning |
+| --- | --- |
+| `aic` | Native op-level or FPM interpolation model with no ready correction store. |
+| `aic_with_correction` | Native model with at least one ready correction store. |
+| `fallback_regression` | Regression model, including an explicitly selected `fpm_regression`; the name does not imply that fallback occurred or that the model is ready. |
+| `learned` | Frozen learned forest with correction disabled or no ready correction store. |
+| `learned_with_correction` | Frozen learned forest with correction enabled and at least one ready correction store. |
+| `learned_online` | Standalone online learned forest, including before its first update. |
+| `learned_causal_selector` | Combined causal selector, regardless of which expert serves a query. |
+
+These values describe the model, not coverage or correction availability for
+every query. Consult `readiness` and the store diagnostics for those details.
+Use `learned_selector_diagnostics()` to inspect per-key expert selection;
+switching experts does not change the combined model's `source`.
 
 ### Speculative decoding configuration
 
@@ -169,10 +219,15 @@ cost-model support does not imply broader scheduler support.
 
 ### Estimator controls
 
-`estimator_config` is passed intact through the Python facade, CLI, Sweeper,
-and Replay, then parsed and validated in Rust. Unknown fields report their
-nested paths. The supported namespaces are:
+For supported execution paths, `estimator_config` is passed intact through the
+Python facade, CLI, Sweeper, and Replay, then parsed and validated in Rust.
+Learned mode remains limited to the standalone API described above. Unknown
+fields report their nested paths. The supported namespaces are:
 
+- `op_level.execution_profile`: optional pinned external operation graph, with
+  an absolute `path` and lowercase `sha256`. See
+  [external execution profiles](methods/op-level.md#external-execution-profiles)
+  for admission, data isolation and query limits.
 - `features`: `attention_kv_weight`, `prefill_attention_pair_weight`, and
   `ffn_token_weight`, each defaulting to 1.0. These currently affect regression
   only; positive finite values are required when regression is constructed.
@@ -186,9 +241,15 @@ nested paths. The supported namespaces are:
   fit only when retrying a singular equation. `rebuild_interval` defaults to JSON `null` / Python
   `None`, disabling periodic rebuilding. A positive integer opts into
   rebuilding after that many retained-sample mutations.
-- `correction`: `enabled` (true), independent `sampling`, `min_observations`
+- `fpm_learned`: explicit forest or checkpoint source, adaptation mode, and
+  online fitting controls for standalone learned models. See the
+  [learned configuration field tables](fpm_ml/configuration.md).
+- `selector`: expert selection controls for learned
+  `adaptation: causal_selector`, documented on the same learned configuration page.
+- `correction`: `enabled` (false for standalone online learned mode, true otherwise),
+  `mode` (`auto`), independent `sampling`, `min_observations`
   (5), `factor_bounds` (min 0.5, max 2.0), and the existing `max_num_tokens`
-  (8192), `max_batch_size` (512), and `max_kv_tokens` (2000000) ranges.
+  (8192), `max_batch_size` (512), and `max_kv_tokens` (2000000) fixed-policy ranges.
 - `fpm_interpolation.method`: `auto` (default), `sol`, or `direct`. Rust selects
   SOL for a registered architecture, or direct interpolation for a verified
   architecture without a registered class when a profile is supplied. Without
@@ -267,14 +328,37 @@ logical store. Rectangular grids were already supported. Regression's
 `[attention, moe]`; `bins_per_axis` must have the same length, contain positive
 integers, and have a representable product. The dimension is the number of
 selected axes, independent of how many features the fit uses. Regression uses
-dynamic `log1p` retention coordinates and fits standardized feature values. Correction
-uses fixed raw workload coordinates; its one-dimensional prefill grid uses
-the product of the two axis counts. Retention evicts the oldest sample from
-the most populated cell when the store exceeds its budget.
+dynamic `log1p` retention coordinates and fits standardized feature values. Correction's
+one-dimensional prefill grid uses the product of the two axis counts. Its coordinate
+transform and bounds depend on the policy below. Balanced retention evicts the oldest
+sample from the most populated cell when the store exceeds its budget.
 
-Correction explicitly reports `feature_space: legacy_workload`. Its existing
-prefill/decode/mixed stores and median-ratio calculation remain unchanged at
-default settings. A shared role-based correction space requires separate
+| Correction field | Default | Behavior |
+| --- | --- | --- |
+| `estimator_config.correction.enabled` | `false` for standalone online learned mode; `true` otherwise | Standalone online learned mode requires disabled correction; the combined selector requires enabled correction. Explicit values override the default and are validated for the selected mode. |
+| `estimator_config.correction.mode` | `auto` | `auto` keeps fixed correction for native AIC estimates and selects `hybrid` for learned forests. `hybrid` uses the fixed grid inside its configured limits and dynamic local correction outside. `fixed` and `dynamic_local` explicitly select a single policy. |
+| `estimator_config.correction.sampling.max_observations` | `64` | Sample-slot budget per workload kind and policy. Hybrid retains independent fixed and dynamic budgets, up to `2 * M` slots per kind (128 by default). Dynamic and hybrid updates take `O(M log M)` time and `O(M)` temporary storage; measure update cost before increasing capacity. |
+
+The fixed policy uses raw workload coordinates and the configured fixed limits.
+The dynamic local policy expands `log1p` bounds as valid feedback arrives, balances
+local samples across the grid, and blends local median ratios with a recent-global
+median. Empty cells and out-of-range queries use that recent-global fallback.
+At the default capacity of 64, it reserves 48 local and 16 recent slots and expires
+samples after 128 admissions. Bounds and cached factors change only on feedback.
+The hybrid policy feeds both stores the same observations and uncorrected base
+predictions; the fixed store continues rejecting out-of-grid observations.
+Selection depends only on the query coordinates and the configured fixed limits,
+including their upper endpoints. An empty or unready in-grid cell keeps the fixed
+factor of 1.0, even if the dynamic store is ready. Dynamic geometry never changes
+the fixed grid. Native AIC can also select `hybrid` explicitly.
+See [learned-model calibration](fpm_ml/learned-forward-pass-model.md#online-correction)
+for the readiness thresholds, shrinkage, and custom-capacity behavior. The existing
+learned-model SDK adapter accepts the equivalent legacy option `correction_mode`;
+canonical native configurations use `estimator_config.correction.mode`.
+
+Correction explicitly reports `feature_space: legacy_workload` for all policies
+and retains separate prefill/decode/mixed stores. Native AIC's default policy
+and median-ratio calculation remain unchanged. A shared role-based correction space requires separate
 accuracy validation and is not accepted as a configuration value in this release.
 
 Use `regression_store_diagnostics()` for per-store counts/readiness. Summary
@@ -299,14 +383,20 @@ concrete-only.
 
 | Knob | Default | Default Range | Preset | Rules |
 |---|---:|---|---|---|
+| `engine.estimation_mode` | `auto` | `x` | `-` | `auto`, `op_level`, `fpm_interpolation`, or `fpm_regression`. `fpm_learned` is rejected by prediction and recommendation configuration validation. |
+| `engine.workers.<role>.timing.estimation_mode` | `null` | `x` | `-` | Optional role override using the same four modes; omission inherits the global selection. `fpm_learned` is rejected here too. |
 | `engine.workers.<role>.timing.type` | `default` | `x` | `-` | `default`, `fixed`, or `polynomial`. |
 | `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.forward_model` | `op_level` | `x` | `-` | `op_level` or `fpm`; `default` timing only. `fpm` replays whole-forward (FPM) latency measured for the role's exact model, hardware, backend version, parallel shape and quantization, and fails closed when no such cell exists. |
 | `engine.workers.<role>.timing.fpm_parquet_path` | `null` | `x` | `-` | External FPM parquet for `forward_model: fpm`; the adjacent same-stem `.metadata.json` sidecar is required. Relative paths are anchored to the working directory when the engine is constructed. Preserved per role in recommendations, candidate YAML, and regular prefill/decode companions in AFD+PD. |
 
-The canonical `estimation_mode`, `fallback_policy`, `estimator_config`, and
+The supported `estimation_mode`, `fallback_policy`, `estimator_config`, and
 `fpm_profile` controls pass through the CLI into the same native constructor.
+The CLI and Sweeper reject `fpm_learned` because their phase timing interface
+lacks complete iteration features; the same restriction applies to global and
+role-specific settings. The generated configuration schemas advertise only the
+four supported modes above.
 A role's `timing.estimator_config` replaces the global dictionary for that role;
 include all required controls in that override. Legacy `timing.forward_model: fpm`
 and `timing.fpm_parquet_path` normalize to FPM interpolation and its external pair.
@@ -325,8 +415,8 @@ These additional public YAML fields are concrete controls:
 | `engine.nextn`, `nextn_accepted` | Compute-side MTP identity and separate expected acceptance assumption; both are required for explicit MTP. |
 | `engine.enable_chunked_prefill` | Override chunked prefill; omission preserves the backend default. |
 
-These controls require default timing on language roles. AFD and analytical
-encoder configurations reject the unsupported controls. Use `--stack engine`
+These controls require default timing on language roles. AFD and encoder-pool
+configurations of either mode reject the unsupported controls. Use `--stack engine`
 and the supported model/backend; an older external adapter can reject them at
 capability validation before Replay. Expected acceptance is workload behavior,
 not an estimator-fitting observation. See [Replay features](../replay/features.md)

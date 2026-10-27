@@ -276,6 +276,10 @@ class VisionEncoderConfig:
     projector_post_norm: bool = field(default=False, kw_only=True)
     encoder_type: str = field(default="", kw_only=True)
     projector_pre_norm: bool = field(default=True, kw_only=True)
+    # Qwen `smart_resize` pixel budget (processor `size.shortest_edge` /
+    # `size.longest_edge`); zero leaves the corresponding bound unset.
+    min_pixels: int = field(default=0, kw_only=True)
+    max_pixels: int = field(default=0, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -871,6 +875,7 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
     "NemotronForCausalLM": "NEMOTRONNAS",
     "DeciLMForCausalLM": "NEMOTRONNAS",
     "NemotronHForCausalLM": "NEMOTRONH",
+    "NemotronH_Omni_Reasoning_V3": "NEMOTRONH",
     "MixtralForCausalLM": "MOE",
     "GptOssForCausalLM": "MOE",
     "Qwen2MoeForCausalLM": "MOE",
@@ -901,6 +906,7 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
 # Multimodal architectures whose LLM config lives under a nested key (e.g. "text_config").
 # _parse_hf_config_json will flatten these before parsing.
 MULTIMODAL_TEXT_CONFIG_KEY = {
+    "NemotronH_Omni_Reasoning_V3": "llm_config",
     "DeepseekV41ForCausalLM": "text_config",
     "Glm5NextForConditionalGeneration": "text_config",
     "KimiK25ForConditionalGeneration": "text_config",

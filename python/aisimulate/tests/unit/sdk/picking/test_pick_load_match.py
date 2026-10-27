@@ -115,6 +115,7 @@ def test_load_match_keeps_budget_feasible_sla_diagnostic(load_target):
     assert not row["sla_satisfied"]
     assert row["load_satisfied"]
     assert row["gpu_budget_satisfied"]
+    assert result["best_throughput"] == 100.0
 
 
 @pytest.mark.parametrize("load_target", ["target_request_rate", "target_concurrency"])
@@ -128,3 +129,88 @@ def test_load_match_without_budget_preserves_sizing(load_target, tpot):
     assert row["sla_satisfied"] == (tpot <= 30.0)
     assert row["load_satisfied"]
     assert row["gpu_budget_satisfied"]
+
+
+@pytest.mark.filterwarnings("error:The inplace keyword in DataFrame.reset_index is deprecated:DeprecationWarning")
+@pytest.mark.parametrize("load_target", ["target_request_rate", "target_concurrency"])
+@pytest.mark.parametrize(
+    "gpu_cap, loads, gpus, tpots, expected",
+    [
+        pytest.param(
+            None,
+            [3.0, 10.0, 5.0],
+            [2, 3, 1],
+            [25.0, 20.0, 15.0],
+            (["B", "A-fast"], [2, 1], [2, 3], None, 0.5),
+            id="unbudgeted",
+        ),
+        pytest.param(
+            4,
+            [3.0, 10.0, 5.0],
+            [2, 3, 1],
+            [25.0, 20.0, 15.0],
+            (["B", "A-fast"], [2, 1], [2, 3], None, 0.5),
+            id="budget-filters-one-candidate",
+        ),
+        pytest.param(
+            4,
+            [1.0, 2.0, 3.0],
+            [2, 3, 2],
+            [25.0, 20.0, 15.0],
+            (["A-fast", "B"], [1, 2], [3, 4], [20.0, 50.0], 150.0),
+            id="gpu-capped",
+        ),
+        pytest.param(
+            None,
+            [3.0, 10.0, 5.0],
+            [2, 3, 1],
+            [50.0, 40.0, 45.0],
+            (["A-fast", "B"], [1, 2], [3, 2], None, 1.0 / 3),
+            id="closest-sla",
+        ),
+    ],
+)
+def test_load_match_handles_duplicate_sweep_indices(load_target, gpu_cap, loads, gpus, tpots, expected):
+    """Concatenating sweeps must preserve row identity through filtering and grouping."""
+    frame = _load_frame(tpots, gpus)
+    frame["parallel"] = ["A", "A", "B"]
+    frame["config_id"] = ["A-slow", "A-fast", "B"]
+    frame["tokens/s/gpu"] = [100.0, 200.0, 120.0]
+    frame["seq/s"] = 100.0
+    frame["concurrency"] = 100.0
+    frame["seq/s" if load_target == "target_request_rate" else "concurrency"] = loads
+    frame["load_served_pct"] = 99.0  # A stale marker must be removed or recomputed.
+    frame = pd.concat([frame.iloc[[i]].reset_index(drop=True) for i in range(len(frame))])
+    original = frame.copy(deep=True)
+
+    result = pick_load_match(
+        frame,
+        serving_mode="agg",
+        target_tpot=30.0,
+        max_total_gpus=gpu_cap,
+        **{load_target: 10.0},
+    )
+
+    configs = result["best_config_df"]
+    names, replicas, total_gpus, load_pct, score = expected
+    assert configs["config_id"].tolist() == names
+    assert configs["replicas_needed"].tolist() == replicas
+    assert configs["total_gpus_needed"].tolist() == total_gpus
+    assert configs["sla_satisfied"].tolist() == [max(tpots) <= 30.0] * len(names)
+    assert configs["load_satisfied"].tolist() == [load_pct is None] * len(names)
+    assert configs["gpu_budget_satisfied"].all()
+    assert result["best_throughput"] == pytest.approx(score)
+    expected_columns = (set(frame.columns) - {"load_served_pct"}) | {
+        "replicas_needed",
+        "total_gpus_needed",
+        "tokens/s/gpu_cluster",
+        "sla_satisfied",
+        "load_satisfied",
+        "gpu_budget_satisfied",
+    }
+    if load_pct is not None:
+        assert configs["load_served_pct"].tolist() == load_pct
+        expected_columns.add("load_served_pct")
+    assert set(configs.columns) == expected_columns
+    pd.testing.assert_index_equal(configs.index, pd.RangeIndex(len(names)))
+    pd.testing.assert_frame_equal(frame, original)

@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+interface:
+  display_name: "AISimulate AgentX Gap Debugging"
+  short_description: "Diagnose AgentX GPU versus replay accuracy gaps"
+  default_prompt: "Use $aisimulate-agentx-gap-debug to investigate this AgentX GPU versus replay discrepancy, preserve the comparison contract, and separate measured evidence from calibration."
+
+policy:
+  allow_implicit_invocation: true
