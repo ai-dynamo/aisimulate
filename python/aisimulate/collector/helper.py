@@ -518,10 +518,47 @@ def flashinfer_autotune_budget() -> FlashInferTuneBudget | None:
             f"(three integers) or '{FLASHINFER_AUTOTUNE_BUDGET_FLASHINFER}'"
         ) from None
     if warmup < 0 or repeat < 1 or delay_us < 0:
-        raise ValueError(
-            f"{FLASHINFER_AUTOTUNE_BUDGET_ENV}={raw!r}: warmup and delay_us must be >= 0, repeat >= 1"
-        )
+        raise ValueError(f"{FLASHINFER_AUTOTUNE_BUDGET_ENV}={raw!r}: warmup and delay_us must be >= 0, repeat >= 1")
     return FlashInferTuneBudget(warmup, repeat, delay_us)
+
+
+def cuda_context_error(device=None) -> str | None:
+    """Probe whether the CUDA context of ``device`` (default: current) is still usable.
+
+    A sticky CUDA error (illegal memory access, launch failure) poisons the whole
+    context: every later kernel on this process fails, so a case that merely runs
+    next on the worker is reported as failed for a crash it did not cause. The probe
+    synchronises the device and launches one trivial kernel; it returns the error
+    text when either raises, ``None`` when the context is healthy or torch is absent.
+    """
+    try:
+        import torch
+    except ImportError:
+        return None
+    try:
+        if device is None:
+            device = torch.cuda.current_device()
+        torch.cuda.synchronize(device)
+        torch.ones(1, device=device).sum().item()
+    except Exception as exc:  # any failure here means the context is gone
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
+def _flashinfer_failed_tactics(tuner) -> str:
+    stats = getattr(tuner, "stats", None)
+    failed = getattr(stats, "failed_tactics", None)
+    if not failed:
+        return "no failed tactics recorded"
+    try:
+        parts = []
+        for op, tactics in failed.items():
+            names = sorted(str(t) for t in tactics)
+            shown = ", ".join(names[:4]) + (", ..." if len(names) > 4 else "")
+            parts.append(f"{op}: {len(names)} failed tactics ({shown})")
+        return "; ".join(parts)
+    except Exception:  # diagnostics only
+        return f"failed tactics: {failed!r}"[:400]
 
 
 _FLASHINFER_TUNER_BUDGET_ATTRS = (
@@ -598,9 +635,26 @@ def flashinfer_autotuned(num_tokens: int, tune_fn: Callable[[], None], *, label:
     entries_before = len(cache) if hasattr(cache, "__len__") else None
     buckets = (int(num_tokens),)
     started = time.perf_counter()
-    with _flashinfer_tuner_budget(tuner, budget), autotune(True, tuning_buckets=buckets):
-        tune_fn()
+    tune_error: BaseException | None = None
+    try:
+        with _flashinfer_tuner_budget(tuner, budget), autotune(True, tuning_buckets=buckets):
+            tune_fn()
+    except Exception as exc:  # re-raised below, after the context probe
+        tune_error = exc
     elapsed = time.perf_counter() - started
+    # FlashInfer profiles every candidate tactic and swallows per-tactic exceptions
+    # (logged at DEBUG, tactic marked inf). A tactic that faults leaves a sticky CUDA
+    # error behind: the chosen tactic then fails with an unrelated-looking "Got CUDA
+    # error", and the next case on this worker inherits the dead context. Probe here so
+    # the failure record names the tuning pass and the worker is recycled right away.
+    poisoned = cuda_context_error()
+    if poisoned is not None:
+        raise RuntimeError(
+            f"FlashInfer autotune pass at num_tokens={num_tokens} {label} left the CUDA context "
+            f"in error state ({poisoned}); {_flashinfer_failed_tactics(tuner)}"
+        ) from tune_error
+    if tune_error is not None:
+        raise tune_error
     budget_desc = str(budget) if budget is not None else "flashinfer defaults"
     if entries_before is not None:
         outcome = f"{len(cache) - entries_before} new tactic entries"

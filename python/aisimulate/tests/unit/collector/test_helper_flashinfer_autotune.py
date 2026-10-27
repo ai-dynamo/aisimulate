@@ -12,6 +12,7 @@ import types
 from contextlib import contextmanager
 
 import pytest
+
 from collector import helper
 from collector.helper import (
     FLASHINFER_AUTOTUNE_BUDGET_ENV,
@@ -70,6 +71,8 @@ def fake_flashinfer(monkeypatch):
     monkeypatch.setitem(sys.modules, "flashinfer.autotuner", module)
     monkeypatch.delenv(FLASHINFER_AUTOTUNE_ENV, raising=False)
     monkeypatch.delenv(FLASHINFER_AUTOTUNE_BUDGET_ENV, raising=False)
+    # Healthy CUDA context unless a test says otherwise.
+    monkeypatch.setattr(helper, "cuda_context_error", lambda device=None: None)
     return types.SimpleNamespace(events=events, active=active, tuner=_FakeTuner)
 
 
@@ -186,3 +189,63 @@ def test_both_moe_collectors_wrap_their_timing_in_the_tuning_context():
         tuned_at = source.index("flashinfer_autotuned(num_tokens, ")
         timed_at = source.index("benchmark_with_power(", tuned_at)
         assert 0 < timed_at - tuned_at < 400, f"{backend}: tuning context must directly wrap the timing"
+
+
+def test_poisoned_context_after_the_tuning_pass_is_reported_as_the_autotune_failure(fake_flashinfer, monkeypatch):
+    """gb200 job 512476645 (2026-10-27): a Llama-4 (topk=1) nvfp4 case faulted inside a
+    candidate tactic; FlashInfer swallowed it, the chosen tactic then failed with an opaque
+    'Got CUDA error', and the next case on the worker inherited the dead context."""
+    tuner = fake_flashinfer.tuner.get()
+    tuner.stats = types.SimpleNamespace(failed_tactics={"flashinfer::trtllm_fp4_block_scale_moe": {(16, 3), (32, 7)}})
+    dead = "AcceleratorError: CUDA error: an illegal memory access was encountered"
+    monkeypatch.setattr(helper, "cuda_context_error", lambda device=None: dead)
+    timed = []
+
+    with pytest.raises(RuntimeError) as info, flashinfer_autotuned(1, lambda: None, label="llama4_nvfp4"):
+        timed.append("timed")
+
+    msg = str(info.value)
+    assert "FlashInfer autotune pass at num_tokens=1 llama4_nvfp4 left the CUDA context in error state" in msg
+    assert "illegal memory access" in msg
+    assert "2 failed tactics" in msg and "(16, 3)" in msg
+    assert timed == []  # the measurement never ran on the dead context
+    assert fake_flashinfer.events == [("enter", True, (1,)), ("exit", True, (1,))]
+
+
+def test_tune_fn_error_on_a_healthy_context_propagates_unchanged(fake_flashinfer):
+    def tune_fn():
+        raise ValueError("shape rejected")
+
+    with pytest.raises(ValueError, match="shape rejected"), flashinfer_autotuned(8, tune_fn):
+        pass
+
+
+def test_cuda_context_error_probe_reports_a_dead_context(monkeypatch):
+    class _Cuda:
+        @staticmethod
+        def current_device():
+            return 0
+
+        @staticmethod
+        def synchronize(device):
+            raise RuntimeError("CUDA error: an illegal memory access was encountered")
+
+    fake_torch = types.SimpleNamespace(cuda=_Cuda, ones=lambda *a, **k: None)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    assert helper.cuda_context_error() == "RuntimeError: CUDA error: an illegal memory access was encountered"
+
+    class _HealthyCuda(_Cuda):
+        @staticmethod
+        def synchronize(device):
+            return None
+
+    class _Tensor:
+        def sum(self):
+            return self
+
+        def item(self):
+            return 1.0
+
+    fake_torch = types.SimpleNamespace(cuda=_HealthyCuda, ones=lambda *a, **k: _Tensor())
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    assert helper.cuda_context_error(0) is None

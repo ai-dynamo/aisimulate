@@ -286,6 +286,10 @@ class TestCudaFatalExceptionDetection:
             "CUBLAS_STATUS_EXECUTION_FAILED",
             "CUBLAS_STATUS_INTERNAL_ERROR",
             "CUBLAS_STATUS_ALLOC_FAILED",
+            # FlashInfer TVM-FFI launcher wrapper (error text only on stderr)
+            "Error in function 'run' at /workspace/csrc/fused_moe/trtllm_backend/"
+            "trtllm_fused_moe_routing_llama4.cu:550: Got CUDA error. See above for details.",
+            "CUDA error: cudaErrorIllegalAddress",
         ],
     )
     def test_cuda_fatal_markers_are_fatal(self, message):

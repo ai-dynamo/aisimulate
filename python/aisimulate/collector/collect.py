@@ -15,7 +15,7 @@ import logging
 import os
 import warnings
 
-from helper import get_device_module, get_device_str
+from helper import cuda_context_error, get_device_module, get_device_str
 
 
 def setup_warning_filters():
@@ -1628,6 +1628,11 @@ def _is_cuda_fatal_exception(exc, torch_mod) -> bool:
         error_text = str(exc).lower()
         fatal_markers = (
             "illegal memory access",
+            "cudaerrorillegaladdress",
+            # FlashInfer's TVM-FFI launchers report a sticky error as
+            # "Error in function 'run' at <file>: Got CUDA error. See above for
+            # details." -- the error text itself only goes to stderr.
+            "got cuda error",
             "unspecified launch failure",
             "cuda_error_launch_failed",
             "cublas_status_execution_failed",
@@ -1814,7 +1819,18 @@ def worker(
             for handler in worker_logger.handlers:
                 handler.flush()
 
-            if _is_cuda_fatal_exception(e, torch_mod):
+            # Message matching alone misses launcher wrappers that hide the CUDA
+            # error text (FlashInfer's "Got CUDA error. See above for details."):
+            # the worker then runs the next case on a dead context and books an
+            # unrelated failure for it (gb200 job 512476645, 2026-10-27: one
+            # healthy case lost per Llama-4 autotune crash). Probe the context
+            # after every failure and recycle the worker when it is gone.
+            context_error = None if _is_cuda_fatal_exception(e, torch_mod) else cuda_context_error(device)
+            if context_error is not None:
+                worker_logger.warning(
+                    f"CUDA context unusable after task {task_id} failed with {type(e).__name__}: {context_error}"
+                )
+            if context_error is not None or _is_cuda_fatal_exception(e, torch_mod):
                 worker_logger.warning(
                     f"Fatal {type(e).__name__} encountered on task {task_id}. "
                     f"Worker {device_id} exiting to reset GPU context. "
