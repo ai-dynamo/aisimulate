@@ -23,6 +23,11 @@ A line with more than one owner is co-ownership. Under GitHub's code-owner
 review rule, any one listed owner can satisfy the gate; co-ownership improves
 review visibility without requiring one approval from every listed team.
 
+Collector resume seeds under `campaign_checkpoints/` belong to the forward-pass
+engine team and maintainers, matching the collector code that consumes their
+checkpoint and provenance contracts. They require explicit ownership even when
+retained only as research evidence.
+
 ## Files
 
 | File | Purpose |

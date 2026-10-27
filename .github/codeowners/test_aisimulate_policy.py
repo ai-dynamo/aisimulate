@@ -500,3 +500,16 @@ def test_coderabbit_reviews_non_draft_prs_without_opt_in() -> None:
         "[no review]",
     ]
     assert policy["reviews"]["request_changes_workflow"] is False
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "campaign_checkpoints/b200_sxm/README.md",
+        "campaign_checkpoints/b200_sxm/collector_checkpoint/vllm/vllm.msa_context_module.json",
+        "campaign_checkpoints/b200_sxm/msa_context_module_perf.txt",
+        "campaign_checkpoints/b200_sxm/msa_context_seed_provenance.json",
+    ],
+)
+def test_collector_campaign_checkpoint_ownership(path: str) -> None:
+    assert _owners(path) == {FPE, MAINTAINERS}

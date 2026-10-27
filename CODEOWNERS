@@ -42,6 +42,7 @@
 # === forward-pass-engine  (@ai-dynamo/aisimulate-forward-pass-engine-codeowners) ===
 /tests/test_aic.py                                       @ai-dynamo/aisimulate-forward-pass-engine-codeowners
 /python/aisimulate/                                      @ai-dynamo/aisimulate-forward-pass-engine-codeowners
+/campaign_checkpoints/                                   @ai-dynamo/aisimulate-forward-pass-engine-codeowners
 /crates/core/perfmodel/                                  @ai-dynamo/aisimulate-forward-pass-engine-codeowners
 /crates/tests/public-api/                                @ai-dynamo/aisimulate-forward-pass-engine-codeowners
 /crates/core/src/perfmodel/                              @ai-dynamo/aisimulate-forward-pass-engine-codeowners
@@ -163,6 +164,7 @@
 /benchmarks/evidence/                                    @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_runner.py                                    @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_vl_cli.py                                    @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
+/campaign_checkpoints/                                   @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/README.md                                   @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/deny.toml                                   @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/examples/                                   @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain

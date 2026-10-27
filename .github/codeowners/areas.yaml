@@ -32,6 +32,7 @@ areas:
       - crates/core/perfmodel/
       - crates/tests/public-api/
       - python/aisimulate/
+      - campaign_checkpoints/
       - python/aisimulate/src/aisimulate/capacity.py
       - tests/test_aic.py
       - tests/test_spline_estimator_config.py
@@ -117,6 +118,8 @@ areas:
 # stays visible on subsystem changes without requiring every listed team to
 # approve: any listed code owner can satisfy GitHub's code-owner gate.
 shared:
+  - glob: campaign_checkpoints/
+    owners: [forward-pass-engine, maintainers]
   - glob: docs/replay/
     owners: [replay, maintainers]
   - glob: docs/adapters/
