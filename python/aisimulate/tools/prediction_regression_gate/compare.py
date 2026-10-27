@@ -41,7 +41,8 @@ BLOCKING_CATEGORIES = {"REGRESSION"}
 # lack data for the precision the identifier now names. A table applies to a
 # combo only while the old side has every retired identifier and none of the
 # introduced ones, so it goes inert once the rename reaches the base and its
-# entries can then be deleted.
+# entries can then be deleted. A new side that lacks an introduced identifier
+# is rejected, so an incomplete snapshot cannot hide behind the rename.
 MODEL_RELABELS: dict[str, str] = {
     # AISIM-2124: zai-org/GLM-5.3 is Z.AI's FP8 release and the BF16 one is
     # zai-org/GLM-5.3-BF16; there is no zai-org/GLM-5.3-FP8.
@@ -94,6 +95,8 @@ def relabel_old_rows(
 
     Returns the (possibly re-keyed) old rows and the number of old rows moved
     per renamed identifier; an empty count means the table did not apply.
+    Raises ValueError when the table applies but the new side lacks one of the
+    introduced identifiers: an incomplete snapshot must not pass as a rename.
     """
     if len(set(relabels.values())) != len(relabels):
         raise ValueError(f"model relabels must be one-to-one: {relabels}")
@@ -103,6 +106,9 @@ def relabel_old_rows(
     introduced = set(relabels.values()) - relabels.keys()
     if not retired <= old_models or retired & new_models or introduced & old_models:
         return old, {}
+    missing = introduced - new_models
+    if missing:
+        raise ValueError(f"declared model rename is incomplete: the new side lacks {sorted(missing)}")
 
     relabeled: dict[tuple, dict] = {}
     moved: dict[str, int] = {}

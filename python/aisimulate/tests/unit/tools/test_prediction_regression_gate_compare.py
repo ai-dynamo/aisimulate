@@ -168,6 +168,14 @@ def test_declared_rename_is_inert_while_new_side_keeps_a_retired_identifier(tmp_
     assert result.diffs == []
 
 
+def test_declared_rename_rejects_a_new_side_that_lacks_an_introduced_identifier(tmp_path: Path) -> None:
+    # The new snapshot lost the BF16 rows while the plain identifier changed status. Without the
+    # check, the old plain rows surface as report-only ROWS_REMOVED and the gate passes.
+    incomplete = [POST_RENAME[0]]
+    with pytest.raises(ValueError, match="incomplete.*org/m-BF16"):
+        _compare_relabeled(tmp_path, PRE_RENAME, incomplete, relabels=RENAME)
+
+
 def test_relabels_must_be_one_to_one(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="one-to-one"):
         _compare_relabeled(tmp_path, PRE_RENAME, POST_RENAME, relabels={"org/a": "org/m", "org/b": "org/m"})
