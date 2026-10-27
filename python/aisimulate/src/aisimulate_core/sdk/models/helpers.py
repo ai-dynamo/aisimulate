@@ -175,9 +175,11 @@ def mixed_precision_quantized_paths(raw_config: dict) -> frozenset[str] | None:
     target) or contains ``*`` (a glob). Those three kinds are dropped. A root module such as
     ``lm_head`` has no dot and is kept.
 
-    Returns ``None`` when the export is not ``MIXED_PRECISION`` or when no kept entry contains a
-    dot. The exclusion globs from :func:`quant_exclude_patterns` are then the only record of what
-    is unquantized.
+    Returns ``None`` when the export is not ``MIXED_PRECISION``, when no kept entry contains a dot,
+    or when the language ``quantization_config`` has ``quant_method`` ``fp8`` (an expert-only requant
+    of an FP8 checkpoint keeps that base header, and its lists describe the expert lane only). The
+    exclusion globs from :func:`quant_exclude_patterns` are then the only record of what is
+    unquantized.
     """
     if raw_config.get("quant_algo") != "mixed_precision":
         return None
@@ -188,6 +190,10 @@ def mixed_precision_quantized_paths(raw_config: dict) -> frozenset[str] | None:
     hf_quant = hf_quant if isinstance(hf_quant, dict) else {}
     quant_config = _get_language_quantization_config(raw_config)
     quant_config = quant_config if isinstance(quant_config, dict) else {}
+    # The base header of a natively FP8 checkpoint is the lane of every module the lists leave out, as in
+    # _infer_mixed_precision_quant_modes. The lists are then not the whole record.
+    if str(quant_config.get("quant_method", "")).lower() == "fp8":
+        return None
     config_groups = quant_config.get("config_groups")
     config_groups = config_groups if isinstance(config_groups, dict) else {}
 

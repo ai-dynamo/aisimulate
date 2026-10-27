@@ -73,17 +73,20 @@ def _dsa_attention_modules_excluded_from_quant(raw_config: dict) -> bool:
     return attention_modules_excluded_from_quant(raw_config)
 
 
-def _shared_experts_excluded_from_quant(raw_config: dict) -> bool:
+def _shared_experts_excluded_from_quant(raw_config: dict, quantized_paths: frozenset[str] | None = None) -> bool:
     """Return whether a GLM/DSA checkpoint keeps the MoE shared experts unquantized.
 
     nvidia/GLM-5.2-NVFP4 excludes every ``model.layers.N.mlp.shared_experts*`` from
     NVFP4 (shared experts stay bf16; only the routed experts are quantized), so the
     shared-expert GEMMs must be modeled at bf16, not the global gemm_quant_mode.
-    A MIXED_PRECISION export that lists its quantized modules also keeps every
-    shared expert it does not list at bf16."""
+    A MIXED_PRECISION export that lists its quantized modules but names no shared
+    expert also keeps the shared experts at bf16. ``quantized_paths`` is the result of
+    :func:`mixed_precision_quantized_paths` for ``raw_config``; it is computed here
+    when it is ``None``."""
     if any("shared_expert" in str(pattern) for pattern in _quant_exclude_patterns(raw_config)):
         return True
-    quantized_paths = mixed_precision_quantized_paths(raw_config)
+    if quantized_paths is None:
+        quantized_paths = mixed_precision_quantized_paths(raw_config)
     return quantized_paths is not None and not mixed_precision_shared_experts_quantized(quantized_paths)
 
 
@@ -123,13 +126,21 @@ def _dsa_shared_expert_quant_mode(extra_params: object, fallback: common.GEMMQua
     return fallback
 
 
+_GATE_UP_QUANT_MISMATCH = "DSA dense gate_proj and up_proj must use the same quantization for their fused GEMM"
+
+
 def _dense_mlp_groups(
     raw_config: dict,
     num_layers: int,
     fallback: common.GEMMQuantMode,
     quantized_paths: frozenset[str] | None = None,
 ) -> list:
-    """Dense-prefix layer counts grouped by gate/up and down projection dtype."""
+    """Dense-prefix layer counts grouped by gate/up and down projection dtype.
+
+    When ``quantized_paths`` is given, a projection is quantized only if the listed paths
+    cover its packed name or every one of its shards. The exclusion globs still win over
+    the lists. Shards that disagree raise ``ValueError``.
+    """
     count = raw_config.get("first_k_dense_replace")
     if count is None:
         count = 0
@@ -159,7 +170,7 @@ def _dense_mlp_groups(
             for shard in shards
         ]
         if any(skipped) != all(skipped):
-            raise ValueError("DSA dense gate_proj and up_proj must use the same quantization for their fused GEMM")
+            raise ValueError(_GATE_UP_QUANT_MISMATCH)
         if all(skipped):
             return common.GEMMQuantMode.bfloat16
         for pattern in patterns:
@@ -172,7 +183,7 @@ def _dense_mlp_groups(
         # that no listed path covers stays BF16.
         listed = [mixed_precision_covers(quantized_paths, f"model.layers.{layer}.mlp.{shard}") for shard in shards]
         if any(listed) != all(listed):
-            raise ValueError("DSA dense gate_proj and up_proj must use the same quantization for their fused GEMM")
+            raise ValueError(_GATE_UP_QUANT_MISMATCH)
         quantized = all(listed) or mixed_precision_covers(quantized_paths, name)
         return fallback if quantized else common.GEMMQuantMode.bfloat16
 
@@ -269,7 +280,7 @@ class DeepSeekV32Model(BaseModel):
         if quantized_paths is not None:
             attention_exclusions |= mixed_precision_attention_exclusions(quantized_paths)
         extra_params.setdefault("dsa_attn_quant_exclusions", attention_exclusions)
-        if _shared_experts_excluded_from_quant(model_info.get("raw_config", {})):
+        if _shared_experts_excluded_from_quant(model_info.get("raw_config", {}), quantized_paths=quantized_paths):
             extra_params.setdefault("dsa_shared_expert_quant_mode", common.GEMMQuantMode.bfloat16)
         # GLM-5.2 shares one DSA topk index across ``index_topk_freq`` layers
         # (GLM-5 / DeepSeek-V3.2 omit it => 1). The DSA modules amortize the

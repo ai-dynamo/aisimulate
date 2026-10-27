@@ -281,6 +281,38 @@ def test_class_name_targets_keep_the_glob_reading():
     assert helpers.mixed_precision_quantized_paths(raw) is None
 
 
+# An expert-only requant of a natively FP8 checkpoint keeps the base FP8 header next to a MIXED_PRECISION
+# list of its experts, as the DeepSeek-V4 NVFP4 exports do. The lists describe the expert lane only.
+DEEPSEEK_V4_LIKE = {
+    "quant_algo": "mixed_precision",
+    "hf_quant_config": {
+        "quantization": {
+            "quant_algo": "MIXED_PRECISION",
+            "quantized_layers": {
+                f"model.layers.{i}.mlp.experts": {"quant_algo": "NVFP4", "group_size": 16} for i in range(3, 6)
+            },
+        }
+    },
+    "quantization_config": {"quant_method": "fp8", "weight_block_size": [128, 128]},
+}
+
+
+@pytest.mark.parametrize("quant_method", ["fp8", "FP8"])
+def test_expert_only_requant_of_an_fp8_checkpoint_keeps_the_glob_reading(quant_method):
+    raw = deepcopy(DEEPSEEK_V4_LIKE)
+    raw["quantization_config"]["quant_method"] = quant_method
+    assert helpers.mixed_precision_quantized_paths(raw) is None
+    assert deepseek_v32._shared_experts_excluded_from_quant(raw) is False  # no glob names a shared expert
+
+
+def test_the_same_lists_under_a_modelopt_header_keep_the_targets_reading():
+    raw = deepcopy(DEEPSEEK_V4_LIKE)
+    raw["quantization_config"]["quant_method"] = "modelopt"
+    listed = frozenset(f"model.layers.{i}.mlp.experts" for i in range(3, 6))
+    assert helpers.mixed_precision_quantized_paths(raw) == listed
+    assert deepseek_v32._shared_experts_excluded_from_quant(raw) is True
+
+
 def _glm52_model(monkeypatch, quantized_layers, globs=()):
     """GLM-5.2 on SGLang through get_model, its quantization swapped for GLM53_LIKE.
 

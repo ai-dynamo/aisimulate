@@ -2149,6 +2149,7 @@ class TestBundledModelConfigsOffline:
         monkeypatch.setattr(sdk_utils, "_download_hf_config", _no_network, raising=False)
         sdk_utils.get_model_config_from_model_path.cache_clear()
         sdk_utils._load_model_config_from_model_path.cache_clear()
+        models._get_model_info.cache_clear()
         try:
             cfg = sdk_utils.get_model_config_from_model_path("nvidia/GLM-5.3-NVFP4")
             raw = cfg["raw_config"]
@@ -2171,6 +2172,7 @@ class TestBundledModelConfigsOffline:
         finally:
             sdk_utils.get_model_config_from_model_path.cache_clear()
             sdk_utils._load_model_config_from_model_path.cache_clear()
+            models._get_model_info.cache_clear()
 
     @pytest.mark.parametrize(
         "backend,version",
