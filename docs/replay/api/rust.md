@@ -40,7 +40,8 @@ takes the pass's `PrefillTotals` and otherwise the arguments of
 `predict_decode_ms`. A provider that prices such a pass as one forward returns
 the decode share, so the pass costs its one-pass estimate; the default `None`
 prices a separate decode pass with `predict_decode_ms`. The built-in `ais`
-provider returns the share for whole-model FPM interpolation.
+provider returns the share for whole-model FPM interpolation; operation-level
+timing, measured SD-round profiles and MTP drafts return `None`.
 `TimingModel::predict_vision_ms(&[VisionShape])`
 prices one vision-encoder batch; the default returns `None`, and a rank with
 image work then rejects it rather than treating the encoder as free. The `ais`
