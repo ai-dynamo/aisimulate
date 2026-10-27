@@ -1254,3 +1254,112 @@ fn kda_alignment_does_not_rotate_state_when_prefix_caching_is_disabled() {
     manager.finish_lease(owner, lease);
     clear_reclaimable_and_assert_empty(&mut manager);
 }
+
+#[test]
+fn speculative_state_capacity_is_atomic_and_survives_slot_turnover() {
+    let mut manager = manager(10, 4, 2, true);
+    manager.configure_state_cache(
+        Some(crate::engine::StateCacheConfig {
+            bytes_per_request: 8,
+            num_speculative_states: Some(2),
+        }),
+        Some(1),
+        true,
+    );
+    manager.configure_prefix_match_unit(Some(4));
+    let owner = Uuid::from_u128(800);
+    let (mut sequence, mut lease) = request(owner, 12, 4, true, 0);
+    assert_eq!(
+        allocated(manager.allocate_lease(owner, &mut lease, 4, 0)),
+        7
+    );
+    let scratch = lease.state.as_ref().unwrap().speculative.clone();
+    assert_eq!(scratch.len(), 4);
+    manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, 0, 4);
+    manager.begin_step();
+    assert_eq!(
+        allocated(manager.allocate_lease(owner, &mut lease, 8, 0)),
+        3
+    );
+    assert_eq!(manager.num_active_blocks(), 10);
+    assert_eq!(lease.state.as_ref().unwrap().speculative, scratch);
+    // A second request cannot partially allocate a working state or its scratch.
+    let other = Uuid::from_u128(801);
+    let (_, mut second) = request(other, 4, 4, true, 0);
+    assert!(matches!(
+        manager.allocate_lease(other, &mut second, 4, 0),
+        NativeAllocation::CapacityExhausted
+    ));
+    assert!(second.state.is_none());
+    manager.preempt_lease(owner, &mut lease);
+    assert_eq!(manager.num_active_blocks(), 0);
+    assert_eq!(
+        allocated(manager.allocate_lease(other, &mut second, 4, 0)),
+        7
+    );
+    manager.finish_lease(other, second);
+    manager.finish_lease(owner, lease);
+    clear_reclaimable_and_assert_empty(&mut manager);
+}
+
+#[test]
+fn mtp_fine_prefix_uses_earlier_state_and_later_attention_tail() {
+    let mut manager = manager(32, 6, 1, true);
+    manager.configure_state_cache(
+        Some(crate::engine::StateCacheConfig {
+            bytes_per_request: 6,
+            num_speculative_states: Some(3),
+        }),
+        Some(1),
+        true,
+    );
+    manager.configure_prefix_match_unit(Some(2));
+    let owner = Uuid::from_u128(810);
+    let (mut sequence, mut lease) = fine_request(owner, 17, 6, 2, 4);
+    let mut before = 0;
+    for end in [6, 12, 14, 17] {
+        allocated(manager.allocate_lease(owner, &mut lease, end, 0));
+        manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, before, end);
+        manager.begin_step();
+        before = end;
+    }
+    assert!(fine_checkpoint(&manager, &lease, 14));
+    let tail_hash = lease.state_hash(16, 6).unwrap();
+    assert!(manager.pool.prefix_hit(tail_hash).is_some());
+    // A source with only the longer attention alias still proves the prefix.
+    let state_hash = lease.state_hash(14, 6).unwrap();
+    assert!(manager.pool.prefix_hit(state_hash).is_none());
+    manager.finish_lease(owner, lease);
+    for (input_tokens, expected) in [(16, 6), (17, 14), (18, 14), (19, 14)] {
+        let (query, reader) = fine_request(Uuid::from_u128(812), input_tokens, 6, 2, 4);
+        assert_eq!(
+            manager
+                .get_lease_prefill_cost(&query, &reader)
+                .cached_tokens,
+            expected,
+            "input_tokens={input_tokens}"
+        );
+    }
+    let owner = Uuid::from_u128(811);
+    let (query, mut reader) = fine_request(owner, 19, 6, 2, 4);
+    assert_eq!(
+        manager
+            .get_lease_prefill_cost(&query, &reader)
+            .cached_tokens,
+        14
+    );
+    allocated(manager.allocate_lease(owner, &mut reader, 18, 7));
+    assert_eq!(reader.computed_state_tokens(), Some(14));
+    assert_eq!(reader.state.as_ref().unwrap().speculative.len(), 3);
+    assert!(
+        manager
+            .pool
+            .key_hit(CacheKey::State {
+                prefix: state_hash,
+                slot: 0
+            })
+            .is_some()
+    );
+    manager.finish_lease(owner, reader);
+    clear_reclaimable_and_assert_empty(&mut manager);
+}
