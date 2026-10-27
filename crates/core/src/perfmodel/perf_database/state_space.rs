@@ -717,16 +717,26 @@ fn load_mamba2_parquet(sources: &[PerfSource]) -> Result<Mamba2Grids, AicError> 
                 continue;
             }
             let phase = row.str_owned(phase_col)?;
+            let invalid_identity = |err: AicError| {
+                AicError::InvalidEngineConfig(format!("Invalid Mamba timing identity: {err}"))
+            };
             let stochastic_rounding = match sr_col {
-                Some(c) => row.bool(c)?,
+                Some(c) => row.bool_strict(c).map_err(&invalid_identity)?,
                 None => false,
             };
             let state_dtype = row
-                .str_optional(state_dtype_col)?
+                .str_optional(state_dtype_col)
+                .map_err(&invalid_identity)?
                 .unwrap_or("unrecorded")
                 .to_string();
-            let token_width = row.u32_optional(width_col)?.unwrap_or(1);
-            let rounds = row.u32_optional(rounds_col)?.unwrap_or(10);
+            let token_width = row
+                .u32_optional(width_col)
+                .map_err(&invalid_identity)?
+                .unwrap_or(1);
+            let rounds = row
+                .u32_optional(rounds_col)
+                .map_err(&invalid_identity)?
+                .unwrap_or(10);
             if !matches!(
                 state_dtype.as_str(),
                 "unrecorded" | "float16" | "bfloat16" | "float32"
@@ -963,7 +973,10 @@ fn missing(table: &str, data_root: &Path, descriptor: String) -> AicError {
 }
 
 fn clone_err(err: &AicError) -> AicError {
-    AicError::PerfDatabase(err.to_string())
+    match err {
+        AicError::InvalidEngineConfig(message) => AicError::InvalidEngineConfig(message.clone()),
+        _ => AicError::PerfDatabase(err.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -1000,31 +1013,30 @@ mod tests {
     fn mamba_decode_rows_are_used_only_for_the_exact_execution_identity() {
         use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
         let tmp = tempfile::tempdir().unwrap();
-        write_parquet(
-            &tmp.path().join("mamba2_perf.parquet"),
-            &[
-                Col::Str(
-                    "kernel_source",
-                    vec!["vllm_flashinfer_selective_state_update"],
-                ),
-                Col::Str("phase", vec!["generation"]),
-                Col::I64("batch_size", vec![2]),
-                Col::I64("seq_len", vec![1]),
-                Col::I64("d_model", vec![4096]),
-                Col::I64("d_state", vec![128]),
-                Col::I64("d_conv", vec![4]),
-                Col::I64("nheads", vec![64]),
-                Col::I64("head_dim", vec![64]),
-                Col::I64("n_groups", vec![4]),
-                Col::I64("chunk_size", vec![128]),
-                Col::Str("state_dtype", vec!["float16"]),
-                Col::I64("stochastic_rounding", vec![1]),
-                Col::I64("philox_rounds", vec![5]),
-                Col::I64("token_width", vec![4]),
-                Col::F64("latency", vec![1.25]),
-                Col::F64("power", vec![200.0]),
-            ],
-        );
+        let mut columns = [
+            Col::Str(
+                "kernel_source",
+                vec!["vllm_flashinfer_selective_state_update"],
+            ),
+            Col::Str("phase", vec!["generation"]),
+            Col::I64("batch_size", vec![2]),
+            Col::I64("seq_len", vec![1]),
+            Col::I64("d_model", vec![4096]),
+            Col::I64("d_state", vec![128]),
+            Col::I64("d_conv", vec![4]),
+            Col::I64("nheads", vec![64]),
+            Col::I64("head_dim", vec![64]),
+            Col::I64("n_groups", vec![4]),
+            Col::I64("chunk_size", vec![128]),
+            Col::Str("state_dtype", vec!["float16"]),
+            Col::Bool("stochastic_rounding", vec![true]),
+            Col::I64("philox_rounds", vec![5]),
+            Col::I64("token_width", vec![4]),
+            Col::F64("latency", vec![1.25]),
+            Col::F64("power", vec![200.0]),
+        ];
+        let path = tmp.path().join("mamba2_perf.parquet");
+        write_parquet(&path, &columns);
         let table = super::StateSpaceTable::new(tmp.path().to_path_buf(), "vllm", "0.31.0");
         let query = |heads, dtype, sr, rounds, width| {
             table.query_mamba2(
@@ -1081,6 +1093,24 @@ mod tests {
         let result = op.query(&db, 8, 0).unwrap();
         assert_eq!(result.latency_ms, 1.25);
         assert_eq!(result.source, crate::operators::Source::Silicon);
+        for (index, invalid) in [
+            (11, Col::Str("state_dtype", vec!["fp8"])),
+            (12, Col::Str("stochastic_rounding", vec!["invalid"])),
+            (14, Col::I64("token_width", vec![0])),
+        ] {
+            let valid = std::mem::replace(&mut columns[index], invalid);
+            write_parquet(&path, &columns);
+            std::sync::Arc::get_mut(&mut db.tables).unwrap().state_space =
+                StateSpaceTable::new(tmp.path().to_path_buf(), "vllm", "0.31.0");
+            // Both the first read and the cached error must stop the operator.
+            for _ in 0..2 {
+                assert!(matches!(
+                    op.query(&db, 8, 0),
+                    Err(AicError::InvalidEngineConfig(_))
+                ));
+            }
+            columns[index] = valid;
+        }
     }
 
     use super::*;
