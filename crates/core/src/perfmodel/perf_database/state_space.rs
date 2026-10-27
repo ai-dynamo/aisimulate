@@ -184,6 +184,21 @@ struct Mamba2Key {
     token_width: u32,
 }
 
+/// Keep only settings consumed by the measured kernel in its lookup identity.
+pub(crate) fn mamba2_identity<'a>(
+    source: &str,
+    dtype: &'a str,
+    sr: bool,
+    rounds: u32,
+    width: u32,
+) -> (&'a str, bool, u32, u32) {
+    match source {
+        "vllm_causal_conv1d_fn" | "vllm_causal_conv1d_update" => ("unrecorded", false, 0, width),
+        "vllm_mamba_chunk_scan_combined_varlen" => (dtype, false, 0, 1),
+        _ => (dtype, sr, if sr { rounds } else { 0 }, width),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct GdnKey {
     kernel_source: String,
@@ -294,6 +309,13 @@ impl StateSpaceTable {
             ));
         }
         let grids = self.load_mamba2()?;
+        let (state_dtype, stochastic_rounding, philox_rounds, token_width) = mamba2_identity(
+            kernel_source,
+            state_dtype,
+            stochastic_rounding,
+            philox_rounds,
+            token_width,
+        );
         let key = Mamba2Key {
             kernel_source: kernel_source.to_string(),
             phase: phase.to_string(),
@@ -306,11 +328,7 @@ impl StateSpaceTable {
             chunk_size,
             state_dtype: state_dtype.to_string(),
             stochastic_rounding,
-            philox_rounds: if stochastic_rounding {
-                philox_rounds
-            } else {
-                0
-            },
+            philox_rounds,
             token_width,
         };
         // A different shard, state dtype, rounding mode, or speculative width
@@ -719,8 +737,16 @@ fn load_mamba2_parquet(sources: &[PerfSource]) -> Result<Mamba2Grids, AicError> 
                     "Invalid Mamba timing identity".into(),
                 ));
             }
+            let kernel_source = row.str_owned(kernel_source_col)?;
+            let (state_dtype, stochastic_rounding, philox_rounds, token_width) = mamba2_identity(
+                &kernel_source,
+                &state_dtype,
+                stochastic_rounding,
+                rounds,
+                token_width,
+            );
             let key = Mamba2Key {
-                kernel_source: row.str_owned(kernel_source_col)?,
+                kernel_source,
                 phase: phase.clone(),
                 d_model: row.u32(d_model_col)?,
                 d_state: row.u32(d_state_col)?,
@@ -729,9 +755,9 @@ fn load_mamba2_parquet(sources: &[PerfSource]) -> Result<Mamba2Grids, AicError> 
                 head_dim: row.u32(head_dim_col)?,
                 n_groups: row.u32(n_groups_col)?,
                 chunk_size: row.u32(chunk_size_col)?,
-                state_dtype,
+                state_dtype: state_dtype.to_string(),
                 stochastic_rounding,
-                philox_rounds: if stochastic_rounding { rounds } else { 0 },
+                philox_rounds,
                 token_width,
             };
             // Earlier sources own duplicate timing coordinates.
@@ -942,6 +968,34 @@ fn clone_err(err: &AicError) -> AicError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mamba_identity_ignores_only_settings_unused_by_the_kernel() {
+        for source in ["vllm_causal_conv1d_fn", "vllm_causal_conv1d_update"] {
+            assert_eq!(
+                mamba2_identity(source, "float16", true, 5, 4),
+                ("unrecorded", false, 0, 4)
+            );
+            assert_eq!(
+                mamba2_identity(source, "float32", false, 10, 4),
+                ("unrecorded", false, 0, 4)
+            );
+        }
+        let scan = "vllm_mamba_chunk_scan_combined_varlen";
+        assert_eq!(
+            mamba2_identity(scan, "float16", true, 5, 1),
+            ("float16", false, 0, 1)
+        );
+        assert_eq!(
+            mamba2_identity(scan, "float32", false, 10, 1),
+            ("float32", false, 0, 1)
+        );
+        let update = "vllm_flashinfer_selective_state_update";
+        assert_eq!(
+            mamba2_identity(update, "float16", true, 5, 4),
+            ("float16", true, 5, 4)
+        );
+    }
+
     #[test]
     fn mamba_decode_rows_are_used_only_for_the_exact_execution_identity() {
         use crate::perf_database::energy_test_fixtures::{Col, write_parquet};

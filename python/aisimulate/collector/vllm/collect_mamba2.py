@@ -141,6 +141,8 @@ def run_mamba2(
         stochastic_rounding=stochastic_rounding,
         philox_rounds=philox_rounds if stochastic_rounding else 0,
         model_name=model_name,
+        use_replayssm=False,
+        conv_state_layout="SD",
     )
     if phase == "context":
         nums, batch_ptr, offsets = compute_causal_conv1d_metadata(starts_cpu, device=device)
