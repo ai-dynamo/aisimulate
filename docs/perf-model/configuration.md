@@ -500,6 +500,14 @@ placeholder identity `model: from_learned`, `system: from_learned`,
 `backend: vllm`, restoration checks only its estimator controls and files, and
 `deployment_topology()` returns `None`.
 
+Engine replay restores a snapshot named by its AIC timing configuration like
+any other `best_available` call. It prices prefill and decode phases with the
+native engine and applies the saved online correction to each phase, the
+same with and without `capture_performance_diagnostics`. Replay times each
+phase separately, so only the pure prefill and pure decode corrections apply,
+never the mixed or cross-rank ones. Operation evidence and its energy scale
+with the correction, so reported power is unchanged.
+
 Gates for replaying a saved model read the snapshot without loading it.
 `RustForwardPassPerfModel.inspect_state_snapshot(path)` returns the snapshot
 kind, versions, pinned identity, deployment topology and the readiness report

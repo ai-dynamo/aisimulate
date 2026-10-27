@@ -1844,6 +1844,29 @@ impl ForwardPassPerfModel {
         self.provenance.as_ref()
     }
 
+    /// Whether some native estimate differs from the engine's: correction is
+    /// enabled and a workload kind has a ready factor, as after tuning or
+    /// restoring a tuned snapshot. Without one, every factor is exactly 1.
+    pub(crate) fn corrects_native_estimates(&self) -> bool {
+        self.is_correction_enabled
+            && matches!(self.mode, ForwardPassPerfMode::Native { .. })
+            && !self.correction_factors().is_empty()
+    }
+
+    /// The online correction factor that [`Self::estimate_forward_pass_time_ms`]
+    /// applies to this iteration's native estimate: 1 for empty work and for
+    /// models without native corrections.
+    pub(crate) fn native_correction_factor(
+        &self,
+        metrics_by_rank: &[ForwardPassMetrics],
+    ) -> Result<f64, AicError> {
+        let ForwardPassPerfMode::Native { corrections, .. } = &self.mode else {
+            return Ok(1.0);
+        };
+        Ok(IterationFeatures::from_metrics(metrics_by_rank)?
+            .map_or(1.0, |feature| self.correction_factor(corrections, &feature)))
+    }
+
     fn correction_factor(
         &self,
         corrections: &WorkloadStores<CorrectionBuckets>,

@@ -575,6 +575,42 @@ def test_fpm_interpolation_snapshots_restore_continue_and_pack_external_data(tmp
     assert _child(packed, [], queries, None)["bits"] == saved
 
 
+def _replay_latencies(timing: dict, capture: bool) -> dict:
+    from aisimulate import _runtime
+
+    rank = {
+        "backend": "vllm",
+        "block_size": 64,
+        "num_gpu_blocks": 4096,
+        "timing_model": {"type": "external", "provider": "aic", "config": timing},
+    }
+    payload = {
+        "spec": {
+            "version": 1,
+            "topology": {"kind": "aggregated", "workers": {"initial_workers": 1}},
+            "engine": {"rank": rank},
+            "requests": [{"id": "r0", "arrival_time_ms": 0.0, "input_tokens": 512, "output_tokens": 3}],
+        },
+        "capture_performance_diagnostics": capture,
+    }
+    report = json.loads(_runtime.run_replay_json(json.dumps(payload)))
+    return {key: report[key] for key in ("mean_ttft_ms", "mean_ttst_ms", "mean_e2e_latency_ms")}
+
+
+def test_replay_applies_restored_corrections_with_and_without_diagnostics(tmp_path):
+    config = _interpolation_config(tmp_path, "fixed")
+    model = RustForwardPassPerfModel.best_available(config)
+    cold = RustForwardPassPerfModel.best_available(config)
+    model.tune_with_fpms(_interpolation_stream(cold, 31, 20, 2.0))
+    pinned = model.save_state_snapshot(tmp_path / "snap")
+    untuned = _replay_latencies(config.to_dict(), capture=False)
+    assert _replay_latencies(config.to_dict(), capture=True) == untuned
+    restored = _replay_latencies(pinned, capture=False)
+    assert _replay_latencies(pinned, capture=True) == restored
+    # Observations ran about twice the native latency in both phases.
+    assert all(restored[key] > untuned[key] for key in untuned), (restored, untuned)
+
+
 def test_perf_data_fingerprint_is_taken_when_this_process_loads_it(tmp_path):
     config = _interpolation_config(tmp_path, "hybrid")
     model = RustForwardPassPerfModel.best_available(config)

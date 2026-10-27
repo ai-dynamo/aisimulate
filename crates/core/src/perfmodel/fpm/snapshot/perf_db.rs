@@ -608,22 +608,34 @@ mod tests {
         assert_ne!(fingerprint(&root, "h200_sxm", None).unwrap(), linked);
     }
 
-    #[cfg(unix)]
+    // Linux file systems accept any byte string as a name; macOS APFS rejects
+    // invalid UTF-8 names before the fingerprint could skip them.
+    #[cfg(target_os = "linux")]
     #[test]
-    fn unreadable_names_and_dangling_links_are_recorded_like_the_loader_sees_them() {
+    fn non_utf8_names_are_skipped_like_the_loader_skips_them() {
         use std::os::unix::ffi::OsStrExt;
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("systems");
         systems(&root);
         let base = fingerprint(&root, "h200_sxm", None).unwrap();
-        let version = root.join("data/h200_sxm/vllm/1.0");
         // The loader cannot name a non-UTF-8 file, so it is skipped.
         std::fs::write(
-            version.join(std::ffi::OsStr::from_bytes(b"bad\xff.parquet")),
+            root.join("data/h200_sxm/vllm/1.0")
+                .join(std::ffi::OsStr::from_bytes(b"bad\xff.parquet")),
             b"x",
         )
         .unwrap();
         assert_eq!(fingerprint(&root, "h200_sxm", None).unwrap(), base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_links_are_recorded_like_the_loader_sees_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("systems");
+        systems(&root);
+        let base = fingerprint(&root, "h200_sxm", None).unwrap();
+        let version = root.join("data/h200_sxm/vllm/1.0");
         // A dangling link is not readable now but would be if it resolved.
         std::os::unix::fs::symlink(dir.path().join("missing"), version.join("moe_perf.parquet"))
             .unwrap();
