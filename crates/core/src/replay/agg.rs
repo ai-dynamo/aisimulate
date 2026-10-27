@@ -14,10 +14,10 @@ use super::evidence::{
 };
 use super::progress::ReplayProgress;
 use super::runtime_utils::{
-    ReplayStepOutcome, next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp,
-    pop_ready_scaling_tick, pop_ready_telemetry_tick, pop_ready_worker_completions,
-    pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick, push_worker_completions,
-    push_worker_ready, settle_internal_work,
+    ReplayStepOutcome, dispatch_failure, next_non_telemetry_event_ms,
+    next_timestamp as choose_next_timestamp, pop_ready_scaling_tick, pop_ready_telemetry_tick,
+    pop_ready_worker_completions, pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick,
+    push_worker_completions, push_worker_ready, settle_internal_work,
 };
 use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot};
 use super::telemetry::{
@@ -326,8 +326,7 @@ where
                 (request, uuid, worker_idx, kv_hint),
             )?;
         } else {
-            self.engine
-                .dispatch(worker_idx, request, kv_hint, self.now_ms)?;
+            self.submit_to_engine(request, uuid, worker_idx, kv_hint)?;
         }
         // Aggregated replay uses a single pool. Treat the assignment as the
         // decode_worker_idx so per-request records consistently carry the
@@ -335,6 +334,21 @@ where
         // signaling "no separate prefill pool".
         self.collector.on_decode_assigned(uuid, worker_idx);
         Ok(())
+    }
+
+    fn submit_to_engine(
+        &mut self,
+        request: DirectRequest,
+        uuid: Uuid,
+        worker_idx: usize,
+        kv_hint: Option<KvHintSource>,
+    ) -> anyhow::Result<()> {
+        self.engine
+            .dispatch(worker_idx, request, kv_hint, self.now_ms)
+            .and_then(|()| self.placement.dispatch_committed(uuid, self.now_ms))
+            .map_err(|error| {
+                dispatch_failure(error, self.placement.dispatch_aborted(uuid, self.now_ms))
+            })
     }
 
     fn record_placement(&mut self, placement: Placement) {
@@ -886,8 +900,7 @@ where
         let changed = !released.is_empty();
         for (tokenized_ms, (request, uuid, worker_idx, kv_hint)) in released {
             let kv_hint = self.engine.live_kv_hint(kv_hint);
-            self.engine
-                .dispatch(worker_idx, request, kv_hint, self.now_ms)?;
+            self.submit_to_engine(request, uuid, worker_idx, kv_hint)?;
             self.collector.on_tokenized(uuid, tokenized_ms);
         }
         Ok(changed)
@@ -1042,6 +1055,9 @@ where
             // Settle idle deadlines first: a completion below may release a
             // queued placement and submit it to that same idle worker.
             changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;
+            let released = self.placement.advance_clock(self.now_ms)?;
+            changed |= !released.is_empty();
+            self.dispatch_placements(released)?;
             let completed = self.apply_worker_completions()?;
             changed |= completed;
             if completed {
