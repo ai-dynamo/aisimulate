@@ -257,3 +257,86 @@ pub(crate) fn pack(
     };
     Ok((stage.destination().join(PACKED_SYSTEMS_DIR), packed_parquet))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn systems(root: &Path) {
+        std::fs::create_dir_all(root.join("data/h200_sxm/vllm/1.0")).unwrap();
+        std::fs::create_dir_all(root.join("data/b200_sxm/vllm/1.0")).unwrap();
+        std::fs::write(root.join("h200_sxm.yaml"), "data_dir: data/h200_sxm/\n").unwrap();
+        std::fs::write(root.join("data/h200_sxm/vllm/1.0/gemm_perf.parquet"), b"a").unwrap();
+        std::fs::write(root.join("data/b200_sxm/vllm/1.0/gemm_perf.parquet"), b"b").unwrap();
+    }
+
+    #[test]
+    fn fingerprint_covers_the_system_tree_and_external_fpm_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("systems");
+        systems(&root);
+        let parquet = dir.path().join("fpm/reviewed.parquet");
+        std::fs::create_dir_all(parquet.parent().unwrap()).unwrap();
+        std::fs::write(&parquet, b"rows").unwrap();
+        std::fs::write(parquet.with_extension("metadata.json"), b"{}").unwrap();
+        let base = fingerprint(&root, "h200_sxm", Some(&parquet), false).unwrap();
+        assert_eq!((base.file_count, base.size_bytes), (2, 25 + 1));
+        assert_eq!(base.data_dir, "data/h200_sxm");
+        let external = base.fpm_parquet.clone().unwrap();
+        assert_eq!(external.sha256, sha256_hex(b"rows"));
+        assert_eq!(external.sidecar_sha256, Some(sha256_hex(b"{}")));
+        // Another system's data is outside the fingerprint.
+        std::fs::write(root.join("data/b200_sxm/vllm/1.0/gemm_perf.parquet"), b"c").unwrap();
+        assert_eq!(
+            fingerprint(&root, "h200_sxm", Some(&parquet), false).unwrap(),
+            base
+        );
+        std::fs::write(parquet.with_extension("metadata.json"), b"{ }").unwrap();
+        assert_ne!(
+            fingerprint(&root, "h200_sxm", Some(&parquet), false).unwrap(),
+            base
+        );
+        std::fs::write(root.join("h200_sxm.yaml"), "data_dir: ../outside\n").unwrap();
+        let error = fingerprint(&root, "h200_sxm", None, false).unwrap_err();
+        assert!(
+            error.to_string().contains("inside the systems root"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn pack_copies_exactly_the_fingerprinted_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("systems");
+        systems(&root);
+        let parquet = dir.path().join("reviewed.parquet");
+        std::fs::write(&parquet, b"rows").unwrap();
+        std::fs::write(parquet.with_extension("metadata.json"), b"{}").unwrap();
+        let stage = Stage::new(&dir.path().join("snapshot")).unwrap();
+        let (packed_root, packed_parquet) =
+            pack(&stage, &root, "h200_sxm", Some(&parquet)).unwrap();
+        assert_eq!(packed_root, stage.destination().join(PACKED_SYSTEMS_DIR));
+        assert_eq!(
+            packed_parquet,
+            Some(
+                stage
+                    .destination()
+                    .join(PACKED_FPM_DIR)
+                    .join("reviewed.parquet")
+            )
+        );
+        let staged = stage.staging().join(PACKED_SYSTEMS_DIR);
+        let staged_parquet = stage
+            .staging()
+            .join(PACKED_FPM_DIR)
+            .join("reviewed.parquet");
+        assert!(staged_parquet.with_extension("metadata.json").is_file());
+        assert!(!staged.join("data/b200_sxm").exists());
+        let mut copied = fingerprint(&staged, "h200_sxm", Some(&staged_parquet), true).unwrap();
+        copied.packed = false;
+        assert_eq!(
+            copied,
+            fingerprint(&root, "h200_sxm", Some(&parquet), false).unwrap()
+        );
+    }
+}
