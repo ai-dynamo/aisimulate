@@ -1056,11 +1056,8 @@ mod tests {
             .map(|i| vec![fpm(i % 13 + 1, i * 977, 2.0 + 0.003 * f64::from(i * 977))])
             .collect();
         model.tune_with_fpms(&observations).unwrap();
-        let directory = std::env::temp_dir().join(format!(
-            "aisimulate-public-api-snapshot-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&directory);
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("snapshot");
         let pinned = model
             .to_file(&directory, &StateSnapshotOptions::default())
             .unwrap();
@@ -1095,7 +1092,6 @@ mod tests {
             mismatches,
             ["dp_size conflicts with canonical attention_dp"]
         );
-        std::fs::remove_dir_all(&directory).unwrap();
     }
 }
 

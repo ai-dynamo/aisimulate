@@ -461,10 +461,10 @@ loaded; restart the process to save a model of the current data. Pass
 `include_perf_db=True` (Rust: `StateSnapshotOptions { include_perf_db: true }`)
 to copy exactly the fingerprinted entries into the snapshot, pointing
 `systems_paths` (and `fpm_parquet_path`) at the copy. A `data_dir` outside
-the systems root can be referenced but not packed. Packing `h200_sxm` copies
-245 files (about 18 MB). All other inputs, including learned forests and
-online checkpoints, are always copied, so a packed snapshot needs no other
-file.
+the systems root can be referenced but not packed. A packed snapshot holds a
+copy of the system's whole data directory, so its size follows that data. All
+other inputs, including learned forests and online checkpoints, are always
+copied, so a packed snapshot needs no other file.
 
 Snapshots record absolute paths and restore only from the directory they
 were saved to: `best_available(file=path)` raises `ValueError` unless `path`
@@ -473,9 +473,11 @@ its pinned file checks. Save a new snapshot instead of moving one. Snapshot
 I/O failures raise an `OSError` subclass (for example `FileNotFoundError` for
 a missing snapshot) through both `file=` and a configuration, never the
 skippable `PerfDataNotAvailableError`. A manifest from another release
-reports its versions even when it has fields this release does not know. Online learner state is always saved and can be large
-(tens of megabytes to above a gigabyte for large forests). Native restoration
-recompiles through Python like any native construction. A `from_learned`
+reports its versions even when it has fields this release does not know.
+Online learner state, including the causal selector's adaptive expert, is
+always saved in full, so its size grows with the forest and its retained
+training history. Native restoration recompiles through Python like any
+native construction. A `from_learned`
 model has no deployment identity: its snapshot configuration carries the
 placeholder identity `model: from_learned`, `system: from_learned`,
 `backend: vllm`, restoration checks only its estimator controls and files, and

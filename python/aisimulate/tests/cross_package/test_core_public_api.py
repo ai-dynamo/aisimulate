@@ -121,7 +121,9 @@ def test_stable_function_signatures() -> None:
     assert {"model_path", "backend", "tp_size", "pp_size", "kv_bytes_per_token"}.issubset(
         inspect.signature(estimate_state_cache).parameters
     )
-    assert list(inspect.signature(RustForwardPassPerfModel.best_available).parameters) == ["config"]
+    best_available = inspect.signature(RustForwardPassPerfModel.best_available).parameters
+    assert list(best_available) == ["config", "file"]
+    assert best_available["file"].kind is inspect.Parameter.KEYWORD_ONLY
     assert not hasattr(RustForwardPassPerfModel, "from_regression")
     assert not hasattr(RustForwardPassPerfModel, "from_native")
 

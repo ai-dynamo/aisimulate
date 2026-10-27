@@ -782,7 +782,7 @@ fn restore_verified(
     let native_root = match (&manifest.native, base.systems_paths.as_slice()) {
         (None, _) => None,
         (Some(native), [root]) => {
-            if perf_db::fingerprint(root, &base.system, parquet)? != native.perf_db {
+            if perf_db::current(root, &base.system, parquet)? != native.perf_db {
                 return Err(invalid(format!(
                     "performance data under {} differs from the snapshot fingerprint",
                     root.display()

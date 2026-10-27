@@ -209,10 +209,10 @@ impl EngineLaunchConfig {
 
     pub fn validate(&self) -> Result<()> {
         self.validate_inputs()?;
-        if let Some(config) = self.performance_config()? {
-            if let Some(first) = self.timing_identity_mismatches(&config)?.into_iter().next() {
-                anyhow::bail!(first);
-            }
+        if let Some(config) = self.performance_config()?
+            && let Some(first) = self.timing_identity_mismatches(&config)?.into_iter().next()
+        {
+            anyhow::bail!(first);
         }
         Ok(())
     }

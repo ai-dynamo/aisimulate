@@ -322,26 +322,51 @@ pub(crate) fn fingerprint(
 /// The load-time fingerprint shared by a process's estimators.
 pub(crate) type LoadedFingerprint = Arc<Result<PerfDbFingerprint, String>>;
 
+/// The process-wide load-time fingerprint cell for one root, system and
+/// external parquet. Each key has its own cell, so concurrent first loads
+/// hash the data once without holding the map lock while hashing.
+fn loaded_cell(
+    root: &Path,
+    system: &str,
+    fpm_parquet: Option<&Path>,
+) -> Arc<OnceLock<LoadedFingerprint>> {
+    type Key = (PathBuf, String, Option<PathBuf>);
+    static LOADED: OnceLock<Mutex<HashMap<Key, Arc<OnceLock<LoadedFingerprint>>>>> =
+        OnceLock::new();
+    let normal = |path: &Path| normalized_absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let key = (normal(root), system.to_owned(), fpm_parquet.map(normal));
+    Arc::clone(
+        LOADED
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(key)
+            .or_default(),
+    )
+}
+
 /// Fingerprint `root` the first time this process loads it and reuse that
 /// result afterwards, like the shared table memo reuses loaded tables. Data
 /// that changes later is caught when saving recomputes the fingerprint.
 /// Failures are recorded, not returned: they only prevent saving.
 pub(crate) fn loaded(root: &Path, system: &str, fpm_parquet: Option<&Path>) -> LoadedFingerprint {
-    type Key = (PathBuf, String, Option<PathBuf>);
-    static LOADED: OnceLock<Mutex<HashMap<Key, LoadedFingerprint>>> = OnceLock::new();
-    let normal = |path: &Path| normalized_absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    let key = (normal(root), system.to_owned(), fpm_parquet.map(normal));
-    let memo = LOADED.get_or_init(Default::default);
-    if let Some(value) = memo.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-        return Arc::clone(value);
-    }
-    let value = Arc::new(fingerprint(root, system, fpm_parquet).map_err(|error| error.to_string()));
-    Arc::clone(
-        memo.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(key)
-            .or_insert(value),
-    )
+    Arc::clone(loaded_cell(root, system, fpm_parquet).get_or_init(|| {
+        Arc::new(fingerprint(root, system, fpm_parquet).map_err(|error| error.to_string()))
+    }))
+}
+
+/// Fingerprint `root` as it is now, before a restore loads it. When this
+/// process has not loaded the root yet, the result is also its load-time
+/// fingerprint, so the load that follows does not hash the same data again.
+pub(crate) fn current(
+    root: &Path,
+    system: &str,
+    fpm_parquet: Option<&Path>,
+) -> Result<PerfDbFingerprint, AicError> {
+    let cell = loaded_cell(root, system, fpm_parquet);
+    let current = fingerprint(root, system, fpm_parquet)?;
+    cell.get_or_init(|| Arc::new(Ok(current.clone())));
+    Ok(current)
 }
 
 /// Copy the fingerprinted systems inputs into the stage. Returns the packed
@@ -468,6 +493,26 @@ mod tests {
             fingerprint(&root, "h200_sxm", Some(&parquet)).unwrap(),
             base
         );
+    }
+
+    #[test]
+    fn restore_check_seeds_the_load_time_fingerprint_without_replacing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let gemm = |root: &Path| root.join("data/h200_sxm/vllm/1.0/gemm_perf.parquet");
+        // Before any load, the restore check's result is the load-time value.
+        let fresh = dir.path().join("fresh");
+        systems(&fresh);
+        let checked = current(&fresh, "h200_sxm", None).unwrap();
+        std::fs::write(gemm(&fresh), b"changed").unwrap();
+        assert_eq!(loaded(&fresh, "h200_sxm", None).as_ref(), &Ok(checked));
+        // After a load, a later check reports the disk but keeps what was loaded.
+        let used = dir.path().join("used");
+        systems(&used);
+        let first = loaded(&used, "h200_sxm", None);
+        std::fs::write(gemm(&used), b"changed").unwrap();
+        let now = current(&used, "h200_sxm", None).unwrap();
+        assert_ne!(first.as_ref(), &Ok(now));
+        assert!(Arc::ptr_eq(&loaded(&used, "h200_sxm", None), &first));
     }
 
     #[test]
