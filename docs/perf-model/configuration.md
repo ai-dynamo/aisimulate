@@ -473,11 +473,14 @@ Snapshot configurations pin absolute paths. Restoration reads the pinned
 `state_snapshot.path`, so `best_available(file=path)` raises `ValueError`
 unless `path` is the directory the snapshot was saved to (compared with
 `os.path.samefile`) rather than silently restoring the original. A
-configuration is not compared with that location: one edited to name a copy
-restores the copy after verifying it against its manifest, but its other
-pinned paths (packed performance data, an execution profile, learned
-artifacts and checkpoints) still name the original directory. Save a new
-snapshot instead of moving one. Snapshot
+configuration is not compared with that location. Edited to name a copy, a
+snapshot with a deployment identity restores the copy after verifying it
+against its manifest, but its other pinned paths (packed performance data, an
+execution profile, learned artifacts and checkpoints) belong to that identity
+and must keep naming the original directory. A `from_learned` snapshot derives
+its artifact path from `state_snapshot.path`, so it rejects the edit unless
+`fpm_learned.artifact_path` names the copy too. Save a new snapshot instead of
+moving one. Snapshot
 I/O failures raise an `OSError` subclass (for example `FileNotFoundError` for
 a missing snapshot) through both `file=` and a configuration, never the
 skippable `PerfDataNotAvailableError`. A manifest from another release
