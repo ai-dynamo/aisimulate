@@ -1092,6 +1092,10 @@ def test_forward_pass_config_preserves_existing_positional_arguments(tmp_path: P
         "moe_kernel_source": None,
         "cp_size": None,
         "encoder_parallel": None,
+        "mamba_backend": None,
+        "mamba_ssm_cache_dtype": None,
+        "mamba_stochastic_rounding": None,
+        "mamba_philox_rounds": None,
     }
 
     source = " source_with_spaces "
@@ -1104,6 +1108,10 @@ def test_forward_pass_config_preserves_existing_positional_arguments(tmp_path: P
         "moe_kernel_source": source,
         "cp_size": None,
         "encoder_parallel": None,
+        "mamba_backend": None,
+        "mamba_ssm_cache_dtype": None,
+        "mamba_stochastic_rounding": None,
+        "mamba_philox_rounds": None,
     }
     assert json.loads(json.dumps(pinned.to_dict()))["moe_kernel_source"] == source
 

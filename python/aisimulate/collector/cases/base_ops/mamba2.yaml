@@ -6,6 +6,11 @@ op: mamba2
 description: Base collector v2 cases for mamba2.
 common_case_values:
   mamba2:
+    vllm_tensor_parallel_sizes: [1, 2, 4, 8]
+    vllm_token_widths: [1, 2, 3, 4]
+    vllm_state_dtype: float16
+    vllm_stochastic_rounding: true
+    vllm_philox_rounds: 5
     context_batch_sizes:
     - 1
     - 2
@@ -55,6 +60,7 @@ common_case_values:
       n_groups: 8
       chunk_size: 256
     - model_path: MAMBA2_GENERIC_1K
+      vllm_tensor_parallel_sizes: [1, 2, 4]
       d_model: 1024
       d_state: 64
       d_conv: 4

@@ -602,6 +602,10 @@ mod tests {
             head_dim: 64,
             n_groups: 8,
             chunk_size: 256,
+            state_dtype: "float32".into(),
+            stochastic_rounding: false,
+            philox_rounds: 10,
+            token_width: 1,
         }
     }
 
@@ -1006,6 +1010,10 @@ mod tests {
             fpm_parquet_path: None,
             decoder_replay: false,
             moe_kernel_source: None,
+            mamba_backend: None,
+            mamba_ssm_cache_dtype: None,
+            mamba_stochastic_rounding: None,
+            mamba_philox_rounds: None,
             kv_block_size: Some(64),
             parallel: ParallelMapping {
                 tp_size: 8,

@@ -177,10 +177,11 @@ struct Mamba2Key {
     head_dim: u32,
     n_groups: u32,
     chunk_size: u32,
-    // Note: Python keys by SHAPE tuple, not by `model_name`. The CSV's
-    // `model_name` column is metadata identifying which model the row
-    // was collected against; the lookup itself is shape-based, so a
-    // matching shape is reused across model names. We mirror that.
+    // Model names remain provenance; shape and execution fields identify a query.
+    state_dtype: String,
+    stochastic_rounding: bool,
+    philox_rounds: u32,
+    token_width: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -280,31 +281,17 @@ impl StateSpaceTable {
         head_dim: u32,
         n_groups: u32,
         chunk_size: u32,
+        state_dtype: &str,
+        stochastic_rounding: bool,
+        philox_rounds: u32,
+        token_width: u32,
         sol: &dyn Fn(f64, f64) -> f64,
     ) -> Result<LeafValue, AicError> {
-        // Mirror Python v2's `load_mamba2_data` defaultdict bug (still
-        // present today, verified 2026-07-09): the row-population pattern
-        // `try { data[ks][ph][mk][bs] } except KeyError: ... = entry` never
-        // reaches the `except` branch for generation rows because the
-        // fourth level is a `defaultdict(dict)` that lazily materialises an
-        // empty dict on `[bs]` access (no KeyError). Generation leaves end
-        // up as empty `{}`; `_query_mamba2_table`'s generation branch then
-        // normalizes them to an empty curve, the perf_interp engine raises,
-        // and the op falls back to SOL (`db.query_mamba2(generation)`
-        // returns `source="sol"` for every query). The Rust parquet loader
-        // populates the rows correctly, so returning silicon here would
-        // give a numerically different (and arguably "more correct")
-        // answer — but for apple-to-apple parity we mirror Python by
-        // returning a PerfDatabase error so the operator-layer SOL branch
-        // fires. GDN's loader is fine (uses explicit `in` checks), so this
-        // workaround is Mamba2-generation-only.
-        if phase == "generation" {
-            return Err(AicError::PerfDatabase(format!(
-                "Mamba2 generation data intentionally not used (matches Python v2 \
-                 `load_mamba2_data` defaultdict bug in operations/mamba.py — generation \
-                 leaves load empty, so every generation query degrades to SOL); \
-                 operator must fall to SOL. ks={kernel_source}, d_model={d_model}"
-            )));
+        // Legacy generation ops lack rank-local shape and verification identity.
+        if phase == "generation" && state_dtype == "unrecorded" {
+            return Err(AicError::PerfDatabase(
+                "Legacy Mamba decode uses SOL".into(),
+            ));
         }
         let grids = self.load_mamba2()?;
         let key = Mamba2Key {
@@ -317,22 +304,23 @@ impl StateSpaceTable {
             head_dim,
             n_groups,
             chunk_size,
+            state_dtype: state_dtype.to_string(),
+            stochastic_rounding,
+            philox_rounds: if stochastic_rounding {
+                philox_rounds
+            } else {
+                0
+            },
+            token_width,
         };
-        // Mirror Python `_query_mamba2_table`: on exact-shape miss, fall back
-        // to the first table entry sharing the same `d_model` (insertion order
-        // in Python; sorted order here — which agrees whenever the per-d_model
-        // bucket has a single entry, as in all current matrices). If no entry
-        // shares d_model, surface as `PerfDatabase` so the operator layer's
-        // SOL fallback applies.
-        //
-        // Only the context phase reaches this point — generation queries are
-        // short-circuited above to match Python's degenerate behaviour.
+        // A different shard, state dtype, rounding mode, or speculative width
+        // is a different operation. Never substitute another d_model match.
         //
         // The backend's own persisted physical label (TRT-LLM rc29 renamed
         // the context convolution `causal_conv1d_fn_token_major`) takes
         // precedence over the logical lane, which after the shared-layer
         // merge can hold an earlier version's or another backend's rows.
-        let own_physical = self
+        let node = self
             .gdn_alias_profile
             .mamba2_aliases(key.kernel_source.as_str(), key.phase.as_str())
             .iter()
@@ -340,26 +328,13 @@ impl StateSpaceTable {
                 let mut alias_key = key.clone();
                 alias_key.kernel_source = (*alias).to_string();
                 grids.by_keys.get(&alias_key)
-            });
-        let node = match own_physical.or_else(|| grids.by_keys.get(&key)) {
-            Some(node) => node,
-            None => grids
-                .by_keys
-                .iter()
-                .find(|(k, _)| {
-                    k.kernel_source == key.kernel_source
-                        && k.phase == key.phase
-                        && k.d_model == key.d_model
-                })
-                .map(|(_, node)| node)
-                .ok_or_else(|| missing("Mamba2", &self.data_root, format!("{key:?}")))?,
-        };
+            })
+            .or_else(|| grids.by_keys.get(&key))
+            .ok_or_else(|| missing("Mamba2", &self.data_root, format!("{key:?}")))?;
         engine_query(node, phase, batch_size, seq_len, sol)
     }
 
-    /// GDN latency for a layer instance. Same engine resolution as Mamba2
-    /// (and, unlike Mamba2, generation queries really resolve: 1-axis
-    /// `(batch,)` Grid RAW over the generation curve, per Python v2).
+    /// GDN latency for a layer instance. Generation uses a one-axis batch grid.
     #[allow(clippy::too_many_arguments)]
     pub fn query_gdn(
         &self,
@@ -711,6 +686,10 @@ fn load_mamba2_parquet(sources: &[PerfSource]) -> Result<Mamba2Grids, AicError> 
         let head_dim_col = reader.col("head_dim")?;
         let n_groups_col = reader.col("n_groups")?;
         let chunk_size_col = reader.col("chunk_size")?;
+        let state_dtype_col = reader.col_optional("state_dtype");
+        let sr_col = reader.col_optional("stochastic_rounding");
+        let rounds_col = reader.col_optional("philox_rounds");
+        let width_col = reader.col_optional("token_width");
         let latency_col = reader.col("latency")?;
         let power_col = reader.col_optional("power");
         let ks_col = reader.col_optional("kernel_source");
@@ -720,6 +699,26 @@ fn load_mamba2_parquet(sources: &[PerfSource]) -> Result<Mamba2Grids, AicError> 
                 continue;
             }
             let phase = row.str_owned(phase_col)?;
+            let stochastic_rounding = match sr_col {
+                Some(c) => row.bool(c)?,
+                None => false,
+            };
+            let state_dtype = row
+                .str_optional(state_dtype_col)?
+                .unwrap_or("unrecorded")
+                .to_string();
+            let token_width = row.u32_optional(width_col)?.unwrap_or(1);
+            let rounds = row.u32_optional(rounds_col)?.unwrap_or(10);
+            if !matches!(
+                state_dtype.as_str(),
+                "unrecorded" | "float16" | "bfloat16" | "float32"
+            ) || token_width == 0
+                || (stochastic_rounding && (state_dtype != "float16" || !matches!(rounds, 5 | 10)))
+            {
+                return Err(AicError::InvalidEngineConfig(
+                    "Invalid Mamba timing identity".into(),
+                ));
+            }
             let key = Mamba2Key {
                 kernel_source: row.str_owned(kernel_source_col)?,
                 phase: phase.clone(),
@@ -730,12 +729,12 @@ fn load_mamba2_parquet(sources: &[PerfSource]) -> Result<Mamba2Grids, AicError> 
                 head_dim: row.u32(head_dim_col)?,
                 n_groups: row.u32(n_groups_col)?,
                 chunk_size: row.u32(chunk_size_col)?,
+                state_dtype,
+                stochastic_rounding,
+                philox_rounds: if stochastic_rounding { rounds } else { 0 },
+                token_width,
             };
-            // First-wins parity with Python `load_mamba2_data`, extended across
-            // shared-layer sources (earlier source wins). Generation rows are
-            // keyed by batch only (Python drops seq for generation). Note the
-            // stored generation leaves are never read: `query_mamba2` mirrors
-            // Python's empty-generation-leaves bug by erroring first.
+            // Earlier sources own duplicate timing coordinates.
             let node = by_keys.entry(key).or_insert_with(Node::branch);
             let batch = row.u32(batch_size_col)?;
             let latency = row.f64(latency_col)?;
@@ -943,6 +942,93 @@ fn clone_err(err: &AicError) -> AicError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mamba_decode_rows_are_used_only_for_the_exact_execution_identity() {
+        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
+        let tmp = tempfile::tempdir().unwrap();
+        write_parquet(
+            &tmp.path().join("mamba2_perf.parquet"),
+            &[
+                Col::Str(
+                    "kernel_source",
+                    vec!["vllm_flashinfer_selective_state_update"],
+                ),
+                Col::Str("phase", vec!["generation"]),
+                Col::I64("batch_size", vec![2]),
+                Col::I64("seq_len", vec![1]),
+                Col::I64("d_model", vec![4096]),
+                Col::I64("d_state", vec![128]),
+                Col::I64("d_conv", vec![4]),
+                Col::I64("nheads", vec![64]),
+                Col::I64("head_dim", vec![64]),
+                Col::I64("n_groups", vec![4]),
+                Col::I64("chunk_size", vec![128]),
+                Col::Str("state_dtype", vec!["float16"]),
+                Col::I64("stochastic_rounding", vec![1]),
+                Col::I64("philox_rounds", vec![5]),
+                Col::I64("token_width", vec![4]),
+                Col::F64("latency", vec![1.25]),
+                Col::F64("power", vec![200.0]),
+            ],
+        );
+        let table = super::StateSpaceTable::new(tmp.path().to_path_buf(), "vllm", "0.31.0");
+        let query = |heads, dtype, sr, rounds, width| {
+            table.query_mamba2(
+                "vllm_flashinfer_selective_state_update",
+                "generation",
+                2,
+                0,
+                4096,
+                128,
+                4,
+                heads,
+                64,
+                4,
+                128,
+                dtype,
+                sr,
+                rounds,
+                width,
+                &|_, _| 0.1,
+            )
+        };
+        let value = query(64, "float16", true, 5, 4).unwrap();
+        assert_eq!(value.latency, 1.25);
+        assert!(query(128, "float16", true, 5, 4).is_err());
+        assert!(query(64, "float32", true, 5, 4).is_err());
+        assert!(query(64, "float16", false, 5, 4).is_err());
+        assert!(query(64, "float16", true, 10, 4).is_err());
+        assert!(query(64, "float16", true, 5, 1).is_err());
+
+        // The engine supplies flattened verify tokens; the operator restores requests once.
+        let systems = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../python/aisimulate/src/aisimulate_core/systems");
+        let mut db =
+            crate::perf_database::PerfDatabase::load(&systems, "b200_sxm", "vllm", "0.27.1")
+                .unwrap();
+        std::sync::Arc::get_mut(&mut db.tables).unwrap().state_space = table;
+        let op = crate::operators::Mamba2Op {
+            name: "synthetic_ssu".into(),
+            scale_factor: 1.0,
+            kernel_source: "vllm_flashinfer_selective_state_update".into(),
+            phase: "generation".into(),
+            d_model: 4096,
+            d_state: 128,
+            d_conv: 4,
+            nheads: 64,
+            head_dim: 64,
+            n_groups: 4,
+            chunk_size: 128,
+            state_dtype: "float16".into(),
+            stochastic_rounding: true,
+            philox_rounds: 5,
+            token_width: 4,
+        };
+        let result = op.query(&db, 8, 0).unwrap();
+        assert_eq!(result.latency_ms, 1.25);
+        assert_eq!(result.source, crate::operators::Source::Silicon);
+    }
+
     use super::*;
     use crate::common::system_spec::SystemSpec;
 
@@ -2051,6 +2137,10 @@ mod tests {
                 head_dim: 64,
                 n_groups: 8,
                 chunk_size: 256,
+                state_dtype: "unrecorded".to_string(),
+                stochastic_rounding: false,
+                philox_rounds: 0,
+                token_width: 1,
             };
             let node = by_keys.entry(key).or_insert_with(Node::branch);
             insert_first_wins(node, &[1, 1024], LeafValue::latency_only(latency));
@@ -2082,6 +2172,10 @@ mod tests {
                 64,
                 8,
                 256,
+                "unrecorded",
+                false,
+                0,
+                1,
                 &dummy_sol,
             )
             .map(|v| v.latency)

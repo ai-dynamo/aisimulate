@@ -105,6 +105,7 @@ model_case_values:
           # bundled with this row. AIC-1743/AIC-1748.
           allowed_modes: [nvfp4]
     - model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
+      frameworks: [sglang, trtllm]
       hidden_size: 4096
       inter_size: 2688
       topk: 22
@@ -125,11 +126,6 @@ model_case_values:
           allowed_modes: [nvfp4]
         trtllm:
           allowed_modes: [nvfp4]
-        vllm:
-          # vLLM's pinned FlashInfer NVFP4 path is limited to top-k <= 10;
-          # this row's topk=22 exceeds it (the 30B/Lightning shape's topk=6
-          # does not — see that row above). AIC-1743/AIC-1748.
-          allowed_modes: []
     - model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
       hidden_size: 1024
       inter_size: 2688
@@ -152,9 +148,9 @@ model_case_values:
         trtllm:
           allowed_modes: [nvfp4]
         vllm:
-          # Same topk=22 > 10 vLLM FlashInfer NVFP4 restriction as above.
-          # AIC-1743/AIC-1748.
-          allowed_modes: []
+          # vLLM 0.31 dispatch evaluates kernel support for top-k 22.
+          # Keep failures visible instead of dropping the target geometry.
+          allowed_modes: [nvfp4]
     # vLLM routes Nemotron-H experts through moe_latent_size=1024.
     - model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8
       frameworks: [vllm]
@@ -364,6 +360,9 @@ framework_specific_model_case_values:
         tensor_parallel_sizes: [1, 2, 4, 8, 16, 32, 64]
 
 framework_specific_op_cases:
+  vllm:
+    mamba2:
+      cases: all
   trtllm:
     mamba2:
       cases: all

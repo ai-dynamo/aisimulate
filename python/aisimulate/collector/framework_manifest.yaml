@@ -107,6 +107,7 @@ frameworks:
       moe: *vllm_0310_runtime
       kda: *vllm_0310_runtime
       mhc: *vllm_0310_runtime
+      mamba2: *vllm_0310_runtime
     # kda family pin RETIRED (owner decision 2026-09-28): the family ran on the
     # kimi-k3 preview image (0.1.dev19262) while the consumer's fused-decode
     # pricing did not match 0.27's packed-decode serving path (review #1559).
@@ -158,6 +159,7 @@ frameworks:
     # the normal framework/family runtime; run these campaigns separately at
     # their declared runtime.
     models:
+      "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4": *vllm_0310_runtime
       # GLM-5.3-Flash (Glm5NextForConditionalGeneration) standalone per-op
       # collection runs on the stock official v0.31.0 release (no overlay),
       # tag commit db9527a46873454610df6dbedf79a36d6bf1a7f6. v0.31.0 moves
