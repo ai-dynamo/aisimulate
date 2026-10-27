@@ -267,7 +267,10 @@ def test_ar_native_cuda_policy_keeps_ar_and_speculative_measurements_separate(pr
         ) == pytest.approx(1.0)
 
 
-def test_speculative_round_prediction_preserves_progress_identity_and_observed_capacity(profile, timing_systems):
+@pytest.mark.parametrize("method", ["eagle3", "mtp"])
+def test_speculative_round_prediction_preserves_progress_identity_and_observed_capacity(
+    profile, timing_systems, method
+):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -282,7 +285,7 @@ def test_speculative_round_prediction_preserves_progress_identity_and_observed_c
     _observed_profile(profile, context=4096)
     execution = {
         "kind": "speculative_round",
-        "method": "eagle3",
+        "method": method,
         "num_draft_tokens": 3,
         "draft_model": "test/draft",
         "draft_revision": "2" * 40,
