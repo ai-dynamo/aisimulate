@@ -15,7 +15,7 @@ use crate::perf_database::PerfDatabase;
 #[serde(deny_unknown_fields)]
 pub struct MeasuredCell {
     /// (batch, new tokens per request, cached prefix per request) for prefill;
-    /// (batch, past KV per request + 1, zero) for decode.
+    /// (batch, sequence length passed by the query API, zero) for decode.
     pub shape: [u32; 3],
     pub latency_ms: f64,
 }
@@ -29,9 +29,9 @@ pub struct MeasuredCell {
 /// shapes are errors, with no interpolation or analytical substitution.
 /// Resident weights and latency scaling are supplied explicitly.
 ///
-/// Mixed composition requires scopes that separate shared non-attention work
-/// from phase-specific attention; a whole-phase measurement cannot supply that
-/// split. The execution profile declares this composition contract.
+/// Uses the same runtime coordinates and mixed-step operation filters as other
+/// operations. A measured whole-phase scope does not expose the attention split
+/// needed by the existing mixed-step composition.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeasuredCompositeOp {

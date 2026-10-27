@@ -541,8 +541,8 @@ pub(crate) fn get_mix_step_ops(
     // their full ISL through the packing if they need exact parity
     // with Python's chunked path.
     let isl_eff_pass2 = new_tokens_per_prefill_req.max(1);
-    let ctx_attn_batch = ctx_tokens.div_ceil(isl_eff_pass2).max(1);
-    let scale_factor = isl_eff_pass2.div_ceil(ctx_tokens.max(1)).max(1) as f64;
+    let ctx_attn_batch = ((ctx_tokens + isl_eff_pass2 - 1) / isl_eff_pass2).max(1);
+    let scale_factor = ((isl_eff_pass2 + ctx_tokens - 1) / ctx_tokens.max(1)).max(1) as f64;
     for op in context_ops {
         if !op.is_context_attention() {
             continue;

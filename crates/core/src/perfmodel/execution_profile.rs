@@ -44,18 +44,9 @@ struct ExecutionProfile {
     ops: Vec<Op>,
     /// Aggregated profiles use `ops` for prefill and this graph for decode.
     generation_ops: Option<Vec<Op>>,
-    mixed_composition: Option<MixedComposition>,
     /// Every file needed to load the private systems root, including hardware
     /// YAML, version/source metadata and all retained operation measurements.
     retained_files: Vec<RetainedFile>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum MixedComposition {
-    /// Author declares separate attention and shared non-attention scopes,
-    /// using the existing context_attention/generation_attention filters.
-    SharedNonAttention,
 }
 
 fn digest(bytes: &[u8]) -> String {
@@ -144,17 +135,11 @@ impl ExecutionProfileSelection {
             ));
         }
         if profile.worker_type == ForwardPassWorkerType::Aggregated {
-            if profile.generation_ops.as_ref().is_none_or(Vec::is_empty)
-                || profile.mixed_composition.is_none()
-            {
-                return Err(invalid(
-                    "aggregated profiles require generation_ops and mixed_composition",
-                ));
+            if profile.generation_ops.as_ref().is_none_or(Vec::is_empty) {
+                return Err(invalid("aggregated profiles require generation_ops"));
             }
-        } else if profile.generation_ops.is_some() || profile.mixed_composition.is_some() {
-            return Err(invalid(
-                "generation_ops and mixed_composition require an aggregated profile",
-            ));
+        } else if profile.generation_ops.is_some() {
+            return Err(invalid("generation_ops require an aggregated profile"));
         }
         Ok(profile)
     }
@@ -208,8 +193,6 @@ impl ExecutionProfileSelection {
         validate_replacement(&profile.ops, &spec, context)?;
         if let Some(generation) = &profile.generation_ops {
             validate_replacement(generation, &spec, false)?;
-            validate_mixed_graph(&profile.ops, true)?;
-            validate_mixed_graph(generation, false)?;
         }
         let snapshot = tempfile::Builder::new()
             .prefix("aisimulate-op-profile-")
@@ -298,41 +281,6 @@ fn validate_replacement(ops: &[Op], spec: &EngineSpec, context: bool) -> Result<
         ));
     }
     validate_ops(ops, spec, context)
-}
-
-fn validate_mixed_graph(ops: &[Op], context: bool) -> Result<(), AicError> {
-    let attention = if context {
-        Op::is_context_attention
-    } else {
-        Op::is_generation_attention
-    };
-    if !ops.iter().any(attention) {
-        return Err(invalid(
-            "mixed composition requires top-level phase attention operations",
-        ));
-    }
-    fn hidden_attention(ops: &[Op]) -> bool {
-        ops.iter().any(|op| {
-            op.is_context_attention()
-                || op.is_generation_attention()
-                || match op {
-                    Op::Overlap(group) => {
-                        hidden_attention(&group.group_a) || hidden_attention(&group.group_b)
-                    }
-                    _ => false,
-                }
-        })
-    }
-    for op in ops {
-        if let Op::Overlap(group) = op {
-            if hidden_attention(&group.group_a) || hidden_attention(&group.group_b) {
-                return Err(invalid(
-                    "mixed composition cannot hide attention inside an overlap group",
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Path of the first field where the actual compiled spec differs from the

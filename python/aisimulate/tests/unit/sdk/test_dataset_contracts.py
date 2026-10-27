@@ -197,7 +197,6 @@ def test_prepared_aggregated_profile_predicts_mixed_step_offline(dataset):
     profile = json.loads((root / "metadata/profile.json").read_bytes())
     config = json.loads((root / "metadata/config.json").read_bytes())
     config["worker_type"] = profile["worker_type"] = "aggregated"
-    profile["mixed_composition"] = "shared_non_attention"
     template = profile["ops"][0]["MeasuredComposite"]
 
     def scope(name, context, shape, latency, weights):
@@ -239,7 +238,7 @@ def test_prepared_aggregated_profile_predicts_mixed_step_offline(dataset):
                 "num_prefill_requests": 1,
                 "sum_prefill_tokens": 4,
                 "num_decode_requests": 1,
-                "sum_decode_kv_tokens": 4,
+                "sum_decode_kv_tokens": 5,
             }
         }
     ]
