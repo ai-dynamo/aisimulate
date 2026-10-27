@@ -296,11 +296,12 @@ pub struct Replayer<C = RoundRobinComposition> {
 
 impl Replayer<RoundRobinComposition> {
     pub fn new(spec: ReplaySpec, factory: ReplayEngineFactory) -> ReplayResult<Self> {
-        let config = &spec.adapters.placement.config;
-        let composition = if config.is_null() {
+        let placement = &spec.adapters.placement;
+        // Other providers get the default so `validate_spec` reports the provider mismatch.
+        let composition = if placement.provider != "round_robin" || placement.config.is_null() {
             RoundRobinComposition::default()
         } else {
-            serde_json::from_value(config.clone())
+            serde_json::from_value(placement.config.clone())
                 .map_err(|error| ReplayError::InvalidSpec(error.to_string()))?
         };
         Self::with_composition(spec, factory, composition)
@@ -1338,6 +1339,24 @@ mod generated_replay_tests {
                 .unwrap();
             assert_eq!(generated.load(Ordering::SeqCst), 3);
         }
+    }
+
+    #[test]
+    fn non_round_robin_placement_reports_provider_before_config() {
+        let mut spec = spec(Backend::Vllm, false, 1, false);
+        spec.adapters.placement = crate::replay::ProviderSpec {
+            provider: "kv_router".into(),
+            config: serde_json::json!({"overlap_weight": 1.0}),
+        };
+        let Err(error) = Replayer::new(spec, ReplayEngineFactory::new()) else {
+            panic!("non-round_robin placement must be rejected");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("engine composition requires round_robin placement"),
+            "{error}"
+        );
     }
 
     #[test]
