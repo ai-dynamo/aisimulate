@@ -862,7 +862,13 @@ impl AicTimingModel {
         let latency_ms = estimate
             .latency_ms
             .context("native FPM returned no estimate")?;
-        if latency_ms > 0.0 {
+        // Empty work runs no lookup. A mixed decode share can be zero after
+        // real decode and baseline lookups, and those remain evidence.
+        let looked_up_baseline = estimate
+            .ranks
+            .iter()
+            .any(|rank| rank.decode_baseline_ms.is_some());
+        if latency_ms > 0.0 || looked_up_baseline {
             let mut evidence = self
                 .fpm_evidence
                 .lock()
@@ -5601,6 +5607,29 @@ mod tests {
             timing.fpm_evidence_summary().unwrap().decode.latency_ms,
             share + decode_ms
         );
+
+        // At the smallest collected KV the decode row is its own pass
+        // baseline (2 ms each): the share is zero, yet both lookups ran and
+        // stay in the captured evidence.
+        assert_eq!(
+            timing
+                .predict_mixed_decode_ms(prefill, 1, 5, 5, 1024)
+                .unwrap(),
+            Some(0.0)
+        );
+        let history = timing.fpm_evidence.lock().unwrap();
+        let zero_share = &history[&(FpmEvidencePhase::MixedDecode, 1, 0, 4)];
+        assert_eq!(zero_share.count, 1);
+        let rank = &zero_share.estimate.ranks[0];
+        assert_eq!(
+            (
+                rank.decode_ms,
+                rank.decode_baseline_ms,
+                rank.marginal_decode_ms
+            ),
+            (Some(2.0), Some(2.0), Some(0.0))
+        );
+        drop(history);
 
         // Operation graphs keep pricing a separate decode pass.
         let op_level = python_timing_model(engine(), false);
