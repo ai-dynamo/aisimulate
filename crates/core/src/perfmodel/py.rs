@@ -359,6 +359,26 @@ impl AicEngine {
             .map_err(aic_to_py)
     }
 
+    /// One prefill-step latency at the exact
+    /// `(batch_size, total_prefill_tokens, total_kv_read_tokens)` totals.
+    fn predict_prefill_latency_total(
+        &self,
+        py: Python<'_>,
+        batch_size: u32,
+        total_prefill_tokens: u32,
+        total_kv_read_tokens: u32,
+    ) -> PyResult<f64> {
+        self.inner.reset_provenance();
+        py.allow_threads(|| {
+            self.inner.predict_prefill_latency_total(
+                batch_size,
+                total_prefill_tokens,
+                total_kv_read_tokens,
+            )
+        })
+        .map_err(aic_to_py)
+    }
+
     /// One FPM decode-step latency at the collector's exact
     /// `(batch_size, total_past_kv_tokens)` coordinate.
     fn predict_decode_latency_total(
@@ -889,6 +909,14 @@ impl AicEngine {
     }
 }
 
+/// Inspect the compiled baseline for authoring a pinned external profile.
+#[pyfunction]
+fn engine_spec_json_from_bincode(bytes: &[u8]) -> PyResult<String> {
+    let spec =
+        crate::perfmodel::engine::spec::EngineSpec::from_bincode(bytes).map_err(aic_to_py)?;
+    serde_json::to_string(&spec).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
 /// Convert a JSON-encoded [`EngineSpec`] into bincode bytes (Python → Rust
 /// op-transfer). Python's `compile_engine` builds the `EngineSpec` as a JSON
 /// string (externally-tagged `Op` variants + `EngineConfig`) — JSON is the
@@ -1050,6 +1078,10 @@ struct EngineBuildRequest {
     attention_dp_size: u32,
     dcp_size: Option<u32>,
     fpm_options: crate::FpmInterpolationConfig,
+    execution_profile: Option<(
+        crate::perfmodel::execution_profile::ExecutionProfileSelection,
+        crate::ForwardPassWorkerType,
+    )>,
     moe_tp_size: Option<u32>,
     moe_ep_size: Option<u32>,
     cp_size: Option<u32>,
@@ -1078,6 +1110,7 @@ struct EngineBuildRequest {
     shared_layer: Option<bool>,
     transfer_policy: Option<Vec<String>>,
     strict_provenance: Option<bool>,
+    encoder_parallel: Option<String>,
 }
 
 /// Ergonomic builder for the Rust -> Python -> Rust compiled-engine entry point.
@@ -1108,6 +1141,7 @@ impl AicEngineBuilder {
                 attention_dp_size: 1,
                 dcp_size: None,
                 fpm_options: crate::FpmInterpolationConfig::default(),
+                execution_profile: None,
                 moe_tp_size: None,
                 moe_ep_size: None,
                 cp_size: None,
@@ -1136,6 +1170,7 @@ impl AicEngineBuilder {
                 shared_layer: None,
                 transfer_policy: None,
                 strict_provenance: None,
+                encoder_parallel: None,
             },
         }
     }
@@ -1541,6 +1576,7 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("shared_layer", request.shared_layer)?;
         kwargs.set_item("transfer_policy", request.transfer_policy.as_deref())?;
         kwargs.set_item("strict_provenance", request.strict_provenance)?;
+        kwargs.set_item("encoder_parallel", request.encoder_parallel.as_deref())?;
         kwargs.set_item("nextn", request.nextn)?;
         if let Some(speculation) = &request.speculation {
             let json = serde_json::to_string(speculation)
@@ -1592,6 +1628,13 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
             request.system,
             request.backend,
         )));
+    }
+    if let Some((selection, worker_type)) = &request.execution_profile {
+        let spec = crate::perfmodel::engine::spec::EngineSpec::from_bincode(&spec_bytes)?;
+        let (spec, snapshot) = selection.apply(spec, &systems_root, *worker_type)?;
+        let mut engine = Engine::from_spec_bytes(&spec.to_bincode()?, snapshot.path())?;
+        engine.profile_snapshot = Some(snapshot);
+        return Ok(engine);
     }
     Engine::from_spec_bytes(&spec_bytes, systems_root.as_path() as &Path)
 }
@@ -1696,6 +1739,12 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         attention_dp_size: config.attention_dp,
         dcp_size: config.dcp,
         fpm_options: config.estimator_config.fpm_interpolation.clone(),
+        execution_profile: config
+            .estimator_config
+            .op_level
+            .execution_profile
+            .clone()
+            .map(|selection| (selection, config.worker_type)),
         moe_tp_size: config.moe_tp_size,
         moe_ep_size: config.moe_ep_size,
         cp_size: config.cp_size,
@@ -1757,6 +1806,9 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         shared_layer: config.enable_shared_layer,
         transfer_policy: config.transfer_policy.clone(),
         strict_provenance: Some(config.strict_provenance),
+        encoder_parallel: config
+            .encoder_parallel
+            .map(|parallel| parallel.as_str().to_owned()),
     })
 }
 
@@ -1790,6 +1842,11 @@ pub(crate) fn compile_engine_to_engine(
             request.fpm_interpolation.as_deref(),
             request.fpm_parquet_path.as_deref(),
         )?;
+        if controls.op_level.execution_profile.is_some() {
+            return Err(AicError::InvalidEngineConfig(
+                "external execution profiles require the canonical best_available interface".into(),
+            ));
+        }
         request.fpm_options = controls.fpm_interpolation.clone();
         request.fpm_interpolation = match controls.fpm_interpolation.method {
             crate::FpmInterpolationMethod::Auto => None,
@@ -1844,6 +1901,7 @@ fn engine_build_request(
         attention_dp_size: config.parallel.attention_dp_size.unwrap_or(1),
         dcp_size: config.parallel.dcp_size,
         fpm_options: crate::FpmInterpolationConfig::default(),
+        execution_profile: None,
         moe_tp_size: config.parallel.moe_tp_size,
         moe_ep_size: config.parallel.moe_ep_size,
         cp_size: config.parallel.cp_size,
@@ -1882,6 +1940,7 @@ fn engine_build_request(
         shared_layer: config.enable_shared_layer,
         transfer_policy: config.transfer_policy.clone(),
         strict_provenance: Some(config.strict_provenance),
+        encoder_parallel: None,
     })
 }
 
@@ -2002,6 +2061,17 @@ impl PyForwardPassPerfModel {
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
+    /// Resolve the deployment identity used by learned artifacts and checkpoints.
+    #[staticmethod]
+    fn learned_identity(config_json: &str) -> PyResult<String> {
+        let config = parse_forward_pass_config(config_json)?
+            .resolve()
+            .map_err(aic_to_py)?;
+        let identity =
+            crate::perfmodel::fpm::canonical_learned_identity(&config).map_err(aic_to_py)?;
+        serde_json::to_string(&identity).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Size declarative resources using canonical configuration, without timing
     /// data or analytical graph construction.
     #[staticmethod]
@@ -2011,6 +2081,24 @@ impl PyForwardPassPerfModel {
             .map_err(|e| PyValueError::new_err(format!("invalid cache budget: {e}")))?;
         let estimate = config.estimate_cache_budget(&request).map_err(aic_to_py)?;
         serde_json::to_string(&estimate).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Normalize recorded execution identity without constructing a timing model.
+    #[staticmethod]
+    fn _normalize_fpm_execution_profile(
+        model_revision: &str,
+        execution_profile_json: &str,
+    ) -> PyResult<String> {
+        let execution_profile: crate::FpmExecutionProfile =
+            serde_json::from_str(execution_profile_json).map_err(|error| {
+                PyValueError::new_err(format!("invalid FPM execution profile: {error}"))
+            })?;
+        crate::FpmExecutionBinding {
+            model_revision: model_revision.to_owned(),
+            execution_profile,
+        }
+        .selector()
+        .map_err(aic_to_py)
     }
 
     /// Share typed FPM option validation with the compilation adapter.
@@ -2159,6 +2247,7 @@ impl PyForwardPassPerfModel {
             moe_kernel_source: request.moe_kernel_source,
             enable_shared_layer: request.shared_layer,
             strict_provenance: legacy.strict_provenance,
+            encoder_parallel: None,
         };
         config.validate().map_err(aic_to_py)?;
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
@@ -2210,6 +2299,40 @@ impl PyForwardPassPerfModel {
                     .map_err(|e| PyValueError::new_err(format!("learned metadata serialize: {e}")))
             })
             .transpose()
+    }
+
+    fn learned_selector_diagnostics(&self) -> PyResult<Option<String>> {
+        self.inner
+            .learned_selector_diagnostics()
+            .map(|value| {
+                serde_json::to_string(&value)
+                    .map_err(|error| PyValueError::new_err(error.to_string()))
+            })
+            .transpose()
+    }
+
+    fn learned_online_diagnostics(&self) -> PyResult<Option<String>> {
+        self.inner
+            .learned_online_diagnostics()
+            .map(|value| {
+                serde_json::to_string(&value)
+                    .map_err(|error| PyValueError::new_err(error.to_string()))
+            })
+            .transpose()
+    }
+
+    fn flush_updates(&mut self, py: Python<'_>) -> PyResult<()> {
+        py.allow_threads(|| self.inner.flush_updates())
+            .map_err(aic_to_py)
+    }
+
+    fn export_learned_artifact(&self) -> PyResult<String> {
+        self.inner.export_learned_artifact().map_err(aic_to_py)
+    }
+
+    fn save_online_checkpoint(&self, py: Python<'_>, path: &str) -> PyResult<()> {
+        py.allow_threads(|| self.inner.save_online_checkpoint(path))
+            .map_err(aic_to_py)
     }
 
     /// Estimate one forward-pass iteration in ms. `fpm_json` is one iteration as
@@ -2279,6 +2402,27 @@ impl PyForwardPassPerfModel {
         serde_json::to_string(&result).map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
+    /// Per-op values of one vision-encoder call. `shapes_json` is a JSON array
+    /// of `EncoderImageShape` objects; requires an estimator compiled with
+    /// `encoder_parallel`. Pure-Rust compute (GIL freed).
+    fn vision_operations(
+        &self,
+        py: Python<'_>,
+        shapes_json: &str,
+    ) -> PyResult<Vec<(String, f64, f64, String)>> {
+        let shapes: Vec<crate::EncoderImageShape> = serde_json::from_str(shapes_json)
+            .map_err(|e| PyValueError::new_err(format!("invalid encoder shapes JSON: {e}")))?;
+        let values = py
+            .allow_threads(|| self.inner.vision_operations(&shapes))
+            .map_err(aic_to_py)?;
+        Ok(values
+            .into_iter()
+            .map(|(name, latency_ms, energy_wms, source)| {
+                (name, latency_ms, energy_wms, source.to_owned())
+            })
+            .collect())
+    }
+
     /// Diagnostics (source / readiness / retained count / warning) as JSON.
     fn diagnostics(&self) -> PyResult<String> {
         serde_json::to_string(&self.inner.diagnostics())
@@ -2290,6 +2434,23 @@ impl PyForwardPassPerfModel {
         let coverage = self.inner.fpm_query_coverage().map_err(aic_to_py)?;
         serde_json::to_string(&coverage)
             .map_err(|error| PyValueError::new_err(format!("FPM coverage serialize: {error}")))
+    }
+
+    fn predict_prefill_latency_total(
+        &self,
+        py: Python<'_>,
+        batch_size: u32,
+        total_prefill_tokens: u32,
+        total_kv_read_tokens: u32,
+    ) -> PyResult<f64> {
+        py.allow_threads(|| {
+            self.inner.predict_prefill_latency_total(
+                batch_size,
+                total_prefill_tokens,
+                total_kv_read_tokens,
+            )
+        })
+        .map_err(aic_to_py)
     }
 
     fn predict_decode_latency_total(
@@ -2344,6 +2505,7 @@ impl PyForwardPassPerfModel {
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_build_smoke, m)?)?;
     m.add_function(wrap_pyfunction!(engine_spec_bincode_from_json, m)?)?;
+    m.add_function(wrap_pyfunction!(engine_spec_json_from_bincode, m)?)?;
     m.add_function(wrap_pyfunction!(weights_ops_json, m)?)?;
     m.add_function(wrap_pyfunction!(gemm_quant_util_levels, m)?)?;
     m.add_function(wrap_pyfunction!(moe_quant_util_levels, m)?)?;

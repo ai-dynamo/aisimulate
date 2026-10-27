@@ -51,12 +51,26 @@ arithmetic. It is not measured performance or a complete serialized report:
 | `request_throughput_rps` | Completed requests divided by modeled duration: `4 / 2 = 2` requests/s. |
 | `num_ttft_samples`, `num_tpot_samples` | Number of qualifying request samples for each latency distribution. A zero-valued latency with zero samples is not a fast deployment. |
 | `goodput_output_throughput_tok_s` | Output tokens from completed, SLA-satisfying requests divided by the same duration; present when an SLA is configured. |
-| `gpu_hours` | Provisioned GPU time integrated over the interval. Here it represents 2 GPUs for 2 seconds. |
+| `gpu_hours` | Provisioned GPU time integrated over the interval: every provisioned GPU over the simulated clock. Here it represents 2 GPUs for 2 seconds. |
 
 Throughput per GPU uses average provisioned GPUs:
 `avg_gpu = gpu_hours / (duration_ms / 3_600_000)`. Here, `200 / 2 = 100`
 tokens/s/GPU. For a scaling runner, average provisioned GPUs can differ from
 the peak allocation. See [optimization goals](../sweeper/optimization-goals.md).
+
+An SGLang worker with `host_loop` ([SGLang VL host loop](../replay/engine/sglang-vl-host-loop.md))
+splits TTFT into six stage means: `mean_frontend_ms`, `mean_scheduler_inbox_wait_ms`,
+`mean_receive_to_admit_ms`, `mean_prefill_elapsed_ms`, `mean_result_observation_delay_ms`
+and `mean_handoff_to_first_token_ms`. They sum to per-request TTFT for requests
+that reached every milestone and end at scheduler observation, not at the
+client. An encoder pool adds `encoder_latency_ms` (mean arrival to embedding
+delivery, where the stage spans then start), `encoder_gpus` and `total_gpus`;
+`gpu_hours` includes the pool and integrates every provisioned GPU over the
+simulated clock, which under the host loop runs one overlap iteration past the
+last observed token. With `--capture-per-request`, each record carries
+the milestones `scheduler_received_ms`, `selected_ms` and `prefill_complete_ms`,
+plus `frontend_ready_ms` when the worker prices frontend stages and, with a
+native pool, `encoder_ready_ms`.
 
 ## Latency populations: ITL is not TPOT
 

@@ -1,0 +1,689 @@
+schema_version: 1
+runtime:
+  framework: vllm
+  version: 0.31.0
+  image: vllm/vllm-openai
+  image_digest: sha256:3f7dd5b777d34d1724456ce71f87385dca288c3bb23029ab27dee358f5d2b971
+tables:
+  glm53_attention_module_perf:
+    status: complete
+    rows: 2315
+    data_sha256: 5cd8068d7706e55e80a2bbb914a2bf4979c169eb184112ba025cdc30d5e0113b
+    collector: collector.vllm.glm53flash_attention_runner
+    measurement: one real sparse-MLA layer (3); output all-reduce excluded; GPU kernel
+      time only
+    timing_method:
+      context:
+      - cupti_gpu_busy_union_framework_breakable_module_graph_replay
+      generation:
+      - cupti_gpu_busy_union_captured_module_graph_replay
+    notes:
+    - 'IndexPool alignment: every prefill chunk starts on a multiple of 4 (the stock
+      vLLM 0.31.0 defect''s trigger); decode rows keep their true sequence length
+      L (prompt L-1, whose last seeding chunk may end off the pool grid and completes
+      in the tail as in serving).'
+    - Regular rows are collected at the serving context limit 131079; long-context
+      rows (prefill prefix >= 262144, decode x >= 262144, B=1) at the model limit
+      1048576 are table-extrapolation coverage. Each attempt's limit is its max_model_len.
+    - 'Known bias: kernel-only rows read 2-12% (median 6%) above the per-layer MLA
+      kernels of stock vllm serve under nsys (fp8-tp2, nvfp4-tp4; 7 points each).
+      Per kernel, the cuBLAS (nvjet) projection GEMMs run 5-18% slower in the standalone
+      module replay while fmha and fwht match; 200 warmup repetitions do not change
+      it. Same standalone-op method as the other tables.'
+    input_tokens:
+      source: seeded_random_tokens
+      count: 1179743
+      generator: sha256_counter_rejection
+      generator_version: 1
+      seed: 53
+      tokenizer_json_sha256: 19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d
+      vocab_high_exclusive: 154820
+      vocab_low: 0
+      vocab_source: pinned tokenizer.json ordinary BPE vocabulary; added/special tokens
+        excluded
+    execution_mode:
+      fp8-tp2-context: cuda_graph
+      fp8-tp2-generation: cuda_graph
+      fp8-tp4-context: cuda_graph
+      fp8-tp4-generation: cuda_graph
+      nvfp4-tp1-context: cuda_graph
+      nvfp4-tp1-generation: cuda_graph
+      nvfp4-tp2-context: cuda_graph
+      nvfp4-tp2-generation: cuda_graph
+      nvfp4-tp4-context: cuda_graph
+      nvfp4-tp4-generation: cuda_graph
+    attempts:
+    - attempt: full-vllm-fp8-tp2-dec-e12adc5a28c2-10082339
+      manifest_sha256: 8d0248b22876bc07dfac20dcac8653d4f954f2a0df96228743b8f08133158f84
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp2
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      vllm_gpu_memory_utilization: 0.85
+      only_sets:
+      - decode-b1
+      - decode-b12
+      - decode-b16
+      - decode-b2
+      - decode-b24
+      - decode-b3
+      - decode-b32
+      - decode-b4
+      - decode-b6
+      - decode-b8
+    - attempt: full-vllm-fp8-tp2-long-e12adc5a28c2-10082339
+      manifest_sha256: ff550b5ecbd39f115514ebe808b200e4ee0eec146876ca147a570ca9bad14aa1
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp2
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 1048576
+      vllm_gpu_memory_utilization: 0.8
+      only_sets:
+      - long-decode-b1
+      - long-prefill-b1-q1024-c0
+      - long-prefill-b1-q8192-c0
+    - attempt: full-vllm-fp8-tp2-pb32-e12adc5a28c2-10082339
+      manifest_sha256: d2e19f32f4513c5e3ade63e9822cf372810b4670003bb8a93a19452d8a207617
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp2
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      vllm_gpu_memory_utilization: 0.68
+      only_sets:
+      - prefill-b32-q256-c1
+    - attempt: full-vllm-fp8-tp2-pf-e12adc5a28c2-10082339
+      manifest_sha256: f0d1bc1d304281123930452f1b0110c95d4a36bcb368685501b365efbe5ffed7
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp2
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      vllm_gpu_memory_utilization: 0.68
+      only_sets:
+      - prefill-b1-q1024-c0
+      - prefill-b1-q1024-c1
+      - prefill-b1-q16-c0
+      - prefill-b1-q2048-c0
+      - prefill-b1-q2048-c1
+      - prefill-b1-q2048-c2
+      - prefill-b1-q2052-c0
+      - prefill-b1-q2052-c1
+      - prefill-b1-q2052-c2
+      - prefill-b1-q2052-c3
+      - prefill-b1-q256-c0
+      - prefill-b1-q256-c1
+      - prefill-b1-q4096-c0
+      - prefill-b1-q4096-c1
+      - prefill-b1-q4096-c2
+      - prefill-b1-q4096-c3
+      - prefill-b1-q64-c0
+      - prefill-b1-q8192-c0
+      - prefill-b1-q8192-c1
+      - prefill-b1-q8192-c2
+      - prefill-b1-q8192-c3
+      - prefill-b1-q8192-c4
+      - prefill-b16-q16-c0
+      - prefill-b16-q256-c0
+      - prefill-b16-q256-c1
+      - prefill-b16-q512-c0
+      - prefill-b16-q512-c1
+      - prefill-b16-q64-c0
+      - prefill-b2-q1024-c0
+      - prefill-b2-q1024-c1
+      - prefill-b2-q16-c0
+      - prefill-b2-q2048-c0
+      - prefill-b2-q2048-c1
+      - prefill-b2-q2048-c2
+      - prefill-b2-q2052-c0
+      - prefill-b2-q2052-c1
+      - prefill-b2-q2052-c2
+      - prefill-b2-q2052-c3
+      - prefill-b2-q256-c0
+      - prefill-b2-q256-c1
+      - prefill-b2-q4096-c0
+      - prefill-b2-q4096-c1
+      - prefill-b2-q4096-c2
+      - prefill-b2-q4096-c3
+      - prefill-b2-q64-c0
+      - prefill-b32-q128-c0
+      - prefill-b32-q256-c0
+      - prefill-b32-q32-c0
+      - prefill-b32-q64-c0
+      - prefill-b32-q8-c0
+      - prefill-b4-q1024-c0
+      - prefill-b4-q1024-c1
+      - prefill-b4-q16-c0
+      - prefill-b4-q2048-c0
+      - prefill-b4-q2048-c1
+      - prefill-b4-q2048-c2
+      - prefill-b4-q256-c0
+      - prefill-b4-q256-c1
+      - prefill-b4-q512-c0
+      - prefill-b4-q512-c1
+      - prefill-b4-q64-c0
+      - prefill-b8-q1024-c0
+      - prefill-b8-q1024-c1
+      - prefill-b8-q16-c0
+      - prefill-b8-q256-c0
+      - prefill-b8-q256-c1
+      - prefill-b8-q512-c0
+      - prefill-b8-q512-c1
+      - prefill-b8-q64-c0
+    - attempt: full-vllm-fp8-tp4-dec-e12adc5a28c2-10082339
+      manifest_sha256: 8a2f39d2ed1726d9aa83def8d83244ccef7e4a8db1b6820949ebd1dc57792a47
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp4
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      vllm_gpu_memory_utilization: 0.85
+      only_sets:
+      - decode-b1
+      - decode-b12
+      - decode-b16
+      - decode-b2
+      - decode-b24
+      - decode-b3
+      - decode-b32
+      - decode-b4
+      - decode-b6
+      - decode-b8
+    - attempt: full-vllm-fp8-tp4-long-e12adc5a28c2-10082339
+      manifest_sha256: 5f2aa46307ea753c20783d18bd3f594db4272a7987390ab539e30a3be93e9498
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp4
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 1048576
+      vllm_gpu_memory_utilization: 0.8
+      only_sets:
+      - long-decode-b1
+      - long-prefill-b1-q1024-c0
+      - long-prefill-b1-q8192-c0
+    - attempt: full-vllm-fp8-tp4-pb32-e12adc5a28c2-10082339
+      manifest_sha256: d1b3820336513c35b71d35ab343e519458b2c6576fb3aff4b0558a365e1156ec
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp4
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      vllm_gpu_memory_utilization: 0.7
+      only_sets:
+      - prefill-b32-q256-c1
+    - attempt: full-vllm-fp8-tp4-pf-e12adc5a28c2-10082339
+      manifest_sha256: b5a6add82a21f6e9644ec871ace98eef3a55680b3204bd9b1b60eba16f10747c
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp4
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      vllm_gpu_memory_utilization: 0.7
+      only_sets:
+      - prefill-b1-q1024-c0
+      - prefill-b1-q1024-c1
+      - prefill-b1-q16-c0
+      - prefill-b1-q2048-c0
+      - prefill-b1-q2048-c1
+      - prefill-b1-q2048-c2
+      - prefill-b1-q2052-c0
+      - prefill-b1-q2052-c1
+      - prefill-b1-q2052-c2
+      - prefill-b1-q2052-c3
+      - prefill-b1-q256-c0
+      - prefill-b1-q256-c1
+      - prefill-b1-q4096-c0
+      - prefill-b1-q4096-c1
+      - prefill-b1-q4096-c2
+      - prefill-b1-q4096-c3
+      - prefill-b1-q64-c0
+      - prefill-b1-q8192-c0
+      - prefill-b1-q8192-c1
+      - prefill-b1-q8192-c2
+      - prefill-b1-q8192-c3
+      - prefill-b1-q8192-c4
+      - prefill-b16-q16-c0
+      - prefill-b16-q256-c0
+      - prefill-b16-q256-c1
+      - prefill-b16-q512-c0
+      - prefill-b16-q512-c1
+      - prefill-b16-q64-c0
+      - prefill-b2-q1024-c0
+      - prefill-b2-q1024-c1
+      - prefill-b2-q16-c0
+      - prefill-b2-q2048-c0
+      - prefill-b2-q2048-c1
+      - prefill-b2-q2048-c2
+      - prefill-b2-q2052-c0
+      - prefill-b2-q2052-c1
+      - prefill-b2-q2052-c2
+      - prefill-b2-q2052-c3
+      - prefill-b2-q256-c0
+      - prefill-b2-q256-c1
+      - prefill-b2-q4096-c0
+      - prefill-b2-q4096-c1
+      - prefill-b2-q4096-c2
+      - prefill-b2-q4096-c3
+      - prefill-b2-q64-c0
+      - prefill-b32-q128-c0
+      - prefill-b32-q256-c0
+      - prefill-b32-q32-c0
+      - prefill-b32-q64-c0
+      - prefill-b32-q8-c0
+      - prefill-b4-q1024-c0
+      - prefill-b4-q1024-c1
+      - prefill-b4-q16-c0
+      - prefill-b4-q2048-c0
+      - prefill-b4-q2048-c1
+      - prefill-b4-q2048-c2
+      - prefill-b4-q256-c0
+      - prefill-b4-q256-c1
+      - prefill-b4-q512-c0
+      - prefill-b4-q512-c1
+      - prefill-b4-q64-c0
+      - prefill-b8-q1024-c0
+      - prefill-b8-q1024-c1
+      - prefill-b8-q16-c0
+      - prefill-b8-q256-c0
+      - prefill-b8-q256-c1
+      - prefill-b8-q512-c0
+      - prefill-b8-q512-c1
+      - prefill-b8-q64-c0
+    - attempt: full-vllm-nvfp4-tp1-dec-e12adc5a28c2-10082340
+      manifest_sha256: 1d5d50a66d55ab53fcd2c3572499eda3705106f966386f57995b48fc7ea777d8
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      vllm_gpu_memory_utilization: 0.88
+      only_sets:
+      - decode-b1
+      - decode-b12
+      - decode-b16
+      - decode-b2
+      - decode-b24
+      - decode-b3
+      - decode-b32
+      - decode-b4
+      - decode-b6
+      - decode-b8
+    - attempt: full-vllm-nvfp4-tp1-long-e12adc5a28c2-10082340
+      manifest_sha256: 6cf1ea39d8e7ad1abe967e9113ae4466926ca053aec3ecefdd8f2adcc15a42b4
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 1048576
+      vllm_gpu_memory_utilization: 0.85
+      only_sets:
+      - long-decode-b1
+      - long-prefill-b1-q1024-c0
+      - long-prefill-b1-q8192-c0
+    - attempt: full-vllm-nvfp4-tp1-pb32-e12adc5a28c2-10082340
+      manifest_sha256: 693a81e9e164295d783b815d4a735312ebeeac5da28cd658f56dc55ff196361e
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      vllm_gpu_memory_utilization: 0.85
+      only_sets:
+      - prefill-b32-q256-c1
+    - attempt: full-vllm-nvfp4-tp1-pfb16q512c1-e85c26d709f0-10090412
+      manifest_sha256: a0134723fa2f9839e8761830f8d2953081b6821127df2b1535ca60b2d3d0e8b3
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e85c26d709f0cd636f9fa4a5513784cde316d755
+      max_model_len: 131079
+      vllm_gpu_memory_utilization: 0.78
+      only_sets:
+      - prefill-b16-q512-c1
+    - attempt: full-vllm-nvfp4-tp1-pfb1-e12adc5a28c2-10090221
+      manifest_sha256: 27c5f531b20de8875082ac0efebad695f6fc4c6720132839667e45b4bb0faa73
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      vllm_gpu_memory_utilization: 0.78
+      only_sets:
+      - prefill-b1-q1024-c0
+      - prefill-b1-q1024-c1
+      - prefill-b1-q16-c0
+      - prefill-b1-q2048-c0
+      - prefill-b1-q2048-c1
+      - prefill-b1-q2048-c2
+      - prefill-b1-q2052-c0
+      - prefill-b1-q2052-c1
+      - prefill-b1-q2052-c2
+      - prefill-b1-q2052-c3
+      - prefill-b1-q256-c0
+      - prefill-b1-q256-c1
+      - prefill-b1-q4096-c0
+      - prefill-b1-q4096-c1
+      - prefill-b1-q4096-c2
+      - prefill-b1-q4096-c3
+      - prefill-b1-q64-c0
+      - prefill-b1-q8192-c0
+      - prefill-b1-q8192-c1
+      - prefill-b1-q8192-c2
+      - prefill-b1-q8192-c3
+      - prefill-b1-q8192-c4
+    - attempt: full-vllm-nvfp4-tp1-pfb2-e12adc5a28c2-10090221
+      manifest_sha256: 6f49ec3740c5af26eb6def918df0a879c7cf55010b87d3a88a304e6979695a1c
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      vllm_gpu_memory_utilization: 0.78
+      only_sets:
+      - prefill-b2-q1024-c0
+      - prefill-b2-q1024-c1
+      - prefill-b2-q16-c0
+      - prefill-b2-q2048-c0
+      - prefill-b2-q2048-c1
+      - prefill-b2-q2048-c2
+      - prefill-b2-q2052-c0
+      - prefill-b2-q2052-c1
+      - prefill-b2-q2052-c2
+      - prefill-b2-q2052-c3
+      - prefill-b2-q256-c0
+      - prefill-b2-q256-c1
+      - prefill-b2-q4096-c0
+      - prefill-b2-q4096-c1
+      - prefill-b2-q4096-c2
+      - prefill-b2-q4096-c3
+      - prefill-b2-q64-c0
+    - attempt: full-vllm-nvfp4-tp1-pfb32-e12adc5a28c2-10090221
+      manifest_sha256: d5f18382e82832db8574169c93d2bbbd6ddc8d5000a614f77a995aa53742fba7
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      vllm_gpu_memory_utilization: 0.78
+      only_sets:
+      - prefill-b32-q128-c0
+      - prefill-b32-q256-c0
+      - prefill-b32-q32-c0
+      - prefill-b32-q64-c0
+      - prefill-b32-q8-c0
+    - attempt: full-vllm-nvfp4-tp1-pfb4-e12adc5a28c2-10090221
+      manifest_sha256: 0e192890cd948f6d3a68891f877bb411748220f263ba99187c23510a831af44e
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      vllm_gpu_memory_utilization: 0.78
+      only_sets:
+      - prefill-b4-q1024-c0
+      - prefill-b4-q1024-c1
+      - prefill-b4-q16-c0
+      - prefill-b4-q2048-c0
+      - prefill-b4-q2048-c1
+      - prefill-b4-q2048-c2
+      - prefill-b4-q256-c0
+      - prefill-b4-q256-c1
+      - prefill-b4-q512-c0
+      - prefill-b4-q512-c1
+      - prefill-b4-q64-c0
+    - attempt: full-vllm-nvfp4-tp2-dec-e12adc5a28c2-10082340
+      manifest_sha256: 090f94193c1fe4a554415d01298bd017e4cc121acc94e4db6b3a32c59b3d6c5a
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp2
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      vllm_gpu_memory_utilization: 0.8
+      only_sets:
+      - decode-b1
+      - decode-b12
+      - decode-b16
+      - decode-b2
+      - decode-b24
+      - decode-b3
+      - decode-b32
+      - decode-b4
+      - decode-b6
+      - decode-b8
+    - attempt: full-vllm-nvfp4-tp2-long-e12adc5a28c2-10082340
+      manifest_sha256: 3f4e262736ae6a7cd4c016c22f21c37ac0289f5bb3acfb2bb7340eec009c29b9
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp2
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 1048576
+      vllm_gpu_memory_utilization: 0.8
+      only_sets:
+      - long-decode-b1
+      - long-prefill-b1-q1024-c0
+      - long-prefill-b1-q8192-c0
+    - attempt: full-vllm-nvfp4-tp2-pb32-e12adc5a28c2-10082339
+      manifest_sha256: 8b3435ad7bc77b859b0b44fccd2c49bc605377dbf02d2e04c9434930abf09553
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp2
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      vllm_gpu_memory_utilization: 0.55
+      only_sets:
+      - prefill-b32-q256-c1
+    - attempt: full-vllm-nvfp4-tp2-pf-e12adc5a28c2-10082339
+      manifest_sha256: 37b0d99bcd222ba27f516dbd775a4a97c17488bdfff61c3bd4f495837214018f
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp2
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      vllm_gpu_memory_utilization: 0.55
+      only_sets:
+      - prefill-b1-q1024-c0
+      - prefill-b1-q1024-c1
+      - prefill-b1-q16-c0
+      - prefill-b1-q2048-c0
+      - prefill-b1-q2048-c1
+      - prefill-b1-q2048-c2
+      - prefill-b1-q2052-c0
+      - prefill-b1-q2052-c1
+      - prefill-b1-q2052-c2
+      - prefill-b1-q2052-c3
+      - prefill-b1-q256-c0
+      - prefill-b1-q256-c1
+      - prefill-b1-q4096-c0
+      - prefill-b1-q4096-c1
+      - prefill-b1-q4096-c2
+      - prefill-b1-q4096-c3
+      - prefill-b1-q64-c0
+      - prefill-b1-q8192-c0
+      - prefill-b1-q8192-c1
+      - prefill-b1-q8192-c2
+      - prefill-b1-q8192-c3
+      - prefill-b1-q8192-c4
+      - prefill-b16-q16-c0
+      - prefill-b16-q256-c0
+      - prefill-b16-q256-c1
+      - prefill-b16-q512-c0
+      - prefill-b16-q512-c1
+      - prefill-b16-q64-c0
+      - prefill-b2-q1024-c0
+      - prefill-b2-q1024-c1
+      - prefill-b2-q16-c0
+      - prefill-b2-q2048-c0
+      - prefill-b2-q2048-c1
+      - prefill-b2-q2048-c2
+      - prefill-b2-q2052-c0
+      - prefill-b2-q2052-c1
+      - prefill-b2-q2052-c2
+      - prefill-b2-q2052-c3
+      - prefill-b2-q256-c0
+      - prefill-b2-q256-c1
+      - prefill-b2-q4096-c0
+      - prefill-b2-q4096-c1
+      - prefill-b2-q4096-c2
+      - prefill-b2-q4096-c3
+      - prefill-b2-q64-c0
+      - prefill-b32-q128-c0
+      - prefill-b32-q256-c0
+      - prefill-b32-q32-c0
+      - prefill-b32-q64-c0
+      - prefill-b32-q8-c0
+      - prefill-b4-q1024-c0
+      - prefill-b4-q1024-c1
+      - prefill-b4-q16-c0
+      - prefill-b4-q2048-c0
+      - prefill-b4-q2048-c1
+      - prefill-b4-q2048-c2
+      - prefill-b4-q256-c0
+      - prefill-b4-q256-c1
+      - prefill-b4-q512-c0
+      - prefill-b4-q512-c1
+      - prefill-b4-q64-c0
+      - prefill-b8-q1024-c0
+      - prefill-b8-q1024-c1
+      - prefill-b8-q16-c0
+      - prefill-b8-q256-c0
+      - prefill-b8-q256-c1
+      - prefill-b8-q512-c0
+      - prefill-b8-q512-c1
+      - prefill-b8-q64-c0
+    - attempt: full-vllm-nvfp4-tp4-dec-e12adc5a28c2-10082340
+      manifest_sha256: ac3a1697f039334afa014090618884b30ac56431b189a912c4f58f5ab1b9455f
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp4
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      vllm_gpu_memory_utilization: 0.85
+      only_sets:
+      - decode-b1
+      - decode-b12
+      - decode-b16
+      - decode-b2
+      - decode-b24
+      - decode-b3
+      - decode-b32
+      - decode-b4
+      - decode-b6
+      - decode-b8
+    - attempt: full-vllm-nvfp4-tp4-long-e12adc5a28c2-10082340
+      manifest_sha256: abf128e3c4b2c7d8ff0d32a01cfe39bc94410f1230dc1d69fddb2eaa52a1c9c1
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp4
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 1048576
+      vllm_gpu_memory_utilization: 0.8
+      only_sets:
+      - long-decode-b1
+      - long-prefill-b1-q1024-c0
+      - long-prefill-b1-q8192-c0
+    - attempt: full-vllm-nvfp4-tp4-pb32-e12adc5a28c2-10082340
+      manifest_sha256: 5931fd9f286d362670aa7010f3f5e7a1bc7b33b10c376f7399e94fa7a7a52b68
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp4
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      vllm_gpu_memory_utilization: 0.7
+      only_sets:
+      - prefill-b32-q256-c1
+    - attempt: full-vllm-nvfp4-tp4-pf-e12adc5a28c2-10082340
+      manifest_sha256: 681760b77dabbbee06f39f1acb9900b40deb572b47a171c91ddf334f7a389067
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp4
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      vllm_gpu_memory_utilization: 0.7
+      only_sets:
+      - prefill-b1-q1024-c0
+      - prefill-b1-q1024-c1
+      - prefill-b1-q16-c0
+      - prefill-b1-q2048-c0
+      - prefill-b1-q2048-c1
+      - prefill-b1-q2048-c2
+      - prefill-b1-q2052-c0
+      - prefill-b1-q2052-c1
+      - prefill-b1-q2052-c2
+      - prefill-b1-q2052-c3
+      - prefill-b1-q256-c0
+      - prefill-b1-q256-c1
+      - prefill-b1-q4096-c0
+      - prefill-b1-q4096-c1
+      - prefill-b1-q4096-c2
+      - prefill-b1-q4096-c3
+      - prefill-b1-q64-c0
+      - prefill-b1-q8192-c0
+      - prefill-b1-q8192-c1
+      - prefill-b1-q8192-c2
+      - prefill-b1-q8192-c3
+      - prefill-b1-q8192-c4
+      - prefill-b16-q16-c0
+      - prefill-b16-q256-c0
+      - prefill-b16-q256-c1
+      - prefill-b16-q512-c0
+      - prefill-b16-q512-c1
+      - prefill-b16-q64-c0
+      - prefill-b2-q1024-c0
+      - prefill-b2-q1024-c1
+      - prefill-b2-q16-c0
+      - prefill-b2-q2048-c0
+      - prefill-b2-q2048-c1
+      - prefill-b2-q2048-c2
+      - prefill-b2-q2052-c0
+      - prefill-b2-q2052-c1
+      - prefill-b2-q2052-c2
+      - prefill-b2-q2052-c3
+      - prefill-b2-q256-c0
+      - prefill-b2-q256-c1
+      - prefill-b2-q4096-c0
+      - prefill-b2-q4096-c1
+      - prefill-b2-q4096-c2
+      - prefill-b2-q4096-c3
+      - prefill-b2-q64-c0
+      - prefill-b32-q128-c0
+      - prefill-b32-q256-c0
+      - prefill-b32-q32-c0
+      - prefill-b32-q64-c0
+      - prefill-b32-q8-c0
+      - prefill-b4-q1024-c0
+      - prefill-b4-q1024-c1
+      - prefill-b4-q16-c0
+      - prefill-b4-q2048-c0
+      - prefill-b4-q2048-c1
+      - prefill-b4-q2048-c2
+      - prefill-b4-q256-c0
+      - prefill-b4-q256-c1
+      - prefill-b4-q512-c0
+      - prefill-b4-q512-c1
+      - prefill-b4-q64-c0
+      - prefill-b8-q1024-c0
+      - prefill-b8-q1024-c1
+      - prefill-b8-q16-c0
+      - prefill-b8-q256-c0
+      - prefill-b8-q256-c1
+      - prefill-b8-q512-c0
+      - prefill-b8-q512-c1
+      - prefill-b8-q64-c0
+    - attempt: full-vllm-nvfp4-tp1-pfb816-e12adc5a28c2-10090221
+      manifest_sha256: a83acf1713c4ee99153ea3b0a80173abf7d5f7bbb643309cbe12f18f6097628a
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      vllm_gpu_memory_utilization: 0.78
+      only_sets:
+      - prefill-b16-q16-c0
+      - prefill-b16-q256-c0
+      - prefill-b16-q256-c1
+      - prefill-b16-q512-c0
+      - prefill-b16-q512-c1
+      - prefill-b16-q64-c0
+      - prefill-b8-q1024-c0
+      - prefill-b8-q1024-c1
+      - prefill-b8-q16-c0
+      - prefill-b8-q256-c0
+      - prefill-b8-q256-c1
+      - prefill-b8-q512-c0
+      - prefill-b8-q512-c1
+      - prefill-b8-q64-c0
+      partial:
+        admitted_sets:
+        - prefill-b8-q16-c0
+        - prefill-b8-q64-c0
+        - prefill-b8-q256-c0
+        - prefill-b8-q256-c1
+        - prefill-b8-q512-c0
+        - prefill-b8-q512-c1
+        - prefill-b8-q1024-c0
+        - prefill-b8-q1024-c1
+        - prefill-b16-q16-c0
+        - prefill-b16-q64-c0
+        - prefill-b16-q256-c0
+        - prefill-b16-q256-c1
+        - prefill-b16-q512-c0
+        failed_sets:
+        - prefill-b16-q512-c1
+        superseded_by_complete_attempts: 0

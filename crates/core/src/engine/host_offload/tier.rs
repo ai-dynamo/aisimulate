@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use super::{HostOffloadObservation, HostOffloadObservationData, HostOffloadObserver};
 use crate::engine::common::hashing::SequenceHash;
+use crate::engine::offload_lru::Lru;
 use crate::engine::offload_transfer::{self, Direction, FairTransfers};
 use crate::engine::{KvBlock, KvEventData, StoredBlocks};
 use anyhow::{Result, bail, ensure};
@@ -94,6 +95,27 @@ pub(crate) enum StoreOutcome {
     },
 }
 
+/// Read-only plan of one external reservation, built in prompt order. Each
+/// planned key takes a free slot or else the least recently used evictable
+/// block outside `protected`, as a one-key reservation at that point would;
+/// [`HostTier::reserve_planned`] then applies the plan as one transfer.
+pub(crate) struct ExternalPlan {
+    free: usize,
+    protected: FxHashSet<HostBlockKey>,
+    /// LRU node of the last planned victim.
+    cursor: Option<NonZeroU32>,
+    victims: Vec<HostBlockKey>,
+    evicted: FxHashSet<HostBlockKey>,
+    reserved: Vec<HostBlockKey>,
+}
+
+impl ExternalPlan {
+    /// The planned keys, in plan order.
+    pub(crate) fn reserved(&self) -> &[HostBlockKey] {
+        &self.reserved
+    }
+}
+
 /// Result of scheduling an H2D selected by a framework adapter.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum LoadOutcome {
@@ -122,12 +144,15 @@ enum EntryState {
     Resident,
 }
 
+/// Kept at 32 bytes by a `const` assertion in the test module.
 #[derive(Clone, Copy, Debug)]
 struct Entry {
     state: EntryState,
-    load_pins: usize,
+    load_pins: u32,
     /// This block's [`Lru`] node while it is resident and unpinned.
     lru_slot: Option<NonZeroU32>,
+    /// Filled by a KVCR peer fetch rather than a local store.
+    kvcr_origin: bool,
 }
 
 /// Declaration order is the same-timestamp completion order.
@@ -175,120 +200,6 @@ impl Ord for Deadline {
             .total_cmp(&other.at_ms)
             .then_with(|| self.kind.cmp(&other.kind))
             .then_with(|| self.transfer_id.cmp(&other.transfer_id))
-    }
-}
-
-/// Recency for resident, currently unpinned blocks.
-///
-/// A framework operation may make several blocks evictable at once. They are
-/// one cohort because vLLM exposes no stable policy order within its Python-set
-/// completion cohort; `HostBlockKey` is only a deterministic tie-break, so a
-/// cohort becomes newest in key order.
-///
-/// Blocks form a circular doubly linked list over a slab, so a touch or removal
-/// relinks in O(1). Each block's [`Entry::lru_slot`] names its node; node 0 is
-/// the sentinel between the newest and oldest blocks.
-struct Lru {
-    nodes: Vec<LruNode>,
-    /// Unlinked nodes reused before the slab grows.
-    vacant: Vec<NonZeroU32>,
-}
-
-#[derive(Clone, Copy)]
-struct LruNode {
-    key: HostBlockKey,
-    older: u32,
-    newer: u32,
-}
-
-const SENTINEL: u32 = 0;
-
-impl Default for Lru {
-    fn default() -> Self {
-        Self {
-            nodes: vec![LruNode {
-                key: HostBlockKey::new(0),
-                older: SENTINEL,
-                newer: SENTINEL,
-            }],
-            vacant: Vec::new(),
-        }
-    }
-}
-
-impl Lru {
-    /// Make `key` the newest block, linking a node into `slot` on first touch.
-    fn touch(&mut self, slot: &mut Option<NonZeroU32>, key: HostBlockKey) {
-        let node = match *slot {
-            Some(node) => {
-                self.unlink(node);
-                node
-            }
-            None => *slot.insert(self.allocate(key)),
-        };
-        self.push_newest(node);
-    }
-
-    fn remove(&mut self, slot: &mut Option<NonZeroU32>) {
-        if let Some(node) = slot.take() {
-            self.unlink(node);
-            self.vacant.push(node);
-        }
-    }
-
-    fn victims(
-        &self,
-        count: usize,
-        mut is_eligible: impl FnMut(HostBlockKey) -> bool,
-    ) -> Vec<HostBlockKey> {
-        self.oldest_first()
-            .filter(|key| is_eligible(*key))
-            .take(count)
-            .collect()
-    }
-
-    fn oldest_first(&self) -> impl Iterator<Item = HostBlockKey> + '_ {
-        let mut node = self.nodes[SENTINEL as usize].newer;
-        std::iter::from_fn(move || {
-            (node != SENTINEL).then(|| {
-                let LruNode { key, newer, .. } = self.nodes[node as usize];
-                node = newer;
-                key
-            })
-        })
-    }
-
-    fn allocate(&mut self, key: HostBlockKey) -> NonZeroU32 {
-        if let Some(node) = self.vacant.pop() {
-            self.nodes[node.get() as usize].key = key;
-            return node;
-        }
-        let node = u32::try_from(self.nodes.len())
-            .ok()
-            .and_then(NonZeroU32::new)
-            .expect("host LRU node overflow");
-        self.nodes.push(LruNode {
-            key,
-            older: SENTINEL,
-            newer: SENTINEL,
-        });
-        node
-    }
-
-    fn unlink(&mut self, node: NonZeroU32) {
-        let LruNode { older, newer, .. } = self.nodes[node.get() as usize];
-        self.nodes[older as usize].newer = newer;
-        self.nodes[newer as usize].older = older;
-    }
-
-    fn push_newest(&mut self, node: NonZeroU32) {
-        let node = node.get();
-        let newest = self.nodes[SENTINEL as usize].older;
-        let linked = &mut self.nodes[node as usize];
-        linked.older = newest;
-        linked.newer = SENTINEL;
-        self.nodes[newest as usize].newer = node;
-        self.nodes[SENTINEL as usize].older = node;
     }
 }
 
@@ -359,6 +270,9 @@ struct Client {
 pub(crate) struct HostTier {
     config: HostTierConfig,
     entries: FxHashMap<HostBlockKey, Entry>,
+    /// Resident, currently unpinned blocks. Blocks a framework operation makes
+    /// evictable together are one cohort because vLLM exposes no stable policy
+    /// order within its Python-set completion cohort.
     lru: Lru,
     transfers: FxHashMap<TransferId, Transfer>,
     transport: Transport,
@@ -587,8 +501,35 @@ impl HostTier {
                 structurally_unfittable,
             };
         }
+        let stored_blocks = missing.len();
+        let transfer_id = self.admit(
+            client,
+            request_id,
+            &victims,
+            missing,
+            missing_meta,
+            now_ms,
+            kind,
+        );
+        StoreOutcome::Prepared {
+            transfer_id,
+            stored_blocks,
+        }
+    }
 
-        for victim in &victims {
+    /// Evict `victims`, then admit `missing` as one pending transfer.
+    #[allow(clippy::too_many_arguments)]
+    fn admit(
+        &mut self,
+        client: u64,
+        request_id: Uuid,
+        victims: &[HostBlockKey],
+        missing: Vec<HostBlockKey>,
+        missing_meta: Vec<Option<HostBlockMeta>>,
+        now_ms: f64,
+        kind: Kind,
+    ) -> TransferId {
+        for victim in victims {
             let mut entry = self
                 .entries
                 .remove(victim)
@@ -605,7 +546,7 @@ impl HostTier {
             });
         }
         if self.meta_retained() {
-            for victim in &victims {
+            for victim in victims {
                 self.meta.remove(victim);
             }
             if !victims.is_empty() {
@@ -630,12 +571,12 @@ impl HostTier {
                             state: EntryState::PendingStore { transfer_id },
                             load_pins: 0,
                             lru_slot: None,
+                            kvcr_origin: false,
                         },
                     )
                     .is_none()
             );
         }
-        let stored_blocks = missing.len();
         if kind == Kind::Store {
             self.observe(HostOffloadObservation {
                 request_id,
@@ -657,10 +598,7 @@ impl HostTier {
                 deadline: None,
             },
         );
-        StoreOutcome::Prepared {
-            transfer_id,
-            stored_blocks,
-        }
+        transfer_id
     }
 
     /// Pure feasibility check: no LRU touch, allocation, eviction or observation.
@@ -683,7 +621,135 @@ impl HostTier {
             == needed
     }
 
-    /// Secondary reads reserve real G2 entries without fabricating a D2H job.
+    /// Start planning one external reservation that never evicts `protected`.
+    /// Settles transfers due by `now` first, as the reservation itself does.
+    pub(crate) fn plan_external(&mut self, protected: &[HostBlockKey], now: f64) -> ExternalPlan {
+        self.prepare_mutation(now);
+        ExternalPlan {
+            free: self.config.capacity_blocks - self.entries.len(),
+            protected: protected.iter().copied().collect(),
+            cursor: None,
+            victims: Vec::new(),
+            evicted: FxHashSet::default(),
+            reserved: Vec::new(),
+        }
+    }
+
+    /// [`Self::lookup`] after the victims `plan` has chosen so far.
+    pub(crate) fn planned_lookup(&self, plan: Option<&ExternalPlan>, key: HostBlockKey) -> Lookup {
+        if plan.is_some_and(|plan| plan.evicted.contains(&key)) {
+            Lookup::Miss
+        } else {
+            self.lookup(key)
+        }
+    }
+
+    /// Add one key, absent after the plan's victims so far, to `plan`. False,
+    /// leaving `plan` unchanged, when neither a free slot nor a victim is left.
+    pub(crate) fn plan_reserve(&self, plan: &mut ExternalPlan, key: HostBlockKey) -> bool {
+        debug_assert!(self.planned_lookup(Some(plan), key) == Lookup::Miss);
+        if let Some(free) = plan.free.checked_sub(1) {
+            plan.free = free;
+        } else {
+            // The LRU holds exactly the resident, unpinned blocks, so each
+            // block past the cursor is a candidate; earlier ones are victims
+            // or protected.
+            // Planning borrows the tier immutably, so the cursor node stays
+            // linked until the plan is applied.
+            let Some((node, victim)) = self
+                .lru
+                .oldest_after(plan.cursor)
+                .find(|(_, key)| !plan.protected.contains(key))
+            else {
+                return false;
+            };
+            debug_assert!(self.entries.get(&victim).is_some_and(|entry| {
+                entry.state == EntryState::Resident
+                    && entry.load_pins == 0
+                    && entry.lru_slot == Some(node)
+            }));
+            plan.cursor = Some(node);
+            plan.victims.push(victim);
+            plan.evicted.insert(victim);
+        }
+        plan.reserved.push(key);
+        true
+    }
+
+    /// [`Self::can_reserve_external_prefix`] after the victims and keys
+    /// `plan` has chosen so far.
+    pub(crate) fn plan_can_reserve_prefix(
+        &self,
+        plan: &ExternalPlan,
+        keys: &[HostBlockKey],
+    ) -> bool {
+        let protected: FxHashSet<_> = keys.iter().copied().collect();
+        let missing = protected
+            .iter()
+            .filter(|key| {
+                (plan.evicted.contains(key) || !self.entries.contains_key(key))
+                    && !plan.reserved.contains(key)
+            })
+            .count();
+        let needed = missing.saturating_sub(plan.free);
+        self.lru
+            .victims(needed, |key| {
+                !protected.contains(&key)
+                    && !plan.evicted.contains(&key)
+                    && self.entries.get(&key).is_some_and(|entry| {
+                        entry.state == EntryState::Resident && entry.load_pins == 0
+                    })
+            })
+            .len()
+            == needed
+    }
+
+    /// Apply `plan` as one external reservation: evict its victims, then
+    /// reserve its keys. `meta`, when given, follows [`ExternalPlan::reserved`].
+    pub(crate) fn reserve_planned(
+        &mut self,
+        client: u64,
+        owner: Uuid,
+        plan: ExternalPlan,
+        meta: Option<Vec<HostBlockMeta>>,
+        now: f64,
+    ) -> TransferId {
+        assert!(
+            !plan.reserved.is_empty(),
+            "an external plan reserves a block"
+        );
+        let now_ms = self.prepare_mutation(now);
+        let meta = match meta {
+            Some(meta) => meta.into_iter().map(Some).collect(),
+            None => vec![None; plan.reserved.len()],
+        };
+        assert_eq!(meta.len(), plan.reserved.len());
+        self.admit(
+            client,
+            owner,
+            &plan.victims,
+            plan.reserved,
+            meta,
+            now_ms,
+            Kind::External,
+        )
+    }
+
+    /// Record that an external reservation stopped at `key` for lack of space.
+    pub(crate) fn note_external_capacity_retry(&self, owner: Uuid, key: HostBlockKey, now: f64) {
+        self.observe(HostOffloadObservation {
+            request_id: owner,
+            event: HostOffloadObservationData::CapacityRetry {
+                at_ms: now.max(self.current_time_ms),
+                blocks: &[key],
+                structurally_unfittable: false,
+            },
+        });
+    }
+
+    /// Reserve G2 entries for `keys` without fabricating a D2H job. Adapters
+    /// reserve through [`Self::reserve_planned`]; tests seed with this.
+    #[cfg(test)]
     pub(crate) fn reserve_external(
         &mut self,
         client: u64,
@@ -696,6 +762,15 @@ impl HostTier {
     }
 
     pub(crate) fn complete_external(&mut self, id: TransferId) {
+        self.complete_external_with(id, false);
+    }
+
+    /// Complete a KVCR peer fetch, marking each block as filled by it.
+    pub(crate) fn complete_external_from_kvcr(&mut self, id: TransferId) {
+        self.complete_external_with(id, true);
+    }
+
+    fn complete_external_with(&mut self, id: TransferId, kvcr_origin: bool) {
         let transfer = self
             .transfers
             .remove(&id)
@@ -705,12 +780,27 @@ impl HostTier {
             let entry = self.entries.get_mut(key).unwrap();
             assert_eq!(entry.state, EntryState::PendingStore { transfer_id: id });
             entry.state = EntryState::Resident;
+            entry.kvcr_origin = kvcr_origin;
             if entry.load_pins == 0 {
                 self.lru.touch(&mut entry.lru_slot, *key);
             }
         }
         self.mark_resident(&transfer.blocks);
         self.notify_peers(transfer.client);
+    }
+
+    /// Count the `keys` a KVCR peer fetch filled and clear their mark, so each
+    /// pulled block counts once, at its first load.
+    pub(crate) fn take_kvcr_origin(&mut self, keys: &[HostBlockKey]) -> usize {
+        let mut count = 0;
+        for key in keys {
+            if let Some(entry) = self.entries.get_mut(key)
+                && std::mem::take(&mut entry.kvcr_origin)
+            {
+                count += 1;
+            }
+        }
+        count
     }
 
     /// Roll back an unsubmitted reservation.
@@ -749,14 +839,19 @@ impl HostTier {
         }
     }
 
-    #[cfg(test)]
+    /// Hold resident `keys` outside the LRU until [`Self::unpin_external`]. The
+    /// caller must have just seen each one report [`Lookup::Hit`].
     pub(crate) fn pin_external(&mut self, keys: &[HostBlockKey]) {
         for key in keys {
             let entry = self
                 .entries
                 .get_mut(key)
-                .expect("G3 pin requires G2 ownership");
-            entry.load_pins += 1;
+                .expect("pin requires a resident G2 entry");
+            debug_assert_eq!(entry.state, EntryState::Resident);
+            entry.load_pins = entry
+                .load_pins
+                .checked_add(1)
+                .expect("host pin count overflow");
             self.lru.remove(&mut entry.lru_slot);
         }
     }
@@ -1094,7 +1189,7 @@ impl HostTier {
                     .expect("completed store lost its pending entry");
                 assert_eq!(entry.state, EntryState::PendingStore { transfer_id });
                 entry.state = EntryState::Resident;
-                entry.load_pins += usize::from(hold);
+                entry.load_pins += u32::from(hold);
             }
             if !hold {
                 self.touch_cohort(&mut blocks.clone());
@@ -1191,6 +1286,10 @@ impl HostTier {
 
     pub(crate) fn capacity_blocks(&self) -> usize {
         self.config.capacity_blocks
+    }
+
+    pub(crate) fn block_bytes(&self) -> usize {
+        self.config.block_bytes
     }
 
     /// `(resident, used)` blocks; used includes pending destinations.
@@ -1345,9 +1444,6 @@ fn assert_valid_time(label: &str, time_ms: f64) {
 pub(crate) mod tests {
     use std::sync::Mutex;
 
-    use rand::rngs::StdRng;
-    use rand::{Rng, SeedableRng};
-
     use super::*;
 
     pub(crate) const C: u64 = 0;
@@ -1386,8 +1482,15 @@ pub(crate) mod tests {
             self.lookup(key) == Lookup::Hit
         }
 
+        /// Evictable blocks, least recently used first.
+        pub(crate) fn lru_order(&self) -> Vec<HostBlockKey> {
+            self.lru.order()
+        }
+
         pub(crate) fn pins(&self, key: HostBlockKey) -> usize {
-            self.entries.get(&key).map_or(0, |entry| entry.load_pins)
+            self.entries
+                .get(&key)
+                .map_or(0, |entry| entry.load_pins as usize)
         }
 
         fn used_blocks(&self) -> usize {
@@ -1404,52 +1507,6 @@ pub(crate) mod tests {
                 Transport::Fair { .. } => unreachable!(),
             }
         }
-    }
-
-    impl Lru {
-        /// Bounded so that a corrupted, cyclic list fails the comparison.
-        fn order(&self) -> Vec<HostBlockKey> {
-            self.oldest_first().take(self.nodes.len()).collect()
-        }
-    }
-
-    #[test]
-    fn lru_matches_move_to_back_list() {
-        let mut rng = StdRng::seed_from_u64(7);
-        let mut lru = Lru::default();
-        // `HostTier` keeps each block's node in its entry.
-        let mut slots = [None; 64];
-        let mut expected = Vec::new();
-        for _ in 0..20_000 {
-            let index = rng.random_range(0..slots.len());
-            let block = key(index as u64);
-            match rng.random_range(0..3) {
-                0 => {
-                    lru.touch(&mut slots[index], block);
-                    expected.retain(|key| *key != block);
-                    expected.push(block);
-                }
-                1 => {
-                    lru.remove(&mut slots[index]);
-                    expected.retain(|key| *key != block);
-                }
-                _ => {
-                    let count = rng.random_range(0..8);
-                    let skipped = rng.random_range(0..3);
-                    let is_eligible = |key: HostBlockKey| key.sequence_hash() % 3 != skipped;
-                    let victims: Vec<_> = expected
-                        .iter()
-                        .copied()
-                        .filter(|key| is_eligible(*key))
-                        .take(count)
-                        .collect();
-                    assert_eq!(lru.victims(count, is_eligible), victims);
-                }
-            }
-            assert_eq!(lru.order(), expected);
-        }
-        // Removed nodes are reused: the slab holds at most every key plus the sentinel.
-        assert!(lru.nodes.len() <= slots.len() + 1);
     }
 
     #[derive(Debug, PartialEq)]
@@ -1567,6 +1624,64 @@ pub(crate) mod tests {
                 (owner, at, vec![key(3), key(4)], Some(true)),
             ]
         );
+    }
+
+    const _: () = assert!(std::mem::size_of::<Entry>() == 32);
+
+    #[test]
+    fn kvcr_origin_counts_each_pulled_block_once() {
+        let mut tier = private(2, 0.0, 0.0);
+        let owner = Uuid::from_u128(1);
+        let (a, b, c) = (key(1), key(2), key(3));
+        let StoreOutcome::Prepared { transfer_id, .. } =
+            tier.reserve_external(0, owner, &[a, b], None, 0.0)
+        else {
+            panic!("reservation")
+        };
+        tier.complete_external_from_kvcr(transfer_id);
+        assert_eq!(tier.take_kvcr_origin(&[a]), 1);
+        assert_eq!(tier.take_kvcr_origin(&[a, b, c]), 1); // only `b` was left
+        assert_eq!(tier.take_kvcr_origin(&[a, b, c]), 0);
+        assert_eq!(tier.block_bytes(), 1_000_000);
+
+        // A completion that is not a KVCR peer fetch never carries the mark.
+        let StoreOutcome::Prepared { transfer_id, .. } =
+            tier.reserve_external(0, owner, &[c], None, 0.0)
+        else {
+            panic!("reservation")
+        };
+        tier.complete_external(transfer_id);
+        assert_eq!(tier.take_kvcr_origin(&[c]), 0);
+    }
+
+    #[test]
+    fn pinned_resident_block_survives_eviction_and_unpins_to_mru() {
+        let mut tier = private(2, 0.0, 0.0);
+        let owner = Uuid::from_u128(1);
+        let (a, b, c) = (key(1), key(2), key(3));
+        for (k, t) in [(a, 0.0), (b, 1.0)] {
+            let StoreOutcome::Prepared { transfer_id, .. } =
+                tier.reserve_external(0, owner, &[k], None, t)
+            else {
+                panic!()
+            };
+            tier.complete_external(transfer_id);
+        }
+        tier.pin_external(&[a]);
+        assert!(!tier.lru.order().contains(&a));
+        // `a` is LRU but pinned, so `c` evicts `b`.
+        let StoreOutcome::Prepared { transfer_id, .. } =
+            tier.reserve_external(0, owner, &[c], None, 2.0)
+        else {
+            panic!()
+        };
+        tier.complete_external(transfer_id);
+        assert!(matches!(tier.lookup(a), Lookup::Hit));
+        assert!(matches!(tier.lookup(b), Lookup::Miss));
+        tier.unpin_external(&[a]);
+        assert_eq!(tier.pins(a), 0);
+        // Unpinning re-enters the LRU as the newest block, after `c`.
+        assert_eq!(tier.lru.order(), [c, a]);
     }
 
     fn tier(capacity_blocks: usize) -> HostTier {

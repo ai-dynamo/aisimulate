@@ -21,6 +21,7 @@ import json
 import re
 import shlex
 
+from scripts.e2e_accuracy.source.hf_bindings import reviewed_binding
 from scripts.e2e_accuracy.source.recipes.inferencex_recipe import (
     INFERENCEX_REPOSITORY_URL,
     InferenceXRecipeError,
@@ -239,10 +240,14 @@ def verified_launcher_recipe_copy(row: SiliconRow, destination: str, source: Rec
         and destination.startswith(manifest["destination_directory"] + "/")
     ):
         return None
+    binding = reviewed_binding(row)
+    config_id = binding["database_config_id"] if binding else row.config_id
     matches = [
         entry
         for entry in manifest["points"]
-        if all(getattr(row, key) == value for key, value in entry["point"].items())
+        if all(
+            (config_id if key == "config_id" else getattr(row, key)) == value for key, value in entry["point"].items()
+        )
         and str(entry["job"]["run_id"]) == str(row.github_run_id)
         and entry["job"]["run_attempt"] == row.run_attempt
         and entry["job"]["head_sha"] == row.head_sha

@@ -82,39 +82,6 @@ def test_sweep_terminal_error_prefers_structured_perf_data_miss():
 
 
 # ---------------------------------------------------------------------------
-# sweep_afd parameter forwarding
-# ---------------------------------------------------------------------------
-
-
-def test_sweep_afd_forwards_max_a_batch_size(monkeypatch):
-    from aisimulate.sdk import pareto_analysis
-
-    captured = {}
-    expected = object()
-
-    def fake_afd_pareto(**kwargs):
-        captured.update(kwargs)
-        return expected
-
-    monkeypatch.setattr(pareto_analysis, "afd_pareto", fake_afd_pareto)
-
-    result = sweep.sweep_afd(
-        model_path="Qwen/Qwen3-32B",
-        runtime_config=config.RuntimeConfig(isl=128, osl=32),
-        database=object(),
-        backend_name="trtllm",
-        model_config=config.ModelConfig(),
-        afd_parallel_config_list=[(1, 1, 2, 1, 3, "optimistic")],
-        gpus_per_node=8,
-        combined_with_pd=False,
-        max_a_batch_size=1536,
-    )
-
-    assert result is expected
-    assert captured["max_a_batch_size"] == 1536
-
-
-# ---------------------------------------------------------------------------
 # sweep_agg no-result classification
 # ---------------------------------------------------------------------------
 
@@ -1094,7 +1061,7 @@ def test_encoder_worker_candidates_keep_llama4_specialized_tower_unsupported():
     from aisimulate.sdk.perf_database import get_database_view
 
     database = get_database_view("b200_sxm", "trtllm", "current", database_mode="SOL", allow_missing_data=True)
-    with pytest.raises(ValueError, match="has no vision encoder"):
+    with pytest.raises(ValueError, match="encoder pools price Qwen3-VL and Kimi K3 vision towers"):
         sweep._get_encoder_worker_candidates(
             model_path="meta-llama/Llama-4-Scout-17B-16E-Instruct",
             tp_list=[1],

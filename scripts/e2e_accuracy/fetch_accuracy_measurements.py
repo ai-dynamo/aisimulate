@@ -2,10 +2,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Extract data from a checksum-pinned public InferenceX PostgreSQL dump.
+"""Fetch pinned private HF measurements, or reproduce a legacy database manifest.
 
-pg_restore writes COPY text; no SQL from the downloaded dump is executed.
-Raw measurements stay in the runner's temporary directory.
+Raw measurements stay in the runner's temporary directory. Legacy pg_restore
+writes COPY text; no SQL from the downloaded dump is executed.
 """
 
 from __future__ import annotations
@@ -18,17 +18,25 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 import urllib.request
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.e2e_accuracy import hf_measurements
 
 TABLES = {"configs", "benchmark_results", "workflow_runs"}
 RELEASE_ROOT = "https://github.com/SemiAnalysisAI/InferenceX-app/releases/download/"
 POLICY = "latest-complete-config-run-v1"
 RESOLVED_POLICY = "gym-resolved-config-v2"
+MTP_POLICY = "gym-resolved-config-v3"
 
 
 def validate_manifest(manifest: dict) -> None:
+    if isinstance(manifest, dict) and manifest.get("schema_version") == 2:
+        hf_measurements.validate_manifest(manifest)
+        return
     fields = {"schema_version", "release_tag", "selection_policy", "max_age_days", "minimum_free_bytes", "parts"}
     if not isinstance(manifest, dict) or set(manifest) != fields:
         raise ValueError("invalid measurement manifest fields")
@@ -37,7 +45,7 @@ def validate_manifest(manifest: dict) -> None:
     tag = manifest["release_tag"]
     if not isinstance(tag, str) or not re.fullmatch(r"db-dump/\d{4}-\d{2}-\d{2}", tag):
         raise ValueError("invalid pinned measurement release")
-    if manifest["selection_policy"] not in {POLICY, RESOLVED_POLICY}:
+    if manifest["selection_policy"] not in {POLICY, RESOLVED_POLICY, MTP_POLICY}:
         raise ValueError("unknown cohort selection policy")
     for field, minimum in (("max_age_days", 0), ("minimum_free_bytes", 1)):
         if type(manifest[field]) is not int or manifest[field] < minimum:
@@ -80,7 +88,9 @@ def release_items(path: str) -> list[dict]:
 
 
 def resolve_latest_manifest(template: dict) -> dict:
-    """Freeze the newest dated dump and its published checksums for one run."""
+    """Freeze the latest HF revision or legacy dump checksums for one run."""
+    if template.get("schema_version") == 2:
+        return hf_measurements.resolve_latest_manifest(template)
     validate_manifest(template)
     releases = [
         release
@@ -252,6 +262,8 @@ def download_part(url: str, part: dict, target) -> None:
 
 def fetch(manifest: dict, output: Path) -> Path:
     validate_manifest(manifest)
+    if manifest["schema_version"] == 2:
+        return hf_measurements.fetch(manifest, output)
     tag = manifest["release_tag"]
     output.mkdir(parents=True, exist_ok=True)
     compressed = output / "measurements.dump.zst"
@@ -302,13 +314,13 @@ if __name__ == "__main__":
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
-        "--resolve-latest", action="store_true", help="Write a resolved manifest without downloading the dump"
+        "--resolve-latest", action="store_true", help="Write a resolved manifest without downloading measurements"
     )
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text())
     if args.resolve_latest:
         resolved = resolve_latest_manifest(manifest)
         args.output.write_text(json.dumps(resolved, sort_keys=True) + "\n")
-        print(f"Resolved {resolved['release_tag']} with {len(resolved['parts'])} verified part checksums")
+        print(f"Resolved {resolved['release_tag']}")
     else:
         fetch(manifest, args.output)

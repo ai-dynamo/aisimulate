@@ -731,7 +731,7 @@ def _infer_quant_modes_from_raw_config(raw_config: dict, architecture: str | Non
 # weight-only ``w4a16_nvfp4`` profile, which vLLM reaches through HYBRID's
 # calibrated XPROFILE relation by design (see
 # test_validate_w4a16_nvfp4_moe_xprofile_reachable_in_hybrid).
-_VLLM_W4A4_MOE_ARCHITECTURES = frozenset({"NemotronHForCausalLM"})
+_VLLM_W4A4_MOE_ARCHITECTURES = frozenset({"NemotronHForCausalLM", "NemotronH_Omni_Reasoning_V3"})
 
 
 def resolve_vllm_moe_execution_mode(

@@ -11,7 +11,7 @@
 //! [`StoreStats`] provides the count/readiness view shared by native correction
 //! and the single role-bound regression store.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 
 use super::options::ForwardPassPerfOptions;
 use crate::AicError;
@@ -36,7 +36,11 @@ pub(crate) enum SampleInsertion<T> {
 
 #[derive(Clone, Debug)]
 pub(crate) struct BucketedSamples<T> {
-    pub(crate) buckets: HashMap<Vec<usize>, VecDeque<(Vec<f64>, T)>>,
+    /// Ordered by bucket key: [`Self::observations`] (the order every refit
+    /// consumes) and the choice among equally full buckets on eviction must
+    /// not depend on a per-process hasher seed, or identical inputs fit
+    /// different models in different processes.
+    pub(crate) buckets: BTreeMap<Vec<usize>, VecDeque<(Vec<f64>, T)>>,
     pub(crate) total_observations: usize,
     axis_min: Vec<f64>,
     axis_max: Vec<f64>,
@@ -70,7 +74,7 @@ impl<T: Clone> BucketedSamples<T> {
     ) -> Result<Self, AicError> {
         validate_regression_shape(axes_shape, max_observations)?;
         Ok(Self {
-            buckets: HashMap::new(),
+            buckets: BTreeMap::new(),
             total_observations: 0,
             axis_min: vec![f64::INFINITY; axes_shape.len()],
             axis_max: vec![f64::NEG_INFINITY; axes_shape.len()],
@@ -93,7 +97,7 @@ impl<T: Clone> BucketedSamples<T> {
             vec![integer_sqrt(options.bucket_count); ndim]
         };
         Self {
-            buckets: HashMap::new(),
+            buckets: BTreeMap::new(),
             total_observations: 0,
             axis_min: vec![f64::INFINITY; ndim],
             axis_max: vec![f64::NEG_INFINITY; ndim],
@@ -201,7 +205,7 @@ impl<T: Clone> BucketedSamples<T> {
         Some(key)
     }
 
-    fn is_in_bounds(&self, x: &[f64]) -> bool {
+    pub(crate) fn is_in_bounds(&self, x: &[f64]) -> bool {
         if x.len() != self.axis_min.len() {
             return false;
         }
@@ -241,7 +245,8 @@ impl<T: Clone> BucketedSamples<T> {
     fn retire_from_fattest_bucket(&mut self) -> Option<T> {
         // Eviction removes samples only. Dynamic regression bounds remain
         // monotonic; fixed correction-grid workload ranges are configured at
-        // model creation.
+        // model creation. Among equally full buckets `max_by_key` keeps the
+        // last, i.e. the greatest bucket key.
         let key = self
             .buckets
             .iter()
@@ -410,6 +415,42 @@ mod tests {
     }
 
     #[test]
+    fn retention_order_and_eviction_ties_do_not_depend_on_the_store_instance() {
+        // A 4 x 4 grid filled round-robin keeps every bucket equally full, so
+        // each eviction breaks a tie. Every store built here would draw its
+        // own hasher seed if the buckets were hashed.
+        let run = || {
+            let mut samples = BucketedSamples::new_regression(&[4, 4], 8).unwrap();
+            let mut evicted = Vec::new();
+            for index in 0..64_usize {
+                let x = vec![(index % 4) as f64, ((index / 4) % 4) as f64];
+                match samples.add_with_eviction(x, index) {
+                    SampleInsertion::Accepted {
+                        evicted: Some(value),
+                    } => evicted.push(value),
+                    SampleInsertion::Accepted { evicted: None } => {}
+                    SampleInsertion::Rejected => panic!("finite sample rejected"),
+                }
+            }
+            let retained = samples
+                .observations()
+                .into_iter()
+                .map(|(_, value)| value)
+                .collect::<Vec<_>>();
+            (retained, evicted)
+        };
+        let first = run();
+        assert_eq!(first.1.len(), 56);
+        // The ninth sample stretches the second axis to [0, 2], leaving nine
+        // singleton cells; the greatest key among them is [3, 2], which holds
+        // sample 7 = (3, 1).
+        assert_eq!(first.1[0], 7);
+        for _ in 0..16 {
+            assert_eq!(run(), first);
+        }
+    }
+
+    #[test]
     fn rejected_insertions_do_not_change_samples_or_bounds() {
         let options = ForwardPassPerfOptions {
             max_observations: 2,
@@ -495,8 +536,7 @@ mod tests {
             ..ForwardPassPerfOptions::default()
         };
         let mut with_events = BucketedSamples::new_dynamic(&options, 2);
-        // Clone the initial hasher so tied bucket choices are comparable.
-        let mut boolean_only = with_events.clone();
+        let mut boolean_only = BucketedSamples::new_dynamic(&options, 2);
         for i in 0..100 {
             let x = vec![(i % 17) as f64, ((i * 7) % 23) as f64];
             assert!(boolean_only.add(x.clone(), i));

@@ -26,15 +26,19 @@
 mod config;
 mod correction;
 pub(crate) mod coverage;
+mod dynamic_correction;
 mod estimator;
 mod evidence;
+mod execution;
 mod learned;
+mod learned_online;
 mod metrics;
 mod model;
 mod options;
 mod regression;
 mod resources;
 mod samples;
+mod selector;
 
 #[cfg(test)]
 mod tests;
@@ -47,7 +51,13 @@ pub use coverage::{FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQue
 pub use estimator::*;
 pub(crate) use evidence::accumulate_fpm_estimates;
 pub use evidence::*;
+pub use execution::{
+    FPM_SPECULATIVE_ROUND_PREFIX, FpmExecutionBinding, FpmExecutionKind, FpmExecutionProfile,
+    FpmSpeculativeMethod, FpmTimingScope,
+};
 pub use learned::LEARNED_SCHEMA_VERSION;
+#[cfg(feature = "python")]
+pub(crate) use learned_online::canonical_learned_identity;
 pub(crate) use metrics::validate_forward_pass_metrics;
 pub use metrics::{FPM_VERSION, ForwardPassMetrics, QueuedRequestMetrics, ScheduledRequestMetrics};
 pub use model::{
@@ -55,7 +65,7 @@ pub use model::{
     ForwardPassPerfReadiness, ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
     ForwardPassRegressionWorkloadKind, ForwardPassWorkerType,
 };
-pub use options::ForwardPassPerfOptions;
+pub use options::{CorrectionMode, ForwardPassPerfOptions};
 pub use regression::ForwardPassSplineDiagnostics;
 pub use resources::{
     FpmCacheBudget, FpmCacheBudgetAdjusted, FpmCacheBudgetRequest, FpmCacheGroup, FpmCacheKind,

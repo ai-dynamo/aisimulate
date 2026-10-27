@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "implementation_commit": "126ba627721ce2127a7bdefefb3d186180e4371c",
+  "implementation_tree": "690f4387889ff01a16c05e55fc66584f1ef8fac1",
+  "base_commit": "643c460fa8117f71aaaada8811669183f3b2b344",
+  "original_warning": "https://github.com/ai-dynamo/aisimulate/pull/533#issuecomment-6302455594",
+  "scope": "Align Replay and Sweeper advertised estimation modes with existing runtime support and document the standalone learned-model boundary in shared references.",
+  "native_build_commit": "747458b0828e52bcbcc9b3546b215149c70e426f",
+  "native_module_sha256": "a7a414e773426a448325290c8c324aacb24faeb6e8034994d0f83cdcb9772316",
+  "native_build_source_binding": "Reused the merged-revision release extension. This follow-up changes Python configuration validation/schema generation, tests, and documentation; Rust and dependency manifests are unchanged. The SDK/API and raw Replay tests imported the candidate worktree native extension.",
+  "platform": "macOS-26.7.1-arm64-arm-64bit",
+  "python_environment": {
+    "executable": "/Users/yueqiz/Documents/ChatGPT/AISimulate/python/aisimulate/.venv/bin/python",
+    "version": "3.12.13",
+    "PYTHONPATH": "$PWD/python/aisimulate/src",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1"
+  },
+  "checks": [
+    {
+      "name": "Python caller regression",
+      "status": "passed",
+      "passed": 904,
+      "command": "python -m pytest -c pytest.ini -p no:timeout tests/test_cli_config.py tests/sweeper/test_config.py tests/sweeper/test_learned_estimator.py tests/test_runner.py -q",
+      "log_sha256": "a6827acb7c2ac06847a6ae711782be8a9fe7632baacb4c158519e1b39f012664",
+      "log_summary": "904 passed in 18.92s"
+    },
+    {
+      "name": "Python SDK and public API",
+      "status": "passed",
+      "passed": 189,
+      "command": "python -m pytest -c python/aisimulate/pytest.ini -p no:timeout python/aisimulate/tests/unit/sdk/test_fpm_selector_integration.py python/aisimulate/tests/unit/sdk/test_fpm_online_export.py python/aisimulate/tests/unit/sdk/test_fpm_online_integration.py python/aisimulate/tests/unit/sdk/test_fpm_online_structural_reference.py python/aisimulate/tests/unit/sdk/test_fpm_learned.py python/aisimulate/tests/cross_package/test_core_public_api.py -q",
+      "log_sha256": "effe230505c874b7f7d23bede619082b8aec611d73d9c9696d4e262ea78c7848",
+      "log_summary": "======================== 189 passed, 1 warning in 2.66s ========================"
+    },
+    {
+      "name": "Documentation local destinations",
+      "status": "passed",
+      "passed": null,
+      "command": "python scripts/ci/check_documentation_links.py",
+      "log_sha256": "46ef423c7445fc587e98fa7ac3aeb135c31f1a3f762abe56c880fea967fdcac7",
+      "log_summary": "Checked local destinations in 81 Markdown files (anchors and remote URLs excluded)."
+    }
+  ],
+  "schema_samples": {
+    "TimingConfig.validation": {
+      "anyOf": [
+        {
+          "enum": [
+            "auto",
+            "op_level",
+            "fpm_interpolation",
+            "fpm_regression"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Estimation Mode"
+    },
+    "TimingConfig.serialization": {
+      "anyOf": [
+        {
+          "enum": [
+            "auto",
+            "op_level",
+            "fpm_interpolation",
+            "fpm_regression"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Estimation Mode"
+    },
+    "EstimatorPolicyConfig.validation": {
+      "default": "auto",
+      "enum": [
+        "auto",
+        "op_level",
+        "fpm_interpolation",
+        "fpm_regression"
+      ],
+      "title": "Estimation Mode",
+      "type": "string"
+    },
+    "EstimatorPolicyConfig.serialization": {
+      "default": "auto",
+      "enum": [
+        "auto",
+        "op_level",
+        "fpm_interpolation",
+        "fpm_regression"
+      ],
+      "title": "Estimation Mode",
+      "type": "string"
+    },
+    "SearchSpace.validation": {
+      "default": "auto",
+      "enum": [
+        "auto",
+        "op_level",
+        "fpm_interpolation",
+        "fpm_regression"
+      ],
+      "title": "Estimation Mode",
+      "type": "string"
+    },
+    "SearchSpace.serialization": {
+      "default": "auto",
+      "enum": [
+        "auto",
+        "op_level",
+        "fpm_interpolation",
+        "fpm_regression"
+      ],
+      "title": "Estimation Mode",
+      "type": "string"
+    }
+  },
+  "coverage": [
+    "Replay TimingConfig, EstimatorPolicyConfig, and SearchSpace validation and serialization schemas advertise exactly auto/op_level/fpm_interpolation/fpm_regression.",
+    "All four supported modes preserve configuration JSON round trips and compiler serialization. Omitted global mode remains auto; omitted worker mode remains null and inherits global selection.",
+    "Direct learned TimingConfig input with no source or a missing artifact/checkpoint retains the explicit phase-only capability error.",
+    "Learned global/per-role prediction/recommendation/Sweeper input and raw Runner/native Replay input reject before source loading.",
+    "Per-role Sweeper controls normalize and survive JSON reload. Standalone learned SDK, fitting, checkpoint continuation, causal selection, and export tests remain passing."
+  ],
+  "source_sha256": {
+    "docs/perf-model/configuration.md": "3d55eea0e252899a656467c05b2f2e581c89d7a0fc3763e5ba9f0be93a610179",
+    "docs/perf-model/support-matrix.md": "d030a416808d5f1770117104abbb8130cd630429f888fbe35eb120e64bd6ae59",
+    "docs/replay/engine/README.md": "2e517a060796ed56a354217d7fb6ade814c6a567c51326cb35bf3f0e2e016895",
+    "python/aisimulate/src/aisimulate/config/engine.py": "b8984929bbf83a5fb8a372b98d111c2cd1f28503a564e81555c2f5cf73ff64aa",
+    "python/aisimulate/src/aisimulate/sweeper/config.py": "c31c700296a9b7d0a55b2594aab10b76441bd9b04d5ac87a7999ecc093850c3a",
+    "tests/sweeper/test_config.py": "57d293cd943594aeacfab08427be517bde80aec2d888758fae878c4e6ca97a15",
+    "tests/test_cli_config.py": "ba098236f503ca449d5a6d7cf84b620790f5a90e29c43babe58acd8ff060f32f"
+  },
+  "format_checks": [
+    "Ruff check and format --check on the two changed configuration modules and two changed test files",
+    "git diff --check",
+    "Commit hooks: Ruff and format passed"
+  ],
+  "dependency_manifests_changed": false,
+  "frozen_goldens_changed": false,
+  "limits": [
+    "Local macOS validation, not a statement of hosted CI completion.",
+    "Caller suites include unit and mocked execution paths; only explicitly native integration cases establish native behavior.",
+    "No new production serving workload, estimator-math change, performance measurement, or fresh parity run. Earlier parity/compatibility/benchmark receipts retain their original revisions."
+  ]
+}

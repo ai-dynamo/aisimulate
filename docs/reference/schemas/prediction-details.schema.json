@@ -624,6 +624,11 @@
                   "type": "integer",
                   "minimum": 0
                 },
+                "reserved_bytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Fixed rank-local non-KV reservations, including the VL embedding cache. May be omitted by older reports."
+                },
                 "cuda_graph_reserved_bytes": {
                   "type": "integer",
                   "minimum": 0

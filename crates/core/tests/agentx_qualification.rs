@@ -53,6 +53,7 @@ fn run(
     let driver = WorkloadDriver::new_agentic_trace_with_lanes(graph, 4, 1).unwrap();
     let spec = ReplaySpec {
         version: 1,
+        encoder: None,
         topology: ReplayTopology::aggregated(1),
         engine: serde_json::to_value(ReplayEngineConfig {
             rank: EngineConfig {
@@ -309,6 +310,7 @@ fn g2_spec(disaggregated: bool, shared: bool, host_blocks: Option<usize>, h2d: f
         ..EngineConfig::for_backend(Backend::Vllm)
     };
     ReplaySpec {
+        encoder: None,
         version: 1,
         topology: if disaggregated {
             ReplayTopology::Disaggregated {
@@ -408,7 +410,7 @@ fn agentx_g2_restores_evicted_parent_after_tool_gap_and_join(
 
 fn g2_snapshot_driver(warmup: bool, from_start: bool) -> WorkloadDriver {
     let prepared = g2_graph()
-        .prepare_snapshots(1, AgenticSnapshotOptions { seed: 42 })
+        .prepare_snapshots(1, AgenticSnapshotOptions::seeded(42))
         .unwrap();
     let play = if from_start {
         prepared.context().prepare_play_from_start(0, 0).unwrap()
@@ -527,9 +529,10 @@ fn agentx_g2_profile_cancels_pending_host_restore_and_releases_server_resources(
     let mut driver = g2_snapshot_driver(false, true);
     driver
         .enable_agentic_profile(AgenticProfileOptions {
-            // The restored parent arrives at 200 ms; its two-block H2D needs
-            // another 200 ms. End profiling while it owns the G1 reservation.
-            duration_seconds: 0.3,
+            // The restored parent arrives 20 ms after its child completes, at
+            // 44 ms; its two-block H2D needs another 200 ms. End profiling
+            // while it owns the G1 reservation.
+            duration_seconds: 0.1,
             response_grace_seconds: 0.0,
             ..Default::default()
         })
@@ -541,7 +544,7 @@ fn agentx_g2_profile_cancels_pending_host_restore_and_releases_server_resources(
     assert_eq!(profile.canceled_requests, 1, "{profile:?}");
     assert_eq!(profile.client_in_flight_requests, 0);
     assert_eq!(profile.server_unsettled_requests, 0);
-    assert_eq!(profile.finished_at_ms, Some(300.0));
+    assert_eq!(profile.finished_at_ms, Some(100.0));
     let restore = g2_request(&report, "restore");
     assert_eq!(restore.terminal_status, ReplayTerminalStatus::Canceled);
     assert!(restore.dispatched_at_ms.is_some());
@@ -555,7 +558,7 @@ fn snapshot_pin_report(
     disaggregated: bool,
 ) -> ReplayReport {
     let prepared = graph
-        .prepare_snapshots(3, AgenticSnapshotOptions { seed: 42 })
+        .prepare_snapshots(3, AgenticSnapshotOptions::seeded(42))
         .unwrap();
     // "profile" profiles after warmup; "profile-cold" profiles straight from
     // the snapshot without warmup's timer rebasing.
@@ -587,6 +590,7 @@ fn snapshot_pin_report(
     };
     let spec = ReplaySpec {
         version: 1,
+        encoder: None,
         topology: if disaggregated {
             ReplayTopology::Disaggregated {
                 prefill: WorkerPoolSpec::default(),
@@ -655,22 +659,22 @@ fn snapshot_warmup_and_profile_reports_are_pinned() {
     // mismatch the change did not intend must first be diffed semantically
     // against the previous report, per-request and lifecycle output.
     let expected = [
-        "g2 snapshot agg: 5 5e02e9f17a77658f",
-        "g2 snapshot disagg: 5 a6573f2379f39c15",
-        "g2 warmup agg: 5 21a10bcd0843bc96",
-        "g2 warmup disagg: 5 a0834d087069f92e",
-        "g2 profile agg: 40 a69d736cdea338aa",
-        "g2 profile disagg: 40 fa167c22cb9d4b34",
-        "g2 profile-cold agg: 40 f63f6e7cf21a4de3",
-        "g2 profile-cold disagg: 40 29b72dc9224ae354",
-        "two-plays snapshot agg: 3 19563e804401e8a2",
-        "two-plays snapshot disagg: 3 88c3919df99f7ce1",
-        "two-plays warmup agg: 3 2bb148e6548bb88a",
-        "two-plays warmup disagg: 3 f784df450822621a",
-        "two-plays profile agg: 821 35351cf48f3958c3",
-        "two-plays profile disagg: 667 6b252248d748175a",
-        "two-plays profile-cold agg: 820 20ee4611dbaa1e83",
-        "two-plays profile-cold disagg: 601 e2d4f4e93360d22e",
+        "g2 snapshot agg: 5 6b28fe341f87b490",
+        "g2 snapshot disagg: 5 515ff132fcdc6b08",
+        "g2 warmup agg: 5 b89358b190c66046",
+        "g2 warmup disagg: 5 1a9c63bc1919b472",
+        "g2 profile agg: 168 b8aa80a7a5d00b2b",
+        "g2 profile disagg: 151 f3062f253ba53636",
+        "g2 profile-cold agg: 168 0cbdef689a45e540",
+        "g2 profile-cold disagg: 151 1a03cbac9330a961",
+        "two-plays snapshot agg: 3 6ee98c82ab648f45",
+        "two-plays snapshot disagg: 3 a01db8613f512a83",
+        "two-plays warmup agg: 3 0f7ad48710c5d7c6",
+        "two-plays warmup disagg: 3 26a20280546a6cc7",
+        "two-plays profile agg: 821 e20edce760494c3c",
+        "two-plays profile disagg: 667 53b97fda7fd727e0",
+        "two-plays profile-cold agg: 820 556b4f20c32324af",
+        "two-plays profile-cold disagg: 601 21257dffb47e3779",
     ];
     assert_eq!(actual, expected);
 }

@@ -89,6 +89,10 @@ pub fn covered_prefill(model: &ForwardPassPerfModel) -> Result<f64, AicError> {
     model.predict_prefill_latency(1, 128, 0)
 }
 
+pub fn covered_prefill_total(model: &ForwardPassPerfModel) -> Result<f64, AicError> {
+    model.predict_prefill_latency_total(1, 128, 0)
+}
+
 pub fn covered_decode(model: &ForwardPassPerfModel) -> Result<f64, AicError> {
     model.predict_decode_latency_total(1, 128)
 }
@@ -105,6 +109,67 @@ pub fn best_available_model_with_roots(
 ) -> Result<ForwardPassPerfModel, AicError> {
     config.systems_paths = vec![systems_root.as_ref().to_path_buf()];
     ForwardPassPerfModel::best_available(config)
+}
+
+/// Learned forests use the same typed constructor as every other estimator.
+pub fn online_forest_model(
+    mut config: ForwardPassPerfModelConfig,
+    checkpoint: &Path,
+) -> Result<ForwardPassPerfModel, AicError> {
+    use aisimulate_core::{
+        FpmLearnedConfig, LearnedAdaptation, LearnedDerivativeRefresh, LearnedUpdateMode,
+    };
+    config.estimation_mode = EstimationMode::FpmLearned;
+    config.estimator_config.correction.enabled = false;
+    config.estimator_config.fpm_learned = FpmLearnedConfig {
+        adaptation: LearnedAdaptation::Online,
+        checkpoint_path: Some(checkpoint.to_owned()),
+        update_mode: LearnedUpdateMode::Structural,
+        recent_window: 64,
+        update_every: 1,
+        history_weight: Some(0.1),
+        history_weight_ramp_observations: 32,
+        history_bin_grouping: true,
+        derivative_refresh: LearnedDerivativeRefresh::Lazy,
+        ..Default::default()
+    };
+    ForwardPassPerfModel::best_available(config)
+}
+
+/// Combined selection remains a mode of the canonical learned estimator.
+pub fn calibrated_online_forest_model(
+    mut config: ForwardPassPerfModelConfig,
+    checkpoint: &Path,
+) -> Result<ForwardPassPerfModel, AicError> {
+    use aisimulate_core::{LearnedAdaptation, SelectorConfig};
+    config.estimation_mode = EstimationMode::FpmLearned;
+    let learned = &mut config.estimator_config.fpm_learned;
+    learned.adaptation = LearnedAdaptation::CausalSelector;
+    learned.recent_window = 8;
+    learned.history_weight = Some(0.25);
+    learned.history_weight_ramp_observations = 8;
+    learned.update_every = 4;
+    learned.checkpoint_path = Some(checkpoint.to_owned());
+    config.estimator_config.correction.enabled = true;
+    config.estimator_config.selector = SelectorConfig {
+        alpha: 0.4,
+        warmup: 5,
+        margin: 0.05,
+        persistence: 1,
+    };
+    let model = ForwardPassPerfModel::best_available(config)?;
+    let _scopes = model.learned_selector_diagnostics();
+    Ok(model)
+}
+
+pub fn online_forest_checkpoint(
+    model: &mut ForwardPassPerfModel,
+    path: &Path,
+) -> Result<String, AicError> {
+    model.flush_updates()?;
+    let _diagnostics = model.learned_online_diagnostics();
+    model.save_online_checkpoint(path)?;
+    model.export_learned_artifact()
 }
 
 /// Keep the KV request type in the external-consumer contract without
@@ -159,7 +224,8 @@ mod tests {
         // v24: FpmForwardOp carries typed DCP separately from matching strings.
         // v25: SOL/direct interpolation selector combined with typed DCP.
         // v26: attention / MLA / DSA ops gained tail-appended decode-CP dcp_size.
-        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 28);
+        // v29: EngineSpec carries the optional vision section (SGLang VL host loop).
+        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 29);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
     }
@@ -290,6 +356,249 @@ mod tests {
         let restored: ForwardPassPerfModelConfig =
             serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
         assert_eq!(restored, config);
+    }
+
+    fn parse_public_config_paths(
+        json: &str,
+        yaml: &str,
+    ) -> [(&'static str, Result<ForwardPassPerfModelConfig, String>); 6] {
+        use serde::Deserialize;
+        type Config = ForwardPassPerfModelConfig;
+        [
+            (
+                "JSON generic",
+                serde_json::from_str(json).map_err(|e| e.to_string()),
+            ),
+            (
+                "JSON associated",
+                Config::deserialize(&mut serde_json::Deserializer::from_str(json))
+                    .map_err(|e| e.to_string()),
+            ),
+            (
+                "JSON trait",
+                <Config as Deserialize>::deserialize(&mut serde_json::Deserializer::from_str(json))
+                    .map_err(|e| e.to_string()),
+            ),
+            (
+                "YAML generic",
+                serde_yaml::from_str(yaml).map_err(|e| e.to_string()),
+            ),
+            (
+                "YAML associated",
+                Config::deserialize(serde_yaml::Deserializer::from_str(yaml))
+                    .map_err(|e| e.to_string()),
+            ),
+            (
+                "YAML trait",
+                <Config as Deserialize>::deserialize(serde_yaml::Deserializer::from_str(yaml))
+                    .map_err(|e| e.to_string()),
+            ),
+        ]
+    }
+
+    #[test]
+    fn learned_defaults_and_overrides_agree_across_public_deserializers() {
+        use aisimulate_core::LearnedAdaptation;
+
+        for adaptation in [None, Some("online"), Some("causal_selector")] {
+            for overrides in [false, true] {
+                let selector = adaptation == Some("causal_selector");
+                let mut input = serde_json::json!({
+                    "model": "offline/model", "system": "offline_system", "backend": "vllm",
+                    "worker_type": "decode", "estimation_mode": "fpm_learned",
+                    "estimator_config": {"fpm_learned": {"checkpoint_path": "/seed"}},
+                });
+                let estimator = &mut input["estimator_config"];
+                if let Some(adaptation) = adaptation {
+                    estimator["fpm_learned"]["adaptation"] = adaptation.into();
+                }
+                if overrides {
+                    for (key, value) in [
+                        ("recent_window", serde_json::json!(17)),
+                        ("history_weight", serde_json::json!(0.3)),
+                        ("history_weight_ramp_observations", serde_json::json!(7)),
+                        ("update_every", serde_json::json!(2)),
+                    ] {
+                        estimator["fpm_learned"][key] = value;
+                    }
+                    // Parsing preserves explicit controls; model validation separately
+                    // rejects correction settings incompatible with the selected mode.
+                    estimator["correction"] = serde_json::json!({"enabled": !selector});
+                }
+                let parsed = parse_public_config_paths(
+                    &input.to_string(),
+                    &serde_yaml::to_string(&input).unwrap(),
+                );
+                let expected = parsed[0].1.as_ref().unwrap();
+                for (path, result) in &parsed {
+                    assert_eq!(result.as_ref().unwrap(), expected, "{path}: {input}");
+                }
+                let learned = &expected.estimator_config.fpm_learned;
+                assert_eq!(
+                    learned.adaptation,
+                    if selector {
+                        LearnedAdaptation::CausalSelector
+                    } else {
+                        LearnedAdaptation::Online
+                    }
+                );
+                assert_eq!(
+                    (
+                        learned.recent_window,
+                        learned.history_weight,
+                        learned.history_weight_ramp_observations,
+                        learned.update_every
+                    ),
+                    if overrides {
+                        (17, Some(0.3), 7, 2)
+                    } else if selector {
+                        (8, Some(0.25), 8, 4)
+                    } else {
+                        (64, Some(0.1), 32, 1)
+                    },
+                );
+                assert_eq!(
+                    expected.estimator_config.correction.enabled,
+                    selector != overrides
+                );
+                for (path, restored) in parse_public_config_paths(
+                    &serde_json::to_string(expected).unwrap(),
+                    &serde_yaml::to_string(expected).unwrap(),
+                ) {
+                    assert_eq!(&restored.unwrap(), expected, "round trip: {path}");
+                }
+                if !overrides {
+                    input["estimator_config"]["fpm_learned"]["history_weight"] =
+                        serde_json::Value::Null;
+                    for (path, result) in parse_public_config_paths(
+                        &input.to_string(),
+                        &serde_yaml::to_string(&input).unwrap(),
+                    ) {
+                        let learned = result.expect(path).estimator_config.fpm_learned;
+                        assert_eq!(
+                            (
+                                learned.history_weight,
+                                learned.history_weight_ramp_observations
+                            ),
+                            (None, 0)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn public_config_deserializers_reject_duplicate_and_unknown_fields() {
+        // Use raw text: converting through Value first would erase duplicates.
+        for (json_fields, yaml_fields, error_kind) in [
+            (r#""tp": 1, "tp": 8"#, "tp: 1\ntp: 8", "duplicate"),
+            (
+                r#""estimation_mode": "op_level", "estimation_mode": "fpm_regression""#,
+                "estimation_mode: op_level\nestimation_mode: fpm_regression",
+                "duplicate",
+            ),
+            (
+                r#""estimator_config": {}, "estimator_config": {}"#,
+                "estimator_config: {}\nestimator_config: {}",
+                "duplicate",
+            ),
+            (
+                r#""estimator_config": {"correction": {"enabled": true, "enabled": false}}"#,
+                "estimator_config:\n  correction:\n    enabled: true\n    enabled: false",
+                "duplicate",
+            ),
+            (
+                r#""estimator_config": {"fpm_learned": {"recent_window": 8, "recent_window": 64}}"#,
+                "estimator_config:\n  fpm_learned:\n    recent_window: 8\n    recent_window: 64",
+                "duplicate",
+            ),
+            (r#""tp": 1, "tp_size": 8"#, "tp: 1\ntp_size: 8", "duplicate"),
+            (
+                r#""estimation_mode": "op_level", "forward_model": "fpm_regression""#,
+                "estimation_mode: op_level\nforward_model: fpm_regression",
+                "duplicate",
+            ),
+            (r#""typo": 1"#, "typo: 1", "unknown field"),
+            (
+                r#""estimator_config": {"correction": {"enable": false}}"#,
+                "estimator_config:\n  correction:\n    enable: false",
+                "unknown field",
+            ),
+            (
+                r#""estimator_config": {"fpm_learned": {"recent_widow": 8}}"#,
+                "estimator_config:\n  fpm_learned:\n    recent_widow: 8",
+                "unknown field",
+            ),
+        ] {
+            let json = format!(
+                r#"{{"model":"offline/model","system":"offline_system",
+                "backend":"vllm","worker_type":"decode",{json_fields}}}"#
+            );
+            let yaml = format!("model: offline/model\nsystem: offline_system\nbackend: vllm\nworker_type: decode\n{yaml_fields}\n");
+            for (path, result) in parse_public_config_paths(&json, &yaml) {
+                let error = result.expect_err(path);
+                assert!(error.contains(error_kind), "{path}: {error}");
+            }
+        }
+        use serde::Deserialize;
+        type Config = ForwardPassPerfModelConfig;
+        for fields in [
+            "fpm_profile: !Unsupported {}",
+            "fpm_profile: {1: invalid}",
+            "estimator_config: {fpm_learned: {history_weight: .nan}}",
+            "estimator_config: {fpm_learned: {history_weight: .inf}}",
+        ] {
+            let yaml = format!("model: offline/model\nsystem: offline_system\nbackend: vllm\nworker_type: decode\n{fields}\n");
+            for result in [
+                serde_yaml::from_str::<Config>(&yaml),
+                Config::deserialize(serde_yaml::Deserializer::from_str(&yaml)),
+                <Config as Deserialize>::deserialize(serde_yaml::Deserializer::from_str(&yaml)),
+            ] {
+                assert!(result.is_err(), "accepted malformed YAML: {yaml}");
+            }
+        }
+    }
+
+    #[test]
+    fn public_config_requires_strings_for_numeric_looking_identity() {
+        let json = r#"{"model":"123","backend_version":"0.10","system":"offline_system","backend":"vllm","worker_type":"decode"}"#;
+        let yaml = "model: \"123\"\nbackend_version: \"0.10\"\nsystem: offline_system\nbackend: vllm\nworker_type: decode\n";
+        for (path, result) in parse_public_config_paths(json, yaml) {
+            let config = result.expect(path);
+            assert_eq!(config.model, "123", "{path}");
+            assert_eq!(config.backend_version.as_deref(), Some("0.10"), "{path}");
+        }
+        for (field, literal) in [("model", "123"), ("backend_version", "0.10")] {
+            let json = json.replace(&format!("\"{literal}\""), literal);
+            let yaml = yaml.replace(&format!("\"{literal}\""), literal);
+            for (path, result) in parse_public_config_paths(&json, &yaml) {
+                let error = result.expect_err(path);
+                assert!(
+                    error.contains(field) && error.contains("string"),
+                    "{path}: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn public_config_aliases_keep_contextual_defaults() {
+        let input = serde_json::json!({
+            "model": "offline/model", "system": "offline_system", "backend": "vllm",
+            "worker_type": "decode", "forward_model": "fpm_learned",
+            "tp_size": 2, "pp_size": 3, "attention_dp_size": 4,
+            "estimator_config": {"fpm_learned": {"adaptation": "causal_selector"}},
+        });
+        for (path, result) in
+            parse_public_config_paths(&input.to_string(), &serde_yaml::to_string(&input).unwrap())
+        {
+            let config = result.expect(path);
+            assert_eq!((config.tp, config.pp, config.attention_dp), (2, 3, 4));
+            assert_eq!(config.estimation_mode, EstimationMode::FpmLearned);
+            assert_eq!(config.estimator_config.fpm_learned.recent_window, 8);
+            assert!(config.estimator_config.correction.enabled);
+        }
     }
 
     #[test]
@@ -611,7 +920,7 @@ mod tests {
         }
         let graph = builder.finish().unwrap();
         let prepared = graph
-            .prepare_snapshots(1, AgenticSnapshotOptions { seed: 42 })
+            .prepare_snapshots(1, AgenticSnapshotOptions::seeded(42))
             .unwrap();
         assert_eq!(prepared.snapshots().len(), 1);
         let evidence = &prepared.snapshots()[0];
@@ -690,6 +999,7 @@ mod tests {
             max_in_flight: None,
             record_per_request: true,
             sla: Default::default(),
+            encoder: None,
             requests: Vec::new(),
         };
         let report = Replayer::new(
@@ -742,6 +1052,7 @@ pub fn rebuild_replay_report_literals(
             kv_eviction_assumption: report.kv_eviction_assumption,
             committed_prefill_tokens: report.committed_prefill_tokens,
             g3_offload: report.g3_offload,
+            kvcr: report.kvcr,
             g2_domains: report.g2_domains,
             request_counts: report.request_counts,
             throughput: report.throughput,
@@ -786,12 +1097,18 @@ pub fn rebuild_replay_report_literals(
             requested_output_length: record.requested_output_length,
             output_length: record.output_length,
             reused_input_tokens: record.reused_input_tokens,
+            first_admission_reused_input_tokens: record.first_admission_reused_input_tokens,
             first_admission_g1_reused_input_tokens: record.first_admission_g1_reused_input_tokens,
             first_admission_host_reused_input_tokens: record
                 .first_admission_host_reused_input_tokens,
             prefill_worker_idx: record.prefill_worker_idx,
             decode_worker_idx: record.decode_worker_idx,
             prefill_admit_ms: record.prefill_admit_ms,
+            encoder_ready_ms: None,
+            frontend_ready_ms: None,
+            scheduler_received_ms: None,
+            selected_ms: None,
+            prefill_complete_ms: None,
             source_held_ms: record.source_held_ms,
             destination_reserved_ms: record.destination_reserved_ms,
             destination_activated_ms: record.destination_activated_ms,

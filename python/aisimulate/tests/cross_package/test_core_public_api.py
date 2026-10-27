@@ -113,7 +113,8 @@ def test_stable_function_signatures() -> None:
         "database_mode: 'str | None' = None, shared_layer: 'bool | None' = None, "
         "transfer_policy: 'str | list[str] | None' = None, "
         "strict_provenance: 'bool | None' = None, "
-        "fpm_parquet_path: 'str | None' = None) -> 'bytes'"
+        "fpm_parquet_path: 'str | None' = None, "
+        "encoder_parallel: 'str | None' = None) -> 'bytes'"
     )
     assert "scheduler_block_size" in inspect.signature(estimate_num_gpu_blocks).parameters
     assert "memory_fraction_kind" in inspect.signature(estimate_kv_cache).parameters
@@ -476,6 +477,37 @@ def test_distribution_carries_typing_contract() -> None:
     root = importlib.resources.files("aisimulate_core")
     assert (root / "py.typed").is_file()
     assert (root / "_native.pyi").is_file()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "method_name,annotations,return_type",
+    [
+        ("learned_identity", {"config_json": "str"}, "str"),
+        ("learned_online_diagnostics", {}, "str | None"),
+        ("learned_selector_diagnostics", {}, "str | None"),
+        ("flush_updates", {}, "None"),
+        ("export_learned_artifact", {}, "str"),
+        ("save_online_checkpoint", {"path": "str"}, "None"),
+    ],
+)
+def test_learned_model_stubs_match_native_contract(method_name, annotations, return_type) -> None:
+    root = importlib.resources.files("aisimulate_core")
+    stub = ast.parse((root / "_native.pyi").read_text(encoding="utf-8"))
+    model = next(
+        node for node in stub.body if isinstance(node, ast.ClassDef) and node.name == "RustForwardPassPerfModel"
+    )
+    method = next(
+        (node for node in model.body if isinstance(node, ast.FunctionDef) and node.name == method_name),
+        None,
+    )
+    assert method is not None, f"The shipped RustForwardPassPerfModel stub omits {method_name}"
+    parameters = inspect.signature(getattr(aisimulate_core.RustForwardPassPerfModel, method_name)).parameters
+    assert [argument.arg for argument in method.args.args] == list(parameters)
+    assert {
+        argument.arg: ast.unparse(argument.annotation) for argument in method.args.args if argument.arg != "self"
+    } == (annotations)
+    assert ast.unparse(method.returns) == return_type
 
 
 @pytest.mark.unit

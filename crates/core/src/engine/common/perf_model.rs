@@ -9,6 +9,8 @@
 use anyhow::{Context, Result, ensure};
 use std::sync::Arc;
 
+use crate::engine::timing::mean_prefill_shape;
+
 /// Performance model for predicting prefill and decode timing
 #[derive(Default)]
 pub enum PerfModel {
@@ -42,18 +44,6 @@ impl std::fmt::Debug for PerfModel {
 }
 
 impl PerfModel {
-    // Injected prediction can fail even when geometry validation accepts every
-    // batch, so admission stays transactional for such providers. Built-in
-    // closed-form models, which the engine also wraps as `External`, cannot.
-    pub(crate) fn prefill_pass_can_fail(&self) -> bool {
-        match self {
-            Self::Polynomial => false,
-            Self::External { timing } => {
-                timing.prefill_batch_validation_can_fail() || timing.prefill_prediction_can_fail()
-            }
-        }
-    }
-
     pub fn validate_prefill_batch(&self, requests: &[(usize, usize)]) -> Result<()> {
         if let PerfModel::External { timing } = self {
             timing
@@ -63,25 +53,61 @@ impl PerfModel {
         Ok(())
     }
 
-    /// Predict prefill time in milliseconds.
+    /// Predict the vision-encoder time in milliseconds for one batch of
+    /// distinct cache-miss images, grouped by shape for the provider.
+    pub fn predict_vision_time(&self, images: &[crate::engine::ImageSpec]) -> Result<f64> {
+        if images.is_empty() {
+            return Ok(0.0);
+        }
+        let PerfModel::External { timing } = self else {
+            anyhow::bail!("polynomial timing does not support vision batches");
+        };
+        let mut shapes: Vec<crate::engine::VisionShape> = Vec::new();
+        for image in images {
+            match shapes
+                .iter_mut()
+                .find(|shape| shape.encoder == image.encoder)
+            {
+                Some(shape) => shape.count += 1,
+                None => shapes.push(crate::engine::VisionShape {
+                    encoder: image.encoder,
+                    count: 1,
+                }),
+            }
+        }
+        let time = timing
+            .predict_vision_ms(&shapes)
+            .context("external vision prediction failed")?
+            .context("timing provider does not support vision batches")?;
+        ensure!(
+            time.is_finite() && time >= 0.0,
+            "vision timing provider returned invalid duration {time}ms"
+        );
+        Ok(time)
+    }
+
+    /// Predict prefill time in milliseconds from batch totals: `new_tokens`
+    /// computed by the batch and `prefix_tokens` of cached or earlier-chunk
+    /// KV that its requests read.
     ///
-    /// Callers always pass all parameters; each variant uses what it needs:
-    /// The polynomial fallback uses total new tokens across the batch. An
-    /// injected provider receives the original batch-local inputs.
+    /// The polynomial fallback keeps its per-request mean. An injected
+    /// provider receives the exact totals.
     pub fn predict_prefill_time(
         &self,
         batch_size: usize,
-        isl: usize,
-        prefix: usize,
+        new_tokens: usize,
+        prefix_tokens: usize,
     ) -> Result<f64> {
-        let new_tokens_per_req = isl.saturating_sub(prefix);
-        if batch_size == 0 || new_tokens_per_req == 0 {
+        if batch_size == 0 || new_tokens == 0 {
             return Ok(0.0);
         }
         let time = match self {
-            PerfModel::Polynomial => polynomial_prefill_time(batch_size, new_tokens_per_req),
+            PerfModel::Polynomial => {
+                let (isl, prefix) = mean_prefill_shape(batch_size, new_tokens, prefix_tokens);
+                polynomial_prefill_time(batch_size, isl - prefix)
+            }
             PerfModel::External { timing } => timing
-                .predict_prefill_ms(batch_size, prefix + new_tokens_per_req, prefix)
+                .predict_prefill_totals_ms(batch_size, new_tokens, prefix_tokens)
                 .context("external prefill prediction failed")?,
         };
         // Validate before the floor: f64::max would hide NaN or -infinity.
@@ -209,36 +235,10 @@ mod tests {
     }
 
     #[test]
-    fn only_injected_prefill_providers_make_admission_transactional() {
-        use crate::engine::timing::{TimingModelConfig, built_in_timing_model};
-
-        // The engine wraps built-in models as `External` too; they must not
-        // pay for an admission rollback image they can never restore.
-        for config in [
-            TimingModelConfig::Polynomial,
-            TimingModelConfig::Fixed {
-                prefill_ms: 2.0,
-                decode_ms: 1.0,
-            },
-        ] {
-            let model = PerfModel::External {
-                timing: built_in_timing_model(&config).unwrap(),
-            };
-            assert!(!model.prefill_pass_can_fail(), "{config:?}");
-        }
-        for timing in [
-            Arc::new(EchoBatchTiming) as Arc<dyn TimingModel>,
-            Arc::new(FailingTiming),
-        ] {
-            assert!(PerfModel::External { timing }.prefill_pass_can_fail());
-        }
-    }
-
-    #[test]
     fn fully_cached_prompt_skips_prefill() {
         assert_eq!(
             PerfModel::default()
-                .predict_prefill_time(1, 128, 128)
+                .predict_prefill_time(1, 0, 128)
                 .unwrap(),
             0.0
         );
