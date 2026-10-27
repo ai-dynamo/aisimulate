@@ -377,6 +377,9 @@ pub struct Engine {
     /// Vision tower ops and their layout over the `tp_size` ranks, when compiled.
     vision: Option<VisionSpec>,
     tp_size: u32,
+    /// [`EngineSpec::content_sha256`] of the spec this engine was built from.
+    /// The engine keeps no spec bytes, so state snapshots record this value.
+    spec_sha256: String,
 }
 
 impl std::fmt::Debug for Engine {
@@ -500,6 +503,7 @@ impl Engine {
             &db,
             spec.context_ops.iter().chain(&spec.generation_ops),
         )?;
+        let spec_sha256 = spec.content_sha256()?;
         Ok(Engine {
             legacy_profile: spec.engine.extra.contains_key("execution_profile_phase")
                 && match spec
@@ -517,6 +521,7 @@ impl Engine {
                     }
                 },
             mixed_ops_supported: Self::supports_mixed_ops(&spec.context_ops, &spec.generation_ops),
+            spec_sha256,
             context_plan: OpListPlan::new(&spec.context_ops),
             generation_plan: OpListPlan::new(&spec.generation_ops),
             context_ops: spec.context_ops,
@@ -933,6 +938,11 @@ impl Engine {
                         .filter(|_| worker_type != crate::ForwardPassWorkerType::Prefill),
                 ),
         )
+    }
+
+    /// Content digest of the compiled spec, excluding storage locations.
+    pub(crate) fn spec_sha256(&self) -> &str {
+        &self.spec_sha256
     }
 
     /// Shared perf database handle.
@@ -1386,6 +1396,48 @@ impl Engine {
             }],
             coverage,
         )
+    }
+
+    /// Latency that `batch_size` decode requests add to a forward pass that
+    /// also computes prefill, from exact FPM iteration totals. A mixed pass
+    /// costs [`Self::predict_prefill_latency_total`] plus this term, as in
+    /// [`Self::forward_pass_time_ms`]. `None` when this engine has no such
+    /// one-pass composition; callers then price a separate decode pass.
+    pub(crate) fn predict_mixed_decode_latency_total_with_coverage(
+        &self,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<Option<f64>, AicError> {
+        self.fpm_mixed_decode_term_ms(batch_size, total_past_kv_tokens, None, coverage)
+    }
+
+    /// [`Self::predict_mixed_decode_latency_total_with_coverage`] with its
+    /// executed lookup evidence.
+    pub(crate) fn predict_mixed_decode_detailed_total(
+        &self,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<Option<crate::ForwardPassEstimate>, AicError> {
+        let mut rank = crate::FpmRankEstimate::default();
+        let Some(latency_ms) = self.fpm_mixed_decode_term_ms(
+            batch_size,
+            total_past_kv_tokens,
+            Some(&mut rank),
+            coverage,
+        )?
+        else {
+            return Ok(None);
+        };
+        rank.latency_ms = latency_ms;
+        Ok(Some(crate::ForwardPassEstimate {
+            latency_ms: Some(latency_ms),
+            native_latency_ms: Some(latency_ms),
+            correction_factor: Some(1.0),
+            max_rank: (latency_ms > 0.0).then_some(0),
+            ranks: vec![rank],
+        }))
     }
 
     /// Highest decode KV-read total covered by a compiled FPM engine.
@@ -2847,46 +2899,16 @@ impl Engine {
                 }
             }
             if has_decode {
-                let result = decode_op.query_totals_with_coverage(
-                    &self.db,
-                    &[
-                        sched.num_decode_requests as f64,
-                        sched.sum_decode_kv_tokens as f64,
-                    ],
+                // Speculative FPM was rejected above, so the packed counts
+                // need no `(nextn + 1)` here.
+                total += self.fpm_decode_term_ms(
+                    decode_op,
+                    sched.num_decode_requests,
+                    sched.sum_decode_kv_tokens,
+                    has_prefill,
+                    evidence.as_deref_mut(),
                     coverage.as_deref_mut(),
                 )?;
-                let decode_ms = result.latency_ms;
-                if let Some(evidence) = evidence.as_deref_mut() {
-                    evidence.decode_ms = Some(decode_ms);
-                    evidence
-                        .queries
-                        .extend(result.fpm_queries.into_iter().flat_map(|queries| *queries));
-                }
-                if has_prefill {
-                    // Mixed rank: marginal-decode composition, mirroring
-                    // `_get_fpm_mix_step_latency` (counts already packed, no
-                    // `(nextn + 1)` — speculative FPM was rejected above).
-                    let baseline = decode_op.query_pass_baseline_with_coverage(
-                        &self.db,
-                        sched.num_decode_requests,
-                        sched.sum_decode_kv_tokens as f64,
-                        coverage.as_deref_mut(),
-                    )?;
-                    let baseline_ms = baseline.latency_ms;
-                    total += (decode_ms - baseline_ms).max(0.0);
-                    if let Some(evidence) = evidence.as_deref_mut() {
-                        evidence.decode_baseline_ms = Some(baseline_ms);
-                        evidence.marginal_decode_ms = Some((decode_ms - baseline_ms).max(0.0));
-                        evidence.queries.extend(
-                            baseline
-                                .fpm_queries
-                                .into_iter()
-                                .flat_map(|queries| *queries),
-                        );
-                    }
-                } else {
-                    total += decode_ms;
-                }
             }
             return Ok(total);
         }
@@ -2984,6 +3006,86 @@ impl Engine {
         }
 
         Ok(total)
+    }
+
+    /// Decode term of a whole-model FPM rank at exact iteration totals: the
+    /// full decode pass, or, when the rank also computes prefill, only the
+    /// latency its decode requests add to that pass. The mixed term mirrors
+    /// `_get_fpm_mix_step_latency`: `max(0, decode - decode_pass_baseline)`.
+    fn fpm_decode_term_ms(
+        &self,
+        decode_op: &FpmForwardOp,
+        num_decode_requests: u32,
+        sum_decode_kv_tokens: u32,
+        rides_prefill: bool,
+        mut evidence: Option<&mut crate::FpmRankEstimate>,
+        mut coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<f64, AicError> {
+        let result = decode_op.query_totals_with_coverage(
+            &self.db,
+            &[num_decode_requests as f64, sum_decode_kv_tokens as f64],
+            coverage.as_deref_mut(),
+        )?;
+        let decode_ms = result.latency_ms;
+        if let Some(evidence) = evidence.as_deref_mut() {
+            evidence.decode_ms = Some(decode_ms);
+            evidence
+                .queries
+                .extend(result.fpm_queries.into_iter().flat_map(|queries| *queries));
+        }
+        if !rides_prefill {
+            return Ok(decode_ms);
+        }
+        let baseline = decode_op.query_pass_baseline_with_coverage(
+            &self.db,
+            num_decode_requests,
+            sum_decode_kv_tokens as f64,
+            coverage,
+        )?;
+        let baseline_ms = baseline.latency_ms;
+        let marginal_decode_ms = (decode_ms - baseline_ms).max(0.0);
+        if let Some(evidence) = evidence {
+            evidence.decode_baseline_ms = Some(baseline_ms);
+            evidence.marginal_decode_ms = Some(marginal_decode_ms);
+            evidence.queries.extend(
+                baseline
+                    .fpm_queries
+                    .into_iter()
+                    .flat_map(|queries| *queries),
+            );
+        }
+        Ok(marginal_decode_ms)
+    }
+
+    /// The mixed decode term of [`Self::rank_latency_ms`] for a pass whose
+    /// prefill is priced separately. `None` when this engine has no such
+    /// composition: operation-level and stage graphs, speculative or SD-round
+    /// FPM, and measured execution profiles.
+    fn fpm_mixed_decode_term_ms(
+        &self,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+        evidence: Option<&mut crate::FpmRankEstimate>,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<Option<f64>, AicError> {
+        let Some((_, decode_op, [], [])) = self.fpm_split() else {
+            return Ok(None);
+        };
+        if self.nextn > 0 || self.fpm_execution_profile.is_some() || self.profile_phase.is_some() {
+            return Ok(None);
+        }
+        if batch_size == 0 && total_past_kv_tokens == 0 {
+            return Ok(Some(0.0));
+        }
+        self.fpm_decode_term_ms(
+            decode_op,
+            batch_size,
+            total_past_kv_tokens,
+            true,
+            evidence,
+            coverage,
+        )
+        .map(Some)
     }
 }
 
@@ -5534,6 +5636,90 @@ pub(crate) mod tests {
         let expected = 21.0 + (decode - 6.0);
         let got = engine.forward_pass_time_ms(&[mixed]).unwrap();
         assert!((got - expected).abs() < 1e-9, "got {got}, want {expected}");
+    }
+
+    /// A caller that prices a mixed pass's prefill and decode separately
+    /// reproduces the one-pass estimate bit for bit with the mixed decode
+    /// term, while a decode-only query still charges the whole pass.
+    #[test]
+    fn fpm_mixed_decode_term_completes_the_one_pass_estimate() {
+        use crate::fpm::{ForwardPassMetrics, ScheduledRequestMetrics};
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = build_fpm_engine(tmp.path(), None).unwrap();
+        let mixed = ForwardPassMetrics {
+            scheduled_requests: ScheduledRequestMetrics {
+                num_prefill_requests: 2,
+                sum_prefill_tokens: 2 * 1024,
+                sum_prefill_kv_tokens: 0,
+                num_decode_requests: 8,
+                sum_decode_kv_tokens: 8 * 4096,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let prefill = engine.predict_prefill_latency_total(2, 2048, 0).unwrap();
+        let share = engine
+            .predict_mixed_decode_latency_total_with_coverage(8, 32768, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            engine
+                .forward_pass_time_ms(std::slice::from_ref(&mixed))
+                .unwrap(),
+            prefill + share
+        );
+        let decode = engine.predict_decode_latency_total(8, 32768).unwrap();
+        assert_eq!(share, decode - 6.0);
+
+        let detailed = engine
+            .predict_mixed_decode_detailed_total(8, 32768, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(detailed.latency_ms, Some(share));
+        let rank = &detailed.ranks[0];
+        let one_pass = engine.forward_pass_estimate(&[mixed], true, None).unwrap();
+        let mixed_rank = &one_pass.ranks[0];
+        assert_eq!(
+            (
+                rank.decode_ms,
+                rank.decode_baseline_ms,
+                rank.marginal_decode_ms
+            ),
+            (Some(decode), Some(6.0), Some(share))
+        );
+        assert_eq!(
+            (
+                rank.decode_ms,
+                rank.decode_baseline_ms,
+                rank.marginal_decode_ms
+            ),
+            (
+                mixed_rank.decode_ms,
+                mixed_rank.decode_baseline_ms,
+                mixed_rank.marginal_decode_ms
+            )
+        );
+        assert_eq!(
+            engine
+                .predict_mixed_decode_latency_total_with_coverage(0, 0, None)
+                .unwrap(),
+            Some(0.0)
+        );
+
+        // SD-round FPM profiles and operation graphs define no such term.
+        let round = tempfile::tempdir().unwrap();
+        assert_eq!(
+            full_round_engine(round.path())
+                .predict_mixed_decode_latency_total_with_coverage(1, 4096, None)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            build_engine(None)
+                .predict_mixed_decode_latency_total_with_coverage(8, 32768, None)
+                .unwrap(),
+            None
+        );
     }
 
     /// Mixed telemetry may request a synthetic decode baseline below the KV

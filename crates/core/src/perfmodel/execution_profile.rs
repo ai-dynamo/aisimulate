@@ -266,10 +266,12 @@ impl ExecutionProfileSelection {
         spec.engine
             .extra
             .insert("execution_profile_sha256".into(), self.sha256.clone());
-        spec.engine.extra.insert(
-            "execution_profile_schema_version".into(),
-            profile.schema_version.to_string(),
-        );
+        // Keep v1 EngineSpec hashes compatible with existing saved model states.
+        if profile.schema_version == 2 {
+            spec.engine
+                .extra
+                .insert("execution_profile_schema_version".into(), "2".into());
+        }
         spec.engine.systems_path = Some(snapshot.path().to_path_buf());
         Ok((spec, snapshot))
     }

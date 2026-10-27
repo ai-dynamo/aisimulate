@@ -328,7 +328,10 @@ def test_unknown_layout_preserves_unchecked_status(tmp_path):
     config = _config(tmp_path, architectures=["CustomDecoderForCausalLM"], model_type="custom", num_experts=0)
     report = suggest_topologies(config, _request(), _runtime())
     assert report.default is None
-    assert {"kv_bytes_per_token", "cache_layout"} <= report.candidates[0].missing.keys()
+    # An architecture intake does not recognize leaves its cache geometry to the runtime probe.
+    candidate = report.candidates[0]
+    assert "unrecognized architecture CustomDecoderForCausalLM" in candidate.pending_runtime["cache_geometry"]
+    assert {"kv_bytes_per_token", "cache_layout"}.isdisjoint(candidate.missing)
     assert any("Unknown architecture constraints" in reason for reason in report.assumptions)
 
 

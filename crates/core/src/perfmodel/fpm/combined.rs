@@ -6,7 +6,7 @@
 //! observations chronologically; delayed labels must not masquerade as the
 //! query-time errors of a different model version.
 
-use super::super::selector::{CausalSelector, SelectedExpert};
+use super::super::selector::{CausalSelector, Evidence, KEY_COUNT, SelectedExpert};
 use super::*;
 
 #[derive(Clone, Debug)]
@@ -170,6 +170,62 @@ impl CalibratedOnlineModel {
             Err(error) => Err(error),
             Ok(_) => Ok(()),
         }
+    }
+
+    pub(super) fn correction_stores(
+        &self,
+    ) -> &[(
+        ForwardPassRegressionWorkloadKind,
+        WorkloadStores<CorrectionBuckets>,
+    )] {
+        &self.corrections
+    }
+
+    pub(super) fn selector_states(&self) -> [Evidence; KEY_COUNT] {
+        *self.selector.states()
+    }
+
+    /// Validate saved calibration and selector evidence against this model's
+    /// freshly configured stores.
+    pub(super) fn validate_snapshot(
+        &self,
+        corrections: &[(
+            ForwardPassRegressionWorkloadKind,
+            WorkloadStores<CorrectionBuckets>,
+        )],
+        states: &[Evidence; KEY_COUNT],
+    ) -> Result<(), String> {
+        if corrections.len() != self.corrections.len()
+            || corrections
+                .iter()
+                .zip(&self.corrections)
+                .any(|((saved, _), (fresh, _))| saved != fresh)
+        {
+            return Err("calibration stores differ from the frozen forest stores".into());
+        }
+        for ((kind, saved), (_, fresh)) in corrections.iter().zip(&self.corrections) {
+            saved
+                .validate_restored(fresh)
+                .map_err(|error| format!("{kind:?} calibration: {error}"))?;
+        }
+        self.selector
+            .validate_states(states, &self.stable.store_kinds())
+    }
+
+    pub(super) fn install_snapshot(
+        &mut self,
+        corrections: Vec<(
+            ForwardPassRegressionWorkloadKind,
+            WorkloadStores<CorrectionBuckets>,
+        )>,
+        states: [Evidence; KEY_COUNT],
+    ) {
+        self.corrections = corrections;
+        self.selector.set_states(states);
+    }
+
+    pub(super) fn set_identity_verified(&mut self, verified: bool) {
+        self.identity_verified = verified;
     }
 
     pub(super) fn correction_count(&self) -> usize {

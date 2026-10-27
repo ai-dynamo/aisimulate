@@ -529,9 +529,10 @@ fn agentx_g2_profile_cancels_pending_host_restore_and_releases_server_resources(
     let mut driver = g2_snapshot_driver(false, true);
     driver
         .enable_agentic_profile(AgenticProfileOptions {
-            // The restored parent arrives at 200 ms; its two-block H2D needs
-            // another 200 ms. End profiling while it owns the G1 reservation.
-            duration_seconds: 0.3,
+            // The restored parent arrives 20 ms after its child completes, at
+            // 44 ms; its two-block H2D needs another 200 ms. End profiling
+            // while it owns the G1 reservation.
+            duration_seconds: 0.1,
             response_grace_seconds: 0.0,
             ..Default::default()
         })
@@ -543,7 +544,7 @@ fn agentx_g2_profile_cancels_pending_host_restore_and_releases_server_resources(
     assert_eq!(profile.canceled_requests, 1, "{profile:?}");
     assert_eq!(profile.client_in_flight_requests, 0);
     assert_eq!(profile.server_unsettled_requests, 0);
-    assert_eq!(profile.finished_at_ms, Some(300.0));
+    assert_eq!(profile.finished_at_ms, Some(100.0));
     let restore = g2_request(&report, "restore");
     assert_eq!(restore.terminal_status, ReplayTerminalStatus::Canceled);
     assert!(restore.dispatched_at_ms.is_some());
@@ -614,6 +615,18 @@ fn snapshot_pin_report(
     run_g2(spec, driver)
 }
 
+// Lineage is additive; preserve every existing report field's golden pin.
+fn remove_lineage(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            fields.remove("lineage");
+            fields.values_mut().for_each(remove_lineage);
+        }
+        serde_json::Value::Array(values) => values.iter_mut().for_each(remove_lineage),
+        _ => {}
+    }
+}
+
 /// Snapshot, warmup and recycling-profile replays must stay byte-identical
 /// across changes to how snapshot plays are built and retained.
 #[test]
@@ -634,16 +647,15 @@ fn snapshot_warmup_and_profile_reports_are_pinned() {
                     let profile = report.agentic_profile.as_ref().unwrap();
                     assert!(profile.plays_started >= 6, "{name}: {profile:?}");
                 }
-                let report_json = serde_json::to_value(report.clone().with_wall_time_ms(0.0))
-                    .unwrap()
-                    .to_string();
-                let per_request = serde_json::to_value(&report.per_request)
-                    .unwrap()
-                    .to_string();
+                let mut report_json =
+                    serde_json::to_value(report.clone().with_wall_time_ms(0.0)).unwrap();
+                let mut per_request = serde_json::to_value(&report.per_request).unwrap();
+                remove_lineage(&mut report_json);
+                remove_lineage(&mut per_request);
                 let lifecycle = report.agentic_lifecycle.as_ref().unwrap();
                 let mut hasher = blake3::Hasher::new();
-                hasher.update(report_json.as_bytes());
-                hasher.update(per_request.as_bytes());
+                hasher.update(report_json.to_string().as_bytes());
+                hasher.update(per_request.to_string().as_bytes());
                 hasher.update(&lifecycle.to_jsonl().unwrap());
                 let topology = if disaggregated { "disagg" } else { "agg" };
                 actual.push(format!(
@@ -662,10 +674,10 @@ fn snapshot_warmup_and_profile_reports_are_pinned() {
         "g2 snapshot disagg: 5 515ff132fcdc6b08",
         "g2 warmup agg: 5 b89358b190c66046",
         "g2 warmup disagg: 5 1a9c63bc1919b472",
-        "g2 profile agg: 40 06e595f5eb8497a5",
-        "g2 profile disagg: 40 d7ec6cb77b031a75",
-        "g2 profile-cold agg: 40 b8d6f3d91db6d848",
-        "g2 profile-cold disagg: 40 e81a448d1e181679",
+        "g2 profile agg: 168 b8aa80a7a5d00b2b",
+        "g2 profile disagg: 151 f3062f253ba53636",
+        "g2 profile-cold agg: 168 0cbdef689a45e540",
+        "g2 profile-cold disagg: 151 1a03cbac9330a961",
         "two-plays snapshot agg: 3 6ee98c82ab648f45",
         "two-plays snapshot disagg: 3 a01db8613f512a83",
         "two-plays warmup agg: 3 0f7ad48710c5d7c6",

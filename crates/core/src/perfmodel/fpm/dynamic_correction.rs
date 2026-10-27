@@ -12,20 +12,23 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
+use serde::{Deserialize, Serialize};
+
+use super::correction::{same_optional_bits, valid_bounded_ratio};
 use super::options::ForwardPassPerfOptions;
 use super::samples::integer_sqrt;
 
 const SHRINKAGE_OBSERVATIONS: f64 = 20.0;
 type BucketKey = [usize; 2];
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 struct Observation {
     admission: usize,
     log_x: [f64; 2],
     ratio: f64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct DynamicCorrection {
     ndim: usize,
     bins: [usize; 2],
@@ -40,6 +43,9 @@ pub(crate) struct DynamicCorrection {
     lower_factor: Option<f64>,
     upper_factor: Option<f64>,
     fallback: f64,
+    /// Derived from `primary`/`recent` on admission. Snapshots keep it so a
+    /// restore can recompute and compare it, detecting semantic drift.
+    #[serde(with = "crate::fpm::snapshot::codec::sorted_map")]
     factors: BTreeMap<BucketKey, f64>,
 }
 
@@ -255,6 +261,100 @@ impl DynamicCorrection {
             let factor = factor.clamp(estimate.min(self.fallback), estimate.max(self.fallback));
             self.factors.insert(key, self.project(factor));
         }
+    }
+}
+
+impl DynamicCorrection {
+    /// Validate a decoded store against one built from the same configuration.
+    /// Rows outside the stored bounds would otherwise panic during the next
+    /// rebuild; cached factors must equal a recomputation from the rows.
+    pub(crate) fn validate_restored(&self, fresh: &Self) -> Result<(), String> {
+        if self.ndim != fresh.ndim
+            || self.bins != fresh.bins
+            || self.primary_capacity != fresh.primary_capacity
+            || self.recent_capacity != fresh.recent_capacity
+            || self.max_age != fresh.max_age
+            || self.min_observations != fresh.min_observations
+            || !same_optional_bits(self.lower_factor, fresh.lower_factor)
+            || !same_optional_bits(self.upper_factor, fresh.upper_factor)
+        {
+            return Err("dynamic correction controls differ from configuration".into());
+        }
+        if self.log_bounds.is_some() != (self.next_admission > 0) {
+            return Err("dynamic correction bounds disagree with its admission clock".into());
+        }
+        if let Some(bounds) = self.log_bounds {
+            for (axis, [lo, hi]) in bounds.iter().copied().enumerate() {
+                let valid = if axis < self.ndim {
+                    lo.is_finite() && hi.is_finite() && lo >= 0.0 && lo <= hi
+                } else {
+                    lo == 0.0 && hi == 0.0
+                };
+                if !valid {
+                    return Err("dynamic correction bounds are invalid".into());
+                }
+            }
+        }
+        if self.primary.len() > self.primary_capacity || self.recent.len() > self.recent_capacity {
+            return Err("dynamic correction exceeds its retention budget".into());
+        }
+        let oldest = self.next_admission.saturating_sub(self.max_age);
+        let row_valid = |row: &Observation| {
+            let Some(bounds) = self.log_bounds else {
+                return false;
+            };
+            row.admission >= oldest
+                && row.admission < self.next_admission
+                && valid_bounded_ratio(row.ratio, self.lower_factor, self.upper_factor)
+                && (0..2).all(|axis| {
+                    let value = row.log_x[axis];
+                    if axis < self.ndim {
+                        value.is_finite()
+                            && value >= 0.0
+                            && value >= bounds[axis][0]
+                            && value <= bounds[axis][1]
+                    } else {
+                        value == 0.0
+                    }
+                })
+        };
+        if !self.primary.iter().chain(&self.recent).all(row_valid) {
+            return Err("dynamic correction row is outside its bounds or admission window".into());
+        }
+        if self
+            .primary
+            .windows(2)
+            .any(|pair| pair[0].admission >= pair[1].admission)
+        {
+            return Err("dynamic correction primary rows are not in admission order".into());
+        }
+        // Every admission enters the recent FIFO, so it is a contiguous run
+        // ending at the newest admission.
+        let first_recent = self.next_admission.checked_sub(self.recent.len());
+        if self.recent_capacity > 0 && self.recent.is_empty() != (self.next_admission == 0) {
+            return Err("dynamic correction recent rows disagree with its admission clock".into());
+        }
+        if self
+            .recent
+            .iter()
+            .enumerate()
+            .any(|(offset, row)| first_recent.map(|first| first + offset) != Some(row.admission))
+        {
+            return Err("dynamic correction recent rows are not contiguous".into());
+        }
+        if let Some(first) = first_recent {
+            for row in &self.primary {
+                if row.admission >= first && self.recent[row.admission - first] != *row {
+                    return Err("dynamic correction duplicate rows differ".into());
+                }
+            }
+        }
+        let mut recomputed = self.clone();
+        recomputed.rebuild_factors();
+        if recomputed != *self {
+            return Err("dynamic correction factors differ from their retained rows".into());
+        }
+        Ok(())
     }
 }
 

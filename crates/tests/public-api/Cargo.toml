@@ -16,3 +16,4 @@ aisimulate-core = { package = "aisimulate-core", path = "../../core", features =
 serde = "1"
 serde_json = "1"
 serde_yaml = "0.9"
+tempfile = "3"
