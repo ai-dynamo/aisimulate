@@ -22,8 +22,12 @@ from aisimulate_core.sdk.models.helpers import (
     attention_projection_exclusions,
     build_large_ep_moe_ops,
     large_ep_gpus_per_node,
+    modelopt_dense_projection_listed,
+    modelopt_mixed_precision_targets,
+    modelopt_shared_experts_unlisted,
     mtp_scale_factor,
     quant_exclude_patterns,
+    validate_modelopt_targets_only_gemm_mode,
     validate_trtllm_large_ep,
 )
 
@@ -74,8 +78,13 @@ def _shared_experts_excluded_from_quant(raw_config: dict) -> bool:
 
     nvidia/GLM-5.2-NVFP4 excludes every ``model.layers.N.mlp.shared_experts*`` from
     NVFP4 (shared experts stay bf16; only the routed experts are quantized), so the
-    shared-expert GEMMs must be modeled at bf16, not the global gemm_quant_mode."""
-    return any("shared_expert" in str(pattern) for pattern in _quant_exclude_patterns(raw_config))
+    shared-expert GEMMs must be modeled at bf16, not the global gemm_quant_mode.
+    A targets-only ModelOpt MIXED_PRECISION export (the upstream
+    nvidia/GLM-5.3-NVFP4 layout) keeps them bf16 by not listing them in
+    ``quantized_layers``."""
+    return any(
+        "shared_expert" in str(pattern) for pattern in _quant_exclude_patterns(raw_config)
+    ) or modelopt_shared_experts_unlisted(raw_config)
 
 
 def _dsa_gemm_quant_mode(extra_params: object, fallback: common.GEMMQuantMode) -> common.GEMMQuantMode:
@@ -133,6 +142,7 @@ def _dense_mlp_groups(raw_config: dict, num_layers: int, fallback: common.GEMMQu
     if raw_config.get("hidden_act", "silu") != "silu":
         raise ValueError("DSA dense-prefix composition requires the silu activation")
     patterns = [str(pattern) for pattern in quant_exclude_patterns(raw_config)]
+    targets_only = modelopt_mixed_precision_targets(raw_config) is not None
 
     def quant_mode(layer: int, projection: str) -> common.GEMMQuantMode:
         name = f"model.layers.{layer}.mlp.{projection}"
@@ -151,6 +161,14 @@ def _dense_mlp_groups(raw_config: dict, num_layers: int, fallback: common.GEMMQu
         for pattern in patterns:
             expression = pattern.replace(".", r"\.").replace("*", ".*")
             if any(re.fullmatch(expression, candidate) for candidate in (name, *name.split("."))):
+                return common.GEMMQuantMode.bfloat16
+        if targets_only:
+            # Targets-only MIXED_PRECISION: an unlisted projection runs
+            # unquantized (see helpers.modelopt_mixed_precision_targets).
+            listed = [modelopt_dense_projection_listed(raw_config, layer, shard) for shard in shards]
+            if any(listed) != all(listed):
+                raise ValueError("DSA dense gate_proj and up_proj must use the same quantization for their fused GEMM")
+            if not (all(listed) or modelopt_dense_projection_listed(raw_config, layer, projection)):
                 return common.GEMMQuantMode.bfloat16
         return fallback
 
@@ -231,6 +249,16 @@ class DeepSeekV32Model(BaseModel):
             model_config,
         )
         extra_params = dict(model_info["extra_params"])
+        raw_config = model_info.get("raw_config", {})
+        # Targets-only ModelOpt MIXED_PRECISION export (the upstream
+        # nvidia/GLM-5.3-NVFP4 layout): modules absent from quantized_layers
+        # run BF16 on vLLM and SGLang. The resolvers below apply that rule;
+        # the listed non-expert GEMMs must agree with the one coarse gemm
+        # mode they are priced with.
+        if modelopt_mixed_precision_targets(raw_config) is not None:
+            if not model_info.get("gemm_quant_mode_is_explicit", False):
+                validate_modelopt_targets_only_gemm_mode(raw_config, model_config.gemm_quant_mode)
+            extra_params["dsa_quant_targets_only"] = True
         # Checkpoint-driven, not architecture-gated: vLLM honors ModelOpt
         # exclude_modules wildcards for any architecture (hf_quant_config.json
         # is read in transformers_utils/config.py:726; excluded prefixes fall
@@ -240,11 +268,9 @@ class DeepSeekV32Model(BaseModel):
         # quantizes o_proj; GLM-5 NVFP4 excludes the whole self_attn block.
         extra_params.setdefault(
             "dsa_attn_quant_exclusions",
-            attention_projection_exclusions(
-                model_info.get("raw_config", {}), precise_module_paths=backend_name == "vllm"
-            ),
+            attention_projection_exclusions(raw_config, precise_module_paths=backend_name == "vllm"),
         )
-        if _shared_experts_excluded_from_quant(model_info.get("raw_config", {})):
+        if _shared_experts_excluded_from_quant(raw_config):
             extra_params.setdefault("dsa_shared_expert_quant_mode", common.GEMMQuantMode.bfloat16)
         # GLM-5.2 shares one DSA topk index across ``index_topk_freq`` layers
         # (GLM-5 / DeepSeek-V3.2 omit it => 1). The DSA modules amortize the
@@ -299,12 +325,25 @@ class DeepSeekV32Model(BaseModel):
         ``_dsa_shared_expert_quant_mode`` (deepseek_v32.py:536-555, 631-653 at
         commit 8372e60), i.e. bf16 for checkpoints like ``nvidia/GLM-5.2-NVFP4``
         that exclude ``mlp.shared_experts*`` from quantization, while sglang
-        used the plain ``gemm_quant_mode`` (deepseek_v32.py:796-819) -- so the
-        override is passed on trtllm only.
+        used the plain ``gemm_quant_mode`` (deepseek_v32.py:796-819) -- so for
+        exclusion-style checkpoints the override is passed on trtllm only.
+
+        Targets-only ModelOpt MIXED_PRECISION exports (``dsa_quant_targets_only``;
+        the upstream nvidia/GLM-5.3-NVFP4 layout) pass the override on every
+        backend. Their coarse ``gemm_quant_mode`` comes from the listed
+        dense-prefix layers only (fp8_static), a lane the shared experts never
+        have: both runtimes leave unlisted modules unquantized, and SGLang
+        builds the GLM shared expert as its own ``DeepseekV2MLP`` (fusion into the routed MoE is off under
+        DeepEP and for non-DeepseekV3 architectures; SGLang v0.5.14 @49e384ce
+        models/deepseek_v2.py L705-714, L2650-2715). The same source makes the
+        legacy sglang nvfp4 shared expert of the exclusion-style checkpoints
+        doubtful too; correcting it moves other models' large-EP predictions
+        and is left to a follow-up.
         """
+        targets_only = isinstance(self.extra_params, dict) and self.extra_params.get("dsa_quant_targets_only", False)
         shared_gemm_quant_mode = (
             _dsa_shared_expert_quant_mode(self.extra_params, self.config.gemm_quant_mode)
-            if self._backend_name == "trtllm"
+            if self._backend_name == "trtllm" or targets_only
             else None
         )
         return build_large_ep_moe_ops(

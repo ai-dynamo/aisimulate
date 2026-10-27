@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Optional
 from aisimulate_core.sdk import common, config
 from aisimulate_core.sdk.utils import (
     _get_language_quantization_config,
+    _normalize_quant_algo,
     get_model_config_from_model_path,
     parse_compressed_tensors_quant,
 )
@@ -107,7 +108,25 @@ def attention_projection_exclusions(raw_config: dict, *, precise_module_paths: b
     vLLM DSA opts into precise module paths: norm and auxiliary exclusions
     do not exclude projection GEMMs. Other consumers retain their existing
     interpretation until their precision/data correction is qualified.
+
+    A targets-only ModelOpt MIXED_PRECISION export (see
+    :func:`modelopt_mixed_precision_targets`) additionally keeps every group
+    that no ``quantized_layers`` entry names unquantized, on both paths.
+    Granularity matches the exclusion globs: a group listed in any layer
+    counts as quantized (the DSA indexer exists only in full layers), and a
+    whole ``self_attn`` parent key lists every group. Exclusion globs still
+    apply and still win.
     """
+    excluded = _glob_attention_projection_exclusions(raw_config, precise_module_paths=precise_module_paths)
+    targets = modelopt_mixed_precision_targets(raw_config)
+    if targets is not None:
+        listed = _modelopt_listed_attention_groups(targets, _modelopt_packed_modules(raw_config))
+        excluded |= frozenset(ATTENTION_PROJECTION_GROUPS) - listed
+    return excluded
+
+
+def _glob_attention_projection_exclusions(raw_config: dict, *, precise_module_paths: bool) -> frozenset:
+    """Attention projection groups named by the checkpoint's exclusion patterns."""
     markers_by_group = _PRECISE_PROJECTION_GROUP_MARKERS if precise_module_paths else _PROJECTION_GROUP_MARKERS
     excluded: set = set()
     for pattern in quant_exclude_patterns(raw_config):
@@ -160,6 +179,193 @@ def attention_modules_excluded_from_quant(raw_config: dict) -> bool:
     keep o_proj quantized, so one boolean cannot describe the block.
     """
     return bool(attention_projection_exclusions(raw_config))
+
+
+# ModelOpt MIXED_PRECISION exports name every quantized module in
+# ``quantized_layers``. vLLM and SGLang check the exclusion list first, then
+# resolve a module by exact key, by its packed checkpoint shards, and by
+# parent prefix; a linear module with no entry stays unquantized
+# (vLLM v0.24.0 @ee0da84a, model_executor/layers/quantization/modelopt.py
+# L2392-2490 ``ModelOptMixedPrecisionConfig._resolve_quant_algo`` /
+# ``get_quant_method``: "Layer not in quantized_layers - leave unquantized";
+# SGLang v0.5.14 @49e384ce, srt/layers/quantization/modelopt_quant.py
+# L618-790). Fused runtime modules resolve through their checkpoint shards;
+# the checkpoint's own ``packed_modules_mapping`` extends these defaults.
+_MODELOPT_DEFAULT_PACKED_MODULES = {
+    "gate_up_proj": ("gate_proj", "up_proj"),
+    "fused_qkv_a_proj_with_mqa": ("q_a_proj", "kv_a_proj_with_mqa"),
+}
+
+# Dense (non-expert) MLP projection names, packed or not.
+_DENSE_MLP_PROJECTION_RE = re.compile(r"\.mlp\.(gate_proj|up_proj|gate_up_proj|down_proj)(\.|$)")
+
+
+def _hf_quant_section(raw_config: dict) -> dict:
+    hf_quant_config = raw_config.get("hf_quant_config")
+    section = hf_quant_config.get("quantization") if isinstance(hf_quant_config, dict) else None
+    return section if isinstance(section, dict) else {}
+
+
+def _language_quant_config(raw_config: dict) -> dict:
+    quant_config = _get_language_quantization_config(raw_config)
+    return quant_config if isinstance(quant_config, dict) else {}
+
+
+def _mixed_precision_layer_algo(metadata: object) -> str | None:
+    """Normalized algorithm of one ``quantized_layers`` entry."""
+    if isinstance(metadata, dict):
+        metadata = metadata.get("quant_algo") or metadata.get("quantization_algo") or metadata.get("quant_method")
+    return _normalize_mixed_precision_layer_algo(metadata)
+
+
+def modelopt_mixed_precision_targets(raw_config: dict) -> dict[str, str | None] | None:
+    """``{module_path: algo}`` of a targets-only ModelOpt MIXED_PRECISION export.
+
+    In scope only when all of these hold:
+
+    1. the quant algo is ``MIXED_PRECISION`` (hf_quant_config first, then the
+       language ``quantization_config``);
+    2. a non-empty ``quantized_layers`` map exists in either source (the two
+       are merged; one module with two different algorithms is an error);
+    3. the language ``quantization_config.quant_method`` is absent,
+       ``modelopt`` or ``mixed_precision``, i.e. the header declares no base
+       lane. Expert-only requants that keep a base lane (DeepSeek-V4-*-NVFP4:
+       ``quant_method: fp8`` + ``weight_block_size``) quantize their
+       non-expert GEMMs through that lane and are out of scope.
+
+    In scope, a module without an entry runs unquantized on vLLM and SGLang
+    (see ``_MODELOPT_DEFAULT_PACKED_MODULES``). Returns ``None`` otherwise,
+    and callers keep their exclusion-glob semantics unchanged.
+    """
+    hf_section = _hf_quant_section(raw_config)
+    quant_config = _language_quant_config(raw_config)
+    algo = _normalize_quant_algo(
+        hf_section.get("quant_algo")
+        or hf_section.get("quantization_algo")
+        or quant_config.get("quant_algo")
+        or quant_config.get("quantization_algo")
+    )
+    if algo != "mixed_precision":
+        return None
+    if _normalize_quant_algo(quant_config.get("quant_method")) not in (None, "modelopt", "mixed_precision"):
+        return None
+    targets: dict[str, str | None] = {}
+    for layer_map in (hf_section.get("quantized_layers"), quant_config.get("quantized_layers")):
+        if not isinstance(layer_map, dict):
+            continue
+        for module, metadata in layer_map.items():
+            module = str(module)
+            layer_algo = _mixed_precision_layer_algo(metadata)
+            if module in targets and targets[module] != layer_algo:
+                raise ValueError(
+                    f"ModelOpt quantized_layers declare conflicting algorithms for {module!r}: "
+                    f"{targets[module]!r} and {layer_algo!r}"
+                )
+            targets[module] = layer_algo
+    return targets or None
+
+
+def _modelopt_packed_modules(raw_config: dict) -> dict[str, tuple[str, ...]]:
+    packed = dict(_MODELOPT_DEFAULT_PACKED_MODULES)
+    for source in (_hf_quant_section(raw_config), _language_quant_config(raw_config)):
+        mapping = source.get("packed_modules_mapping")
+        if isinstance(mapping, dict):
+            packed.update({str(name): tuple(str(shard) for shard in shards) for name, shards in mapping.items()})
+    return packed
+
+
+def _modelopt_module_listed(targets: dict, module: str, packed: dict[str, tuple[str, ...]]) -> bool:
+    """Whether ``quantized_layers`` covers ``module`` (exact, packed shards, parent prefix)."""
+    if module in targets:
+        return True
+    base, _, name = module.rpartition(".")
+    shards = packed.get(name)
+    if shards:
+        listed = [f"{base}.{shard}" in targets for shard in shards]
+        if all(listed):
+            return True
+        if any(listed):
+            raise ValueError(
+                f"ModelOpt quantized_layers list only some shards of the fused module {module!r} "
+                f"({', '.join(shards)}); all shards of one fused GEMM must share its quantization"
+            )
+    prefix = module + "."
+    return any(key.startswith(prefix) for key in targets)
+
+
+def _modelopt_listed_attention_groups(targets: dict, packed: dict[str, tuple[str, ...]]) -> frozenset:
+    """Attention projection groups named by any ``quantized_layers`` entry (any layer)."""
+    listed: set = set()
+    for key in targets:
+        _, sep, tail = key.partition(".self_attn")
+        if not sep:
+            continue
+        if not tail:
+            # A whole-block parent key covers every projection beneath it.
+            return frozenset(ATTENTION_PROJECTION_GROUPS)
+        if not tail.startswith("."):
+            continue
+        tail = tail[1:]
+        head, _, rest = tail.partition(".")
+        names = [f"{shard}.{rest}" if rest else shard for shard in packed[head]] if head in packed else [tail]
+        for group, modules in _PROJECTION_MODULE_PATHS.items():
+            if any(
+                name == module or name.startswith(module + ".") or module.startswith(name + ".")
+                for name in names
+                for module in modules
+            ):
+                listed.add(group)
+    return frozenset(listed)
+
+
+def modelopt_shared_experts_unlisted(raw_config: dict) -> bool:
+    """Whether a targets-only MIXED_PRECISION export leaves the shared experts unquantized."""
+    targets = modelopt_mixed_precision_targets(raw_config)
+    return targets is not None and not any(".shared_expert" in key.lower() for key in targets)
+
+
+def modelopt_dense_projection_listed(raw_config: dict, layer: int, projection: str) -> bool | None:
+    """Whether ``model.layers.{layer}.mlp.{projection}`` is listed; ``None`` when out of scope."""
+    targets = modelopt_mixed_precision_targets(raw_config)
+    if targets is None:
+        return None
+    module = f"model.layers.{layer}.mlp.{projection}"
+    return _modelopt_module_listed(targets, module, _modelopt_packed_modules(raw_config))
+
+
+def validate_modelopt_targets_only_gemm_mode(raw_config: dict, gemm_quant_mode: common.GEMMQuantMode) -> None:
+    """Fail when a listed non-expert GEMM would be priced at a dtype it does not have.
+
+    Targets-only checkpoints price their listed attention, shared-expert and
+    dense-MLP projections with the one coarse ``gemm_quant_mode`` (inferred
+    by :func:`_infer_mixed_precision_quant_modes`). That is only faithful
+    when every such entry maps to that mode; a checkpoint mixing e.g. NVFP4
+    attention with FP8 dense layers needs per-module modes the model graph
+    cannot express. Callers skip this check for an explicit user GEMM mode.
+    """
+    targets = modelopt_mixed_precision_targets(raw_config)
+    if targets is None:
+        return
+    quant_dynamic = raw_config.get("quant_dynamic")
+    # Non-Blackwell hardware runs the same NVFP4 checkpoint on the
+    # weight-only lane (resolve_nvfp4_for_system / Task quant resolution).
+    expected = common.GEMMQuantMode.nvfp4 if gemm_quant_mode == common.GEMMQuantMode.nvfp4_wo else gemm_quant_mode
+    mismatched: dict[str, list[str]] = {}
+    for module, algo in targets.items():
+        lowered = module.lower()
+        if _is_routing_expert_target(lowered):
+            continue
+        if ".self_attn" in lowered or ".shared_expert" in lowered or _DENSE_MLP_PROJECTION_RE.search(lowered):
+            mode = _mixed_precision_algo_gemm_mode(algo, quant_dynamic)
+            if mode != expected:
+                mismatched.setdefault(getattr(mode, "name", str(algo)), []).append(module)
+    if mismatched:
+        detail = "; ".join(f"{mode}: {', '.join(sorted(modules)[:3])}" for mode, modules in sorted(mismatched.items()))
+        raise ValueError(
+            "ModelOpt MIXED_PRECISION checkpoint lists non-expert GEMMs whose dtype differs from the resolved "
+            f"gemm_quant_mode={gemm_quant_mode.name} ({detail}); set gemm_quant_mode explicitly to price them "
+            "with one mode"
+        )
 
 
 def attention_op_keys(
@@ -543,11 +749,7 @@ def _collect_mixed_precision_layer_algos(raw_config: dict) -> tuple[set[str], se
         if not isinstance(quantized_layers, dict):
             return
         for target, metadata in quantized_layers.items():
-            if isinstance(metadata, dict):
-                algo = metadata.get("quant_algo") or metadata.get("quantization_algo") or metadata.get("quant_method")
-            else:
-                algo = metadata
-            add_target(target, algo)
+            add_target(target, _mixed_precision_layer_algo(metadata))
 
     hf_quant_config = raw_config.get("hf_quant_config")
     if isinstance(hf_quant_config, dict):
@@ -572,6 +774,25 @@ def _collect_mixed_precision_layer_algos(raw_config: dict) -> tuple[set[str], se
     return gemm_algos, moe_algos
 
 
+# Coarse GEMM-lane priority over the non-expert algorithms a mixed-precision
+# checkpoint lists (rationale at the use site in
+# _infer_mixed_precision_quant_modes).
+_MIXED_PRECISION_GEMM_ALGO_PRIORITY = ("mxfp8", "fp8", "w4a16_nvfp4", "nvfp4")
+
+
+def _mixed_precision_algo_gemm_mode(algo: str | None, quant_dynamic: bool | None) -> common.GEMMQuantMode | None:
+    """SDK GEMM mode of one normalized non-expert mixed-precision algorithm."""
+    if algo == "mxfp8":
+        return common.GEMMQuantMode.fp8_block
+    if algo == "fp8":
+        return common.GEMMQuantMode.fp8 if quant_dynamic is True else common.GEMMQuantMode.fp8_static
+    if algo == "w4a16_nvfp4":
+        return common.GEMMQuantMode.w4a16_nvfp4
+    if algo == "nvfp4":
+        return common.GEMMQuantMode.nvfp4
+    return None
+
+
 def _infer_mixed_precision_quant_modes(raw_config: dict, quant_dynamic: bool | None) -> dict[str, object]:
     """Map ModelOpt MIXED_PRECISION metadata onto coarse SDK quant modes."""
     gemm_algos, moe_algos = _collect_mixed_precision_layer_algos(raw_config)
@@ -590,6 +811,8 @@ def _infer_mixed_precision_quant_modes(raw_config: dict, quant_dynamic: bool | N
         overrides["gemm_quant_mode"] = (
             common.GEMMQuantMode.fp8 if quant_dynamic is True else common.GEMMQuantMode.fp8_static
         )
+    # Otherwise the listed non-expert algorithms pick the lane in
+    # _MIXED_PRECISION_GEMM_ALGO_PRIORITY order (mxfp8, fp8, w4a16_nvfp4, nvfp4).
     # MXFP8 -> fp8_block approximation (owner decision 2026-08-09): MXFP8 is
     # 32-element block-scaled FP8, i.e. the same 1 B/elem weights and the same
     # FP8 tensor-core throughput class as fp8_block; only the scale
@@ -602,17 +825,11 @@ def _infer_mixed_precision_quant_modes(raw_config: dict, quant_dynamic: bool | N
     # the conservative block-scaled lane. First seen on
     # nvidia/MiniMax-M3-NVFP4 (attention/dense-MLP/shared-expert projections
     # MXFP8, routed experts NVFP4).
-    elif "mxfp8" in gemm_algos:
-        overrides["gemm_quant_mode"] = common.GEMMQuantMode.fp8_block
-    elif "fp8" in gemm_algos:
-        if quant_dynamic is not True:
-            overrides["gemm_quant_mode"] = common.GEMMQuantMode.fp8_static
-        else:
-            overrides["gemm_quant_mode"] = common.GEMMQuantMode.fp8
-    elif "w4a16_nvfp4" in gemm_algos:
-        overrides["gemm_quant_mode"] = common.GEMMQuantMode.w4a16_nvfp4
-    elif "nvfp4" in gemm_algos:
-        overrides["gemm_quant_mode"] = common.GEMMQuantMode.nvfp4
+    else:
+        for algo in _MIXED_PRECISION_GEMM_ALGO_PRIORITY:
+            if algo in gemm_algos:
+                overrides["gemm_quant_mode"] = _mixed_precision_algo_gemm_mode(algo, quant_dynamic)
+                break
 
     # nvfp4-class stays first: routed experts are the artifact's headline
     # dtype when mixed with fp8-class expert layers. mxfp8 takes the same
