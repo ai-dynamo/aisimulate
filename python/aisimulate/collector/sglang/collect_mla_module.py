@@ -537,24 +537,28 @@ def _model_native_gemm_quant(model_id: str) -> str | None:
     # ``bfloat16`` label premise (no attention lane), the ``ModelOptMixedPrecisionConfig`` methods for unlisted
     # modules and the KV cache, the section precedence including ``compression_config``, the ``quant_method`` gate,
     # the exact match and the lane tuple, the NemotronH exception and the ``w4afp8`` fallback.
+    # A parse error of an existing file propagates: ``None`` would become the ``bfloat16`` DSA label.
     quant_cfg = None
     section = "config.json quantization_config"
-    try:
-        if os.path.exists(config_file):
-            with open(config_file) as f:
-                quant_cfg = json.load(f).get("quantization_config")
-        if quant_cfg is None and os.path.exists(quant_file):
-            section = "hf_quant_config.json quantization"
-            with open(quant_file) as f:
-                quant_cfg = json.load(f).get("quantization")
-    except Exception:
-        quant_cfg = None
+    if os.path.exists(config_file):
+        with open(config_file) as f:
+            quant_cfg = json.load(f).get("quantization_config")
+    if quant_cfg is None and os.path.exists(quant_file):
+        section = "hf_quant_config.json quantization"
+        with open(quant_file) as f:
+            quant_cfg = json.load(f).get("quantization")
     if (
         isinstance(quant_cfg, dict)
         and quant_cfg.get("quant_method", "modelopt") == "modelopt"
         and quant_cfg.get("quant_algo") == "MIXED_PRECISION"
     ):
-        lanes_map = quant_cfg.get("quantized_layers") or {}
+        lanes_map = quant_cfg.get("quantized_layers")
+        if lanes_map is None:
+            lanes_map = {}
+        elif not isinstance(lanes_map, dict):
+            raise ValueError(
+                f"{model_id}: {section} quantized_layers must be an object, got {type(lanes_map).__name__}"
+            )
         attention_lanes = sorted(
             name for name, lane in lanes_map.items() if isinstance(lane, dict) and "self_attn" in str(name)
         )

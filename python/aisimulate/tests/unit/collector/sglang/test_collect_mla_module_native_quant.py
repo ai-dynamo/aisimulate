@@ -248,6 +248,34 @@ class TestMixedPrecisionExport:
         ):
             mod.load_model_runner(MODEL_ID, 8, "bfloat16", "dsa")
 
+    def test_malformed_config_json_fails_loudly(self, mod, tmp_path):
+        # A parse error of an existing file must not fall back to ``None``: ``None`` is the
+        # ``bfloat16`` DSA label, the silent outcome this reading exists to prevent.
+        (tmp_path / "org--m_config.json").write_text("{not json")
+        _write_hf_quant(tmp_path, _mixed_hf_quant(GLM53_LANES))
+        with pytest.raises(json.JSONDecodeError):
+            mod._model_native_gemm_quant(MODEL_ID)
+
+    def test_malformed_hf_quant_config_fails_loudly(self, mod, tmp_path):
+        _write_config(tmp_path)
+        (tmp_path / "org--m_hf_quant_config.json").write_text("[")
+        with pytest.raises(json.JSONDecodeError):
+            mod._model_native_gemm_quant(MODEL_ID)
+
+    @pytest.mark.parametrize(
+        "lanes",
+        [
+            pytest.param(["model.layers.3.mlp.experts"], id="list"),
+            pytest.param([], id="empty-list"),
+            pytest.param(0, id="zero"),
+            pytest.param("NVFP4", id="string"),
+        ],
+    )
+    def test_quantized_layers_that_is_not_an_object_raises_a_clear_error(self, mod, tmp_path, lanes):
+        _write_mixed_export(tmp_path, lanes)
+        with pytest.raises(ValueError, match=rf"{MODEL_ID}.*quantized_layers must be an object"):
+            mod._model_native_gemm_quant(MODEL_ID)
+
 
 class TestUnchangedExports:
     @pytest.mark.parametrize(
