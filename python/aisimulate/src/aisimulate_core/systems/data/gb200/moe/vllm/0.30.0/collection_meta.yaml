@@ -9,7 +9,7 @@ runtime:
   image_digest: sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90
 tables:
   moe_perf:
-    rows: 78852
+    rows: 78333
     status: complete
     collections:
     - collector_ref: ee219cc60e13e9f60db50b63f13bab536c598781
@@ -42,9 +42,27 @@ tables:
       collected_at: '2026-10-08'
       rows: 5103
       status: complete
-    - collector_ref: ee219cc60e13e9f60db50b63f13bab536c598781
-      collector_hash: sha256:389809dd595bfadfdc65d8c9619ad8645980325c093804ad672d7384ba64a5b5
-      case_plan_hash: sha256:736cdaf70bb6d9036370223859d45bf8ebcbcb8fc353e231b191c294eb491267
-      collected_at: '2026-10-08'
-      rows: 21101
+    - collector_ref: a8d79b2b806615ffddc296b4abd7643a083833df
+      collector_hash: sha256:098dc8512b069b3db158d01adfcbbe1739915ff003a94caa7dc778ea4c632360
+      case_plan_hash: sha256:67d064ffb794c9ec212ea03ee0724f6da591d446f3312943faa97362598324c5
+      collected_at: '2026-10-27'
+      rows: 652
+      status: complete
+    - collector_ref: e0163dcfb2a1e16785e56b3a55340d97614b50aa
+      collector_hash: sha256:34c18ac5f1690ba4787ef96b512c17d9eee791432ddb5283280a87c86c5cc2ac
+      case_plan_hash: sha256:51c216ef1c5ad9904fbd5b67fcce4733f1c1c599a3b027c89427eaa1cbb8a136
+      collected_at: '2026-10-27'
+      rows: 6804
+      status: complete
+    - collector_ref: e0163dcfb2a1e16785e56b3a55340d97614b50aa
+      collector_hash: sha256:34c18ac5f1690ba4787ef96b512c17d9eee791432ddb5283280a87c86c5cc2ac
+      case_plan_hash: sha256:8cdcca477f317e21bec7d240562ec38d25e76058a0301e34f53409d6fa691beb
+      collected_at: '2026-10-27'
+      rows: 6780
+      status: complete
+    - collector_ref: e0163dcfb2a1e16785e56b3a55340d97614b50aa
+      collector_hash: sha256:34c18ac5f1690ba4787ef96b512c17d9eee791432ddb5283280a87c86c5cc2ac
+      case_plan_hash: sha256:781072e6fcab4cb0e2ff55babb8227ab269d46c891576217e8be0287505612c3
+      collected_at: '2026-10-27'
+      rows: 6779
       status: complete
