@@ -22,6 +22,10 @@ from aisimulate_core.sdk.models.helpers import (
     attention_projection_exclusions,
     build_large_ep_moe_ops,
     large_ep_gpus_per_node,
+    mixed_precision_attention_exclusions,
+    mixed_precision_covers,
+    mixed_precision_quantized_paths,
+    mixed_precision_shared_experts_quantized,
     mtp_scale_factor,
     quant_exclude_patterns,
     validate_trtllm_large_ep,
@@ -74,8 +78,13 @@ def _shared_experts_excluded_from_quant(raw_config: dict) -> bool:
 
     nvidia/GLM-5.2-NVFP4 excludes every ``model.layers.N.mlp.shared_experts*`` from
     NVFP4 (shared experts stay bf16; only the routed experts are quantized), so the
-    shared-expert GEMMs must be modeled at bf16, not the global gemm_quant_mode."""
-    return any("shared_expert" in str(pattern) for pattern in _quant_exclude_patterns(raw_config))
+    shared-expert GEMMs must be modeled at bf16, not the global gemm_quant_mode.
+    A MIXED_PRECISION export that lists its quantized modules also keeps every
+    shared expert it does not list at bf16."""
+    if any("shared_expert" in str(pattern) for pattern in _quant_exclude_patterns(raw_config)):
+        return True
+    quantized_paths = mixed_precision_quantized_paths(raw_config)
+    return quantized_paths is not None and not mixed_precision_shared_experts_quantized(quantized_paths)
 
 
 def _dsa_gemm_quant_mode(extra_params: object, fallback: common.GEMMQuantMode) -> common.GEMMQuantMode:
@@ -114,7 +123,12 @@ def _dsa_shared_expert_quant_mode(extra_params: object, fallback: common.GEMMQua
     return fallback
 
 
-def _dense_mlp_groups(raw_config: dict, num_layers: int, fallback: common.GEMMQuantMode) -> list:
+def _dense_mlp_groups(
+    raw_config: dict,
+    num_layers: int,
+    fallback: common.GEMMQuantMode,
+    quantized_paths: frozenset[str] | None = None,
+) -> list:
     """Dense-prefix layer counts grouped by gate/up and down projection dtype."""
     count = raw_config.get("first_k_dense_replace")
     if count is None:
@@ -152,7 +166,15 @@ def _dense_mlp_groups(raw_config: dict, num_layers: int, fallback: common.GEMMQu
             expression = pattern.replace(".", r"\.").replace("*", ".*")
             if any(re.fullmatch(expression, candidate) for candidate in (name, *name.split("."))):
                 return common.GEMMQuantMode.bfloat16
-        return fallback
+        if quantized_paths is None:
+            return fallback
+        # A MIXED_PRECISION export lists what it quantizes: a projection
+        # that no listed path covers stays BF16.
+        listed = [mixed_precision_covers(quantized_paths, f"model.layers.{layer}.mlp.{shard}") for shard in shards]
+        if any(listed) != all(listed):
+            raise ValueError("DSA dense gate_proj and up_proj must use the same quantization for their fused GEMM")
+        quantized = all(listed) or mixed_precision_covers(quantized_paths, name)
+        return fallback if quantized else common.GEMMQuantMode.bfloat16
 
     groups: Counter = Counter()
     for layer in range(count):
@@ -238,12 +260,15 @@ class DeepSeekV32Model(BaseModel):
         # -> is_layer_skipped, modelopt.py:150-161 @0.24.0). Exclusions are
         # PER-PROJECTION: DeepSeek-V3.2-NVFP4 keeps q/kv/indexer in BF16 but
         # quantizes o_proj; GLM-5 NVFP4 excludes the whole self_attn block.
-        extra_params.setdefault(
-            "dsa_attn_quant_exclusions",
-            attention_projection_exclusions(
-                model_info.get("raw_config", {}), precise_module_paths=backend_name == "vllm"
-            ),
+        # A MIXED_PRECISION export that lists its quantized modules also
+        # excludes every group that no listed self_attn path covers.
+        attention_exclusions = attention_projection_exclusions(
+            model_info.get("raw_config", {}), precise_module_paths=backend_name == "vllm"
         )
+        quantized_paths = mixed_precision_quantized_paths(model_info.get("raw_config", {}))
+        if quantized_paths is not None:
+            attention_exclusions |= mixed_precision_attention_exclusions(quantized_paths)
+        extra_params.setdefault("dsa_attn_quant_exclusions", attention_exclusions)
         if _shared_experts_excluded_from_quant(model_info.get("raw_config", {})):
             extra_params.setdefault("dsa_shared_expert_quant_mode", common.GEMMQuantMode.bfloat16)
         # GLM-5.2 shares one DSA topk index across ``index_topk_freq`` layers
@@ -277,7 +302,10 @@ class DeepSeekV32Model(BaseModel):
             and not model_config.nextn
         ):
             extra_params["dsa_dense_mlp_groups"] = _dense_mlp_groups(
-                model_info.get("raw_config", {}), model_info["layers"], model_config.gemm_quant_mode
+                model_info.get("raw_config", {}),
+                model_info["layers"],
+                model_config.gemm_quant_mode,
+                quantized_paths=quantized_paths,
             )
 
         # One class for both regimes: ``__init__`` branches on

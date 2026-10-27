@@ -2,9 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """A MIXED_PRECISION export names what it quantizes; everything else is unquantized."""
 
+from copy import deepcopy
+
 import pytest
 
-from aisimulate_core.sdk.models import helpers
+from aisimulate_core.sdk import common, config, models
+from aisimulate_core.sdk.models import deepseek_v32, helpers
 
 pytestmark = pytest.mark.unit
 
@@ -185,3 +188,142 @@ def test_shared_experts_quantized_only_when_listed():
 
 def test_shared_experts_quantized_for_the_singular_module_name():
     assert helpers.mixed_precision_shared_experts_quantized(frozenset({"model.layers.4.mlp.shared_expert.up_proj"}))
+
+
+DENSE_RAW = {
+    **GLM53_LIKE,
+    "first_k_dense_replace": 3,
+    "num_hidden_layers": 78,
+    "moe_layer_freq": 1,
+    "hidden_act": "silu",
+}
+GLM53_LAYERS = GLM53_LIKE["hf_quant_config"]["quantization"]["quantized_layers"]
+FP8 = {"quant_algo": "FP8"}
+
+
+def test_dense_groups_follow_the_targets():
+    groups = deepseek_v32._dense_mlp_groups(
+        DENSE_RAW,
+        78,
+        common.GEMMQuantMode.fp8_static,
+        quantized_paths=helpers.mixed_precision_quantized_paths(DENSE_RAW),
+    )
+    assert groups == [(3, common.GEMMQuantMode.fp8_static, common.GEMMQuantMode.fp8_static)]
+    unlisted = frozenset({"model.layers.0.mlp.gate_up_proj"})  # only layer 0 gate/up listed
+    groups = deepseek_v32._dense_mlp_groups(DENSE_RAW, 78, common.GEMMQuantMode.fp8_static, quantized_paths=unlisted)
+    assert groups == [
+        (1, common.GEMMQuantMode.fp8_static, common.GEMMQuantMode.bfloat16),
+        (2, common.GEMMQuantMode.bfloat16, common.GEMMQuantMode.bfloat16),
+    ]
+    with pytest.raises(ValueError, match="same quantization"):
+        deepseek_v32._dense_mlp_groups(
+            DENSE_RAW,
+            78,
+            common.GEMMQuantMode.fp8_static,
+            quantized_paths=frozenset({"model.layers.0.mlp.gate_proj"}),
+        )
+
+
+def test_dense_glob_still_wins_over_a_listed_layer():
+    raw = {
+        **DENSE_RAW,
+        "hf_quant_config": {
+            "quantization": {**DENSE_RAW["hf_quant_config"]["quantization"], "exclude_modules": ["model.layers.1.*"]}
+        },
+    }
+    groups = deepseek_v32._dense_mlp_groups(
+        raw,
+        78,
+        common.GEMMQuantMode.fp8_static,
+        quantized_paths=helpers.mixed_precision_quantized_paths(raw),
+    )
+    assert sorted(groups) == sorted(
+        [
+            (2, common.GEMMQuantMode.fp8_static, common.GEMMQuantMode.fp8_static),
+            (1, common.GEMMQuantMode.bfloat16, common.GEMMQuantMode.bfloat16),
+        ]
+    )
+
+
+def test_shared_experts_excluded_when_unlisted():
+    assert deepseek_v32._shared_experts_excluded_from_quant(GLM53_LIKE)
+    listed = {
+        **GLM53_LIKE,
+        "hf_quant_config": {
+            "quantization": {"quantized_layers": {"model.layers.4.mlp.shared_experts.gate_proj": FP8}},
+        },
+    }
+    assert not deepseek_v32._shared_experts_excluded_from_quant(listed)
+
+
+def test_shared_experts_glob_still_excludes_a_listed_module():
+    raw = {
+        **GLM53_LIKE,
+        "hf_quant_config": {
+            "quantization": {
+                "quantized_layers": {"model.layers.4.mlp.shared_experts.gate_proj": FP8},
+                "exclude_modules": ["*.shared_experts*"],
+            }
+        },
+    }
+    assert deepseek_v32._shared_experts_excluded_from_quant(raw)
+
+
+def test_class_name_targets_keep_the_glob_reading():
+    raw = {
+        "quant_algo": "mixed_precision",
+        "hf_quant_config": {"quantization": {"exclude_modules": ["*.shared_experts*"]}},
+        "quantization_config": {
+            "config_groups": {"g": {"weights": {"num_bits": 4, "type": "float"}, "targets": ["Linear"]}}
+        },
+    }
+    assert deepseek_v32._shared_experts_excluded_from_quant(raw)  # by the glob, not by omission
+    assert helpers.mixed_precision_quantized_paths(raw) is None
+
+
+def _glm52_model(monkeypatch, quantized_layers, globs=()):
+    """GLM-5.2 on SGLang through get_model, its quantization swapped for GLM53_LIKE.
+
+    The export lists ``quantized_layers`` and excludes only ``globs``.
+    """
+    export = deepcopy(GLM53_LIKE)
+    export["hf_quant_config"]["quantization"].update(quantized_layers=quantized_layers, exclude_modules=list(globs))
+    export["quantization_config"]["ignore"] = list(globs)
+    info = deepcopy(models._get_model_info("nvidia/GLM-5.2-NVFP4"))
+    info["raw_config"].update(export)
+    monkeypatch.setattr(models, "_get_model_info", lambda model_path: info)
+    model_config = config.ModelConfig(tp_size=4, moe_tp_size=4, moe_ep_size=1)
+    return models.get_model("nvidia/GLM-5.2-NVFP4", model_config, "sglang")
+
+
+def test_listed_projections_stay_quantized(monkeypatch):
+    attention = {f"model.layers.{i}.self_attn.{child}": FP8 for i in range(78) for child in ("q_b_proj", "o_proj")}
+    model = _glm52_model(monkeypatch, {**GLM53_LAYERS, **attention})
+    assert model.extra_params["dsa_attn_quant_exclusions"] == frozenset({"kv", "indexer"})
+
+
+def test_block_level_target_covers_every_group(monkeypatch):
+    model = _glm52_model(monkeypatch, {**GLM53_LAYERS, "model.layers.0.self_attn": FP8})
+    assert model.extra_params["dsa_attn_quant_exclusions"] == frozenset()
+
+
+def test_attention_globs_are_unioned_with_the_targets(monkeypatch):
+    # The targets leave kv unlisted. The glob keeps o_proj out although a target lists it.
+    attention = {f"model.layers.{i}.self_attn.{child}": FP8 for i in range(78) for child in ("q_b_proj", "o_proj")}
+    attention.update({f"model.layers.{i}.self_attn.indexer": FP8 for i in range(78)})
+    model = _glm52_model(monkeypatch, {**GLM53_LAYERS, **attention}, globs=["*.o_proj"])
+    assert model.extra_params["dsa_attn_quant_exclusions"] == frozenset({"kv", "o"})
+
+
+def test_create_reads_dense_and_shared_expert_precision_from_the_targets(monkeypatch):
+    layer_zero_only = {
+        path: entry
+        for path, entry in GLM53_LAYERS.items()
+        if not path.startswith(("model.layers.1.", "model.layers.2."))
+    }
+    model = _glm52_model(monkeypatch, layer_zero_only)
+    assert model.extra_params["dsa_dense_mlp_groups"] == [
+        (1, common.GEMMQuantMode.fp8_static, common.GEMMQuantMode.fp8_static),
+        (2, common.GEMMQuantMode.bfloat16, common.GEMMQuantMode.bfloat16),
+    ]
+    assert model.extra_params["dsa_shared_expert_quant_mode"] == common.GEMMQuantMode.bfloat16
