@@ -136,12 +136,20 @@ def _source_tiered_lane_walk_order(
     then build requested-version and shared-only tiers with the same density
     ranking. Within a lane, Rust's existing first-source-wins fold still
     preserves requested-version rows when the same label also appears in a
-    donor. A pinned lane remains first even when it exists only in a donor.
+    donor. A pinned lane remains first even when it exists only in a donor;
+    among several pinned labels (an override maps to every label the backend
+    has collected under across versions), the ones the requested version
+    collected itself come before labels that only a donor version carries, so
+    an explicit ``attention_backend`` never selects an older measurement when
+    the requested version has its own rows for that backend.
     """
     shared_order = lane_walk_order(density, lane_order)
     if not primary_density:
         return shared_order
     pinned, _ = split_attention_lane_tiers(lane_order)
+    pinned = tuple(lane for lane in pinned if lane in primary_density) + tuple(
+        lane for lane in pinned if lane not in primary_density
+    )
     primary_order = tuple(
         lane for lane in lane_walk_order(primary_density, lane_order) if lane in primary_density and lane not in pinned
     )

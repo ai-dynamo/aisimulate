@@ -3,11 +3,14 @@
 
 """GDN context-scan lane preference: vLLM's own physical rows (AIC-1782 V5b).
 
-The vLLM 0.24.0 and 0.27.1 collectors persist the executed context-scan
-label (``chunk_gated_delta_rule_flashinfer`` on SM100 systems) while the
-modeling layer queries the logical ``chunk_gated_delta_rule``. The alias
-walk in ``perf_database/state_space.rs`` must therefore serve the physical
-row for both versions.
+The vLLM collectors from 0.24.0 on persist the executed context-scan label
+(``chunk_gated_delta_rule_flashinfer`` on SM100 systems) while the modeling
+layer queries the logical ``chunk_gated_delta_rule``. The alias walk in
+``perf_database/state_space.rs`` (``GdnAliasProfile``) must therefore serve
+the physical row for every such version — 0.24.0, 0.27.1 and the 2026-10
+campaign's 0.30.0 — and, since that campaign, the TRT-LLM 1.3.0rc29
+FlashInfer labels and the SGLang 0.5.21 fused decode convolution as well
+(PR #517 review, simone-chen).
 
 Same real-data engine-query pattern as ``test_gdn_flashinfer_lane.py``
 (``Operation._engine_query`` — the sanctioned single-op plumbing — plus
@@ -65,5 +68,61 @@ def test_query_gdn_vllm_0240_context_scan_still_resolves_own_flashinfer_rows():
     assert own_raw == pytest.approx(0.05393343925476074, rel=1e-9)
 
     result = _gdn_context_op("chunk_gated_delta_rule", model_key)._engine_query(db, batch_size=1, s=1024)
+    assert result.source == "silicon"
+    assert float(result) == pytest.approx(own_raw, rel=1e-9)
+
+
+def _gdn_generation_op(kernel_source, model_key):
+    d_model, num_k_heads, head_k_dim, num_v_heads, head_v_dim, d_conv = model_key
+    return GDNKernel(
+        "gdn", 1.0, kernel_source, "generation", d_model, num_k_heads, head_k_dim, num_v_heads, head_v_dim, d_conv
+    )
+
+
+def _raw_generation_latency(db, kernel_source, model_key, batch):
+    GDNKernel.load_data(db)
+    return db._gdn_data[kernel_source]["generation"][model_key][batch]["latency"]
+
+
+def test_query_gdn_vllm_0300_context_scan_prefers_own_flashinfer_rows():
+    """The 2026-10 campaign tables carry the same physical label as 0.24.0; a
+    version whitelist sent this query to SOL (about 9x too fast)."""
+    db = get_database("b200_sxm", "vllm", "0.30.0", allow_unlisted_version=True)
+    model_key = (2048, 8, 128, 8, 128, 4)  # Qwen3.5-2B
+
+    own_raw = _raw_context_latency(db, "chunk_gated_delta_rule_flashinfer", model_key, 1, 1024)
+    result = _gdn_context_op("chunk_gated_delta_rule", model_key)._engine_query(db, batch_size=1, s=1024)
+    assert result.source == "silicon"
+    assert float(result) == pytest.approx(own_raw, rel=1e-9)
+
+
+def test_query_gdn_trtllm_rc29_resolves_its_flashinfer_labels():
+    """TRT-LLM 1.3.0rc29 renamed both GDN kernels with a ``_flashinfer``
+    suffix; the logical queries must land on those rows, not on the rc20
+    logical rows reachable through the earlier-version fallback."""
+    db = get_database("b200_sxm", "trtllm", "1.3.0rc29", allow_unlisted_version=True)
+    model_key = (1024, 2, 128, 2, 128, 4)  # Qwen3.5-0.8B, tp2
+
+    own_ctx = _raw_context_latency(db, "chunk_gated_delta_rule_flashinfer", model_key, 1, 1024)
+    ctx = _gdn_context_op("chunk_gated_delta_rule", model_key)._engine_query(db, batch_size=1, s=1024)
+    assert ctx.source == "silicon"
+    assert float(ctx) == pytest.approx(own_ctx, rel=1e-9)
+
+    own_gen = _raw_generation_latency(db, "fused_sigmoid_gating_delta_rule_update_flashinfer", model_key, 1)
+    gen = _gdn_generation_op("fused_sigmoid_gating_delta_rule_update", model_key)._engine_query(db, batch_size=1, s=1)
+    assert gen.source == "silicon"
+    assert float(gen) == pytest.approx(own_gen, rel=1e-9)
+
+
+def test_query_gdn_sglang_0521_conv_update_resolves_the_fused_kernel():
+    """SGLang 0.5.21 replaced ``causal_conv1d_update`` with the fused
+    ``fused_qkvzba_causal_conv1d_update_contiguous``; the logical query must
+    serve that row rather than the 0.5.14 row the earlier-version fallback
+    still carries."""
+    db = get_database("b200_sxm", "sglang", "0.5.21", allow_unlisted_version=True)
+    model_key = (1024, 4, 128, 4, 128, 4)  # Qwen3.5-0.8B, tp1
+
+    own_raw = _raw_generation_latency(db, "fused_qkvzba_causal_conv1d_update_contiguous", model_key, 1)
+    result = _gdn_generation_op("causal_conv1d_update", model_key)._engine_query(db, batch_size=1, s=1)
     assert result.source == "silicon"
     assert float(result) == pytest.approx(own_raw, rel=1e-9)

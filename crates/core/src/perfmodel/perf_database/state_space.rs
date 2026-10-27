@@ -20,7 +20,10 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::OnceLock;
+
+use pep440_rs::Version;
 
 use super::perf_interp::{LeafValue, Node, OpInterpConfig, PreparedGrid};
 use super::{SourceResolver, kernel_source_ok};
@@ -36,20 +39,85 @@ pub struct StateSpaceTable {
     mamba2_sources: Vec<PerfSource>,
     gdn_sources: Vec<PerfSource>,
     kda_sources: Vec<PerfSource>,
-    /// vLLM versions whose collected tables persist per-system physical
-    /// context-scan labels (`chunk_gated_delta_rule_{flashinfer,triton,cutedsl}`)
-    /// instead of the logical `chunk_gated_delta_rule`. The 0.22.0-era
-    /// tables persist the logical label directly and stay outside this gate.
-    vllm_gdn_physical_aliases: bool,
+    /// Which backend-specific physical GDN kernel labels this
+    /// (backend, version) persists in place of the logical modeling names
+    /// (see [`GdnAliasProfile`]).
+    gdn_alias_profile: GdnAliasProfile,
     /// SM-major-10 (sm 100/103, NOT sm 120) sglang serving auto-selects the
     /// FlashInfer bf16-state GDN decode kernel when the model's
     /// `mamba_ssm_dtype` is bfloat16 (see `query_gdn`'s alias branch below —
     /// the dtype half of the predicate is per-query). Computed once at
-    /// construction, same convention as `vllm_gdn_physical_aliases`.
+    /// construction, same convention as `gdn_alias_profile`.
     sglang_sm100_gdn_flashinfer_lane: bool,
     mamba2: OnceLock<Result<Mamba2Grids, AicError>>,
     gdn: OnceLock<Result<GdnGrids, AicError>>,
     kda: OnceLock<Result<KdaGrids, AicError>>,
+}
+
+/// The physical GDN kernel labels a backend persists in place of the
+/// logical modeling names, per version. The lookup prefers the backend's own
+/// physical rows over the logical lane (which can hold cross-backend donor
+/// rows after the shared-layer merge) and fails closed on ambiguity.
+///
+/// - `VllmPhysical`: vLLM >= 0.24.0 persists per-system context-scan labels
+///   (`chunk_gated_delta_rule_{flashinfer,triton,cutedsl}`) and the packed
+///   decode recurrence. 0.22.0-era tables persist the logical label directly
+///   and stay outside the gate (their only physical-labelled rows would be
+///   donors).
+/// - `TrtllmFlashinfer`: TRT-LLM >= 1.3.0rc29 persists the FlashInfer
+///   context scan and decode recurrence (`chunk_gated_delta_rule_flashinfer`,
+///   `fused_sigmoid_gating_delta_rule_update_flashinfer`); rc20 persisted the
+///   logical names.
+/// - `SglangFusedConv`: SGLang >= 0.5.21 persists the fused decode
+///   convolution (`fused_qkvzba_causal_conv1d_update_contiguous`) instead of
+///   `causal_conv1d_update`.
+///
+/// Versions are compared as PEP 440; an unparseable version gets no profile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GdnAliasProfile {
+    None,
+    VllmPhysical,
+    TrtllmFlashinfer,
+    SglangFusedConv,
+}
+
+impl GdnAliasProfile {
+    fn for_backend_version(backend: &str, version: &str) -> Self {
+        let at_least = |floor: &str| match (Version::from_str(version), Version::from_str(floor)) {
+            (Ok(v), Ok(f)) => v >= f,
+            _ => false,
+        };
+        match backend {
+            "vllm" if at_least("0.24.0") => Self::VllmPhysical,
+            "trtllm" if at_least("1.3.0rc29") => Self::TrtllmFlashinfer,
+            "sglang" if at_least("0.5.21") => Self::SglangFusedConv,
+            _ => Self::None,
+        }
+    }
+
+    /// Physical labels to try (in this order) for a logical `(kernel_source, phase)` query.
+    fn aliases(self, kernel_source: &str, phase: &str) -> &'static [&'static str] {
+        match (self, kernel_source, phase) {
+            (Self::VllmPhysical, "chunk_gated_delta_rule", "context") => &[
+                "chunk_gated_delta_rule_flashinfer",
+                "chunk_gated_delta_rule_triton",
+                "chunk_gated_delta_rule_cutedsl",
+            ],
+            (Self::VllmPhysical, "fused_sigmoid_gating_delta_rule_update", "generation") => {
+                &["fused_recurrent_gated_delta_rule_packed_decode"]
+            }
+            (Self::TrtllmFlashinfer, "chunk_gated_delta_rule", "context") => {
+                &["chunk_gated_delta_rule_flashinfer"]
+            }
+            (Self::TrtllmFlashinfer, "fused_sigmoid_gating_delta_rule_update", "generation") => {
+                &["fused_sigmoid_gating_delta_rule_update_flashinfer"]
+            }
+            (Self::SglangFusedConv, "causal_conv1d_update", "generation") => {
+                &["fused_qkvzba_causal_conv1d_update_contiguous"]
+            }
+            _ => &[],
+        }
+    }
 }
 
 /// Per shape-key engine table. Context keys hold a 2-level `[batch][seq]`
@@ -154,7 +222,7 @@ impl StateSpaceTable {
             mamba2_sources,
             gdn_sources,
             kda_sources,
-            vllm_gdn_physical_aliases: backend == "vllm" && matches!(version, "0.24.0" | "0.27.1"),
+            gdn_alias_profile: GdnAliasProfile::for_backend_version(backend, version),
             // Mirror sglang's `is_sm100_supported` (utils/common.py @ pinned
             // v0.5.14 clone): device capability major EXACTLY 10, so sm
             // 100/103 qualify and sm 120 (rtx_pro_6000_server) does not.
@@ -308,25 +376,19 @@ impl StateSpaceTable {
         // physical-alias hit) only; any miss surfaces as `PerfDatabase` so
         // the operator degrades to SOL.
         //
-        // The framework's own persisted physical kernels (vLLM 0.24/0.27.1
-        // name their context scan chunk_gated_delta_rule_*; capability-major-10 sglang
-        // BF16 decode requires flashinfer_gated_delta_rule_decode) take
-        // precedence: after the
+        // The framework's own persisted physical kernels (see
+        // `GdnAliasProfile`: vLLM >= 0.24.0 context-scan labels, TRT-LLM
+        // >= 1.3.0rc29 FlashInfer labels, SGLang >= 0.5.21 fused decode
+        // convolution; capability-major-10 sglang BF16 decode requires
+        // flashinfer_gated_delta_rule_decode) take precedence: after the
         // shared-layer merge the logical lane can hold cross-backend donor
         // rows, which only serve as gap fill when no own physical lane covers
         // the shape. Ambiguous physical data fails closed.
-        let aliases: &[&str] = if self.vllm_gdn_physical_aliases {
-            match (key.kernel_source.as_str(), key.phase.as_str()) {
-                ("chunk_gated_delta_rule", "context") => &[
-                    "chunk_gated_delta_rule_flashinfer",
-                    "chunk_gated_delta_rule_triton",
-                    "chunk_gated_delta_rule_cutedsl",
-                ],
-                ("fused_sigmoid_gating_delta_rule_update", "generation") => {
-                    &["fused_recurrent_gated_delta_rule_packed_decode"]
-                }
-                _ => &[],
-            }
+        let profile_aliases = self
+            .gdn_alias_profile
+            .aliases(key.kernel_source.as_str(), key.phase.as_str());
+        let aliases: &[&str] = if !profile_aliases.is_empty() {
+            profile_aliases
         } else if requires_flashinfer_alias {
             // SM-major-10 sglang serving auto-selects the FlashInfer
             // bf16-state GDN decode kernel ONLY when the model's
@@ -1064,6 +1126,177 @@ mod tests {
             );
             assert!(query_gdn_test_shape(&table, "chunk_gated_delta_rule", "context", 48).is_err());
         }
+        // TRT-LLM rc20 and SGLang 0.5.14 persisted the logical names: a
+        // FlashInfer / fused-conv label in their tables could only be a donor.
+        let table = in_memory_gdn_table(
+            "trtllm",
+            "1.3.0rc20",
+            &[("chunk_gated_delta_rule_flashinfer", "context", 48, 2.0)],
+        );
+        assert!(query_gdn_test_shape(&table, "chunk_gated_delta_rule", "context", 48).is_err());
+        let table = in_memory_gdn_table(
+            "sglang",
+            "0.5.14",
+            &[(
+                "fused_qkvzba_causal_conv1d_update_contiguous",
+                "generation",
+                48,
+                2.0,
+            )],
+        );
+        assert!(query_gdn_test_shape(&table, "causal_conv1d_update", "generation", 48).is_err());
+    }
+
+    #[test]
+    fn gdn_alias_profile_follows_pep440_floors() {
+        use GdnAliasProfile::{None, SglangFusedConv, TrtllmFlashinfer, VllmPhysical};
+        for (backend, version, expected) in [
+            ("vllm", "0.22.0", None),
+            ("vllm", "0.24.0", VllmPhysical),
+            ("vllm", "0.27.1", VllmPhysical),
+            ("vllm", "0.30.0", VllmPhysical),
+            ("vllm", "0.31.0", VllmPhysical),
+            ("trtllm", "1.3.0rc20", None),
+            ("trtllm", "1.3.0rc29", TrtllmFlashinfer),
+            ("trtllm", "1.3.0", TrtllmFlashinfer),
+            ("sglang", "0.5.14", None),
+            ("sglang", "0.5.20", None),
+            ("sglang", "0.5.21", SglangFusedConv),
+            ("vllm", "next", None),
+            ("nccl", "2.30.7", None),
+        ] {
+            assert_eq!(
+                GdnAliasProfile::for_backend_version(backend, version),
+                expected,
+                "{backend} {version}"
+            );
+        }
+    }
+
+    #[test]
+    fn vllm_0300_gdn_resolves_physical_aliases_like_0240() {
+        // The 2026-10 campaign tables (0.30.0) and the GLM-5.3-Flash drop
+        // (0.31.0, no gdn table of its own -> 0.30.0 fallback) persist the
+        // same physical labels as 0.24.0; a version whitelist would silently
+        // send the model's context scan to SOL.
+        for version in ["0.30.0", "0.31.0"] {
+            let table = in_memory_gdn_table(
+                "vllm",
+                version,
+                &[
+                    ("chunk_gated_delta_rule", "context", 48, 1.0),
+                    ("chunk_gated_delta_rule_flashinfer", "context", 48, 2.0),
+                    (
+                        "fused_recurrent_gated_delta_rule_packed_decode",
+                        "generation",
+                        48,
+                        3.0,
+                    ),
+                ],
+            );
+            assert_eq!(
+                query_gdn_test_shape(&table, "chunk_gated_delta_rule", "context", 48).unwrap(),
+                2.0,
+                "{version}"
+            );
+            assert_eq!(
+                query_gdn_test_shape(
+                    &table,
+                    "fused_sigmoid_gating_delta_rule_update",
+                    "generation",
+                    48
+                )
+                .unwrap(),
+                3.0,
+                "{version}"
+            );
+        }
+    }
+
+    #[test]
+    fn trtllm_rc29_gdn_resolves_flashinfer_aliases_over_donor_logical_rows() {
+        let table = in_memory_gdn_table(
+            "trtllm",
+            "1.3.0rc29",
+            &[
+                ("chunk_gated_delta_rule", "context", 48, 1.0),
+                ("chunk_gated_delta_rule_flashinfer", "context", 48, 2.0),
+                (
+                    "fused_sigmoid_gating_delta_rule_update",
+                    "generation",
+                    48,
+                    1.0,
+                ),
+                (
+                    "fused_sigmoid_gating_delta_rule_update_flashinfer",
+                    "generation",
+                    48,
+                    3.0,
+                ),
+            ],
+        );
+        assert_eq!(
+            query_gdn_test_shape(&table, "chunk_gated_delta_rule", "context", 48).unwrap(),
+            2.0
+        );
+        assert_eq!(
+            query_gdn_test_shape(
+                &table,
+                "fused_sigmoid_gating_delta_rule_update",
+                "generation",
+                48
+            )
+            .unwrap(),
+            3.0
+        );
+    }
+
+    #[test]
+    fn sglang_0521_gdn_conv_update_resolves_fused_alias_for_any_state_dtype() {
+        let table = in_memory_gdn_table(
+            "sglang",
+            "0.5.21",
+            &[
+                ("causal_conv1d_update", "generation", 48, 1.0),
+                (
+                    "fused_qkvzba_causal_conv1d_update_contiguous",
+                    "generation",
+                    48,
+                    3.0,
+                ),
+            ],
+        );
+        for dtype in ["float32", "bfloat16"] {
+            assert_eq!(
+                query_gdn_test_shape_with_dtype(
+                    &table,
+                    "causal_conv1d_update",
+                    "generation",
+                    48,
+                    dtype
+                )
+                .unwrap(),
+                3.0,
+                "{dtype}"
+            );
+        }
+        // The context convolution and the fp32 context scan keep their logical rows.
+        let table = in_memory_gdn_table(
+            "sglang",
+            "0.5.21",
+            &[
+                ("causal_conv1d_fn", "context", 48, 2.0),
+                ("chunk_gated_delta_rule", "context", 48, 4.0),
+            ],
+        );
+        assert_eq!(
+            query_gdn_test_shape(&table, "causal_conv1d_fn", "context", 48).unwrap(),
+            2.0
+        );
+        assert_eq!(
+            query_gdn_test_shape(&table, "chunk_gated_delta_rule", "context", 48).unwrap(),
+            4.0
+        );
     }
 
     #[test]
