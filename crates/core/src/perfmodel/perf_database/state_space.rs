@@ -72,6 +72,10 @@ pub struct StateSpaceTable {
 ///   convolution (`fused_qkvzba_causal_conv1d_update_contiguous`) instead of
 ///   `causal_conv1d_update`.
 ///
+/// The same TRT-LLM floor also covers Mamba2 (`mamba2_aliases`): rc29
+/// persists the token-major context convolution
+/// (`causal_conv1d_fn_token_major`) where rc20 persisted `causal_conv1d_fn`.
+///
 /// Versions are compared as PEP 440; an unparseable version gets no profile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GdnAliasProfile {
@@ -95,7 +99,17 @@ impl GdnAliasProfile {
         }
     }
 
-    /// Physical labels to try (in this order) for a logical `(kernel_source, phase)` query.
+    /// Physical Mamba2 labels to try for a logical `(kernel_source, phase)` query.
+    fn mamba2_aliases(self, kernel_source: &str, phase: &str) -> &'static [&'static str] {
+        match (self, kernel_source, phase) {
+            (Self::TrtllmFlashinfer, "causal_conv1d_fn", "context") => {
+                &["causal_conv1d_fn_token_major"]
+            }
+            _ => &[],
+        }
+    }
+
+    /// Physical GDN labels to try (in this order) for a logical `(kernel_source, phase)` query.
     fn aliases(self, kernel_source: &str, phase: &str) -> &'static [&'static str] {
         match (self, kernel_source, phase) {
             (Self::VllmPhysical, "chunk_gated_delta_rule", "context") => &[
@@ -299,7 +313,21 @@ impl StateSpaceTable {
         //
         // Only the context phase reaches this point — generation queries are
         // short-circuited above to match Python's degenerate behaviour.
-        let node = match grids.by_keys.get(&key) {
+        //
+        // The backend's own persisted physical label (TRT-LLM rc29 renamed
+        // the context convolution `causal_conv1d_fn_token_major`) takes
+        // precedence over the logical lane, which after the shared-layer
+        // merge can hold an earlier version's or another backend's rows.
+        let own_physical = self
+            .gdn_alias_profile
+            .mamba2_aliases(key.kernel_source.as_str(), key.phase.as_str())
+            .iter()
+            .find_map(|alias| {
+                let mut alias_key = key.clone();
+                alias_key.kernel_source = (*alias).to_string();
+                grids.by_keys.get(&alias_key)
+            });
+        let node = match own_physical.or_else(|| grids.by_keys.get(&key)) {
             Some(node) => node,
             None => grids
                 .by_keys
@@ -1806,5 +1834,85 @@ mod tests {
             "energy {}",
             v.energy
         );
+    }
+
+    fn in_memory_mamba2_table(
+        backend: &str,
+        version: &str,
+        rows: &[(&str, f64)],
+    ) -> StateSpaceTable {
+        let mut by_keys: BTreeMap<Mamba2Key, Node> = BTreeMap::new();
+        for &(kernel_source, latency) in rows {
+            let key = Mamba2Key {
+                kernel_source: kernel_source.to_string(),
+                phase: "context".to_string(),
+                d_model: 8192,
+                d_state: 128,
+                d_conv: 4,
+                nheads: 128,
+                head_dim: 64,
+                n_groups: 8,
+                chunk_size: 256,
+            };
+            let node = by_keys.entry(key).or_insert_with(Node::branch);
+            insert_first_wins(node, &[1, 1024], LeafValue::latency_only(latency));
+        }
+        let table = StateSpaceTable::new(PathBuf::from("test-data"), backend, version);
+        assert!(
+            table
+                .mamba2
+                .set(Ok(Mamba2Grids {
+                    by_keys: prepare_nodes(by_keys),
+                }))
+                .is_ok()
+        );
+        table
+    }
+
+    fn query_mamba2_conv(table: &StateSpaceTable) -> Result<f64, AicError> {
+        let dummy_sol = |_: f64, _: f64| 1.0;
+        table
+            .query_mamba2(
+                "causal_conv1d_fn",
+                "context",
+                1,
+                1024,
+                8192,
+                128,
+                4,
+                128,
+                64,
+                8,
+                256,
+                &dummy_sol,
+            )
+            .map(|v| v.latency)
+    }
+
+    #[test]
+    fn trtllm_rc29_mamba2_context_conv_resolves_token_major_over_donor_logical_rows() {
+        let table = in_memory_mamba2_table(
+            "trtllm",
+            "1.3.0rc29",
+            &[
+                ("causal_conv1d_fn", 1.0),
+                ("causal_conv1d_fn_token_major", 2.0),
+            ],
+        );
+        assert_eq!(query_mamba2_conv(&table).unwrap(), 2.0);
+        // rc20 persisted the logical name: no alias, the logical row serves.
+        let table = in_memory_mamba2_table(
+            "trtllm",
+            "1.3.0rc20",
+            &[
+                ("causal_conv1d_fn", 1.0),
+                ("causal_conv1d_fn_token_major", 2.0),
+            ],
+        );
+        assert_eq!(query_mamba2_conv(&table).unwrap(), 1.0);
+        // Without any matching row the query still misses (SOL at the operator).
+        let table =
+            in_memory_mamba2_table("trtllm", "1.3.0rc29", &[("mamba_chunk_scan_combined", 3.0)]);
+        assert!(query_mamba2_conv(&table).is_err());
     }
 }

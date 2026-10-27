@@ -1617,6 +1617,12 @@ HYBRID_CASES = [
         EngineStepParityCase(
             model_path="Qwen/Qwen3-32B",
             database_mode="EMPIRICAL",
+            # EMPIRICAL needs the version's OWN comm tables (custom_allreduce
+            # util grid); the 2026-10 campaign did not collect comm, so the
+            # estimator is pinned to the 0.24.0 data (follow-up: comm tables for
+            # the current versions).
+            backend_version="0.24.0",
+            allow_unlisted_version=True,
         ),
         id="qwen3-32b-b200-vllm-empirical",
     ),
@@ -1624,6 +1630,12 @@ HYBRID_CASES = [
         EngineStepParityCase(
             model_path="Qwen/Qwen3-235B-A22B",
             database_mode="EMPIRICAL",
+            # EMPIRICAL needs the version's OWN comm tables (custom_allreduce
+            # util grid); the 2026-10 campaign did not collect comm, so the
+            # estimator is pinned to the 0.24.0 data (follow-up: comm tables for
+            # the current versions).
+            backend_version="0.24.0",
+            allow_unlisted_version=True,
         ),
         id="qwen3-235b-a22b-b200-vllm-empirical",
     ),
@@ -1631,6 +1643,12 @@ HYBRID_CASES = [
         EngineStepParityCase(
             model_path="moonshotai/Kimi-K2.5",
             database_mode="EMPIRICAL",
+            # EMPIRICAL needs the version's OWN comm tables (custom_allreduce
+            # util grid); the 2026-10 campaign did not collect comm, so the
+            # estimator is pinned to the 0.24.0 data (follow-up: comm tables for
+            # the current versions).
+            backend_version="0.24.0",
+            allow_unlisted_version=True,
         ),
         id="kimi-k25-b200-vllm-empirical",
     ),
@@ -1638,6 +1656,12 @@ HYBRID_CASES = [
         EngineStepParityCase(
             model_path="deepseek-ai/DeepSeek-V3.2",
             database_mode="EMPIRICAL",
+            # EMPIRICAL needs the version's OWN comm tables (custom_allreduce
+            # util grid); the 2026-10 campaign did not collect comm, so the
+            # estimator is pinned to the 0.24.0 data (follow-up: comm tables for
+            # the current versions).
+            backend_version="0.24.0",
+            allow_unlisted_version=True,
         ),
         id="deepseek-v32-b200-vllm-empirical",
     ),
@@ -1652,6 +1676,12 @@ HYBRID_CASES = [
             backend_name="sglang",
             isl=1536,
             database_mode="EMPIRICAL",
+            # EMPIRICAL needs the version's OWN comm tables (custom_allreduce
+            # util grid); the 2026-10 campaign did not collect comm, so the
+            # estimator is pinned to the 0.5.14 data (follow-up: comm tables for
+            # the current versions).
+            backend_version="0.5.14",
+            allow_unlisted_version=True,
         ),
         id="glm5-b200-sglang-empirical",
     ),
@@ -1659,6 +1689,12 @@ HYBRID_CASES = [
         EngineStepParityCase(
             model_path="MiniMaxAI/MiniMax-M2.5",
             database_mode="EMPIRICAL",
+            # EMPIRICAL needs the version's OWN comm tables (custom_allreduce
+            # util grid); the 2026-10 campaign did not collect comm, so the
+            # estimator is pinned to the 0.24.0 data (follow-up: comm tables for
+            # the current versions).
+            backend_version="0.24.0",
+            allow_unlisted_version=True,
         ),
         id="minimax-m25-b200-vllm-empirical",
     ),
@@ -1666,6 +1702,12 @@ HYBRID_CASES = [
         EngineStepParityCase(
             model_path="nvidia/Nemotron-H-56B-Base-8K",
             database_mode="EMPIRICAL",
+            # EMPIRICAL needs the version's OWN comm tables (custom_allreduce
+            # util grid); the 2026-10 campaign did not collect comm, so the
+            # estimator is pinned to the 0.24.0 data (follow-up: comm tables for
+            # the current versions).
+            backend_version="0.24.0",
+            allow_unlisted_version=True,
         ),
         id="nemotron-h-56b-b200-vllm-empirical",
     ),
