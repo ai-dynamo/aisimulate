@@ -42,26 +42,28 @@ constructor and Rust operation executor as ordinary op-level prediction.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `estimator_config.op_level.execution_profile` | Unset | Opt in to a qualified external graph for one phase. |
+| `estimator_config.op_level.execution_profile` | Unset | Opt in to qualified external phase graphs, including an aggregated mixed-step composition. |
 | `execution_profile.path` | Required when selected | Absolute path to the external JSON profile. |
 | `execution_profile.sha256` | Required when selected | Lowercase SHA-256 of the exact profile bytes; preserved in saved configuration and provenance. |
 
 Set `estimation_mode: op_level`, `fallback_policy: deny`, `database_mode: SILICON`,
 `enable_shared_layer: false`, and `estimator_config.correction.enabled: false`.
-Choose `worker_type: prefill` or `decode`, an explicit backend version and a
+Choose `worker_type: prefill`, `decode`, or `aggregated`, an explicit backend version and a
 single PP/attention-DP/CP/DCP rank. Keep `encoder_parallel` unset: these profiles
 qualify the language-model phase only. Speculation, decoder replay, automatic
 estimator selection and shared-source inheritance are not supported.
 Supply the external hardware and performance-data root through `systems_paths`.
 
-The version-1 profile JSON has these required fields:
+The version-1 profile JSON has these fields:
 
 | Field | Contract |
 | --- | --- |
 | `schema_version` | `1`. |
 | `basis` | The complete ordinary compiled `EngineSpec` used to qualify the profile. Both operation lists and every engine identity field must match the current compiler output; only `engine.systems_path` is excluded from comparison. |
-| `worker_type` | `prefill` or `decode`, matching the caller. |
-| `ops` | Replacement operations for that phase, in execution order, using the existing externally tagged operation format. Resident weight bytes must match the original phase. |
+| `worker_type` | `prefill`, `decode`, or `aggregated`, matching the caller. |
+| `ops` | Replacement operations for the selected phase, or the prefill graph for `aggregated`, in execution order, using the existing externally tagged operation format. Resident weight bytes must match the original phase. |
+| `generation_ops` | Required for `aggregated`; absent for other roles. Replacement decode graph, with resident weight bytes matching the original decode graph. |
+| `mixed_composition` | Required for `aggregated`; absent for other roles. Set to `shared_non_attention` to declare the three-pass composition described below. |
 | `retained_files` | Bundle-relative `path`, lowercase `sha256`, and `size_bytes` for every required hardware YAML, source/version metadata file and retained operation table. |
 
 Profile authors can inspect an ordinary `compile_engine` result using the
@@ -75,7 +77,10 @@ the consumer's compile from the prepared root, and admission fails naming the
 first differing field. Compiler/schema changes that alter the basis require
 requalification and a new profile pin.
 
-`MeasuredComposite` is an exact, latency-only operation with `name`, `system`,
+`MeasuredComposite` represents a measured scope, which may contain multiple
+kernels or operations, as one operation. Its internal operations are not modeled
+individually; the name identifies the scope and does not imply confidentiality.
+It is an exact, latency-only operation with `name`, `system`,
 `backend`, `version`, `is_context`, `weight_bytes`, `scale_factor`, and `cells`.
 Each cell contains `shape` and `latency_ms`. Sort cells by their unique shape:
 
@@ -109,18 +114,48 @@ The model returned by `RustForwardPassPerfModel.best_available(config)` accepts
 use the same interface as other estimators; AISimulate dispatches the scheduled
 work to the selected profile. Queued metrics do not contribute to the estimate.
 
-Supported metrics contain one rank and one phase: equal uncached prefill prompts,
+Supported metrics contain one rank: equal uncached prefill prompts,
 one prefill request with a known KV prefix, or one decode step with equal context
-lengths. Totals must identify integral per-request lengths. Prefill prompt variance
+lengths. An aggregated profile also accepts both supported phase shapes in the
+same step. Totals must identify integral per-request lengths. Prefill prompt variance
 does not establish equal chunk/prefix pairs, so multi-request prefill with nonzero
 past KV remains unsupported. Existing aggregate fields are used; no telemetry
 schema change is required. Missing cells, unsupported shapes, and a mismatched
 phase raise the same prediction errors through the common interface, without
 switching estimators or relaxing the selected fallback policy.
 
+For mixed steps, an aggregated profile declares `mixed_composition:
+shared_non_attention` and supplies both phase graphs. This is an author-supplied
+modeling contract: the graphs must separate attention from shared non-attention
+work. AISimulate reuses its three-pass operation composition:
+
+1. Query prefill non-attention operations once at the combined new-token count
+   (prefill tokens plus decode requests), with batch 1 and the total prefill prefix.
+2. Query prefill attention at the prefill batch's own new-token and prefix lengths.
+3. Query decode attention at the decode batch's own length, including its current token.
+
+Use the existing top-level `context_attention` and `generation_attention` names
+for the attention scopes (typed GLM-5.3 attention operations already carry their
+phase). Other scopes belong to shared non-attention work; decode non-attention
+operations are used for decode-only steps. Do not place attention inside an
+`Overlap` group. Measured scopes can use this contract when attention and shared
+work have been measured separately; an opaque whole-phase measurement cannot
+establish the split. The declaration does not validate that decomposition against
+silicon. For measured scopes, every shape queried by these passes needs an exact
+cell, including combined-token shapes. Separate complete prefill/decode timings
+are not added together.
+
+For example, 10 prefill tokens in two equal prompts and two decode requests with
+four past KV tokens each query shared work at `[1, 12, 0]`, prefill attention at
+`[2, 5, 0]`, and decode attention at `[2, 5, 0]`. Existing single-phase profile files
+remain valid; combining two such files does not implicitly create an aggregated
+profile. Dataset preparation accepts an aggregated profile through the same
+`prepare_execution_profile` function and manifest schema.
+
 Direct `predict_prefill_latency(batch, total_input_length, prefix)` and
 `predict_decode_latency_total(batch, total_past_kv_tokens)` calls remain supported.
-Multi-step decode trajectories and mixed steps remain unsupported. Successful
+Multi-step decode trajectories and the static `mixed_step_latency` surface remain
+unsupported for profiles; use the common forward-pass API for mixed work. Successful
 queries do not establish scheduler-inclusive Replay, Planner sizing, or end-to-end
 serving accuracy. Caller workload approximations remain the caller's responsibility.
 

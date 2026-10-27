@@ -35,7 +35,7 @@ use crate::session::{
     query_generation_op, run_context_ops, run_context_ops_planned, run_context_ops_with,
     run_generation_ops_step, run_generation_ops_step_beamed_with, run_generation_ops_step_planned,
 };
-use crate::{ForwardPassMetrics, validate_forward_pass_metrics};
+use crate::{ForwardPassMetrics, ForwardPassWorkerType, validate_forward_pass_metrics};
 
 /// Per-call runtime inputs. Field-for-field mirror of the Python
 /// `sdk/config.RuntimeConfig`.
@@ -368,7 +368,7 @@ pub struct Engine {
     /// (`batch_size = batch_size * (model._nextn + 1)`). 0 disables scaling.
     nextn: u32,
     pub(crate) profile_snapshot: Option<tempfile::TempDir>,
-    profile_phase: Option<bool>,
+    profile_phase: Option<ForwardPassWorkerType>,
     /// Measured target+draft round identity. This is parsed once from the
     /// existing EngineConfig.extra map, not a new serialized Op field.
     fpm_execution_profile: Option<FpmExecutionBinding>,
@@ -390,7 +390,11 @@ impl std::fmt::Debug for Engine {
 
 impl Engine {
     fn check_profile_phase(&self, prefill: bool) -> Result<(), AicError> {
-        if self.profile_phase.is_some_and(|phase| phase != prefill) {
+        if self.profile_phase.is_some_and(|phase| match phase {
+            ForwardPassWorkerType::Prefill => !prefill,
+            ForwardPassWorkerType::Decode => prefill,
+            ForwardPassWorkerType::Aggregated => false,
+        }) {
             return Err(crate::operators::measured_composite::invalid(
                 "query phase is not qualified by this profile",
             ));
@@ -401,7 +405,7 @@ impl Engine {
     fn reject_profile_telemetry(&self) -> Result<(), AicError> {
         if self.profile_phase.is_some() {
             return Err(crate::operators::measured_composite::invalid(
-                "execution profiles require direct homogeneous phase queries; mixed/aggregate telemetry is not qualified",
+                "execution profiles require the common forward-pass API for mixed steps; static mixed-step composition is not qualified",
             ));
         }
         Ok(())
@@ -465,8 +469,9 @@ impl Engine {
                 .map(String::as_str)
             {
                 None => None,
-                Some("prefill") => Some(true),
-                Some("decode") => Some(false),
+                Some("prefill") => Some(ForwardPassWorkerType::Prefill),
+                Some("decode") => Some(ForwardPassWorkerType::Decode),
+                Some("aggregated") => Some(ForwardPassWorkerType::Aggregated),
                 _ => {
                     return Err(crate::operators::measured_composite::invalid(
                         "invalid profile phase",
@@ -2689,20 +2694,63 @@ impl Engine {
         let has_prefill = sched.sum_prefill_tokens > 0;
         let has_decode = sched.num_decode_requests > 0 || sched.sum_decode_kv_tokens > 0;
 
-        if self.profile_phase.is_some() {
-            if has_prefill && has_decode {
+        if let Some(phase) = self.profile_phase {
+            if has_prefill && has_decode && phase != ForwardPassWorkerType::Aggregated {
                 return Err(crate::operators::measured_composite::invalid(
-                    "execution profiles do not support mixed forward passes",
+                    "mixed forward passes require an aggregated execution profile",
                 ));
             }
-            if has_prefill {
-                if sched.var_prefill_length != 0.0
-                    || (sched.num_prefill_requests > 1 && sched.sum_prefill_kv_tokens != 0)
+            if has_prefill
+                && (sched.var_prefill_length != 0.0
+                    || (sched.num_prefill_requests > 1 && sched.sum_prefill_kv_tokens != 0))
+            {
+                return Err(crate::operators::measured_composite::invalid(
+                    "prefill profile metrics require equal uncached prompts or one request",
+                ));
+            }
+            if has_decode && sched.var_decode_kv_tokens != 0.0 {
+                return Err(crate::operators::measured_composite::invalid(
+                    "decode profile metrics require equal context lengths",
+                ));
+            }
+            if has_prefill && has_decode {
+                let n_prefill = sched.num_prefill_requests;
+                let n_decode = sched.num_decode_requests;
+                if sched.sum_prefill_tokens % n_prefill != 0
+                    || sched.sum_prefill_kv_tokens % n_prefill != 0
+                    || sched.sum_decode_kv_tokens % n_decode != 0
                 {
                     return Err(crate::operators::measured_composite::invalid(
-                        "prefill profile metrics require equal uncached prompts or one request",
+                        "mixed profile requires homogeneous prefill and decode batches",
                     ));
                 }
+                sched
+                    .sum_prefill_tokens
+                    .checked_add(n_decode)
+                    .ok_or_else(|| {
+                        crate::operators::measured_composite::invalid("mixed token count overflow")
+                    })?;
+                // Measured decode cells include the current token in s, as
+                // in direct decode prediction; telemetry carries only past KV.
+                let decode_length = (sched.sum_decode_kv_tokens / n_decode)
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        crate::operators::measured_composite::invalid("decode length overflow")
+                    })?;
+                return get_mix_step_ops(
+                    &self.context_ops,
+                    &self.generation_ops,
+                    &self.db,
+                    sched.sum_prefill_tokens,
+                    n_decode,
+                    sched.sum_prefill_tokens / n_prefill,
+                    sched.sum_prefill_kv_tokens / n_prefill,
+                    sched.sum_prefill_kv_tokens,
+                    decode_length,
+                    n_decode,
+                );
+            }
+            if has_prefill {
                 return self.predict_prefill_latency_total_with_coverage(
                     sched.num_prefill_requests,
                     sched.sum_prefill_tokens,
@@ -2711,11 +2759,6 @@ impl Engine {
                 );
             }
             if has_decode {
-                if sched.var_decode_kv_tokens != 0.0 {
-                    return Err(crate::operators::measured_composite::invalid(
-                        "decode profile metrics require equal context lengths",
-                    ));
-                }
                 return self.predict_decode_latency_total_with_coverage(
                     sched.num_decode_requests,
                     sched.sum_decode_kv_tokens,
@@ -3259,6 +3302,67 @@ pub(crate) mod tests {
             assert_eq!(detailed.latency_ms, Some(6.0));
             assert_eq!(detailed.native_latency_ms, Some(6.0));
         }
+    }
+
+    #[test]
+    fn execution_profile_mixed_query_counts_shared_work_once() {
+        use crate::operators::measured_composite::{MeasuredCell, MeasuredCompositeOp};
+
+        let mut config = fixture_engine_config(None);
+        config
+            .extra
+            .insert("execution_profile_phase".into(), "aggregated".into());
+        let scope = |name: &str, context: bool, shape, latency_ms| {
+            Op::MeasuredComposite(MeasuredCompositeOp {
+                name: name.into(),
+                system: "b200_sxm".into(),
+                backend: "vllm".into(),
+                version: "0.24.0".into(),
+                is_context: context,
+                weight_bytes: 0.0,
+                scale_factor: 3.0,
+                cells: vec![MeasuredCell { shape, latency_ms }],
+            })
+        };
+        let engine = Engine::build(
+            EngineSpec::new(
+                config,
+                vec![
+                    scope("shared_compute", true, [1, 12, 0], 5.0),
+                    scope("context_attention", true, [2, 5, 0], 2.0),
+                ],
+                vec![
+                    // This whole-phase-only cell must not be queried in a mixed step.
+                    scope("decode_compute", false, [99, 99, 0], 100.0),
+                    scope("generation_attention", false, [2, 5, 0], 7.0),
+                ],
+            ),
+            build_engine(None).db,
+        )
+        .unwrap();
+        let metrics = ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_prefill_requests: 2,
+                sum_prefill_tokens: 10,
+                num_decode_requests: 2,
+                sum_decode_kv_tokens: 8,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // Independent measured scopes: (5 shared + 2 prefill + 7 decode) ms,
+        // each repeated three times. Decode's measured length is past KV + 1.
+        assert_eq!(
+            engine.forward_pass_time_ms(&[metrics.clone()]).unwrap(),
+            42.0
+        );
+        assert_eq!(
+            engine
+                .forward_pass_estimate(&[metrics], true, None)
+                .unwrap()
+                .latency_ms,
+            Some(42.0)
+        );
     }
 
     #[test]

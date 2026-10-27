@@ -20,6 +20,18 @@ pub struct MeasuredCell {
     pub latency_ms: f64,
 }
 
+/// A measured execution scope represented as one operation.
+///
+/// The scope may contain multiple kernels or operations. Its latency comes
+/// from an exact measured shape lookup instead of modeling its internals.
+/// The name identifies the scope; it does not imply a confidential identity.
+/// Measurements belong to one system, backend, version, and phase. Missing
+/// shapes are errors, with no interpolation or analytical substitution.
+/// Resident weights and latency scaling are supplied explicitly.
+///
+/// Mixed composition requires scopes that separate shared non-attention work
+/// from phase-specific attention; a whole-phase measurement cannot supply that
+/// split. The execution profile declares this composition contract.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeasuredCompositeOp {

@@ -192,6 +192,63 @@ def test_prepared_profile_predicts_and_reloads_without_producer_inputs(dataset):
         assert restored.predict_prefill_latency(1, 8, 4) == 15.0
 
 
+def test_prepared_aggregated_profile_predicts_mixed_step_offline(dataset):
+    root, path, manifest = dataset
+    profile = json.loads((root / "metadata/profile.json").read_bytes())
+    config = json.loads((root / "metadata/config.json").read_bytes())
+    config["worker_type"] = profile["worker_type"] = "aggregated"
+    profile["mixed_composition"] = "shared_non_attention"
+    template = profile["ops"][0]["MeasuredComposite"]
+
+    def scope(name, context, shape, latency, weights):
+        return {
+            "MeasuredComposite": template
+            | {
+                "name": name,
+                "is_context": context,
+                "weight_bytes": weights,
+                "cells": [{"shape": shape, "latency_ms": latency}],
+            }
+        }
+
+    profile["ops"] = [
+        scope("shared_compute", True, [1, 5, 0], 11.0, template["weight_bytes"]),
+        scope("context_attention", True, [1, 4, 0], 3.0, 0.0),
+    ]
+    decode_weights = sum(_native.weights_ops_json(json.dumps(profile["basis"]["generation_ops"])))
+    profile["generation_ops"] = [
+        scope("decode_compute", False, [1, 5, 0], 7.0, decode_weights),
+        scope("generation_attention", False, [1, 5, 0], 5.0, 0.0),
+    ]
+    write(root, "metadata/profile.json", profile)
+    record = next(a for a in manifest["artifacts"] if a["role"] == "execution-profile")
+    record.update(artifact(root, record["path"], record["role"]))
+    config["estimator_config"]["op_level"]["execution_profile"]["sha256"] = record["sha256"]
+    write(root, "metadata/config.json", config)
+    record = next(a for a in manifest["artifacts"] if a["role"] == "predictor-config")
+    record.update(artifact(root, record["path"], record["role"]))
+    write(root, path, manifest)
+    output = root.parent / "prepared-aggregated"
+    shutil.rmtree(root.parent / "producer-systems")
+    prepared = prepare_execution_profile(root, path, output)
+    shutil.rmtree(root)
+    model = RustForwardPassPerfModel.best_available(prepared)
+    metrics = [
+        {
+            "scheduled_requests": {
+                "num_prefill_requests": 1,
+                "sum_prefill_tokens": 4,
+                "num_decode_requests": 1,
+                "sum_decode_kv_tokens": 4,
+            }
+        }
+    ]
+    # Independent oracle: (11 ms shared + 3 ms prefill + 5 ms decode) x 3.
+    assert model.estimate_forward_pass_time_ms(metrics) == 57.0
+    saved = json.loads((output / "config.json").read_bytes())
+    assert RustForwardPassPerfModel.best_available(saved).estimate_forward_pass_time_ms(metrics) == 57.0
+
+
 @pytest.mark.parametrize(
     "change",
     ["missing_hardware", "missing_version", "malformed_hardware", "missing_op", "schema", "basis", "remote_model"],

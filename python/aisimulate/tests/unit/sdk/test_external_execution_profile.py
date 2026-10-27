@@ -190,7 +190,6 @@ def test_mutation_is_rejected_and_existing_model_owns_snapshot(profile):
         ("fallback_policy", "allow"),
         ("database_mode", "HYBRID"),
         ("enable_shared_layer", True),
-        ("worker_type", "aggregated"),
         ("nextn", 1),
         ("pp", 2),
         ("attention_dp", 2),
@@ -374,6 +373,137 @@ def test_profile_common_prefill_prefix_geometry(profile):
                 }
             ]
         )
+
+
+@pytest.fixture
+def aggregated_profile(profile):
+    config, payload, publish, _, _ = profile
+    config["worker_type"] = payload["worker_type"] = "aggregated"
+    payload["mixed_composition"] = "shared_non_attention"
+    template = payload["ops"][0]["MeasuredComposite"]
+
+    def scope(name, context, cells):
+        return {
+            "MeasuredComposite": template
+            | {
+                "name": name,
+                "is_context": context,
+                "cells": [{"shape": shape, "latency_ms": ms} for shape, ms in sorted(cells)],
+            }
+        }
+
+    payload["ops"] = [
+        scope("shared_compute", True, [([2, 5, 0], 3.0), ([1, 12, 0], 5.0), ([1, 7, 4], 13.0)]),
+        scope("context_attention", True, [([2, 5, 0], 2.0), ([1, 5, 4], 17.0)]),
+    ]
+    payload["generation_ops"] = [
+        scope("decode_compute", False, [([2, 5, 0], 11.0)]),
+        scope("generation_attention", False, [([2, 5, 0], 7.0)]),
+    ]
+    publish()
+    return profile
+
+
+def test_aggregated_profile_common_api_and_phase_queries(aggregated_profile):
+    config, _, _, _, _ = aggregated_profile
+    model = RustForwardPassPerfModel.best_available(config)
+    prefill = {"num_prefill_requests": 2, "sum_prefill_tokens": 10}
+    decode = {"num_decode_requests": 2, "sum_decode_kv_tokens": 8}
+    metrics = [{"scheduled_requests": prefill | decode}]
+    # Independent oracle: shared work at 12 tokens (5 ms), attention for two
+    # 5-token prefills (2 ms), attention for two decodes at KV+1=5 (7 ms).
+    # Each scope repeats three times: (5 + 2 + 7) * 3 = 42 ms. Adding whole
+    # phases instead gives 15 + 54 = 69 ms and double-counts shared work.
+    assert model.estimate_forward_pass_time_ms(metrics) == 42.0
+    detailed = model.estimate_forward_pass_detailed(metrics)
+    assert detailed["latency_ms"] == detailed["native_latency_ms"] == 42.0
+    assert model.estimate_forward_pass_time_ms([{"scheduled_requests": prefill}]) == 15.0
+    assert model.predict_prefill_latency(2, 5, 0) == 15.0
+    assert model.estimate_forward_pass_time_ms([{"scheduled_requests": decode}]) == 54.0
+    assert model.predict_decode_latency_total(2, 8) == 54.0
+    assert model.estimate_forward_pass_time_ms([{}]) == 0.0
+    saved = model.diagnostics()["provenance"]["config"]
+    reloaded = RustForwardPassPerfModel.best_available(saved)
+    assert reloaded.estimate_forward_pass_time_ms(metrics) == 42.0
+    # One prefix-aware prefill, plus the same decode batch: (13 + 17 + 7) * 3.
+    prefix = {"num_prefill_requests": 1, "sum_prefill_tokens": 5, "sum_prefill_kv_tokens": 4}
+    assert model.estimate_forward_pass_time_ms([{"scheduled_requests": prefix | decode}]) == 111.0
+    for extra, pattern in [
+        ({"sum_prefill_tokens": 11}, "homogeneous"),
+        ({"sum_decode_kv_tokens": 9}, "homogeneous"),
+        ({"var_prefill_length": 1.0}, "equal"),
+        ({"var_decode_kv_tokens": 1.0}, "equal"),
+        ({"sum_prefill_kv_tokens": 2}, "equal uncached"),
+        ({"sum_prefill_tokens": 12}, "no exact cell"),
+        ({"sum_decode_kv_tokens": 10}, "no exact cell"),
+        ({"num_prefill_requests": 0}, "token sum|token sums"),
+        ({"num_decode_requests": 0}, "token sum|token sums"),
+        ({"num_prefill_requests": 1, "sum_prefill_tokens": 2**32 - 1}, "overflow"),
+        ({"num_decode_requests": 1, "sum_decode_kv_tokens": 2**32 - 1}, "overflow"),
+    ]:
+        with pytest.raises(ValueError, match=pattern):
+            model.estimate_forward_pass_time_ms([{"scheduled_requests": prefill | decode | extra}])
+
+
+@pytest.mark.parametrize(
+    "change,pattern",
+    [
+        ("missing_decode", "require generation_ops"),
+        ("missing_composition", "require generation_ops"),
+        ("unknown_composition", "unknown variant"),
+        ("opaque_scope", "top-level phase attention"),
+        ("hidden_attention", "hide attention"),
+        ("wrong_phase", "identity or phase"),
+        ("weights", "resident weights"),
+        ("single_phase", "require an aggregated profile"),
+    ],
+)
+def test_aggregated_profile_requires_composable_graphs(aggregated_profile, change, pattern):
+    config, payload, publish, _, _ = aggregated_profile
+    if change == "missing_decode":
+        del payload["generation_ops"]
+    elif change == "missing_composition":
+        del payload["mixed_composition"]
+    elif change == "unknown_composition":
+        payload["mixed_composition"] = "sum_whole_phases"
+    elif change == "opaque_scope":
+        payload["generation_ops"][1]["MeasuredComposite"]["name"] = "whole_decode"
+    elif change == "hidden_attention":
+        payload["ops"].append(
+            {"Overlap": {"name": "hidden", "group_a": [copy.deepcopy(payload["ops"][1])], "group_b": []}}
+        )
+    elif change == "wrong_phase":
+        payload["generation_ops"][1]["MeasuredComposite"]["is_context"] = True
+    elif change == "weights":
+        payload["generation_ops"][0]["MeasuredComposite"]["weight_bytes"] = 1e6
+    elif change == "single_phase":
+        config["worker_type"] = payload["worker_type"] = "prefill"
+    publish()
+    with pytest.raises(ValueError, match=pattern):
+        RustForwardPassPerfModel.best_available(config)
+
+
+def test_aggregated_profile_large_exact_shape_does_not_overflow(aggregated_profile):
+    config, payload, publish, _, _ = aggregated_profile
+    for op, shape in zip(
+        payload["ops"] + payload["generation_ops"],
+        [[1, 2**32 - 1, 0], [1, 2**32 - 2, 0], [1, 1, 0], [1, 1, 0]],
+        strict=True,
+    ):
+        op["MeasuredComposite"]["cells"] = [{"shape": shape, "latency_ms": 1.0}]
+    publish()
+    model = RustForwardPassPerfModel.best_available(config)
+    metrics = [
+        {
+            "scheduled_requests": {
+                "num_prefill_requests": 1,
+                "sum_prefill_tokens": 2**32 - 2,
+                "num_decode_requests": 1,
+            }
+        }
+    ]
+    # Three queried scopes, each measured at 1 ms and repeated three times.
+    assert model.estimate_forward_pass_time_ms(metrics) == 9.0
 
 
 def _communication_profile(profile, kind, version):

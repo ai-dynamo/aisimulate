@@ -42,9 +42,20 @@ struct ExecutionProfile {
     basis: EngineSpec,
     worker_type: ForwardPassWorkerType,
     ops: Vec<Op>,
+    /// Aggregated profiles use `ops` for prefill and this graph for decode.
+    generation_ops: Option<Vec<Op>>,
+    mixed_composition: Option<MixedComposition>,
     /// Every file needed to load the private systems root, including hardware
     /// YAML, version/source metadata and all retained operation measurements.
     retained_files: Vec<RetainedFile>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum MixedComposition {
+    /// Author declares separate attention and shared non-attention scopes,
+    /// using the existing context_attention/generation_attention filters.
+    SharedNonAttention,
 }
 
 fn digest(bytes: &[u8]) -> String {
@@ -67,7 +78,6 @@ pub(crate) fn validate_config(config: &ForwardPassPerfModelConfig) -> Result<(),
         || config.database_mode != DatabaseMode::Silicon
         || config.enable_shared_layer != Some(false)
         || config.estimator_config.correction.enabled
-        || config.worker_type == ForwardPassWorkerType::Aggregated
         || config.nextn != 0
         || config.speculation.is_some()
         || config.fpm_profile.is_some()
@@ -85,7 +95,7 @@ pub(crate) fn validate_config(config: &ForwardPassPerfModelConfig) -> Result<(),
         || !is_digest(&selection.sha256)
     {
         return Err(invalid(
-            "requires explicit op_level/SILICON, fallback deny, shared layer and correction disabled, a single prefill or decode worker, PP1/DP1/CP1/DCP1, no speculation or vision encoder, a literal backend version, and an absolute path with a lowercase SHA-256 pin",
+            "requires explicit op_level/SILICON, fallback deny, shared layer and correction disabled, PP1/DP1/CP1/DCP1, no speculation or vision encoder, a literal backend version, and an absolute path with a lowercase SHA-256 pin",
         ));
     }
     Ok(())
@@ -126,12 +136,24 @@ impl ExecutionProfileSelection {
         let profile: ExecutionProfile = serde_json::from_slice(&bytes).map_err(invalid)?;
         if profile.schema_version != 1
             || profile.basis.schema_version != crate::ENGINE_SPEC_SCHEMA_VERSION
-            || profile.worker_type == ForwardPassWorkerType::Aggregated
             || profile.ops.is_empty()
             || profile.retained_files.is_empty()
         {
             return Err(invalid(
                 "unsupported profile schema, phase or empty graph/bundle",
+            ));
+        }
+        if profile.worker_type == ForwardPassWorkerType::Aggregated {
+            if profile.generation_ops.as_ref().is_none_or(Vec::is_empty)
+                || profile.mixed_composition.is_none()
+            {
+                return Err(invalid(
+                    "aggregated profiles require generation_ops and mixed_composition",
+                ));
+            }
+        } else if profile.generation_ops.is_some() || profile.mixed_composition.is_some() {
+            return Err(invalid(
+                "generation_ops and mixed_composition require an aggregated profile",
             ));
         }
         Ok(profile)
@@ -182,21 +204,13 @@ impl ExecutionProfileSelection {
                 "baseline requires op_level SILICON with primary sources only",
             ));
         }
-        let context = profile.worker_type == ForwardPassWorkerType::Prefill;
-        let baseline = if context {
-            &spec.context_ops
-        } else {
-            &spec.generation_ops
-        };
-        let weights = |ops: &[Op]| ops.iter().map(Op::weight_bytes).sum::<f64>();
-        if !weights(&profile.ops).is_finite()
-            || (weights(baseline) - weights(&profile.ops)).abs() > 1.0
-        {
-            return Err(invalid(
-                "replacement graph must preserve the baseline resident weights",
-            ));
+        let context = profile.worker_type != ForwardPassWorkerType::Decode;
+        validate_replacement(&profile.ops, &spec, context)?;
+        if let Some(generation) = &profile.generation_ops {
+            validate_replacement(generation, &spec, false)?;
+            validate_mixed_graph(&profile.ops, true)?;
+            validate_mixed_graph(generation, false)?;
         }
-        validate_ops(&profile.ops, &spec, context)?;
         let snapshot = tempfile::Builder::new()
             .prefix("aisimulate-op-profile-")
             .tempdir()
@@ -249,14 +263,19 @@ impl ExecutionProfileSelection {
         }
         if context {
             spec.context_ops = profile.ops;
-            spec.generation_ops.clear();
+            spec.generation_ops = profile.generation_ops.unwrap_or_default();
         } else {
             spec.generation_ops = profile.ops;
             spec.context_ops.clear();
         }
         spec.engine.extra.insert(
             "execution_profile_phase".into(),
-            if context { "prefill" } else { "decode" }.into(),
+            match profile.worker_type {
+                ForwardPassWorkerType::Prefill => "prefill",
+                ForwardPassWorkerType::Decode => "decode",
+                ForwardPassWorkerType::Aggregated => "aggregated",
+            }
+            .into(),
         );
         spec.engine
             .extra
@@ -264,6 +283,56 @@ impl ExecutionProfileSelection {
         spec.engine.systems_path = Some(snapshot.path().to_path_buf());
         Ok((spec, snapshot))
     }
+}
+
+fn validate_replacement(ops: &[Op], spec: &EngineSpec, context: bool) -> Result<(), AicError> {
+    let baseline = if context {
+        &spec.context_ops
+    } else {
+        &spec.generation_ops
+    };
+    let weights = |ops: &[Op]| ops.iter().map(Op::weight_bytes).sum::<f64>();
+    if !weights(ops).is_finite() || (weights(baseline) - weights(ops)).abs() > 1.0 {
+        return Err(invalid(
+            "replacement graph must preserve the baseline resident weights",
+        ));
+    }
+    validate_ops(ops, spec, context)
+}
+
+fn validate_mixed_graph(ops: &[Op], context: bool) -> Result<(), AicError> {
+    let attention = if context {
+        Op::is_context_attention
+    } else {
+        Op::is_generation_attention
+    };
+    if !ops.iter().any(attention) {
+        return Err(invalid(
+            "mixed composition requires top-level phase attention operations",
+        ));
+    }
+    fn hidden_attention(ops: &[Op]) -> bool {
+        ops.iter().any(|op| {
+            op.is_context_attention()
+                || op.is_generation_attention()
+                || match op {
+                    Op::Overlap(group) => {
+                        hidden_attention(&group.group_a) || hidden_attention(&group.group_b)
+                    }
+                    _ => false,
+                }
+        })
+    }
+    for op in ops {
+        if let Op::Overlap(group) = op {
+            if hidden_attention(&group.group_a) || hidden_attention(&group.group_b) {
+                return Err(invalid(
+                    "mixed composition cannot hide attention inside an overlap group",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Path of the first field where the actual compiled spec differs from the
