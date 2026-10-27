@@ -348,7 +348,16 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
         )
     exit_stack.enter_context(set_current_vllm_config(vllm_config))
 
-    outside_loop_count = 1 if gemm_type in ("fp8_block", "nvfp4") else 6
+    outside_loop_count = 1 if gemm_type == "nvfp4" else 6
+    if gemm_type == "fp8_block":
+        # FP8 stores one byte per weight. Target a two-L2 working set to
+        # reduce cache reuse, including for matrices slightly larger than L2.
+        weight_bytes = n * k
+        target_bytes = 2 * torch.cuda.get_device_properties(device).L2_cache_size
+        # Retain the six-copy cap used by the BF16/per-tensor FP8 paths here
+        # and collector/sglang/collect_gemm.py to bound setup and graph size.
+        # Very small matrices may not reach the target; cold reads are not guaranteed.
+        outside_loop_count = max(1, min(6, (target_bytes + weight_bytes - 1) // weight_bytes))
     op_list = []
     for i in range(outside_loop_count):
         op_list.append(create_gemm())

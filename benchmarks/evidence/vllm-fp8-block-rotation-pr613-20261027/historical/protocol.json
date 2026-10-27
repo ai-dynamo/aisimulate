@@ -1,0 +1,76 @@
+{
+  "created_utc": "2026-10-27T16:22:27.874832+00:00",
+  "purpose": "Follow-up mechanism evidence for PR; not replacement for frozen full-forward accuracy result",
+  "model": "Qwen/Qwen3-4B-FP8",
+  "revision": "96b30dc13593a244a5e59e84687309f53c375cfa",
+  "backend": "vllm 0.24.0",
+  "hardware": "H100 NVL",
+  "reference": "Same complete CUDA graph, real model checkpoint and prefilled KV, 5 profiled replays after unprofiled timing",
+  "model_cases": [
+    [
+      1,
+      128
+    ],
+    [
+      16,
+      512
+    ]
+  ],
+  "replicates": 3,
+  "op_shapes": [
+    [
+      1,
+      6144,
+      2560
+    ],
+    [
+      1,
+      2560,
+      4096
+    ],
+    [
+      1,
+      19456,
+      2560
+    ],
+    [
+      1,
+      2560,
+      9728
+    ],
+    [
+      16,
+      6144,
+      2560
+    ],
+    [
+      16,
+      2560,
+      4096
+    ],
+    [
+      16,
+      19456,
+      2560
+    ],
+    [
+      16,
+      2560,
+      9728
+    ]
+  ],
+  "copies": [
+    1,
+    2,
+    3,
+    4,
+    6,
+    8,
+    12,
+    24
+  ],
+  "negative_control": "FP8 M16 N12288 K8192 (96MiB weights, larger than L2), copies1/2/4",
+  "measurement": "Common 72 GEMM operations per captured graph; 5 blocks of 50 timed replays, 25 warmups; profile5 graph replays separately",
+  "comparison": "Exact CUDA GEMM kernel-name match between model graph and isolated graph; report per-shape kernel durations and whole-op rotation curve; no prediction recalibration",
+  "limitation": "CUPTI timing is diagnostic; both sides profiled with same method. No L2 hardware counters available from installed ncu."
+}
