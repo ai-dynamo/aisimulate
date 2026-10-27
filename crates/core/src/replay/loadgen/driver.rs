@@ -3,8 +3,9 @@
 
 // Live warmup and the continuous-profile release rules are modified native
 // re-implementations of NVIDIA AIPerf's Apache-2.0 agentic_replay.py,
-// branch_orchestrator.py and loop_scheduler.py at SemiAnalysisAI/aiperf commit
-// 754356e9a39acc6cc6afb242d123bb57c3fb6f75; see THIRD_PARTY_NOTICES.md.
+// branch_orchestrator.py, replay_dependencies.py and loop_scheduler.py at
+// SemiAnalysisAI/aiperf commit 754356e9a39acc6cc6afb242d123bb57c3fb6f75; see
+// THIRD_PARTY_NOTICES.md.
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -5968,6 +5969,72 @@ mod tests {
                 .map(|shift| (shift.shifted_by_ms, shift.timer_count))
                 .collect::<Vec<_>>(),
             vec![(20_000.0, 1), (10_000.0, 2)]
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::barrier_tree(AgenticDependencyRelation::ReplayBarrier, true)]
+    #[case::barrier_global(AgenticDependencyRelation::ReplayBarrier, false)]
+    #[case::join_tree(AgenticDependencyRelation::Join, true)]
+    #[case::join_global(AgenticDependencyRelation::Join, false)]
+    fn profile_idle_guards_advance_past_blocked_deadlines(
+        #[case] gate: AgenticDependencyRelation,
+        #[case] tree_guard: bool,
+    ) {
+        use AgenticDependencyRelation::{Join, ReplayBarrier, Sequence, Spawn};
+        use AgenticDependencyTrigger::Completion;
+        // r1's own delay ends before w1's timer, but r1 also waits for w1.
+        // AIPerf arms r1's timer and checks the barrier or join when it fires.
+        let mut w0 = profile_row("w0", "play", 1_000.0);
+        w0.session_id = "session-chain".into();
+        let start = if gate == Join { Spawn } else { ReplayBarrier };
+        w0.dependencies = vec![dependency("r0", Completion, 0.0, start)];
+        let mut w1 = profile_row("w1", "play", 40_000.0);
+        w1.session_id = "session-chain".into();
+        w1.dependencies = vec![dependency("w0", Completion, 38_000.0, Sequence)];
+        let mut r1 = profile_row("r1", "play", 41_000.0);
+        r1.dependencies = vec![
+            dependency("r0", Completion, 19_000.0, Sequence),
+            dependency("w1", Completion, 0.0, gate),
+        ];
+        let cap = |capped: bool| if capped { 10.0 } else { 1_000.0 };
+        let mut driver = cut_driver(
+            vec![profile_row("r0", "play", 0.0), w0, w1, r1],
+            0.0,
+            Some(AgenticProfileOptions {
+                tree_idle_cap_seconds: cap(tree_guard),
+                global_idle_cap_seconds: cap(!tree_guard),
+                ..uncapped_profile()
+            }),
+        );
+        let r0 = dispatch_only(&mut driver, 0.0, "r0");
+        complete(&mut driver, r0, 1_000.0);
+        let w0 = dispatch_only(&mut driver, 1_000.0, "w0");
+        complete(&mut driver, w0, 2_000.0);
+        // Idle from 2 s with r1's deadline at 20 s and w1's timer at 40 s.
+        // The first same-time pass lands on r1, which cannot dispatch, so the
+        // guard is due again at once and the second pass lands on w1.
+        assert!(driver.advance_agentic_profile(12_000.0).unwrap());
+        assert_eq!(driver.next_ready_time_ms(), Some(12_000.0));
+        assert!(driver.advance_agentic_profile(12_000.0).unwrap());
+        let w1 = dispatch_only(&mut driver, 12_000.0, "w1");
+        complete(&mut driver, w1, 13_000.0);
+        dispatch_only(&mut driver, 13_000.0, "r1");
+        let shifts = driver.agentic_profile_report().unwrap().idle_shifts;
+        assert_eq!(
+            shifts
+                .iter()
+                .map(|shift| (
+                    shift.at_ms,
+                    shift.shifted_by_ms,
+                    shift.timer_count,
+                    shift.play_id.is_some()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (12_000.0, 8_000.0, 2, tree_guard),
+                (12_000.0, 20_000.0, 1, tree_guard)
+            ]
         );
     }
 

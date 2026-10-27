@@ -66,10 +66,13 @@ authored offsets.
 Idle guards advance pending workload timers after a tree or the whole client
 workload has no outstanding requests for its configured cap. Requests queued
 for placement and requests between prefill and decode still count as outstanding.
-Pending timers include the elapsed part of a joining turn's own delay while its
-children are still pending. The timer shift moves every pending timer by the
-same amount, preserving relative delays and dependencies. It does not move
-engine completions, KV transfers, or server cleanup events.
+Pending timers include a blocked request's own delay once its predecessor
+completes, such as a joining turn's delay while its children are pending or a
+turn's think time while its replay barrier is pending. The timer shift moves
+every pending timer by the same amount, preserving relative delays and
+dependencies. It does not move engine completions, KV transfers, or server
+cleanup events. When the earliest shifted timer belongs to a request that is
+still blocked, the guard shifts again at the same time.
 
 At the admission deadline, no new workload request or replacement play is
 issued. Previously submitted requests may complete during the response grace
@@ -168,3 +171,8 @@ Known release differences:
   measured from its parent request's recorded end, while the fork measures it
   from the earliest subagent spawned with it. An inner subagent chain without a
   detected fork is anchored to the play root instead of the subagent's spawn.
+- The fork's per-tree guard shifts again only when its earliest timer lands on
+  a request held by a replay barrier. When it lands on a joining turn whose
+  children still wait on later timers, the fork leaves that tree idle until its
+  next timer fires. AISimulate shifts again in both cases, as the fork's global
+  guard does.
