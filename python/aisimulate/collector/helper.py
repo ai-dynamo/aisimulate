@@ -587,6 +587,81 @@ def _flashinfer_tuner_budget(tuner, budget: FlashInferTuneBudget | None):
             setattr(tuner, attr, value)
 
 
+_FLASHINFER_TUNER_DIAG_MARKERS = (
+    "failed to get valid tactics",
+    "no valid tactic",
+    "fallback",
+    "oom",
+)
+
+
+def _flashinfer_loggers() -> list[logging.Logger]:
+    """The loggers FlashInfer's autotuner writes to. ``flashinfer.jit.core.logger`` is a
+    ``FlashInferJITLogger`` built directly (not via ``logging.getLogger``), so it has to be
+    imported; the stdlib name is included for builds that register it normally."""
+    loggers: list[logging.Logger] = []
+    try:
+        from flashinfer.jit.core import logger as fi_logger
+
+        loggers.append(fi_logger)
+    except Exception:  # optional dependency: any import failure means "absent"
+        pass
+    std = logging.getLogger("flashinfer")
+    if all(lg is not std for lg in loggers):
+        loggers.append(std)
+    return loggers
+
+
+class _LogMessageCapture(logging.Handler):
+    def __init__(self):
+        super().__init__(logging.DEBUG)
+        self.messages: list[str] = []
+
+    def emit(self, record):
+        try:
+            self.messages.append(record.getMessage())
+        except Exception:  # diagnostics must never break the tuning pass
+            pass
+
+
+@contextmanager
+def _flashinfer_tuner_log_capture():
+    """Collect FlashInfer's autotuner log at DEBUG for the block without changing what it
+    prints: the loggers' pre-existing handlers are pinned at the old effective threshold
+    while the logger level is lowered, and everything is restored afterwards."""
+    handler = _LogMessageCapture()
+    saved: list[tuple[logging.Logger, int, list[tuple[logging.Handler, int]]]] = []
+    for lg in _flashinfer_loggers():
+        effective = lg.getEffectiveLevel()
+        pinned = []
+        for existing in lg.handlers:
+            pinned.append((existing, existing.level))
+            existing.setLevel(max(existing.level, effective))
+        saved.append((lg, lg.level, pinned))
+        lg.addHandler(handler)
+        lg.setLevel(logging.DEBUG)
+    try:
+        yield handler.messages
+    finally:
+        for lg, level, pinned in saved:
+            lg.removeHandler(handler)
+            lg.setLevel(level)
+            for existing, old_level in pinned:
+                existing.setLevel(old_level)
+
+
+def _flashinfer_tuner_diagnostics(messages: Iterable[str]) -> list[str]:
+    """Autotuner messages that explain a tactic *not* being profiled: the per-runner
+    ``get_valid_tactics`` failure (``core.py`` swallows the C++ exception and returns ``[]``
+    at DEBUG), empty tactic sets, fallback selection and OOM."""
+    out = []
+    for msg in messages:
+        low = msg.lower()
+        if any(marker in low for marker in _FLASHINFER_TUNER_DIAG_MARKERS):
+            out.append(" ".join(msg.split())[:400])
+    return out
+
+
 def _flashinfer_autotune_api():
     """FlashInfer's ``autotune`` context manager and ``AutoTuner`` class, or ``(None, None)``."""
     try:
@@ -619,7 +694,10 @@ def flashinfer_autotuned(num_tokens: int, tune_fn: Callable[[], None], *, label:
     The tuning pass runs under :func:`flashinfer_autotune_budget` (default 1 warm-up, 3
     timed launches, 1 ms delay per tactic instead of FlashInfer's 3 / 10 / 5 ms; see
     :class:`FlashInferTuneBudget`), restored afterwards. The log line records the pass's
-    wall time and budget so a probe can read the tuning cost per token point.
+    wall time and budget so a probe can read the tuning cost per token point. FlashInfer's
+    own autotuner log is captured at DEBUG during the pass and its fallback / failure
+    messages (an op whose ``get_valid_tactics`` raised is silently timed untuned) are
+    printed as a ``FlashInfer autotune WARNING`` line next to the case.
 
     Yields ``True`` when a tuning pass ran, ``False`` when FlashInfer is not importable or
     ``COLLECTOR_FLASHINFER_AUTOTUNE`` is off (then the body runs untouched and ``tune_fn``
@@ -636,8 +714,13 @@ def flashinfer_autotuned(num_tokens: int, tune_fn: Callable[[], None], *, label:
     buckets = (int(num_tokens),)
     started = time.perf_counter()
     tune_error: BaseException | None = None
+    tuner_log: list[str] = []
     try:
-        with _flashinfer_tuner_budget(tuner, budget), autotune(True, tuning_buckets=buckets):
+        with (
+            _flashinfer_tuner_log_capture() as tuner_log,
+            _flashinfer_tuner_budget(tuner, budget),
+            autotune(True, tuning_buckets=buckets),
+        ):
             tune_fn()
     except Exception as exc:  # re-raised below, after the context probe
         tune_error = exc
@@ -664,6 +747,18 @@ def flashinfer_autotuned(num_tokens: int, tune_fn: Callable[[], None], *, label:
         f"FlashInfer autotune: {outcome} at num_tokens={num_tokens} {label}".rstrip()
         + f" [{elapsed:.2f}s, {budget_desc}]"
     )
+    # An op the tuner could not enumerate tactics for is timed on the untuned fallback
+    # with no visible trace (b300 sglang 0.5.21 Nemotron-3-Nano nvfp4 relu2 shape,
+    # 2026-10-28: unchanged against the untuned table while every other shape moved).
+    # Surface FlashInfer's own DEBUG explanation next to the case.
+    diagnostics = _flashinfer_tuner_diagnostics(tuner_log)
+    if diagnostics:
+        shown = "; ".join(diagnostics[:4])
+        more = f" (+{len(diagnostics) - 4} more)" if len(diagnostics) > 4 else ""
+        print(
+            f"FlashInfer autotune WARNING at num_tokens={num_tokens} {label}".rstrip()
+            + f": {len(diagnostics)} autotuner fallback/failure messages: {shown}{more}"
+        )
     with autotune(False, tuning_buckets=buckets):
         yield True
 

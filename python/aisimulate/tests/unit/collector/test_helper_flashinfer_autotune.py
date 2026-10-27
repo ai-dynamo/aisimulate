@@ -104,6 +104,7 @@ def test_tunes_once_at_the_exact_token_count_then_times_under_lookup_only(fake_f
     out = capsys.readouterr().out
     assert "FlashInfer autotune: 1 new tactic entries at num_tokens=320 vllm_trtllm_nvfp4 [" in out
     assert "s, warmup=1 repeat=3 delay_us=1000]" in out
+    assert "WARNING" not in out
 
 
 def test_budget_env_overrides_or_keeps_flashinfer_defaults(fake_flashinfer, monkeypatch, capsys):
@@ -249,3 +250,49 @@ def test_cuda_context_error_probe_reports_a_dead_context(monkeypatch):
     fake_torch = types.SimpleNamespace(cuda=_HealthyCuda, ones=lambda *a, **k: _Tensor())
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     assert helper.cuda_context_error(0) is None
+
+
+def test_autotuner_fallback_messages_are_surfaced_and_logging_is_restored(fake_flashinfer, capsys):
+    """b300 sglang 0.5.21 (2026-10-28): the Nemotron-3-Nano nvfp4 relu2 shape came back
+    identical to the untuned table while every other shape moved -- FlashInfer's
+    ``MoERunner.get_valid_tactics`` swallows the C++ exception, logs it at DEBUG and
+    returns ``[]``, so the op is timed on the fallback with no visible trace. The tuning
+    pass captures that log and prints the explanation next to the case."""
+    import logging
+
+    fi_logger = logging.getLogger("flashinfer")
+    stream = logging.StreamHandler()
+    fi_logger.addHandler(stream)
+    try:
+        assert fi_logger.level == logging.NOTSET
+        seen_levels = []
+
+        def tune_fn():
+            seen_levels.append((fi_logger.level, stream.level))
+            fi_logger.debug(
+                "[Autotuner]: Failed to get valid tactics for (E2m1, 6, 2688, 1920, 128, Relu2). "
+                "Error occurred: No kernel found for the given options: mActType 6 tile 192"
+            )
+            fi_logger.debug("[Autotuner]: profiling runner MoERunner tactic (128, 3)")
+            fi_logger.debug("[AutoTuner]: Using fallback tactic for trtllm_fp4_block_scale_moe")
+
+        with flashinfer_autotuned(768, tune_fn, label="sglang_flashinfer_trtllm_moe"):
+            pass
+
+        # Captured at DEBUG, while the pre-existing stream handler was pinned at the old
+        # effective threshold so FlashInfer's stderr output did not change.
+        assert seen_levels == [(logging.DEBUG, logging.WARNING)]
+        assert fi_logger.level == logging.NOTSET
+        assert stream.level == logging.NOTSET
+        assert all(h is not fi_logger for h in fi_logger.handlers) and stream in fi_logger.handlers
+    finally:
+        fi_logger.removeHandler(stream)
+
+    out = capsys.readouterr().out
+    assert "FlashInfer autotune: 0 new tactic entries at num_tokens=768 sglang_flashinfer_trtllm_moe [" in out
+    warning = [line for line in out.splitlines() if line.startswith("FlashInfer autotune WARNING")]
+    assert len(warning) == 1
+    assert "num_tokens=768 sglang_flashinfer_trtllm_moe: 2 autotuner fallback/failure messages" in warning[0]
+    assert "No kernel found for the given options: mActType 6 tile 192" in warning[0]
+    assert "Using fallback tactic" in warning[0]
+    assert "profiling runner" not in warning[0]
