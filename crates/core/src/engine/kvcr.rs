@@ -355,6 +355,8 @@ impl KvcrRegistry {
     /// Pulls into `target` that landed by `now`, in landing order, as
     /// `(pull id, landed at)`. Later landings stay queued for the next deadline.
     pub(crate) fn take_landed(&mut self, target: KvHintSource, now: f64) -> Vec<(u64, f64)> {
+        // TODO: Skip idle targets (no landed/moving/parked pulls): baseline hinted/G2-only was 1.17/1.23/1.18/1.98/3.17x at W=8/32/128/512/2048.
+        // Invalidate only on start/land and split FairTransfers by source; preserve CanonicalV1 bytes.
         self.advance(now);
         let taken: Vec<_> = self
             .landed

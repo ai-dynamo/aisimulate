@@ -13,6 +13,8 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
+use serde::{Deserialize, Serialize};
+
 use super::options::ForwardPassPerfOptions;
 use crate::AicError;
 
@@ -34,12 +36,17 @@ pub(crate) enum SampleInsertion<T> {
     Rejected,
 }
 
-#[derive(Clone, Debug)]
+/// State snapshots encode every field in declaration order; a layout change
+/// requires a `STATE_LAYOUT_VERSION` bump.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(serialize = "T: Serialize", deserialize = "T: Deserialize<'de>"))]
 pub(crate) struct BucketedSamples<T> {
     /// Ordered by bucket key: [`Self::observations`] (the order every refit
     /// consumes) and the choice among equally full buckets on eviction must
     /// not depend on a per-process hasher seed, or identical inputs fit
-    /// different models in different processes.
+    /// different models in different processes. Each bucket keeps its
+    /// within-bucket order, which eviction and refits consume.
+    #[serde(with = "crate::fpm::snapshot::codec::sorted_map")]
     pub(crate) buckets: BTreeMap<Vec<usize>, VecDeque<(Vec<f64>, T)>>,
     pub(crate) total_observations: usize,
     axis_min: Vec<f64>,
@@ -264,6 +271,83 @@ impl<T: Clone> BucketedSamples<T> {
             }
         }
         evicted
+    }
+}
+
+impl<T: Clone> BucketedSamples<T> {
+    /// Check a decoded snapshot against a store freshly configured from the
+    /// same canonical configuration. Every condition that later indexing,
+    /// eviction or refits assume is verified here instead of panicking.
+    pub(crate) fn validate_restored(
+        &self,
+        fresh: &Self,
+        mut sample: impl FnMut(&[f64], &T) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if self.buckets_per_axis != fresh.buckets_per_axis
+            || self.max_observations != fresh.max_observations
+            || self.fixed_bounds != fresh.fixed_bounds
+        {
+            return Err("sample grid differs from the configured grid".into());
+        }
+        let dims = self.buckets_per_axis.len();
+        if self.axis_min.len() != dims || self.axis_max.len() != dims {
+            return Err("sample bounds do not match the grid dimension".into());
+        }
+        let same_bits = |a: &[f64], b: &[f64]| {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+        };
+        if self.fixed_bounds || self.total_observations == 0 {
+            // Fixed grids keep configured limits; an empty dynamic grid has
+            // never admitted a sample and retains its infinite sentinels.
+            if !same_bits(&self.axis_min, &fresh.axis_min)
+                || !same_bits(&self.axis_max, &fresh.axis_max)
+            {
+                return Err("sample bounds differ from the configured or empty bounds".into());
+            }
+        } else if self
+            .axis_min
+            .iter()
+            .zip(&self.axis_max)
+            .any(|(lo, hi)| !lo.is_finite() || !hi.is_finite() || lo > hi)
+        {
+            return Err("dynamic sample bounds must be finite and ordered".into());
+        }
+        let mut total = 0usize;
+        for (key, bucket) in &self.buckets {
+            if bucket.is_empty() {
+                return Err("empty sample bucket".into());
+            }
+            if key.len() != dims
+                || key
+                    .iter()
+                    .zip(&self.buckets_per_axis)
+                    .any(|(index, bins)| index >= bins)
+            {
+                return Err("sample bucket key is outside the grid".into());
+            }
+            for (x, value) in bucket {
+                if x.len() != dims || x.iter().any(|v| !v.is_finite()) {
+                    return Err("retained sample coordinates are invalid".into());
+                }
+                if x.iter()
+                    .enumerate()
+                    .any(|(axis, v)| *v < self.axis_min[axis] || *v > self.axis_max[axis])
+                {
+                    return Err("retained sample lies outside the sample bounds".into());
+                }
+                if self.bucket_key(x) != *key {
+                    return Err("retained sample is stored under the wrong bucket key".into());
+                }
+                sample(x, value)?;
+            }
+            total = total
+                .checked_add(bucket.len())
+                .ok_or("retained sample count overflows")?;
+        }
+        if total != self.total_observations || total > self.max_observations {
+            return Err("retained sample count does not match the store total or budget".into());
+        }
+        Ok(())
     }
 }
 
