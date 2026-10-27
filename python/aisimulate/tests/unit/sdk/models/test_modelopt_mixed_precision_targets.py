@@ -13,13 +13,16 @@ linear module without an entry unquantized. An ancestor key quantizes nothing.
 nvidia/GLM-5.3-NVFP4 lists only its three dense FP8 MLP layers and the NVFP4
 routed experts, so its attention, indexer and shared experts run BF16.
 
-Fixtures are synthetic: the packaged GLM-5.2-NVFP4 / DeepSeek-V3 geometry
-with a generated ModelOpt header shaped like that export. No upstream
-checkpoint bytes are copied.
+Synthetic fixtures use the packaged GLM-5.2-NVFP4 / DeepSeek-V3 geometry
+with a generated ModelOpt header shaped like that export. The packaged
+nvidia/GLM-5.3-NVFP4 itself is an unmodified copy of the upstream export at
+e3b8f9f2 (model_configs/GLM53_NVFP4_PROVENANCE.md); the graph and SILICON
+tests run on both.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,6 +45,12 @@ pytestmark = pytest.mark.unit
 _CONFIGS = Path(aisimulate_core.__file__).parent / "model_configs"
 _GLM_BASE = "nvidia--GLM-5.2-NVFP4"
 _DSV3_BASE = "deepseek-ai--DeepSeek-V3"
+_PACKAGED = "nvidia/GLM-5.3-NVFP4"
+# nvidia/GLM-5.3-NVFP4@e3b8f9f2fad29727dfa95e766c5cac18ea1414bf, byte for byte.
+_PACKAGED_SHA256 = {
+    "config": "b0b6b9ab922a82e3688bc39a4117bc443e106fcf88969ef48b3627778f4bdf7b",
+    "hf_quant_config": "13799d4fed353c20dde2264fbdd7f68a780b514782f8d80bba96ac5e44aa9bba",
+}
 
 GLM_LAYERS = 78
 DENSE_LAYERS = 3
@@ -137,6 +146,12 @@ def _write_export(directory: Path, base: str, layers: dict, **kwargs) -> str:
 @pytest.fixture(scope="module")
 def glm53(tmp_path_factory):
     return _write_export(tmp_path_factory.mktemp("glm53") / "export", _GLM_BASE, _glm53_layers())
+
+
+@pytest.fixture(params=["synthetic", "packaged"])
+def glm53_export(request, glm53):
+    """The synthetic export and the packaged upstream copy resolve alike."""
+    return glm53 if request.param == "synthetic" else _PACKAGED
 
 
 def _native(model, phase):
@@ -375,8 +390,8 @@ def test_coarse_inference_of_packaged_mixed_precision_bundles_is_unchanged(path,
 
 @pytest.mark.parametrize("backend", ["sglang", "vllm", "trtllm"])
 @pytest.mark.parametrize("phase", ["context", "generation"])
-def test_native_graph_prices_unlisted_modules_bf16(glm53, backend, phase):
-    model = _build(glm53, backend)
+def test_native_graph_prices_unlisted_modules_bf16(glm53_export, backend, phase):
+    model = _build(glm53_export, backend)
     assert (model.config.gemm_quant_mode, model.config.moe_quant_mode, model.config.kvcache_quant_mode) == (
         FP8_STATIC,
         common.MoEQuantMode.nvfp4,
@@ -401,8 +416,8 @@ def test_native_graph_prices_unlisted_modules_bf16(glm53, backend, phase):
 
 
 @pytest.mark.parametrize("phase", ["context", "generation"])
-def test_explicit_gemm_mode_reaches_listed_modules_only(glm53, phase):
-    model = _build(glm53, "sglang", gemm_quant_mode=NVFP4, moe_quant_mode=common.MoEQuantMode.nvfp4)
+def test_explicit_gemm_mode_reaches_listed_modules_only(glm53_export, phase):
+    model = _build(glm53_export, "sglang", gemm_quant_mode=NVFP4, moe_quant_mode=common.MoEQuantMode.nvfp4)
     native = _native(model, phase)
     assert native[f"{phase}_attention"][1]["gemm_quant_mode"] == "bfloat16"
     gemms = _gemm_modes(native)
@@ -441,9 +456,9 @@ def _large_ep(path, backend):
 
 @pytest.mark.parametrize("backend", list(_LARGE_EP))
 @pytest.mark.parametrize("phase", ["context", "generation"])
-def test_large_ep_shared_experts_follow_the_listing(glm53, backend, phase):
+def test_large_ep_shared_experts_follow_the_listing(glm53_export, backend, phase):
     shared = f"{phase}_{_LARGE_EP[backend][2]}"
-    assert _gemm_modes(_native(_large_ep(glm53, backend), phase))[shared] == "bfloat16"
+    assert _gemm_modes(_native(_large_ep(glm53_export, backend), phase))[shared] == "bfloat16"
     # Exclusion-style GLM-5.2-NVFP4 keeps its transcribed legacy asymmetry:
     # BF16 on trtllm, the model-wide nvfp4 lane elsewhere.
     legacy = _gemm_modes(_native(_large_ep("nvidia/GLM-5.2-NVFP4", backend), phase))[shared]
@@ -499,15 +514,40 @@ class TestDeepSeekFamily:
             _build(path, "sglang", tp_size=8, moe_ep_size=8)
 
 
+class TestPackagedExport:
+    """The packaged nvidia/GLM-5.3-NVFP4 is the upstream targets-only export."""
+
+    @pytest.mark.parametrize("suffix", list(_PACKAGED_SHA256))
+    def test_bundle_is_the_pinned_upstream_bytes(self, suffix):
+        data = (_CONFIGS / f"nvidia--GLM-5.3-NVFP4_{suffix}.json").read_bytes()
+        assert hashlib.sha256(data).hexdigest() == _PACKAGED_SHA256[suffix]
+
+    def test_bundle_resolves_the_listed_modes(self):
+        info = get_model_config_from_model_path(_PACKAGED)
+        raw = info["raw_config"]
+        modes = H._infer_quant_modes_from_raw_config(raw, info["architecture"])
+        assert (modes["gemm_quant_mode"], modes["moe_quant_mode"], modes["kvcache_quant_mode"]) == (
+            FP8_STATIC,
+            common.MoEQuantMode.nvfp4,
+            common.KVCacheQuantMode.fp8,
+        )
+        assert len(H.modelopt_mixed_precision_targets(raw)) == 87
+        assert H.attention_projection_exclusions(raw) == ALL_GROUPS
+        assert H.modelopt_shared_experts_unlisted(raw) is True
+        assert _dense_mlp_groups(raw, GLM_LAYERS, FP8_STATIC) == [(DENSE_LAYERS, FP8_STATIC, FP8_STATIC)]
+        # The upstream config carries head_dim 64 (the rope width); it is read
+        # as is. For DSA it only feeds the activation-memory width (all
+        # backends); latency op keys and KV bytes per token are unaffected.
+        assert info["d"] == 64
+
+
 def test_packaged_targets_only_checkpoints_are_reviewed():
     """Every packaged checkpoint the targets-only rule reaches, by family.
 
     The changed resolvers run only for the DEEPSEEK/KIMIK25/DEEPSEEKV32
-    families, so none of these predictions move. The packaged
-    nvidia/GLM-5.3-NVFP4 is still a copy of the GLM-5.2-NVFP4 exclusion-style
-    export: bundling the upstream targets-only export waits on license
-    review (its model card names the NVIDIA Open Model Agreement and the
-    GLM-5.3 License). Replacing it adds it here.
+    families. nvidia/GLM-5.3-NVFP4 is the only member of those families in
+    scope, so the other predictions here do not move. A new member needs the
+    same review.
     """
     in_scope = {}
     for path in sorted(DefaultHFModels):
@@ -515,6 +555,7 @@ def test_packaged_targets_only_checkpoints_are_reviewed():
         if H.modelopt_mixed_precision_targets(info["raw_config"]) is not None:
             in_scope[path] = H._architecture_to_model_family(info["architecture"])
     assert in_scope == {
+        _PACKAGED: "DEEPSEEKV32",
         "nvidia/MiniMax-M3-NVFP4": "MINIMAXM3",
         "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4": "NEMOTRONH",
         "nvidia/Qwen3.6-27B-NVFP4": "QWEN35",
@@ -557,14 +598,14 @@ def _phase_attention(model):
 @pytest.mark.parametrize("layout", _SILICON_LAYOUTS, ids=lambda layout: "tp{}-moetp{}-ep{}".format(*layout))
 @pytest.mark.parametrize(("backend", "version"), _SILICON_RUNTIMES)
 @pytest.mark.parametrize("system", _SILICON_SYSTEMS)
-def test_packaged_silicon_covers_the_checkpoint_precision(glm53, system, backend, version, layout):
+def test_packaged_silicon_covers_the_checkpoint_precision(glm53_export, system, backend, version, layout):
     # Public contract: the canonical constructor with fallback denied. The
     # DSA rows exist for (fmha bf16, kv fp8, gemm bf16), which is what the
     # checkpoint runs; no new collection is needed.
     tp, moe_tp, moe_ep = layout
-    graph = _build(glm53, backend, tp_size=tp, moe_tp_size=moe_tp, moe_ep_size=moe_ep)
+    graph = _build(glm53_export, backend, tp_size=tp, moe_tp_size=moe_tp, moe_ep_size=moe_ep)
     assert _native(graph, "context")["context_attention"][1]["gemm_quant_mode"] == "bfloat16"
-    model = RustForwardPassPerfModel.best_available(_silicon(glm53, system, backend, version, layout))
+    model = RustForwardPassPerfModel.best_available(_silicon(glm53_export, system, backend, version, layout))
     try:
         for attention in _phase_attention(model):
             assert attention["source"] == "silicon"

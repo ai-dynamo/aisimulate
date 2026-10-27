@@ -2103,19 +2103,19 @@ class TestBundledModelConfigsOffline:
             # Z.AI publishes the FP8-block release under the plain name and the
             # BF16 weights under the -BF16 suffix (GLM-5.2 used the reverse
             # convention, and no zai-org/GLM-5.3-FP8 repository exists). The
-            # nvidia/GLM-5.3-NVFP4 bundle is not covered here: its ModelOpt
-            # MIXED_PRECISION export marks the BF16 attention and shared
-            # experts only by omission, which the exclusion resolver does not
-            # read yet, so that bundle still carries the GLM-5.2-NVFP4 layout.
+            # NVIDIA ModelOpt MIXED_PRECISION export lists FP8 dense layers 0-2
+            # and NVFP4 routed experts; its per-module modes are pinned in
+            # test_modelopt_mixed_precision_targets.py.
             # The FP8 checkpoint declares no KV scheme; its fp8 KV mode is the
             # backend default for fp8_block, not a checkpoint fact, so it is
             # not asserted here.
             ("zai-org/GLM-5.3", "fp8_block", "fp8_block", None),
             ("zai-org/GLM-5.3-BF16", "bfloat16", "bfloat16", "bfloat16"),
+            ("nvidia/GLM-5.3-NVFP4", "fp8_static", "nvfp4", "fp8"),
         ],
     )
     def test_glm53_bundles_resolve_checkpoint_quant_modes(self, monkeypatch, model_path, gemm, moe, kv):
-        """The zai-org GLM-5.3 bundles must be the real checkpoint configs, not GLM-5.2 copies."""
+        """The GLM-5.3 bundles must be the real checkpoint configs, not GLM-5.2 copies."""
         import aisimulate.sdk.utils as sdk_utils
 
         def _no_network(*a, **k):
