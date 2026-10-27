@@ -100,6 +100,9 @@ execution_profile:
   timing_scope: model_step_cuda
 ```
 
+The `method` field accepts `eagle3` or `mtp`. Both use the same measured-round
+timing path and retain the recorded method in the exact cell identity.
+
 The initial identity contract permits vLLM pure TP with DP1/PP1/CP1 and 1–5
 draft tokens. Acceptance length belongs to replay progress, not this timing
 selector. Omitting `execution_profile` preserves existing AR profile JSON and
