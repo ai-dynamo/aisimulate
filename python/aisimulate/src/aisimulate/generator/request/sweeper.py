@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass, replace
 from typing import Any
 
+from ...config.engine import resolve_block_size
 from ..context_parallel import ContextParallelUnsupportedError, context_parallel_params
 from .schema import (
     BackendSpec,
@@ -152,7 +153,7 @@ def _role_sizing(
         path=f"candidate.config.{role}_max_num_batched_tokens",
     )
     tokens_per_block = _positive_int(
-        config.get(f"{role}_block_size"),
+        resolve_block_size(backend, config.get(f"{role}_block_size")),
         path=f"candidate.config.{role}_block_size",
     )
     memory_path = f"candidate.config.{role}_gpu_memory_utilization"

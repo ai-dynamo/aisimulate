@@ -144,6 +144,23 @@ def test_agg_candidate_lowers_evaluated_engine_limits_and_deployment_overrides()
     assert params["preserve_engine_limits"] is True
 
 
+@pytest.mark.parametrize(
+    ("backend", "expected_block_size"),
+    [("vllm", 64), ("sglang", 1), ("trtllm", 32)],
+)
+def test_agg_candidate_resolves_backend_default_block_size(
+    backend: str, expected_block_size: int
+) -> None:
+    request = from_sweeper_candidate(
+        _agg_candidate(backend=backend, agg_block_size=None),
+        workload={"isl": 4000, "osl": 1000},
+        model_facts=ModelFacts(is_moe=False, architecture="Qwen3ForCausalLM"),
+    )
+
+    params = to_legacy_params(request)
+    assert params["params"]["agg"]["tokens_per_block"] == expected_block_size
+
+
 def test_disagg_candidate_preserves_dynamo_adapter_configs_and_concurrency():
     request = from_sweeper_candidate(
         _disagg_candidate(prefill_context_length=64000, decode_context_length=128000),
