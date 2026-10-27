@@ -75,9 +75,12 @@ Pages publication belong to [CI accuracy](../ci/accuracy.md).
 
 The matrix probes every backend version that has bundled performance data.
 `aisimulate predict` and `aisimulate recommend` accept only the queryable
-versions of each GPU and backend: `current`, plus `previous` when configured in
-[`query_versions.yaml`](../../python/aisimulate/src/aisimulate_core/systems/query_versions.yaml),
-and `next` when a newer data-backed version is available. A `PASS` row at
+versions of each GPU and backend, defined in
+[`query_versions.yaml`](../../python/aisimulate/src/aisimulate_core/systems/query_versions.yaml):
+`current` (the newest completed full collection), `previous` (the full
+collection it replaced, when configured) and `next` (the in-development
+version: the highest version newer than `current` with any measurements
+landed, or `current` itself when nothing newer has data). A `PASS` row at
 any other version is SDK coverage only; the CLI rejects it with an error that
 names the accepted versions. To run the same model, GPU and backend from the
 CLI, set `engine.backend_version: current` or a version the error names.

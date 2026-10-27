@@ -222,6 +222,11 @@ def _load_query_slots_doc(systems_paths: tuple[str, ...]) -> dict | None:
 def get_version_slots(system: str, backend: str, systems_paths: str | list[str] | None = None) -> dict[str, str] | None:
     """Resolved slots for (system, backend): {'current': v[, 'previous': v][, 'next': v]}.
 
+    Defaults-governed systems always carry 'next': the fleet's highest
+    data-backed version newer than current, or current itself when nothing
+    newer has data. Override-governed systems (frozen baselines) carry no
+    'next'.
+
     None when the slots file is absent (gate off) or the combination has no
     authored entry (e.g. a framework never maintained on that system).
     """
@@ -272,8 +277,10 @@ def get_version_slots(system: str, backend: str, systems_paths: str | list[str] 
             name for name, per_backend in (doc.get("overrides") or {}).items() if (per_backend or {}).get(backend)
         )
         nxt = _derive_fleet_next(tuple(systems_paths), backend, slots["current"], override_systems)
-        if nxt is not None:
-            slots["next"] = nxt
+        # next is the in-development version. When no version newer than
+        # current has data anywhere on the fleet, there is nothing in
+        # development and next resolves to current (query_versions.yaml).
+        slots["next"] = nxt if nxt is not None else slots["current"]
     return slots
 
 

@@ -5,11 +5,12 @@
 
 Each (system, framework) exposes at most three queryable versions:
 authored current/previous plus a fleet-derived next (highest data-backed
-version newer than current; override systems are frozen baselines with no
-next). The literal aliases current/previous/next resolve anywhere a version is
-requested; anything else fails loudly unless the caller (a test fixture
-pinning data coordinates) passes allow_unlisted_version=True. Absent slots
-file = gate off (synthetic/external trees unchanged).
+version newer than current, or current itself when nothing newer has data;
+override systems are frozen baselines with no next). The literal aliases
+current/previous/next resolve anywhere a version is requested; anything else
+fails loudly unless the caller (a test fixture pinning data coordinates)
+passes allow_unlisted_version=True. Absent slots file = gate off
+(synthetic/external trees unchanged).
 """
 
 import os
@@ -149,3 +150,18 @@ def test_supported_databases_enumerate_slots(systems_root):
 
 def test_latest_is_current_not_dev(systems_root):
     assert pdb.get_latest_database_version("h200_sxm", "trtllm", systems_paths=systems_root) == "1.3.0rc20"
+
+
+def test_next_resolves_to_current_when_nothing_newer_has_data(systems_root):
+    """next is the in-development version; with no data newer than current
+    anywhere on the fleet there is nothing in development, so the alias
+    resolves to current instead of raising (query_versions.yaml rule)."""
+    root = systems_root
+    _touch_data(__import__("pathlib").Path(root), "h200_sxm", "gemm", "sglang", "0.5.14")
+    pdb._load_query_slots_doc.cache_clear()
+    pdb._derive_fleet_next.cache_clear()
+    assert pdb.get_version_slots("h200_sxm", "sglang", root) == {"current": "0.5.14", "next": "0.5.14"}
+    assert pdb.resolve_query_version("h200_sxm", "sglang", "next", root) == "0.5.14"
+    # Override baselines still expose no next.
+    assert "next" not in pdb.get_version_slots("a100_sxm", "trtllm", root)
+
