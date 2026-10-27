@@ -148,10 +148,6 @@ frameworks:
         default: "vllm/vllm-openai:v0.24.0@sha256:251eba5cc7c12fed0b75da22a9240e582b1c9e39f6fbc064f86781b963bd814f"
         cu129: "vllm/vllm-openai:v0.24.0-cu129@sha256:6b005c78cd17a1f0215f31e95d183833f4dfd6167c4473241b80d1c8843b91e8"
     families:
-      mamba2:
-        version: "0.31.0"
-        images:
-          default: "vllm/vllm-openai:v0.31.0@sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3"
       # Kimi-K3 KDA kernels exist on the official kimi-k3 preview image
       # (CUDA 13 build with fused_kda_decode + FlashKDA; setuptools-scm
       # version 0.1.dev19262+gb6bbf29dd) and upstreamed in v0.27.0 — but the

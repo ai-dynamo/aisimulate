@@ -188,10 +188,7 @@ families:
     op_files: [computescale_perf, scale_matrix_perf]
 
   - family: linear_attention
-    op_files: [gdn_perf]
-
-  - family: mamba2
-    op_files: [mamba2_perf]
+    op_files: [mamba2_perf, gdn_perf]
 
   # KDA gets its own family (not linear_attention) so its runtime can pin to
   # the sglang kimi-k3 branch image independently of the other SSM kernels.

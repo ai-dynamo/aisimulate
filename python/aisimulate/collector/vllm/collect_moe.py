@@ -220,14 +220,18 @@ def _load_checkpoint_quantization_config(model_name: str) -> dict:
     return quant
 
 
-def _modelopt_mixed_expert_prefix(quant: dict) -> str | None:
+def _modelopt_mixed_expert_prefix(quant: dict, model_type: str) -> str | None:
+    if model_type != "nemotron_h":
+        return None
     section = quant.get("quantization", quant)
     if (
         str(section.get("quant_algo", "")).upper() != "MIXED_PRECISION"
         and quant.get("quant_method") != "modelopt_mixed"
     ):
         return None
-    layers = section.get("quantized_layers", {})
+    layers = section.get("quantized_layers")
+    if not isinstance(layers, dict) or not layers:
+        raise ValueError("Nemotron-H ModelOpt mixed collection requires complete quantized_layers metadata")
     experts = [
         (name.split(".experts.")[0] + ".experts", data.get("quant_algo"))
         for name, data in layers.items()
@@ -241,14 +245,22 @@ def _modelopt_mixed_expert_prefix(quant: dict) -> str | None:
 def _uses_modelopt_nvfp4_checkpoint(model_name: str) -> bool:
     """True when serving loads this model's NVFP4 experts via ModelOptNvFp4Config.
 
-    Scoped to GLM-5.3-Flash so every other nvfp4 model keeps its existing
+    Scoped to GLM-5.3-Flash and Nemotron-H so other nvfp4 models keep their
     CompressedTensors construction (and kernel_source label). vLLM resolves
     quant_method "modelopt" + quant_algo "NVFP4" to modelopt_fp4
     (config/model.py:1349-1388, quantization/modelopt.py:756-763 @v0.31.0).
     """
-    if _load_model_moe_config(model_name).get("model_type") != "glm5_next_text":
+    model_type = _load_model_moe_config(model_name).get("model_type")
+    if model_type not in {"glm5_next_text", "nemotron_h"}:
         return False
     checkpoint_qc = _load_checkpoint_quantization_config(model_name)
+    if model_type == "nemotron_h":
+        section = checkpoint_qc.get("quantization", checkpoint_qc)
+        if str(section.get("quant_algo", "")).upper() == "NVFP4":
+            return True
+        if checkpoint_qc.get("quant_method") != "compressed-tensors":
+            raise ValueError("Nemotron-H NVFP4 collection requires complete checkpoint quantization metadata")
+        return False
     return (
         str(checkpoint_qc.get("quant_method", "")).lower() == "modelopt"
         and str(checkpoint_qc.get("quant_algo", "")).upper() == "NVFP4"
@@ -610,7 +622,9 @@ def run_moe_torch(
         custom_routing_function = gemma4_routing_function
 
     checkpoint_quant = _load_checkpoint_quantization_config(model_name) if moe_type == "nvfp4" else {}
-    mixed_prefix = _modelopt_mixed_expert_prefix(checkpoint_quant)
+    mixed_prefix = _modelopt_mixed_expert_prefix(
+        checkpoint_quant, _load_model_moe_config(model_name).get("model_type", "")
+    )
     if moe_type == "bfloat16":
         quant_config = None
     elif moe_type == "fp8":

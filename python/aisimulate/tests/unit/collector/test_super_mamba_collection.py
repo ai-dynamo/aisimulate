@@ -23,6 +23,18 @@ def test_super_latent_moe_is_not_filtered_out(monkeypatch):
     assert all(c.hidden_size == 1024 for c in cases)
 
 
+def test_super_runtime_pin_keeps_the_legacy_data_family():
+    from collector.framework_manifest import require_collector_runtime
+    from collector.op_catalog import load_family_map
+    from collector.vllm.registry import REGISTRY
+
+    runtime = require_collector_runtime("vllm", "0.31.0", requested_ops={"mamba2", "moe"}, model_path=MODEL)
+    assert runtime.version == "0.31.0"
+    assert runtime.source_commit == "db9527a46873454610df6dbedf79a36d6bf1a7f6"
+    assert load_family_map()["mamba2_perf"] == "linear_attention"
+    assert next(entry for entry in REGISTRY if entry.op == "mamba2").unverified
+
+
 def test_mamba_collection_covers_tp_and_mtp_without_combining_shards(monkeypatch):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", MODEL)
     cases = get_mamba2_test_cases()
@@ -40,6 +52,7 @@ def moe_helpers():
         "_load_model_moe_config",
         "_load_checkpoint_quantization_config",
         "_modelopt_mixed_expert_prefix",
+        "_uses_modelopt_nvfp4_checkpoint",
     }
     tree = ast.parse(path.read_text())
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
@@ -64,7 +77,39 @@ def test_mixed_checkpoint_uses_language_config_and_companion_quantization(tmp_pa
     assert helpers["_load_model_moe_config"](str(tmp_path))["mlp_hidden_act"] == "relu2"
     actual = helpers["_load_checkpoint_quantization_config"](str(tmp_path))
     assert actual == quant
-    assert helpers["_modelopt_mixed_expert_prefix"](actual) == "model.layers.1.mixer.experts"
+    assert helpers["_modelopt_mixed_expert_prefix"](actual, "nemotron_h") == "model.layers.1.mixer.experts"
     layers["model.layers.1.mixer.experts.0.down_proj"] = {"quant_algo": "FP8"}
     with pytest.raises(ValueError, match="uniformly NVFP4"):
-        helpers["_modelopt_mixed_expert_prefix"](quant)
+        helpers["_modelopt_mixed_expert_prefix"](quant, "nemotron_h")
+
+
+@pytest.mark.parametrize("model_type", ["deepseek_v4", "qwen3_5_moe", "minimax_m3"])
+def test_other_model_families_keep_the_existing_moe_quantization_path(model_type):
+    quant = {"quant_method": "modelopt_mixed"}
+    assert moe_helpers()["_modelopt_mixed_expert_prefix"](quant, model_type) is None
+
+
+def test_mixed_collection_requires_per_layer_metadata():
+    with pytest.raises(ValueError, match="complete quantized_layers"):
+        moe_helpers()["_modelopt_mixed_expert_prefix"]({"quant_method": "modelopt_mixed"}, "nemotron_h")
+
+
+def test_uniform_nemotron_nvfp4_uses_modelopt_and_missing_metadata_fails(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"model_type": "nemotron_h"}))
+    helpers = moe_helpers()
+    with pytest.raises(ValueError, match="complete checkpoint quantization metadata"):
+        helpers["_uses_modelopt_nvfp4_checkpoint"](str(tmp_path))
+    (tmp_path / "hf_quant_config.json").write_text(
+        json.dumps(
+            {
+                "quantization": {
+                    "quant_algo": "NVFP4",
+                    "group_size": 16,
+                    "kv_cache_quant_algo": "FP8",
+                    "exclude_modules": [],
+                }
+            }
+        )
+    )
+    assert helpers["_uses_modelopt_nvfp4_checkpoint"](str(tmp_path))

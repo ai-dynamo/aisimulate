@@ -39,6 +39,48 @@ def test_resolves_shared_and_excluded_latent_projections():
     assert modes["fc2_latent_proj"] == common.GEMMQuantMode.bfloat16
 
 
+def test_linear_class_target_respects_ignored_projections():
+    raw = {
+        "quantization_config": {
+            "config_groups": {"all": {"weights": {"num_bits": 4, "type": "float"}, "targets": ["Linear"]}},
+            "ignore": ["*.fc1_latent_proj", "*.fc2_latent_proj"],
+        }
+    }
+    modes = _projection_modes(raw, "E", common.GEMMQuantMode.fp8_static)
+    assert modes["shared_experts.up_proj"] == common.GEMMQuantMode.nvfp4
+    assert modes["shared_experts.down_proj"] == common.GEMMQuantMode.nvfp4
+    assert modes["fc1_latent_proj"] == common.GEMMQuantMode.bfloat16
+    assert modes["fc2_latent_proj"] == common.GEMMQuantMode.bfloat16
+
+
+def test_exact_group_target_does_not_imply_a_complete_layer_listing():
+    raw = {
+        "quantization_config": {
+            "config_groups": {
+                "one": {
+                    "weights": {"num_bits": 4, "type": "float"},
+                    "targets": ["model.layers.0.mixer.shared_experts.up_proj"],
+                }
+            }
+        }
+    }
+    modes = _projection_modes(raw, "E", common.GEMMQuantMode.fp8_static)
+    assert modes["shared_experts.up_proj"] == common.GEMMQuantMode.nvfp4
+    assert modes["shared_experts.down_proj"] == common.GEMMQuantMode.fp8_static
+
+
+def test_complete_layer_metadata_overrides_a_broad_group_declaration():
+    raw = {
+        "quantization_config": {
+            "quantized_layers": {"model.layers.0.mixer.shared_experts.up_proj": {"quant_algo": "NVFP4"}},
+            "config_groups": {"all": {"weights": {"num_bits": 8, "type": "float"}, "targets": ["Linear"]}},
+        }
+    }
+    modes = _projection_modes(raw, "E", common.GEMMQuantMode.fp8_static)
+    assert modes["shared_experts.up_proj"] == common.GEMMQuantMode.nvfp4
+    assert modes["shared_experts.down_proj"] == common.GEMMQuantMode.bfloat16
+
+
 @pytest.mark.parametrize("key", ["quant_algo", "quantization_algo", "quant_method"])
 def test_projection_precision_accepts_modelopt_metadata_keys(key):
     raw = {
@@ -121,6 +163,16 @@ def test_model_uses_checkpoint_projection_precision_and_preserves_override(check
         assert by_name["fc1_latent_proj_gemm"]._quant_mode == common.GEMMQuantMode.bfloat16
         assert by_name["fc2_latent_proj_gemm"]._quant_mode == common.GEMMQuantMode.bfloat16
         assert by_name["mamba_in_proj_gemm"]._quant_mode == (explicit or common.GEMMQuantMode.fp8_static)
+
+
+def test_non_latent_nemotron_keeps_existing_calibration_policy():
+    model = get_model(
+        "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", ModelConfig(moe_tp_size=1), backend_name="vllm"
+    )
+    assert not model._projection_quant_modes
+    for op in model.context_ops + model.generation_ops:
+        if "shared_" in op._name and op._name.endswith("_gemm"):
+            assert op._quant_mode == model.config.gemm_quant_mode
 
 
 @pytest.mark.parametrize("tp", [1, 2, 4, 8])

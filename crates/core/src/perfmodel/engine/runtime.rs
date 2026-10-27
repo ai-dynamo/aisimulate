@@ -1686,6 +1686,12 @@ impl Engine {
         // a guard — callers always pass isl >= 1. Clamp to avoid a Rust
         // div-by-zero panic on degenerate input Python would crash on.
         let isl = isl.max(1);
+        if ctx_tokens > 0 && prefix >= isl {
+            return Err(AicError::InvalidEngineConfig(format!(
+                "isl must be greater than 0 after removing prefix, but got {}",
+                isl as i64 - prefix as i64
+            )));
+        }
 
         // ---- Pass 1: combined non-attention work ----
         // Speculative progress model: every decode request verifies one
@@ -1704,12 +1710,35 @@ impl Engine {
         }
         let mut shared_non_attention = 0.0;
         for op in &self.context_ops {
+            if op.is_qualified_mamba() {
+                // Each prefill chunk reads and writes its recurrent state once.
+                let per_request = isl.saturating_sub(prefix).max(1);
+                let new_tokens = ctx_tokens - prefix1;
+                // shortcut: sum uniform timing rows until variable-length batches are calibrated.
+                for (batch, tokens) in [
+                    (new_tokens / per_request, per_request),
+                    (1, new_tokens % per_request),
+                ] {
+                    if batch == 0 || tokens == 0 {
+                        continue;
+                    }
+                    let result = query_context_op(
+                        op,
+                        &self.db,
+                        batch,
+                        tokens,
+                        prefix,
+                        seq_imbalance_correction_scale,
+                        None,
+                    )?;
+                    shared_non_attention += result.latency_ms;
+                    on_op(MixedPass::SharedNonAttention, op, result);
+                }
+                continue;
+            }
             // Only target operations share a forward across prefill and
             // verification. The draft has its own phase-specific graph.
-            if op.is_context_attention()
-                || op.name().starts_with("draft_")
-                || op.is_qualified_mamba()
-            {
+            if op.is_context_attention() || op.name().starts_with("draft_") {
                 continue;
             }
             let result = query_context_op(
@@ -1725,25 +1754,18 @@ impl Engine {
             on_op(MixedPass::SharedNonAttention, op, result);
         }
 
-        // ---- Pass 2: context attention and qualified Mamba at the prefill shape ----
+        // ---- Pass 2: context attention at the prefill shape ----
         // Python: batch = ceil(ctx/isl), effective_isl = isl - prefix, then
         // latency["context_attention"] / ceil(isl/ctx). With ctx_tokens == 0
         // Python's `np.ceil(isl/0)` is +inf and the division yields 0 — skip.
         let mut context_attention = 0.0_f64;
         if ctx_tokens > 0 {
-            if prefix >= isl {
-                return Err(AicError::InvalidEngineConfig(format!(
-                    "isl must be greater than 0 after removing prefix, but got {}",
-                    isl as i64 - prefix as i64
-                )));
-            }
             let batch2 = ctx_tokens.div_ceil(isl);
             let scale2 = isl.div_ceil(ctx_tokens) as f64;
             let mut attn = 0.0;
             for op in &self.context_ops {
-                if !op.is_context_attention()
-                    && !op.name().starts_with("draft_")
-                    && !op.is_qualified_mamba()
+                if op.is_qualified_mamba()
+                    || (!op.is_context_attention() && !op.name().starts_with("draft_"))
                 {
                     continue;
                 }
@@ -3505,6 +3527,69 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!((telemetry - expected).abs() < 1e-12);
+        for (ctx, isl, prefix, requests, new_tokens) in [
+            (512, 4096, 0, 1, 512),
+            (512, 4096, 1024, 1, 512),
+            (3500, 4096, 1024, 2, 3500),
+            (4608, 4096, 1024, 2, 3584),
+            (6000, 4096, 3000, 3, 3000),
+            (8128, 4096, 1024, 3, 7104),
+            (0, 4096, 1024, 0, 0),
+        ] {
+            // Each chunk adds two 1 MiB states, regardless of the full prompt length.
+            let bytes =
+                f64::from(new_tokens) * 18_560.0 + f64::from(requests) * 2_097_152.0 + 10_634_240.0;
+            let expected = bytes / engine.db.system_spec.gpu.mem_bw * 1000.0;
+            let mixed = engine
+                .mixed_step_latency(ctx, 2, isl, 1, prefix, 1.0, 1.0)
+                .unwrap();
+            assert!(
+                (mixed - expected).abs() < 1e-12,
+                "chunk={ctx}, prefix={prefix}"
+            );
+            let (shared, context, decode) = engine
+                .mixed_step_breakdown_per_op(ctx, 2, isl, 1, prefix, 1.0, 1.0)
+                .unwrap();
+            let sum: f64 = shared
+                .iter()
+                .chain(&context)
+                .chain(&decode)
+                .map(|row| row.1)
+                .sum();
+            assert!((sum - mixed).abs() < 1e-12);
+            let telemetry = get_mix_step_ops(
+                &engine.context_ops,
+                &engine.generation_ops,
+                &engine.db,
+                new_tokens,
+                8,
+                isl - prefix,
+                prefix,
+                ctx - new_tokens,
+                isl,
+                8,
+            )
+            .unwrap();
+            assert!(
+                (telemetry - expected).abs() < 1e-12,
+                "telemetry chunk={ctx}, prefix={prefix}"
+            );
+        }
+        if let Op::Mamba2(op) = &mut engine.context_ops[0] {
+            op.name = "draft_context_ssm".into();
+        }
+        let draft_named = engine
+            .mixed_step_latency(16, 2, 16, 1, 0, 1.0, 1.0)
+            .unwrap();
+        assert!((draft_named - expected).abs() < 1e-12);
+        assert!(
+            engine
+                .mixed_step_latency(4096, 2, 4096, 4097, 4097, 1.0, 1.0)
+                .is_err()
+        );
+        assert!(
+            (engine.mixed_step_latency(0, 2, 0, 1, 0, 1.0, 1.0).unwrap() - decode).abs() < 1e-12
+        );
     }
 
     fn runtime(batch_size: u32, isl: u32, osl: u32) -> RuntimeConfig {

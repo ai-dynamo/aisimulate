@@ -517,7 +517,30 @@ pub(crate) fn get_mix_step_ops(
     let effective_isl_combined = (ctx_tokens + gen_tokens).max(1);
     let mut total = 0.0_f64;
     for op in context_ops {
-        if op.is_context_attention() || op.is_qualified_mamba() {
+        if op.is_qualified_mamba() {
+            let per_request = new_tokens_per_prefill_req.max(1);
+            for (batch, tokens) in [
+                (ctx_tokens / per_request, per_request),
+                (1, ctx_tokens % per_request),
+            ] {
+                if batch == 0 || tokens == 0 {
+                    continue;
+                }
+                let ctx = RuntimeContext {
+                    batch_size: batch,
+                    beam_width: 1,
+                    s: tokens,
+                    prefix: prefix_per_req,
+                    num_tokens: batch * tokens,
+                    seq_imbalance_correction_scale: 1.0,
+                    gen_seq_imbalance_correction_scale: 1.0,
+                    num_image_tokens: 0,
+                };
+                total += op.query(db, &ctx)?.latency_ms;
+            }
+            continue;
+        }
+        if op.is_context_attention() {
             continue;
         }
         let x = if op.is_logits_gemm() {
@@ -554,7 +577,7 @@ pub(crate) fn get_mix_step_ops(
     let ctx_attn_batch = ((ctx_tokens + isl_eff_pass2 - 1) / isl_eff_pass2).max(1);
     let scale_factor = ((isl_eff_pass2 + ctx_tokens - 1) / ctx_tokens.max(1)).max(1) as f64;
     for op in context_ops {
-        if !op.is_context_attention() && !op.is_qualified_mamba() {
+        if !op.is_context_attention() {
             continue;
         }
         let ctx = RuntimeContext {

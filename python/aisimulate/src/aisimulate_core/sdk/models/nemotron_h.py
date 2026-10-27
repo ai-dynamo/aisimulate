@@ -17,6 +17,8 @@ from aisimulate_core.sdk.models.helpers import (
 
 
 def _projection_matches(path: str, target: str) -> bool:
+    if target == "Linear":
+        return True
     return bool(re.match(target[3:], path)) if target.startswith("re:") else fnmatchcase(path, target)
 
 
@@ -24,9 +26,13 @@ def _projection_modes(raw: dict, pattern: str, default: common.GEMMQuantMode) ->
     """Resolve the shared and latent projections without collapsing mixed precision."""
     declarations = []
     exact = {}
+    has_layer_listing = False
     exclusions = quant_exclude_patterns(raw)
-    for target, algo in _iter_mixed_precision_layer_algos(raw):
-        if target.startswith("re:") or any(char in target for char in "*?["):
+    for target, algo, listed in _iter_mixed_precision_layer_algos(raw):
+        has_layer_listing |= listed
+        if has_layer_listing and not listed:
+            continue
+        if target == "Linear" or target.startswith("re:") or any(char in target for char in "*?["):
             declarations.append((target, algo))
         else:
             exact.setdefault(target, set()).add(algo)
@@ -55,7 +61,7 @@ def _projection_modes(raw: dict, pattern: str, default: common.GEMMQuantMode) ->
             algos.update(algo for path in paths for algo in exact.get(path, ()))
             if len(algos) > 1 or any(algo not in modes for algo in algos):
                 raise ValueError(f"Unsupported mixed precision for Nemotron-H projection {suffix}: {algos}")
-            unlisted = common.GEMMQuantMode.bfloat16 if exact else default
+            unlisted = common.GEMMQuantMode.bfloat16 if has_layer_listing else default
             values.add(modes[next(iter(algos))] if algos else unlisted)
         if len(values) > 1:
             raise ValueError(f"Nemotron-H projection {suffix} has different precision across layers")
@@ -99,7 +105,8 @@ class NemotronHModel(BaseModel):
         )
         # extra_params is NemotronHConfig with hybrid layer configuration.
         explicit = model_info["gemm_quant_mode_is_explicit"]
-        if explicit is False:
+        # shortcut: qualify non-latent MoE calibration before enabling per-projection precision there.
+        if explicit is False and model_info["extra_params"].moe_latent_size:
             model._projection_quant_modes = _projection_modes(
                 model_info.get("raw_config", {}),
                 model_info["extra_params"].hybrid_override_pattern,

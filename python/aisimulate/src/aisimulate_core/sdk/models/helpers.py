@@ -787,7 +787,7 @@ def _is_routing_expert_target(target: object) -> bool:
 
 
 def _iter_mixed_precision_layer_algos(raw_config: dict):
-    """Yield target paths and normalized algorithms from ModelOpt metadata."""
+    """Yield target, normalized algorithm, and whether the target is a listed layer."""
     quant = _get_language_quantization_config(raw_config) or {}
     hf_config = raw_config.get("hf_quant_config")
     hf_quant = hf_config.get("quantization", {}) if isinstance(hf_config, dict) else {}
@@ -798,20 +798,20 @@ def _iter_mixed_precision_layer_algos(raw_config: dict):
         if not isinstance(layers, dict):
             continue
         for target, metadata in layers.items():
-            yield target, _mixed_precision_layer_algo(metadata)
+            yield target, _mixed_precision_layer_algo(metadata), True
     groups = quant.get("config_groups")
     if isinstance(groups, dict):
         for group in groups.values():
             if isinstance(group, dict):
                 for target in group.get("targets") or []:
-                    yield target, _infer_mixed_precision_group_algo(group)
+                    yield target, _infer_mixed_precision_group_algo(group), False
 
 
 def _collect_mixed_precision_layer_algos(raw_config: dict) -> tuple[set[str], set[str]]:
     """Collect ModelOpt mixed precision algorithms by SDK GEMM/MoE category."""
     gemm_algos: set[str] = set()
     moe_algos: set[str] = set()
-    for target, algo in _iter_mixed_precision_layer_algos(raw_config):
+    for target, algo, _ in _iter_mixed_precision_layer_algos(raw_config):
         if algo is not None:
             (moe_algos if _is_routing_expert_target(target) else gemm_algos).add(algo)
     return gemm_algos, moe_algos

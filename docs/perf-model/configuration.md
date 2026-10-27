@@ -88,10 +88,11 @@ analytical bandwidth lower bound with a `sol` source label. That bound includes
 recurrent-state traffic but does not estimate stochastic-rounding instructions.
 Do not interpret that label as measured FlashInfer coverage.
 
-Nemotron-H resolves shared-expert and latent-projection precision from checkpoint
-metadata unless the caller supplies an explicit GEMM precision override.
+Nemotron-H latent-MoE layouts resolve shared-expert and latent-projection precision
+from checkpoint metadata unless the caller supplies an explicit GEMM precision override.
 Conflicting precision across layers raises an error because the current graph
 aggregates those projections. Routed experts remain a separate precision choice.
+Non-latent layouts keep their existing calibration policy.
 
 AFD regular companions currently reject exact-source requests through their legacy estimator and fixed timing paths. The external-FPM companion forwards the source to canonical validation, which rejects the incompatible FPM request. These controls describe standalone AISimulate behavior, not downstream Dynamo planner integration.
 

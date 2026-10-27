@@ -336,6 +336,7 @@ def _engine_config_dict(
     fields to locate the perf database; the rest are carried for completeness.
     """
     cfg = model.config
+    mamba_backend = getattr(cfg, "mamba_backend", None)
     model_nextn = getattr(model, "_nextn", None)
     effective_nextn = int(model_nextn) if model_nextn is not None else int(nextn)
     speculative = None
@@ -355,10 +356,10 @@ def _engine_config_dict(
         "backend_version": _literal_backend_version(system, backend, backend_version, systems_path, database),
         "fpm_parquet_path": fpm_parquet_path,
         "moe_kernel_source": getattr(cfg, "moe_kernel_source", None),
-        "mamba_backend": getattr(cfg, "mamba_backend", None) if cfg.mamba_backend else None,
-        "mamba_ssm_cache_dtype": getattr(cfg, "mamba_ssm_cache_dtype", None) if cfg.mamba_backend else None,
-        "mamba_stochastic_rounding": getattr(cfg, "mamba_stochastic_rounding", None) if cfg.mamba_backend else None,
-        "mamba_philox_rounds": getattr(cfg, "mamba_philox_rounds", None) if cfg.mamba_backend else None,
+        "mamba_backend": mamba_backend,
+        "mamba_ssm_cache_dtype": getattr(cfg, "mamba_ssm_cache_dtype", None) if mamba_backend else None,
+        "mamba_stochastic_rounding": getattr(cfg, "mamba_stochastic_rounding", None) if mamba_backend else None,
+        "mamba_philox_rounds": getattr(cfg, "mamba_philox_rounds", None) if mamba_backend else None,
         "kv_block_size": kv_block_size,
         "forward_model": getattr(model, "forward_model", getattr(cfg, "forward_model", None)),
         "decoder_replay": bool(getattr(cfg, "decoder_replay", False)),
