@@ -156,6 +156,9 @@ capacity. GPU qualification must compare tensor strides and cache behavior
 against serving before these rows become calibration evidence. This lane uses
 `use_replayssm=false` and SD convolution storage. ReplaySSM and DS convolution
 storage require separate collection and query support.
+Mixed prefill lengths currently sum separate uniform-batch timing queries.
+This approximation can count launch overhead twice. Compare it with one
+variable-length serving batch before claiming measured mixed-step accuracy.
 
 The vLLM registry marks this collector unverified. A normal collection reports
 that status and skips it. Remove the marker only after a GPU qualification run.
@@ -163,6 +166,14 @@ The model-scoped runtime for the public Nemotron-3 Super NVFP4 case is vLLM
 0.31.0. Its latent MoE case includes 512 experts, top-k 22, width 1024, and
 intermediate width 2688. The runtime selects its supported backend or reports
 an error. The case generator no longer suppresses this geometry.
+The runtime pin applies to this model and keeps the existing `linear_attention`
+data family unchanged. Other models need their own compatible runtime pin.
+
+Nemotron-H NVFP4 collection uses native ModelOpt dispatch when checkpoint metadata
+declares ModelOpt quantization. Mixed exports require a complete `quantized_layers`
+mapping. Uniform exports require the fields that `ModelOptNvFp4Config` validates.
+The packaged public metadata omits some required fields. Supply the complete
+checkpoint metadata before collection. Missing fields cause an error.
 
 For a different checkpoint, create a model case file and pin its runtime in
 `framework_manifest.yaml`. Use the checkpoint directory as `model_path`.

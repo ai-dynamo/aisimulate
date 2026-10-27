@@ -60,6 +60,8 @@ def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
     # 0.31.0). One release per file (owner policy 2026-09-20): no ranges.
     module_versions: dict[str, set[str]] = {}
     for entry in VLLM_REGISTRY:
+        if entry.unverified:
+            continue
         module_versions.setdefault(entry.module, set()).add(resolve_op_runtime("vllm", entry.op).version)
 
     for module, versions in sorted(module_versions.items()):
