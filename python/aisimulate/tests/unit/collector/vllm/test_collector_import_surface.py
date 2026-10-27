@@ -32,10 +32,12 @@ collector file actually under test, not on re-proving that separately-
 verified surface every time.
 """
 
+import ast
 import importlib.util
 import re
 import sys
 import types
+from inspect import signature
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -132,6 +134,7 @@ _MOE_COMMON_SURFACE = {
     "vllm.config": {"VllmConfig": _Dummy, "set_current_vllm_config": _null_context},
     "vllm.forward_context": {"get_forward_context": _dummy, "set_forward_context": _null_context},
     "vllm.model_executor.layers.fused_moe.experts.fallback": {"FallbackExperts": _Dummy},
+    "vllm.model_executor.layers.fused_moe.experts.trtllm_bf16_moe": {},
     "vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors": {
         "CompressedTensorsConfig": _Dummy
     },
@@ -157,6 +160,56 @@ VLLM_0271_MOE_SURFACE = {
 
 _COLLECT_MOE_PATH = COLLECTOR_DIR / "vllm" / "collect_moe.py"
 _COLLECT_MOE_DOTTED = "collector.vllm.collect_moe"
+
+
+@pytest.mark.parametrize("native_situ", [False, True])
+@pytest.mark.parametrize("activation", ["situ", "silu"])
+def test_moe_activation_probe_uses_factory_callable(native_situ, activation):
+    def native_factory(*, activation, activation_situ_beta=None, activation_situ_linear_beta=None):
+        return activation, activation_situ_beta, activation_situ_linear_beta
+
+    def legacy_factory(*, activation):
+        return activation, None, None
+
+    # Execute the real activation-selection block without importing CUDA.
+    # A function's __init__ has no SiTU parameters even for the native factory.
+    tree = ast.parse(_COLLECT_MOE_PATH.read_text())
+    worker = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_moe_torch")
+    start = next(
+        i
+        for i, n in enumerate(worker.body)
+        if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "situ_kwargs" for t in n.targets)
+    )
+    stop = next(
+        i
+        for i, n in enumerate(worker.body)
+        if isinstance(n, ast.FunctionDef) and n.name == "_serving_truth_marlin_selection"
+    )
+    runtime = {"activation": activation, "activation_situ_beta": 4.0, "activation_situ_linear_beta": 25.0}
+    factory = native_factory if native_situ else legacy_factory
+    namespace = {"runtime_config": runtime, "FusedMoE": factory, "signature": signature}
+    exec(compile(ast.Module(body=worker.body[start:stop], type_ignores=[]), str(_COLLECT_MOE_PATH), "exec"), namespace)
+    result = factory(activation=runtime["activation"], **namespace["situ_kwargs"])
+    if native_situ and activation == "situ":
+        assert result == ("situ", 4.0, 25.0)
+    else:
+        assert result == ("silu", None, None)
+    assert namespace["situ_marlin_approx"] is (activation == "situ" and not native_situ)
+
+
+@pytest.mark.parametrize("quant_method", [types.SimpleNamespace(), types.SimpleNamespace(use_cutlass_mxfp4=False)])
+def test_moe_keeps_weight_only_mxfp4_methods(monkeypatch, quant_method):
+    _install_fake_vllm(monkeypatch, VLLM_0271_MOE_SURFACE)
+    module = _import_fresh(monkeypatch, _COLLECT_MOE_DOTTED, _COLLECT_MOE_PATH)
+    module._require_moe_activation_precision("w4a16_mxfp4", quant_method)
+
+
+def test_moe_rejects_mxfp4_activation_under_weight_only_label(monkeypatch):
+    _install_fake_vllm(monkeypatch, VLLM_0271_MOE_SURFACE)
+    module = _import_fresh(monkeypatch, _COLLECT_MOE_DOTTED, _COLLECT_MOE_PATH)
+    with pytest.raises(ValueError, match="quantizes activations to MXFP4"):
+        module._require_moe_activation_precision("w4a16_mxfp4", types.SimpleNamespace(use_cutlass_mxfp4=True))
+
 
 # run_moe_torch() runs its whole vllm import preamble (10 statements, 9 of
 # them vllm-rooted) as the first lines of the function body, strictly before
@@ -424,3 +477,83 @@ class TestCollectGdnImportSurface:
 
         _install_fake_vllm(monkeypatch, VLLM_0240_GDN_SURFACE)
         _import_fresh(monkeypatch, _COLLECT_GDN_DOTTED, scratch_file)
+
+
+@pytest.mark.parametrize("dtypes", [("mxfp8", "mxfp8"), (None, "mxfp8"), ("fp8", None)])
+def test_moe_rejects_native_quantized_activation_after_loading(monkeypatch, dtypes):
+    _install_fake_vllm(monkeypatch, VLLM_0271_MOE_SURFACE)
+    module = _import_fresh(monkeypatch, _COLLECT_MOE_DOTTED, _COLLECT_MOE_PATH)
+    module.vllm_version = "0.31.0+build"
+    method = types.SimpleNamespace(
+        mxfp4_backend="FLASHINFER_TRTLLM_MXFP4_MXFP8",
+        moe_quant_config=types.SimpleNamespace(
+            _a1=types.SimpleNamespace(dtype=dtypes[0]), _a2=types.SimpleNamespace(dtype=dtypes[1])
+        ),
+    )
+    with pytest.raises(ValueError, match="selects activation quantization"):
+        module._require_moe_activation_precision("w4a16_mxfp4", method, loaded=True)
+    # The same selected MXFP8 format is valid under the explicit W4A8 identity.
+    module._require_moe_activation_precision("w4a8_mxfp4_mxfp8", method, loaded=True)
+
+
+def test_moe_preserves_explicit_weight_only_native_precision(monkeypatch):
+    _install_fake_vllm(monkeypatch, VLLM_0271_MOE_SURFACE)
+    module = _import_fresh(monkeypatch, _COLLECT_MOE_DOTTED, _COLLECT_MOE_PATH)
+    module.vllm_version = "0.31.0"
+    method = types.SimpleNamespace(
+        moe_quant_config=types.SimpleNamespace(
+            _a1=types.SimpleNamespace(dtype=None), _a2=types.SimpleNamespace(dtype=None)
+        )
+    )
+    module._require_moe_activation_precision("w4a16_mxfp4", method, loaded=True)
+
+
+@pytest.mark.parametrize("config", [None, types.SimpleNamespace(), types.SimpleNamespace(_a1=None, _a2=None)])
+def test_moe_unknown_loaded_precision_fails_closed_for_target_runtime(monkeypatch, config):
+    _install_fake_vllm(monkeypatch, VLLM_0271_MOE_SURFACE)
+    module = _import_fresh(monkeypatch, _COLLECT_MOE_DOTTED, _COLLECT_MOE_PATH)
+    method = types.SimpleNamespace(moe_quant_config=config)
+    module.vllm_version = "0.27.1"
+    module._require_moe_activation_precision("w4a16_mxfp4", method, loaded=True)
+    module.vllm_version = "0.31.0"
+    with pytest.raises(ValueError, match="Cannot verify selected W4A16"):
+        module._require_moe_activation_precision("w4a16_mxfp4", method, loaded=True)
+
+
+def test_moe_checks_selected_precision_after_loading_before_timing():
+    source = _COLLECT_MOE_PATH.read_text()
+    loaded = source.index("quant_method.process_weights_after_loading(routed_experts)")
+    guard = source.index("_require_moe_activation_precision(moe_type, quant_method, loaded=True)")
+    timing = source.index("benchmark_with_power(", guard)
+    assert loaded < guard < timing
+
+
+@pytest.mark.parametrize("version", ["0.31.0", "0.31.0+build"])
+def test_moe_rejects_native_bf16_input_weighting(monkeypatch, version):
+    _install_fake_vllm(monkeypatch, VLLM_0271_MOE_SURFACE)
+    module = _import_fresh(monkeypatch, _COLLECT_MOE_DOTTED, _COLLECT_MOE_PATH)
+    native_type = type("TrtLlmBf16ExpertsMonolithic", (), {})
+    module.trtllm_bf16_moe.TrtLlmBf16ExpertsMonolithic = native_type
+    module.vllm_version = version
+    with pytest.raises(RuntimeError, match="routing-contract mismatch"):
+        module._require_moe_input_weighting({"apply_router_weight_on_input": True}, native_type())
+    module._require_moe_input_weighting({"apply_router_weight_on_input": False}, native_type())
+    # Even a same-named unrelated class must not be mistaken for the native leaf.
+    unrelated = type("TrtLlmBf16ExpertsMonolithic", (), {})
+    module._require_moe_input_weighting({"apply_router_weight_on_input": True}, unrelated())
+    module._require_moe_input_weighting({"apply_router_weight_on_input": True}, None)
+
+
+def test_moe_keeps_older_bf16_class_surface(monkeypatch):
+    _install_fake_vllm(monkeypatch, VLLM_0240_MOE_SURFACE)
+    module = _import_fresh(monkeypatch, _COLLECT_MOE_DOTTED, _COLLECT_MOE_PATH)
+    module.vllm_version = "0.24.0"
+    module._require_moe_input_weighting({"apply_router_weight_on_input": True}, _Dummy())
+
+
+def test_moe_checks_selected_leaf_before_timing():
+    source = _COLLECT_MOE_PATH.read_text()
+    selected = source.index("leaf_experts = experts_impl._select_experts_impl(")
+    guard = source.index("_require_moe_input_weighting(runtime_config, leaf_experts)", selected)
+    timing = source.index("benchmark_with_power(", guard)
+    assert selected < guard < timing

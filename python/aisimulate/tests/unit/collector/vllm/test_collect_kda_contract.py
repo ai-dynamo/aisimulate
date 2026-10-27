@@ -7,8 +7,10 @@
 
 import ast
 import sys
+import weakref
+from contextlib import contextmanager
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -76,7 +78,7 @@ def test_kda_context_seq_len_one_routes_through_decode_kernels(monkeypatch):
     namespace = {
         "WORKER_RESTART": 23,
         "_is_glm5_next_kda": lambda model_name: False,
-        "_require_audited_runtime": lambda model_name, version: None,
+        "_require_audited_runtime": lambda model_name, version, **kwargs: None,
         "run_kda_context_benchmark": record("context"),
         "run_kda_generation_benchmark": record("decode"),
         "run_kda_verify_benchmark": record("verify"),
@@ -176,7 +178,7 @@ def test_glm5_next_rows_route_to_the_glm5next_dispatch(monkeypatch, model_name, 
     calls = []
     namespace = {
         "WORKER_RESTART": 23,
-        "_require_audited_runtime": lambda model_name, version: None,
+        "_require_audited_runtime": lambda model_name, version, **kwargs: None,
         "run_glm5_next_kda_torch": lambda *args, **kwargs: calls.append(("glm", kwargs["vllm_version"])),
         "run_kda_generation_benchmark": lambda **kwargs: calls.append(("kimi", kwargs["vllm_version"])),
     }
@@ -364,3 +366,415 @@ def test_glm5_next_imports_follow_the_v031_module_layout():
         ("vllm.models.glm5next.nvidia.ops.third_party.kda", "chunk_kda_with_fused_gate"),
         ("vllm.models.glm5next.nvidia.ops.third_party.kda", "fused_recurrent_kda"),
     }
+
+
+def _compile_function(name, namespace):
+    tree = ast.parse(SOURCE_PATH.read_text())
+    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(SOURCE_PATH), "exec"), namespace)
+    return namespace[name]
+
+
+@pytest.mark.parametrize("backend", ["flashkda", "triton", "flashinfer"])
+def test_target_prefill_resolver_uses_fp32_state_and_propagates_selection(monkeypatch, backend):
+    from collector.version_resolver import _check_compat
+
+    calls = []
+    native = ModuleType("vllm.models.kimi_k3.nvidia.kda")
+    native.resolve_kda_prefill_backend = lambda *args: (calls.append(args), backend)[1]
+    native._flashkda_prefill = object()
+    monkeypatch.setitem(sys.modules, native.__name__, native)
+    vllm = ModuleType("vllm")
+    monkeypatch.setitem(sys.modules, "vllm", vllm)
+    monkeypatch.setitem(sys.modules, "vllm._flashkda_C", ModuleType("vllm._flashkda_C"))
+    resolve = _compile_function(
+        "_resolve_prefill_kernel",
+        {
+            "torch": SimpleNamespace(dtype=object, float32="fp32"),
+            "KDA_LOWER_BOUND": -5.0,
+            "_check_compat": _check_compat,
+        },
+    )
+    if backend == "flashinfer":
+        with pytest.raises(RuntimeError, match="Unexpected KDA prefill backend"):
+            resolve("bf16", "0.31.0")
+    else:
+        source, kernel = resolve("bf16", "0.31.0")
+        assert (source, kernel) == (
+            ("flashkda_fwd", native._flashkda_prefill) if backend == "flashkda" else ("chunk_kda_with_fused_gate", None)
+        )
+    assert calls == [("auto", 128, "bf16", "fp32", -5.0)]
+    if backend == "flashkda":
+        monkeypatch.setitem(sys.modules, "vllm._flashkda_C", None)
+        with pytest.raises(ImportError):
+            resolve("bf16", "0.31.0")
+
+
+class _ContractTensor:
+    def __init__(self, *shape, dtype=None, **kwargs):
+        self.shape, self.dtype = shape, dtype
+
+    def reshape(self, *shape):
+        return _ContractTensor(*shape, dtype=self.dtype)
+
+    def transpose(self, first, second):
+        shape = list(self.shape)
+        shape[first], shape[second] = shape[second], shape[first]
+        return _ContractTensor(*shape, dtype=self.dtype)
+
+    def contiguous(self):
+        return self
+
+    def __rmul__(self, scalar):
+        return self
+
+
+@pytest.mark.parametrize("native_failure", [False, True])
+def test_target_decode_uses_native_output_and_never_times_unused_fallback(monkeypatch, native_failure):
+    from collector.version_resolver import _check_compat
+
+    calls, published, selected, cleanups = [], [], [], []
+
+    def native_decode(**kwargs):
+        calls.append(kwargs)
+        if native_failure:
+            raise RuntimeError("native kernel failed")
+
+    def unused(*args, **kwargs):
+        raise AssertionError("unused fallback was called")
+
+    vllm = ModuleType("vllm")
+    monkeypatch.setitem(sys.modules, "vllm", vllm)
+    for name, attributes in {
+        "vllm._custom_ops": {"fused_kda_decode": native_decode},
+        "vllm.model_executor.layers.mamba.ops.causal_conv1d": {"causal_conv1d_update": unused},
+        "vllm.models.kimi_k3.nvidia.kda": {
+            "is_fused_kda_decode_supported": unused,
+            "resolve_kda_decode_backend": lambda *args: (selected.append(args), "native")[1],
+        },
+        "vllm.models.kimi_k3.nvidia.ops.third_party.kda": {"fused_recurrent_kda_packed_decode": unused},
+    }.items():
+        module = ModuleType(name)
+        module.__dict__.update(attributes)
+        monkeypatch.setitem(sys.modules, name, module)
+
+    @contextmanager
+    def benchmark(**kwargs):
+        kwargs["kernel_func"]()
+        yield {"latency_ms": 1.0, "power_stats": None}
+
+    torch = SimpleNamespace(
+        device=lambda device: device,
+        cuda=SimpleNamespace(set_device=lambda device: None),
+        bfloat16="bf16",
+        float32="fp32",
+        int32="int32",
+        randn=_ContractTensor,
+        zeros=_ContractTensor,
+        empty=_ContractTensor,
+        empty_like=lambda tensor: _ContractTensor(*tensor.shape, dtype=tensor.dtype),
+        arange=_ContractTensor,
+    )
+    run = _compile_function(
+        "run_kda_generation_benchmark",
+        {
+            "torch": torch,
+            "_check_compat": _check_compat,
+            "KDA_LOWER_BOUND": -5.0,
+            "NUM_WARMUPS": 3,
+            "NUM_RUNS": 10,
+            "benchmark_with_power": benchmark,
+            "_log": lambda *args: published.append(args),
+            "_cleanup": cleanups.append,
+            "_format_failures": lambda failures: ";".join(failures),
+        },
+    )
+    args = (7168, 4, 12, 128, 12, 128, [1], "moonshotai/Kimi-K3", "isolated.txt", "0.31.0")
+    if native_failure:
+        with pytest.raises(RuntimeError, match="native kernel failed"):
+            run(*args)
+        assert published == []
+    else:
+        run(*args)
+        assert [record[2] for record in published] == ["fused_kda_decode"]
+    assert selected == [("auto", 12, 128, 4, 0, "bf16", "bf16", "fp32")]
+    assert len(calls) == 1
+    assert calls[0]["out"].shape == (1, 1, 12, 128)
+    assert calls[0]["state"].shape == (1, 12, 128, 128)
+    assert calls[0]["state"].dtype == "fp32"
+    assert calls[0]["conv_state"].shape == (1, 4608, 3)
+    assert cleanups == ["generation"]
+
+
+def test_target_flashkda_buffers_are_allocated_before_timed_callback():
+    from collector.version_resolver import _check_compat
+
+    tree = ast.parse(SOURCE_PATH.read_text())
+    context = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_kda_context_benchmark")
+    branch = next(
+        n
+        for n in ast.walk(context)
+        if isinstance(n, ast.If)
+        and ast.dump(n.test) == ast.dump(ast.parse('prefill_source == "flashkda_fwd"', mode="eval").body)
+    )
+    calls, allocations = [], []
+
+    def allocate(*shape, **kwargs):
+        allocations.append(shape)
+        return _ContractTensor(*shape, **kwargs)
+
+    torch = SimpleNamespace(
+        float32="fp32",
+        uint8="uint8",
+        empty=allocate,
+        empty_like=lambda tensor: allocate(*tensor.shape, dtype=tensor.dtype),
+        ops=SimpleNamespace(_flashkda_C=SimpleNamespace(get_workspace_size=lambda *args: 1234)),
+    )
+    namespace = {
+        "torch": torch,
+        "_check_compat": _check_compat,
+        "vllm_version": "0.31.0",
+        "nt": 128,
+        "nh": 12,
+        "batch_size": 2,
+        "device": "cuda:0",
+        "KDA_LOWER_BOUND": -5.0,
+        "q": _ContractTensor(1, 128, 12, 128, dtype="bf16"),
+        "init_state": _ContractTensor(2, 12, 128, 128, dtype="fp32"),
+        "flashkda_prefill": lambda *args, **kwargs: calls.append(kwargs),
+        "flashkda_buffers": {},
+    }
+    namespace.update(dict.fromkeys(["k", "v", "raw_g", "raw_beta", "a_log", "dt_bias", "cu"], object()))
+    exec(compile(ast.Module(body=branch.body, type_ignores=[]), str(SOURCE_PATH), "exec"), namespace)
+    assert len(allocations) == 3
+    namespace["run_prefill"]()
+    namespace["run_prefill"]()
+    assert len(allocations) == 3
+    assert calls[0]["out"].shape == (1, 128, 12, 128)
+    assert calls[0]["final_state"].shape == (2, 12, 128, 128)
+    assert calls[0]["final_state"].dtype == "fp32"
+    assert calls[0]["workspace"].shape == (1234,)
+    assert calls[0]["workspace"].dtype == "uint8"
+    assert calls[1]["workspace"] is calls[0]["workspace"]
+
+
+@pytest.mark.parametrize("backend", ["flashkda_fwd", "chunk_kda_with_fused_gate"])
+@pytest.mark.parametrize("first_core_fails", [False, True])
+def test_prefill_releases_completed_phase_storage_and_failed_point_buffers(monkeypatch, backend, first_core_fails):
+    from collector.version_resolver import _check_compat
+
+    mixed_refs, buffer_refs, core_calls, conv_calls, timings, published, cleanups = [], [], [], [], [], [], []
+
+    class Storage:
+        pass
+
+    class Tensor(_ContractTensor):
+        def __init__(self, *shape, dtype=None, storage=None, **kwargs):
+            super().__init__(*shape, dtype=dtype)
+            self.storage = storage if storage is not None else Storage()
+
+        def transpose(self, first, second):
+            shape = list(self.shape)
+            shape[first], shape[second] = shape[second], shape[first]
+            return Tensor(*shape, dtype=self.dtype, storage=self.storage)
+
+        def split(self, sizes, dim=0):
+            return [
+                Tensor(*self.shape[:dim], size, *self.shape[dim + 1 :], dtype=self.dtype, storage=self.storage)
+                for size in sizes
+            ]
+
+    def randn(*shape, **kwargs):
+        if len(shape) == 2 and shape[1] == 4608:
+            assert all(ref() is None for ref in buffer_refs), "Previous point retains native buffers"
+        if len(shape) == 4:
+            assert all(ref() is None for ref in mixed_refs), "Completed conv storage overlaps core"
+        tensor = Tensor(*shape, **kwargs)
+        if len(shape) == 2 and shape[1] == 4608:
+            mixed_refs.append(weakref.ref(tensor.storage))
+        return tensor
+
+    def buffer(*shape, **kwargs):
+        tensor = Tensor(*shape, **kwargs)
+        buffer_refs.append(weakref.ref(tensor.storage))
+        return tensor
+
+    def native(*args, **kwargs):
+        core_calls.append(args[0].shape)
+        if backend == "flashkda_fwd":
+            assert kwargs["out"].shape == args[0].shape
+            assert kwargs["final_state"].shape == (1, 12, 128, 128)
+            assert kwargs["final_state"].dtype == "fp32"
+            assert kwargs["workspace"].shape == (1234,)
+        if first_core_fails and len(core_calls) == 1:
+            raise MemoryError("native core allocation failed")
+
+    def conv(x, weight, bias, **kwargs):
+        assert x.storage is mixed_refs[-1]()
+        assert kwargs["metadata"].num_prefills == 1
+        conv_calls.append(x.shape)
+
+    def cleanup(tag):
+        assert all(ref() is None for ref in buffer_refs), "Point cleanup retains native buffers"
+        cleanups.append(tag)
+
+    for name, attrs in {
+        "vllm.model_executor.layers.mamba.ops.causal_conv1d": {"causal_conv1d_fn": conv},
+        "vllm.models.kimi_k3.nvidia.ops.third_party.kda": {"chunk_kda_with_fused_gate": native},
+        "vllm.v1.attention.backends.gdn_attn": {"GDNAttentionMetadata": SimpleNamespace},
+        "vllm.v1.attention.backends.utils": {"compute_causal_conv1d_metadata": lambda *a, **kw: ({}, None, None)},
+        "vllm.model_executor.layers.mamba.mamba_utils": {"is_conv_state_dim_first": lambda: False},
+    }.items():
+        module = ModuleType(name)
+        module.__dict__.update(attrs)
+        monkeypatch.setitem(sys.modules, name, module)
+
+    @contextmanager
+    def benchmark(**kwargs):
+        timings.append((kwargs["num_warmups"], kwargs["num_runs"], kwargs["repeat_n"]))
+        kwargs["kernel_func"]()
+        yield {"latency_ms": 1.0, "power_stats": None}
+
+    torch = SimpleNamespace(
+        device=lambda device: device,
+        cuda=SimpleNamespace(set_device=lambda device: None),
+        bfloat16="bf16",
+        float32="fp32",
+        int32="int32",
+        bool="bool",
+        uint8="uint8",
+        randn=randn,
+        zeros=Tensor,
+        arange=Tensor,
+        empty=buffer,
+        empty_like=lambda t: buffer(*t.shape, dtype=t.dtype),
+        ops=SimpleNamespace(_flashkda_C=SimpleNamespace(get_workspace_size=lambda *args: 1234)),
+    )
+    run = _compile_function(
+        "run_kda_context_benchmark",
+        {
+            "torch": torch,
+            "_check_compat": _check_compat,
+            "KDA_LOWER_BOUND": -5.0,
+            "NUM_WARMUPS": 3,
+            "NUM_RUNS": 10,
+            "benchmark_with_power": benchmark,
+            "_resolve_prefill_kernel": lambda *args: (backend, native),
+            "_log": lambda common, latency, source, *args: published.append((common.copy(), source)),
+            "_cleanup": cleanup,
+            "_format_failures": lambda failures: ";".join(failures),
+        },
+    )
+    args = (7168, 4, 12, 128, 12, 128, [1], [2, 4], "moonshotai/Kimi-K3", "unused.txt", "0.31.0")
+    if first_core_fails:
+        with pytest.raises(RuntimeError, match="batch_size=1 seq_len=2: MemoryError"):
+            run(*args)
+    else:
+        run(*args)
+    assert core_calls == [(1, 2, 12, 128), (1, 4, 12, 128)]
+    assert conv_calls == [(1536, 2)] * 3 + [(1536, 4)] * 3
+    assert timings == [(3, 10, 10), (3, 10, 1)] * 2
+    assert cleanups == ["context", "context"]
+    assert [(row["seq_len"], source) for row, source in published] == (
+        [(2, "causal_conv1d_fn_qkv3")]
+        + ([] if first_core_fails else [(2, backend)])
+        + [(4, "causal_conv1d_fn_qkv3"), (4, backend)]
+    )
+
+
+@pytest.mark.parametrize("phase", ["context", "generation", "verify"])
+def test_kimi031_fixed_profile_gate_admits_only_b200_sd(monkeypatch, phase):
+    namespace = _gate_namespace()
+    namespace["torch"] = SimpleNamespace(cuda=SimpleNamespace(get_device_name=lambda device: "NVIDIA B200"))
+    native = ModuleType("vllm.model_executor.layers.mamba.mamba_utils")
+    native.is_conv_state_dim_first = lambda: False
+    monkeypatch.setitem(sys.modules, native.__name__, native)
+    gate = namespace["_require_audited_runtime"]
+    gate("moonshotai/Kimi-K3", "0.31.0", phase=phase)
+    native.is_conv_state_dim_first = lambda: True
+    with pytest.raises(namespace["KdaRuntimeNotAuditedError"], match="SD conv state"):
+        gate("moonshotai/Kimi-K3", "0.31.0", phase=phase)
+    native.is_conv_state_dim_first = lambda: False
+    namespace["torch"].cuda.get_device_name = lambda device: "NVIDIA H100"
+    with pytest.raises(namespace["KdaRuntimeNotAuditedError"], match="NVIDIA B200"):
+        gate("moonshotai/Kimi-K3", "0.31.0", phase=phase)
+
+
+@pytest.mark.parametrize("phase", [None, "unknown"])
+def test_kimi031_unspecified_phase_rejected_before_native_import(phase):
+    namespace = _gate_namespace()
+    with pytest.raises(namespace["KdaRuntimeNotAuditedError"], match="context/nonspec"):
+        namespace["_require_audited_runtime"]("moonshotai/Kimi-K3", "0.31.0", phase=phase)
+
+
+def test_kimi031_entrypoint_preserves_phase_at_gate(monkeypatch):
+    calls = []
+    namespace = {
+        "WORKER_RESTART": 23,
+        "_require_audited_runtime": lambda model, version, **kwargs: calls.append((model, version, kwargs)),
+        "_is_glm5_next_kda": lambda model: False,
+        "run_kda_generation_benchmark": lambda **kwargs: None,
+    }
+    _exec_functions({"run_kda_torch"}, namespace)
+    _fake_vllm_version(monkeypatch)
+    namespace["run_kda_torch"](
+        "generation", 7168, 4, 12, 128, 12, 128, [1], [1], "moonshotai/Kimi-K3", perf_filename="unused.txt"
+    )
+    assert calls == [("moonshotai/Kimi-K3", "0.31.0", {"phase": "generation", "device": "cuda:0"})]
+
+
+def test_kimi031_registered_structural_keys_remain_distinct_from_glm():
+    from collector.case_generator import get_common_kda_test_cases
+
+    keys = {"kimi": set(), "glm": set()}
+    for case in get_common_kda_test_cases():
+        family = "kimi" if case.model_name == "moonshotai/Kimi-K3" else "glm"
+        keys[family].add(
+            (case.d_model, case.d_conv, case.num_k_heads, case.head_k_dim, case.num_v_heads, case.head_v_dim)
+        )
+    assert len(keys["kimi"]) == len(keys["glm"]) == 4
+    assert keys["kimi"].isdisjoint(keys["glm"])
+
+
+@pytest.mark.parametrize("target", [False, True])
+def test_kimi_prefill_target_reserves_native_null_slot(target):
+    # Native v0.31 causal_conv1d returns immediately for cache index0. Execute
+    # the collector's allocation statements so a zero-based regression fails.
+    from collector.version_resolver import _check_compat
+
+    tree = ast.parse(SOURCE_PATH.read_text())
+    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_kda_context_benchmark")
+    names = {"target_runtime", "first_slot", "idx", "has_init"}
+    assignments = [
+        n
+        for n in ast.walk(function)
+        if isinstance(n, ast.Assign)
+        and len(n.targets) == 1
+        and any(isinstance(t, ast.Name) and t.id in names for t in n.targets)
+    ]
+    assignments.sort(key=lambda n: n.lineno)
+    namespace = {
+        "_check_compat": _check_compat,
+        "vllm_version": "0.31.0" if target else "0.1.dev19262",
+        "batch_size": 1,
+        "device": "cuda:0",
+        "torch": SimpleNamespace(
+            int32="int32", bool="bool", arange=lambda a, b, **kw: list(range(a, b)), zeros=lambda n, **kw: [False] * n
+        ),
+    }
+    exec(compile(ast.Module(body=assignments, type_ignores=[]), str(SOURCE_PATH), "exec"), namespace)
+    assert namespace["idx"] == ([1] if target else [0])
+    if target:
+        assert all(slot != 0 for slot in namespace["idx"]), "Native null-slot branch skips all B1 work"
+    target_branch = next(
+        n
+        for n in ast.walk(function)
+        if isinstance(n, ast.If) and isinstance(n.test, ast.Name) and n.test.id == "target_runtime"
+    )
+    cache_allocations = [
+        n
+        for n in ast.walk(ast.Module(body=target_branch.body, type_ignores=[]))
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "zeros"
+    ]
+    assert len(cache_allocations) == 2
+    assert all(ast.unparse(n.args[0]) == "batch_size + 1" for n in cache_allocations)

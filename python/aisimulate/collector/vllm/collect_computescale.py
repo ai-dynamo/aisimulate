@@ -7,7 +7,13 @@
 # compute_scale: 8/8 representative cases. The native framework
 # builders/selectors remain authoritative; no kernel fallback is introduced.
 # The campaign manifest still selects one exact release per run.
-__compat__ = "vllm>=0.24.0,<=0.25.0"
+# Source-only 0.31.0 API audit: vllm db9527a46873454610df6dbedf79a36d6bf1a7f6
+# _custom_ops.py:1823-1891 retains the 0.25.0 dd10e03f wrapper's dynamic
+# per-token and static per-tensor calls; quant_utils.py:134 retains (-1, -1).
+# https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/_custom_ops.py#L1823
+# Preserve the five-call timing boundary and paired outputs. Admission is not
+# hardware/performance qualification; intermediate releases remain unaudited.
+__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0,!=0.27.1,!=0.28.0,!=0.29.0,!=0.30.0"
 
 import torch
 from collector.case_generator import get_compute_scale_case_specs

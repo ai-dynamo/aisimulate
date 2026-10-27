@@ -19,7 +19,167 @@ platform alignment ledger, a local campaign record kept outside the repo
 (`docs/perf_database/sglang-0.5.14-hopper-blackwell-ledger.md` in the
 campaign workspace).
 
+# vLLM 0.31 recurrent and MoE qualification
+
+vLLM `compute_scale` admits 0.31.0 after a source API audit against
+[`db9527a4`](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/_custom_ops.py#L1823).
+It retains dynamic per-token quantization, static per-tensor quantization with
+`group_shape=(-1, -1)`, and five calls per timed component. The two outputs
+remain `max(0, dynamic - static)` and the static latency. This permits GPU
+qualification; it does not approve historical timing reuse. Compare both
+components when the difference is clipped to zero. Other newly intervening
+release versions remain excluded pending their own API audit.
+
+
+vLLM 0.31 recurrent qualification uses the same pinned source:
+
+- GDN keeps the native prefill resolver and FP32 recurrent state. The native
+  [packed decoder](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/third_party/flash_linear_attention/ops/fused_recurrent.py#L454)
+  now splits large grids; the collector no longer rejects them before launch.
+  Context callbacks emit both convolution and chunk rows; generation callbacks
+  emit convolution and packed-recurrence rows. Compare donor convolution rows
+  separately from the newly measured recurrence implementations. The manifest
+  contract test checks the audited 0.31.0 compatibility bound and retains the
+  exclusions for unqualified intervening releases.
+- The Kimi KDA benchmark callbacks support the target's native dtype-aware
+  [resolvers and prefill buffers](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/models/kimi_k3/nvidia/kda.py#L217).
+  FlashKDA output/state/workspace allocation stays outside timing. Default
+  generation records only the native-selected path; a failed selected backend
+  raises rather than substituting another kernel. Preview callback behavior is
+  retained. The Kimi entry point admits B200 0.31 context, nonspeculative generation
+  and fixed non-RecoverSSM verify with SD convolution state, BF16 inputs and
+  FP32 recurrence.
+  Target prefill reserves null cache slot 0 and assigns real requests slots
+  1..batch, as required by the native convolution; preview slot allocation is
+  unchanged. Callbacks fix gate bound −5 and omit RecoverSSM. Prefill does not
+  export checkpoints. The native layout probe rejects DS; other hardware
+  remains unaudited for this target route and raises explicit failures.
+  Preview and GLM routes are unchanged.
+  Existing labels retain their meaning: native decode includes convolution and
+  gated RMSNorm, while prefill emits convolution and recurrence separately.
+  Kimi structural keys (d_model 7168, heads 12/24/48/96) do not overlap current
+  GLM keys (d_model 4096, heads 8/16/32/64); model name is metadata, so a second
+  state/layout/speculation profile at the same key needs a separate contract.
+  Default framework versions, case grids and consumer routing are unchanged.
+  Admission permits qualification/collection; publication still requires complete
+  numerical and timing validation of the selected cases. Three-way prefill
+  convolution and speculative verify need their own numerical evidence.
+  Verify uses the [native checkpoint and packed-input contract](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/models/kimi_k3/nvidia/kda.py#L954):
+  query width S in 2/4/8 means num_spec=S−1, accepted=S, positive checkpoint
+  IDs 1..B*S with null 0 reserved, and conv extent S+2. Native dtype/shape
+  calculators plus `MambaBase.bind_kv_cache` create unpadded per-layer shared
+  pages; packed Q/K/V views consume actual conv output, with shared recurrence
+  output and native projection/beta strides. This is pure uniform verify,
+  not mixed scheduling or a full-model page-padding claim. The four existing
+  H96/48/24/12 callbacks retain 108 shape points and 216 conv/recurrence rows.
+  Separate native timer callbacks, row keys and point failures are preserved.
+  CPU tests execute both callbacks and check IDs, strides, view sharing,
+  preview preservation and selected-backend failure propagation. This repair
+  enables qualification; fresh auto-collector smoke/full evidence is still
+  required before publication. Missing historical allocator provenance
+  prevents reuse approval. No forced fallback profile is added: the approved
+  B200 auto/nonspec decode cases all select native fused decode.
+  Prefill releases the completed convolution input and its views before
+  allocating independent core inputs, and releases native output/state/workspace
+  buffers after every point, including failures. This removes setup overlap;
+  it does not reduce the [native workspace](https://github.com/vllm-project/FlashKDA/blob/17a037d98da546deb4591e967cf961a43c034d8b/csrc/flash_kda.cpp#L11)
+  or change callback grids, inputs, dispatch, or timing. Oversized points still
+  run and retain explicit failure evidence; partial convolution rows do not
+  make a failed callback complete. CPU lifetime tests cover both prefill paths
+  and continuation after a core failure. GPU capacity remains a runtime check.
+- DeepSeek-V4 mHC remains gated on 0.31: its pre rows do not model the fused
+  default serving path, and shared mHC identities omit architecture. A standalone
+  post comparison may use an isolated research artifact, but cannot establish
+  full mHC coverage or permit mixed DeepSeek/GLM publication.
+
+CPU tests cover resolver arguments, target native decode output/state contracts,
+selected-extension failures, and preservation of the publication gates. They do
+not establish numerical correctness, GPU launch validity, or timing reuse.
+
+vLLM0.31 MiniMax-M3 MSA constructs both main and indexer caches through the
+native layout resolver and byte-stride view builder. Public common metadata
+retains absolute positions, prefix lengths, and the current token in decode
+sequence lengths. Both layers use native cache-binding hooks; the indexer
+removes its singleton head axis. The model's own backend/implementation
+selector remains authoritative. On B200, default MSA decode is Triton;
+CUTLASS decode is an opt-in configuration and is not qualified by default runs.
+See [target cache binding](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/models/minimax_m3/common/indexer.py#L141)
+and [default decode selection](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/config/attention.py#L43).
+These adapters enable GPU qualification; older MSA timing data remains subject
+to the refresh audit.
+
+MSA dummy-weight initialization preserves the native attention Q/K/V/probability
+scale buffers and their host values. These are runtime attention scales, not
+projection weight scales. The target fused FP8 cache writer uses identity scale;
+changing device scales alone would make Triton decode rescale stored K/V while
+MSA prefill reads the same bytes at identity scale. See
+[native scale initialization](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/model_executor/layers/attention/attention.py#L133)
+and [fused cache conversion](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/csrc/libtorch_stable/fused_minimax_m3_qknorm_rope_kv_insert_kernel.cu#L215).
+Projection weight-scale initialization and native backend selection are unchanged.
+
+vLLM 0.31 MiniMax-M3 MoE uses the native packed `swigluoai_uninterleave`
+activation with checkpoint clamp/alpha/beta (defaults 7, 1.702, 1). GPT-OSS
+keeps its interleaved activation. The NVFP4 checkpoint uses
+`ModelOptMixedPrecisionConfig` with an actual routed-expert prefix, so native
+resolution constructs `ModelOptNvFp4FusedMoE`; a dummy prefix would miss the
+per-layer mapping. The native selector still chooses the kernel. See
+[MiniMax serving arguments](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/models/minimax_m3/nvidia/model.py#L253),
+[activation defaults](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/transformers_utils/configs/minimax_m3.py#L36),
+and [mixed-precision resolution](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/model_executor/layers/quantization/modelopt.py#L1789).
+This changes no case arguments, precision keys, token sweep or output columns.
+Earlier MiniMax timings using the interleaved/no-clamp contract are not serving
+measurements and need fresh qualification. Older vLLM constructor behavior is
+unchanged; the new path still requires native numerical and smoke validation.
+
 # Preparation
+
+The vLLM 0.31.0 MoE collector probes the callable `FusedMoEFactory` for native
+SiTU parameters and forwards both model beta values. Factories without these
+parameters retain the existing, explicitly labeled `_situ_as_silu` Marlin
+approximation. Native SiTU measurements require fresh qualification; the old
+approximation is not evidence of native activation or backend equivalence.
+The stock compressed-tensors CUTLASS MXFP4 path quantizes activations to MXFP4
+(W4A4). It now fails before timing when requested under the `w4a16_mxfp4`
+label. B200 Kimi-K3 native SiTU needs a separate approved precision contract;
+do not force Marlin or publish W4A4 timings as W4A16 to bypass this failure.
+For vLLM 0.31.0, the collector also checks both native activation quantization
+descriptors after weight loading. OCP GPT-OSS can select MXFP8 activations on
+B200 despite a declared W4A16 case; that selection now raises before timing.
+Explicitly unquantized descriptors remain valid. Unknown descriptors raise an
+unverified-precision error. Each queued geometry is checked independently;
+this is not a hardware exclusion, backend override or new data identity.
+
+The vLLM 0.31.0 collector also rejects an actual selected
+`TrtLlmBf16ExpertsMonolithic` leaf when the model requires
+`apply_router_weight_on_input=True`. Native Llama4 BF16 diagnostics on B200
+showed output weighting instead of the declared input weighting. The guard
+runs after per-token native leaf selection and raises before timing; queued
+cases remain explicit failures. Other leaves and output-weighted models retain
+their paths. It does not force a fallback or change the model contract.
+The source evidence is vLLM
+[`db9527a` BF16 apply](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/model_executor/layers/fused_moe/experts/trtllm_bf16_moe.py#L257)
+(drops the input-weight flag) and FlashInfer
+[`946200de` BF16 launcher](https://github.com/flashinfer-ai/flashinfer/blob/946200de1ae94fc93fdd0926f0a13afd1fa7f0f1/csrc/trtllm_fused_moe_kernel_launcher.cu#L5304)
+(passes false). A native repair and numerical requalification are required
+before retiring this version-scoped guard; unchanged class names alone are
+not evidence that an upgraded implementation still has the defect.
+CPU regression checks include the strict import-surface tests and the shared
+getter/GLM case-plan tests. Their fake vLLM tree includes the BF16 expert module
+import without running or replacing its GPU implementation.
+
+The vLLM MoE callback collects unreachable cyclic objects after a successful
+return, once its native setup/timing frame has been released. Native parameters
+can retain their owning expert layer through bound weight loaders, keeping
+weight tensors alive across callbacks. This cleanup runs once per complete
+token sweep, outside timing. It does not empty the CUDA allocator cache, force
+dispatch, alter case identities, or catch callback exceptions. Existing worker
+failure handling and periodic cleanup remain unchanged.
+
+This changes the MoE collector content hash, even though the native callback
+body, case grid and timing contract remain unchanged. Use a fresh output and
+checkpoint directory for qualification. Preserving prior successful data for
+a continuation requires an explicit per-case provenance/compatibility review;
+do not relabel old measurements or silently clear failed checkpoint entries.
 
 SGLang 0.5.14 standalone MLA rows distinguish kernel compute from KV storage.
 On B200/B300, `trtllm_mla` quantizes Q/K/V internally when the KV cache is FP8,
@@ -503,6 +663,12 @@ arguments and derives computed-token counts from device sequence and query
 lengths; the helper keeps the CPU sequence-length upper bound in both versions.
 This API repair does not qualify all v0.31.0 operations: version guards remain
 in place until serving-path audits and GPU smoke collection pass.
+
+`compute_scale` produces both `computescale_perf` and its static-quantization
+companion `scale_matrix_perf`. Finalization and recovery bind both tables to
+the same registered producer and checkpoint. Both staging files are required
+before either is published; the attempted ledger closes only after both tables
+and their provenance commit.
 
 At collection time:
 1. `collect.py` reads the backend registry

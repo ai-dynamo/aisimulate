@@ -15,8 +15,9 @@ ct-mxfp4+situ checkpoint is MarlinExperts W4A16 on every SM (the preview
 build's CUTLASS activation whitelist rejects SITU), so the collector
 forces the same Marlin selection on stock, runs the elementwise epilogue
 as silu (<~3% of the op), and marks the rows' kernel_source with
-`_situ_as_silu`. On the preview build itself the betas pass through
-natively. Re-verify at every version bump: when upstream wires SITU into
+`_situ_as_silu`. Builds exposing SiTU parameters on their factory, including
+stock 0.31.0, receive the betas natively and retain framework dispatch.
+Re-verify at every version bump: when upstream wires SITU into
 a quantized-activation kernel (the preview already carries an unwired
 trtllm-gen SITU mapping), the serving kernel class changes and this
 approximation must be retired.
@@ -163,8 +164,11 @@ approximation must be retired.
 __compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0,!=0.28.0,!=0.29.0,!=0.30.0"
 
 import contextlib
+import gc
 import json
 import os
+from functools import wraps
+from inspect import signature
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -182,6 +186,7 @@ from collector.helper import (
     log_perf,
     power_law_logits_v3,
 )
+from vllm.model_executor.layers.fused_moe.experts import trtllm_bf16_moe
 from vllm.version import __version__ as vllm_version
 
 aic_debug = int(os.getenv("aic_moe_debug", "0"))  # noqa: SIM112
@@ -230,6 +235,34 @@ def _uses_modelopt_nvfp4_checkpoint(model_name: str) -> bool:
     )
 
 
+def _uses_minimax_m3_031(model_name: str) -> bool:
+    # These registered aliases have a VL wrapper; their text_config omits
+    # model_type. Scope this serving audit to the inspected 0.31 release.
+    return vllm_version.split("+", 1)[0] == "0.31.0" and model_name in {
+        "MiniMaxAI/MiniMax-M3",
+        "nvidia/MiniMax-M3-NVFP4",
+    }
+
+
+def _minimax_m3_nvfp4_checkpoint(model_name: str) -> tuple[dict, str]:
+    """Keep the native mixed-precision resolver and an actual expert prefix."""
+    checkpoint = _load_checkpoint_quantization_config(model_name)
+    entries = {
+        key: value
+        for key, value in checkpoint.get("quantized_layers", {}).items()
+        if ".block_sparse_moe.experts." in key
+    }
+    if (
+        checkpoint.get("quant_method") != "modelopt"
+        or checkpoint.get("quant_algo") != "MIXED_PRECISION"
+        or not entries
+        or any(value.get("quant_algo") != "NVFP4" or value.get("group_size") != 16 for value in entries.values())
+    ):
+        raise ValueError(f"MiniMax-M3 NVFP4 requires checkpoint-native ModelOpt NVFP4/group16 experts: {model_name}")
+    prefix = next(iter(entries)).split(".experts.", 1)[0] + ".experts"
+    return checkpoint, prefix
+
+
 def _resolve_moe_runtime_config(model_name: str, module_config: dict) -> dict:
     """Resolve the FusedMoE arguments used by vLLM 0.24 model code."""
     model_config = _load_model_moe_config(model_name)
@@ -240,6 +273,12 @@ def _resolve_moe_runtime_config(model_name: str, module_config: dict) -> dict:
         or model_config.get("hidden_activation")
         or "silu"
     )
+    native_minimax_m3 = _uses_minimax_m3_031(model_name)
+    if native_minimax_m3:
+        # vLLM db9527a, models/minimax_m3/nvidia/model.py:253-265:
+        # packed [gate; up] (not GPT-OSS interleaved), with native clamp/betas.
+        # Missing fields use MiniMaxM3TextConfig defaults (:36-41).
+        activation = "swigluoai_uninterleave"
 
     use_grouped_topk = model_type in {
         "deepseek_v3",
@@ -360,9 +399,17 @@ def _resolve_moe_runtime_config(model_name: str, module_config: dict) -> dict:
         # filters the NVFP4 backends (oracle/nvfp4.py:205-219) and gates the
         # TRT-LLM FP8 experts (trtllm_fp8_moe.py:86-112).
         "swiglu_limit": (
-            model_config.get("swiglu_limit")
-            if model_type in ("deepseek_v4", "deepseek_ref", "glm5_next_text")
-            else None
+            model_config.get("swiglu_limit", 7.0) if native_minimax_m3 else model_config.get("swiglu_limit")
+        )
+        if native_minimax_m3 or model_type in ("deepseek_v4", "deepseek_ref", "glm5_next_text")
+        else None,
+        **(
+            {
+                "swiglu_alpha": model_config.get("swiglu_alpha", 1.702),
+                "swiglu_beta": model_config.get("swiglu_beta", 1.0),
+            }
+            if native_minimax_m3
+            else {}
         ),
         "use_grouped_topk": use_grouped_topk,
         "num_expert_group": num_expert_group,
@@ -499,6 +546,67 @@ def get_moe_test_cases():
     return test_cases
 
 
+def _require_moe_activation_precision(moe_type, quant_method, *, loaded=False):
+    # CT MXFP4's device-selected CUTLASS path quantizes activations as well
+    # as weights (compressed_tensors_moe_w4a4_mxfp4.py:151-160 @v0.31.0).
+    # A native SiTU factory must not turn a declared W4A16 row into W4A4.
+    if moe_type == "w4a16_mxfp4" and getattr(quant_method, "use_cutlass_mxfp4", False):
+        raise ValueError(
+            "w4a16_mxfp4 requires BF16 activations, but the selected compressed-tensors "
+            "CUTLASS MXFP4 method quantizes activations to MXFP4 (W4A4); "
+            "a separate collector/data precision contract is required"
+        )
+    if not loaded or moe_type != "w4a16_mxfp4" or vllm_version.split("+")[0] != "0.31.0":
+        return
+    # vLLM db9527a: oracle/mxfp4.py:1898 and fused_moe/config.py:704
+    # select MXFP8 for both activations even for an OCP weight-only checkpoint.
+    config = getattr(quant_method, "moe_quant_config", None)
+    activations = [getattr(config, name, None) for name in ("_a1", "_a2")]
+    if any(not hasattr(activation, "dtype") for activation in activations):
+        raise ValueError("Cannot verify selected W4A16 activation precision after native weight loading")
+    dtypes = tuple(activation.dtype for activation in activations)
+    if any(dtype is not None for dtype in dtypes):
+        raise ValueError(
+            f"w4a16_mxfp4 requires BF16 activations, but {type(quant_method).__name__} "
+            f"backend={getattr(quant_method, 'mxfp4_backend', 'unknown')} "
+            f"selects activation quantization {dtypes}; "
+            "a separate collector/data precision contract is required"
+        )
+
+
+def _require_moe_input_weighting(runtime_config, leaf_experts):
+    # FIXME(kernel-limit): re-qualify on framework upgrades. vLLM db9527a
+    # experts/trtllm_bf16_moe.py:257-310 accepts but drops input weighting;
+    # FlashInfer 946200de trtllm_fused_moe_kernel_launcher.cu:5304 passes false.
+    # Only the observed native class is rejected; never substitute a backend.
+    native_type = getattr(trtllm_bf16_moe, "TrtLlmBf16ExpertsMonolithic", None)
+    if (
+        vllm_version.split("+")[0] == "0.31.0"
+        and runtime_config["apply_router_weight_on_input"]
+        and native_type is not None
+        and type(leaf_experts) is native_type
+    ):
+        raise RuntimeError(
+            "Native TrtLlmBf16ExpertsMonolithic does not preserve "
+            "apply_router_weight_on_input=True on vLLM 0.31.0; "
+            "refusing to time this routing-contract mismatch. "
+            "Native implementation repair and numerical qualification are required"
+        )
+
+
+def _collect_after_success(callback):
+    @wraps(callback)
+    def wrapped(*args, **kwargs):
+        result = callback(*args, **kwargs)
+        # The returned frame must release its locals before collecting native
+        # layer -> parameter -> bound weight_loader -> layer cycles.
+        gc.collect()
+        return result
+
+    return wrapped
+
+
+@_collect_after_success
 def run_moe_torch(
     moe_type,
     num_tokens_lists,
@@ -570,6 +678,7 @@ def run_moe_torch(
     )
     router_logits_dtype = torch.float32 if runtime_config["router_logits_float32"] else None
     custom_routing_function = None
+    moe_prefix = "collector_moe"
     if runtime_config["custom_routing"] == "llama4":
         from vllm.model_executor.models.llama4 import Llama4MoE
 
@@ -655,6 +764,14 @@ def run_moe_torch(
             activation_scheme="dynamic",
             weight_block_size=[128, 128],
         )
+    elif moe_type == "nvfp4" and _uses_minimax_m3_031(model_name):
+        # db9527a modelopt.py:1655-1700,1788-1792 resolves the real expert
+        # prefix to ModelOptNvFp4FusedMoE. A collector_dummy prefix would
+        # miss the checkpoint mapping and incorrectly become unquantized.
+        from vllm.model_executor.layers.quantization.modelopt import ModelOptMixedPrecisionConfig
+
+        checkpoint, moe_prefix = _minimax_m3_nvfp4_checkpoint(model_name)
+        quant_config = ModelOptMixedPrecisionConfig.from_config(checkpoint)
     elif moe_type == "nvfp4" and _uses_modelopt_nvfp4_checkpoint(model_name):
         # Serving loads this checkpoint with ModelOptNvFp4Config
         # (ModelOptNvFp4FusedMoE, modelopt.py:819-851 @v0.31.0). It shares the
@@ -739,10 +856,11 @@ def run_moe_torch(
     # and the rank-0 expert map exactly as in a multi-rank model.
     logical_parallel_size = moe_ep_size if moe_ep_size > 1 else moe_tp_size
 
-    # SITU activation (Kimi-K3) exists only on the kimi-k3 preview build
-    # (stock v0.24.0 has no situ path — upstream v0.24.0 activation.py).
-    # Probe the constructor instead of predicting: on the preview build,
-    # pass the betas through. On stock, apply the owner-approved
+    # FusedMoE is a factory function, not the returned layer class. Inspect
+    # that callable: layer.py:88-112 @v0.31.0 exposes both SiTU betas, as used
+    # by models/kimi_k3/nvidia/model.py:708-716. Inspecting its __init__ would
+    # miss them and incorrectly replace native SiTU with the legacy fallback.
+    # On older factories without SiTU parameters, apply the owner-approved
     # approximation (2026-08-02): serving truth for (ct-mxfp4, situ) is
     # MarlinExperts weight-only W4A16 — the preview rejects SITU in its
     # CUTLASS activation whitelist and falls to Marlin
@@ -757,9 +875,7 @@ def run_moe_torch(
     situ_kwargs = {}
     situ_marlin_approx = False
     if runtime_config["activation"] == "situ":
-        from inspect import signature as _sig
-
-        if "activation_situ_beta" in _sig(FusedMoE.__init__).parameters:
+        if "activation_situ_beta" in signature(FusedMoE).parameters:
             situ_kwargs = {
                 "activation_situ_beta": runtime_config["activation_situ_beta"],
                 "activation_situ_linear_beta": runtime_config["activation_situ_linear_beta"],
@@ -803,7 +919,7 @@ def run_moe_torch(
             tp_size=logical_parallel_size,
             dp_size=1,
             pcp_size=1,
-            prefix="collector_moe",
+            prefix=moe_prefix,
             custom_routing_function=custom_routing_function,
             scoring_func=runtime_config["scoring_func"],
             routed_scaling_factor=runtime_config["routed_scaling_factor"],
@@ -814,6 +930,7 @@ def run_moe_torch(
             activation=runtime_config["activation"],
             router_logits_dtype=router_logits_dtype,
             apply_routed_scale_to_output=runtime_config["apply_routed_scale_to_output"],
+            **{key: runtime_config[key] for key in ("swiglu_alpha", "swiglu_beta") if key in runtime_config},
             **situ_kwargs,
         )
         moe_module.to(device)
@@ -839,6 +956,7 @@ def run_moe_torch(
                     parameter.zero_()
 
         quant_method = routed_experts.quant_method
+        _require_moe_activation_precision(moe_type, quant_method)
         # API-compat shim for stock v0.24.0 Marlin weight prep under EP:
         # prepare_moe_fp4_layer_for_marlin sizes its repack loop and shape
         # assert from moe_config.num_experts (GLOBAL), while create_weights
@@ -865,6 +983,8 @@ def run_moe_torch(
                     _mc.num_experts = _global_e
                 except AttributeError:
                     object.__setattr__(_mc, "num_experts", _global_e)
+
+        _require_moe_activation_precision(moe_type, quant_method, loaded=True)
 
         selected_backend = None
         for backend_attr in (
@@ -908,6 +1028,7 @@ def run_moe_torch(
                     raise RuntimeError(f"vLLM MoE wrapper {wrapper_name} did not select an experts implementation")
             else:
                 leaf_experts = experts_impl
+            _require_moe_input_weighting(runtime_config, leaf_experts)
             experts_name = type(leaf_experts).__name__ if leaf_experts is not None else "direct"
             print(f"vLLM MoE experts: wrapper={wrapper_name} leaf={experts_name}")
             source = f"vllm_{method_name}_{backend_name}_{experts_name}".lower()

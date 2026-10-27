@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import sys
 import types
@@ -19,6 +20,56 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MODEL_PATH = "MiniMaxAI/MiniMax-M3"
 ARCHITECTURE = "MiniMaxM3ForCausalLM"
+
+
+@pytest.mark.parametrize("native_scale", [1.0, 0.25])
+def test_vllm_dummy_weights_preserve_native_attention_scales(native_scale):
+    """Execute the real initialization loop without importing a CUDA runtime."""
+    source = REPO_ROOT / "collector/vllm/collect_msa_module.py"
+    tree = ast.parse(source.read_text())
+    loops = [
+        node for node in ast.walk(tree) if isinstance(node, ast.For) and ast.unparse(node.target) == "(name, tensor)"
+    ]
+    assert len(loops) == 1
+
+    class Tensor:
+        def __init__(self, value, dtype="float32", is_meta=False):
+            self.value, self.dtype, self.is_meta = value, dtype, is_meta
+            self.data = self
+
+        def fill_(self, value):
+            self.value = value
+
+        def zero_(self):
+            self.fill_(0)
+
+    scales = {name: Tensor(native_scale) for name in ("_q_scale", "_k_scale", "_v_scale", "_prob_scale")}
+    weights = {
+        "qkv_proj.weight_scale": Tensor(99),
+        "qkv_proj._q_scale": Tensor(99),
+        "qkv_proj.weight": Tensor(99, "bfloat16"),
+        "packed.weight": Tensor(99, "uint8"),
+        "unmaterialized": Tensor(99, is_meta=True),
+    }
+    host = {name + "_float": native_scale for name in scales}
+    module = SimpleNamespace(
+        **scales,
+        **host,
+        named_parameters=lambda: weights.items(),
+        named_buffers=lambda: scales.items(),
+    )
+    fake_torch = SimpleNamespace(float8_e4m3fn="e4m3", float8_e5m2="e5m2", uint8="uint8", float32="float32")
+    exec(
+        compile(ast.Module(body=loops, type_ignores=[]), str(source), "exec"),
+        {"attn_module": module, "torch": fake_torch},
+    )
+    for name, tensor in scales.items():
+        assert getattr(module, name) is tensor
+        assert tensor.value == getattr(module, name + "_float") == native_scale
+    assert weights["qkv_proj.weight_scale"].value == weights["qkv_proj._q_scale"].value == 0.5
+    assert weights["qkv_proj.weight"].value == 0.01
+    assert weights["packed.weight"].value == 0
+    assert weights["unmaterialized"].value == 99
 
 
 class _Dummy:
@@ -269,3 +320,67 @@ def test_vllm_standalone_full_sweep_keeps_declared_prefixes_and_quick_defaults_t
     monkeypatch.setattr(sys, "argv", ["collect_msa_module.py", "--mode", "context", "--quick"])
     module.main()
     assert [call["prefix_len"] for call in calls] == [0]
+
+
+@pytest.mark.parametrize("is_context,expected_query", [(True, 128), (False, 1)])
+def test_vllm031_msa_uses_native_views_and_public_metadata(monkeypatch, is_context, expected_query):
+    module = _load_backend(monkeypatch, "vllm")
+    monkeypatch.setattr(module, "vllm_version", "0.31.0")
+    requests, allocations, builds = [], [], []
+    common = object()
+
+    def metadata(batch, block_size, num_blocks, device, context, *, randomize_blocks):
+        requests.append((batch.seq_lens, batch.query_lens, block_size, num_blocks, context, randomize_blocks))
+        return common, object()
+
+    def allocate(config, backend, spec, num_blocks, device):
+        value = object()
+        allocations.append((backend, spec, num_blocks, value))
+        return value
+
+    _stub_module(monkeypatch, "collector.vllm.runtime_031", create_common_metadata=metadata, allocate_cache=allocate)
+
+    class Builder:
+        def __init__(self, spec, names, config, device):
+            self.names = names
+
+        def build(self, **kwargs):
+            builds.append((self.names, kwargs))
+            return self.names
+
+    # Deliberately no get_kv_cache_shape: target removed that API.
+    backend = SimpleNamespace(get_builder_cls=lambda: Builder)
+    main_spec, index_spec = object(), object()
+    index = SimpleNamespace(get_attn_backend=lambda: backend, get_kv_cache_spec=lambda config: index_spec)
+    layer = SimpleNamespace(
+        get_attn_backend=lambda: backend,
+        get_kv_cache_spec=lambda config: main_spec,
+        indexer=SimpleNamespace(index_cache=index),
+    )
+    config = SimpleNamespace(cache_config=SimpleNamespace(block_size=128))
+    result = module._create_kv_caches_and_metadata(config, layer, 2, 128, is_context, prefix_len=128)
+    total = 256 if is_context else 129
+    assert requests == [([total, total], [expected_query, expected_query], 128, 5, is_context, False)]
+    assert [entry[1] for entry in allocations] == [main_spec, index_spec]
+    assert [entry[2] for entry in allocations] == [5, 5]
+    assert result[:2] == (allocations[0][3], allocations[1][3])
+    assert result[-1] is common
+    assert [b[0] for b in builds] == [[module._ATTN_LAYER_NAME], [module._INDEX_CACHE_LAYER_NAME]]
+    assert all(b[1]["common_attn_metadata"] is common for b in builds)
+    assert all(b[1]["common_prefix_len"] == (128 if is_context else 0) for b in builds)
+
+
+def test_vllm031_msa_binds_both_native_layer_views(monkeypatch):
+    module = _load_backend(monkeypatch, "vllm")
+    monkeypatch.setattr(module, "vllm_version", "0.31.0")
+    bindings = []
+    context = {
+        name: SimpleNamespace(bind_kv_cache=lambda cache, name=name: bindings.append((name, cache)))
+        for name in [module._ATTN_LAYER_NAME, module._INDEX_CACHE_LAYER_NAME]
+    }
+    main, index = object(), object()
+    module._bind_msa_caches(context, main, index)
+    assert bindings == [(module._ATTN_LAYER_NAME, main), (module._INDEX_CACHE_LAYER_NAME, index)]
+    # The indexer hook transforms the4D native view; bypassing it via direct
+    # assignment leaves the wrong rank, even though allocation succeeded.
+    assert not hasattr(context[module._INDEX_CACHE_LAYER_NAME], "kv_cache")

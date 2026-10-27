@@ -58,14 +58,16 @@ Output:
 # The file-level range spans the two audited routes (PEP 440 clauses are
 # conjunctive, so it cannot name the two releases alone). Each KDA
 # architecture is additionally gated at runtime to its own audited release by
-# _KDA_ARCHITECTURE_COMPAT: Kimi-K3 only on the 0.1.dev19262 preview, GLM-5.3-
-# Flash only on stock 0.31.0 (no overlay); every release in between
-# (including 0.30.0, where the GLM layer lived under glm5next/nvidia/) raises
-# KdaRuntimeNotAuditedError.
+# _KDA_ARCHITECTURE_COMPAT: the preview and GLM routes remain unchanged.
+# A separate fixed-profile gate admits Kimi context/nonspec generation on
+# B200 0.31.0 with SD convolution state, including fixed non-RecoverSSM verify.
+# Intervening releases still raise KdaRuntimeNotAuditedError.
 __compat__ = "vllm>=0.1.dev19262,<=0.31.0"
 
 import gc
+import math
 import os
+from types import SimpleNamespace
 
 import torch
 
@@ -148,10 +150,25 @@ def _log(common, latency_ms, kernel_source, perf_filename, vllm_version, device,
         raise RuntimeError(f"failed to persist vLLM KDA row to {perf_filename}")
 
 
-def _resolve_prefill_kernel(dtype: torch.dtype):
+def _resolve_prefill_kernel(dtype: torch.dtype, runtime_version: str):
     """Mirror serving's resolve_kda_prefill_backend on this device: FlashKDA
     when supported AND importable, else the Triton chunk kernel
     (vllm/models/kimi_k3/nvidia/kda.py resolve_kda_prefill_backend)."""
+    # Stock 0.31.0 (db9527a4, kda.py:394-435) adds the recurrent
+    # dtype to its resolver. A selected extension import failure must raise.
+    if _check_compat("vllm==0.31.0", runtime_version):
+        from vllm.models.kimi_k3.nvidia.kda import resolve_kda_prefill_backend
+
+        backend = resolve_kda_prefill_backend("auto", 128, dtype, torch.float32, KDA_LOWER_BOUND)
+        if backend == "flashkda":
+            import vllm._flashkda_C
+            from vllm.models.kimi_k3.nvidia.kda import _flashkda_prefill
+
+            return "flashkda_fwd", _flashkda_prefill
+        if backend != "triton":
+            raise RuntimeError(f"Unexpected KDA prefill backend for FP32 state: {backend}")
+        return "chunk_kda_with_fused_gate", None
+
     from vllm.models.kimi_k3.nvidia.kda import is_flashkda_supported
 
     if is_flashkda_supported(128, dtype, KDA_LOWER_BOUND):
@@ -212,7 +229,7 @@ def run_kda_context_benchmark(
     nh, hd, cw = num_v_heads, head_v_dim, d_conv
     proj = nh * hd
 
-    prefill_source, flashkda_prefill = _resolve_prefill_kernel(dtype)
+    prefill_source, flashkda_prefill = _resolve_prefill_kernel(dtype, vllm_version)
     conv_weight = torch.randn(3 * proj, cw, dtype=torch.float32, device=device)
     q_w, k_w, v_w = conv_weight.split([proj] * 3, dim=0)
     ok = err = 0
@@ -221,6 +238,7 @@ def run_kda_context_benchmark(
     for batch_size in batch_size_list:
         for seq_len in seq_len_list:
             nt = batch_size * seq_len
+            flashkda_buffers = {}
             try:
                 # Resolved at the 0.27.0 era bump: the former FIXME
                 # kernel-limit guard (nt * proj >= 2**31 rejected) is
@@ -235,9 +253,25 @@ def run_kda_context_benchmark(
                 # 14.3ms for the same traffic — both within the 8TB/s byte
                 # model margin).
                 cu = torch.arange(0, nt + 1, seq_len, dtype=torch.int32, device=device)
-                idx = torch.arange(batch_size, dtype=torch.int32, device=device)
+                target_runtime = _check_compat("vllm==0.31.0", vllm_version)
+                # v0.31 db9527a4 causal_conv1d.py:491,145-151,751 reserves
+                # NULL_BLOCK_ID=0 and returns without processing that slot.
+                # Serving's block allocator reserves it; keep preview IDs intact.
+                first_slot = 1 if target_runtime else 0
+                idx = torch.arange(first_slot, batch_size + first_slot, dtype=torch.int32, device=device)
                 has_init = torch.zeros(batch_size, dtype=torch.bool, device=device)
-                conv_state = torch.zeros(batch_size, 3 * proj, cw - 1, dtype=dtype, device=device)
+                if target_runtime:
+                    from vllm.model_executor.layers.mamba.mamba_utils import is_conv_state_dim_first
+
+                    # kda.py:860-861 uses the configured native cache layout.
+                    if is_conv_state_dim_first():
+                        conv_state = torch.zeros(batch_size + 1, 3 * proj, cw - 1, dtype=dtype, device=device)
+                    else:
+                        conv_state = torch.zeros(
+                            batch_size + 1, cw - 1, 3 * proj, dtype=dtype, device=device
+                        ).transpose(1, 2)
+                else:
+                    conv_state = torch.zeros(batch_size, 3 * proj, cw - 1, dtype=dtype, device=device)
                 q_cs, k_cs, v_cs = conv_state.split([proj] * 3, dim=-2)
                 mixed = torch.randn(nt, 3 * proj, dtype=dtype, device=device)
                 q_in, k_in, v_in = mixed.transpose(0, 1).split([proj] * 3, dim=0)
@@ -333,6 +367,8 @@ def run_kda_context_benchmark(
                         results["power_stats"],
                     )
 
+                # Conv timing has finished; these views retain an unused 3*nt*proj input.
+                mixed = q_in = k_in = v_in = None
                 q = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
                 k = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
                 v = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
@@ -343,6 +379,15 @@ def run_kda_context_benchmark(
                 init_state = torch.zeros(batch_size, nh, hd, hd, dtype=torch.float32, device=device)
 
                 if prefill_source == "flashkda_fwd":
+                    # kda.py:684-691 allocates these before forward; the new
+                    # :312-356 API requires them. Do not time allocation.
+                    if _check_compat("vllm==0.31.0", vllm_version):
+                        workspace_size = torch.ops._flashkda_C.get_workspace_size(nt, nh, batch_size)
+                        flashkda_buffers = {
+                            "out": torch.empty_like(q),
+                            "final_state": torch.empty_like(init_state),
+                            "workspace": torch.empty(workspace_size, dtype=torch.uint8, device=device),
+                        }
 
                     def run_prefill():
                         flashkda_prefill(
@@ -356,6 +401,7 @@ def run_kda_context_benchmark(
                             KDA_LOWER_BOUND,
                             init_state,
                             cu,
+                            **flashkda_buffers,
                         )
 
                 else:
@@ -400,6 +446,7 @@ def run_kda_context_benchmark(
                 cu = idx = has_init = conv_state = q_cs = k_cs = v_cs = None
                 mixed = q_in = k_in = v_in = q = k = v = raw_g = raw_beta = None
                 a_log = dt_bias = init_state = None
+                flashkda_buffers.clear()
                 _cleanup("context")
 
     summary = f"ok={ok} error={err} skip=0"
@@ -447,7 +494,18 @@ def run_kda_generation_benchmark(
     nh, hd, cw = num_v_heads, head_v_dim, d_conv
     dim = nh * hd
 
-    fused_ok = is_fused_kda_decode_supported(nh, hd, cw, num_spec=0, input_dtype=dtype, conv_state_dtype=dtype)
+    target_runtime = _check_compat("vllm==0.31.0", vllm_version)
+    if target_runtime:
+        from vllm.models.kimi_k3.nvidia.kda import resolve_kda_decode_backend
+
+        # kda.py:217-271: native if supported, else Triton; FlashInfer is
+        # explicit opt-in. Default generation has no speculative tokens.
+        decode_backend = resolve_kda_decode_backend("auto", nh, hd, cw, 0, dtype, dtype, torch.float32)
+        if decode_backend not in {"native", "triton"}:
+            raise RuntimeError(f"Unexpected default KDA decode backend: {decode_backend}")
+        fused_ok = decode_backend == "native"
+    else:
+        fused_ok = is_fused_kda_decode_supported(nh, hd, cw, num_spec=0, input_dtype=dtype, conv_state_dtype=dtype)
     conv_weight = torch.randn(3 * dim, cw, dtype=torch.float32, device=device)
     fused_weight = conv_weight.reshape(3, dim, cw).transpose(1, 2).contiguous()
     norm_weight = torch.randn(hd, dtype=torch.float32, device=device)
@@ -484,6 +542,9 @@ def run_kda_generation_benchmark(
             }
 
             if fused_ok:
+                # Serving supplies core_attn_out (kda.py:895-912); preserve
+                # the preview API while matching the target's output buffer.
+                fused_output = {"out": torch.empty(1, nb, nh, hd, dtype=dtype, device=device)} if target_runtime else {}
 
                 def run_fused_decode():
                     ops.fused_kda_decode(
@@ -501,6 +562,7 @@ def run_kda_generation_benchmark(
                         output_gate=output_gate,
                         norm_weight=norm_weight,
                         norm_eps=1e-5,
+                        **fused_output,
                     )
 
                 with benchmark_with_power(
@@ -519,6 +581,13 @@ def run_kda_generation_benchmark(
                         device,
                         results["power_stats"],
                     )
+
+            if target_runtime and fused_ok:
+                # Serving returns after native decode (kda.py:913). The
+                # fallback is a separate speculative/explicit-Triton lane,
+                # not another measurement of this default-generation case.
+                ok += 1
+                continue
 
             def run_conv_update():
                 causal_conv1d_update(
@@ -587,6 +656,33 @@ def run_kda_generation_benchmark(
         )
 
 
+def _kimi031_verify_state_pool(batch_size, query_len, nh, hd, cw, device):
+    """Bind the native unpadded per-layer cache; slot zero stays reserved."""
+    # Version-local imports preserve the preview module's import surface.
+    # vLLM db9527a4 mamba_utils.py:133-149,303-326 and
+    # mamba/abstract.py:28-44 own dtype/shape/byte-stride construction.
+    from vllm.model_executor.layers.mamba.abstract import MambaBase
+    from vllm.model_executor.layers.mamba.mamba_utils import MambaStateDtypeCalculator, MambaStateShapeCalculator
+    from vllm.models.kimi_k3.nvidia.kda import resolve_kda_decode_backend
+
+    dtypes = MambaStateDtypeCalculator.kda_state_dtype(torch.bfloat16, "auto")
+    selected = resolve_kda_decode_backend("auto", nh, hd, cw, query_len - 1, torch.bfloat16, *dtypes)
+    if selected != "triton":
+        raise KdaRuntimeNotAuditedError(f"Kimi verify expected native auto Triton dispatch, selected {selected}")
+    shapes = MambaStateShapeCalculator.kda_state_shape(
+        tp_world_size=1, num_heads=nh, head_dim=hd, conv_kernel_size=cw, num_spec=query_len - 1
+    )
+    page_bytes = sum(
+        math.prod(shape) * torch.empty((), dtype=dtype).element_size()
+        for shape, dtype in zip(shapes, dtypes, strict=True)
+    )
+    pages = torch.zeros((batch_size * query_len + 1, 1, 1, page_bytes), dtype=torch.int8, device=device)
+    holder = SimpleNamespace(get_state_shape=lambda: shapes, get_state_dtype=lambda: dtypes)
+    MambaBase.bind_kv_cache(holder, pages)
+    conv, state = holder.kv_cache
+    return conv.transpose(-1, -2), state
+
+
 def run_kda_verify_benchmark(
     d_model,
     d_conv,
@@ -615,6 +711,14 @@ def run_kda_verify_benchmark(
     nh, hd, cw = num_v_heads, head_v_dim, d_conv
     dim = nh * hd
 
+    target_runtime = model_name == "moonshotai/Kimi-K3" and _check_compat("vllm==0.31.0", vllm_version)
+    if target_runtime:
+        _require_audited_runtime(model_name, vllm_version, phase="verify", device=device)
+        if (d_model, cw, hd) != (7168, 4, 128) or nh not in (12, 24, 48, 96):
+            raise KdaRuntimeNotAuditedError("Kimi verify requires the audited hidden7168/conv4/head128 profile")
+        if any(width not in (2, 4, 8) for width in draft_token_list):
+            raise KdaRuntimeNotAuditedError("Kimi verify requires the audited query widths 2/4/8")
+
     conv_weight = torch.randn(3 * dim, cw, dtype=torch.float32, device=device)
     ok = err = 0
     failures: list[str] = []
@@ -624,23 +728,41 @@ def run_kda_verify_benchmark(
             nb = batch_size
             nt = nb * ns
             try:
-                x = torch.randn(nt, 3 * dim, dtype=dtype, device=device)
-                # spec conv cache carries num_spec extra columns
-                conv_state = torch.zeros(nb, cw - 1 + ns, 3 * dim, dtype=dtype, device=device).transpose(1, 2)
+                if target_runtime:
+                    # db9527a4 kda.py:549-567,789-795: aligned projection row,
+                    # packed qkv and narrow beta shard. Pure verify keeps these
+                    # views (kda.py:922-927); no mixed scheduler reordering.
+                    projection_width = ((4 * dim + hd + nh + 15) // 16) * 16
+                    projected = torch.randn(nt, projection_width, dtype=dtype, device=device)
+                    x = projected[:, : 3 * dim]
+                    raw_beta = projected[:, 4 * dim + hd : 4 * dim + hd + nh].unsqueeze(0)
+                    conv_state, state = _kimi031_verify_state_pool(nb, ns, nh, hd, cw, device)
+                    # kda.py:954-1027: spec conv uses first checkpoint column;
+                    # fused_recurrent.py:196,277 reserves null checkpoint zero.
+                    ssm_idx = torch.arange(1, nt + 1, dtype=torch.int32, device=device).view(nb, ns)
+                    idx = ssm_idx[:, 0]
+                else:
+                    x = torch.randn(nt, 3 * dim, dtype=dtype, device=device)
+                    conv_state = torch.zeros(nb, cw - 1 + ns, 3 * dim, dtype=dtype, device=device).transpose(1, 2)
+                    idx = torch.arange(nb, dtype=torch.int32, device=device)
                 cu = torch.arange(0, nt + 1, ns, dtype=torch.int32, device=device)
-                idx = torch.arange(nb, dtype=torch.int32, device=device)
                 accepted = torch.full((nb,), ns, dtype=torch.int32, device=device)
                 conv_out = torch.empty_like(x)
-
-                q = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
-                k = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
-                v = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
+                if target_runtime:
+                    # kda.py:978-986: actual conv output, packed token stride 3HD.
+                    q, k, v = [part.view(1, nt, nh, hd) for part in conv_out.split(dim, -1)]
+                else:
+                    q = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
+                    k = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
+                    v = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
                 raw_g = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
-                raw_beta = torch.randn(1, nt, nh, dtype=dtype, device=device)
+                if not target_runtime:
+                    raw_beta = torch.randn(1, nt, nh, dtype=dtype, device=device)
                 a_log = torch.zeros(nh, dtype=torch.float32, device=device)
                 dt_bias_hd = 0.1 * torch.randn(nh, hd, dtype=torch.float32, device=device)
-                state = torch.zeros(nb * (ns + 1), nh, hd, hd, dtype=torch.float32, device=device)
-                ssm_idx = torch.arange(nb * ns, dtype=torch.int32, device=device).view(nb, ns)
+                if not target_runtime:
+                    state = torch.zeros(nb * (ns + 1), nh, hd, hd, dtype=torch.float32, device=device)
+                    ssm_idx = torch.arange(nb * ns, dtype=torch.int32, device=device).view(nb, ns)
                 out = torch.empty(1, nt, nh, hd, dtype=dtype, device=device)
 
                 common = {
@@ -838,8 +960,30 @@ def _kda_architecture(model_name: str) -> str:
     return GLM5_NEXT_KDA_ARCHITECTURE if _is_glm5_next_kda(model_name) else KIMI_K3_KDA_ARCHITECTURE
 
 
-def _require_audited_runtime(model_name: str, runtime_version: str) -> None:
+def _require_audited_runtime(
+    model_name: str, runtime_version: str, *, phase: str | None = None, device: str = "cuda:0"
+) -> None:
     architecture = _kda_architecture(model_name)
+    if model_name == "moonshotai/Kimi-K3" and _check_compat("vllm==0.31.0", runtime_version):
+        # Fixed target profile, not a blanket architecture/version admission.
+        # db9527a4 kda.py:160-185,217-269 selects native decode for BF16
+        # input/conv, FP32 recurrence, width4/dim128, num_spec=0. Those dtypes
+        # and no-spec inputs are constructed by our callbacks. Prefill uses
+        # the same FP32 state and auto resolver (kda.py:394-433), with no
+        # exported checkpoints. kda.py:858-861 honors the native SD/DS layout;
+        # only SD is qualified here. Verify fixes num_spec=query_width-1,
+        # accepted=query_width, native cache pages/packed inputs and no
+        # RecoverSSM; query width already exists in the row identity.
+        if phase not in {"context", "generation", "verify"}:
+            raise KdaRuntimeNotAuditedError(
+                "Kimi KDA 0.31.0 is not an audited KDA runtime for unspecified phase; "
+                "only fixed context/nonspec generation/non-RecoverSSM verify profiles are qualified"
+            )
+        from vllm.model_executor.layers.mamba.mamba_utils import is_conv_state_dim_first
+
+        if torch.cuda.get_device_name(device) != "NVIDIA B200" or is_conv_state_dim_first():
+            raise KdaRuntimeNotAuditedError("Kimi KDA 0.31.0 qualification requires NVIDIA B200 and SD conv state")
+        return
     compat = _KDA_ARCHITECTURE_COMPAT[architecture]
     if not _check_compat(compat, runtime_version):
         raise KdaRuntimeNotAuditedError(
@@ -1277,7 +1421,7 @@ def run_kda_torch(
     """Main entry point: routes phases and reports the installed vLLM version."""
     from vllm.version import __version__ as vllm_version
 
-    _require_audited_runtime(model_name, vllm_version)
+    _require_audited_runtime(model_name, vllm_version, phase=phase, device=device)
     if _is_glm5_next_kda(model_name):
         run_glm5_next_kda_torch(
             phase,

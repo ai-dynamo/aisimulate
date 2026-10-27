@@ -73,6 +73,7 @@ def _run_func_for(full_name: str) -> str:
     return {
         "gemm": RUN_FUNC,
         "moe": "run_moe_torch",
+        "compute_scale": "run_computescale",
         "mla_bmm_gen_pre": "run_mla_gen_pre",
         "mla_bmm_gen_post": "run_mla_gen_post",
     }.get(full_name.split(".", 1)[-1], "run")
@@ -8056,3 +8057,128 @@ def test_finalize_raises_when_existing_sidecar_is_legacy_tier(tmp_path):
     # The legacy sidecar itself must be left untouched, not partially rebuilt.
     doc = yaml.safe_load((output_root / "collection_meta.yaml").read_text(encoding="utf-8"))
     assert doc == legacy_doc
+
+
+@pytest.mark.parametrize(
+    "backend,version,interrupt_publish",
+    [
+        ("sglang", "0.5.14", False),
+        ("sglang", "0.5.14", True),
+        ("vllm", "0.24.0", False),
+        ("vllm", "0.31.0", False),
+        ("trtllm", "1.3.0rc29", False),
+    ],
+)
+def test_compute_scale_companion_finalization_and_recovery(tmp_path, backend, version, interrupt_publish):
+    output_root = tmp_path / "out"
+    output_root.mkdir()
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint = _write_checkpoint_for(
+        checkpoint_dir,
+        backend=backend,
+        full_name=f"{backend}.compute_scale",
+        version=version,
+        done=["scale-case"],
+        failed=[],
+        attempted=["scale-case"],
+    )
+    collections = [
+        {
+            "name": backend,
+            "type": "compute_scale",
+            "module": f"collector.{backend}.collect_computescale",
+            "run_func": "run_computescale",
+            "perf_filename": "computescale_perf.txt",
+        }
+    ]
+    paths = [output_root / name for name in ("computescale_perf.txt", "scale_matrix_perf.txt")]
+    for path in paths:
+        path.write_text("op,shape,latency\nscale,10x64,1.0\n")
+    context = _provenance_ctx(collections)
+    context.update(
+        framework=backend,
+        installed_version=version,
+        runtime=CollectorRuntime(
+            framework=backend, version=version, images={"default": "example/collector@sha256:" + "0" * 64}
+        ),
+    )
+    assert (
+        collect_mod._pending_resume_perf_outputs(
+            output_root,
+            context,
+            backend=backend,
+            checkpoint_dir=str(checkpoint_dir),
+            sm_version=100,
+        )
+        == paths
+    )
+    if interrupt_publish:
+        _run_hard_exit(
+            _crash_after_first_parquet_publish,
+            (str(output_root), str(checkpoint_dir), collections),
+            86,
+            "companion output publish crash",
+        )
+        assert _recover_finalization(output_root, checkpoint_dir) is None
+        assert all(path.exists() for path in paths)
+        assert not list(output_root.glob("*.parquet"))
+        assert _attempted(checkpoint) == {"scale-case"}
+    collect_mod._finalize_collector_outputs_transaction(
+        output_root,
+        paths,
+        context,
+        [],
+        backend=backend,
+        checkpoint_dir=str(checkpoint_dir),
+        sm_version=100,
+    )
+    meta = yaml.safe_load((output_root / "collection_meta.yaml").read_text())
+    assert set(meta["tables"]) == {path.stem for path in paths}
+    for path in paths:
+        assert pq.read_metadata(path.with_suffix(".parquet")).num_rows == 1
+        assert meta["tables"][path.stem]["case_plan_hash"] == provenance.case_plan_hash(["scale-case"])
+        assert meta["tables"][path.stem]["status"] == "complete"
+        assert not path.exists()
+    assert _attempted(checkpoint) == set()
+
+
+@pytest.mark.parametrize("present_table", ["computescale_perf", "scale_matrix_perf"])
+def test_compute_scale_missing_companion_rejected_before_publication(tmp_path, present_table):
+    output_root = tmp_path / "out"
+    output_root.mkdir()
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint = _write_checkpoint_for(
+        checkpoint_dir,
+        backend=BACKEND,
+        full_name=f"{BACKEND}.compute_scale",
+        version="0.5.14",
+        done=["scale-case"],
+        failed=[],
+        attempted=["scale-case"],
+    )
+    path = output_root / f"{present_table}.txt"
+    path.write_text("op,shape,latency\nscale,10x64,1.0\n")
+    context = _provenance_ctx(
+        [
+            {
+                "name": BACKEND,
+                "type": "compute_scale",
+                "module": "collector.sglang.collect_computescale",
+                "run_func": "run_computescale",
+                "perf_filename": "computescale_perf.txt",
+            }
+        ]
+    )
+    with pytest.raises(RuntimeError, match="companion"):
+        collect_mod._finalize_collector_outputs_transaction(
+            output_root,
+            [path],
+            context,
+            [],
+            backend=BACKEND,
+            checkpoint_dir=str(checkpoint_dir),
+            sm_version=100,
+        )
+    assert path.exists() and not list(output_root.glob("*.parquet"))
+    assert not (output_root / "collection_meta.yaml").exists()
+    assert _attempted(checkpoint) == {"scale-case"}

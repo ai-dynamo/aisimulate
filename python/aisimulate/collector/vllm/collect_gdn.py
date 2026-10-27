@@ -60,7 +60,10 @@ Input/output projection GEMMs remain covered by the GEMM collector.
 # 1968047). Existing framework construction/dispatch is unchanged. Invalid
 # model/quant shapes continue to raise and remain recorded failures; this is
 # API compatibility, not a claim that every Cartesian shape is supported.
-__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.1,!=0.26.0,!=0.27.0"
+# 0.31 source audit: db9527a4 qwen_gdn_linear_attn.py:93-327 retains
+# the native resolver, FP32 state and packed non-spec decode contract.
+# fused_recurrent.py:454-455 now splits oversized grids across batch/head.
+__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0,!=0.28.0,!=0.29.0,!=0.30.0"
 
 import gc
 import os
@@ -508,22 +511,11 @@ def run_gdn_generation_benchmark(
         gc.collect()
         torch.cuda.empty_cache()
 
-        # vLLM's packed recurrent kernel launches grid-y as
-        # batch_size * num_v_heads (`grid = (NV, B * HV)`,
-        # fused_recurrent.py:449 at BOTH pinned versions -- under
-        # vllm/model_executor/layers/fla/ops/ @0.24.0 and under
-        # vllm/third_party/flash_linear_attention/ops/ @0.27.1);
-        # CUDA limits grid-y to 65,535. Keep the valid convolution measurement
-        # above, then surface the unsupported recurrent point to Collector V2
-        # instead of silently dropping it.
-        if batch_size * num_v_heads > 65_535:
-            raise RuntimeError(
-                "vLLM packed recurrent GDN exceeds CUDA grid-y limit "
-                "(fused_recurrent.py:449 launches grid-y = batch * num_v_heads; "
-                "fla/ops/ @0.24.0, third_party/flash_linear_attention/ops/ @0.27.1): "
-                f"batch_size={batch_size}, num_v_heads={num_v_heads}, "
-                f"grid_y={batch_size * num_v_heads} > 65535"
-            )
+        # Let the native kernel validate its launch. In vLLM 0.31.0
+        # db9527a4, third_party/flash_linear_attention/ops/fused_recurrent.py
+        # :454-455 uses (NV, HV, B) above 65535 rather than (NV, B * HV).
+        # The former collector guard rejected these now-valid target cases.
+        # Older runtimes still report any native launch failure to the worker.
 
         # The production non-spec decode fast path feeds packed convolution
         # output directly to this recurrent kernel: GDN decode routes to

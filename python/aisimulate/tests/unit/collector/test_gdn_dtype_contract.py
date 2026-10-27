@@ -60,3 +60,14 @@ def test_sglang_gdn_generation_matches_bf16_model_dt_bias():
 
     assert len(calls) == 1
     assert _dtype_expression(calls[0]) == "dtype"
+
+
+def test_vllm_gdn_does_not_preempt_native_split_grid_launch():
+    # Target native kernel splits (B*HV) across grid axes. The collector must
+    # call it even for the historical 1024*64 failure and retain its errors.
+    source = REPO_ROOT / "collector" / "vllm" / "collect_gdn.py"
+    function = _function(source, "run_gdn_generation_benchmark")
+    conditions = [ast.unparse(node.test) for node in ast.walk(function) if isinstance(node, ast.If)]
+    assert not any("65535" in condition or "65_535" in condition for condition in conditions)
+    calls = [node for node in ast.walk(function) if isinstance(node, ast.Call)]
+    assert any(getattr(node.func, "id", None) == "fused_recurrent_gated_delta_rule_packed_decode" for node in calls)
