@@ -937,6 +937,7 @@ mod speculative_scheduling {
                 .kv_cache_bytes_per_token(Some(16))
                 .state_cache(Some(crate::engine::StateCacheConfig {
                     bytes_per_request: 16,
+                    num_speculative_states: None,
                 }))
                 .build()
                 .unwrap(),
