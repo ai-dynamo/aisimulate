@@ -6,9 +6,10 @@
 A ModelOpt MIXED_PRECISION export quantizes exactly the modules its
 ``quantized_layers`` map lists. vLLM v0.24.0 (ee0da84a,
 model_executor/layers/quantization/modelopt.py L2392-2490) and SGLang v0.5.14
-(49e384ce, srt/layers/quantization/modelopt_quant.py L618-790) apply the
-exclusion list first, then resolve a module by exact key, packed shards or
-parent prefix, and leave any linear module without an entry unquantized.
+(49e384ce, srt/layers/quantization/modelopt_quant.py L734-792) apply the
+exclusion list first, then resolve a module by exact key, packed shards or a
+descendant key (one that starts with the module path + "."), and leave any
+linear module without an entry unquantized. An ancestor key quantizes nothing.
 nvidia/GLM-5.3-NVFP4 lists only its three dense FP8 MLP layers and the NVFP4
 routed experts, so its attention, indexer and shared experts run BF16.
 
@@ -211,10 +212,27 @@ _ATTENTION_CASES = {
     "nothing_listed": ({}, (), ALL_GROUPS),
     "all_listed": (_listed(_GLM_ATTENTION), (), frozenset()),
     "only_o_proj": (_listed(("o_proj",)), (), frozenset({"q", "kv", "indexer"})),
+    # Ancestor keys quantize nothing beneath them on either runtime.
     "whole_block_parent_key": (
         {f"model.layers.{layer}.self_attn": {"quant_algo": "NVFP4"} for layer in range(GLM_LAYERS)},
         (),
-        frozenset(),
+        ALL_GROUPS,
+    ),
+    "ancestor_indexer_key": (
+        {
+            **_listed(_GLM_ATTENTION[:5]),
+            **{f"model.layers.{layer}.self_attn.indexer": {"quant_algo": "NVFP4"} for layer in range(GLM_LAYERS)},
+        },
+        (),
+        frozenset({"indexer"}),
+    ),
+    # A key inside an excluded module (the MTP layer) lists nothing.
+    "excluded_mtp_key": ({"model.layers.78.self_attn.o_proj": {"quant_algo": "NVFP4"}}, (), ALL_GROUPS),
+    # A key naming the fused q_a/kv_a runtime module lists both groups.
+    "fused_qkv_a_key": (
+        _listed(("fused_qkv_a_proj_with_mqa",)),
+        (),
+        frozenset({"o", "indexer"}),
     ),
     "exclusion_glob_wins": (_listed(_GLM_ATTENTION), ("model.layers.*.self_attn*",), ALL_GROUPS),
     "indexer_listed_in_full_layers_only": (
@@ -236,18 +254,34 @@ def test_attention_groups_absent_from_quantized_layers_are_excluded(case, precis
     assert H.attention_projection_exclusions(raw, precise_module_paths=precise) == expected
 
 
+def test_keys_beyond_the_decoder_layers_list_nothing():
+    # MTP/draft layers sit at index >= num_hidden_layers even without an exclusion glob.
+    raw = _raw(_glm53_layers(extra=_listed(_GLM_ATTENTION, layers=[GLM_LAYERS])), exclude=())
+    assert H.attention_projection_exclusions(raw) == ALL_GROUPS
+    raw = _raw(_glm53_layers(extra=_listed(_GLM_ATTENTION, layers=[GLM_LAYERS - 1])), exclude=())
+    assert H.attention_projection_exclusions(raw) == frozenset()
+
+
 class TestSharedExpertsAndDensePrefix:
     def test_shared_experts_are_unquantized_unless_listed(self):
         assert H.modelopt_shared_experts_unlisted(_raw()) is True
         shared = _shared_experts_listed()
         assert H.modelopt_shared_experts_unlisted(_raw(_glm53_layers(extra=shared))) is False
 
+    def test_ancestor_and_mtp_shared_expert_keys_list_nothing(self):
+        ancestor = {
+            f"model.layers.{layer}.mlp.shared_experts": {"quant_algo": "FP8"}
+            for layer in range(DENSE_LAYERS, GLM_LAYERS)
+        }
+        assert H.modelopt_shared_experts_unlisted(_raw(_glm53_layers(extra=ancestor))) is True
+        mtp = _listed(("gate_proj", "up_proj", "down_proj"), [GLM_LAYERS], "FP8", "mlp.shared_experts")
+        assert H.modelopt_shared_experts_unlisted(_raw(_glm53_layers(extra=mtp))) is True
+
     @pytest.mark.parametrize(
         "projections,expected",
         [
             (_DENSE_PROJECTIONS, [(3, FP8_STATIC, FP8_STATIC)]),
-            # Shards only, packed key only: both resolve the fused gate/up GEMM.
-            (("gate_proj", "up_proj", "down_proj"), [(3, FP8_STATIC, FP8_STATIC)]),
+            # SGLang resolves the fused gate/up GEMM by its own key.
             (("gate_up_proj", "down_proj"), [(3, FP8_STATIC, FP8_STATIC)]),
             (("gate_proj", "up_proj", "gate_up_proj"), [(3, FP8_STATIC, BF16)]),
             ((), [(3, BF16, BF16)]),
@@ -262,10 +296,15 @@ class TestSharedExpertsAndDensePrefix:
         with pytest.raises(ValueError, match="same quantization for their fused GEMM"):
             _dense_mlp_groups(raw, GLM_LAYERS, FP8_STATIC)
 
-    def test_partially_listed_packed_module_is_rejected(self):
-        raw = _raw(_glm53_layers(dense_projections=("gate_proj", "down_proj")))
-        with pytest.raises(ValueError, match="only some shards of the fused module"):
-            H.modelopt_dense_projection_listed(raw, 0, "gate_up_proj")
+    def test_shards_without_the_fused_gate_up_key_are_rejected(self):
+        # SGLang's DeepseekV2/GlmMoeDsa packed_modules_mapping has no
+        # gate_up_proj: listed shards alone leave the fused GEMM unquantized,
+        # a layout it cannot load, so there is nothing faithful to price.
+        raw = _raw(_glm53_layers(dense_projections=("gate_proj", "up_proj", "down_proj")))
+        assert H.modelopt_dense_projection_listed(raw, 0, "gate_proj") is True
+        assert H.modelopt_dense_projection_listed(raw, 0, "gate_up_proj") is False
+        with pytest.raises(ValueError, match="but not the fused gate_up_proj"):
+            _dense_mlp_groups(raw, GLM_LAYERS, FP8_STATIC)
 
 
 class TestGemmGuard:
@@ -288,6 +327,16 @@ class TestGemmGuard:
 
     def test_glm53_layout_passes(self):
         H.validate_modelopt_targets_only_gemm_mode(_raw(), FP8_STATIC)
+
+    def test_keys_that_quantize_no_modeled_gemm_are_ignored(self):
+        # Ancestor keys and keys inside the excluded MTP layer quantize no
+        # decoder GEMM, so their dtype cannot conflict with the coarse mode.
+        extra = {
+            **{f"model.layers.{layer}.self_attn": {"quant_algo": "NVFP4"} for layer in range(GLM_LAYERS)},
+            **_listed(_GLM_ATTENTION, layers=[GLM_LAYERS]),
+            **_listed(("gate_proj", "up_proj", "down_proj"), [GLM_LAYERS], "NVFP4", "mlp.shared_experts"),
+        }
+        H.validate_modelopt_targets_only_gemm_mode(_raw(_glm53_layers(extra=extra)), FP8_STATIC)
 
 
 @pytest.mark.parametrize(
@@ -456,7 +505,9 @@ def test_packaged_targets_only_checkpoints_are_reviewed():
     The changed resolvers run only for the DEEPSEEK/KIMIK25/DEEPSEEKV32
     families, so none of these predictions move. The packaged
     nvidia/GLM-5.3-NVFP4 is still a copy of the GLM-5.2-NVFP4 exclusion-style
-    export; replacing it with the real targets-only export adds it here.
+    export: bundling the upstream targets-only export waits on license
+    review (its model card names the NVIDIA Open Model Agreement and the
+    GLM-5.3 License). Replacing it adds it here.
     """
     in_scope = {}
     for path in sorted(DefaultHFModels):

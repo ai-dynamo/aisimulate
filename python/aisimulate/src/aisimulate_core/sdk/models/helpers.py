@@ -14,6 +14,7 @@ import dataclasses
 import logging
 import re
 import warnings
+from fnmatch import fnmatchcase
 from functools import cache
 from typing import TYPE_CHECKING, Optional
 
@@ -111,17 +112,19 @@ def attention_projection_exclusions(raw_config: dict, *, precise_module_paths: b
 
     A targets-only ModelOpt MIXED_PRECISION export (see
     :func:`modelopt_mixed_precision_targets`) additionally keeps every group
-    that no ``quantized_layers`` entry names unquantized, on both paths.
-    Granularity matches the exclusion globs: a group listed in any layer
-    counts as quantized (the DSA indexer exists only in full layers), and a
-    whole ``self_attn`` parent key lists every group. Exclusion globs still
-    apply and still win.
+    that no ``quantized_layers`` entry names unquantized, on both paths. As
+    on vLLM and SGLang, only a key naming a projection (or a fused module
+    packing it) exactly, or a descendant of one, lists it; an ancestor key
+    (``...self_attn``, ``...self_attn.indexer``) quantizes nothing. Keys the
+    exclusion list covers and keys at layer index >= ``num_hidden_layers``
+    (MTP) do not count. Granularity matches the exclusion globs: a group
+    listed in any decoder layer counts as quantized (the DSA indexer exists
+    only in full layers). Exclusion globs still apply and still win.
     """
     excluded = _glob_attention_projection_exclusions(raw_config, precise_module_paths=precise_module_paths)
     targets = modelopt_mixed_precision_targets(raw_config)
     if targets is not None:
-        listed = _modelopt_listed_attention_groups(targets, _modelopt_packed_modules(raw_config))
-        excluded |= frozenset(ATTENTION_PROJECTION_GROUPS) - listed
+        excluded |= frozenset(ATTENTION_PROJECTION_GROUPS) - _modelopt_listed_attention_groups(raw_config, targets)
     return excluded
 
 
@@ -182,22 +185,42 @@ def attention_modules_excluded_from_quant(raw_config: dict) -> bool:
 
 
 # ModelOpt MIXED_PRECISION exports name every quantized module in
-# ``quantized_layers``. vLLM and SGLang check the exclusion list first, then
-# resolve a module by exact key, by its packed checkpoint shards, and by
-# parent prefix; a linear module with no entry stays unquantized
-# (vLLM v0.24.0 @ee0da84a, model_executor/layers/quantization/modelopt.py
-# L2392-2490 ``ModelOptMixedPrecisionConfig._resolve_quant_algo`` /
-# ``get_quant_method``: "Layer not in quantized_layers - leave unquantized";
-# SGLang v0.5.14 @49e384ce, srt/layers/quantization/modelopt_quant.py
-# L618-790). Fused runtime modules resolve through their checkpoint shards;
-# the checkpoint's own ``packed_modules_mapping`` extends these defaults.
-_MODELOPT_DEFAULT_PACKED_MODULES = {
-    "gate_up_proj": ("gate_proj", "up_proj"),
+# ``quantized_layers``. vLLM and SGLang skip a module the exclusion list
+# covers, then resolve a runtime linear module by (1) its exact key, (2) the
+# keys of its packed checkpoint shards, or (3) a descendant key, i.e. one that
+# starts with the module path + "."; a linear module none of these finds
+# stays unquantized (vLLM v0.24.0 @ee0da84a,
+# model_executor/layers/quantization/modelopt.py L2392-2490
+# ``ModelOptMixedPrecisionConfig._resolve_quant_algo`` / ``get_quant_method``:
+# "Layer not in quantized_layers - leave unquantized"; SGLang v0.5.14
+# @49e384ce, srt/layers/quantization/modelopt_quant.py L734-792). An ancestor
+# key (``...self_attn``, ``...mlp.shared_experts``) therefore quantizes
+# nothing beneath it; vLLM's only parent rule is a fallback for routed
+# ``.experts``.
+#
+# Neither runtime reads the checkpoint's ``packed_modules_mapping``: both
+# install the model class's mapping (SGLang model_loader/loader.py L203 and
+# weight_utils.py L261/L328; vLLM model_loader/utils.py
+# ``configure_quant_config`` L274-295). Both fuse q_a_proj and
+# kv_a_proj_with_mqa (SGLang ``fused_qkv_a_proj_with_mqa``, models/
+# deepseek_v2.py L2571-2596; vLLM ``fused_qkv_a_proj``), so a key naming
+# either fused module lists the q and kv groups. Only vLLM packs the dense
+# ``gate_up_proj``; SGLang resolves it by its own key
+# (deepseek_v32._dense_mlp_groups).
+_MODELOPT_ATTENTION_PACKED_MODULES = {
     "fused_qkv_a_proj_with_mqa": ("q_a_proj", "kv_a_proj_with_mqa"),
+    "fused_qkv_a_proj": ("q_a_proj", "kv_a_proj_with_mqa"),
 }
 
-# Dense (non-expert) MLP projection names, packed or not.
-_DENSE_MLP_PROJECTION_RE = re.compile(r"\.mlp\.(gate_proj|up_proj|gate_up_proj|down_proj)(\.|$)")
+# A ``quantized_layers`` key inside a decoder layer, plain or VLM-wrapped
+# (vLLM ``_quantized_layer_prefix_candidates`` maps the two wrappings).
+_MODELOPT_DECODER_KEY_RE = re.compile(r"(?:language_model\.)?model\.(?:language_model\.)?layers\.(\d+)\.(.+)")
+# Shared-expert linear modules (DeepSeek/GLM ``shared_experts``, Qwen ``shared_expert``).
+_MODELOPT_SHARED_EXPERT_LINEAR_RE = re.compile(
+    r"mlp\.shared_experts?\.(?:gate_proj|up_proj|gate_up_proj|down_proj)(?:\..+)?"
+)
+# Dense (non-expert) MLP linear modules, packed or not.
+_MODELOPT_DENSE_MLP_LINEAR_RE = re.compile(r"mlp\.(?:gate_proj|up_proj|gate_up_proj|down_proj)(?:\..+)?")
 
 
 def _hf_quant_section(raw_config: dict) -> dict:
@@ -234,7 +257,7 @@ def modelopt_mixed_precision_targets(raw_config: dict) -> dict[str, str | None] 
        non-expert GEMMs through that lane and are out of scope.
 
     In scope, a module without an entry runs unquantized on vLLM and SGLang
-    (see ``_MODELOPT_DEFAULT_PACKED_MODULES``). Returns ``None`` otherwise,
+    (see ``_MODELOPT_ATTENTION_PACKED_MODULES``). Returns ``None`` otherwise,
     and callers keep their exclusion-glob semantics unchanged.
     """
     hf_section = _hf_quant_section(raw_config)
@@ -265,72 +288,95 @@ def modelopt_mixed_precision_targets(raw_config: dict) -> dict[str, str | None] 
     return targets or None
 
 
-def _modelopt_packed_modules(raw_config: dict) -> dict[str, tuple[str, ...]]:
-    packed = dict(_MODELOPT_DEFAULT_PACKED_MODULES)
-    for source in (_hf_quant_section(raw_config), _language_quant_config(raw_config)):
-        mapping = source.get("packed_modules_mapping")
-        if isinstance(mapping, dict):
-            packed.update({str(name): tuple(str(shard) for shard in shards) for name, shards in mapping.items()})
-    return packed
-
-
-def _modelopt_module_listed(targets: dict, module: str, packed: dict[str, tuple[str, ...]]) -> bool:
-    """Whether ``quantized_layers`` covers ``module`` (exact, packed shards, parent prefix)."""
-    if module in targets:
-        return True
-    base, _, name = module.rpartition(".")
-    shards = packed.get(name)
-    if shards:
-        listed = [f"{base}.{shard}" in targets for shard in shards]
-        if all(listed):
+def _modelopt_key_excluded(key: str, patterns: list[str]) -> bool:
+    """Whether an exclusion pattern covers the module a ``quantized_layers`` key names."""
+    for pattern in patterns:
+        if pattern.startswith("re:"):
+            try:
+                if re.match(pattern[3:], key):
+                    return True
+            except re.error as error:
+                raise ValueError(f"Invalid quantization exclusion {pattern!r}: {error}") from error
+        elif key == pattern or key.startswith(pattern + ".") or fnmatchcase(key, pattern):
             return True
-        if any(listed):
-            raise ValueError(
-                f"ModelOpt quantized_layers list only some shards of the fused module {module!r} "
-                f"({', '.join(shards)}); all shards of one fused GEMM must share its quantization"
-            )
-    prefix = module + "."
-    return any(key.startswith(prefix) for key in targets)
+    return False
 
 
-def _modelopt_listed_attention_groups(targets: dict, packed: dict[str, tuple[str, ...]]) -> frozenset:
-    """Attention projection groups named by any ``quantized_layers`` entry (any layer)."""
-    listed: set = set()
+def _modelopt_decoder_targets(raw_config: dict, targets: dict) -> list[tuple[str, int, str]]:
+    """``(key, layer, path within the layer)`` of the keys that can quantize a modeled decoder module.
+
+    Drops keys outside ``model.layers.<i>.``, keys the exclusion list covers
+    (the runtimes skip those modules before consulting ``quantized_layers``),
+    and keys at a layer index >= the root ``num_hidden_layers`` (MTP/draft
+    layers, which the graph prices with the decoder layers' ops).
+    """
+    patterns = [str(pattern) for pattern in quant_exclude_patterns(raw_config)]
+    num_layers = raw_config.get("num_hidden_layers")
+    if isinstance(num_layers, bool) or not isinstance(num_layers, int):
+        num_layers = None
+    result = []
     for key in targets:
-        _, sep, tail = key.partition(".self_attn")
-        if not sep:
+        match = _MODELOPT_DECODER_KEY_RE.fullmatch(key)
+        if match is None:
             continue
-        if not tail:
-            # A whole-block parent key covers every projection beneath it.
-            return frozenset(ATTENTION_PROJECTION_GROUPS)
-        if not tail.startswith("."):
+        layer = int(match.group(1))
+        if (num_layers is not None and layer >= num_layers) or _modelopt_key_excluded(key, patterns):
             continue
-        tail = tail[1:]
-        head, _, rest = tail.partition(".")
-        names = [f"{shard}.{rest}" if rest else shard for shard in packed[head]] if head in packed else [tail]
-        for group, modules in _PROJECTION_MODULE_PATHS.items():
-            if any(
-                name == module or name.startswith(module + ".") or module.startswith(name + ".")
-                for name in names
-                for module in modules
-            ):
-                listed.add(group)
+        result.append((key, layer, match.group(2)))
+    return result
+
+
+def _modelopt_attention_key_groups(path: str) -> frozenset:
+    """Attention groups a decoder-layer key quantizes: exact or descendant keys of a projection."""
+    if not path.startswith("self_attn."):
+        return frozenset()
+    tail = path[len("self_attn.") :]
+    head, _, rest = tail.partition(".")
+    shards = _MODELOPT_ATTENTION_PACKED_MODULES.get(head)
+    names = [f"{shard}.{rest}" if rest else shard for shard in shards] if shards else [tail]
+    return frozenset(
+        group
+        for group, modules in _PROJECTION_MODULE_PATHS.items()
+        if any(name == module or name.startswith(module + ".") for name in names for module in modules)
+    )
+
+
+def _modelopt_listed_attention_groups(raw_config: dict, targets: dict) -> frozenset:
+    """Attention projection groups a ``quantized_layers`` entry quantizes in any decoder layer."""
+    listed: set = set()
+    for _, _, path in _modelopt_decoder_targets(raw_config, targets):
+        listed |= _modelopt_attention_key_groups(path)
     return frozenset(listed)
 
 
 def modelopt_shared_experts_unlisted(raw_config: dict) -> bool:
-    """Whether a targets-only MIXED_PRECISION export leaves the shared experts unquantized."""
+    """Whether a targets-only MIXED_PRECISION export leaves the shared experts unquantized.
+
+    Only a key naming a shared-expert linear module (or a descendant of one)
+    in a modeled decoder layer quantizes it; an ancestor key such as
+    ``...mlp.shared_experts`` does not.
+    """
     targets = modelopt_mixed_precision_targets(raw_config)
-    return targets is not None and not any(".shared_expert" in key.lower() for key in targets)
+    return targets is not None and not any(
+        _MODELOPT_SHARED_EXPERT_LINEAR_RE.fullmatch(path)
+        for _, _, path in _modelopt_decoder_targets(raw_config, targets)
+    )
 
 
 def modelopt_dense_projection_listed(raw_config: dict, layer: int, projection: str) -> bool | None:
-    """Whether ``model.layers.{layer}.mlp.{projection}`` is listed; ``None`` when out of scope."""
+    """Whether a key names ``model.layers.{layer}.mlp.{projection}`` or a descendant of it.
+
+    Packed shards are not consulted (callers that price a packed module
+    decide how its shards resolve). ``None`` when out of scope.
+    """
     targets = modelopt_mixed_precision_targets(raw_config)
     if targets is None:
         return None
-    module = f"model.layers.{layer}.mlp.{projection}"
-    return _modelopt_module_listed(targets, module, _modelopt_packed_modules(raw_config))
+    module = f"mlp.{projection}"
+    return any(
+        key_layer == layer and (path == module or path.startswith(module + "."))
+        for _, key_layer, path in _modelopt_decoder_targets(raw_config, targets)
+    )
 
 
 def validate_modelopt_targets_only_gemm_mode(raw_config: dict, gemm_quant_mode: common.GEMMQuantMode) -> None:
@@ -341,7 +387,9 @@ def validate_modelopt_targets_only_gemm_mode(raw_config: dict, gemm_quant_mode: 
     by :func:`_infer_mixed_precision_quant_modes`). That is only faithful
     when every such entry maps to that mode; a checkpoint mixing e.g. NVFP4
     attention with FP8 dense layers needs per-module modes the model graph
-    cannot express. Callers skip this check for an explicit user GEMM mode.
+    cannot express. Only keys that quantize a modeled decoder module count
+    (the same rule as the listing helpers above). Callers skip this check
+    for an explicit user GEMM mode.
     """
     targets = modelopt_mixed_precision_targets(raw_config)
     if targets is None:
@@ -351,14 +399,17 @@ def validate_modelopt_targets_only_gemm_mode(raw_config: dict, gemm_quant_mode: 
     # weight-only lane (resolve_nvfp4_for_system / Task quant resolution).
     expected = common.GEMMQuantMode.nvfp4 if gemm_quant_mode == common.GEMMQuantMode.nvfp4_wo else gemm_quant_mode
     mismatched: dict[str, list[str]] = {}
-    for module, algo in targets.items():
-        lowered = module.lower()
-        if _is_routing_expert_target(lowered):
+    for key, _, path in _modelopt_decoder_targets(raw_config, targets):
+        if not (
+            _modelopt_attention_key_groups(path)
+            or _MODELOPT_SHARED_EXPERT_LINEAR_RE.fullmatch(path)
+            or _MODELOPT_DENSE_MLP_LINEAR_RE.fullmatch(path)
+        ):
             continue
-        if ".self_attn" in lowered or ".shared_expert" in lowered or _DENSE_MLP_PROJECTION_RE.search(lowered):
-            mode = _mixed_precision_algo_gemm_mode(algo, quant_dynamic)
-            if mode != expected:
-                mismatched.setdefault(getattr(mode, "name", str(algo)), []).append(module)
+        algo = targets[key]
+        mode = _mixed_precision_algo_gemm_mode(algo, quant_dynamic)
+        if mode != expected:
+            mismatched.setdefault(getattr(mode, "name", str(algo)), []).append(key)
     if mismatched:
         detail = "; ".join(f"{mode}: {', '.join(sorted(modules)[:3])}" for mode, modules in sorted(mismatched.items()))
         raise ValueError(
@@ -473,7 +524,11 @@ def build_large_ep_moe_ops(
     ``DeepSeekV32Model._large_ep_moe_ops``: resolve the model-owned
     workload-distribution string, then delegate to ``build_moe_block_ops``.
     ``shared_gemm_quant_mode`` is the one caller-specific difference — the
-    DeepSeekV32 family passes its ``dsa_shared_expert_quant_mode`` on trtllm.
+    DeepSeek family passes its model-wide shared-expert mode on every
+    backend; the DeepSeekV32 family passes its ``dsa_shared_expert_quant_mode``
+    on trtllm, and on every backend for targets-only ModelOpt
+    MIXED_PRECISION exports (``dsa_quant_targets_only``), else ``None``
+    (``cfg.gemm_quant_mode``).
 
     Workload-distribution strings are transcribed from the deleted wideEP
     classes at commit 8372e60: sglang flattens the prefill alpha to 0.6 under

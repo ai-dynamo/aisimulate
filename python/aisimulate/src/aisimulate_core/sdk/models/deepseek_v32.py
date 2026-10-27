@@ -165,10 +165,23 @@ def _dense_mlp_groups(raw_config: dict, num_layers: int, fallback: common.GEMMQu
         if targets_only:
             # Targets-only MIXED_PRECISION: an unlisted projection runs
             # unquantized (see helpers.modelopt_mixed_precision_targets).
+            # Only SGLang prices the dense prefix, and its DeepseekV2 /
+            # GlmMoeDsa packed_modules_mapping has no gate_up_proj (v0.5.14
+            # @49e384ce models/deepseek_v2.py L2571-2596): the fused GEMM
+            # resolves by its own key, never by its gate_proj/up_proj shards.
             listed = [modelopt_dense_projection_listed(raw_config, layer, shard) for shard in shards]
             if any(listed) != all(listed):
                 raise ValueError("DSA dense gate_proj and up_proj must use the same quantization for their fused GEMM")
-            if not (all(listed) or modelopt_dense_projection_listed(raw_config, layer, projection)):
+            if projection == "gate_up_proj":
+                fused = modelopt_dense_projection_listed(raw_config, layer, projection)
+                if all(listed) and not fused:
+                    raise ValueError(
+                        f"ModelOpt quantized_layers list the gate_proj/up_proj shards of {name} but not the fused "
+                        "gate_up_proj; SGLang builds that GEMM unquantized and cannot load the shards' "
+                        "quantization scales"
+                    )
+                listed = [fused]
+            if not all(listed):
                 return common.GEMMQuantMode.bfloat16
         return fallback
 
@@ -332,13 +345,17 @@ class DeepSeekV32Model(BaseModel):
         the upstream nvidia/GLM-5.3-NVFP4 layout) pass the override on every
         backend. Their coarse ``gemm_quant_mode`` comes from the listed
         dense-prefix layers only (fp8_static), a lane the shared experts never
-        have: both runtimes leave unlisted modules unquantized, and SGLang
-        builds the GLM shared expert as its own ``DeepseekV2MLP`` (fusion into the routed MoE is off under
-        DeepEP and for non-DeepseekV3 architectures; SGLang v0.5.14 @49e384ce
-        models/deepseek_v2.py L705-714, L2650-2715). The same source makes the
-        legacy sglang nvfp4 shared expert of the exclusion-style checkpoints
-        doubtful too; correcting it moves other models' large-EP predictions
-        and is left to a follow-up.
+        have: both runtimes leave unlisted modules unquantized, and under
+        large EP SGLang builds the GLM shared expert as its own
+        ``DeepseekV2MLP``. ``GlmMoeDsaForCausalLM`` passes its own
+        architecture to ``determine_num_fused_shared_experts``
+        (models/glm4_moe.py L1477-1479), so the architecture/expert-count
+        check does not block fusion, but a DeepEP-class a2a backend
+        (deepseek_v2.py L2664) and ``moe_ep_size > 1`` on CUDA (L2696) both
+        disable it (SGLang v0.5.14 @49e384ce models/deepseek_v2.py L705-714,
+        L2650-2715). The same source makes the legacy sglang nvfp4 shared
+        expert of the exclusion-style checkpoints doubtful too; correcting it
+        moves other models' large-EP predictions and is left to a follow-up.
         """
         targets_only = isinstance(self.extra_params, dict) and self.extra_params.get("dsa_quant_targets_only", False)
         shared_gemm_quant_mode = (
