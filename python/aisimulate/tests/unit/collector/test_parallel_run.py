@@ -665,3 +665,55 @@ class TestResumeIntegrity:
         assert _load_done_ids(tmp_path, module_name) == set()
         assert _load_failed_ids(tmp_path, module_name) == set()
         assert _load_attempted_ids(tmp_path, module_name) == set()
+
+
+class TestLiveWorkerFailureReporting:
+    def test_failure_visible_before_next_callback_finishes(self, tmp_path, caplog):
+        release = mp.get_context("fork").Event()
+        live_records = []
+
+        class ReleaseOnFailure(logging.Handler):
+            def emit(self, record):
+                if record.msg.startswith("%s: task %s failed on worker"):
+                    live_records.append(record.getMessage())
+                    release.set()
+
+        def callback(label, behavior, device):
+            if behavior == "error":
+                raise ValueError("first failure\nsecond line")
+            if not release.wait(timeout=8):
+                raise RuntimeError("failure was not reported while collection was running")
+
+        handler = ReleaseOnFailure()
+        _collect_mod.logger.addHandler(handler)
+        tasks = _tasks([("failed", "error"), ("waiting", "normal")])
+        try:
+            errors = parallel_run(
+                tasks,
+                callback,
+                num_processes=1,
+                module_name="live_failure",
+                resume_options={"checkpoint_dir": str(tmp_path / ".checkpoint")},
+            )
+        finally:
+            release.set()
+            _collect_mod.logger.removeHandler(handler)
+
+        assert len(errors) == 1
+        assert errors[0]["task_id"] == "failed"
+        assert len(live_records) == 1
+        message = live_records[0]
+        assert "live_failure: task failed failed on worker 0" in message
+        assert "ValueError" in message and "group=None" in message
+        assert "params=" in message and "first failure\\nsecond line" in message
+        assert "\n" not in message
+        assert _load_done_ids(tmp_path, "live_failure") == {"waiting"}
+        assert _load_failed_ids(tmp_path, "live_failure") == {"failed"}
+        _assert_all_tasks_attempted(tasks, tmp_path, "live_failure")
+        assert "ValueError: first failure" in (tmp_path / "collector_errors.log").read_text()
+        persisted = json.loads((tmp_path / "errors_live_failure.json").read_text())
+        assert persisted[0]["traceback"] == errors[0]["traceback"]
+
+    def test_success_does_not_emit_failure_summary(self, tmp_path, caplog):
+        assert _run(_tasks(2), 1, tmp_path, module_name="live_success") == []
+        assert not any("failed on worker" in record.getMessage() for record in caplog.records)

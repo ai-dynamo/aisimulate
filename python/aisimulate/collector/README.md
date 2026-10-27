@@ -404,6 +404,13 @@ downstream by interpolation and fallback. Escalation rules — when a failure
 deserves a denylist entry, a registry `unverified` marker, or a capability
 floor — live in `.claude/rules/collector/failure_handling.md`.
 
+Worker stdout/stderr and full tracebacks remain in `collector.log` and
+`collector_errors.log`. As the parent receives each worker failure, it emits a
+newline-delimited error summary to the console with the module, case ID, worker,
+group, exception and case parameters. CI can therefore identify clustered
+failures before the final summary. This reporting does not stop, skip or retry
+cases; checkpoint accounting and measurement callbacks are unchanged.
+
 `--gpu <type>` resolves the SM version from
 `src/aisimulate_core/systems/<gpu>.yaml`; use `--sm <version>` on an
 unregistered GPU. Without either, the local device capability is detected

@@ -1682,6 +1682,20 @@ def worker(
                 get_device_module().empty_cache()
 
 
+def _log_worker_failure(error):
+    # Worker stdout/stderr go to files; forward a newline-delimited summary to CI.
+    logger.error(
+        "%s: task %s failed on worker %s; group=%r; %s: %r; params=%r",
+        error["module"],
+        error["task_id"],
+        error["device_id"],
+        error.get("group"),
+        error["error_type"],
+        error["error_message"],
+        error["task_params"],
+    )
+
+
 def parallel_run(tasks, func, num_processes, module_name="unknown", resume_options=None):
     """parallel runner with error collection
 
@@ -1923,6 +1937,7 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
             # Drain errors
             while not error_queue.empty():
                 error = error_queue.get()
+                _log_worker_failure(error)
                 errors.append(error)
                 process_stats[error["device_id"]]["errors"].append(error["task_id"])
             sync_done_to_checkpoint()
@@ -2018,6 +2033,7 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
             if all(p is None for p in processes) and len(accounted) < len(task_infos):
                 while not error_queue.empty():
                     error = error_queue.get()
+                    _log_worker_failure(error)
                     errors.append(error)
                     process_stats[error["device_id"]]["errors"].append(error["task_id"])
                 sync_done_to_checkpoint()
@@ -2056,7 +2072,9 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
 
     # Collect remaining errors
     while not error_queue.empty():
-        errors.append(error_queue.get())
+        error = error_queue.get()
+        _log_worker_failure(error)
+        errors.append(error)
     sync_done_to_checkpoint()
     resume_tracker.flush(force=True)
 
