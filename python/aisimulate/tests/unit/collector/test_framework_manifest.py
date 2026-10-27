@@ -15,7 +15,7 @@ from collector.framework_manifest import (
 )
 from collector.sglang.registry import REGISTRY as SGLANG_REGISTRY
 from collector.trtllm.registry import REGISTRY as TRTLLM_REGISTRY
-from collector.version_resolver import _check_compat
+from collector.version_resolver import _check_compat, resolve_module
 from collector.vllm.registry import REGISTRY as VLLM_REGISTRY
 from collector.vllm.registry import REGISTRY_XPU as VLLM_XPU_REGISTRY
 from collector.wideep.sglang import dataset_version_label
@@ -55,7 +55,23 @@ def test_manifest_exposes_pinned_vllm_xpu_runtime_identity():
 
 
 def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
-    assert all(not entry.versions for entry in VLLM_REGISTRY)
+    assert {entry.op for entry in VLLM_REGISTRY if entry.versions} == {
+        "mla_bmm_gen_pre",
+        "mla_bmm_gen_post",
+        "attention_context",
+        "attention_generation",
+        "encoder_attention",
+        "mla_context_module",
+        "mla_generation_module",
+        "dsa_context_module",
+        "dsa_generation_module",
+        "dsv4_csa_context_module",
+        "dsv4_hca_context_module",
+        "dsv4_csa_generation_module",
+        "dsv4_hca_generation_module",
+        "dsv4_paged_mqa_logits_module",
+        "dsv4_hca_attn_module",
+    }
 
     # Each module pins the runtime that actually collects it: the manifest
     # default, or its family override (e.g. kda runs only on the vllm kimi-k3
@@ -64,7 +80,10 @@ def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
     # 0.27.1, so compare the declaration semantically just as collect.py does.
     module_versions: dict[str, set[str]] = {}
     for entry in VLLM_REGISTRY:
-        module_versions.setdefault(entry.module, set()).add(resolve_op_runtime("vllm", entry.op).version)
+        version = resolve_op_runtime("vllm", entry.op).version
+        module = resolve_module(entry, version)
+        assert module is not None, entry.op
+        module_versions.setdefault(module, set()).add(version)
 
     for module, versions in sorted(module_versions.items()):
         assert len(versions) == 1, (module, versions)

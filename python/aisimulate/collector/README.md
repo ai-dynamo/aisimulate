@@ -291,6 +291,133 @@ registered op resolves to exactly one pinned runtime. See
 `docs/perf_database/collector-v3-op-centric-design.md` §4 for the full
 design.
 
+## vLLM 0.31.0 MLA BMM qualification
+
+`--ops mla_bmm_gen_pre` selects the 0.31.0 route when an external, hash-bound
+runtime manifest declares that version. The repository's default runtime pins
+remain unchanged. The B200 qualification manifest is
+`collector/campaigns/vllm031-b200-runtime.json` (relative to `python/aisimulate`).
+Supply its absolute in-container path through `AISIM_COLLECTOR_RUNTIME_MANIFEST`
+and its file SHA-256 through `AISIM_COLLECTOR_RUNTIME_MANIFEST_SHA256`.
+The campaign must separately select `b200_sxm` and `mla_bmm_gen_pre`; the manifest
+declares runtime identity and does not grant compatibility to other ops or GPUs.
+The new route measures BF16 `torch.bmm` with token-major
+output storage, matching the unpadded serving branch at
+[vLLM db9527a4](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/model_executor/layers/attention/mla_attention.py#L1080).
+Older qualified versions retain head-major pre-BMM output. The 0.31.0
+`--ops mla_bmm_gen_post` route shares the existing post-BMM implementation:
+its token-major output view and timed operation are unchanged. This enables
+the 48 B200 reuse probes; it does not approve performance reuse before their
+results are reviewed. The padded `CUTLASS_MLA` branch is outside this dataset's scope.
+
+The full pre-BMM sweep contains 300 cases: 25 token counts × 12 head counts,
+BF16 only, with two warmups and ten measured runs under CUDA graph replay.
+Explicit `--ops` uses this complete base sweep without `--model-cases-full`.
+For the B200 refresh, first smoke-test the pinned target image, then remove the
+sample limit for the full sweep. CPU tests qualify layout and routing, not GPU
+performance. Retain failures and provenance; do not reuse checkpoints from the
+old output layout or claim post-BMM coverage from a pre-only table.
+
+### B200 native dense attention qualification
+
+`attention_context` and `attention_generation` select the exact 0.31.0 adapter.
+It accepts native `FLASHINFER`, `FLASH_ATTN` and `TRITON_ATTN` selection, with
+no forced backend or fallback. FlashInfer's own metadata builder chooses its
+native or TRTLLM prefill/decode path; FlashAttention chooses its own FA version.
+Other selected backends still fail explicitly. Case grids and old routes stay
+unchanged.
+
+The adapter delegates layout negotiation and packed cache views to vLLM and
+populates the current
+[serving metadata fields](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/worker/gpu_model_runner.py#L2426).
+The existing single-layer parameters match
+[the native FlashInfer builder](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/attention/backends/flashinfer.py#L882).
+Query conversion follows the selected implementation's quantized-query capability;
+metadata construction and history population remain outside timing. The measured
+boundary remains the production KV update plus forward, with unchanged warmup,
+repeats, CUDA graph timing and perf keys. `kernel_source` records the actual
+FlashInfer phase-metadata class or selected FlashAttention version; retain native
+FlashInfer logs identifying `trtllm-gen`, `xqa` or `flashinfer-native` as well.
+
+This enables qualification; it does not establish correctness or full coverage.
+Before a full sweep, use exact case filters to smoke every planned head-size,
+KV-dtype and window group, check the native dispatch/cache layout and validate
+outputs outside timing. Include context length one: FlashInfer classifies that
+input as decode even though the collector writes a context row. Keep every
+failure visible. A successful Triton or encoder test does not qualify dense
+FlashInfer/FA4. Existing 16 Triton smoke cases are fresh-path measurements because
+[vLLM 0.31 changed the packed K/V cache contract](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/attention/backends/triton_attn.py#L615).
+
+`encoder_attention` also has an exact 0.31.0 route for the existing BF16 grid.
+It retains the native ViT selector, selected FlashAttention version, and wrapper
+calls, whose signatures match the target source. The target wrapper adds
+[output initialization during CUDA graph capture](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/attention/ops/vit_attn_wrappers.py#L64);
+collect fresh measurements after its smoke gate. FP8 encoder attention is
+outside this grid. A backend unsupported by the collector remains an explicit
+failure instead of being replaced.
+
+### B200 MLA and DSA module qualification
+
+The four `mla_*_module` and `dsa_*_module` operations select an exact 0.31.0
+adapter through the campaign manifest. Older runtimes keep their legacy routes.
+The adapter fills the current public common metadata, delegates cache layout and
+views to vLLM, calls each production layer's `bind_kv_cache`, and populates cached
+MLA history through the native `update_kv_cache` method. The indexer retains its
+native quantized cache producer. See the target
+[MLA cache contract](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/model_executor/layers/attention/mla_attention.py#L733)
+and [indexer binding](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/model_executor/models/deepseek_v2.py#L647).
+Metadata builders use vLLM's serving `AttentionGroup` factory, including the
+DSA indexer's required, aligned `block_table_width`. This avoids reconstructing
+backend-specific constructor arguments in the collector.
+
+Model construction, native backend selection, precision checks, case identities,
+and the complete module-forward CUDA graph timing remain unchanged. The existing
+explicit FP8-prefill configuration is retained. HiSparse/offloaded cache state
+raises an explicit error because this harness allocates a single-device cache.
+CPU tests cover cache binding, history slots, worker forwarding, legacy routing,
+and provenance. Run exact small cases for each model and precision before a
+full sweep; a source-qualified adapter does not establish runtime support for
+all declared cases. Failures remain visible and must not become broad skips.
+
+NVFP4 module inputs retain ModelOpt's native W4A4 checkpoint contract. vLLM
+0.31 stores it in `ModelOptLinearMethod` with the exact static-NVFP4 weight and
+dynamic-NVFP4 activation keys; older runtimes keep `ModelOptNvFp4LinearMethod`.
+The initializer reads the native 16-element group size, fills the existing
+packed weights, block scales and dequantizing global scales, then lets vLLM
+perform its own post-load layout conversion and kernel selection. W4A16 and
+other unified ModelOpt formats are not mistaken for W4A4. See the
+[native format resolution](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/model_executor/layers/quantization/modelopt.py#L2621).
+This compatibility repair does not qualify ModelOpt numerical output from
+CompressedTensors GEMM evidence; module-specific native numerical checks remain
+required. Case grids, output keys and timing are unchanged.
+
+### B200 DSV4 qualification
+
+The six `dsv4_*` operations have an exact 0.31.0 route. It retains the existing
+case grids, native attention selector, TP shard simulation, and timing calls.
+Full CSA/HCA and isolated HCA use vLLM's native cache groups, shared allocation,
+layer binding, kernel block sizes, and metadata builders. Each group receives
+disjoint physical page IDs in the shared buffer; layers packed within a group
+use the same page table. This avoids overwriting attention KV with compressor
+state. See the native [allocator](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/worker/utils.py#L395)
+and [group placement](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/kv_cache_utils.py#L1669).
+
+Isolated FlashMLA HCA preserves the full model's CSA indexer layout constraint
+([native declaration](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/attention/backends/mla/indexer.py#L254)).
+Without that constraint, the isolated layer selects layer-outer `LBNHC`, and
+native page unification rejects its unequal MLA pages before execution.
+The adapter includes the native indexer's layout declaration when resolving
+HCA's layout; it does not instantiate an indexer or change attention dispatch.
+Explicit incompatible layouts still fail. CPU tests check HCA/CSA preference
+and rejection; numerical GPU qualification remains required after this fix.
+
+Standalone paged MQA retains its FP8 packed-cache inputs and native DeepGEMM
+wrapper call, whose target signature remains compatible. All six operations
+require fresh target measurements and a GPU smoke gate. CPU checks verify page
+and slot mappings, shared-allocation delegation, capacity restoration on error,
+version routing, and unchanged case/measurement fields. Use fresh checkpoint
+identities after this adapter change; no performance reuse is implied.
+
 ## File Naming Convention
 
 - **No version fork**: `collect_{op}.py` (no suffix)
@@ -369,6 +496,13 @@ When upstream framework `X.Y.Z` changes an API that a collector depends on:
 6. Run tests to validate
 
 ## Runtime Behavior
+
+The CUDA vLLM attention metadata helper preserves the v0.24.0 private CPU
+fields when accepted by the installed constructor. v0.31.0 removed those
+arguments and derives computed-token counts from device sequence and query
+lengths; the helper keeps the CPU sequence-length upper bound in both versions.
+This API repair does not qualify all v0.31.0 operations: version guards remain
+in place until serving-path audits and GPU smoke collection pass.
 
 At collection time:
 1. `collect.py` reads the backend registry

@@ -156,13 +156,17 @@ def test_dsa_collector_hash_covers_worker_binding(tmp_path, backend, binding_fil
 @pytest.mark.parametrize(
     "module_name",
     [
-        "collect_attn",
+        "collect_attn_v1",
+        "collect_attn_v2",
         "collect_computescale",
-        "collect_dsv4_attn",
+        "collect_dsv4_attn_v1",
+        "collect_dsv4_attn_v2",
         "collect_gemm",
         "collect_mhc_module",
-        "collect_mla_module",
-        "collect_mla_module_027",
+        "collect_mla_module_v1",
+        "collect_mla_module_v2",
+        "collect_dsa_module_v1",
+        "collect_dsa_module_v2",
         "collect_moe",
         "collect_msa_module",
     ],
@@ -180,7 +184,7 @@ def test_vllm_collector_hash_covers_native_setup(tmp_path, module_name):
 
 
 def test_vllm_mla_shim_hash_covers_executed_module(tmp_path):
-    module = "collector.vllm.collect_mla_module_027"
+    module = "collector.vllm.collect_mla_module_v1"
     closures = provenance.load_closures(HASH_CLOSURES_PATH)
     paths = {module.replace(".", "/") + ".py", *provenance.SHARED_CORE, *closures[module]}
     for relative in paths - {provenance.MODEL_CASES_GROUP}:

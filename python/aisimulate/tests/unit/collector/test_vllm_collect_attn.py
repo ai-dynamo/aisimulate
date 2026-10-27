@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import os
+import sys
 import typing
 from contextlib import ExitStack, contextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, make_dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,8 +18,8 @@ import pytest
 pytestmark = pytest.mark.unit
 
 ROOT = Path(__file__).resolve().parents[3]
-ATTN_SOURCE = ROOT / "collector/vllm/collect_attn.py"
-ENCODER_ATTN_SOURCE = ROOT / "collector/vllm/collect_attn_encoder.py"
+ATTN_SOURCE = ROOT / "collector/vllm/collect_attn_v1.py"
+ENCODER_ATTN_SOURCE = ROOT / "collector/vllm/collect_attn_encoder_v1.py"
 MLA_ATTN_SOURCE = ROOT / "collector/vllm/collect_mla_module.py"
 UTILS_SOURCE = ROOT / "collector/vllm/utils.py"
 BF16, FP8, UINT8 = object(), object(), object()
@@ -68,8 +70,65 @@ class BatchSpec:
     query_lens: list[int]
 
 
+@pytest.mark.parametrize("legacy_cpu_fields", [False, True])
+@pytest.mark.parametrize("query_lens", [[1, 1], [9, 32], [1, 16]])
+def test_common_attention_metadata_preserves_context_across_constructor_versions(legacy_cpu_fields, query_lens):
+    torch = _real_torch_or_skip()
+    # Strict constructors reject unexpected keywords, unlike a **kwargs stub.
+    field_names = [
+        "query_start_loc",
+        "query_start_loc_cpu",
+        "seq_lens",
+        "seq_lens_cpu_upper_bound",
+        "num_reqs",
+        "num_actual_tokens",
+        "max_query_len",
+        "max_seq_len",
+        "block_table_tensor",
+        "slot_mapping",
+        "causal",
+    ]
+    if legacy_cpu_fields:
+        field_names += ["_seq_lens_cpu", "_num_computed_tokens_cpu"]
+    metadata_type = make_dataclass("CommonAttentionMetadata", field_names)
+    create = _load_function(
+        UTILS_SOURCE,
+        "create_common_attn_metadata",
+        {
+            "torch": torch,
+            "inspect": inspect,
+            "CommonAttentionMetadata": metadata_type,
+        },
+    )
+    batch = SimpleNamespace(
+        seq_lens=[9, 32],
+        query_lens=query_lens,
+        batch_size=2,
+        compute_num_tokens=lambda: sum(query_lens),
+    )
+    metadata = create(batch, 16, torch.device("cpu"), arange_block_indices=True)
+    assert metadata.seq_lens.tolist() == [9, 32]
+    assert metadata.seq_lens_cpu_upper_bound.tolist() == [9, 32]
+    assert metadata.query_start_loc_cpu.tolist() == [0, query_lens[0], sum(query_lens)]
+    assert metadata.num_actual_tokens == sum(query_lens)
+    assert metadata.num_reqs == 2
+    assert metadata.max_query_len == max(query_lens)
+    assert metadata.max_seq_len == 32
+    assert metadata.block_table_tensor.tolist() == [[0, 1], [2, 3]]
+    context_lens = metadata.seq_lens - metadata.query_start_loc.diff()
+    assert context_lens.tolist() == [9 - query_lens[0], 32 - query_lens[1]]
+    if legacy_cpu_fields:
+        assert torch.equal(metadata._seq_lens_cpu, metadata.seq_lens_cpu_upper_bound)
+        assert torch.equal(metadata._num_computed_tokens_cpu, context_lens)
+
+
 @pytest.mark.parametrize("use_fp8_kv_cache", [False, True])
-def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_kv_cache):
+@pytest.mark.parametrize("native_runtime", [False, True])
+@pytest.mark.parametrize("window_size", [0, 128])
+@pytest.mark.parametrize("backend_name,fa_version", [("FLASH_ATTN", 3), ("FLASH_ATTN", 4), ("FLASHINFER", None)])
+def test_generation_uses_total_runtime_length_and_production_call_order(
+    use_fp8_kv_cache, native_runtime, window_size, backend_name, fa_version, monkeypatch
+):
     calls, events = {}, []
     slot_mapping = object()
     history_slot_mapping = SimpleNamespace(numel=lambda: 128)
@@ -95,23 +154,40 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
     class Backend:
         forward_includes_kv_cache_update = False
 
-        get_name = staticmethod(lambda: "FLASH_ATTN")
+        get_name = staticmethod(lambda: backend_name)
         get_required_kv_cache_layout = staticmethod(lambda: None)
         get_kv_cache_stride_order = staticmethod(lambda: (0, 1, 2, 3, 4))
 
-    class Builder:
-        def __init__(self, *_args, **_kwargs):
-            pass
+    flashinfer = SimpleNamespace(get_per_layer_parameters=None)
+    if backend_name == "FLASHINFER":
+        # The production runner imports and patches this upstream population hook.
+        for name in ("vllm", "vllm.v1", "vllm.v1.attention", "vllm.v1.attention.backends"):
+            monkeypatch.setitem(sys.modules, name, SimpleNamespace(__path__=[]))
+        monkeypatch.setitem(sys.modules, "vllm.v1.attention.backends.flashinfer", flashinfer)
+        monkeypatch.setitem(
+            sys.modules, "vllm.v1.attention.backends.utils", SimpleNamespace(PerLayerParameters=SimpleNamespace)
+        )
 
-        def build(self, **_kwargs):
+    class FlashInferTrtllmAPIDecode:
+        kernel = SimpleNamespace(value="trtllm-gen")
+
+    class Builder:
+        def __init__(self, _spec, layer_names, actual_config, _device):
+            if backend_name == "FLASHINFER":
+                calls["per_layer"] = flashinfer.get_per_layer_parameters(actual_config, layer_names, Impl)
+
+        def build(self, **kwargs):
+            calls["build"] = kwargs
+            if backend_name == "FLASHINFER":
+                return SimpleNamespace(num_prefills=0, prefill=None, decode=FlashInferTrtllmAPIDecode())
             return object()
 
     class Impl:
-        supports_quant_query_input = False
-        vllm_flash_attn_version = 3
+        supports_quant_query_input = backend_name == "FLASHINFER"
+        vllm_flash_attn_version = fa_version
 
-        def __init__(self, *_args, **_kwargs):
-            pass
+        def __init__(self, *_args, **kwargs):
+            calls["impl"] = kwargs
 
         def do_kv_cache_update(self, layer, key, value, cache, slots):
             events.append(("update", layer, key, value, cache, slots))
@@ -126,7 +202,7 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
 
     config = SimpleNamespace(
         cache_config=SimpleNamespace(block_size=64, num_gpu_blocks=8192),
-        model_config=SimpleNamespace(get_sliding_window=lambda: None),
+        model_config=SimpleNamespace(get_sliding_window=lambda: window_size or None),
     )
 
     def create_config(**kwargs):
@@ -139,6 +215,7 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
 
     @contextmanager
     def benchmark(**kwargs):
+        calls["timing"] = kwargs
         kwargs["kernel_func"]()
         kwargs["kernel_func"]()
         yield {"latency_ms": 1.25, "power_stats": None}
@@ -155,11 +232,11 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
         "AttentionSelectorConfig": lambda **kwargs: SimpleNamespace(**kwargs),
         "current_platform": Platform(),
         "resolve_obj_by_qualname": lambda _path: Backend,
-        "AttentionBackendEnum": {"FLASH_ATTN": object()},
+        "AttentionBackendEnum": {backend_name: object()},
         "create_standard_kv_cache_spec": lambda *_args: SimpleNamespace(dtype=UINT8 if use_fp8_kv_cache else BF16),
         "create_common_attn_metadata": create_metadata,
         "create_kv_cache_and_block_mappings": lambda **_kwargs: (FakeTensor(), history_slot_mapping),
-        "set_kv_cache_layout": lambda _layout: None,
+        "backend_utils": SimpleNamespace(set_kv_cache_layout=lambda _layout: None),
         "get_attention_backend": lambda _backend: (Builder, Impl),
         "benchmark_with_power": benchmark,
         "log_perf": lambda **kwargs: calls.setdefault("log", kwargs),
@@ -167,6 +244,20 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
     }
     _load_function(ATTN_SOURCE, "_dense_kernel_source", namespace)
     run = _load_function(ATTN_SOURCE, "run_attention_torch", namespace)
+    runtime = None
+    if native_runtime:
+
+        def prepare_cache(batch, _config, _backend, _spec, _blocks, _device, _is_context):
+            calls["batch"] = batch
+            return SimpleNamespace(slot_mapping=slot_mapping), FakeTensor(), history_slot_mapping
+
+        runtime = SimpleNamespace(
+            validate_backend=lambda name: calls.setdefault("validated_backend", name), prepare_cache=prepare_cache
+        )
+        # The current route must never invoke the removed legacy metadata/layout APIs.
+        namespace["create_common_attn_metadata"] = None
+        namespace["create_kv_cache_and_block_mappings"] = None
+        namespace["backend_utils"] = None
     with ExitStack() as stack:
         run(
             stack,
@@ -177,15 +268,31 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
             head_dim=128,
             use_fp8_kv_cache=use_fp8_kv_cache,
             is_context_phase=False,
+            window_size=window_size,
             perf_filename="generation_attention_perf.txt",
+            _runtime=runtime,
         )
 
     assert calls["batch"] == BatchSpec(seq_lens=[65, 65], query_lens=[1, 1])
     assert calls["config"]["max_model_len"] == 65
+    assert calls["config"]["sliding_window"] == (window_size or None)
+    assert calls["impl"]["sliding_window"] == (window_size or None)
     assert calls["selector"].kv_cache_dtype == ("fp8" if use_fp8_kv_cache else "auto")
     assert calls["log"]["item_list"][0]["isl"] == 1
     assert calls["log"]["item_list"][0]["step"] == 64
-    assert calls["log"]["kernel_source"] == "vllm_flash_attn_fa3"
+    expected_source = (
+        "vllm_flashinfer_flashinfertrtllmapidecode"
+        if backend_name == "FLASHINFER"
+        else f"vllm_flash_attn_fa{fa_version}"
+    )
+    assert calls["log"]["kernel_source"] == expected_source
+    if backend_name == "FLASHINFER":
+        params = calls["per_layer"]["placeholder"]
+        assert params.window_left == (window_size - 1 if window_size else -1)
+        assert params.logits_soft_cap == 0.0 and params.sm_scale == pytest.approx(128**-0.5)
+        assert flashinfer.get_per_layer_parameters is None  # no leaked monkeypatch
+    assert calls["build"]["common_prefix_len"] == 0
+    assert (calls["timing"]["num_warmups"], calls["timing"]["num_runs"], calls["timing"]["repeat_n"]) == (3, 6, 1)
     assert [event[0] for event in events] == ["update", "update", "forward", "update", "forward"]
     assert events[0][5] is history_slot_mapping
     for update, forward in zip(events[1::2], events[2::2], strict=True):
@@ -313,6 +420,49 @@ def test_encoder_attention_rejects_missing_flash_attention_version():
 
     with pytest.raises(RuntimeError, match="without a concrete FA version"):
         run(1, 64, 4, 128, perf_filename="encoder_attention_perf.txt")
+
+
+def test_encoder_031_route_keeps_native_version_wrapper_and_timing():
+    calls = {}
+    flash_attn = object()
+    cu_seqlens = object()
+
+    @contextmanager
+    def benchmark(**kwargs):
+        calls["timing"] = kwargs
+        kwargs["kernel_func"]()
+        yield {"latency_ms": 0.01, "power_stats": None}
+
+    namespace = {
+        "torch": SimpleNamespace(
+            bfloat16=BF16,
+            int32=object(),
+            cuda=SimpleNamespace(set_device=lambda _: None, get_device_name=lambda _: "B200"),
+            randn=lambda *_args, **_kwargs: FakeTensor(),
+            arange=lambda *_args, **_kwargs: cu_seqlens,
+        ),
+        "get_vit_attn_backend": lambda **kwargs: calls.setdefault("selector", kwargs) and flash_attn,
+        "AttentionBackendEnum": SimpleNamespace(FLASH_ATTN=flash_attn),
+        "get_flash_attn_version": lambda **kwargs: calls.setdefault("fa_selector", kwargs) and 4,
+        "vit_flash_attn_wrapper": lambda *args, **kwargs: calls.setdefault("wrapper", kwargs),
+        "benchmark_with_power": benchmark,
+        "log_perf": lambda **kwargs: calls.setdefault("row", kwargs),
+        "vllm_version": "0.31.0",
+    }
+    implementation = _load_function(ENCODER_ATTN_SOURCE, "run_encoder_attention_torch", namespace)
+    wrapper = _load_function(
+        ROOT / "collector/vllm/collect_attn_encoder_v2.py",
+        "run_encoder_attention_torch",
+        {"collect_attn_encoder_v1": SimpleNamespace(run_encoder_attention_torch=implementation)},
+    )
+    wrapper(2, 64, 4, 128, perf_filename="encoder_attention_perf.txt")
+    assert calls["selector"] == {"head_size": 128, "dtype": BF16}
+    assert calls["fa_selector"] == {"head_size": 128}
+    assert calls["wrapper"]["fa_version"] == 4
+    assert calls["wrapper"]["cu_seqlens"] is cu_seqlens
+    assert calls["wrapper"]["batch_size"] == 2
+    assert (calls["timing"]["num_warmups"], calls["timing"]["num_runs"], calls["timing"]["repeat_n"]) == (3, 6, 1)
+    assert calls["row"]["kernel_source"] == "vllm_vit_flash_attn_fa4"
 
 
 class _FIPrefill:

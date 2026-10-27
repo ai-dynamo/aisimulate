@@ -428,7 +428,7 @@ def test_bf16_prefill_on_fp8_kv_fails_closed_on_internally_quantizing_backends()
         # (trtllm_attn_backend) and now passes backend="trtllm"; its
         # population contract is covered by
         # test_trtllm_attention_backend.py.
-        "collector/vllm/collect_attn.py",
+        "collector/vllm/collect_attn_v1.py",
         "collector/vllm/collect_attn_xpu.py",
     ],
 )

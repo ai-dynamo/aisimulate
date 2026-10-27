@@ -4,10 +4,11 @@
 
 # Modified from https://github.com/vllm-project/vllm/blob/v0.11.0/tests/v1/attention/utils.py
 
-"""Shared vLLM 0.24.0 collector test-harness utilities."""
+"""Shared vLLM collector test-harness utilities."""
 
 import atexit
 import functools
+import inspect
 import shutil
 import tempfile
 from contextlib import ExitStack
@@ -95,10 +96,6 @@ def create_common_attn_metadata(
     seq_lens_cpu = seq_lens.cpu()
     max_seq_len = int(seq_lens_cpu.max())
 
-    # Create computed tokens (context length for each sequence)
-    context_lens = [batch_spec.seq_lens[i] - batch_spec.query_lens[i] for i in range(batch_spec.batch_size)]
-    num_computed_tokens_cpu = torch.tensor(context_lens, dtype=torch.int32)
-
     # Create block table and slot mapping
     max_blocks = (max(batch_spec.seq_lens) + block_size - 1) // block_size
     if arange_block_indices:
@@ -116,13 +113,11 @@ def create_common_attn_metadata(
     # Calculate max query length
     max_query_len = max(batch_spec.query_lens)
 
-    return CommonAttentionMetadata(
+    metadata_kwargs = dict(
         query_start_loc=query_start_loc,
         query_start_loc_cpu=query_start_loc_cpu,
         seq_lens=seq_lens,
         seq_lens_cpu_upper_bound=seq_lens_cpu,
-        _seq_lens_cpu=seq_lens_cpu,
-        _num_computed_tokens_cpu=num_computed_tokens_cpu,
         num_reqs=batch_spec.batch_size,
         num_actual_tokens=num_tokens,
         max_query_len=max_query_len,
@@ -131,6 +126,19 @@ def create_common_attn_metadata(
         slot_mapping=slot_mapping,
         causal=True,
     )
+    # Serving population: vLLM v0.24.0 gpu_model_runner.py:2338-2354
+    # supplies both private CPU fields. v0.31.0 (db9527a), same file:2426-2442,
+    # supplies only seq_lens_cpu_upper_bound; computed tokens come from device
+    # seq_lens - query_lens (v1/attention/backend.py:488-492).
+    metadata_params = inspect.signature(CommonAttentionMetadata).parameters
+    if "_seq_lens_cpu" in metadata_params:
+        metadata_kwargs["_seq_lens_cpu"] = seq_lens_cpu
+    if "_num_computed_tokens_cpu" in metadata_params:
+        context_lens = [
+            seq_len - query_len for seq_len, query_len in zip(batch_spec.seq_lens, batch_spec.query_lens, strict=True)
+        ]
+        metadata_kwargs["_num_computed_tokens_cpu"] = torch.tensor(context_lens, dtype=torch.int32)
+    return CommonAttentionMetadata(**metadata_kwargs)
 
 
 def get_attention_backend(backend_name: AttentionBackendEnum):

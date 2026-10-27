@@ -179,9 +179,14 @@ def test_nvfp4_config_preserves_native_modelopt_without_projection_exclusions(mo
     }
 
 
-def _nvfp4_fixture(monkeypatch, torch, *, invalid_scales=False):
+def _nvfp4_fixture(monkeypatch, torch, *, invalid_scales=False, unified=False):
     class NativeMethod:
         quant_config = SimpleNamespace(group_size=16)
+
+    if unified:
+        del NativeMethod.quant_config
+        NativeMethod.ctx = SimpleNamespace(group_size=16)
+        NativeMethod.spec = SimpleNamespace(weight="nvfp4_weight", activation="nvfp4_activation")
 
     calls = []
 
@@ -208,7 +213,12 @@ def _nvfp4_fixture(monkeypatch, torch, *, invalid_scales=False):
     monkeypatch.setitem(
         sys.modules,
         "vllm.model_executor.layers.quantization.modelopt",
-        SimpleNamespace(ModelOptNvFp4LinearMethod=NativeMethod),
+        SimpleNamespace(**{("ModelOptLinearMethod" if unified else "ModelOptNvFp4LinearMethod"): NativeMethod}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm.model_executor.layers.quantization.utils.quant_utils",
+        SimpleNamespace(kNvfp4Static="nvfp4_weight", kNvfp4Dynamic="nvfp4_activation"),
     )
     module = torch.nn.Module()
     layer = module.projection = torch.nn.Module()
@@ -222,8 +232,9 @@ def _nvfp4_fixture(monkeypatch, torch, *, invalid_scales=False):
     return module, calls
 
 
-def test_nvfp4_populates_native_weight_and_scale_formats_without_rng_or_buffer_changes(monkeypatch, torch):
-    module, calls = _nvfp4_fixture(monkeypatch, torch)
+@pytest.mark.parametrize("unified", [False, True])
+def test_nvfp4_populates_native_weight_and_scale_formats_without_rng_or_buffer_changes(monkeypatch, torch, unified):
+    module, calls = _nvfp4_fixture(monkeypatch, torch, unified=unified)
     initialize = _load_function("_initialize_nvfp4_parameters", torch)
     rng = torch.get_rng_state()
     initialize(module)
@@ -257,3 +268,21 @@ def test_nvfp4_cannot_be_claimed_without_a_native_nvfp4_projection(monkeypatch, 
     module.projection.quant_method = object()
     with pytest.raises(RuntimeError, match="no native ModelOpt NVFP4 linear"):
         _load_function("_initialize_nvfp4_parameters", torch)(module)
+
+
+@pytest.mark.parametrize("weight,activation", [("nvfp4_weight", None), ("fp8_weight", "nvfp4_activation")])
+def test_unified_modelopt_rejects_non_w4a4_contract(monkeypatch, torch, weight, activation):
+    module, calls = _nvfp4_fixture(monkeypatch, torch, unified=True)
+    module.projection.quant_method.spec = SimpleNamespace(weight=weight, activation=activation)
+    with pytest.raises(RuntimeError, match="no native ModelOpt NVFP4 linear"):
+        _load_function("_initialize_nvfp4_parameters", torch)(module)
+    assert not calls
+    assert torch.count_nonzero(module.projection.weight) == 0
+
+
+def test_unified_modelopt_rejects_wrong_group_size(monkeypatch, torch):
+    module, calls = _nvfp4_fixture(monkeypatch, torch, unified=True)
+    module.projection.quant_method.ctx = SimpleNamespace(group_size=32)
+    with pytest.raises(ValueError, match="16-input blocks"):
+        _load_function("_initialize_nvfp4_parameters", torch)(module)
+    assert not calls
