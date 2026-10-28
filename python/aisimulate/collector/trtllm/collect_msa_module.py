@@ -899,7 +899,9 @@ def run_msa_module(
         f"compute={compute_dtype}, kv={kv_cache_dtype}, model={model_path}"
     )
 
-    attn_module, model_config, original_architecture = _cached_msa_attention_layer(model_path, num_heads, gemm_type, device)
+    attn_module, model_config, original_architecture = _cached_msa_attention_layer(
+        model_path, num_heads, gemm_type, device
+    )
 
     kv_cache_manager, attn_metadata, kernel_source = create_kv_cache_and_metadata(
         model_config=model_config,
