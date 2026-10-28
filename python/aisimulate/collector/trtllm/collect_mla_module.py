@@ -643,6 +643,39 @@ def create_attention_layer(
 # ═══════════════════════════════════════════════════════════════════════
 
 
+# One attention layer per (model, heads, kv dtype, gemm type) per worker. The layer
+# build (ModelConfig.from_pretrained, DeepseekV3DecoderLayer, dummy weights,
+# post_load_weights) does not depend on the point: create_attention_layer sizes
+# the config with fixed max_num_tokens / max_seq_len, so one layer serves every
+# (batch, seq, prefix) of its key exactly as serving reuses one module. The
+# per-case KV cache manager, metadata, dry run, CUDA-graph capture and timing are
+# untouched. Same pattern as collect_dsv4_attn._cached_dsv4_attention_module
+# (owner-approved perf change 2026-08-09); b300 base run (job 471159002):
+# dsa_context_module 1.2-2.4 GPU-s and dsa_generation_module 1.8 GPU-s per
+# one-row case, most of it this build. At most one layer is retained.
+_LAYER_CACHE: dict = {}
+
+
+def _cached_attention_layer(model_path: str, num_heads: int, use_fp8_kv_cache: bool, gemm_type: str, device: str):
+    key = (model_path, int(num_heads), bool(use_fp8_kv_cache), gemm_type, device)
+    hit = _LAYER_CACHE.get(key)
+    if hit is not None:
+        return hit
+    if _LAYER_CACHE:
+        _LAYER_CACHE.clear()
+        gc.collect()
+        torch.cuda.empty_cache()
+    entry = create_attention_layer(
+        model_path=model_path,
+        num_heads=num_heads,
+        use_fp8_kv_cache=use_fp8_kv_cache,
+        gemm_type=gemm_type,
+        device=device,
+    )
+    _LAYER_CACHE[key] = entry
+    return entry
+
+
 def create_kv_cache_and_metadata(
     model_config: ModelConfig,
     attn_module,
@@ -889,12 +922,8 @@ def run_mla_module(
     )
 
     # 1. Create attention layer (from_pretrained reads config.json)
-    attn_module, model_config, original_architecture = create_attention_layer(
-        model_path=model_path,
-        num_heads=num_heads,
-        use_fp8_kv_cache=use_fp8_kv_cache,
-        gemm_type=gemm_type,
-        device=device,
+    attn_module, model_config, original_architecture = _cached_attention_layer(
+        model_path, num_heads, use_fp8_kv_cache, gemm_type, device
     )
 
     # 2. Create KV cache + metadata

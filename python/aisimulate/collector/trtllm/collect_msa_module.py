@@ -590,6 +590,28 @@ def _resolve_attention_backend_cls(model_config: ModelConfig):
     )
 
 
+# One MiniMax-M3 sparse attention layer per (model, heads, gemm type) per worker —
+# same pattern and rationale as collect_mla_module._cached_attention_layer /
+# collect_dsv4_attn._cached_dsv4_attention_module: the layer build does not depend
+# on the point; the per-case KV cache manager, metadata, dry run and timing are
+# untouched (b300 base run: msa_context_module 1.8 GPU-s per one-row case).
+_LAYER_CACHE: dict = {}
+
+
+def _cached_msa_attention_layer(model_path: str, num_heads: int, gemm_type: str, device: str):
+    key = (model_path, int(num_heads), gemm_type, device)
+    hit = _LAYER_CACHE.get(key)
+    if hit is not None:
+        return hit
+    if _LAYER_CACHE:
+        _LAYER_CACHE.clear()
+        gc.collect()
+        torch.cuda.empty_cache()
+    entry = create_msa_attention_layer(model_path=model_path, num_heads=num_heads, gemm_type=gemm_type, device=device)
+    _LAYER_CACHE[key] = entry
+    return entry
+
+
 def create_kv_cache_and_metadata(
     model_config: ModelConfig,
     batch_size: int,
@@ -875,12 +897,7 @@ def run_msa_module(
         f"compute={compute_dtype}, kv={kv_cache_dtype}, model={model_path}"
     )
 
-    attn_module, model_config, original_architecture = create_msa_attention_layer(
-        model_path=model_path,
-        num_heads=num_heads,
-        gemm_type=gemm_type,
-        device=device,
-    )
+    attn_module, model_config, original_architecture = _cached_msa_attention_layer(model_path, num_heads, gemm_type, device)
 
     kv_cache_manager, attn_metadata, kernel_source = create_kv_cache_and_metadata(
         model_config=model_config,
