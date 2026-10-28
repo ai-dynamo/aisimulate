@@ -188,7 +188,10 @@ unavailable; their summary fields are explicit nulls where unsupported.
 ```
 
 - `prediction.json` preserves the selected runner's existing full prediction report.
-- `requests.jsonl` contains one record per request when explicitly enabled.
+- `requests.jsonl` contains one record per request when explicitly enabled. SGLang workers with
+  `host_loop` add `scheduler_received_ms`, `selected_ms` and `prefill_complete_ms` to each
+  record; a worker with `frontend` or `host_profile` also adds `frontend_ready_ms`, and a native
+  encoder pool adds `encoder_ready_ms`.
 - `resource-plan.json` describes preflight refusal, with null for unavailable host, budget,
   or workload estimates. `resource-runtime.json` records the effective budget and supervision
   outcome. `execution-events.jsonl` retains complete checkpoints after interruption; see
@@ -228,7 +231,13 @@ importing an installed plugin or inside an adapter occur after the known outputs
 `--format table` prints a concise human-readable summary. `--format json` prints the same summary as
 one JSON value for shell automation. Durable artifact formats do not change with this option.
 
-Prediction JSON without `--detail` on standard output is a summary object. Recommendation JSON is an array of selected
+Prediction JSON without `--detail` on standard output is a summary object. SGLang workers with
+`host_loop` add the mean time to first token split by stage: `mean_frontend_ms`,
+`mean_scheduler_inbox_wait_ms`, `mean_receive_to_admit_ms`, `mean_prefill_elapsed_ms`,
+`mean_result_observation_delay_ms` and `mean_handoff_to_first_token_ms`. The six spans sum to
+per-request TTFT for requests that reached every milestone; with a native encoder pool they start
+at the pool's delivery and `encoder_latency_ms` covers the wait. Encoder pools also report
+`encoder_gpus` and `total_gpus`. Recommendation JSON is an array of selected
 rows with `rank`, `score`, `objectives`, `used_gpus`, and `config_path`. Single-objective scores are
 signed so higher is better; latency-minimizing targets report negative scores. Pareto rows carry
 the raw objective values in `objectives`. Use `recommendation.json` for the complete candidate ledger.
@@ -273,6 +282,9 @@ sections and skipped-section reasons to the normal prediction summary.
   `kvcache_quant_mode`: compare it with the deployment before interpreting token capacity.
   An omitted engine override can infer FP8; see [KV precision](../perf-model/configuration.md#kv-precision-and-token-capacity).
   The field is omitted when the estimator cannot establish the quantization mode.
+  When exported, `memory_breakdown.reserved_bytes` reports fixed rank-local non-KV
+  reservations, such as the VL embedding cache, separately from `cuda_graph_reserved_bytes`.
+  Older reports may omit `reserved_bytes`.
   `estimated_num_gpu_blocks` is captured at this stage,
   before adjustments such as FPM profile-domain limits. It is neither a final runtime capacity
   nor observed memory usage. Explicit KV blocks, nested rank input,
@@ -376,6 +388,7 @@ Check KV capacity against request lengths, context limits, and traffic stop limi
 | No selected configuration and zero resource-limited candidates, exit `1` | Inspect `recommendation.json` for candidate status, reason, and GPU/SLA constraints. | Check that the model fits within `max_candidate_gpus`, and that the workload can meet the SLA. |
 | Resource refusal, exit `3` | Inspect resource diagnostics and any completed recommendation ledger. | Check the [local resource budget](local-resources.md); preserve completed results before choosing a smaller workload or another host. |
 | A candidate fails to resolve performance data | Check the model, hardware, backend version, and timing mode. FPM needs a matching collected cell. | Use a covered combination from the [support reference](../../README.md#support-and-accuracy) or the [FPM workflow](../perf-model/methods/whole-forward.md). |
+| `host cost table ... does not exist yet` (or a missing-row message) | A native SGLang VL prediction reads the frontend stage from a host cost table row measured on the serving host; the message prints the `collect` command that adds the row. | Run the printed `python -m aisimulate.vl.collect ...` with `--sglang-python` pointing at the serving venv, then rerun `predict`; see [SGLang VL host loop](../replay/engine/sglang-vl-host-loop.md). |
 | `--online` is rejected | The selected stack must advertise online support. | Use offline execution with `--stack engine`, or an integration that supports online execution. |
 
 For automation, check the exit code as well as standard output. `--format json` changes successful

@@ -82,6 +82,20 @@ def test_default_vllm_rules_still_resize_unpinned_requests():
     assert result["params"]["decode"]["max_num_tokens"] == 512
 
 
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+def test_trtllm_preserved_limits_still_default_missing_transfer_buffer(rule):
+    params = _params(preserve=True, rule=rule)
+    params["params"]["prefill"].pop("cache_transceiver_max_tokens_in_buffer")
+
+    result = apply_rule_plugins(copy.deepcopy(params), "trtllm")
+
+    assert result["params"]["prefill"]["cache_transceiver_max_tokens_in_buffer"] > 0
+    assert result["params"]["decode"]["cache_transceiver_max_tokens_in_buffer"] == 8192
+    for role in ("prefill", "decode"):
+        for key in ("max_batch_size", "max_num_tokens", "max_seq_len"):
+            assert result["params"][role][key] == params["params"][role][key]
+
+
 def test_preserve_engine_limits_survives_typed_request_round_trip():
     params = _params(preserve=True)
 

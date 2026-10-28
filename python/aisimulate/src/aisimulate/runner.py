@@ -12,7 +12,7 @@ import logging
 import math
 import random
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from numbers import Real
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -22,7 +22,7 @@ from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfM
 
 from .capacity import materialize_aic_num_gpu_blocks
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
-from .config.engine import StateCacheConfig
+from .config.engine import StateCacheConfig, _validate_replay_estimation_mode
 from .power import normalize_power_summary, power_metadata
 from .sweeper.afd_engine import AFDForegroundEngine
 from .sweeper.afd_parallel import AFDPhase, AFDTopology
@@ -30,6 +30,7 @@ from .sweeper.afd_perfmodel import AFDLayerTimes
 from .sweeper.provider import JSONValue
 from .sweeper.replay import (
     BackendDeploymentSpec,
+    EncoderPoolSpec,
     ReplayOutputRequirements,
     ReplayReport,
     ReplaySpec,
@@ -83,6 +84,7 @@ _RUNTIME_TRAFFIC_FIELDS = frozenset(
         "agentic_lanes",
         "agentic_snapshot",
         "agentic_warmup",
+        "agentic_warmup_policy",
         "agentic_profile",
     }
 )
@@ -382,11 +384,15 @@ class EngineReplayRunnerFactory:
             supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
             supports_disaggregated_attention_dp=True,
             supports_analytical_epd=True,
+            supports_native_epd=True,
             supports_cached_prefix_tokens=True,
             supports_mtp_expected_acceptance=True,
+            supports_generic_speculation=True,
             supported_engine_model_controls=ENGINE_MODEL_CONTROL_FIELDS,
             supports_state_cache=True,
             supports_grouped_kv_cache=True,
+            supports_tokenization=True,
+            supports_sglang_host_loop=True,
             supported_trace_formats=(
                 "mooncake",
                 "mooncake-delta",
@@ -398,6 +404,7 @@ class EngineReplayRunnerFactory:
             supports_agentic_lanes=True,
             supports_agentic_snapshots=True,
             supports_agentic_warmup=True,
+            supports_agentic_live_warmup=True,
             supports_agentic_profile=True,
             supported_agentic_topologies=("agg", "disagg"),
             supported_agentic_backends=("vllm", "sglang"),
@@ -473,9 +480,22 @@ class EngineReplayRunner:
             raise ValueError("length_sampler requires materialized direct synthetic replay without source_type")
         self.capabilities.require_compatible(spec)
         encoder = spec.backend_deployment.encoder
-        if encoder is None and spec.workload.get("images") is not None:
-            raise InvalidRunnerError("image workloads require an encoder pool")
+        if (
+            encoder is None
+            and spec.workload.get("images") is not None
+            and _vision_role_args(spec.backend_deployment) is None
+        ):
+            raise InvalidRunnerError(
+                "image workloads require an encoder pool or an aggregated or prefill SGLang worker hosting the "
+                "vision encoder"
+            )
+        if encoder is None and spec.workload.get("images") is not None and spec.workload.get("source_type") is None:
+            # Only the workload driver lays image placeholders into prompts; a
+            # materialized request list would silently run the workload text-only.
+            raise InvalidRunnerError("native image workloads require workload-driver traffic (workload.source_type)")
         if spec.backend_deployment.deployment_mode in {"afd", "afd+pd"}:
+            if spec.workload.get("images") is not None:
+                raise InvalidRunnerError("image workloads are unsupported for AFD")
             return _run_afd_replay(
                 spec,
                 trace_block_size=self.trace_block_size,
@@ -484,26 +504,29 @@ class EngineReplayRunner:
                 capture_per_request=output_requirements.capture_per_request,
             )
         if encoder is not None:
-            from .sweeper.config import OptimizationGoal, Workload
-            from .sweeper.epd import apply_encoder_overlay
+            from .sweeper.config import OptimizationGoal
+            from .sweeper.epd import apply_encoder_overlay, replay_workload
 
-            if output_requirements.capture_per_request or output_requirements.include_raw_report:
-                raise InvalidRunnerError("analytical EPD cannot produce per-request or raw replay reports")
             if spec.adapters or spec.execution_mode != "offline":
-                raise InvalidRunnerError("analytical EPD requires offline static pools without adapters")
-            goal = OptimizationGoal.model_validate(spec.goal)
-            if (
-                goal.min_goodput_rps is not None
-                or (goal.sla is not None and not goal.requires_aggregate_sla)
-                or any(
-                    target.value.startswith("goodput")
-                    for target in (goal.resolved_pareto_objectives if goal.is_pareto else [goal.target])
-                )
-            ):
-                raise InvalidRunnerError("analytical EPD cannot report per-request goodput")
-            workload = Workload.model_validate(spec.workload)
-            workload.require_fixed_epd()
+                raise InvalidRunnerError("encoder pools require offline static pools without adapters")
+            workload = replay_workload(spec.workload)
+            if encoder.mode == "analytical":
+                if output_requirements.capture_per_request or output_requirements.include_raw_report:
+                    raise InvalidRunnerError("analytical EPD cannot produce per-request or raw replay reports")
+                goal = OptimizationGoal.model_validate(spec.goal)
+                if (
+                    goal.min_goodput_rps is not None
+                    or (goal.sla is not None and not goal.requires_aggregate_sla)
+                    or any(
+                        target.value.startswith("goodput")
+                        for target in (goal.resolved_pareto_objectives if goal.is_pareto else [goal.target])
+                    )
+                ):
+                    raise InvalidRunnerError("analytical EPD cannot report per-request goodput")
+                workload.require_fixed_epd()
             images = workload.images
+            if images is None:
+                raise InvalidRunnerError("encoder pools require an image workload")
             if (images.height, images.width, images.count) != (
                 encoder.image_height,
                 encoder.image_width,
@@ -527,13 +550,16 @@ class EngineReplayRunner:
                         raise InvalidRunnerError("language rank config must be a mapping")
                     scopes.append(args["rank"])
                 for scope in scopes:
-                    if scope.get("timing_model") is not None or any(
-                        scope.get(alias, "op_level") != "op_level"
-                        for alias in _AIC_TIMING_FIELD_ALIASES["forward_model"]
+                    if encoder.mode == "analytical" and (
+                        scope.get("timing_model") is not None
+                        or any(
+                            scope.get(alias, "op_level") != "op_level"
+                            for alias in _AIC_TIMING_FIELD_ALIASES["forward_model"]
+                        )
                     ):
                         raise InvalidRunnerError("analytical EPD requires op_level language timing")
                     if scope.get("startup_time") not in (None, 0.0):
-                        raise InvalidRunnerError("analytical EPD requires static worker pools")
+                        raise InvalidRunnerError("encoder pools require static worker pools")
             original_spec = spec
             spec = replace(spec, workload={**spec.workload, "isl": spec.workload["isl"] + encoder.visual_tokens})
         memory_diagnostics = {} if output_requirements.capture_memory_diagnostics else None
@@ -543,6 +569,10 @@ class EngineReplayRunner:
             record_per_request=output_requirements.capture_per_request,
             memory_diagnostics=memory_diagnostics,
         )
+        if encoder is not None and encoder.mode == "native":
+            if "spec" not in execution_spec:
+                execution_spec = {"spec": execution_spec}
+            execution_spec["spec"]["encoder"] = _native_encoder_spec(encoder, spec.backend_deployment)
         if output_requirements.capture_performance_diagnostics:
             if "spec" not in execution_spec:
                 execution_spec = {"spec": execution_spec}
@@ -553,6 +583,10 @@ class EngineReplayRunner:
             execution_spec["determinism"] = self.determinism
         if self.trace_graph_cache and "traffic" in execution_spec:
             execution_spec["traffic"]["trace_graph_cache"] = True
+        if spec.backend_deployment.tokenization is not None:
+            if "spec" not in execution_spec:
+                execution_spec = {"spec": execution_spec}
+            execution_spec["tokenization"] = dict(spec.backend_deployment.tokenization)
         execution_spec_json = json.dumps(
             execution_spec,
             allow_nan=False,
@@ -608,13 +642,24 @@ class EngineReplayRunner:
             ),
         )
         if encoder is not None:
-            normalized = apply_encoder_overlay(normalized, original_spec)
+            if encoder.mode == "analytical":
+                normalized = apply_encoder_overlay(normalized, original_spec)
+            else:
+                from .sweeper.epd import language_gpus
+
+                # The pool's GPUs are in the replay's gpu_hours; publish the totals
+                # the analytical overlay reports so the two modes stay comparable.
+                total_gpus = language_gpus(spec.backend_deployment) + encoder.total_gpus
+                normalized = ReplayReport(
+                    metrics={**normalized.metrics, "total_gpus": float(total_gpus)},
+                    metadata={**normalized.metadata, "encoder": asdict(encoder), "total_gpus": total_gpus},
+                )
             if memory_diagnostics is not None:
                 memory_diagnostics["encoder"] = {
                     "scope": "capacity_estimate_per_rank",
                     "stage": "before_native_capacity_adjustments",
                     "status": "unavailable",
-                    "unavailable_reason": "analytical EPD does not export an encoder memory component estimate",
+                    "unavailable_reason": "encoder pools do not export an encoder memory component estimate",
                 }
                 # Capacity estimates remain valid across the overlay. Raw language
                 # timing/records do not describe the combined EPD workload.
@@ -712,30 +757,32 @@ def _afd_total_gpus(deployment, topology: AFDTopology) -> int:
     return expected
 
 
-def _run_afd_phase(
+def _plan_afd_phase(
     engine: AFDForegroundEngine,
-    *,
     phase: AFDPhase,
-    start_ms: float,
+    *,
     input_length: int,
     output_length: int,
-    passes: int,
-) -> tuple[float, float, int]:
+) -> tuple[float, int]:
+    # Every pass of a phase has the same evaluation, so plan one pass to keep the
+    # engine's validation and reuse its step and interval count for every pass.
+    planned = engine.execute_pass(
+        phase=phase,
+        now_ms=0.0,
+        input_length=input_length,
+        output_length=output_length,
+    )
+    engine.complete_pass(planned.pass_id, now_ms=planned.end_ms)
+    return planned.evaluation.step_latency_ms, len(planned.intervals)
+
+
+def _run_afd_phase(plan: tuple[float, int], *, start_ms: float, passes: int) -> tuple[float, int]:
+    step_ms, intervals_per_pass = plan
     cursor = start_ms
-    pass_latency_ms = 0.0
-    interval_count = 0
+    # Add one step per pass, as the engine does, so pass boundaries round identically.
     for _ in range(passes):
-        planned = engine.execute_pass(
-            phase=phase,
-            now_ms=cursor,
-            input_length=input_length,
-            output_length=output_length,
-        )
-        completed = engine.complete_pass(planned.pass_id, now_ms=planned.end_ms)
-        cursor = completed.completed_at_ms
-        pass_latency_ms = completed.pass_latency_ms
-        interval_count += len(planned.intervals)
-    return cursor, pass_latency_ms, interval_count
+        cursor += step_ms
+    return cursor, intervals_per_pass * passes
 
 
 def _request_passes_sla(record: Mapping[str, JSONValue], sla: Mapping[str, JSONValue]) -> bool:
@@ -805,6 +852,11 @@ def _run_afd_replay(
             deployment.prefill_engine_args if companion.phase is AFDPhase.PREFILL else deployment.decode_engine_args
         )
         companion_available_ms = _startup_delay_ms(_required_engine_args(raw_args, companion.phase.value))
+    afd_phases = (AFDPhase.PREFILL, AFDPhase.DECODE) if topology.phase is AFDPhase.BOTH else (topology.phase,)
+    pass_plans = {
+        phase: _plan_afd_phase(engine, phase, input_length=input_length, output_length=output_length)
+        for phase in afd_phases
+    }
     afd_passes = 0
     afd_intervals = 0
     batch_count = 0
@@ -846,21 +898,9 @@ def _run_afd_replay(
         decode_passes = max(output_length - 1, 0)
         if deployment.deployment_mode == "afd":
             prefill_start = max(batch_start, afd_available_ms)
-            prefill_end, _, interval_count = _run_afd_phase(
-                engine,
-                phase=AFDPhase.PREFILL,
-                start_ms=prefill_start,
-                input_length=input_length,
-                output_length=output_length,
-                passes=1,
-            )
-            decode_end, _, decode_intervals = _run_afd_phase(
-                engine,
-                phase=AFDPhase.DECODE,
-                start_ms=prefill_end,
-                input_length=input_length,
-                output_length=output_length,
-                passes=decode_passes,
+            prefill_end, interval_count = _run_afd_phase(pass_plans[AFDPhase.PREFILL], start_ms=prefill_start, passes=1)
+            decode_end, decode_intervals = _run_afd_phase(
+                pass_plans[AFDPhase.DECODE], start_ms=prefill_end, passes=decode_passes
             )
             afd_available_ms = decode_end
             afd_passes += 1 + decode_passes
@@ -868,14 +908,7 @@ def _run_afd_replay(
         elif topology.phase is AFDPhase.PREFILL:
             assert companion is not None
             prefill_start = max(batch_start, afd_available_ms)
-            prefill_end, _, interval_count = _run_afd_phase(
-                engine,
-                phase=AFDPhase.PREFILL,
-                start_ms=prefill_start,
-                input_length=input_length,
-                output_length=output_length,
-                passes=1,
-            )
+            prefill_end, interval_count = _run_afd_phase(pass_plans[AFDPhase.PREFILL], start_ms=prefill_start, passes=1)
             afd_available_ms = prefill_end
             decode_end = prefill_end
             if decode_passes:
@@ -892,13 +925,8 @@ def _run_afd_replay(
             decode_end = prefill_end
             if decode_passes:
                 decode_start = max(prefill_end, afd_available_ms)
-                decode_end, _, interval_count = _run_afd_phase(
-                    engine,
-                    phase=AFDPhase.DECODE,
-                    start_ms=decode_start,
-                    input_length=input_length,
-                    output_length=output_length,
-                    passes=decode_passes,
+                decode_end, interval_count = _run_afd_phase(
+                    pass_plans[AFDPhase.DECODE], start_ms=decode_start, passes=decode_passes
                 )
                 afd_available_ms = decode_end
                 afd_passes += decode_passes
@@ -1121,6 +1149,9 @@ def _materialize_engine_execution_spec(
         traffic = {
             key: value for key, value in spec.workload.items() if key in _RUNTIME_TRAFFIC_FIELDS and value is not None
         }
+        images = spec.workload.get("images")
+        if images is not None and spec.backend_deployment.encoder is None:
+            traffic.update(_image_traffic_fields(spec.backend_deployment, images))
         if traffic.get("trace_format") not in {"dynamo", "weka"}:
             traffic.setdefault("trace_block_size", trace_block_size)
         trace_format = traffic.get("trace_format")
@@ -1151,6 +1182,80 @@ def _materialize_engine_execution_spec(
                 traffic["execution_model"] = execution_model
         return {"spec": execution_spec, "traffic": traffic}
     return execution_spec
+
+
+def _vision_role_args(deployment: BackendDeploymentSpec) -> Mapping[str, JSONValue] | None:
+    """Rank args of the language role hosting the vision encoder: the aggregated or the prefill worker.
+
+    Lower-level specifications nest the rank under `rank`, as the materializer
+    accepts them; the flat form is the rank itself.
+    """
+
+    def rank(args: Mapping[str, JSONValue] | None) -> Mapping[str, JSONValue] | None:
+        nested = args.get("rank") if args else None
+        return nested if isinstance(nested, Mapping) else args
+
+    if (rank(deployment.decode_engine_args) or {}).get("vision"):
+        raise InvalidRunnerError("the decode worker never runs the vision encoder")
+    for args in (deployment.agg_engine_args, deployment.prefill_engine_args):
+        role = rank(args)
+        if role and role.get("vision"):
+            return role
+    return None
+
+
+def _native_encoder_spec(encoder: EncoderPoolSpec, deployment: BackendDeploymentSpec) -> dict[str, JSONValue]:
+    """Lower the resolved pool to the replay's encoder component.
+
+    The embeddings fan out to every tensor-parallel rank of the language worker
+    that receives them (SGLang `zmq_to_scheduler`), so the bytes scale with its width.
+    """
+    native = encoder.native
+    assert native is not None
+    prefix = "" if deployment.deployment_mode == "agg" else "prefill_"
+    tensor = int(deployment.parallel_config[prefix + "tp"])
+    return {
+        "instances": encoder.workers,
+        "max_batch": encoder.batch_size,
+        "gpus_per_instance": encoder.tp,
+        "images_per_request": encoder.image_count,
+        "shape": dict(native.shape),
+        "preprocess_ms_per_image": native.preprocess_ms_per_image,
+        "transfer_bytes_per_image": native.transfer_bytes_per_image * tensor,
+        "transfer_bandwidth_gb_s": native.transfer_bandwidth_gb_s,
+        "timing_model": native.timing_model,
+    }
+
+
+def _image_traffic_fields(deployment: BackendDeploymentSpec, images: Mapping[str, JSONValue]) -> dict[str, JSONValue]:
+    """Lower the public image profile to the placeholder geometry the workload driver lays out."""
+    from aisimulate_core.sdk.backends.base_backend import image_geometry
+
+    args = _vision_role_args(deployment) or {}
+    timing = args.get("timing_model") if isinstance(args.get("timing_model"), Mapping) else {}
+    model = args.get("aic_model_path") or (timing.get("config") or {}).get("model")
+    if not isinstance(model, str) or not model:
+        raise ValueError("image workloads require the language model identity in the vision-hosting engine args")
+    geometry = image_geometry(
+        model,
+        int(images["height"]),
+        int(images["width"]),
+        min_pixels=images.get("min_pixels"),
+        max_pixels=images.get("max_pixels"),
+    )
+    fields: dict[str, JSONValue] = {
+        "image_count": int(images.get("count", 1)),
+        "image_visual_tokens": geometry.visual_tokens,
+        "image_sequences": geometry.sequences,
+        "image_patch_tokens": geometry.patch_tokens,
+        "image_transformer_tokens": geometry.transformer_tokens,
+        "image_output_tokens": geometry.output_tokens,
+        "image_embedding_bytes": geometry.embedding_bytes,
+    }
+    identity = images.get("identity", "unique")
+    if isinstance(identity, Mapping):
+        fields["image_identity_pool"] = int(identity["pool"])
+    return fields
 
 
 def _execution_target_model(
@@ -1402,6 +1507,33 @@ def _materialize_engine_role(
     """Materialize one single-rank or attention-DP generalized engine."""
 
     role_config = dict(raw_config)
+    # New generic schemes use caller-authored capacity; leave the existing
+    # Ngram/NextN capacity paths unchanged.
+    requested_rank = role_config.get("rank", role_config)
+    if isinstance(requested_rank, Mapping):
+        timing = requested_rank.get("timing_model")
+        timing_config = timing.get("config", {}) if isinstance(timing, Mapping) else {}
+        if (
+            isinstance(timing, Mapping)
+            and timing.get("type") == "external"
+            and timing.get("provider") == "aic"
+            and isinstance(timing_config, Mapping)
+        ):
+            # Capacity materialization also constructs the canonical estimator,
+            # including with explicit KV blocks. Reject unsupported replay modes
+            # before it opens a learned source.
+            _validate_replay_estimation_mode(timing_config.get("estimation_mode"))
+        canonical = timing_config.get("speculation") if isinstance(timing_config, Mapping) else None
+        selections = (requested_rank.get("speculation"), canonical)
+        for spec in selections:
+            if spec is not None and not isinstance(spec, Mapping):
+                raise ValueError("speculation must be a mapping")
+            if isinstance(spec, Mapping) and not isinstance(spec.get("params", {}), Mapping):
+                raise ValueError("speculation params must be a mapping")
+        if requested_rank.get("num_gpu_blocks") is None:
+            for spec in selections:
+                if isinstance(spec, Mapping) and spec.get("kind") not in ("none", "ngram"):
+                    raise ValueError(f"{spec.get('kind')} speculation requires explicit fixed KV capacity on {role}")
     # The shared CLI/Sweeper form is flat. Nested rank descriptors are already
     # execution-level input and retain the native runtime's compatibility
     # fallback after their structure has been validated below.
@@ -1699,18 +1831,23 @@ def _materialize_engine_role(
             memory_fraction_overrides.clear()
 
     speculation_raw = rank.pop("speculation", None)
+    timing_config = timing_model.get("config", {}) if uses_aic_timing and isinstance(timing_model, dict) else {}
+    canonical_speculation = timing_config.get("speculation")
+    canonical_kind = canonical_speculation.get("kind") if isinstance(canonical_speculation, Mapping) else None
     speculation = None
     if speculation_raw is not None:
-        from .config.engine import NgramSpeculationConfig
+        from pydantic import TypeAdapter
 
-        speculation = NgramSpeculationConfig.model_validate(speculation_raw)
-        if backend != "vllm" or rank.get("native_host_offload") is not None:
-            raise ValueError("ngram speculation requires vllm without host_offload")
+        from .config.engine import NgramSpeculationConfig, SpeculationConfig
+
+        speculation = TypeAdapter(SpeculationConfig).validate_python(speculation_raw)
         if any(
             rank.get(key) is not None
             for key in (
                 "aic_nextn",
                 "nextn",
+                "aic_nextn_accepted",
+                "nextn_accepted",
                 "aic_nextn_accept_rates",
                 "nextn_accept_rates",
                 "aic_mtp_seed",
@@ -1719,8 +1856,17 @@ def _materialize_engine_role(
         ):
             raise ValueError("speculation cannot be combined with legacy speculative decoding fields")
         rank["aic_nextn"] = speculation.num_speculative_tokens
-        rank["aic_nextn_accept_rates"] = ",".join(str(rate) for rate in speculation.acceptance_rates)
+        if isinstance(speculation, NgramSpeculationConfig):
+            rank["aic_nextn_accept_rates"] = ",".join(str(rate) for rate in speculation.acceptance_rates)
+        else:
+            rank["aic_nextn_accepted"] = speculation.expected_accepted_tokens
         rank["aic_mtp_seed"] = speculation.seed
+
+    kind = speculation.kind if speculation is not None else canonical_kind
+    if kind not in (None, "none"):
+        supported = {"vllm"} if kind == "ngram" else {"vllm", "sglang"}
+        if backend not in supported or rank.get("native_host_offload") is not None:
+            raise ValueError(f"{kind} speculation requires a supported backend without host_offload")
 
     nextn = _pop_alias(rank, "aic_nextn", ("aic_nextn", "nextn"))
     if nextn is not None:
@@ -1735,7 +1881,9 @@ def _materialize_engine_role(
         ("aic_nextn_accept_rates", "nextn_accept_rates"),
     )
     if accept_rates is not None:
-        if nextn is None:
+        # Canonical timing resolves depth in native replay. Keep the authored
+        # rates intact instead of requiring the same depth on the rank too.
+        if nextn is None and canonical_kind in (None, "none"):
             raise ValueError(f"engine provider {role} aic_nextn_accept_rates requires aic_nextn")
         if not isinstance(accept_rates, str):
             raise ValueError(f"engine provider {role} aic_nextn_accept_rates must be a string")
@@ -1820,22 +1968,25 @@ def _materialize_engine_role(
             if speculation is not None:
                 cost_config = speculation.cost_config()
                 if timing_config.get("nextn") not in (None, 0):
-                    raise ValueError("ngram speculation conflicts with timing_model.config.nextn")
+                    raise ValueError("speculation conflicts with timing_model.config.nextn")
                 if timing_config.get("speculation") not in (None, cost_config):
-                    raise ValueError("ngram speculation conflicts with timing_model.config.speculation")
-                if timing_config.get("forward_model", "op_level") != "op_level":
-                    raise ValueError("ngram speculation requires op_level timing")
+                    raise ValueError("speculation conflicts with timing_model.config.speculation")
+                if speculation.kind == "ngram" and timing_config.get("forward_model", "op_level") != "op_level":
+                    raise ValueError("speculation requires op_level timing")
                 timing_config["speculation"] = cost_config
             configured_nextn = timing_config.get("nextn")
-            if speculation is None and configured_nextn is not None and configured_nextn != nextn:
+            canonical = timing_config.get("speculation")
+            if speculation is None and canonical is None and configured_nextn is not None and configured_nextn != nextn:
                 raise ValueError(
                     f"engine provider {role} aic_nextn={nextn} conflicts with "
                     f"timing_model.config.nextn={configured_nextn!r}"
                 )
-            if speculation is None:
+            if speculation is None and canonical is None:
                 timing_config["nextn"] = nextn
             timing_model["config"] = timing_config
             rank["timing_model"] = timing_model
+        elif speculation is not None and speculation.kind != "ngram":
+            raise ValueError(f"{speculation.kind} speculation requires external AIC timing")
 
     host_offload = rank.get("native_host_offload")
     if (
@@ -1892,8 +2043,12 @@ def _manual_state_cache(rank: Mapping[str, JSONValue], backend: str, role: str) 
     if raw is None:
         return None
     state_cache = StateCacheConfig.model_validate(raw)
-    if rank.get("prefix_match_unit") is not None and rank.get("aic_nextn") is not None:
-        raise ValueError("prefix_match_unit does not support speculative decoding")
+    if (
+        rank.get("prefix_match_unit") is not None
+        and rank["prefix_match_unit"] != rank.get("block_size")
+        and rank.get("aic_nextn") is not None
+    ):
+        raise ValueError("sub-block prefix_match_unit does not support speculative decoding")
     if backend != "vllm" or role not in ("aggregated", "prefill", "decode"):
         raise ValueError("state_cache requires backend=vllm and an aggregated, prefill or decode G1 worker")
     if rank.get("native_host_offload") is not None:

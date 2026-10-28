@@ -716,6 +716,283 @@ mod speculative_scheduling {
     }
 }
 
+mod prefill_timing_totals {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// Records each prefill query at the whole-forward FPM coordinates
+    /// `(batch, total prefill tokens, total KV read tokens)`. A mean-based
+    /// call is mapped as the FPM provider maps it: `batch * (isl - prefix)`
+    /// and `batch * prefix`.
+    #[derive(Default)]
+    struct FpmCoordinateProbe {
+        prefill: Mutex<Vec<(usize, usize, usize)>>,
+        decode: Mutex<Vec<usize>>,
+    }
+
+    impl crate::engine::TimingModel for FpmCoordinateProbe {
+        fn predict_prefill_ms(
+            &self,
+            batch: usize,
+            mean_isl: usize,
+            mean_prefix: usize,
+        ) -> anyhow::Result<f64> {
+            self.prefill.lock().unwrap().push((
+                batch,
+                batch * (mean_isl - mean_prefix),
+                batch * mean_prefix,
+            ));
+            Ok(1.0)
+        }
+
+        fn predict_prefill_totals_ms(
+            &self,
+            batch: usize,
+            new_tokens: usize,
+            prefix_tokens: usize,
+        ) -> anyhow::Result<f64> {
+            self.prefill
+                .lock()
+                .unwrap()
+                .push((batch, new_tokens, prefix_tokens));
+            Ok(1.0)
+        }
+
+        fn predict_decode_ms(
+            &self,
+            batch: usize,
+            _: usize,
+            _: usize,
+            _: usize,
+        ) -> anyhow::Result<f64> {
+            self.decode.lock().unwrap().push(batch);
+            Ok(1.0)
+        }
+    }
+
+    #[test]
+    fn prefill_timing_queries_scheduled_totals_for_cached_and_partial_blocks() {
+        const BUDGET: usize = 16;
+        let mut core = VllmCore::new(
+            MockEngineArgs::builder()
+                .block_size(4)
+                .num_gpu_blocks(64)
+                .max_num_batched_tokens(Some(BUDGET))
+                .max_num_seqs(Some(4))
+                .enable_chunked_prefill(true)
+                .enable_prefix_caching(true)
+                .speedup_ratio(1.0)
+                .build()
+                .unwrap(),
+        );
+        let timing = Arc::new(FpmCoordinateProbe::default());
+        core.args.perf_model = crate::engine::common::perf_model::PerfModel::External {
+            timing: timing.clone(),
+        }
+        .into();
+        let cached: Vec<u32> = (0..8).collect();
+        let arrivals = [
+            // Caches two full blocks and finishes in its first pass.
+            vec![(1, cached.clone(), 1)],
+            // Q hits all 8 cached tokens of its 9-token prompt and computes one;
+            // R ends in a partial block; T is chunked at the budget.
+            vec![
+                (2, [cached.clone(), vec![100]].concat(), 2),
+                (3, (200..207).collect(), 2),
+                (4, (300..312).collect(), 2),
+            ],
+            // F's prompt is fully cached, so vLLM recomputes its last block.
+            vec![(5, cached, 2)],
+            vec![],
+        ];
+        // Hand-derived (batch, prefill tokens, KV read tokens) and decode
+        // batches. In the second pass, integer means (24 / 3, 8 / 3) would
+        // have queried (3, 18, 6): two tokens beyond the budget.
+        let expected = [
+            (Some((1, 8, 0)), None),
+            (Some((3, 16, 8)), None),
+            // T resumes after its 8-token chunk beside F and two decodes.
+            (Some((2, 8, 12)), Some(2)),
+            (None, Some(2)),
+        ];
+
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let mut now_ms = 0.0;
+        for (arrivals, (prefill, decode)) in arrivals.into_iter().zip(expected) {
+            for (id, tokens, max_output_tokens) in arrivals {
+                core.receive(DirectRequest {
+                    tokens,
+                    max_output_tokens,
+                    uuid: Some(Uuid::from_u128(id)),
+                    ..Default::default()
+                });
+            }
+            let pass = core.execute_pass(&mut collector, now_ms);
+            now_ms = pass.end_ms;
+            let fpm = pass.fpm.expect("each pass reports forward-pass metrics");
+            assert_eq!(
+                std::mem::take(&mut *timing.prefill.lock().unwrap()),
+                Vec::from_iter(prefill)
+            );
+            assert_eq!(
+                std::mem::take(&mut *timing.decode.lock().unwrap()),
+                Vec::from_iter(decode)
+            );
+            let (batch, prefill_tokens, kv_tokens) = prefill.unwrap_or_default();
+            assert_eq!(
+                (
+                    fpm.num_prefill_requests as usize,
+                    fpm.sum_prefill_tokens as usize,
+                    fpm.sum_prefill_kv_tokens as usize,
+                ),
+                (batch, prefill_tokens, kv_tokens),
+                "timing must price the work this pass scheduled"
+            );
+            assert!(prefill_tokens + decode.unwrap_or_default() <= BUDGET);
+        }
+        assert!(core.is_empty());
+    }
+}
+
+mod mixed_pass_timing {
+    use super::*;
+    use crate::engine::{MixedPassMs, PrefillTotals};
+    use std::sync::{Arc, Mutex};
+
+    /// Prefill alone costs 10 ms and a separate decode pass 7 ms. With `pass`,
+    /// the provider prices a mixed pass as one forward with those prefill and
+    /// decode parts. It records each mixed query and counts separate prefills.
+    struct OnePassProbe {
+        pass: Option<MixedPassMs>,
+        queries: Mutex<Vec<(PrefillTotals, usize, usize)>>,
+        prefills: Mutex<usize>,
+    }
+
+    impl OnePassProbe {
+        fn new(pass: Option<MixedPassMs>) -> Arc<Self> {
+            Arc::new(Self {
+                pass,
+                queries: Mutex::default(),
+                prefills: Mutex::default(),
+            })
+        }
+    }
+
+    impl crate::engine::TimingModel for OnePassProbe {
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            *self.prefills.lock().unwrap() += 1;
+            Ok(10.0)
+        }
+
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(7.0)
+        }
+
+        fn predict_mixed_pass_ms(
+            &self,
+            prefill: PrefillTotals,
+            batch: usize,
+            active_kv_tokens: usize,
+            _: usize,
+            _: usize,
+        ) -> anyhow::Result<Option<MixedPassMs>> {
+            self.queries
+                .lock()
+                .unwrap()
+                .push((prefill, batch, active_kv_tokens));
+            Ok(self.pass)
+        }
+    }
+
+    fn core(engine_type: EngineType, timing: Arc<OnePassProbe>, nextn: Option<usize>) -> VllmCore {
+        let mut core = VllmCore::new(
+            MockEngineArgs::builder()
+                .engine_type(engine_type)
+                .block_size(4)
+                .num_gpu_blocks(64)
+                .max_num_batched_tokens(Some(16))
+                .max_num_seqs(Some(4))
+                .enable_chunked_prefill(true)
+                .enable_prefix_caching(false)
+                .speedup_ratio(1.0)
+                .aic_nextn(nextn)
+                .aic_nextn_accept_rates(nextn.map(|_| "1".into()))
+                .build()
+                .unwrap(),
+        );
+        core.args.perf_model =
+            crate::engine::common::perf_model::PerfModel::External { timing }.into();
+        core
+    }
+
+    fn submit(core: &mut VllmCore, id: u128, prompt: usize, output: usize) {
+        core.receive(DirectRequest {
+            tokens: vec![id as u32; prompt],
+            max_output_tokens: output,
+            uuid: Some(Uuid::from_u128(id)),
+            ..Default::default()
+        });
+    }
+
+    /// A pass that computes prefill and a decode step costs the provider's one
+    /// forward, whose prefill part replaces the separate 10 ms prefill.
+    /// Without a composition it remains a prefill and a separate decode pass,
+    /// and passes without both kinds of work never ask.
+    #[rstest]
+    #[case::vllm(EngineType::Vllm, Some((9.0, 2.0)), 11.0, 1)]
+    #[case::trtllm(EngineType::Trtllm, Some((9.0, 2.0)), 11.0, 1)]
+    #[case::no_composition(EngineType::Vllm, None, 17.0, 2)]
+    fn a_pass_with_prefill_and_decode_costs_the_provider_forward(
+        #[case] engine_type: EngineType,
+        #[case] pass: Option<(f64, f64)>,
+        #[case] mixed_ms: f64,
+        #[case] separate_prefills: usize,
+    ) {
+        let timing = OnePassProbe::new(pass.map(|(prefill_ms, decode_ms)| MixedPassMs {
+            prefill_ms,
+            decode_ms,
+        }));
+        let mut core = core(engine_type, timing.clone(), None);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        submit(&mut core, 1, 8, 3);
+        // The first token comes from the prefill forward: no decode work.
+        let first = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(first.end_ms, 10.0);
+        submit(&mut core, 2, 8, 2);
+        let mixed = core.execute_pass(&mut collector, first.end_ms);
+        assert_eq!(mixed.end_ms - first.end_ms, mixed_ms);
+        let decode = core.execute_pass(&mut collector, mixed.end_ms);
+        assert_eq!(decode.end_ms - mixed.end_ms, 7.0);
+        // Only the mixed pass asked, with the prefill it computes and the
+        // decoder's nine-token sequence; a composed pass prices no separate
+        // prefill.
+        let prefill = PrefillTotals {
+            batch_size: 1,
+            new_tokens: 8,
+            prefix_tokens: 0,
+        };
+        assert_eq!(*timing.queries.lock().unwrap(), [(prefill, 1, 9)]);
+        assert_eq!(*timing.prefills.lock().unwrap(), separate_prefills);
+    }
+
+    #[test]
+    fn speculative_pass_with_prefill_and_decode_costs_the_provider_forward() {
+        let timing = OnePassProbe::new(Some(MixedPassMs {
+            prefill_ms: 9.0,
+            decode_ms: 3.0,
+        }));
+        let mut core = core(EngineType::Vllm, timing.clone(), Some(1));
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        submit(&mut core, 1, 8, 6);
+        let first = core.execute_pass(&mut collector, 0.0);
+        submit(&mut core, 2, 8, 2);
+        let mixed = core.execute_pass(&mut collector, first.end_ms);
+        assert_eq!(mixed.end_ms - first.end_ms, 12.0);
+        assert_eq!(timing.queries.lock().unwrap().len(), 1);
+        assert_eq!(*timing.prefills.lock().unwrap(), 1);
+    }
+}
+
 mod source_holds {
     use super::*;
 
@@ -1696,6 +1973,8 @@ mod core_behavior {
             uuid: Some(uuid),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1745,6 +2024,8 @@ mod core_behavior {
             uuid: Some(r1),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
         core.receive(DirectRequest {
             tokens: (100..108).collect(),
@@ -1753,6 +2034,8 @@ mod core_behavior {
             uuid: Some(r2),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1810,6 +2093,8 @@ mod core_behavior {
             uuid: Some(r1),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
         core.receive(DirectRequest {
             tokens: (100..108).collect(),
@@ -1818,6 +2103,8 @@ mod core_behavior {
             uuid: Some(r2),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1855,6 +2142,8 @@ mod core_behavior {
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
                 session_id: None,
+                images: Vec::new(),
+                kv_hint: None,
             });
         }
 
@@ -1915,6 +2204,8 @@ mod core_behavior {
             uuid: Some(Uuid::from_u128(81)),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1939,6 +2230,8 @@ mod core_behavior {
             uuid: Some(uuid),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1982,6 +2275,8 @@ mod core_behavior {
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
                 session_id: None,
+                images: Vec::new(),
+                kv_hint: None,
             });
         }
 
@@ -2028,6 +2323,8 @@ mod core_behavior {
             uuid: Some(holder),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
         core.receive(DirectRequest {
             tokens: (100..112).collect(),
@@ -2036,6 +2333,8 @@ mod core_behavior {
             uuid: Some(blocked),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
         core.receive(DirectRequest {
             tokens: (200..204).collect(),
@@ -2044,6 +2343,8 @@ mod core_behavior {
             uuid: Some(follower),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2115,6 +2416,8 @@ mod core_behavior {
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
                 session_id: None,
+                images: Vec::new(),
+                kv_hint: None,
             });
         }
 
@@ -2145,6 +2448,8 @@ mod core_behavior {
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
                 session_id: None,
+                images: Vec::new(),
+                kv_hint: None,
             });
         }
 
@@ -2181,6 +2486,8 @@ mod core_behavior {
             uuid: Some(short),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
         core.receive(DirectRequest {
             tokens: (100..104).collect(),
@@ -2189,6 +2496,8 @@ mod core_behavior {
             uuid: Some(long),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2281,6 +2590,8 @@ mod core_behavior {
                 uuid: Some(Uuid::from_u128(1)),
                 arrival_timestamp_ms: None,
                 session_id: None,
+                images: Vec::new(),
+                kv_hint: None,
             });
             core.execute_pass(&mut collector, 0.0);
             assert!(core.is_empty());
@@ -2292,6 +2603,8 @@ mod core_behavior {
                 uuid: Some(Uuid::from_u128(2)),
                 arrival_timestamp_ms: None,
                 session_id: None,
+                images: Vec::new(),
+                kv_hint: None,
             });
             let pass = core.execute_pass(&mut collector, 1.0);
             let fpm = pass.fpm.expect("forward-pass metrics should be present");
@@ -2334,6 +2647,8 @@ mod forward_pass_metrics {
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2362,6 +2677,8 @@ mod forward_pass_metrics {
             uuid: Some(r1),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2381,6 +2698,8 @@ mod forward_pass_metrics {
             uuid: Some(r2),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         // Pass 2: r1 decode + r2 prefill (mixed batch)
@@ -2411,6 +2730,8 @@ mod forward_pass_metrics {
             uuid: Some(r1),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2451,6 +2772,8 @@ mod forward_pass_metrics {
             uuid: Some(r1),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2496,6 +2819,8 @@ mod forward_pass_metrics {
             uuid: Some(r1),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
         core.receive(DirectRequest {
             tokens: (100..108).collect(),
@@ -2504,6 +2829,8 @@ mod forward_pass_metrics {
             uuid: Some(r2),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2542,6 +2869,8 @@ mod forward_pass_metrics {
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
         core.receive(DirectRequest {
             tokens: (100..112).collect(), // prompt_len = 12
@@ -2550,6 +2879,8 @@ mod forward_pass_metrics {
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2589,6 +2920,8 @@ mod forward_pass_metrics {
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2659,6 +2992,8 @@ mod forward_pass_metrics {
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         // Prefill r1 and decode a few tokens to build up KV
@@ -2674,6 +3009,8 @@ mod forward_pass_metrics {
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
             session_id: None,
+            images: Vec::new(),
+            kv_hint: None,
         });
 
         // This pass should trigger preemption

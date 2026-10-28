@@ -8,11 +8,12 @@
 //! records provenance and is not a reproducible validation input.
 //! This solves nonnegative least squares after each rank-one moment update;
 //! it does not clip unconstrained inverse-RLS coefficients.
-use super::fit::{Model, P, Row, features, fit as batch_fit, kkt_valid, nnls};
+use super::fit::{Model, P, Row, features, fit as batch_fit, kkt_valid, nnls, validate_knots};
 
 const D: usize = P + 1;
 
-#[derive(Clone, Debug)]
+/// Running sums may be non-finite: that is a legitimate pending-rebuild state.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct RecursiveSpline {
     knots: [Vec<f64>; 2],
     p: usize,
@@ -94,6 +95,21 @@ impl RecursiveSpline {
         state.rebuilds = 0;
         state.mutations = 0;
         state
+    }
+
+    /// The basis width must match the knots; `vector` slices by `p`.
+    pub(super) fn validate_restored(
+        &self,
+        retained: usize,
+        rebuild_interval: Option<usize>,
+    ) -> Result<(), String> {
+        if validate_knots(&self.knots)? != self.p {
+            return Err("spline basis width differs from its knots".into());
+        }
+        if self.count != retained || self.rebuild_interval != rebuild_interval {
+            return Err("spline statistics are inconsistent with retained samples".into());
+        }
+        Ok(())
     }
 
     fn vector(&self, row: Row) -> [f64; D] {

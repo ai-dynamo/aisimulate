@@ -16,6 +16,7 @@ from typing import Any
 
 from aisimulate.fpm_profile import FpmResourceProfile
 
+from .config_profile import _linear_layout_gap, linear_runtime_resources
 from .plan import _plan_documents, check_plan, plan_lock, request_id
 from .schema import FPMDeployment, SupportRequest
 
@@ -257,6 +258,33 @@ def _merge_resources(
             else provenance
         ),
     }
+
+
+def _finalized_resources(
+    source: SupportRequest,
+    observations: list[dict[str, Any]],
+    manifest: dict[str, Any],
+    *,
+    source_references: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The finalized resources in the source profile's cache layout, and the merged grouped measurements.
+
+    Finalization, the finalized check and the validation workflow all derive the expected resources here. A linear
+    profile that has runtime-probe evidence stays linear, so the merged groups are returned in the linear layout.
+    Every other profile, such as a config-derived one, gets the merged grouped measurements, as before.
+    """
+    from .runtime import runtime_probe_manifest
+
+    merged = _merge_resources(observations, manifest, source_references=source_references)
+    if source.profile_deployment().resources.cache_layout != "linear" or runtime_probe_manifest(source) is None:
+        return merged, merged
+    linear = linear_runtime_resources(merged)
+    if linear is None:
+        raise ValueError(
+            "the accepted profile is linear, but the collection's measured cache groups have no linear layout: "
+            f"{_linear_layout_gap(merged)}"
+        )
+    return linear, merged
 
 
 def _verify_collection(
@@ -547,7 +575,7 @@ def finalize(
             manifest,
             Path(collection_report).expanduser().resolve() if collection_report is not None else None,
         )
-        resources = _merge_resources(observations, manifest, source_references=True)
+        resources, measured = _finalized_resources(request, observations, manifest, source_references=True)
         payload = request.model_dump(mode="json")
         payload["fpm_profile"]["provenance"] = _canonical(
             {
@@ -556,6 +584,10 @@ def finalize(
                 "source_collection_plan_sha256": manifest["source_collection_plan_sha256"],
                 "source_profile_provenance": request.fpm_profile.provenance,
                 "collection_quality": manifest["collection_quality"],
+                # A linear profile keeps the measured groups for audit.
+                **(
+                    {"measured_cache_groups": measured["cache_groups"]} if resources["cache_layout"] == "linear" else {}
+                ),
             }
         )
         selected = request.profile_deployment()

@@ -100,7 +100,7 @@ def test_cli_saved_config_and_replay_preserve_source(source):
         model="Qwen/Qwen3-30B-A3B",
         hardware="b200_sxm",
         backend="sglang",
-        backend_version="0.5.17",
+        backend_version="next",
         moe_kernel_source=source,
         workers={"aggregated": {"kv_cache": {"capacity": {"type": "fixed", "blocks": 100}}}},
     )
@@ -110,7 +110,7 @@ def test_cli_saved_config_and_replay_preserve_source(source):
     config = payload["timing_model"]["config"]
     assert config.get("moe_kernel_source") == source
     assert ("moe_kernel_source" in config) == (source is not None)
-    role = _materialize_engine_role("sglang", "0.5.17", {}, payload, "aggregated")
+    role = _materialize_engine_role("sglang", "next", {}, payload, "aggregated")
     assert role["rank"]["timing_model"]["config"].get("moe_kernel_source") == source
 
 

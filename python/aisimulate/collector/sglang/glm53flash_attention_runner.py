@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import platform
 import time
 import traceback
 from pathlib import Path
@@ -47,7 +48,9 @@ from types import SimpleNamespace
 
 from collector.glm53flash_attention_contract import (
     RUNTIME_VERSIONS,
+    SERVING_KV_CACHE_DTYPE,
     build_plan,
+    check_runtime_arch,
     geometry,
     representative_layer_is_uniform,
     selected_max_model_len,
@@ -596,9 +599,14 @@ def main():
     if installed != RUNTIME_VERSIONS["sglang"] or manifest["framework_version"] != installed:
         raise RuntimeError(f"sglang {installed} is not the pinned {RUNTIME_VERSIONS['sglang']}")
     config = json.loads((Path(server_args.model_path) / "config.json").read_text())
-    expected = geometry(config, "sglang", manifest["geometry"]["checkpoint_format"], manifest["geometry"]["tp_size"])
+    flat = manifest["geometry"]
+    expected = geometry(config, "sglang", flat["checkpoint_format"], flat["tp_size"], flat["kv_cache_dtype"])
     if expected != manifest["geometry"] or server_args.tp_size != expected["tp_size"]:
         raise ValueError("checkpoint/TP geometry differs from the manifest")
+    if server_args.kv_cache_dtype != SERVING_KV_CACHE_DTYPE[expected["kv_cache_dtype"]]:
+        raise ValueError(f"--kv-cache-dtype {server_args.kv_cache_dtype} differs from the manifest KV identity")
+    # The container must be the manifest's pinned image architecture.
+    check_runtime_arch(manifest, platform.machine())
     representative_layer_is_uniform(config, manifest["layer_id"], expected["checkpoint_format"])
     graph = manifest["serving_graph"]["sglang_args"].split()
     if any(flag not in rest for flag in graph[::2]) or [rest[rest.index(f) + 1] for f in graph[::2]] != graph[1::2]:

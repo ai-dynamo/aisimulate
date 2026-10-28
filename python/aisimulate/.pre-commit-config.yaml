@@ -7,10 +7,11 @@ repos:
     hooks:
       # Run the linter
       - id: ruff
-        args: [--fix]
+        args: [--fix, --config, python/aisimulate/pyproject.toml]
         exclude: ".*\\.ipynb$"
       # Run the formatter
       - id: ruff-format
+        args: [--config, python/aisimulate/pyproject.toml]
         exclude: ".*\\.ipynb$"
   - repo: https://github.com/pre-commit/mirrors-eslint
     rev: v9.15.0

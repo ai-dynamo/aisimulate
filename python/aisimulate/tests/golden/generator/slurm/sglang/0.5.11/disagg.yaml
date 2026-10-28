@@ -40,6 +40,8 @@ deployment.json: |-
           "nixl",
           "--disaggregation-mode",
           "prefill",
+          "--host",
+          "0.0.0.0",
           "--disaggregation-bootstrap-port",
           "@BOOTSTRAP_PORT@"
         ],
@@ -133,6 +135,8 @@ deployment.json: |-
           "16",
           "--disaggregation-mode",
           "decode",
+          "--host",
+          "0.0.0.0",
           "--disaggregation-bootstrap-port",
           "@BOOTSTRAP_PORT@"
         ],
