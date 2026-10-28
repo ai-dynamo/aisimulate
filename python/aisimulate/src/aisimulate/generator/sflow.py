@@ -28,6 +28,7 @@ from aisimulate.generator.dynamo_features import (
     frontend_cli_args_string,
     kvbm_shell_exports_from_dyn_config,
 )
+from aisimulate.generator.utils import has_fixed_request_lengths
 
 _SUPPORTED_BACKENDS = {"trtllm", "sglang", "vllm"}
 _SFLOW_EXPR_RE = re.compile(r"\$\[\[(.+?)\]\]")
@@ -156,12 +157,17 @@ def enrich_context_for_sflow(
             gpn,
         )
 
-    # Benchmark script
-    ctx["sflow_bench_script"] = _build_bench_script(
-        context=context,
-        sla=sla,
-        bench_run_content=ctx["sflow_bench_run_content"],
-        profile=variable_profile,
+    # Benchmark script. It runs one fixed ISL/OSL, so a request without
+    # lengths, such as a trace, gets no benchmark task.
+    ctx["sflow_bench_script"] = (
+        _build_bench_script(
+            context=context,
+            sla=sla,
+            bench_run_content=ctx["sflow_bench_run_content"],
+            profile=variable_profile,
+        )
+        if has_fixed_request_lengths(bench, sla)
+        else ""
     )
     ctx["sflow_variables"] = _build_sflow_variables(
         backend=backend,

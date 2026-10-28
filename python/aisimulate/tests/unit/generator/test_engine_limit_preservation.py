@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+import yaml
 
 from aisimulate.generator.module_bridge import task_config_to_generator_config
 from aisimulate.generator.rendering.engine import render_backend_templates
@@ -94,6 +95,47 @@ def test_trtllm_preserved_limits_still_default_missing_transfer_buffer(rule):
     for role in ("prefill", "decode"):
         for key in ("max_batch_size", "max_num_tokens", "max_seq_len"):
             assert result["params"][role][key] == params["params"][role][key]
+
+
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+def test_trtllm_transfer_buffer_is_not_sized_without_request_lengths(rule):
+    params = _params(preserve=True, rule=rule)
+    params["SlaConfig"] = {}
+    for role in ("prefill", "decode"):
+        params["params"][role].pop("cache_transceiver_max_tokens_in_buffer")
+
+    result = apply_rule_plugins(copy.deepcopy(params), "trtllm")
+
+    for role in ("prefill", "decode"):
+        assert result["params"][role].get("cache_transceiver_max_tokens_in_buffer") is None
+        assert result["params"][role]["cache_transceiver_backend"] == "DEFAULT"
+
+
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+def test_trtllm_explicit_transfer_backend_is_rendered(rule):
+    params = _params(preserve=True, rule=rule)
+    for role in ("prefill", "decode"):
+        params["params"][role]["cache_transceiver_backend"] = "NIXL"
+
+    artifacts = render_backend_templates(apply_rule_plugins(copy.deepcopy(params), "trtllm"), "trtllm")
+
+    for role in ("prefill", "decode"):
+        engine = yaml.safe_load(artifacts[f"extra_engine_args_{role}.yaml"])
+        assert engine["cache_transceiver_config"]["backend"] == "NIXL"
+
+
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+def test_trtllm_transfer_settings_stay_off_aggregated_workers(rule):
+    params = _params(preserve=True, rule=rule)
+    params["DynConfig"] = {"mode": "agg"}
+    params["WorkerConfig"] = {"agg_workers": 1}
+    params["params"] = {"agg": params["params"]["prefill"]}
+    params["params"]["agg"].pop("cache_transceiver_max_tokens_in_buffer")
+
+    result = apply_rule_plugins(copy.deepcopy(params), "trtllm")
+
+    assert "cache_transceiver_backend" not in result["params"]["agg"]
+    assert result["params"]["agg"].get("cache_transceiver_max_tokens_in_buffer") is None
 
 
 def test_preserve_engine_limits_survives_typed_request_round_trip():

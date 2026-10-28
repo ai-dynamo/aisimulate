@@ -275,6 +275,46 @@ def _resolve_model_facts(model_path: str, config: Mapping[str, Any]) -> ModelFac
     )
 
 
+def _is_trace_workload(workload: Mapping[str, Any]) -> bool:
+    return bool(workload.get("trace_path") or workload.get("trace_paths")) or workload.get("source_type") == "trace"
+
+
+def _request_lengths(workload: Mapping[str, Any], raw: Mapping[str, Any]) -> tuple[int | None, int | None]:
+    """Return the workload's fixed ISL/OSL, or ``(None, None)`` for a trace.
+
+    A trace has no single request length. Any length supplied for one would be
+    a placeholder that rules could size generated fields from, so it is
+    rejected and the request's SLA stays absent.
+    """
+    if _is_trace_workload(workload):
+        supplied = [
+            name
+            for name, value in (
+                ("workload.isl", workload.get("isl")),
+                ("workload.osl", workload.get("osl")),
+                ("SlaConfig.isl", raw.get("SlaConfig.isl")),
+                ("SlaConfig.osl", raw.get("SlaConfig.osl")),
+            )
+            if value is not None
+        ]
+        if supplied:
+            raise SweeperCandidateError(f"a trace workload has no fixed request length; remove {', '.join(supplied)}")
+        return None, None
+
+    # A present None is a missing length, so it must not hide an override.
+    isl = workload.get("isl")
+    osl = workload.get("osl")
+    if isl is None:
+        isl = raw.get("SlaConfig.isl")
+    if osl is None:
+        osl = raw.get("SlaConfig.osl")
+    if isl is None or osl is None:
+        raise SweeperCandidateError(
+            "a synthetic workload must provide isl and osl (or set SlaConfig.isl/osl overrides)"
+        )
+    return _positive_int(isl, path="workload.isl"), _positive_int(osl, path="workload.osl")
+
+
 def from_sweeper_candidate(
     candidate: Any,
     *,
@@ -289,8 +329,9 @@ def from_sweeper_candidate(
 
     ``candidate`` may be the public Pydantic ``Candidate`` or its JSON mapping.
     ``workload`` should be the matching Sweeper workload (or a mapping containing
-    ``isl``/``osl``). Cluster-specific values remain generator overrides or an
-    environment profile; evaluated engine and adapter choices always win.
+    ``isl``/``osl``). A trace workload is lowered without request lengths.
+    Cluster-specific values remain generator overrides or an environment
+    profile; evaluated engine and adapter choices always win.
     """
 
     candidate_payload = _as_mapping(candidate, label="candidate")
@@ -373,22 +414,19 @@ def from_sweeper_candidate(
             )
 
     raw = _flatten_overrides(generator_overrides)
-    isl = workload_payload.get("isl", raw.get("SlaConfig.isl"))
-    osl = workload_payload.get("osl", raw.get("SlaConfig.osl"))
-    if isl is None or osl is None:
-        raise SweeperCandidateError(
-            "the matching workload must provide isl and osl (or set SlaConfig.isl/osl overrides)"
-        )
-    isl = _positive_int(isl, path="workload.isl")
-    osl = _positive_int(osl, path="workload.osl")
+    isl, osl = _request_lengths(workload_payload, raw)
+    if isl is None and deployment_target == "slurm":
+        # The Slurm bundle's default operation replays one fixed ISL/OSL.
+        raise SweeperCandidateError("a Slurm bundle needs a fixed request length; use a Dynamo target for a trace")
 
     # Evaluated facts take precedence over deployment-environment overrides.
     raw["backend"] = backend
     raw["rule"] = "benchmark"
     raw["preserve_engine_limits"] = True
     raw["NodeConfig.system_name"] = hardware_sku
-    raw["SlaConfig.isl"] = isl
-    raw["SlaConfig.osl"] = osl
+    if isl is not None:
+        raw["SlaConfig.isl"] = isl
+        raw["SlaConfig.osl"] = osl
     concurrency = config.get("concurrency")
     if concurrency is not None:
         raw["BenchConfig.estimated_concurrency"] = _positive_int(concurrency, path="candidate.config.concurrency")
