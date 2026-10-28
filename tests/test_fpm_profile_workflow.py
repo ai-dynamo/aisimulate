@@ -267,23 +267,8 @@ def test_ar_native_cuda_policy_keeps_ar_and_speculative_measurements_separate(pr
         ) == pytest.approx(1.0)
 
 
-@pytest.mark.parametrize("method", ["eagle3", "mtp"])
-def test_speculative_round_prediction_preserves_progress_identity_and_observed_capacity(
-    profile, timing_systems, method
-):
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    from aisimulate import _runtime
-    from aisimulate.runner import EngineReplayRunnerFactory
-    from aisimulate.sweeper import ReplayOutputRequirements
-    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
-    from aisimulate_core.sdk.fpm_profile import load_fpm_profile
-
-    profile["model_revision"] = "1" * 40
-    profile["deployments"] = profile["deployments"][:1]
-    _observed_profile(profile, context=4096)
-    execution = {
+def _speculative_execution(method):
+    return {
         "kind": "speculative_round",
         "method": method,
         "num_draft_tokens": 3,
@@ -291,23 +276,40 @@ def test_speculative_round_prediction_preserves_progress_identity_and_observed_c
         "draft_revision": "2" * 40,
         "timing_scope": "model_step_cuda",
     }
-    profile["deployments"][0]["execution_profile"] = execution
-    deployment = load_fpm_profile(profile).deployments[0]
-    execution_identity = dict(
-        zip(EXECUTION_COLUMNS, deployment.execution_identity(profile["model_revision"]), strict=True)
-    )
+
+
+def _install_speculative_rows(profile, timing_systems, timings):
+    """Write dp=1 rows for each method at identical coordinates with distinct (prefill, decode) ms."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
+    from aisimulate_core.sdk.fpm_profile import load_fpm_profile
+
     path = Path(timing_systems) / "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet"
-    rows = [row for row in pq.read_table(path).to_pylist() if row["dp"] == 1]
-    for row in rows:
-        row.update(
-            **execution_identity,
-            measurement_policy="vllm_native_fpm_model_step_cuda_v1",
-            timing_scope="model_step_cuda",
-            measurement_reduction="single_sample",
-            source_sample_count=1,
-            # Deliberately synthetic per-round times, not an analytical estimate.
-            latency_ms=7.0 if row["workload_kind"] == "prefill" else 11.0,
-        )
+    base = [row for row in pq.read_table(path).to_pylist() if row["dp"] == 1]
+    rows = []
+    for method, (prefill_ms, decode_ms) in timings.items():
+        deployment = load_fpm_profile(
+            {
+                **profile,
+                "deployments": [{**profile["deployments"][0], "execution_profile": _speculative_execution(method)}],
+            }
+        ).deployments[0]
+        identity = dict(zip(EXECUTION_COLUMNS, deployment.execution_identity(profile["model_revision"]), strict=True))
+        for row in base:
+            rows.append(
+                row
+                | identity
+                | dict(
+                    measurement_policy="vllm_native_fpm_model_step_cuda_v1",
+                    timing_scope="model_step_cuda",
+                    measurement_reduction="single_sample",
+                    source_sample_count=1,
+                    # Deliberately synthetic per-round times, not an analytical estimate.
+                    latency_ms=prefill_ms if row["workload_kind"] == "prefill" else decode_ms,
+                )
+            )
     pq.write_table(pa.Table.from_pylist(rows), path)
     metadata = json.loads(path.with_suffix(".metadata.json").read_text())
     metadata.update(
@@ -318,7 +320,10 @@ def test_speculative_round_prediction_preserves_progress_identity_and_observed_c
         parquet_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
     )
     path.with_suffix(".metadata.json").write_text(json.dumps(metadata))
-    public = CorePredictionConfig.model_validate(
+
+
+def _speculative_public(profile, timing_systems):
+    return CorePredictionConfig.model_validate(
         {
             "engine": {
                 **_engine(profile),
@@ -334,6 +339,39 @@ def test_speculative_round_prediction_preserves_progress_identity_and_observed_c
             },
         }
     )
+
+
+def _requested_method_profile(profile, method):
+    profile["model_revision"] = "1" * 40
+    profile["deployments"] = profile["deployments"][:1]
+    _observed_profile(profile, context=4096)
+    profile["deployments"][0]["execution_profile"] = _speculative_execution(method)
+
+
+@pytest.mark.parametrize("method,other", [("eagle3", "mtp"), ("mtp", "eagle3")])
+def test_speculative_method_never_borrows_the_other_methods_rows(profile, timing_systems, method, other):
+    from aisimulate.runner import EngineReplayRunnerFactory
+
+    _requested_method_profile(profile, method)
+    _install_speculative_rows(profile, timing_systems, {other: (70.0, 110.0)})
+    spec = prediction_to_replay_spec(_speculative_public(profile, timing_systems))
+    with pytest.raises(Exception, match="No FPM cell matches"):
+        EngineReplayRunnerFactory().create(0).run(spec)
+
+
+@pytest.mark.parametrize("method,other", [("eagle3", "mtp"), ("mtp", "eagle3")])
+def test_speculative_round_prediction_preserves_progress_identity_and_observed_capacity(
+    profile, timing_systems, method, other
+):
+    from aisimulate import _runtime
+    from aisimulate.runner import EngineReplayRunnerFactory
+    from aisimulate.sweeper import ReplayOutputRequirements
+
+    _requested_method_profile(profile, method)
+    execution = _speculative_execution(method)
+    # The other method's rows share every coordinate but carry 10x timings.
+    _install_speculative_rows(profile, timing_systems, {method: (7.0, 11.0), other: (70.0, 110.0)})
+    public = _speculative_public(profile, timing_systems)
     restored = CorePredictionConfig.model_validate_json(public.model_dump_json())
     spec = prediction_to_replay_spec(restored)
     diagnostics = {}
