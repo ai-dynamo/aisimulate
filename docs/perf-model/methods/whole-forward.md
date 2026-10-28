@@ -101,7 +101,15 @@ execution_profile:
 ```
 
 The `method` field accepts `eagle3` or `mtp`. Both use the same measured-round
-timing path and retain the recorded method in the exact cell identity.
+timing path and retain the recorded method in the exact cell identity. An
+`eagle3` table never serves an `mtp` request, or the reverse.
+
+MTP draft heads ship inside the target checkpoint (`num_nextn_predict_layers`),
+so an MTP deployment has no separate draft checkpoint. For `method: mtp`,
+record the target's own identity: `draft_model` is the profile `model` and
+`draft_revision` is the profile `model_revision`. Schema validation does not
+enforce this. Selectors compare the values exactly, so a table recorded with
+other values only matches a profile that records the same values.
 
 The initial identity contract permits vLLM pure TP with DP1/PP1/CP1 and 1–5
 draft tokens. Acceptance length belongs to replay progress, not this timing
