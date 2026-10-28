@@ -211,6 +211,52 @@ class PowerMonitor:
             self._stop_event.wait(self.interval_s)
 
 
+class PhaseClock:
+    """Wall-clock split of one collector case or sweep point into named phases.
+
+    ``mark(name)`` closes the phase that began at the previous mark (or at
+    construction); ``absorb`` folds a nested breakdown (for example the
+    ``phase_seconds`` that ``benchmark_with_power`` reports) into the clock
+    under a prefix; ``add_to`` accumulates the phases into a per-sweep total
+    that ``render_phase_totals`` prints. Collectors print these lines so the
+    campaign log shows where a case spends its seconds; they never change
+    what is measured.
+    """
+
+    def __init__(self) -> None:
+        self.start = self.last = time.perf_counter()
+        self.phases: dict[str, float] = {}
+
+    def mark(self, name: str) -> None:
+        now = time.perf_counter()
+        self.phases[name] = self.phases.get(name, 0.0) + (now - self.last)
+        self.last = now
+
+    def absorb(self, phases, prefix: str = "") -> None:
+        for name, seconds in (phases or {}).items():
+            key = f"{prefix}{name}"
+            self.phases[key] = self.phases.get(key, 0.0) + float(seconds)
+
+    def total(self) -> float:
+        return time.perf_counter() - self.start
+
+    def render(self) -> str:
+        parts = [f"{name}={seconds:.2f}s" for name, seconds in self.phases.items()]
+        return " ".join(parts + [f"total={self.total():.2f}s"])
+
+    def add_to(self, totals: dict[str, float]) -> None:
+        for name, seconds in self.phases.items():
+            totals[name] = totals.get(name, 0.0) + seconds
+        totals["total"] = totals.get("total", 0.0) + self.total()
+        totals["points"] = totals.get("points", 0) + 1
+
+
+def render_phase_totals(totals: dict[str, float]) -> str:
+    points = int(totals.get("points", 0))
+    parts = [f"{name}={seconds:.1f}s" for name, seconds in totals.items() if name != "points"]
+    return f"{points} point(s): " + " ".join(parts)
+
+
 @contextmanager
 def benchmark_with_power(
     device,
@@ -266,6 +312,16 @@ def benchmark_with_power(
 
     # Adaptive num_runs calculation
     actual_num_runs = num_runs
+    # Wall time of each protocol phase, reported as results["phase_seconds"].
+    phase_seconds: dict[str, float] = {}
+    _phase_start = time.perf_counter()
+
+    def _close_phase(name: str) -> None:
+        nonlocal _phase_start
+        now = time.perf_counter()
+        phase_seconds[name] = phase_seconds.get(name, 0.0) + (now - _phase_start)
+        _phase_start = now
+
     if measure_power:
         # Estimate single iteration time with warmup
         start_warmup = torch.cuda.Event(enable_timing=True)
@@ -297,6 +353,8 @@ def benchmark_with_power(
         for _ in range(num_warmups):
             kernel_func()
         get_device_module().synchronize()
+
+    _close_phase("eager_warmup")
 
     # ═══════════════════════════════════════════════════════════════════
     # CUDA Graph Capture with Optional Fallback
@@ -337,6 +395,7 @@ def benchmark_with_power(
                 torch.cuda.empty_cache()
                 use_graph = False
 
+        _close_phase("capture")
         capture_phase_completed = True
         # ═══════════════════════════════════════════════════════════════
         # Warmup the ACTUAL execution path (after graph capture)
@@ -351,6 +410,7 @@ def benchmark_with_power(
                     for _ in range(repeat_n):
                         kernel_func()
             torch.cuda.synchronize()
+        _close_phase("graph_warmup")
 
         # Initialize power monitor if enabled
         power_monitor = None
@@ -387,6 +447,7 @@ def benchmark_with_power(
                     kernel_func()
         end_event.record()
         get_device_module().synchronize()
+        _close_phase("timed")
 
         # Check for throttling
         throttled = False
@@ -419,6 +480,7 @@ def benchmark_with_power(
             "throttled": throttled,
             "num_runs_executed": actual_num_runs,
             "used_cuda_graph": use_graph,  # NEW: Inform caller which path was used
+            "phase_seconds": phase_seconds,
         }
     finally:
         # Preserve default cleanup after timing starts. Explicit cleanup also
@@ -432,6 +494,7 @@ def benchmark_with_power(
                 if not explicit_graph_cleanup:
                     torch.cuda.synchronize()
                 torch.cuda.empty_cache()
+        _close_phase("cleanup")
 
 
 @contextmanager

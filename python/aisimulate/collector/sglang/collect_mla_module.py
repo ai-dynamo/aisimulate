@@ -49,10 +49,10 @@ import torch
 from collector.sglang.runtime_compat import resolved_arg  # 0.5.21: derived server args live behind the resolving view
 
 try:
-    from helper import benchmark_with_power, get_sm_version, log_perf
+    from helper import PhaseClock, benchmark_with_power, get_sm_version, log_perf, render_phase_totals
 except ModuleNotFoundError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from helper import benchmark_with_power, get_sm_version, log_perf
+    from helper import PhaseClock, benchmark_with_power, get_sm_version, log_perf, render_phase_totals
 
 try:
     from collector.case_generator import (
@@ -131,6 +131,10 @@ _MODEL_CONFIG_DIR = os.path.join(
 )
 _GLM5_DSA_ARCHITECTURE = "GlmMoeDsaForCausalLM"
 _NATIVE_NVFP4_SMS = {100, 103, 120}
+
+
+# Per-subprocess sum of the point phase times printed by run_mla_module.
+_POINT_PHASE_TOTALS: dict[str, float] = {}
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -1395,6 +1399,7 @@ def _run_prefill(
     forward_context_type, forward_context = _import_sglang_forward_context()
 
     print(f"\nPrefill: batch_size={batch_size}, seq_length={seq_length}, prefix_len={prefix_len}")
+    point_clock = PhaseClock()
 
     try:
         model_runner.req_to_token_pool.clear()
@@ -1425,6 +1430,7 @@ def _run_prefill(
                 req.set_extend_range(full_length - _n, full_length)
             req.logprob_start_len = 0
             reqs.append(req)
+        point_clock.mark("reqs")
 
         cache_params = CacheInitParams(
             disable=True,
@@ -1445,6 +1451,7 @@ def _run_prefill(
         )
         with _temporarily_chunked_alloc_extend(model_runner, batch_size * seq_length):
             batch.prepare_for_extend()
+        point_clock.mark("batch")
         # sglang 0.5.16 made return_hidden_states_before_norm a required
         # keyword (ForwardBatch.init_new); older pins do not accept it —
         # same dispatch collect_msa_module.py:1015 uses.
@@ -1455,6 +1462,7 @@ def _run_prefill(
                   else {})
         forward_batch = ForwardBatch.init_new(batch, model_runner, **_fb_kw)
         model_runner.attn_backend.init_forward_metadata(forward_batch)
+        point_clock.mark("metadata")
 
         hidden_states = torch.randn(
             batch_size * seq_length,
@@ -1911,6 +1919,7 @@ def _run_prefill(
                         **_skip_kwargs(),
                     )
 
+        point_clock.mark("setup")
         last_can_run_graph = None
 
         def call_full_model_piecewise_replay():
@@ -1962,6 +1971,7 @@ def _run_prefill(
                 "refusing to record a skip row with full-indexer latency."
             )
 
+        point_clock.mark("warmup")
         module_cuda_graph = None
         if use_module_cuda_graph:
             try:
@@ -1975,6 +1985,7 @@ def _run_prefill(
                 print("  Module CUDA graph capture failed")
                 raise
 
+        point_clock.mark("capture")
         # Timed runs — run ALL iterations back-to-back, ONE sync at the end, then
         # divide by count. Per-iteration cuda.synchronize would insert GPU-idle
         # bubbles + per-launch latency between modules (NOT representative); the
@@ -1992,6 +2003,7 @@ def _run_prefill(
         end_event.record()
         torch.cuda.synchronize()
         avg_time_ms = start_event.elapsed_time(end_event) / num_iterations
+        point_clock.mark("timed")
 
         # Log perf — wideep MLA uses old filename/op_name/kernel_source conventions
         try:
@@ -2071,6 +2083,11 @@ def _run_prefill(
                 cleanup_errors.append(f"{cleanup_name}: {type(cleanup_exc).__name__}: {cleanup_exc}")
         if cleanup_errors:
             raise RuntimeError(f"DSA/MLA prefill cleanup failed: {'; '.join(cleanup_errors)}")
+        point_clock.mark("cleanup")
+        point_clock.add_to(_POINT_PHASE_TOTALS)
+        print(
+            f"  [DSA point timing] prefill b={batch_size}, s={seq_length}, prefix={prefix_len}: {point_clock.render()}"
+        )
 
 
 def _run_decode(
@@ -2117,6 +2134,7 @@ def _run_decode(
     forward_context_type, forward_context = _import_sglang_forward_context()
 
     print(f"\nDecode: batch_size={batch_size}, kv_cache_length={seq_length}")
+    point_clock = PhaseClock()
 
     try:
         model_runner.req_to_token_pool.clear()
@@ -2141,6 +2159,7 @@ def _run_decode(
             req.cached_tokens = 0
             req.already_computed = 0
             reqs.append(req)
+        point_clock.mark("reqs")
 
         cache_params = CacheInitParams(
             disable=True,
@@ -2164,6 +2183,7 @@ def _run_decode(
         for req in batch.reqs:
             req.output_ids.append(0)
         batch.prepare_for_decode()
+        point_clock.mark("batch")
         import inspect as _inspect
 
         _fb_kw = ({"return_hidden_states_before_norm": False}
@@ -2171,6 +2191,7 @@ def _run_decode(
                   else {})  # sglang 0.5.16 required keyword (see the context path above)
         forward_batch_decode = ForwardBatch.init_new(batch, model_runner, **_fb_kw)
         model_runner.attn_backend.init_forward_metadata(forward_batch_decode)
+        point_clock.mark("metadata")
 
         decode_hidden = torch.randn(
             batch_size,
@@ -2183,6 +2204,7 @@ def _run_decode(
 
         attn_inputs_decode = AttentionInputs(decode_hidden, forward_batch_decode, dummy_qkv_latent_func)
         get_attn_tp_context().set_attn_inputs(attn_inputs_decode)
+        point_clock.mark("inputs")
         if use_module_cuda_graph or _env_flag("AIC_ENABLE_MODULE_CUDA_GRAPH"):
             _patch_nsa_indexer_compile_for_module_cuda_graph(attention_module)
 
@@ -2261,6 +2283,7 @@ def _run_decode(
             if _skip_indexer:
                 attention_module.next_skip_topk = original_next_skip_topk
 
+        point_clock.mark("prewarm")
         print(f"  Decode module CUDA graph: {use_benchmark_cuda_graph} (tokens={batch_size})")
 
         with benchmark_with_power(
@@ -2272,6 +2295,8 @@ def _run_decode(
             use_cuda_graph=use_benchmark_cuda_graph,
         ) as results:
             pass
+        point_clock.mark("bench")
+        point_clock.absorb(results.get("phase_seconds"), prefix="bench_")
 
         if _skip_indexer and _skip_state["prev_topk"] is None:
             raise RuntimeError(
@@ -2367,6 +2392,9 @@ def _run_decode(
                 cleanup_errors.append(f"{cleanup_name}: {type(cleanup_exc).__name__}: {cleanup_exc}")
         if cleanup_errors:
             raise RuntimeError(f"DSA/MLA decode cleanup failed: {'; '.join(cleanup_errors)}")
+        point_clock.mark("cleanup")
+        point_clock.add_to(_POINT_PHASE_TOTALS)
+        print(f"  [DSA point timing] decode b={batch_size}, kv={seq_length}: {point_clock.render()}")
 
 
 def _resolve_perf_path(output_path: str | None, filename: str) -> str:
@@ -2664,6 +2692,7 @@ def run_mla_module(
         error_count = len(cases) - logged_count
         summary = f"ok={logged_count} error={error_count} skip=0 total={len(cases)}"
         print(f"[{attn_type.upper()}] {phase_name.lower()} {summary}")
+        print(f"[{attn_type.upper()} timing] {phase_name.lower()}: {render_phase_totals(_POINT_PHASE_TOTALS)}")
         if error_count > 0:
             raise RuntimeError(
                 f"{attn_type.upper()} module {phase_name.lower()} failed strict completeness: {summary}; "

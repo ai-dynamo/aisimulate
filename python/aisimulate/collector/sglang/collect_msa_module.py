@@ -78,10 +78,12 @@ from collector.case_generator import (
     get_mla_module_sweep_spec,
 )
 from collector.helper import (
+    PhaseClock,
     _resolve_local_model_path,
     benchmark_with_power,
     get_sm_version,
     log_perf,
+    render_phase_totals,
 )
 
 try:
@@ -134,6 +136,10 @@ SGLANG_KV_DTYPE = {"bfloat16": "bfloat16", "fp8": "fp8_e4m3"}
 #             max(1, total_idx // attn_tp_size), replica ranks share one
 #             head when attn_tp_size > total_idx (minimax_m3.py:509-521).
 # All three are emulated on one GPU by shrinking the config head counts.
+
+
+# Per-subprocess sum of the point phase times printed by run_msa_module.
+_POINT_PHASE_TOTALS: dict[str, float] = {}
 
 
 def _ceil_div(a: int, b: int) -> int:
@@ -1016,6 +1022,7 @@ def _run_prefill_point(
     """
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
+    point_clock = PhaseClock()
     model_runner.req_to_token_pool.clear()
     model_runner.token_to_kv_pool_allocator.clear()
 
@@ -1030,6 +1037,7 @@ def _run_prefill_point(
     batch = _make_schedule_batch(model_runner, reqs)
     with temporarily_chunked_alloc_extend(model_runner, batch_size * seq_len):
         batch.prepare_for_extend()
+    point_clock.mark("batch")
     # return_hidden_states_before_norm=False mirrors the serving worker
     # (managers/tp_worker.py:267,548@v0.5.16).
     forward_batch = ForwardBatch.init_new(batch, model_runner, return_hidden_states_before_norm=False)
@@ -1039,6 +1047,7 @@ def _run_prefill_point(
     # minimax_sparse_backend.py:505-507, base_attn_backend.py:48-54).
     with _forward_ctx(model_runner):
         model_runner.attn_backend.init_forward_metadata(forward_batch)
+    point_clock.mark("metadata")
 
     hidden_states = torch.randn(
         batch_size * seq_len,
@@ -1053,6 +1062,7 @@ def _run_prefill_point(
         .contiguous()
         .flatten()
     )
+    point_clock.mark("inputs")
 
     def kernel_func():
         with _forward_ctx(model_runner):
@@ -1073,11 +1083,16 @@ def _run_prefill_point(
             use_cuda_graph=False,
         ) as results:
             pass
+        point_clock.mark("bench")
+        point_clock.absorb(results.get("phase_seconds"), prefix="bench_")
         return results["latency_ms"], results["power_stats"]
     finally:
         model_runner.req_to_token_pool.clear()
         model_runner.token_to_kv_pool_allocator.clear()
         torch.cuda.empty_cache()
+        point_clock.mark("cleanup")
+        point_clock.add_to(_POINT_PHASE_TOTALS)
+        print(f"  [MSA point timing] context b={batch_size}, s={seq_len}, prefix={prefix_len}: {point_clock.render()}")
 
 
 def _run_decode_point(
@@ -1103,6 +1118,7 @@ def _run_decode_point(
     """
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
+    point_clock = PhaseClock()
     model_runner.req_to_token_pool.clear()
     model_runner.token_to_kv_pool_allocator.clear()
 
@@ -1114,6 +1130,7 @@ def _run_decode_point(
         req.output_ids.append(0)
     batch.prepare_for_decode()
     forward_batch = ForwardBatch.init_new(batch, model_runner, return_hidden_states_before_norm=False)
+    point_clock.mark("batch")
 
     use_graph = _decode_graph_covered(model_runner, batch_size)
     with _forward_ctx(model_runner):
@@ -1128,6 +1145,7 @@ def _run_decode_point(
             # the serving decode graph runner owns — the module bench never
             # executes a dense layer, so its eager metadata is kept.
             model_runner.attn_backend.sparse.init_forward_metadata_out_graph(forward_batch, in_capture=True)
+    point_clock.mark("metadata")
 
     hidden_states = torch.randn(
         batch_size,
@@ -1136,6 +1154,7 @@ def _run_decode_point(
         device="cuda",
     )
     positions = torch.full((batch_size,), kv_len, device="cuda", dtype=torch.int64)
+    point_clock.mark("inputs")
 
     def kernel_func():
         with _forward_ctx(model_runner):
@@ -1156,11 +1175,16 @@ def _run_decode_point(
             use_cuda_graph=use_graph,
         ) as results:
             pass
+        point_clock.mark("bench")
+        point_clock.absorb(results.get("phase_seconds"), prefix="bench_")
         return results["latency_ms"], results["power_stats"], use_graph
     finally:
         model_runner.req_to_token_pool.clear()
         model_runner.token_to_kv_pool_allocator.clear()
         torch.cuda.empty_cache()
+        point_clock.mark("cleanup")
+        point_clock.add_to(_POINT_PHASE_TOTALS)
+        print(f"  [MSA point timing] generation b={batch_size}, kv={kv_len}: {point_clock.render()}")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1362,6 +1386,7 @@ def run_msa_module(
 
         summary = f"ok={ok} error={len(failures)} skip=0 total={len(shapes)}"
         print(f"[MSA] {phase} {summary}")
+        print(f"[MSA timing] {phase}: {render_phase_totals(_POINT_PHASE_TOTALS)}")
         if ok == 0:
             raise RuntimeError(f"MSA module {phase} persisted no rows; {summary}")
         if failures:

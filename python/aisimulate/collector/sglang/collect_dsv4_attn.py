@@ -55,10 +55,10 @@ os.environ.setdefault("SGLANG_APPLY_CONFIG_BACKUP", "none")
 # few shapes which the bench's own warmup JIT-compiles on first use.
 os.environ["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] = "0"
 try:
-    from helper import _resolve_local_model_path, benchmark_with_power, log_perf
+    from helper import PhaseClock, _resolve_local_model_path, benchmark_with_power, log_perf, render_phase_totals
 except ModuleNotFoundError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from helper import _resolve_local_model_path, benchmark_with_power, log_perf
+    from helper import PhaseClock, _resolve_local_model_path, benchmark_with_power, log_perf, render_phase_totals
 
 try:
     from collector.sglang.runtime_limits import (
@@ -1251,6 +1251,7 @@ def _bench_cuda_events(
         "used_cuda_graph": True,
         "power_stats": result.get("power_stats"),
         "throttled": bool(result.get("throttled", False)),
+        "phase_seconds": result.get("phase_seconds"),
     }
 
 
@@ -1387,6 +1388,7 @@ def run_dsv4_mla_module(
             seq_lens_by_prefix.get(cur_prefix, default_seq_lens) if seq_lens_by_prefix is not None else default_seq_lens
         )
     ]
+    phase_totals: dict[str, float] = {}
 
     # SGLang derives compressed-pool sizes from max_total_tokens. Direct
     # probes with an explicit value must account for both the full pool and
@@ -1553,6 +1555,7 @@ def run_dsv4_mla_module(
                             skipped_shapes.append((batch_size, seq_len, cur_prefix, "KVPoolSWACapacity"))
                             continue
                     print(f"\n{mode}: batch_size={batch_size}, seq_len={seq_len}, prefix_len={cur_prefix}")
+                    point_clock = PhaseClock()
                     try:
                         forward_batch = _build_forward_batch(
                             model_runner,
@@ -1561,6 +1564,7 @@ def run_dsv4_mla_module(
                             is_prefill=is_prefill,
                             prefix_len=cur_prefix,
                         )
+                        point_clock.mark("forward_batch")
                         hidden_states, positions = _make_inputs(
                             model_runner,
                             batch_size=batch_size,
@@ -1569,6 +1573,7 @@ def run_dsv4_mla_module(
                             device=device,
                             prefix_len=cur_prefix,
                         )
+                        point_clock.mark("inputs")
 
                         def kernel_func(model_runner=model_runner):
                             from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
@@ -1594,6 +1599,8 @@ def run_dsv4_mla_module(
                             graph_repeat=graph_repeat,
                             device=device,
                         )
+                        point_clock.mark("bench")
+                        point_clock.absorb(stats.get("phase_seconds"), prefix="bench_")
                         print(
                             f"  latency mean={stats['mean_ms']:.4f} ms, "
                             f"median={stats['median_ms']:.4f} ms, "
@@ -1664,6 +1671,12 @@ def run_dsv4_mla_module(
                                 f"dsv4-flash {sweep_label} bs={batch_size} sl={seq_len} "
                                 f"prefix={cur_prefix}: cleanup failed: {'; '.join(cleanup_errors)}"
                             )
+                        point_clock.mark("cleanup")
+                        point_clock.add_to(phase_totals)
+                        print(
+                            f"  [dsv4 point timing] {sweep_label} bs={batch_size} sl={seq_len} prefix={cur_prefix}: "
+                            + point_clock.render()
+                        )
     finally:
         final_cleanup_errors = []
         del model_runner
@@ -1691,6 +1704,7 @@ def run_dsv4_mla_module(
     if skipped_shapes:
         skipped_str = ", ".join(f"(bs={b},sl={s},prefix={p},reason={r})" for b, s, p, r in skipped_shapes)
         print(f"[WARN] dsv4-flash {sweep_label}: skipped or errored shapes: {skipped_str}")
+    print(f"[dsv4 timing] {sweep_label}: {render_phase_totals(phase_totals)}")
     print(f"[dsv4-collector] {sweep_label}: {summary}")
     if ok_count == 0 or error_count > 0:
         raise RuntimeError(f"dsv4-flash {sweep_label}: {summary}")

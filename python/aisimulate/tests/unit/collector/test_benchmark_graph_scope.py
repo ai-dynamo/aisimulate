@@ -6,6 +6,7 @@
 import ast
 import logging
 import sys
+import time
 from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
@@ -99,7 +100,7 @@ def trace_benchmark(monkeypatch, *, source=SOURCE, failure=None, explicit=None, 
     monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=cuda))
     tree = ast.parse(source.read_text())
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "benchmark_with_power")
-    namespace = {"contextmanager": contextmanager, "get_device_module": lambda: cuda, "logging": logging}
+    namespace = {"contextmanager": contextmanager, "get_device_module": lambda: cuda, "logging": logging, "time": time}
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), "exec"), namespace)
     kwargs = {
         "device": SimpleNamespace(index=0),
@@ -122,7 +123,8 @@ def trace_benchmark(monkeypatch, *, source=SOURCE, failure=None, explicit=None, 
         caught = {"type": type(exc).__name__, "message": str(exc), "original_error": exc is error}
     return {
         "events": events,
-        "result": result,
+        # phase_seconds are wall-clock readings that differ between otherwise identical runs.
+        "result": {k: v for k, v in result.items() if k != "phase_seconds"} if result is not None else None,
         "error": caught,
         "stream": state["stream"],
         "resets": [graph.resets for graph in graphs],
