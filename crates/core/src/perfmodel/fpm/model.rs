@@ -1670,6 +1670,49 @@ impl ForwardPassPerfModel {
         )
     }
 
+    /// Uncorrected latency that `batch_size` decode requests add to a forward
+    /// pass that also computes prefill, at exact past-KV totals. A mixed pass
+    /// costs [`Self::predict_prefill_latency_total`] plus this term, which is
+    /// the whole-model FPM one-pass composition. `None` when the selected
+    /// estimator has no such composition.
+    pub(crate) fn predict_mixed_decode_latency_total(
+        &self,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+    ) -> Result<Option<f64>, AicError> {
+        let engine = self.require_native_engine()?;
+        let mut coverage = self
+            .query_coverage
+            .as_ref()
+            .map(FpmCoverageState::lock)
+            .transpose()?;
+        engine.predict_mixed_decode_latency_total_with_coverage(
+            batch_size,
+            total_past_kv_tokens,
+            coverage.as_deref_mut(),
+        )
+    }
+
+    /// [`Self::predict_mixed_decode_latency_total`] with its executed lookup
+    /// evidence.
+    pub(crate) fn mixed_decode_detailed_total(
+        &self,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+    ) -> Result<Option<crate::ForwardPassEstimate>, AicError> {
+        let engine = self.require_native_engine()?;
+        let mut coverage = self
+            .query_coverage
+            .as_ref()
+            .map(FpmCoverageState::lock)
+            .transpose()?;
+        engine.predict_mixed_decode_detailed_total(
+            batch_size,
+            total_past_kv_tokens,
+            coverage.as_deref_mut(),
+        )
+    }
+
     /// Largest collected decode KV total for the selected FPM cell. Reading
     /// this bound is not a timing lookup and does not add coverage evidence.
     pub fn fpm_decode_kv_ceiling(&self) -> Result<Option<u32>, AicError> {

@@ -369,8 +369,11 @@ def test_native_snapshot_pins_engine_and_perf_data_across_processes(tmp_path):
     assert _bits(RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "packed"), queries) == expected
 
 
-def test_execution_profile_is_copied_and_perf_data_packed(profile, tmp_path):  # noqa: F811
-    config, _, _, root, path = profile
+@pytest.mark.parametrize("profile_version", [1, 2])
+def test_execution_profile_is_copied_and_perf_data_packed(profile, tmp_path, profile_version):  # noqa: F811
+    config, payload, publish, root, path = profile
+    payload["schema_version"] = profile_version
+    publish()
     model = RustForwardPassPerfModel.best_available(config)
     # Synthetic oracle from the profile fixture: three repetitions of 2 ms.
     assert model.predict_prefill_latency(1, 4, 0) == 6.0
@@ -388,6 +391,12 @@ def test_execution_profile_is_copied_and_perf_data_packed(profile, tmp_path):  #
     path.unlink()
     restored = RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "packed")
     assert restored.predict_prefill_latency(1, 4, 0) == 6.0
+    query = [{"version": 1, "scheduled_requests": {"num_prefill_requests": 1, "sum_prefill_tokens": 4}}]
+    if profile_version == 1:
+        with pytest.raises(ValueError, match="schema_version 2"):
+            restored.estimate_forward_pass_time_ms(query)
+    else:
+        assert restored.estimate_forward_pass_time_ms(query) == 6.0
     assert restored.readiness_report() == model.readiness_report()
 
 

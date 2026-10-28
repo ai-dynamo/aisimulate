@@ -35,7 +35,7 @@ use crate::session::{
     query_generation_op, run_context_ops, run_context_ops_planned, run_context_ops_with,
     run_generation_ops_step, run_generation_ops_step_beamed_with, run_generation_ops_step_planned,
 };
-use crate::{ForwardPassMetrics, validate_forward_pass_metrics};
+use crate::{ForwardPassMetrics, ForwardPassWorkerType, validate_forward_pass_metrics};
 
 /// Per-call runtime inputs. Field-for-field mirror of the Python
 /// `sdk/config.RuntimeConfig`.
@@ -368,7 +368,9 @@ pub struct Engine {
     /// (`batch_size = batch_size * (model._nextn + 1)`). 0 disables scaling.
     nextn: u32,
     pub(crate) profile_snapshot: Option<tempfile::TempDir>,
-    profile_phase: Option<bool>,
+    profile_phase: Option<ForwardPassWorkerType>,
+    legacy_profile: bool,
+    mixed_ops_supported: bool,
     /// Measured target+draft round identity. This is parsed once from the
     /// existing EngineConfig.extra map, not a new serialized Op field.
     fpm_execution_profile: Option<FpmExecutionBinding>,
@@ -392,8 +394,64 @@ impl std::fmt::Debug for Engine {
 }
 
 impl Engine {
+    fn require_common_profile(&self) -> Result<(), AicError> {
+        if self.legacy_profile {
+            return Err(crate::operators::measured_composite::invalid(
+                "common forward-pass and mixed queries require execution profile schema_version 2; requalify the query coordinates and update the profile pin",
+            ));
+        }
+        Ok(())
+    }
+
+    fn check_mixed_ops(&self) -> Result<(), AicError> {
+        if !self.mixed_ops_supported {
+            return Err(crate::operators::measured_composite::invalid(
+                "mixed measured scopes require separate top-level phase attention operations; opaque whole-phase scopes or nested attention cannot be composed",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Measured scopes must expose the split used by the existing mixed filters.
+    /// Compute this once for all input sources; pure-phase queries remain valid.
+    fn supports_mixed_ops(context: &[Op], generation: &[Op]) -> bool {
+        fn inspect(ops: &[Op], context: bool, nested: bool) -> (bool, bool) {
+            let mut measured = false;
+            let mut invalid_attention = false;
+            for op in ops {
+                measured |= matches!(op, Op::MeasuredComposite(_));
+                invalid_attention |= if nested {
+                    op.is_context_attention() || op.is_generation_attention()
+                } else if context {
+                    op.is_generation_attention()
+                } else {
+                    op.is_context_attention()
+                };
+                if let Op::Overlap(group) = op {
+                    for children in [&group.group_a, &group.group_b] {
+                        let (child_measured, child_invalid) = inspect(children, context, true);
+                        measured |= child_measured;
+                        invalid_attention |= child_invalid;
+                    }
+                }
+            }
+            (measured, invalid_attention)
+        }
+        let (ctx_measured, ctx_invalid) = inspect(context, true, false);
+        let (gen_measured, gen_invalid) = inspect(generation, false, false);
+        !(ctx_measured || gen_measured)
+            || (!ctx_invalid
+                && !gen_invalid
+                && context.iter().any(Op::is_context_attention)
+                && generation.iter().any(Op::is_generation_attention))
+    }
+
     fn check_profile_phase(&self, prefill: bool) -> Result<(), AicError> {
-        if self.profile_phase.is_some_and(|phase| phase != prefill) {
+        if self.profile_phase.is_some_and(|phase| match phase {
+            ForwardPassWorkerType::Prefill => !prefill,
+            ForwardPassWorkerType::Decode => prefill,
+            ForwardPassWorkerType::Aggregated => false,
+        }) {
             return Err(crate::operators::measured_composite::invalid(
                 "query phase is not qualified by this profile",
             ));
@@ -401,14 +459,6 @@ impl Engine {
         Ok(())
     }
 
-    fn reject_profile_telemetry(&self) -> Result<(), AicError> {
-        if self.profile_phase.is_some() {
-            return Err(crate::operators::measured_composite::invalid(
-                "execution profiles require direct homogeneous phase queries; mixed/aggregate telemetry is not qualified",
-            ));
-        }
-        Ok(())
-    }
     /// Build an `Engine` from a spec and a pre-loaded database.
     ///
     /// Extracts the op lists and the `nextn` scalar from `spec.engine`. The
@@ -455,6 +505,22 @@ impl Engine {
         )?;
         let spec_sha256 = spec.content_sha256()?;
         Ok(Engine {
+            legacy_profile: spec.engine.extra.contains_key("execution_profile_phase")
+                && match spec
+                    .engine
+                    .extra
+                    .get("execution_profile_schema_version")
+                    .map(String::as_str)
+                {
+                    None | Some("1") => true,
+                    Some("2") => false,
+                    _ => {
+                        return Err(crate::operators::measured_composite::invalid(
+                            "unsupported profile schema version",
+                        ));
+                    }
+                },
+            mixed_ops_supported: Self::supports_mixed_ops(&spec.context_ops, &spec.generation_ops),
             spec_sha256,
             context_plan: OpListPlan::new(&spec.context_ops),
             generation_plan: OpListPlan::new(&spec.generation_ops),
@@ -470,8 +536,9 @@ impl Engine {
                 .map(String::as_str)
             {
                 None => None,
-                Some("prefill") => Some(true),
-                Some("decode") => Some(false),
+                Some("prefill") => Some(ForwardPassWorkerType::Prefill),
+                Some("decode") => Some(ForwardPassWorkerType::Decode),
+                Some("aggregated") => Some(ForwardPassWorkerType::Aggregated),
                 _ => {
                     return Err(crate::operators::measured_composite::invalid(
                         "invalid profile phase",
@@ -1049,9 +1116,9 @@ impl Engine {
         mut on_op: impl FnMut(usize, &Op, PerformanceResult),
     ) -> Result<f64, AicError> {
         self.check_profile_phase(false)?;
-        if self.profile_phase.is_some() && runtime.osl > 2 {
+        if self.legacy_profile && runtime.osl > 2 {
             return Err(crate::operators::measured_composite::invalid(
-                "execution profiles support at most one decode step per query",
+                "v1 execution profiles support at most one decode step per query",
             ));
         }
         self.reject_full_round_surface("static generation trajectories")?;
@@ -1250,12 +1317,12 @@ impl Engine {
                 Ok(latency_ms)
             }
             _ => {
-                if self.profile_phase.is_some()
+                if self.legacy_profile
                     && (total_prefill_tokens % batch_size != 0
                         || total_kv_read_tokens % batch_size != 0)
                 {
                     return Err(crate::operators::measured_composite::invalid(
-                        "prefill profile requires a homogeneous batch",
+                        "v1 prefill profile requires a homogeneous batch",
                     ));
                 }
                 let total_isl = total_prefill_tokens
@@ -1309,16 +1376,15 @@ impl Engine {
         total_past_kv_tokens: u32,
         coverage: Option<&mut FpmQueryCoverage>,
     ) -> Result<f64, AicError> {
-        if self.profile_phase.is_some() {
+        if self.legacy_profile {
             self.check_profile_phase(false)?;
             if batch_size == 0 || total_past_kv_tokens % batch_size != 0 {
                 return Err(crate::operators::measured_composite::invalid(
-                    "decode profile requires a positive homogeneous batch",
+                    "v1 decode profile requires a positive homogeneous batch",
                 ));
             }
             return self.predict_decode_latency(batch_size, total_past_kv_tokens / batch_size, 2);
         }
-
         self.forward_pass_time_ms_with_coverage(
             &[ForwardPassMetrics {
                 scheduled_requests: crate::ScheduledRequestMetrics {
@@ -1330,6 +1396,48 @@ impl Engine {
             }],
             coverage,
         )
+    }
+
+    /// Latency that `batch_size` decode requests add to a forward pass that
+    /// also computes prefill, from exact FPM iteration totals. A mixed pass
+    /// costs [`Self::predict_prefill_latency_total`] plus this term, as in
+    /// [`Self::forward_pass_time_ms`]. `None` when this engine has no such
+    /// one-pass composition; callers then price a separate decode pass.
+    pub(crate) fn predict_mixed_decode_latency_total_with_coverage(
+        &self,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<Option<f64>, AicError> {
+        self.fpm_mixed_decode_term_ms(batch_size, total_past_kv_tokens, None, coverage)
+    }
+
+    /// [`Self::predict_mixed_decode_latency_total_with_coverage`] with its
+    /// executed lookup evidence.
+    pub(crate) fn predict_mixed_decode_detailed_total(
+        &self,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<Option<crate::ForwardPassEstimate>, AicError> {
+        let mut rank = crate::FpmRankEstimate::default();
+        let Some(latency_ms) = self.fpm_mixed_decode_term_ms(
+            batch_size,
+            total_past_kv_tokens,
+            Some(&mut rank),
+            coverage,
+        )?
+        else {
+            return Ok(None);
+        };
+        rank.latency_ms = latency_ms;
+        Ok(Some(crate::ForwardPassEstimate {
+            latency_ms: Some(latency_ms),
+            native_latency_ms: Some(latency_ms),
+            correction_factor: Some(1.0),
+            max_rank: (latency_ms > 0.0).then_some(0),
+            ranks: vec![rank],
+        }))
     }
 
     /// Highest decode KV-read total covered by a compiled FPM engine.
@@ -1441,7 +1549,16 @@ impl Engine {
         gen_seq_imbalance_correction_scale: f64,
         mut on_op: impl FnMut(MixedPass, &Op, PerformanceResult),
     ) -> Result<[f64; 4], AicError> {
-        self.reject_profile_telemetry()?;
+        self.require_common_profile()?;
+        if ctx_tokens > 0 && gen_tokens > 0 {
+            self.check_mixed_ops()?;
+        }
+        if ctx_tokens > 0 {
+            self.check_profile_phase(true)?;
+        }
+        if gen_tokens > 0 {
+            self.check_profile_phase(false)?;
+        }
         self.reject_full_round_surface("static mixed-step composition")?;
         if ctx_tokens == 0 && gen_tokens == 0 {
             return Ok([0.0; 4]);
@@ -2628,7 +2745,7 @@ impl Engine {
         capture: bool,
         mut coverage: Option<&mut FpmQueryCoverage>,
     ) -> Result<crate::ForwardPassEstimate, AicError> {
-        self.reject_profile_telemetry()?;
+        self.require_common_profile()?;
         if metrics_by_rank.is_empty() {
             return Err(AicError::InvalidForwardPassMetrics(
                 "at least one attention-DP rank metric required".to_string(),
@@ -2694,6 +2811,13 @@ impl Engine {
         // and price decode as marginal work riding a pass that does not exist.
         let has_prefill = sched.sum_prefill_tokens > 0;
         let has_decode = sched.num_decode_requests > 0 || sched.sum_decode_kv_tokens > 0;
+
+        if has_prefill {
+            self.check_profile_phase(true)?;
+        }
+        if has_decode {
+            self.check_profile_phase(false)?;
+        }
 
         // The whole-forward rewrite retains the original stage graph in
         // sol_ops. Apply the same replay restriction before its table lookup
@@ -2775,46 +2899,16 @@ impl Engine {
                 }
             }
             if has_decode {
-                let result = decode_op.query_totals_with_coverage(
-                    &self.db,
-                    &[
-                        sched.num_decode_requests as f64,
-                        sched.sum_decode_kv_tokens as f64,
-                    ],
+                // Speculative FPM was rejected above, so the packed counts
+                // need no `(nextn + 1)` here.
+                total += self.fpm_decode_term_ms(
+                    decode_op,
+                    sched.num_decode_requests,
+                    sched.sum_decode_kv_tokens,
+                    has_prefill,
+                    evidence.as_deref_mut(),
                     coverage.as_deref_mut(),
                 )?;
-                let decode_ms = result.latency_ms;
-                if let Some(evidence) = evidence.as_deref_mut() {
-                    evidence.decode_ms = Some(decode_ms);
-                    evidence
-                        .queries
-                        .extend(result.fpm_queries.into_iter().flat_map(|queries| *queries));
-                }
-                if has_prefill {
-                    // Mixed rank: marginal-decode composition, mirroring
-                    // `_get_fpm_mix_step_latency` (counts already packed, no
-                    // `(nextn + 1)` — speculative FPM was rejected above).
-                    let baseline = decode_op.query_pass_baseline_with_coverage(
-                        &self.db,
-                        sched.num_decode_requests,
-                        sched.sum_decode_kv_tokens as f64,
-                        coverage.as_deref_mut(),
-                    )?;
-                    let baseline_ms = baseline.latency_ms;
-                    total += (decode_ms - baseline_ms).max(0.0);
-                    if let Some(evidence) = evidence.as_deref_mut() {
-                        evidence.decode_baseline_ms = Some(baseline_ms);
-                        evidence.marginal_decode_ms = Some((decode_ms - baseline_ms).max(0.0));
-                        evidence.queries.extend(
-                            baseline
-                                .fpm_queries
-                                .into_iter()
-                                .flat_map(|queries| *queries),
-                        );
-                    }
-                } else {
-                    total += decode_ms;
-                }
             }
             return Ok(total);
         }
@@ -2859,6 +2953,7 @@ impl Engine {
             // `_get_mix_step_latency`. `sum_prefill_kv_tokens` is exactly the
             // combined-prefix value the pass-1 non-attention call needs; pass
             // it through unchanged.
+            self.check_mixed_ops()?;
             let n_prefill = sched.num_prefill_requests.max(1);
             let new_tokens_per_req = sched.sum_prefill_tokens / n_prefill;
             let prefix_per_req = sched.sum_prefill_kv_tokens / n_prefill;
@@ -2911,6 +3006,86 @@ impl Engine {
         }
 
         Ok(total)
+    }
+
+    /// Decode term of a whole-model FPM rank at exact iteration totals: the
+    /// full decode pass, or, when the rank also computes prefill, only the
+    /// latency its decode requests add to that pass. The mixed term mirrors
+    /// `_get_fpm_mix_step_latency`: `max(0, decode - decode_pass_baseline)`.
+    fn fpm_decode_term_ms(
+        &self,
+        decode_op: &FpmForwardOp,
+        num_decode_requests: u32,
+        sum_decode_kv_tokens: u32,
+        rides_prefill: bool,
+        mut evidence: Option<&mut crate::FpmRankEstimate>,
+        mut coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<f64, AicError> {
+        let result = decode_op.query_totals_with_coverage(
+            &self.db,
+            &[num_decode_requests as f64, sum_decode_kv_tokens as f64],
+            coverage.as_deref_mut(),
+        )?;
+        let decode_ms = result.latency_ms;
+        if let Some(evidence) = evidence.as_deref_mut() {
+            evidence.decode_ms = Some(decode_ms);
+            evidence
+                .queries
+                .extend(result.fpm_queries.into_iter().flat_map(|queries| *queries));
+        }
+        if !rides_prefill {
+            return Ok(decode_ms);
+        }
+        let baseline = decode_op.query_pass_baseline_with_coverage(
+            &self.db,
+            num_decode_requests,
+            sum_decode_kv_tokens as f64,
+            coverage,
+        )?;
+        let baseline_ms = baseline.latency_ms;
+        let marginal_decode_ms = (decode_ms - baseline_ms).max(0.0);
+        if let Some(evidence) = evidence {
+            evidence.decode_baseline_ms = Some(baseline_ms);
+            evidence.marginal_decode_ms = Some(marginal_decode_ms);
+            evidence.queries.extend(
+                baseline
+                    .fpm_queries
+                    .into_iter()
+                    .flat_map(|queries| *queries),
+            );
+        }
+        Ok(marginal_decode_ms)
+    }
+
+    /// The mixed decode term of [`Self::rank_latency_ms`] for a pass whose
+    /// prefill is priced separately. `None` when this engine has no such
+    /// composition: operation-level and stage graphs, speculative or SD-round
+    /// FPM, and measured execution profiles.
+    fn fpm_mixed_decode_term_ms(
+        &self,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+        evidence: Option<&mut crate::FpmRankEstimate>,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<Option<f64>, AicError> {
+        let Some((_, decode_op, [], [])) = self.fpm_split() else {
+            return Ok(None);
+        };
+        if self.nextn > 0 || self.fpm_execution_profile.is_some() || self.profile_phase.is_some() {
+            return Ok(None);
+        }
+        if batch_size == 0 && total_past_kv_tokens == 0 {
+            return Ok(Some(0.0));
+        }
+        self.fpm_decode_term_ms(
+            decode_op,
+            batch_size,
+            total_past_kv_tokens,
+            true,
+            evidence,
+            coverage,
+        )
+        .map(Some)
     }
 }
 
@@ -3168,6 +3343,9 @@ pub(crate) mod tests {
             "execution_profile_phase".into(),
             if prefill { "prefill" } else { "decode" }.into(),
         );
+        config
+            .extra
+            .insert("execution_profile_schema_version".into(), "2".into());
         let values: &[f64] = if complete {
             &[2.0, 5.0, 7.0, 11.0]
         } else {
@@ -3199,68 +3377,168 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn execution_profile_decode_rejects_trajectories_for_scalar_and_per_op_queries() {
-        for complete in [false, true] {
-            let engine = measured_profile_engine(false, complete);
-            // Independent oracle: three executions of each exact measured scope.
-            let expected: &[f64] = if complete {
-                &[6.0, 15.0, 21.0, 33.0]
-            } else {
-                &[6.0]
+    fn execution_profile_common_forward_pass_query() {
+        for prefill in [false, true] {
+            let engine = measured_profile_engine(prefill, true);
+            let metrics = ForwardPassMetrics {
+                scheduled_requests: if prefill {
+                    crate::ScheduledRequestMetrics {
+                        num_prefill_requests: 2,
+                        sum_prefill_tokens: 10,
+                        ..Default::default()
+                    }
+                } else {
+                    crate::ScheduledRequestMetrics {
+                        num_decode_requests: 2,
+                        sum_decode_kv_tokens: 10,
+                        ..Default::default()
+                    }
+                },
+                ..Default::default()
             };
-            for (i, &latency) in expected.iter().enumerate() {
-                assert_eq!(
-                    engine
-                        .predict_decode_latency_total(2, 8 + 2 * i as u32)
-                        .unwrap(),
-                    latency
-                );
-            }
-            for stride in [1, 32] {
-                let rt = runtime(2, 4, 5);
-                let errors = [
-                    engine
-                        .run_static(&rt, StaticMode::Generation, stride)
-                        .unwrap_err(),
-                    engine
-                        .run_static_per_op(&rt, StaticMode::Generation, stride)
-                        .unwrap_err(),
-                    engine
-                        .run_static_per_op_with_metadata(&rt, StaticMode::Generation, stride)
-                        .unwrap_err(),
-                ];
-                for error in errors {
-                    assert!(error.to_string().contains("one decode step"), "{error}");
-                }
-                assert_eq!(
-                    engine
-                        .run_generation_phase(&runtime(2, 4, 2), stride)
-                        .unwrap(),
-                    6.0
-                );
-                assert_eq!(
-                    engine
-                        .run_generation_phase(&runtime(2, 4, 1), stride)
-                        .unwrap(),
-                    0.0
-                );
-            }
+            // The first exact cell is a 2 ms scope repeated three times.
+            assert_eq!(
+                engine.forward_pass_time_ms(&[metrics.clone()]).unwrap(),
+                6.0
+            );
+            let detailed = engine
+                .forward_pass_estimate(&[metrics], true, None)
+                .unwrap();
+            assert_eq!(detailed.latency_ms, Some(6.0));
+            assert_eq!(detailed.native_latency_ms, Some(6.0));
         }
     }
 
     #[test]
-    fn execution_profile_prefill_totals_require_a_homogeneous_batch() {
-        let engine = measured_profile_engine(true, true);
-        // Two 5-token prompts match the first measured cell, executed 3 times.
-        assert_eq!(engine.predict_prefill_latency_total(2, 10, 0).unwrap(), 6.0);
-        // Integer means would price these ragged totals at a measured shape
-        // that is not the scheduled work.
-        for (prefill, kv) in [(11, 0), (10, 1)] {
-            let error = engine
-                .predict_prefill_latency_total(2, prefill, kv)
-                .unwrap_err();
-            assert!(error.to_string().contains("homogeneous"), "{error}");
+    fn execution_profile_mixed_query_counts_shared_work_once() {
+        use crate::operators::measured_composite::{MeasuredCell, MeasuredCompositeOp};
+
+        let mut config = fixture_engine_config(None);
+        config
+            .extra
+            .insert("execution_profile_phase".into(), "aggregated".into());
+        config
+            .extra
+            .insert("execution_profile_schema_version".into(), "2".into());
+        let scope = |name: &str, context: bool, shape, latency_ms| {
+            Op::MeasuredComposite(MeasuredCompositeOp {
+                name: name.into(),
+                system: "b200_sxm".into(),
+                backend: "vllm".into(),
+                version: "0.24.0".into(),
+                is_context: context,
+                weight_bytes: 0.0,
+                scale_factor: 3.0,
+                cells: vec![MeasuredCell { shape, latency_ms }],
+            })
+        };
+        let engine = Engine::build(
+            EngineSpec::new(
+                config,
+                vec![
+                    scope("shared_compute", true, [1, 12, 0], 5.0),
+                    scope("context_attention", true, [2, 5, 0], 2.0),
+                ],
+                vec![
+                    // This whole-phase-only cell must not be queried in a mixed step.
+                    scope("decode_compute", false, [99, 99, 0], 100.0),
+                    scope("generation_attention", false, [2, 5, 0], 7.0),
+                ],
+            ),
+            build_engine(None).db,
+        )
+        .unwrap();
+        let metrics = ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_prefill_requests: 2,
+                sum_prefill_tokens: 10,
+                num_decode_requests: 2,
+                sum_decode_kv_tokens: 10,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // Independent measured scopes: (5 shared + 2 prefill + 7 decode) ms,
+        // each repeated three times. Both input sources use the same KV coordinate.
+        assert_eq!(
+            engine.forward_pass_time_ms(&[metrics.clone()]).unwrap(),
+            42.0
+        );
+        assert_eq!(
+            engine
+                .forward_pass_estimate(&[metrics], true, None)
+                .unwrap()
+                .latency_ms,
+            Some(42.0)
+        );
+    }
+
+    #[test]
+    fn measured_scope_mixed_queries_require_attention_decomposition() {
+        let context = measured_profile_engine(true, true);
+        let generation = measured_profile_engine(false, true);
+        // Apply the same composition boundary to a raw EngineSpec, without a profile.
+        let engine = Engine::build(
+            EngineSpec::new(
+                fixture_engine_config(None),
+                context.context_ops,
+                generation.generation_ops,
+            ),
+            context.db,
+        )
+        .unwrap();
+        let metrics = ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_prefill_requests: 2,
+                sum_prefill_tokens: 10,
+                num_decode_requests: 2,
+                sum_decode_kv_tokens: 10,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        for error in [
+            engine.forward_pass_time_ms(&[metrics]).unwrap_err(),
+            engine
+                .mixed_step_latency(10, 2, 5, 2, 0, 1.0, 1.0)
+                .unwrap_err(),
+        ] {
+            assert!(
+                error.to_string().contains("top-level phase attention"),
+                "{error}"
+            );
         }
+        let mut context_ops = engine.context_ops.clone();
+        let mut generation_ops = engine.generation_ops.clone();
+        if let Op::MeasuredComposite(op) = &mut context_ops[0] {
+            op.name = "context_attention".into();
+        }
+        if let Op::MeasuredComposite(op) = &mut generation_ops[0] {
+            op.name = "generation_attention".into();
+        }
+        assert!(Engine::supports_mixed_ops(&context_ops, &generation_ops));
+        let nested = vec![Op::Overlap(crate::operators::op::OverlapOp {
+            name: "nested".into(),
+            group_a: context_ops,
+            group_b: vec![],
+        })];
+        assert!(!Engine::supports_mixed_ops(&nested, &generation_ops));
+    }
+
+    #[test]
+    fn execution_profile_reuses_static_trajectory_and_total_queries() {
+        let decode = measured_profile_engine(false, true);
+        // Four measured steps: (2 + 5 + 7 + 11) ms, each repeated three times.
+        assert_eq!(
+            decode.run_generation_phase(&runtime(2, 4, 5), 1).unwrap(),
+            75.0
+        );
+        let prefill = measured_profile_engine(true, true);
+        // Ordinary totals queries use integer per-request means: 11/2 = 5.
+        assert_eq!(
+            prefill.predict_prefill_latency_total(2, 11, 0).unwrap(),
+            6.0
+        );
     }
 
     #[test]
@@ -5358,6 +5636,90 @@ pub(crate) mod tests {
         let expected = 21.0 + (decode - 6.0);
         let got = engine.forward_pass_time_ms(&[mixed]).unwrap();
         assert!((got - expected).abs() < 1e-9, "got {got}, want {expected}");
+    }
+
+    /// A caller that prices a mixed pass's prefill and decode separately
+    /// reproduces the one-pass estimate bit for bit with the mixed decode
+    /// term, while a decode-only query still charges the whole pass.
+    #[test]
+    fn fpm_mixed_decode_term_completes_the_one_pass_estimate() {
+        use crate::fpm::{ForwardPassMetrics, ScheduledRequestMetrics};
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = build_fpm_engine(tmp.path(), None).unwrap();
+        let mixed = ForwardPassMetrics {
+            scheduled_requests: ScheduledRequestMetrics {
+                num_prefill_requests: 2,
+                sum_prefill_tokens: 2 * 1024,
+                sum_prefill_kv_tokens: 0,
+                num_decode_requests: 8,
+                sum_decode_kv_tokens: 8 * 4096,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let prefill = engine.predict_prefill_latency_total(2, 2048, 0).unwrap();
+        let share = engine
+            .predict_mixed_decode_latency_total_with_coverage(8, 32768, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            engine
+                .forward_pass_time_ms(std::slice::from_ref(&mixed))
+                .unwrap(),
+            prefill + share
+        );
+        let decode = engine.predict_decode_latency_total(8, 32768).unwrap();
+        assert_eq!(share, decode - 6.0);
+
+        let detailed = engine
+            .predict_mixed_decode_detailed_total(8, 32768, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(detailed.latency_ms, Some(share));
+        let rank = &detailed.ranks[0];
+        let one_pass = engine.forward_pass_estimate(&[mixed], true, None).unwrap();
+        let mixed_rank = &one_pass.ranks[0];
+        assert_eq!(
+            (
+                rank.decode_ms,
+                rank.decode_baseline_ms,
+                rank.marginal_decode_ms
+            ),
+            (Some(decode), Some(6.0), Some(share))
+        );
+        assert_eq!(
+            (
+                rank.decode_ms,
+                rank.decode_baseline_ms,
+                rank.marginal_decode_ms
+            ),
+            (
+                mixed_rank.decode_ms,
+                mixed_rank.decode_baseline_ms,
+                mixed_rank.marginal_decode_ms
+            )
+        );
+        assert_eq!(
+            engine
+                .predict_mixed_decode_latency_total_with_coverage(0, 0, None)
+                .unwrap(),
+            Some(0.0)
+        );
+
+        // SD-round FPM profiles and operation graphs define no such term.
+        let round = tempfile::tempdir().unwrap();
+        assert_eq!(
+            full_round_engine(round.path())
+                .predict_mixed_decode_latency_total_with_coverage(1, 4096, None)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            build_engine(None)
+                .predict_mixed_decode_latency_total_with_coverage(8, 32768, None)
+                .unwrap(),
+            None
+        );
     }
 
     /// Mixed telemetry may request a synthetic decode baseline below the KV

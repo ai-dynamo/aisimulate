@@ -772,6 +772,24 @@ pub struct VisionShape {
     pub count: u32,
 }
 
+/// Exact totals of the prefill batch one forward pass computes: its requests,
+/// the tokens they compute, and the cached or earlier-chunk KV they read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrefillTotals {
+    pub batch_size: usize,
+    pub new_tokens: usize,
+    pub prefix_tokens: usize,
+}
+
+/// One forward pass that computes prefill and decode work together, in
+/// milliseconds: the prefill latency and the latency the decode batch adds.
+/// Their sum is the provider's estimate of the whole pass.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MixedPassMs {
+    pub prefill_ms: f64,
+    pub decode_ms: f64,
+}
+
 /// Runtime latency model injected at the engine boundary.
 ///
 /// Implementations may call AIC, interpolate profiler data, or use another
@@ -821,6 +839,26 @@ pub trait TimingModel: Send + Sync {
         mean_context_length: usize,
         total_kv_tokens: usize,
     ) -> Result<f64>;
+
+    /// Predict one forward pass that computes `prefill` together with a decode
+    /// batch. Arguments after `prefill` describe the decode batch as in
+    /// [`Self::predict_decode_ms`].
+    ///
+    /// A provider that prices such a pass as one forward returns its prefill
+    /// latency and the latency the decode batch adds, which sum to its
+    /// estimate of that pass. The default `None` means the provider has no
+    /// such composition; schedulers then price the prefill with
+    /// [`Self::predict_prefill_totals_ms`] and a separate decode pass.
+    fn predict_mixed_pass_ms(
+        &self,
+        _prefill: PrefillTotals,
+        _batch_size: usize,
+        _active_kv_tokens: usize,
+        _mean_context_length: usize,
+        _total_kv_tokens: usize,
+    ) -> Result<Option<MixedPassMs>> {
+        Ok(None)
+    }
 
     /// Return typed evidence accumulated by this provider so far.
     ///

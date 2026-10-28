@@ -9,7 +9,7 @@
 use anyhow::{Context, Result, ensure};
 use std::sync::Arc;
 
-use crate::engine::timing::mean_prefill_shape;
+use crate::engine::timing::{MixedPassMs, PrefillTotals, mean_prefill_shape};
 
 /// Performance model for predicting prefill and decode timing
 #[derive(Default)]
@@ -160,6 +160,47 @@ impl PerfModel {
         // can legitimately be below one millisecond and must retain that value.
         Ok(time)
     }
+
+    /// Predict one forward pass, in milliseconds, that computes `prefill`
+    /// together with a decode batch. A provider that prices such a pass as one
+    /// forward returns its prefill and decode parts. Other providers and the
+    /// polynomial fallback return `None`; callers then price the prefill with
+    /// [`Self::predict_prefill_time`] and a separate decode pass with
+    /// [`Self::predict_decode_time`].
+    pub fn predict_mixed_pass_time(
+        &self,
+        prefill: PrefillTotals,
+        batch_size: usize,
+        active_kv_tokens: usize,
+        context_length: usize,
+        total_kv_tokens: usize,
+    ) -> Result<Option<MixedPassMs>> {
+        let PerfModel::External { timing } = self else {
+            return Ok(None);
+        };
+        if batch_size == 0 || prefill.batch_size == 0 || prefill.new_tokens == 0 {
+            return Ok(None);
+        }
+        let Some(pass) = timing
+            .predict_mixed_pass_ms(
+                prefill,
+                batch_size,
+                active_kv_tokens,
+                context_length,
+                total_kv_tokens,
+            )
+            .context("external mixed pass prediction failed")?
+        else {
+            return Ok(None);
+        };
+        ensure!(
+            [pass.prefill_ms, pass.decode_ms]
+                .iter()
+                .all(|ms| ms.is_finite() && *ms >= 0.0),
+            "mixed pass timing provider returned invalid durations {pass:?}"
+        );
+        Ok(Some(pass))
+    }
 }
 
 pub(crate) fn polynomial_prefill_time(batch_size: usize, new_tokens_per_request: usize) -> f64 {
@@ -186,7 +227,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::{PerfModel, polynomial_decode_time};
-    use crate::engine::TimingModel;
+    use crate::engine::{MixedPassMs, PrefillTotals, TimingModel};
 
     struct EchoBatchTiming;
 
@@ -241,6 +282,69 @@ mod tests {
                 .predict_prefill_time(1, 0, 128)
                 .unwrap(),
             0.0
+        );
+    }
+
+    #[test]
+    fn external_mixed_pass_keeps_valid_parts_and_rejects_invalid_ones() {
+        struct FixedPass(f64, f64);
+        impl TimingModel for FixedPass {
+            fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+                Ok(1.0)
+            }
+
+            fn predict_decode_ms(
+                &self,
+                _: usize,
+                _: usize,
+                _: usize,
+                _: usize,
+            ) -> anyhow::Result<f64> {
+                Ok(1.0)
+            }
+
+            fn predict_mixed_pass_ms(
+                &self,
+                _: PrefillTotals,
+                _: usize,
+                _: usize,
+                _: usize,
+                _: usize,
+            ) -> anyhow::Result<Option<MixedPassMs>> {
+                Ok(Some(MixedPassMs {
+                    prefill_ms: self.0,
+                    decode_ms: self.1,
+                }))
+            }
+        }
+        let prefill = PrefillTotals {
+            batch_size: 1,
+            new_tokens: 8,
+            prefix_tokens: 0,
+        };
+        let pass = |prefill_ms, decode_ms| {
+            PerfModel::External {
+                timing: Arc::new(FixedPass(prefill_ms, decode_ms)),
+            }
+            .predict_mixed_pass_time(prefill, 1, 9, 9, 1024)
+        };
+        // A decode share can legitimately be zero.
+        assert_eq!(
+            pass(2.0, 0.0).unwrap(),
+            Some(MixedPassMs {
+                prefill_ms: 2.0,
+                decode_ms: 0.0
+            })
+        );
+        for (prefill_ms, decode_ms) in [(f64::NAN, 1.0), (1.0, -0.5), (f64::INFINITY, 1.0)] {
+            assert!(pass(prefill_ms, decode_ms).is_err());
+        }
+        // The polynomial fallback has no one-forward composition.
+        assert_eq!(
+            PerfModel::default()
+                .predict_mixed_pass_time(prefill, 1, 9, 9, 1024)
+                .unwrap(),
+            None
         );
     }
 
