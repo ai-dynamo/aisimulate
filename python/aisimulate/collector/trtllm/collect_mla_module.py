@@ -82,6 +82,7 @@ import dataclasses
 import gc
 import os
 import sys
+import time
 import traceback
 import weakref
 
@@ -921,10 +922,23 @@ def run_mla_module(
         f"compute={compute_dtype}, kv={kv_cache_dtype}, model={model_path}"
     )
 
+    # Per-phase wall time of this case, printed after cleanup so the campaign
+    # log shows where a module case spends its seconds (layer cache hit vs
+    # KV manager + metadata vs graph capture + timing vs teardown).
+    _t_case = _t_last = time.perf_counter()
+    phase_timing: dict[str, float] = {}
+
+    def _mark(name: str) -> None:
+        nonlocal _t_last
+        now = time.perf_counter()
+        phase_timing[name] = now - _t_last
+        _t_last = now
+
     # 1. Create attention layer (from_pretrained reads config.json)
     attn_module, model_config, original_architecture = _cached_attention_layer(
         model_path, num_heads, use_fp8_kv_cache, gemm_type, device
     )
+    _mark("layer")
 
     # 2. Create KV cache + metadata
     kv_cache_manager, attn_metadata = create_kv_cache_and_metadata(
@@ -937,6 +951,8 @@ def run_mla_module(
         use_fp8_kv_cache=use_fp8_kv_cache,
         device=device,
     )
+
+    _mark("kv_meta")
 
     # 3. Input tensors
     hidden_size = model_config.pretrained_config.hidden_size
@@ -965,6 +981,8 @@ def run_mla_module(
         device=torch_device,
     )
 
+    _mark("inputs")
+
     # 4. Dry run
     with model_extra_attrs(model_config.extra_attrs):
         get_model_extra_attrs()["attention_metadata"] = weakref.ref(attn_metadata)
@@ -980,6 +998,8 @@ def run_mla_module(
             traceback.print_exc()
             _cleanup(kv_cache_manager)
             raise
+
+    _mark("dry_run")
 
     # 5. Benchmark
     import tensorrt_llm._torch.utils as _trtllm_utils
@@ -1007,6 +1027,7 @@ def run_mla_module(
         pass
 
     latency = results["latency_ms"]
+    _mark("bench")
 
     # 6. Log results
     if is_context:
@@ -1052,6 +1073,13 @@ def run_mla_module(
     )
 
     _cleanup(kv_cache_manager)
+    _mark("cleanup")
+    print(
+        f"  [{variant} module timing] {phase} b={batch_size}, s={seq_len}, prefix={prefix_len}, "
+        f"heads={num_heads}, gemm={gemm_type}, kv={kv_cache_dtype}: "
+        + " ".join(f"{name}={seconds:.2f}s" for name, seconds in phase_timing.items())
+        + f" total={time.perf_counter() - _t_case:.2f}s"
+    )
     return latency
 
 
