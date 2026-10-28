@@ -497,14 +497,10 @@ def test_worker_paths_share_one_language_replay(monkeypatch, path, outcome):
     monkeypatch.setattr(search_mod, "_WORKER_CTX", {})
     timed_out = outcome == "timed_out"
     submitted = []
-    returned = []
 
     def run_in_worker(evaluate, spec):
         submitted.append(spec)
-        if timed_out:
-            return None
-        returned.append(evaluate(spec))
-        return returned[-1]
+        return None if timed_out else evaluate(spec)
 
     if path == "pool":
         factory = _LanguageRunnerFactory()
@@ -555,8 +551,7 @@ def test_worker_paths_share_one_language_replay(monkeypatch, path, outcome):
     if timed_out:
         assert [candidate.status for candidate in result.candidates] == [CandidateStatus.TIMED_OUT] * 2
         return
-    # The worker returns the language metrics alone; each pool takes its own overlay.
-    assert returned == [ReplayReport(metrics=_report().metrics)]
+    # Each pool takes its own overlay of the one language replay.
     assert [candidate.status for candidate in result.candidates] == [CandidateStatus.FEASIBLE] * 2
     assert [candidate.metrics["encoder_gpus"] for candidate in result.candidates] == [1.0, 2.0]
 

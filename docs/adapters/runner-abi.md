@@ -107,10 +107,9 @@ capture even though native Rust observers support it.
 A factory that sets `supports_deferred_encoder_overlay` accepts
 `defer_encoder_overlay=True`: for an analytical EPD spec, the runner returns
 the normalized language report without the encoder overlay, and rejects the
-flag together with memory diagnostics. Sweeper then replays each language
-deployment once per candidate batch and applies `apply_encoder_overlay` for
-every encoder pool that shares it. A failed, timed-out or refused language
-replay is recorded for each of those pools.
+flag together with memory diagnostics. Sweeper uses it to replay a language
+deployment once and apply `apply_encoder_overlay` for every encoder pool that
+shares it.
 
 An optional `estimate_host_resources(workload, *, concurrency=None)` factory
 method participates in [resource admission](../reference/local-resources.md).

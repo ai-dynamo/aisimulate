@@ -804,12 +804,8 @@ def _materialize_one(
 
 def _run_replay_detailed(
     spec: ReplaySpec, runner: Runner, output_requirements: ReplayOutputRequirements | None = None
-) -> _ReplayEvaluation | ReplayReport:
-    """Run one replay while retaining validated runner provenance metadata.
-
-    With a deferred encoder overlay, a replayed language report returns as its metrics
-    alone: the coordinator overlays each pool, and the overlay reads nothing else.
-    """
+) -> _ReplayEvaluation:
+    """Run one replay while retaining validated runner provenance metadata."""
 
     try:
         report = (
@@ -821,10 +817,15 @@ def _run_replay_detailed(
         raise
     except Exception as exc:
         return _failed_replay(exc)
-    evaluation = _evaluate_report(report)
-    if output_requirements is None or not output_requirements.defer_encoder_overlay or evaluation.outcome != "replayed":
-        return evaluation
-    if evaluation.metadata.get("metric_semantics") == "analytical_epd_overlay":
+    return _evaluate_report(report)
+
+
+def _overlay_language_replay(language: _ReplayEvaluation, spec: ReplaySpec) -> _ReplayEvaluation:
+    """Evaluate one pool's overlay of a deferred language replay, as the runner would have applied it."""
+
+    if language.outcome != "replayed":
+        return language
+    if language.metadata.get("metric_semantics") == "analytical_epd_overlay":
         return _ReplayEvaluation(
             metrics=None,
             metadata={},
@@ -835,14 +836,9 @@ def _run_replay_detailed(
             ),
             reason_category=ReasonCategory.RUNNER_CONTRACT,
         )
-    return ReplayReport(metrics=evaluation.metrics)
-
-
-def _overlay_language_report(report: ReplayReport, spec: ReplaySpec) -> _ReplayEvaluation:
-    """Evaluate one pool's overlay of a language report, as the runner would have applied it."""
-
     try:
-        overlaid = apply_encoder_overlay(report, spec)
+        # The overlay reads only the language metrics and rebuilds the metadata.
+        overlaid = apply_encoder_overlay(ReplayReport(metrics=language.metrics), spec)
     except Exception as exc:
         return _failed_replay(exc)
     return _evaluate_report(overlaid)
@@ -1148,7 +1144,7 @@ def _init_worker(
     _WORKER_CTX.update(runner=runner, output_requirements=output_requirements)
 
 
-def _worker_eval(spec: ReplaySpec) -> _ReplayEvaluation | ReplayReport:
+def _worker_eval(spec: ReplaySpec) -> _ReplayEvaluation:
     return _run_replay_detailed(spec, _WORKER_CTX["runner"], _WORKER_CTX.get("output_requirements"))
 
 
@@ -1226,25 +1222,26 @@ class Sweeper:
         capabilities = runner_factory.capabilities()
         capabilities.require_replay_spec_version(REPLAY_SPEC_API_VERSION)
         encoder_catalog = None
+        output_requirements = self._output_requirements
+        language_replays: dict[str, _ReplayEvaluation] | None = None
         if config.search_space.encoder is not None:
             mode = config.search_space.encoder.mode
             supported = capabilities.supports_native_epd if mode == "native" else capabilities.supports_analytical_epd
             if not supported:
                 raise ValueError(f"runner does not support {mode} EPD")
             encoder_catalog = resolve_encoder_catalog(config)
-        output_requirements = self._output_requirements
-        # Analytical EPD candidates that differ only in their encoder pool share one
-        # language replay, and the coordinator applies each pool's overlay. Memory
-        # diagnostics are attached after the runner's overlay, so they keep it there.
-        language_reports: dict[str, ReplayReport] | None = None
-        if (
-            encoder_catalog is not None
-            and config.search_space.encoder.mode == "analytical"
-            and capabilities.supports_deferred_encoder_overlay
-            and not (output_requirements is not None and output_requirements.capture_memory_diagnostics)
-        ):
-            language_reports = {}
-            output_requirements = replace(output_requirements or ReplayOutputRequirements(), defer_encoder_overlay=True)
+            # Analytical EPD candidates that differ only in their encoder pool share one
+            # language replay, and the coordinator applies each pool's overlay. Memory
+            # diagnostics are attached after the runner's overlay, so they keep it there.
+            if (
+                mode == "analytical"
+                and capabilities.supports_deferred_encoder_overlay
+                and not (output_requirements is not None and output_requirements.capture_memory_diagnostics)
+            ):
+                language_replays = {}
+                output_requirements = replace(
+                    output_requirements or ReplayOutputRequirements(), defer_encoder_overlay=True
+                )
         worker_initializer = partial(_init_worker, output_requirements=output_requirements)
 
         # Preserve the legacy preflight order: reject an impossible backend/topology
@@ -1384,22 +1381,20 @@ class Sweeper:
                 '"__main__":`, or set sweep.parallel_evals=1 to evaluate sequentially.'
             )
 
-        def _finish(prepared: _PreparedCandidate, result: _ReplayEvaluation | ReplayReport) -> _EvalResult:
-            if isinstance(result, ReplayReport):
-                # A deferred language report: keep it for the pools that share it, then overlay this one.
-                assert language_reports is not None and prepared.language_key is not None
-                language_reports[prepared.language_key] = result
-                result = _overlay_language_report(result, prepared.replay_spec)
+        def _finish(prepared: _PreparedCandidate, result: _ReplayEvaluation) -> _EvalResult:
+            if language_replays is not None and prepared.language_key is not None:
+                # A deferred language replay: keep it for the pools that share it, then overlay this one.
+                if result.outcome == "replayed":
+                    language_replays[prepared.language_key] = result
+                result = _overlay_language_replay(result, prepared.replay_spec)
             return _score_prepared(prepared, result, config=config, goal=goal)
 
         def _eval_batch(todo: list[tuple[Suggestion, _PreparedCandidate]]):
-            """Yield ``(suggestion, _EvalResult)`` for each supported suggestion.
-
-            With a deferred encoder overlay, the pools that share a language deployment
-            share one replay per batch: each pool overlays its report, or records its
-            failure, as soon as that replay finishes.
+            """Like ``_replay_batch``, but with a deferred encoder overlay the pools that
+            share a language deployment share one replay per batch: each pool overlays its
+            report, or records its failure, as soon as that replay finishes.
             """
-            if language_reports is None:
+            if language_replays is None:
                 yield from _replay_batch(todo)
                 return
             groups: dict[str, list[tuple[Suggestion, _PreparedCandidate]]] = {}
@@ -1409,18 +1404,18 @@ class Sweeper:
             replays: list[tuple[Suggestion, _PreparedCandidate]] = []
             siblings: dict[int, list[tuple[Suggestion, _PreparedCandidate]]] = {}
             for key, members in groups.items():
-                if key in language_reports:
+                if key in language_replays:
                     for suggestion, prepared in members:
-                        yield suggestion, _finish(prepared, language_reports[key])
+                        yield suggestion, _finish(prepared, language_replays[key])
                     continue
                 replays.append(members[0])
                 siblings[id(members[0][0])] = members[1:]
             for suggestion, evaluation in _replay_batch(replays):
                 yield suggestion, evaluation
                 for sibling, prepared in siblings[id(suggestion)]:
-                    report = language_reports.get(prepared.language_key)
-                    if report is not None:
-                        yield sibling, _finish(prepared, report)
+                    language = language_replays.get(prepared.language_key)
+                    if language is not None:
+                        yield sibling, _finish(prepared, language)
                     else:
                         # A failed, timed-out or refused language replay fails every pool alike.
                         yield sibling, replace(evaluation, runner_metadata=deepcopy(evaluation.runner_metadata))
