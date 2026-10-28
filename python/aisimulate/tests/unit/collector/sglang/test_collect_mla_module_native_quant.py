@@ -306,8 +306,10 @@ class TestMixedPrecisionExport:
             mod._model_native_gemm_quant(MODEL_ID)
 
     def test_compression_config_takes_precedence_over_the_sidecar(self, mod, tmp_path):
-        # SGLang reads ``compression_config`` before the ModelOpt sidecar (configs/model_config.py:1044-1046
-        # @v0.5.14), so a checkpoint that declares it never reaches the mixed recipe, whatever the sidecar says.
+        # SGLang resolves ``quantization_config``, then ``compression_config``, then the ModelOpt sidecar
+        # (configs/model_config.py:1029, 1046 and 1117@v0.5.14), so a checkpoint that declares
+        # ``compression_config`` reaches the mixed recipe only through its own ``quantization_config``,
+        # never through the sidecar.
         payload = {
             "architectures": ["GlmMoeDsaForCausalLM"],
             "compression_config": {"quant_method": "compressed-tensors", "format": "float-quantized"},
@@ -315,6 +317,38 @@ class TestMixedPrecisionExport:
         (tmp_path / "org--m_config.json").write_text(json.dumps(payload))
         _write_hf_quant(tmp_path, _mixed_hf_quant(GLM53_LANES))
         assert mod._model_native_gemm_quant(MODEL_ID) is None
+
+    def test_null_compression_config_reads_as_absent(self, mod, tmp_path):
+        # SGLang tests ``is None`` on ``getattr(hf_config, "compression_config", None)``, so a JSON null is absent
+        # and the sidecar is still read.
+        payload = {"architectures": ["GlmMoeDsaForCausalLM"], "compression_config": None}
+        (tmp_path / "org--m_config.json").write_text(json.dumps(payload))
+        _write_hf_quant(tmp_path, _mixed_hf_quant(GLM53_LANES))
+        assert mod._model_native_gemm_quant(MODEL_ID) == "nvfp4"
+
+    def test_empty_compression_config_is_declared(self, mod, tmp_path):
+        # ``is None``, not truthiness: an empty object is declared and the sidecar is never read.
+        payload = {"architectures": ["GlmMoeDsaForCausalLM"], "compression_config": {}}
+        (tmp_path / "org--m_config.json").write_text(json.dumps(payload))
+        _write_hf_quant(tmp_path, _mixed_hf_quant(GLM53_LANES))
+        assert mod._model_native_gemm_quant(MODEL_ID) is None
+
+    def test_quantization_config_takes_precedence_over_compression_config(self, mod, tmp_path):
+        payload = {
+            "architectures": ["GlmMoeDsaForCausalLM"],
+            "quantization_config": _mixed_config(GLM53_LANES),
+            "compression_config": {"quant_method": "compressed-tensors", "format": "float-quantized"},
+        }
+        (tmp_path / "org--m_config.json").write_text(json.dumps(payload))
+        assert mod._model_native_gemm_quant(MODEL_ID) == "nvfp4"
+
+    @pytest.mark.parametrize("compression_config", [[], 0, "compressed-tensors"], ids=["list", "zero", "string"])
+    def test_compression_config_that_is_not_an_object_raises_a_clear_error(self, mod, tmp_path, compression_config):
+        payload = {"architectures": ["GlmMoeDsaForCausalLM"], "compression_config": compression_config}
+        (tmp_path / "org--m_config.json").write_text(json.dumps(payload))
+        _write_hf_quant(tmp_path, _mixed_hf_quant(GLM53_LANES))
+        with pytest.raises(ValueError, match=rf"{MODEL_ID}.*config\.json compression_config must be an object"):
+            mod._model_native_gemm_quant(MODEL_ID)
 
 
 class TestUnchangedExports:
