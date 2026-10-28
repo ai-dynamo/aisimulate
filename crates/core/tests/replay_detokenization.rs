@@ -88,8 +88,18 @@ fn run(
     requests: VecDeque<DirectRequest>,
     detokenization: Option<Detokenization>,
 ) -> Result<ReplayReport, ReplayError> {
+    run_with_response_overhead(spec, requests, detokenization, (0.0, 0.0))
+}
+
+fn run_with_response_overhead(
+    spec: ReplaySpec,
+    requests: VecDeque<DirectRequest>,
+    detokenization: Option<Detokenization>,
+    (response_overhead_ms, per_output_token_ms): (f64, f64),
+) -> Result<ReplayReport, ReplayError> {
     let mut replayer = Replayer::new(spec, ReplayEngineFactory::new())?
-        .with_runtime_input(ReplayRuntimeInput::Requests(requests));
+        .with_runtime_input(ReplayRuntimeInput::Requests(requests))
+        .with_response_overhead(response_overhead_ms, per_output_token_ms)?;
     if let Some((workers, base_ms, per_output_ms)) = detokenization {
         replayer = replayer.with_detokenization(workers, base_ms, per_output_ms)?;
     }
@@ -202,7 +212,7 @@ fn outputs_of_one_pass_reach_the_client_together() {
 }
 
 #[test]
-fn the_client_sends_its_next_request_when_it_receives_the_response() {
+fn the_client_releases_its_next_request_after_receiving_and_response_overhead() {
     for backend in BACKENDS {
         for disagg in [false, true] {
             let context = format!("{backend:?} disagg={disagg}");
@@ -216,22 +226,41 @@ fn the_client_sends_its_next_request_when_it_receives_the_response() {
                 "{context}"
             );
 
-            let streamed = run(
+            let response_overhead = run_with_response_overhead(
+                spec(backend, disagg, Some(1)),
+                requests(),
+                None,
+                (2.0, 0.0),
+            )
+            .unwrap();
+            let first = record(&response_overhead, FIRST);
+            assert_eq!(
+                first.terminal_time_ms, direct_first.terminal_time_ms,
+                "{context}"
+            );
+            assert_eq!(
+                record(&response_overhead, SECOND).arrival_time_ms,
+                first.terminal_time_ms + 2.0,
+                "{context}"
+            );
+
+            let both = run_with_response_overhead(
                 spec(backend, disagg, Some(1)),
                 requests(),
                 Some((1, 0.5, 0.0)),
+                (2.0, 0.0),
             )
             .unwrap();
-            assert_eq!(streamed.request_counts.completed_requests, 2, "{context}");
-            let first = record(&streamed, FIRST);
+            assert_eq!(both.request_counts.completed_requests, 2, "{context}");
+            let first = record(&both, FIRST);
             assert_eq!(
                 first.terminal_time_ms,
                 direct_first.terminal_time_ms + 0.5,
                 "{context}"
             );
             assert_eq!(
-                record(&streamed, SECOND).arrival_time_ms,
-                first.terminal_time_ms,
+                record(&both, SECOND).arrival_time_ms,
+                first.terminal_time_ms + 2.0,
                 "{context}"
             );
         }
@@ -249,6 +278,28 @@ fn short_context_spec(disagg: bool, max_in_flight: Option<usize>) -> ReplaySpec 
     })
     .unwrap();
     spec
+}
+
+#[test]
+fn a_longer_response_has_a_longer_response_overhead() {
+    for disagg in [false, true] {
+        let requests = || VecDeque::from([request(FIRST, 8, 6, None), request(SECOND, 8, 2, None)]);
+        let report = run_with_response_overhead(
+            spec(Backend::Vllm, disagg, Some(1)),
+            requests(),
+            None,
+            (1.0, 0.5),
+        )
+        .unwrap();
+        let first = record(&report, FIRST);
+        assert_eq!(first.output_length, 6, "disagg={disagg}");
+        // 1 + 0.5 x 6 tokens.
+        assert_eq!(
+            record(&report, SECOND).arrival_time_ms,
+            first.terminal_time_ms + 4.0,
+            "disagg={disagg}"
+        );
+    }
 }
 
 #[test]
@@ -277,6 +328,78 @@ fn a_rejection_reaches_the_client_when_the_engine_rejects_it() {
             "{context}"
         );
         assert_eq!(next.arrival_time_ms, rejected.terminal_time_ms, "{context}");
+    }
+}
+
+#[test]
+fn a_rejected_request_waits_for_the_response_overhead() {
+    for disagg in [false, true] {
+        let context = format!("disagg={disagg}");
+        let requests =
+            || VecDeque::from([request(FIRST, 20, 2, None), request(SECOND, 8, 2, None)]);
+        let direct = run(short_context_spec(disagg, Some(1)), requests(), None).unwrap();
+        let report = run_with_response_overhead(
+            short_context_spec(disagg, Some(1)),
+            requests(),
+            Some((1, 0.5, 0.25)),
+            (3.0, 0.0),
+        )
+        .unwrap();
+        let (rejected, next) = (record(&report, FIRST), record(&report, SECOND));
+        assert_eq!(
+            rejected.terminal_status,
+            ReplayTerminalStatus::Rejected,
+            "{context}"
+        );
+        // The client receives the rejection when the engine rejects the
+        // request, and acts on it after the response overhead.
+        assert_eq!(
+            rejected.terminal_time_ms,
+            record(&direct, FIRST).terminal_time_ms,
+            "{context}"
+        );
+        assert_eq!(
+            next.arrival_time_ms,
+            rejected.terminal_time_ms + 3.0,
+            "{context}"
+        );
+    }
+}
+
+#[test]
+fn a_rejection_holds_one_slot_until_the_client_acts_on_it() {
+    const THIRD: u128 = 3;
+    for disagg in [false, true] {
+        let context = format!("disagg={disagg}");
+        let report = run_with_response_overhead(
+            short_context_spec(disagg, Some(2)),
+            VecDeque::from([
+                request(FIRST, 20, 2, None),
+                request(SECOND, 8, 6, None),
+                request(THIRD, 8, 2, None),
+            ]),
+            Some((1, 0.5, 0.25)),
+            (3.0, 0.0),
+        )
+        .unwrap();
+        let (rejected, third) = (record(&report, FIRST), record(&report, THIRD));
+        assert_eq!(
+            rejected.terminal_status,
+            ReplayTerminalStatus::Rejected,
+            "{context}"
+        );
+        // The rejected request counts once against the concurrency limit, so
+        // its slot is free after the response overhead while the second
+        // request still runs.
+        assert_eq!(
+            third.arrival_time_ms,
+            rejected.terminal_time_ms + 3.0,
+            "{context}"
+        );
+        assert!(
+            third.arrival_time_ms < record(&report, SECOND).terminal_time_ms,
+            "{context}"
+        );
     }
 }
 
@@ -324,6 +447,48 @@ fn a_rejection_does_not_delay_the_outputs_of_its_pass() {
 }
 
 #[test]
+fn worker_time_ends_with_the_last_response_not_its_response_overhead() {
+    for disagg in [false, true] {
+        let context = format!("disagg={disagg}");
+        let requests = || VecDeque::from([request(FIRST, 8, 4, None), request(SECOND, 8, 2, None)]);
+        let report = run_with_response_overhead(
+            spec(Backend::Vllm, disagg, Some(1)),
+            requests(),
+            Some((1, 0.5, 0.25)),
+            (2.0, 0.5),
+        )
+        .unwrap();
+        assert_eq!(report.request_counts.completed_requests, 2, "{context}");
+        // The response_overhead delays the second request, whose service time counts.
+        assert_eq!(
+            record(&report, SECOND).arrival_time_ms,
+            record(&report, FIRST).terminal_time_ms + 4.0,
+            "{context}"
+        );
+        // One worker per role is provisioned for exactly the reported duration:
+        // the response overhead after the last response adds no worker time.
+        let duration_s = report.throughput.duration_ms / 1000.0;
+        assert_eq!(
+            report.throughput.duration_ms,
+            record(&report, SECOND).terminal_time_ms,
+            "{context}"
+        );
+        let throughput = &report.throughput;
+        assert!(
+            (throughput.decode_worker_seconds - duration_s).abs() < 1e-12,
+            "{context}: {} != {duration_s}",
+            throughput.decode_worker_seconds
+        );
+        let prefill_worker_seconds = if disagg { duration_s } else { 0.0 };
+        assert!(
+            (throughput.prefill_worker_seconds - prefill_worker_seconds).abs() < 1e-12,
+            "{context}: {} != {prefill_worker_seconds}",
+            throughput.prefill_worker_seconds
+        );
+    }
+}
+
+#[test]
 fn attention_dp_ranks_of_a_worker_share_its_detokenizer_servers() {
     let dp_spec = || {
         let mut spec = spec(Backend::Vllm, false, None);
@@ -360,16 +525,17 @@ fn attention_dp_ranks_of_a_worker_share_its_detokenizer_servers() {
 }
 
 #[test]
-fn zero_detokenization_cost_keeps_pass_end_delivery() {
+fn zero_detokenization_cost_and_response_overhead_keep_pass_end_delivery() {
     for backend in BACKENDS {
         for disagg in [false, true] {
             let requests =
                 || VecDeque::from([request(FIRST, 8, 3, None), request(SECOND, 4, 2, None)]);
             let direct = run(spec(backend, disagg, Some(1)), requests(), None).unwrap();
-            let zero = run(
+            let zero = run_with_response_overhead(
                 spec(backend, disagg, Some(1)),
                 requests(),
                 Some((1, 0.0, 0.0)),
+                (0.0, 0.0),
             )
             .unwrap();
             assert_eq!(
@@ -438,6 +604,8 @@ fn agentic_requests_complete_through_the_client_path() {
         .with_runtime_input(ReplayRuntimeInput::Workload(driver))
         .with_detokenization(1, 0.5, 0.25)
         .unwrap()
+        .with_response_overhead(1.0, 0.01)
+        .unwrap()
         .run()
         .unwrap();
         assert_eq!(
@@ -472,7 +640,7 @@ fn base_time_occupies_the_detokenizer() {
 }
 
 #[test]
-fn invalid_detokenization_is_rejected() {
+fn invalid_detokenization_and_response_overhead_are_rejected() {
     let replayer =
         || Replayer::new(spec(Backend::Vllm, false, None), ReplayEngineFactory::new()).unwrap();
     for (workers, base_ms, per_output_ms) in [
@@ -486,6 +654,18 @@ fn invalid_detokenization_is_rejected() {
             .with_detokenization(workers, base_ms, per_output_ms)
             .err()
             .expect("invalid detokenization must be rejected");
+        assert!(matches!(error, ReplayError::InvalidSpec(_)), "{error}");
+    }
+    for (response_overhead_ms, per_output_token_ms) in [
+        (-1.0, 0.0),
+        (f64::NAN, 0.0),
+        (0.0, f64::INFINITY),
+        (0.0, -0.5),
+    ] {
+        let error = replayer()
+            .with_response_overhead(response_overhead_ms, per_output_token_ms)
+            .err()
+            .expect("invalid response overhead must be rejected");
         assert!(matches!(error, ReplayError::InvalidSpec(_)), "{error}");
     }
 }

@@ -963,6 +963,10 @@ def _traffic(
         "source_type": source.type,
         "load_type": load.type,
     }
+    response_overhead = getattr(load, "response_overhead", None)
+    if response_overhead is not None and response_overhead.active:
+        workload["response_overhead_ms"] = response_overhead.base_ms
+        workload["response_overhead_per_output_token_ms"] = response_overhead.per_output_token_us / 1000.0
     concurrency: int | None = None
     if isinstance(source, TraceSource):
         workload.update(

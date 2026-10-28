@@ -179,6 +179,15 @@ class AgenticProfileOptions(StrictModel):
         return self
 
 
+class ResponseOverhead(StrictModel):
+    base_ms: NonNegativeFloat = 0.0
+    per_output_token_us: NonNegativeFloat = 0.0
+
+    @property
+    def active(self) -> bool:
+        return bool(self.base_ms or self.per_output_token_us)
+
+
 class TrafficPredictionLoad(StrictModel):
     agentic_warmup_policy: Literal["repeated_prefixes", "live_trajectory_v1"] = "repeated_prefixes"
 
@@ -204,6 +213,7 @@ class TrafficPredictionLoad(StrictModel):
     agentic_snapshot: AgenticSnapshotOptions | None = None
     agentic_warmup: bool = Field(default=False, strict=True)
     agentic_profile: AgenticProfileOptions | None = None
+    response_overhead: ResponseOverhead | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -285,6 +295,7 @@ def _validate_load_fields(load) -> None:
             "agentic_lanes",
             "agentic_snapshot",
             "agentic_profile",
+            "response_overhead",
         )
         if getattr(load, name, None) is not None
     }
@@ -306,7 +317,11 @@ def _validate_load_fields(load) -> None:
             "agentic_profile",
         },
     }[load.type]
-    unexpected = used - allowed
+    # The response overhead applies to every request that waits on a response.
+    unexpected = used - allowed - {"response_overhead"}
+    response_overhead = getattr(load, "response_overhead", None)
+    if response_overhead is not None and response_overhead.active and load.agentic_profile is not None:
+        raise ValueError("traffic.load.response_overhead cannot be combined with agentic_profile")
     if unexpected:
         raise ValueError(f"traffic.load.type={load.type!r} does not accept {sorted(unexpected)}")
     required = {

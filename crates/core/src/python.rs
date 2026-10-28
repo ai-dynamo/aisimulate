@@ -82,12 +82,14 @@ struct DetokenizationPayload {
     per_output_ms: f64,
 }
 
-/// The request and response path around the engine: tokenization before it
-/// and detokenization after it.
+/// The request and response path around the engine: tokenization before it,
+/// detokenization after it and the response overhead.
 #[derive(Debug, Clone, Copy, Default)]
 struct ServingPath {
     tokenization: Option<TokenizationPayload>,
     detokenization: Option<DetokenizationPayload>,
+    /// `(base_ms, per_output_token_ms)`.
+    response_overhead: (f64, f64),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -160,6 +162,12 @@ struct RuntimeTraffic {
     num_prefix_groups: Option<usize>,
     #[serde(default)]
     inter_turn_delay_ms: Option<f64>,
+    /// Client time from receiving a response's end to sending the request it
+    /// released, plus a cost per token of that response.
+    #[serde(default)]
+    response_overhead_ms: Option<f64>,
+    #[serde(default)]
+    response_overhead_per_output_token_ms: Option<f64>,
     #[serde(default)]
     request_rate: Option<f64>,
     #[serde(default)]
@@ -2441,6 +2449,10 @@ fn run_with_input(
             detokenization.per_output_ms,
         )?;
     }
+    let (response_overhead_ms, response_overhead_per_output_token_ms) =
+        serving_path.response_overhead;
+    replayer = replayer
+        .with_response_overhead(response_overhead_ms, response_overhead_per_output_token_ms)?;
     if capture_artifacts {
         let (report, artifacts) =
             replayer.run_with_artifacts(ReplayArtifactKvEventVisibility::Native)?;
@@ -2920,7 +2932,7 @@ fn replay_fpm_coverage(
 }
 
 fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
-    let (mut spec, mut traffic, capture_performance_diagnostics, determinism, serving_path) =
+    let (mut spec, mut traffic, capture_performance_diagnostics, determinism, mut serving_path) =
         match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
             ExecutionPayload::Configured {
                 spec,
@@ -2937,6 +2949,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 ServingPath {
                     tokenization,
                     detokenization,
+                    response_overhead: (0.0, 0.0),
                 },
             ),
             ExecutionPayload::Legacy(spec) => (
@@ -2947,12 +2960,18 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 ServingPath::default(),
             ),
         };
+    if let Some(traffic) = &traffic {
+        serving_path.response_overhead = (
+            traffic.response_overhead_ms.unwrap_or(0.0),
+            traffic.response_overhead_per_output_token_ms.unwrap_or(0.0),
+        );
+    }
     ensure!(
-        serving_path.detokenization.is_none()
+        (serving_path.detokenization.is_none() && serving_path.response_overhead == (0.0, 0.0))
             || traffic
                 .as_ref()
                 .is_none_or(|traffic| traffic.agentic_profile.is_none()),
-        "detokenization cannot be combined with agentic_profile"
+        "detokenization and response overhead cannot be combined with agentic_profile"
     );
     ensure!(
         spec.max_sim_time_ms.is_none()

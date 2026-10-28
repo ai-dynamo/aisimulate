@@ -45,10 +45,19 @@ class CorePredictionConfig(StrictModel):
             raise ValueError("AFD prediction requires fixed-length synthetic request traffic")
         if isinstance(source, TraceSource) and source.format == "mooncake-delta" and self.engine.mode != "aggregated":
             raise ValueError(f"{source.format} requires aggregated engine mode")
+        load = self.traffic.load
+        if (
+            load.response_overhead is not None
+            and load.response_overhead.active
+            and (self.engine.mode == "afd" or self.engine.workers.encoder is not None)
+        ):
+            raise ValueError(
+                "traffic.load.response_overhead requires token replay; AFD and analytical EPD are unsupported"
+            )
         if (
             self.engine.detokenization is not None
             and self.engine.detokenization.active
-            and self.traffic.load.agentic_profile is not None
+            and load.agentic_profile is not None
         ):
             raise ValueError("engine.detokenization cannot be combined with traffic.load.agentic_profile")
         return self

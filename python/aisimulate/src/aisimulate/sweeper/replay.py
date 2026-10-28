@@ -569,13 +569,24 @@ class RunnerCapabilities:
                 raise ValueError("runner does not support engine.tokenization; use --stack engine")
             if spec.execution_mode != "offline":
                 raise ValueError("engine.tokenization requires offline replay")
-        if deployment.detokenization is not None:
+        for name, configured in (
+            ("engine.detokenization", deployment.detokenization is not None),
+            (
+                "traffic.load.response_overhead",
+                bool(
+                    spec.workload.get("response_overhead_ms")
+                    or spec.workload.get("response_overhead_per_output_token_ms")
+                ),
+            ),
+        ):
+            if not configured:
+                continue
             if is_afd:
-                raise ValueError("engine.detokenization is unsupported for AFD")
+                raise ValueError(f"{name} is unsupported for AFD")
             if not self.supports_client_path:
-                raise ValueError("runner does not support engine.detokenization; use --stack engine")
+                raise ValueError(f"runner does not support {name}; use --stack engine")
             if spec.execution_mode != "offline":
-                raise ValueError("engine.detokenization requires offline replay")
+                raise ValueError(f"{name} requires offline replay")
         if deployment.encoder is not None and deployment.deployment_mode not in {"agg", "disagg"}:
             raise ValueError("encoder pools support only agg/disagg language deployments; AFD is unsupported")
         if deployment.encoder is not None:

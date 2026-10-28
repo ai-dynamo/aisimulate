@@ -74,6 +74,8 @@ _RUNTIME_TRAFFIC_FIELDS = frozenset(
         "shared_prefix_ratio",
         "num_prefix_groups",
         "inter_turn_delay_ms",
+        "response_overhead_ms",
+        "response_overhead_per_output_token_ms",
         "request_rate",
         "arrival_interval_ms",
         "arrival_seed",
@@ -1348,6 +1350,9 @@ def _startup_delay_ms(payload: Mapping[str, JSONValue]) -> float:
 
 def _materialize_requests(spec: ReplaySpec, trace_block_size: int) -> tuple[list[dict[str, JSONValue]], int | None]:
     workload = spec.workload
+    if workload.get("response_overhead_ms") or workload.get("response_overhead_per_output_token_ms"):
+        # Materialized requests bypass the workload driver that waits for the client.
+        raise ValueError("traffic.load.response_overhead requires a workload with source_type")
     trace_path = workload.get("trace_path")
     if trace_path is not None:
         if not isinstance(trace_path, str) or not trace_path:

@@ -82,6 +82,7 @@ the current SA convention.
 | `traffic.load.agentic_profile.cancel_drain_seconds` | `10` when enabled | `x` | `-` | Nonnegative finite upper bound for cancellation acknowledgements. The supported offline runtimes acknowledge synchronously; this does not guarantee server/GPU cleanup. |
 | `traffic.load.agentic_profile.tree_idle_cap_seconds` | `300` when enabled | `x` | `-` | Positive finite idle cap for advancing a play's pending workload timers when that play has no outstanding requests. |
 | `traffic.load.agentic_profile.global_idle_cap_seconds` | `10` when enabled | `x` | `-` | Positive finite idle cap for advancing pending workload timers when the entire client workload has no outstanding requests. Engine completions and server cleanup keep their actual timestamps. |
+| `traffic.load.response_overhead` | `null` (unset) | `x` | `-` | Optional `{base_ms, per_output_token_us}`, finite and nonnegative, default `0`; predict only. The client's time from receiving the end of a response to sending a request that waited on it. See [response overhead](#response-overhead). Offline token replay on `--stack engine` only; online replay, worker scaling, AFD, analytical EPD (`engine.workers.encoder`), `agentic_profile` and SDK workloads without `source_type` are rejected. |
 | `traffic.stop.requests` | `100` for default traffic | `x` | `-` | Positive integer; 10× default concurrency; synthetic request source only. |
 | `traffic.stop.requests_per_load_unit` | `null` | `x` | `-` | Positive; synthetic request source only. |
 | `traffic.stop.sessions` | `null` | `x` | `-` | Positive integer; synthetic session source only. |
@@ -622,6 +623,45 @@ first-session arrival timestamps, it requires `load.type: concurrency` and rejec
 
 
 
+
+<a id="response-overhead"></a>
+
+## Response overhead
+
+A load generator takes time to act on a finished response before it sends a
+request that waited on it. AIPerf, for example, parses every streamed chunk of
+the response and returns the concurrency slot to its scheduler first, so this
+overhead grows with the length of the response. `traffic.load.response_overhead`
+adds it to every request that waits on another:
+
+- the next request of a slot under `load.type: concurrency`,
+- the next turn of a session, before its `inter_turn_delay_ms` or trace delay,
+- a dependent agentic request, before its dependency delay.
+
+```yaml
+traffic:
+  load:
+    type: concurrency
+    concurrency: 64
+    response_overhead:
+      base_ms: 1.5
+      per_output_token_us: 3.4
+```
+
+The client spends `base_ms` plus `per_output_token_us` for every token of the
+finished response, counted from when it receives the end of the response;
+see [response detokenization](engine/README.md#detokenization) for that time.
+This is a cost of the load generator, not an authored wait: a session's next
+turn is sent at the end of the response, plus the response overhead, plus
+`inter_turn_delay_ms`. A request that ends without output, such as a
+rejection or a failed or canceled P/D handoff, reaches the client when it ends
+and also waits `base_ms`. A request that is waited on keeps its concurrency slot
+until then. Latency metrics of the next request still start when it is sent.
+Worker time and `gpu_hours` cover the response overhead between requests but,
+like `duration_ms`, end with the last response. Measure the overhead with your
+own client: run one request at a time with a few output lengths and take the
+time from the end of each response to the start of the next request. The
+values above are only an illustration.
 
 ## Runtime admission and SDK mapping
 

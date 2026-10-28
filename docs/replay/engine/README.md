@@ -223,8 +223,9 @@ frontend and the host CPU. The values above are only an illustration.
   client receives each token. With `--capture-per-request`, `first_token_ms`,
   `last_token_ms` and `terminal_time_ms` are client receive times.
 - A request finishes when the client receives the end of its response. A
-  request that waits on it, such as the next request of a concurrency slot or
-  a session's next turn, is released at that time.
+  request that waits on it, such as the next request of a concurrency slot,
+  is sent after the client's
+  [response overhead](../workloads.md#response-overhead).
 - A rejected request carries no output, so it skips detokenization: the client
   learns of the rejection when the engine rejects the request, in both
   aggregated and disaggregated deployments, and the rejection does not delay

@@ -18,7 +18,7 @@ use crate::replay::artifact::{
 };
 use crate::replay::components::{
     AdmissionQueue, ClientPath, DetokenizationLatency, NoReplayMetadata, ReplayAdmissionMetadata,
-    ReplayEngineObservation, ReplayMode, TokenizationLatency,
+    ReplayEngineObservation, ReplayMode, ResponseOverhead, TokenizationLatency,
 };
 use crate::replay::core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlacement};
 use crate::replay::core::{NoEngineEvents, PlacementPolicy, WorkerTopology};
@@ -309,6 +309,7 @@ pub struct Replayer<C = RoundRobinComposition> {
     telemetry: Option<(f64, Box<dyn ReplayTelemetryObserver>)>,
     tokenization: Option<TokenizationLatency>,
     detokenization: Option<DetokenizationLatency>,
+    response_overhead: Option<ResponseOverhead>,
 }
 
 impl Replayer<RoundRobinComposition> {
@@ -359,6 +360,7 @@ impl<C: ReplayComposition> Replayer<C> {
             telemetry: None,
             tokenization: None,
             detokenization: None,
+            response_overhead: None,
         })
     }
 
@@ -457,6 +459,31 @@ impl<C: ReplayComposition> Replayer<C> {
         Ok(self)
     }
 
+    /// Hand each finished request back to the workload after the response
+    /// overhead: `base_ms` plus `per_output_token_ms` for every token of the
+    /// response, counted from when the client receives the response's end.
+    /// This is when a closed-loop slot, a session's next turn or a dependent
+    /// agentic request is released. Both zero, the default, release them when
+    /// the response is received.
+    pub fn with_response_overhead(
+        mut self,
+        base_ms: f64,
+        per_output_token_ms: f64,
+    ) -> ReplayResult<Self> {
+        for (name, value) in [
+            ("response overhead base_ms", base_ms),
+            ("response overhead per_output_token_ms", per_output_token_ms),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                return Err(ReplayError::InvalidSpec(format!(
+                    "{name} must be finite and non-negative, got {value}"
+                )));
+            }
+        }
+        self.response_overhead = ResponseOverhead::new(base_ms, per_output_token_ms);
+        Ok(self)
+    }
+
     pub fn run(self) -> ReplayResult<ReplayReport> {
         self.run_inner(None)
     }
@@ -528,11 +555,11 @@ impl<C: ReplayComposition> Replayer<C> {
                 "tokenization does not support worker scaling".to_string(),
             ));
         }
-        let client = self.detokenization.map(ClientPath::new);
+        let client = ClientPath::new(self.detokenization, self.response_overhead);
         if client.is_some() && (scaling.is_some() || self.spec.adapters.scaling.provider != "none")
         {
             return Err(ReplayError::InvalidSpec(
-                "detokenization does not support worker scaling".to_string(),
+                "detokenization and response overhead do not support worker scaling".to_string(),
             ));
         }
 

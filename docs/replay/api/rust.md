@@ -133,6 +133,13 @@ Both costs zero, the default, keep every output at its pass end. Scaling and
 agentic profiles are rejected. See
 [response detokenization](../engine/README.md#detokenization).
 
+`with_response_overhead(base_ms, per_output_token_ms)` hands each finished
+request back to the workload `base_ms` plus `per_output_token_ms` per response
+token after the client receives the end of its response. Both zero, the
+default, release it when the response is received. Scaling and agentic
+profiles are rejected. See
+[response overhead](../workloads.md#response-overhead).
+
 `with_capture_options(ReplayCaptureOptions)` controls capture and canonical
 determinism. Canonical comparison uses the exported schema version, seed and
 exclusion definitions rather than arbitrary JSON key order. The default

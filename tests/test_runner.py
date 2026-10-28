@@ -2973,7 +2973,7 @@ def test_canonical_replay_spec_json_omits_unset_tokenization() -> None:
     assert configured["backend_deployment"]["tokenization"] == tokenization
 
 
-def _client_path_prediction(detokenization: dict | None = None) -> CorePredictionConfig:
+def _client_path_prediction(detokenization: dict | None = None, load: dict | None = None) -> CorePredictionConfig:
     config = {
         "engine": {
             "model": "example/model",
@@ -2984,6 +2984,8 @@ def _client_path_prediction(detokenization: dict | None = None) -> CorePredictio
     }
     if detokenization is not None:
         config["engine"]["detokenization"] = detokenization
+    if load is not None:
+        config["traffic"] = {"source": {"type": "synthetic"}, "load": load, "stop": {"requests": 8}}
     return CorePredictionConfig.model_validate(config)
 
 
@@ -3038,6 +3040,35 @@ def test_recommendation_rejects_detokenization() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("response_overhead", "expected"),
+    [
+        (None, (None, None)),
+        ({}, (None, None)),
+        ({"base_ms": 1.5, "per_output_token_us": 3.4}, (1.5, 0.0034)),
+        ({"per_output_token_us": 2.0}, (0.0, 0.002)),
+    ],
+)
+@pytest.mark.parametrize(
+    "load", [{"type": "concurrency", "concurrency": 4}, {"type": "poisson", "requests_per_second": 2.0}]
+)
+def test_prediction_compiler_carries_response_overhead(load, response_overhead, expected) -> None:
+    if response_overhead is not None:
+        load = {**load, "response_overhead": response_overhead}
+    workload = prediction_to_replay_spec(_client_path_prediction(load=load)).workload
+
+    actual = (workload.get("response_overhead_ms"), workload.get("response_overhead_per_output_token_ms"))
+    assert actual == (pytest.approx(expected) if expected[0] is not None else expected)
+
+
+@pytest.mark.parametrize(
+    "response_overhead", [{"base_ms": -1.0}, {"per_output_token_us": math.inf}, {"base_ms": "4"}, {"latency_ms": 1}]
+)
+def test_prediction_rejects_invalid_response_overhead(response_overhead) -> None:
+    with pytest.raises(ValidationError):
+        _client_path_prediction(load={"type": "concurrency", "concurrency": 4, "response_overhead": response_overhead})
+
+
 def _client_path_deployment(detokenization: dict | None = None, num_workers: int = 2) -> BackendDeploymentSpec:
     return BackendDeploymentSpec(
         deployment_mode="agg",
@@ -3049,47 +3080,62 @@ def _client_path_deployment(detokenization: dict | None = None, num_workers: int
     )
 
 
-def test_engine_runner_sends_detokenization_in_the_execution_envelope() -> None:
+def test_engine_runner_sends_detokenization_and_response_overhead_in_the_execution_envelope() -> None:
     runtime = RecordingRuntime()
     detokenization = {"workers": 2, "base_ms": 1.0, "per_output_ms": 0.04}
     deployment = _client_path_deployment(detokenization)
     workload = {"source_type": "synthetic", "load_type": "concurrency", "isl": 8, "osl": 2, "concurrency": 1}
 
+    response_overhead = {"response_overhead_ms": 1.5, "response_overhead_per_output_token_ms": 0.0034}
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(
-        _spec(deployment=deployment, workload={**workload, "request_count": 2})
+        _spec(deployment=deployment, workload={**workload, "request_count": 2, **response_overhead})
     )
 
     assert runtime.execution_spec["detokenization"] == detokenization
+    assert {key: runtime.execution_spec["traffic"][key] for key in response_overhead} == response_overhead
     assert "tokenization" not in runtime.execution_spec
 
 
-def test_detokenization_requires_capability_and_offline_replay() -> None:
+def test_client_path_requires_capability_and_offline_replay() -> None:
     from aisimulate.sweeper import RunnerCapabilities
 
     detokenization = {"workers": 1, "base_ms": 1.0, "per_output_ms": 0.0}
-    spec = _spec(deployment=_client_path_deployment(detokenization, 1))
-    with pytest.raises(ValueError, match="does not support engine.detokenization"):
-        RunnerCapabilities(supported_backend_topologies=(("*", "*"),)).require_compatible(spec)
-    engine = EngineReplayRunnerFactory(runtime=RecordingRuntime()).capabilities()
-    engine.require_compatible(spec)
-    with pytest.raises(ValueError, match="offline"):
-        replace(engine, supported_execution_modes=("offline", "online")).require_compatible(
-            replace(spec, execution_mode="online")
-        )
+    deployment = _client_path_deployment(num_workers=1)
+    for spec, name in (
+        (_spec(deployment=_client_path_deployment(detokenization, 1)), "engine.detokenization"),
+        (
+            _spec(deployment=deployment, workload={"isl": 8, "osl": 2, "response_overhead_ms": 4.2}),
+            "traffic.load.response_overhead",
+        ),
+    ):
+        with pytest.raises(ValueError, match=f"does not support {name}"):
+            RunnerCapabilities(supported_backend_topologies=(("*", "*"),)).require_compatible(spec)
+        engine = EngineReplayRunnerFactory(runtime=RecordingRuntime()).capabilities()
+        engine.require_compatible(spec)
+        with pytest.raises(ValueError, match="offline"):
+            replace(engine, supported_execution_modes=("offline", "online")).require_compatible(
+                replace(spec, execution_mode="online")
+            )
 
 
-def test_detokenization_rejects_afd() -> None:
+def test_client_path_rejects_afd_and_materialized_requests() -> None:
     engine = EngineReplayRunnerFactory(runtime=RecordingRuntime()).capabilities()
     detokenization = {"workers": 1, "base_ms": 1.0, "per_output_ms": 0.0}
     afd = replace(_client_path_deployment(detokenization, 1), deployment_mode="afd")
     with pytest.raises(ValueError, match="engine.detokenization is unsupported for AFD"):
         engine.require_compatible(_spec(deployment=afd))
+    # Without source_type the runner materializes requests and no client waits on them.
+    workload = {"isl": 8, "osl": 2, "concurrency": 1, "num_request_ratio": 1, "response_overhead_ms": 2.0}
+    with pytest.raises(ValueError, match="response_overhead requires a workload with source_type"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(workload=workload))
 
 
-def test_native_replay_detokenizes_outputs_for_the_client() -> None:
-    def run(detokenization=None):
+def test_native_replay_detokenizes_outputs_and_response_overhead_for_the_client() -> None:
+    def run(detokenization=None, response_overhead=None):
         workload = {"source_type": "synthetic", "load_type": "concurrency", "isl": 8, "osl": 2}
         workload.update(concurrency=1, request_count=2)
+        if response_overhead is not None:
+            workload["response_overhead_ms"], workload["response_overhead_per_output_token_ms"] = response_overhead
         report = (
             EngineReplayRunnerFactory()
             .create(0)
@@ -3103,11 +3149,11 @@ def test_native_replay_detokenizes_outputs_for_the_client() -> None:
     direct = run()
     # Each pass has one output, which takes 0.5 + 0.25 ms on the detokenizer
     # before the next pass ends.
-    detokenized = run({"workers": 1, "base_ms": 0.5, "per_output_ms": 0.25})
+    detokenized = run({"workers": 1, "base_ms": 0.5, "per_output_ms": 0.25}, (3.0, 0.5))
     assert detokenized[0]["first_token_ms"] == pytest.approx(direct[0]["first_token_ms"] + 0.75)
     assert detokenized[0]["terminal_time_ms"] == pytest.approx(direct[0]["terminal_time_ms"] + 0.75)
-    # The client sends its next request when it receives the end of the response.
-    assert detokenized[1]["arrival_time_ms"] == pytest.approx(detokenized[0]["terminal_time_ms"])
+    # 3 ms plus 0.5 ms for each of the two output tokens.
+    assert detokenized[1]["arrival_time_ms"] == pytest.approx(detokenized[0]["terminal_time_ms"] + 4.0)
 
 
 @pytest.mark.parametrize("accepted,rates", [(0.25, "0.25,0"), (1.25, "1,0.25")])

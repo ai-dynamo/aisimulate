@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The response path from a worker to the client.
+//! The client side of a request: response detokenization and response overhead.
 //!
 //! A serving engine returns a pass's outputs through its server processes,
 //! which detokenize each request's new tokens, format streamed chunks and write
@@ -12,9 +12,11 @@
 //! `base_ms + per_output_ms * outputs`, and the client receives every output of
 //! the job when it ends.
 //!
-//! The client records a finished request and acts on it when it receives the
-//! end of its response. That is when a closed-loop slot, a session's next turn
-//! or a dependent agentic request is released.
+//! The client records a finished request when it receives the end of its
+//! response, and acts on it after its response overhead: `base_ms` plus
+//! `per_output_token_ms` for every token of the response. That is when a
+//! closed-loop slot, a session's next turn or a dependent agentic request is
+//! released.
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
@@ -64,6 +66,27 @@ impl DetokenizationLatency {
     }
 }
 
+/// The client's time from receiving the end of a response to acting on it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResponseOverhead {
+    base_ms: f64,
+    per_output_token_ms: f64,
+}
+
+impl ResponseOverhead {
+    /// Returns `None` when both costs are zero, which acts on a response when it is received.
+    pub(crate) fn new(base_ms: f64, per_output_token_ms: f64) -> Option<Self> {
+        (base_ms > 0.0 || per_output_token_ms > 0.0).then_some(Self {
+            base_ms,
+            per_output_token_ms,
+        })
+    }
+
+    fn ms(self, output_tokens: usize) -> f64 {
+        self.base_ms + self.per_output_token_ms * output_tokens as f64
+    }
+}
+
 /// When the client receives each output of one pass.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PassReceipt {
@@ -90,24 +113,49 @@ impl PassReceipt {
 }
 
 /// Outputs on their way to the client, and finished requests the client has
-/// not received yet.
+/// not received or not acted on yet.
 pub(crate) struct ClientPath {
-    detokenization: DetokenizationLatency,
+    detokenization: Option<DetokenizationLatency>,
+    response_overhead: Option<ResponseOverhead>,
     /// Time each `(worker, server)` finishes the jobs it has taken. Only
     /// servers that have taken a job are tracked.
     server_free_at_ms: FxHashMap<(usize, usize), f64>,
     terminals: BinaryHeap<Reverse<PendingTerminal>>,
+    /// Held requests whose response the client has not received yet; the
+    /// others only wait for the response overhead.
+    unreceived: usize,
     next_entry: u64,
 }
 
+/// What the client does with a finished request when its time comes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClientStep {
+    /// The client receives the end of the response.
+    Receive,
+    /// The client acts on the finished request.
+    Act,
+}
+
 impl ClientPath {
-    pub(crate) fn new(detokenization: DetokenizationLatency) -> Self {
-        Self {
+    /// Returns `None` without detokenization costs or response overhead, which keeps
+    /// every output and terminal at its pass end.
+    pub(crate) fn new(
+        detokenization: Option<DetokenizationLatency>,
+        response_overhead: Option<ResponseOverhead>,
+    ) -> Option<Self> {
+        (detokenization.is_some() || response_overhead.is_some()).then(|| Self {
             detokenization,
+            response_overhead,
             server_free_at_ms: FxHashMap::default(),
             terminals: BinaryHeap::new(),
+            unreceived: 0,
             next_entry: 0,
-        }
+        })
+    }
+
+    /// Whether outputs leave the pass end at all; with response overhead alone they do not.
+    pub(crate) fn detokenizes(&self) -> bool {
+        self.detokenization.is_some()
     }
 
     /// Hand the outputs of a pass that ended at `pass_end_ms` on `worker` to
@@ -120,13 +168,15 @@ impl ClientPath {
         pass_end_ms: f64,
         outputs: impl Iterator<Item = Uuid>,
     ) -> Result<PassReceipt> {
-        let latency = self.detokenization;
+        let Some(latency) = self.detokenization else {
+            return Ok(PassReceipt::Together(pass_end_ms));
+        };
         if latency.workers == 1 {
             let outputs = outputs.count();
             if outputs == 0 {
                 return Ok(PassReceipt::Together(pass_end_ms));
             }
-            let finished_ms = self.job_end_ms(worker, 0, pass_end_ms, outputs)?;
+            let finished_ms = self.job_end_ms(latency, worker, 0, pass_end_ms, outputs)?;
             self.server_free_at_ms.insert((worker, 0), finished_ms);
             return Ok(PassReceipt::Together(finished_ms));
         }
@@ -137,7 +187,8 @@ impl ClientPath {
         let mut received_ms = vec![pass_end_ms; latency.workers];
         for (server, &outputs) in counts.iter().enumerate() {
             if outputs > 0 {
-                received_ms[server] = self.job_end_ms(worker, server, pass_end_ms, outputs)?;
+                received_ms[server] =
+                    self.job_end_ms(latency, worker, server, pass_end_ms, outputs)?;
             }
         }
         for (server, &outputs) in counts.iter().enumerate() {
@@ -154,6 +205,7 @@ impl ClientPath {
 
     fn job_end_ms(
         &self,
+        latency: DetokenizationLatency,
         worker: usize,
         server: usize,
         pass_end_ms: f64,
@@ -163,7 +215,7 @@ impl ClientPath {
             .server_free_at_ms
             .get(&(worker, server))
             .map_or(pass_end_ms, |free_at_ms| free_at_ms.max(pass_end_ms));
-        let finished_ms = start_ms + self.detokenization.service_ms(outputs);
+        let finished_ms = start_ms + latency.service_ms(outputs);
         ensure!(
             finished_ms.is_finite(),
             "detokenizing {outputs} outputs of a pass that ends at {pass_end_ms} ms does not finish in finite time"
@@ -171,35 +223,51 @@ impl ClientPath {
         Ok(finished_ms)
     }
 
-    /// Hold a finished request until the client receives the end of its
-    /// response at `received_ms`.
+    /// Hold a finished request with `output_tokens` tokens until the client
+    /// receives the end of its response at `received_ms` and then acts on it.
+    /// An action time that is not finite is rejected before any state changes.
     pub(crate) fn defer_terminal(
         &mut self,
         received_ms: f64,
         request_id: Uuid,
         status: ReplayTerminalStatus,
-    ) {
-        self.terminals.push(Reverse(PendingTerminal {
-            at_ms: received_ms,
-            entry: self.next_entry,
-            request_id,
-            status,
-        }));
-        self.next_entry += 1;
+        output_tokens: usize,
+    ) -> Result<()> {
+        let act_ms = received_ms
+            + self
+                .response_overhead
+                .map_or(0.0, |response_overhead| response_overhead.ms(output_tokens));
+        ensure!(
+            act_ms.is_finite(),
+            "the response overhead after a {output_tokens}-token response received at {received_ms} ms does not finish in finite time"
+        );
+        self.push(received_ms, ClientStep::Receive, request_id, status, act_ms);
+        self.unreceived += 1;
+        Ok(())
     }
 
-    /// Finished requests the client has not received yet.
+    /// Finished requests held for the client, received or not.
     pub(crate) fn len(&self) -> usize {
         self.terminals.len()
+    }
+
+    /// Whether every held request has reached the client and only waits for
+    /// its response overhead.
+    pub(crate) fn only_response_overhead_pending(&self) -> bool {
+        self.unreceived == 0 && !self.terminals.is_empty()
     }
 
     pub(crate) fn next_release_ms(&self) -> Option<f64> {
         self.terminals.peek().map(|Reverse(pending)| pending.at_ms)
     }
 
-    /// Remove every finished request the client has received by `now_ms`, in
-    /// receive time and entry order.
-    pub(crate) fn release_due(&mut self, now_ms: f64) -> Vec<(f64, Uuid, ReplayTerminalStatus)> {
+    /// Remove every client step due by `now_ms`, in time and entry order. A
+    /// received request is scheduled for its action after the response overhead; a
+    /// step due by `now_ms` is returned in the same call.
+    pub(crate) fn release_due(
+        &mut self,
+        now_ms: f64,
+    ) -> Vec<(f64, ClientStep, Uuid, ReplayTerminalStatus)> {
         let mut released = Vec::new();
         while self
             .terminals
@@ -207,9 +275,43 @@ impl ClientPath {
             .is_some_and(|Reverse(pending)| pending.at_ms <= now_ms)
         {
             let Reverse(pending) = self.terminals.pop().expect("peeked client terminal");
-            released.push((pending.at_ms, pending.request_id, pending.status));
+            if pending.step == ClientStep::Receive {
+                self.unreceived -= 1;
+                self.push(
+                    pending.act_ms,
+                    ClientStep::Act,
+                    pending.request_id,
+                    pending.status,
+                    pending.act_ms,
+                );
+            }
+            released.push((
+                pending.at_ms,
+                pending.step,
+                pending.request_id,
+                pending.status,
+            ));
         }
         released
+    }
+
+    fn push(
+        &mut self,
+        at_ms: f64,
+        step: ClientStep,
+        request_id: Uuid,
+        status: ReplayTerminalStatus,
+        act_ms: f64,
+    ) {
+        self.terminals.push(Reverse(PendingTerminal {
+            at_ms,
+            entry: self.next_entry,
+            step,
+            request_id,
+            status,
+            act_ms,
+        }));
+        self.next_entry += 1;
     }
 }
 
@@ -217,8 +319,11 @@ impl ClientPath {
 struct PendingTerminal {
     at_ms: f64,
     entry: u64,
+    step: ClientStep,
     request_id: Uuid,
     status: ReplayTerminalStatus,
+    /// When the client acts on the request, known once it is held.
+    act_ms: f64,
 }
 
 impl PartialEq for PendingTerminal {
@@ -248,7 +353,11 @@ mod tests {
     use super::*;
 
     fn path(workers: usize, base_ms: f64, per_output_ms: f64) -> ClientPath {
-        ClientPath::new(DetokenizationLatency::new(workers, base_ms, per_output_ms).unwrap())
+        ClientPath::new(
+            DetokenizationLatency::new(workers, base_ms, per_output_ms),
+            None,
+        )
+        .unwrap()
     }
 
     fn ids(range: std::ops::Range<u128>) -> impl Iterator<Item = Uuid> {
@@ -319,7 +428,7 @@ mod tests {
     #[test]
     fn servers_split_a_pass_and_queue_independently() {
         let mut path = path(2, 1.0, 1.0);
-        let latency = path.detokenization;
+        let latency = path.detokenization.unwrap();
         let (on_0, on_1): (Vec<_>, Vec<_>) = ids(0..16).partition(|id| latency.server(*id) == 0);
         let a0 = on_0[0];
         let a1 = on_1[0];
@@ -336,25 +445,104 @@ mod tests {
     }
 
     #[test]
-    fn the_client_acts_on_a_request_when_it_receives_it() {
+    fn response_overhead_alone_keeps_outputs_at_the_pass_end() {
+        let mut path = ClientPath::new(None, ResponseOverhead::new(3.0, 0.0)).unwrap();
+        assert!(!path.detokenizes());
+        assert_eq!(
+            path.receive_pass(0, 7.0, ids(0..4)).unwrap(),
+            PassReceipt::Together(7.0)
+        );
+    }
+
+    #[test]
+    fn a_received_request_is_acted_on_after_the_response_overhead() {
+        let mut path = ClientPath::new(None, ResponseOverhead::new(1.0, 0.5)).unwrap();
+        let (first, second) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        // 1 + 0.5 x 4 = 3 ms for both four-token responses.
+        path.defer_terminal(11.0, first, ReplayTerminalStatus::Completed, 4)
+            .unwrap();
+        path.defer_terminal(11.0, second, ReplayTerminalStatus::Completed, 4)
+            .unwrap();
+        assert_eq!(path.len(), 2);
+        assert!(!path.only_response_overhead_pending());
+        assert_eq!(path.next_release_ms(), Some(11.0));
+        assert_eq!(
+            path.release_due(11.0),
+            vec![
+                (
+                    11.0,
+                    ClientStep::Receive,
+                    first,
+                    ReplayTerminalStatus::Completed
+                ),
+                (
+                    11.0,
+                    ClientStep::Receive,
+                    second,
+                    ReplayTerminalStatus::Completed
+                ),
+            ]
+        );
+        assert_eq!(path.len(), 2);
+        assert!(path.only_response_overhead_pending());
+        assert_eq!(path.next_release_ms(), Some(14.0));
+        assert_eq!(
+            path.release_due(14.0),
+            vec![
+                (
+                    14.0,
+                    ClientStep::Act,
+                    first,
+                    ReplayTerminalStatus::Completed
+                ),
+                (
+                    14.0,
+                    ClientStep::Act,
+                    second,
+                    ReplayTerminalStatus::Completed
+                ),
+            ]
+        );
+        assert_eq!(path.len(), 0);
+        assert!(!path.only_response_overhead_pending());
+    }
+
+    #[test]
+    fn without_response_overhead_the_client_acts_when_it_receives() {
         let mut path = path(1, 1.0, 0.0);
         let (first, second, third) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
-        path.defer_terminal(7.0, first, ReplayTerminalStatus::Completed);
-        path.defer_terminal(5.0, second, ReplayTerminalStatus::Rejected);
-        path.defer_terminal(7.0, third, ReplayTerminalStatus::Completed);
+        path.defer_terminal(7.0, first, ReplayTerminalStatus::Completed, 0)
+            .unwrap();
+        path.defer_terminal(5.0, second, ReplayTerminalStatus::Rejected, 0)
+            .unwrap();
+        path.defer_terminal(7.0, third, ReplayTerminalStatus::Completed, 0)
+            .unwrap();
         assert_eq!(path.len(), 3);
         assert_eq!(path.next_release_ms(), Some(5.0));
         assert_eq!(path.release_due(4.0), vec![]);
         assert_eq!(
             path.release_due(5.0),
-            vec![(5.0, second, ReplayTerminalStatus::Rejected)]
+            vec![
+                (
+                    5.0,
+                    ClientStep::Receive,
+                    second,
+                    ReplayTerminalStatus::Rejected
+                ),
+                (5.0, ClientStep::Act, second, ReplayTerminalStatus::Rejected),
+            ]
         );
         // Requests received together are released in entry order.
         assert_eq!(
-            path.release_due(7.0),
+            path.release_due(7.0)
+                .into_iter()
+                .map(|(at_ms, step, id, _)| (at_ms, step, id))
+                .collect::<Vec<_>>(),
             vec![
-                (7.0, first, ReplayTerminalStatus::Completed),
-                (7.0, third, ReplayTerminalStatus::Completed),
+                (7.0, ClientStep::Receive, first),
+                (7.0, ClientStep::Receive, third),
+                (7.0, ClientStep::Act, first),
+                (7.0, ClientStep::Act, third),
             ]
         );
         assert_eq!(path.len(), 0);
@@ -362,9 +550,27 @@ mod tests {
     }
 
     #[test]
+    fn a_longer_response_takes_the_client_longer_to_act_on() {
+        let mut path = ClientPath::new(None, ResponseOverhead::new(1.0, 0.25)).unwrap();
+        let (long, short) = (Uuid::from_u128(4), Uuid::from_u128(5));
+        path.defer_terminal(0.0, long, ReplayTerminalStatus::Completed, 12)
+            .unwrap();
+        path.defer_terminal(0.0, short, ReplayTerminalStatus::Completed, 2)
+            .unwrap();
+        assert_eq!(path.release_due(0.0).len(), 2);
+        assert_eq!(
+            path.release_due(4.0),
+            vec![
+                (1.5, ClientStep::Act, short, ReplayTerminalStatus::Completed),
+                (4.0, ClientStep::Act, long, ReplayTerminalStatus::Completed),
+            ]
+        );
+    }
+
+    #[test]
     fn a_non_finite_receive_time_is_rejected_without_state_changes() {
         let mut path = path(2, 0.0, f64::MAX);
-        let latency = path.detokenization;
+        let latency = path.detokenization.unwrap();
         let (on_0, on_1): (Vec<_>, Vec<_>) = ids(0..16).partition(|id| latency.server(*id) == 0);
         // Server 1 can take one output, but two on server 0 overflow: nothing changes.
         assert!(
@@ -375,7 +581,23 @@ mod tests {
     }
 
     #[test]
-    fn zero_costs_disable_detokenization() {
+    fn a_non_finite_action_time_is_rejected_without_state_changes() {
+        let mut path = ClientPath::new(None, ResponseOverhead::new(0.0, f64::MAX)).unwrap();
+        let id = Uuid::from_u128(6);
+        assert!(
+            path.defer_terminal(0.0, id, ReplayTerminalStatus::Completed, 10)
+                .is_err()
+        );
+        assert_eq!(path.len(), 0);
+        path.defer_terminal(0.0, id, ReplayTerminalStatus::Completed, 1)
+            .unwrap();
+        assert_eq!(path.len(), 1);
+    }
+
+    #[test]
+    fn zero_costs_disable_the_path() {
         assert_eq!(DetokenizationLatency::new(1, 0.0, 0.0), None);
+        assert_eq!(ResponseOverhead::new(0.0, 0.0), None);
+        assert!(ClientPath::new(None, None).is_none());
     }
 }

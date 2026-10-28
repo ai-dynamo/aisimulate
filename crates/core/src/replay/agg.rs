@@ -26,9 +26,9 @@ use super::telemetry::{
 };
 use super::{
     components::{
-        AdmissionQueue, ClientPath, EngineComponent, EngineEffects, EnginePassMode, PassReceipt,
-        ReplayAdmissionMetadata, ReplayEngineObservation, ReplayReadyArrival, TokenizationLatency,
-        TokenizationStage, TrafficAccumulators,
+        AdmissionQueue, ClientPath, ClientStep, EngineComponent, EngineEffects, EnginePassMode,
+        PassReceipt, ReplayAdmissionMetadata, ReplayEngineObservation, ReplayReadyArrival,
+        TokenizationLatency, TokenizationStage, TrafficAccumulators,
     },
     state::AggRequestState,
 };
@@ -80,8 +80,13 @@ where
     placement: PlacementPolicyImpl,
     /// Optional per-worker tokenization between placement and the engine.
     tokenization: Option<TokenizationStage<TokenizingDispatch>>,
-    /// Optional detokenization after the engine.
+    /// Optional detokenization and response overhead after the engine.
     client: Option<ClientPath>,
+    /// Clock time since every request in flight reached the client and only
+    /// waits for its response overhead. It counts as provisioned worker time only once
+    /// more work follows, so a final response overhead does not outlast the reported
+    /// duration, which ends at the last terminal.
+    response_overhead_tail_ms: f64,
     progress: ReplayProgress,
     stats: AggRuntimeStats,
     /// Latest forward pass metric per worker/rank since the previous scaling tick.
@@ -171,6 +176,7 @@ where
             placement,
             tokenization: None,
             client: None,
+            response_overhead_tail_ms: 0.0,
             progress,
             stats: AggRuntimeStats::default(),
             fpm_buffer: LatestFpmBuffer::default(),
@@ -258,7 +264,7 @@ where
         self
     }
 
-    /// Detokenize outputs for the client and hold finished requests until the client receives them.
+    /// Detokenize outputs for the client and hold finished requests until the client acts on them.
     pub(crate) fn with_client_path(mut self, client: Option<ClientPath>) -> Self {
         self.client = client;
         self
@@ -626,7 +632,7 @@ where
         }
         if let Some(token_id) = signal.token_id {
             self.admission.defer_output_token(signal.uuid, token_id)?;
-            if self.client.is_some() {
+            if self.client.as_ref().is_some_and(ClientPath::detokenizes) {
                 self.collector
                     .on_detokenized_token(signal.uuid, self.now_ms, received_ms);
             } else {
@@ -642,15 +648,28 @@ where
             } else {
                 ReplayTerminalStatus::Completed
             };
-            // The client records and acts on a response when it receives its
-            // end. A rejection carries no output: the client learns of it when
-            // the engine rejects the request.
-            let via_client = self.client.is_some() && !signal.rejected;
             match &mut self.client {
-                Some(client) if via_client => {
-                    client.defer_terminal(received_ms, signal.uuid, status)
-                }
-                _ => self.collector.on_terminal(signal.uuid, self.now_ms, status),
+                // The client records the request when it receives the response's
+                // end and acts on it after its response overhead. A rejection carries no
+                // output: the client receives it when the engine rejects it.
+                Some(client) => client.defer_terminal(
+                    if signal.rejected {
+                        self.now_ms
+                    } else {
+                        received_ms
+                    },
+                    signal.uuid,
+                    status,
+                    self.collector
+                        .actual_output_length(signal.uuid)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "offline replay missing collector state for {}",
+                                signal.uuid
+                            )
+                        })?,
+                )?,
+                None => self.collector.on_terminal(signal.uuid, self.now_ms, status),
             }
             if self.defer_drive {
                 self.step_freed_slot = true;
@@ -681,7 +700,7 @@ where
                     latencies,
                 );
             }
-            if !via_client {
+            if self.client.is_none() {
                 self.admission
                     .defer_terminal(signal.uuid, self.now_ms, status)?;
             }
@@ -763,17 +782,19 @@ where
         client.receive_pass(worker_id, self.now_ms, outputs)
     }
 
-    /// Record every response the client has received by now and hand its
-    /// request back to the workload.
+    /// Record every response the client has received by now, and hand every
+    /// request whose response overhead has elapsed back to the workload.
     fn release_client_terminals(&mut self) -> anyhow::Result<bool> {
         let Some(client) = &mut self.client else {
             return Ok(false);
         };
         let released = client.release_due(self.now_ms);
         let changed = !released.is_empty();
-        for (at_ms, uuid, status) in released {
-            self.collector.on_terminal(uuid, at_ms, status);
-            self.admission.defer_terminal(uuid, self.now_ms, status)?;
+        for (at_ms, step, uuid, status) in released {
+            match step {
+                ClientStep::Receive => self.collector.on_terminal(uuid, at_ms, status),
+                ClientStep::Act => self.admission.defer_terminal(uuid, self.now_ms, status)?,
+            }
         }
         Ok(changed)
     }
@@ -1375,6 +1396,8 @@ where
         let next_evidence = ReplayEvidenceCollector::new(self.evidence.options());
         self.collector
             .set_runtime_evidence(std::mem::replace(&mut self.evidence, next_evidence).finish());
+        // The preparation report ends now, after its last response overhead, so it keeps that tail.
+        self.commit_response_overhead_tail();
         self.collector.take_report(self.now_ms);
         self.collector
             .set_g3_profile_baseline(self.engine.g3_stats());
@@ -1549,12 +1572,38 @@ where
     pub(crate) fn advance_now_ms(&mut self, new_now_ms: f64) {
         let dt_ms = (new_now_ms - self.now_ms).max(0.0);
         if dt_ms > 0.0 {
-            let decode_worker_seconds = self.engine.worker_count() as f64 * dt_ms / 1000.0;
-            self.collector
-                .add_worker_seconds(0.0, decode_worker_seconds);
-            self.collector.add_encoder_gpu_seconds(dt_ms / 1000.0);
+            if self.only_response_overhead_in_flight() {
+                self.response_overhead_tail_ms += dt_ms;
+            } else {
+                self.commit_response_overhead_tail();
+                self.add_provisioned_ms(dt_ms);
+            }
         }
         self.now_ms = new_now_ms;
+    }
+
+    fn add_provisioned_ms(&mut self, dt_ms: f64) {
+        let decode_worker_seconds = self.engine.worker_count() as f64 * dt_ms / 1000.0;
+        self.collector
+            .add_worker_seconds(0.0, decode_worker_seconds);
+        self.collector.add_encoder_gpu_seconds(dt_ms / 1000.0);
+    }
+
+    /// Whether the only requests in flight are finished ones the client has
+    /// received and has not acted on yet.
+    fn only_response_overhead_in_flight(&self) -> bool {
+        self.client.as_ref().is_some_and(|client| {
+            client.only_response_overhead_pending() && self.cluster_in_flight() == client.len()
+        })
+    }
+
+    /// Count the response overhead time held so far as provisioned worker time, now
+    /// that more work follows it. Worker counts are static with a client path.
+    fn commit_response_overhead_tail(&mut self) {
+        let tail_ms = std::mem::take(&mut self.response_overhead_tail_ms);
+        if tail_ms > 0.0 {
+            self.add_provisioned_ms(tail_ms);
+        }
     }
 
     /// Advance to an observational heartbeat without waking semantic replay
@@ -1760,7 +1809,7 @@ where
         }
         // Profile cancellation does not know about responses still on their way to the client.
         if self.client.is_some() && self.admission.agentic_profile_report().is_some() {
-            bail!("agentic_profile cannot be combined with detokenization");
+            bail!("agentic_profile cannot be combined with detokenization or response overhead");
         }
         if let Some(cap_ms) = self.max_sim_time_ms
             && (!cap_ms.is_finite() || cap_ms < 0.0)
