@@ -182,47 +182,35 @@ struct TwoDGrids {
     by_quant: BTreeMap<String, ScaleGrid>,
 }
 
-/// One quant's scale table plus its clamp envelope, both built once at load
-/// (tables are immutable) so queries do not rescan the rows.
+/// One quant's scale table plus its inclusive `(min, max)` clamp ranges,
+/// fixed at load (tables are immutable) so queries do not rescan the rows:
+/// m spans the first..last row and k the UNION of every row's range (rows
+/// may be ragged).
 struct ScaleGrid {
     grid: PreparedGrid,
-    /// `None` only for a table without rows.
-    bounds: Option<ScaleBounds>,
-}
-
-/// Inclusive `(min, max)` clamp envelope of a scale table: m spans the
-/// first..last row and k the UNION of every row's range (rows may be
-/// ragged).
-#[derive(Clone, Copy)]
-struct ScaleBounds {
-    m: (u32, u32),
-    k: (u32, u32),
+    m_range: (u32, u32),
+    k_range: (u32, u32),
 }
 
 impl ScaleGrid {
-    fn new(rows: BTreeMap<u32, BTreeMap<u32, LeafValue>>) -> Self {
-        let bounds = ScaleBounds::of(&rows);
+    /// `None` only for a table without rows.
+    fn new(rows: BTreeMap<u32, BTreeMap<u32, LeafValue>>) -> Option<Self> {
+        let m_range = (*rows.keys().next()?, *rows.keys().next_back()?);
+        let k_range = rows
+            .values()
+            .filter_map(|cols| Some((*cols.keys().next()?, *cols.keys().next_back()?)))
+            .reduce(|(lo, hi), (row_lo, row_hi)| (lo.min(row_lo), hi.max(row_hi)))?;
         let mut node = Node::branch();
         for (m, cols) in rows {
             for (k, leaf) in cols {
                 node.insert_value(&[m, k], leaf);
             }
         }
-        Self {
+        Some(Self {
             grid: PreparedGrid::new(node),
-            bounds,
-        }
-    }
-}
-
-impl ScaleBounds {
-    fn of(rows: &BTreeMap<u32, BTreeMap<u32, LeafValue>>) -> Option<Self> {
-        let m = (*rows.keys().next()?, *rows.keys().next_back()?);
-        let k = rows
-            .values()
-            .filter_map(|cols| Some((*cols.keys().next()?, *cols.keys().next_back()?)))
-            .reduce(|(lo, hi), (row_lo, row_hi)| (lo.min(row_lo), hi.max(row_hi)))?;
-        Some(Self { m, k })
+            m_range,
+            k_range,
+        })
     }
 }
 
@@ -687,16 +675,8 @@ fn query_scale_table(
             by_quant.keys().collect::<Vec<_>>(),
         ))
     })?;
-    if !matches!(scale.grid.node(), Node::Branch(_)) {
-        return Err(AicError::PerfDatabase("malformed scale table".to_string()));
-    }
-    let Some(bounds) = scale.bounds else {
-        return Err(AicError::PerfDatabase(format!(
-            "empty scale table for quant '{quant_name}'"
-        )));
-    };
-    let m_c = m.clamp(bounds.m.0, bounds.m.1);
-    let k_c = k.clamp(bounds.k.0, bounds.k.1);
+    let m_c = m.clamp(scale.m_range.0, scale.m_range.1);
+    let k_c = k.clamp(scale.k_range.0, scale.k_range.1);
 
     let cfg = OpInterpConfig::grid(&["m", "k"], sol);
     let value = scale.grid.query_value(&cfg, &[m_c as f64, k_c as f64])?;
@@ -853,9 +833,10 @@ fn load_two_d_parquet(sources: &[PerfSource]) -> Result<TwoDGrids, AicError> {
                 .unwrap_or_default()
         )));
     }
+    // Every quant entry above holds at least one leaf, so none is dropped.
     let by_quant = raw
         .into_iter()
-        .map(|(quant, rows)| (quant, ScaleGrid::new(rows)))
+        .filter_map(|(quant, rows)| Some((quant, ScaleGrid::new(rows)?)))
         .collect();
     Ok(TwoDGrids { by_quant })
 }
@@ -1443,30 +1424,6 @@ mod tests {
                     && msg.ends_with("; available: [\"fp8\"]"),
                 "{msg}"
             );
-        }
-    }
-
-    /// The loaders never produce an empty quant entry, but the query keeps
-    /// its explicit error for one rather than clamping into an empty range.
-    #[test]
-    fn scale_table_empty_quant_errors() {
-        let by_quant = BTreeMap::from([("fp8".to_string(), ScaleGrid::new(BTreeMap::new()))]);
-        let sol = |c: &[f64]| c[0] * c[1];
-        for sol_ratio_beyond_grid in [false, true] {
-            let err = query_scale_table(
-                &by_quant,
-                "fp8",
-                192,
-                1536,
-                &sol,
-                sol_ratio_beyond_grid,
-                Path::new("/unused"),
-            )
-            .unwrap_err();
-            let AicError::PerfDatabase(msg) = err else {
-                panic!("expected PerfDatabase error, got {err:?}");
-            };
-            assert_eq!(msg, "empty scale table for quant 'fp8'");
         }
     }
 
