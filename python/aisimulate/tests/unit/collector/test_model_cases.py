@@ -1889,6 +1889,42 @@ def test_dsa_module_plan_drops_sub_8_head_cells_on_sm100_only(backend):
         assert [c[2] for c in build("mla", "context")] == heads, (backend, sm)  # dense MLA untouched
 
 
+def test_vllm_module_plan_groups_the_seq_len_points_of_one_module_into_one_case():
+    """One case per (batch, heads, dtypes, gemm, model, attn, prefix) with its seq_len points
+    in slot 0, largest first: run_mla_module builds the module once per case (the module
+    build dominated vllm dsa_context_module in the 2026-10 campaign)."""
+    from types import SimpleNamespace
+
+    base = [
+        [128, 1, 64, "bfloat16", "bfloat16", "bfloat16", 0],
+        [16, 1, 64, "bfloat16", "bfloat16", "bfloat16", 0],
+        [1024, 1, 64, "bfloat16", "bfloat16", "bfloat16", 0],
+        [16, 1, 64, "bfloat16", "bfloat16", "bfloat16", 4096],  # other prefix -> other case
+        [16, 8, 64, "bfloat16", "bfloat16", "bfloat16", 0],  # other batch -> other case
+        [16, 1, 64, "fp8", "bfloat16", "bfloat16", 0],  # other kv dtype -> other case
+    ]
+    ns = {
+        "get_context_test_cases": lambda _t: base,
+        "get_generation_test_cases": lambda _t: [],
+        "get_mla_module_model_specs": lambda **_k: [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3.2")],
+        "get_sm_version": lambda: 100,
+        "_DSA_SPARSE_DECODE_MIN_HEADS": 8,
+        "_DSA_SPARSE_DECODE_MIN_HEADS_SMS": (100, 103),
+        "_model_max_position_embeddings": lambda _m: None,
+    }
+    build = _load_module_case_builder("vllm", ns)
+    cases = build("dsa", "context")
+    assert cases == [
+        [[1024, 128, 16], 1, 64, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", "dsa", 0],
+        [[16], 1, 64, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", "dsa", 4096],
+        [[16], 8, 64, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", "dsa", 0],
+        [[16], 1, 64, "fp8", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", "dsa", 0],
+    ]
+    # the trtllm planner keeps one case per point
+    trt = _load_module_case_builder("trtllm", dict(ns))
+    assert [c[0] for c in trt("dsa", "context")] == [128, 16, 1024, 16, 16, 16]
+
+
 def test_vllm_dsa_module_plan_caps_prefix_at_the_model_max_position():
     """7,050 b200 vllm DSA cases (job 471043976) asked vLLM for max_model_len > the model's
     max_position_embeddings (prefix 262144+ on DeepSeek-V3.2 / GLM-5): the planner now

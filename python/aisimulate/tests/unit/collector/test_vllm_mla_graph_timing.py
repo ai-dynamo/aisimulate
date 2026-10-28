@@ -26,8 +26,9 @@ def _load_function(path, name, namespace):
     return namespace[name]
 
 
-def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pattern=None):
+def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pattern=None, point_failures=None):
     events, published, benchmark_calls = [], [], []
+    point_failures = dict(point_failures or {})
     error = RuntimeError(f"{failure} failed")
     active_contexts = []
     active_slot_mapping = {}
@@ -104,6 +105,18 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
         yield {"used_cuda_graph": graph_flag, "latency_ms": 0.015, "power_stats": None}
         events.append("graph teardown")
 
+    def create_kv(**kwargs):
+        events.append(("kv", kwargs["seq_len"]))
+        if kwargs["seq_len"] in point_failures:
+            raise point_failures[kwargs["seq_len"]]
+        return (
+            Tensor(),
+            object(),
+            SimpleNamespace(slot_mapping=query_slots),
+            Tensor() if kwargs["attn_type"] == "dsa" else None,
+            object() if kwargs["attn_type"] == "dsa" else None,
+        )
+
     def cleanup():
         assert active_contexts == []
         assert module.mla_attn.skip_topk is False
@@ -123,21 +136,17 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
                 set_device=lambda value: None,
                 get_device_name=lambda value: "B200",
                 OutOfMemoryError=MemoryError,
+                empty_cache=lambda: events.append("empty_cache"),
             ),
         ),
+        "gc": SimpleNamespace(collect=lambda: None),
         "setup_distributed": lambda device: None,
         "enable_engine_fused_ops": lambda: None,
         "init_workspace_manager": lambda device: events.append("workspace init"),
         "_create_attention_module": create_module,
         "_install_rope_missing_key_shims": lambda module: ([], []),
         "_process_module_weights": lambda *args: None,
-        "_create_kv_cache_and_metadata": lambda **kwargs: (
-            Tensor(),
-            object(),
-            SimpleNamespace(slot_mapping=query_slots),
-            Tensor() if kwargs["attn_type"] == "dsa" else None,
-            object() if kwargs["attn_type"] == "dsa" else None,
-        ),
+        "_create_kv_cache_and_metadata": create_kv,
         "set_current_vllm_config": lambda config: context("config"),
         "set_forward_context": forward_context,
         "benchmark_with_power": benchmark,
@@ -149,11 +158,13 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
         "time": time,
     }
     _load_function(COLLECTOR / "vllm/utils.py", "with_exit_stack", namespace)
+    for helper in ("_series_seq_lens", "_is_fatal_cuda_error"):
+        _load_function(COLLECTOR / "vllm/collect_mla_module.py", helper, namespace)
     run = _load_function(COLLECTOR / "vllm/collect_mla_module.py", "run_mla_module", namespace)
 
-    def execute(attn_type="dsa", phase="context"):
+    def execute(attn_type="dsa", phase="context", seq_len=16):
         return run(
-            seq_len=16,
+            seq_len=seq_len,
             batch_size=2,
             num_heads=8,
             kv_cache_dtype="fp8",
@@ -173,7 +184,7 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
 @pytest.mark.parametrize("reuse_frequency", [1, None])
 def test_graph_publication_and_workspace_teardown_after_context_exit(attn_type, phase, reuse_frequency):
     execute, events, published, calls, _ = _module_runner(reuse_frequency=reuse_frequency)
-    assert execute(attn_type, phase) == 0.015
+    assert execute(attn_type, phase) == [0.015]
     assert len(calls) == len(published) == 1
     assert events[-4:] == ["graph teardown", "exit forward", "exit config", "cleanup"]
     row = published[0]["item_list"][0]
@@ -189,7 +200,7 @@ def test_graph_publication_and_workspace_teardown_after_context_exit(attn_type, 
 @pytest.mark.parametrize("reuse", [{"reuse_frequency": 4}, {"reuse_frequency": None, "reuse_pattern": "FFSS"}])
 def test_reuse_checkpoint_publishes_native_full_and_skip_measurements(phase, reuse):
     execute, events, published, calls, _ = _module_runner(**reuse)
-    assert execute(phase=phase) == 0.015
+    assert execute(phase=phase) == [0.015]
     assert [call["skip_indexer"] for call in calls] == [False, True]
     assert [row["op_name"] for row in published] == [
         f"dsa_{phase}_module",
@@ -236,6 +247,69 @@ def test_each_case_prints_one_phase_timing_line(capsys, reuse_frequency):
     phases += ["indexer_fill", "total"]
     assert [field.split("=")[0] for field in line.split(": ", 1)[1].split()] == phases
     assert len(calls) == len([p for p in phases if p.startswith("measure")])
+
+
+def test_series_builds_the_module_once_and_measures_every_point_largest_first(capsys):
+    execute, events, published, calls, _ = _module_runner(reuse_frequency=4)
+    assert execute(seq_len=[8, 16, 8]) == [0.015, 0.015]
+    assert events.count("workspace init") == 1
+    assert [e for e in events if isinstance(e, tuple) and e[0] == "kv"] == [("kv", 16), ("kv", 8)]
+    assert [(row["op_name"], row["item_list"][0]["isl"]) for row in published] == [
+        ("dsa_context_module", 16),
+        ("dsa_context_module_skip_indexer", 16),
+        ("dsa_context_module", 8),
+        ("dsa_context_module_skip_indexer", 8),
+    ]
+    assert len(calls) == 4 and events[-1] == "cleanup" and events.count("cleanup") == 1
+    out = capsys.readouterr().out
+    timing = [line for line in out.splitlines() if "module timing" in line]
+    assert len(timing) == 2
+    assert "module=" in timing[0] and "weights=" in timing[0], "setup phases are reported once, on the first point"
+    assert "module=" not in timing[1] and "kv_metadata=" in timing[1]
+    series_lines = [line for line in out.splitlines() if "[DSA module series] context b=2, prefix=128" in line]
+    assert len(series_lines) == 1 and "2/2 points" in series_lines[0]
+
+
+def test_series_keeps_measuring_after_a_non_fatal_point_failure_and_raises_it_afterwards():
+    oom = MemoryError("CUDA out of memory (fixture)")
+    execute, events, published, calls, _ = _module_runner(point_failures={16: oom})
+    with pytest.raises(MemoryError) as caught:
+        execute(seq_len=[16, 8])
+    assert caught.value is oom
+    assert [e for e in events if isinstance(e, tuple) and e[0] == "kv"] == [("kv", 16), ("kv", 8)]
+    assert "empty_cache" in events, "the failed point's memory is released before the next point"
+    assert [row["item_list"][0]["isl"] for row in published] == [8]
+    assert len(calls) == 1 and events[-1] == "cleanup"
+
+
+def test_series_summarises_several_point_failures_in_one_classified_error():
+    failures = {16: MemoryError("oom at 16"), 4: RuntimeError("Missing TRTLLM-GEN kernel (decode)")}
+    execute, _, published, _, _ = _module_runner(point_failures=failures)
+    with pytest.raises(RuntimeError, match=r"2/3 point\(s\) of the module series failed") as caught:
+        execute(seq_len=[16, 8, 4])
+    assert "s=16: MemoryError: oom at 16" in str(caught.value)
+    assert "s=4: RuntimeError: Missing TRTLLM-GEN kernel" in str(caught.value)
+    assert [row["item_list"][0]["isl"] for row in published] == [8]
+
+
+def test_series_aborts_at_once_on_a_sticky_cuda_error():
+    sticky = RuntimeError("CUDA error: an illegal memory access was encountered")
+    execute, events, published, _, _ = _module_runner(point_failures={16: sticky})
+    with pytest.raises(RuntimeError) as caught:
+        execute(seq_len=[16, 8])
+    assert caught.value is sticky
+    kv_points = [e for e in events if isinstance(e, tuple) and e[0] == "kv"]
+    assert kv_points == [("kv", 16)], "no further point on a dead context"
+    assert published == [] and events[-1] == "cleanup"
+
+
+def test_single_point_failures_keep_their_original_exception_and_timing():
+    """A one-point case (CLI, single-point fills) behaves exactly like before the series layout."""
+    oom = MemoryError("oom")
+    execute, events, published, _, _ = _module_runner(point_failures={16: oom})
+    with pytest.raises(MemoryError) as caught:
+        execute(seq_len=16)
+    assert caught.value is oom and published == [] and events[-1] == "cleanup"
 
 
 def test_explicit_full_pattern_overrides_reuse_frequency():
