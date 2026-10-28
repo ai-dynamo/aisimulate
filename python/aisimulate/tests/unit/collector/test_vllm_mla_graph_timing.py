@@ -7,6 +7,7 @@ import ast
 import math
 import os
 import sys
+import time
 from contextlib import ExitStack, contextmanager, nullcontext
 from functools import wraps
 from pathlib import Path
@@ -128,6 +129,7 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
         "enable_engine_fused_ops": lambda: None,
         "init_workspace_manager": lambda device: events.append("workspace init"),
         "_create_attention_module": create_module,
+        "_install_rope_missing_key_shims": lambda module: ([], []),
         "_process_module_weights": lambda *args: None,
         "_create_kv_cache_and_metadata": lambda **kwargs: (
             Tensor(),
@@ -144,6 +146,7 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
         "_cleanup": cleanup,
         "vllm_version": "0.25.0",
         "traceback": SimpleNamespace(print_exc=lambda: None),
+        "time": time,
     }
     _load_function(COLLECTOR / "vllm/utils.py", "with_exit_stack", namespace)
     run = _load_function(COLLECTOR / "vllm/collect_mla_module.py", "run_mla_module", namespace)
@@ -217,6 +220,22 @@ def test_ordinary_mla_does_not_publish_dsa_reuse_rows():
     execute(attn_type="mla")
     assert len(calls) == 1
     assert [row["op_name"] for row in published] == ["mla_context_module"]
+
+
+@pytest.mark.parametrize("reuse_frequency", [1, 4])
+def test_each_case_prints_one_phase_timing_line(capsys, reuse_frequency):
+    execute, _, _, calls, _ = _module_runner(reuse_frequency=reuse_frequency)
+    execute()
+    lines = [line for line in capsys.readouterr().out.splitlines() if "module timing" in line]
+    assert len(lines) == 1
+    (line,) = lines
+    assert line.startswith("  [DSA module timing] context b=2, s=16, prefix=128, heads=8, gemm=bfloat16, kv=fp8: ")
+    phases = ["module", "weights", "kv_metadata", "dry_run", "measure_full"]
+    if reuse_frequency == 4:
+        phases.append("measure_skip")
+    phases += ["indexer_fill", "total"]
+    assert [field.split("=")[0] for field in line.split(": ", 1)[1].split()] == phases
+    assert len(calls) == len([p for p in phases if p.startswith("measure")])
 
 
 def test_explicit_full_pattern_overrides_reuse_frequency():

@@ -50,6 +50,7 @@ import json
 import math
 import os
 import tempfile
+import time
 import traceback
 from functools import partial
 from pathlib import Path
@@ -1025,6 +1026,13 @@ def _populate_indexer_kv_cache(
 # ═══════════════════════════════════════════════════════════════════════
 
 
+# Per-case phase timings. run_mla_module prints one "[... module timing]" line
+# per case so a run log shows where the module collectors spend their time
+# (framework setup per case vs. the timed forwards); _create_kv_cache_and_metadata
+# records the indexer-cache fill here because its return tuple is a contract.
+_PHASE_TIMINGS: dict[str, float] = {}
+
+
 def _create_kv_cache_and_metadata(
     vllm_config,
     attn_type: str,
@@ -1037,6 +1045,7 @@ def _create_kv_cache_and_metadata(
     indexer=None,
 ):
     """Create KV cache and attention metadata for benchmarking."""
+    _PHASE_TIMINGS["indexer_fill"] = 0.0
     hf_config = vllm_config.model_config.hf_text_config
     kv_lora_rank = hf_config.kv_lora_rank
     qk_rope_head_dim = hf_config.qk_rope_head_dim
@@ -1216,12 +1225,14 @@ def _create_kv_cache_and_metadata(
                         _v = getattr(_c, _f, None)
                         if not _f.startswith("_") and isinstance(_v, (int, bool, float)):
                             print(f"[idxmeta]   chunk.{_f} = {_v}")
+        _fill_start = time.perf_counter()
         _populate_indexer_kv_cache(
             indexer_kv_cache=indexer_kv_cache,
             common_attn_metadata=common_attn_metadata,
             context_lens=[tensor.shape[0] for tensor in kv_c_contexts],
             indexer=indexer,
         )
+        _PHASE_TIMINGS["indexer_fill"] = time.perf_counter() - _fill_start
 
     return kv_cache, attn_metadata, common_attn_metadata, indexer_kv_cache, indexer_metadata
 
@@ -1263,6 +1274,15 @@ def run_mla_module(
             f"@0.24.0); got kv_cache_dtype={kv_cache_dtype!r}"
         )
 
+    _t_start = _t_last = time.perf_counter()
+    _phase: dict[str, float] = {}
+
+    def _lap(name: str) -> None:
+        nonlocal _t_last
+        now = time.perf_counter()
+        _phase[name] = now - _t_last
+        _t_last = now
+
     setup_distributed(device)
     torch.cuda.set_device(device)
     enable_engine_fused_ops()
@@ -1302,6 +1322,7 @@ def run_mla_module(
         device=device,
         is_context=is_context,
     )
+    _lap("module")
     if attn_type == "dsa" and use_fp8_kv_cache:
         # vLLM 0.30 DeepseekV32 attention: the short-prefill dense-MHA branch with an FP8 query
         # calls `self.rotary_emb(positions, q_pe)[0]` (models/deepseek_v32/attention.py:534) —
@@ -1329,6 +1350,7 @@ def run_mla_module(
 
     # 1b. Process weights (FP8 quantization + create W_UK_T / W_UV for MLA)
     _process_module_weights(attn_module, vllm_config, device)
+    _lap("weights")
 
     # 2. Create KV cache + metadata
     with set_current_vllm_config(vllm_config):
@@ -1347,6 +1369,7 @@ def run_mla_module(
         )
 
     # 2b. Bind KV cache to the 0.24.0 attention layer.
+    _lap("kv_metadata")
     attn_layer_name = "model.layers.0.self_attn.attn"
     forward_ctx = vllm_config.compilation_config.static_forward_context
     forward_ctx[attn_layer_name].kv_cache = kv_cache
@@ -1463,6 +1486,8 @@ def run_mla_module(
         # rows while the pipeline reports success.
         raise
 
+    _lap("dry_run")
+
     # 5. Benchmark
     def kernel_func():
         attn_module.forward(*_fwd_args)
@@ -1512,6 +1537,7 @@ def run_mla_module(
             allow_graph_fail=False,
         ) as results:
             pass
+        _lap("measure_skip" if skip_indexer else "measure_full")
 
         if results.get("used_cuda_graph") is not True:
             raise RuntimeError("vLLM MLA/DSA module requires CUDA graph timing; refusing to publish eager timing")
@@ -1576,6 +1602,13 @@ def run_mla_module(
     full_latency = measure_and_log(False)
     if has_reuse:
         measure_and_log(True)
+    _phase["indexer_fill"] = globals().get("_PHASE_TIMINGS", {}).get("indexer_fill", 0.0)
+    print(
+        f"  [{variant} module timing] {phase} b={batch_size}, s={seq_len}, prefix={prefix_len}, "
+        f"heads={num_heads}, gemm={gemm_type}, kv={kv_cache_dtype}: "
+        + " ".join(f"{name}={seconds:.2f}s" for name, seconds in _phase.items())
+        + f" total={time.perf_counter() - _t_start:.2f}s"
+    )
     return full_latency
 
 
