@@ -140,18 +140,14 @@ impl StateCacheManager {
         target: usize,
     ) -> usize {
         Self::debug_assert_working_cached(pool, state);
-        if let Some(block_size) = self.align_block_size {
-            if target <= state.computed_tokens || state.working.is_empty() {
-                return 0;
-            }
-            let slot = target.saturating_sub(1) / block_size;
-            return if state.working_slot != Some(slot) || state.working_cached {
-                self.blocks_per_state
-            } else {
-                0
-            };
+        if target <= state.computed_tokens || state.working.is_empty() {
+            return 0;
         }
-        if target > state.computed_tokens && state.working_cached {
+        // Align mode writes into a new working allocation when the slot changes.
+        let new_slot = self.align_block_size.is_some_and(|block_size| {
+            state.working_slot != Some(target.saturating_sub(1) / block_size)
+        });
+        if new_slot || state.working_cached {
             self.blocks_per_state
         } else {
             0

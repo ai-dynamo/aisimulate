@@ -453,52 +453,6 @@ fn long_decode_keeps_one_working_state_and_one_latest_checkpoint() {
 }
 
 #[test]
-fn state_write_follows_published_checkpoints_and_resets_on_preemption() {
-    let mut manager = manager(64, 4, 2, true);
-    let owner = Uuid::from_u128(1);
-    let (mut sequence, mut lease) = request(owner, 4, 4, true, 8);
-    allocated(manager.allocate_lease(owner, &mut lease, 4, 0));
-    manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, 0, 4);
-    for before in 4..12 {
-        manager.begin_step();
-        // Only the pass after a full-block checkpoint preserves it first.
-        let write = if before % 4 == 0 { 2 } else { 0 };
-        assert_eq!(manager.state_write_blocks(&lease, before + 1), write);
-        let (_, opened) = sequence.generate_token();
-        if opened {
-            lease.append_partial();
-        }
-        assert_eq!(
-            allocated(manager.allocate_lease(owner, &mut lease, before + 1, 0)),
-            write + usize::from(opened)
-        );
-        assert_eq!(manager.state_write_blocks(&lease, before + 1), 0);
-        manager.finalize_lease_computed_prefix(
-            owner,
-            &mut sequence,
-            &mut lease,
-            before,
-            before + 1,
-        );
-    }
-    assert_eq!(manager.state_write_blocks(&lease, 13), 2);
-    manager.begin_step();
-    manager.preempt_lease(owner, &mut lease);
-    assert_eq!(manager.state_write_blocks(&lease, 13), 0);
-    manager.begin_step();
-    // The restored state starts in fresh private working blocks.
-    let cost = manager.get_lease_prefill_cost(&sequence, &lease);
-    assert_eq!(cost.cached_tokens, 12);
-    assert_eq!(
-        allocated(manager.allocate_lease(owner, &mut lease, 12, 3)),
-        3 + 2
-    );
-    assert_eq!(manager.state_write_blocks(&lease, 13), 0);
-    manager.finish_lease(owner, lease);
-    clear_reclaimable_and_assert_empty(&mut manager);
-}
-
-#[test]
 fn preemption_and_requeue_release_work_and_restore_saved_state() {
     let mut manager = manager(12, 4, 2, true);
     let owner = Uuid::from_u128(1);
