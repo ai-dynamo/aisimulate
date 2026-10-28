@@ -615,6 +615,18 @@ fn snapshot_pin_report(
     run_g2(spec, driver)
 }
 
+// Lineage is additive; preserve every existing report field's golden pin.
+fn remove_lineage(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            fields.remove("lineage");
+            fields.values_mut().for_each(remove_lineage);
+        }
+        serde_json::Value::Array(values) => values.iter_mut().for_each(remove_lineage),
+        _ => {}
+    }
+}
+
 /// Snapshot, warmup and recycling-profile replays must stay byte-identical
 /// across changes to how snapshot plays are built and retained.
 #[test]
@@ -635,16 +647,15 @@ fn snapshot_warmup_and_profile_reports_are_pinned() {
                     let profile = report.agentic_profile.as_ref().unwrap();
                     assert!(profile.plays_started >= 6, "{name}: {profile:?}");
                 }
-                let report_json = serde_json::to_value(report.clone().with_wall_time_ms(0.0))
-                    .unwrap()
-                    .to_string();
-                let per_request = serde_json::to_value(&report.per_request)
-                    .unwrap()
-                    .to_string();
+                let mut report_json =
+                    serde_json::to_value(report.clone().with_wall_time_ms(0.0)).unwrap();
+                let mut per_request = serde_json::to_value(&report.per_request).unwrap();
+                remove_lineage(&mut report_json);
+                remove_lineage(&mut per_request);
                 let lifecycle = report.agentic_lifecycle.as_ref().unwrap();
                 let mut hasher = blake3::Hasher::new();
-                hasher.update(report_json.as_bytes());
-                hasher.update(per_request.as_bytes());
+                hasher.update(report_json.to_string().as_bytes());
+                hasher.update(per_request.to_string().as_bytes());
                 hasher.update(&lifecycle.to_jsonl().unwrap());
                 let topology = if disaggregated { "disagg" } else { "agg" };
                 actual.push(format!(

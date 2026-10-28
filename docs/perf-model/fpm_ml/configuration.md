@@ -150,7 +150,9 @@ fitting state and pending observations. `save_online_checkpoint(path)` preserves
 that online continuation state in a new checkpoint directory without implicitly
 flushing pending observations. Resume through the same canonical constructor with matching
 identity and fitting controls. The combined selector rejects both export
-methods because neither format preserves all its state. See
+methods because neither format preserves all its state.
+[State snapshots](../configuration.md#state-snapshots) save every adaptation,
+including the combined selector, with calibration and pending rows. See
 [the training and resume workflow](learned-forward-pass-model.md#online-tree-adaptation)
 for source export, observation ordering and checkpoint differences.
 

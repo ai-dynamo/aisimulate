@@ -60,8 +60,10 @@ The block-size defaults above are simulation defaults. When a Sweeper candidate'
 role block size is absent or `null`, the deployment generator omits `--block-size`
 (vLLM), `--page-size` (SGLang), or `kv_cache_config.tokens_per_block`
 (TensorRT-LLM), allowing the engine to choose its runtime default. Explicit values
-are preserved. Fixed-capacity conversion from blocks to tokens still uses the
-simulation's effective block size without emitting it as a runtime override. Set
+are preserved. For SGLang and TensorRT-LLM, generating a fixed `capacity.blocks`
+requires an explicit `block_size` matching the runtime: the generator must
+convert the block count to a token capacity and cannot infer runtime geometry
+from a simulation default. vLLM accepts the block count directly. Set
 `block_size` explicitly when simulation and deployment must use the same value.
 
 ## GPU cache (G1)
@@ -192,8 +194,12 @@ aisimulate predict --stack engine --config host-offload-prediction.yaml --captur
 For example, two replicas with `attention_data: 2` and `num_host_blocks: 4096`
 get four private 4096-block caches with `dp_rank_local`, or one 4096-block
 cache with `cluster_shared`. In a shared pool, transfers in the same direction
-share bandwidth equally: four ranks at 32 GB/s under an 80 GB/s pool each move
-at 20 GB/s while all four transfer.
+share bandwidth max-min fairly per transfer, not per rank: four ranks at
+32 GB/s, each running one transfer under an 80 GB/s pool, each move at 20 GB/s.
+Pool bandwidth a rank cannot use because its own limit binds goes to the other
+ranks: with one rank running nine transfers and another running one, both at
+32 GB/s, each rank moves 32 GB/s in total. Under a 20 GB/s pool the same ten
+transfers each get 2 GB/s, so the busier rank moves 18 GB/s.
 
 `cluster_shared` models a deployment-wide host cache such as Mooncake Store or
 LMCache. vLLM's native offload has no equivalent, so it has no native parity
@@ -245,7 +251,8 @@ These defaults are modeling assumptions, not measured values.
   `worker_local`, workers cannot read each other's blocks.
 - G3 evicts least recently used blocks that are not being transferred.
 - With `worker_local`, total bandwidth grows with the worker count (16 workers
-  at 10 GB/s reach 160 GB/s). `cluster_shared` caps it at the shared limits.
+  at 10 GB/s reach 160 GB/s). `cluster_shared` caps it at the shared limits and
+  divides them max-min fairly, as in a [shared G2 pool](#g2-scope).
 
 To compare scopes at equal total capacity with `N` workers, use
 `num_g3_blocks: C` for `worker_local` and `N × C` for `cluster_shared`. Set the
@@ -342,6 +349,11 @@ appears only when it is nonzero. The counters update as the pool's ranks run.
 A run stopped by `traffic.stop.max_virtual_time_seconds` (native
 `max_sim_time_ms`) can miss pulls that landed during a pass still running at
 the cutoff; a run that completes counts every pull.
+
+Ranks without incoming pulls skip shared KVCR deadline lookups. Other KVCR
+bookkeeping still queries shared pool state from per-rank calls. Large worker
+or attention-DP pools can substantially increase replay wall time. Further
+overhead reductions are deferred; they must preserve CanonicalV1 replay output bytes.
 
 ### Supported
 

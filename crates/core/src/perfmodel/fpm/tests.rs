@@ -27,12 +27,12 @@ use crate::{
     ScheduledRequestMetrics,
 };
 
-fn systems_root() -> PathBuf {
+pub(crate) fn systems_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../python/aisimulate/src/aisimulate_core/systems")
 }
 
-const TEST_MODEL: &str = "MiniMaxAI/MiniMax-M2.5";
+pub(crate) const TEST_MODEL: &str = "MiniMaxAI/MiniMax-M2.5";
 
 #[test]
 fn dcp_cannot_construct_explicit_regression() {
@@ -56,7 +56,7 @@ fn dcp_cannot_construct_explicit_regression() {
 
 /// Hand-built context op list against the b200_sxm/vllm/0.24.0 perf tables
 /// (same fixture pattern as `engine/runtime.rs` and `py.rs` tests).
-fn context_ops() -> Vec<Op> {
+pub(crate) fn context_ops() -> Vec<Op> {
     vec![
         Op::Elementwise(ElementwiseOp {
             name: "rmsnorm".into(),
@@ -95,7 +95,7 @@ fn context_ops() -> Vec<Op> {
     ]
 }
 
-fn generation_ops() -> Vec<Op> {
+pub(crate) fn generation_ops() -> Vec<Op> {
     vec![
         Op::Elementwise(ElementwiseOp {
             name: "rmsnorm".into(),
@@ -121,7 +121,7 @@ fn generation_ops() -> Vec<Op> {
     ]
 }
 
-fn fixture_engine_config() -> EngineConfig {
+pub(crate) fn fixture_engine_config() -> EngineConfig {
     EngineConfig {
         schema_version: crate::ENGINE_CONFIG_SCHEMA_VERSION,
         model_name: TEST_MODEL.to_string(),
@@ -411,7 +411,7 @@ fn regression_model(
     )
 }
 
-fn fixture_engine() -> Arc<Engine> {
+pub(crate) fn fixture_engine() -> Arc<Engine> {
     // Match SILICON's shared-layer default: 0.24.0 declares reuse of the
     // corrected, graph-timed FP8-block GEMM measurements from 0.25.0.
     let db = PerfDatabase::load_resolved(

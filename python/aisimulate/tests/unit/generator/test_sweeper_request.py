@@ -3,11 +3,15 @@
 
 from __future__ import annotations
 
+import logging
+import re
 import shlex
+from pathlib import Path
 
 import pytest
 import yaml
 
+from aisimulate.generator import api as generator_api
 from aisimulate.generator.api import generate_from_request
 from aisimulate.generator.request import (
     ModelFacts,
@@ -15,6 +19,14 @@ from aisimulate.generator.request import (
     from_sweeper_candidate,
     to_legacy_params,
 )
+from aisimulate.sweeper.config import Workload
+
+_TRACE_WORKLOAD = {
+    "source_type": "trace",
+    "trace_path": "/traces/day.jsonl",
+    "trace_paths": ["/traces/day.jsonl"],
+}
+_TRTLLM_TRANSFER_BUFFER_LINE = re.compile(r"^[ \t]*max_tokens_in_buffer: \d+\n", re.MULTILINE)
 
 
 def _agg_candidate(**overrides):
@@ -204,7 +216,7 @@ def test_disagg_candidate_keeps_block_size_selection_role_local(backend, backend
     _assert_artifact_block_size(artifacts, backend, "decode", 16)
 
 
-@pytest.mark.parametrize("block_size", [0, -1, True])
+@pytest.mark.parametrize("block_size", [0, -1, True, 32.5, "invalid"])
 def test_candidate_rejects_invalid_explicit_block_size(block_size):
     with pytest.raises(SweeperCandidateError, match="agg_block_size must be a positive integer"):
         from_sweeper_candidate(
@@ -337,6 +349,179 @@ def test_workload_lengths_can_come_from_generator_overrides():
     assert request.sla.osl == 512
 
 
+def test_missing_workload_lengths_fall_back_to_generator_overrides():
+    request = from_sweeper_candidate(
+        _agg_candidate(),
+        workload={"isl": None, "osl": None},
+        generator_overrides={"SlaConfig": {"isl": 2048, "osl": 512}},
+        model_facts=ModelFacts(is_moe=False),
+    )
+
+    assert (request.sla.isl, request.sla.osl) == (2048, 512)
+
+
+def test_workload_lengths_take_precedence_over_generator_overrides():
+    request = from_sweeper_candidate(
+        _agg_candidate(),
+        workload={"isl": 4000, "osl": 1000},
+        generator_overrides={"SlaConfig": {"isl": 2048, "osl": 512}},
+        model_facts=ModelFacts(is_moe=False),
+    )
+
+    assert (request.sla.isl, request.sla.osl) == (4000, 1000)
+
+
+def test_synthetic_workload_requires_request_lengths():
+    with pytest.raises(SweeperCandidateError, match="a synthetic workload must provide isl and osl"):
+        from_sweeper_candidate(_agg_candidate(), workload={"isl": 4000}, model_facts=ModelFacts(is_moe=False))
+
+
+@pytest.mark.parametrize(
+    "workload",
+    [
+        _TRACE_WORKLOAD,
+        Workload(trace_path="/traces/day.jsonl"),
+        Workload(trace_path="/traces/day.jsonl").model_dump(mode="json"),
+        {"trace_paths": ["/traces/day.jsonl"]},
+        {"source_type": "trace"},
+    ],
+    ids=["mapping", "sweeper-workload", "sweeper-workload-json", "trace-paths-only", "source-type-only"],
+)
+def test_trace_workload_lowers_without_request_lengths(workload):
+    request = from_sweeper_candidate(_agg_candidate(), workload=workload, model_facts=ModelFacts(is_moe=False))
+
+    assert (request.sla.isl, request.sla.osl) == (None, None)
+    assert not [key for key in request.overrides.raw if key.startswith("SlaConfig.")]
+
+
+@pytest.mark.parametrize(
+    ("workload", "overrides", "supplied"),
+    [
+        ({**_TRACE_WORKLOAD, "isl": 1, "osl": 1}, None, "workload.isl, workload.osl"),
+        (_TRACE_WORKLOAD, {"SlaConfig": {"isl": 4000, "osl": 1000}}, "SlaConfig.isl, SlaConfig.osl"),
+        (_TRACE_WORKLOAD, {"SlaConfig.osl": 1000}, "SlaConfig.osl"),
+    ],
+)
+def test_trace_workload_rejects_supplied_request_lengths(workload, overrides, supplied):
+    with pytest.raises(SweeperCandidateError, match=re.escape(f"no fixed request length; remove {supplied}")):
+        from_sweeper_candidate(
+            _agg_candidate(),
+            workload=workload,
+            generator_overrides=overrides,
+            model_facts=ModelFacts(is_moe=False),
+        )
+
+
+@pytest.mark.parametrize(
+    ("workload", "context_length", "warned"),
+    [(_TRACE_WORKLOAD, 10000, True), (_TRACE_WORKLOAD, 16384, False), ({"isl": 8192, "osl": 1024}, 10000, False)],
+    ids=["trace-unaligned", "trace-aligned", "synthetic-unaligned"],
+)
+def test_trtllm_trace_warns_when_max_seq_len_is_off_the_block_grid(caplog, workload, context_length, warned):
+    with caplog.at_level(logging.WARNING, logger="aisimulate.generator.request.sweeper"):
+        from_sweeper_candidate(
+            _disagg_candidate(context_length=context_length),
+            workload=workload,
+            model_facts=ModelFacts(is_moe=True, architecture="DeepseekV3ForCausalLM"),
+        )
+
+    messages = [record.getMessage() for record in caplog.records if "tokens_per_block" in record.getMessage()]
+    if warned:
+        # Both roles use 64-token blocks; 10000 = 156 * 64 + 16.
+        assert [message.split(".")[0] for message in messages] == [
+            f"TRT-LLM {role} max_seq_len 10000 is not a multiple of tokens_per_block 64"
+            for role in ("prefill", "decode")
+        ]
+    else:
+        assert messages == []
+
+
+def test_trace_workload_is_rejected_for_a_slurm_bundle():
+    with pytest.raises(SweeperCandidateError, match="a Slurm bundle needs a fixed request length"):
+        from_sweeper_candidate(
+            _agg_candidate(),
+            workload=_TRACE_WORKLOAD,
+            deployment_target="slurm",
+            model_facts=ModelFacts(is_moe=False),
+        )
+
+
+def test_trace_candidate_benchmarks_only_with_explicit_benchmark_lengths():
+    def render(overrides=None):
+        return generate_from_request(
+            from_sweeper_candidate(
+                _agg_candidate(),
+                workload=_TRACE_WORKLOAD,
+                model_facts=ModelFacts(is_moe=False, architecture="Qwen3ForCausalLM"),
+                generator_overrides=overrides,
+            )
+        )
+
+    default = render()
+    benchmarked = render({"BenchConfig": {"isl": 2048, "osl": 512}})
+
+    assert not {"bench_run.sh", "k8s_bench.yaml"} & default.keys()
+    assert "name: benchmark" not in default["sflow.yaml"]
+    assert 'BENCH_ISL="${AICONFIGURATOR_BENCH_ISL:-2048}"' in benchmarked["bench_run.sh"]
+    assert "--isl 2048" in benchmarked["k8s_bench.yaml"]
+    assert "name: benchmark" in benchmarked["sflow.yaml"]
+
+
+@pytest.mark.parametrize("mode", ["agg", "disagg"])
+@pytest.mark.parametrize("block_size", [64, None])
+@pytest.mark.parametrize(
+    ("backend", "backend_version"),
+    [("vllm", "0.20.1"), ("sglang", "0.5.14"), ("trtllm", "1.3.0rc20"), ("trtllm", "1.3.0rc23")],
+)
+def test_trace_candidate_renders_like_a_synthetic_candidate(mode, block_size, backend, backend_version):
+    make_candidate = _agg_candidate if mode == "agg" else _disagg_candidate
+    candidate = make_candidate(backend=backend, backend_version=backend_version, model_name="Qwen/Qwen3-32B-FP8")
+    for role in ("agg",) if mode == "agg" else ("prefill", "decode"):
+        candidate["config"][f"{role}_block_size"] = block_size
+    # SGLang has no KVBM integration.
+    candidate["config"].get("adapters", {}).pop("dynamo.kvbm", None)
+
+    def render(workload):
+        return generate_from_request(
+            from_sweeper_candidate(
+                candidate,
+                workload=workload,
+                model_facts=ModelFacts(is_moe=False, architecture="Qwen3ForCausalLM"),
+                generator_overrides={"K8sConfig": {"k8s_image": f"example/{backend}:{backend_version}"}},
+            )
+        )
+
+    synthetic = render({"isl": 4000, "osl": 1000})
+    traced = render(_TRACE_WORKLOAD)
+
+    # Benchmarks need one fixed ISL/OSL, including sflow.yaml's benchmark task.
+    # Otherwise only TRT-LLM's P/D transfer buffer size is derived from the
+    # lengths, and a trace leaves it unset.
+    assert {"bench_run.sh", "k8s_bench.yaml"} <= synthetic.keys()
+    assert synthetic.keys() - traced.keys() == {"bench_run.sh", "k8s_bench.yaml"}
+    assert "name: benchmark" in synthetic["sflow.yaml"]
+    assert "name: benchmark" not in traced["sflow.yaml"]
+    assert "aiperf profile" not in traced["sflow.yaml"]
+    sized = _TRTLLM_TRANSFER_BUFFER_LINE.findall("".join(synthetic.values()))
+    assert bool(sized) == (backend == "trtllm" and mode == "disagg" and block_size is not None)
+    for name, text in traced.items():
+        if name == "k8s_deploy.yaml":
+            # The DGD carries each engine config as an inline YAML string.
+            assert yaml.safe_load(text) == _without_transfer_buffer_size(yaml.safe_load(synthetic[name]))
+        elif name != "sflow.yaml":
+            assert text == _without_transfer_buffer_size(synthetic[name]), name
+
+
+def _without_transfer_buffer_size(value):
+    if isinstance(value, str):
+        return _TRTLLM_TRANSFER_BUFFER_LINE.sub("", value)
+    if isinstance(value, dict):
+        return {key: _without_transfer_buffer_size(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_without_transfer_buffer_size(item) for item in value]
+    return value
+
+
 def test_model_facts_are_lowered_by_typed_request():
     request = from_sweeper_candidate(
         _agg_candidate(aic_nextn=2),
@@ -411,6 +596,50 @@ def test_trtllm_candidate_enables_kv_transfer_without_changing_evaluated_limits(
     assert artifacts["k8s_deploy.yaml"].count("cache_transceiver_config:") == 2
 
 
+def _trtllm_engine_templates() -> dict[str, str]:
+    template_dir = Path(generator_api.__file__).parent / "config" / "backend_templates" / "trtllm"
+    templates = {}
+    for path in sorted(template_dir.glob("extra_engine_args*.yaml.j2")):
+        version = path.name.removeprefix("extra_engine_args").removesuffix(".yaml.j2").lstrip(".")
+        # The unversioned template serves versions older than every versioned one.
+        templates[version or "0.19.0"] = path.read_text()
+    return templates
+
+
+def test_only_pre_transceiver_trtllm_templates_omit_kv_transfer():
+    without = {
+        version for version, text in _trtllm_engine_templates().items() if "cache_transceiver_config" not in text
+    }
+
+    assert without == {"0.20.0", "1.0.0rc3"}
+
+
+@pytest.mark.parametrize(
+    "version",
+    [version for version, text in _trtllm_engine_templates().items() if "cache_transceiver_config" in text],
+)
+def test_trtllm_trace_candidate_keeps_kv_transfer_without_a_guessed_buffer(version):
+    candidate = _disagg_candidate(backend_version=version, model_name="Qwen/Qwen3-32B-FP8")
+
+    def engine_args(workload):
+        artifacts = generate_from_request(
+            from_sweeper_candidate(
+                candidate,
+                workload=workload,
+                model_facts=ModelFacts(is_moe=False, architecture="Qwen3ForCausalLM"),
+            )
+        )
+        return {role: yaml.safe_load(artifacts[f"extra_engine_args_{role}.yaml"]) for role in ("prefill", "decode")}
+
+    synthetic = engine_args({"isl": 8192, "osl": 1024})
+    traced = engine_args(_TRACE_WORKLOAD)
+
+    for role in ("prefill", "decode"):
+        # (8192 + 1024 + 1500) rounded up to the 64-token block.
+        assert synthetic[role]["cache_transceiver_config"] == {"backend": "DEFAULT", "max_tokens_in_buffer": 10752}
+        assert traced[role]["cache_transceiver_config"] == {"backend": "DEFAULT"}
+
+
 @pytest.mark.parametrize(
     ("backend", "backend_version", "expected_fraction"),
     [
@@ -437,15 +666,15 @@ def test_agg_candidate_materializes_backend_default_kv_capacity(backend, backend
 
 
 @pytest.mark.parametrize(
-    ("backend", "backend_version"),
+    ("backend", "backend_version", "block_size"),
     [
-        ("vllm", "0.24.0"),
-        ("sglang", "0.5.14"),
-        ("trtllm", "1.3.0rc20"),
-        ("trtllm", "1.3.0rc23"),
+        ("vllm", "0.24.0", 64),
+        ("vllm", "0.24.0", None),
+        ("sglang", "0.5.14", 64),
+        ("trtllm", "1.3.0rc20", 64),
+        ("trtllm", "1.3.0rc23", 64),
     ],
 )
-@pytest.mark.parametrize("block_size", [64, None])
 def test_agg_candidate_preserves_fixed_kv_capacity_in_generated_artifacts(backend, backend_version, block_size):
     request = from_sweeper_candidate(
         _agg_candidate(
@@ -466,8 +695,7 @@ def test_agg_candidate_preserves_fixed_kv_capacity_in_generated_artifacts(backen
 
     artifacts = generate_from_request(request)
     _assert_artifact_block_size(artifacts, backend, "agg", block_size)
-    effective_block_size = block_size if block_size is not None else {"vllm": 64, "sglang": 1, "trtllm": 32}[backend]
-    expected_max_tokens = 256 * effective_block_size
+    expected_max_tokens = 16384
     if backend == "vllm":
         assert _cli_flag_value(artifacts["cli_args_agg"], "--num-gpu-blocks-override") == "256"
         assert "--gpu-memory-utilization" not in shlex.split(artifacts["cli_args_agg"])
@@ -516,6 +744,52 @@ def test_candidate_rejects_conflicting_fixed_and_fractional_kv_capacity():
         )
 
 
+@pytest.mark.parametrize("backend", ["sglang", "trtllm"])
+@pytest.mark.parametrize("role", ["agg", "prefill", "decode"])
+@pytest.mark.parametrize("omit_field", [False, True], ids=["null", "missing"])
+def test_fixed_block_capacity_requires_explicit_geometry(backend, role, omit_field):
+    candidate = (_agg_candidate if role == "agg" else _disagg_candidate)(backend=backend)
+    candidate["config"].update(
+        {f"{role}_gpu_memory_utilization": None, f"{role}_num_gpu_blocks": 256, f"{role}_block_size": None}
+    )
+    if omit_field:
+        candidate["config"].pop(f"{role}_block_size")
+
+    with pytest.raises(SweeperCandidateError, match=rf"{role}_block_size is required to convert .*num_gpu_blocks"):
+        from_sweeper_candidate(
+            candidate,
+            workload={"isl": 128, "osl": 1},
+            model_facts=ModelFacts(is_moe=True, architecture="DeepseekV3ForCausalLM"),
+        )
+
+
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+def test_trtllm_unset_block_size_delegates_flashmla_buffer_alignment(rule, caplog):
+    # FlashMLA selects 64-token blocks at runtime. Rounding ISL + OSL + 1500
+    # to the simulation's 32-token default would emit the invalid size 1632.
+    request = from_sweeper_candidate(
+        _disagg_candidate(
+            backend_version="1.3.0rc23",
+            prefill_block_size=None,
+            decode_block_size=None,
+            context_length=10000,
+            adapters={},
+        ),
+        workload={"isl": 128, "osl": 1},
+        model_facts=ModelFacts(is_moe=True, architecture="DeepseekV3ForCausalLM"),
+    )
+    request.overrides.raw["rule"] = rule
+
+    artifacts = generate_from_request(request)
+
+    for role in ("prefill", "decode"):
+        engine = yaml.safe_load(artifacts[f"extra_engine_args_{role}.yaml"])
+        assert "tokens_per_block" not in engine["kv_cache_config"]
+        assert engine["cache_transceiver_config"] == {"backend": "DEFAULT"}
+        assert f"TRT-LLM {role} tokens_per_block is unset" in caplog.text
+    assert "max_tokens_in_buffer" not in artifacts["k8s_deploy.yaml"]
+
+
 def _cli_flag_value(cli_args: str, flag: str) -> str:
     tokens = shlex.split(cli_args)
     return tokens[tokens.index(flag) + 1]
@@ -529,7 +803,11 @@ def _assert_artifact_block_size(artifacts, backend, role, expected):
         else:
             assert engine_args["kv_cache_config"]["tokens_per_block"] == expected
         if role in {"prefill", "decode"}:
-            assert engine_args["cache_transceiver_config"]["max_tokens_in_buffer"] > 0
+            assert engine_args["cache_transceiver_config"]["backend"] == "DEFAULT"
+            if expected is None:
+                assert "max_tokens_in_buffer" not in engine_args["cache_transceiver_config"]
+            else:
+                assert engine_args["cache_transceiver_config"]["max_tokens_in_buffer"] > 0
     else:
         flag = "--block-size" if backend == "vllm" else "--page-size"
         if expected is None:

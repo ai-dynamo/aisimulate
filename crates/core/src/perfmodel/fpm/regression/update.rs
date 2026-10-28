@@ -5,8 +5,11 @@
 use super::super::estimator::RegressionUpdatePolicy;
 use super::spline::ErrorMonitor;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct LinearUpdateState {
+    /// Configuration-only and internally tagged; snapshots rebuild it from
+    /// the canonical configuration.
+    #[serde(skip)]
     policy: RegressionUpdatePolicy,
     monitor: ErrorMonitor,
     accepted: usize,
@@ -66,5 +69,26 @@ impl LinearUpdateState {
             self.age = 0;
             self.monitor.clear();
         }
+    }
+}
+
+impl LinearUpdateState {
+    /// Adopt the configured policy and validate the saved clocks against it.
+    pub(super) fn restore_snapshot(&mut self, fresh: &Self) -> Result<(), String> {
+        self.policy = fresh.policy.clone();
+        match self.policy {
+            RegressionUpdatePolicy::Always => {
+                if !self.monitor.is_empty() || self.accepted != 0 || self.age != 0 {
+                    return Err("eager regression updates carry lazy-update state".into());
+                }
+            }
+            RegressionUpdatePolicy::ErrorThreshold { window, .. } => {
+                self.monitor.validate_restored(window)?;
+                if self.age > self.accepted {
+                    return Err("lazy regression update clocks are inconsistent".into());
+                }
+            }
+        }
+        Ok(())
     }
 }

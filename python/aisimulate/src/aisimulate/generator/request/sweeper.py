@@ -11,12 +11,12 @@ does not import Sweeper or Dynamo implementation types.
 from __future__ import annotations
 
 import copy
+import logging
 import math
 from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass, replace
 from typing import Any
 
-from ...config.engine import resolve_block_size
 from ..context_parallel import ContextParallelUnsupportedError, context_parallel_params
 from .schema import (
     BackendSpec,
@@ -30,6 +30,8 @@ from .schema import (
     SlaSpec,
     Topology,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SweeperCandidateError(ValueError):
@@ -187,9 +189,14 @@ def _role_sizing(
         num_gpu_blocks = _positive_int(blocks_value, path=blocks_path)
         extra["num_gpu_blocks"] = num_gpu_blocks
         if backend in {"sglang", "trtllm"}:
-            # Resolve the evaluated geometry only for the capacity conversion;
-            # it must not turn an unset block size into a deployment override.
-            extra["kv_cache_max_tokens"] = num_gpu_blocks * resolve_block_size(backend, tokens_per_block)
+            # These backends accept a token capacity, so converting a block
+            # count requires known geometry rather than a simulation default.
+            if tokens_per_block is None:
+                raise SweeperCandidateError(
+                    f"candidate.config.{role}_block_size is required to convert {blocks_path} "
+                    f"to a token capacity for {backend}; the runtime block size is unknown"
+                )
+            extra["kv_cache_max_tokens"] = num_gpu_blocks * tokens_per_block
     else:
         if memory_value is None:
             memory_value = _DEFAULT_GPU_MEMORY_UTILIZATION.get(backend)
@@ -279,6 +286,75 @@ def _resolve_model_facts(model_path: str, config: Mapping[str, Any]) -> ModelFac
     )
 
 
+def _is_trace_workload(workload: Mapping[str, Any]) -> bool:
+    return bool(workload.get("trace_path") or workload.get("trace_paths")) or workload.get("source_type") == "trace"
+
+
+def _request_lengths(workload: Mapping[str, Any], raw: Mapping[str, Any]) -> tuple[int | None, int | None]:
+    """Return the workload's fixed ISL/OSL, or ``(None, None)`` for a trace.
+
+    A trace has no single request length. Any length supplied for one would be
+    a placeholder that rules could size generated fields from, so it is
+    rejected and the request's SLA stays absent.
+    """
+    if _is_trace_workload(workload):
+        supplied = [
+            name
+            for name, value in (
+                ("workload.isl", workload.get("isl")),
+                ("workload.osl", workload.get("osl")),
+                ("SlaConfig.isl", raw.get("SlaConfig.isl")),
+                ("SlaConfig.osl", raw.get("SlaConfig.osl")),
+            )
+            if value is not None
+        ]
+        if supplied:
+            raise SweeperCandidateError(f"a trace workload has no fixed request length; remove {', '.join(supplied)}")
+        return None, None
+
+    # A present None is a missing length, so it must not hide an override.
+    isl = workload.get("isl")
+    osl = workload.get("osl")
+    if isl is None:
+        isl = raw.get("SlaConfig.isl")
+    if osl is None:
+        osl = raw.get("SlaConfig.osl")
+    if isl is None or osl is None:
+        raise SweeperCandidateError(
+            "a synthetic workload must provide isl and osl (or set SlaConfig.isl/osl overrides)"
+        )
+    return _positive_int(isl, path="workload.isl"), _positive_int(osl, path="workload.osl")
+
+
+def _warn_unaligned_runtime_transfer_buffer(roles: Mapping[str, RoleSizing]) -> None:
+    """Warn when TRT-LLM may size its KV-transfer buffer off the block grid.
+
+    A trace or an unset block size leaves buffer sizing to TRT-LLM. The candidate's
+    backend version is not the deployed runtime, so this warns instead of rejecting.
+    """
+    for role, sizing in roles.items():
+        max_seq_len = sizing.extra.get("max_seq_len")
+        tokens_per_block = sizing.extra.get("tokens_per_block")
+        if tokens_per_block is None:
+            logger.warning(
+                "TRT-LLM %s tokens_per_block is unset, so KV-transfer buffer alignment cannot be checked. "
+                "The runtime sizes the buffer; 1.3.0rc3 through 1.3.0rc22 use max_seq_len unrounded. "
+                "Use a runtime that rounds to its effective block size (1.3.0rc22.post1 or newer), "
+                "or verify the deployed context length is block-aligned.",
+                role,
+            )
+            continue
+        if max_seq_len is not None and max_seq_len % tokens_per_block:
+            logger.warning(
+                "TRT-LLM %s max_seq_len %d is not a multiple of tokens_per_block %d. A trace leaves the KV-transfer "
+                "buffer size to TRT-LLM, and 1.3.0rc3 through 1.3.0rc22 use max_seq_len unrounded, so the worker "
+                "can fail at startup on those runtimes.",
+                role,
+                max_seq_len,
+                tokens_per_block,
+            )
+
+
 def from_sweeper_candidate(
     candidate: Any,
     *,
@@ -293,8 +369,9 @@ def from_sweeper_candidate(
 
     ``candidate`` may be the public Pydantic ``Candidate`` or its JSON mapping.
     ``workload`` should be the matching Sweeper workload (or a mapping containing
-    ``isl``/``osl``). Cluster-specific values remain generator overrides or an
-    environment profile; evaluated engine and adapter choices always win.
+    ``isl``/``osl``). A trace workload is lowered without request lengths.
+    Cluster-specific values remain generator overrides or an environment
+    profile; evaluated engine and adapter choices always win.
     """
 
     candidate_payload = _as_mapping(candidate, label="candidate")
@@ -377,22 +454,27 @@ def from_sweeper_candidate(
             )
 
     raw = _flatten_overrides(generator_overrides)
-    isl = workload_payload.get("isl", raw.get("SlaConfig.isl"))
-    osl = workload_payload.get("osl", raw.get("SlaConfig.osl"))
-    if isl is None or osl is None:
-        raise SweeperCandidateError(
-            "the matching workload must provide isl and osl (or set SlaConfig.isl/osl overrides)"
+    isl, osl = _request_lengths(workload_payload, raw)
+    if isl is None and deployment_target == "slurm":
+        # The Slurm bundle's default operation replays one fixed ISL/OSL.
+        raise SweeperCandidateError("a Slurm bundle needs a fixed request length; use a Dynamo target for a trace")
+    if backend == "trtllm" and mode == "disagg":
+        _warn_unaligned_runtime_transfer_buffer(
+            {
+                role: sizing
+                for role, sizing in roles.items()
+                if isl is None or sizing.extra.get("tokens_per_block") is None
+            }
         )
-    isl = _positive_int(isl, path="workload.isl")
-    osl = _positive_int(osl, path="workload.osl")
 
     # Evaluated facts take precedence over deployment-environment overrides.
     raw["backend"] = backend
     raw["rule"] = "benchmark"
     raw["preserve_engine_limits"] = True
     raw["NodeConfig.system_name"] = hardware_sku
-    raw["SlaConfig.isl"] = isl
-    raw["SlaConfig.osl"] = osl
+    if isl is not None:
+        raw["SlaConfig.isl"] = isl
+        raw["SlaConfig.osl"] = osl
     concurrency = config.get("concurrency")
     if concurrency is not None:
         raw["BenchConfig.estimated_concurrency"] = _positive_int(concurrency, path="candidate.config.concurrency")

@@ -707,8 +707,16 @@ DefaultHFModels = {
     "zai-org/GLM-5.2",
     "zai-org/GLM-5.2-FP8",
     "nvidia/GLM-5.2-NVFP4",
+    # GLM-5.3: Z.AI ships the FP8-block weights under the plain repository
+    # and the BF16 weights under -BF16 (the reverse of the GLM-5.2 naming;
+    # no zai-org/GLM-5.3-FP8 repository exists). The zai-org bundles are
+    # unmodified copies of zai-org/GLM-5.3@ba32f8c1 and
+    # zai-org/GLM-5.3-BF16@abf42e6c (see THIRD_PARTY_NOTICES.md).
     "zai-org/GLM-5.3",
-    "zai-org/GLM-5.3-FP8",
+    "zai-org/GLM-5.3-BF16",
+    # Unmodified copy of nvidia/GLM-5.3-NVFP4@e3b8f9f2 (ModelOpt
+    # MIXED_PRECISION; unlisted attention and shared experts run BF16).
+    # See model_configs/GLM53_NVFP4_PROVENANCE.md.
     "nvidia/GLM-5.3-NVFP4",
     # GLM-5.3-Flash: bundled configs are byte-identical to the pinned
     # checkpoint revisions in aisimulate_core.sdk.glm53flash.MODEL_REVISIONS.

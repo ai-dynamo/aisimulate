@@ -179,7 +179,39 @@ struct GemmEngineGrids {
 /// (`{latency, power, energy}`, mirroring Python `load_compute_scale_data`
 /// / `load_scale_matrix_data`).
 struct TwoDGrids {
-    by_quant: BTreeMap<String, PreparedGrid>,
+    by_quant: BTreeMap<String, ScaleGrid>,
+}
+
+/// One quant's scale table plus its inclusive `(min, max)` clamp ranges,
+/// fixed at load (tables are immutable) so queries do not rescan the rows:
+/// m spans the first..last row and k the UNION of every row's range (rows
+/// may be ragged).
+struct ScaleGrid {
+    grid: PreparedGrid,
+    m_range: (u32, u32),
+    k_range: (u32, u32),
+}
+
+impl ScaleGrid {
+    /// `None` only for a table without rows.
+    fn new(rows: BTreeMap<u32, BTreeMap<u32, LeafValue>>) -> Option<Self> {
+        let m_range = (*rows.keys().next()?, *rows.keys().next_back()?);
+        let k_range = rows
+            .values()
+            .filter_map(|cols| Some((*cols.keys().next()?, *cols.keys().next_back()?)))
+            .reduce(|(lo, hi), (row_lo, row_hi)| (lo.min(row_lo), hi.max(row_hi)))?;
+        let mut node = Node::branch();
+        for (m, cols) in rows {
+            for (k, leaf) in cols {
+                node.insert_value(&[m, k], leaf);
+            }
+        }
+        Some(Self {
+            grid: PreparedGrid::new(node),
+            m_range,
+            k_range,
+        })
+    }
 }
 
 impl GemmTable {
@@ -402,13 +434,13 @@ impl GemmTable {
         data_root: &Path,
     ) -> Result<Vec<(Vec<f64>, f64)>, AicError> {
         let quant_name = quant.name();
-        let node = grids.by_quant.get(quant_name).ok_or_else(|| {
+        let scale = grids.by_quant.get(quant_name).ok_or_else(|| {
             AicError::PerfDatabase(format!(
                 "{table_name} perf data missing for quant '{quant_name}' at {}",
                 data_root.display()
             ))
         })?;
-        let points = crate::perf_database::perf_interp::node_points(node.node());
+        let points = crate::perf_database::perf_interp::node_points(scale.grid.node());
         if points.is_empty() {
             return Err(AicError::PerfDatabase(format!(
                 "{table_name} perf data empty for quant '{quant_name}' at {}",
@@ -628,7 +660,7 @@ fn grid3_to_node(grid: &Grid3<LeafValue>) -> Node {
 /// energy=interpolated.energy * ratio)`). Mirrors Python
 /// `_query_compute_scale_table` / `_query_scale_matrix_table`.
 fn query_scale_table(
-    by_quant: &BTreeMap<String, PreparedGrid>,
+    by_quant: &BTreeMap<String, ScaleGrid>,
     quant_name: &str,
     m: u32,
     k: u32,
@@ -636,37 +668,18 @@ fn query_scale_table(
     sol_ratio_beyond_grid: bool,
     data_root: &Path,
 ) -> Result<LeafValue, AicError> {
-    let prepared = by_quant.get(quant_name).ok_or_else(|| {
+    let scale = by_quant.get(quant_name).ok_or_else(|| {
         AicError::PerfDatabase(format!(
             "perf data missing for quant '{quant_name}' at {}; available: {:?}",
             data_root.display(),
             by_quant.keys().collect::<Vec<_>>(),
         ))
     })?;
-    let Node::Branch(rows) = prepared.node() else {
-        return Err(AicError::PerfDatabase("malformed scale table".to_string()));
-    };
-    if rows.is_empty() {
-        return Err(AicError::PerfDatabase(format!(
-            "empty scale table for quant '{quant_name}'"
-        )));
-    }
-    let m_keys: Vec<u32> = rows.keys().copied().collect();
-    let m_c = m.clamp(m_keys[0], m_keys[m_keys.len() - 1]);
-    let mut k_min = u32::MAX;
-    let mut k_max = 0u32;
-    for row in rows.values() {
-        if let Node::Branch(cols) = row {
-            if let (Some(&lo), Some(&hi)) = (cols.keys().next(), cols.keys().next_back()) {
-                k_min = k_min.min(lo);
-                k_max = k_max.max(hi);
-            }
-        }
-    }
-    let k_c = k.clamp(k_min, k_max);
+    let m_c = m.clamp(scale.m_range.0, scale.m_range.1);
+    let k_c = k.clamp(scale.k_range.0, scale.k_range.1);
 
     let cfg = OpInterpConfig::grid(&["m", "k"], sol);
-    let value = prepared.query_value(&cfg, &[m_c as f64, k_c as f64])?;
+    let value = scale.grid.query_value(&cfg, &[m_c as f64, k_c as f64])?;
     if !sol_ratio_beyond_grid || (m_c == m && k_c == k) {
         return Ok(value);
     }
@@ -820,17 +833,10 @@ fn load_two_d_parquet(sources: &[PerfSource]) -> Result<TwoDGrids, AicError> {
                 .unwrap_or_default()
         )));
     }
+    // Every quant entry above holds at least one leaf, so none is dropped.
     let by_quant = raw
         .into_iter()
-        .map(|(quant, rows)| {
-            let mut node = Node::branch();
-            for (m, cols) in rows {
-                for (k, leaf) in cols {
-                    node.insert_value(&[m, k], leaf);
-                }
-            }
-            (quant, PreparedGrid::new(node))
-        })
+        .filter_map(|(quant, rows)| Some((quant, ScaleGrid::new(rows)?)))
         .collect();
     Ok(TwoDGrids { by_quant })
 }
@@ -1248,6 +1254,176 @@ mod tests {
         match err {
             AicError::Io { .. } | AicError::PerfDatabase(_) => {}
             other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    /// Ragged synthetic fp8 scale table, `(m, k, latency, power)`: rows
+    /// `m=128` cover k 1024..2048 and `m=256` cover k 1024..4096, so the
+    /// collected envelope is m 128..256 and the k UNION is 1024..4096.
+    fn write_ragged_scale_table(path: &Path, rows: [(i64, i64, f64, f64); 5]) {
+        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
+        write_parquet(
+            path,
+            &[
+                Col::Str("quant_dtype", vec!["fp8"; 5]),
+                Col::I64("m", rows.iter().map(|r| r.0).collect()),
+                Col::I64("k", rows.iter().map(|r| r.1).collect()),
+                Col::F64("latency", rows.iter().map(|r| r.2).collect()),
+                Col::F64("power", rows.iter().map(|r| r.3).collect()),
+            ],
+        );
+    }
+
+    fn assert_scale_leaf(actual: LeafValue, (latency, power, energy): (f64, f64, f64), at: &str) {
+        for (name, got, want) in [
+            ("latency", actual.latency, latency),
+            ("power", actual.power, power),
+            ("energy", actual.energy, energy),
+        ] {
+            assert!(
+                (got - want).abs() <= 1e-12 * want.abs(),
+                "{at}: {name} {got} != {want}"
+            );
+        }
+    }
+
+    /// compute_scale / scale_matrix query oracle on a RAGGED 2-D table
+    /// (`write_ragged_scale_table`). Expected values are hand-derived from
+    /// the legacy scale-table contract, not from the production code:
+    ///
+    /// 1. clamp m into [128, 256] and k into the k UNION [1024, 4096];
+    /// 2. resolve the clamped point: exact leaf, else bracket each axis and
+    ///    lerp latency and power with the same weight; a bracket row that
+    ///    does not reach the clamped k is dropped and the survivor's
+    ///    latency is carried by SOL(q)/SOL(survivor) = m_q / m_survivor
+    ///    (both tables' SOL is `c * m * k / bw`), power unchanged;
+    ///    energy = power * latency;
+    /// 3. compute_scale holds that value FLAT beyond the grid; scale_matrix
+    ///    multiplies latency AND energy by SOL(q)/SOL(clamped)
+    ///    = (m * k) / (m_c * k_c), power unchanged.
+    ///
+    /// Worked examples:
+    /// - (192, 1536): rows at k=1536 lerp to (0.1875, 110) and (0.5, 150);
+    ///   m lerp -> latency 0.34375, power 130, energy 44.6875.
+    /// - (192, 8192): k clamps to the union max 4096, which only the m=256
+    ///   row reaches -> 1.0 * 192/256 = 0.75 at power 200. Clamping to the
+    ///   shared k range (2048) instead would give 0.4375.
+    /// - scale_matrix (512, 8192) clamps to the (256, 4096) leaf
+    ///   (2.0, 120) and scales by (512 * 8192)/(256 * 4096) = 4.
+    #[test]
+    fn scale_tables_clamp_to_ragged_envelope_matches_hand_oracle() {
+        use crate::perf_database::energy_test_fixtures::energy_test_spec;
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        write_ragged_scale_table(
+            &tmp.path().join("computescale_perf.parquet"),
+            [
+                (128, 1024, 0.125, 100.0),
+                (128, 2048, 0.25, 120.0),
+                (256, 1024, 0.375, 140.0),
+                (256, 2048, 0.625, 160.0),
+                (256, 4096, 1.0, 200.0),
+            ],
+        );
+        write_ragged_scale_table(
+            &tmp.path().join("scale_matrix_perf.parquet"),
+            [
+                (128, 1024, 0.25, 40.0),
+                (128, 2048, 0.5, 60.0),
+                (256, 1024, 0.75, 80.0),
+                (256, 2048, 1.25, 90.0),
+                (256, 4096, 2.0, 120.0),
+            ],
+        );
+        let table = GemmTable::new(tmp.path().to_path_buf(), energy_test_spec());
+        let quant = GemmQuantMode::Fp8Static;
+
+        // (query m, query k, label, compute_scale, scale_matrix), each as
+        // (latency, power, energy).
+        let cases = [
+            (
+                192,
+                1536,
+                "interior",
+                (0.34375, 130.0, 44.6875),
+                // rows (0.375, 50) and (1.0, 85) -> (0.6875, 67.5)
+                (0.6875, 67.5, 46.40625),
+            ),
+            (
+                64,
+                2048,
+                "m below",
+                (0.25, 120.0, 30.0),
+                // (128, 2048) leaf (0.5, 60) x 64/128
+                (0.25, 60.0, 15.0),
+            ),
+            (
+                512,
+                1024,
+                "m above",
+                (0.375, 140.0, 52.5),
+                // (256, 1024) leaf (0.75, 80) x 512/256
+                (1.5, 80.0, 120.0),
+            ),
+            (
+                192,
+                512,
+                "k below",
+                // k=1024 column lerps (0.125, 100) and (0.375, 140)
+                (0.25, 120.0, 30.0),
+                // column (0.25, 40) and (0.75, 80) -> (0.5, 60), x 512/1024
+                (0.25, 60.0, 15.0),
+            ),
+            (
+                192,
+                8192,
+                "k above (union clamp)",
+                (0.75, 200.0, 150.0),
+                // survivor 2.0 x 192/256 = 1.5 at power 120, x 8192/4096
+                (3.0, 120.0, 360.0),
+            ),
+            (
+                512,
+                8192,
+                "m and k above",
+                (1.0, 200.0, 200.0),
+                (8.0, 120.0, 960.0),
+            ),
+            (
+                64,
+                512,
+                "m and k below",
+                (0.125, 100.0, 12.5),
+                // (128, 1024) leaf (0.25, 40) x (64 * 512)/(128 * 1024)
+                (0.0625, 40.0, 2.5),
+            ),
+        ];
+        for (m, k, label, compute_scale, scale_matrix) in cases {
+            let at = format!("{label} ({m}, {k})");
+            let cs = table
+                .query_compute_scale(quant, m, k)
+                .expect("compute_scale");
+            assert_scale_leaf(cs, compute_scale, &format!("compute_scale {at}"));
+            let sm = table.query_scale_matrix(quant, m, k).expect("scale_matrix");
+            assert_scale_leaf(sm, scale_matrix, &format!("scale_matrix {at}"));
+        }
+
+        // A quant the tables lack fails with the available list, for both.
+        for err in [
+            table
+                .query_compute_scale(GemmQuantMode::Bfloat16, 192, 1536)
+                .unwrap_err(),
+            table
+                .query_scale_matrix(GemmQuantMode::Bfloat16, 192, 1536)
+                .unwrap_err(),
+        ] {
+            let AicError::PerfDatabase(msg) = err else {
+                panic!("expected PerfDatabase miss, got {err:?}");
+            };
+            assert!(
+                msg.starts_with("perf data missing for quant 'bfloat16' at ")
+                    && msg.ends_with("; available: [\"fp8\"]"),
+                "{msg}"
+            );
         }
     }
 

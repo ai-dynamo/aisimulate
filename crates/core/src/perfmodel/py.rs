@@ -99,12 +99,29 @@ fn sdk_error_type(
 /// * `AicError::SolNotImplemented` raises
 ///   `aisimulate_core.sdk.errors.SolNotImplementedError` (the analytic SOL
 ///   path has no implementation for a required operator);
+/// * `AicError::StateSnapshotIo` raises the built-in `OSError` subclass for
+///   its I/O kind (`FileNotFoundError`, `PermissionError`,
+///   `FileExistsError`, otherwise `OSError`), never the skippable
+///   missing-data class;
 /// * everything else stays `PyValueError`.
 ///
 /// The sdk import is lazy and failure-tolerant: in pure-Rust test contexts
 /// (cargo test without the sdk on `sys.path`) the conversion degrades to
 /// `PyValueError` with the same message.
 pub(crate) fn aic_to_py(e: AicError) -> PyErr {
+    if let AicError::StateSnapshotIo { source, .. } = &e {
+        let message = e.to_string();
+        return match source.kind() {
+            std::io::ErrorKind::NotFound => pyo3::exceptions::PyFileNotFoundError::new_err(message),
+            std::io::ErrorKind::PermissionDenied => {
+                pyo3::exceptions::PyPermissionError::new_err(message)
+            }
+            std::io::ErrorKind::AlreadyExists => {
+                pyo3::exceptions::PyFileExistsError::new_err(message)
+            }
+            _ => pyo3::exceptions::PyOSError::new_err(message),
+        };
+    }
     let sdk_class: Option<(&'static GILOnceCell<Py<PyType>>, &str)> = if e.is_missing_perf_data() {
         Some((&PERF_DATA_NOT_AVAILABLE_ERROR, "PerfDataNotAvailableError"))
     } else if matches!(e, AicError::EmpiricalNotImplemented(_)) {
@@ -2335,6 +2352,61 @@ impl PyForwardPassPerfModel {
             .map_err(aic_to_py)
     }
 
+    /// Write the complete tuned state to a new directory and return the
+    /// pinned canonical configuration JSON that restores it.
+    #[pyo3(signature = (path, include_perf_db=false))]
+    fn save_state_snapshot(
+        &self,
+        py: Python<'_>,
+        path: &str,
+        include_perf_db: bool,
+    ) -> PyResult<String> {
+        let options = crate::StateSnapshotOptions { include_perf_db };
+        let config = py
+            .allow_threads(|| self.inner.save_state_snapshot(path, &options))
+            .map_err(aic_to_py)?;
+        serde_json::to_string(&config).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    /// Read a snapshot manifest summary as JSON without restoring the model.
+    #[staticmethod]
+    fn inspect_state_snapshot(path: &str) -> PyResult<String> {
+        let summary =
+            crate::ForwardPassPerfModel::inspect_state_snapshot(path).map_err(aic_to_py)?;
+        serde_json::to_string(&summary).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    /// Launch rules that reject `config_json` as the timing model of the
+    /// engine described by `engine_args_json`; empty when compatible.
+    #[staticmethod]
+    fn engine_launch_mismatches(
+        config_json: &str,
+        engine_args_json: &str,
+    ) -> PyResult<Vec<String>> {
+        let config = parse_forward_pass_config(config_json)?;
+        let engine_args: serde_json::Value = serde_json::from_str(engine_args_json)
+            .map_err(|error| PyValueError::new_err(format!("invalid engine arguments: {error}")))?;
+        crate::engine::EngineLaunchConfig::timing_config_mismatches(engine_args, &config)
+            .map_err(|error| PyValueError::new_err(format!("{error:#}")))
+    }
+
+    /// Per-store estimation and correction readiness as JSON.
+    fn readiness_report(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner.readiness_report())
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    /// Deployment topology of the construction identity as JSON, or `None`.
+    fn deployment_topology(&self) -> PyResult<Option<String>> {
+        self.inner
+            .deployment_topology()
+            .map(|topology| {
+                serde_json::to_string(&topology)
+                    .map_err(|error| PyValueError::new_err(error.to_string()))
+            })
+            .transpose()
+    }
+
     /// Estimate one forward-pass iteration in ms. `fpm_json` is one iteration as
     /// a single FPM object or a per-attention-DP-rank array. Returns `None` for
     /// regression models without enough data yet and for learned models whose
@@ -2979,6 +3051,21 @@ mod tests {
             // Non-typed variants stay ValueError regardless of the sdk.
             let other = aic_to_py(AicError::InvalidEngineConfig("bad".to_string()));
             assert_eq!(other.get_type(py).name().unwrap().to_string(), "ValueError");
+
+            // Snapshot I/O maps to built-in OSError subclasses by kind.
+            for (kind, name) in [
+                (std::io::ErrorKind::NotFound, "FileNotFoundError"),
+                (std::io::ErrorKind::PermissionDenied, "PermissionError"),
+                (std::io::ErrorKind::AlreadyExists, "FileExistsError"),
+                (std::io::ErrorKind::InvalidData, "OSError"),
+            ] {
+                let error = aic_to_py(AicError::StateSnapshotIo {
+                    path: PathBuf::from("/snapshot"),
+                    source: std::io::Error::new(kind, "io"),
+                });
+                assert_eq!(error.get_type(py).name().unwrap().to_string(), name);
+                assert!(error.value(py).to_string().contains("/snapshot"));
+            }
 
             // The message survives the mapping.
             let msg_err = aic_to_py(AicError::PerfDatabase("missing table xyz".to_string()));
