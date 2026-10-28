@@ -24,6 +24,8 @@ from collector.helper import (
 
 pytestmark = pytest.mark.unit
 
+_REAL_DEVICE_TAG = helper._flashinfer_device_tag
+
 
 class _FakeTuner:
     instance = None
@@ -72,8 +74,10 @@ def fake_flashinfer(monkeypatch):
     monkeypatch.setitem(sys.modules, "flashinfer.autotuner", module)
     monkeypatch.delenv(FLASHINFER_AUTOTUNE_ENV, raising=False)
     monkeypatch.delenv(FLASHINFER_AUTOTUNE_BUDGET_ENV, raising=False)
-    # Healthy CUDA context unless a test says otherwise.
+    # Healthy CUDA context unless a test says otherwise; no device tag (other test modules
+    # leave a stub ``torch`` in sys.modules, so the tag must not depend on the import).
     monkeypatch.setattr(helper, "cuda_context_error", lambda device=None: None)
+    monkeypatch.setattr(helper, "_flashinfer_device_tag", lambda: "")
     return types.SimpleNamespace(events=events, active=active, tuner=_FakeTuner)
 
 
@@ -422,6 +426,8 @@ def test_autotune_lines_carry_the_cuda_device_tag(fake_flashinfer, monkeypatch, 
             return 3
 
     monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(cuda=_Cuda))
+    monkeypatch.setattr(helper, "_flashinfer_device_tag", _REAL_DEVICE_TAG)  # fixture blanks it
+    assert helper._flashinfer_device_tag() == " dev3"
 
     def tune_fn():
         fake_flashinfer.tuner.get().profiling_cache[("moe", 96)] = ((128, 2), None)
