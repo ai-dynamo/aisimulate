@@ -267,18 +267,24 @@ def test_ar_native_cuda_policy_keeps_ar_and_speculative_measurements_separate(pr
         ) == pytest.approx(1.0)
 
 
-def _speculative_execution(method):
+def _speculative_execution(method, *, canonical_target=None):
+    """Descriptor with a separate test draft, or the documented canonical MTP draft equal to the target."""
+    draft = (
+        (canonical_target["model"], canonical_target["model_revision"])
+        if canonical_target
+        else ("test/draft", "2" * 40)
+    )
     return {
         "kind": "speculative_round",
         "method": method,
         "num_draft_tokens": 3,
-        "draft_model": "test/draft",
-        "draft_revision": "2" * 40,
+        "draft_model": draft[0],
+        "draft_revision": draft[1],
         "timing_scope": "model_step_cuda",
     }
 
 
-def _install_speculative_rows(profile, timing_systems, timings):
+def _install_speculative_rows(profile, timing_systems, timings, *, canonical_target=None):
     """Write dp=1 rows for each method at identical coordinates with distinct (prefill, decode) ms."""
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -293,7 +299,12 @@ def _install_speculative_rows(profile, timing_systems, timings):
         deployment = load_fpm_profile(
             {
                 **profile,
-                "deployments": [{**profile["deployments"][0], "execution_profile": _speculative_execution(method)}],
+                "deployments": [
+                    {
+                        **profile["deployments"][0],
+                        "execution_profile": _speculative_execution(method, canonical_target=canonical_target),
+                    }
+                ],
             }
         ).deployments[0]
         identity = dict(zip(EXECUTION_COLUMNS, deployment.execution_identity(profile["model_revision"]), strict=True))
@@ -341,11 +352,13 @@ def _speculative_public(profile, timing_systems):
     )
 
 
-def _requested_method_profile(profile, method):
+def _requested_method_profile(profile, method, *, canonical=False):
     profile["model_revision"] = "1" * 40
     profile["deployments"] = profile["deployments"][:1]
     _observed_profile(profile, context=4096)
-    profile["deployments"][0]["execution_profile"] = _speculative_execution(method)
+    profile["deployments"][0]["execution_profile"] = _speculative_execution(
+        method, canonical_target=profile if canonical else None
+    )
 
 
 @pytest.mark.parametrize("method,other", [("eagle3", "mtp"), ("mtp", "eagle3")])
@@ -359,18 +372,29 @@ def test_speculative_method_never_borrows_the_other_methods_rows(profile, timing
         EngineReplayRunnerFactory().create(0).run(spec)
 
 
-@pytest.mark.parametrize("method,other", [("eagle3", "mtp"), ("mtp", "eagle3")])
+@pytest.mark.parametrize(
+    "method,other,canonical",
+    [("eagle3", "mtp", False), ("mtp", "eagle3", False), ("mtp", "eagle3", True)],
+    ids=["eagle3", "mtp", "mtp-canonical-target-draft"],
+)
 def test_speculative_round_prediction_preserves_progress_identity_and_observed_capacity(
-    profile, timing_systems, method, other
+    profile, timing_systems, method, other, canonical
 ):
     from aisimulate import _runtime
     from aisimulate.runner import EngineReplayRunnerFactory
     from aisimulate.sweeper import ReplayOutputRequirements
 
-    _requested_method_profile(profile, method)
-    execution = _speculative_execution(method)
+    _requested_method_profile(profile, method, canonical=canonical)
+    execution = profile["deployments"][0]["execution_profile"]
+    if canonical:
+        assert (execution["draft_model"], execution["draft_revision"]) == (profile["model"], profile["model_revision"])
     # The other method's rows share every coordinate but carry 10x timings.
-    _install_speculative_rows(profile, timing_systems, {method: (7.0, 11.0), other: (70.0, 110.0)})
+    _install_speculative_rows(
+        profile,
+        timing_systems,
+        {method: (7.0, 11.0), other: (70.0, 110.0)},
+        canonical_target=profile if canonical else None,
+    )
     public = _speculative_public(profile, timing_systems)
     restored = CorePredictionConfig.model_validate_json(public.model_dump_json())
     spec = prediction_to_replay_spec(restored)
