@@ -241,6 +241,21 @@ def test_weka_finite_lanes_do_not_duplicate_the_complete_corpus(tmp_path):
     assert plan["status"] == "admitted"
 
 
+def test_weka_import_reserves_the_graph_while_lowering_later_plays(tmp_path):
+    # Large metadata makes import dominate replay, so graph growth must still
+    # increase the estimate when another play has the same scratch requirement.
+    play = {**_play([_request()]), "metadata": "x" * 100000}
+    one = _write_trace(tmp_path, play, name="one.jsonl")
+    two = tmp_path / "two"
+    two.mkdir()
+    _write_trace(two, play, name="a.jsonl")
+    _write_trace(two, play, name="b.jsonl")
+    one_peak = _peak(_workload(one))
+    two_peak = _peak(_workload(two))
+    assert two_peak > one_peak
+    assert one_peak > 256 * MIB + 32 * one.stat().st_size + 128 + 32768
+
+
 def test_weka_snapshot_lanes_account_for_repeated_play_payloads(tmp_path):
     trace = _write_trace(tmp_path, _play([_request(64, 10**6)]))
     options = {"agentic_snapshot": {"seed": 42}}
@@ -319,10 +334,12 @@ def test_weka_hash_arrays_cross_parser_buffers_without_changing_allocations(tmp_
     trace = _write_trace(tmp_path, _play([_request(64, 3, hashes=hashes)]))
     assert trace.stat().st_size > 2 * 64 * 1024
     estimate = estimate_workload(_workload(trace), stack="engine")
-    assert estimate.allocation_model == "weka-materialized-v1"
+    assert estimate.allocation_model == "weka-materialized-v2"
     assert estimate.input_token_bytes == 4 * 64
     assert estimate.lower_bound_bytes == max(8, 4 * 3)
-    assert estimate.estimated_peak_bytes == 256 * MIB + 32 * trace.stat().st_size + 128 * len(hashes) + 32768
+    assert (
+        estimate.estimated_peak_bytes == 256 * MIB + 32 * trace.stat().st_size + 128 * len(hashes) + 32768 + 32 + 2048
+    )
 
 
 @pytest.mark.parametrize("value", [-1, 2**64, 1.5, True, None, "1", [1], {"nested": 1}])

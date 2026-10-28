@@ -971,7 +971,7 @@ def test_native_weka_keeps_qualified_parallel_admission(tmp_path, host, monkeypa
     factory = GuardedRunnerFactory(object(), "engine", ResourceConfig())
     workload = {"trace_path": str(trace), "trace_format": "weka"}
     expected = estimate_workload(workload, stack="engine")
-    assert expected.allocation_model == "weka-materialized-v1"
+    assert expected.allocation_model == "weka-materialized-v2"
     assert expected.estimated_peak_bytes is not None
     for lanes in (1, 32, 128, 512):
         candidate = {**workload, "agentic_lanes": lanes}

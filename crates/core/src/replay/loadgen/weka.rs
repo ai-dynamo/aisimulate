@@ -128,7 +128,6 @@ pub struct WekaImporter {
     requests: usize,
     raw_zero_outputs: usize,
     nested_timestamp_basis: WekaResolvedTimestampBasis,
-    raw_digest: String,
     header: AgenticMooncakeHeader,
     rows: tempfile::NamedTempFile,
 }
@@ -139,13 +138,18 @@ enum SubagentMode {
     Background,
 }
 
-impl WekaImporter {
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::open_with_options(path, WekaImportOptions::default())
-    }
+/// Immutable source snapshots with corpus-wide timestamp interpretation.
+struct WekaSource {
+    root: PathBuf,
+    snapshots: Vec<SourceSnapshot>,
+    raw_digest: String,
+    header: AgenticMooncakeHeader,
+    nested_timestamp_basis: WekaResolvedTimestampBasis,
+    preflight_plays: usize,
+}
 
-    pub fn open_with_options(path: impl AsRef<Path>, options: WekaImportOptions) -> Result<Self> {
-        let path = path.as_ref();
+impl WekaSource {
+    fn open(path: &Path, options: WekaImportOptions) -> Result<Self> {
         let (root, files) = collect_source_files(path)?;
         if files.is_empty() {
             bail!(
@@ -202,54 +206,6 @@ impl WekaImporter {
         let nested_timestamp_basis = evidence.resolve(options.nested_timestamp_basis);
         let digest = semantic_digest(&raw_digest, nested_timestamp_basis);
 
-        let mut plays = 0;
-        let mut requests = 0;
-        let mut raw_zero_outputs = 0;
-        let file_count = snapshots.len();
-        let mut canonical_rows =
-            tempfile::NamedTempFile::new().context("creating Weka row spool")?;
-        let mut row_writer = BufWriter::new(canonical_rows.as_file_mut());
-        for snapshot in &snapshots {
-            for_each_source_trace(
-                File::open(&snapshot.file).context("reopening Weka source snapshot")?,
-                snapshot.jsonl,
-                &snapshot.display_path,
-                &snapshot.relative_path,
-                |trace, source_name| {
-                    // Preflight the complete lowering contract before callers are
-                    // allowed to observe a single emitted row. This catches
-                    // malformed timing, ownership, status, and graph topology in
-                    // every play while keeping memory bounded to one play.
-                    let lowered = lower_trace(
-                        trace,
-                        source_name,
-                        plays,
-                        nested_timestamp_basis.effective_basis(),
-                    )?;
-                    validate_preflight_graph(trace.block_size, &lowered.rows)?;
-                    raw_zero_outputs += lowered.raw_zero_outputs;
-                    requests += lowered.rows.len();
-                    for row in lowered.rows {
-                        serde_json::to_writer(&mut row_writer, &row)
-                            .context("writing preflighted Weka row spool")?;
-                        row_writer
-                            .write_all(b"\n")
-                            .context("writing preflighted Weka row delimiter")?;
-                    }
-                    plays += 1;
-                    Ok(())
-                },
-            )?;
-        }
-        row_writer
-            .flush()
-            .context("flushing preflighted Weka row spool")?;
-        drop(row_writer);
-        canonical_rows
-            .as_file_mut()
-            .seek(SeekFrom::Start(0))
-            .context("rewinding preflighted Weka row spool")?;
-        debug_assert_eq!(plays, preflight_plays);
         tracing::info!(
             requested_basis = options.nested_timestamp_basis.as_str(),
             resolved_basis = nested_timestamp_basis.as_str(),
@@ -258,21 +214,18 @@ impl WekaImporter {
             } else {
                 "configured"
             },
-            files = file_count,
-            plays,
-            requests,
+            files = snapshots.len(),
+            plays = preflight_plays,
             relative_witness = evidence.relative_witness.as_deref().unwrap_or("none"),
             "resolved Weka nested timestamp basis for complete corpus"
         );
 
         Ok(Self {
             root,
-            files: file_count,
-            plays,
-            requests,
-            raw_zero_outputs,
-            nested_timestamp_basis,
+            snapshots,
             raw_digest,
+            nested_timestamp_basis,
+            preflight_plays,
             header: AgenticMooncakeHeader {
                 schema: AGENTIC_MOONCAKE_SCHEMA.to_string(),
                 version: AGENTIC_MOONCAKE_VERSION,
@@ -283,6 +236,96 @@ impl WekaImporter {
                     digest,
                 },
             },
+        })
+    }
+
+    // The sink must stay private until every play passes validation.
+    fn lower_rows(
+        &self,
+        mut emit: impl FnMut(AgenticMooncakeRow) -> Result<()>,
+    ) -> Result<WekaImportSummary> {
+        let mut plays = 0;
+        let mut requests = 0;
+        let mut raw_zero_outputs = 0;
+        for snapshot in &self.snapshots {
+            for_each_source_trace(
+                File::open(&snapshot.file).context("reopening Weka source snapshot")?,
+                snapshot.jsonl,
+                &snapshot.display_path,
+                &snapshot.relative_path,
+                |trace, source_name| {
+                    // Validate one play at a time before passing its rows to the private sink.
+                    let lowered = lower_trace(
+                        trace,
+                        source_name,
+                        plays,
+                        self.nested_timestamp_basis.effective_basis(),
+                    )?;
+                    validate_preflight_graph(trace.block_size, &lowered.rows)?;
+                    raw_zero_outputs += lowered.raw_zero_outputs;
+                    requests += lowered.rows.len();
+                    for row in lowered.rows {
+                        emit(row)?;
+                    }
+                    plays += 1;
+                    Ok(())
+                },
+            )?;
+        }
+        debug_assert_eq!(plays, self.preflight_plays);
+        Ok(WekaImportSummary {
+            header: self.header.clone(),
+            files: self.snapshots.len(),
+            plays,
+            requests,
+            raw_zero_outputs,
+            nested_timestamp_basis: self.nested_timestamp_basis,
+        })
+    }
+
+    fn into_graph(self, expected_block_size: Option<usize>) -> Result<AgenticTrace> {
+        assert_source_block_size(self.header.block_size, expected_block_size)?;
+        let mut builder = AgenticGraphBuilder::new(self.header.clone())?;
+        self.lower_rows(|row| builder.push(row))?;
+        drop(self);
+        builder.finish()
+    }
+}
+
+impl WekaImporter {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_options(path, WekaImportOptions::default())
+    }
+
+    pub fn open_with_options(path: impl AsRef<Path>, options: WekaImportOptions) -> Result<Self> {
+        let source = WekaSource::open(path.as_ref(), options)?;
+        let mut canonical_rows =
+            tempfile::NamedTempFile::new().context("creating Weka row spool")?;
+        let mut row_writer = BufWriter::new(canonical_rows.as_file_mut());
+        let summary = source.lower_rows(|row| {
+            serde_json::to_writer(&mut row_writer, &row)
+                .context("writing preflighted Weka row spool")?;
+            row_writer
+                .write_all(b"\n")
+                .context("writing preflighted Weka row delimiter")?;
+            Ok(())
+        })?;
+        row_writer
+            .flush()
+            .context("flushing preflighted Weka row spool")?;
+        drop(row_writer);
+        canonical_rows
+            .as_file_mut()
+            .seek(SeekFrom::Start(0))
+            .context("rewinding preflighted Weka row spool")?;
+        Ok(Self {
+            root: source.root,
+            files: summary.files,
+            plays: summary.plays,
+            requests: summary.requests,
+            raw_zero_outputs: summary.raw_zero_outputs,
+            nested_timestamp_basis: summary.nested_timestamp_basis,
+            header: summary.header,
             rows: canonical_rows,
         })
     }
@@ -407,7 +450,7 @@ pub(crate) fn load_weka_agentic_graph_cached(
         // A path is only a lookup hint. Re-hash its current bytes before every
         // reuse so replacing or editing a corpus can never return a stale
         // compiled graph. This still avoids the expensive snapshot, parse,
-        // lowering, row-spool, and graph-build work for sweep candidates.
+        // lowering and graph-build work for sweep candidates.
         let current_digest = compute_corpus_digest(path)?;
         let cache = cache
             .lock()
@@ -433,14 +476,10 @@ pub(crate) fn load_weka_agentic_graph_cached(
         }
     }
 
-    let importer = WekaImporter::open_with_options(path, options)?;
-    let header = importer.header().clone();
-    let raw_digest = importer.raw_digest.clone();
-    let resolved_timestamp_basis = importer.nested_timestamp_basis;
-    assert_source_block_size(header.block_size, expected_block_size)?;
-    let mut builder = AgenticGraphBuilder::new(header)?;
-    importer.for_each_row(|row| builder.push(row))?;
-    let graph = builder.finish()?;
+    let source = WekaSource::open(path, options)?;
+    let raw_digest = source.raw_digest.clone();
+    let resolved_timestamp_basis = source.nested_timestamp_basis;
+    let graph = source.into_graph(expected_block_size)?;
     if !use_cache {
         return Ok((graph, resolved_timestamp_basis, false));
     }
@@ -2546,6 +2585,68 @@ mod tests {
             error.to_string().contains("invalid request timestamp"),
             "{error:#}"
         );
+        for use_cache in [false, true] {
+            let error = load_weka_agentic_graph_cached(
+                directory.path(),
+                None,
+                WekaImportOptions::default(),
+                use_cache,
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("invalid request timestamp"),
+                "{error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_graph_matches_spooled_rows_and_keeps_source_snapshot() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.jsonl");
+        let first = trace_value(
+            "first",
+            serde_json::json!([
+                request(0.0, 7, 0, &[1, 2]),
+                {"t":2.0,"type":"subagent","agent_id":"worker","subagent_type":"Explore","duration_ms":400,"status":"completed","requests":[
+                    {"t":2.2,"type":"s","model":"model","in":8,"out":1,"hash_ids":[],"api_time":0.1}
+                ],"models":["model"]},
+                request(6.0, 12, 1, &[1, 2, 3]),
+            ]),
+        );
+        let last = trace_value(
+            "last",
+            (1..64)
+                .map(|index| {
+                    let mut row = request(index as f64 * 0.12345678901234567, 4, 2, &[index]);
+                    row["api_time"] = serde_json::json!(0.012345678901234567);
+                    row
+                })
+                .collect(),
+        );
+        let jsonl = format!("{first}\n{last}\n");
+        for nested_timestamp_basis in [
+            WekaNestedTimestampBasis::Auto,
+            WekaNestedTimestampBasis::Absolute,
+            WekaNestedTimestampBasis::Relative,
+        ] {
+            std::fs::write(&path, &jsonl).unwrap();
+            let options = WekaImportOptions {
+                nested_timestamp_basis,
+            };
+            let importer = WekaImporter::open_with_options(&path, options).unwrap();
+            let mut expected = AgenticGraphBuilder::new(importer.header().clone()).unwrap();
+            let summary = importer.for_each_row(|row| expected.push(row)).unwrap();
+            let expected = expected.finish().unwrap();
+            let (native, resolved) =
+                load_weka_agentic_graph_with_options(&path, Some(4), options).unwrap();
+            assert_eq!(native, expected);
+            assert_eq!(resolved, summary.nested_timestamp_basis);
+
+            let source = WekaSource::open(&path, options).unwrap();
+            std::fs::write(&path, "malformed replacement").unwrap();
+            assert_eq!(source.into_graph(Some(4)).unwrap(), expected);
+        }
     }
 
     #[test]
