@@ -462,6 +462,7 @@ def _build_sflow_variables(
     context: dict[str, Any],
 ) -> list[dict[str, Any]]:
     bench = param_values.get("BenchConfig", {}) or {}
+    sla = param_values.get("SlaConfig", {}) or {}
     wp = param_values.get("params", {}) or {}
     wc = param_values.get("WorkerConfig", {}) or {}
     model_path = context.get("model_path", "")
@@ -502,8 +503,9 @@ def _build_sflow_variables(
 
     vars_out.extend(
         [
-            _var("ISL", "Input sequence length", _int(bench.get("isl"), 4000), "integer"),
-            _var("OSL", "Output sequence length", _int(bench.get("osl"), 1000), "integer"),
+            # Same lengths that has_fixed_request_lengths gates the benchmark task on.
+            _var("ISL", "Input sequence length", _int(bench.get("isl") or sla.get("isl"), 4000), "integer"),
+            _var("OSL", "Output sequence length", _int(bench.get("osl") or sla.get("osl"), 1000), "integer"),
             _var("MULTI_ROUND", "Number of benchmark rounds", 20, "integer"),
             _var("CONCURRENCY", "Concurrency", ctx["sflow_concurrency"], "integer", domain=[ctx["sflow_concurrency"]]),
             _var("AIPERF_IMAGE", "AIPerf container image", ctx["sflow_aiperf_image"]),

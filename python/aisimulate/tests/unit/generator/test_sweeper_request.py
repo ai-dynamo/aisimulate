@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import shlex
 from pathlib import Path
@@ -339,6 +340,30 @@ def test_trace_workload_rejects_supplied_request_lengths(workload, overrides, su
             generator_overrides=overrides,
             model_facts=ModelFacts(is_moe=False),
         )
+
+
+@pytest.mark.parametrize(
+    ("workload", "context_length", "warned"),
+    [(_TRACE_WORKLOAD, 10000, True), (_TRACE_WORKLOAD, 16384, False), ({"isl": 8192, "osl": 1024}, 10000, False)],
+    ids=["trace-unaligned", "trace-aligned", "synthetic-unaligned"],
+)
+def test_trtllm_trace_warns_when_max_seq_len_is_off_the_block_grid(caplog, workload, context_length, warned):
+    with caplog.at_level(logging.WARNING, logger="aisimulate.generator.request.sweeper"):
+        from_sweeper_candidate(
+            _disagg_candidate(context_length=context_length),
+            workload=workload,
+            model_facts=ModelFacts(is_moe=True, architecture="DeepseekV3ForCausalLM"),
+        )
+
+    messages = [record.getMessage() for record in caplog.records if "tokens_per_block" in record.getMessage()]
+    if warned:
+        # Both roles use 64-token blocks; 10000 = 156 * 64 + 16.
+        assert [message.split(".")[0] for message in messages] == [
+            f"TRT-LLM {role} max_seq_len 10000 is not a multiple of tokens_per_block 64"
+            for role in ("prefill", "decode")
+        ]
+    else:
+        assert messages == []
 
 
 def test_trace_workload_is_rejected_for_a_slurm_bundle():

@@ -138,6 +138,15 @@ def test_trtllm_transfer_settings_stay_off_aggregated_workers(rule):
     assert result["params"]["agg"].get("cache_transceiver_max_tokens_in_buffer") is None
 
 
+@pytest.mark.parametrize("backend", ["vllm", "trtllm"])
+def test_sflow_benchmark_replays_sla_lengths_without_benchmark_lengths(backend):
+    artifacts = render_backend_templates(apply_rule_plugins(_params(preserve=True), backend), backend)
+
+    sflow = yaml.safe_load(artifacts["sflow.yaml"])
+    assert "name: benchmark" in artifacts["sflow.yaml"]
+    assert (sflow["variables"]["ISL"]["value"], sflow["variables"]["OSL"]["value"]) == (128, 16)
+
+
 def test_preserve_engine_limits_survives_typed_request_round_trip():
     params = _params(preserve=True)
 

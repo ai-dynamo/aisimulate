@@ -11,6 +11,7 @@ does not import Sweeper or Dynamo implementation types.
 from __future__ import annotations
 
 import copy
+import logging
 import math
 from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass, replace
@@ -29,6 +30,8 @@ from .schema import (
     SlaSpec,
     Topology,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SweeperCandidateError(ValueError):
@@ -315,6 +318,26 @@ def _request_lengths(workload: Mapping[str, Any], raw: Mapping[str, Any]) -> tup
     return _positive_int(isl, path="workload.isl"), _positive_int(osl, path="workload.osl")
 
 
+def _warn_unaligned_trace_transfer_buffer(roles: Mapping[str, RoleSizing]) -> None:
+    """Warn when TRT-LLM may size a trace's KV-transfer buffer off the block grid.
+
+    A trace leaves the buffer size to TRT-LLM. The candidate's backend version
+    is not the deployed runtime, so this only warns instead of rejecting.
+    """
+    for role, sizing in roles.items():
+        max_seq_len = sizing.extra.get("max_seq_len")
+        tokens_per_block = sizing.extra["tokens_per_block"]
+        if max_seq_len is not None and max_seq_len % tokens_per_block:
+            logger.warning(
+                "TRT-LLM %s max_seq_len %d is not a multiple of tokens_per_block %d. A trace leaves the KV-transfer "
+                "buffer size to TRT-LLM, and 1.3.0rc3 through 1.3.0rc22 use max_seq_len unrounded, so the worker "
+                "can fail at startup on those runtimes.",
+                role,
+                max_seq_len,
+                tokens_per_block,
+            )
+
+
 def from_sweeper_candidate(
     candidate: Any,
     *,
@@ -418,6 +441,8 @@ def from_sweeper_candidate(
     if isl is None and deployment_target == "slurm":
         # The Slurm bundle's default operation replays one fixed ISL/OSL.
         raise SweeperCandidateError("a Slurm bundle needs a fixed request length; use a Dynamo target for a trace")
+    if isl is None and backend == "trtllm" and mode == "disagg":
+        _warn_unaligned_trace_transfer_buffer(roles)
 
     # Evaluated facts take precedence over deployment-environment overrides.
     raw["backend"] = backend
