@@ -2245,7 +2245,7 @@ def _execute_tasks(
         eligible_scores = full_target_scores or eligible_scores
     if not eligible_scores:
         logger.warning("No nonempty configuration found for the target load.")
-        return "none", best_configs, pareto_fronts, best_throughputs, best_latencies, outcomes
+        return "none", {}, pareto_fronts, best_throughputs, best_latencies, outcomes
     chosen_exp = max(eligible_scores, key=eligible_scores.get)
 
     log_final_summary(

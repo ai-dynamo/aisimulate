@@ -803,7 +803,7 @@ def test_load_match_prefers_sla_compliant_partial_load(
 
     if gpu_cap < 2:
         assert chosen == "none"
-        assert all(frame.empty for frame in configs.values())
+        assert configs == {}
         return
     assert chosen == "disagg"
     assert all((frame["total_gpus_needed"] <= 4).all() for frame in configs.values())
