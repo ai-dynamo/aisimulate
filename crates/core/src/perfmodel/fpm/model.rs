@@ -483,6 +483,64 @@ enum ForwardPassPerfMode {
 }
 
 impl ForwardPassPerfModel {
+    fn validate_speculative_reference(&self) -> Result<(), AicError> {
+        let already_speculative = self.provenance.as_ref().is_some_and(|provenance| {
+            provenance.config.nextn != 0 || provenance.config.speculation.is_some()
+        });
+        let native_is_stp_fpm = match &self.mode {
+            ForwardPassPerfMode::Native { engine, .. } => engine.is_autoregressive_fpm(),
+            _ => true,
+        };
+        if already_speculative || !native_is_stp_fpm {
+            return Err(AicError::InvalidEngineConfig(
+                "draft_length scaling requires an ordinary STP FPM estimator; op-level, hybrid and measured SD-round models cannot be scaled".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Estimate a complete speculative decode iteration as
+    /// `(1.25 + 0.08*d) * F_STP((d+1)*B, K_total)`.
+    ///
+    /// The configured estimator remains an ordinary STP model. Each rank's
+    /// logical request count is widened, its total past KV is preserved, and
+    /// the multiplier is applied once after STP estimation/correction and rank
+    /// reduction. All FPM estimator kinds use the same rule; it does not build
+    /// a draft graph or assume accepted-token progress. Pure decode only.
+    /// Missing baseline data/readiness remain errors/None. The empirical fit
+    /// was measured at d=1..4; larger depths are extrapolation.
+    pub fn estimate_speculative_forward_pass_time_ms(
+        &self,
+        metrics_by_rank: &[ForwardPassMetrics],
+        draft_length: u32,
+    ) -> Result<Option<f64>, AicError> {
+        self.validate_speculative_reference()?;
+        let (reference, factor) =
+            super::speculative::reference_metrics(metrics_by_rank, draft_length)?;
+        Ok(self
+            .estimate_forward_pass_time_ms(&reference)?
+            .map(|ms| ms * factor))
+    }
+
+    /// The speculative estimate with the original STP support, without
+    /// relabelling recorded STP observations as measured speculative timings.
+    pub fn estimate_speculative_forward_pass_detailed(
+        &self,
+        metrics_by_rank: &[ForwardPassMetrics],
+        draft_length: u32,
+    ) -> Result<super::SpeculativeForwardPassEstimate, AicError> {
+        self.validate_speculative_reference()?;
+        let (reference, scaling_factor) =
+            super::speculative::reference_metrics(metrics_by_rank, draft_length)?;
+        let stp_reference = self.estimate_forward_pass_detailed(&reference)?;
+        Ok(super::SpeculativeForwardPassEstimate {
+            latency_ms: stp_reference.latency_ms.map(|ms| ms * scaling_factor),
+            draft_length,
+            scaling_factor,
+            stp_reference,
+        })
+    }
+
     /// Internal: build a native model directly from an already-compiled
     /// [`Engine`]. Holds the actual native-mode logic; the public
     /// [`Self::best_available`] constructor compiles the `Engine` (crossing

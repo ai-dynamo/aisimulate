@@ -851,6 +851,20 @@ impl Engine {
         self.fpm_split().map(|(p, d, _, _)| (p, d))
     }
 
+    /// Whether this engine supplies an unscaled STP whole-forward reference.
+    pub(crate) fn is_autoregressive_fpm(&self) -> bool {
+        self.nextn == 0
+            && self.fpm_execution_profile.is_none()
+            && self
+                .fpm_split()
+                .is_some_and(|(prefill, decode, ctx_tail, gen_tail)| {
+                    prefill.verify_width == 1
+                        && decode.verify_width == 1
+                        && ctx_tail.is_empty()
+                        && gen_tail.is_empty()
+                })
+    }
+
     /// Convenience constructor: deserialize a bincode `EngineSpec` and load the
     /// matching `PerfDatabase` from its identity, then [`Engine::build`].
     ///
@@ -4931,6 +4945,39 @@ pub(crate) mod tests {
     fn full_round_engine(tmp: &std::path::Path) -> Engine {
         let spec = full_round_spec(tmp);
         Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp).unwrap()
+    }
+
+    #[test]
+    fn speculative_scaling_rejects_a_measured_round_without_construction_provenance() {
+        let tmp = tempfile::tempdir().unwrap();
+        let model = crate::ForwardPassPerfModel::from_engine(
+            Arc::new(full_round_engine(tmp.path())),
+            Default::default(),
+        );
+        let metrics = [ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_decode_requests: 1,
+                sum_decode_kv_tokens: 4096,
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        assert_eq!(
+            model.estimate_forward_pass_time_ms(&metrics).unwrap(),
+            Some(7.0)
+        );
+        assert!(
+            model
+                .estimate_speculative_forward_pass_time_ms(&metrics, 3)
+                .unwrap_err()
+                .to_string()
+                .contains("ordinary STP FPM")
+        );
+        assert!(
+            model
+                .estimate_speculative_forward_pass_detailed(&metrics, 3)
+                .is_err()
+        );
     }
 
     #[test]

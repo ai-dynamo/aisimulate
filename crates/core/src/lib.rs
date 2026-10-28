@@ -93,5 +93,5 @@ pub(crate) use perfmodel::{py, py_ops};
 
 pub use perfmodel::{
     DirectFpmQueryEvidence, ForwardPassEstimate, FpmCoordinates, FpmEstimateEvidence,
-    FpmMeasurementSupport, FpmQueryResolution, FpmRankEstimate,
+    FpmMeasurementSupport, FpmQueryResolution, FpmRankEstimate, SpeculativeForwardPassEstimate,
 };

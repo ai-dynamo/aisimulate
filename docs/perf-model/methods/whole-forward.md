@@ -14,6 +14,94 @@ Use [FPM self-service](../fpm-self-service/README.md) to prepare, review, collec
 or import a profile. The existing [implementation guide](../fpm-self-service/implementation.md)
 owns artifact validation, publication, checkpoints, and recovery.
 
+## Estimate speculative decode from an STP FPM
+
+An ordinary single-token-prediction (STP) FPM can also estimate the complete
+latency of one speculative decode iteration. Supply `draft_length` on the
+existing query API; the model itself remains an STP estimator:
+
+```python
+from aisimulate_core.sdk import RustForwardPassPerfModel
+
+model = RustForwardPassPerfModel.best_available(stp_config)
+metrics = {
+    "scheduled_requests": {
+        "num_decode_requests": 8,
+        "sum_decode_kv_tokens": 32768,
+    }
+}
+sd_iteration_ms = model.estimate_forward_pass_time_ms(metrics, draft_length=3)
+detail = model.estimate_forward_pass_detailed(metrics, draft_length=3)
+```
+
+The fixed rule is:
+
+$$\widehat T_{\mathrm{SD,iter}} = (0.08d + 1.25)\,F_{\mathrm{STP}}((d+1)B, K_{\mathrm{total}}).$$
+
+- `d` is the positive integer draft length, with a chain verify width of `d+1`.
+- `B` is each rank's logical decode request count; `K_total` is its total past
+  KV token count, excluding the current input tokens. The STP reference uses
+  `(d+1)B` virtual requests and preserves `K_total` exactly. With per-request
+  feature lists, each original KV length is split evenly across `d+1` virtual
+  requests, distributing integer remainders without dropping tokens; their
+  STP extend lengths are one. This is an empirical mapping, not an equivalent
+  attention graph.
+- The result is **the complete SD decode iteration**, including draft and
+  verification work. It is not verification-only or time per accepted token.
+  Acceptance/progress and draft memory remain separate concerns. The STP
+  reference is not an additional executed stage.
+
+There is no model, GPU or SD-algorithm allowlist and no draft checkpoint is
+required. Interpolation (direct or SOL-assisted), regression and learned FPM
+estimators use the same rule, applying the multiplier once after the STP
+prediction, its existing corrections and rank reduction. The example queries
+STP at batch 32 and total KV 32768, then multiplies by 1.49. The widened
+reference must still be supported by the selected estimator: missing data,
+missing learned stores and regression readiness retain their normal behavior.
+
+Omitting `draft_length` preserves the existing STP API and result schema.
+Supplying it to the detailed query returns `latency_ms`, `draft_length`,
+`scaling_factor` and the original `stp_reference` estimate/evidence. Recorded
+STP observations are never relabelled as measured SD timings. This per-query
+option does not modify the model, cache identity, saved configuration or
+tuning state; `tune_with_fpms` continues to take STP observations. The Rust
+counterparts are `estimate_speculative_forward_pass_time_ms(metrics, d)` and
+`estimate_speculative_forward_pass_detailed(metrics, d)`.
+
+V1 accepts pure decode iterations (including idle ranks). Prefill/mixed work,
+operation-level estimators, hybrid draft graphs and already-measured SD-round
+estimators are rejected. This option is a prediction API, not a new replay
+executor or CLI deployment switch. Ordinary replay SD controls and measured
+SD-round profiles retain their existing contracts.
+
+### Calibration and limitations
+
+The two fixed coefficients were compared against protocol-5 measurements of
+Qwen3.5-4B native MTP and Qwen3-8B EAGLE3 on H100, H200, B200 and GB200:
+TP1 BF16, top-k 1, `d=1/2/3/4`, batch `1/4/8`, initial context `1024/4096`,
+two repetitions and 256 generated tokens. The CUDA interval brackets the
+model-worker forward call, including possible host launch gaps; it excludes
+prefill and scheduler work outside that call. Offload, overlap scheduling and
+radix caching were disabled.
+
+![Repetition-1 MAPE by GPU, model/method and draft depth](sd-fpm-depth-mape.svg)
+
+The proposed fixed rule has **8.08% round-weighted MAPE**, **7.33%
+equal-configuration MAPE**, **18.19% P90 absolute error**, and **31.53%
+worst-configuration MAPE** over 18,836 repetition-1 rounds / 192 configurations.
+Repetition 0 defines the frozen measured STP reference. These data were already
+inspected during the study; they are not a new blind test. Errors exclude
+actual FPM prediction error and do not establish accuracy on every supported
+model. One model per method confounds model/method effects. Hopper MTP used
+FlashInfer, while Blackwell MTP used TRT-LLM MHA; EAGLE3 used FlashInfer on both.
+The family comparison includes runtime/backend differences. Depths beyond
+1–4, other models and production workloads are extrapolation.
+
+The figure records the study values supplied with this change. Full observations,
+exclusions and fitting comparisons are in the
+[study report](https://gitlab-pages-72a7bf.gitlab-master-pages.nvidia.com/sd-unified-depth.html)
+(NVIDIA access; report revision `19ff8f8a4d6018fe0d2009af1013aae90df882a6`).
+
 ## Recorded speculative-round identity
 
 A profile deployment may record the following optional identity. The parent
