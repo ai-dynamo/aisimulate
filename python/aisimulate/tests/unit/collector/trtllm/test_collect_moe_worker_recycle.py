@@ -49,8 +49,12 @@ def _load(*, allocated_mb: float = 0.0):
         "EXIT_CODE_RESTART": EXIT_CODE_RESTART,
         "torch": SimpleNamespace(
             device=lambda value: f"device:{value}",
-            cuda=SimpleNamespace(memory_allocated=lambda device: allocated_mb * 2**20),
+            cuda=SimpleNamespace(
+                memory_allocated=lambda device: allocated_mb * 2**20,
+                memory_reserved=lambda device: allocated_mb * 2**20,
+            ),
         ),
+        "_print_live_cuda_tensors": lambda device: None,
         "gc_collect": lambda: gc_calls.append(True),
         "_run_moe_case": lambda *args, **kwargs: cases.append((args, kwargs)),
     }
@@ -80,6 +84,7 @@ def test_default_policy_recycles_after_sixteen_cases(clean_env, capsys):
     out = capsys.readouterr().out
     assert "trtllm.moe: recycling worker after 16 case(s)" in out
     assert "every 16" in out
+    assert out.count("MiB allocated, ") == 16, "one memory line per case, recycle or not"
 
 
 def test_leak_guard_recycles_immediately_when_memory_stays_allocated(clean_env, capsys):

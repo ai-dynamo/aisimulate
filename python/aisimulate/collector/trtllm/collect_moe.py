@@ -983,6 +983,32 @@ def _worker_restart_policy() -> tuple[int, int] | None:
     return every, leak_mb
 
 
+def _print_live_cuda_tensors(device, top: int = 8) -> None:
+    """TRTLLM_MOE_LEAK_DEBUG=1: name what still pins CUDA memory after a case.
+
+    b200 probe 2026-10-29 (jobs 514778748/514778867): 2.7-86 GiB stayed allocated after
+    every DeepSeek-V3 fp8_block case, so the leak guard recycled the worker each time and
+    the policy bought nothing. Lists the largest live CUDA tensors with the types of the
+    objects that reference them (gc view; a traceback-free best effort).
+    """
+    sizes = []
+    for obj in gc.get_objects():
+        try:
+            if isinstance(obj, torch.Tensor) and obj.is_cuda and obj.device == device:
+                sizes.append((obj.numel() * obj.element_size(), obj))
+        except Exception:  # gc.get_objects can hand back half-built objects
+            continue
+    sizes.sort(key=lambda item: -item[0])
+    total = sum(size for size, _ in sizes)
+    print(f"trtllm.moe: leak debug: {len(sizes)} live CUDA tensors, {total / 2**20:.0f} MiB; largest:")
+    for size, tensor in sizes[:top]:
+        referrers = [type(r).__name__ for r in gc.get_referrers(tensor) if r is not sizes][:4]
+        print(
+            f"  {size / 2**20:8.0f} MiB {tuple(tensor.shape)} {tensor.dtype} "
+            f"param={isinstance(tensor, torch.nn.Parameter)} referrers={referrers}"
+        )
+
+
 def _recycle_worker_if_due(device) -> None:
     """Exit this worker with EXIT_CODE_RESTART when the recycling policy says so.
 
@@ -997,6 +1023,13 @@ def _recycle_worker_if_due(device) -> None:
     _cases_since_worker_start += 1
     gc_collect()
     allocated_mb = torch.cuda.memory_allocated(device) / 2**20
+    reserved_mb = torch.cuda.memory_reserved(device) / 2**20
+    print(
+        f"trtllm.moe: after case {_cases_since_worker_start} on this worker: "
+        f"{allocated_mb:.0f} MiB allocated, {reserved_mb:.0f} MiB reserved"
+    )
+    if os.getenv("TRTLLM_MOE_LEAK_DEBUG", "0") == "1" and allocated_mb > 256:
+        _print_live_cuda_tensors(device)
     due_count = every > 0 and _cases_since_worker_start >= every
     due_leak = leak_mb > 0 and allocated_mb > leak_mb
     if not (due_count or due_leak):
