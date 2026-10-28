@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
 
 //! Radix-tree KV cache for SGLang engine simulation.
 //!
@@ -13,7 +16,6 @@ use rustc_hash::FxHashMap;
 use slotmap::{SlotMap, new_key_type};
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
-use std::sync::Arc;
 use std::time::Instant;
 
 new_key_type! {
@@ -44,7 +46,6 @@ impl KvPageId {
 /// Manages free / allocated pages for the simulated SGLang KV cache.
 ///
 /// SGLang's paged allocator owns and frees whole pages in production.
-#[derive(Clone)]
 pub struct PagePool {
     next_fresh: usize,
     free: Vec<KvPageId>,
@@ -159,7 +160,6 @@ impl PagePool {
 }
 
 /// A single node in the radix tree.
-#[derive(Clone)]
 pub struct TreeNode {
     /// Children keyed by the first complete page on the child edge.
     pub children: FxHashMap<LocalBlockHash, NodeId>,
@@ -170,15 +170,25 @@ pub struct TreeNode {
     /// page identity so completed radix state does not retain token IDs.
     /// Consequently, as in router-side indexing, hash collisions are treated
     /// as identical pages rather than guarded by an exact-token comparison.
-    /// Admission snapshots share edge contents. Copy only an edge that changes
-    /// while a snapshot is live; normal decode extensions retain their capacity.
-    pub key: Arc<Vec<LocalBlockHash>>,
+    pub key: Vec<LocalBlockHash>,
     /// One physical page ID per key. Length = `key.len()`.
-    pub value: Arc<Vec<KvPageId>>,
+    pub value: Vec<KvPageId>,
     /// Walk-to-root reference count (protected when > 0).
     pub lock_ref: usize,
     /// Monotonic timestamp for LRU eviction.
     pub last_access_time: Instant,
+    /// Bumped whenever this edge's tail changes in place (leaf extension or partial eviction),
+    /// so a [`PrefixMatchHint`] ending at this node is not reused across such a change.
+    edge_version: u64,
+}
+
+/// Where a read-only prefix match fully matched its deepest node, so the same page hashes can be
+/// matched again from that node instead of from the root.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PrefixMatchHint {
+    node: NodeId,
+    edge_version: u64,
+    pages: usize,
 }
 
 /// Radix tree for SGLang KV cache simulation.
@@ -200,7 +210,6 @@ pub struct RadixCache {
 }
 
 /// Optional forecast metadata; physical ownership and leaf eligibility stay in the radix tree.
-#[derive(Clone)]
 struct BeladyLeaves {
     oracle: BeladyOracle,
     cursor: usize,
@@ -210,58 +219,27 @@ struct BeladyLeaves {
     indexed: FxHashMap<NodeId, (SequenceHash, usize)>,
 }
 
-/// Leave the suffix in `edge` and return a compact prefix. When a snapshot
-/// shares the edge, copy each half once instead of cloning before splitting.
-fn split_edge_prefix<T: Clone>(edge: &mut Arc<Vec<T>>, at: usize) -> Vec<T> {
-    if let Some(values) = Arc::get_mut(edge) {
-        let suffix = values.split_off(at);
-        let mut prefix = std::mem::replace(values, suffix);
-        // The short prefix must not retain the original edge's allocation.
-        prefix.shrink_to_fit();
-        prefix
-    } else {
-        let prefix = edge[..at].to_vec();
-        *edge = Arc::new(edge[at..].to_vec());
-        prefix
-    }
-}
-
-fn truncate_edge<T: Clone>(edge: &mut Arc<Vec<T>>, len: usize) {
-    if let Some(values) = Arc::get_mut(edge) {
-        values.truncate(len);
-    } else {
-        *edge = Arc::new(edge[..len].to_vec());
-    }
+/// Leave the suffix in `edge` and return a compact prefix.
+fn split_edge_prefix<T>(edge: &mut Vec<T>, at: usize) -> Vec<T> {
+    let suffix = edge.split_off(at);
+    let mut prefix = std::mem::replace(edge, suffix);
+    // The short prefix must not retain the original edge's allocation.
+    prefix.shrink_to_fit();
+    prefix
 }
 
 impl RadixCache {
-    /// Snapshot allocator and radix metadata for a fallible admission transaction.
-    /// This is not a second owner of live request leases; only one cache state may commit.
-    pub(crate) fn admission_checkpoint(&self) -> Self {
-        Self {
-            nodes: self.nodes.clone(),
-            root: self.root,
-            page_pool: self.page_pool.clone(),
-            page_size: self.page_size,
-            #[cfg(test)]
-            test_now: self.test_now,
-            evictable_leaves: self.evictable_leaves.clone(),
-            belady: self.belady.clone(),
-            evictable_size: self.evictable_size,
-            protected_size: self.protected_size,
-        }
-    }
-
     pub fn new(total_tokens: usize, page_size: usize) -> Self {
         assert!(page_size >= 1, "page_size must be >= 1");
         let mut nodes = SlotMap::with_key();
         let root = nodes.insert(TreeNode {
             children: FxHashMap::default(),
             parent: None,
-            key: Arc::default(),
-            value: Arc::default(),
+            key: Vec::new(),
+            value: Vec::new(),
             lock_ref: 0,
             last_access_time: Instant::now(),
+            edge_version: 0,
         });
         Self {
             nodes,
@@ -543,6 +521,9 @@ impl RadixCache {
 
             if common_len < child_len {
                 if common_len > 0 {
+                    // Refresh the matched child before splitting it, so both the retained
+                    // suffix and the new prefix node it seeds count as just accessed.
+                    self.touch_node(child_id, now);
                     let intermediate = self.split_node(child_id, common_len);
                     current = intermediate;
                 }
@@ -562,7 +543,7 @@ impl RadixCache {
                 self.touch_node(id, now);
             }
         } else if lock_match {
-            // A partial edge match keeps the split node's inherited timestamp.
+            // A split node inherits the timestamp just given to its suffix.
             self.inc_lock_ref(current);
         }
 
@@ -581,9 +562,52 @@ impl RadixCache {
 
     /// Read-only prefix match using page hashes already owned by the request.
     pub(crate) fn prefix_match_hashes_len(&self, page_keys: &[LocalBlockHash]) -> usize {
-        let mut current = self.root;
-        let mut matched_pages: usize = 0;
+        self.prefix_match_hashes_from(self.root, 0, page_keys).0 * self.page_size
+    }
 
+    /// Read-only prefix match that resumes from `hint` when its node is unchanged, and updates
+    /// `hint` for the next call. `hint` must come from a match of the same request's page hashes,
+    /// which only grow, so the prefix it covers is unchanged.
+    ///
+    /// Content on the path to the hinted node can only change by evicting that node (its
+    /// descendants go first) or by changing its own tail in place; splits keep the path intact.
+    /// Matching beyond it walks on as usual, so newly inserted children are still found.
+    pub(crate) fn prefix_match_hashes_len_hinted(
+        &self,
+        page_keys: &[LocalBlockHash],
+        hint: &mut Option<PrefixMatchHint>,
+    ) -> usize {
+        let (start, start_pages) = match *hint {
+            Some(hint)
+                if hint.pages <= page_keys.len()
+                    && self
+                        .nodes
+                        .get(hint.node)
+                        .is_some_and(|node| node.edge_version == hint.edge_version) =>
+            {
+                (hint.node, hint.pages)
+            }
+            _ => (self.root, 0),
+        };
+        let (matched_pages, node, node_pages) =
+            self.prefix_match_hashes_from(start, start_pages, page_keys);
+        *hint = Some(PrefixMatchHint {
+            node,
+            edge_version: self.nodes[node].edge_version,
+            pages: node_pages,
+        });
+        matched_pages * self.page_size
+    }
+
+    /// Match `page_keys[matched_pages..]` below `current`, which fully matches
+    /// `page_keys[..matched_pages]`. Returns the matched page count and the deepest fully matched
+    /// node with its page count.
+    fn prefix_match_hashes_from(
+        &self,
+        mut current: NodeId,
+        mut matched_pages: usize,
+        page_keys: &[LocalBlockHash],
+    ) -> (usize, NodeId, usize) {
         while matched_pages < page_keys.len() {
             let child_id = match self.nodes[current]
                 .children
@@ -598,15 +622,14 @@ impl RadixCache {
             let common_len = Self::key_match(child_key, &page_keys[matched_pages..]);
 
             if common_len < child_key.len() {
-                matched_pages += common_len;
-                break;
+                return (matched_pages + common_len, current, matched_pages);
             }
 
             matched_pages += common_len;
             current = child_id;
         }
 
-        matched_pages * self.page_size
+        (matched_pages, current, matched_pages)
     }
 
     /// Insert a token sequence into the tree. Key is page-aligned before insertion.
@@ -718,9 +741,6 @@ impl RadixCache {
             prefix_len <= aligned_len,
             "prefix length {prefix_len} exceeds aligned key length {aligned_len}"
         );
-        if aligned_len == prefix_len {
-            return start_node;
-        }
         let page_keys = self.page_hashes(&key[prefix_len..aligned_len]);
         self.insert_page_hash_suffix(
             start_node,
@@ -743,11 +763,12 @@ impl RadixCache {
             page_keys.len(),
             page_ids.len()
         );
+        // Re-inserting an already cached sequence still refreshes its path.
+        let now = self.now();
+        self.touch_path(start_node, now);
         if page_keys.is_empty() {
             return start_node;
         }
-        let now = self.now();
-        self.touch_path(start_node, now);
 
         let mut current = start_node;
         let mut key_offset = 0;
@@ -790,11 +811,12 @@ impl RadixCache {
                     child_key.len(),
                 )
             };
+            // Refresh a partially matched child too, before it is split.
+            self.touch_node(child_id, now);
 
             if common_len == child_len {
                 key_offset += common_len;
                 current = child_id;
-                self.touch_node(current, now);
             } else {
                 if common_len > 0 {
                     let intermediate = self.split_node(child_id, common_len);
@@ -837,8 +859,9 @@ impl RadixCache {
         node.last_access_time = now;
         debug_assert!(node.children.is_empty());
         debug_assert!(node.lock_ref <= 1);
-        Arc::make_mut(&mut node.key).extend_from_slice(key);
-        Arc::make_mut(&mut node.value).extend_from_slice(value);
+        node.key.extend_from_slice(key);
+        node.value.extend_from_slice(value);
+        node.edge_version += 1;
         if node.lock_ref == 0 {
             self.evictable_size += key.len() * self.page_size;
         } else {
@@ -877,10 +900,11 @@ impl RadixCache {
         let intermediate = TreeNode {
             children: inter_children,
             parent: child_parent,
-            key: Arc::new(prefix_key),
-            value: Arc::new(prefix_value),
+            key: prefix_key,
+            value: prefix_value,
             lock_ref,
             last_access_time: accessed,
+            edge_version: 0,
         };
         let inter_id = self.nodes.insert(intermediate);
 
@@ -908,10 +932,11 @@ impl RadixCache {
         let new_node = TreeNode {
             children: FxHashMap::default(),
             parent: Some(parent_id),
-            key: Arc::new(key.to_vec()),
-            value: Arc::new(value.to_vec()),
+            key: key.to_vec(),
+            value: value.to_vec(),
             lock_ref: 0,
             last_access_time: now,
+            edge_version: 0,
         };
         let ck = key[0];
         let new_id = self.nodes.insert(new_node);
@@ -1037,7 +1062,8 @@ impl RadixCache {
                 let split_pos = victim_pages - eviction_pages;
                 let (nodes, page_pool) = (&mut self.nodes, &mut self.page_pool);
                 let victim_node = &mut nodes[victim_id];
-                truncate_edge(&mut victim_node.key, split_pos);
+                victim_node.key.truncate(split_pos);
+                victim_node.edge_version += 1;
                 let evicted_values = &victim_node.value[split_pos..];
                 if let Some(belady) = &mut self.belady {
                     for page in evicted_values {
@@ -1046,7 +1072,7 @@ impl RadixCache {
                 }
                 page_pool.free_pages(evicted_values);
                 evicted_indices.extend_from_slice(evicted_values);
-                truncate_edge(&mut victim_node.value, split_pos);
+                victim_node.value.truncate(split_pos);
 
                 self.evictable_size -= eviction_len;
                 evicted += eviction_len;
@@ -1119,29 +1145,20 @@ mod tests {
         .unwrap()
     }
 
-    #[rstest::rstest]
-    fn belady_reranks_compressed_tail_before_evicting_its_prefix(
-        #[values(false, true)] shared: bool,
-    ) {
+    #[test]
+    fn belady_reranks_compressed_tail_before_evicting_its_prefix() {
         let mut cache = RadixCache::new(3, 1);
         cache.set_belady_oracle(oracle_for_prompts(&[&[1], &[3], &[1, 2]]));
         let ab = cache.page_pool.allocate(2).unwrap();
         cache.insert(&[1, 2], &ab);
         let c = cache.page_pool.allocate(1).unwrap();
         cache.insert(&[3], &c);
-        let snapshot = shared.then(|| cache.admission_checkpoint());
 
         let (tokens, pages) = cache.evict(2);
         assert_eq!((tokens, pages), (2, vec![KvPageId(1), KvPageId(2)]));
         assert_eq!(cache.prefix_match_len(&[1, 2]), 1);
         assert_eq!(cache.prefix_match_len(&[3]), 0);
         assert_eq!(cache.available_tokens(), 2);
-        if let Some(mut saved) = snapshot {
-            assert_eq!(saved.prefix_match_len(&[1, 2]), 2);
-            assert_eq!(saved.prefix_match_len(&[3]), 1);
-            assert_eq!(saved.available_tokens(), 0);
-            assert_eq!(saved.evict(2).1, vec![KvPageId(1), KvPageId(2)]);
-        }
     }
 
     #[test]
@@ -1317,31 +1334,50 @@ mod tests {
         assert_eq!(cache.match_prefix(&[1, 2, 3, 4, 5, 6, 7, 8]).0, 8);
     }
 
-    #[rstest::rstest]
-    fn repeated_prefix_splits_keep_retained_capacity_proportional_to_live_pages(
-        #[values(false, true)] shared: bool,
-    ) {
+    #[test]
+    fn hinted_prefix_match_follows_tree_changes() {
+        let query = RadixCache::new(1, 1).page_hashes(&[1, 2, 3, 4, 5, 6]);
+        let check = |cache: &RadixCache, hint: &mut Option<PrefixMatchHint>, expected: usize| {
+            assert_eq!(cache.prefix_match_hashes_len_hinted(&query, hint), expected);
+            assert_eq!(cache.prefix_match_hashes_len(&query), expected);
+        };
+
+        // In-place changes to the hinted leaf's tail.
+        let mut cache = RadixCache::new(100, 1);
+        let mut hint = None;
+        cache.insert(&[1, 2, 3], &[0, 1, 2]);
+        check(&cache, &mut hint, 3);
+        let (_, leaf) = cache.match_prefix(&[1, 2, 3]);
+        cache.insert_from_node(leaf, 3, &[1, 2, 3, 4], &[0, 1, 2, 3]);
+        check(&cache, &mut hint, 4);
+        cache.evict(2);
+        check(&cache, &mut hint, 2);
+        cache.evict(2);
+        check(&cache, &mut hint, 0);
+
+        // A new child below the hinted internal node, then splits above and at the hinted node.
+        let mut cache = RadixCache::new(100, 1);
+        let mut hint = None;
+        cache.insert(&[1, 2, 3, 9], &[0, 1, 2, 3]);
+        cache.insert(&[1, 2, 3, 8], &[0, 1, 2, 4]);
+        check(&cache, &mut hint, 3);
+        cache.insert(&[1, 2, 3, 4, 5], &[0, 1, 2, 5, 6]);
+        check(&cache, &mut hint, 5);
+        cache.insert(&[1, 7], &[0, 7]);
+        check(&cache, &mut hint, 5);
+        cache.insert(&[1, 2, 3, 4, 7], &[0, 1, 2, 5, 8]);
+        check(&cache, &mut hint, 5);
+    }
+
+    #[test]
+    fn repeated_prefix_splits_keep_retained_capacity_proportional_to_live_pages() {
         let mut cache = RadixCache::new(512, 1);
         let tokens: Vec<u32> = (0..512).collect();
         let indices: Vec<usize> = (0..512).collect();
         cache.insert(&tokens, &indices);
 
         for prefix_len in (1..512).step_by(4) {
-            let snapshot = shared.then(|| cache.admission_checkpoint());
-            let saved_edges = snapshot.as_ref().map(|saved| {
-                saved
-                    .nodes
-                    .iter()
-                    .map(|(id, node)| (id, (node.key.to_vec(), node.value.to_vec())))
-                    .collect::<FxHashMap<_, _>>()
-            });
             assert_eq!(cache.match_prefix(&tokens[..prefix_len]).0, prefix_len);
-            if let Some(saved) = snapshot {
-                for (id, (key, pages)) in saved_edges.unwrap() {
-                    assert_eq!(*saved.node(id).key, key);
-                    assert_eq!(*saved.node(id).value, pages);
-                }
-            }
         }
         assert_eq!(cache.match_prefix(&tokens).0, tokens.len());
 
@@ -1558,10 +1594,125 @@ mod tests {
         assert_eq!(cache.match_prefix(&[4, 5, 6]).0, 3);
     }
 
+    /// An older prompt cached one second before a two-page newer prompt, with the test clock
+    /// one more second later: unless something refreshes it, the older prompt is evicted first.
+    struct OlderAndNewer {
+        cache: RadixCache,
+        older: Vec<u32>,
+        older_indices: Vec<usize>,
+        older_node: NodeId,
+        newer: Vec<u32>,
+        newer_indices: Vec<usize>,
+    }
+
+    impl OlderAndNewer {
+        fn new(page_size: usize, older_pages: usize) -> Self {
+            let page_tokens = page_size as u32;
+            let mut cache = RadixCache::new((older_pages + 2) * page_size, page_size);
+            let older = (0..older_pages as u32 * page_tokens).collect::<Vec<_>>();
+            let newer = (1_000..1_000 + 2 * page_tokens).collect::<Vec<_>>();
+            let base = Instant::now();
+            cache.set_test_now(base);
+            let older_indices = cache.page_pool.allocate(older.len()).unwrap();
+            let older_node = cache.insert(&older, &older_indices);
+            cache.set_test_now(base + std::time::Duration::from_secs(1));
+            let newer_indices = cache.page_pool.allocate(newer.len()).unwrap();
+            cache.insert(&newer, &newer_indices);
+            cache.set_test_now(base + std::time::Duration::from_secs(2));
+            Self {
+                cache,
+                older,
+                older_indices,
+                older_node,
+                newer,
+                newer_indices,
+            }
+        }
+
+        fn assert_newer_is_evicted_first(mut self) {
+            let page_size = self.cache.page_size();
+            let newer_pages = self.cache.page_ids(&self.newer_indices, 2);
+            assert_eq!(
+                self.cache.evict(2 * page_size),
+                (2 * page_size, newer_pages)
+            );
+            assert_eq!(self.cache.prefix_match_len(&self.newer), 0);
+            assert_eq!(self.cache.prefix_match_len(&self.older), self.older.len());
+        }
+    }
+
     #[rstest::rstest]
-    fn partial_eviction_and_parent_promotion_keep_index_consistent(
-        #[values(false, true)] shared: bool,
+    fn partial_match_refreshes_the_suffix_it_splits(
+        #[values(1, 4, 64)] page_size: usize,
+        #[values(false, true)] lock: bool,
     ) {
+        let mut fixture = OlderAndNewer::new(page_size, 4);
+        let prefix = &fixture.older[..2 * page_size];
+        let (matched, node) = if lock {
+            let hashes = fixture.cache.page_hashes(prefix);
+            fixture.cache.match_prefix_hashes_and_lock(&hashes)
+        } else {
+            fixture.cache.match_prefix(prefix)
+        };
+        assert_eq!(matched, prefix.len());
+        if lock {
+            fixture.cache.dec_lock_ref(node);
+        }
+        fixture.assert_newer_is_evicted_first();
+    }
+
+    #[rstest::rstest]
+    fn partial_insert_refreshes_the_suffix_it_splits(
+        #[values(1, 4, 64)] page_size: usize,
+        #[values(false, true)] hashed: bool,
+    ) {
+        let mut fixture = OlderAndNewer::new(page_size, 4);
+        let prefix = &fixture.older[..2 * page_size];
+        let prefix_indices = &fixture.older_indices[..2 * page_size];
+        if hashed {
+            let hashes = fixture.cache.page_hashes(prefix);
+            let pages = fixture.cache.page_ids(prefix_indices, hashes.len());
+            let root = fixture.cache.root();
+            fixture
+                .cache
+                .insert_page_hashes_from_node(root, 0, &hashes, &pages);
+        } else {
+            fixture.cache.insert(prefix, prefix_indices);
+        }
+        fixture.assert_newer_is_evicted_first();
+    }
+
+    #[rstest::rstest]
+    fn reinserting_a_cached_sequence_without_new_pages_refreshes_its_path(
+        #[values(1, 4, 64)] page_size: usize,
+        #[values(false, true)] hashed: bool,
+    ) {
+        // A request holding the older prompt finishes without completing another page, so
+        // the insert that caches its sequence has no suffix to add.
+        let mut fixture = OlderAndNewer::new(page_size, 2);
+        let node = fixture.older_node;
+        fixture.cache.inc_lock_ref(node);
+        let inserted = if hashed {
+            let hashes = fixture.cache.page_hashes(&fixture.older);
+            let pages = fixture.cache.page_ids(&fixture.older_indices, hashes.len());
+            fixture
+                .cache
+                .insert_page_hashes_from_node(node, fixture.older.len(), &hashes, &pages)
+        } else {
+            fixture.cache.insert_from_node(
+                node,
+                fixture.older.len(),
+                &fixture.older,
+                &fixture.older_indices,
+            )
+        };
+        assert_eq!(inserted, node);
+        fixture.cache.dec_lock_ref(node);
+        fixture.assert_newer_is_evicted_first();
+    }
+
+    #[test]
+    fn partial_eviction_and_parent_promotion_keep_index_consistent() {
         let mut cache = RadixCache::new(100, 1);
         let base = Instant::now();
         cache.set_test_now(base);
@@ -1569,7 +1720,6 @@ mod tests {
         let (_, leaf) = cache.match_prefix(&[1, 2, 3, 4]);
         cache.set_test_now(base + std::time::Duration::from_secs(1));
         cache.insert(&[5, 6, 7], &[4, 5, 6]);
-        let snapshot = shared.then(|| cache.admission_checkpoint());
 
         assert_eq!(cache.evict(2).0, 2);
         assert_eq!(cache.node(leaf).key.len(), 2);
@@ -1577,15 +1727,6 @@ mod tests {
         assert_eq!(cache.evict(2).0, 2);
         assert_eq!(cache.match_prefix(&[1, 2, 3, 4]).0, 0);
         assert_eq!(cache.match_prefix(&[5, 6, 7]).0, 3);
-        if let Some(mut saved) = snapshot {
-            assert_eq!(*saved.node(leaf).key, saved.page_hashes(&[1, 2, 3, 4]));
-            assert_eq!(
-                *saved.node(leaf).value,
-                vec![KvPageId(0), KvPageId(1), KvPageId(2), KvPageId(3)]
-            );
-            assert!(saved.evictable_leaf_is_indexed(leaf));
-            assert_eq!(saved.evict(2).1, vec![KvPageId(2), KvPageId(3)]);
-        }
 
         let mut branched = RadixCache::new(100, 1);
         branched.set_test_now(base);

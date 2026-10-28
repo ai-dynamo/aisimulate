@@ -976,9 +976,11 @@ def test_forward_pass_config_carries_context_parallel_knobs_through_rust_normali
     plain = ForwardPassPerfModelConfig(model="m", system="s", backend="vllm", worker_type="decode")
     assert (plain.cp_size, plain.dcp) == (None, None)
     normalized = json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(plain.to_dict())))
-    # Unset prefill CP never enters the serialized identity (pre-CP configs stay
-    # byte-identical); unrecorded decode CP serializes as the canonical null.
-    assert "cp_size" not in normalized and normalized.get("dcp") is None
+    # Unset prefill CP and encoder layout never enter the serialized identity
+    # (pre-CP, text-only configs stay byte-identical); unrecorded decode CP
+    # serializes as the canonical null.
+    assert "cp_size" not in normalized and "encoder_parallel" not in normalized
+    assert normalized.get("dcp") is None
 
     striped = ForwardPassPerfModelConfig(
         model="m", system="s", backend="vllm", worker_type="decode", tp=8, cp_size=2, dcp=4
@@ -987,6 +989,40 @@ def test_forward_pass_config_carries_context_parallel_knobs_through_rust_normali
     assert (payload["cp_size"], payload["dcp"]) == (2, 4)
     normalized = json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(payload)))
     assert (normalized["cp_size"], normalized["dcp"]) == (2, 4)
+
+
+@pytest.mark.parametrize(
+    "encoder_options", [{}, {"encoder_parallel": None}, {"encoder_parallel": "tp"}, {"encoder_parallel": "dp"}]
+)
+def test_forward_pass_config_preserves_encoder_identity_on_saved_round_trip(encoder_options) -> None:
+    import aisimulate_core
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig
+
+    config = ForwardPassPerfModelConfig(
+        model="m", system="s", backend="sglang", worker_type="prefill", cp_size=1, **encoder_options
+    )
+    resolved = json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(config.to_dict())))
+    assert resolved.get("encoder_parallel") == encoder_options.get("encoder_parallel")
+    saved = json.loads(json.dumps(ForwardPassPerfModelConfig(**resolved).to_dict()))
+    assert saved == resolved
+
+
+def test_encoder_parallel_requires_op_level_timing() -> None:
+    import aisimulate_core
+
+    config = {
+        "model": "test/model",
+        "system": "test",
+        "backend": "sglang",
+        "worker_type": "prefill",
+        "estimation_mode": "fpm_regression",
+        "fallback_policy": "deny",
+        "encoder_parallel": "tp",
+    }
+    # The whole-forward estimators compile no vision tower: the layout is refused at
+    # construction instead of surviving in provenance until the first vision query.
+    with pytest.raises(ValueError, match="encoder_parallel requires op_level timing"):
+        aisimulate_core.RustForwardPassPerfModel.best_available(json.dumps(config))
 
 
 def test_forward_pass_config_requires_role_and_defaults_to_auto_deny() -> None:
@@ -1055,6 +1091,7 @@ def test_forward_pass_config_preserves_existing_positional_arguments(tmp_path: P
         "fpm_fmha_quant_mode": None,
         "moe_kernel_source": None,
         "cp_size": None,
+        "encoder_parallel": None,
     }
 
     source = " source_with_spaces "
@@ -1066,6 +1103,7 @@ def test_forward_pass_config_preserves_existing_positional_arguments(tmp_path: P
         "fpm_fmha_quant_mode": None,
         "moe_kernel_source": source,
         "cp_size": None,
+        "encoder_parallel": None,
     }
     assert json.loads(json.dumps(pinned.to_dict()))["moe_kernel_source"] == source
 

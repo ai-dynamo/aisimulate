@@ -29,7 +29,27 @@ composition. Construction validates the spec and composition. Running consumes
 the Replayer so ownership, virtual time and caches remain within one execution.
 `ReplayEngineFactory::default()` uses engine timing from the descriptor;
 `with_timing_model` or `with_optional_role_timing_models` supplies explicit
-`Arc<dyn TimingModel>` providers.
+`Arc<dyn TimingModel>` providers. Schedulers price each prefill batch with
+`TimingModel::predict_prefill_totals_ms(batch_size, new_tokens, prefix_tokens)`:
+the tokens the batch computes and the cached or earlier-chunk KV its requests
+read. The default reduces these totals to the integer per-request means of
+`predict_prefill_ms`; providers indexed by iteration totals override it.
+A vLLM or TensorRT-LLM pass that computes prefill and decode steps together
+is priced with `TimingModel::predict_mixed_pass_ms(prefill, batch_size, ...)`,
+which takes the pass's `PrefillTotals` and otherwise the arguments of
+`predict_decode_ms`. A provider that prices such a pass as one forward returns
+`MixedPassMs`: the prefill latency and the latency the decode steps add, which
+sum to its estimate of the pass. The default `None` prices the prefill with
+`predict_prefill_totals_ms` and a separate decode pass with
+`predict_decode_ms`. The built-in `ais` provider returns the pass only for
+whole-model FPM interpolation, corrected as one mixed iteration when the model
+is tuned. Any other timing it serves, including operation-level timing,
+measured SD-round profiles and MTP drafts, returns `None`.
+`TimingModel::predict_vision_ms(&[VisionShape])`
+prices one vision-encoder batch; the default returns `None`, and a rank with
+image work then rejects it rather than treating the encoder as free. The `ais`
+provider answers from the `EngineSpec` `vision` section compiled under
+`encoder_parallel`.
 
 `run_engine_replay`, `run_engine_replay_with_timing`, and
 `run_engine_replay_with_optional_role_timing` are exported convenience functions;
@@ -60,6 +80,18 @@ aggregated/decode rank; `prefill_dp_rank` is P/D-only. `WorkerPoolSpec` defines
 initial worker count and startup delay. Millisecond clocks, bandwidth-derived
 handoff times and callback timestamps use simulated time, never host wall time.
 
+A request may author `kv_hints: {"source_worker": W, "source_dp_rank": R}`, the
+worker and attention-DP rank that hold a prefix of its prompt, as when a client
+attaches a `kv.fetch` hint. It is omitted when absent. When replay starts, an
+`R` outside the `dp_size` of the pool that places the request (aggregated, or
+prefill in P/D) fails with `ReplayError::InvalidSpec`. The built-in round-robin
+placement ignores a hint whose source worker is unknown, not yet ready, draining
+or removed, and the P/D decode pool ignores every hint. Only a pool that
+configures `kvcr` acts on hints ([KV cache](../engine/kv-cache.md#kvcr-peer-fetch));
+elsewhere they change nothing. Engines receive the resolved source as
+`engine::Request::kv_hint` (`KvHintSource { worker_id, dp_rank }`), which never
+names the receiving rank.
+
 `ReplayEngineConfig` has the aggregated rank/DP/TP/PCP descriptor and optional
 prefill/decode `ReplayRoleConfig` objects. Engine and topology validators enforce
 feature combinations beyond the generic spec validator. Grouped-cache, G2/G3,
@@ -81,6 +113,15 @@ its performance comparison does not qualify nondefault PCP configurations.
 SLA goodput, optional per-request admission/routing records, cache and power
 evidence. `ReplayTerminalStatus` is also exported as `RequestTerminalStatus`.
 Native power diagnostics do not certify downstream Python adapter passthrough.
+
+`with_tokenization(workers, base_ms, per_input_token_ms)` tokenizes each
+request on the worker it was placed on before that worker's engine sees it.
+Each worker of the entry role has `workers` first-come, first-served servers,
+and a request takes `base_ms + per_input_token_ms × input tokens` on one of
+them. Latency metrics keep the arrival time, and each per-request record gains
+`tokenized_ms`. Both costs zero, the default, keep direct dispatch. Scaling is
+rejected. See
+[request tokenization](../engine/README.md#tokenization).
 
 `with_capture_options(ReplayCaptureOptions)` controls capture and canonical
 determinism. Canonical comparison uses the exported schema version, seed and

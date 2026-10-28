@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "implementation_commit": "1de653c9ef28788a877a660cb81cb3379edb8c6a",
+  "implementation_tree": "0988584f2a4c0f20c0f634d5d278afc7c1d56498",
+  "native_module_sha256": "7a17d7fcf7f8342455d702d8bdf8bee048b615eef4a70e1d1add41f7fd929574",
+  "native_build_command": "CARGO_TARGET_DIR=/Users/yueqiz/Documents/ChatGPT/AISimulate/target /Users/yueqiz/Documents/ChatGPT/AISimulate/python/aisimulate/.venv/bin/maturin build --release --locked --offline --out /private/tmp/pr533-review-evidence/wheels --interpreter /Users/yueqiz/Documents/ChatGPT/AISimulate/python/aisimulate/.venv/bin/python",
+  "native_build_cwd": "python/aisimulate",
+  "python_environment": {
+    "executable": "/Users/yueqiz/Documents/ChatGPT/AISimulate/python/aisimulate/.venv/bin/python",
+    "PYTHONPATH": "$PWD/python/aisimulate/src",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1"
+  },
+  "checks": [
+    {
+      "name": "Rust FPM",
+      "passed": 263,
+      "command": "CARGO_TARGET_DIR=/Users/yueqiz/Documents/ChatGPT/AISimulate/target cargo test --locked --offline -p aisimulate-core --lib --no-default-features perfmodel::fpm:: -- --nocapture",
+      "status": "passed",
+      "log_sha256": "c6ee888b8e365dba006dc8a60c311f86e8c6eaa08cd128972d827ce4163a7701",
+      "log_summary": "\ntest result: ok. 263 passed; 0 failed; 0 ignored; 0 measured; 1889 filtered out; finished in 10.50s\n"
+    },
+    {
+      "name": "Python SDK and public API",
+      "passed": 178,
+      "command": "python -m pytest -c python/aisimulate/pytest.ini -p no:timeout python/aisimulate/tests/unit/sdk/test_fpm_online_export.py python/aisimulate/tests/unit/sdk/test_fpm_online_integration.py python/aisimulate/tests/unit/sdk/test_fpm_online_structural_reference.py python/aisimulate/tests/unit/sdk/test_fpm_learned.py python/aisimulate/tests/cross_package/test_core_public_api.py -q",
+      "status": "passed",
+      "log_sha256": "fdccb73abc238677ba04b11c3056c5cb7018da0f8e0f6f66c615a6ef0f0f6e38",
+      "log_summary": "0.03s call     tests/unit/sdk/test_fpm_online_integration.py::test_real_checkpoint_continuation_and_frozen_snapshot[lazy-leaf_only]\n0.03s call     tests/unit/sdk/test_fpm_online_integration.py::test_real_checkpoint_continuation_and_frozen_snapshot[eager-structural]\n======================== 178 passed, 1 warning in 2.75s ========================"
+    },
+    {
+      "name": "Configuration and caller boundaries",
+      "passed": 369,
+      "command": "python -m pytest -c pytest.ini -p no:timeout tests/test_cli_config.py tests/sweeper/test_config.py tests/sweeper/test_learned_estimator.py -q",
+      "status": "passed",
+      "log_sha256": "0a73f366166dddd6d41e8ee4ac6cee27fa1330ffaca232b0aa3cb316798c1d38",
+      "log_summary": "........................................................................ [ 97%]\n.........                                                                [100%]\n369 passed in 4.91s"
+    },
+    {
+      "name": "Python Runner",
+      "passed": 519,
+      "command": "python -m pytest -c pytest.ini -p no:timeout tests/test_runner.py -q",
+      "status": "passed",
+      "evidence": "Successful agent execution: 519 passed in 15.23s; no separate log retained."
+    },
+    {
+      "name": "Frozen parity",
+      "passed": 389,
+      "command": "python -m pytest -c python/aisimulate/pytest.ini -p no:timeout crates/core/parity_tests/perfmodel/test_engine_step_parity.py crates/core/parity_tests/perfmodel/test_compile_engine_parity.py -q",
+      "status": "passed",
+      "log_sha256": "3291f5603bf5a67c77d0391ebe2e5ac6fd6968730cf83cc10510b0b98a41a3c4",
+      "log_summary": "1.15s call     ::TestRustEngineStepHybridStaticParity::test_hybrid_parity[minimax-m25-nvfp4-h200-vllm-hybrid-xprofile]\n1.15s call     ::TestRustEngineStepMixedStepParity::test_smoke_parity[minimax-m25-b200-vllm-isl1024-osl2]\n================== 389 passed, 1 warning in 141.33s (0:02:21) =================="
+    }
+  ],
+  "format_checks": [
+    "cargo fmt --all -- --check",
+    "ruff check --config python/aisimulate/pyproject.toml (13 changed Python/stub files)",
+    "ruff format --check --config python/aisimulate/pyproject.toml (same 13 files)",
+    "git diff --check"
+  ],
+  "frozen_goldens_changed": false,
+  "limits": [
+    "Local macOS validation, not a claim about GitHub CI on this commit.",
+    "Performance is synthetic native eager feedback; no serving-accuracy or engine replay speedup claim."
+  ]
+}

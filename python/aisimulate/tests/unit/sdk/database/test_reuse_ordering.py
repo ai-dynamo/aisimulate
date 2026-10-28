@@ -917,3 +917,27 @@ def test_corrected_024_gemm_uses_declared_025_measurements(system):
         for k, value in ks.items()
     }
     assert actual == expected
+
+
+@pytest.mark.parametrize("slot,high_k_source", [("previous", "0.20.0"), ("current", "0.28.0")])
+@pytest.mark.parametrize("dtype", ["bfloat16", "fp8"])
+def test_b60_queryable_gemm_preserves_high_k_coverage(slot, high_k_source, dtype):
+    """Llama 8B TP1 down_proj (k=14336) needs a measured upper neighbor."""
+    db = get_database("b60", "vllm", slot, shared_layer=True, strict_provenance=True)
+    loaded = fetch_table_view(db, "_gemm_data")[common.GEMMQuantMode[dtype]]
+    for m in (1, 128):
+        assert {4096, 12288, 16384, 32768} <= loaded[m][4096].keys()
+
+    data = Path(__file__).resolve().parents[4] / "src/aisimulate_core/systems/data/b60/gemm/vllm"
+    # The existing measured rows are the oracle: primary rows win overlaps,
+    # while previous fills high-k gaps from 0.20 rather than borrowing 0.28.
+    for version, ks in ((db.version, {4096}), (high_k_source, {16384, 32768})):
+        rows = pq.read_table(data / version / "gemm_perf.parquet").to_pylist()
+        expected = {
+            (row["m"], row["k"]): row["latency"]
+            for row in rows
+            if row["gemm_dtype"] == dtype and row["m"] in (1, 128) and row["n"] == 4096 and row["k"] in ks
+        }
+        assert len(expected) == 2 * len(ks)
+        for (m, k), latency in expected.items():
+            assert loaded[m][4096][k]["latency"] == latency

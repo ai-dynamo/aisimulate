@@ -11,8 +11,8 @@ use crate::replay::core::round_robin::AggregatedRoundRobinPlacement;
 use crate::replay::engine::{ReplayEngineConfig, ReplayEngineFactory};
 use crate::replay::scaling::ReplayScalingDecision;
 use crate::replay::{
-    ReplayArtifactKvEventVisibility, ReplaySpec, ReplayTelemetryObserver, ReplayTelemetrySnapshot,
-    Replayer, WorkerStage, run_engine_replay,
+    ReplayArtifactKvEventVisibility, ReplayCaptureOptions, ReplayDeterminism, ReplaySpec,
+    ReplayTelemetryObserver, ReplayTelemetrySnapshot, Replayer, WorkerStage, run_engine_replay,
 };
 use serde_json::{Value, json};
 
@@ -103,6 +103,7 @@ impl PlacementPolicy<ReplayRequestPayload> for MismatchedPlacement {
                 scheduler_id: 0,
                 reported_overlap_tokens: 0,
                 cache_sample: None,
+                kv_hints: None,
                 placement_replica_id: None,
             }),
             released: Vec::new(),
@@ -728,6 +729,76 @@ fn g3_summary_serializes_g3_counters_only_when_enabled() {
             .get("g3_offload")
             .is_none()
     );
+}
+
+#[test]
+fn kvcr_without_hints_replays_exactly_like_g2_only() {
+    // Request 2 pushes request 1's block out of the one-block G1; request 3 restores it from G2.
+    let replay = |kvcr: bool| {
+        let mut rank = json!({
+            "num_gpu_blocks": 1, "block_size": 4, "max_num_seqs": 2, "max_num_batched_tokens": 8,
+            "kv_cache_bytes_per_token": 250_000,
+            "native_host_offload": {"num_host_blocks": 2, "d2h_bandwidth_gbps": 1.0, "h2d_bandwidth_gbps": 1.0},
+            "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 0.0},
+        });
+        if kvcr {
+            rank["kvcr"] = json!({});
+        }
+        let requests = [
+            (0.0, [1, 2, 3, 4]),
+            (2.0, [5, 6, 7, 8]),
+            (4.0, [1, 2, 3, 4]),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(id, (arrival, tokens))| {
+            json!({"id": id.to_string(), "arrival_time_ms": arrival, "input_tokens": 4,
+                    "input_token_ids": tokens, "output_tokens": 0})
+        })
+        .collect::<Vec<_>>();
+        let spec = serde_json::from_value(json!({
+            "topology": {"kind": "aggregated", "workers": {"initial_workers": 1}},
+            "engine": {"rank": rank}, "requests": requests, "record_per_request": true,
+        }))
+        .unwrap();
+        Replayer::new(spec, ReplayEngineFactory::new())
+            .unwrap()
+            .with_capture_options(ReplayCaptureOptions {
+                determinism: ReplayDeterminism::CanonicalV1,
+                ..ReplayCaptureOptions::default()
+            })
+            .run()
+            .unwrap()
+    };
+    let (g2_only, with_kvcr) = (replay(false), replay(true));
+    assert!(
+        g2_only
+            .per_request
+            .iter()
+            .any(|record| record.first_admission_host_reused_input_tokens == Some(4)),
+        "the workload must exercise G2"
+    );
+    assert_eq!(
+        serde_json::to_value(&with_kvcr.per_request).unwrap(),
+        serde_json::to_value(&g2_only.per_request).unwrap()
+    );
+    // Only the canonical wall-clock exclusions and the idle `kvcr` section differ.
+    let summary = |report: &crate::replay::ReplayReport| {
+        let mut summary = serde_json::to_value(report).unwrap();
+        for pointer in crate::replay::CANONICAL_RESULT_EXCLUSIONS {
+            if let Some(field) = pointer.strip_prefix("/summary/") {
+                summary.as_object_mut().unwrap().remove(field);
+            }
+        }
+        summary
+    };
+    let (g2_only, mut with_kvcr) = (summary(&g2_only), summary(&with_kvcr));
+    assert_eq!(
+        with_kvcr["kvcr"]["pulls"],
+        json!({"success": 0, "partial": 0})
+    );
+    with_kvcr.as_object_mut().unwrap().remove("kvcr");
+    assert_eq!(with_kvcr, g2_only);
 }
 
 #[test]

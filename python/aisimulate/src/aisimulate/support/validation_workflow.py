@@ -597,7 +597,7 @@ def check_collection_report(
 
 def _check_replay(path: Path, original: SupportRequest, collection: dict[str, Any], source_plan: Any) -> dict[str, Any]:
     from .finalization import (
-        _merge_resources,
+        _finalized_resources,
         _verify_collection,
         finalization_manifest,
         verify_finalized_data,
@@ -640,7 +640,8 @@ def _check_replay(path: Path, original: SupportRequest, collection: dict[str, An
         quality = verify_finalized_quality(manifest)
         if quality is not None:
             verified_manifest["collection_quality"] = quality
-        expected_resources = _merge_resources(
+        expected_resources, _ = _finalized_resources(
+            original,
             observations,
             verified_manifest,
             source_references=manifest.get("observation_provenance") == "source_references",

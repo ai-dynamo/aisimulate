@@ -17,7 +17,13 @@ import yaml
 
 from aisimulate.fpm_profile import FpmModelProfile
 
-from .config_profile import load_model_config, profile_from_observations, validate_overrides
+from .config_profile import (
+    linear_block_bytes,
+    linear_runtime_resources,
+    load_model_config,
+    profile_from_observations,
+    validate_overrides,
+)
 from .runtime_collection import collection_runtime_review as collection_runtime_review
 from .runtime_collection import verify_collection_runtime_bindings as verify_collection_runtime_bindings
 from .runtime_collection import verify_collection_runtime_plans as verify_collection_runtime_plans
@@ -397,7 +403,7 @@ def verify_runtime_profile(request: SupportRequest) -> dict[str, Any] | None:
     manifest = runtime_probe_manifest(request)
     if manifest is None:
         from .finalization import (
-            _merge_resources,
+            _finalized_resources,
             _verify_collection,
             finalization_manifest,
             verify_finalized_quality,
@@ -419,7 +425,8 @@ def verify_runtime_profile(request: SupportRequest) -> dict[str, Any] | None:
             )
             if quality is not None:
                 evidence["collection_quality"] = quality
-            expected = _merge_resources(
+            expected, _ = _finalized_resources(
+                original,
                 observations,
                 evidence,
                 source_references=finalized.get("observation_provenance") == "source_references",
@@ -461,7 +468,10 @@ def verify_runtime_profile(request: SupportRequest) -> dict[str, Any] | None:
     actual = _resource_values(selected.resources.model_dump(mode="json"))
     observed_capacity = expected["runtime_memory"].pop("kv_cache_bytes")
     actual_capacity = actual["runtime_memory"].pop("kv_cache_bytes")
-    if actual != expected:
+    # The draft holds the grouped evidence, or the same evidence in the linear layout. Only the evidence decides
+    # which layouts exist.
+    linear = linear_runtime_resources(expected)
+    if actual != expected and actual != linear:
         raise ValueError("runtime cache geometry or settings changed; a compatible fresh probe is required")
     overrides = (
         {}
@@ -478,6 +488,18 @@ def verify_runtime_profile(request: SupportRequest) -> dict[str, Any] | None:
         raise ValueError(
             "resource edits require checkpoint registration to preserve observed values and label user overrides"
         )
+    if overrides and actual == linear:
+        # The plan counts whole tokens of a linear profile, but vLLM allocates whole blocks. A whole multiple of the
+        # smallest capacity that fills whole cache blocks in every group keeps the two counts equal. The grouped
+        # estimate already counts whole blocks.
+        block = linear_block_bytes(expected)
+        if actual_capacity % block:
+            raise ValueError(
+                f"the runtime_memory.kv_cache_bytes override {actual_capacity} is not a whole multiple of {block} "
+                f"bytes ({block // linear['kv_bytes_per_token']} tokens). That is the smallest capacity that fills "
+                "whole cache blocks in every measured group. A linear runtime profile needs whole blocks. The nearest "
+                f"lower capacity of whole blocks is {actual_capacity // block * block} bytes"
+            )
     metadata = {key: getattr(request.fpm_profile, key) for key in ("architecture", "context_length", "num_experts")}
     if metadata != manifest["model_metadata"]:
         raise ValueError("model metadata edits require a compatible fresh probe")
@@ -936,6 +958,10 @@ def import_observations(
             results[name].update(
                 request=str(directory / "request.yaml"), profile=str(directory / "fpm-model-profile.json")
             )
+            # The layout outcome of a cache_layout or kv_bytes_per_token claim; the profile provenance keeps it too.
+            reason = json.loads(request.fpm_profile.provenance).get("cache_layout_reason")
+            if reason is not None:
+                results[name]["cache_layout_reason"] = reason
     state, _ = save_checkpoint(
         checkpoint, patch={"configurations": patches}, expected_revision=state.revision, accept=[]
     )

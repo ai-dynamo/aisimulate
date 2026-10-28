@@ -25,6 +25,7 @@ pub mod fpm_forward;
 pub(crate) mod fpm_sol;
 pub mod gemm;
 pub mod mamba;
+pub mod measured_composite;
 pub mod mhc;
 pub mod mla;
 pub mod moe;

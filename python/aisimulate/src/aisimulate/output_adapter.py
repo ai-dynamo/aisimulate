@@ -26,6 +26,8 @@ class RecommendationOutputCallbacks:
 
     on_candidate: Callable[[CandidateRecord], None] | None = None
     on_round: Callable[[int, list[Candidate]], None] | None = None
+    on_complete: Callable[[], None] | None = None
+    on_failure: Callable[[Exception], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +169,8 @@ def resolve_output_callbacks(
     adapters = resolve_output_adapters(configs, injected=injected, entry_points=entry_points)
     candidate_callbacks: list[tuple[str, Callable[[CandidateRecord], None]]] = []
     round_callbacks: list[tuple[str, Callable[[int, list[Candidate]], None]]] = []
+    complete_callbacks: list[tuple[str, Callable[[], None]]] = []
+    failure_callbacks: list[tuple[str, Callable[[Exception], None]]] = []
     for name, adapter in adapters.items():
         subscribe = getattr(adapter, "subscribe", None)
         if subscribe is None:
@@ -195,6 +199,10 @@ def resolve_output_callbacks(
             candidate_callbacks.append((name, callbacks.on_candidate))
         if callbacks.on_round is not None:
             round_callbacks.append((name, callbacks.on_round))
+        if callbacks.on_complete is not None:
+            complete_callbacks.append((name, callbacks.on_complete))
+        if callbacks.on_failure is not None:
+            failure_callbacks.append((name, callbacks.on_failure))
 
     def on_candidate(record: CandidateRecord) -> None:
         for name, callback in candidate_callbacks:
@@ -204,9 +212,28 @@ def resolve_output_callbacks(
         for name, callback in round_callbacks:
             _dispatch_callback(name, "on_round", callback, round_no, deepcopy(candidates))
 
+    def on_complete() -> None:
+        for name, callback in complete_callbacks:
+            _dispatch_callback(name, "on_complete", callback)
+
+    def on_failure(error: Exception) -> None:
+        failures: list[OutputAdapterExecutionError] = []
+        for name, callback in failure_callbacks:
+            try:
+                _dispatch_callback(name, "on_failure", callback, error)
+            except OutputAdapterExecutionError as exc:
+                failures.append(exc)
+        if len(failures) == 1:
+            raise failures[0]
+        if failures:
+            details = "; ".join(str(failure) for failure in failures)
+            raise ExceptionGroup(f"output adapter on_failure callbacks failed: {details}", failures)
+
     return RecommendationOutputCallbacks(
         on_candidate=on_candidate if candidate_callbacks else None,
         on_round=on_round if round_callbacks else None,
+        on_complete=on_complete if complete_callbacks else None,
+        on_failure=on_failure if failure_callbacks else None,
     )
 
 

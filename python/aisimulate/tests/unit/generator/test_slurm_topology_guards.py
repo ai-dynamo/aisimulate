@@ -117,6 +117,16 @@ def test_slurm_rejects_topology_and_config_overrides_before_emission(backend, ex
 
 
 @pytest.mark.parametrize("role", ["prefill", "decode"])
+@pytest.mark.parametrize("extra", [["--host", "127.0.0.1"], ["--host=127.0.0.1"], ["--hos=127.0.0.1"]])
+def test_sglang_slurm_rejects_bootstrap_listener_override(role, extra, tmp_path):
+    with pytest.raises(ValueError, match=rf"Workers\.{role}\.extra_cli_args.*Slurm-owned"):
+        generate_backend_artifacts(
+            _params("sglang", extra, role), "sglang", deployment_target="slurm", output_dir=str(tmp_path)
+        )
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("role", ["prefill", "decode"])
 def test_slurm_checks_topology_overrides_in_each_disaggregated_pool(role):
     with pytest.raises(ValueError, match=rf"Workers\.{role}\.extra_cli_args.*Slurm-owned"):
         generate_backend_artifacts(_params("vllm", ["-tp", "16"], role), "vllm", deployment_target="slurm")

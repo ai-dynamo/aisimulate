@@ -9,6 +9,7 @@ Tests HuggingFace config parsing and model config retrieval.
 
 import io
 import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -240,7 +241,9 @@ class TestParseHFConfig:
         assert "E" not in extra_params.hybrid_override_pattern  # No MoE layers
         assert extra_params.moe_shared_expert_intermediate_size == 0
 
-    def test_parse_nemotronh_layers_block_type_config(self):
+    @pytest.mark.parametrize("architecture", ["NemotronHForCausalLM", "NemotronH_Omni_Reasoning_V3"])
+    @pytest.mark.parametrize("attention_names", [("mamba", "attention"), ("linear_attention", "full_attention")])
+    def test_parse_nemotronh_layers_block_type_config(self, architecture, attention_names, tmp_path):
         """Test parsing NemotronH configs that use explicit layer block names."""
         config = {
             "architectures": ["NemotronHForCausalLM"],
@@ -254,7 +257,7 @@ class TestParseHFConfig:
             "n_routed_experts": 512,
             "moe_intermediate_size": 5120,
             "head_dim": 128,
-            "layers_block_type": ["mamba", "moe", "mamba", "attention", "mlp"],
+            "layers_block_type": [attention_names[0], "moe", attention_names[0], attention_names[1], "mlp"],
             "mamba_num_heads": 256,
             "mamba_head_dim": 64,
             "ssm_state_size": 128,
@@ -264,9 +267,11 @@ class TestParseHFConfig:
             "moe_shared_expert_intermediate_size": 10240,
         }
 
+        if architecture == "NemotronH_Omni_Reasoning_V3":
+            config = {"architectures": [architecture], "llm_config": config}
         result = _parse_hf_config_json(config)
 
-        assert result["architecture"] == "NemotronHForCausalLM"
+        assert result["architecture"] == architecture
         assert result["layers"] == 5
         assert result["hidden_size"] == 8192
         assert result["topk"] == 22
@@ -276,6 +281,13 @@ class TestParseHFConfig:
         assert extra_params.hybrid_override_pattern == "MEM*-"
         assert extra_params.mamba_num_heads == 256
         assert extra_params.moe_shared_expert_intermediate_size == 10240
+
+        from aisimulate.sdk import models
+        from aisimulate.sdk.config import ModelConfig
+
+        (tmp_path / "config.json").write_text(json.dumps(config))
+        model = models.get_model(str(tmp_path), ModelConfig(tp_size=1, moe_tp_size=1), "vllm")
+        assert isinstance(model, models.NemotronHModel)
 
     def test_parse_qwen35_dense_config(self):
         """Test parsing Qwen3.5-27B (dense hybrid) config → Qwen35Config."""
@@ -2168,3 +2180,30 @@ class TestQwen3VLVisionEncoderParsing:
         cfg = {**_QWEN3VL_HF_CONFIG, "vision_config": vision_cfg}
         result = _parse_hf_config_json(cfg)
         assert result["extra_params"].deepstack_visual_indexes == (8, 17, 26)
+
+
+def test_qwen3_vl_pixel_budget_follows_the_checkpoint_processor(tmp_path, caplog):
+    checkpoint = tmp_path / "with-processor"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(json.dumps(_QWEN3VL_HF_CONFIG))
+    (checkpoint / "preprocessor_config.json").write_text(
+        json.dumps({"size": {"shortest_edge": 3136, "longest_edge": 1003520}})
+    )
+    enc_cfg = get_model_config_from_model_path(str(checkpoint))["extra_params"]
+    assert (enc_cfg.min_pixels, enc_cfg.max_pixels) == (3136, 1003520)
+
+    invalid = tmp_path / "invalid-processor"
+    invalid.mkdir()
+    (invalid / "config.json").write_text(json.dumps(_QWEN3VL_HF_CONFIG))
+    (invalid / "preprocessor_config.json").write_text("[]")
+    with pytest.raises(ValueError, match="Qwen3-VL preprocessor_config.json must be an object"):
+        get_model_config_from_model_path(str(invalid))
+
+    # A checkpoint without the file keeps the pinned Qwen3-VL budget instead of failing.
+    bare = tmp_path / "without-processor"
+    bare.mkdir()
+    (bare / "config.json").write_text(json.dumps(_QWEN3VL_HF_CONFIG))
+    with caplog.at_level(logging.WARNING):
+        enc_cfg = get_model_config_from_model_path(str(bare))["extra_params"]
+    assert (enc_cfg.min_pixels, enc_cfg.max_pixels) == utils.QWEN3_VL_PIXEL_BOUNDS
+    assert "no pixel budget" in caplog.text

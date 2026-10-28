@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "baseline_commit": "4a710f144930a40e1cfee5010b386b35319457a7",
+  "candidate_commit": "247e02da9c56da398391ebe77dad724d0c5ae654",
+  "rust_version": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "tests": [
+    {
+      "command": "cargo test --locked -p aisimulate-core --lib --no-default-features --offline perfmodel::fpm::learned_online::tests::mutable_tail_ -- --nocapture",
+      "passed": 3,
+      "failed": 0,
+      "scope": "Two new allocation/rollback tests plus the existing mutable-tail leaf-displacement test."
+    },
+    {
+      "command": "cargo test --locked -p aisimulate-core --lib --no-default-features --offline perfmodel::fpm:: -- --nocapture",
+      "passed": 247,
+      "failed": 0,
+      "scope": "Parent online-GBDT implementation, all FPM unit tests.",
+      "log_sha256": "7f6d544a95731a27c8f22ef7520978f769267ec95c5904814abfe66d28119e8f"
+    }
+  ],
+  "format_command": "cargo fmt --all -- --check",
+  "format_result": "passed",
+  "numerical_oracle": "Frozen prefix 10 + 1 + 2 = 13; independently averaged tail residuals give left predictions 14, 15 and 16.4, and right prediction 22. A finite fitted leaf of 900 produces a raw log upper bound of 913 and is rejected only at final prediction-range validation.",
+  "regression_scope": [
+    "Frozen predictor values and serialized training contents remain unchanged.",
+    "Nonempty histogram, candidate and region buffers keep their allocation identities.",
+    "Direct eager, scheduled eager and lazy structural fallback paths are exercised.",
+    "Final validation failure preserves model, training buffers and pending feedback; explicit retry succeeds.",
+    "Existing checkpoint, admission and continuation tests are included in the full FPM suite."
+  ],
+  "review_scope": [
+    "Independent source review of eager publication, tail boundaries, rollback, lazy fallback and checkpoint compatibility.",
+    "Independent test review confirms pointer checks fail old clone-and-replace behavior and numerical expectations do not mirror fitting helpers."
+  ],
+  "limits": [
+    "No public API or serialized state layout changed.",
+    "This change affects standalone learned-model fitting, not engine-step numerical computation; existing engine goldens were not changed or rerun for this allocation-only fix.",
+    "Frozen predictor arrays are still copied and frozen trees still contribute prefix predictions. Lazy per-row gradient vectors retain full forest width.",
+    "Performance measurements are separate from serving-workload accuracy."
+  ],
+  "ci_collection_fix": {
+    "commit": "5b04d92f6b69aee542815dbaa019f501b4e99ea4",
+    "cause": "Collection-time sklearn imports encounter collector-installed torch MagicMock; SciPy array API checks require torch.Tensor to be a class.",
+    "failed_runs": [
+      "https://github.com/ai-dynamo/aisimulate/actions/runs/39508763522",
+      "https://github.com/ai-dynamo/aisimulate/actions/runs/39508820971"
+    ],
+    "scope": "Three online test modules explicitly register the shared isolation fixture. sklearn import hides only malformed Torch stubs and restores the prior module. The dependent selector test must also register the fixture.",
+    "pytest_args": [
+      "-c",
+      "python/aisimulate/pytest.ini",
+      "-p",
+      "no:timeout",
+      "-q",
+      "python/aisimulate/tests/unit/sdk/test_fpm_online_export.py",
+      "python/aisimulate/tests/unit/sdk/test_fpm_online_integration.py",
+      "python/aisimulate/tests/unit/sdk/test_fpm_online_structural_reference.py"
+    ],
+    "invocation": "Set OMP_NUM_THREADS=OPENBLAS_NUM_THREADS=MKL_NUM_THREADS=1. In a fresh python/aisimulate/.venv/bin/python process, assign stub = unittest.mock.MagicMock(); sys.modules[\"torch\"] = stub; result = pytest.main(pytest_args); assert sys.modules[\"torch\"] is stub; raise SystemExit(result). Add --collect-only to verify collection alone.",
+    "before_fix": "Fresh-process collection reproduces TypeError in issubclass and exits 2.",
+    "after_fix": {
+      "collected": 33,
+      "passed": 33,
+      "failed": 0,
+      "warnings": 1,
+      "torch_stub_restored": true
+    },
+    "helper_checks": [
+      "A ModuleType with class-valued Tensor is left intact (not a real Torch installation).",
+      "A MetaPathFinder that raises ModuleNotFoundError for sklearn preserves pytest dependency skip behavior and restores the Torch stub."
+    ],
+    "versions": {
+      "sklearn": "1.9.1",
+      "scipy_local": "1.17.1",
+      "scipy_ci": "1.18.1",
+      "pytest": "9.1.1"
+    },
+    "native_extension": {
+      "path": "python/aisimulate/src/aisimulate/_runtime.abi3.so",
+      "sha256": "fb9cc16f6313ff89a600ef2f4c65f22ef5d1aafac3c387ec867662ce894bb375",
+      "scope": "Existing release extension from before the allocation-only change; verifies Python dependency isolation. The Rust tests and separately built native benchmark cover the new fitting implementation."
+    },
+    "logs_sha256": {
+      "fpm-ci-stub-collection-before.log": "4599aa07a8e5098141389d1bde0c7fed423041b8123ac005b47b6cc1ee68f60b",
+      "fpm-ci-stub-collection-after.log": "76f556d84c2eae25af3a2e07c0b0fe9ef8966bef550eb48a16da4c39fd250baa",
+      "fpm-ci-stub-tests.log": "167225943f1eed4e2ab2a063bac2148c131813a09ae7ddd88903d55bb90294fd"
+    },
+    "static_checks": "Ruff check and format --check with python/aisimulate/pyproject.toml passed for the helper and three affected modules; git diff --check passed."
+  },
+  "dependent_selector_validation": {
+    "rust_tree_revision": "2ae93bd5bbf2b1c94bc9b86e594dd70598d59783",
+    "additional_test_change": {
+      "path": "python/aisimulate/tests/unit/sdk/test_fpm_selector_integration.py",
+      "sha256": "8f9d3fd8f6c4c4acb233d7e889825f6543907765a9a052c5c6d65ce951700107",
+      "description": "Explicitly register the shared training-dependency isolation fixture in the selector test module."
+    },
+    "rust": {
+      "command": "cargo test --locked -p aisimulate-core --lib --no-default-features --offline perfmodel::fpm:: -- --nocapture",
+      "passed": 259,
+      "failed": 0,
+      "log_sha256": "ab4a94333e5cdfa13fe49c8c9f7e7727dc55d34b73d343b814440e601193cb59"
+    },
+    "python": {
+      "pytest_args": [
+        "-c",
+        "python/aisimulate/pytest.ini",
+        "-p",
+        "no:timeout",
+        "-q",
+        "python/aisimulate/tests/unit/sdk/test_fpm_selector_integration.py",
+        "python/aisimulate/tests/unit/sdk/test_fpm_online_export.py",
+        "python/aisimulate/tests/unit/sdk/test_fpm_online_integration.py",
+        "python/aisimulate/tests/unit/sdk/test_fpm_online_structural_reference.py",
+        "python/aisimulate/tests/unit/sdk/test_fpm_learned.py"
+      ],
+      "invocation": "Same fresh-process Torch-stub injection, thread settings and post-pytest restoration assertion as ci_collection_fix.invocation.",
+      "passed": 60,
+      "failed": 0,
+      "warnings": 1,
+      "log_sha256": "9a5ed39f3bd7f2318a869d576bba81593d781d960b5139aabfd3de883af2850e",
+      "native_extension_scope": "Same pre-existing release extension and provenance as ci_collection_fix.native_extension; no rebuild for Python test-only changes."
+    },
+    "hygiene": "cargo fmt --all -- --check, Python-config Ruff check/format --check on the selector test, and git diff --check passed."
+  }
+}

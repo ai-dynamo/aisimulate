@@ -909,6 +909,23 @@ class TestKVCacheElementsPerToken:
         assert model.model_family == expected_family
         assert model.get_kvcache_elements_per_token() == expected_elems
 
+    @pytest.mark.parametrize("tp,expected_elements", [(1, 4096), (2, 2048), (4, 2048)])
+    @pytest.mark.parametrize("kv_dtype", [common.KVCacheQuantMode.fp8, common.KVCacheQuantMode.bfloat16])
+    def test_nemotron_h_counts_only_attention_kv(self, tp, expected_elements, kv_dtype):
+        model = self._build_model(
+            "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
+            tp,
+            kvcache_quant_mode=kv_dtype,
+            moe_tp_size=1,
+            moe_ep_size=tp,
+        )
+        # The bundled config has 8 attention layers, 2 KV heads, and 128-wide heads.
+        # TP >= 2 retains one KV head per rank, including replicated heads at TP4.
+        assert model.get_kvcache_elements_per_token() == expected_elements
+        bytes_per_token = expected_elements * kv_dtype.value.memory
+        assert model.get_kvcache_bytes_per_sequence(64) == 64 * bytes_per_token
+        assert model.get_kvcache_max_tokens(64 * bytes_per_token) == 64
+
     @pytest.mark.parametrize(
         "hf_id",
         [
@@ -2079,6 +2096,51 @@ class TestBundledModelConfigsOffline:
         assert model_config.moe_quant_mode == common.MoEQuantMode.nvfp4
         assert model_config.kvcache_quant_mode == common.KVCacheQuantMode.bfloat16
         assert model_config.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+
+    @pytest.mark.parametrize(
+        "model_path,gemm,moe,kv",
+        [
+            # Z.AI publishes the FP8-block release under the plain name and the
+            # BF16 weights under the -BF16 suffix (GLM-5.2 used the reverse
+            # convention, and no zai-org/GLM-5.3-FP8 repository exists). The
+            # nvidia/GLM-5.3-NVFP4 bundle is not covered here: its ModelOpt
+            # MIXED_PRECISION export marks the BF16 attention and shared
+            # experts only by omission, which the exclusion resolver does not
+            # read yet, so that bundle still carries the GLM-5.2-NVFP4 layout.
+            # The FP8 checkpoint declares no KV scheme; its fp8 KV mode is the
+            # backend default for fp8_block, not a checkpoint fact, so it is
+            # not asserted here.
+            ("zai-org/GLM-5.3", "fp8_block", "fp8_block", None),
+            ("zai-org/GLM-5.3-BF16", "bfloat16", "bfloat16", "bfloat16"),
+        ],
+    )
+    def test_glm53_bundles_resolve_checkpoint_quant_modes(self, monkeypatch, model_path, gemm, moe, kv):
+        """The zai-org GLM-5.3 bundles must be the real checkpoint configs, not GLM-5.2 copies."""
+        import aisimulate.sdk.utils as sdk_utils
+
+        def _no_network(*a, **k):
+            raise AssertionError("network path reached")
+
+        monkeypatch.setattr(sdk_utils, "_download_hf_config", _no_network, raising=False)
+        sdk_utils.get_model_config_from_model_path.cache_clear()
+        sdk_utils._load_model_config_from_model_path.cache_clear()
+        try:
+            cfg = sdk_utils.get_model_config_from_model_path(model_path)
+            assert cfg["architecture"] == "GlmMoeDsaForCausalLM"
+            model_config = config.ModelConfig(tp_size=8, moe_tp_size=1, moe_ep_size=8)
+            get_model(model_path, model_config, backend_name="sglang")
+        finally:
+            sdk_utils.get_model_config_from_model_path.cache_clear()
+            sdk_utils._load_model_config_from_model_path.cache_clear()
+
+        assert model_config.gemm_quant_mode == common.GEMMQuantMode[gemm]
+        assert model_config.moe_quant_mode == common.MoEQuantMode[moe]
+        if kv is not None:
+            assert model_config.kvcache_quant_mode == common.KVCacheQuantMode[kv]
+
+    def test_glm53_registered_identifiers_match_the_published_repositories(self):
+        assert "zai-org/GLM-5.3-BF16" in common.DefaultHFModels
+        assert "zai-org/GLM-5.3-FP8" not in common.DefaultHFModels
 
     def test_qwen38max_loads_from_bundle_with_gdn_and_moe_fields(self, monkeypatch):
         import aisimulate.sdk.utils as sdk_utils
