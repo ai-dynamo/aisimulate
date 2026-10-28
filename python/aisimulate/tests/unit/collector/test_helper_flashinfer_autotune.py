@@ -274,6 +274,10 @@ def test_autotuner_fallback_messages_are_surfaced_and_logging_is_restored(fake_f
     # the full collector run); the scenario needs the production default, NOTSET.
     inherited_level = fi_logger.level
     fi_logger.setLevel(logging.NOTSET)
+    # The threshold the capture pins pre-existing handlers at is the logger's EFFECTIVE level,
+    # inherited from the root logger — WARNING by default, INFO when another test module
+    # configured logging in this process; read it instead of assuming.
+    effective_before = fi_logger.getEffectiveLevel()
     stream = logging.StreamHandler()
     fi_logger.addHandler(stream)
     try:
@@ -294,7 +298,7 @@ def test_autotuner_fallback_messages_are_surfaced_and_logging_is_restored(fake_f
 
         # Captured at DEBUG, while the pre-existing stream handler was pinned at the old
         # effective threshold so FlashInfer's stderr output did not change.
-        assert seen_levels == [(logging.DEBUG, logging.WARNING)]
+        assert seen_levels == [(logging.DEBUG, effective_before)]
         assert fi_logger.level == logging.NOTSET
         assert stream.level == logging.NOTSET
         assert all(h is not fi_logger for h in fi_logger.handlers) and stream in fi_logger.handlers
