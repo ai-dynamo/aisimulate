@@ -270,10 +270,13 @@ def test_autotuner_fallback_messages_are_surfaced_and_logging_is_restored(fake_f
     import logging
 
     fi_logger = logging.getLogger("flashinfer")
+    # Other test modules leave this logger at an explicit level (seen at ERROR in
+    # the full collector run); the scenario needs the production default, NOTSET.
+    inherited_level = fi_logger.level
+    fi_logger.setLevel(logging.NOTSET)
     stream = logging.StreamHandler()
     fi_logger.addHandler(stream)
     try:
-        assert fi_logger.level == logging.NOTSET
         seen_levels = []
 
         def tune_fn():
@@ -297,6 +300,7 @@ def test_autotuner_fallback_messages_are_surfaced_and_logging_is_restored(fake_f
         assert all(h is not fi_logger for h in fi_logger.handlers) and stream in fi_logger.handlers
     finally:
         fi_logger.removeHandler(stream)
+        fi_logger.setLevel(inherited_level)
 
     out = capsys.readouterr().out
     assert "FlashInfer autotune: 0 new tactic entries at num_tokens=768 sglang_flashinfer_trtllm_moe [" in out
