@@ -22,7 +22,6 @@ SPDX-License-Identifier: Apache-2.0
 {%- set _ = args.append('--cudagraph-capture-sizes ' ~ (vllm['cudagraph-capture-sizes'] | join(' '))) -%}
 {%- endif -%}
 {%- if vllm['no-enable-prefix-caching'] -%}{%- set _ = args.append('--no-enable-prefix-caching') -%}{%- endif -%}
-{{ args | join(' ') }}
 {%- set spec_cfg = namespace(value={}) -%}
 {%- if speculative_config.method is defined and speculative_config.method -%}
     {%- set _ = spec_cfg.value.update({'method': speculative_config.method}) -%}
@@ -33,3 +32,4 @@ SPDX-License-Identifier: Apache-2.0
 {%- if spec_cfg.value -%}
     {%- set _ = args.append('--speculative-config \'' ~ (spec_cfg.value | tojson) ~ '\'') -%}
 {%- endif -%}
+{{ args | join(' ') }}
