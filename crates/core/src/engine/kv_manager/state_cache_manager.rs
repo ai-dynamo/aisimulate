@@ -28,6 +28,10 @@ pub(crate) struct StateRequest {
     // Align mode rotates the working allocation when the destination slot
     // changes. The previous slot remains a real input until the next pass.
     pub(crate) working_slot: Option<usize>,
+    // Whether `working` carries a published checkpoint identity. Only this
+    // manager moves working copies between private and cached, so the flag
+    // spares decode a pool lookup per state block on every capacity check.
+    working_cached: bool,
     previous: Vec<BlockCopyId>,
     previous_step: u64,
     // Indices into the manager's per-step copy-reference queue, not extra refs.
@@ -121,26 +125,33 @@ impl StateCacheManager {
         previous + copies
     }
 
+    fn debug_assert_working_cached(pool: &VllmBlockPool, state: &StateRequest) {
+        debug_assert_eq!(
+            state.working_cached,
+            state.working.iter().any(|&id| !pool.is_private(id)),
+            "working-state cache flag diverged from the pool"
+        );
+    }
+
     pub(crate) fn write_blocks(
         &self,
         pool: &VllmBlockPool,
         state: &StateRequest,
         target: usize,
     ) -> usize {
+        Self::debug_assert_working_cached(pool, state);
         if let Some(block_size) = self.align_block_size {
             if target <= state.computed_tokens || state.working.is_empty() {
                 return 0;
             }
             let slot = target.saturating_sub(1) / block_size;
-            return if state.working_slot != Some(slot)
-                || state.working.iter().any(|&id| !pool.is_private(id))
-            {
+            return if state.working_slot != Some(slot) || state.working_cached {
                 self.blocks_per_state
             } else {
                 0
             };
         }
-        if target > state.computed_tokens && state.working.iter().any(|&id| !pool.is_private(id)) {
+        if target > state.computed_tokens && state.working_cached {
             self.blocks_per_state
         } else {
             0
@@ -167,6 +178,7 @@ impl StateCacheManager {
                 for id in previous {
                     self.hold_previous(state, id);
                 }
+                state.working_cached = false;
                 state.working_slot = Some(slot);
             } else {
                 // Producer partial-tail CoW: keep the running slot, move its
@@ -181,6 +193,7 @@ impl StateCacheManager {
                 for &id in &state.working {
                     pool.make_state_private(id);
                 }
+                state.working_cached = false;
                 for &id in &saved {
                     self.hold_copy(state, id);
                 }
@@ -200,6 +213,7 @@ impl StateCacheManager {
         for &id in &state.working {
             pool.make_state_private(id);
         }
+        state.working_cached = false;
         state.snapshot = preserved;
         state.snapshot_owned = true;
         state.snapshot_step = self.step;
@@ -217,8 +231,9 @@ impl StateCacheManager {
         if computed_tokens == state.computed_tokens || state.working.is_empty() {
             return;
         }
+        Self::debug_assert_working_cached(pool, state);
         assert!(
-            state.working.iter().all(|&id| pool.is_private(id)),
+            !state.working_cached,
             "state write must reserve its transition before compute"
         );
         if self.align_block_size.is_some() {
@@ -229,6 +244,7 @@ impl StateCacheManager {
                 for (&id, key) in state.working.iter().zip(self.keys(hash)) {
                     pool.cache_private_key(id, key);
                 }
+                state.working_cached = true;
                 state.snapshot.clone_from(&state.working);
                 state.snapshot_hash = Some(hash);
                 state.snapshot_step = self.step;
@@ -252,6 +268,7 @@ impl StateCacheManager {
         for (&id, key) in state.working.iter().zip(self.keys(hash)) {
             pool.cache_private_key(id, key);
         }
+        state.working_cached = true;
         // This is a non-owning alias: the request holds only its working refs.
         state.snapshot.clone_from(&state.working);
         state.snapshot_hash = Some(hash);
@@ -295,6 +312,7 @@ impl StateCacheManager {
         for id in state.working.drain(..) {
             pool.release(id);
         }
+        state.working_cached = false;
         // Published checkpoints remain reclaimable cross-request cache entries.
         state.snapshot.clear();
         state.snapshot_hash = None;
