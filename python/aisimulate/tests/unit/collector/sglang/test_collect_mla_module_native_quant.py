@@ -290,6 +290,32 @@ class TestMixedPrecisionExport:
         with pytest.raises(ValueError, match=rf"{MODEL_ID}.*quantized_layers must be an object"):
             mod._model_native_gemm_quant(MODEL_ID)
 
+    @pytest.mark.parametrize("quantization_config", [[], 0, "modelopt"], ids=["list", "zero", "string"])
+    def test_quantization_config_that_is_not_an_object_raises_a_clear_error(self, mod, tmp_path, quantization_config):
+        # A non-null section that is not an object must not read as absent: the sidecar fallback and the
+        # ``None`` result would both hide malformed metadata.
+        _write_config(tmp_path, quantization_config)
+        _write_hf_quant(tmp_path, _mixed_hf_quant(GLM53_LANES))
+        with pytest.raises(ValueError, match=rf"{MODEL_ID}.*config\.json quantization_config must be an object"):
+            mod._model_native_gemm_quant(MODEL_ID)
+
+    @pytest.mark.parametrize("quantization", [[], 0, "modelopt"], ids=["list", "zero", "string"])
+    def test_hf_quant_config_quantization_that_is_not_an_object_raises_a_clear_error(self, mod, tmp_path, quantization):
+        _write_hf_quant(tmp_path, quantization)
+        with pytest.raises(ValueError, match=rf"{MODEL_ID}.*hf_quant_config\.json quantization must be an object"):
+            mod._model_native_gemm_quant(MODEL_ID)
+
+    def test_compression_config_takes_precedence_over_the_sidecar(self, mod, tmp_path):
+        # SGLang reads ``compression_config`` before the ModelOpt sidecar (configs/model_config.py:1044-1046
+        # @v0.5.14), so a checkpoint that declares it never reaches the mixed recipe, whatever the sidecar says.
+        payload = {
+            "architectures": ["GlmMoeDsaForCausalLM"],
+            "compression_config": {"quant_method": "compressed-tensors", "format": "float-quantized"},
+        }
+        (tmp_path / "org--m_config.json").write_text(json.dumps(payload))
+        _write_hf_quant(tmp_path, _mixed_hf_quant(GLM53_LANES))
+        assert mod._model_native_gemm_quant(MODEL_ID) is None
+
 
 class TestUnchangedExports:
     @pytest.mark.parametrize(

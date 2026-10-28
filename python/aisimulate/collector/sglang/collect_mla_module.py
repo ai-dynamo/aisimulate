@@ -486,6 +486,8 @@ def _model_native_gemm_quant(model_id: str) -> str | None:
     ``ValueError`` for a ``MIXED_PRECISION`` export without an NVFP4 lane:
     SGLang resolves it to ``w4afp8``, which this collector has no path for.
     It also raises when a ``self_attn`` lane is listed: the ``bfloat16`` DSA label assumes BF16 attention.
+    For the mixed recipe a ``compression_config`` in ``*_config.json`` takes precedence over the sidecar, as
+    in SGLang, and a ``quantization_config`` or ``quantization`` section that is not an object raises.
     """
     base = os.path.join(_MODEL_CONFIG_DIR, model_id.replace("/", "--"))
     quant_file = f"{base}_hf_quant_config.json"
@@ -537,16 +539,26 @@ def _model_native_gemm_quant(model_id: str) -> str | None:
     # ``bfloat16`` label premise (no attention lane), the ``ModelOptMixedPrecisionConfig`` methods for unlisted
     # modules and the KV cache, the section precedence including ``compression_config``, the ``quant_method`` gate,
     # the exact match and the lane tuple, the NemotronH exception and the ``w4afp8`` fallback.
-    # A parse error of an existing file propagates: ``None`` would become the ``bfloat16`` DSA label.
+    # A parse error of an existing file propagates and a section that is not an object raises: ``None`` would
+    # become the ``bfloat16`` DSA label.
     quant_cfg = None
+    compression_cfg = None
     section = "config.json quantization_config"
     if os.path.exists(config_file):
         with open(config_file) as f:
-            quant_cfg = json.load(f).get("quantization_config")
-    if quant_cfg is None and os.path.exists(quant_file):
+            config = json.load(f)
+        quant_cfg = config.get("quantization_config")
+        compression_cfg = config.get("compression_config")
+    if quant_cfg is not None and not isinstance(quant_cfg, dict):
+        raise ValueError(f"{model_id}: {section} must be an object, got {type(quant_cfg).__name__}")
+    # SGLang reads ``compression_config`` before the sidecar (configs/model_config.py:1044-1046@v0.5.14): a
+    # checkpoint that declares it never reaches the mixed recipe.
+    if quant_cfg is None and compression_cfg is None and os.path.exists(quant_file):
         section = "hf_quant_config.json quantization"
         with open(quant_file) as f:
             quant_cfg = json.load(f).get("quantization")
+        if quant_cfg is not None and not isinstance(quant_cfg, dict):
+            raise ValueError(f"{model_id}: {section} must be an object, got {type(quant_cfg).__name__}")
     if (
         isinstance(quant_cfg, dict)
         and quant_cfg.get("quant_method", "modelopt") == "modelopt"
