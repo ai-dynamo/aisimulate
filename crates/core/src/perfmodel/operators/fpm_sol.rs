@@ -1137,6 +1137,8 @@ mod tests {
             head_dim: 64,
             n_groups: 8,
             chunk_size: 256,
+            state_dtype: "unrecorded".into(),
+            token_width: 1,
         });
 
         let err = op_sol_latency_ms(&op, &d, 64.0, 1.0, 1.0, 0.0).unwrap_err();

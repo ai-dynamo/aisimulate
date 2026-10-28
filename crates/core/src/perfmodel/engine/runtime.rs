@@ -34,6 +34,7 @@ use crate::session::{
     ContextOpFilter, OpListPlan, QueryMemo, get_mix_step_ops, query_context_op,
     query_generation_op, run_context_ops, run_context_ops_planned, run_context_ops_with,
     run_generation_ops_step, run_generation_ops_step_beamed_with, run_generation_ops_step_planned,
+    run_telemetry_decode_ops,
 };
 use crate::{ForwardPassMetrics, ForwardPassWorkerType, validate_forward_pass_metrics};
 
@@ -544,6 +545,21 @@ impl Engine {
             .as_ref()
             .and_then(|s| s.nextn)
             .unwrap_or(0);
+        // Generation Mamba queries carry `requests * (nextn + 1)` flattened
+        // tokens and the op divides by its own width; the two must agree.
+        for op in &spec.generation_ops {
+            if let Op::Mamba2(m) = op
+                && op.is_qualified_mamba()
+                && m.token_width != nextn.saturating_add(1)
+            {
+                return Err(AicError::InvalidEngineConfig(format!(
+                    "qualified Mamba op {} has token_width {} but speculative nextn+1 is {}",
+                    m.name,
+                    m.token_width,
+                    nextn.saturating_add(1)
+                )));
+            }
+        }
         super::readiness::validate_glm53_kv(
             &db,
             spec.context_ops.iter().chain(&spec.generation_ops),
@@ -1672,6 +1688,12 @@ impl Engine {
         // a guard — callers always pass isl >= 1. Clamp to avoid a Rust
         // div-by-zero panic on degenerate input Python would crash on.
         let isl = isl.max(1);
+        if ctx_tokens > 0 && prefix >= isl {
+            return Err(AicError::InvalidEngineConfig(format!(
+                "isl must be greater than 0 after removing prefix, but got {}",
+                isl as i64 - prefix as i64
+            )));
+        }
 
         // ---- Pass 1: combined non-attention work ----
         // Speculative progress model: every decode request verifies one
@@ -1690,6 +1712,34 @@ impl Engine {
         }
         let mut shared_non_attention = 0.0;
         for op in &self.context_ops {
+            if op.is_qualified_mamba() {
+                // Each prefill chunk reads and writes its recurrent state once.
+                // Decode Mamba is priced in pass 3 at its own request shape.
+                // `ctx_tokens` packs `floor(ctx/isl)` complete requests (each
+                // `isl - prefix` new tokens) plus one trailing partial extend.
+                // shortcut: sum uniform timing rows until variable-length batches are
+                // calibrated; this can overcount launch overhead for ragged batches.
+                for (batch, tokens) in [
+                    (ctx_tokens / isl, isl.saturating_sub(prefix)),
+                    (1, ctx_tokens % isl),
+                ] {
+                    if batch == 0 || tokens == 0 {
+                        continue;
+                    }
+                    let result = query_context_op(
+                        op,
+                        &self.db,
+                        batch,
+                        tokens,
+                        prefix,
+                        seq_imbalance_correction_scale,
+                        None,
+                    )?;
+                    shared_non_attention += result.latency_ms;
+                    on_op(MixedPass::SharedNonAttention, op, result);
+                }
+                continue;
+            }
             // Only target operations share a forward across prefill and
             // verification. The draft has its own phase-specific graph.
             if op.is_context_attention() || op.name().starts_with("draft_") {
@@ -1714,17 +1764,13 @@ impl Engine {
         // Python's `np.ceil(isl/0)` is +inf and the division yields 0 — skip.
         let mut context_attention = 0.0_f64;
         if ctx_tokens > 0 {
-            if prefix >= isl {
-                return Err(AicError::InvalidEngineConfig(format!(
-                    "isl must be greater than 0 after removing prefix, but got {}",
-                    isl as i64 - prefix as i64
-                )));
-            }
             let batch2 = ctx_tokens.div_ceil(isl);
             let scale2 = isl.div_ceil(ctx_tokens) as f64;
             let mut attn = 0.0;
             for op in &self.context_ops {
-                if !op.is_context_attention() && !op.name().starts_with("draft_") {
+                if op.is_qualified_mamba()
+                    || (!op.is_context_attention() && !op.name().starts_with("draft_"))
+                {
                     continue;
                 }
                 // Draft prefill uses the same whole-prefill amortization
@@ -1750,7 +1796,7 @@ impl Engine {
             context_attention = attn / scale2;
         }
 
-        // ---- Pass 3: decode attention ----
+        // ---- Pass 3: decode attention and qualified Mamba ----
         let mut decode_attention = 0.0_f64;
         if gen_tokens > 0 {
             let bs = gen_tokens.saturating_mul(self.nextn.saturating_add(1));
@@ -1758,7 +1804,10 @@ impl Engine {
             // isl_pass3 = isl + osl//2 and a single step (osl=2, i=0).
             let s = isl + osl / 2 + 1;
             for op in &self.generation_ops {
-                if !op.is_generation_attention() && !op.name().starts_with("draft_") {
+                if !op.is_generation_attention()
+                    && !op.name().starts_with("draft_")
+                    && !op.is_qualified_mamba()
+                {
                     continue;
                 }
                 // The draft's TokenScale maps this verification-width
@@ -3068,6 +3117,7 @@ impl Engine {
                 sched.sum_prefill_kv_tokens,
                 kv_per_req,
                 n_decode,
+                n_prefill,
             );
         }
 
@@ -3091,14 +3141,8 @@ impl Engine {
         if has_decode {
             let n_decode = sched.num_decode_requests.max(1);
             let kv_per_req = sched.sum_decode_kv_tokens / n_decode;
-            total += run_generation_ops_step(
-                &self.generation_ops,
-                &self.db,
-                n_decode,
-                kv_per_req,
-                1.0,
-                false,
-            )?;
+            total +=
+                run_telemetry_decode_ops(&self.generation_ops, &self.db, n_decode, kv_per_req)?;
         }
 
         Ok(total)
@@ -3419,6 +3463,189 @@ pub(crate) mod tests {
             generation_ops(),
         );
         Engine::build(spec, Arc::new(db)).unwrap()
+    }
+
+    #[test]
+    fn qualified_mamba_mixed_steps_preserve_prefill_and_decode_shapes() {
+        let mut engine = build_engine(Some(3));
+        let make_op = |prefill: bool| {
+            Op::Mamba2(crate::operators::Mamba2Op {
+                name: if prefill {
+                    "context_ssm"
+                } else {
+                    "generation_ssm"
+                }
+                .into(),
+                scale_factor: 1.0,
+                kernel_source: if prefill {
+                    "vllm_mamba_chunk_scan_combined_varlen"
+                } else {
+                    "vllm_flashinfer_selective_state_update"
+                }
+                .into(),
+                phase: if prefill { "context" } else { "generation" }.into(),
+                d_model: 4096,
+                d_state: 128,
+                d_conv: 4,
+                nheads: 64,
+                head_dim: 64,
+                n_groups: 4,
+                chunk_size: 128,
+                state_dtype: "float16".into(),
+                token_width: if prefill { 1 } else { 4 },
+            })
+        };
+        engine.context_ops = vec![make_op(true)];
+        engine.generation_ops = vec![make_op(false)];
+        // One 16-token prefill: 296,960 activation bytes + two 1 MiB states.
+        // Two width-four decodes: 148,480 activation bytes + ten 1 MiB states.
+        let expected = 13_028_352.0 / engine.db.system_spec.gpu.mem_bw * 1000.0;
+        let mixed = engine
+            .mixed_step_latency(16, 2, 16, 1, 0, 1.0, 1.0)
+            .unwrap();
+        assert!((mixed - expected).abs() < 1e-12);
+        let decode = engine.decode_step_latency(2, 16, 1, 1.0).unwrap();
+        assert!((decode - 10_634_240.0 / engine.db.system_spec.gpu.mem_bw * 1000.0).abs() < 1e-12);
+        let telemetry = get_mix_step_ops(
+            &engine.context_ops,
+            &engine.generation_ops,
+            &engine.db,
+            16,
+            8,
+            16,
+            0,
+            0,
+            16,
+            2,
+            1,
+        )
+        .unwrap();
+        assert!((telemetry - expected).abs() < 1e-12);
+        // The engine's packed-telemetry entry point carries request counts.
+        let bw = engine.db.system_spec.gpu.mem_bw;
+        let packed = |prefill_tokens: u32, prefills: u32, decodes: u32| {
+            engine
+                .forward_pass_time_ms(&[ForwardPassMetrics {
+                    scheduled_requests: crate::ScheduledRequestMetrics {
+                        num_prefill_requests: prefills,
+                        sum_prefill_tokens: prefill_tokens,
+                        num_decode_requests: decodes,
+                        sum_decode_kv_tokens: decodes * 8,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }])
+                .unwrap()
+        };
+        assert!((packed(16, 1, 2) - expected).abs() < 1e-12);
+        assert!((packed(0, 0, 2) - 10_634_240.0 / bw * 1000.0).abs() < 1e-12);
+        assert!((packed(16, 1, 0) - 2_394_112.0 / bw * 1000.0).abs() < 1e-12);
+        // Two prefills totaling 17 new tokens plus a decode: exactly two state
+        // pairs (9 + 8 tokens), never a third request from the floored average.
+        let ragged = packed(17, 2, 1);
+        let ragged_bytes = 17.0 * 18_560.0 + 2.0 * 2_097_152.0 + 5_317_120.0;
+        assert!(
+            (ragged - ragged_bytes / bw * 1000.0).abs() < 1e-12,
+            "{ragged}"
+        );
+        for (ctx, isl, prefix, requests, new_tokens) in [
+            (512, 4096, 0, 1, 512),
+            (512, 4096, 1024, 1, 512),
+            (3500, 4096, 1024, 1, 3500),
+            (4608, 4096, 1024, 2, 3584),
+            (6000, 4096, 3000, 2, 3000),
+            (8128, 4096, 1024, 2, 7104),
+            (0, 4096, 1024, 0, 0),
+        ] {
+            // Each chunk adds two 1 MiB states, regardless of the full prompt length.
+            let bytes =
+                f64::from(new_tokens) * 18_560.0 + f64::from(requests) * 2_097_152.0 + 10_634_240.0;
+            let expected = bytes / engine.db.system_spec.gpu.mem_bw * 1000.0;
+            let mixed = engine
+                .mixed_step_latency(ctx, 2, isl, 1, prefix, 1.0, 1.0)
+                .unwrap();
+            assert!(
+                (mixed - expected).abs() < 1e-12,
+                "chunk={ctx}, prefix={prefix}"
+            );
+            let (shared, context, decode) = engine
+                .mixed_step_breakdown_per_op(ctx, 2, isl, 1, prefix, 1.0, 1.0)
+                .unwrap();
+            let sum: f64 = shared
+                .iter()
+                .chain(&context)
+                .chain(&decode)
+                .map(|row| row.1)
+                .sum();
+            assert!((sum - mixed).abs() < 1e-12);
+            let telemetry = get_mix_step_ops(
+                &engine.context_ops,
+                &engine.generation_ops,
+                &engine.db,
+                new_tokens,
+                8,
+                // Production passes `sum_prefill_tokens / num_prefill_requests`.
+                new_tokens / requests.max(1),
+                prefix,
+                ctx - new_tokens,
+                isl,
+                2,
+                requests.max(1),
+            )
+            .unwrap();
+            assert!(
+                (telemetry - expected).abs() < 1e-12,
+                "telemetry chunk={ctx}, prefix={prefix}"
+            );
+        }
+        if let Op::Mamba2(op) = &mut engine.context_ops[0] {
+            op.name = "draft_context_ssm".into();
+        }
+        let draft_named = engine
+            .mixed_step_latency(16, 2, 16, 1, 0, 1.0, 1.0)
+            .unwrap();
+        assert!((draft_named - expected).abs() < 1e-12);
+        assert!(
+            engine
+                .mixed_step_latency(4096, 2, 4096, 4097, 4097, 1.0, 1.0)
+                .is_err()
+        );
+        assert!(
+            (engine.mixed_step_latency(0, 2, 0, 1, 0, 1.0, 1.0).unwrap() - decode).abs() < 1e-12
+        );
+    }
+
+    #[test]
+    fn qualified_mamba_token_width_must_match_speculative_width() {
+        let mut ops = generation_ops();
+        ops.push(Op::Mamba2(crate::operators::Mamba2Op {
+            name: "generation_ssm".into(),
+            scale_factor: 1.0,
+            kernel_source: "selective_state_update".into(),
+            phase: "generation".into(),
+            d_model: 4096,
+            d_state: 128,
+            d_conv: 4,
+            nheads: 64,
+            head_dim: 64,
+            n_groups: 4,
+            chunk_size: 128,
+            state_dtype: "float16".into(),
+            token_width: 1,
+        }));
+        let db = build_engine(None).db;
+        let err = Engine::build(
+            EngineSpec::new(fixture_engine_config(Some(3)), context_ops(), ops.clone()),
+            db.clone(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("token_width 1"), "{err}");
+        // A matching width, or a legacy op, builds.
+        Engine::build(
+            EngineSpec::new(fixture_engine_config(None), context_ops(), ops),
+            db,
+        )
+        .unwrap();
     }
 
     fn runtime(batch_size: u32, isl: u32, osl: u32) -> RuntimeConfig {
@@ -6467,6 +6694,8 @@ pub(crate) mod tests {
             head_dim: 64,
             n_groups: 8,
             chunk_size: 256,
+            state_dtype: "unrecorded".into(),
+            token_width: 1,
         })];
         let ops_json = serde_json::to_string(&ops).unwrap();
         let err = engine
@@ -7000,6 +7229,7 @@ pub(crate) mod tests {
             2 * prefix,
             kv,
             generation,
+            2,
         )
         .unwrap();
         let want = sol(&ctx_attn, 2, new_tokens, prefix) + sol(&gen_attn, generation, kv, 0);
