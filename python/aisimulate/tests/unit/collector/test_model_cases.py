@@ -255,7 +255,6 @@ def test_added_model_moe_profiles_resolve_targeted_aliases(monkeypatch):
         ("nvidia/DeepSeek-V4-Flash-NVFP4", "nvfp4"),
         ("nvidia/DeepSeek-V4-Pro-NVFP4", "nvfp4"),
         ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4", "nvfp4"),
-        ("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", "nvfp4"),
         ("nvidia/MiniMax-M3-NVFP4", "nvfp4"),
     ],
 )
@@ -269,6 +268,14 @@ def test_nvfp4_quant_artifacts_have_exact_moe_profiles_and_lanes(monkeypatch, mo
     assert {case.model_name for case in cases} == {model_path}
     for backend in ("sglang", "trtllm", "vllm"):
         assert moe_model_allows_quantization(backend, model_path, quant_mode)
+
+
+def test_lightning_w4a16_nvfp4_experts_are_not_collected_as_vllm_w4a4_nvfp4():
+    model_path = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4"
+
+    assert moe_model_allows_quantization("sglang", model_path, "nvfp4")
+    assert moe_model_allows_quantization("trtllm", model_path, "nvfp4")
+    assert not moe_model_allows_quantization("vllm", model_path, "nvfp4")
 
 
 @pytest.mark.parametrize(

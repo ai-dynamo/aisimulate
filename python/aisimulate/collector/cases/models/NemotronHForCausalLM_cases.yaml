@@ -93,14 +93,10 @@ model_case_values:
         trtllm:
           allowed_modes: [nvfp4]
         vllm:
-          # Not the topk restriction (topk=6 is fine). vLLM's moe getter
-          # additionally needs a packaged HF config
-          # (collect_moe.py::_load_model_moe_config) at
-          # model_configs/nvidia--NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4_config.json
-          # -- outside collector/'s module boundary, so it was added as its
-          # own human-approved commit (layer_permissions.md) rather than
-          # bundled with this row. AIC-1743/AIC-1748.
-          allowed_modes: [nvfp4]
+          # The checkpoint's routed experts are W4A16_NVFP4 (weight-only), so
+          # vLLM serves them through ModelOptNvFp4FusedMoE with BF16
+          # activations, not the W4A4 nvfp4 mode collected here.
+          allowed_modes: []
     - model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
       # vLLM routes experts through moe_latent_size=1024 (next row), so this
       # outer-width row is SGLang/TRT-LLM only.
