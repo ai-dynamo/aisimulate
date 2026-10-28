@@ -60,14 +60,64 @@ pub struct CommunicationTable {
     oneccl: OnceLock<Result<NcclGrids, AicError>>,
 }
 
+/// Measured fan-out (`tp_size` / `num_gpus`) -> immutable `u64` message-size
+/// leaf curve.
+type FanoutCurves = BTreeMap<u32, LeafAxisCurve<u64>>;
+
 struct CustomAllReduceGrids {
-    /// `(quant_name, tp_size)` -> immutable `u64` message-size leaf curve.
-    by_keys: BTreeMap<(String, u32), LeafAxisCurve<u64>>,
+    /// `quant_name` -> measured `tp_size` curves. Nested so per-query lookups
+    /// borrow the quant name and fan-out selection reads one slice's keys.
+    by_quant: BTreeMap<String, FanoutCurves>,
+}
+
+impl CustomAllReduceGrids {
+    fn from_curves(curves: impl IntoIterator<Item = ((String, u32), LeafAxisCurve<u64>)>) -> Self {
+        let mut by_quant: BTreeMap<String, FanoutCurves> = BTreeMap::new();
+        for ((quant, tp_size), curve) in curves {
+            by_quant.entry(quant).or_default().insert(tp_size, curve);
+        }
+        Self { by_quant }
+    }
+
+    fn slice(&self, quant: &str) -> Option<&FanoutCurves> {
+        self.by_quant.get(quant)
+    }
+
+    fn curve(&self, quant: &str, tp_size: u32) -> Option<&LeafAxisCurve<u64>> {
+        self.slice(quant)?.get(&tp_size)
+    }
 }
 
 struct NcclGrids {
-    /// `(dtype_name, operation, num_gpus)` -> immutable `u64` message-size leaf curve.
-    by_keys: BTreeMap<(String, String, u32), LeafAxisCurve<u64>>,
+    /// `dtype_name` -> `operation` -> measured `num_gpus` curves. Nested so
+    /// per-query lookups borrow their names and fan-out selection reads one
+    /// slice's keys.
+    by_dtype: BTreeMap<String, BTreeMap<String, FanoutCurves>>,
+}
+
+impl NcclGrids {
+    fn from_curves(
+        curves: impl IntoIterator<Item = ((String, String, u32), LeafAxisCurve<u64>)>,
+    ) -> Self {
+        let mut by_dtype: BTreeMap<String, BTreeMap<String, FanoutCurves>> = BTreeMap::new();
+        for ((dtype, operation, num_gpus), curve) in curves {
+            by_dtype
+                .entry(dtype)
+                .or_default()
+                .entry(operation)
+                .or_default()
+                .insert(num_gpus, curve);
+        }
+        Self { by_dtype }
+    }
+
+    fn slice(&self, dtype: &str, operation: &str) -> Option<&FanoutCurves> {
+        self.by_dtype.get(dtype)?.get(operation)
+    }
+
+    fn curve(&self, dtype: &str, operation: &str, num_gpus: u32) -> Option<&LeafAxisCurve<u64>> {
+        self.slice(dtype, operation)?.get(&num_gpus)
+    }
 }
 
 /// Select the recorded fan-out that can answer `requested` without looking
@@ -95,6 +145,21 @@ fn measured_fanout_slice(
             greatest_at_or_below.unwrap_or(per_node)
         }
     })
+}
+
+/// The fan-outs of one measured slice that can decide [`measured_fanout_slice`]:
+/// its largest one and its greatest one at or below `requested`.
+fn deciding_fanouts(slice: &FanoutCurves, requested: u32) -> impl Iterator<Item = u32> + '_ {
+    [
+        slice.keys().next_back(),
+        slice
+            .range(..=requested)
+            .next_back()
+            .map(|(fanout, _)| fanout),
+    ]
+    .into_iter()
+    .flatten()
+    .copied()
 }
 
 impl CommunicationTable {
@@ -170,8 +235,8 @@ impl CommunicationTable {
             return Ok(LeafValue::latency_only(0.0));
         }
         let grids = self.load_custom_allreduce()?;
-        let key = (quant.name().to_string(), tp_size_effective);
-        let curve = grids.by_keys.get(&key).ok_or_else(|| {
+        let key = (quant.name(), tp_size_effective);
+        let curve = grids.curve(key.0, key.1).ok_or_else(|| {
             AicError::PerfDatabase(format!(
                 "custom_allreduce data missing for {key:?} at {}",
                 self.data_root.display()
@@ -190,18 +255,12 @@ impl CommunicationTable {
     /// Rust engine method is the single implementation; Python/SDK queries
     /// delegate to the engine.
     pub fn measured_tp_slice(&self, quant: CommQuantMode, tp_size: u32, per_node: u32) -> u32 {
-        if let Ok(grids) = self.load_custom_allreduce() {
-            if let Some(measured) = measured_fanout_slice(
-                grids.by_keys.keys().filter_map(|(name, measured_tp)| {
-                    (name == quant.name()).then_some(*measured_tp)
-                }),
-                tp_size,
-                per_node,
-            ) {
-                return measured;
-            }
-        }
-        tp_size.min(per_node)
+        self.custom_allreduce_grids()
+            .and_then(|grids| grids.slice(quant.name()))
+            .and_then(|slice| {
+                measured_fanout_slice(deciding_fanouts(slice, tp_size), tp_size, per_node)
+            })
+            .unwrap_or_else(|| tp_size.min(per_node))
     }
 
     /// Custom-allreduce latency at a RAW tp_size. This is the engine-level
@@ -265,20 +324,27 @@ impl CommunicationTable {
             return Ok(LeafValue::latency_only(0.0));
         }
         let dtype_name = dtype.name();
-        let fanouts = [self.load_nccl(), self.load_oneccl()]
+        let nccl = self
+            .nccl_grids()
+            .and_then(|grids| grids.slice(dtype_name, operation));
+        let oneccl = self
+            .oneccl_grids()
+            .and_then(|grids| grids.slice(dtype_name, operation));
+        let fanouts = nccl
             .into_iter()
-            .filter_map(Result::ok)
-            .flat_map(|grids| {
-                grids
-                    .by_keys
-                    .keys()
-                    .filter_map(|(key_dtype, key_op, measured)| {
-                        (key_dtype == dtype_name && key_op == operation).then_some(*measured)
-                    })
-            });
+            .chain(oneccl)
+            .flat_map(|slice| deciding_fanouts(slice, num_gpus));
         let effective = measured_fanout_slice(fanouts, num_gpus, spec.node.num_gpus_per_node)
             .unwrap_or(num_gpus);
-        let mut value = self.query_nccl(dtype, operation, effective, message_size)?;
+        // The NCCL slice found above answers the query directly. The OneCCL
+        // fallback, a miss and its error go through `query_nccl`.
+        let mut value = match nccl
+            .and_then(|slice| slice.get(&effective))
+            .filter(|_| effective > 1)
+        {
+            Some(curve) => interp_message_size(curve, message_size)?,
+            None => self.query_nccl(dtype, operation, effective, message_size)?,
+        };
         if num_gpus > effective {
             let max_bw = spec.get_p2p_bandwidth(effective);
             let req_bw = spec.get_p2p_bandwidth(num_gpus);
@@ -311,20 +377,17 @@ impl CommunicationTable {
         if num_gpus_effective <= 1 {
             return Ok(LeafValue::latency_only(0.0));
         }
-        let key = (
-            dtype.name().to_string(),
-            operation.to_string(),
-            num_gpus_effective,
-        );
+        let key = (dtype.name(), operation, num_gpus_effective);
 
-        if let Ok(grids) = self.load_nccl() {
-            if let Some(curve) = grids.by_keys.get(&key) {
-                return interp_message_size(curve, message_size);
-            }
+        if let Some(curve) = self
+            .nccl_grids()
+            .and_then(|grids| grids.curve(key.0, key.1, key.2))
+        {
+            return interp_message_size(curve, message_size);
         }
         // Fall back to OneCCL.
         let grids = self.load_oneccl()?;
-        let curve = grids.by_keys.get(&key).ok_or_else(|| {
+        let curve = grids.curve(key.0, key.1, key.2).ok_or_else(|| {
             AicError::PerfDatabase(format!(
                 "neither NCCL nor OneCCL has data for {key:?} at {}",
                 self.data_root.display()
@@ -344,8 +407,8 @@ impl CommunicationTable {
         tp_size: u32,
     ) -> Result<Vec<(Vec<f64>, f64)>, AicError> {
         let grids = self.load_custom_allreduce()?;
-        let key = (quant.name().to_string(), tp_size);
-        let curve = grids.by_keys.get(&key).ok_or_else(|| {
+        let key = (quant.name(), tp_size);
+        let curve = grids.curve(key.0, key.1).ok_or_else(|| {
             AicError::PerfDatabase(format!(
                 "custom_allreduce data missing for {key:?} at {}",
                 self.data_root.display()
@@ -369,7 +432,7 @@ impl CommunicationTable {
     /// when neither is loaded. Unlike [`Self::query_nccl`], there is NO
     /// per-slice fallback across sources.
     fn nccl_empirical_source(&self) -> Result<&NcclGrids, AicError> {
-        if let Ok(grids) = self.load_nccl() {
+        if let Some(grids) = self.nccl_grids() {
             return Ok(grids);
         }
         self.load_oneccl()
@@ -387,11 +450,8 @@ impl CommunicationTable {
         let grids = self.nccl_empirical_source()?;
         let dtype_name = dtype.name();
         grids
-            .by_keys
-            .keys()
-            .filter(|(d, op, _)| d.as_str() == dtype_name && op.as_str() == operation)
-            .map(|(_, _, n)| *n)
-            .max()
+            .slice(dtype_name, operation)
+            .and_then(|slice| slice.keys().next_back().copied())
             .ok_or_else(|| {
                 AicError::PerfDatabase(format!(
                     "NCCL data missing for dtype='{dtype_name}', operation='{operation}' at {}",
@@ -410,8 +470,8 @@ impl CommunicationTable {
         num_gpus: u32,
     ) -> Result<Vec<(Vec<f64>, f64)>, AicError> {
         let grids = self.nccl_empirical_source()?;
-        let key = (dtype.name().to_string(), operation.to_string(), num_gpus);
-        let curve = grids.by_keys.get(&key).ok_or_else(|| {
+        let key = (dtype.name(), operation, num_gpus);
+        let curve = grids.curve(key.0, key.1, key.2).ok_or_else(|| {
             AicError::PerfDatabase(format!(
                 "NCCL data missing for {key:?} at {}",
                 self.data_root.display()
@@ -437,29 +497,34 @@ impl CommunicationTable {
         dtype: CommQuantMode,
         operation: &str,
     ) -> Result<Option<u32>, AicError> {
-        let dtype_name = dtype.name().to_string();
-        let op = operation.to_string();
-        let mut max_seen = None;
-        for source in [self.load_nccl(), self.load_oneccl()] {
-            let Ok(grids) = source else { continue };
-            for (k_dtype, k_op, k_num) in grids.by_keys.keys() {
-                if k_dtype == &dtype_name && k_op == &op {
-                    max_seen = Some(max_seen.map_or(*k_num, |m: u32| m.max(*k_num)));
-                }
-            }
-        }
-        Ok(max_seen)
+        let dtype_name = dtype.name();
+        Ok([self.nccl_grids(), self.oneccl_grids()]
+            .into_iter()
+            .flatten()
+            .filter_map(|grids| grids.slice(dtype_name, operation))
+            .filter_map(|slice| slice.keys().next_back().copied())
+            .max())
+    }
+
+    // The `load_*` accessors return an owned copy of a cached load error for
+    // callers that propagate it. Probes that discard the error use the
+    // `*_grids` accessors instead, so per-query paths never format one.
+
+    fn custom_allreduce_cell(&self) -> &Result<CustomAllReduceGrids, AicError> {
+        self.custom_allreduce
+            .get_or_init(|| load_custom_allreduce_parquet(&self.custom_allreduce_sources))
     }
 
     fn load_custom_allreduce(&self) -> Result<&CustomAllReduceGrids, AicError> {
-        let cell = self
-            .custom_allreduce
-            .get_or_init(|| load_custom_allreduce_parquet(&self.custom_allreduce_sources));
-        cell.as_ref().map_err(clone_err)
+        self.custom_allreduce_cell().as_ref().map_err(clone_err)
     }
 
-    fn load_nccl(&self) -> Result<&NcclGrids, AicError> {
-        let cell = self.nccl.get_or_init(|| {
+    fn custom_allreduce_grids(&self) -> Option<&CustomAllReduceGrids> {
+        self.custom_allreduce_cell().as_ref().ok()
+    }
+
+    fn nccl_cell(&self) -> &Result<NcclGrids, AicError> {
+        self.nccl.get_or_init(|| {
             let Some(root) = self.nccl_root.as_ref() else {
                 return Err(AicError::PerfDatabase(
                     "NCCL data not configured for this system (no misc.nccl_version in YAML)"
@@ -467,12 +532,20 @@ impl CommunicationTable {
                 ));
             };
             load_nccl_parquet(&root.join("nccl_perf.parquet"))
-        });
-        cell.as_ref().map_err(clone_err)
+        })
     }
 
-    fn load_oneccl(&self) -> Result<&NcclGrids, AicError> {
-        let cell = self.oneccl.get_or_init(|| {
+    #[cfg(test)]
+    fn load_nccl(&self) -> Result<&NcclGrids, AicError> {
+        self.nccl_cell().as_ref().map_err(clone_err)
+    }
+
+    fn nccl_grids(&self) -> Option<&NcclGrids> {
+        self.nccl_cell().as_ref().ok()
+    }
+
+    fn oneccl_cell(&self) -> &Result<NcclGrids, AicError> {
+        self.oneccl.get_or_init(|| {
             let Some(root) = self.oneccl_root.as_ref() else {
                 return Err(AicError::PerfDatabase(
                     "OneCCL data not configured for this system (no misc.oneccl_version in YAML)"
@@ -480,8 +553,15 @@ impl CommunicationTable {
                 ));
             };
             load_nccl_parquet(&root.join("oneccl_perf.parquet"))
-        });
-        cell.as_ref().map_err(clone_err)
+        })
+    }
+
+    fn load_oneccl(&self) -> Result<&NcclGrids, AicError> {
+        self.oneccl_cell().as_ref().map_err(clone_err)
+    }
+
+    fn oneccl_grids(&self) -> Option<&NcclGrids> {
+        self.oneccl_cell().as_ref().ok()
     }
 }
 
@@ -586,12 +666,9 @@ fn load_custom_allreduce_parquet(sources: &[PerfSource]) -> Result<CustomAllRedu
                 .unwrap_or_default()
         )));
     }
-    Ok(CustomAllReduceGrids {
-        by_keys: by_keys
-            .into_iter()
-            .map(|(key, points)| (key, LeafAxisCurve::from_map("message_bytes", points)))
-            .collect(),
-    })
+    Ok(CustomAllReduceGrids::from_curves(by_keys.into_iter().map(
+        |(key, points)| (key, LeafAxisCurve::from_map("message_bytes", points)),
+    )))
 }
 
 fn load_nccl_parquet(path: &Path) -> Result<NcclGrids, AicError> {
@@ -626,12 +703,9 @@ fn load_nccl_parquet(path: &Path) -> Result<NcclGrids, AicError> {
             path.display()
         )));
     }
-    Ok(NcclGrids {
-        by_keys: by_keys
-            .into_iter()
-            .map(|(key, points)| (key, LeafAxisCurve::from_map("message_bytes", points)))
-            .collect(),
-    })
+    Ok(NcclGrids::from_curves(by_keys.into_iter().map(
+        |(key, points)| (key, LeafAxisCurve::from_map("message_bytes", points)),
+    )))
 }
 
 fn clone_err(err: &AicError) -> AicError {
@@ -830,15 +904,13 @@ mod tests {
         let custom_allreduce_cell = OnceLock::new();
         assert!(
             custom_allreduce_cell
-                .set(Ok(CustomAllReduceGrids {
-                    by_keys: custom_allreduce
-                }))
+                .set(Ok(CustomAllReduceGrids::from_curves(custom_allreduce)))
                 .is_ok()
         );
         let nccl_cell = OnceLock::new();
-        assert!(nccl_cell.set(Ok(NcclGrids { by_keys: nccl })).is_ok());
+        assert!(nccl_cell.set(Ok(NcclGrids::from_curves(nccl))).is_ok());
         let oneccl_cell = OnceLock::new();
-        assert!(oneccl_cell.set(Ok(NcclGrids { by_keys: oneccl })).is_ok());
+        assert!(oneccl_cell.set(Ok(NcclGrids::from_curves(oneccl))).is_ok());
         CommunicationTable {
             data_root: PathBuf::from("synthetic"),
             nccl_root: None,
@@ -1246,6 +1318,180 @@ mod tests {
             (v.energy - 300.0).abs() < 1e-9 * 300.0,
             "energy {}",
             v.energy
+        );
+    }
+
+    /// The scaled query on a system without OneCCL data (every NVIDIA
+    /// system) still resolves the measured NCCL slice. b200_sxm has 8 GPUs
+    /// per node and NCCL data up to 8 GPUs, so TP8 is an exact slice with no
+    /// fan-out correction and must equal the Python oracle values pinned in
+    /// `nccl_query_matches_python_v2_engine`.
+    #[test]
+    fn nccl_scaled_without_oneccl_matches_python_v2_engine() {
+        let spec = SystemSpec::load(&systems_root().join("b200_sxm.yaml")).expect("b200 spec");
+        let table = CommunicationTable::new(b200_vllm_data_root(), b200_nccl_root(), None);
+        for (msg, expected) in [(384.0, 0.01559), (1_073_741_824.0, 3.0412399999999997)] {
+            let got = table
+                .query_nccl_scaled(&spec, CommQuantMode::Half, "all_gather", 8, msg)
+                .expect("scaled query must succeed without OneCCL")
+                .latency;
+            assert!(
+                ((got - expected) / expected).abs() < 1e-9,
+                "msg={msg}: rust {got} vs python {expected}"
+            );
+        }
+    }
+
+    /// Feeding `measured_fanout_slice` only each slice's deciding fan-outs
+    /// selects the same slice as scanning every recorded fan-out.
+    #[test]
+    fn deciding_fanouts_select_like_a_full_scan() {
+        let curve = || latency_curve(BTreeMap::from([(1024, 1.0)]));
+        let slices: Vec<FanoutCurves> = [
+            vec![2, 4, 8],
+            vec![4, 8, 16],
+            vec![2, 3, 6, 12, 24, 48, 72],
+            vec![16],
+        ]
+        .into_iter()
+        .map(|fanouts| fanouts.into_iter().map(|n| (n, curve())).collect())
+        .collect();
+        for per_node in [4, 8, 72] {
+            for requested in 1..=160 {
+                for first in &slices {
+                    for second in [None, Some(&slices[1]), Some(&slices[3])] {
+                        let sources = || std::iter::once(first).chain(second);
+                        let full = measured_fanout_slice(
+                            sources().flat_map(|slice| slice.keys().copied()),
+                            requested,
+                            per_node,
+                        );
+                        let deciding = measured_fanout_slice(
+                            sources().flat_map(|slice| deciding_fanouts(slice, requested)),
+                            requested,
+                            per_node,
+                        );
+                        assert_eq!(deciding, full, "requested={requested} per_node={per_node}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// A scaled query whose deciding fan-out exists only in OneCCL resolves
+    /// that OneCCL curve and scales it like any measured slice.
+    #[test]
+    fn nccl_scaled_resolves_a_oneccl_only_fanout() {
+        let spec = SystemSpec::load(&systems_root().join("gb300.yaml")).expect("gb300.yaml parse");
+        let key = |num_gpus| ("half".to_string(), "all_gather".to_string(), num_gpus);
+        let curve = |latency| latency_curve(BTreeMap::from([(1024, latency)]));
+        let table = table_with_loaded_collectives(
+            BTreeMap::new(),
+            BTreeMap::from([(key(4), curve(1.0)), (key(8), curve(2.0))]),
+            BTreeMap::from([(key(16), curve(5.0))]),
+        );
+        assert_eq!(
+            table
+                .query_nccl_scaled(&spec, CommQuantMode::Half, "all_gather", 16, 1024.0)
+                .unwrap(),
+            LeafValue::latency_only(5.0)
+        );
+        // GB300's TP16 and TP32 bandwidths are equal, so only the ring factor
+        // (31/32 * 16/15 = 31/30) scales the OneCCL TP16 value.
+        let scaled = table
+            .query_nccl_scaled(&spec, CommQuantMode::Half, "all_gather", 32, 1024.0)
+            .unwrap();
+        assert!((scaled.latency - 5.0 * 31.0 / 30.0).abs() < 1e-12);
+    }
+
+    /// Fan-out caps union both NCCL sources per (dtype, operation) slice.
+    #[test]
+    fn nccl_max_num_gpus_unions_nccl_and_oneccl_slices() {
+        let curve = || latency_curve(BTreeMap::from([(1024, 1.0)]));
+        let nccl = BTreeMap::from([
+            (("half".to_string(), "all_reduce".to_string(), 4), curve()),
+            (("half".to_string(), "all_reduce".to_string(), 8), curve()),
+            (("half".to_string(), "all_gather".to_string(), 32), curve()),
+        ]);
+        let oneccl =
+            BTreeMap::from([(("half".to_string(), "all_reduce".to_string(), 16), curve())]);
+        let table = table_with_loaded_collectives(BTreeMap::new(), nccl, oneccl);
+        let max = |operation| {
+            table
+                .nccl_max_num_gpus(CommQuantMode::Half, operation)
+                .unwrap()
+        };
+        assert_eq!(max("all_reduce"), Some(16));
+        assert_eq!(max("all_gather"), Some(32));
+        assert_eq!(max("alltoall"), None);
+        // The empirical source is NCCL alone, without the OneCCL union.
+        assert_eq!(
+            table
+                .nccl_empirical_max_num_gpus(CommQuantMode::Half, "all_reduce")
+                .unwrap(),
+            8
+        );
+    }
+
+    /// Missing-slice errors keep their exact text: each key renders as the
+    /// `{key:?}` tuple of its quoted names and fan-out.
+    #[test]
+    fn missing_slice_errors_name_the_requested_key() {
+        let curve = || latency_curve(BTreeMap::from([(1024, 1.0)]));
+        let table = table_with_loaded_collectives(
+            BTreeMap::from([(("half".to_string(), 4), curve())]),
+            BTreeMap::from([(("half".to_string(), "all_reduce".to_string(), 4), curve())]),
+            BTreeMap::from([(("half".to_string(), "all_reduce".to_string(), 8), curve())]),
+        );
+        let message = |err: AicError| err.to_string();
+        assert_eq!(
+            message(
+                table
+                    .query_custom_allreduce(CommQuantMode::Half, 8, 1024.0)
+                    .unwrap_err()
+            ),
+            "perf database error: custom_allreduce data missing for (\"half\", 8) at synthetic"
+        );
+        assert_eq!(
+            message(
+                table
+                    .custom_allreduce_points(CommQuantMode::Half, 8)
+                    .unwrap_err()
+            ),
+            "perf database error: custom_allreduce data missing for (\"half\", 8) at synthetic"
+        );
+        assert_eq!(
+            message(
+                table
+                    .query_nccl(CommQuantMode::Half, "all_gather", 4, 1024.0)
+                    .unwrap_err()
+            ),
+            "perf database error: neither NCCL nor OneCCL has data for \
+             (\"half\", \"all_gather\", 4) at synthetic"
+        );
+        assert_eq!(
+            message(
+                table
+                    .nccl_empirical_points(CommQuantMode::Half, "all_reduce", 8)
+                    .unwrap_err()
+            ),
+            "perf database error: NCCL data missing for (\"half\", \"all_reduce\", 8) at synthetic"
+        );
+        assert_eq!(
+            message(
+                table
+                    .nccl_empirical_max_num_gpus(CommQuantMode::Half, "alltoall")
+                    .unwrap_err()
+            ),
+            "perf database error: NCCL data missing for dtype='half', operation='alltoall' \
+             at synthetic"
+        );
+        // The OneCCL fallback still answers a slice NCCL lacks.
+        assert_eq!(
+            table
+                .query_nccl(CommQuantMode::Half, "all_reduce", 8, 1024.0)
+                .unwrap(),
+            LeafValue::latency_only(1.0)
         );
     }
 }
