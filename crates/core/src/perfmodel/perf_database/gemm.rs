@@ -179,7 +179,51 @@ struct GemmEngineGrids {
 /// (`{latency, power, energy}`, mirroring Python `load_compute_scale_data`
 /// / `load_scale_matrix_data`).
 struct TwoDGrids {
-    by_quant: BTreeMap<String, PreparedGrid>,
+    by_quant: BTreeMap<String, ScaleGrid>,
+}
+
+/// One quant's scale table plus its clamp envelope, both built once at load
+/// (tables are immutable) so queries do not rescan the rows.
+struct ScaleGrid {
+    grid: PreparedGrid,
+    /// `None` only for a table without rows.
+    bounds: Option<ScaleBounds>,
+}
+
+/// Inclusive `(min, max)` clamp envelope of a scale table: m spans the
+/// first..last row and k the UNION of every row's range (rows may be
+/// ragged).
+#[derive(Clone, Copy)]
+struct ScaleBounds {
+    m: (u32, u32),
+    k: (u32, u32),
+}
+
+impl ScaleGrid {
+    fn new(rows: BTreeMap<u32, BTreeMap<u32, LeafValue>>) -> Self {
+        let bounds = ScaleBounds::of(&rows);
+        let mut node = Node::branch();
+        for (m, cols) in rows {
+            for (k, leaf) in cols {
+                node.insert_value(&[m, k], leaf);
+            }
+        }
+        Self {
+            grid: PreparedGrid::new(node),
+            bounds,
+        }
+    }
+}
+
+impl ScaleBounds {
+    fn of(rows: &BTreeMap<u32, BTreeMap<u32, LeafValue>>) -> Option<Self> {
+        let m = (*rows.keys().next()?, *rows.keys().next_back()?);
+        let k = rows
+            .values()
+            .filter_map(|cols| Some((*cols.keys().next()?, *cols.keys().next_back()?)))
+            .reduce(|(lo, hi), (row_lo, row_hi)| (lo.min(row_lo), hi.max(row_hi)))?;
+        Some(Self { m, k })
+    }
 }
 
 impl GemmTable {
@@ -402,13 +446,13 @@ impl GemmTable {
         data_root: &Path,
     ) -> Result<Vec<(Vec<f64>, f64)>, AicError> {
         let quant_name = quant.name();
-        let node = grids.by_quant.get(quant_name).ok_or_else(|| {
+        let scale = grids.by_quant.get(quant_name).ok_or_else(|| {
             AicError::PerfDatabase(format!(
                 "{table_name} perf data missing for quant '{quant_name}' at {}",
                 data_root.display()
             ))
         })?;
-        let points = crate::perf_database::perf_interp::node_points(node.node());
+        let points = crate::perf_database::perf_interp::node_points(scale.grid.node());
         if points.is_empty() {
             return Err(AicError::PerfDatabase(format!(
                 "{table_name} perf data empty for quant '{quant_name}' at {}",
@@ -628,7 +672,7 @@ fn grid3_to_node(grid: &Grid3<LeafValue>) -> Node {
 /// energy=interpolated.energy * ratio)`). Mirrors Python
 /// `_query_compute_scale_table` / `_query_scale_matrix_table`.
 fn query_scale_table(
-    by_quant: &BTreeMap<String, PreparedGrid>,
+    by_quant: &BTreeMap<String, ScaleGrid>,
     quant_name: &str,
     m: u32,
     k: u32,
@@ -636,37 +680,26 @@ fn query_scale_table(
     sol_ratio_beyond_grid: bool,
     data_root: &Path,
 ) -> Result<LeafValue, AicError> {
-    let prepared = by_quant.get(quant_name).ok_or_else(|| {
+    let scale = by_quant.get(quant_name).ok_or_else(|| {
         AicError::PerfDatabase(format!(
             "perf data missing for quant '{quant_name}' at {}; available: {:?}",
             data_root.display(),
             by_quant.keys().collect::<Vec<_>>(),
         ))
     })?;
-    let Node::Branch(rows) = prepared.node() else {
+    if !matches!(scale.grid.node(), Node::Branch(_)) {
         return Err(AicError::PerfDatabase("malformed scale table".to_string()));
-    };
-    if rows.is_empty() {
+    }
+    let Some(bounds) = scale.bounds else {
         return Err(AicError::PerfDatabase(format!(
             "empty scale table for quant '{quant_name}'"
         )));
-    }
-    let m_keys: Vec<u32> = rows.keys().copied().collect();
-    let m_c = m.clamp(m_keys[0], m_keys[m_keys.len() - 1]);
-    let mut k_min = u32::MAX;
-    let mut k_max = 0u32;
-    for row in rows.values() {
-        if let Node::Branch(cols) = row {
-            if let (Some(&lo), Some(&hi)) = (cols.keys().next(), cols.keys().next_back()) {
-                k_min = k_min.min(lo);
-                k_max = k_max.max(hi);
-            }
-        }
-    }
-    let k_c = k.clamp(k_min, k_max);
+    };
+    let m_c = m.clamp(bounds.m.0, bounds.m.1);
+    let k_c = k.clamp(bounds.k.0, bounds.k.1);
 
     let cfg = OpInterpConfig::grid(&["m", "k"], sol);
-    let value = prepared.query_value(&cfg, &[m_c as f64, k_c as f64])?;
+    let value = scale.grid.query_value(&cfg, &[m_c as f64, k_c as f64])?;
     if !sol_ratio_beyond_grid || (m_c == m && k_c == k) {
         return Ok(value);
     }
@@ -822,15 +855,7 @@ fn load_two_d_parquet(sources: &[PerfSource]) -> Result<TwoDGrids, AicError> {
     }
     let by_quant = raw
         .into_iter()
-        .map(|(quant, rows)| {
-            let mut node = Node::branch();
-            for (m, cols) in rows {
-                for (k, leaf) in cols {
-                    node.insert_value(&[m, k], leaf);
-                }
-            }
-            (quant, PreparedGrid::new(node))
-        })
+        .map(|(quant, rows)| (quant, ScaleGrid::new(rows)))
         .collect();
     Ok(TwoDGrids { by_quant })
 }
@@ -1425,7 +1450,7 @@ mod tests {
     /// its explicit error for one rather than clamping into an empty range.
     #[test]
     fn scale_table_empty_quant_errors() {
-        let by_quant = BTreeMap::from([("fp8".to_string(), PreparedGrid::new(Node::branch()))]);
+        let by_quant = BTreeMap::from([("fp8".to_string(), ScaleGrid::new(BTreeMap::new()))]);
         let sol = |c: &[f64]| c[0] * c[1];
         for sol_ratio_beyond_grid in [false, true] {
             let err = query_scale_table(
