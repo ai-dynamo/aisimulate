@@ -20,7 +20,9 @@ when not (preserve_engine_limits or false):
     prefill max_num_tokens = (((SlaConfig.isl + 500) + tokens_per_block - 1) // tokens_per_block) * tokens_per_block
     decode max_num_tokens = ((max_batch_size + tokens_per_block - 1) // tokens_per_block) * tokens_per_block
     agg max_num_tokens = ((max_batch_size + SlaConfig.isl + 500 + tokens_per_block - 1) // tokens_per_block) * tokens_per_block
-    prefill_decode cache_transceiver_max_tokens_in_buffer = (((SlaConfig.isl + SlaConfig.osl + 500) + tokens_per_block - 1) // tokens_per_block) * tokens_per_block
+
+# P/D needs KV transfer even when evaluated scheduler limits are preserved.
+prefill_decode cache_transceiver_max_tokens_in_buffer = (cache_transceiver_max_tokens_in_buffer if ((preserve_engine_limits or false) and cache_transceiver_max_tokens_in_buffer) else ((((SlaConfig.isl or 0) + (SlaConfig.osl or 0) + 500) + tokens_per_block - 1) // tokens_per_block) * tokens_per_block)
 
 # Multimodal EPD encode worker (vision encoder). The SDK sweep does not size it,
 # so give it small concrete batch/token budgets. Matches dynamo's qwen3-vl

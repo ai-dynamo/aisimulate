@@ -124,8 +124,11 @@ class LiteralSite(NamedTuple):
 # Compatibility adaptation of NVIDIA Dynamo's Apache-2.0 sources at DYNAMO_REVISION:
 # https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/grouped_scheduler/compatibility.rs
 # https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/extensions/kv_router/mod.rs
-# Adds `field: None` for new optional AISimulate fields to these exhaustive
-# struct literals only; Dynamo behavior is otherwise unchanged.
+# https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/entrypoints.rs
+# https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/extensions/kv_events/mod.rs
+# https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/bindings/python/rust/llm/replay.rs
+# Adds `field: None` for new optional AISimulate fields and empty images for the
+# pinned text-only Request; Dynamo behavior is otherwise unchanged.
 OPTIONAL_FIELD_LITERALS = (
     LiteralSite(
         "lib/mocker/src/grouped_scheduler/compatibility.rs",
@@ -140,6 +143,27 @@ OPTIONAL_FIELD_LITERALS = (
         "fn placement(&self, admission: WorkerAdmission) -> Placement {",
         "Placement",
         "src/replay/core/mod.rs",
+    ),
+    LiteralSite(
+        "lib/mocker/src/replay/offline/entrypoints.rs",
+        "df54ed60160f23b421c309004ac370b17ad5f28ecc4dab4b4495574f72678217",
+        "fn replay_spec(",
+        "ReplaySpec",
+        "src/replay/spec.rs",
+    ),
+    LiteralSite(
+        "lib/mocker/src/replay/offline/extensions/kv_events/mod.rs",
+        "f28f1faf84c16b17271b24c204cf5792af4438478968d186f28bc2db94b1ead8",
+        "pub(in crate::replay) fn generate_trace_worker_artifacts_with_visibility(",
+        "ReplaySpec",
+        "src/replay/spec.rs",
+    ),
+    LiteralSite(
+        "lib/bindings/python/rust/llm/replay.rs",
+        "5f0f5910a77f6bb1bd315c67b75e161d792dddc8fd6381ea35e2046855470f41",
+        "fn build_synthetic_workload(",
+        "SyntheticTraceSpec",
+        "src/replay/loadgen/types.rs",
     ),
 )
 _OPTION_TYPE = re.compile(r"(?:(?:std|core)::option::)?Option\s*<.*>", re.DOTALL)
@@ -204,7 +228,7 @@ def _struct_fields(api_source: str, struct: str) -> dict[str, tuple[bool, str]]:
 
 
 def _patch_literal(source: str, site: LiteralSite, struct_fields: dict) -> tuple[str, list[str]]:
-    """Insert ``None`` for missing optional fields into the literal after ``site.anchor``."""
+    """Fill optional request/placement fields and precisely reviewed text-only defaults."""
     if source.count(site.anchor) != 1:
         raise ValueError(f"{site.path}: literal anchor is not unique")
     literal = re.compile(rf"(?<![\w:]){site.struct}\s*\{{").search(source, source.index(site.anchor) + len(site.anchor))
@@ -221,10 +245,26 @@ def _patch_literal(source: str, site: LiteralSite, struct_fields: dict) -> tuple
     if stale:
         raise ValueError(f"{site.path}: {site.struct} literal sets fields AISimulate no longer has: {stale}")
     missing = [name for name in struct_fields if name not in present]
+    defaults = {
+        "ReplaySpec": {"encoder": ((True, "Option<EncoderSpec>"), "None")},
+        "SyntheticTraceSpec": {"images": ((True, "Option<SyntheticImages>"), "None")},
+        "SglangConfig": {
+            "host_loop": ((True, "bool"), "false"),
+            "vlm_cache_bytes": ((True, "u64"), "SglangConfig::default().vlm_cache_bytes"),
+        },
+    }.get(site.struct)
+    if defaults is not None:
+        unreviewed = [name for name in missing if name not in defaults or struct_fields[name] != defaults[name][0]]
+        if unreviewed:
+            raise ValueError(f"{site.path}: unreviewed AISimulate {site.struct} fields: {unreviewed}")
+    empty_images = (
+        site.struct == "Request" and "images" in missing and struct_fields["images"] == (True, "Vec<ImageSpec>")
+    )
+    optional = [name for name in missing if not (empty_images and name == "images")]
     required = [
-        name for name in missing if not (struct_fields[name][0] and _OPTION_TYPE.fullmatch(struct_fields[name][1]))
+        name for name in optional if not (struct_fields[name][0] and _OPTION_TYPE.fullmatch(struct_fields[name][1]))
     ]
-    if required:
+    if required and defaults is None:
         raise ValueError(
             f"{site.path}: AISimulate {site.struct} adds fields Dynamo must set (not `pub` Option): {required}"
         )
@@ -234,13 +274,63 @@ def _patch_literal(source: str, site: LiteralSite, struct_fields: dict) -> tuple
     if source[line_start:close].strip() or not source[:line_start].rstrip().endswith(","):
         raise ValueError(f"{site.path}: {site.struct} literal is not multi-line with a trailing comma")
     indent = re.search(r"\n([ \t]*)\S", source[start - 1 : close])[1]
-    inserted = f"{indent}// Modified by AISimulate CI: Dynamo does not set these optional fields yet.\n"
-    inserted += "".join(f"{indent}{name}: None,\n" for name in missing)
+    inserted = ""
+    if defaults is not None:
+        inserted = f"{indent}// Modified by AISimulate CI: retain the pinned text-only replay configuration.\n"
+        inserted += "".join(f"{indent}{name}: {defaults[name][1]},\n" for name in missing)
+    elif optional:
+        inserted = f"{indent}// Modified by AISimulate CI: Dynamo does not set these optional fields yet.\n"
+        inserted += "".join(f"{indent}{name}: None,\n" for name in optional)
+    if empty_images:
+        inserted += f"{indent}// Modified by AISimulate CI: the pinned Dynamo request is text-only.\n"
+        inserted += (
+            f"{indent}images: {{\n"
+            f"{indent}    assert!(\n"
+            f"{indent}        request.images.is_empty(),\n"
+            f'{indent}        "pinned Dynamo CI adapter supports text-only requests",\n'
+            f"{indent}    );\n"
+            f"{indent}    Vec::new()\n"
+            f"{indent}}},\n"
+        )
     return source[:line_start] + inserted + source[line_start:], missing
 
 
-# Fail closed: each file must match its reviewed sha256, every field the literal
-# lacks must be a public `Option`, and the literal may not set a removed field.
+def _patch_ttft_lifecycle(source: str, api: str) -> tuple[str, list[str]]:
+    """The legacy Dynamo lifecycle DTO cannot represent host-loop milestones."""
+    enums = list(re.finditer(r"\bpub enum LifecycleEvent\s*\{", api))
+    if len(enums) != 1:
+        raise ValueError("expected one AISimulate LifecycleEvent enum")
+    start, end = _braced(api, enums[0].start())
+    variants = {}
+    for item in _top_level_items(api[start:end], angle=True):
+        variant = re.fullmatch(r"(\w+)\s*\{(.*)\}", item, re.DOTALL)
+        if not variant:
+            raise ValueError(f"unreviewed AISimulate lifecycle variant: {item}")
+        variants[variant[1]] = re.sub(r"\s+", "", variant[2])
+    legacy = {"SourceHeld", "DestinationReserved"}
+    if set(variants) == legacy:
+        return source, []
+    if set(variants) != legacy | {"TtftMilestone"} or variants["TtftMilestone"] != (
+        "request_id:Uuid,stage:TtftMilestone,at_ms:f64,"
+    ):
+        raise ValueError("unreviewed AISimulate lifecycle API; update the pinned adapter")
+    anchor = "        Ok(match event {\n"
+    if source.count(anchor) != 1:
+        raise ValueError("pinned Dynamo lifecycle conversion anchor is not unique")
+    arm = """            // Modified by AISimulate CI: host-loop/frontend events are unsupported.
+            LifecycleEvent::TtftMilestone { request_id, stage, at_ms } => {
+                return Err(anyhow!(
+                    "pinned Dynamo CI adapter does not support TTFT milestone {stage:?} for {request_id} at {at_ms}ms"
+                ));
+            }
+"""
+    return source.replace(anchor, anchor + arm), ["TtftMilestone"]
+
+
+# Fail closed: each file must match its reviewed sha256 before any file is written.
+# Request/placement additions must be public `Option`s or the reviewed Request.images;
+# ReplaySpec and SyntheticTraceSpec accept only reviewed text-only defaults.
+# Removed fields remain errors.
 def patch_optional_literal_fields(core: Path, dynamo: Path) -> list[dict]:
     originals, patched, records = {}, {}, []
     for site in OPTIONAL_FIELD_LITERALS:
@@ -249,11 +339,15 @@ def patch_optional_literal_fields(core: Path, dynamo: Path) -> list[dict]:
             patched[site.path] = originals[site.path].decode()
         if hashlib.sha256(originals[site.path]).hexdigest() != site.sha256:
             raise ValueError(f"pinned Dynamo {site.path} differs from reviewed source")
-        struct_fields = _struct_fields((core / site.api).read_text(), site.struct)
+        api = (core / site.api).read_text()
+        struct_fields = _struct_fields(api, site.struct)
         patched[site.path], inserted = _patch_literal(patched[site.path], site, struct_fields)
-        records.append(
-            {"path": site.path, "struct": site.struct, "before_sha256": site.sha256, "inserted_fields": inserted}
-        )
+        record = {"path": site.path, "struct": site.struct, "before_sha256": site.sha256, "inserted_fields": inserted}
+        if site.struct == "Request":
+            patched[site.path], rejected = _patch_ttft_lifecycle(patched[site.path], api)
+            if rejected:
+                record["rejected_lifecycle_events"] = rejected
+        records.append(record)
     for record in records:
         record["after_sha256"] = hashlib.sha256(patched[record["path"]].encode()).hexdigest()
     for path, text in patched.items():
@@ -264,8 +358,8 @@ def patch_optional_literal_fields(core: Path, dynamo: Path) -> list[dict]:
 
 # Compatibility adaptation of NVIDIA Dynamo's Apache-2.0 replay adapter:
 # https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/engine_adapter.rs
-def patch_replay_context_parallelism(core: Path, dynamo: Path) -> dict:
-    """Keep the pinned adapter's CP=1 topology when replay gains explicit PCP."""
+def patch_replay_engine_config(core: Path, dynamo: Path) -> dict:
+    """Keep the pinned CP=1 topology and disabled SGLang host loop."""
     path = dynamo / "lib/mocker/src/engine_adapter.rs"
     original = path.read_bytes()
     if hashlib.sha256(original).hexdigest() != REPLAY_ADAPTER_SHA256:
@@ -287,6 +381,18 @@ def patch_replay_context_parallelism(core: Path, dynamo: Path) -> dict:
             b"        // Modified by AISimulate CI: the pinned adapter has no PCP control.\n"
             b"        prefill_context_parallel_size: 1,\n" + anchor,
         )
+    site = LiteralSite(
+        str(path.relative_to(dynamo)),
+        REPLAY_ADAPTER_SHA256,
+        "    let sglang = ",
+        "SglangConfig",
+        "src/engine/config.rs",
+    )
+    patched, sglang_fields = _patch_literal(
+        patched.decode(), site, _struct_fields((core / site.api).read_text(), site.struct)
+    )
+    patched = patched.encode()
+    if patched != original:
         path.write_bytes(patched)
     return {
         "path": str(path.relative_to(dynamo)),
@@ -294,6 +400,7 @@ def patch_replay_context_parallelism(core: Path, dynamo: Path) -> dict:
         "after_sha256": hashlib.sha256(patched).hexdigest(),
         "api_has_prefill_context_parallel_size": fields[0] is not None,
         "prefill_context_parallel_size": 1,
+        "inserted_sglang_fields": sglang_fields,
     }
 
 
@@ -307,7 +414,7 @@ def build(source: Path, dynamo: Path, output: Path) -> None:
     handoff_compatibility = patch_handoff_timing(core, dynamo)
     literal_compatibility = patch_optional_literal_fields(core, dynamo)
     speculation_compatibility = patch_speculation_depth(dynamo)
-    replay_compatibility = patch_replay_context_parallelism(core, dynamo)
+    replay_compatibility = patch_replay_engine_config(core, dynamo)
     bindings = dynamo / "lib/bindings/python"
     for manifest, options in (
         (dynamo / "Cargo.toml", ""),

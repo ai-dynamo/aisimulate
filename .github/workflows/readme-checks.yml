@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.daily && '[{"profile":"development","os":"ubuntu-latest"},{"profile":"release","os":"ubuntu-latest"},{"profile":"dynamo","os":"ubuntu-latest"},{"profile":"macos","os":"macos-14"}]' || '[{"profile":"source","os":"ubuntu-latest"},{"profile":"dynamo","os":"ubuntu-latest"}]') }}
+        include: ${{ fromJSON(inputs.daily && '[{"profile":"development","os":"ubuntu-24.04"},{"profile":"release","os":"ubuntu-24.04"},{"profile":"dynamo","os":"ubuntu-24.04"},{"profile":"macos","os":"macos-14"}]' || '[{"profile":"source","os":"ubuntu-24.04"},{"profile":"dynamo","os":"ubuntu-24.04"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 330
     env:

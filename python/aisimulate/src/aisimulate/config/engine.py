@@ -6,9 +6,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, StrictBool, field_validator, model_serializer, model_validator
+from pydantic import (
+    AfterValidator,
+    BeforeValidator,
+    Field,
+    PrivateAttr,
+    StrictBool,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from aisimulate.fpm_profile import FpmModelProfile
 
@@ -20,6 +30,7 @@ from .common import (
     StrictModel,
     SystemsPath,
     SystemsRoot,
+    _absolute_path,
     is_active_engine_model_control,
     requested_backend_version,
 )
@@ -42,6 +53,23 @@ AFDExpertParallel = PositiveInt | Literal["n_f_nodes", "ffn_tp"]
 def resolve_block_size(backend: str, configured: int | None) -> int:
     """Resolve the same backend cache geometry for prediction and search."""
     return {"vllm": 64, "sglang": 1, "trtllm": 32}[backend] if configured is None else int(configured)
+
+
+def _validate_replay_estimation_mode(mode: str | None) -> str | None:
+    if mode == "fpm_learned":
+        raise ValueError(
+            "fpm_learned requires complete ForwardPassMetrics; engine replay's phase-only timing "
+            "interface cannot supply its batch features. Use the canonical FPM estimate/tune API"
+        )
+    return mode
+
+
+# Advertise only phase-only timing modes, while retaining the capability error
+# for learned input before Literal validation would turn it into a generic error.
+ReplayEstimationMode = Annotated[
+    Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"],
+    BeforeValidator(_validate_replay_estimation_mode),
+]
 
 
 class AFDTopologyPredictionConfig(StrictModel):
@@ -184,6 +212,13 @@ class G3OffloadConfig(StrictModel):
     shared_write_bandwidth_gbps: NonNegativeFloat = 80.0
 
 
+class KvcrConfig(StrictModel):
+    """KVCR peer G2 fetch: pull a hinted prefix from another rank's private G2."""
+
+    latency_to_first_byte_ms: NonNegativeFloat = 1.0
+    bandwidth_gbps: NonNegativeFloat = 50.0
+
+
 def manual_block_bytes(block_size: int | None, bytes_per_token: int | str) -> int:
     """Validate explicit byte geometry without invoking model inference."""
     for name, value in (("block_size", block_size), ("bytes_per_token", bytes_per_token)):
@@ -236,6 +271,7 @@ class KvCachePredictionConfig(StrictModel):
     capacity: KvCapacityPredictionConfig = Field(default_factory=KvCapacityPredictionConfig)
     host_offload: HostOffloadConfig | None = None
     g3_offload: G3OffloadConfig | None = None
+    kvcr: KvcrConfig | None = None
     state_cache: StateCachePredictionConfig | None = None
 
     @field_validator("state_cache", mode="before")
@@ -249,6 +285,16 @@ class KvCachePredictionConfig(StrictModel):
     def _validate_g3(self):
         if self.g3_offload is not None and self.host_offload is None:
             raise ValueError("g3_offload requires host_offload")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_kvcr(self):
+        if self.kvcr is None:
+            return self
+        if self.host_offload is None or self.host_offload.scope != "dp_rank_local":
+            raise ValueError("kvcr requires host_offload with scope dp_rank_local")
+        if self.g3_offload is not None:
+            raise ValueError("kvcr cannot be combined with g3_offload")
         return self
 
     @model_validator(mode="after")
@@ -300,6 +346,43 @@ class NgramSpeculationConfig(StrictModel):
         return {"kind": self.kind, "params": {"num_speculative_tokens": self.num_speculative_tokens}}
 
 
+class SchemeSpeculationConfig(StrictModel):
+    """SDK scheme cost identity plus an explicit replay acceptance assumption."""
+
+    kind: Annotated[str, Field(strict=True, min_length=1)]
+    params: dict[str, Any] = Field(default_factory=dict)
+    draft_model_path: Annotated[str, Field(strict=True, min_length=1)] | None = None
+    draft_config: dict[str, Any] | None = None
+    expected_accepted_tokens: NonNegativeFloat
+    seed: Annotated[int, Field(strict=True, ge=0, le=0xFFFF_FFFF_FFFF_FFFF)] = 42
+    _num_speculative_tokens: int = PrivateAttr(default=0)
+
+    @model_validator(mode="after")
+    def _resolve_scheme(self) -> SchemeSpeculationConfig:
+        from aisimulate_core.sdk.speculation.base import SpeculationConfig, resolve_speculation_config
+
+        resolved = resolve_speculation_config(SpeculationConfig(**self.cost_config()))
+        self.params = resolved.params
+        self.draft_config = resolved.draft_config
+        self._num_speculative_tokens = resolved.replay_depth()
+        maximum = self.num_speculative_tokens
+        if maximum == 0:
+            raise ValueError("omit speculation to disable it")
+        if self.expected_accepted_tokens > maximum:
+            raise ValueError(f"expected_accepted_tokens must be within [0, {maximum}] accepted draft tokens")
+        return self
+
+    @property
+    def num_speculative_tokens(self) -> int:
+        return self._num_speculative_tokens
+
+    def cost_config(self) -> dict[str, Any]:
+        return self.model_dump(exclude={"expected_accepted_tokens", "seed"}, exclude_none=True)
+
+
+SpeculationConfig = NgramSpeculationConfig | SchemeSpeculationConfig
+
+
 class TimingConfig(StrictModel):
     gemm_quant_mode: str | None = None
     moe_quant_mode: str | None = None
@@ -310,7 +393,7 @@ class TimingConfig(StrictModel):
     type: Literal["default", "fixed", "polynomial"] = "default"
     forward_model: Literal["op_level", "fpm"] = Field(default="op_level", exclude=True)
     fpm_parquet_path: str | None = None
-    estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] | None = None
+    estimation_mode: ReplayEstimationMode | None = None
     fallback_policy: Literal["deny", "allow"] | None = None
     estimator_config: dict[str, Any] | None = None
     systems_paths: list[SystemsRoot] | None = Field(default=None, min_length=1)
@@ -373,6 +456,109 @@ class TimingConfig(StrictModel):
         return self
 
 
+class FrontendStageConfig(StrictModel):
+    """One black-box frontend stage: request-level service on a pool of workers."""
+
+    workers: PositiveInt = 1
+    service_ms: NonNegativeFloat = Field(description="Service time of one request running alone on the pool.")
+    concurrency_scale: list[PositiveFloat] = Field(
+        default_factory=list,
+        description="Entry c-1 scales the service time while c requests share the pool; empty keeps it constant.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_scale(self) -> FrontendStageConfig:
+        if self.concurrency_scale and len(self.concurrency_scale) != self.workers:
+            raise ValueError("concurrency_scale needs one entry per worker")
+        return self
+
+
+FrontendKind = Literal["python", "rust"]
+FeatureTransport = Literal["inline", "shm"]
+
+
+def feature_transport(frontend: FrontendKind, tensor: int) -> FeatureTransport:
+    """How SGLang 0.5.19 hands image features to the scheduler.
+
+    The Python tokenizer manager always parks them in POSIX shared memory; the
+    Rust multimodal workers keep them inline on a single rank and switch to shared
+    memory once the request is broadcast across tensor-parallel ranks.
+    """
+    return "shm" if frontend == "python" or tensor > 1 else "inline"
+
+
+class FrontendMeasurementConfig(StrictModel):
+    """The model, frontend, feature transport and image workload a set of stages was measured on."""
+
+    model: str = Field(min_length=1)
+    frontend: FrontendKind
+    feature_transport: FeatureTransport
+    height: PositiveInt
+    width: PositiveInt
+    count: PositiveInt = 1
+    encoding: Literal["png", "jpeg"] = "png"
+    min_pixels: PositiveInt | None = None
+    max_pixels: PositiveInt | None = None
+
+    @classmethod
+    def for_workload(
+        cls, model: str, frontend: FrontendKind, images: Mapping[str, Any], tensor: int
+    ) -> FrontendMeasurementConfig:
+        """The measurement a prediction of `model` over `images` on `tensor` ranks needs."""
+        return cls(
+            model=model,
+            frontend=frontend,
+            feature_transport=feature_transport(frontend, tensor),
+            height=int(images["height"]),
+            width=int(images["width"]),
+            count=int(images.get("count", 1)),
+            encoding=str(images.get("encoding", "png")),
+            min_pixels=images.get("min_pixels"),
+            max_pixels=images.get("max_pixels"),
+        )
+
+    def describe(self) -> str:
+        pixels = "".join(
+            f" {name}={value}"
+            for name, value in (("min_pixels", self.min_pixels), ("max_pixels", self.max_pixels))
+            if value is not None
+        )
+        return (
+            f"{self.model} {self.frontend} {self.feature_transport} "
+            f"{self.height}x{self.width}x{self.count} {self.encoding}{pixels}"
+        )
+
+
+class FrontendPredictionConfig(StrictModel):
+    """Frontend stages a request crosses, in order, before the SGLang scheduler admits it."""
+
+    stages: list[FrontendStageConfig] = Field(min_length=1)
+    measured_for: FrontendMeasurementConfig | None = Field(
+        default=None,
+        description="Workload the stages were measured on; a prediction of another shape or transport is refused.",
+    )
+
+
+class HostProfileConfig(StrictModel):
+    """Take the frontend stages from a measured host cost table instead of spelling them out."""
+
+    path: Annotated[str, Field(min_length=1), AfterValidator(_absolute_path)]
+    frontend: FrontendKind
+
+
+class VisionPredictionConfig(StrictModel):
+    """Vision encoder hosted on the language worker."""
+
+    cache_mib: NonNegativeInt = Field(
+        default=100, description="SGLang multimodal embedding cache in MiB (SGLANG_VLM_CACHE_SIZE_MB)."
+    )
+    encoder_parallel: Literal["tp", "dp"] = Field(
+        default="tp",
+        description="Vision tower layout over the tensor-parallel group: tp shards it (SGLang default), "
+        "dp replicates it and splits the images (--mm-enable-dp-encoder).",
+    )
+
+
 class WorkerPredictionConfig(StrictModel):
     hardware: str | None = Field(default=None, min_length=1)
     context_length: PositiveInt | None = None
@@ -383,23 +569,149 @@ class WorkerPredictionConfig(StrictModel):
     startup_seconds: float = Field(default=0.0, ge=0.0)
 
 
-class EncoderPredictionConfig(StrictModel):
-    """Dedicated analytical encoder pool, not an event-level language worker."""
+def _frontend_implies_host_loop(value: Any) -> Any:
+    """Frontend stages only exist ahead of the scheduler loop; spelling `host_loop` out is optional."""
+    if (
+        isinstance(value, dict)
+        and "host_loop" not in value
+        and (value.get("frontend") is not None or value.get("host_profile") is not None)
+    ):
+        return {**value, "host_loop": True}
+    return value
 
+
+def _omit_inactive_host_loop(self, handler: Any) -> dict[str, Any]:
+    # Keep the plain worker shape unless the host loop is on.
+    payload = handler(self)
+    if payload.get("host_loop") is False:
+        payload.pop("host_loop")
+    return payload
+
+
+def _validate_frontend_source(
+    config: HostWorkerPredictionConfig
+    | HostWorkerRecommendationConfig
+    | EncoderPredictionConfig
+    | EncoderRecommendationConfig,
+) -> None:
+    """Frontend stages come from one source: spelled out, or resolved from a host cost table."""
+    if config.host_profile is not None and config.frontend is not None:
+        raise ValueError("host_profile replaces the explicit frontend stages")
+
+
+class HostWorkerPredictionConfig(WorkerPredictionConfig):
+    """The aggregated or prefill worker can model SGLang's scheduler loop, frontend and vision encoder."""
+
+    host_loop: StrictBool = Field(
+        default=False,
+        description="Model each pass as one SGLang overlap-scheduler iteration: requests are received at "
+        "iteration boundaries and a forward's outputs become visible one iteration later.",
+    )
+    frontend: FrontendPredictionConfig | None = None
+    host_profile: HostProfileConfig | None = None
+    vision: VisionPredictionConfig | None = None
+
+    _implies_host_loop = model_validator(mode="before")(_frontend_implies_host_loop)
+    _omit_host_loop = model_serializer(mode="wrap")(_omit_inactive_host_loop)
+
+    @model_validator(mode="after")
+    def _validate_host_features(self) -> HostWorkerPredictionConfig:
+        if (self.frontend is not None or self.host_profile is not None) and not self.host_loop:
+            raise ValueError("frontend stages run ahead of the scheduler loop; drop host_loop: false")
+        _validate_frontend_source(self)
+        return self
+
+
+class EncoderTransferConfig(StrictModel):
+    """Network link from the encoder servers to the language ranks (`--encoder-transfer-backend zmq_to_scheduler`)."""
+
+    bandwidth_gb_per_second: PositiveFloat
+
+
+def _native_encoder_batch_cap(value: Any) -> Any:
+    """SGLang's encoder loop batches up to `SGLANG_ENCODER_MAX_BATCH_SIZE` (8) unless told otherwise."""
+    if isinstance(value, dict) and value.get("mode") == "native" and "batch_size" not in value:
+        return {**value, "batch_size": 8}
+    return value
+
+
+class EncoderPredictionConfig(StrictModel):
+    """Dedicated encoder pool: an analytical overlay, or a native replay of SGLang's encoder servers."""
+
+    mode: Literal["analytical", "native"] = Field(
+        default="analytical",
+        description="analytical: the AIC batch latency is added to the language replay's mean TTFT; native: an "
+        "event-level encoder loop (SGLang --encoder-only) gates each request's admission to the language worker.",
+    )
     hardware: str | None = Field(default=None, min_length=1)
     backend_version: str | None = Field(default=None, min_length=1)
     tensor: PositiveInt = 1
     replicas: PositiveInt = 1
-    batch_size: Annotated[int, Field(strict=True, gt=0, le=8)] = 1
+    batch_size: Annotated[int, Field(strict=True, gt=0, le=8)] = Field(
+        default=1,
+        description="analytical: the batch the pool runs; native: the loop's cap (SGLANG_ENCODER_MAX_BATCH_SIZE).",
+    )
     latency_correction: PositiveFloat = 1.0
     rate_degradation: Fraction = 0.9
+    host_profile: HostProfileConfig | None = Field(
+        default=None,
+        description="native: the `process` stage of this host cost table prices the encoder's CPU preprocessing.",
+    )
+    frontend: FrontendPredictionConfig | None = Field(
+        default=None,
+        description="native: the resolved stages a saved recommendation carries in place of host_profile.",
+    )
+    transfer: EncoderTransferConfig | None = Field(
+        default=None, description="native: embedding transfer from the encoder to the language rank."
+    )
+
+    _batch_cap = model_validator(mode="before")(_native_encoder_batch_cap)
+
+    @model_validator(mode="after")
+    def _validate_mode(self) -> EncoderPredictionConfig:
+        _validate_encoder_mode(self)
+        return self
+
+
+def _validate_encoder_mode(encoder: EncoderPredictionConfig | EncoderRecommendationConfig) -> None:
+    if encoder.mode == "native":
+        _validate_frontend_source(encoder)
+        if encoder.transfer is None or (encoder.host_profile is None and encoder.frontend is None):
+            raise ValueError(
+                "native encoder replay requires transfer.bandwidth_gb_per_second and one of host_profile or frontend"
+            )
+        if encoder.host_profile is not None and encoder.host_profile.frontend != "python":
+            raise ValueError("the encoder servers run the Python image processor; host_profile.frontend must be python")
+        measured = encoder.frontend.measured_for if encoder.frontend is not None else None
+        if encoder.frontend is not None and measured is None:
+            raise ValueError(
+                "native encoder frontend stages require measured_for; set host_profile to resolve them from a host "
+                "cost table"
+            )
+        if measured is not None and measured.frontend != "python":
+            raise ValueError(
+                "the encoder servers run the Python image processor; frontend.measured_for.frontend must be python"
+            )
+        if encoder.latency_correction != 1.0:
+            raise ValueError("latency_correction applies to analytical encoder pools only")
+    elif encoder.host_profile is not None or encoder.frontend is not None or encoder.transfer is not None:
+        raise ValueError("host_profile, frontend and transfer apply to encoder mode=native only")
+
+
+def _lift_plain_worker(value: Any) -> Any:
+    """A plain worker object stands in for the host-aware one; unset fields stay unset so role defaults apply."""
+    if type(value) in (WorkerPredictionConfig, WorkerRecommendationConfig):
+        return value.model_dump(exclude_unset=True)
+    return value
 
 
 class WorkersPredictionConfig(StrictModel):
     encoder: EncoderPredictionConfig | None = None
-    aggregated: WorkerPredictionConfig | None = None
-    prefill: WorkerPredictionConfig | None = None
+    aggregated: HostWorkerPredictionConfig | None = None
+    prefill: HostWorkerPredictionConfig | None = None
     decode: WorkerPredictionConfig | None = None
+
+    _lift_plain_worker = field_validator("aggregated", "prefill", mode="before")(_lift_plain_worker)
 
     @model_validator(mode="after")
     def _apply_role_scheduler_defaults(self) -> WorkersPredictionConfig:
@@ -420,6 +732,12 @@ class KvTransferConfig(StrictModel):
     bytes_per_token: KvBytesPerToken = "auto"
     bandwidth_gb_per_second: PositiveFloat | None = None
     timing_mode: Literal["full_prompt", "destination_missing"] = "destination_missing"
+
+
+class TokenizationConfig(StrictModel):
+    workers: PositiveInt = 1
+    base_ms: NonNegativeFloat = 0.0
+    per_input_token_us: NonNegativeFloat = 0.0
 
 
 class EstimatorPolicyConfig(StrictModel):
@@ -464,7 +782,7 @@ class EstimatorPolicyConfig(StrictModel):
     transfer_policy: str | list[str] | None = None
     systems_paths: list[SystemsRoot] | None = Field(default=None, min_length=1)
     systems_path: SystemsPath | None = Field(default=None, exclude=True)
-    estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] = "auto"
+    estimation_mode: ReplayEstimationMode = "auto"
     fallback_policy: Literal["deny", "allow"] = "deny"
     estimator_config: dict[str, Any] = Field(default_factory=dict)
 
@@ -499,7 +817,7 @@ class EstimatorPolicyConfig(StrictModel):
         roles = [getattr(workers, role, None) for role in ("aggregated", "prefill", "decode")]
         unsupported_provider = "afd" in modes or getattr(workers, "encoder", None) is not None
         if self.systems_paths not in (None, ["default"]) and unsupported_provider:
-            unsupported = "AFD" if "afd" in modes else "analytical encoder pools"
+            unsupported = "AFD" if "afd" in modes else "encoder pools"
             raise ValueError(f"engine.systems_paths does not support {unsupported}")
         if unsupported_provider and any(
             worker is not None
@@ -551,9 +869,10 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
     enable_shared_layer: StrictBool | None = None
     strict_provenance: StrictBool | None = None
     context_length: PositiveInt | Literal["max"] = "max"
-    speculation: NgramSpeculationConfig | None = None
+    speculation: SpeculationConfig | None = None
     workers: WorkersPredictionConfig = Field(default_factory=WorkersPredictionConfig)
     kv_transfer: KvTransferConfig | None = None
+    tokenization: TokenizationConfig | None = None
     afd: AFDTopologyPredictionConfig | None = None
 
     @field_validator("model", "hardware")
@@ -582,6 +901,13 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
             if self.model != DEEPSEEK_V41_MODEL_PATH or self.backend != "sglang":
                 raise ValueError(f"decoder_replay requires model={DEEPSEEK_V41_MODEL_PATH!r} and backend='sglang'")
         _validate_worker_hardware(modes={self.mode}, workers=self.workers)
+        if self.tokenization is not None and (self.mode == "afd" or self.workers.encoder is not None):
+            raise ValueError("engine.tokenization requires token replay; AFD and analytical EPD are unsupported")
+        if self.tokenization is not None and any(
+            worker is not None and (worker.frontend is not None or worker.host_profile is not None)
+            for worker in (self.workers.aggregated, self.workers.prefill)
+        ):
+            raise ValueError("engine.tokenization and SGLang frontend stages both price request tokenization; use one")
         if self.mode == "afd":
             _validate_prediction_afd(self)
         else:
@@ -596,6 +922,7 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
         _validate_prediction_state_cache(self)
         _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
         _validate_prediction_scheduler_backend(self)
+        _validate_prediction_host(self)
         _validate_speculation(self, modes={self.mode}, backends={self.backend})
         return self
 
@@ -739,9 +1066,29 @@ class WorkerRecommendationConfig(StrictModel):
         return self
 
 
+class HostWorkerRecommendationConfig(WorkerRecommendationConfig):
+    """Host-aware settings are measured data, not search dimensions; every candidate shares them."""
+
+    host_loop: StrictBool = False
+    frontend: FrontendPredictionConfig | None = None
+    host_profile: HostProfileConfig | None = None
+    vision: VisionPredictionConfig | None = None
+
+    _implies_host_loop = model_validator(mode="before")(_frontend_implies_host_loop)
+    _omit_host_loop = model_serializer(mode="wrap")(_omit_inactive_host_loop)
+
+    @model_validator(mode="after")
+    def _validate_host_features(self) -> HostWorkerRecommendationConfig:
+        if (self.frontend is not None or self.host_profile is not None) and not self.host_loop:
+            raise ValueError("frontend stages run ahead of the scheduler loop; drop host_loop: false")
+        _validate_frontend_source(self)
+        return self
+
+
 class EncoderRecommendationConfig(StrictModel):
     """Finite encoder domains; scalar values pin a single choice."""
 
+    mode: Literal["analytical", "native"] = "analytical"
     hardware: str | None = Field(default=None, min_length=1)
     backend_version: str | None = Field(default=None, min_length=1)
     tensor: PositiveInt | Choices[PositiveInt] = 1
@@ -751,13 +1098,27 @@ class EncoderRecommendationConfig(StrictModel):
     ) = 1
     latency_correction: PositiveFloat = 1.0
     rate_degradation: Fraction = 0.9
+    host_profile: HostProfileConfig | None = None
+    frontend: FrontendPredictionConfig | None = None
+    transfer: EncoderTransferConfig | None = None
+
+    _batch_cap = model_validator(mode="before")(_native_encoder_batch_cap)
+
+    @model_validator(mode="after")
+    def _validate_mode(self) -> EncoderRecommendationConfig:
+        _validate_encoder_mode(self)
+        if self.mode == "native" and not isinstance(self.batch_size, int):
+            raise ValueError("native encoder replay takes one batch cap, not a batch_size search")
+        return self
 
 
 class WorkersRecommendationConfig(StrictModel):
     encoder: EncoderRecommendationConfig | None = None
-    aggregated: WorkerRecommendationConfig | None = None
-    prefill: WorkerRecommendationConfig | None = None
+    aggregated: HostWorkerRecommendationConfig | None = None
+    prefill: HostWorkerRecommendationConfig | None = None
     decode: WorkerRecommendationConfig | None = None
+
+    _lift_plain_worker = field_validator("aggregated", "prefill", mode="before")(_lift_plain_worker)
 
 
 class EngineRecommendationConfig(EstimatorPolicyConfig):
@@ -808,6 +1169,7 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
             if unknown:
                 raise ValueError(f"backend_version contains unconfigured backend(s): {unknown}")
         _validate_recommendation_host_offload(self)
+        _validate_recommendation_host(self, modes=modes, backends=backends)
         _validate_speculation(self, modes=modes, backends=backends)
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
         return self
@@ -880,18 +1242,27 @@ def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
 def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> None:
     if engine.speculation is None:
         return
-    if engine.nextn:
-        raise ValueError("speculation cannot be combined with nextn")
-    if backends != {"vllm"} or "afd" in modes or engine.workers.encoder is not None:
-        raise ValueError("ngram speculation requires vllm aggregated/disaggregated language workers")
+    kind = engine.speculation.kind
+    if engine.nextn or engine.nextn_accepted is not None:
+        raise ValueError("speculation cannot be combined with nextn or nextn_accepted")
+    supported_backends = {"vllm"} if kind == "ngram" else {"vllm", "sglang"}
+    if not backends <= supported_backends or "afd" in modes or engine.workers.encoder is not None:
+        raise ValueError(
+            f"{kind} speculation requires {'/'.join(sorted(supported_backends))} "
+            "aggregated/disaggregated language workers"
+        )
     for role in ("aggregated", "prefill", "decode"):
         worker = getattr(engine.workers, role)
         if worker is None:
             continue
         if worker.kv_cache.host_offload is not None:
-            raise ValueError("ngram speculation does not support host_offload")
-        if worker.timing.forward_model != "op_level":
-            raise ValueError("ngram speculation requires op_level timing")
+            raise ValueError(f"{kind} speculation does not support host_offload")
+        if kind == "ngram" and worker.timing.forward_model != "op_level":
+            raise ValueError(f"{kind} speculation requires op_level timing")
+        if kind != "ngram" and worker.kv_cache.capacity.type != "fixed":
+            raise ValueError(f"{kind} speculation requires explicit fixed KV capacity on workers.{role}")
+        if kind != "ngram" and worker.timing.type != "default":
+            raise ValueError(f"{kind} speculation requires default timing to preserve draft costs")
 
 
 def _validate_worker_hardware(*, modes: set[str], workers) -> None:
@@ -931,9 +1302,56 @@ def _validate_prediction_scheduler_backend(engine: EnginePredictionConfig) -> No
                 raise ValueError(f"workers.{role}.scheduler.{field} is supported only for backend={backend}")
 
 
+def require_native_vl_parallelism(
+    worker: HostWorkerPredictionConfig | HostWorkerRecommendationConfig,
+) -> None:
+    """The host loop and the colocated vision encoder run on one pipeline stage without attention or context DP.
+
+    Shared by the explicit `host_loop`/`vision` gates and by the image workloads that
+    enable the encoder implicitly, so spelling the defaults out changes nothing.
+    """
+    parallel = worker.parallelism
+    if isinstance(worker, HostWorkerPredictionConfig):
+        if (
+            parallel.pipeline != 1
+            or parallel.attention_data != 1
+            or parallel.prefill_context not in (None, 1)
+            or parallel.decode_context not in (None, 1)
+        ):
+            raise ValueError(
+                "native VL replay requires the host-aware worker's parallelism with pipeline=1, attention_data=1, "
+                "prefill_context=1 and decode_context=1"
+            )
+        return
+    if (
+        parallel.preset not in (False, {})
+        or parallel.pipeline not in (None, 1)
+        or parallel.attention_data not in (None, 1)
+    ):
+        raise ValueError(
+            "native VL recommendation requires the host-aware worker's parallelism with preset: false, pipeline=1 "
+            "and attention_data=1"
+        )
+
+
+def _validate_prediction_host(engine: EnginePredictionConfig) -> None:
+    """The aggregated worker hosts the loop in aggregated mode, the prefill worker in disaggregated mode."""
+    for role, mode in (("aggregated", "aggregated"), ("prefill", "disaggregated")):
+        worker = getattr(engine.workers, role)
+        if worker is None or (not worker.host_loop and worker.vision is None):
+            continue
+        if engine.mode != mode:
+            raise ValueError(f"workers.{role}.host_loop and workers.{role}.vision require engine.mode={mode}")
+        if engine.backend != "sglang":
+            raise ValueError(
+                f"workers.{role}.host_loop and workers.{role}.vision are supported only for backend=sglang"
+            )
+        require_native_vl_parallelism(worker)
+
+
 def _validate_prediction_afd(engine: EnginePredictionConfig) -> None:
     if engine.workers.encoder is not None:
-        raise ValueError("AFD does not support analytical EPD encoder pools")
+        raise ValueError("AFD does not support encoder pools")
     afd = engine.afd
     if afd is None:
         raise ValueError("engine.mode='afd' requires engine.afd")
@@ -955,7 +1373,7 @@ def _validate_prediction_afd(engine: EnginePredictionConfig) -> None:
 
 def _validate_recommendation_afd(engine: EngineRecommendationConfig) -> None:
     if engine.workers.encoder is not None:
-        raise ValueError("AFD does not support analytical EPD encoder pools")
+        raise ValueError("AFD does not support encoder pools")
     afd = engine.afd
     if afd is None:
         raise ValueError("engine.mode='afd' requires engine.afd")
@@ -989,6 +1407,14 @@ def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:
             raise ValueError("host_offload requires prefix_caching=true")
         if worker.kv_cache.g3_offload is not None and (role != "aggregated" or worker.parallelism.attention_data != 1):
             raise ValueError("g3_offload is supported only for the aggregated worker with attention_data=1")
+        if worker.kv_cache.kvcr is not None and role == "decode":
+            raise ValueError("kvcr supports aggregated and prefill workers only")
+        if worker.kv_cache.kvcr is not None and worker.parallelism.pipeline > 1:
+            raise ValueError("kvcr does not support pipeline parallelism (parallelism.pipeline must be 1)")
+        if worker.kv_cache.kvcr is not None and (worker.parallelism.prefill_context or 1) > 1:
+            raise ValueError(
+                "kvcr does not support prefill context parallelism (parallelism.prefill_context must be 1)"
+            )
 
 
 def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
@@ -998,8 +1424,14 @@ def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
         if worker is None or worker.kv_cache.state_cache is None:
             continue
         roles.append(role)
-        if worker.kv_cache.prefix_match_unit is not None and (engine.speculation is not None or engine.nextn > 0):
-            raise ValueError("prefix_match_unit does not support speculative decoding (speculation or nextn > 0)")
+        if (
+            worker.kv_cache.prefix_match_unit is not None
+            and worker.kv_cache.prefix_match_unit != worker.kv_cache.block_size
+            and (engine.speculation is not None or engine.nextn > 0)
+        ):
+            raise ValueError(
+                "sub-block prefix_match_unit does not support speculative decoding (speculation or nextn > 0)"
+            )
         supported = role == "aggregated" if engine.mode == "aggregated" else engine.mode == "disaggregated"
         if engine.backend != "vllm" or not supported:
             raise ValueError("state_cache requires backend=vllm and mode=aggregated or disaggregated (G1 only)")
@@ -1064,6 +1496,18 @@ def _validate_recommendation_host_offload(engine: EngineRecommendationConfig) ->
                     f"cluster_shared host_offload roles require matching host_offload.{field}: "
                     f"prefill={prefill_value!r}, decode={decode_value!r}"
                 )
+
+
+def _validate_recommendation_host(engine: EngineRecommendationConfig, *, modes: set[str], backends: set[str]) -> None:
+    for role, mode in (("aggregated", "aggregated"), ("prefill", "disaggregated")):
+        worker = getattr(engine.workers, role)
+        if worker is None or (not worker.host_loop and worker.vision is None):
+            continue
+        if modes != {mode}:
+            raise ValueError(f"host recommendation on workers.{role} requires concrete mode={mode}")
+        if backends != {"sglang"}:
+            raise ValueError("host recommendation requires concrete backend=sglang")
+        require_native_vl_parallelism(worker)
 
 
 def _validate_worker_roles(*, modes: set[str], workers, has_transfer: bool) -> None:

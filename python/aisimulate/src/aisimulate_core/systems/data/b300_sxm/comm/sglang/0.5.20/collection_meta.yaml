@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+provenance: collected
+runtime:
+  framework: sglang
+  version: 0.5.20
+  image: lmsysorg/sglang:v0.5.20
+  image_digest: sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f
+  source_commit: 94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+tables:
+  custom_allreduce_perf:
+    # TP2/TP4/TP8 framework tensor_model_parallel_all_reduce, graph and eager; serving env (NCCL_CUMEM_ENABLE=1 NCCL_NVLS_ENABLE=1 NCCL_P2P_LEVEL=NVL NCCL_MNNVL_ENABLE=0).
+    # kernel_source records launch mode, not the size-dependent backend the framework dispatched to.
+    # collector_hash: sha256 of collector/network/collect_all_reduce.py (standalone collector, no closure entry).
+    # b300_sxm (SM103, computelab), 8 GPUs/node, stock image amd64 child sha256:b27fce60bc5494c118c4910702812bcfa8cee67abcdd1ff8b0902f21647552f4 (no overlay) run via pyxis; launcher audits/glm53flash-multigpu/tools/ops/launcher; collector source 00d2e3196a20f44d1514f23419acdd59409139e5; Slurm job(s) 4956285.
+    # data_sha256: 08e7a9efafb6b5e0b1b2a9e0c8579e45a1028ad3aa48029c5767f883cd47eacd
+    collector_ref: 00d2e3196a20f44d1514f23419acdd59409139e5
+    collector_hash: sha256:3466e42a7d8561328cbe318451261315a3381ef1f5c47d6a076c6b6f77e2f9e8
+    case_plan_hash: sha256:ca988404b14af71d7b706d054716786d003d3fff5b21f526b29b677d68f62b08
+    collected_at: '2026-10-14'
+    rows: 138
+    status: complete

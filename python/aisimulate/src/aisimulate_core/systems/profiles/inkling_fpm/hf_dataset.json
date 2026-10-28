@@ -1,0 +1,91 @@
+{
+  "format_version": 1,
+  "repo_id": "nvidia/aisimulate-fpm-dataset",
+  "revision": "dbfcdd9eb62ea733efbc3f0cbd78277f2960061a",
+  "profiles": {
+    "gb300-vllm-nvfp4-tp1-dp4-ep4": {
+      "admission": "development",
+      "admission_reason": "No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/thinkingmachines--Inkling-NVFP4/gb300/vllm/0.27.0/dep4/fpm/fpm_forward_perf.parquet",
+          "target": "data/gb300/vllm/0.27.0/fpm_forward_perf.parquet",
+          "sha256": "a22184e47c66fd87d03f63615faa94b2728164b703deb17c0d741942fa9f14aa"
+        },
+        {
+          "path": "data/thinkingmachines--Inkling-NVFP4/gb300/vllm/0.27.0/dep4/fpm/fpm_forward_perf.metadata.json",
+          "target": "data/gb300/vllm/0.27.0/fpm_forward_perf.metadata.json",
+          "sha256": "bd624369a4ef939ab296681457e3c083ac212faab015f64eb2308544f5627f73"
+        },
+        {
+          "path": "data/thinkingmachines--Inkling-NVFP4/gb300/vllm/0.27.0/dep4/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "fda2f4d5024d5bd0271883edc313a7bd54efd3025df9826379a4002707cd6eaa"
+        },
+        {
+          "path": "data/thinkingmachines--Inkling-NVFP4/gb300/vllm/0.27.0/dep4/fpm/provenance/import.json",
+          "target": "provenance/import.json",
+          "sha256": "c9a692d7cf660e93b4fd7ccececa0e2902468dc4d84cadaa0727617d29dce098"
+        }
+      ],
+      "packaged_system": "gb300"
+    },
+    "gb300-vllm-nvfp4-tp4": {
+      "admission": "development",
+      "admission_reason": "No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/thinkingmachines--Inkling-NVFP4/gb300/vllm/0.27.0/pure-tp4/fpm/fpm_forward_perf.parquet",
+          "target": "data/gb300/vllm/0.27.0/fpm_forward_perf.parquet",
+          "sha256": "7c862f90942c434a265bf95960b20cde399ddfe8b5bcebe64a781762beba773f"
+        },
+        {
+          "path": "data/thinkingmachines--Inkling-NVFP4/gb300/vllm/0.27.0/pure-tp4/fpm/fpm_forward_perf.metadata.json",
+          "target": "data/gb300/vllm/0.27.0/fpm_forward_perf.metadata.json",
+          "sha256": "780413737df4843d2e7089fe4736d662481c3c53f0d5739e4ae0e2302e86c18c"
+        },
+        {
+          "path": "data/thinkingmachines--Inkling-NVFP4/gb300/vllm/0.27.0/pure-tp4/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "a3094537498018b2457fea05c9fcd2f0b749a3fdb5687bf798351efecf7fe578"
+        },
+        {
+          "path": "data/thinkingmachines--Inkling-NVFP4/gb300/vllm/0.27.0/pure-tp4/fpm/provenance/import.json",
+          "target": "provenance/import.json",
+          "sha256": "602db807796424de7cf4102dad8a9c493d89cc8272cacdf01084eb8770c4983c"
+        }
+      ],
+      "packaged_system": "gb300"
+    },
+    "gb300-vllm-nvfp4-tp8": {
+      "admission": "development",
+      "admission_reason": "No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/thinkingmachines--Inkling-NVFP4/gb300/vllm/0.27.0/pure-tp8/fpm/fpm_forward_perf.parquet",
+          "target": "data/gb300/vllm/0.27.0/fpm_forward_perf.parquet",
+          "sha256": "9239d1c324ed7c7810fa9000048f2637a57e7f3c93183b9f97b1227810210093"
+        },
+        {
+          "path": "data/thinkingmachines--Inkling-NVFP4/gb300/vllm/0.27.0/pure-tp8/fpm/fpm_forward_perf.metadata.json",
+          "target": "data/gb300/vllm/0.27.0/fpm_forward_perf.metadata.json",
+          "sha256": "37c93e702b0d0dbab7a951349fae3f6d265dd6e16df47f6b29ce3c78f219c82f"
+        },
+        {
+          "path": "data/thinkingmachines--Inkling-NVFP4/gb300/vllm/0.27.0/pure-tp8/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "16ed97f3741e6b8221ebd7837c4e11de350493dbd3c39a5ea740bd0825870b48"
+        },
+        {
+          "path": "data/thinkingmachines--Inkling-NVFP4/gb300/vllm/0.27.0/pure-tp8/fpm/provenance/import.json",
+          "target": "provenance/import.json",
+          "sha256": "520bcf1de830adaa5b42e1b3783bb43c5bf1e7b26eb9832e9d529d4f23c160ce"
+        }
+      ],
+      "packaged_system": "gb300"
+    }
+  }
+}

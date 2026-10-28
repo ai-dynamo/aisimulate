@@ -32,6 +32,32 @@ def _reload(canonical):
     return ForwardPassPerfModelConfig(**json.loads(json.dumps(canonical.to_dict())))
 
 
+@pytest.mark.parametrize("mode", ["auto", "fixed", "dynamic_local", "hybrid"])
+def test_correction_mode_survives_reload_and_controls_native_feedback(mode):
+    config = ForwardPassPerfModelConfig(
+        model="Qwen/Qwen3-32B",
+        system="b200_sxm",
+        backend="vllm",
+        backend_version="0.24.0",
+        worker_type="prefill",
+        estimator_config={"correction": {"mode": mode, "max_num_tokens": 100}},
+    )
+    restored = _reload(config)
+    normalized = RustForwardPassPerfModel.normalize_config(restored)
+    assert normalized["estimator_config"]["correction"].get("mode", "auto") == mode
+    model = RustForwardPassPerfModel.best_available(restored)
+    query = {"version": 1, "scheduled_requests": {"num_prefill_requests": 1, "sum_prefill_tokens": 101}}
+    base_ms = model.estimate_forward_pass_time_ms([query])
+    assert base_ms is not None and base_ms > 0
+    feedback = dict(query, wall_time=base_ms * 1.5 / 1000)
+    for _ in range(5):
+        model.tune_with_fpms([[feedback]])
+    # Native auto/fixed reject the out-of-grid feedback. Explicit hybrid and
+    # dynamic use the observed/base ratio 1.5 after their readiness threshold.
+    factor = 1.0 if mode in ("auto", "fixed") else 1.5
+    assert model.estimate_forward_pass_time_ms([query]) == pytest.approx(base_ms * factor)
+
+
 def test_migration_merges_saved_and_caller_controls_before_round_trip():
     legacy = _legacy_config(
         {

@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import sys
 import time
 import traceback
@@ -42,7 +43,9 @@ from pathlib import Path
 from collector.glm53flash_attention_contract import (
     KPOOL_ALIGN,
     RUNTIME_VERSIONS,
+    SERVING_KV_CACHE_DTYPE,
     build_plan,
+    check_runtime_arch,
     geometry,
     representative_layer_is_uniform,
     selected_max_model_len,
@@ -230,9 +233,12 @@ def main():
     if any(output.glob("rank-*.jsonl")) or (output / "COMPLETE").exists():
         raise RuntimeError("output has prior raw records; use a fresh attempt directory")
     config = json.loads((Path(options.model_path) / "config.json").read_text())
-    expected = geometry(config, "vllm", manifest["geometry"]["checkpoint_format"], manifest["geometry"]["tp_size"])
+    flat = manifest["geometry"]
+    expected = geometry(config, "vllm", flat["checkpoint_format"], flat["tp_size"], flat["kv_cache_dtype"])
     if expected != manifest["geometry"]:
         raise ValueError("checkpoint/TP geometry differs from the manifest")
+    # The container must be the manifest's pinned image architecture.
+    check_runtime_arch(manifest, platform.machine())
     representative_layer_is_uniform(config, manifest["layer_id"], expected["checkpoint_format"])
 
     plugin = write_plugin(output / "plugin")
@@ -264,7 +270,7 @@ def main():
     engine_args = {
         "model": options.model_path,
         "tensor_parallel_size": expected["tp_size"],
-        "kv_cache_dtype": "fp8_e4m3",
+        "kv_cache_dtype": SERVING_KV_CACHE_DTYPE[expected["kv_cache_dtype"]],
         # Serving context limit of the selected context class (capacity only).
         "max_model_len": max_model_len,
         "max_num_batched_tokens": 8192,

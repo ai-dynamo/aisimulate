@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Typed estimator-specific controls. Defaults preserve the existing algorithms.
+//! Typed estimator-specific controls with Rust-owned defaults.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::options::{ForwardPassPerfOptions, validate_options};
+use super::options::{CorrectionMode, ForwardPassPerfOptions, validate_options};
 use crate::AicError;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -17,12 +17,348 @@ pub struct EstimatorConfig {
     pub op_level: OpLevelConfig,
     pub fpm_interpolation: FpmInterpolationConfig,
     pub fpm_regression: FpmRegressionConfig,
+    #[serde(skip_serializing_if = "FpmLearnedConfig::is_default")]
+    pub fpm_learned: FpmLearnedConfig,
+    #[serde(skip_serializing_if = "SelectorConfig::is_default")]
+    pub selector: SelectorConfig,
     pub correction: CorrectionConfig,
+    /// Restore tuned state written by `ForwardPassPerfModel::save_state_snapshot`.
+    /// Absent for ordinary construction and omitted from serialization.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_snapshot: Option<StateSnapshotConfig>,
+}
+
+/// Saved model state restored by
+/// [`ForwardPassPerfModel::best_available`](crate::ForwardPassPerfModel::best_available).
+///
+/// `path` names a directory written by
+/// [`ForwardPassPerfModel::save_state_snapshot`](crate::ForwardPassPerfModel::save_state_snapshot).
+/// Normalization makes it absolute (lexically normalized, symlinks kept) and
+/// pins `sha256` to the exact bytes of
+/// `<path>/manifest.json`; a supplied digest that differs is an error. The
+/// rest of the configuration must equal the identity recorded in that
+/// manifest. Restoration requires an explicit `estimation_mode` and
+/// `fallback_policy: deny`, so a snapshot failure never selects another model.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StateSnapshotConfig {
+    pub path: PathBuf,
+    /// Lowercase or uppercase hexadecimal SHA-256 of `<path>/manifest.json`.
+    #[serde(default)]
+    pub sha256: Option<String>,
+    #[serde(default)]
+    pub on_tune: StateSnapshotTuning,
+}
+
+/// Whether a restored model accepts further feedback.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StateSnapshotTuning {
+    /// `tune_with_fpms` and `flush_updates` return an error; the restored
+    /// state is read-only.
+    #[default]
+    Reject,
+    /// Feedback continues from the restored state exactly as it would have
+    /// continued in the saving model.
+    Continue,
+}
+
+impl StateSnapshotConfig {
+    pub(crate) fn validate(&self) -> Result<(), AicError> {
+        let invalid = |reason: &str| {
+            AicError::InvalidEngineConfig(format!("estimator_config.state_snapshot: {reason}"))
+        };
+        if self.path.as_os_str().is_empty() {
+            return Err(invalid("path cannot be empty"));
+        }
+        if self.path.to_str().is_none() {
+            return Err(invalid("path must be valid UTF-8"));
+        }
+        if self.sha256.as_ref().is_some_and(|digest| {
+            digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit())
+        }) {
+            return Err(invalid("sha256 must contain 64 hexadecimal characters"));
+        }
+        Ok(())
+    }
+
+    /// Anchor the directory and bind the manifest bytes before caller caches
+    /// use the resolved configuration. Relative paths resolve against the
+    /// working directory and are normalized lexically, without resolving
+    /// symlinks, matching the path `save_state_snapshot` records. The manifest read is
+    /// bounded.
+    pub(crate) fn resolve_source(&mut self) -> Result<(), AicError> {
+        use sha2::{Digest, Sha256};
+        self.path = super::snapshot::normalized_absolute(&self.path)?;
+        let bytes = super::snapshot::read_manifest_bytes(&self.path)?;
+        let actual = format!("{:x}", Sha256::digest(&bytes));
+        if self
+            .sha256
+            .as_ref()
+            .is_some_and(|expected| !expected.eq_ignore_ascii_case(&actual))
+        {
+            return Err(AicError::InvalidEngineConfig(
+                "estimator_config.state_snapshot.sha256 does not match manifest.json".into(),
+            ));
+        }
+        self.sha256 = Some(actual);
+        Ok(())
+    }
+}
+
+/// How a learned model adapts after construction.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LearnedAdaptation {
+    Frozen,
+    #[default]
+    Online,
+    CausalSelector,
+}
+
+/// Causal expert selection using admitted pre-update relative errors.
+/// Kept outside FpmLearnedConfig so standalone online checkpoint layout stays stable.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SelectorConfig {
+    pub alpha: f64,
+    pub warmup: usize,
+    pub margin: f64,
+    pub persistence: usize,
+}
+
+impl Default for SelectorConfig {
+    fn default() -> Self {
+        Self {
+            alpha: 0.4,
+            warmup: 5,
+            margin: 0.05,
+            persistence: 1,
+        }
+    }
+}
+
+impl SelectorConfig {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), AicError> {
+        let invalid =
+            |reason| AicError::InvalidEngineConfig(format!("estimator_config.selector: {reason}"));
+        if !self.alpha.is_finite() || !(0.0..=1.0).contains(&self.alpha) || self.alpha == 0.0 {
+            return Err(invalid("alpha must be finite and in (0, 1]"));
+        }
+        if !self.margin.is_finite() || !(0.0..1.0).contains(&self.margin) {
+            return Err(invalid("margin must be finite and in [0, 1)"));
+        }
+        if self.warmup == 0 || self.persistence == 0 {
+            return Err(invalid("warmup and persistence must be positive"));
+        }
+        Ok(())
+    }
+}
+
+/// Which parts of an online forest may change.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LearnedUpdateMode {
+    LeafOnly,
+    #[default]
+    Structural,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LearnedDerivativeRefresh {
+    #[default]
+    Eager,
+    Lazy,
+}
+
+/// Explicit learned-model sources and Rust-owned online fitting controls.
+/// Offline anchors are retained in addition to the bounded recent window.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FpmLearnedConfig {
+    pub artifact_path: Option<PathBuf>,
+    pub checkpoint_path: Option<PathBuf>,
+    /// Digest of the artifact file or checkpoint manifest, pinned at construction.
+    pub source_sha256: Option<String>,
+    pub adaptation: LearnedAdaptation,
+    pub update_mode: LearnedUpdateMode,
+    pub recent_window: usize,
+    /// None keeps unit row weights; Some(beta) fixes total history mass.
+    pub history_weight: Option<f64>,
+    /// Retained recent support needed to reach the configured group mass.
+    pub history_weight_ramp_observations: usize,
+    /// Aggregate immutable history by complete fitted-bin vectors; preserve its mass.
+    pub history_bin_grouping: bool,
+    /// Only this many final seed trees may change; None updates all trees.
+    pub mutable_tree_tail: Option<usize>,
+    /// Convex displacement toward fitted leaf values; structural updates require 1.
+    pub update_step: f64,
+    /// Maximum global learned-observation age of recent rows, inclusive.
+    pub recent_max_age_observations: Option<usize>,
+    pub update_every: usize,
+    pub derivative_refresh: LearnedDerivativeRefresh,
+    pub split_sampling_rate: f64,
+    pub split_rank_tolerance: f64,
+    pub eager_refresh_interval: usize,
+    pub seed: u64,
+}
+
+impl Default for FpmLearnedConfig {
+    fn default() -> Self {
+        Self {
+            artifact_path: None,
+            checkpoint_path: None,
+            source_sha256: None,
+            adaptation: LearnedAdaptation::Online,
+            update_mode: LearnedUpdateMode::Structural,
+            recent_window: 64,
+            history_weight: Some(0.1),
+            history_weight_ramp_observations: 32,
+            history_bin_grouping: true,
+            mutable_tree_tail: None,
+            update_step: 1.0,
+            recent_max_age_observations: None,
+            update_every: 1,
+            derivative_refresh: LearnedDerivativeRefresh::Lazy,
+            split_sampling_rate: 0.5,
+            split_rank_tolerance: 0.01,
+            eager_refresh_interval: 32,
+            seed: 0,
+        }
+    }
+}
+
+impl FpmLearnedConfig {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+
+    /// Bind content before caller caches use the resolved configuration.
+    pub(crate) fn resolve_source(&mut self) -> Result<(), AicError> {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+        for path in [&mut self.artifact_path, &mut self.checkpoint_path]
+            .into_iter()
+            .flatten()
+        {
+            *path = std::path::absolute(&*path).map_err(|source| AicError::Io {
+                path: path.clone(),
+                source,
+            })?;
+        }
+        let source = self
+            .artifact_path
+            .clone()
+            .or_else(|| {
+                self.checkpoint_path
+                    .as_ref()
+                    .map(|path| path.join("manifest.json"))
+            })
+            .ok_or_else(|| AicError::InvalidEngineConfig("fpm_learned source is missing".into()))?;
+        let mut file = std::fs::File::open(&source).map_err(|error| AicError::Io {
+            path: source.clone(),
+            source: error,
+        })?;
+        let mut digest = Sha256::new();
+        let mut bytes = [0u8; 65536];
+        loop {
+            let count = file.read(&mut bytes).map_err(|error| AicError::Io {
+                path: source.clone(),
+                source: error,
+            })?;
+            if count == 0 {
+                break;
+            }
+            digest.update(&bytes[..count]);
+        }
+        let actual = format!("{:x}", digest.finalize());
+        if self
+            .source_sha256
+            .as_ref()
+            .is_some_and(|expected| !expected.eq_ignore_ascii_case(&actual))
+        {
+            return Err(AicError::InvalidEngineConfig(
+                "estimator_config.fpm_learned.source_sha256 does not match source contents".into(),
+            ));
+        }
+        self.source_sha256 = Some(actual);
+        Ok(())
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), AicError> {
+        let invalid = |reason: &str| {
+            AicError::InvalidEngineConfig(format!("estimator_config.fpm_learned: {reason}"))
+        };
+        if self
+            .history_weight
+            .is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v))
+        {
+            return Err(invalid("history_weight must be finite and in [0, 1]"));
+        }
+        if self.history_weight.is_none() && self.history_weight_ramp_observations > 0 {
+            return Err(invalid(
+                "history_weight_ramp_observations requires history_weight",
+            ));
+        }
+        if self.mutable_tree_tail == Some(0) || self.recent_max_age_observations == Some(0) {
+            return Err(invalid(
+                "mutable_tree_tail and recent_max_age_observations must be positive",
+            ));
+        }
+        if !self.update_step.is_finite() || self.update_step <= 0.0 || self.update_step > 1.0 {
+            return Err(invalid("update_step must be finite and in (0, 1]"));
+        }
+        if self.update_step != 1.0 && self.update_mode == LearnedUpdateMode::Structural {
+            return Err(invalid(
+                "update_step below 1 requires leaf_only to preserve exact interpolation",
+            ));
+        }
+        if self.recent_window == 0 || self.update_every == 0 || self.eager_refresh_interval == 0 {
+            return Err(invalid(
+                "recent_window, update_every, and eager_refresh_interval must be positive",
+            ));
+        }
+        if !self.split_sampling_rate.is_finite()
+            || self.split_sampling_rate <= 0.0
+            || self.split_sampling_rate > 1.0
+        {
+            return Err(invalid("split_sampling_rate must be finite and in (0, 1]"));
+        }
+        if !self.split_rank_tolerance.is_finite()
+            || !(0.0..=1.0).contains(&self.split_rank_tolerance)
+        {
+            return Err(invalid("split_rank_tolerance must be finite and in [0, 1]"));
+        }
+        if self.source_sha256.as_ref().is_some_and(|digest| {
+            digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit())
+        }) {
+            return Err(invalid(
+                "source_sha256 must contain 64 hexadecimal characters",
+            ));
+        }
+        for path in [&self.artifact_path, &self.checkpoint_path]
+            .into_iter()
+            .flatten()
+        {
+            if path.as_os_str().is_empty() {
+                return Err(invalid("artifact_path and checkpoint_path cannot be empty"));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct OpLevelConfig {}
+pub struct OpLevelConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_profile: Option<crate::perfmodel::execution_profile::ExecutionProfileSelection>,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -549,6 +885,8 @@ pub enum CorrectionFeatureSpace {
 #[serde(default, deny_unknown_fields)]
 pub struct CorrectionConfig {
     pub enabled: bool,
+    #[serde(skip_serializing_if = "CorrectionMode::is_auto")]
+    pub mode: CorrectionMode,
     pub feature_space: CorrectionFeatureSpace,
     pub sampling: SamplingConfig,
     pub min_observations: usize,
@@ -562,6 +900,7 @@ impl Default for CorrectionConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            mode: CorrectionMode::Auto,
             feature_space: CorrectionFeatureSpace::LegacyWorkload,
             sampling: SamplingConfig::default(),
             min_observations: 5,
@@ -574,6 +913,58 @@ impl Default for CorrectionConfig {
 }
 
 impl EstimatorConfig {
+    /// Apply defaults before parsing so explicit choices, including values equal
+    /// to another recipe's defaults, are never mistaken for omitted fields.
+    pub(crate) fn apply_context_defaults(
+        estimator: &mut serde_json::Value,
+        mode: super::EstimationMode,
+    ) {
+        if mode != super::EstimationMode::FpmLearned {
+            return;
+        }
+        let Some(estimator) = estimator.as_object_mut() else {
+            return;
+        };
+        let adaptation = estimator
+            .get("fpm_learned")
+            .and_then(|learned| learned.get("adaptation"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("online");
+        let enabled = adaptation != "online";
+        let selector = adaptation == "causal_selector";
+        if let Some(learned) = estimator
+            .get_mut("fpm_learned")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            if learned
+                .get("history_weight")
+                .is_some_and(serde_json::Value::is_null)
+            {
+                learned
+                    .entry("history_weight_ramp_observations")
+                    .or_insert(serde_json::json!(0));
+            }
+            if selector {
+                for (key, value) in [
+                    ("recent_window", serde_json::json!(8)),
+                    ("history_weight", serde_json::json!(0.25)),
+                    ("history_weight_ramp_observations", serde_json::json!(8)),
+                    ("update_every", serde_json::json!(4)),
+                ] {
+                    learned.entry(key).or_insert(value);
+                }
+            }
+        }
+        let correction = estimator
+            .entry("correction")
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(correction) = correction.as_object_mut() {
+            correction
+                .entry("enabled")
+                .or_insert(serde_json::json!(enabled));
+        }
+    }
+
     pub(crate) fn resolve_defaults(&mut self) {
         if self.fpm_regression.fit.kind == RegressionFitKind::Spline {
             self.fpm_regression
@@ -614,6 +1005,7 @@ impl EstimatorConfig {
                 .map_err(|error| invalid_migration("legacy options", error))?;
             let mut migrated = serde_json::json!({});
             for (legacy, paths) in [
+                ("correction_mode", &["correction.mode"][..]),
                 (
                     "max_observations",
                     &[
@@ -658,7 +1050,11 @@ impl EstimatorConfig {
             ] {
                 if supplied.get(legacy).is_some() {
                     for path in paths {
-                        insert_explicit(&mut migrated, path, normalized[legacy].clone());
+                        insert_explicit(
+                            &mut migrated,
+                            path,
+                            normalized.get(legacy).unwrap_or(&supplied[legacy]).clone(),
+                        );
                     }
                 }
             }
@@ -709,6 +1105,7 @@ impl EstimatorConfig {
     pub(crate) fn correction_options(&self) -> ForwardPassPerfOptions {
         let config = &self.correction;
         ForwardPassPerfOptions {
+            correction_mode: config.mode,
             bucket_shape: Some(config.sampling.bins_per_axis),
             max_observations: config.sampling.max_observations,
             min_observations: config.min_observations,
@@ -746,6 +1143,11 @@ impl EstimatorConfig {
     }
 
     pub(crate) fn validate(&self) -> Result<(), AicError> {
+        self.fpm_learned.validate()?;
+        self.selector.validate()?;
+        if let Some(snapshot) = &self.state_snapshot {
+            snapshot.validate()?;
+        }
         self.fpm_regression.sampling.validate()?;
         validate_rebuild_interval(self.fpm_regression.fit.rebuild_interval)?;
         self.validate_linear()?;
@@ -923,6 +1325,7 @@ impl EstimatorConfig {
                 },
             },
             correction: CorrectionConfig {
+                mode: options.correction_mode,
                 sampling,
                 min_observations: options.min_observations,
                 factor_bounds: CorrectionFactorBounds {
@@ -1236,6 +1639,103 @@ pub(super) fn validate_rebuild_interval(interval: Option<usize>) -> Result<(), A
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn null_history_weight_defaults_only_an_omitted_ramp_to_zero() {
+        for adaptation in ["online", "frozen", "causal_selector"] {
+            for ramp in [None, Some(0), Some(8)] {
+                let mut value = serde_json::json!({"fpm_learned": {
+                    "adaptation": adaptation, "history_weight": null
+                }});
+                if let Some(ramp) = ramp {
+                    value["fpm_learned"]["history_weight_ramp_observations"] = ramp.into();
+                }
+                EstimatorConfig::apply_context_defaults(
+                    &mut value,
+                    super::super::EstimationMode::FpmLearned,
+                );
+                let config: EstimatorConfig = serde_json::from_value(value).unwrap();
+                assert_eq!(config.fpm_learned.history_weight, None);
+                assert_eq!(
+                    config.fpm_learned.history_weight_ramp_observations,
+                    ramp.unwrap_or(0)
+                );
+                assert_eq!(config.validate().is_ok(), ramp != Some(8));
+            }
+        }
+    }
+
+    #[test]
+    fn default_selector_controls_preserve_previous_reader_configuration() {
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"selector": {}}),
+            serde_json::json!({"selector": SelectorConfig::default(), "fpm_learned": {}}),
+        ] {
+            let config: EstimatorConfig = serde_json::from_value(value).unwrap();
+            let serialized = serde_json::to_value(&config).unwrap();
+            assert!(serialized.get("selector").is_none());
+            assert!(serialized.get("fpm_learned").is_none());
+            let restored: EstimatorConfig = serde_json::from_value(serialized).unwrap();
+            assert_eq!(restored, config);
+            assert_eq!(restored.selector, SelectorConfig::default());
+        }
+    }
+
+    #[test]
+    fn each_nondefault_selector_control_survives_serialization() {
+        for selector in [
+            serde_json::json!({"alpha": 0.125}),
+            serde_json::json!({"warmup": 2}),
+            serde_json::json!({"margin": 0.1}),
+            serde_json::json!({"persistence": 3}),
+            serde_json::json!({"alpha": 1.0, "warmup": 1, "margin": 0.0, "persistence": 2}),
+        ] {
+            let config: EstimatorConfig =
+                serde_json::from_value(serde_json::json!({"selector": selector})).unwrap();
+            config.selector.validate().unwrap();
+            let serialized = serde_json::to_value(&config).unwrap();
+            assert_eq!(
+                serialized.get("selector").unwrap(),
+                &serde_json::to_value(&config.selector).unwrap()
+            );
+            assert!(serialized.get("fpm_learned").is_none());
+            let restored: EstimatorConfig = serde_json::from_value(serialized).unwrap();
+            assert_eq!(restored, config);
+        }
+    }
+
+    #[test]
+    fn default_learned_controls_preserve_existing_serialized_configuration() {
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"fpm_learned": {}}),
+        ] {
+            let config: EstimatorConfig = serde_json::from_value(value).unwrap();
+            let serialized = serde_json::to_value(&config).unwrap();
+            assert!(serialized.get("fpm_learned").is_none());
+            let restored: EstimatorConfig = serde_json::from_value(serialized).unwrap();
+            assert_eq!(restored, config);
+            assert_eq!(restored.fpm_learned, FpmLearnedConfig::default());
+        }
+    }
+
+    #[test]
+    fn nondefault_learned_controls_survive_serialization_without_a_source() {
+        for learned in [
+            serde_json::json!({"recent_window": 128}),
+            serde_json::json!({"seed": 42}),
+            serde_json::json!({"artifact_path": "seed.json"}),
+            serde_json::json!({"checkpoint_path": "checkpoint", "adaptation": "online"}),
+        ] {
+            let config: EstimatorConfig =
+                serde_json::from_value(serde_json::json!({"fpm_learned": learned})).unwrap();
+            let serialized = serde_json::to_value(&config).unwrap();
+            assert!(serialized.get("fpm_learned").is_some());
+            let restored: EstimatorConfig = serde_json::from_value(serialized).unwrap();
+            assert_eq!(restored, config);
+        }
+    }
 
     #[test]
     fn linear_default_and_alias_keep_existing_wire_contract() {

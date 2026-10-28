@@ -177,6 +177,21 @@ def test_all_backends_render_standalone_slurm_bundle(backend, version, mode, tmp
             assert "--disaggregation-mode" in worker["argv"]
 
 
+@pytest.mark.parametrize("version", ["0.5.11", "0.5.21"])
+def test_sglang_slurm_bootstrap_listens_on_advertised_node_interfaces(version):
+    artifacts = generate_backend_artifacts(
+        _params("sglang", "disagg"), "sglang", backend_version=version, deployment_target="slurm"
+    )
+    workers = json.loads(artifacts["deployment.json"])["workers"]
+    assert {worker["name"].split("-")[0] for worker in workers} == {"prefill", "decode"}
+    for worker in workers:
+        argv = worker["argv"]
+        assert argv[argv.index("--host") + 1] == "0.0.0.0"
+        assert "--disaggregation-bootstrap-port" in argv
+        assert "SGLANG_HOST_IP" not in worker["env"]
+    assert "SGLANG_HOST_IP" not in artifacts["environment.sh"]
+
+
 @pytest.mark.parametrize("backend,version", _BACKENDS)
 @pytest.mark.parametrize("mode", ["agg", "disagg"])
 def test_moe_topology_matches_slurm_allocation_and_worker_commands(backend, version, mode):
