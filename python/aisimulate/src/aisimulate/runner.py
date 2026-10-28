@@ -496,6 +496,8 @@ class EngineReplayRunner:
         if spec.backend_deployment.deployment_mode in {"afd", "afd+pd"}:
             if spec.workload.get("images") is not None:
                 raise InvalidRunnerError("image workloads are unsupported for AFD")
+            if any(spec.goal.get(name) is not None for name in ("max_p99_ttft_ms", "max_p99_e2e_latency_ms")):
+                raise InvalidRunnerError("p99 latency constraints are unsupported for AFD replay")
             return _run_afd_replay(
                 spec,
                 trace_block_size=self.trace_block_size,
@@ -514,6 +516,8 @@ class EngineReplayRunner:
                 if output_requirements.capture_per_request or output_requirements.include_raw_report:
                     raise InvalidRunnerError("analytical EPD cannot produce per-request or raw replay reports")
                 goal = OptimizationGoal.model_validate(spec.goal)
+                if goal.has_percentile_constraints:
+                    raise InvalidRunnerError("p99 latency constraints are unsupported for analytical EPD")
                 if (
                     goal.min_goodput_rps is not None
                     or (goal.sla is not None and not goal.requires_aggregate_sla)

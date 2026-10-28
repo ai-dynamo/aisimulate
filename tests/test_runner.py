@@ -33,6 +33,7 @@ from aisimulate.sweeper import (
     RuntimeHookSpec,
 )
 from aisimulate.sweeper.config import Workload
+from aisimulate.sweeper.replay import EncoderPoolSpec, NativeEncoderTiming
 from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 from scripts.e2e_accuracy.source.replay import engine_args
 
@@ -110,6 +111,63 @@ def _spec(*, deployment=None, workload=None, goal=None, concurrency=None, adapte
         goal=goal or {"target": "throughput"},
         concurrency=concurrency,
         adapters=adapters or {},
+    )
+
+
+def _encoder_replay_spec(*, native=False):
+    timing = (
+        NativeEncoderTiming(
+            preprocess_ms_per_image=1.0,
+            preprocess_source="test",
+            shape={"sequences": 1, "patch_tokens": 4, "transformer_tokens": 4, "output_tokens": 1},
+            transfer_bytes_per_image=16,
+            transfer_bandwidth_gb_s=50.0,
+            timing_model={"type": "external", "provider": "aic", "config": {}},
+            frontend={"stages": [{"name": "process", "latency_ms": 1.0}]},
+            host_profile_digest=None,
+        )
+        if native
+        else None
+    )
+    encoder = EncoderPoolSpec(
+        model="test-model",
+        system="test-system",
+        backend="sglang",
+        backend_version="test",
+        tp=1,
+        batch_size=1,
+        workers=1,
+        latency_ms=5.0,
+        throughput_rps=100.0,
+        memory_gib=1.0,
+        rate_degradation=0.9,
+        visual_tokens=1,
+        image_height=448,
+        image_width=448,
+        image_count=1,
+        mode="native" if native else "analytical",
+        native=timing,
+    )
+    args = _engine_args(backend="sglang")
+    if not native:
+        args.pop("timing_model")
+    return _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="agg",
+            backend="sglang",
+            backend_version="test",
+            agg_engine_args=args,
+            parallel_config={"tp": 2, "pp": 1, "attention_dp": 1},
+            num_workers=1,
+            encoder=encoder,
+        ),
+        workload={
+            "isl": 8,
+            "osl": 2,
+            "concurrency": 1,
+            "num_request_ratio": 1,
+            "images": {"height": 448, "width": 448, "count": 1},
+        },
     )
 
 
@@ -1020,6 +1078,58 @@ def test_engine_runner_preserves_independent_sla_bounds(field: str, bound: float
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
 
     assert runtime.execution_spec["sla"] == {field: bound}
+
+
+@pytest.mark.parametrize("field", ["max_p99_ttft_ms", "max_p99_e2e_latency_ms"])
+@pytest.mark.parametrize("deployment_mode", ["afd", "afd+pd"])
+@pytest.mark.parametrize("bound", [None, 100.0])
+def test_direct_afd_runner_gates_p99_constraints_before_replay(monkeypatch, field, deployment_mode, bound):
+    runtime = RecordingRuntime()
+    replayed = []
+    expected = ReplayReport(metrics={"completed_requests": 1.0})
+
+    def replay(spec, **kwargs):
+        replayed.append(spec)
+        return expected
+
+    monkeypatch.setattr("aisimulate.runner._run_afd_replay", replay)
+    spec = _spec(
+        deployment=BackendDeploymentSpec(deployment_mode=deployment_mode, backend="vllm", backend_version="test"),
+        goal={"target": "throughput", field: bound},
+    )
+    runner = EngineReplayRunnerFactory(runtime=runtime).create(0)
+    if bound is None:
+        assert runner.run(spec) is expected
+        assert replayed == [spec]
+    else:
+        with pytest.raises(InvalidRunnerError, match="p99 latency constraints are unsupported for AFD replay"):
+            runner.run(spec)
+        assert not replayed
+    assert runtime.execution_spec_json is None
+
+
+@pytest.mark.parametrize("field", ["max_p99_ttft_ms", "max_p99_e2e_latency_ms"])
+def test_direct_analytical_encoder_runner_rejects_p99_before_runtime(field):
+    runtime = RecordingRuntime()
+    spec = _encoder_replay_spec()
+    spec = replace(spec, goal={**spec.goal, field: 100.0})
+
+    with pytest.raises(InvalidRunnerError, match="p99 latency constraints are unsupported for analytical EPD"):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+
+    assert runtime.execution_spec_json is None
+
+
+@pytest.mark.parametrize("field", ["max_p99_ttft_ms", "max_p99_e2e_latency_ms"])
+def test_direct_native_encoder_runner_accepts_p99_without_changing_request_sla(field):
+    runtime = RecordingRuntime()
+    spec = _encoder_replay_spec(native=True)
+    spec = replace(spec, goal={**spec.goal, field: 100.0, "sla": {"ttft_ms": 50.0}})
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+
+    assert runtime.execution_spec["spec"]["encoder"]["max_batch"] == 1
+    assert runtime.execution_spec["spec"]["sla"] == {"ttft_ms": 50.0}
 
 
 def test_runner_lowers_sglang_with_prefix_caching_disabled():

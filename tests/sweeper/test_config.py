@@ -486,6 +486,67 @@ def test_strict_sla_requires_a_bound_but_does_not_change_request_sla_shape():
     assert goodput.strict_sla
 
 
+@pytest.mark.parametrize("field", ["max_p99_ttft_ms", "max_p99_e2e_latency_ms"])
+@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), True, "100"])
+def test_goal_p99_constraints_reject_invalid_bounds(field, value):
+    with pytest.raises(ValidationError, match=field):
+        OptimizationGoal(**{field: value})
+
+
+def test_goal_p99_constraints_do_not_redefine_request_sla_or_strict_sla():
+    assert not OptimizationGoal().has_percentile_constraints
+    goal = OptimizationGoal(max_p99_ttft_ms=100.0, max_p99_e2e_latency_ms=1000.0)
+    assert goal.has_percentile_constraints
+    assert goal.sla is None
+    assert not goal.requires_aggregate_sla
+    assert OptimizationGoal.model_validate_json(goal.model_dump_json()) == goal
+    with pytest.raises(ValidationError, match="strict_sla requires"):
+        OptimizationGoal(strict_sla=True, max_p99_ttft_ms=100.0)
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        SLATarget(max_p99_ttft_ms=100.0)
+
+
+@pytest.mark.parametrize("target", ["goodput", "goodput_per_gpu", "min_gpus"])
+def test_goal_p99_constraints_do_not_satisfy_request_sla_requirement(target):
+    with pytest.raises(ValidationError, match="SLA bound"):
+        OptimizationGoal(target=target, max_p99_ttft_ms=100.0)
+
+
+@pytest.mark.parametrize("mode", ["afd", "afd+pd"])
+def test_sdk_p99_constraints_reject_afd(mode):
+    payload = {
+        "search_space": _search_space(
+            deployment_mode=[mode], afd_phase="both" if mode == "afd" else "decode", afd_batch_size_candidates=[8]
+        ),
+        "workload": _workload(),
+    }
+    SmartSearchConfig.model_validate(payload)
+    with pytest.raises(ValidationError, match="p99 latency constraints are unsupported for AFD replay"):
+        SmartSearchConfig.model_validate({**payload, "goal": {"max_p99_ttft_ms": 100.0}})
+
+
+@pytest.mark.parametrize("encoder_mode", ["analytical", "native"])
+def test_sdk_p99_constraints_distinguish_encoder_replay_modes(encoder_mode):
+    encoder = {"mode": encoder_mode, "batch_size": [1]}
+    if encoder_mode == "native":
+        encoder.update(
+            host_profile={"path": "unused.json", "frontend": "python"},
+            transfer_bandwidth_gb_per_second=50.0,
+        )
+    payload = {
+        "search_space": _search_space(deployment_mode=["agg"], backend=["sglang"], encoder=encoder),
+        "workload": _workload(images={"height": 448, "width": 448}),
+    }
+    SmartSearchConfig.model_validate(payload)
+    payload["goal"] = {"max_p99_e2e_latency_ms": 1000.0}
+    if encoder_mode == "analytical":
+        with pytest.raises(ValidationError, match="p99 latency constraints are unsupported for analytical EPD"):
+            SmartSearchConfig.model_validate(payload)
+    else:
+        config = SmartSearchConfig.model_validate(payload)
+        assert config.goal.max_p99_e2e_latency_ms == 1000.0
+
+
 def test_scalar_target_directions():
     assert OptimizationTarget.THROUGHPUT.maximize
     assert OptimizationTarget.THROUGHPUT_PER_GPU.maximize

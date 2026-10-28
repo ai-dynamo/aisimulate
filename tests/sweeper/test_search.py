@@ -22,7 +22,7 @@ from aisimulate.sweeper.replay import (
     ReplaySpec,
     RunnerCapabilities,
 )
-from aisimulate.sweeper.result import CandidateRecord, CandidateStatus
+from aisimulate.sweeper.result import CandidateRecord, CandidateStatus, ReasonCategory
 from aisimulate.sweeper.sampler import Suggestion
 from aisimulate.sweeper.search import Sweeper
 from aisimulate.sweeper.search_space import BranchSpace
@@ -893,6 +893,143 @@ def test_strict_aggregate_sla_rejects_reports_without_latency_samples(monkeypatc
         isinstance(item, tuple) and item[0] == "infeasible" and "no qualifying samples" in item[1]
         for item in sampler_seen["sampler"].scored
     )
+
+
+@pytest.mark.parametrize("target", ["throughput", "pareto"])
+@pytest.mark.parametrize("strict_sla", [False, True])
+@pytest.mark.parametrize(
+    ("bound_field", "metric", "sla_field", "bound"),
+    [
+        ("max_p99_ttft_ms", "p99_ttft_ms", "ttft_ms", 100.0),
+        ("max_p99_e2e_latency_ms", "p99_e2e_latency_ms", "e2e_ms", 200.0),
+    ],
+)
+def test_p99_constraints_gate_before_optimizer_feedback_and_ranking(
+    monkeypatch,
+    target,
+    strict_sla,
+    bound_field,
+    metric,
+    sla_field,
+    bound,
+):
+    branch = _branch(_pc())
+    _stub(monkeypatch, branch)
+    seen = {}
+
+    def sampler_factory(branch, study_id, objectives=None, **kwargs):
+        sampler = _FakeSampler(branch, study_id, objectives)
+        seen["sampler"] = sampler
+        return sampler
+
+    class TailLatencyRunner(_FakeRunner):
+        def run(self, spec):
+            assert spec.goal[bound_field] == bound
+            max_seqs = float(spec.backend_deployment.agg_engine_args["max_num_seqs"])
+            return ReplayReport(
+                metrics={
+                    "completed_requests": 10.0,
+                    "num_ttft_samples": 10.0,
+                    "num_e2e_latency_samples": 10.0,
+                    "output_throughput_tok_s": max_seqs,
+                    "mean_ttft_ms": 20.0,
+                    "mean_e2e_latency_ms": 40.0,
+                    metric: bound * max_seqs / 512.0,
+                }
+            )
+
+    config_payload = _config(max_trials=3, max_eval_seconds=None).model_dump(mode="python")
+    config_payload["goal"] = {
+        "target": target,
+        "strict_sla": strict_sla,
+        "sla": {sla_field: bound / 2.0},
+        bound_field: bound,
+    }
+    if target == "pareto":
+        config_payload["goal"]["pareto_objectives"] = ["throughput", "ttft"]
+
+    result = Sweeper(
+        runner_factory=_FakeRunnerFactory(TailLatencyRunner()),
+        sampler_factory=sampler_factory,
+        show_progress=False,
+    ).run(SmartSearchConfig.model_validate(config_payload))
+
+    # Every mean satisfies its SLA; the fastest candidate fails only the p99 bound.
+    assert all(record.metrics["mean_ttft_ms"] == 20.0 for record in result.candidates)
+    assert all(record.metrics["mean_e2e_latency_ms"] == 40.0 for record in result.candidates)
+    assert result.counts.feasible == 2
+    assert result.counts.infeasible == 1
+    rejected = next(record for record in result.candidates if record.status is CandidateStatus.INFEASIBLE)
+    assert rejected.metrics["output_throughput_tok_s"] == 768.0
+    assert rejected.metrics[metric] == bound * 1.5
+    assert rejected.reason_category is ReasonCategory.SLA_CONSTRAINT
+    assert metric in rejected.reason
+
+    observations = seen["sampler"].scored
+    assert [(item[0], item[1]) for item in observations if isinstance(item, tuple)] == [("infeasible", rejected.reason)]
+    objective_key = "throughput" if target == "pareto" else "objective"
+    assert [item[objective_key] for item in observations if isinstance(item, dict)] == [256.0, 512.0]
+    expected_scores = [512.0] if target == "pareto" else [512.0, 256.0]
+    assert [candidate.score for candidate in result.selected_candidates] == expected_scores
+    assert result.selected_candidates[0].metrics[metric] == bound
+
+
+@pytest.mark.parametrize("missing_evidence", ["metric", "samples"])
+@pytest.mark.parametrize(
+    ("bound_field", "metric", "sample_metric", "target"),
+    [
+        ("max_p99_ttft_ms", "p99_ttft_ms", "num_ttft_samples", "ttft"),
+        ("max_p99_e2e_latency_ms", "p99_e2e_latency_ms", "num_e2e_latency_samples", "e2e_latency"),
+    ],
+)
+def test_p99_constraints_fail_closed_before_latency_objective_feedback(
+    monkeypatch,
+    missing_evidence,
+    bound_field,
+    metric,
+    sample_metric,
+    target,
+):
+    branch = _branch(_pc())
+    _stub(monkeypatch, branch)
+    seen = {}
+
+    def sampler_factory(branch, study_id, objectives=None, **kwargs):
+        sampler = _FakeSampler(branch, study_id, objectives)
+        seen["sampler"] = sampler
+        return sampler
+
+    class UnqualifiedTailRunner(_FakeRunner):
+        def run(self, spec):
+            metrics = {
+                "completed_requests": 10.0,
+                "num_ttft_samples": 10.0,
+                "num_e2e_latency_samples": 10.0,
+                "mean_ttft_ms": 20.0,
+                "mean_e2e_latency_ms": 40.0,
+                metric: 0.0,
+            }
+            if missing_evidence == "metric":
+                del metrics[metric]
+            else:
+                metrics[sample_metric] = 0.0
+            return ReplayReport(metrics=metrics)
+
+    config_payload = _config(max_trials=1, candidates_per_round=1, max_eval_seconds=None).model_dump(mode="python")
+    config_payload["goal"] = {"target": target, bound_field: 100.0}
+    result = Sweeper(
+        runner_factory=_FakeRunnerFactory(UnqualifiedTailRunner()),
+        sampler_factory=sampler_factory,
+        show_progress=False,
+    ).run(SmartSearchConfig.model_validate(config_payload))
+
+    assert result.selected_candidates == []
+    assert result.counts.infeasible == 1
+    assert result.counts.failed == 0
+    rejected = result.candidates[0]
+    assert rejected.reason_category is ReasonCategory.SLA_CONSTRAINT
+    assert (metric if missing_evidence == "metric" else sample_metric) in rejected.reason
+    assert seen["sampler"].scored == [("infeasible", rejected.reason)]
 
 
 def test_replay_spec_version_is_checked_before_runner_creation(monkeypatch):

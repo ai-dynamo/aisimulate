@@ -17,6 +17,7 @@ from aisimulate.sweeper.score import (
     aggregate_sla_violations,
     analyze_candidates,
     is_feasible,
+    latency_constraint_violations,
     make_candidate,
     meets_aggregate_sla,
     minimum_goodput_violations,
@@ -438,3 +439,91 @@ def test_strict_sla_filters_before_pareto_dominance():
     assert analyze_candidates([violating, compliant], strict_goal) == [compliant]
     default_goal = strict_goal.model_copy(update={"strict_sla": False})
     assert analyze_candidates([violating, compliant], default_goal) == [violating]
+
+
+@pytest.mark.parametrize(
+    ("bound_field", "metric", "sample_metric"),
+    [
+        ("max_p99_ttft_ms", "p99_ttft_ms", "num_ttft_samples"),
+        ("max_p99_e2e_latency_ms", "p99_e2e_latency_ms", "num_e2e_latency_samples"),
+    ],
+)
+def test_percentile_constraints_are_inclusive_and_do_not_require_an_unconfigured_metric(
+    bound_field, metric, sample_metric
+):
+    goal = OptimizationGoal(**{bound_field: 100.0})
+    report = {"completed_requests": 100.0, sample_metric: 100.0, metric: 100.0}
+    assert not goal.strict_sla and goal.sla is None
+    assert latency_constraint_violations(report, goal) == ()
+    assert latency_constraint_violations({**report, metric: 0.0}, goal) == ()
+    assert latency_constraint_violations({**report, metric: 100.001}, goal) == (f"{metric}=100.001ms > 100ms",)
+    # An old report without percentiles remains usable when no bound is requested.
+    assert latency_constraint_violations(REPORT, OptimizationGoal()) == ()
+
+
+@pytest.mark.parametrize("value", [None, math.nan, math.inf, -math.inf, -1.0, True, "0"])
+@pytest.mark.parametrize(
+    ("bound_field", "metric"),
+    [("max_p99_ttft_ms", "p99_ttft_ms"), ("max_p99_e2e_latency_ms", "p99_e2e_latency_ms")],
+)
+def test_percentile_constraints_reject_missing_or_invalid_tail_evidence(bound_field, metric, value):
+    report = {**REPORT, "p99_ttft_ms": 100.0, "p99_e2e_latency_ms": 100.0}
+    if value is not None:
+        report[metric] = value
+    else:
+        report.pop(metric)
+    assert f"{metric} is missing or invalid" in latency_constraint_violations(
+        report, OptimizationGoal(**{bound_field: 100.0})
+    )
+
+
+@pytest.mark.parametrize("value", [None, 0.0, -1.0, math.nan, math.inf, True])
+@pytest.mark.parametrize("sample_metric", ["completed_requests", "num_ttft_samples", "num_e2e_latency_samples"])
+def test_percentile_constraints_require_completed_requests_and_qualifying_token_samples(sample_metric, value):
+    # A completed prefill-only request can have zero token samples and p99=0.
+    report = {**REPORT, "p99_ttft_ms": 0.0, "p99_e2e_latency_ms": 0.0}
+    if value is None:
+        report.pop(sample_metric)
+    else:
+        report[sample_metric] = value
+    violations = latency_constraint_violations(
+        report, OptimizationGoal(max_p99_ttft_ms=100.0, max_p99_e2e_latency_ms=100.0)
+    )
+    assert any(sample_metric in item for item in violations)
+
+
+def test_request_percentile_constraints_do_not_substitute_trajectory_percentiles():
+    report = {**REPORT, "p99_trajectory_e2e_latency_ms": 10.0}
+    goal = OptimizationGoal(max_p99_e2e_latency_ms=100.0)
+    assert "p99_e2e_latency_ms is missing or invalid" in latency_constraint_violations(report, goal)
+
+
+def test_percentile_constraints_preserve_goodput_and_compose_with_mean_constraints():
+    # 98 fast requests and two tail requests can pass a 50ms mean bound and
+    # still have p99=100ms. Per-request goodput is an independent measurement.
+    report = {
+        **REPORT,
+        "completed_requests": 100.0,
+        "num_ttft_samples": 100.0,
+        "num_e2e_latency_samples": 100.0,
+        "mean_ttft_ms": 2.98,
+        "p99_ttft_ms": 100.0,
+        "mean_e2e_latency_ms": 12.98,
+        "p99_e2e_latency_ms": 110.0,
+        "goodput_completed_requests": 98.0,
+    }
+    mean_goal = OptimizationGoal(target="goodput", sla=SLATarget(ttft_ms=50.0), strict_sla=True)
+    assert latency_constraint_violations(report, mean_goal) == ()
+    tail_goal = mean_goal.model_copy(update={"max_p99_ttft_ms": 50.0, "max_p99_e2e_latency_ms": 110.0})
+    assert latency_constraint_violations(report, tail_goal) == ("p99_ttft_ms=100ms > 50ms",)
+    candidate = make_candidate({"used_gpus": 4}, report, tail_goal.target)
+    assert candidate.metrics["p99_ttft_ms"] == 100.0
+    assert candidate.metrics["p99_e2e_latency_ms"] == 110.0
+    assert candidate.metrics["goodput_completed_requests"] == 98.0
+    assert candidate.score == report["goodput_output_throughput_tok_s"]
+    assert analyze_candidates([candidate], tail_goal) == []
+    assert analyze_candidates([candidate], mean_goal) == [candidate]
+
+    # Satisfying both tail bounds does not bypass an independently enabled mean bound.
+    mean_violation = tail_goal.model_copy(update={"sla": SLATarget(ttft_ms=2.0), "max_p99_ttft_ms": 100.0})
+    assert latency_constraint_violations(report, mean_violation) == ("ttft 2.98ms > 2ms",)

@@ -108,6 +108,52 @@ opt-in: it filters aggregate mean metrics before scalar ranking or Pareto domina
 Strict aggregate comparisons are inclusive (`value <= bound`). A configured bound with
 a missing/non-finite report metric or no qualifying latency samples rejects the candidate.
 
+## Percentile constraints
+
+Aggregate p99 constraints are independent of `SLATarget` and `strict_sla`. In the public
+recommendation YAML, configure them under `optimization.constraints`:
+
+```yaml
+optimization:
+  target: throughput
+  constraints:
+    max_p99_ttft_ms: 100.0
+    max_p99_e2e_latency_ms: 1000.0
+```
+
+The SDK uses the same field names directly on `OptimizationGoal` (`goal:` in a
+`SmartSearchConfig`). Both fields default to `None`, accept only positive finite numbers,
+and may be configured together. They apply before scalar ranking or Pareto dominance even
+when `strict_sla` is false. They can also accompany the existing mean gate and per-request
+goodput bounds; they do not satisfy any target's existing `sla` requirement.
+
+| SDK goal field | Report metric | Required sample count |
+|---|---|---|
+| `max_p99_ttft_ms` | `p99_ttft_ms` | `num_ttft_samples > 0` |
+| `max_p99_e2e_latency_ms` | `p99_e2e_latency_ms` | `num_e2e_latency_samples > 0` |
+
+Comparisons are inclusive (`p99 <= bound`). Missing or non-finite metrics, missing or
+non-positive sample counts, and reports with no completed requests reject the candidate;
+means are never substituted for percentiles. Native TTFT/E2E percentiles use the sorted
+sample at `round((n - 1) * 0.99)`. AFD and analytical EPD currently reject p99 constraints
+because their aggregate reports do not provide qualifying percentiles. Native encoder replay
+can supply them. Custom runners, including interactive runners, must report both requested
+percentiles and the corresponding sample counts.
+
+The native sample population consists of admitted, completed requests with token timings.
+Failed, canceled, and incomplete requests do not contribute. E2E latency measures one LLM
+request from arrival to its last token; it is not an agent trajectory latency. Agentic
+headline reports exclude warmup and describe the profiling phase. A passing p99 gate does
+not establish that every request completed or that an entire trajectory succeeded. The
+constraint describes this modeled workload's observed percentile; it does not impose a
+completion-rate floor or a statistical confidence threshold.
+
+The complete recommendation run configuration and candidate objective provenance retain
+the constraints. Canonical result metrics retain reported percentile evidence, and
+compatibility `Candidate` metrics carry it through ranking and reanalysis after JSON reload.
+Selected prediction YAML remains a concrete `predict` input, without an `optimization`
+section; rerunning it reports latency statistics but does not reapply recommendation gates.
+
 ## Minimum GPUs
 
 `goal.target: min_gpus` selects the smallest qualifying configuration found by the sweep.
