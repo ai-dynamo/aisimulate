@@ -128,9 +128,17 @@ def test_model_config_attention_backend_defaults_to_none():
 # trtllm_mha on GB300 and B200; the 397B sibling architecture (undeclared in
 # attention_lane_defaults.yaml's architectures: section) stays on the
 # inherited triton default, byte-identical to the pre-AIC-1762 walk.
+# 0.5.17 is a data coordinate outside the queryable version slots, so these
+# tests opt into AIC_ALLOW_UNLISTED_VERSIONS for the engine-spec build.
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def _allow_unlisted_sglang_0517(monkeypatch):
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+
+
+@pytest.mark.usefixtures("_allow_unlisted_sglang_0517")
 def test_architecture_default_reaches_both_attention_ops_without_override():
     from aisimulate.sdk import models
     from aisimulate.sdk.perf_database import get_database
@@ -167,6 +175,7 @@ def test_architecture_default_reaches_both_attention_ops_without_override():
     assert all(op._lane_order[0] == "triton" for op in condgen_gen), [op._lane_order for op in condgen_gen]
 
 
+@pytest.mark.usefixtures("_allow_unlisted_sglang_0517")
 @pytest.mark.parametrize(
     ("attention_backend", "expected_lane"),
     [(None, "trtllm_mha"), ("default", "trtllm_mha"), ("triton", "triton")],
@@ -216,6 +225,7 @@ def test_architecture_default_is_serialized_by_build_engine_spec_json(attention_
     assert all(order[0] == expected_lane for order in generation_orders)
 
 
+@pytest.mark.usefixtures("_allow_unlisted_sglang_0517")
 def test_architecture_default_yields_to_an_explicit_override():
     """Explicit override still wins outright, even for Max's own architecture
     default -- explicit intent stays first-class (owner design, same

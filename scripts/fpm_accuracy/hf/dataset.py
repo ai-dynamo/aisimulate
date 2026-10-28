@@ -68,6 +68,17 @@ _FPM_V7_SELECTOR_FIELDS = frozenset(
         "fmha_resolution",
     }
 )
+_FPM_V7_OPTIONAL_SELECTOR_FIELDS = frozenset(
+    {
+        "measurement_policy",
+        "measurement_repeats",
+        "warmup_repeats",
+        "state_protocol",
+        "timing_boundary",
+        "sglang_allocator_max_split_size_mb",
+        "sglang_allocator_policy_sha256",
+    }
+)
 _FPM_CONFIGURATION_FIELDS = (
     "model_path",
     "system",
@@ -714,7 +725,7 @@ class HfDataset:
         selector_fields = set(selector)
         expected_fields = set(expected_identity)
         if metadata["schema_version"] == 7:
-            expected_fields |= _FPM_V7_SELECTOR_FIELDS
+            expected_fields |= _FPM_V7_SELECTOR_FIELDS | (_FPM_V7_OPTIONAL_SELECTOR_FIELDS & selector_fields)
         if selector_fields != expected_fields:
             missing = sorted(expected_fields - selector_fields)
             unknown = sorted(selector_fields - expected_fields)
@@ -731,10 +742,16 @@ class HfDataset:
             raise DataError(f"FPM sidecar {artifact.metadata_path} selects a different configuration: {mismatches}")
         parquet_identity = dict(expected_identity)
         if metadata["schema_version"] == 7:
-            for field in _FPM_V7_SELECTOR_FIELDS:
+            execution_fields = expected_fields - set(expected_identity)
+            for field in execution_fields:
                 value = selector[field]
                 if field in {"enable_wideep", "enable_eplb"}:
                     valid = type(value) is bool
+                elif field in {"measurement_repeats", "warmup_repeats", "sglang_allocator_max_split_size_mb"}:
+                    minimum = 0 if field == "warmup_repeats" else 1
+                    valid = type(value) is int and value >= minimum
+                elif field == "sglang_allocator_policy_sha256":
+                    valid = isinstance(value, str) and _SHA256.fullmatch(value) is not None
                 elif field == "model_config_sha256":
                     # Empty is the producer's legacy model-config identity.
                     valid = isinstance(value, str) and (value == "" or _SHA256.fullmatch(value) is not None)
@@ -745,7 +762,7 @@ class HfDataset:
             # Check pair consistency only: these values are not an authoritative
             # configuration-to-execution binding. Native staging rejects every
             # v7 pair, even if all rows agree, until that binding is available.
-            parquet_identity.update({field: selector[field] for field in _FPM_V7_SELECTOR_FIELDS})
+            parquet_identity.update({field: selector[field] for field in execution_fields})
         try:
             parquet = pq.ParquetFile(artifact.local_path)
             physical_rows = parquet.metadata.num_rows

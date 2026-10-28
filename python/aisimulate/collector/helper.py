@@ -254,6 +254,8 @@ def benchmark_with_power(
     """
     import torch
 
+    dev_mod = get_device_module(device)
+
     # Auto-detect configuration from environment if not explicitly provided
     if measure_power is None:
         measure_power = _parse_bool_env("COLLECTOR_MEASURE_POWER", default=False)
@@ -264,15 +266,15 @@ def benchmark_with_power(
     actual_num_runs = num_runs
     if measure_power:
         # Estimate single iteration time with warmup
-        start_warmup = torch.cuda.Event(enable_timing=True)
-        end_warmup = torch.cuda.Event(enable_timing=True)
+        start_warmup = dev_mod.Event(enable_timing=True)
+        end_warmup = dev_mod.Event(enable_timing=True)
 
-        torch.cuda.synchronize()
+        dev_mod.synchronize()
         start_warmup.record()
         for _ in range(num_warmups):
             kernel_func()
         end_warmup.record()
-        torch.cuda.synchronize()
+        dev_mod.synchronize()
 
         single_iter_time = start_warmup.elapsed_time(end_warmup) / num_warmups / 1000.0  # seconds
 
@@ -289,13 +291,13 @@ def benchmark_with_power(
             )
     else:
         # Normal warmup
-        get_device_module().synchronize()
+        dev_mod.synchronize()
         for _ in range(num_warmups):
             kernel_func()
-        get_device_module().synchronize()
+        dev_mod.synchronize()
 
     # ═══════════════════════════════════════════════════════════════════
-    # CUDA Graph Capture with Optional Fallback
+    # Device Graph Capture with Optional Fallback (CUDA: CUDAGraph, XPU: XPUGraph)
     # ═══════════════════════════════════════════════════════════════════
     g = None
     capture_phase_completed = False
@@ -303,50 +305,61 @@ def benchmark_with_power(
     # The default preserves the pre-existing lifetime on capture failure.
     # Neither mode guarantees CUDA recovery after an interrupted capture.
     try:
-        use_graph = torch.cuda.is_available() and use_cuda_graph
+        is_cuda = dev_mod is torch.cuda  # match the requested device, not just host capability
+        use_graph = use_cuda_graph and (is_cuda or torch.xpu.is_available())
         if use_graph:
-            g = torch.cuda.CUDAGraph()
+            graph_cls = torch.cuda.CUDAGraph if is_cuda else torch.xpu.XPUGraph
+            graph_ctx = torch.cuda.graph if is_cuda else torch.xpu.graph
+            g = graph_cls()
             if explicit_graph_cleanup:
-                original_stream = torch.cuda.current_stream()
+                original_stream = dev_mod.current_stream()
             try:
                 if explicit_graph_cleanup:
                     try:
-                        with torch.cuda.graph(g):
+                        with graph_ctx(g):
                             for _ in range(repeat_n):
                                 kernel_func()
                     finally:
                         # capture_begin/end may raise before torch's stream
                         # context restores the caller's current stream.
-                        torch.cuda.set_stream(original_stream)
+                        dev_mod.set_stream(original_stream)
                 else:
-                    with torch.cuda.graph(g):
+                    with graph_ctx(g):
                         for _ in range(repeat_n):
                             kernel_func()
-                torch.cuda.synchronize()
+                dev_mod.synchronize()
             except Exception as e:
                 if not allow_graph_fail:
+                    if not is_cuda:
+                        # XPU: free the partial capture's pool; repeated failures otherwise leak -> OOM/DEVICE_LOST.
+                        g = None
+                        try:
+                            dev_mod.empty_cache()
+                        except Exception:
+                            pass
                     raise
-                logging.getLogger(__name__).warning(f"CUDA graph capture failed: {e}. Falling back to eager execution.")
+                logging.getLogger(__name__).warning(
+                    f"{'CUDA' if is_cuda else 'XPU'} graph capture failed: {e}. Falling back to eager execution."
+                )
                 if explicit_graph_cleanup:
                     g.reset()
                 g = None
-                torch.cuda.empty_cache()
+                dev_mod.empty_cache()
                 use_graph = False
 
         capture_phase_completed = True
         # ═══════════════════════════════════════════════════════════════
         # Warmup the ACTUAL execution path (after graph capture)
         # ═══════════════════════════════════════════════════════════════
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-            for _ in range(num_warmups):
-                if use_graph:
-                    g.replay()
-                else:
-                    # Fallback: Direct execution matching actual execution path
-                    for _ in range(repeat_n):
-                        kernel_func()
-            torch.cuda.synchronize()
+        dev_mod.synchronize()
+        for _ in range(num_warmups):
+            if use_graph:
+                g.replay()
+            else:
+                # Fallback: Direct execution matching actual execution path
+                for _ in range(repeat_n):
+                    kernel_func()
+        dev_mod.synchronize()
 
         # Initialize power monitor if enabled
         power_monitor = None
@@ -370,8 +383,8 @@ def benchmark_with_power(
         # ═══════════════════════════════════════════════════════════════════
         # Execute with Graph or Eager (both paths measured!)
         # ═══════════════════════════════════════════════════════════════════
-        start_event = get_device_module().Event(enable_timing=True)
-        end_event = get_device_module().Event(enable_timing=True)
+        start_event = dev_mod.Event(enable_timing=True)
+        end_event = dev_mod.Event(enable_timing=True)
         start_event.record()
         for _ in range(actual_num_runs):
             if use_graph:
@@ -382,7 +395,7 @@ def benchmark_with_power(
                 for _ in range(repeat_n):
                     kernel_func()
         end_event.record()
-        get_device_module().synchronize()
+        dev_mod.synchronize()
 
         # Check for throttling
         throttled = False
@@ -424,10 +437,9 @@ def benchmark_with_power(
             if explicit_graph_cleanup:
                 g.reset()
             g = None
-            if torch.cuda.is_available():
-                if not explicit_graph_cleanup:
-                    torch.cuda.synchronize()
-                torch.cuda.empty_cache()
+            if not explicit_graph_cleanup:
+                dev_mod.synchronize()
+            dev_mod.empty_cache()
 
 
 @contextmanager
@@ -3683,9 +3695,42 @@ def _resolve_local_model_path(model_id: str) -> str:
 
 
 @functools.lru_cache(maxsize=1)
-def get_device_module():
+def get_vllm_version() -> str:
+    try:
+        import vllm
+
+        return getattr(vllm, "__version__", "unknown")
+    except Exception:
+        return "unknown"
+
+
+def xpu_graph_measure_enabled() -> bool:
+    # Measure under XPU graph only when the platform supports it AND vLLM's own
+    # graph flag is on, so collected latency matches the serving mode. vLLM 0.28
+    # defaults VLLM_XPU_ENABLE_XPU_GRAPH off (eager); the graph recipe sets it to 1.
     import torch
 
+    if not torch.xpu.is_available():
+        return False
+    try:
+        import vllm.envs as vllm_envs
+
+        return bool(vllm_envs.VLLM_XPU_ENABLE_XPU_GRAPH)
+    except Exception:
+        return False
+
+
+def get_device_module(device=None):
+    import torch
+
+    # Resolve the module from the requested device so a mixed CUDA+XPU host
+    # targets the caller's device, not just the first available accelerator.
+    if device is not None:
+        dev = str(device)
+        if dev.startswith("cuda"):
+            return torch.cuda
+        if dev.startswith("xpu"):
+            return torch.xpu
     if torch.cuda.is_available():
         return torch.cuda
     elif torch.xpu.is_available():

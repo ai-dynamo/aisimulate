@@ -76,6 +76,15 @@ pub enum AicError {
         #[source]
         source: parquet::errors::ParquetError,
     },
+    /// Reading or writing a forward-pass state snapshot failed. Unlike
+    /// [`Self::Io`], this is never missing performance data: Python raises
+    /// an `OSError` subclass, and no fallback or skip path treats it as a gap.
+    #[error("state snapshot I/O error at {path}: {source}")]
+    StateSnapshotIo {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 impl AicError {

@@ -39,7 +39,7 @@ concurrency:
 jobs:
   verify-target:
     name: Verify Exact Target
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       comparison-base: ${{ steps.comparison-base.outputs.sha }}
     env:
@@ -117,7 +117,7 @@ jobs:
   select-full-ci:
     name: Select Full CI Scope
     needs: verify-target
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       run_all: ${{ steps.plan.outputs.run_all }}
@@ -215,7 +215,7 @@ jobs:
   fast-ci:
     name: Require Fast CI
     needs: verify-target
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 12
     permissions:
       contents: read
@@ -932,7 +932,7 @@ jobs:
       - engine-golden-regression
       - release-artifact-contract
       - readme-commands
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Report and require every Full CI job

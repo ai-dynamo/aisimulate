@@ -76,6 +76,13 @@ SPDX-License-Identifier: Apache-2.0
         <button id="tab-details" type="button" aria-pressed="false">Details(op-based)</button>
       </nav>
       <p id="evidence-brief" class="evidence-brief" role="status">Loading evidence…</p>
+      <label class="topology-control">Decoding
+        <select id="decoding-select">
+          <option value="all">All (STP + MTP)</option>
+          <option value="none">STP</option>
+          <option value="mtp">MTP</option>
+        </select>
+      </label>
       <div id="detail-filters" class="filter-toolbar" hidden></div>
       <div class="exclusions" role="group" aria-label="Exclude">
         <span>Exclude:</span>

@@ -99,7 +99,7 @@ def trace_benchmark(monkeypatch, *, source=SOURCE, failure=None, explicit=None, 
     monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=cuda))
     tree = ast.parse(source.read_text())
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "benchmark_with_power")
-    namespace = {"contextmanager": contextmanager, "get_device_module": lambda: cuda, "logging": logging}
+    namespace = {"contextmanager": contextmanager, "get_device_module": lambda device=None: cuda, "logging": logging}
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), "exec"), namespace)
     kwargs = {
         "device": SimpleNamespace(index=0),

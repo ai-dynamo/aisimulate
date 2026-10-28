@@ -16,10 +16,6 @@ use super::core::VllmCore;
 struct CapturedDecodeQueries(Mutex<Vec<(usize, usize, usize)>>);
 
 impl crate::engine::TimingModel for CapturedDecodeQueries {
-    fn prefill_batch_validation_can_fail(&self) -> bool {
-        false
-    }
-
     fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
         Ok(0.0)
     }

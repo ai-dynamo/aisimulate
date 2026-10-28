@@ -232,6 +232,45 @@ fn invalid(message: impl Into<String>) -> AicError {
 }
 
 impl LearnedForwardPassModel {
+    pub(crate) fn artifact(&self) -> LearnedArtifact {
+        LearnedArtifact {
+            schema: LEARNED_SCHEMA_NAME.to_owned(),
+            schema_version: LEARNED_SCHEMA_VERSION,
+            worker_type: self.worker_type,
+            target: self.target.clone(),
+            features: self.feature_names.clone(),
+            stores: self.stores.clone(),
+            metadata: self.metadata.clone(),
+        }
+    }
+
+    pub(crate) fn to_json(&self) -> Result<String, AicError> {
+        serde_json::to_string(&self.artifact()).map_err(|e| invalid(e.to_string()))
+    }
+
+    pub(crate) fn target(&self) -> LearnedTarget {
+        self.target.clone()
+    }
+
+    pub(crate) fn store(&self, kind: ForwardPassRegressionWorkloadKind) -> Option<&LearnedStore> {
+        self.stores.get(&kind)
+    }
+
+    pub(crate) fn replace_store(
+        &mut self,
+        kind: ForwardPassRegressionWorkloadKind,
+        store: LearnedStore,
+    ) {
+        self.stores.insert(kind, store);
+    }
+
+    pub(crate) fn selected_features(&self, features: &IterationFeatureVector) -> Vec<f64> {
+        self.feature_indices
+            .iter()
+            .map(|&i| features.values[i])
+            .collect()
+    }
+
     pub(crate) fn from_path(path: &Path) -> Result<Self, AicError> {
         let text = std::fs::read_to_string(path).map_err(|source| AicError::Io {
             path: path.to_path_buf(),
@@ -349,17 +388,27 @@ impl LearnedForwardPassModel {
         kind: ForwardPassRegressionWorkloadKind,
         features: &IterationFeatureVector,
     ) -> Result<Option<f64>, AicError> {
-        let Some(store) = self.stores.get(&kind) else {
-            return Ok(None);
-        };
         let mut buf = [f64::NAN; FEATURE_COUNT];
         for (slot, &index) in self.feature_indices.iter().enumerate() {
             buf[slot] = features.values[index];
         }
-        let x = &buf[..self.feature_indices.len()];
+        self.predict_selected_ms(kind, &buf[..self.feature_indices.len()])
+    }
+
+    /// Prediction from this artifact's already-projected feature ABI. Combined
+    /// feedback shares this projection between both experts and the retained row.
+    pub(crate) fn predict_selected_ms(
+        &self,
+        kind: ForwardPassRegressionWorkloadKind,
+        x: &[f64],
+    ) -> Result<Option<f64>, AicError> {
+        debug_assert_eq!(x.len(), self.feature_indices.len());
+        let Some(store) = self.stores.get(&kind) else {
+            return Ok(None);
+        };
         let mut raw = store.baseline;
         for tree in &store.trees {
-            raw += tree_leaf_value(tree, &x);
+            raw += tree_leaf_value(tree, x);
         }
         let ms = match self.target {
             LearnedTarget::LogMs => raw.exp(),
@@ -380,7 +429,7 @@ fn allowed_workload_kinds(
     super::model::workload_kinds_for(worker_type)
 }
 
-fn validate_tree(tree: &LearnedTree, n_features: usize) -> Result<(), String> {
+pub(super) fn validate_tree(tree: &LearnedTree, n_features: usize) -> Result<(), String> {
     let n = tree.value.len();
     if n == 0 {
         return Err("empty tree".to_string());
@@ -422,7 +471,7 @@ fn validate_tree(tree: &LearnedTree, n_features: usize) -> Result<(), String> {
     Ok(())
 }
 
-fn tree_leaf_value(tree: &LearnedTree, x: &[f64]) -> f64 {
+pub(super) fn tree_leaf_value(tree: &LearnedTree, x: &[f64]) -> f64 {
     let mut node = 0usize;
     loop {
         let left = tree.left[node];

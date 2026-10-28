@@ -381,12 +381,12 @@ def test_explicit_and_legacy_speculation_cannot_be_combined():
         RustForwardPassPerfModel.normalize_config(_config(nextn=3, speculation={"kind": "mtp", "params": {"depth": 3}}))
 
 
-def test_cost_api_does_not_enable_generic_agentx_replay():
+def test_replay_requires_acceptance_in_addition_to_cost_identity():
     from pydantic import ValidationError
 
     from aisimulate.config.engine import EnginePredictionConfig
 
-    with pytest.raises(ValidationError, match="speculation"):
+    with pytest.raises(ValidationError, match="expected_accepted_tokens"):
         EnginePredictionConfig.model_validate(
             {
                 "model": "Qwen/Qwen3-8B",

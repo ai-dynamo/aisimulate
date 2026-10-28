@@ -1,0 +1,2871 @@
+{
+  "all_64_updates_accepted_published_eager_without_failures": true,
+  "analyzer_sha256": "b3139ccc0332c91ed16d129ad9db1e575b19a06a8f1c8c3f9d8a5a85f47e7ad2",
+  "equality_gates": {
+    "all_rounds_and_phases_equal_per_scenario": true,
+    "completed_at_unix": 1792539328.2396421,
+    "equality_keys": [
+      "initial_predictions_sha256",
+      "pre_update_trajectory_sha256",
+      "final_predictions_sha256",
+      "final_artifact_sha256",
+      "semantic_diagnostics_sha256",
+      "queries_sha256",
+      "seed_manifest_sha256",
+      "config"
+    ],
+    "loadavg_after": "1.02 0.85 0.51 1/1093 2129624",
+    "paired_comparisons": 40,
+    "records": 80,
+    "scenario_references": {
+      "150trees_10000rows_all": {
+        "config": {
+          "backend": "vllm",
+          "estimation_mode": "fpm_learned",
+          "estimator_config": {
+            "correction": {
+              "enabled": false
+            },
+            "fpm_learned": {
+              "adaptation": "online",
+              "checkpoint_path": "/home/yueqiz/work/fpm-model-publication-v1/fixture/seed",
+              "derivative_refresh": "eager",
+              "eager_refresh_interval": 32,
+              "history_bin_grouping": true,
+              "history_weight": 0.1,
+              "history_weight_ramp_observations": 32,
+              "mutable_tree_tail": null,
+              "recent_window": 64,
+              "split_rank_tolerance": 0.01,
+              "split_sampling_rate": 0.5,
+              "update_every": 1,
+              "update_mode": "structural"
+            }
+          },
+          "model": "benchmark/private-model",
+          "system": "benchmark_cpu",
+          "worker_type": "decode"
+        },
+        "final_artifact_sha256": "f6640169f75119fe46666686b638bccef3dc979f0371917c80f955b79dc92eac",
+        "final_predictions_sha256": "8d9b26bfe1f37c941647924cc2c32913c9855c9f57edf1cb2a8e5efe824b69e8",
+        "initial_predictions_sha256": "10c65a75635972bd47bf0767c3e361c52b8a5aca3af72aab568a7c0e0567202c",
+        "pre_update_trajectory_sha256": "0f738b0dd465311812c6802d5ab4abf73d219d3695ead5dc68af6132c4252028",
+        "queries_sha256": "2808768bec8bb2d7a821b1233cbda7e04eadc422ca036115ca6b4c8c34641013",
+        "seed_manifest_sha256": "f85d9ba2a4eb363df135a668a186cf1a61ef3b39dccd45370e036b8381b82dcc",
+        "semantic_diagnostics_sha256": "dffef740131c352033e7d24942826e47eb0392a454773ace1e6507b7fc497cd1"
+      },
+      "150trees_10000rows_tail1": {
+        "config": {
+          "backend": "vllm",
+          "estimation_mode": "fpm_learned",
+          "estimator_config": {
+            "correction": {
+              "enabled": false
+            },
+            "fpm_learned": {
+              "adaptation": "online",
+              "checkpoint_path": "/home/yueqiz/work/fpm-model-publication-v1/fixture/seed",
+              "derivative_refresh": "eager",
+              "eager_refresh_interval": 32,
+              "history_bin_grouping": true,
+              "history_weight": 0.1,
+              "history_weight_ramp_observations": 32,
+              "mutable_tree_tail": 1,
+              "recent_window": 64,
+              "split_rank_tolerance": 0.01,
+              "split_sampling_rate": 0.5,
+              "update_every": 1,
+              "update_mode": "structural"
+            }
+          },
+          "model": "benchmark/private-model",
+          "system": "benchmark_cpu",
+          "worker_type": "decode"
+        },
+        "final_artifact_sha256": "6ac1f2f48050520a237c6d5dc61711f42197e6c2da28ee955f0c9bb364264200",
+        "final_predictions_sha256": "2ddf4d7ad62c613a6290f8c1939f97d53404538a7d238fc9698ccdf49710a6f1",
+        "initial_predictions_sha256": "10c65a75635972bd47bf0767c3e361c52b8a5aca3af72aab568a7c0e0567202c",
+        "pre_update_trajectory_sha256": "53ee6493ac8dcf7bcc74db616514d2dc270edbecd1d87928482baf5181fcbadb",
+        "queries_sha256": "2808768bec8bb2d7a821b1233cbda7e04eadc422ca036115ca6b4c8c34641013",
+        "seed_manifest_sha256": "f85d9ba2a4eb363df135a668a186cf1a61ef3b39dccd45370e036b8381b82dcc",
+        "semantic_diagnostics_sha256": "c913b21a04f0036b78d81198f51738238f66fc550b0936a1aa630edff1c62884"
+      },
+      "150trees_256rows_tail1": {
+        "config": {
+          "backend": "vllm",
+          "estimation_mode": "fpm_learned",
+          "estimator_config": {
+            "correction": {
+              "enabled": false
+            },
+            "fpm_learned": {
+              "adaptation": "online",
+              "checkpoint_path": "/home/yueqiz/work/fpm-model-publication-v1/small-fixture/seed",
+              "derivative_refresh": "eager",
+              "eager_refresh_interval": 32,
+              "history_bin_grouping": true,
+              "history_weight": 0.1,
+              "history_weight_ramp_observations": 32,
+              "mutable_tree_tail": 1,
+              "recent_window": 64,
+              "split_rank_tolerance": 0.01,
+              "split_sampling_rate": 0.5,
+              "update_every": 1,
+              "update_mode": "structural"
+            }
+          },
+          "model": "benchmark/private-model",
+          "system": "benchmark_cpu",
+          "worker_type": "decode"
+        },
+        "final_artifact_sha256": "d230971963318c2e37ef27edbfa47d20ea5c9d6488f10938fcdd9b9cd9518317",
+        "final_predictions_sha256": "fb42a3abeb651eacbd3442ac9c8368cb3fd8d6c2a6a54e3db94a26ec5532c2ec",
+        "initial_predictions_sha256": "4f38648d6bc83552defae527d9557b16f473a4def072e82258bb2112740be085",
+        "pre_update_trajectory_sha256": "1f79b17572eb6e1515bd414bf7fec47075ed7cbed4ff0b7b8ad5679d71dec916",
+        "queries_sha256": "2808768bec8bb2d7a821b1233cbda7e04eadc422ca036115ca6b4c8c34641013",
+        "seed_manifest_sha256": "5e389e1a64c1f1a0bc689f1f4d502df98a7fe83ef369feb7333c0ea93149458e",
+        "semantic_diagnostics_sha256": "1ca07f30ed9e6ca219e1da0b579d0a8b20cefbec55355fbbb0c380d1e4b2209a"
+      },
+      "300trees_10000rows_tail1": {
+        "config": {
+          "backend": "vllm",
+          "estimation_mode": "fpm_learned",
+          "estimator_config": {
+            "correction": {
+              "enabled": false
+            },
+            "fpm_learned": {
+              "adaptation": "online",
+              "checkpoint_path": "/home/yueqiz/work/fpm-model-publication-v1/frozen-prefix-v1/fixture-300/seed",
+              "derivative_refresh": "eager",
+              "eager_refresh_interval": 32,
+              "history_bin_grouping": true,
+              "history_weight": 0.1,
+              "history_weight_ramp_observations": 32,
+              "mutable_tree_tail": 1,
+              "recent_window": 64,
+              "split_rank_tolerance": 0.01,
+              "split_sampling_rate": 0.5,
+              "update_every": 1,
+              "update_mode": "structural"
+            }
+          },
+          "model": "benchmark/private-model",
+          "system": "benchmark_cpu",
+          "worker_type": "decode"
+        },
+        "final_artifact_sha256": "f30406183d34f23ff49c6628b14d12ef169d8a6bcebfcdec5d30b583492dd7ab",
+        "final_predictions_sha256": "b8b6f05c3b3b3edb1fa8fd157ebec7582bd0d65a174aac85a85ded0f07d8e40d",
+        "initial_predictions_sha256": "08bf03ae04056dd6dd90ed3708314ff0925c2b4dcf3863feb7a748a75f2d7358",
+        "pre_update_trajectory_sha256": "468509c7f4e5bbce8391e251021b206121e951eb46d6190bcab8f34d4a5c995d",
+        "queries_sha256": "2808768bec8bb2d7a821b1233cbda7e04eadc422ca036115ca6b4c8c34641013",
+        "seed_manifest_sha256": "78d8557cb3e2618f5aef90b844fec3ea3c718cd33d54d665de3c7c489aa620b5",
+        "semantic_diagnostics_sha256": "a4202aa2fe3aa5008e8acf0ff25effd35fb2f88fdc610b8731a47e1f7ae77a68"
+      }
+    },
+    "sources_binaries_and_inputs_unchanged_after_run": true,
+    "status": "pass"
+  },
+  "execution_log_sha256": {
+    "baseline-build.log": "e97ef5223f6e1ad5cc4809640352d51d36bd1e03ed494a838f7cc24979622cbb",
+    "candidate-build-cache-hit.log": "90c8a1a69c0155761cff4bfe0e61bbee007961d2b96729d2127c2e0c291489dd",
+    "candidate-build.log": "d0f9476e70d30159b14f01d83a99ecb7dcd8d11211ab971f6473229a73d92865",
+    "controller-preflight1.log": "655ee342394ab4edf7158cb89792f8227a9687ba697309cc50db3a74d225a0af",
+    "controller.log": "733d06ef14ea229d806df0384e74708431f88060cf422cb9895fee394e25eb32",
+    "prepare-fixture-attempt1.log": "142bf236dca1bc761dd29a0ad68de8aa6d2b8d4a267daeaa0dca6ee9569dc3f6",
+    "prepare-fixture.log": "b02ae9aab79c9310e9ff4e1b7faea5af5dd20cbe00e536de46e2560b92e2d404"
+  },
+  "fixture_generator_sha256_verified_against_repository": true,
+  "initial_semantic_diagnostics_equal_per_scenario": true,
+  "manifest": {
+    "allocation_definition": "Rust GlobalAlloc requested sizes; successful allocations and full new realloc requests; peak is maximum net live-byte increase during one update",
+    "baseline_revision": "4a710f144930a40e1cfee5010b386b35319457a7",
+    "binaries": {
+      "baseline": {
+        "path": "/home/yueqiz/work/fpm-model-publication-v1/frozen-prefix-v1/baseline-probe",
+        "sha256": "63214b82c9c8263c62d44fa962035e5908055de47d3b52aee0ae3dd8145af502"
+      },
+      "candidate": {
+        "path": "/home/yueqiz/work/fpm-model-publication-v1/frozen-prefix-v1/candidate-probe",
+        "sha256": "88d304066efa9ba0db7f3685703abe2850a44b881dfd5c6a5910157af33ac86c"
+      }
+    },
+    "candidate_revision": "247e02da9c56da398391ebe77dad724d0c5ae654",
+    "controller_sha256": "57ae1528cfe3827450c663ab9fa6f5dc572179a6c16e91d8fad6b4db2279f90c",
+    "cpu_affinity": 2,
+    "fixture_preparation": {
+      "generator_sha256": "aed5690150b452b6b4d9ca042c70d774dba9f979cc68e6ccaf8133fc1001b7dc",
+      "history_rows": 10000,
+      "manifest_sha256": "78d8557cb3e2618f5aef90b844fec3ea3c718cd33d54d665de3c7c489aa620b5",
+      "source_manifest_sha256": "f85d9ba2a4eb363df135a668a186cf1a61ef3b39dccd45370e036b8381b82dcc",
+      "trees": 300,
+      "verified_feature_target_rows": 10000
+    },
+    "fixture_preparation_script_sha256": "a2e8d35cb2599bffcd6f8beab79d1bd7488462bfc9cdd3747cc30ad0651f8987",
+    "fixtures": {
+      "150trees_10000rows_all": {
+        "feature_count": 17,
+        "file_sha256": {
+          "queries.json": "2808768bec8bb2d7a821b1233cbda7e04eadc422ca036115ca6b4c8c34641013",
+          "seed/manifest.json": "f85d9ba2a4eb363df135a668a186cf1a61ef3b39dccd45370e036b8381b82dcc",
+          "seed/model.json": "844ef3625e2f5c7529eeba3c8d8eb239d2de9220d5f280bbdf989b09b2a6c536",
+          "seed/pure_decode.rows.parquet": "16637caf28242d58142ccf285624c5e1caba66f2b8114419b0d3b1adcd7e3964"
+        },
+        "history_rows": 10000,
+        "path": "/home/yueqiz/work/fpm-model-publication-v1/fixture",
+        "sklearn_version": "1.9.1",
+        "trees": 150
+      },
+      "150trees_10000rows_tail1": {
+        "feature_count": 17,
+        "file_sha256": {
+          "queries.json": "2808768bec8bb2d7a821b1233cbda7e04eadc422ca036115ca6b4c8c34641013",
+          "seed/manifest.json": "f85d9ba2a4eb363df135a668a186cf1a61ef3b39dccd45370e036b8381b82dcc",
+          "seed/model.json": "844ef3625e2f5c7529eeba3c8d8eb239d2de9220d5f280bbdf989b09b2a6c536",
+          "seed/pure_decode.rows.parquet": "16637caf28242d58142ccf285624c5e1caba66f2b8114419b0d3b1adcd7e3964"
+        },
+        "history_rows": 10000,
+        "path": "/home/yueqiz/work/fpm-model-publication-v1/fixture",
+        "sklearn_version": "1.9.1",
+        "trees": 150
+      },
+      "150trees_256rows_tail1": {
+        "feature_count": 17,
+        "file_sha256": {
+          "queries.json": "2808768bec8bb2d7a821b1233cbda7e04eadc422ca036115ca6b4c8c34641013",
+          "seed/manifest.json": "5e389e1a64c1f1a0bc689f1f4d502df98a7fe83ef369feb7333c0ea93149458e",
+          "seed/model.json": "35853ed18b086f911527773e7e5f7eef852680101d9abb84bc9cf98a8267686a",
+          "seed/pure_decode.rows.parquet": "1ff686dcbad8b2a51585e8b467dac13e808291515342d243b7b587ddc48c4b98"
+        },
+        "history_rows": 256,
+        "path": "/home/yueqiz/work/fpm-model-publication-v1/small-fixture",
+        "sklearn_version": "1.9.1",
+        "trees": 150
+      },
+      "300trees_10000rows_tail1": {
+        "feature_count": 17,
+        "file_sha256": {
+          "queries.json": "2808768bec8bb2d7a821b1233cbda7e04eadc422ca036115ca6b4c8c34641013",
+          "seed/manifest.json": "78d8557cb3e2618f5aef90b844fec3ea3c718cd33d54d665de3c7c489aa620b5",
+          "seed/model.json": "b58441ee6e75af0fb17b462752d11a71b84d7a95d1f80057b4b896d6b0253b96",
+          "seed/pure_decode.rows.parquet": "16637caf28242d58142ccf285624c5e1caba66f2b8114419b0d3b1adcd7e3964"
+        },
+        "history_rows": 10000,
+        "path": "/home/yueqiz/work/fpm-model-publication-v1/frozen-prefix-v1/fixture-300",
+        "sklearn_version": "1.9.1",
+        "trees": 300
+      }
+    },
+    "host": {
+      "loadavg_before": "0.08 0.29 0.20 4/1100 2127443",
+      "lscpu": "Architecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           46 bits physical, 48 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  24\nOn-line CPU(s) list:                     0-23\nVendor ID:                               GenuineIntel\nModel name:                              Intel(R) Core(TM) Ultra 9 285K\nCPU family:                              6\nModel:                                   198\nThread(s) per core:                      1\nCore(s) per socket:                      24\nSocket(s):                               1\nStepping:                                2\nCPU(s) scaling MHz:                      59%\nCPU max MHz:                             5700.0000\nCPU min MHz:                             800.0000\nBogoMIPS:                                7372.80\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl vmx smx est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault ssbd ibrs ibpb stibp ibrs_enhanced tpr_shadow flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdt_a rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni lam wbnoinvd dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi vnmi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid bus_lock_detect movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities\nVirtualization:                          VT-x\nL1d cache:                               768 KiB (20 instances)\nL1i cache:                               1.3 MiB (20 instances)\nL2 cache:                                40 MiB (12 instances)\nL3 cache:                                36 MiB (1 instance)\nNUMA node(s):                            1\nNUMA node0 CPU(s):                       0-23\nVulnerability Gather data sampling:      Not affected\nVulnerability Ghostwrite:                Not affected\nVulnerability Indirect target selection: Not affected\nVulnerability Itlb multihit:             Not affected\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Not affected\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Not affected\nVulnerability Old microcode:             Not affected\nVulnerability Reg file data sampling:    Not affected\nVulnerability Retbleed:                  Not affected\nVulnerability Spec rstack overflow:      Not affected\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; PBRSB-eIBRS Not affected; BHI BHI_DIS_S\nVulnerability Srbds:                     Not affected\nVulnerability Tsa:                       Not affected\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Mitigation; IBPB before exit to userspace\n",
+      "meminfo": "MemTotal:       131142800 kB\nMemFree:         5026540 kB\nMemAvailable:   126121936 kB\nBuffers:         3200696 kB\nCached:         112131752 kB\nSwapCached:        17852 kB\nActive:         45134580 kB\nInactive:       71660720 kB\nActive(anon):    1549424 kB\nInactive(anon):   205940 kB\nActive(file):   43585156 kB\nInactive(file): 71454780 kB\nUnevictable:      174964 kB\nMlocked:               0 kB\nSwapTotal:      65011708 kB\nSwapFree:       64884328 kB\nZswap:                 0 kB\nZswapped:              0 kB\nDirty:              6272 kB\nWriteback:             0 kB\nAnonPages:       1634880 kB\nMapped:           802968 kB\nShmem:            292508 kB\nKReclaimable:    7267872 kB\nSlab:            8435296 kB\nSReclaimable:    7267872 kB\nSUnreclaim:      1167424 kB\nKernelStack:       17984 kB\nPageTables:        28248 kB\nSecPageTables:      7940 kB\nNFS_Unstable:          0 kB\nBounce:                0 kB\nWritebackTmp:          0 kB\nCommitLimit:    130583108 kB\nCommitted_AS:    9370852 kB\nVmallocTotal:   34359738367 kB\nVmallocUsed:      151968 kB\nVmallocChunk:          0 kB\nPercpu:           148704 kB\nHardwareCorrupted:     0 kB\nAnonHugePages:         0 kB\nShmemHugePages:   204800 kB\nShmemPmdMapped:        0 kB\nFileHugePages:   1656832 kB\nFilePmdMapped:         0 kB\nCmaTotal:              0 kB\nCmaFree:          844952 kB\nUnaccepted:            0 kB\nBalloon:               0 kB\nHugePages_Total:       0\nHugePages_Free:        0\nHugePages_Rsvd:        0\nHugePages_Surp:        0\nHugepagesize:       2048 kB\nHugetlb:               0 kB\nDirectMap4k:      464300 kB\nDirectMap2M:    11356160 kB\nDirectMap1G:    123731968 kB\n",
+      "node": "e255d42-lcedt",
+      "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.39"
+    },
+    "rounds": 5,
+    "rustc": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+    "schema_version": 1,
+    "source_archives": {
+      "baseline": {
+        "archive_members": "git archive REV Cargo.toml Cargo.lock crates",
+        "archive_sha256": "81dab16e030b0f639323fece82e78763d78b0640da426ab3fe5522544641135f",
+        "cargo_lock_sha256": "b8ba470a555be37b373d0f0098260ae3339a7667ade6a7ab50e228328dbadfed",
+        "file_count": 254,
+        "fitting_rs_sha256": "4e44cc3a629a6a429d5b52cb84eefcdb61ada38d6925759dbb062b107ef0063c",
+        "inventory_sha256": "fa99474e8de9e221dff95dac8fb76c877e51f5a7b9e1592acb1fe6b09abb9a0e",
+        "revision": "4a710f144930a40e1cfee5010b386b35319457a7"
+      },
+      "candidate": {
+        "archive_members": "git archive REV Cargo.toml Cargo.lock crates",
+        "archive_sha256": "4c617933a40ea4858c9f42545d586cd32499b0891e28065319943fdffa281eb6",
+        "cargo_lock_sha256": "b8ba470a555be37b373d0f0098260ae3339a7667ade6a7ab50e228328dbadfed",
+        "file_count": 254,
+        "fitting_rs_sha256": "5fb91c82849728530b97c69f2f28f78e1289e29b6d31454285995e33c9b5bd2d",
+        "inventory_sha256": "6f4c9c4f2b416e274e4f44d5dfd313f181892ad01489128b7ac151b7a0ce4791",
+        "revision": "247e02da9c56da398391ebe77dad724d0c5ae654"
+      }
+    },
+    "sources": {
+      "baseline": {
+        "cargo_lock_sha256": "b8ba470a555be37b373d0f0098260ae3339a7667ade6a7ab50e228328dbadfed",
+        "file_count": 255,
+        "fitting_rs_sha256": "4e44cc3a629a6a429d5b52cb84eefcdb61ada38d6925759dbb062b107ef0063c",
+        "inventory_sha256": "0f97d81d603859b408d03d5d916a9ce41a9e0fa52fc94e3a47944f90dbe6672c",
+        "probe_rs_sha256": "35d82ccd447080b35c13918c007f9a52da90c98b556b834c4d99fd60869838c0",
+        "production_file_count": 254,
+        "production_inventory_sha256": "fa99474e8de9e221dff95dac8fb76c877e51f5a7b9e1592acb1fe6b09abb9a0e"
+      },
+      "candidate": {
+        "cargo_lock_sha256": "b8ba470a555be37b373d0f0098260ae3339a7667ade6a7ab50e228328dbadfed",
+        "file_count": 255,
+        "fitting_rs_sha256": "5fb91c82849728530b97c69f2f28f78e1289e29b6d31454285995e33c9b5bd2d",
+        "inventory_sha256": "6d9732c45b48203623ed2e8c92de2fa49fc2f184137620476cbf7d2ef7817813",
+        "probe_rs_sha256": "35d82ccd447080b35c13918c007f9a52da90c98b556b834c4d99fd60869838c0",
+        "production_file_count": 254,
+        "production_inventory_sha256": "6f4c9c4f2b416e274e4f44d5dfd313f181892ad01489128b7ac151b7a0ce4791"
+      }
+    },
+    "started_at_unix": 1792538916.1548321,
+    "timing_definition": "Rust allocator wrapper present, allocation counters disabled",
+    "updates_per_process": 64
+  },
+  "percentile_method": "linear interpolation between sorted adjacent values",
+  "raw_samples_sha256": "d885d5654c0ba29974e4b3db9c8e748b8d70d3f2afdf4b6723f5db1d37279c27",
+  "schema_version": 1,
+  "statistical_unit": "fresh process, paired by round; 64 updates are repeated measurements within one process",
+  "summaries": {
+    "150trees_10000rows_all": {
+      "allocation": {
+        "baseline": {
+          "process_max_allocations": {
+            "max": 72298,
+            "median": 72298,
+            "min": 72298,
+            "values": [
+              72298,
+              72298,
+              72298,
+              72298,
+              72298
+            ]
+          },
+          "process_max_deallocations": {
+            "max": 72295,
+            "median": 72295,
+            "min": 72295,
+            "values": [
+              72295,
+              72295,
+              72295,
+              72295,
+              72295
+            ]
+          },
+          "process_max_net_live_requested_bytes": {
+            "max": 1102608,
+            "median": 1102608,
+            "min": 1102608,
+            "values": [
+              1102608,
+              1102608,
+              1102608,
+              1102608,
+              1102608
+            ]
+          },
+          "process_max_peak_additional_live_requested_bytes": {
+            "max": 130765144,
+            "median": 130765144,
+            "min": 130765144,
+            "values": [
+              130765144,
+              130765144,
+              130765144,
+              130765144,
+              130765144
+            ]
+          },
+          "process_max_reallocations": {
+            "max": 69091,
+            "median": 69091,
+            "min": 69091,
+            "values": [
+              69091,
+              69091,
+              69091,
+              69091,
+              69091
+            ]
+          },
+          "process_max_requested_bytes": {
+            "max": 986258014,
+            "median": 986258014,
+            "min": 986258014,
+            "values": [
+              986258014,
+              986258014,
+              986258014,
+              986258014,
+              986258014
+            ]
+          },
+          "process_mean_allocations": {
+            "max": 66585.296875,
+            "median": 66585.296875,
+            "min": 66585.296875,
+            "values": [
+              66585.296875,
+              66585.296875,
+              66585.296875,
+              66585.296875,
+              66585.296875
+            ]
+          },
+          "process_mean_deallocations": {
+            "max": 66583.28125,
+            "median": 66583.28125,
+            "min": 66583.28125,
+            "values": [
+              66583.28125,
+              66583.28125,
+              66583.28125,
+              66583.28125,
+              66583.28125
+            ]
+          },
+          "process_mean_net_live_requested_bytes": {
+            "max": -17677.21875,
+            "median": -17677.21875,
+            "min": -17677.21875,
+            "values": [
+              -17677.21875,
+              -17677.21875,
+              -17677.21875,
+              -17677.21875,
+              -17677.21875
+            ]
+          },
+          "process_mean_peak_additional_live_requested_bytes": {
+            "max": 130056099.0625,
+            "median": 130056099.0625,
+            "min": 130056099.0625,
+            "values": [
+              130056099.0625,
+              130056099.0625,
+              130056099.0625,
+              130056099.0625,
+              130056099.0625
+            ]
+          },
+          "process_mean_reallocations": {
+            "max": 60944.5625,
+            "median": 60944.5625,
+            "min": 60944.5625,
+            "values": [
+              60944.5625,
+              60944.5625,
+              60944.5625,
+              60944.5625,
+              60944.5625
+            ]
+          },
+          "process_mean_requested_bytes": {
+            "max": 899856284.8125,
+            "median": 899856284.8125,
+            "min": 899856284.8125,
+            "values": [
+              899856284.8125,
+              899856284.8125,
+              899856284.8125,
+              899856284.8125,
+              899856284.8125
+            ]
+          },
+          "process_median_allocations": {
+            "max": 66650.5,
+            "median": 66650.5,
+            "min": 66650.5,
+            "values": [
+              66650.5,
+              66650.5,
+              66650.5,
+              66650.5,
+              66650.5
+            ]
+          },
+          "process_median_deallocations": {
+            "max": 66648.5,
+            "median": 66648.5,
+            "min": 66648.5,
+            "values": [
+              66648.5,
+              66648.5,
+              66648.5,
+              66648.5,
+              66648.5
+            ]
+          },
+          "process_median_net_live_requested_bytes": {
+            "max": -23219.0,
+            "median": -23219.0,
+            "min": -23219.0,
+            "values": [
+              -23219.0,
+              -23219.0,
+              -23219.0,
+              -23219.0,
+              -23219.0
+            ]
+          },
+          "process_median_peak_additional_live_requested_bytes": {
+            "max": 130078029.0,
+            "median": 130078029.0,
+            "min": 130078029.0,
+            "values": [
+              130078029.0,
+              130078029.0,
+              130078029.0,
+              130078029.0,
+              130078029.0
+            ]
+          },
+          "process_median_reallocations": {
+            "max": 60698.0,
+            "median": 60698.0,
+            "min": 60698.0,
+            "values": [
+              60698.0,
+              60698.0,
+              60698.0,
+              60698.0,
+              60698.0
+            ]
+          },
+          "process_median_requested_bytes": {
+            "max": 903431545.0,
+            "median": 903431545.0,
+            "min": 903431545.0,
+            "values": [
+              903431545.0,
+              903431545.0,
+              903431545.0,
+              903431545.0,
+              903431545.0
+            ]
+          }
+        },
+        "candidate": {
+          "process_max_allocations": {
+            "max": 72298,
+            "median": 72298,
+            "min": 72298,
+            "values": [
+              72298,
+              72298,
+              72298,
+              72298,
+              72298
+            ]
+          },
+          "process_max_deallocations": {
+            "max": 72295,
+            "median": 72295,
+            "min": 72295,
+            "values": [
+              72295,
+              72295,
+              72295,
+              72295,
+              72295
+            ]
+          },
+          "process_max_net_live_requested_bytes": {
+            "max": 1102608,
+            "median": 1102608,
+            "min": 1102608,
+            "values": [
+              1102608,
+              1102608,
+              1102608,
+              1102608,
+              1102608
+            ]
+          },
+          "process_max_peak_additional_live_requested_bytes": {
+            "max": 130765144,
+            "median": 130765144,
+            "min": 130765144,
+            "values": [
+              130765144,
+              130765144,
+              130765144,
+              130765144,
+              130765144
+            ]
+          },
+          "process_max_reallocations": {
+            "max": 69091,
+            "median": 69091,
+            "min": 69091,
+            "values": [
+              69091,
+              69091,
+              69091,
+              69091,
+              69091
+            ]
+          },
+          "process_max_requested_bytes": {
+            "max": 986258014,
+            "median": 986258014,
+            "min": 986258014,
+            "values": [
+              986258014,
+              986258014,
+              986258014,
+              986258014,
+              986258014
+            ]
+          },
+          "process_mean_allocations": {
+            "max": 66585.296875,
+            "median": 66585.296875,
+            "min": 66585.296875,
+            "values": [
+              66585.296875,
+              66585.296875,
+              66585.296875,
+              66585.296875,
+              66585.296875
+            ]
+          },
+          "process_mean_deallocations": {
+            "max": 66583.28125,
+            "median": 66583.28125,
+            "min": 66583.28125,
+            "values": [
+              66583.28125,
+              66583.28125,
+              66583.28125,
+              66583.28125,
+              66583.28125
+            ]
+          },
+          "process_mean_net_live_requested_bytes": {
+            "max": -17677.21875,
+            "median": -17677.21875,
+            "min": -17677.21875,
+            "values": [
+              -17677.21875,
+              -17677.21875,
+              -17677.21875,
+              -17677.21875,
+              -17677.21875
+            ]
+          },
+          "process_mean_peak_additional_live_requested_bytes": {
+            "max": 130056099.0625,
+            "median": 130056099.0625,
+            "min": 130056099.0625,
+            "values": [
+              130056099.0625,
+              130056099.0625,
+              130056099.0625,
+              130056099.0625,
+              130056099.0625
+            ]
+          },
+          "process_mean_reallocations": {
+            "max": 60944.5625,
+            "median": 60944.5625,
+            "min": 60944.5625,
+            "values": [
+              60944.5625,
+              60944.5625,
+              60944.5625,
+              60944.5625,
+              60944.5625
+            ]
+          },
+          "process_mean_requested_bytes": {
+            "max": 899856284.8125,
+            "median": 899856284.8125,
+            "min": 899856284.8125,
+            "values": [
+              899856284.8125,
+              899856284.8125,
+              899856284.8125,
+              899856284.8125,
+              899856284.8125
+            ]
+          },
+          "process_median_allocations": {
+            "max": 66650.5,
+            "median": 66650.5,
+            "min": 66650.5,
+            "values": [
+              66650.5,
+              66650.5,
+              66650.5,
+              66650.5,
+              66650.5
+            ]
+          },
+          "process_median_deallocations": {
+            "max": 66648.5,
+            "median": 66648.5,
+            "min": 66648.5,
+            "values": [
+              66648.5,
+              66648.5,
+              66648.5,
+              66648.5,
+              66648.5
+            ]
+          },
+          "process_median_net_live_requested_bytes": {
+            "max": -23219.0,
+            "median": -23219.0,
+            "min": -23219.0,
+            "values": [
+              -23219.0,
+              -23219.0,
+              -23219.0,
+              -23219.0,
+              -23219.0
+            ]
+          },
+          "process_median_peak_additional_live_requested_bytes": {
+            "max": 130078029.0,
+            "median": 130078029.0,
+            "min": 130078029.0,
+            "values": [
+              130078029.0,
+              130078029.0,
+              130078029.0,
+              130078029.0,
+              130078029.0
+            ]
+          },
+          "process_median_reallocations": {
+            "max": 60698.0,
+            "median": 60698.0,
+            "min": 60698.0,
+            "values": [
+              60698.0,
+              60698.0,
+              60698.0,
+              60698.0,
+              60698.0
+            ]
+          },
+          "process_median_requested_bytes": {
+            "max": 903431545.0,
+            "median": 903431545.0,
+            "min": 903431545.0,
+            "values": [
+              903431545.0,
+              903431545.0,
+              903431545.0,
+              903431545.0,
+              903431545.0
+            ]
+          }
+        }
+      },
+      "paired_candidate_over_baseline_process_median": {
+        "max": 1.0072514322538841,
+        "median": 1.0033980702787402,
+        "min": 0.9979499215646741,
+        "values": [
+          1.0072514322538841,
+          1.0033980702787402,
+          0.9979499215646741,
+          1.000569057722308,
+          1.0049424486058838
+        ]
+      },
+      "timing": {
+        "baseline": {
+          "final_retained_training_bytes": {
+            "pure_decode": 131621036
+          },
+          "initial_retained_training_bytes": {
+            "pure_decode": 132713264
+          },
+          "process_median_update_ns": {
+            "max": 244480402.0,
+            "median": 243289328.0,
+            "min": 242816238.0,
+            "values": [
+              242816238.0,
+              242994680.0,
+              244480402.0,
+              243368984.5,
+              243289328.0
+            ]
+          },
+          "process_p95_update_ns": {
+            "max": 262871561.0,
+            "median": 261982480.7,
+            "min": 261207387.85,
+            "values": [
+              261982480.7,
+              262555473.85,
+              262871561.0,
+              261659987.9,
+              261207387.85
+            ]
+          },
+          "process_peak_rss_kib_after_updates": {
+            "max": 271080,
+            "median": 271012,
+            "min": 270804,
+            "values": [
+              271012,
+              271032,
+              270804,
+              271080,
+              270832
+            ]
+          },
+          "process_peak_rss_kib_before_updates": {
+            "max": 139124,
+            "median": 139112,
+            "min": 139060,
+            "values": [
+              139124,
+              139084,
+              139112,
+              139120,
+              139060
+            ]
+          },
+          "rss_kib_after_updates": {
+            "max": 271012,
+            "median": 270804,
+            "min": 268612,
+            "values": [
+              271012,
+              269544,
+              270804,
+              268612,
+              270832
+            ]
+          },
+          "rss_kib_before_updates": {
+            "max": 137880,
+            "median": 137832,
+            "min": 137808,
+            "values": [
+              137832,
+              137880,
+              137808,
+              137832,
+              137832
+            ]
+          },
+          "setup_ns": {
+            "max": 220302678,
+            "median": 219547055,
+            "min": 218173953,
+            "values": [
+              218173953,
+              219732814,
+              218553607,
+              220302678,
+              219547055
+            ]
+          }
+        },
+        "candidate": {
+          "final_retained_training_bytes": {
+            "pure_decode": 131621036
+          },
+          "initial_retained_training_bytes": {
+            "pure_decode": 132713264
+          },
+          "process_median_update_ns": {
+            "max": 244577003.5,
+            "median": 243979198.0,
+            "min": 243507475.5,
+            "values": [
+              244577003.5,
+              243820393.0,
+              243979198.0,
+              243507475.5,
+              244491773.0
+            ]
+          },
+          "process_p95_update_ns": {
+            "max": 262650590.45,
+            "median": 262553278.04999998,
+            "min": 261298491.0,
+            "values": [
+              261298491.0,
+              262553278.04999998,
+              262613924.54999998,
+              261671835.15,
+              262650590.45
+            ]
+          },
+          "process_peak_rss_kib_after_updates": {
+            "max": 270956,
+            "median": 270920,
+            "min": 270560,
+            "values": [
+              270860,
+              270920,
+              270560,
+              270924,
+              270956
+            ]
+          },
+          "process_peak_rss_kib_before_updates": {
+            "max": 139100,
+            "median": 138996,
+            "min": 138944,
+            "values": [
+              138944,
+              139020,
+              138996,
+              138992,
+              139100
+            ]
+          },
+          "rss_kib_after_updates": {
+            "max": 270956,
+            "median": 270920,
+            "min": 270560,
+            "values": [
+              270860,
+              270920,
+              270560,
+              270924,
+              270956
+            ]
+          },
+          "rss_kib_before_updates": {
+            "max": 137960,
+            "median": 137764,
+            "min": 137576,
+            "values": [
+              137708,
+              137576,
+              137764,
+              137788,
+              137960
+            ]
+          },
+          "setup_ns": {
+            "max": 220855087,
+            "median": 219706708,
+            "min": 219205931,
+            "values": [
+              220855087,
+              219205931,
+              219896333,
+              219706708,
+              219697529
+            ]
+          }
+        }
+      }
+    },
+    "150trees_10000rows_tail1": {
+      "allocation": {
+        "baseline": {
+          "process_max_allocations": {
+            "max": 10485,
+            "median": 10485,
+            "min": 10485,
+            "values": [
+              10485,
+              10485,
+              10485,
+              10485,
+              10485
+            ]
+          },
+          "process_max_deallocations": {
+            "max": 10483,
+            "median": 10483,
+            "min": 10483,
+            "values": [
+              10483,
+              10483,
+              10483,
+              10483,
+              10483
+            ]
+          },
+          "process_max_net_live_requested_bytes": {
+            "max": 41444,
+            "median": 41444,
+            "min": 41444,
+            "values": [
+              41444,
+              41444,
+              41444,
+              41444,
+              41444
+            ]
+          },
+          "process_max_peak_additional_live_requested_bytes": {
+            "max": 124188794,
+            "median": 124188794,
+            "min": 124188794,
+            "values": [
+              124188794,
+              124188794,
+              124188794,
+              124188794,
+              124188794
+            ]
+          },
+          "process_max_reallocations": {
+            "max": 814,
+            "median": 814,
+            "min": 814,
+            "values": [
+              814,
+              814,
+              814,
+              814,
+              814
+            ]
+          },
+          "process_max_requested_bytes": {
+            "max": 129848856,
+            "median": 129848856,
+            "min": 129848856,
+            "values": [
+              129848856,
+              129848856,
+              129848856,
+              129848856,
+              129848856
+            ]
+          },
+          "process_mean_allocations": {
+            "max": 10264.046875,
+            "median": 10264.046875,
+            "min": 10264.046875,
+            "values": [
+              10264.046875,
+              10264.046875,
+              10264.046875,
+              10264.046875,
+              10264.046875
+            ]
+          },
+          "process_mean_deallocations": {
+            "max": 10262.03125,
+            "median": 10262.03125,
+            "min": 10262.03125,
+            "values": [
+              10262.03125,
+              10262.03125,
+              10262.03125,
+              10262.03125,
+              10262.03125
+            ]
+          },
+          "process_mean_net_live_requested_bytes": {
+            "max": -104090.75,
+            "median": -104090.75,
+            "min": -104090.75,
+            "values": [
+              -104090.75,
+              -104090.75,
+              -104090.75,
+              -104090.75,
+              -104090.75
+            ]
+          },
+          "process_mean_peak_additional_live_requested_bytes": {
+            "max": 123631902.34375,
+            "median": 123631902.34375,
+            "min": 123631902.34375,
+            "values": [
+              123631902.34375,
+              123631902.34375,
+              123631902.34375,
+              123631902.34375,
+              123631902.34375
+            ]
+          },
+          "process_mean_reallocations": {
+            "max": 514.65625,
+            "median": 514.65625,
+            "min": 514.65625,
+            "values": [
+              514.65625,
+              514.65625,
+              514.65625,
+              514.65625,
+              514.65625
+            ]
+          },
+          "process_mean_requested_bytes": {
+            "max": 126255865.03125,
+            "median": 126255865.03125,
+            "min": 126255865.03125,
+            "values": [
+              126255865.03125,
+              126255865.03125,
+              126255865.03125,
+              126255865.03125,
+              126255865.03125
+            ]
+          },
+          "process_median_allocations": {
+            "max": 10244.0,
+            "median": 10244.0,
+            "min": 10244.0,
+            "values": [
+              10244.0,
+              10244.0,
+              10244.0,
+              10244.0,
+              10244.0
+            ]
+          },
+          "process_median_deallocations": {
+            "max": 10242.0,
+            "median": 10242.0,
+            "min": 10242.0,
+            "values": [
+              10242.0,
+              10242.0,
+              10242.0,
+              10242.0,
+              10242.0
+            ]
+          },
+          "process_median_net_live_requested_bytes": {
+            "max": 170.0,
+            "median": 170.0,
+            "min": 170.0,
+            "values": [
+              170.0,
+              170.0,
+              170.0,
+              170.0,
+              170.0
+            ]
+          },
+          "process_median_peak_additional_live_requested_bytes": {
+            "max": 123555641.0,
+            "median": 123555641.0,
+            "min": 123555641.0,
+            "values": [
+              123555641.0,
+              123555641.0,
+              123555641.0,
+              123555641.0,
+              123555641.0
+            ]
+          },
+          "process_median_reallocations": {
+            "max": 494.0,
+            "median": 494.0,
+            "min": 494.0,
+            "values": [
+              494.0,
+              494.0,
+              494.0,
+              494.0,
+              494.0
+            ]
+          },
+          "process_median_requested_bytes": {
+            "max": 125917416.0,
+            "median": 125917416.0,
+            "min": 125917416.0,
+            "values": [
+              125917416.0,
+              125917416.0,
+              125917416.0,
+              125917416.0,
+              125917416.0
+            ]
+          }
+        },
+        "candidate": {
+          "process_max_allocations": {
+            "max": 1545,
+            "median": 1545,
+            "min": 1545,
+            "values": [
+              1545,
+              1545,
+              1545,
+              1545,
+              1545
+            ]
+          },
+          "process_max_deallocations": {
+            "max": 1543,
+            "median": 1543,
+            "min": 1543,
+            "values": [
+              1543,
+              1543,
+              1543,
+              1543,
+              1543
+            ]
+          },
+          "process_max_net_live_requested_bytes": {
+            "max": 41444,
+            "median": 41444,
+            "min": 41444,
+            "values": [
+              41444,
+              41444,
+              41444,
+              41444,
+              41444
+            ]
+          },
+          "process_max_peak_additional_live_requested_bytes": {
+            "max": 2157696,
+            "median": 2157696,
+            "min": 2157696,
+            "values": [
+              2157696,
+              2157696,
+              2157696,
+              2157696,
+              2157696
+            ]
+          },
+          "process_max_reallocations": {
+            "max": 814,
+            "median": 814,
+            "min": 814,
+            "values": [
+              814,
+              814,
+              814,
+              814,
+              814
+            ]
+          },
+          "process_max_requested_bytes": {
+            "max": 7817758,
+            "median": 7817758,
+            "min": 7817758,
+            "values": [
+              7817758,
+              7817758,
+              7817758,
+              7817758,
+              7817758
+            ]
+          },
+          "process_mean_allocations": {
+            "max": 1324.046875,
+            "median": 1324.046875,
+            "min": 1324.046875,
+            "values": [
+              1324.046875,
+              1324.046875,
+              1324.046875,
+              1324.046875,
+              1324.046875
+            ]
+          },
+          "process_mean_deallocations": {
+            "max": 1322.03125,
+            "median": 1322.03125,
+            "min": 1322.03125,
+            "values": [
+              1322.03125,
+              1322.03125,
+              1322.03125,
+              1322.03125,
+              1322.03125
+            ]
+          },
+          "process_mean_net_live_requested_bytes": {
+            "max": -180.03125,
+            "median": -180.03125,
+            "min": -180.03125,
+            "values": [
+              -180.03125,
+              -180.03125,
+              -180.03125,
+              -180.03125,
+              -180.03125
+            ]
+          },
+          "process_mean_peak_additional_live_requested_bytes": {
+            "max": 1600804.34375,
+            "median": 1600804.34375,
+            "min": 1600804.34375,
+            "values": [
+              1600804.34375,
+              1600804.34375,
+              1600804.34375,
+              1600804.34375,
+              1600804.34375
+            ]
+          },
+          "process_mean_reallocations": {
+            "max": 514.65625,
+            "median": 514.65625,
+            "min": 514.65625,
+            "values": [
+              514.65625,
+              514.65625,
+              514.65625,
+              514.65625,
+              514.65625
+            ]
+          },
+          "process_mean_requested_bytes": {
+            "max": 4224767.03125,
+            "median": 4224767.03125,
+            "min": 4224767.03125,
+            "values": [
+              4224767.03125,
+              4224767.03125,
+              4224767.03125,
+              4224767.03125,
+              4224767.03125
+            ]
+          },
+          "process_median_allocations": {
+            "max": 1304.0,
+            "median": 1304.0,
+            "min": 1304.0,
+            "values": [
+              1304.0,
+              1304.0,
+              1304.0,
+              1304.0,
+              1304.0
+            ]
+          },
+          "process_median_deallocations": {
+            "max": 1302.0,
+            "median": 1302.0,
+            "min": 1302.0,
+            "values": [
+              1302.0,
+              1302.0,
+              1302.0,
+              1302.0,
+              1302.0
+            ]
+          },
+          "process_median_net_live_requested_bytes": {
+            "max": 170.0,
+            "median": 170.0,
+            "min": 170.0,
+            "values": [
+              170.0,
+              170.0,
+              170.0,
+              170.0,
+              170.0
+            ]
+          },
+          "process_median_peak_additional_live_requested_bytes": {
+            "max": 1524543.0,
+            "median": 1524543.0,
+            "min": 1524543.0,
+            "values": [
+              1524543.0,
+              1524543.0,
+              1524543.0,
+              1524543.0,
+              1524543.0
+            ]
+          },
+          "process_median_reallocations": {
+            "max": 494.0,
+            "median": 494.0,
+            "min": 494.0,
+            "values": [
+              494.0,
+              494.0,
+              494.0,
+              494.0,
+              494.0
+            ]
+          },
+          "process_median_requested_bytes": {
+            "max": 3886318.0,
+            "median": 3886318.0,
+            "min": 3886318.0,
+            "values": [
+              3886318.0,
+              3886318.0,
+              3886318.0,
+              3886318.0,
+              3886318.0
+            ]
+          }
+        }
+      },
+      "paired_candidate_over_baseline_process_median": {
+        "max": 0.6167430582464569,
+        "median": 0.6084364134434965,
+        "min": 0.608351733880852,
+        "values": [
+          0.6167430582464569,
+          0.6083643075721753,
+          0.6102006109671169,
+          0.608351733880852,
+          0.6084364134434965
+        ]
+      },
+      "timing": {
+        "baseline": {
+          "final_retained_training_bytes": {
+            "pure_decode": 126090570
+          },
+          "initial_retained_training_bytes": {
+            "pure_decode": 132713264
+          },
+          "process_median_update_ns": {
+            "max": 24491345.5,
+            "median": 24440457.0,
+            "min": 24290962.5,
+            "values": [
+              24290962.5,
+              24424329.0,
+              24445996.5,
+              24491345.5,
+              24440457.0
+            ]
+          },
+          "process_p95_update_ns": {
+            "max": 26596854.549999993,
+            "median": 25426908.25,
+            "min": 25236965.75,
+            "values": [
+              25236965.75,
+              25433625.9,
+              26596854.549999993,
+              25426908.25,
+              25285306.2
+            ]
+          },
+          "process_peak_rss_kib_after_updates": {
+            "max": 258024,
+            "median": 257800,
+            "min": 257768,
+            "values": [
+              257768,
+              257768,
+              257800,
+              258024,
+              257852
+            ]
+          },
+          "process_peak_rss_kib_before_updates": {
+            "max": 139292,
+            "median": 139060,
+            "min": 138964,
+            "values": [
+              139060,
+              138964,
+              139048,
+              139292,
+              139136
+            ]
+          },
+          "rss_kib_after_updates": {
+            "max": 258024,
+            "median": 257800,
+            "min": 257768,
+            "values": [
+              257768,
+              257768,
+              257800,
+              258024,
+              257852
+            ]
+          },
+          "rss_kib_before_updates": {
+            "max": 138080,
+            "median": 137852,
+            "min": 137816,
+            "values": [
+              137824,
+              137816,
+              137852,
+              138080,
+              137900
+            ]
+          },
+          "setup_ns": {
+            "max": 220244105,
+            "median": 218769285,
+            "min": 218105832,
+            "values": [
+              218105832,
+              219062276,
+              218225914,
+              218769285,
+              220244105
+            ]
+          }
+        },
+        "candidate": {
+          "final_retained_training_bytes": {
+            "pure_decode": 132730128
+          },
+          "initial_retained_training_bytes": {
+            "pure_decode": 132713264
+          },
+          "process_median_update_ns": {
+            "max": 14981282.5,
+            "median": 14899352.5,
+            "min": 14858890.0,
+            "values": [
+              14981282.5,
+              14858890.0,
+              14916962.0,
+              14899352.5,
+              14870464.0
+            ]
+          },
+          "process_p95_update_ns": {
+            "max": 15916179.65,
+            "median": 15779629.9,
+            "min": 15759371.1,
+            "values": [
+              15916179.65,
+              15759371.1,
+              15765071.049999999,
+              15805671.25,
+              15779629.9
+            ]
+          },
+          "process_peak_rss_kib_after_updates": {
+            "max": 139076,
+            "median": 139000,
+            "min": 138724,
+            "values": [
+              138920,
+              139000,
+              139076,
+              139060,
+              138724
+            ]
+          },
+          "process_peak_rss_kib_before_updates": {
+            "max": 139076,
+            "median": 139000,
+            "min": 138724,
+            "values": [
+              138920,
+              139000,
+              139076,
+              139060,
+              138724
+            ]
+          },
+          "rss_kib_after_updates": {
+            "max": 138724,
+            "median": 138628,
+            "min": 138368,
+            "values": [
+              138628,
+              138584,
+              138680,
+              138724,
+              138368
+            ]
+          },
+          "rss_kib_before_updates": {
+            "max": 137864,
+            "median": 137748,
+            "min": 137484,
+            "values": [
+              137748,
+              137668,
+              137820,
+              137864,
+              137484
+            ]
+          },
+          "setup_ns": {
+            "max": 228173460,
+            "median": 218470881,
+            "min": 217169597,
+            "values": [
+              218665714,
+              218429924,
+              218470881,
+              228173460,
+              217169597
+            ]
+          }
+        }
+      }
+    },
+    "150trees_256rows_tail1": {
+      "allocation": {
+        "baseline": {
+          "process_max_allocations": {
+            "max": 10484,
+            "median": 10484,
+            "min": 10484,
+            "values": [
+              10484,
+              10484,
+              10484,
+              10484,
+              10484
+            ]
+          },
+          "process_max_deallocations": {
+            "max": 10482,
+            "median": 10482,
+            "min": 10482,
+            "values": [
+              10482,
+              10482,
+              10482,
+              10482,
+              10482
+            ]
+          },
+          "process_max_net_live_requested_bytes": {
+            "max": 60382,
+            "median": 60382,
+            "min": 60382,
+            "values": [
+              60382,
+              60382,
+              60382,
+              60382,
+              60382
+            ]
+          },
+          "process_max_peak_additional_live_requested_bytes": {
+            "max": 108831256,
+            "median": 108831256,
+            "min": 108831256,
+            "values": [
+              108831256,
+              108831256,
+              108831256,
+              108831256,
+              108831256
+            ]
+          },
+          "process_max_reallocations": {
+            "max": 674,
+            "median": 674,
+            "min": 674,
+            "values": [
+              674,
+              674,
+              674,
+              674,
+              674
+            ]
+          },
+          "process_max_requested_bytes": {
+            "max": 112133058,
+            "median": 112133058,
+            "min": 112133058,
+            "values": [
+              112133058,
+              112133058,
+              112133058,
+              112133058,
+              112133058
+            ]
+          },
+          "process_mean_allocations": {
+            "max": 10227.421875,
+            "median": 10227.421875,
+            "min": 10227.421875,
+            "values": [
+              10227.421875,
+              10227.421875,
+              10227.421875,
+              10227.421875,
+              10227.421875
+            ]
+          },
+          "process_mean_deallocations": {
+            "max": 10225.40625,
+            "median": 10225.40625,
+            "min": 10225.40625,
+            "values": [
+              10225.40625,
+              10225.40625,
+              10225.40625,
+              10225.40625,
+              10225.40625
+            ]
+          },
+          "process_mean_net_live_requested_bytes": {
+            "max": -141339.625,
+            "median": -141339.625,
+            "min": -141339.625,
+            "values": [
+              -141339.625,
+              -141339.625,
+              -141339.625,
+              -141339.625,
+              -141339.625
+            ]
+          },
+          "process_mean_peak_additional_live_requested_bytes": {
+            "max": 108300095.03125,
+            "median": 108300095.03125,
+            "min": 108300095.03125,
+            "values": [
+              108300095.03125,
+              108300095.03125,
+              108300095.03125,
+              108300095.03125,
+              108300095.03125
+            ]
+          },
+          "process_mean_reallocations": {
+            "max": 422.515625,
+            "median": 422.515625,
+            "min": 422.515625,
+            "values": [
+              422.515625,
+              422.515625,
+              422.515625,
+              422.515625,
+              422.515625
+            ]
+          },
+          "process_mean_requested_bytes": {
+            "max": 109974774.1875,
+            "median": 109974774.1875,
+            "min": 109974774.1875,
+            "values": [
+              109974774.1875,
+              109974774.1875,
+              109974774.1875,
+              109974774.1875,
+              109974774.1875
+            ]
+          },
+          "process_median_allocations": {
+            "max": 10172.0,
+            "median": 10172.0,
+            "min": 10172.0,
+            "values": [
+              10172.0,
+              10172.0,
+              10172.0,
+              10172.0,
+              10172.0
+            ]
+          },
+          "process_median_deallocations": {
+            "max": 10170.0,
+            "median": 10170.0,
+            "min": 10170.0,
+            "values": [
+              10170.0,
+              10170.0,
+              10170.0,
+              10170.0,
+              10170.0
+            ]
+          },
+          "process_median_net_live_requested_bytes": {
+            "max": 170.0,
+            "median": 170.0,
+            "min": 170.0,
+            "values": [
+              170.0,
+              170.0,
+              170.0,
+              170.0,
+              170.0
+            ]
+          },
+          "process_median_peak_additional_live_requested_bytes": {
+            "max": 108171062.0,
+            "median": 108171062.0,
+            "min": 108171062.0,
+            "values": [
+              108171062.0,
+              108171062.0,
+              108171062.0,
+              108171062.0,
+              108171062.0
+            ]
+          },
+          "process_median_reallocations": {
+            "max": 370.5,
+            "median": 370.5,
+            "min": 370.5,
+            "values": [
+              370.5,
+              370.5,
+              370.5,
+              370.5,
+              370.5
+            ]
+          },
+          "process_median_requested_bytes": {
+            "max": 109488586.0,
+            "median": 109488586.0,
+            "min": 109488586.0,
+            "values": [
+              109488586.0,
+              109488586.0,
+              109488586.0,
+              109488586.0,
+              109488586.0
+            ]
+          }
+        },
+        "candidate": {
+          "process_max_allocations": {
+            "max": 1544,
+            "median": 1544,
+            "min": 1544,
+            "values": [
+              1544,
+              1544,
+              1544,
+              1544,
+              1544
+            ]
+          },
+          "process_max_deallocations": {
+            "max": 1542,
+            "median": 1542,
+            "min": 1542,
+            "values": [
+              1542,
+              1542,
+              1542,
+              1542,
+              1542
+            ]
+          },
+          "process_max_net_live_requested_bytes": {
+            "max": 60382,
+            "median": 60382,
+            "min": 60382,
+            "values": [
+              60382,
+              60382,
+              60382,
+              60382,
+              60382
+            ]
+          },
+          "process_max_peak_additional_live_requested_bytes": {
+            "max": 1722208,
+            "median": 1722208,
+            "min": 1722208,
+            "values": [
+              1722208,
+              1722208,
+              1722208,
+              1722208,
+              1722208
+            ]
+          },
+          "process_max_reallocations": {
+            "max": 674,
+            "median": 674,
+            "min": 674,
+            "values": [
+              674,
+              674,
+              674,
+              674,
+              674
+            ]
+          },
+          "process_max_requested_bytes": {
+            "max": 5024010,
+            "median": 5024010,
+            "min": 5024010,
+            "values": [
+              5024010,
+              5024010,
+              5024010,
+              5024010,
+              5024010
+            ]
+          },
+          "process_mean_allocations": {
+            "max": 1287.421875,
+            "median": 1287.421875,
+            "min": 1287.421875,
+            "values": [
+              1287.421875,
+              1287.421875,
+              1287.421875,
+              1287.421875,
+              1287.421875
+            ]
+          },
+          "process_mean_deallocations": {
+            "max": 1285.40625,
+            "median": 1285.40625,
+            "min": 1285.40625,
+            "values": [
+              1285.40625,
+              1285.40625,
+              1285.40625,
+              1285.40625,
+              1285.40625
+            ]
+          },
+          "process_mean_net_live_requested_bytes": {
+            "max": -1049.875,
+            "median": -1049.875,
+            "min": -1049.875,
+            "values": [
+              -1049.875,
+              -1049.875,
+              -1049.875,
+              -1049.875,
+              -1049.875
+            ]
+          },
+          "process_mean_peak_additional_live_requested_bytes": {
+            "max": 1191047.03125,
+            "median": 1191047.03125,
+            "min": 1191047.03125,
+            "values": [
+              1191047.03125,
+              1191047.03125,
+              1191047.03125,
+              1191047.03125,
+              1191047.03125
+            ]
+          },
+          "process_mean_reallocations": {
+            "max": 422.515625,
+            "median": 422.515625,
+            "min": 422.515625,
+            "values": [
+              422.515625,
+              422.515625,
+              422.515625,
+              422.515625,
+              422.515625
+            ]
+          },
+          "process_mean_requested_bytes": {
+            "max": 2865726.1875,
+            "median": 2865726.1875,
+            "min": 2865726.1875,
+            "values": [
+              2865726.1875,
+              2865726.1875,
+              2865726.1875,
+              2865726.1875,
+              2865726.1875
+            ]
+          },
+          "process_median_allocations": {
+            "max": 1232.0,
+            "median": 1232.0,
+            "min": 1232.0,
+            "values": [
+              1232.0,
+              1232.0,
+              1232.0,
+              1232.0,
+              1232.0
+            ]
+          },
+          "process_median_deallocations": {
+            "max": 1230.0,
+            "median": 1230.0,
+            "min": 1230.0,
+            "values": [
+              1230.0,
+              1230.0,
+              1230.0,
+              1230.0,
+              1230.0
+            ]
+          },
+          "process_median_net_live_requested_bytes": {
+            "max": 170.0,
+            "median": 170.0,
+            "min": 170.0,
+            "values": [
+              170.0,
+              170.0,
+              170.0,
+              170.0,
+              170.0
+            ]
+          },
+          "process_median_peak_additional_live_requested_bytes": {
+            "max": 1062014.0,
+            "median": 1062014.0,
+            "min": 1062014.0,
+            "values": [
+              1062014.0,
+              1062014.0,
+              1062014.0,
+              1062014.0,
+              1062014.0
+            ]
+          },
+          "process_median_reallocations": {
+            "max": 370.5,
+            "median": 370.5,
+            "min": 370.5,
+            "values": [
+              370.5,
+              370.5,
+              370.5,
+              370.5,
+              370.5
+            ]
+          },
+          "process_median_requested_bytes": {
+            "max": 2379538.0,
+            "median": 2379538.0,
+            "min": 2379538.0,
+            "values": [
+              2379538.0,
+              2379538.0,
+              2379538.0,
+              2379538.0,
+              2379538.0
+            ]
+          }
+        }
+      },
+      "paired_candidate_over_baseline_process_median": {
+        "max": 0.10090628232519853,
+        "median": 0.09947960918084173,
+        "min": 0.099267538345644,
+        "values": [
+          0.09947960918084173,
+          0.099267538345644,
+          0.09927177431225237,
+          0.10090628232519853,
+          0.09967366075891697
+        ]
+      },
+      "timing": {
+        "baseline": {
+          "final_retained_training_bytes": {
+            "pure_decode": 107899202
+          },
+          "initial_retained_training_bytes": {
+            "pure_decode": 116905824
+          },
+          "process_median_update_ns": {
+            "max": 9622502.0,
+            "median": 9581662.0,
+            "min": 9555485.5,
+            "values": [
+              9614216.5,
+              9581662.0,
+              9555485.5,
+              9581341.0,
+              9622502.0
+            ]
+          },
+          "process_p95_update_ns": {
+            "max": 10343598.7,
+            "median": 10066384.1,
+            "min": 10020263.15,
+            "values": [
+              10343598.7,
+              10066384.1,
+              10181843.249999998,
+              10020263.15,
+              10065161.6
+            ]
+          },
+          "process_peak_rss_kib_after_updates": {
+            "max": 228388,
+            "median": 228352,
+            "min": 228196,
+            "values": [
+              228196,
+              228380,
+              228388,
+              228252,
+              228352
+            ]
+          },
+          "process_peak_rss_kib_before_updates": {
+            "max": 122072,
+            "median": 121972,
+            "min": 121904,
+            "values": [
+              121904,
+              121940,
+              122028,
+              121972,
+              122072
+            ]
+          },
+          "rss_kib_after_updates": {
+            "max": 228064,
+            "median": 227976,
+            "min": 227784,
+            "values": [
+              227784,
+              227976,
+              228064,
+              227920,
+              228024
+            ]
+          },
+          "rss_kib_before_updates": {
+            "max": 122072,
+            "median": 121972,
+            "min": 121904,
+            "values": [
+              121904,
+              121940,
+              122028,
+              121972,
+              122072
+            ]
+          },
+          "setup_ns": {
+            "max": 92542368,
+            "median": 87842206,
+            "min": 87599492,
+            "values": [
+              92542368,
+              87599492,
+              87842206,
+              87741042,
+              88070196
+            ]
+          }
+        },
+        "candidate": {
+          "final_retained_training_bytes": {
+            "pure_decode": 116867018
+          },
+          "initial_retained_training_bytes": {
+            "pure_decode": 116905824
+          },
+          "process_median_update_ns": {
+            "max": 966817.5,
+            "median": 956418.5,
+            "min": 948590.0,
+            "values": [
+              956418.5,
+              951148.0,
+              948590.0,
+              966817.5,
+              959110.0
+            ]
+          },
+          "process_p95_update_ns": {
+            "max": 1426728.8999999997,
+            "median": 1375117.4999999998,
+            "min": 1328706.8,
+            "values": [
+              1375117.4999999998,
+              1383972.0499999996,
+              1426728.8999999997,
+              1328706.8,
+              1332682.45
+            ]
+          },
+          "process_peak_rss_kib_after_updates": {
+            "max": 123720,
+            "median": 123424,
+            "min": 123144,
+            "values": [
+              123144,
+              123424,
+              123144,
+              123628,
+              123720
+            ]
+          },
+          "process_peak_rss_kib_before_updates": {
+            "max": 122140,
+            "median": 122008,
+            "min": 121640,
+            "values": [
+              121640,
+              122008,
+              121704,
+              122040,
+              122140
+            ]
+          },
+          "rss_kib_after_updates": {
+            "max": 123704,
+            "median": 123356,
+            "min": 122884,
+            "values": [
+              122976,
+              123356,
+              122884,
+              123628,
+              123704
+            ]
+          },
+          "rss_kib_before_updates": {
+            "max": 122140,
+            "median": 122008,
+            "min": 121640,
+            "values": [
+              121640,
+              122008,
+              121704,
+              122040,
+              122140
+            ]
+          },
+          "setup_ns": {
+            "max": 88457509,
+            "median": 88138311,
+            "min": 87748836,
+            "values": [
+              88138311,
+              88121422,
+              88257883,
+              88457509,
+              87748836
+            ]
+          }
+        }
+      }
+    },
+    "300trees_10000rows_tail1": {
+      "allocation": {
+        "baseline": {
+          "process_max_allocations": {
+            "max": 20534,
+            "median": 20534,
+            "min": 20534,
+            "values": [
+              20534,
+              20534,
+              20534,
+              20534,
+              20534
+            ]
+          },
+          "process_max_deallocations": {
+            "max": 20532,
+            "median": 20532,
+            "min": 20532,
+            "values": [
+              20532,
+              20532,
+              20532,
+              20532,
+              20532
+            ]
+          },
+          "process_max_net_live_requested_bytes": {
+            "max": 45062,
+            "median": 45062,
+            "min": 45062,
+            "values": [
+              45062,
+              45062,
+              45062,
+              45062,
+              45062
+            ]
+          },
+          "process_max_peak_additional_live_requested_bytes": {
+            "max": 247184682,
+            "median": 247184682,
+            "min": 247184682,
+            "values": [
+              247184682,
+              247184682,
+              247184682,
+              247184682,
+              247184682
+            ]
+          },
+          "process_max_reallocations": {
+            "max": 1108,
+            "median": 1108,
+            "min": 1108,
+            "values": [
+              1108,
+              1108,
+              1108,
+              1108,
+              1108
+            ]
+          },
+          "process_max_requested_bytes": {
+            "max": 253194560,
+            "median": 253194560,
+            "min": 253194560,
+            "values": [
+              253194560,
+              253194560,
+              253194560,
+              253194560,
+              253194560
+            ]
+          },
+          "process_mean_allocations": {
+            "max": 20309.859375,
+            "median": 20309.859375,
+            "min": 20309.859375,
+            "values": [
+              20309.859375,
+              20309.859375,
+              20309.859375,
+              20309.859375,
+              20309.859375
+            ]
+          },
+          "process_mean_deallocations": {
+            "max": 20307.84375,
+            "median": 20307.84375,
+            "min": 20307.84375,
+            "values": [
+              20307.84375,
+              20307.84375,
+              20307.84375,
+              20307.84375,
+              20307.84375
+            ]
+          },
+          "process_mean_net_live_requested_bytes": {
+            "max": -209190.53125,
+            "median": -209190.53125,
+            "min": -209190.53125,
+            "values": [
+              -209190.53125,
+              -209190.53125,
+              -209190.53125,
+              -209190.53125,
+              -209190.53125
+            ]
+          },
+          "process_mean_peak_additional_live_requested_bytes": {
+            "max": 246624404.15625,
+            "median": 246624404.15625,
+            "min": 246624404.15625,
+            "values": [
+              246624404.15625,
+              246624404.15625,
+              246624404.15625,
+              246624404.15625,
+              246624404.15625
+            ]
+          },
+          "process_mean_reallocations": {
+            "max": 791.96875,
+            "median": 791.96875,
+            "min": 791.96875,
+            "values": [
+              791.96875,
+              791.96875,
+              791.96875,
+              791.96875,
+              791.96875
+            ]
+          },
+          "process_mean_requested_bytes": {
+            "max": 249216072.09375,
+            "median": 249216072.09375,
+            "min": 249216072.09375,
+            "values": [
+              249216072.09375,
+              249216072.09375,
+              249216072.09375,
+              249216072.09375,
+              249216072.09375
+            ]
+          },
+          "process_median_allocations": {
+            "max": 20280.0,
+            "median": 20280.0,
+            "min": 20280.0,
+            "values": [
+              20280.0,
+              20280.0,
+              20280.0,
+              20280.0,
+              20280.0
+            ]
+          },
+          "process_median_deallocations": {
+            "max": 20278.0,
+            "median": 20278.0,
+            "min": 20278.0,
+            "values": [
+              20278.0,
+              20278.0,
+              20278.0,
+              20278.0,
+              20278.0
+            ]
+          },
+          "process_median_net_live_requested_bytes": {
+            "max": 178.0,
+            "median": 178.0,
+            "min": 178.0,
+            "values": [
+              178.0,
+              178.0,
+              178.0,
+              178.0,
+              178.0
+            ]
+          },
+          "process_median_peak_additional_live_requested_bytes": {
+            "max": 246539608.0,
+            "median": 246539608.0,
+            "min": 246539608.0,
+            "values": [
+              246539608.0,
+              246539608.0,
+              246539608.0,
+              246539608.0,
+              246539608.0
+            ]
+          },
+          "process_median_reallocations": {
+            "max": 748.5,
+            "median": 748.5,
+            "min": 748.5,
+            "values": [
+              748.5,
+              748.5,
+              748.5,
+              748.5,
+              748.5
+            ]
+          },
+          "process_median_requested_bytes": {
+            "max": 248858300.0,
+            "median": 248858300.0,
+            "min": 248858300.0,
+            "values": [
+              248858300.0,
+              248858300.0,
+              248858300.0,
+              248858300.0,
+              248858300.0
+            ]
+          }
+        },
+        "candidate": {
+          "process_max_allocations": {
+            "max": 2594,
+            "median": 2594,
+            "min": 2594,
+            "values": [
+              2594,
+              2594,
+              2594,
+              2594,
+              2594
+            ]
+          },
+          "process_max_deallocations": {
+            "max": 2592,
+            "median": 2592,
+            "min": 2592,
+            "values": [
+              2592,
+              2592,
+              2592,
+              2592,
+              2592
+            ]
+          },
+          "process_max_net_live_requested_bytes": {
+            "max": 45062,
+            "median": 45062,
+            "min": 45062,
+            "values": [
+              45062,
+              45062,
+              45062,
+              45062,
+              45062
+            ]
+          },
+          "process_max_peak_additional_live_requested_bytes": {
+            "max": 2302390,
+            "median": 2302390,
+            "min": 2302390,
+            "values": [
+              2302390,
+              2302390,
+              2302390,
+              2302390,
+              2302390
+            ]
+          },
+          "process_max_reallocations": {
+            "max": 1108,
+            "median": 1108,
+            "min": 1108,
+            "values": [
+              1108,
+              1108,
+              1108,
+              1108,
+              1108
+            ]
+          },
+          "process_max_requested_bytes": {
+            "max": 8312268,
+            "median": 8312268,
+            "min": 8312268,
+            "values": [
+              8312268,
+              8312268,
+              8312268,
+              8312268,
+              8312268
+            ]
+          },
+          "process_mean_allocations": {
+            "max": 2369.859375,
+            "median": 2369.859375,
+            "min": 2369.859375,
+            "values": [
+              2369.859375,
+              2369.859375,
+              2369.859375,
+              2369.859375,
+              2369.859375
+            ]
+          },
+          "process_mean_deallocations": {
+            "max": 2367.84375,
+            "median": 2367.84375,
+            "min": 2367.84375,
+            "values": [
+              2367.84375,
+              2367.84375,
+              2367.84375,
+              2367.84375,
+              2367.84375
+            ]
+          },
+          "process_mean_net_live_requested_bytes": {
+            "max": -669.71875,
+            "median": -669.71875,
+            "min": -669.71875,
+            "values": [
+              -669.71875,
+              -669.71875,
+              -669.71875,
+              -669.71875,
+              -669.71875
+            ]
+          },
+          "process_mean_peak_additional_live_requested_bytes": {
+            "max": 1742112.15625,
+            "median": 1742112.15625,
+            "min": 1742112.15625,
+            "values": [
+              1742112.15625,
+              1742112.15625,
+              1742112.15625,
+              1742112.15625,
+              1742112.15625
+            ]
+          },
+          "process_mean_reallocations": {
+            "max": 791.96875,
+            "median": 791.96875,
+            "min": 791.96875,
+            "values": [
+              791.96875,
+              791.96875,
+              791.96875,
+              791.96875,
+              791.96875
+            ]
+          },
+          "process_mean_requested_bytes": {
+            "max": 4333780.09375,
+            "median": 4333780.09375,
+            "min": 4333780.09375,
+            "values": [
+              4333780.09375,
+              4333780.09375,
+              4333780.09375,
+              4333780.09375,
+              4333780.09375
+            ]
+          },
+          "process_median_allocations": {
+            "max": 2340.0,
+            "median": 2340.0,
+            "min": 2340.0,
+            "values": [
+              2340.0,
+              2340.0,
+              2340.0,
+              2340.0,
+              2340.0
+            ]
+          },
+          "process_median_deallocations": {
+            "max": 2338.0,
+            "median": 2338.0,
+            "min": 2338.0,
+            "values": [
+              2338.0,
+              2338.0,
+              2338.0,
+              2338.0,
+              2338.0
+            ]
+          },
+          "process_median_net_live_requested_bytes": {
+            "max": 178.0,
+            "median": 178.0,
+            "min": 178.0,
+            "values": [
+              178.0,
+              178.0,
+              178.0,
+              178.0,
+              178.0
+            ]
+          },
+          "process_median_peak_additional_live_requested_bytes": {
+            "max": 1657316.0,
+            "median": 1657316.0,
+            "min": 1657316.0,
+            "values": [
+              1657316.0,
+              1657316.0,
+              1657316.0,
+              1657316.0,
+              1657316.0
+            ]
+          },
+          "process_median_reallocations": {
+            "max": 748.5,
+            "median": 748.5,
+            "min": 748.5,
+            "values": [
+              748.5,
+              748.5,
+              748.5,
+              748.5,
+              748.5
+            ]
+          },
+          "process_median_requested_bytes": {
+            "max": 3976008.0,
+            "median": 3976008.0,
+            "min": 3976008.0,
+            "values": [
+              3976008.0,
+              3976008.0,
+              3976008.0,
+              3976008.0,
+              3976008.0
+            ]
+          }
+        }
+      },
+      "paired_candidate_over_baseline_process_median": {
+        "max": 0.5621116392468422,
+        "median": 0.5590857147335142,
+        "min": 0.5575413344386747,
+        "values": [
+          0.5590857147335142,
+          0.558384089831614,
+          0.5621116392468422,
+          0.5575413344386747,
+          0.5608792867399419
+        ]
+      },
+      "timing": {
+        "baseline": {
+          "final_retained_training_bytes": {
+            "pure_decode": 248926626
+          },
+          "initial_retained_training_bytes": {
+            "pure_decode": 262236592
+          },
+          "process_median_update_ns": {
+            "max": 44261656.0,
+            "median": 44153264.5,
+            "min": 44150477.0,
+            "values": [
+              44152368.5,
+              44261656.0,
+              44150477.0,
+              44211983.0,
+              44153264.5
+            ]
+          },
+          "process_p95_update_ns": {
+            "max": 45803112.949999996,
+            "median": 45623808.35,
+            "min": 45300597.7,
+            "values": [
+              45642957.35,
+              45623808.35,
+              45300597.7,
+              45380193.2,
+              45803112.949999996
+            ]
+          },
+          "process_peak_rss_kib_after_updates": {
+            "max": 504976,
+            "median": 504844,
+            "min": 504764,
+            "values": [
+              504900,
+              504772,
+              504764,
+              504844,
+              504976
+            ]
+          },
+          "process_peak_rss_kib_before_updates": {
+            "max": 266172,
+            "median": 266124,
+            "min": 265992,
+            "values": [
+              266172,
+              266160,
+              265992,
+              266104,
+              266124
+            ]
+          },
+          "rss_kib_after_updates": {
+            "max": 504976,
+            "median": 504844,
+            "min": 504764,
+            "values": [
+              504900,
+              504772,
+              504764,
+              504844,
+              504976
+            ]
+          },
+          "rss_kib_before_updates": {
+            "max": 265316,
+            "median": 265192,
+            "min": 265108,
+            "values": [
+              265240,
+              265120,
+              265108,
+              265192,
+              265316
+            ]
+          },
+          "setup_ns": {
+            "max": 398186392,
+            "median": 395954632,
+            "min": 395570239,
+            "values": [
+              395896631,
+              395570239,
+              396842402,
+              395954632,
+              398186392
+            ]
+          }
+        },
+        "candidate": {
+          "final_retained_training_bytes": {
+            "pure_decode": 262250430
+          },
+          "initial_retained_training_bytes": {
+            "pure_decode": 262236592
+          },
+          "process_median_update_ns": {
+            "max": 24817497.0,
+            "median": 24715004.5,
+            "min": 24650008.0,
+            "values": [
+              24684958.5,
+              24715004.5,
+              24817497.0,
+              24650008.0,
+              24764651.5
+            ]
+          },
+          "process_p95_update_ns": {
+            "max": 25592688.4,
+            "median": 25475793.0,
+            "min": 25433503.1,
+            "values": [
+              25433503.1,
+              25475793.0,
+              25592688.4,
+              25461961.2,
+              25569837.65
+            ]
+          },
+          "process_peak_rss_kib_after_updates": {
+            "max": 266328,
+            "median": 266104,
+            "min": 265848,
+            "values": [
+              266328,
+              265848,
+              266236,
+              266104,
+              265940
+            ]
+          },
+          "process_peak_rss_kib_before_updates": {
+            "max": 266328,
+            "median": 266104,
+            "min": 265848,
+            "values": [
+              266328,
+              265848,
+              266236,
+              266104,
+              265940
+            ]
+          },
+          "rss_kib_after_updates": {
+            "max": 265704,
+            "median": 265608,
+            "min": 265300,
+            "values": [
+              265704,
+              265300,
+              265660,
+              265608,
+              265460
+            ]
+          },
+          "rss_kib_before_updates": {
+            "max": 265276,
+            "median": 265180,
+            "min": 264868,
+            "values": [
+              265276,
+              264868,
+              265260,
+              265180,
+              265016
+            ]
+          },
+          "setup_ns": {
+            "max": 401179939,
+            "median": 397176516,
+            "min": 394371329,
+            "values": [
+              394371329,
+              399209913,
+              401179939,
+              397176516,
+              395218341
+            ]
+          }
+        }
+      }
+    }
+  }
+}

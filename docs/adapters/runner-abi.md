@@ -70,10 +70,18 @@ AgentX backends/topologies/lanes/snapshots/warmup/profiles, offload/speculation,
 analytical EPD, cached-prefix tokens, state/grouped cache and model controls.
 Generic flag defaults are not qualification evidence for an optional stack.
 
+`supports_generic_speculation` defaults to `False`; the built-in engine factory
+sets it to `True` within the [registered-scheme replay limits](../replay/engine/speculation.md#registered-schemes).
+Unsupported stacks reject generic scheme inputs before runner creation or
+resource preparation. `supports_mtp_expected_acceptance` only declares handling
+of MTP/NextN acceptance inputs; it does not establish support for EAGLE or other
+schemes' draft costs. A stack must explicitly declare generic speculation
+support and retain those costs through its timing provider.
+
 `require_compatible(spec)` checks versions and coarse combinations before
 execution. AgentX G2 additionally requires offline vLLM, a static single
-aggregated worker or 1P1D, and DP1 on every role. G3 and agentic speculation
-remain rejected. The [feature matrix](../replay/features.md) records the built-in
+aggregated worker or 1P1D, and DP1 on every role. G3 and speculation cannot be
+combined with AgentX G2. The [feature matrix](../replay/features.md) records the built-in
 stack's actual boundary, including limitations stricter than a capability flag.
 
 If every backend/topology pair fails Sweeper preflight, `RunnerIncompatibleError`

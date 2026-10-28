@@ -18,8 +18,10 @@ use crate::engine::common::protocols::DirectRequest;
 pub(crate) use crate::engine::common::protocols::ForwardPassSnapshot;
 use crate::engine::common::protocols::OutputSignal;
 use crate::engine::generalized::SameTimestampRetry;
+use crate::engine::host_offload::HostTierHandle;
 use crate::engine::{
-    CacheTierAttribution, DecodeAcceptance, HostOffloadObserver, KvEvent, PressureEvent,
+    CacheTierAttribution, DecodeAcceptance, HostOffloadObserver, KvEvent, KvHintSource,
+    PressureEvent,
 };
 pub(crate) use kv_event_sink::{CapturedKvEventBuffer, capture_kv_event_sink};
 pub(crate) use source_holds::{
@@ -306,6 +308,15 @@ impl EngineCore {
         matches!(self, Self::Sglang(core) if core.model_work_in_pass())
     }
 
+    /// Device time of the forward the last pass launched, when the SGLang host
+    /// loop separates it from the pass end.
+    pub(crate) fn last_forward_ms(&self) -> Option<f64> {
+        match self {
+            Self::Sglang(core) => core.last_forward_ms(),
+            Self::Vllm(_) => None,
+        }
+    }
+
     pub(crate) fn finish_group_pass(&mut self, any_rank_prefilled: bool, any_rank_ran_model: bool) {
         if let Self::Sglang(core) = self {
             core.finish_group_pass(any_rank_prefilled, any_rank_ran_model);
@@ -319,6 +330,18 @@ impl EngineCore {
     ) {
         if let Self::Vllm(core) = self {
             core.set_g3_offload(registry, node);
+        }
+    }
+
+    /// The rank's own G2 for peers to pull from; `None` for SGLang.
+    pub(crate) fn set_kvcr(
+        &mut self,
+        registry: crate::engine::kvcr::SharedKvcrRegistry,
+        rank: KvHintSource,
+    ) -> Option<HostTierHandle> {
+        match self {
+            Self::Vllm(core) => Some(core.set_kvcr(registry, rank)),
+            Self::Sglang(_) => None,
         }
     }
 
@@ -354,20 +377,21 @@ impl EngineCore {
     pub(crate) fn is_ready(&self) -> bool {
         match self {
             Self::Vllm(core) => core.is_ready(),
-            Self::Sglang(core) => !core.is_drained(),
+            Self::Sglang(core) => core.is_ready(),
         }
     }
 
     pub(crate) fn next_internal_deadline_ms(&self) -> Option<f64> {
         match self {
             Self::Vllm(core) => core.next_internal_deadline_ms(),
-            Self::Sglang(_) => None,
+            Self::Sglang(core) => core.next_internal_deadline_ms(),
         }
     }
 
     pub(crate) fn process_internal_work(&mut self, now_ms: f64) {
-        if let Self::Vllm(core) = self {
-            core.process_internal_work(now_ms);
+        match self {
+            Self::Vllm(core) => core.process_internal_work(now_ms),
+            Self::Sglang(core) => core.process_internal_work(now_ms),
         }
     }
 
@@ -417,7 +441,9 @@ impl EngineCore {
             Self::Vllm(core) => {
                 core.apply_command_effects_at(command, allow_destination_admission, Some(now_ms))
             }
-            Self::Sglang(core) => core.apply_command_effects(command, allow_destination_admission),
+            Self::Sglang(core) => {
+                core.apply_command_effects_at(command, allow_destination_admission, Some(now_ms))
+            }
         }
     }
 

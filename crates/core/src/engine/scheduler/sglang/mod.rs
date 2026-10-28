@@ -8,9 +8,12 @@
 mod config;
 mod core;
 mod decode;
+mod frontend;
+mod host_loop;
 mod policy;
 mod prefill;
 mod request;
+mod vision;
 
 pub(crate) use core::SglangCore;
 

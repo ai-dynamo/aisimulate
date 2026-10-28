@@ -245,9 +245,11 @@ framework_specific_op_cases:
         - 0
         - 128
         head_profiles:
+        # hd64 SWA on XPU is gpt-oss only (with sink, via its model profile);
+        # no-sink SWA has no XPU kernel, so sweep window=0 only here.
         - id: default_head64
           head_dim: 64
-          window_sizes: [0, 128]
+          window_sizes: [0]
           query_head_counts: [1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 64]
           kv_head_options: [1, 2, 4, 8]
         - id: default_head128

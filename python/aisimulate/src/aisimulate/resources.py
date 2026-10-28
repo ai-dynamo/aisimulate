@@ -292,7 +292,7 @@ def _weka_active_inputs(intervals: list[tuple[float, float, int, int | None]]) -
     return min(total, peak)
 
 
-def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes: int | None) -> ResourceEstimate:
+def _inspect_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes: int | None) -> ResourceEstimate:
     """Account for the native Weka import and replay phases, without token arrays.
 
     These are planning allowances, not a hard RSS guarantee. Import materializes
@@ -335,7 +335,8 @@ def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes
                 intervals: list[list[tuple[float, float, int, int | None]]] = []
                 document_start = 0
                 with path.open("rb") as stream:
-                    for prefix, event, value in ijson.parse(stream, multiple_values=True, buf_size=buffer_size):
+                    events = ijson.parse(stream, multiple_values=True, buf_size=buffer_size)
+                    for prefix, event, value in events:
                         if event == "start_map":
                             if prefix == "":
                                 document_start = max(0, stream.tell() - buffer_size)
@@ -395,10 +396,26 @@ def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes
                             outputs += sum(r["out"] for r in requests)
                             active_inputs += sum(_weka_active_inputs(scope) for scope in intervals)
                         elif event == "start_array" and frames and frames[-1][1] is not None:
-                            map_prefix = frames[-1][0]
+                            map_prefix, frame = frames[-1]
                             if prefix == (map_prefix + "." if map_prefix else "") + "requests":
                                 scopes.append((prefix, len(intervals)))
                                 intervals.append([])
+                            elif "hash_count" in frame and prefix == map_prefix + ".hash_ids":
+                                # Hashes dominate large traces; avoid dispatch and prefix allocation per hash.
+                                count = frame["hash_count"]
+                                for _, hash_event, hash_value in events:
+                                    if hash_event == "end_array":
+                                        break
+                                    if (
+                                        hash_event != "number"
+                                        or type(hash_value) is not int
+                                        or not 0 <= hash_value < 2**64
+                                    ):
+                                        raise ValueError("Weka hash_ids must contain unsigned 64-bit integers")
+                                    if not count:
+                                        frame["first_hash"] = hash_value
+                                    count += 1
+                                frame["hash_count"] = count
                         elif event == "end_array" and scopes and prefix == scopes[-1][0]:
                             scopes.pop()
                         elif frames and frames[-1][1] is not None and event not in {"map_key", "end_array"}:
@@ -436,6 +453,56 @@ def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes
     # inputs, not an unavoidable allocation or an admission lower bound.
     lower = max(8 * hashes, 4 * outputs)
     peak = max(lower, baseline + max(import_peak, replay))
+    return ResourceEstimate(
+        "weka-materialized-v1",
+        None,
+        4 * active_inputs,
+        lower,
+        peak,
+        "Weka per-play import and native replay estimate; normalized hashes, planned outputs and active prompts; "
+        "runtime trace validation still required",
+    )
+
+
+def _weka_scan_key(workload: Mapping[str, Any]) -> tuple[Any, ...] | None:
+    files = _trace_files(workload, "weka")
+    if files is None:
+        return None
+    return (
+        workload.get("trace_block_size"),
+        int(workload.get("agentic_lanes") or 1),
+        workload.get("agentic_snapshot") is not None,
+        bool(workload.get("agentic_warmup")),
+        _trace_scan_identity(files),
+    )
+
+
+def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes: int | None) -> ResourceEstimate:
+    """Reuse completed inspection while applying profile admission to current headroom."""
+    unqualified = lambda reason: ResourceEstimate("weka-unqualified-v1", None, 0, 0, None, reason)
+    try:
+        key = _weka_scan_key(workload)
+        if key is None:
+            return unqualified("trace symlinks have no stable resource identity")
+        with _TRACE_SCAN_CACHE_LOCK:
+            estimate = _WEKA_SCAN_CACHE.get(key)
+            if estimate is not None:
+                _WEKA_SCAN_CACHE.move_to_end(key)
+        if estimate is None:
+            estimate = _inspect_weka_trace(workload, inspection_budget_bytes=inspection_budget_bytes)
+        if _weka_scan_key(workload) != key:
+            return unqualified("Weka source changed during metadata inspection")
+        # Empty, invalid and inspection-limited scans have no complete allocation bound.
+        if estimate.allocation_model != "weka-materialized-v1" or not estimate.lower_bound_bytes:
+            return estimate
+        peak, lower = estimate.estimated_peak_bytes, estimate.lower_bound_bytes
+        if inspection_budget_bytes is None or peak <= inspection_budget_bytes:
+            with _TRACE_SCAN_CACHE_LOCK:
+                _WEKA_SCAN_CACHE[key] = estimate
+                while len(_WEKA_SCAN_CACHE) > _TRACE_SCAN_CACHE_SIZE:
+                    _WEKA_SCAN_CACHE.popitem(last=False)
+    except (OSError, ValueError, TypeError, KeyError, OverflowError) as exc:
+        return unqualified(f"cannot inspect Weka metadata: {exc}")
     if workload.get("agentic_profile") is not None:
         if inspection_budget_bytes is not None and peak > inspection_budget_bytes:
             return ResourceEstimate(
@@ -455,15 +522,7 @@ def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes
             "agentic profile retains evidence beyond the initial corpus; total memory has no qualified static bound "
             "and requires supervised serial execution",
         )
-    return ResourceEstimate(
-        "weka-materialized-v1",
-        None,
-        4 * active_inputs,
-        lower,
-        peak,
-        "Weka per-play import and native replay estimate; normalized hashes, planned outputs and active prompts; "
-        "runtime trace validation still required",
-    )
+    return estimate
 
 
 OBSERVED_TRACE_MODEL = "trace-observed-peak-v1"
@@ -746,14 +805,23 @@ def _scan_finite_trace(
     return counters
 
 
+def _trace_scan_identity(files: list[Path]) -> tuple[Any, ...]:
+    return tuple(
+        (str(path.absolute()), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        for path, stat in ((path, path.stat()) for path in files)
+    )
+
+
 _TRACE_SCAN_CACHE_SIZE = 16
 _TRACE_SCAN_CACHE: OrderedDict[tuple[Any, ...], _TraceCounters] = OrderedDict()
+_WEKA_SCAN_CACHE: OrderedDict[tuple[Any, ...], ResourceEstimate] = OrderedDict()
 _TRACE_SCAN_CACHE_LOCK = threading.Lock()
 
 
 def _clear_trace_scan_cache() -> None:
     with _TRACE_SCAN_CACHE_LOCK:
         _TRACE_SCAN_CACHE.clear()
+        _WEKA_SCAN_CACHE.clear()
 
 
 def _estimate_finite_trace(
@@ -771,10 +839,7 @@ def _estimate_finite_trace(
             "trace-scan-v1",
             format_name,
             workload.get("trace_block_size"),
-            tuple(
-                (str(path), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-                for path, stat in ((path, path.stat()) for path in files)
-            ),
+            _trace_scan_identity(files),
         )
         with _TRACE_SCAN_CACHE_LOCK:
             counters = _TRACE_SCAN_CACHE.get(key)

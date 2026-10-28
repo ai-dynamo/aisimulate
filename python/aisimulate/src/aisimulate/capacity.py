@@ -10,6 +10,7 @@ State sizing is re-exported from the shared estimator SDK.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from functools import cache
 from typing import Any
 
@@ -28,6 +29,22 @@ _DEFAULT_AIC_SYSTEM = "h200_sxm"
 _DEFAULT_MAX_NUM_BATCHED_TOKENS = 8192
 _DEFAULT_MAX_NUM_SEQUENCES = 1
 _DEFAULT_BLOCK_SIZES = {"vllm": 64, "sglang": 1, "trtllm": 32}
+
+
+def _vision_cache_bytes(lowered: Mapping[str, Any]) -> int:
+    """The embedding cache a rank hosting the vision encoder deducts from its KV budget."""
+    cache = (lowered.get("sglang") or {}).get("vlm_cache_bytes")
+    if cache is None:
+        raise ValueError("rank.vision requires rank.sglang.vlm_cache_bytes")
+    return int(cache)
+
+
+def _vision_encoder_parallel(lowered: Mapping[str, Any]) -> str:
+    """The tower layout a rank hosting the vision encoder sizes its weights by."""
+    layout = ((lowered.get("timing_model") or {}).get("config") or {}).get("encoder_parallel")
+    if layout not in ("tp", "dp"):
+        raise ValueError("rank.vision requires timing_model.config.encoder_parallel (tp or dp)")
+    return layout
 
 
 def materialize_aic_num_gpu_blocks(
@@ -201,6 +218,32 @@ def materialize_aic_num_gpu_blocks(
             # canonical lowering has already pinned the selected root above.
             capacity_systems_path = resolved_roots[0]
 
+    speculative_profile_kwargs = {}
+    if lowered.get("aic_fpm_profile") is not None:
+        from aisimulate_core.sdk.fpm_profile import load_fpm_profile
+
+        deployment = load_fpm_profile(lowered["aic_fpm_profile"]).select(
+            model=model,
+            system=lowered.get("aic_system") or _DEFAULT_AIC_SYSTEM,
+            backend=backend,
+            backend_version=lowered.get("aic_backend_version", lowered.get("backend_version")),
+            worker_type=lowered.get("worker_type", "aggregated"),
+            tp_size=lowered.get("aic_tp_size", 1),
+            pp_size=lowered.get("aic_pp_size", 1),
+            attention_dp_size=dp,
+            moe_tp_size=lowered.get("aic_moe_tp_size"),
+            moe_ep_size=lowered.get("aic_moe_ep_size"),
+            cp_size=lowered.get("aic_cp_size", 1),
+        )
+        if deployment.execution_profile is not None:
+            depth = lowered.get("aic_nextn", 0)
+            if canonical_result is not None:
+                depth = lowered["timing_model"]["config"]["nextn"]
+                for name in ("aic_nextn", "nextn"):
+                    if name in lowered and lowered[name] != depth:
+                        raise ValueError(f"{name} conflicts with canonical timing configuration")
+            speculative_profile_kwargs["nextn"] = depth
+
     lowered["num_gpu_blocks"] = estimate_num_gpu_blocks(
         backend_name=backend,
         system=lowered.get("aic_system") or _DEFAULT_AIC_SYSTEM,
@@ -247,7 +290,11 @@ def materialize_aic_num_gpu_blocks(
             else {}
         ),
         **({"context_length": lowered.get("max_model_len")} if lowered.get("aic_fpm_profile") is not None else {}),
+        colocated_encoder=bool(lowered.get("vision", False)),
+        reserved_bytes=_vision_cache_bytes(lowered) if lowered.get("vision") else 0,
+        encoder_parallel=_vision_encoder_parallel(lowered) if lowered.get("vision") else None,
         **({"diagnostics": memory_diagnostics} if memory_diagnostics is not None else {}),
+        **speculative_profile_kwargs,
     )
     return finish_lowering(lowered)
 
@@ -356,12 +403,16 @@ def estimate_num_gpu_blocks(
     fpm_profile: dict[str, Any] | None = None,
     worker_type: str = "aggregated",
     context_length: int | None = None,
+    nextn: int | None = None,
+    colocated_encoder: bool = False,
+    reserved_bytes: int = 0,
+    encoder_parallel: str | None = None,
 ) -> int:
     """Estimate per-rank KV blocks using the replay-wide AIC contract.
 
-    NextN is intentionally absent. AIC currently can return negative KV
-    capacity for Eagle when speculative-decoding state is included. Timing
-    compilation still receives NextN; only capacity estimation omits it.
+    Legacy analytical estimates omit NextN. Measured speculative profiles
+    instead carry their depth to validate the observed pool, without estimating
+    additional draft-model memory.
     """
 
     if backend_name not in DEFAULT_BACKEND_VERSIONS:
@@ -384,6 +435,8 @@ def estimate_num_gpu_blocks(
             raise ValueError(f"no perf database for system={system!r}, backend={backend_name!r}")
 
     validate_moe_controls(enable_eplb=enable_eplb, wideep_num_slots=wideep_num_slots)
+    if nextn is not None and fpm_profile is None:
+        raise ValueError("nextn capacity forwarding requires an FPM profile")
 
     if backend_name == "trtllm":
         memory_fraction_kind = "of_free"
@@ -437,7 +490,11 @@ def estimate_num_gpu_blocks(
             cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
             **({"fpm_profile": fpm_profile, "worker_type": worker_type} if fpm_profile is not None else {}),
             **({"context_length": context_length} if context_length is not None else {}),
+            colocated_encoder=colocated_encoder,
+            reserved_bytes=reserved_bytes,
+            encoder_parallel=encoder_parallel,
             **({"diagnostics": diagnostics} if diagnostics is not None else {}),
+            **({"nextn": nextn} if nextn is not None else {}),
         )
     )
 

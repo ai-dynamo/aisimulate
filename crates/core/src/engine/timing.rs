@@ -328,6 +328,35 @@ impl ValidatedTimingPhase {
         TimingPhaseEvidence::try_from_operations(operations).map(Self)
     }
 
+    /// This phase stretched by an online correction `factor`: operation
+    /// latencies and energies scale with it and the totals are reduced again,
+    /// so power is unchanged. SOL compares the same work and stays the
+    /// unscaled physical baseline.
+    #[cfg(feature = "python")]
+    pub(crate) fn scaled(&self, factor: f64) -> Result<Self> {
+        ensure!(
+            factor.is_finite() && factor >= 0.0,
+            "online correction factor must be finite and non-negative, got {factor}"
+        );
+        let mut phase = self.0.clone();
+        phase.latency_ms *= factor;
+        phase.covered_latency_ms *= factor;
+        phase.energy_wms = phase.energy_wms.map(|energy| energy * factor);
+        for operation in &mut phase.operations {
+            operation.latency_ms *= factor;
+            operation.covered_latency_ms *= factor;
+            operation.energy_wms = operation.energy_wms.map(|energy| energy * factor);
+        }
+        phase.reconcile_operation_totals();
+        ensure!(
+            phase.latency_ms.is_finite()
+                && phase.covered_latency_ms.is_finite()
+                && phase.energy_wms.is_none_or(f64::is_finite),
+            "online correction factor {factor} overflowed timing evidence"
+        );
+        Ok(Self(phase))
+    }
+
     pub(crate) fn as_phase(&self) -> &TimingPhaseEvidence {
         &self.0
     }
@@ -736,32 +765,47 @@ pub enum TimingModelConfig {
     },
 }
 
+/// One homogeneous group of images in a vision-encoder batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct VisionShape {
+    pub encoder: crate::engine::EncoderShape,
+    pub count: u32,
+}
+
+/// Exact totals of the prefill batch one forward pass computes: its requests,
+/// the tokens they compute, and the cached or earlier-chunk KV they read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrefillTotals {
+    pub batch_size: usize,
+    pub new_tokens: usize,
+    pub prefix_tokens: usize,
+}
+
+/// One forward pass that computes prefill and decode work together, in
+/// milliseconds: the prefill latency and the latency the decode batch adds.
+/// Their sum is the provider's estimate of the whole pass.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MixedPassMs {
+    pub prefill_ms: f64,
+    pub decode_ms: f64,
+}
+
 /// Runtime latency model injected at the engine boundary.
 ///
 /// Implementations may call AIC, interpolate profiler data, or use another
 /// provider without adding that dependency to `aisimulate-core`.
 pub trait TimingModel: Send + Sync {
-    /// Whether `validate_prefill_batch` may reject geometry. A false return
-    /// guarantees only that validation accepts every batch, not that prediction
-    /// or duration conversion is infallible. Admission must still protect those
-    /// later operations for external providers.
-    fn prefill_batch_validation_can_fail(&self) -> bool {
-        true
-    }
-
-    /// Whether `predict_prefill_ms` may fail or return a non-finite duration
-    /// for a batch that validation accepted. Only a false return from both this
-    /// and `prefill_batch_validation_can_fail` lets admission skip its rollback
-    /// checkpoint, so injected providers keep this conservative default.
-    fn prefill_prediction_can_fail(&self) -> bool {
-        true
-    }
-
     /// Validate actual (new tokens, cached prefix) pairs before a scheduler
     /// reduces them to means. Providers with nonlinear per-request execution
     /// policies may reject batches that their aggregate API cannot represent.
     fn validate_prefill_batch(&self, _requests: &[(usize, usize)]) -> Result<()> {
         Ok(())
+    }
+
+    /// Predict one vision-encoder batch's latency in milliseconds. Latency-only
+    /// providers keep the default `None`; the scheduler rejects image work then.
+    fn predict_vision_ms(&self, _shapes: &[VisionShape]) -> Result<Option<f64>> {
+        Ok(None)
     }
 
     /// Predict one prefill batch's latency in milliseconds.
@@ -772,6 +816,21 @@ pub trait TimingModel: Send + Sync {
         mean_prefix: usize,
     ) -> Result<f64>;
 
+    /// Predict one prefill batch from its exact totals: `new_tokens` computed
+    /// by the batch and `prefix_tokens` of cached or earlier-chunk KV that its
+    /// requests read. Integer means cannot represent every heterogeneous
+    /// batch, so providers indexed by these totals override this method. The
+    /// default keeps the per-request means of [`Self::predict_prefill_ms`].
+    fn predict_prefill_totals_ms(
+        &self,
+        batch_size: usize,
+        new_tokens: usize,
+        prefix_tokens: usize,
+    ) -> Result<f64> {
+        let (mean_isl, mean_prefix) = mean_prefill_shape(batch_size, new_tokens, prefix_tokens);
+        self.predict_prefill_ms(batch_size, mean_isl, mean_prefix)
+    }
+
     /// Predict one decode batch's latency in milliseconds.
     fn predict_decode_ms(
         &self,
@@ -780,6 +839,26 @@ pub trait TimingModel: Send + Sync {
         mean_context_length: usize,
         total_kv_tokens: usize,
     ) -> Result<f64>;
+
+    /// Predict one forward pass that computes `prefill` together with a decode
+    /// batch. Arguments after `prefill` describe the decode batch as in
+    /// [`Self::predict_decode_ms`].
+    ///
+    /// A provider that prices such a pass as one forward returns its prefill
+    /// latency and the latency the decode batch adds, which sum to its
+    /// estimate of that pass. The default `None` means the provider has no
+    /// such composition; schedulers then price the prefill with
+    /// [`Self::predict_prefill_totals_ms`] and a separate decode pass.
+    fn predict_mixed_pass_ms(
+        &self,
+        _prefill: PrefillTotals,
+        _batch_size: usize,
+        _active_kv_tokens: usize,
+        _mean_context_length: usize,
+        _total_kv_tokens: usize,
+    ) -> Result<Option<MixedPassMs>> {
+        Ok(None)
+    }
 
     /// Return typed evidence accumulated by this provider so far.
     ///
@@ -810,17 +889,19 @@ pub trait TimingModel: Send + Sync {
     }
 }
 
+/// Per-request integer means `(isl, prefix)` of a prefill batch's totals.
+pub(crate) fn mean_prefill_shape(
+    batch_size: usize,
+    new_tokens: usize,
+    prefix_tokens: usize,
+) -> (usize, usize) {
+    let mean = |tokens: usize| tokens.checked_div(batch_size).unwrap_or(0);
+    (mean(new_tokens + prefix_tokens), mean(prefix_tokens))
+}
+
 struct PolynomialTimingModel;
 
 impl TimingModel for PolynomialTimingModel {
-    fn prefill_batch_validation_can_fail(&self) -> bool {
-        false
-    }
-
-    fn prefill_prediction_can_fail(&self) -> bool {
-        false
-    }
-
     fn predict_prefill_ms(
         &self,
         batch_size: usize,
@@ -853,14 +934,6 @@ struct FixedTimingModel {
 }
 
 impl TimingModel for FixedTimingModel {
-    fn prefill_batch_validation_can_fail(&self) -> bool {
-        false
-    }
-
-    fn prefill_prediction_can_fail(&self) -> bool {
-        false
-    }
-
     fn predict_prefill_ms(
         &self,
         batch_size: usize,
@@ -1059,7 +1132,6 @@ mod tests {
             decode_ms: 3.0,
         })
         .unwrap();
-        assert!(!model.prefill_batch_validation_can_fail());
         assert_eq!(model.predict_prefill_ms(0, 128, 0).unwrap(), 0.0);
         assert_eq!(model.predict_decode_ms(0, 128, 64, 1024).unwrap(), 0.0);
         assert_eq!(model.predict_prefill_ms(2, 128, 0).unwrap(), 7.0);
@@ -1067,10 +1139,28 @@ mod tests {
     }
 
     #[test]
-    fn polynomial_model_does_not_need_admission_checkpoint() {
+    fn polynomial_model_accepts_heterogeneous_prefill_batches() {
         let model = built_in_timing_model(&TimingModelConfig::Polynomial).unwrap();
-        assert!(!model.prefill_batch_validation_can_fail());
         model.validate_prefill_batch(&[(4, 0), (12, 8)]).unwrap();
+    }
+
+    #[test]
+    fn mean_only_providers_keep_receiving_per_request_means() {
+        struct MeanProbe(std::sync::Mutex<Vec<(usize, usize, usize)>>);
+        impl TimingModel for MeanProbe {
+            fn predict_prefill_ms(&self, batch: usize, isl: usize, prefix: usize) -> Result<f64> {
+                self.0.lock().unwrap().push((batch, isl, prefix));
+                Ok(1.0)
+            }
+            fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> Result<f64> {
+                Ok(1.0)
+            }
+        }
+        let probe = MeanProbe(Default::default());
+        // Three requests computing 16 tokens after reading 8: means (24 / 3, 8 / 3).
+        probe.predict_prefill_totals_ms(3, 16, 8).unwrap();
+        probe.predict_prefill_totals_ms(0, 0, 0).unwrap();
+        assert_eq!(*probe.0.lock().unwrap(), vec![(3, 8, 2), (0, 0, 0)]);
     }
 
     #[test]

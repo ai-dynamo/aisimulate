@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+provenance: collected
+runtime:
+  framework: vllm
+  version: 0.31.0
+  image: vllm/vllm-openai:v0.31.0
+  image_digest: sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3
+  source_commit: db9527a46873454610df6dbedf79a36d6bf1a7f6
+tables:
+  mhc_module_perf:
+    # GLM-5.3-Flash mHC (hidden 4096, hc_mult 4, 20 Sinkhorn iterations), replicated per TP rank (no TP axis).
+    # GB300 (SM103, ocijhb), 4 GPUs/node, stock image arm64 child sha256:3f7dd5b777d34d1724456ce71f87385dca288c3bb23029ab27dee358f5d2b971 (no overlay) run via pyxis; launcher audits/glm53flash-v031-recollect/opsmig/launcher; Slurm job(s) 896354.
+    # data_sha256: a2143079f674396b641017bfb403d5523bdf43f4bc00b33bdbf6229107212d93
+    collector_ref: bdfc9eb527babc2d3c506ed65a42294e8e563f02
+    collector_hash: sha256:9591a8ccdb727a37e52eb0635613eab32bb76b58587c5060a5f92d85798b5e97
+    case_plan_hash: sha256:5df748d1a619b360aa56378c37f9d498ed9f85b02299c26ddb3c0789616095f7
+    collected_at: '2026-10-08'
+    rows: 175
+    status: complete
