@@ -186,7 +186,8 @@ def test_eager_does_not_touch_graph_lifetime_in_either_mode(monkeypatch):
     opted = trace_benchmark(monkeypatch, eager=True, explicit=True)
     assert default == opted
     assert default["resets"] == []
-    assert default["events"].count("kernel") == 7
+    # eager: num_warmups (2) + num_runs (3); the helper no longer repeats the eager warmup after the capture step
+    assert default["events"].count("kernel") == 5
 
 
 def test_only_vllm_mla_module_binds_explicit_graph_cleanup():

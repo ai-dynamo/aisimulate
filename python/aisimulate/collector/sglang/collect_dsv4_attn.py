@@ -55,10 +55,24 @@ os.environ.setdefault("SGLANG_APPLY_CONFIG_BACKUP", "none")
 # few shapes which the bench's own warmup JIT-compiles on first use.
 os.environ["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] = "0"
 try:
-    from helper import PhaseClock, _resolve_local_model_path, benchmark_with_power, log_perf, render_phase_totals
+    from helper import (
+        PeriodicGarbageCollector,
+        PhaseClock,
+        _resolve_local_model_path,
+        benchmark_with_power,
+        log_perf,
+        render_phase_totals,
+    )
 except ModuleNotFoundError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from helper import PhaseClock, _resolve_local_model_path, benchmark_with_power, log_perf, render_phase_totals
+    from helper import (
+        PeriodicGarbageCollector,
+        PhaseClock,
+        _resolve_local_model_path,
+        benchmark_with_power,
+        log_perf,
+        render_phase_totals,
+    )
 
 try:
     from collector.sglang.runtime_limits import (
@@ -1389,6 +1403,8 @@ def run_dsv4_mla_module(
         )
     ]
     phase_totals: dict[str, float] = {}
+    # gc.collect() after every point cost 0.2-0.4 s (half of a context sweep); collect periodically instead.
+    point_gc = PeriodicGarbageCollector()
 
     # SGLang derives compressed-pool sizes from max_total_tokens. Direct
     # probes with an explicit value must account for both the full pool and
@@ -1658,7 +1674,7 @@ def run_dsv4_mla_module(
                             ("req_to_token_pool.clear", model_runner.req_to_token_pool.clear),
                             ("token_to_kv_pool_allocator.clear", model_runner.token_to_kv_pool_allocator.clear),
                             ("torch.cuda.empty_cache", torch.cuda.empty_cache),
-                            ("gc.collect", gc.collect),
+                            ("gc.collect", point_gc.maybe_collect),
                         ):
                             try:
                                 _cleanup_step()

@@ -60,10 +60,16 @@ def _stub_torch(monkeypatch):
     )
 
 
+class _PeriodicGCStub:
+    def maybe_collect(self):
+        return False
+
+
 def _install_helper_stub(monkeypatch):
     _stub_module(
         monkeypatch,
         "collector.helper",
+        PeriodicGarbageCollector=_PeriodicGCStub,
         _resolve_local_model_path=lambda path: path,
         benchmark_with_power=_noop,
         get_sm_version=lambda: 100,

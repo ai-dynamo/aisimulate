@@ -136,7 +136,13 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from collector.case_generator import get_mla_module_model_specs, get_mla_module_sweep_spec
-from collector.helper import _resolve_local_model_path, benchmark_with_power, get_sm_version, log_perf
+from collector.helper import (
+    PeriodicGarbageCollector,
+    _resolve_local_model_path,
+    benchmark_with_power,
+    get_sm_version,
+    log_perf,
+)
 from collector.registry_types import PerfFile
 
 if "glm_moe_dsa" not in _CONFIG_REGISTRY:
@@ -1113,11 +1119,15 @@ def run_mla_module_worker(
     )
 
 
+# gc.collect() after every case cost 0.17 s of a ~1 s module case; collect periodically instead.
+_CASE_GC = PeriodicGarbageCollector()
+
+
 def _cleanup(kv_cache_manager):
     if kv_cache_manager is not None:
         kv_cache_manager.shutdown()
     torch.cuda.empty_cache()
-    gc.collect()
+    _CASE_GC.maybe_collect()
 
 
 # ═══════════════════════════════════════════════════════════════════════

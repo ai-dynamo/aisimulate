@@ -257,6 +257,51 @@ def render_phase_totals(totals: dict[str, float]) -> str:
     return f"{points} point(s): " + " ".join(parts)
 
 
+class PeriodicGarbageCollector:
+    """Run ``gc.collect()`` every ``every`` calls, or sooner when allocated CUDA
+    memory sits more than ``growth_bytes`` above the lowest level seen after a
+    collection.
+
+    A full collection in a process that holds a loaded model costs 0.2-0.4 s;
+    running it after every case or sweep point was half of an SGLang DSV4
+    context sweep and 0.17 s of every TRT-LLM module case. The collectors
+    release framework state (KV pools, CUDA graphs, workspace buffers)
+    explicitly, so the collection only has to catch reference cycles, and the
+    memory guard keeps a cycle-heavy sweep from growing unbounded.
+    """
+
+    def __init__(self, every: int = 16, growth_bytes: int = 2 << 30) -> None:
+        self.every = max(1, int(every))
+        self.growth_bytes = int(growth_bytes)
+        self.calls = 0
+        self.floor: int | None = None
+
+    @staticmethod
+    def _allocated() -> int:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                return int(torch.cuda.memory_allocated())
+        except Exception:
+            pass
+        return 0
+
+    def maybe_collect(self) -> bool:
+        import gc
+
+        self.calls += 1
+        allocated = self._allocated()
+        if self.floor is None:
+            self.floor = allocated
+        if self.calls < self.every and allocated <= self.floor + self.growth_bytes:
+            return False
+        gc.collect()
+        self.calls = 0
+        self.floor = min(self.floor, self._allocated())
+        return True
+
+
 @contextmanager
 def benchmark_with_power(
     device,
@@ -400,15 +445,13 @@ def benchmark_with_power(
         # ═══════════════════════════════════════════════════════════════
         # Warmup the ACTUAL execution path (after graph capture)
         # ═══════════════════════════════════════════════════════════════
-        if torch.cuda.is_available():
+        # Eager callers already ran num_warmups kernel_func() calls above;
+        # repeating them here re-ran the same eager path (23% of an SGLang
+        # MSA context sweep) ahead of an identical timed loop.
+        if torch.cuda.is_available() and use_graph:
             torch.cuda.synchronize()
             for _ in range(num_warmups):
-                if use_graph:
-                    g.replay()
-                else:
-                    # Fallback: Direct execution matching actual execution path
-                    for _ in range(repeat_n):
-                        kernel_func()
+                g.replay()
             torch.cuda.synchronize()
         _close_phase("graph_warmup")
 

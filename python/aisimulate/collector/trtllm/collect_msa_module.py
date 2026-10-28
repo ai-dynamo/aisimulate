@@ -116,7 +116,13 @@ from collector.case_generator import (
     get_mla_module_sweep_spec,
     get_msa_head_counts,
 )
-from collector.helper import _resolve_local_model_path, benchmark_with_power, get_sm_version, log_perf
+from collector.helper import (
+    PeriodicGarbageCollector,
+    _resolve_local_model_path,
+    benchmark_with_power,
+    get_sm_version,
+    log_perf,
+)
 from collector.registry_types import PerfFile
 
 if not hasattr(_trtllm_configs, "PretrainedConfig"):
@@ -1079,11 +1085,15 @@ def run_msa_module_worker(
     )
 
 
+# gc.collect() after every case cost 0.17 s of a ~1 s module case; collect periodically instead.
+_CASE_GC = PeriodicGarbageCollector()
+
+
 def _cleanup(kv_cache_manager):
     if kv_cache_manager is not None:
         kv_cache_manager.shutdown()
     torch.cuda.empty_cache()
-    gc.collect()
+    _CASE_GC.maybe_collect()
 
 
 # ═══════════════════════════════════════════════════════════════════════
