@@ -333,7 +333,7 @@ def _declared_moe_routing(model_name: str):
     return None
 
 
-def run_moe_torch(
+def _run_moe_case(
     moe_type,
     num_tokens_lists,
     hidden_size,
@@ -350,7 +350,7 @@ def run_moe_torch(
     perf_filename,
     device="cuda:0",
 ):
-    """Run MoE forward passes and log latency/power to perf file (trtllm >= 1.1 collector)."""
+    """Run one MoE case (its token sweep) and log latency/power rows (trtllm >= 1.1 collector)."""
     device = torch.device(device)
     torch.cuda.set_device(device)
     torch.set_default_device(device)
@@ -950,10 +950,100 @@ def run_moe_torch(
             _clear_deepgemm_moe_workspaces()
             torch.cuda.empty_cache()
 
-    if os.getenv("TRTLLM_MOE_RESTART_WORKER", "1") != "0":
-        # Exit the worker process after completing MOE task to ensure complete resource cleanup.
-        # This forces OS to reclaim all GPU memory, CUDA context, and other resources.
-        sys.exit(EXIT_CODE_RESTART)
+
+# ── Worker recycling ─────────────────────────────────────────────────────────
+# AIConfigurator's collector (40bc989a9) exited the worker after EVERY case so the
+# OS reclaimed all GPU memory. collect.py spawns its workers, so each recycle
+# re-imports tensorrt_llm and re-creates the CUDA context (10-15 s); on the b300
+# base run (job 471159002) that was most of a 14-20 GPU-s case of 27 token
+# points. The policy is now:
+#   TRTLLM_MOE_RESTART_EVERY=N    recycle after N completed cases on this worker
+#                                 (default 16; 1 = the legacy per-case recycle;
+#                                 0 = never recycle on the count)
+#   TRTLLM_MOE_RESTART_LEAK_MB=M  recycle at once when more than M MiB are still
+#                                 allocated after the case's own cleanup (default
+#                                 1024; 0 disables the guard) — the residue the
+#                                 per-case exit used to hide
+#   TRTLLM_MOE_RESTART_WORKER=0   legacy switch: never recycle (overrides both)
+# A recycle is always announced on one greppable line so a run log shows how
+# often, and why, workers were replaced.
+_cases_since_worker_start = 0
+
+
+def _worker_restart_policy() -> tuple[int, int] | None:
+    """(cases per worker, leak guard MiB), or None when recycling is disabled."""
+    if os.getenv("TRTLLM_MOE_RESTART_WORKER", "1") == "0":
+        return None
+    every = int(os.getenv("TRTLLM_MOE_RESTART_EVERY", "16"))
+    leak_mb = int(os.getenv("TRTLLM_MOE_RESTART_LEAK_MB", "1024"))
+    if every < 0 or leak_mb < 0:
+        raise ValueError(
+            f"TRTLLM_MOE_RESTART_EVERY and TRTLLM_MOE_RESTART_LEAK_MB must be >= 0; got {every} and {leak_mb}"
+        )
+    return every, leak_mb
+
+
+def _recycle_worker_if_due(device) -> None:
+    """Exit this worker with EXIT_CODE_RESTART when the recycling policy says so.
+
+    Runs after the case's rows are persisted; collect.py marks the task done and
+    starts a fresh worker on the same device (worker(): SystemExit handling).
+    """
+    global _cases_since_worker_start
+    policy = _worker_restart_policy()
+    if policy is None:
+        return
+    every, leak_mb = policy
+    _cases_since_worker_start += 1
+    gc_collect()
+    allocated_mb = torch.cuda.memory_allocated(device) / 2**20
+    due_count = every > 0 and _cases_since_worker_start >= every
+    due_leak = leak_mb > 0 and allocated_mb > leak_mb
+    if not (due_count or due_leak):
+        return
+    reason = "leak guard" if due_leak else f"every {every}"
+    print(
+        f"trtllm.moe: recycling worker after {_cases_since_worker_start} case(s) "
+        f"({allocated_mb:.0f} MiB still allocated, {reason})"
+    )
+    sys.exit(EXIT_CODE_RESTART)
+
+
+def run_moe_torch(
+    moe_type,
+    num_tokens_lists,
+    hidden_size,
+    inter_size,
+    topk,
+    num_experts,
+    moe_tp_size,
+    moe_ep_size,
+    min_latency_mode,
+    model_name,
+    distributed="power_law",
+    power_law_alpha=0.0,
+    *,
+    perf_filename,
+    device="cuda:0",
+):
+    """Run one MoE case, then recycle the worker when the policy above is due."""
+    _run_moe_case(
+        moe_type,
+        num_tokens_lists,
+        hidden_size,
+        inter_size,
+        topk,
+        num_experts,
+        moe_tp_size,
+        moe_ep_size,
+        min_latency_mode,
+        model_name,
+        distributed=distributed,
+        power_law_alpha=power_law_alpha,
+        perf_filename=perf_filename,
+        device=device,
+    )
+    _recycle_worker_if_due(torch.device(device))
 
 
 if __name__ == "__main__":
