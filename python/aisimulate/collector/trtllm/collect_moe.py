@@ -983,6 +983,36 @@ def _worker_restart_policy() -> tuple[int, int] | None:
     return every, leak_mb
 
 
+def _release_trtllm_memory_buffers() -> int:
+    """Drop TRT-LLM's global workspace buffer pool between cases; returns MiB released.
+
+    b200 probe 2026-10-29 (job 514855922, TRTLLM_MOE_LEAK_DEBUG=1): everything still
+    allocated after a case was `BufferBlock` tensors of
+    tensorrt_llm/_torch/memory_buffer_utils.py — the module-level ``_buffer = Buffers()``
+    pool the fused-MoE kernels draw their workspaces from (2.7-86 GiB, the two
+    largest blocks in the 2:1 shape of w3_w1 / w2). It is a reuse pool, not a leak:
+    the next case replaces it, so memory did not grow across 117 cases. Serving keeps
+    it alive for the model's lifetime; between collector cases nothing is live, so
+    every block (reserved ones included — ``clear_memory_buffers`` keeps those) is
+    released here and the leak guard measures real residue again. @1.3.0rc29; a
+    TRT-LLM without this module (older pins) makes this a no-op.
+    """
+    try:
+        from tensorrt_llm._torch import memory_buffer_utils
+    except ImportError:
+        return 0
+    pool = memory_buffer_utils.get_memory_buffers()
+    released = 0
+    for blocks in list(pool.buffers.values()):
+        for block in blocks:
+            tensor = getattr(block, "buffer", None)
+            if tensor is not None:
+                released += tensor.numel() * tensor.element_size()
+            block.buffer = None
+    pool.buffers.clear()
+    return released // 2**20
+
+
 def _print_live_cuda_tensors(device, top: int = 8) -> None:
     """TRTLLM_MOE_LEAK_DEBUG=1: name what still pins CUDA memory after a case.
 
@@ -1021,12 +1051,14 @@ def _recycle_worker_if_due(device) -> None:
         return
     every, leak_mb = policy
     _cases_since_worker_start += 1
+    workspace_mb = _release_trtllm_memory_buffers()
     gc_collect()
     allocated_mb = torch.cuda.memory_allocated(device) / 2**20
     reserved_mb = torch.cuda.memory_reserved(device) / 2**20
     print(
         f"trtllm.moe: after case {_cases_since_worker_start} on this worker: "
-        f"{allocated_mb:.0f} MiB allocated, {reserved_mb:.0f} MiB reserved"
+        f"{allocated_mb:.0f} MiB allocated, {reserved_mb:.0f} MiB reserved "
+        f"(released {workspace_mb} MiB of TRT-LLM workspace buffers)"
     )
     if os.getenv("TRTLLM_MOE_LEAK_DEBUG", "0") == "1" and allocated_mb > 256:
         _print_live_cuda_tensors(device)

@@ -23,6 +23,7 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = Path(__file__).resolve().parents[4]
 SOURCE_PATH = REPO_ROOT / "collector" / "trtllm" / "collect_moe.py"
 NAMES = ("_cases_since_worker_start", "_worker_restart_policy", "_recycle_worker_if_due", "run_moe_torch")
+RELEASE = "_release_trtllm_memory_buffers"
 EXIT_CODE_RESTART = 10
 
 CASE_ARGS = ("nvfp4", [1, 2, 4], 7168, 2048, 8, 256, 1, 8, False, "deepseek-ai/DeepSeek-V3")
@@ -55,6 +56,7 @@ def _load(*, allocated_mb: float = 0.0):
             ),
         ),
         "_print_live_cuda_tensors": lambda device: None,
+        "_release_trtllm_memory_buffers": lambda: 0,
         "gc_collect": lambda: gc_calls.append(True),
         "_run_moe_case": lambda *args, **kwargs: cases.append((args, kwargs)),
     }
@@ -151,3 +153,48 @@ def test_case_body_no_longer_exits_on_its_own():
     ]
     assert exits == [], "worker recycling belongs to run_moe_torch's policy, not the case body"
     assert "TRTLLM_MOE_RESTART_WORKER" not in ast.get_source_segment(SOURCE_PATH.read_text(), body)
+
+
+def test_release_drops_every_trtllm_workspace_block_including_reserved(monkeypatch):
+    import types
+
+    tree = ast.parse(SOURCE_PATH.read_text(), filename=str(SOURCE_PATH))
+    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == RELEASE)
+    namespace: dict = {}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE_PATH), "exec"), namespace)
+
+    class _Tensor:
+        def __init__(self, mib):
+            self.mib = mib
+
+        def numel(self):
+            return self.mib * 2**20
+
+        def element_size(self):
+            return 1
+
+    class _Block:
+        def __init__(self, mib, reserved):
+            self.buffer = _Tensor(mib)
+            self.is_reserved = reserved
+
+    blocks = {"moe_workspace": [_Block(7168, True), _Block(3584, False)], "other": [_Block(28, False)]}
+    pool = SimpleNamespace(buffers=blocks)
+    utils = types.ModuleType("tensorrt_llm._torch.memory_buffer_utils")
+    utils.get_memory_buffers = lambda: pool
+    pkg = types.ModuleType("tensorrt_llm._torch")
+    pkg.memory_buffer_utils = utils
+    monkeypatch.setitem(sys.modules, "tensorrt_llm", types.ModuleType("tensorrt_llm"))
+    monkeypatch.setitem(sys.modules, "tensorrt_llm._torch", pkg)
+    monkeypatch.setitem(sys.modules, "tensorrt_llm._torch.memory_buffer_utils", utils)
+    assert namespace[RELEASE]() == 7168 + 3584 + 28
+    assert pool.buffers == {}
+
+
+def test_release_is_a_no_op_without_the_trtllm_module(monkeypatch):
+    tree = ast.parse(SOURCE_PATH.read_text(), filename=str(SOURCE_PATH))
+    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == RELEASE)
+    namespace: dict = {}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE_PATH), "exec"), namespace)
+    monkeypatch.setitem(sys.modules, "tensorrt_llm", None)
+    assert namespace[RELEASE]() == 0
