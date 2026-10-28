@@ -230,6 +230,26 @@ def _uses_modelopt_nvfp4_checkpoint(model_name: str) -> bool:
     )
 
 
+def _require_native_nemotron_h_nvfp4_dispatch(model_name: str) -> None:
+    """Refuse the synthetic CompressedTensors NVFP4 fall-through for latent-MoE Nemotron-H.
+
+    Reached only when no native ModelOpt branch above applied. Latent-MoE Nemotron-H
+    checkpoints (``moe_latent_size`` set, the Super/Ultra geometry) carry
+    ``quantization_config: null`` plus ``hf_quant_config.json``; vLLM serving resolves
+    them to a ModelOpt config (config/model.py:1349-1388, quantization/modelopt.py:756-763
+    @v0.31.0), never CompressedTensors. Raise instead of timing a different method
+    (layer_permissions.md, no invented fallbacks). Nemotron-H without a latent width
+    (Nano, Lightning) keeps its existing collection path.
+    """
+    config = _load_model_moe_config(model_name)
+    if config.get("model_type") == "nemotron_h" and config.get("moe_latent_size") is not None:
+        raise RuntimeError(
+            f"vLLM NVFP4 MoE collection for latent-MoE Nemotron-H {model_name!r} requires native "
+            "ModelOpt dispatch with complete checkpoint quantization metadata; the synthetic "
+            "CompressedTensors config would time a method serving never uses"
+        )
+
+
 def _resolve_moe_runtime_config(model_name: str, module_config: dict) -> dict:
     """Resolve the FusedMoE arguments used by vLLM 0.24 model code."""
     model_config = _load_model_moe_config(model_name)
@@ -664,6 +684,7 @@ def run_moe_torch(
 
         quant_config = ModelOptNvFp4Config.from_config(_load_checkpoint_quantization_config(model_name))
     elif moe_type == "nvfp4":
+        _require_native_nemotron_h_nvfp4_dispatch(model_name)
         nvfp4_args = {
             "num_bits": 4,
             "type": "float",

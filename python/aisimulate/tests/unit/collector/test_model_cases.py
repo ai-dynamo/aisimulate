@@ -746,7 +746,6 @@ def test_deepseek_minimax_and_nemotron_moe_quantization_is_artifact_specific():
         }
         if backend == "vllm":
             expected_by_artifact["nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8"] = {"fp8"}
-            expected_by_artifact["nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"] = set()
             expected_by_artifact["nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4"] = set()
         for model_path, expected in expected_by_artifact.items():
             allowed = {mode for mode in available_modes if moe_model_allows_quantization(backend, model_path, mode)}
@@ -2087,6 +2086,20 @@ def test_unverified_nemotron_rl_artifact_has_no_moe_profile(monkeypatch):
 
     assert get_common_moe_test_cases() == []
     assert get_common_mamba2_test_cases()
+
+
+def test_nemotron_super_nvfp4_declares_backend_specific_moe_geometry(monkeypatch):
+    from collector.case_generator import get_common_moe_test_cases
+
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4")
+
+    # vLLM routes experts through moe_latent_size=1024; the others use the outer width.
+    vllm_cases = get_common_moe_test_cases(backend="vllm")
+    assert {(c.hidden_size, c.inter_size, c.topk, c.num_experts) for c in vllm_cases} == {(1024, 2688, 22, 512)}
+    assert {c.tp for c in vllm_cases} >= {1, 2, 4, 8}
+    assert {c.ep for c in vllm_cases if c.tp == 8} == {1}
+    assert 4096 in {c.hidden_size for c in get_common_moe_test_cases(backend="sglang")}
+    assert 4096 in {c.hidden_size for c in get_common_moe_test_cases(backend="trtllm")}
 
 
 def test_support_matrix_mamba_alias_generates_targeted_cases(monkeypatch):

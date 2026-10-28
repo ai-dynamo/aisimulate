@@ -466,6 +466,7 @@ def test_vllm_sm100_repository_moe_getter_expands_native_dsv4_w4a8_cases(monkeyp
     ("model_path", "moe_type", "expected_hidden_size"),
     [
         ("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8", "fp8", 1024),
+        ("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4", "nvfp4", 1024),
         ("nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16", "bfloat16", 2048),
         ("nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8", "fp8", 2048),
     ],
@@ -474,7 +475,7 @@ def test_vllm_nemotron_uses_latent_moe_width(monkeypatch, model_path, moe_type, 
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
     _install_vllm_stubs(monkeypatch)
     module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
-    monkeypatch.setattr(module, "get_sm_version", lambda: 90)
+    monkeypatch.setattr(module, "get_sm_version", lambda: 100 if moe_type == "nvfp4" else 90)
 
     cases = module.get_moe_test_cases()
 
@@ -485,9 +486,42 @@ def test_vllm_nemotron_uses_latent_moe_width(monkeypatch, model_path, moe_type, 
 
 
 @pytest.mark.parametrize(
+    ("config", "raises"),
+    [
+        ({"model_type": "nemotron_h", "moe_latent_size": 1024}, True),
+        ({"model_type": "nemotron_h", "moe_latent_size": None}, False),
+        ({"model_type": "nemotron_h"}, False),
+        ({"model_type": "qwen3_moe", "moe_latent_size": 1024}, False),
+    ],
+)
+def test_vllm_nemotron_nvfp4_fallthrough_raises_only_for_latent_moe(monkeypatch, config, raises):
+    _install_vllm_stubs(monkeypatch)
+    module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
+    monkeypatch.setattr(module, "_load_model_moe_config", lambda _model_name: config)
+
+    if raises:
+        with pytest.raises(RuntimeError, match="native ModelOpt dispatch"):
+            module._require_native_nemotron_h_nvfp4_dispatch("synthetic/model")
+    else:
+        module._require_native_nemotron_h_nvfp4_dispatch("synthetic/model")
+
+
+def test_vllm_nemotron_nvfp4_guard_uses_packaged_metadata(monkeypatch):
+    _install_vllm_stubs(monkeypatch)
+    module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
+
+    with pytest.raises(RuntimeError, match="native ModelOpt dispatch"):
+        module._require_native_nemotron_h_nvfp4_dispatch("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4")
+    for unchanged in (
+        "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
+    ):
+        module._require_native_nemotron_h_nvfp4_dispatch(unchanged)
+
+
+@pytest.mark.parametrize(
     "model_path",
     [
-        "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
         "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4",
     ],
 )
