@@ -607,7 +607,9 @@ def _cached_msa_attention_layer(model_path: str, num_heads: int, gemm_type: str,
         _LAYER_CACHE.clear()
         gc.collect()
         torch.cuda.empty_cache()
-    entry = create_msa_attention_layer(model_path=model_path, num_heads=num_heads, gemm_type=gemm_type, device=device)
+    entry = create_msa_attention_layer(
+        model_path=model_path, num_heads=num_heads, gemm_type=gemm_type, device=device
+    )
     _LAYER_CACHE[key] = entry
     return entry
 
