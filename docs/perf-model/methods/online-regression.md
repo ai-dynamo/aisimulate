@@ -495,10 +495,12 @@ The sampler uses $`\log(1+x_j)`$ of its selected retention coordinates to choose
 cells. The independent fit uses its selected feature values. Grid bounds expand
 with incoming observations and do not
 shrink on eviction. If the store exceeds its capacity, it evicts the oldest
-observation in a most-populated cell. Hash-map ordering can affect tied
-choices. Each retained observation has weight one; an evicted observation
-has weight zero. This is spatially balanced retention, not a FIFO window or
-exponential forgetting.
+observation in a most-populated cell. Among equally populated cells it picks
+the lexicographically greatest cell index, and refits read cells in index
+order, so identical inputs retain and fit identical samples in every process.
+Each retained observation has weight one; an evicted observation has weight
+zero. This is spatially balanced retention, not a FIFO window or exponential
+forgetting.
 
 Let $M$ be retained capacity, $B$ the bucket-map storage scanned to select an
 eviction. With two fixed features:
@@ -659,7 +661,10 @@ axes, and no `fit.linear` block. Evaluate fit choice against deployment-specific
 observations; a nonlinear fit does not guarantee lower prediction error.
 
 Configuration serialization saves controls, not observations, knots, or fitted
-state. Reconstructing a saved configuration creates a cold model. Offline CLI,
+state. Reconstructing a saved configuration creates a cold model. To keep the
+retained samples, fits, statistics and search clocks, save a
+[state snapshot](../configuration.md#state-snapshots) with
+`save_state_snapshot`; restoring it predicts bit-identically and can continue tuning exactly. Offline CLI,
 Sweeper, and Replay reject an untrained regression even when its configuration
 parses successfully.
 

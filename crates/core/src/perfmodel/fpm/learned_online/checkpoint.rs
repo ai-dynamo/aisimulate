@@ -54,10 +54,36 @@ struct SeedStore {
 }
 
 #[derive(Serialize)]
-struct SaveState<'a> {
-    learner: &'a OnlineLearner,
+struct SaveState<'a, L: Serialize> {
+    learner: L,
     correction_json: &'a str,
     artifact_sha256: &'a str,
+}
+
+/// Encodes exactly like the derived `OnlineLearner` layout, with the learner's
+/// source locations (`artifact_path`, `checkpoint_path`, `source_sha256`)
+/// cleared. Loading always replaces them from the resolved configuration, so
+/// clearing them makes the bytes independent of where the source lived.
+struct SourceFreeLearner<'a>(&'a OnlineLearner);
+
+impl Serialize for SourceFreeLearner<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let learner = self.0;
+        let mut config = learner.config.clone();
+        config.artifact_path = None;
+        config.checkpoint_path = None;
+        config.source_sha256 = None;
+        let mut state = serializer.serialize_struct("OnlineLearner", 7)?;
+        state.serialize_field("config", &config)?;
+        state.serialize_field("identity_json", &learner.identity_json)?;
+        state.serialize_field("anchor_manifest_sha256", &learner.anchor_manifest_sha256)?;
+        state.serialize_field("stores", &learner.stores)?;
+        state.serialize_field("next_row_id", &learner.next_row_id)?;
+        state.serialize_field("version", &learner.version)?;
+        state.serialize_field("rejected_observations", &learner.rejected_observations)?;
+        state.end()
+    }
 }
 
 #[derive(Deserialize)]
@@ -229,7 +255,28 @@ pub(super) fn load(
     config: &FpmLearnedConfig,
     canonical: &ForwardPassPerfModelConfig,
 ) -> Result<OnlineLearner, AicError> {
+    load_with(path, learned, config, canonical, false)
+}
+
+/// `combined_runtime` admits the adaptive expert of a causal selector saved
+/// inside a state snapshot, whose frozen expert, calibration and selector
+/// evidence the snapshot restores separately. Standalone configurations never
+/// set it, so a runtime checkpoint alone still cannot seed a selector.
+pub(super) fn load_with(
+    path: &Path,
+    learned: &mut LearnedForwardPassModel,
+    config: &FpmLearnedConfig,
+    canonical: &ForwardPassPerfModelConfig,
+    combined_runtime: bool,
+) -> Result<OnlineLearner, AicError> {
     let m = manifest_pinned(path, config.source_sha256.as_deref())?;
+    if combined_runtime
+        && !(m.schema == RUNTIME_SCHEMA && config.adaptation == LearnedAdaptation::CausalSelector)
+    {
+        return Err(invalid(
+            "a causal selector snapshot requires its runtime checkpoint",
+        ));
+    }
     let actual_identity = canonical_learned_identity(canonical)?;
     if m.identity != actual_identity {
         return Err(invalid(
@@ -244,7 +291,7 @@ pub(super) fn load(
         return Err(invalid("frozen inference must not initialize a learner"));
     }
     if m.schema == RUNTIME_SCHEMA {
-        if config.adaptation == LearnedAdaptation::CausalSelector {
+        if config.adaptation == LearnedAdaptation::CausalSelector && !combined_runtime {
             return Err(invalid(
                 "causal_selector requires a training checkpoint; online runtime snapshots do not contain frozen calibration and selector state",
             ));
@@ -946,6 +993,19 @@ pub(super) fn save(
     learner: &OnlineLearner,
     corrections: &str,
 ) -> Result<(), AicError> {
+    save_with(path, learned, learner, corrections, false)
+}
+
+/// `source_free` writes [`SourceFreeLearner`] instead of the learner's own
+/// source locations; state snapshots use it so identical learner state
+/// always produces identical bytes.
+pub(super) fn save_with(
+    path: &Path,
+    learned: &LearnedForwardPassModel,
+    learner: &OnlineLearner,
+    corrections: &str,
+    source_free: bool,
+) -> Result<(), AicError> {
     if path.exists() {
         return Err(invalid(
             "checkpoint destination already exists; use a new snapshot directory",
@@ -966,9 +1026,18 @@ pub(super) fn save(
     let artifact_sha256 = hash(&model_path)?;
     let state_path = staging.path().join("state.bin");
     let mut writer = BufWriter::new(File::create(&state_path).map_err(|e| io(&state_path, e))?);
-    bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .serialize_into(
+    let options = bincode::DefaultOptions::new().with_fixint_encoding();
+    if source_free {
+        options.serialize_into(
+            &mut writer,
+            &SaveState {
+                learner: SourceFreeLearner(learner),
+                correction_json: corrections,
+                artifact_sha256: &artifact_sha256,
+            },
+        )
+    } else {
+        options.serialize_into(
             &mut writer,
             &SaveState {
                 learner,
@@ -976,7 +1045,8 @@ pub(super) fn save(
                 artifact_sha256: &artifact_sha256,
             },
         )
-        .map_err(|e| invalid(format!("cannot serialize learner state: {e}")))?;
+    }
+    .map_err(|e| invalid(format!("cannot serialize learner state: {e}")))?;
     writer.flush().map_err(|e| io(&state_path, e))?;
     writer
         .get_ref()
@@ -1011,6 +1081,32 @@ fn publish_checkpoint(staging: &Path, path: &Path) -> Result<(), AicError> {
 #[cfg(test)]
 mod publication_tests {
     use super::*;
+
+    #[test]
+    fn source_free_learner_encoding_matches_the_derived_layout() {
+        let learner = OnlineLearner {
+            config: FpmLearnedConfig {
+                checkpoint_path: Some("/checkpoint".into()),
+                source_sha256: Some("a".repeat(64)),
+                ..FpmLearnedConfig::default()
+            },
+            identity_json: "{}".into(),
+            anchor_manifest_sha256: "b".repeat(64),
+            stores: BTreeMap::new(),
+            next_row_id: 7,
+            version: 3,
+            rejected_observations: 2,
+            restored_corrections: Some("{}".into()),
+        };
+        let options = bincode::DefaultOptions::new().with_fixint_encoding();
+        let mut cleared = learner.clone();
+        cleared.config.checkpoint_path = None;
+        cleared.config.source_sha256 = None;
+        assert_eq!(
+            options.serialize(&SourceFreeLearner(&learner)).unwrap(),
+            options.serialize(&cleared).unwrap()
+        );
+    }
 
     #[test]
     fn destination_created_after_preparation_is_never_replaced() {

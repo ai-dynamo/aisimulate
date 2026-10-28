@@ -854,6 +854,145 @@ mod prefill_timing_totals {
     }
 }
 
+mod mixed_pass_timing {
+    use super::*;
+    use crate::engine::{MixedPassMs, PrefillTotals};
+    use std::sync::{Arc, Mutex};
+
+    /// Prefill alone costs 10 ms and a separate decode pass 7 ms. With `pass`,
+    /// the provider prices a mixed pass as one forward with those prefill and
+    /// decode parts. It records each mixed query and counts separate prefills.
+    struct OnePassProbe {
+        pass: Option<MixedPassMs>,
+        queries: Mutex<Vec<(PrefillTotals, usize, usize)>>,
+        prefills: Mutex<usize>,
+    }
+
+    impl OnePassProbe {
+        fn new(pass: Option<MixedPassMs>) -> Arc<Self> {
+            Arc::new(Self {
+                pass,
+                queries: Mutex::default(),
+                prefills: Mutex::default(),
+            })
+        }
+    }
+
+    impl crate::engine::TimingModel for OnePassProbe {
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            *self.prefills.lock().unwrap() += 1;
+            Ok(10.0)
+        }
+
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(7.0)
+        }
+
+        fn predict_mixed_pass_ms(
+            &self,
+            prefill: PrefillTotals,
+            batch: usize,
+            active_kv_tokens: usize,
+            _: usize,
+            _: usize,
+        ) -> anyhow::Result<Option<MixedPassMs>> {
+            self.queries
+                .lock()
+                .unwrap()
+                .push((prefill, batch, active_kv_tokens));
+            Ok(self.pass)
+        }
+    }
+
+    fn core(engine_type: EngineType, timing: Arc<OnePassProbe>, nextn: Option<usize>) -> VllmCore {
+        let mut core = VllmCore::new(
+            MockEngineArgs::builder()
+                .engine_type(engine_type)
+                .block_size(4)
+                .num_gpu_blocks(64)
+                .max_num_batched_tokens(Some(16))
+                .max_num_seqs(Some(4))
+                .enable_chunked_prefill(true)
+                .enable_prefix_caching(false)
+                .speedup_ratio(1.0)
+                .aic_nextn(nextn)
+                .aic_nextn_accept_rates(nextn.map(|_| "1".into()))
+                .build()
+                .unwrap(),
+        );
+        core.args.perf_model =
+            crate::engine::common::perf_model::PerfModel::External { timing }.into();
+        core
+    }
+
+    fn submit(core: &mut VllmCore, id: u128, prompt: usize, output: usize) {
+        core.receive(DirectRequest {
+            tokens: vec![id as u32; prompt],
+            max_output_tokens: output,
+            uuid: Some(Uuid::from_u128(id)),
+            ..Default::default()
+        });
+    }
+
+    /// A pass that computes prefill and a decode step costs the provider's one
+    /// forward, whose prefill part replaces the separate 10 ms prefill.
+    /// Without a composition it remains a prefill and a separate decode pass,
+    /// and passes without both kinds of work never ask.
+    #[rstest]
+    #[case::vllm(EngineType::Vllm, Some((9.0, 2.0)), 11.0, 1)]
+    #[case::trtllm(EngineType::Trtllm, Some((9.0, 2.0)), 11.0, 1)]
+    #[case::no_composition(EngineType::Vllm, None, 17.0, 2)]
+    fn a_pass_with_prefill_and_decode_costs_the_provider_forward(
+        #[case] engine_type: EngineType,
+        #[case] pass: Option<(f64, f64)>,
+        #[case] mixed_ms: f64,
+        #[case] separate_prefills: usize,
+    ) {
+        let timing = OnePassProbe::new(pass.map(|(prefill_ms, decode_ms)| MixedPassMs {
+            prefill_ms,
+            decode_ms,
+        }));
+        let mut core = core(engine_type, timing.clone(), None);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        submit(&mut core, 1, 8, 3);
+        // The first token comes from the prefill forward: no decode work.
+        let first = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(first.end_ms, 10.0);
+        submit(&mut core, 2, 8, 2);
+        let mixed = core.execute_pass(&mut collector, first.end_ms);
+        assert_eq!(mixed.end_ms - first.end_ms, mixed_ms);
+        let decode = core.execute_pass(&mut collector, mixed.end_ms);
+        assert_eq!(decode.end_ms - mixed.end_ms, 7.0);
+        // Only the mixed pass asked, with the prefill it computes and the
+        // decoder's nine-token sequence; a composed pass prices no separate
+        // prefill.
+        let prefill = PrefillTotals {
+            batch_size: 1,
+            new_tokens: 8,
+            prefix_tokens: 0,
+        };
+        assert_eq!(*timing.queries.lock().unwrap(), [(prefill, 1, 9)]);
+        assert_eq!(*timing.prefills.lock().unwrap(), separate_prefills);
+    }
+
+    #[test]
+    fn speculative_pass_with_prefill_and_decode_costs_the_provider_forward() {
+        let timing = OnePassProbe::new(Some(MixedPassMs {
+            prefill_ms: 9.0,
+            decode_ms: 3.0,
+        }));
+        let mut core = core(EngineType::Vllm, timing.clone(), Some(1));
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        submit(&mut core, 1, 8, 6);
+        let first = core.execute_pass(&mut collector, 0.0);
+        submit(&mut core, 2, 8, 2);
+        let mixed = core.execute_pass(&mut collector, first.end_ms);
+        assert_eq!(mixed.end_ms - first.end_ms, 12.0);
+        assert_eq!(timing.queries.lock().unwrap().len(), 1);
+        assert_eq!(*timing.prefills.lock().unwrap(), 1);
+    }
+}
+
 mod source_holds {
     use super::*;
 

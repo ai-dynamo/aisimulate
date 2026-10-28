@@ -328,6 +328,35 @@ impl ValidatedTimingPhase {
         TimingPhaseEvidence::try_from_operations(operations).map(Self)
     }
 
+    /// This phase stretched by an online correction `factor`: operation
+    /// latencies and energies scale with it and the totals are reduced again,
+    /// so power is unchanged. SOL compares the same work and stays the
+    /// unscaled physical baseline.
+    #[cfg(feature = "python")]
+    pub(crate) fn scaled(&self, factor: f64) -> Result<Self> {
+        ensure!(
+            factor.is_finite() && factor >= 0.0,
+            "online correction factor must be finite and non-negative, got {factor}"
+        );
+        let mut phase = self.0.clone();
+        phase.latency_ms *= factor;
+        phase.covered_latency_ms *= factor;
+        phase.energy_wms = phase.energy_wms.map(|energy| energy * factor);
+        for operation in &mut phase.operations {
+            operation.latency_ms *= factor;
+            operation.covered_latency_ms *= factor;
+            operation.energy_wms = operation.energy_wms.map(|energy| energy * factor);
+        }
+        phase.reconcile_operation_totals();
+        ensure!(
+            phase.latency_ms.is_finite()
+                && phase.covered_latency_ms.is_finite()
+                && phase.energy_wms.is_none_or(f64::is_finite),
+            "online correction factor {factor} overflowed timing evidence"
+        );
+        Ok(Self(phase))
+    }
+
     pub(crate) fn as_phase(&self) -> &TimingPhaseEvidence {
         &self.0
     }
@@ -743,6 +772,24 @@ pub struct VisionShape {
     pub count: u32,
 }
 
+/// Exact totals of the prefill batch one forward pass computes: its requests,
+/// the tokens they compute, and the cached or earlier-chunk KV they read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrefillTotals {
+    pub batch_size: usize,
+    pub new_tokens: usize,
+    pub prefix_tokens: usize,
+}
+
+/// One forward pass that computes prefill and decode work together, in
+/// milliseconds: the prefill latency and the latency the decode batch adds.
+/// Their sum is the provider's estimate of the whole pass.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MixedPassMs {
+    pub prefill_ms: f64,
+    pub decode_ms: f64,
+}
+
 /// Runtime latency model injected at the engine boundary.
 ///
 /// Implementations may call AIC, interpolate profiler data, or use another
@@ -792,6 +839,26 @@ pub trait TimingModel: Send + Sync {
         mean_context_length: usize,
         total_kv_tokens: usize,
     ) -> Result<f64>;
+
+    /// Predict one forward pass that computes `prefill` together with a decode
+    /// batch. Arguments after `prefill` describe the decode batch as in
+    /// [`Self::predict_decode_ms`].
+    ///
+    /// A provider that prices such a pass as one forward returns its prefill
+    /// latency and the latency the decode batch adds, which sum to its
+    /// estimate of that pass. The default `None` means the provider has no
+    /// such composition; schedulers then price the prefill with
+    /// [`Self::predict_prefill_totals_ms`] and a separate decode pass.
+    fn predict_mixed_pass_ms(
+        &self,
+        _prefill: PrefillTotals,
+        _batch_size: usize,
+        _active_kv_tokens: usize,
+        _mean_context_length: usize,
+        _total_kv_tokens: usize,
+    ) -> Result<Option<MixedPassMs>> {
+        Ok(None)
+    }
 
     /// Return typed evidence accumulated by this provider so far.
     ///

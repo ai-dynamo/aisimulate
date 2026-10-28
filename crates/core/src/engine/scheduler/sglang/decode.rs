@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
 
+use std::cmp::Reverse;
 use std::time::Duration;
 
 use uuid::Uuid;
@@ -18,7 +22,8 @@ use super::config::{SglangConfig, floor_to_block};
 use super::request::SglangRequest;
 
 /// SGLang `SGLANG_RETRACT_DECODE_STEPS`: decode steps worth of KV reserved per surviving request
-/// when `retract_decode` re-estimates `new_token_ratio`.
+/// when `retract_decode` re-estimates `new_token_ratio`, and the per-request token reserve that
+/// `release_req` evicts cached pages toward after each retraction.
 pub(super) const RETRACT_DECODE_STEPS: usize = 20;
 
 #[derive(Default)]
@@ -235,12 +240,13 @@ fn check_decode_mem_for_burst(
             break;
         }
 
-        let Some((idx, _)) = running
-            .iter()
-            .enumerate()
-            .filter(|(_, req)| !req.pending_terminal)
-            .min_by_key(|(_, req)| req.output_len())
-        else {
+        // `retract_decode` stably sorts the batch once, longest output first and then shortest
+        // prompt first, retracts from the end, and keeps the survivors in that order. Ghost rows
+        // are sorted with the batch but never retracted.
+        if retracted.is_empty() && running.iter().any(|req| !req.pending_terminal) {
+            running.sort_by_key(|req| (Reverse(req.output_len()), req.prompt_len()));
+        }
+        let Some(idx) = running.iter().rposition(|req| !req.pending_terminal) else {
             break;
         };
 
@@ -264,6 +270,13 @@ fn check_decode_mem_for_burst(
             logical_available_blocks_before: Some(logical_available_blocks_before),
             required_blocks_before: Some(required_blocks_before),
         });
+        // `release_req` evicts cached pages toward a reserve for the remaining requests. Only the
+        // next step's demand decides whether to retract another request.
+        let reserve = running.len() * RETRACT_DECODE_STEPS;
+        let available = kv_manager.cache().available_tokens();
+        if available < reserve {
+            kv_manager.evict(reserve - available);
+        }
         retracted.push(req);
     }
 
@@ -375,7 +388,6 @@ fn prefill_first_tokens(
         newly_completed.push(running.remove(idx));
     }
     newly_completed.reverse();
-    completed_requests.extend(newly_completed);
 
     // The rest need a slot for the first output token; a row that finished on it takes its ghost
     // slot in the next decode step. Make room by evicting cached pages only.
@@ -388,12 +400,19 @@ fn prefill_first_tokens(
     if available < needed {
         kv_manager.evict(needed - available);
     }
+    // Prefill commits its prompt even when the first decode slots cannot be reserved.
+    // Overlap mode defers these commits until the forward result is observed.
+    for req in running.iter_mut().chain(newly_completed.iter_mut()) {
+        commit_materialized_prefix(req, kv_manager, config, &mut cache_commits);
+    }
+    completed_requests.extend(newly_completed);
     let reserved_pages = needed / config.block_size;
     let Some(mut reservation) = kv_manager.reserve_decode_pages(reserved_pages) else {
         return DecodeResult {
             completed_requests,
             output_signals,
             end_ms: current_time_ms,
+            cache_commits,
             ..DecodeResult::default()
         };
     };
@@ -408,7 +427,6 @@ fn prefill_first_tokens(
         }
         let token_id = req.next_output_token();
         req.append_output_token(token_id, config.block_size);
-        commit_materialized_prefix(req, kv_manager, config, &mut cache_commits);
         req.debug_assert_invariants(config.block_size);
         output_signals.push(OutputSignal {
             uuid: req.uuid,
@@ -641,7 +659,7 @@ fn simulate_step(
 
     output_signals.reserve(running.len());
     let mut completed_indices = Vec::new();
-    let mut cache_commits = Vec::new();
+    let cache_commits = Vec::new();
     let mut decode_acceptance = DecodeAcceptance::default();
 
     for (idx, req) in running.iter_mut().enumerate() {
@@ -702,7 +720,7 @@ fn simulate_step(
                 break;
             }
 
-            commit_materialized_prefix(req, kv_manager, config, &mut cache_commits);
+            // Decode output becomes reusable only when the request finishes.
             req.debug_assert_invariants(config.block_size);
         }
     }

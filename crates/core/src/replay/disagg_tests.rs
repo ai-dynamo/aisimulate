@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, VecDeque};
@@ -65,6 +68,8 @@ impl ReplayTelemetryObserver for CaptureTelemetryObserver {
 struct QueueUntilWorkerPlacement {
     scheduler_id: Option<usize>,
     pending: VecDeque<Uuid>,
+    abort_count: usize,
+    fail_abort: bool,
 }
 
 impl QueueUntilWorkerPlacement {
@@ -72,6 +77,8 @@ impl QueueUntilWorkerPlacement {
         Self {
             scheduler_id: None,
             pending: VecDeque::new(),
+            abort_count: 0,
+            fail_abort: false,
         }
     }
 
@@ -133,6 +140,13 @@ impl PlacementPolicy<ReplayRequestPayload> for QueueUntilWorkerPlacement {
         let before = self.pending.len();
         self.pending.retain(|pending| *pending != request_id);
         self.pending.len() != before
+    }
+
+    fn dispatch_aborted(&mut self, request_id: Uuid, _now_ms: f64) -> anyhow::Result<()> {
+        self.abort_count += 1;
+        self.cancel_pending(request_id);
+        anyhow::ensure!(!self.fail_abort, "injected abort failure");
+        Ok(())
     }
 
     fn request_terminal(
@@ -436,6 +450,30 @@ fn trtllm_disaggregation_runs_source_first_handoff_to_completion() {
     assert_eq!(
         conformance.lifecycle,
         crate::replay::expected_normalized_handoff(HandoffOrder::SourceFirst)
+    );
+    assert_eq!(conformance.completed_requests, 1);
+    assert!(conformance.source_drained);
+    assert!(conformance.destination_drained);
+}
+
+#[test]
+fn sglang_destination_stores_nothing_before_running_admission() {
+    let mut config = sglang_disagg_config();
+    config.num_prefill_workers = 1;
+    config.num_decode_workers = 1;
+    let runtime =
+        new_handoff_conformance(&config, VecDeque::from([request(1, 128, 2, 0.0)])).unwrap();
+
+    let conformance = runtime.run_handoff_conformance(EngineType::Sglang).unwrap();
+
+    assert_eq!(conformance.order, HandoffOrder::DestinationFirst);
+    assert_eq!(
+        conformance.lifecycle,
+        crate::replay::expected_normalized_handoff(HandoffOrder::DestinationFirst)
+    );
+    assert_eq!(
+        conformance.destination_stored,
+        crate::replay::NormalizedStoredTiming::default()
     );
     assert_eq!(conformance.completed_requests, 1);
     assert!(conformance.source_drained);
@@ -2101,6 +2139,92 @@ fn per_request_handoff_detail_preserves_backend_causality_and_stage_reuse() {
         assert_eq!(second.prefill_route_overlap_tokens, Some(0));
         assert_eq!(second.decode_route_overlap_tokens, Some(0));
         assert!(second.reused_input_tokens > 0);
+    }
+}
+
+#[rstest::rstest]
+#[case::prefill(true, disagg_config())]
+#[case::decode(false, sglang_disagg_config())]
+fn command_failure_aborts_placement_and_preserves_request_failure(
+    #[case] prefill: bool,
+    #[case] config: TestDisaggConfig,
+    #[values(false, true)] fail_abort: bool,
+) {
+    let config = config.runtime_config(false).unwrap();
+    let mut runtime =
+        DisaggRuntimeImpl::<QueueUntilWorkerPlacement, NoEngineEvents, ()>::new_composed(
+            &config,
+            AdmissionQueue::new_requests(
+                VecDeque::from([request(1, 64, 2, 0.0), request(2, 64, 2, 100.0)]),
+                ReplayMode::Trace,
+            ),
+            false,
+            |_, prefill_topology, _, decode_topology| {
+                Ok((
+                    QueueUntilWorkerPlacement::initially_blocked(prefill_topology),
+                    QueueUntilWorkerPlacement::initially_blocked(decode_topology),
+                ))
+            },
+        )
+        .unwrap()
+        .with_per_request_records(true);
+    runtime.step().unwrap();
+    let uuid = Uuid::from_u128(1);
+    let state = runtime.state_mut(uuid).unwrap();
+    let action = if prefill {
+        state.pending_prefill_action.take()
+    } else {
+        state.pending_destination_action.take()
+    }
+    .unwrap();
+    runtime.prefill_placement.fail_abort = fail_abort;
+    runtime.decode_placement.fail_abort = fail_abort;
+    // Inject failure at the command boundary after a real route/action exists.
+    // No engine accepts ownership, so cleanup must not block subsequent requests.
+    let result = if prefill {
+        runtime.submit_prefill(uuid, usize::MAX, action, None)
+    } else {
+        runtime.reserve_destination(uuid, usize::MAX, action)
+    };
+    assert_eq!(
+        (
+            runtime.prefill_placement.abort_count,
+            runtime.decode_placement.abort_count
+        ),
+        (usize::from(prefill), usize::from(!prefill))
+    );
+    if fail_abort {
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(
+            error.contains("unknown rank") && error.contains("injected abort failure"),
+            "{error}"
+        );
+    } else {
+        result.unwrap();
+        assert_eq!(
+            runtime.state(uuid).unwrap().terminal_status(),
+            Some(ReplayTerminalStatus::Failed)
+        );
+        runtime.prefill_placement.scheduler_id = Some(0);
+        runtime.decode_placement.scheduler_id = Some(0);
+        runtime.run_to_completion().unwrap();
+        assert_eq!(
+            runtime.prefill_placement.abort_count + runtime.decode_placement.abort_count,
+            1
+        );
+        let report = runtime.run().unwrap().0.finish();
+        assert_eq!(report.request_counts.completed_requests, 1);
+        assert_eq!(
+            report
+                .per_request
+                .iter()
+                .map(|r| r.terminal_status)
+                .collect::<Vec<_>>(),
+            [
+                ReplayTerminalStatus::Failed,
+                ReplayTerminalStatus::Completed
+            ],
+        );
     }
 }
 

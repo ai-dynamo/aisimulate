@@ -38,10 +38,11 @@ use super::evidence::{
 };
 use super::progress::ReplayProgress;
 use super::runtime_utils::{
-    ReplayStepOutcome, next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp,
-    pop_ready_scaling_tick, pop_ready_telemetry_tick, pop_ready_transfer_complete,
-    pop_ready_worker_completions, pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick,
-    push_transfer_complete, push_worker_completions, push_worker_ready, settle_internal_work,
+    ReplayStepOutcome, dispatch_failure, next_non_telemetry_event_ms,
+    next_timestamp as choose_next_timestamp, pop_ready_scaling_tick, pop_ready_telemetry_tick,
+    pop_ready_transfer_complete, pop_ready_worker_completions, pop_ready_worker_ready,
+    push_scaling_tick, push_telemetry_tick, push_transfer_complete, push_worker_completions,
+    push_worker_ready, settle_internal_work,
 };
 use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot};
 #[cfg(test)]
@@ -1394,6 +1395,9 @@ where
         ) {
             Ok(effects) => effects,
             Err(error) => {
+                if let Err(abort) = self.prefill_placement.dispatch_aborted(uuid, self.now_ms) {
+                    return Err(dispatch_failure(error, Err(abort)));
+                }
                 self.acknowledge_action(
                     uuid,
                     action,
@@ -1404,6 +1408,12 @@ where
         };
         if !matches!(effects.result, CommandResult::Submitted(id) if id == uuid) {
             bail!("offline disagg replay prefill submission returned an unexpected result");
+        }
+        if let Err(error) = self.prefill_placement.dispatch_committed(uuid, self.now_ms) {
+            return Err(dispatch_failure(
+                error,
+                self.prefill_placement.dispatch_aborted(uuid, self.now_ms),
+            ));
         }
         self.flow.finish_prefill_submission(
             uuid,
@@ -1434,6 +1444,9 @@ where
         ) {
             Ok(effects) => effects,
             Err(error) => {
+                if let Err(abort) = self.decode_placement.dispatch_aborted(uuid, self.now_ms) {
+                    return Err(dispatch_failure(error, Err(abort)));
+                }
                 self.acknowledge_action(
                     uuid,
                     action,
@@ -1447,6 +1460,12 @@ where
             CommandResult::DestinationAccepted { request_id } if request_id == uuid
         ) {
             bail!("offline disagg replay destination acceptance returned an unexpected result");
+        }
+        if let Err(error) = self.decode_placement.dispatch_committed(uuid, self.now_ms) {
+            return Err(dispatch_failure(
+                error,
+                self.decode_placement.dispatch_aborted(uuid, self.now_ms),
+            ));
         }
         let stored_hashes = self
             .flow
@@ -2748,6 +2767,11 @@ where
             // request to an idle prefill worker at this same timestamp.
             let mut changed = settle(self)?;
             changed |= self.prune_stale_transfer_events();
+            let prefill = self.prefill_placement.advance_clock(self.now_ms)?;
+            let decode = self.decode_placement.advance_clock(self.now_ms)?;
+            changed |= !prefill.is_empty() || !decode.is_empty();
+            self.dispatch_prefill_placements(prefill)?;
+            self.dispatch_decode_placements(decode)?;
             let completed = self.apply_worker_completions()?;
             changed |= completed;
             if completed {

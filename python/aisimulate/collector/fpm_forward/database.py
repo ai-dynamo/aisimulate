@@ -21,6 +21,7 @@ import yaml
 from aisimulate.fpm_contract import FPM_RESOLVED_CONFIG_GLOB
 from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
 
+from .capabilities import GENERIC_RUNTIME_TEMPLATE_ID
 from .native_artifact import NativeCollection, _rank_artifacts, select_native_measurements, validate_native_collection
 from .planner import FPMCell, FPMCollectionPlan, backend_identity_columns
 
@@ -289,6 +290,18 @@ def aggregate_cell(
             and _kv_seed_regime(point, phase) != "real_kv"
         ):
             raise ValueError("DeepSeek-V4.1 cached prefill/decode publication requires real_kv measurements")
+        if (
+            capability.template_id == GENERIC_RUNTIME_TEMPLATE_ID
+            and phase == "prefill"
+            and total_kv > 0
+            and measurement.kv_seed_regime != "real_prefix"
+        ):
+            # No FPM template describes this cache layout. The formal prefill regime stays n/a, so only the native
+            # row shows a fake prefix. Decode rows keep the existing classification, which labels them.
+            raise ValueError(
+                "cached prefill for this cache layout requires real_prefix seeding, "
+                f"got {measurement.kv_seed_regime or 'unreported'}"
+            )
         rows.append(
             {
                 "cell_id": cell.cell_id,

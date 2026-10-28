@@ -15,10 +15,14 @@ use super::{
 const SCORE_RELATIVE_TOLERANCE: f64 = 1e-10;
 const MIN_COVARIANCE_DETERMINANT_RATIO: f64 = 1e-8;
 
-#[derive(Clone, Debug)]
+/// Running sums may be non-finite: that is a legitimate pending-rebuild
+/// state (see [`RecursiveFit::rebuild_required`]) and snapshots preserve it.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct RecursiveFit<const D: usize = 2, const S: usize = 3> {
     count: usize,
+    #[serde(with = "crate::fpm::snapshot::codec::arr")]
     means: [f64; S],
+    #[serde(with = "crate::fpm::snapshot::codec::arr2")]
     scatter: [[f64; S]; S],
     mutations_since_rebuild: usize,
     damaged_downdate: bool,
@@ -61,6 +65,25 @@ impl<const D: usize, const S: usize> RecursiveFit<D, S> {
 
     pub(super) fn observation_count(&self) -> usize {
         self.count
+    }
+
+    pub(super) fn non_negative(&self) -> bool {
+        self.non_negative
+    }
+
+    /// Configuration-derived controls must match; the count must track the
+    /// retained samples. Running sums are path-dependent and accepted as saved.
+    pub(super) fn validate_restored(&self, fresh: &Self, retained: usize) -> Result<(), String> {
+        if self.ridge_scale.to_bits() != fresh.ridge_scale.to_bits()
+            || self.rebuild_interval != fresh.rebuild_interval
+            || self.non_negative != fresh.non_negative
+        {
+            return Err("regression statistics controls differ from configuration".into());
+        }
+        if self.count != retained {
+            return Err("regression statistics count differs from retained samples".into());
+        }
+        Ok(())
     }
 
     #[cfg(test)]

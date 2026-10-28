@@ -36,6 +36,11 @@ uv sync --project python/aisimulate --extra dev
 This creates `python/aisimulate/.venv`, builds the unified native extension,
 and installs the sole Python distribution together with its development tools.
 
+The development dependencies constrain pytest to `<9.2`: pytest 9.2's
+`monkeypatch` cleanup deletes forwarded model and memory attributes instead of
+restoring them. Keep this bound until compatibility-module patch restoration
+passes with a newer pytest release.
+
 To activate the environment:
 
 ```bash

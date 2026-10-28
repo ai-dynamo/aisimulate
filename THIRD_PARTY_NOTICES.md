@@ -44,6 +44,20 @@ native deterministic dependency executor and its transactional server-settlement
 barrier. The original NVIDIA copyright and Apache-2.0 license apply; no
 upstream serving implementation is vendored.
 
+The continuous-profile release rules in the same `driver.rs`, their regression
+tests there, and the release descriptions in
+`docs/replay/agentic/continuous-profiles.md` and `docs/replay/workloads.md` are
+modified re-implementations of the pinned `agentic_replay.py`,
+`src/aiperf/timing/branch_orchestrator.py`,
+`src/aiperf/timing/replay_dependencies.py` and
+`src/aiperf/common/loop_scheduler.py` behavior: dependency-relative release of
+continuations, spawns and joins, joins gated by the parent's own replay
+deadline, detected chains released when their replay barrier clears, and
+uniform idle shifts of every pending replay timer, repeated when a shift lands
+on a request still held by its replay barrier. NVIDIA modified these rules to
+operate on the native dependency graph. The original NVIDIA copyright and
+Apache-2.0 license apply; no upstream implementation is vendored.
+
 ## AIConfigurator
 
 The repository-root `.coderabbit.yaml` is adapted and modified from
@@ -1252,6 +1266,55 @@ the license is included at the repository root as `LICENSE` and in the Python
 distribution. Upstream license:
 https://github.com/vllm-project/vllm/blob/a474da28131f61684849b31e29af0eebaaedc383/LICENSE
 
+## GLM-5.3 model configuration files
+
+The following files are unmodified copies of the named Hugging Face
+configuration files at the immutable revisions shown:
+
+| Packaged file | Upstream file and revision |
+| --- | --- |
+| `src/aisimulate_core/model_configs/zai-org--GLM-5.3_config.json` | `config.json` from `zai-org/GLM-5.3@ba32f8c19c8738e2c57c71798c601d477a7bf844` |
+| `src/aisimulate_core/model_configs/zai-org--GLM-5.3-BF16_config.json` | `config.json` from `zai-org/GLM-5.3-BF16@abf42e6c0e53bc29a875511301e7b7fcd220315b` |
+
+Upstream repositories:
+https://huggingface.co/zai-org/GLM-5.3 and
+https://huggingface.co/zai-org/GLM-5.3-BF16
+
+Copyright owner: Z.AI. The copied files are unmodified. Both upstream
+revisions ship the GLM-5.3 License, reproduced in full below:
+
+```text
+GLM-5.3 License
+
+Copyright (c) 2026 Z.AI
+
+Permission is hereby granted, free of charge, to any person or entity (the "Licensee") obtaining a copy of this software — including the model weights, parameters, configuration files, inference and training code, and associated documentation (collectively, the "Software") — to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software; to run, deploy, fine-tune, or otherwise modify the Software and create derivative works from it; and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+1. The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. The Licensee's use of the Software must comply with applicable laws and regulations.
+
+2. "Model as a Service" means giving a third party access to language model inference or fine-tuning (e.g., via API) in a manner that allows such third party to exercise meaningful control over the inputs, parameters, or training data. This does not include (a) end-user products with model capabilities solely embedded within specific features or harnesses, or (b) mere relaying of requests to models hosted by others.
+If the Licensee or any of its affiliates operates a Model as a Service business, and the aggregate revenue of the Licensee and its affiliates exceeds 10 billion US dollars (or the equivalent in other currencies) in total over any consecutive 12 months, the Licensee must pass Z.AI's security review before using the Software or its derivative works for any commercial purpose. The scope and method of the security review shall be reasonably determined by Z.AI.
+
+3. THE SOFTWARE AND ANY OUTPUT AND RESULTS THEREFROM ARE PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL Z.AI OR ITS AFFILIATES OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+For any questions regarding this license, please contact glmlicense@z.ai.
+
+-----
+
+版权所有 (c) 2026 Z.AI
+
+特此免费授予任何获得本软件副本的个人或实体（"被许可方"）——包括模型权重、参数、配置文件、推理和训练代码及相关文档（统称"软件"）——不受限制地处理本软件的权利，包括但不限于：使用、复制、修改、合并、发布、分发、再许可和/或销售软件副本；运行、部署、微调或以其他方式修改软件并创建衍生作品；以及允许获得软件的其他人行使上述权利，但须遵守以下条件：
+
+1. 上述版权声明和本许可声明应包含在软件的所有副本或实质性部分中。被许可方对软件的使用必须符合适用法律法规。
+
+2. "模型即服务"指以允许第三方对输入、参数或训练数据行使实质性控制的方式，向第三方提供语言模型推理或微调服务（如通过API）。不包括：(a) 模型能力仅嵌入特定功能或框架中的终端用户产品，或(b) 单纯转发请求至他人托管的模型。
+若被许可方或其关联方运营"模型即服务"业务，且被许可方及关联方在任意连续12个月内累计总收入超过100亿美元（或等值其他货币），则被许可方在使用软件或其衍生作品进行任何商业用途之前，须通过Z.AI的安全审查。安全审查的范围和方式由Z.AI合理确定。
+
+3. 软件及其任何输出和结果均按"现状"提供，不附带任何形式的保证，无论是明示还是暗示，包括但不限于适销性、特定用途适用性和不侵权的保证。在任何情况下，Z.AI或其关联方或版权持有人均不对任何索赔、损害或其他责任承担责任，无论该责任是基于合同、侵权或其他方式，因软件或使用软件而产生或与之相关。
+
+如对本许可有任何疑问，请联系 glmlicense@z.ai。
+```
+
 ## GLM-5.3-Flash configurations and analytical model
 
 Unmodified configurations are included at
@@ -1443,3 +1506,94 @@ https://github.com/alibaba/tair-kvcache/blob/85402f1a012fb4279be5bb4b57613bb0a06
 
 The AISimulate files are modified re-implementations, not verbatim copies.
 Both derived files carry the source URLs and revisions in their headers.
+
+## SGLang v0.5.20 transferred-prompt publication at running admission and release on ready-queue cancellation
+
+The following repository-root files independently model transferred-prompt publication at running admission and release on ready-queue cancellation:
+
+- `crates/core/src/engine/kv_manager/sglang_backend.rs`
+- `crates/core/src/engine/scheduler/sglang/core.rs`
+- `crates/core/src/engine/scheduler/sglang/tests.rs`
+- `crates/core/src/replay/disagg_tests.rs`
+- `crates/core/src/replay/handoff.rs`
+
+The modified Rust behavior and synthetic regression fixtures adapt the contract
+observed in SGLang v0.5.20, commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+Original source paths: python/sglang/srt/disaggregation/decode.py (get_new_prebuilt_batch), python/sglang/srt/disaggregation/decode_schedule_batch_mixin.py (process_prebuilt), and python/sglang/srt/managers/scheduler.py (waiting-queue cancellation).
+
+Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
+the upstream license is at
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
+and its full text is included in this repository as `LICENSE`.
+Modified for AISimulate request leases, physical page accounting and replay.
+No serving implementation, production request content or upstream test fixture is vendored.
+
+## SGLang v0.5.20 partial-edge access recency and reinsertion of an already cached prefix
+
+The following repository-root files independently model partial-edge access recency and reinsertion of an already cached prefix:
+
+- `crates/core/src/engine/cache/radix_cache.rs`
+
+The modified Rust behavior and synthetic regression fixtures adapt the contract
+observed in SGLang v0.5.20, commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+Original source paths: python/sglang/srt/mem_cache/radix_cache.py (_match_prefix_helper and _insert_helper).
+
+Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
+the upstream license is at
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
+and its full text is included in this repository as `LICENSE`.
+Modified for AISimulate request leases, physical page accounting and replay.
+No serving implementation, production request content or upstream test fixture is vendored.
+
+## SGLang v0.5.20 stable length-policy retraction order and post-release cache eviction toward the survivor reserve
+
+The following repository-root files independently model stable length-policy retraction order and post-release cache eviction toward the survivor reserve:
+
+- `crates/core/src/engine/scheduler/sglang/core.rs`
+- `crates/core/src/engine/scheduler/sglang/decode.rs`
+- `crates/core/src/engine/scheduler/sglang/tests.rs`
+
+The modified Rust behavior and synthetic regression fixtures adapt the contract
+observed in SGLang v0.5.20, commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+Original source paths: python/sglang/srt/managers/schedule_batch.py (_get_decode_retraction_order, retract_decode and release_req).
+
+Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
+the upstream license is at
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
+and its full text is included in this repository as `LICENSE`.
+Modified for AISimulate request leases, physical page accounting and replay.
+No serving implementation, production request content or upstream test fixture is vendored.
+
+## SGLang v0.5.20 completed source-prompt publication before the transfer hold
+
+The following repository-root files independently model completed source-prompt publication before the transfer hold:
+
+- `crates/core/src/engine/scheduler/sglang/core.rs`
+- `crates/core/src/engine/scheduler/sglang/tests.rs`
+
+The modified Rust behavior and synthetic regression fixtures adapt the contract
+observed in SGLang v0.5.20, commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+Original source paths: python/sglang/srt/disaggregation/prefill.py (process_batch_result_disagg_prefill).
+
+Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
+the upstream license is at
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
+and its full text is included in this repository as `LICENSE`.
+Modified for AISimulate request leases, physical page accounting and replay.
+No serving implementation, production request content or upstream test fixture is vendored.
+
+## SGLang cache publication and KV event cadence
+
+The modified behavior and synthetic tests in `crates/core/src/engine/kv_manager/sglang_backend.rs`, `crates/core/src/engine/scheduler/sglang/core.rs`, `crates/core/src/engine/scheduler/sglang/decode.rs`, `crates/core/src/engine/scheduler/sglang/host_loop.rs`, and `crates/core/src/engine/scheduler/sglang/tests.rs` adapt the cache insert points and event queue/publish contract from SGLang v0.5.20, immutable commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`: `python/sglang/srt/mem_cache/radix_cache.py`, `python/sglang/srt/mem_cache/events.py`, `python/sglang/srt/managers/scheduler.py`, `python/sglang/srt/managers/scheduler_components/batch_result_processor.py`, and `python/sglang/srt/managers/scheduler_components/metrics_reporter.py`. Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e . Copyright 2023-2024 SGLang Team and contributors, Apache-2.0. The license text is included as `LICENSE`. Modified for AISimulate request leases, overlap observation, and physical page accounting. No production fixture is included.
+
+Running-request cancellation retains its KV lease until the in-flight forward
+is observed, adapting `Scheduler.abort_request` and result-time
+`release_kv_cache` from the same pinned scheduler and batch-result sources.

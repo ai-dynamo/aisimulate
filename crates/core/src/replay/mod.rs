@@ -153,7 +153,8 @@ pub use handoff::{
 };
 #[doc(hidden)]
 pub use protocol::{
-    AgenticRuntimeIdentity, DirectRequest, ReplayPromptTokenSource, ReplayRequestContext,
+    AGENTIC_CONVERSATION_LINEAGE_SCHEMA_V1, AgenticConversationLineage, AgenticRuntimeIdentity,
+    DirectRequest, ReplayPromptTokenSource, ReplayRequestContext,
 };
 pub use protocol::{AuthoredKvHints, ForwardPassSnapshot};
 #[doc(hidden)]

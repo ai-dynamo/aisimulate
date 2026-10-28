@@ -92,9 +92,9 @@ must not be composed with measurements that already include the draft work.
 Supported queries are pure-prefill and pure-decode `ForwardPassMetrics`, prefill
 static/detailed queries, and replay's prefill and decode queries with actual
 iteration totals. Raw mixed FPM, static multi-round generation, per-operation
-and ad-hoc operation queries fail explicitly. Ordinary replay retains its
-existing separate P/D phase composition; this is an approximation for mixed
-iterations, not a measured mixed-round model. Partial-width decode rounds still
+and ad-hoc operation queries fail explicitly. Ordinary replay with a measured
+round retains its existing separate P/D phase composition; this is an
+approximation for mixed iterations, not a measured mixed-round model. Partial-width decode rounds still
 use the configured depth's timing. Enable query coverage to identify holes
 rather than extrapolating.
 
@@ -204,10 +204,18 @@ scheduled per-rank FPM telemetry, including mixed work and its existing online
 correction behavior.
 
 Ordinary replay uses this returned model for FPM timing and emits
-`fpm_query_coverage` in its report when collection is enabled. The CLI also saves
-`fpm-coverage.json`, including partial evidence when a native timing error stops
-replay; the Python exception retains a `fpm_query_coverage` attribute for that
-failure path. A passing replay coverage status requires completed requests,
+`fpm_query_coverage` in its report when collection is enabled. A vLLM or
+TensorRT-LLM replay pass that computes prefill alongside decode steps runs as
+one forward. Replay charges the prefill at the pass's exact totals plus only
+the latency the decode requests add, `max(0, decode - decode_pass_baseline)`
+at their totals. A tuned model applies the online correction of that mixed
+iteration to both parts, so the pass costs what
+`estimate_forward_pass_time_ms()` returns for it. Measured SD-round profiles,
+MTP drafts (`nextn > 0`) and operation-level draft tails define no such decode
+share; replay prices their decode work as a separate decode pass. The CLI also
+saves `fpm-coverage.json`, including partial evidence when a native timing
+error stops replay; the Python exception retains a `fpm_query_coverage`
+attribute for that failure path. A passing replay coverage status requires completed requests,
 nonempty resolved queries and no unsupported lookup. It is distinct from
 operation/energy evidence, which whole-model FPM does not provide. See
 [FPM replay validation](../fpm-self-service/implementation.md#validate-fpm-query-coverage-with-agentx-replay)
