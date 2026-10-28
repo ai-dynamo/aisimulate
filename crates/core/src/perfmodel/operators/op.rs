@@ -524,6 +524,12 @@ impl Op {
         }
     }
 
+    /// Mamba2 op with a recorded state dtype. Mixed steps price it with
+    /// per-phase request/token coordinates instead of the token-major pass.
+    pub fn is_qualified_mamba(&self) -> bool {
+        matches!(self, Op::Mamba2(m) if m.state_dtype != "unrecorded")
+    }
+
     /// True if this op's name matches Python's mix-step filter for the
     /// context-attention bucket. Python uses literal string equality on
     /// `"context_attention"` — that's the LLAMA / MOE attention op name.
