@@ -516,6 +516,10 @@ def test_vllm_nemotron_nvfp4_selects_native_modelopt_from_packaged_metadata(monk
     assert module._load_checkpoint_quantization_config(nano)["quantization"]["group_size"] == 16
     assert module._modelopt_mixed_expert_prefix(nano) is None
     assert module._uses_modelopt_nvfp4_checkpoint(nano)
+    # Published MIXED_PRECISION exports resolve the routed-expert prefix.
+    for mixed in ("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4", "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4"):
+        assert module._modelopt_mixed_expert_prefix(mixed) == "backbone.layers.1.mixer.experts"
+        assert not module._uses_modelopt_nvfp4_checkpoint(mixed)
     # W4A16_NVFP4 experts do not match the W4A4 nvfp4 collector mode.
     with pytest.raises(ValueError, match="uniformly NVFP4 routed experts"):
         module._modelopt_mixed_expert_prefix("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4")

@@ -1390,6 +1390,33 @@ Model Agreement does not modify or supersede it. The full texts of both are
 preserved in the adjacent distributed
 `src/aisimulate_core/model_configs/GLM53_NVFP4_PROVENANCE.md`.
 
+## NVIDIA Nemotron 3 Super and Ultra NVFP4 model configuration files
+
+The following files are unmodified copies of the named Hugging Face
+configuration files at the immutable revisions shown:
+
+| Packaged file | Upstream file and revision |
+| --- | --- |
+| `src/aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4_config.json` | `config.json` from `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4@ff433f5493e25d631c9f12b5d55c674229923d02` |
+| `src/aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4_hf_quant_config.json` | `hf_quant_config.json` from `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4@ff433f5493e25d631c9f12b5d55c674229923d02` |
+| `src/aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4_config.json` | `config.json` from `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4@02462641f13d3af838b904f48195b9bb8a1e4ebc` |
+| `src/aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4_hf_quant_config.json` | `hf_quant_config.json` from `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4@02462641f13d3af838b904f48195b9bb8a1e4ebc` |
+
+Upstream repositories:
+https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4/tree/ff433f5493e25d631c9f12b5d55c674229923d02
+https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4/tree/02462641f13d3af838b904f48195b9bb8a1e4ebc
+
+Copyright owner: NVIDIA CORPORATION & AFFILIATES. The copied files are
+unmodified.
+
+Licenses, as declared by the upstream model cards at those revisions: Super
+uses the NVIDIA Nemotron Open Model License,
+https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-nemotron-open-model-license/
+(terms v. December 15, 2025, retrieved 2026-10-28). Ultra uses the OpenMDW
+License Agreement, version 1.1, https://openmdw.ai/license/1-1/. The full
+texts of both are preserved in the adjacent distributed
+`src/aisimulate_core/model_configs/NEMOTRON3_NVFP4_PROVENANCE.md`.
+
 ## vLLM DeepSeek V4 cache sizing
 
 `src/aisimulate_core/sdk/memory/deepseek_v4.py` and the indexer cache-dtype

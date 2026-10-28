@@ -2429,7 +2429,7 @@ def test_nvfp4_remapped_to_nvfp4_wo_on_hopper():
     """nvfp4 models on non-Blackwell get remapped to nvfp4_wo unconditionally."""
     t = Task(
         serving_mode="agg",
-        model_path="nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4",
+        model_path="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
         system_name="h100_sxm",
         backend_name="trtllm",
     )
@@ -2441,7 +2441,7 @@ def test_nvfp4_preserved_on_blackwell():
     """Blackwell keeps native nvfp4 quant modes."""
     t = Task(
         serving_mode="agg",
-        model_path="nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4",
+        model_path="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
         system_name="b200_sxm",
         backend_name="trtllm",
     )
