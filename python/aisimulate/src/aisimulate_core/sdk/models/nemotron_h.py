@@ -34,32 +34,15 @@ def _projection_matches(path: str, target: str) -> bool:
     return bool(re.match(target[3:], path)) if target.startswith("re:") else fnmatchcase(path, target)
 
 
-def _single_mode(suffix: str, values: list, default: common.GEMMQuantMode) -> common.GEMMQuantMode:
-    """One mode for an op that aggregates all MoE layers; reject disagreement instead of guessing."""
-    counts = Counter(values)
-    if len(counts) > 1:
-        per_layer = {m.name: n for m, n in counts.items()}
-        raise ValueError(
-            f"Nemotron-H projection {suffix} has different precision across layers ({per_layer}) "
-            "and one aggregated operation cannot represent it; "
-            "set gemm_quant_mode explicitly to price every projection with one mode"
-        )
-    return next(iter(counts), default)
-
-
 def _projection_modes(raw: dict, pattern: str, default: common.GEMMQuantMode, system: str | None = None) -> dict:
     """Resolve the shared-expert and latent projections from checkpoint metadata.
 
-    The model aggregates each projection over all MoE layers into one operation,
-    so layers that resolve to different precisions, or conflicting algorithms for
-    one path, are rejected. A full
-    ``quantized_layers`` listing makes every unlisted projection BF16; group
-    targets alone leave unmatched projections on ``default``. Exclusions win.
+    Returns ``{projection: {mode: number of MoE layers}}``. Layers with different
+    precisions get one operation each, so per-layer precision is kept exactly.
+    Conflicting or unsupported algorithms for one module path are rejected.
+    Group targets apply only without a ``quantized_layers`` listing. Exclusions win.
 
-    Only metadata that carries per-layer information changes anything. The
-    bundled ``nvidia/NVIDIA-Nemotron-3-*-NVFP4`` copies hold only
-    ``quant_algo: NVFP4``, so every projection stays on ``default`` for them;
-    the resolver applies to local or freshly downloaded checkpoints.
+    Metadata without per-layer information leaves every projection on ``default``.
 
     A projection that a listing leaves out is BF16 only for a targets-only
     ModelOpt MIXED_PRECISION export, the contract vLLM and SGLang implement
@@ -113,7 +96,7 @@ def _projection_modes(raw: dict, pattern: str, default: common.GEMMQuantMode, sy
             if len(algos) > 1 or any(algo not in modes for algo in algos):
                 raise ValueError(f"Unsupported mixed precision for Nemotron-H projection {suffix}: {algos}")
             values.append(modes[next(iter(algos))] if algos else unlisted)
-        resolved[suffix] = _single_mode(suffix, values, default)
+        resolved[suffix] = dict(Counter(values))
     return resolved
 
 
@@ -172,7 +155,7 @@ class NemotronHModel(BaseModel):
         self._num_experts = num_experts
         self._moe_inter_size = moe_inter_size
         self._hybrid_config: common.NemotronHConfig | None = None
-        self._projection_quant_modes: dict[str, common.GEMMQuantMode] = {}
+        self._projection_quant_modes: dict[str, dict[common.GEMMQuantMode, int]] = {}
         self._power_law_alpha = 1.01  # follow DeepSeek MoE
         # MTP (num_nextn_predict_layers > 0): scale generation iteration cost by
         # the small extra-layer factor (nextn+L)/L. Accepted-token progress is
@@ -200,6 +183,20 @@ class NemotronHModel(BaseModel):
         self._hybrid_config = hybrid_config
         self._build_context_ops()
         self._build_generation_ops()
+
+    def _projection_gemms(self, name: str, suffix: str, count, n: int, k: int, quant_mode, **kwargs) -> list:
+        """One GEMM per checkpoint precision of a projection, each priced for its own MoE layers.
+
+        Ops that share a name fold additively, so the buckets sum to the per-layer cost.
+        """
+        buckets = self._projection_quant_modes.get(suffix)
+        if not buckets:
+            return [ops.GEMM(name, count, n, k, quant_mode, **kwargs)]
+        total = sum(buckets.values())
+        return [
+            ops.GEMM(name, count if layers == total else count * layers / total, n, k, mode, **kwargs)
+            for mode, layers in buckets.items()
+        ]
 
     def _count_layer_types(self) -> dict[str, int]:
         """Count occurrences of each layer type in the pattern."""
@@ -352,12 +349,13 @@ class NemotronHModel(BaseModel):
             # See TensorRT-LLM modeling_nemotron_h.py NemotronHMLP class
             self.context_ops.extend(
                 [
-                    ops.GEMM(
+                    *self._projection_gemms(
                         "context_shared_up_gemm",
+                        "shared_experts.up_proj",
                         count,
                         cfg.moe_shared_expert_intermediate_size // tp_size,
                         h,
-                        self._projection_quant_modes.get("shared_experts.up_proj", gemm_quant_mode),
+                        gemm_quant_mode,
                     ),
                     ops.ElementWise(
                         "context_shared_relu2",
@@ -366,12 +364,13 @@ class NemotronHModel(BaseModel):
                         cfg.moe_shared_expert_intermediate_size // tp_size,
                         0.8,
                     ),
-                    ops.GEMM(
+                    *self._projection_gemms(
                         "context_shared_down_gemm",
+                        "shared_experts.down_proj",
                         count,
                         h,
                         cfg.moe_shared_expert_intermediate_size // tp_size,
-                        self._projection_quant_modes.get("shared_experts.down_proj", gemm_quant_mode),
+                        gemm_quant_mode,
                         low_precision_input=True,
                     ),
                 ]
@@ -392,13 +391,14 @@ class NemotronHModel(BaseModel):
             # When latent-MoE is active, fc1_latent_proj (h -> latent) runs before
             # dispatch, so dispatch/experts/combine all communicate in latent dim.
             if cfg.moe_latent_size > 0:
-                self.context_ops.append(
-                    ops.GEMM(
+                self.context_ops.extend(
+                    self._projection_gemms(
                         "context_fc1_latent_proj_gemm",
+                        "fc1_latent_proj",
                         count,
                         cfg.moe_latent_size // tp_size,
                         h,
-                        self._projection_quant_modes.get("fc1_latent_proj", gemm_quant_mode),
+                        gemm_quant_mode,
                     )
                 )
             self.context_ops.extend(
@@ -450,13 +450,14 @@ class NemotronHModel(BaseModel):
                 # fc2_latent_proj (latent -> h) runs after expert combine,
                 # before the post-MoE allreduce. Modeled as a row-parallel GEMM
                 # whose partial sums are aggregated by the following AllReduce.
-                self.context_ops.append(
-                    ops.GEMM(
+                self.context_ops.extend(
+                    self._projection_gemms(
                         "context_fc2_latent_proj_gemm",
+                        "fc2_latent_proj",
                         count,
                         h,
                         cfg.moe_latent_size // tp_size,
-                        self._projection_quant_modes.get("fc2_latent_proj", gemm_quant_mode),
+                        gemm_quant_mode,
                         low_precision_input=True,
                     )
                 )
@@ -645,12 +646,13 @@ class NemotronHModel(BaseModel):
             # See TensorRT-LLM modeling_nemotron_h.py NemotronHMLP class
             self.generation_ops.extend(
                 [
-                    ops.GEMM(
+                    *self._projection_gemms(
                         "generation_shared_up_gemm",
+                        "shared_experts.up_proj",
                         count,
                         cfg.moe_shared_expert_intermediate_size // tp_size,
                         h,
-                        self._projection_quant_modes.get("shared_experts.up_proj", gemm_quant_mode),
+                        gemm_quant_mode,
                     ),
                     ops.ElementWise(
                         "generation_shared_relu2",
@@ -659,12 +661,13 @@ class NemotronHModel(BaseModel):
                         cfg.moe_shared_expert_intermediate_size // tp_size,
                         0.8,
                     ),
-                    ops.GEMM(
+                    *self._projection_gemms(
                         "generation_shared_down_gemm",
+                        "shared_experts.down_proj",
                         count,
                         h,
                         cfg.moe_shared_expert_intermediate_size // tp_size,
-                        self._projection_quant_modes.get("shared_experts.down_proj", gemm_quant_mode),
+                        gemm_quant_mode,
                         low_precision_input=True,
                     ),
                 ]
@@ -685,13 +688,14 @@ class NemotronHModel(BaseModel):
             # When latent-MoE is active, fc1_latent_proj (h -> latent) runs before
             # dispatch, so dispatch/experts/combine all communicate in latent dim.
             if cfg.moe_latent_size > 0:
-                self.generation_ops.append(
-                    ops.GEMM(
+                self.generation_ops.extend(
+                    self._projection_gemms(
                         "generation_fc1_latent_proj_gemm",
+                        "fc1_latent_proj",
                         count,
                         cfg.moe_latent_size // tp_size,
                         h,
-                        self._projection_quant_modes.get("fc1_latent_proj", gemm_quant_mode),
+                        gemm_quant_mode,
                     )
                 )
             self.generation_ops.extend(
@@ -743,13 +747,14 @@ class NemotronHModel(BaseModel):
                 # fc2_latent_proj (latent -> h) runs after expert combine,
                 # before the post-MoE allreduce. Modeled as a row-parallel GEMM
                 # whose partial sums are aggregated by the following AllReduce.
-                self.generation_ops.append(
-                    ops.GEMM(
+                self.generation_ops.extend(
+                    self._projection_gemms(
                         "generation_fc2_latent_proj_gemm",
+                        "fc2_latent_proj",
                         count,
                         h,
                         cfg.moe_latent_size // tp_size,
-                        self._projection_quant_modes.get("fc2_latent_proj", gemm_quant_mode),
+                        gemm_quant_mode,
                         low_precision_input=True,
                     )
                 )
