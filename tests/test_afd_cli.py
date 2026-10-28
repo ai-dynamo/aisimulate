@@ -152,6 +152,17 @@ def test_afd_plus_pd_companion_rejects_the_host_loop() -> None:
         CorePredictionConfig.model_validate(raw)
 
 
+def test_afd_plus_pd_companion_rejects_async_scheduling() -> None:
+    raw = _pure_prediction()
+    raw["engine"]["backend"] = "vllm"
+    raw["engine"]["afd"].update(phase="decode", combined_with_pd=True)
+    raw["engine"]["workers"] = {
+        "prefill": {"parallelism": {"replicas": 1, "tensor": 2}, "scheduler": {"async_scheduling": True}}
+    }
+    with pytest.raises(ValidationError, match="async_scheduling=true is not modeled"):
+        CorePredictionConfig.model_validate(raw)
+
+
 def test_afd_plus_pd_prediction_requires_and_materializes_opposite_worker() -> None:
     raw = _pure_prediction()
     raw["engine"]["afd"].update(phase="decode", combined_with_pd=True)

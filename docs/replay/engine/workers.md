@@ -185,14 +185,20 @@ that window. Behavior follows vLLM at commit
 ### vLLM async scheduling
 
 `async_scheduling` mirrors vLLM's `--async-scheduling` and
-`--no-async-scheduling`. Unset, it follows vLLM's default since v0.14: on,
-except with ngram drafts, which turn it off.
+`--no-async-scheduling`. Unset, replay turns it on, except with ngram drafts,
+which turn it off. vLLM v0.28.0 resolves the same default for the
+configurations replay models; it also turns async scheduling off for pooling
+models, some speculative and executor settings and ROCm DeepEP DBO, so set it
+explicitly to match such a deployment.
 
 With async scheduling, a busy vLLM engine keeps two batches committed: one
 running and the next queued behind it. When the running batch finishes, vLLM
 processes its outputs, reads the requests that have arrived, and commits
-another batch, all before a client can react to those outputs. A request
-therefore joins the first batch committed after it arrives:
+another batch. Replay assumes that this happens before a client can react to
+those outputs; it does not model when outputs reach the client. The earliest
+batch a request may join is therefore the first one committed after it
+arrives, and sequence limits, the token budget or KV capacity can delay it
+further:
 
 - A request that arrives while a pass runs skips the pass already queued and
   joins the one after it.
@@ -219,7 +225,9 @@ follows `EngineCore.step_with_batch_queue` and `VllmConfig.max_concurrent_batche
 in vLLM
 [v0.28.0](https://github.com/vllm-project/vllm/tree/2cf0a6915ce544dc493a0990f2ea38d81601128a).
 Pipeline parallelism deepens vLLM's batch queue, but engine replay does not
-model it.
+model it. Replay also reserves no capacity for the queued batch, so under KV
+pressure its admission and preemption can differ from vLLM's. AFD companion
+workers do not model async scheduling and reject `true`.
 
 <a id="sglang-prefilldecode-interval"></a>
 

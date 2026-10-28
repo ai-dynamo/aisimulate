@@ -1372,6 +1372,10 @@ def _validate_prediction_afd(engine: EnginePredictionConfig) -> None:
         companion = "decode" if afd.phase == "prefill" else "prefill"
         if configured != {companion}:
             raise ValueError(f"AFD phase={afd.phase!r} combined_with_pd=true requires only workers.{companion}")
+        # The AFD replay prices its companion from the companion model, which
+        # does not model async-scheduling admission.
+        if getattr(engine.workers, companion).scheduler.async_scheduling:
+            raise ValueError(f"AFD companion workers.{companion}.scheduler.async_scheduling=true is not modeled")
     else:
         if afd.phase != "both":
             raise ValueError("pure AFD prediction requires phase='both'; use combined_with_pd=true for one phase")

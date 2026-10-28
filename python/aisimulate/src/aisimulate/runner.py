@@ -1867,6 +1867,8 @@ def _materialize_engine_role(
         supported = {"vllm"} if kind == "ngram" else {"vllm", "sglang"}
         if backend not in supported or rank.get("native_host_offload") is not None:
             raise ValueError(f"{kind} speculation requires a supported backend without host_offload")
+    if rank.get("async_scheduling") is not None and not isinstance(rank["async_scheduling"], bool):
+        raise ValueError(f"engine provider {role} async_scheduling must be a boolean")
     if kind == "ngram":
         # vLLM turns async scheduling off for ngram drafts and rejects it when
         # requested. Resolve that here, where the speculation kind is still

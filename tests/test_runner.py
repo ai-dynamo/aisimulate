@@ -2827,6 +2827,23 @@ def test_flat_active_controls_reject_fixed_timing():
         )
 
 
+@pytest.mark.parametrize("value", [1, "true", 0.0])
+def test_runner_rejects_non_boolean_async_scheduling(value):
+    args = {**_engine_args(), "async_scheduling": value}
+    with pytest.raises(ValueError, match="async_scheduling must be a boolean"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(
+                deployment=BackendDeploymentSpec(
+                    deployment_mode="agg",
+                    backend="vllm",
+                    backend_version="test",
+                    agg_engine_args=args,
+                    num_workers=1,
+                )
+            )
+        )
+
+
 @pytest.mark.parametrize("retain_raw", [False, True])
 @pytest.mark.parametrize("polynomial", [False, True])
 def test_native_fixed_timing_provenance_without_diagnostics(retain_raw, polynomial):
