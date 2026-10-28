@@ -440,6 +440,19 @@ def test_model_pin_match_resolves_qwen38_max_to_vllm_0_27_1(model_path):
     assert runtime.family is None
 
 
+@pytest.mark.parametrize(
+    "model_path",
+    ["nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4", "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4"],
+)
+def test_model_pin_match_resolves_nemotron3_nvfp4_to_vllm_0_31_0(model_path):
+    runtime = require_collector_runtime(
+        "vllm", "0.31.0", requested_ops={"moe"}, wideep_ops=set(), model_path=model_path
+    )
+    assert runtime.version == "0.31.0"
+    assert runtime.image().startswith("vllm/vllm-openai:v0.31.0@sha256:")
+    assert runtime.family is None
+
+
 def test_vllm_model_pin_mismatch_error_names_the_model_scoped_image():
     with pytest.raises(RuntimeError) as excinfo:
         require_collector_runtime(
