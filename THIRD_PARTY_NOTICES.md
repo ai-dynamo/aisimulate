@@ -1359,6 +1359,37 @@ the mathematical work with hand-calculated examples; no kernel source is
 vendored. The upstream license is preserved by the repository and packaged
 Apache-2.0 `LICENSE` text.
 
+## NVIDIA GLM-5.3-NVFP4 model configuration files
+
+The following files are unmodified copies of the named Hugging Face
+configuration files at the immutable revision shown:
+
+| Packaged file | Upstream file and revision |
+| --- | --- |
+| `src/aisimulate_core/model_configs/nvidia--GLM-5.3-NVFP4_config.json` | `config.json` from `nvidia/GLM-5.3-NVFP4@e3b8f9f2fad29727dfa95e766c5cac18ea1414bf` |
+| `src/aisimulate_core/model_configs/nvidia--GLM-5.3-NVFP4_hf_quant_config.json` | `hf_quant_config.json` from `nvidia/GLM-5.3-NVFP4@e3b8f9f2fad29727dfa95e766c5cac18ea1414bf` |
+
+Upstream repository:
+https://huggingface.co/nvidia/GLM-5.3-NVFP4/tree/e3b8f9f2fad29727dfa95e766c5cac18ea1414bf
+
+Copyright owners: NVIDIA CORPORATION & AFFILIATES (the quantized export and
+its quantization metadata) and Z.AI (the base GLM-5.3 configuration). The
+copied files are unmodified.
+
+License, as declared by the upstream model card at that revision: "License
+type: NVIDIA Proprietary", with use governed by the NVIDIA Open Model
+Agreement,
+https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-agreement/
+(the card links the unversioned page; the agreement text preserved in the
+provenance file named below was retrieved 2026-10-27 and is v. March 9,
+2026, page release date April 2, 2026). The card metadata declares
+`license_name: nvidia-open-model-license`. The original GLM-5.3 model is
+licensed under the GLM-5.3 License (Copyright (c) 2026 Z.AI), which ships in
+the upstream repository as `LICENSE`; the card states that the NVIDIA Open
+Model Agreement does not modify or supersede it. The full texts of both are
+preserved in the adjacent distributed
+`src/aisimulate_core/model_configs/GLM53_NVFP4_PROVENANCE.md`.
+
 ## vLLM DeepSeek V4 cache sizing
 
 `src/aisimulate_core/sdk/memory/deepseek_v4.py` and the indexer cache-dtype
