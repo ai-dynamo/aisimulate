@@ -60,16 +60,18 @@ __compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.18,!=0.5.19,!=0.5.
 
 import gc
 import importlib
-import itertools
 import os
 import tempfile
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TypedDict
 from unittest.mock import MagicMock
 
-from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from recent framework images
+from importlib.metadata import (
+    version as _dist_version,
+)  # setuptools/pkg_resources is absent from recent framework images
 
 # Mock global server args before importing MOE modules (required by SGLang 0.5.5+)
 # The fused_moe_triton_config module now requires get_global_server_args() to be set
@@ -310,6 +312,13 @@ def _ensure_writable_flashinfer_cubin_dir() -> None:
 
 
 def get_moe_test_cases():
+    """One case per (quant mode, shape, tp, ep, distribution) carrying the whole token
+    sweep, like the vLLM and TRT-LLM MoE collectors: the framework layer (weights, quant
+    processing, backend pins) is built once per case and every token point is timed and
+    persisted inside it. The previous one-case-per-token layout rebuilt the layer for
+    each of the 27 token points, which made the SGLang nvfp4 tables ~2x the fixed cost of
+    the vLLM ones (2026-10-28 re-collection: 4.4-5.8 h per SGLang shard vs 1-1.4 h per
+    vLLM shard on the same shapes)."""
     sm_version = get_sm_version()
     moe_list = get_moe_quantization_modes("sglang", sm_version=sm_version)
 
@@ -323,7 +332,7 @@ def get_moe_test_cases():
         model_name = common_moe_testcase.model_name
         num_tokens_list = common_moe_testcase.num_tokens_list
 
-        for moe_type, num_tokens in itertools.product(moe_list, num_tokens_list):
+        for moe_type in moe_list:
             if not moe_model_allows_quantization("sglang", model_name, moe_type):
                 quant_policy_drops[model_name] = quant_policy_drops.get(model_name, 0) + 1
                 continue
@@ -335,7 +344,7 @@ def get_moe_test_cases():
             moe_backend = get_sglang_moe_backend(common_moe_testcase, moe_type, sm_version)
             base_case = [
                 moe_type,
-                num_tokens,
+                list(num_tokens_list),
                 common_moe_testcase.hidden_size,
                 common_moe_testcase.inter_size,
                 common_moe_testcase.topk,
@@ -364,7 +373,7 @@ def get_moe_test_cases():
             ]
             physical_key = (
                 moe_type,
-                num_tokens,
+                tuple(num_tokens_list),
                 common_moe_testcase.hidden_size,
                 common_moe_testcase.inter_size,
                 common_moe_testcase.topk,
@@ -778,7 +787,8 @@ def _benchmark_framework_quantized_moe(
     *,
     moe_type: str,
     moe_backend: str,
-    num_tokens: int,
+    num_tokens_list: list[int],
+    on_result: Callable[[int, float, dict, str], None],
     hidden_size: int,
     inter_size: int,
     topk: int,
@@ -805,8 +815,14 @@ def _benchmark_framework_quantized_moe(
     is_fp4_experts: bool,
     int4_group_size: int,
     device: str,
-) -> tuple[float, dict, str]:
-    """Benchmark model-aware paths through SGLang FusedMoE (0.5.14/0.5.17)."""
+) -> str:
+    """Benchmark model-aware paths through SGLang FusedMoE (0.5.14/0.5.17).
+
+    The layer is constructed and its weights processed once; each token point in
+    ``num_tokens_list`` is then timed on it and handed to ``on_result(num_tokens,
+    latency_ms, power_stats, kernel_source)`` as soon as it is measured, so a crash
+    later in the sweep keeps the rows already persisted. Returns the kernel source.
+    """
     if moe_backend.startswith("flashinfer"):
         _ensure_writable_flashinfer_cubin_dir()
 
@@ -1083,40 +1099,45 @@ def _benchmark_framework_quantized_moe(
                     ),
                     is_fp4_experts=is_fp4_experts,
                 )
-            hidden_states = torch.randn(num_tokens, hidden_size, dtype=torch.bfloat16, device=device)
-            if distributed == "balanced":
-                logits = [
-                    balanced_logits(num_tokens, num_experts, topk).to(device=device, dtype=torch.float32)
-                    for _ in range(5)
-                ]
-            elif distributed == "power_law":
-                logits = [
-                    power_law_logits_v3(num_tokens, num_experts, topk, moe_ep_size, power_law_alpha).to(
-                        device=device, dtype=torch.float32
-                    )
-                    for _ in range(5)
-                ]
-            else:
-                logits = [torch.randn(num_tokens, num_experts, dtype=torch.float32, device=device) for _ in range(5)]
+            for num_tokens in num_tokens_list:
+                print(f"num_tokens {num_tokens} ({kernel_source})")
+                hidden_states = torch.randn(num_tokens, hidden_size, dtype=torch.bfloat16, device=device)
+                if distributed == "balanced":
+                    logits = [
+                        balanced_logits(num_tokens, num_experts, topk).to(device=device, dtype=torch.float32)
+                        for _ in range(5)
+                    ]
+                elif distributed == "power_law":
+                    logits = [
+                        power_law_logits_v3(num_tokens, num_experts, topk, moe_ep_size, power_law_alpha).to(
+                            device=device, dtype=torch.float32
+                        )
+                        for _ in range(5)
+                    ]
+                else:
+                    logits = [
+                        torch.randn(num_tokens, num_experts, dtype=torch.float32, device=device) for _ in range(5)
+                    ]
 
-            def kernel_func():
-                for router_logits in logits:
-                    moe_layer(hidden_states, topk_layer(hidden_states, router_logits))
+                def kernel_func():
+                    for router_logits in logits:
+                        moe_layer(hidden_states, topk_layer(hidden_states, router_logits))
 
-            # FlashInfer-backed runners (flashinfer_trtllm / _mxfp4 / _cutlass / _cutedsl)
-            # are timed on the autotuned tactic like serving; see helper.flashinfer_autotuned.
-            with (
-                flashinfer_autotuned(num_tokens, kernel_func, label=kernel_source),
-                benchmark_with_power(
-                    device=device,
-                    kernel_func=kernel_func,
-                    num_warmups=5,
-                    num_runs=10,
-                    repeat_n=1,
-                ) as results,
-            ):
-                pass
-            return results["latency_ms"] / len(logits), results["power_stats"], kernel_source
+                # FlashInfer-backed runners (flashinfer_trtllm / _mxfp4 / _cutlass / _cutedsl)
+                # are timed on the autotuned tactic like serving; see helper.flashinfer_autotuned.
+                with (
+                    flashinfer_autotuned(num_tokens, kernel_func, label=kernel_source),
+                    benchmark_with_power(
+                        device=device,
+                        kernel_func=kernel_func,
+                        num_warmups=5,
+                        num_runs=10,
+                        repeat_n=1,
+                    ) as results,
+                ):
+                    pass
+                on_result(num_tokens, results["latency_ms"] / len(logits), results["power_stats"], kernel_source)
+            return kernel_source
     finally:
         if moe_layer is not None:
             for parameter in moe_layer.parameters():
@@ -1352,7 +1373,7 @@ def _raise_if_unverified_moe_lane(moe_type: str) -> str:
 
 def run_moe_torch(
     moe_type,
-    num_tokens,
+    num_tokens_list,
     hidden_size,
     inter_size,
     topk,
@@ -1384,6 +1405,11 @@ def run_moe_torch(
 ):
     torch.cuda.set_device(device)
     torch.set_default_device(device)
+    # One case carries the whole token sweep; a single int is accepted for fills and
+    # direct callers that re-measure one point.
+    num_tokens_list = [int(num_tokens_list)] if isinstance(num_tokens_list, int) else [int(n) for n in num_tokens_list]
+    if not num_tokens_list:
+        raise ValueError("SGLang MoE case has an empty num_tokens_list")
 
     assert moe_type in [
         "fp8_block",
@@ -1536,11 +1562,41 @@ def run_moe_torch(
         or apply_router_weight_on_input
         or (moe_backend != "triton" and not use_int4_w4a16)
     )
+    distribution = "power_law_" + str(power_law_alpha) if distributed == "power_law" else distributed
+
+    def _persist(num_tokens: int, latency: float, power_stats: dict, kernel_source: str) -> None:
+        persisted = log_perf(
+            item_list=[
+                {
+                    "moe_dtype": moe_type,
+                    "num_tokens": num_tokens,
+                    "hidden_size": hidden_size,
+                    "inter_size": inter_size,
+                    "topk": topk,
+                    "num_experts": num_experts,
+                    "moe_tp_size": moe_tp_size,
+                    "moe_ep_size": moe_ep_size,
+                    "distribution": distribution,
+                    "latency": latency,
+                }
+            ],
+            framework="SGLang",
+            version=installed_sglang_version,
+            device_name=torch.cuda.get_device_name(device),
+            op_name="moe",
+            kernel_source=kernel_source,
+            perf_filename=perf_filename,
+            power_stats=power_stats,
+        )
+        if not persisted:
+            raise RuntimeError("Failed to persist SGLang MoE performance row")
+
     if use_framework_layer:
-        latency, power_stats, kernel_source = _benchmark_framework_quantized_moe(
+        _benchmark_framework_quantized_moe(
             moe_type=moe_type,
             moe_backend=moe_backend,
-            num_tokens=num_tokens,
+            num_tokens_list=num_tokens_list,
+            on_result=_persist,
             hidden_size=hidden_size,
             inter_size=inter_size,
             topk=topk,
@@ -1569,54 +1625,6 @@ def run_moe_torch(
             device=device,
         )
     else:
-        rank0_workloads: list[Rank0Workload] | None = None
-        if moe_ep_size > 1 and distributed in ("power_law", "balanced"):
-            rank0_workloads = build_rank0_workloads(
-                num_workloads=5,
-                num_tokens=num_tokens,
-                hidden_size=hidden_size,
-                topk=topk,
-                num_experts=num_experts,
-                moe_ep_size=moe_ep_size,
-                distributed=distributed,
-                power_law_alpha=power_law_alpha if distributed == "power_law" else None,
-                dtype=torch.bfloat16,
-                device=torch.device(device),
-            )
-        try:
-            latency, power_stats = benchmark(
-                num_tokens,
-                num_local_experts,
-                (2 if is_gated else 1) * local_inter_size,
-                hidden_size,
-                topk,
-                torch.bfloat16,
-                moe_type == "fp8_block",
-                False,
-                False,
-                block_shape=block_shape,
-                distributed=distributed,
-                power_law_alpha=power_law_alpha,
-                workloads=rank0_workloads,
-                swiglu_limit=swiglu_limit,
-                activation=activation,
-                is_gated=is_gated,
-                gemm1_alpha=gemm1_alpha,
-                gemm1_clamp_limit=gemm1_clamp_limit,
-            )
-        except Exception:
-            _fmoe_kernels_mod._B_DESC_CACHE.clear()
-            gc.collect()
-            torch.cuda.empty_cache()
-            raise
-
-    if not use_framework_layer:
-        _fmoe_kernels_mod._B_DESC_CACHE.clear()
-        gc.collect()
-        torch.cuda.empty_cache()
-
-    restart_worker = torch.cuda.memory_allocated(device) > torch.cuda.get_device_properties(device).total_memory // 4
-    if not use_framework_layer:
         kernel_source = {
             "triton": "sglang_fused_moe_triton",
             "triton_kernel": "sglang_triton_kernel_moe",
@@ -1624,31 +1632,53 @@ def run_moe_torch(
             "flashinfer_trtllm": "sglang_flashinfer_trtllm_moe",
             "flashinfer_cutlass": "sglang_flashinfer_cutlass_moe",
         }[moe_backend]
-    persisted = log_perf(
-        item_list=[
-            {
-                "moe_dtype": moe_type,
-                "num_tokens": num_tokens,
-                "hidden_size": hidden_size,
-                "inter_size": inter_size,
-                "topk": topk,
-                "num_experts": num_experts,
-                "moe_tp_size": moe_tp_size,
-                "moe_ep_size": moe_ep_size,
-                "distribution": "power_law_" + str(power_law_alpha) if distributed == "power_law" else distributed,
-                "latency": latency,
-            }
-        ],
-        framework="SGLang",
-        version=installed_sglang_version,
-        device_name=torch.cuda.get_device_name(device),
-        op_name="moe",
-        kernel_source=kernel_source,
-        perf_filename=perf_filename,
-        power_stats=power_stats,
-    )
-    if not persisted:
-        raise RuntimeError("Failed to persist SGLang MoE performance row")
+        try:
+            for num_tokens in num_tokens_list:
+                rank0_workloads: list[Rank0Workload] | None = None
+                if moe_ep_size > 1 and distributed in ("power_law", "balanced"):
+                    rank0_workloads = build_rank0_workloads(
+                        num_workloads=5,
+                        num_tokens=num_tokens,
+                        hidden_size=hidden_size,
+                        topk=topk,
+                        num_experts=num_experts,
+                        moe_ep_size=moe_ep_size,
+                        distributed=distributed,
+                        power_law_alpha=power_law_alpha if distributed == "power_law" else None,
+                        dtype=torch.bfloat16,
+                        device=torch.device(device),
+                    )
+                latency, power_stats = benchmark(
+                    num_tokens,
+                    num_local_experts,
+                    (2 if is_gated else 1) * local_inter_size,
+                    hidden_size,
+                    topk,
+                    torch.bfloat16,
+                    moe_type == "fp8_block",
+                    False,
+                    False,
+                    block_shape=block_shape,
+                    distributed=distributed,
+                    power_law_alpha=power_law_alpha,
+                    workloads=rank0_workloads,
+                    swiglu_limit=swiglu_limit,
+                    activation=activation,
+                    is_gated=is_gated,
+                    gemm1_alpha=gemm1_alpha,
+                    gemm1_clamp_limit=gemm1_clamp_limit,
+                )
+                _persist(num_tokens, latency, power_stats, kernel_source)
+        except Exception:
+            _fmoe_kernels_mod._B_DESC_CACHE.clear()
+            gc.collect()
+            torch.cuda.empty_cache()
+            raise
+        _fmoe_kernels_mod._B_DESC_CACHE.clear()
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    restart_worker = torch.cuda.memory_allocated(device) > torch.cuda.get_device_properties(device).total_memory // 4
     if restart_worker:
         return WORKER_RESTART
 
