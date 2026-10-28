@@ -7,8 +7,10 @@ import json
 import math
 import pickle
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 import aisimulate
@@ -35,6 +37,8 @@ from aisimulate.sweeper import (
 from aisimulate.sweeper.config import Workload
 from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 from scripts.e2e_accuracy.source.replay import engine_args
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 pytestmark = [
     pytest.mark.unit,
@@ -1238,7 +1242,7 @@ def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
     engine_args.pop("timing_model")
     engine_args["aic_backend_version"] = "test"
     engine_args["aic_nextn"] = 3
-    engine_args["aic_pp_size"] = 2
+    engine_args["aic_pp_size"] = 1
     engine_args["gpu_memory_utilization"] = 0.8
     engine_args["cuda_graph_reserved_bytes"] = 14559947612
     engine_args["systems_path"] = "/tmp/custom-systems.yaml"
@@ -1262,16 +1266,46 @@ def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
     assert runtime.execution_spec["engine"]["rank"]["num_gpu_blocks"] == 321
     assert runtime.execution_spec["engine"]["num_gpu_blocks_is_explicit"] is False
     timing_config = runtime.execution_spec["engine"]["rank"]["timing_model"]["config"]
-    assert timing_config["pp"] == 2
+    assert timing_config["pp"] == 1
     assert timing_config["systems_path"] == "/tmp/custom-systems.yaml"
     assert timing_config["gpu_memory_utilization"] == 0.8
     assert timing_config["cuda_graph_reserved_bytes"] == 14559947612
-    assert calls[0]["pp_size"] == 2
+    assert calls[0]["pp_size"] == 1
     assert calls[0]["systems_path"] == "/tmp/custom-systems.yaml"
     assert calls[0]["gpu_memory_utilization"] == 0.8
     assert calls[0]["cuda_graph_reserved_bytes"] == 14559947612
     assert "cuda_graph_reserved_bytes" not in runtime.execution_spec["engine"]["rank"]
     assert "nextn" not in calls[0]
+
+
+@pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
+@pytest.mark.parametrize("source", ["deployment", "flat", "nested", "canonical", "canonical_alias"])
+def test_runner_rejects_pipeline_parallelism_before_capacity(monkeypatch, role, source):
+    def unexpected_capacity(*args, **kwargs):
+        pytest.fail("unsupported pipeline parallelism reached capacity materialization")
+
+    monkeypatch.setattr(aic, "estimate_num_gpu_blocks", unexpected_capacity)
+    parallel = {}
+    args = _engine_args(role=role)
+    rank = _materialize_engine_role("vllm", "test", parallel, args, role)["rank"]
+    if source in ("deployment", "flat"):
+        args.pop("num_gpu_blocks")
+        args.pop("timing_model")
+    if source == "deployment":
+        parallel["pp" if role == "aggregated" else f"{role}_pp"] = 2
+    elif source == "flat":
+        args["aic_pp_size"] = 2
+    elif source == "nested":
+        args = {"rank": {**rank, "aic_pp_size": 2}}
+    else:
+        rank["timing_model"] = {
+            "type": "external",
+            "provider": "aic",
+            "config": {"pp" if source == "canonical" else "pp_size": 2},
+        }
+        args = {"rank": rank}
+    with pytest.raises(ValueError, match="does not support pipeline parallelism"):
+        _materialize_engine_role("vllm", "test", parallel, args, role)
 
 
 def test_runner_rejects_nested_inferred_capacity_when_fixed_timing_discards_reservation():
@@ -2995,3 +3029,26 @@ def test_gym_mtp_acceptance_reaches_runner_scheduler_and_timing(accepted, rates)
     assert rank["aic_nextn"] == 2
     assert rank["timing_model"]["config"]["nextn"] == 2
     assert rank["timing_model"]["config"]["forward_model"] == "op_level"
+
+
+@pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
+def test_prediction_compile_rejects_pipeline_parallelism_before_capacity(monkeypatch, role):
+    def unexpected_capacity(*args, **kwargs):
+        pytest.fail("unsupported pipeline parallelism reached capacity estimation")
+
+    monkeypatch.setattr(aic, "estimate_num_gpu_blocks", unexpected_capacity)
+    example = "agentx-g2-local.yaml" if role == "aggregated" else "agentx-g2-shared-pd.yaml"
+    # The JSON round trip splits the YAML prefill/decode alias so only the tested role gets PP2.
+    config = json.loads(json.dumps(yaml.safe_load((_REPO_ROOT / "examples/cli" / example).read_text())))
+    config["traffic"]["source"]["paths"] = [
+        str(_REPO_ROOT / "tests/e2e/configs/unified_cli/fixtures/traces/weka-g2-restore.jsonl")
+    ]
+    config["engine"]["model"] = str(_REPO_ROOT / "tests/e2e/configs/unified_cli/fixtures/tiny-model")
+    worker = config["engine"]["workers"][role]
+    worker["parallelism"]["pipeline"] = 2
+    worker["kv_cache"].pop("capacity")
+    worker["kv_cache"].pop("host_offload")
+    others = [name for name, other in config["engine"]["workers"].items() if name != role]
+    assert all(config["engine"]["workers"][name]["parallelism"].get("pipeline", 1) == 1 for name in others)
+    with pytest.raises(ValueError, match=f"does not support pipeline parallelism for {role}"):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(config))

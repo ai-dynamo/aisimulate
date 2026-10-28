@@ -11,6 +11,7 @@ from typing import Any
 from .capacity import (
     estimate_kv_bytes_per_token,
     materialize_aic_num_gpu_blocks,
+    reject_pipeline_parallelism,
     resolve_model_context_length,
 )
 from .config.cli import CorePredictionConfig
@@ -691,6 +692,9 @@ def _worker_engine_args(
     cache = worker.kv_cache
     capacity = cache.capacity
     memory_fraction = capacity.memory_fraction
+    if engine.mode != "afd":
+        # AFD only compiles its analytically priced PD companion here, which supports pipeline stages.
+        reject_pipeline_parallelism(role, parallel.pipeline)
     identity_fields = (
         "gemm_quant_mode",
         "moe_quant_mode",
