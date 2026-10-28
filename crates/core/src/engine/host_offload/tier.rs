@@ -857,6 +857,8 @@ impl HostTier {
     }
 
     pub(crate) fn unpin_external(&mut self, keys: &[HostBlockKey]) {
+        // NOTE: Peer unpins refresh source MRU in hash-key order, which can evict mid-prefix.
+        // TODO: Decide whether peer reads should refresh recency and, if so, preserve prompt order.
         self.release_load_pins(keys);
     }
 

@@ -459,6 +459,9 @@ where
 
     pub(crate) fn mark_for_removal(&mut self, worker_id: usize) {
         self.pending_removal.insert(worker_id);
+        if let Some(registry) = &self.factory.kvcr {
+            registry.lock().unwrap().mark_draining(worker_id as u64);
+        }
     }
 
     pub(crate) fn try_remove_drained(&mut self) -> Result<Vec<usize>> {
@@ -1054,13 +1057,14 @@ where
         Ok(EngineEffects::default())
     }
 
-    /// Start the KVCR pulls staged at `now_ms` once the scan has run every
-    /// pass starting then, so a pull waits for a source pass at the same
-    /// instant whatever the worker order. No worker needs a refresh: the
+    /// Start KVCR pulls after this drive scan has noted its source passes,
+    /// independent of worker order within the scan. No worker needs a refresh: the
     /// ready set does not depend on when a pull starts (a staged pull already
     /// counts as registry work), and `next_internal_deadline_ms` reads each
     /// target's deadline from the registry when the driver asks.
     fn start_parked_kvcr_pulls(&self) {
+        // TODO: Start once the instant is quiescent; later same-time scans can start a source pass
+        // after a pull has already started, without delaying that pull.
         if let Some(registry) = &self.factory.kvcr {
             registry.lock().unwrap().start_parked();
         }

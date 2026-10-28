@@ -3,6 +3,8 @@
 
 //! Replay-level KVCR: a hinted request pulls a prefix from a peer rank's G2.
 
+use std::sync::{Arc, Mutex};
+
 use aisimulate_core::engine::KvcrPullCounts;
 use aisimulate_core::replay::{
     AggregatedRoundRobinPlacement, NoEngineEvents, NoReplayMetadata, PoolRoundRobinPlacement,
@@ -377,6 +379,119 @@ fn a_draining_source_is_removed_after_its_pulls_land() {
         vec![Some(0), Some(8), Some(0), Some(0)]
     );
     assert_eq!(report.kvcr.unwrap().pulls.success, 1);
+}
+
+#[derive(Clone, Default)]
+struct DrainWithQueuedHint {
+    snapshots: Arc<Mutex<Vec<(f64, bool)>>>,
+}
+
+impl ReplayComposition for DrainWithQueuedHint {
+    type Metadata = NoReplayMetadata;
+    type Observation = NoEngineEvents;
+    type AggregatedPlacement = AggregatedRoundRobinPlacement<()>;
+    type DisaggregatedPlacement = PoolRoundRobinPlacement<()>;
+
+    fn create_aggregated_placement(
+        &mut self,
+        dp_size: u32,
+        topology: Vec<WorkerTopology>,
+    ) -> anyhow::Result<Self::AggregatedPlacement> {
+        Ok(AggregatedRoundRobinPlacement::new(dp_size, topology))
+    }
+
+    fn create_disaggregated_placements(
+        &mut self,
+        _prefill_dp_size: u32,
+        _prefill_topology: Vec<WorkerTopology>,
+        _decode_dp_size: u32,
+        _decode_topology: Vec<WorkerTopology>,
+    ) -> anyhow::Result<(Self::DisaggregatedPlacement, Self::DisaggregatedPlacement)> {
+        unreachable!("this test replays an aggregated deployment")
+    }
+
+    fn take_scaling_policy(&mut self) -> anyhow::Result<Option<Box<dyn ReplayScalingPolicy>>> {
+        Ok(Some(Box::new(self.clone())))
+    }
+}
+
+impl ReplayScalingPolicy for DrainWithQueuedHint {
+    fn initial_tick_ms(&mut self) -> anyhow::Result<f64> {
+        Ok(102.0)
+    }
+
+    fn on_tick(
+        &mut self,
+        snapshot: ReplayScalingSnapshot,
+    ) -> anyhow::Result<ReplayScalingDecision> {
+        self.snapshots
+            .lock()
+            .unwrap()
+            .push((snapshot.now_ms, snapshot.draining_decode_ids.contains(&1)));
+        Ok(ReplayScalingDecision {
+            target_decode: Some(1),
+            next_tick_ms: [150.5, 151.0].get(snapshot.tick_ordinal as usize).copied(),
+            ..ReplayScalingDecision::default()
+        })
+    }
+}
+
+#[test]
+fn a_queued_hint_cannot_start_a_pull_after_its_source_starts_draining() {
+    let mut rank = kvcr_rank(json!({"latency_to_first_byte_ms": 1.0, "bandwidth_gbps": 1.0}));
+    rank["timing_model"] = json!({"type": "fixed", "prefill_ms": 50.0, "decode_ms": 1.0});
+    rank["native_host_offload"] =
+        json!({"num_host_blocks": 8, "d2h_bandwidth_gbps": 0.0, "h2d_bandwidth_gbps": 0.0});
+    rank["max_num_seqs"] = json!(1);
+    let engine = json!({"rank": rank});
+    // The hint reaches worker 0 before the drain mark at 102, but waits
+    // behind its [100, 150) pass. Source 1 stays busy until 151, so it is
+    // still registered when the queued request first looks up its prefix.
+    let requests = vec![
+        request("target_seed", 0.0, &OTHER),
+        request("source_seed", 1.0, &PROMPT),
+        request("target_busy", 100.0, &OTHER),
+        request("source_busy", 101.0, &OTHER),
+        hinted("queued", 101.5, &PROMPT, 1),
+    ];
+    let control = run(aggregated(2), engine.clone(), requests.clone()).unwrap();
+    assert_eq!(control.kvcr.unwrap().pulls.success, 1);
+
+    let mut without_hint = requests.clone();
+    without_hint
+        .last_mut()
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .remove("kv_hints");
+    let baseline = DrainWithQueuedHint::default();
+    run_with(
+        baseline.clone(),
+        aggregated(2),
+        engine.clone(),
+        without_hint,
+    )
+    .unwrap();
+    assert_eq!(
+        *baseline.snapshots.lock().unwrap(),
+        vec![(102.0, false), (150.5, true), (151.0, false)]
+    );
+
+    let draining = DrainWithQueuedHint::default();
+    let report = run_with(draining.clone(), aggregated(2), engine, requests).unwrap();
+    assert_eq!(report.request_counts.completed_requests, 5);
+    assert_eq!(
+        *draining.snapshots.lock().unwrap(),
+        *baseline.snapshots.lock().unwrap(),
+        "a queued hint must not delay source removal"
+    );
+    assert_eq!(report.kvcr.unwrap().pulls, KvcrPullCounts::default());
+    let queued = report
+        .per_request
+        .iter()
+        .find(|record| record.request_id.as_deref() == Some("queued"))
+        .unwrap();
+    assert_eq!(queued.first_admission_host_reused_input_tokens, Some(0));
 }
 
 #[test]

@@ -287,7 +287,7 @@ measured values.
   order, and pulls each missing block the source holds. It stops at the first
   block the source lacks.
 - A pull starts when the source finishes its current forward pass, including
-  a pass that starts at the same instant the pull is requested, waits
+  a pass started in the same worker drive scan as the pull, waits
   `latency_to_first_byte_ms`, then moves bytes. Each pulled block carries the
   KV of every GPU of the source rank: G2 block bytes times the role's
   `parallelism.tensor` (native `tensor_parallel_size`). The ranks of one worker run
@@ -303,7 +303,10 @@ The model simplifies KVCR:
   source's blocks are then protected from eviction until the rank takes the
   landed pull: as soon as it lands if the rank's worker is idle, otherwise when
   that worker's current pass ends. The pulled blocks become usable in the
-  rank's G2 at the same point.
+  rank's G2 at the same point. Releasing the last source pin makes those
+  blocks most recently used in hash-key order. A peer read therefore refreshes
+  source recency, without preserving vLLM's reverse prompt touch order; under
+  G2 pressure, this can evict blocks from the middle of a prefix.
 - The rank reserves G2 slots only for the blocks the source holds, all in one
   reservation per pull. A pull never evicts from the rank's G2 a block of the
   hinted prompt that the rank's G1 does not hold; it stops at the first block
@@ -311,6 +314,14 @@ The model simplifies KVCR:
   evictable, since the request does not load them.
 - While its pull is in flight, a request is not looked up again, as vLLM skips
   a request that waits for remote KV.
+- Bandwidth contention is per source rank only. Target ingress is unbounded,
+  and peer transfers do not share the target's H2D or D2H bandwidth. The
+  target's subsequent G2-to-G1 load still uses its normal H2D lane.
+- Parked pulls start at the end of a worker drive scan, independent of worker
+  order within that scan. Replay can drive workers again at the same logical
+  timestamp; a source pass started in a later scan does not delay a pull
+  that already started. Starting pulls only after the timestamp settles is
+  deferred work.
 - Pulls do not fail or time out, and the first pull between two ranks has no
   connection setup cost.
 - A pull moves one block share per tensor-parallel GPU. KV that each GPU
@@ -322,10 +333,15 @@ each other. If the rank makes no progress for 1,024 consecutive pull rounds,
 the request recomputes the missing part instead. Each time this happens
 `kvcr.bypassed` increments. vLLM has no such rule.
 
-The prediction summary includes a `kvcr` section: `pulls` by result (`success`,
-or `partial` when the source held only part of the missing blocks or the rank
-had no free G2 slot for the rest, including a block the same request already
-pulled at that instant), pulled `blocks` and `bytes` (summed over
+The prediction summary includes a `kvcr` section. A landed pull counts as
+`success` when staging reaches the end of the missing prompt blocks, or
+`partial` when it stops at a block absent from the source, a block the target
+cannot reserve room for, or a block the same request already pulled at that
+instant. An ordinary multi-turn follow-up that extends the source's cached
+prefix therefore counts as partial; this is not a separate measure of target
+capacity pressure or a guarantee of native KVCR counter parity.
+
+The section also reports pulled `blocks` and `bytes` (summed over
 the GPUs of each source rank),
 `remote_deliver_ms` (total time from submit to landing in G2), `source_wait_ms`
 (total time spent waiting for the source's pass to end) and `loaded_blocks`
@@ -344,8 +360,10 @@ overhead reductions are deferred; they must preserve CanonicalV1 replay output b
 
 KVCR supports vLLM aggregated workers with any `attention_data`, and pulls
 between the prefill ranks of P/D. Workers may be fixed or Planner-scaled; a
-draining worker is removed only after every pull from or into it has landed and
-been taken by its target. Rejected: missing or `cluster_shared` `host_offload`,
+draining worker cannot source newly staged pulls, including from requests
+queued before draining or looked up again after preemption. Pulls already
+staged from or into it finish normally, and removal waits until they have
+landed and been taken by their targets. Rejected: missing or `cluster_shared` `host_offload`,
 `g3_offload` together with `kvcr`, `kvcr` on the decode role, `parallelism.pipeline` above 1,
 `parallelism.prefill_context` above 1 (native `prefill_context_parallel_size`), and `recommend`.
 Everything G2 rejects is rejected too, including SGLang and TensorRT-LLM.

@@ -87,10 +87,11 @@ impl VllmKvcrAdapter {
             self.attempted.clear();
         }
         let mut registry = self.registry.lock().unwrap();
-        let Some(source_g2) = registry.source(source) else {
+        let Some(source_g2) = registry.source_for_staging(source) else {
             return false;
         };
         let mut src = source_g2.lock();
+        // TODO: Count target-capacity truncation separately; an ordinary follow-up extending the source is also partial.
         let (mut deferred, mut partial) = (false, false);
         let (mut plan, mut no_room) = (None, None);
         for key in keys.iter().copied() {
