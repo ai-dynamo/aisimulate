@@ -104,6 +104,26 @@ def test_preserve_engine_limits_survives_typed_request_round_trip():
     assert result["preserve_engine_limits"] is True
 
 
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+@pytest.mark.parametrize("preserve", [False, True])
+def test_trtllm_rules_only_default_block_size_for_unpinned_requests(rule, preserve):
+    params = _params(preserve=preserve, rule=rule)
+    for role in ("prefill", "decode"):
+        params["params"][role].pop("tokens_per_block")
+        params["params"][role].pop("cache_transceiver_max_tokens_in_buffer")
+
+    result = apply_rule_plugins(params, "trtllm")
+
+    for role in ("prefill", "decode"):
+        actual = result["params"][role]
+        if preserve:
+            assert "tokens_per_block" not in actual
+        else:
+            assert actual["tokens_per_block"] == 32
+        assert actual["cache_transceiver_max_tokens_in_buffer"] > 0
+        assert actual["cache_transceiver_max_tokens_in_buffer"] % 32 == 0
+
+
 @pytest.mark.parametrize("value", [True, False])
 def test_module_bridge_propagates_preserve_engine_limits(value: bool):
     task = SimpleNamespace(

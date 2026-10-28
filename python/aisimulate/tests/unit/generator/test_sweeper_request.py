@@ -145,20 +145,73 @@ def test_agg_candidate_lowers_evaluated_engine_limits_and_deployment_overrides()
 
 
 @pytest.mark.parametrize(
-    ("backend", "expected_block_size"),
-    [("vllm", 64), ("sglang", 1), ("trtllm", 32)],
+    ("backend", "backend_version"),
+    [("vllm", "0.20.1"), ("sglang", "0.5.11"), ("trtllm", "1.3.0rc14")],
 )
-def test_agg_candidate_resolves_backend_default_block_size(
-    backend: str, expected_block_size: int
-) -> None:
+@pytest.mark.parametrize("mode", ["agg", "disagg"])
+@pytest.mark.parametrize("block_size", [None, "omitted", 16], ids=["null", "missing", "explicit"])
+def test_candidate_preserves_block_size_selection_in_artifacts(backend, backend_version, mode, block_size):
+    candidate = (_agg_candidate if mode == "agg" else _disagg_candidate)(
+        backend=backend, backend_version=backend_version, adapters={}
+    )
+    roles = ("agg",) if mode == "agg" else ("prefill", "decode")
+    for role in roles:
+        if block_size == "omitted":
+            candidate["config"].pop(f"{role}_block_size")
+        else:
+            candidate["config"][f"{role}_block_size"] = block_size
     request = from_sweeper_candidate(
-        _agg_candidate(backend=backend, agg_block_size=None),
+        candidate,
+        workload={"isl": 4000, "osl": 1000},
+        model_facts=ModelFacts(is_moe=False, architecture="Qwen3ForCausalLM"),
+        generator_overrides={"K8sConfig": {"k8s_image": f"example/{backend}:{backend_version}"}},
+    )
+
+    params = to_legacy_params(request)
+    artifacts = generate_from_request(request)
+    expected = 16 if block_size == 16 else None
+    for role in roles:
+        if expected is None:
+            assert "tokens_per_block" not in params["params"][role]
+        else:
+            assert params["params"][role]["tokens_per_block"] == expected
+        _assert_artifact_block_size(artifacts, backend, role, expected)
+    if expected is None:
+        for parameter in ("--block-size", "--page-size", "tokens_per_block:"):
+            assert parameter not in artifacts["k8s_deploy.yaml"]
+
+
+@pytest.mark.parametrize(
+    ("backend", "backend_version"),
+    [("vllm", "0.20.1"), ("sglang", "0.5.11"), ("trtllm", "1.3.0rc14")],
+)
+def test_disagg_candidate_keeps_block_size_selection_role_local(backend, backend_version):
+    request = from_sweeper_candidate(
+        _disagg_candidate(
+            backend=backend,
+            backend_version=backend_version,
+            prefill_block_size=None,
+            decode_block_size=16,
+            adapters={},
+        ),
         workload={"isl": 4000, "osl": 1000},
         model_facts=ModelFacts(is_moe=False, architecture="Qwen3ForCausalLM"),
     )
 
-    params = to_legacy_params(request)
-    assert params["params"]["agg"]["tokens_per_block"] == expected_block_size
+    artifacts = generate_from_request(request)
+
+    _assert_artifact_block_size(artifacts, backend, "prefill", None)
+    _assert_artifact_block_size(artifacts, backend, "decode", 16)
+
+
+@pytest.mark.parametrize("block_size", [0, -1, True])
+def test_candidate_rejects_invalid_explicit_block_size(block_size):
+    with pytest.raises(SweeperCandidateError, match="agg_block_size must be a positive integer"):
+        from_sweeper_candidate(
+            _agg_candidate(agg_block_size=block_size),
+            workload={"isl": 4000, "osl": 1000},
+            model_facts=ModelFacts(is_moe=False),
+        )
 
 
 def test_disagg_candidate_preserves_dynamo_adapter_configs_and_concurrency():
@@ -392,11 +445,13 @@ def test_agg_candidate_materializes_backend_default_kv_capacity(backend, backend
         ("trtllm", "1.3.0rc23"),
     ],
 )
-def test_agg_candidate_preserves_fixed_kv_capacity_in_generated_artifacts(backend, backend_version):
+@pytest.mark.parametrize("block_size", [64, None])
+def test_agg_candidate_preserves_fixed_kv_capacity_in_generated_artifacts(backend, backend_version, block_size):
     request = from_sweeper_candidate(
         _agg_candidate(
             backend=backend,
             backend_version=backend_version,
+            agg_block_size=block_size,
             agg_gpu_memory_utilization=None,
             agg_num_gpu_blocks=256,
         ),
@@ -410,17 +465,20 @@ def test_agg_candidate_preserves_fixed_kv_capacity_in_generated_artifacts(backen
     assert "kv_cache_free_gpu_memory_fraction" not in extra
 
     artifacts = generate_from_request(request)
+    _assert_artifact_block_size(artifacts, backend, "agg", block_size)
+    effective_block_size = block_size if block_size is not None else {"vllm": 64, "sglang": 1, "trtllm": 32}[backend]
+    expected_max_tokens = 256 * effective_block_size
     if backend == "vllm":
         assert _cli_flag_value(artifacts["cli_args_agg"], "--num-gpu-blocks-override") == "256"
         assert "--gpu-memory-utilization" not in shlex.split(artifacts["cli_args_agg"])
     elif backend == "sglang":
-        assert extra["kv_cache_max_tokens"] == 16384
-        assert _cli_flag_value(artifacts["cli_args_agg"], "--max-total-tokens") == "16384"
+        assert extra["kv_cache_max_tokens"] == expected_max_tokens
+        assert _cli_flag_value(artifacts["cli_args_agg"], "--max-total-tokens") == str(expected_max_tokens)
         assert "--mem-fraction-static" not in shlex.split(artifacts["cli_args_agg"])
     else:
-        assert extra["kv_cache_max_tokens"] == 16384
+        assert extra["kv_cache_max_tokens"] == expected_max_tokens
         engine_args = yaml.safe_load(artifacts["extra_engine_args_agg.yaml"])
-        assert engine_args["kv_cache_config"]["max_tokens"] == 16384
+        assert engine_args["kv_cache_config"]["max_tokens"] == expected_max_tokens
         assert "free_gpu_memory_fraction" not in engine_args["kv_cache_config"]
 
 
@@ -461,3 +519,20 @@ def test_candidate_rejects_conflicting_fixed_and_fractional_kv_capacity():
 def _cli_flag_value(cli_args: str, flag: str) -> str:
     tokens = shlex.split(cli_args)
     return tokens[tokens.index(flag) + 1]
+
+
+def _assert_artifact_block_size(artifacts, backend, role, expected):
+    if backend == "trtllm":
+        engine_args = yaml.safe_load(artifacts[f"extra_engine_args_{role}.yaml"])
+        if expected is None:
+            assert "tokens_per_block" not in engine_args["kv_cache_config"]
+        else:
+            assert engine_args["kv_cache_config"]["tokens_per_block"] == expected
+        if role in {"prefill", "decode"}:
+            assert engine_args["cache_transceiver_config"]["max_tokens_in_buffer"] > 0
+    else:
+        flag = "--block-size" if backend == "vllm" else "--page-size"
+        if expected is None:
+            assert flag not in shlex.split(artifacts[f"cli_args_{role}"])
+        else:
+            assert _cli_flag_value(artifacts[f"cli_args_{role}"], flag) == str(expected)

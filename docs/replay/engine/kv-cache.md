@@ -56,6 +56,14 @@ All paths below are under `engine.workers.<role>.kv_cache`.
 | `state_cache` | Unset (off) | Rejected | Recurrent-state block; see [state cache](#state-cache). |
 | `prefix_match_unit` | Unset | Rejected | Prefix-matching granularity with `state_cache`. |
 
+The block-size defaults above are simulation defaults. When a Sweeper candidate's
+role block size is absent or `null`, the deployment generator omits `--block-size`
+(vLLM), `--page-size` (SGLang), or `kv_cache_config.tokens_per_block`
+(TensorRT-LLM), allowing the engine to choose its runtime default. Explicit values
+are preserved. Fixed-capacity conversion from blocks to tokens still uses the
+simulation's effective block size without emitting it as a runtime override. Set
+`block_size` explicitly when simulation and deployment must use the same value.
+
 ## GPU cache (G1)
 
 Each attention-DP rank has its own G1 cache and its own running requests.

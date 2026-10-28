@@ -152,10 +152,9 @@ def _role_sizing(
         config.get(f"{role}_max_num_batched_tokens"),
         path=f"candidate.config.{role}_max_num_batched_tokens",
     )
-    tokens_per_block = _positive_int(
-        resolve_block_size(backend, config.get(f"{role}_block_size")),
-        path=f"candidate.config.{role}_block_size",
-    )
+    tokens_per_block = config.get(f"{role}_block_size")
+    if tokens_per_block is not None:
+        tokens_per_block = _positive_int(tokens_per_block, path=f"candidate.config.{role}_block_size")
     memory_path = f"candidate.config.{role}_gpu_memory_utilization"
     blocks_path = f"candidate.config.{role}_num_gpu_blocks"
     memory_value = config.get(f"{role}_gpu_memory_utilization")
@@ -178,15 +177,19 @@ def _role_sizing(
         # Prefill CP ranks are extra GPUs; decode CP reuses the TP ranks.
         "gpus_per_worker": tp * pp * dp * cp,
         "max_num_tokens": max_num_tokens,
-        "tokens_per_block": tokens_per_block,
         "disable_prefix_cache": not bool(config.get(f"{role}_enable_prefix_caching")),
         **cp_params,
     }
+    # An unset block size delegates selection to the backend at startup.
+    if tokens_per_block is not None:
+        extra["tokens_per_block"] = tokens_per_block
     if blocks_value is not None:
         num_gpu_blocks = _positive_int(blocks_value, path=blocks_path)
         extra["num_gpu_blocks"] = num_gpu_blocks
         if backend in {"sglang", "trtllm"}:
-            extra["kv_cache_max_tokens"] = num_gpu_blocks * tokens_per_block
+            # Resolve the evaluated geometry only for the capacity conversion;
+            # it must not turn an unset block size into a deployment override.
+            extra["kv_cache_max_tokens"] = num_gpu_blocks * resolve_block_size(backend, tokens_per_block)
     else:
         if memory_value is None:
             memory_value = _DEFAULT_GPU_MEMORY_UTILIZATION.get(backend)
