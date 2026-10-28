@@ -91,6 +91,20 @@ runs:
         mv repaired-wheelhouse/*.whl wheelhouse/
         python python/aisimulate/tools/verify_release_wheels.py wheelhouse
 
+    - name: Check exact wheel configuration provenance
+      shell: bash
+      run: |
+        python scripts/ci/check_bundled_configs.py \
+          --wheel wheelhouse/aisimulate-*.whl \
+          --output-dir "${RUNNER_TEMP}/bundled-configs-platform"
+
+    - name: Preserve wheel configuration inventory
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: bundled-configs-platform-${{ inputs.build_method }}-${{ inputs.python_architecture }}
+        path: ${{ runner.temp }}/bundled-configs-platform/*
+        if-no-files-found: error
+
     - name: Verify installed unified wheel
       shell: bash
       run: |
