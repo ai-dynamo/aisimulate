@@ -3,10 +3,118 @@
 
 from __future__ import annotations
 
+import re
+from collections import Counter
+from fnmatch import fnmatchcase
+
 import aisimulate_core.sdk.operations as ops
 from aisimulate_core.sdk import common
 from aisimulate_core.sdk.models.base import BaseModel, register_model
-from aisimulate_core.sdk.models.helpers import mtp_scale_factor
+from aisimulate_core.sdk.models.helpers import (
+    _iter_mixed_precision_layer_algos,
+    modelopt_mixed_precision_targets,
+    mtp_scale_factor,
+    quant_exclude_patterns,
+)
+from aisimulate_core.sdk.perf_database import is_blackwell_system
+
+# Decoder-layer prefixes: HF ``model``, native ``backbone``, and their language_model wrappers.
+_LAYER_PREFIXES = (
+    "model",
+    "backbone",
+    "language_model.model",
+    "language_model.backbone",
+    "model.language_model",
+)
+
+
+def _projection_matches(path: str, target: str) -> bool:
+    if target == "Linear":
+        return True
+    return bool(re.match(target[3:], path)) if target.startswith("re:") else fnmatchcase(path, target)
+
+
+def _single_mode(suffix: str, values: list, default: common.GEMMQuantMode) -> common.GEMMQuantMode:
+    """One mode for an op that aggregates all MoE layers; reject disagreement instead of guessing."""
+    counts = Counter(values)
+    if len(counts) > 1:
+        per_layer = {m.name: n for m, n in counts.items()}
+        raise ValueError(
+            f"Nemotron-H projection {suffix} has different precision across layers ({per_layer}) "
+            "and one aggregated operation cannot represent it; "
+            "set gemm_quant_mode explicitly to price every projection with one mode"
+        )
+    return next(iter(counts), default)
+
+
+def _projection_modes(raw: dict, pattern: str, default: common.GEMMQuantMode, system: str | None = None) -> dict:
+    """Resolve the shared-expert and latent projections from checkpoint metadata.
+
+    The model aggregates each projection over all MoE layers into one operation,
+    so layers that resolve to different precisions, or conflicting algorithms for
+    one path, are rejected. A full
+    ``quantized_layers`` listing makes every unlisted projection BF16; group
+    targets alone leave unmatched projections on ``default``. Exclusions win.
+
+    Only metadata that carries per-layer information changes anything. The
+    bundled ``nvidia/NVIDIA-Nemotron-3-*-NVFP4`` copies hold only
+    ``quant_algo: NVFP4``, so every projection stays on ``default`` for them;
+    the resolver applies to local or freshly downloaded checkpoints.
+
+    A projection that a listing leaves out is BF16 only for a targets-only
+    ModelOpt MIXED_PRECISION export, the contract vLLM and SGLang implement
+    (see ``modelopt_mixed_precision_targets``). Any other metadata keeps
+    ``default`` for an unlisted projection instead of guessing a mode.
+    """
+    declarations = []
+    exact = {}
+    group_targets = []
+    layer_listing = False
+    exclusions = quant_exclude_patterns(raw)
+
+    def add(target, algo):
+        if target == "Linear" or target.startswith("re:") or any(char in target for char in "*?["):
+            declarations.append((target, algo))
+        else:
+            exact.setdefault(target, set()).add(algo)
+
+    for target, algo, listed in _iter_mixed_precision_layer_algos(raw):
+        layer_listing |= listed
+        if listed:
+            add(target, algo)
+        else:
+            group_targets.append((target, algo))
+    # A layer listing is authoritative: group targets only apply without one.
+    for target, algo in [] if layer_listing else group_targets:
+        add(target, algo)
+    # Non-Blackwell systems have no native FP4 tensor cores: NVFP4 runs weight-only, as
+    # resolve_nvfp4_for_system does for the global mode. Without a system, keep native NVFP4.
+    nvfp4 = common.GEMMQuantMode.nvfp4_wo if system and not is_blackwell_system(system) else common.GEMMQuantMode.nvfp4
+    modes = {
+        "fp8": common.GEMMQuantMode.fp8 if default == common.GEMMQuantMode.fp8 else common.GEMMQuantMode.fp8_static,
+        "mxfp8": common.GEMMQuantMode.fp8_block,
+        "nvfp4": nvfp4,
+        "w4a16_nvfp4": common.GEMMQuantMode.w4a16_nvfp4,
+    }
+    targets_only = layer_listing and modelopt_mixed_precision_targets(raw) is not None
+    unlisted = common.GEMMQuantMode.bfloat16 if targets_only else default
+    resolved = {}
+    for suffix in ("shared_experts.up_proj", "shared_experts.down_proj", "fc1_latent_proj", "fc2_latent_proj"):
+        values = []
+        for layer, kind in enumerate(pattern):
+            if kind != "E":
+                continue
+            paths = [f"{prefix}.layers.{layer}.mixer.{suffix}" for prefix in _LAYER_PREFIXES]
+            if any(_projection_matches(path, target) for path in paths for target in exclusions):
+                values.append(common.GEMMQuantMode.bfloat16)
+                continue
+            algos = {algo for target, algo in declarations if any(_projection_matches(path, target) for path in paths)}
+            algos.update(algo for path in paths for algo in exact.get(path, ()))
+            if len(algos) > 1 or any(algo not in modes for algo in algos):
+                raise ValueError(f"Unsupported mixed precision for Nemotron-H projection {suffix}: {algos}")
+            values.append(modes[next(iter(algos))] if algos else unlisted)
+        resolved[suffix] = _single_mode(suffix, values, default)
+    return resolved
 
 
 @register_model("NEMOTRONH")
@@ -44,6 +152,14 @@ class NemotronHModel(BaseModel):
             backend_name=backend_name,
         )
         # extra_params is NemotronHConfig with hybrid layer configuration.
+        # Non-latent MoE keeps the global GEMM mode until its calibration is qualified.
+        if not model_info["gemm_quant_mode_is_explicit"] and model_info["extra_params"].moe_latent_size:
+            model._projection_quant_modes = _projection_modes(
+                model_info.get("raw_config", {}),
+                model_info["extra_params"].hybrid_override_pattern,
+                model_config.gemm_quant_mode,
+                model_config.system,
+            )
         model.set_hybrid_config(model_info["extra_params"])
         return model
 
@@ -56,6 +172,7 @@ class NemotronHModel(BaseModel):
         self._num_experts = num_experts
         self._moe_inter_size = moe_inter_size
         self._hybrid_config: common.NemotronHConfig | None = None
+        self._projection_quant_modes: dict[str, common.GEMMQuantMode] = {}
         self._power_law_alpha = 1.01  # follow DeepSeek MoE
         # MTP (num_nextn_predict_layers > 0): scale generation iteration cost by
         # the small extra-layer factor (nextn+L)/L. Accepted-token progress is
@@ -240,7 +357,7 @@ class NemotronHModel(BaseModel):
                         count,
                         cfg.moe_shared_expert_intermediate_size // tp_size,
                         h,
-                        gemm_quant_mode,
+                        self._projection_quant_modes.get("shared_experts.up_proj", gemm_quant_mode),
                     ),
                     ops.ElementWise(
                         "context_shared_relu2",
@@ -254,7 +371,7 @@ class NemotronHModel(BaseModel):
                         count,
                         h,
                         cfg.moe_shared_expert_intermediate_size // tp_size,
-                        gemm_quant_mode,
+                        self._projection_quant_modes.get("shared_experts.down_proj", gemm_quant_mode),
                         low_precision_input=True,
                     ),
                 ]
@@ -281,7 +398,7 @@ class NemotronHModel(BaseModel):
                         count,
                         cfg.moe_latent_size // tp_size,
                         h,
-                        gemm_quant_mode,
+                        self._projection_quant_modes.get("fc1_latent_proj", gemm_quant_mode),
                     )
                 )
             self.context_ops.extend(
@@ -339,7 +456,7 @@ class NemotronHModel(BaseModel):
                         count,
                         h,
                         cfg.moe_latent_size // tp_size,
-                        gemm_quant_mode,
+                        self._projection_quant_modes.get("fc2_latent_proj", gemm_quant_mode),
                         low_precision_input=True,
                     )
                 )
@@ -533,7 +650,7 @@ class NemotronHModel(BaseModel):
                         count,
                         cfg.moe_shared_expert_intermediate_size // tp_size,
                         h,
-                        gemm_quant_mode,
+                        self._projection_quant_modes.get("shared_experts.up_proj", gemm_quant_mode),
                     ),
                     ops.ElementWise(
                         "generation_shared_relu2",
@@ -547,7 +664,7 @@ class NemotronHModel(BaseModel):
                         count,
                         h,
                         cfg.moe_shared_expert_intermediate_size // tp_size,
-                        gemm_quant_mode,
+                        self._projection_quant_modes.get("shared_experts.down_proj", gemm_quant_mode),
                         low_precision_input=True,
                     ),
                 ]
@@ -574,7 +691,7 @@ class NemotronHModel(BaseModel):
                         count,
                         cfg.moe_latent_size // tp_size,
                         h,
-                        gemm_quant_mode,
+                        self._projection_quant_modes.get("fc1_latent_proj", gemm_quant_mode),
                     )
                 )
             self.generation_ops.extend(
@@ -632,7 +749,7 @@ class NemotronHModel(BaseModel):
                         count,
                         h,
                         cfg.moe_latent_size // tp_size,
-                        gemm_quant_mode,
+                        self._projection_quant_modes.get("fc2_latent_proj", gemm_quant_mode),
                         low_precision_input=True,
                     )
                 )
