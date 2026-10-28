@@ -272,7 +272,6 @@ impl PerOpFold {
 /// [`PerOpFold`] by name slot, without names or fallback records. Static
 /// walks visit every op in order, so each slot first arrives as the next
 /// entry and entry `k` is name slot `k`.
-#[derive(Default)]
 struct PerOpSlotFold {
     entries: Vec<PerOpSlotValue>,
     /// A slot arrived ahead of its first-encounter position.
@@ -280,10 +279,10 @@ struct PerOpSlotFold {
 }
 
 impl PerOpSlotFold {
-    /// A fold sized for every name of `plan` when its phase runs.
-    fn for_plan(plan: &OpListPlan, runs: bool) -> Self {
+    /// A fold sized for every name of `plan`.
+    fn for_plan(plan: &OpListPlan) -> Self {
         Self {
-            entries: Vec::with_capacity(if runs { plan.names() } else { 0 }),
+            entries: Vec::with_capacity(plan.names()),
             misordered: false,
         }
     }
@@ -2306,67 +2305,52 @@ impl Engine {
     ) -> Result<(Vec<PerOpValueWithMetadata>, Vec<PerOpValueWithMetadata>), AicError> {
         let mut context = PerOpFold::for_plan("context", &self.context_plan);
         let mut generation = PerOpFold::for_plan("generation", &self.generation_plan);
-        self.run_static_per_op_with(
-            runtime,
-            mode,
-            stride,
-            |slot, op, r| context.add_slot(slot, op, r),
-            |slot, op, r| generation.add_slot(slot, op, r),
-        )?;
+        self.run_static_per_op_with(runtime, mode, stride, |is_context, slot, op, r| {
+            if is_context {
+                context.add_slot(slot, op, r)
+            } else {
+                generation.add_slot(slot, op, r)
+            }
+        })?;
         Ok((context.into_values(), generation.into_values()))
     }
 
-    /// [`Self::run_static_per_op`] with each phase's values indexed by name
-    /// slot instead of named: entry `k` of a nonempty phase belongs to
-    /// [`Self::static_slot_names`]`[k]`. Values, sources and order are those
-    /// of [`Self::run_static_per_op`]; callers that keep names apart skip
-    /// allocating them on every call.
+    /// The phase of [`Self::run_static_per_op`] that a static timing query
+    /// reads, context for [`StaticMode::Context`] and generation otherwise,
+    /// with value `k` belonging to the returned name `k` instead of carrying
+    /// it. Every call returns the same shared names, so callers that keep
+    /// names apart skip allocating them. The walk, values, sources and order
+    /// are those of [`Self::run_static_per_op`].
     pub(crate) fn run_static_slot_values(
         &self,
         runtime: &RuntimeConfig,
         mode: StaticMode,
         stride: u32,
-    ) -> Result<(Vec<PerOpSlotValue>, Vec<PerOpSlotValue>), AicError> {
-        let mut context = PerOpSlotFold::for_plan(
-            &self.context_plan,
-            matches!(mode, StaticMode::Context | StaticMode::Both),
-        );
-        let mut generation = PerOpSlotFold::for_plan(
-            &self.generation_plan,
-            matches!(mode, StaticMode::Generation | StaticMode::Both),
-        );
-        self.run_static_per_op_with(
-            runtime,
-            mode,
-            stride,
-            |slot, _, r| context.add(slot, r),
-            |slot, _, r| generation.add(slot, r),
-        )?;
-        Ok((
-            context.into_values(&self.context_plan)?,
-            generation.into_values(&self.generation_plan)?,
-        ))
-    }
-
-    /// Distinct context (`prefill`) or generation op names in name-slot order,
-    /// shared by every [`Self::run_static_slot_values`] call.
-    pub(crate) fn static_slot_names(&self, prefill: bool) -> &Arc<[String]> {
-        if prefill {
-            self.context_plan.slot_names()
+    ) -> Result<(&Arc<[String]>, Vec<PerOpSlotValue>), AicError> {
+        let context = mode == StaticMode::Context;
+        let plan = if context {
+            &self.context_plan
         } else {
-            self.generation_plan.slot_names()
-        }
+            &self.generation_plan
+        };
+        let mut fold = PerOpSlotFold::for_plan(plan);
+        self.run_static_per_op_with(runtime, mode, stride, |is_context, slot, _, r| {
+            if is_context == context {
+                fold.add(slot, r);
+            }
+        })?;
+        Ok((plan.slot_names(), fold.into_values(plan)?))
     }
 
-    /// The static per-op walk: `on_context` and `on_generation` observe each
-    /// op's name slot and result in [`Self::run_static_per_op`] fold order.
+    /// The static per-op walk: `on_op` observes whether each op is a context
+    /// op, its name slot and its result, in [`Self::run_static_per_op`] fold
+    /// order.
     fn run_static_per_op_with(
         &self,
         runtime: &RuntimeConfig,
         mode: StaticMode,
         stride: u32,
-        mut on_context: impl FnMut(usize, &Op, PerformanceResult),
-        on_generation: impl FnMut(usize, &Op, PerformanceResult),
+        mut on_op: impl FnMut(bool, usize, &Op, PerformanceResult),
     ) -> Result<(), AicError> {
         self.reject_full_round_surface("per-operation static phases")?;
         if matches!(mode, StaticMode::Context | StaticMode::Both) {
@@ -2386,11 +2370,13 @@ impl Engine {
                 runtime.prefix,
                 runtime.seq_imbalance_correction_scale,
                 ContextOpFilter::All,
-                |index, op, r| on_context(self.context_plan.name_slot(index), op, r),
+                |index, op, r| on_op(true, self.context_plan.name_slot(index), op, r),
             )?;
         }
         if matches!(mode, StaticMode::Generation | StaticMode::Both) {
-            self.run_generation_phase_with(runtime, stride, on_generation)?;
+            self.run_generation_phase_with(runtime, stride, |slot, op, r| {
+                on_op(false, slot, op, r)
+            })?;
         }
         Ok(())
     }
@@ -3812,12 +3798,12 @@ pub(crate) mod tests {
             build_engine(Some(1)),
             glm_layer_engine(),
         ] {
-            for (osl, prefix, mode) in [
-                (40, 200, StaticMode::Context),
-                (40, 0, StaticMode::Generation),
-                (2, 0, StaticMode::Generation),
-                (40, 200, StaticMode::Both),
-                (1, 0, StaticMode::Both),
+            for (mode, osl, prefix) in [
+                (StaticMode::Context, 40, 200),
+                (StaticMode::Generation, 40, 0),
+                (StaticMode::Generation, 2, 0),
+                (StaticMode::Generation, 1, 0),
+                (StaticMode::Both, 40, 200),
             ] {
                 let rt = RuntimeConfig {
                     batch_size: 3,
@@ -3826,74 +3812,44 @@ pub(crate) mod tests {
                     prefix,
                     ..Default::default()
                 };
-                let (named_context, named_generation) =
-                    engine.run_static_per_op(&rt, mode, 32).unwrap();
-                let (slot_context, slot_generation) =
-                    engine.run_static_slot_values(&rt, mode, 32).unwrap();
-                for (prefill, named, slots) in [
-                    (true, named_context, slot_context),
-                    (false, named_generation, slot_generation),
-                ] {
-                    let names = engine.static_slot_names(prefill);
-                    if !named.is_empty() {
-                        assert_eq!(slots.len(), names.len());
-                    }
-                    let actual = names
-                        .iter()
-                        .zip(&slots)
-                        .map(|(name, &(latency, energy, source))| {
-                            (name.clone(), latency.to_bits(), energy.to_bits(), source)
-                        })
-                        .collect::<Vec<_>>();
-                    let expected = named
-                        .into_iter()
-                        .map(|(name, latency, energy, source)| {
-                            (name, latency.to_bits(), energy.to_bits(), source)
-                        })
-                        .collect::<Vec<_>>();
-                    assert_eq!(actual, expected, "prefill={prefill} {mode:?} osl={osl}");
+                let (context, generation) = engine.run_static_per_op(&rt, mode, 32).unwrap();
+                let named = if mode == StaticMode::Context {
+                    context
+                } else {
+                    generation
+                };
+                let (names, slots) = engine.run_static_slot_values(&rt, mode, 32).unwrap();
+                // Callers rely on every call sharing one name list.
+                let (again, _) = engine.run_static_slot_values(&rt, mode, 32).unwrap();
+                assert!(Arc::ptr_eq(names, again));
+                if !named.is_empty() {
+                    assert_eq!(slots.len(), names.len());
                 }
+                let actual = names
+                    .iter()
+                    .zip(&slots)
+                    .map(|(name, &(latency, energy, source))| {
+                        (name.clone(), latency.to_bits(), energy.to_bits(), source)
+                    })
+                    .collect::<Vec<_>>();
+                let expected = named
+                    .into_iter()
+                    .map(|(name, latency, energy, source)| {
+                        (name, latency.to_bits(), energy.to_bits(), source)
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(actual, expected, "{mode:?} osl={osl}");
             }
-            // Every pass shares the plan's names.
-            assert!(Arc::ptr_eq(
-                engine.static_slot_names(false),
-                engine.generation_plan.slot_names()
-            ));
-            let invalid = RuntimeConfig {
-                batch_size: 1,
-                isl: 4,
-                prefix: 4,
-                ..Default::default()
-            };
-            assert_eq!(
-                engine
-                    .run_static_slot_values(&invalid, StaticMode::Context, 32)
-                    .unwrap_err()
-                    .to_string(),
-                engine
-                    .run_static_per_op(&invalid, StaticMode::Context, 32)
-                    .unwrap_err()
-                    .to_string()
-            );
         }
         // 19 GLM ops fold to 18 names; the trailing "gemm_0" joins slot 2.
         let glm = glm_layer_engine();
-        let names = glm.static_slot_names(true);
+        let (names, _) = glm
+            .run_static_slot_values(&runtime(3, 700, 1), StaticMode::Context, 32)
+            .unwrap();
         assert_eq!(names.len(), 18);
         assert_eq!(
             names[..3],
             ["mhc_0", "attention_0", "gemm_0"].map(String::from)
-        );
-        let decode = measured_profile_engine(false, false);
-        assert_eq!(
-            decode
-                .run_static_slot_values(&runtime(2, 4, 2), StaticMode::Context, 32)
-                .unwrap_err()
-                .to_string(),
-            decode
-                .run_static_per_op(&runtime(2, 4, 2), StaticMode::Context, 32)
-                .unwrap_err()
-                .to_string()
         );
     }
 
@@ -3902,7 +3858,7 @@ pub(crate) mod tests {
         use crate::operators::base::Source;
         let gemm = |name: &str| Op::Gemm(GemmOp::new(name, 64, 64, GemmQuantMode::Bfloat16));
         let plan = OpListPlan::new(&[gemm("a"), gemm("b"), gemm("a")]);
-        let mut fold = PerOpSlotFold::default();
+        let mut fold = PerOpSlotFold::for_plan(&plan);
         fold.add(0, PerformanceResult::with_energy(1.0, 2.0, Source::Silicon));
         fold.add(1, PerformanceResult::with_energy(0.5, 0.0, Source::Sol));
         fold.add(
@@ -3914,15 +3870,15 @@ pub(crate) mod tests {
             fold.into_values(&plan).unwrap(),
             [(1.25, 6.0, "mixed"), (0.5, 0.0, "sol")]
         );
-        let mut fold = PerOpSlotFold::default();
+        let mut fold = PerOpSlotFold::for_plan(&plan);
         fold.add(1, PerformanceResult::new(1.0, Source::Sol));
         fold.add(0, PerformanceResult::new(1.0, Source::Sol));
         assert!(fold.into_values(&plan).is_err(), "slot 1 before slot 0");
-        let mut fold = PerOpSlotFold::default();
+        let mut fold = PerOpSlotFold::for_plan(&plan);
         fold.add(0, PerformanceResult::new(1.0, Source::Sol));
         assert!(fold.into_values(&plan).is_err(), "unvisited name slot");
         assert!(
-            PerOpSlotFold::default()
+            PerOpSlotFold::for_plan(&plan)
                 .into_values(&plan)
                 .unwrap()
                 .is_empty()

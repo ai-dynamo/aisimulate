@@ -3,7 +3,7 @@
 
 //! Runtime-neutral forward-pass timing models.
 
-#[cfg(test)]
+#[cfg(any(feature = "python", test))]
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
@@ -196,19 +196,8 @@ impl TimingOperationEvidence {
         energy_wms: Option<f64>,
         source: TimingEvidenceSource,
     ) -> Result<Self> {
-        let covered_latency_ms = energy_wms
-            .is_some_and(|energy| energy > 0.0)
-            .then_some(latency_ms)
-            .unwrap_or(0.0);
-        Self {
-            name: name.into(),
-            energy_wms,
-            latency_ms,
-            covered_latency_ms,
-            source,
-            details: None,
-        }
-        .canonicalized()
+        let name = name.into();
+        Ok(OperationValues::new(&name, latency_ms, energy_wms, source)?.into_named(name))
     }
 
     fn canonicalized(mut self) -> Result<Self> {
@@ -298,6 +287,55 @@ impl TimingOperationEvidence {
     }
 }
 
+/// One operation's canonical values without its name: what
+/// [`TimingOperationEvidence::new`] keeps, and what a slotted phase stores.
+#[derive(Debug, Clone)]
+struct OperationValues {
+    latency_ms: f64,
+    energy_wms: Option<f64>,
+    covered_latency_ms: f64,
+    source: TimingEvidenceSource,
+}
+
+impl OperationValues {
+    /// Validate one operation called `name`. Energy that is not positive is
+    /// missing, so its latency is uncovered.
+    fn new(
+        name: &str,
+        latency_ms: f64,
+        energy_wms: Option<f64>,
+        source: TimingEvidenceSource,
+    ) -> Result<Self> {
+        let covered_latency_ms = if energy_wms.is_some_and(|energy| energy > 0.0) {
+            latency_ms
+        } else {
+            0.0
+        };
+        ensure!(
+            !name.trim().is_empty(),
+            "timing evidence operation name cannot be empty"
+        );
+        check_operation_values(name, latency_ms, energy_wms, covered_latency_ms)?;
+        Ok(Self {
+            latency_ms,
+            energy_wms: energy_wms.filter(|energy| *energy > 0.0),
+            covered_latency_ms,
+            source,
+        })
+    }
+
+    fn into_named(self, name: String) -> TimingOperationEvidence {
+        TimingOperationEvidence {
+            name,
+            energy_wms: self.energy_wms,
+            latency_ms: self.latency_ms,
+            covered_latency_ms: self.covered_latency_ms,
+            source: self.source,
+            details: None,
+        }
+    }
+}
+
 /// Typed operation evidence and totals for one forward-pass phase.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TimingPhaseEvidence {
@@ -328,50 +366,6 @@ enum ValidatedEvidence {
 impl Default for ValidatedEvidence {
     fn default() -> Self {
         Self::Named(TimingPhaseEvidence::default())
-    }
-}
-
-/// One operation's values, named by its slot in a [`SlottedPhase`].
-#[derive(Debug, Clone)]
-#[cfg(any(feature = "python", test))]
-pub(crate) struct OperationValues {
-    latency_ms: f64,
-    energy_wms: Option<f64>,
-    covered_latency_ms: f64,
-    source: TimingEvidenceSource,
-}
-
-#[cfg(any(feature = "python", test))]
-impl OperationValues {
-    /// The values `TimingOperationEvidence::new` keeps for `name`, with the
-    /// same validation and errors, without allocating `name`.
-    pub(crate) fn new(
-        name: &str,
-        latency_ms: f64,
-        energy_wms: Option<f64>,
-        source: TimingEvidenceSource,
-    ) -> Result<Self> {
-        let covered_latency_ms = if energy_wms.is_some_and(|energy| energy > 0.0) {
-            latency_ms
-        } else {
-            0.0
-        };
-        ensure!(
-            !name.trim().is_empty(),
-            "timing evidence operation name cannot be empty"
-        );
-        check_operation_values(name, latency_ms, energy_wms, covered_latency_ms)?;
-        let energy_wms = energy_wms.filter(|energy| *energy > 0.0);
-        Ok(Self {
-            latency_ms,
-            energy_wms,
-            covered_latency_ms: if energy_wms.is_some() {
-                covered_latency_ms
-            } else {
-                0.0
-            },
-            source,
-        })
     }
 }
 
@@ -413,30 +407,10 @@ impl SlottedPhase {
                 .names
                 .iter()
                 .zip(&self.operations)
-                .map(|(name, op)| TimingOperationEvidence {
-                    name: name.clone(),
-                    energy_wms: op.energy_wms,
-                    latency_ms: op.latency_ms,
-                    covered_latency_ms: op.covered_latency_ms,
-                    source: op.source.clone(),
-                    details: None,
-                })
+                .map(|(name, op)| op.clone().into_named(name.clone()))
                 .collect(),
         }
     }
-}
-
-/// Stretch latency, covered latency and energy by an online correction.
-#[cfg(feature = "python")]
-fn scale_values(
-    latency_ms: &mut f64,
-    covered_latency_ms: &mut f64,
-    energy_wms: &mut Option<f64>,
-    factor: f64,
-) {
-    *latency_ms *= factor;
-    *covered_latency_ms *= factor;
-    *energy_wms = energy_wms.map(|energy| energy * factor);
 }
 
 #[cfg(any(feature = "python", test))]
@@ -469,15 +443,13 @@ impl ValidatedTimingPhase {
             matches!(operation.clone().canonicalized(), Ok(canonical) if canonical == *operation)
         }));
         let mut phase = TimingPhaseEvidence {
+            source: operations
+                .iter()
+                .map(|operation| operation.source.clone())
+                .reduce(TimingEvidenceSource::merge),
             operations,
             ..TimingPhaseEvidence::default()
         };
-        for operation in &phase.operations {
-            phase.source = Some(match phase.source.take() {
-                Some(source) => source.merge(operation.source.clone()),
-                None => operation.source.clone(),
-            });
-        }
         // Use the checked path's exact sum/reduce order, including signed zero.
         // All row checks precede phase-total checks, even if a total overflows.
         phase.reconcile_operation_totals();
@@ -488,33 +460,37 @@ impl ValidatedTimingPhase {
         Ok(Self(ValidatedEvidence::Named(phase)))
     }
 
-    /// [`Self::from_name_folded_operations`] over operation `k` named
-    /// `names[k]`. A compiled engine phase shares `names` across passes, so
-    /// passes allocate no names; they are copied only when evidence is read.
-    pub(crate) fn from_slot_operations(
+    /// [`Self::from_name_folded_operations`] over `TimingOperationEvidence::new`
+    /// of each `(latency_ms, energy_wms, source)` value and its slot name, in
+    /// slot order. Values are pulled one at a time, so a caller's own check of
+    /// value `k` reports before any check of value `k + 1`. A compiled engine
+    /// phase shares `names` across passes, so passes allocate no names; they
+    /// are copied only when evidence is read.
+    pub(crate) fn from_slot_values(
         names: &Arc<[String]>,
-        operations: Vec<OperationValues>,
+        values: impl ExactSizeIterator<Item = Result<(f64, Option<f64>, TimingEvidenceSource)>>,
     ) -> Result<Self> {
         ensure!(
-            operations.len() == names.len(),
-            "timing evidence has {} operations for {} slot names",
-            operations.len(),
+            values.len() == names.len(),
+            "timing evidence has {} values for {} slot names",
+            values.len(),
             names.len()
         );
-        let mut source: Option<TimingEvidenceSource> = None;
-        for operation in &operations {
-            source = Some(match source.take() {
-                Some(source) => source.merge(operation.source.clone()),
-                None => operation.source.clone(),
-            });
+        let mut operations = Vec::with_capacity(names.len());
+        for (name, value) in names.iter().zip(values) {
+            let (latency_ms, energy_wms, source) = value?;
+            operations.push(OperationValues::new(name, latency_ms, energy_wms, source)?);
         }
         let mut phase = SlottedPhase {
             names: Arc::clone(names),
+            source: operations
+                .iter()
+                .map(|operation| operation.source.clone())
+                .reduce(TimingEvidenceSource::merge),
             operations,
             latency_ms: 0.0,
             energy_wms: None,
             covered_latency_ms: 0.0,
-            source,
         };
         phase.reconcile_operation_totals();
         check_phase_totals(phase.latency_ms, phase.energy_wms, phase.covered_latency_ms)?;
@@ -541,62 +517,71 @@ impl ValidatedTimingPhase {
             factor.is_finite() && factor >= 0.0,
             "online correction factor must be finite and non-negative, got {factor}"
         );
-        let (scaled, (latency_ms, covered_latency_ms, energy_wms)) = match &self.0 {
+        let scale = |latency_ms: &mut f64, covered_ms: &mut f64, energy_wms: &mut Option<f64>| {
+            *latency_ms *= factor;
+            *covered_ms *= factor;
+            *energy_wms = energy_wms.map(|energy| energy * factor);
+        };
+        let scaled = Self(match &self.0 {
             ValidatedEvidence::Named(phase) => {
                 let mut phase = phase.clone();
-                scale_values(
+                scale(
                     &mut phase.latency_ms,
                     &mut phase.covered_latency_ms,
                     &mut phase.energy_wms,
-                    factor,
                 );
-                for operation in &mut phase.operations {
-                    scale_values(
-                        &mut operation.latency_ms,
-                        &mut operation.covered_latency_ms,
-                        &mut operation.energy_wms,
-                        factor,
+                for op in &mut phase.operations {
+                    scale(
+                        &mut op.latency_ms,
+                        &mut op.covered_latency_ms,
+                        &mut op.energy_wms,
                     );
                 }
                 phase.reconcile_operation_totals();
-                let totals = (phase.latency_ms, phase.covered_latency_ms, phase.energy_wms);
-                (ValidatedEvidence::Named(phase), totals)
+                ValidatedEvidence::Named(phase)
             }
             ValidatedEvidence::Slotted(phase) => {
                 let mut phase = phase.clone();
-                scale_values(
+                scale(
                     &mut phase.latency_ms,
                     &mut phase.covered_latency_ms,
                     &mut phase.energy_wms,
-                    factor,
                 );
-                for operation in &mut phase.operations {
-                    scale_values(
-                        &mut operation.latency_ms,
-                        &mut operation.covered_latency_ms,
-                        &mut operation.energy_wms,
-                        factor,
+                for op in &mut phase.operations {
+                    scale(
+                        &mut op.latency_ms,
+                        &mut op.covered_latency_ms,
+                        &mut op.energy_wms,
                     );
                 }
                 phase.reconcile_operation_totals();
-                let totals = (phase.latency_ms, phase.covered_latency_ms, phase.energy_wms);
-                (ValidatedEvidence::Slotted(phase), totals)
+                ValidatedEvidence::Slotted(phase)
             }
-        };
+        });
+        let (latency_ms, energy_wms, covered_latency_ms) = scaled.totals();
         ensure!(
             latency_ms.is_finite()
                 && covered_latency_ms.is_finite()
                 && energy_wms.is_none_or(f64::is_finite),
             "online correction factor {factor} overflowed timing evidence"
         );
-        Ok(Self(scaled))
+        Ok(scaled)
+    }
+
+    /// `(latency_ms, energy_wms, covered_latency_ms)` of the phase.
+    fn totals(&self) -> (f64, Option<f64>, f64) {
+        match &self.0 {
+            ValidatedEvidence::Named(phase) => {
+                (phase.latency_ms, phase.energy_wms, phase.covered_latency_ms)
+            }
+            ValidatedEvidence::Slotted(phase) => {
+                (phase.latency_ms, phase.energy_wms, phase.covered_latency_ms)
+            }
+        }
     }
 
     pub(crate) fn latency_ms(&self) -> f64 {
-        match &self.0 {
-            ValidatedEvidence::Named(phase) => phase.latency_ms,
-            ValidatedEvidence::Slotted(phase) => phase.latency_ms,
-        }
+        self.totals().0
     }
 
     /// The evidence as named operations, copying slot names when needed.
@@ -707,28 +692,26 @@ impl TimingEvidenceAccumulator {
                 )
             }
             ValidatedEvidence::Slotted(slotted) => {
-                Self::record_named(phase, &mut self.pending, &slotted.to_named())?;
+                Self::record_named(phase, &mut self.pending, Cow::Owned(slotted.to_named()))?;
                 *names =
                     matches_slot_names(phase, &slotted.names).then(|| Arc::clone(&slotted.names));
                 Ok(())
             }
             ValidatedEvidence::Named(incoming) => {
-                Self::record_named(phase, &mut self.pending, incoming)?;
-                if names
-                    .as_ref()
-                    .is_some_and(|names| !matches_slot_names(phase, names))
-                {
+                // Named operations may add names or diagnostics.
+                if !incoming.operations.is_empty() {
                     *names = None;
                 }
-                Ok(())
+                Self::record_named(phase, &mut self.pending, Cow::Borrowed(incoming))
             }
         }
     }
 
+    /// Record named evidence; the checked fallback consumes an owned phase.
     fn record_named(
         phase: &mut TimingPhaseEvidence,
         pending: &mut Vec<OperationUpdate>,
-        incoming: &TimingPhaseEvidence,
+        incoming: Cow<'_, TimingPhaseEvidence>,
     ) -> Result<()> {
         // Private provider inputs are empty or built from operations, so stored
         // operation-backed totals are already reconciled. This shortcut relies
@@ -761,7 +744,7 @@ impl TimingEvidenceAccumulator {
                         }
                 })
         {
-            return phase.try_accumulate(incoming.clone());
+            return phase.try_accumulate(incoming.into_owned());
         }
         Self::accumulate_aligned(
             phase,
@@ -1885,16 +1868,12 @@ mod tests {
     /// A slotted pass over `names` with `(latency_ms, energy_wms, source)`.
     fn slotted_pass(
         names: &Arc<[String]>,
-        values: impl IntoIterator<Item = (f64, Option<f64>, TimingEvidenceSource)>,
+        values: impl IntoIterator<
+            Item = (f64, Option<f64>, TimingEvidenceSource),
+            IntoIter: ExactSizeIterator,
+        >,
     ) -> Result<ValidatedTimingPhase> {
-        let operations = names
-            .iter()
-            .zip(values)
-            .map(|(name, (latency_ms, energy_wms, source))| {
-                OperationValues::new(name, latency_ms, energy_wms, source)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        ValidatedTimingPhase::from_slot_operations(names, operations)
+        ValidatedTimingPhase::from_slot_values(names, values.into_iter().map(Ok))
     }
 
     #[test]
@@ -2022,17 +2001,25 @@ mod tests {
                 }),
             )
             .unwrap();
+            let named_operations = incoming.to_phase().operations.clone();
             let reference =
-                ValidatedTimingPhase::from_operations(incoming.to_phase().operations.clone())
-                    .unwrap();
+                ValidatedTimingPhase::from_operations(named_operations.clone()).unwrap();
             assert_phase_bits(&incoming.to_phase(), &reference.to_phase());
             assert_eq!(
                 incoming.latency_ms().to_bits(),
                 reference.latency_ms().to_bits()
             );
-            // Decode sees only slotted passes; prefill also sees a foreign
-            // operation, as a vision rank's encoder adds, and empty phases.
+            // Decode sees slotted passes and, now and then, the same pass
+            // named, which clears its slots until the next slotted pass.
+            // Prefill also sees a foreign operation, as a vision rank's
+            // encoder adds, and empty phases.
             let prefill = step % 7 == 0;
+            let named_decode = !prefill && step % 97 == 3;
+            let incoming = if named_decode {
+                ValidatedTimingPhase::from_operations(named_operations).unwrap()
+            } else {
+                incoming
+            };
             let mut updates = vec![(incoming, reference)];
             if prefill && step % 2 == 0 {
                 let foreign = ValidatedTimingPhase::from_operations(vec![
@@ -2055,12 +2042,16 @@ mod tests {
             }
             for (incoming, reference) in updates {
                 let by_slot = !prefill
+                    && matches!(incoming.0, ValidatedEvidence::Slotted(_))
                     && slotted
                         .decode_names
                         .as_ref()
-                        .is_some_and(|names| matches!(&incoming.0, ValidatedEvidence::Slotted(phase) if Arc::ptr_eq(names, &phase.names)));
+                        .is_some_and(|marker| Arc::ptr_eq(marker, names));
                 slot_updates += usize::from(by_slot);
                 slotted.record(&incoming, prefill).unwrap();
+                if named_decode {
+                    assert!(slotted.decode_names.is_none());
+                }
                 named.record(&reference, prefill).unwrap();
                 let phase = if prefill {
                     &mut checked.prefill
@@ -2090,25 +2081,28 @@ mod tests {
     #[test]
     fn slotted_passes_preserve_checked_errors_and_atomicity() {
         use TimingEvidenceSource::Silicon;
-        for (name, latency, energy) in [
-            (" ", 1.0, None),
-            ("op", f64::NAN, None),
-            ("op", -1.0, Some(1.0)),
-            ("op", 1.0, Some(-1.0)),
-            ("op", 1.0, Some(f64::INFINITY)),
-            ("op", f64::INFINITY, Some(1.0)),
+        // Values are checked one at a time: value 0's own error precedes a
+        // caller's error for value 1, and a valid value 0 lets it through.
+        let names = slot_names(&["first", "second"]);
+        for (latency, expected) in [
+            (
+                f64::NAN,
+                "timing evidence operation \"first\" returned invalid latency NaNms",
+            ),
+            (1.0, "caller rejected value 1"),
         ] {
+            let values = [
+                Ok((latency, None, Silicon)),
+                Err(anyhow::anyhow!("caller rejected value 1")),
+            ];
             assert_eq!(
-                OperationValues::new(name, latency, energy, Silicon)
+                ValidatedTimingPhase::from_slot_values(&names, values.into_iter())
                     .unwrap_err()
                     .to_string(),
-                TimingOperationEvidence::new(name, latency, energy, Silicon)
-                    .unwrap_err()
-                    .to_string()
+                expected
             );
         }
         // Valid operations whose phase total overflows fail like the checked builder.
-        let names = slot_names(&["first", "second"]);
         let overflow = [(f64::MAX, None, Silicon), (f64::MAX, None, Silicon)];
         assert_eq!(
             slotted_pass(&names, overflow.clone())
@@ -2128,8 +2122,8 @@ mod tests {
             .to_string()
         );
         assert!(
-            ValidatedTimingPhase::from_slot_operations(&names, Vec::new()).is_err(),
-            "every slot name needs one operation"
+            ValidatedTimingPhase::from_slot_values(&names, std::iter::empty()).is_err(),
+            "every slot name needs one value"
         );
         // Accumulated overflow through the slot path reports the checked
         // error and leaves the state intact.

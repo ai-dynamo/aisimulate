@@ -59,9 +59,7 @@ pub use timing::{
     TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence, VisionShape,
 };
 #[cfg(feature = "python")]
-pub(crate) use timing::{
-    OperationValues, TimingEvidenceAccumulator, ValidatedTimingPhase, mean_prefill_shape,
-};
+pub(crate) use timing::{TimingEvidenceAccumulator, ValidatedTimingPhase, mean_prefill_shape};
 
 #[doc(hidden)]
 pub use protocol::PendingPass;

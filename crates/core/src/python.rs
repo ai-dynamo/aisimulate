@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::engine::{
-    Backend, EngineConfig, MixedPassMs, OperationValues, PrefillTotals, TimingEvidenceAccumulator,
+    Backend, EngineConfig, MixedPassMs, PrefillTotals, TimingEvidenceAccumulator,
     TimingEvidenceSource, TimingEvidenceSummary, TimingModel, TimingModelConfig,
     TimingOperationEvidence, TimingPhaseEvidence, ValidatedTimingPhase, VisionShape,
 };
@@ -791,7 +791,7 @@ impl AicTimingModel {
                     seq_imbalance_correction_scale: 1.0,
                     gen_seq_imbalance_correction_scale: 1.0,
                 };
-                let (context, generation) = crate::py::parse_mode(mode)
+                let (names, values) = crate::py::parse_mode(mode)
                     .and_then(|mode| {
                         engine.reset_provenance();
                         engine
@@ -803,12 +803,11 @@ impl AicTimingModel {
                             .map_err(crate::py::aic_to_py)
                     })
                     .map_err(|error| anyhow!("AIC {mode} evidence prediction failed: {error}"))?;
-                let values = if prefill { context } else { generation };
                 ensure!(
                     !values.is_empty(),
                     "AIC {mode} returned empty operation evidence for nonzero work"
                 );
-                phase_evidence_from_native_slots(engine.static_slot_names(prefill), values)?
+                phase_evidence_from_native_slots(names, values)?
             }
             #[cfg(test)]
             AicPhaseProvider::Python => {
@@ -1058,50 +1057,39 @@ fn corrected_estimate(
     estimate
 }
 
-/// [`phase_evidence_from_native_entries`] over the engine's slot-indexed
-/// values: entry `k` is named `names[k]`, which every pass shares.
+/// Evidence of one native phase whose name-folded value `k` is named
+/// `names[k]`, which every pass of a compiled phase shares.
 fn phase_evidence_from_native_slots(
     names: &Arc<[String]>,
-    values: Vec<crate::perfmodel::engine::PerOpSlotValue>,
+    values: Vec<crate::perfmodel::engine::runtime::PerOpSlotValue>,
 ) -> Result<ValidatedTimingPhase> {
-    let operations = names
-        .iter()
-        .zip(values)
-        .map(|(name, (latency_ms, energy_wms, source))| {
-            ensure!(
-                energy_wms.is_finite() && energy_wms >= 0.0,
-                "AIC operation {name:?} returned invalid energy {energy_wms}W-ms"
-            );
-            OperationValues::new(
-                name,
-                latency_ms,
-                Some(energy_wms),
-                TimingEvidenceSource::from_native(source),
-            )
-        })
-        .collect::<Result<Vec<_>>>()?;
-    ValidatedTimingPhase::from_slot_operations(names, operations)
+    ValidatedTimingPhase::from_slot_values(
+        names,
+        names
+            .iter()
+            .zip(values)
+            .map(|(name, (latency_ms, energy_wms, source))| {
+                ensure!(
+                    energy_wms.is_finite() && energy_wms >= 0.0,
+                    "AIC operation {name:?} returned invalid energy {energy_wms}W-ms"
+                );
+                Ok((
+                    latency_ms,
+                    Some(energy_wms),
+                    TimingEvidenceSource::from_native(source),
+                ))
+            }),
+    )
 }
 
 fn phase_evidence_from_native_entries(
     entries: Vec<crate::perfmodel::engine::PerOpValue>,
 ) -> Result<ValidatedTimingPhase> {
-    let operations = entries
+    let (names, values): (Vec<_>, Vec<_>) = entries
         .into_iter()
-        .map(|(name, latency_ms, energy_wms, source)| {
-            ensure!(
-                energy_wms.is_finite() && energy_wms >= 0.0,
-                "AIC operation {name:?} returned invalid energy {energy_wms}W-ms"
-            );
-            TimingOperationEvidence::new(
-                name,
-                latency_ms,
-                Some(energy_wms),
-                TimingEvidenceSource::from_native(source),
-            )
-        })
-        .collect::<Result<Vec<_>>>()?;
-    ValidatedTimingPhase::from_name_folded_operations(operations)
+        .map(|(name, latency_ms, energy_wms, source)| (name, (latency_ms, energy_wms, source)))
+        .unzip();
+    phase_evidence_from_native_slots(&names.into(), values)
 }
 
 #[cfg(test)]
@@ -6472,29 +6460,6 @@ mod tests {
                     })
                     .collect(),
             );
-            // The slot builder shares names across passes but is otherwise
-            // the native builder, including its error order.
-            let names: Arc<[String]> = entries.iter().map(|(name, ..)| name.clone()).collect();
-            let slotted = phase_evidence_from_native_slots(
-                &names,
-                entries
-                    .iter()
-                    .map(|&(_, latency, energy, source)| (latency, energy, source))
-                    .collect(),
-            );
-            match (&slotted, &checked) {
-                (Ok(slotted), Ok(checked)) => {
-                    assert_bits(&slotted.to_phase(), &checked.to_phase());
-                    assert_eq!(
-                        slotted.latency_ms().to_bits(),
-                        checked.latency_ms().to_bits()
-                    );
-                }
-                (Err(slotted), Err(checked)) => {
-                    assert_eq!(slotted.to_string(), checked.to_string())
-                }
-                mismatch => panic!("slot builder mismatch: {mismatch:?}"),
-            }
             let native = phase_evidence_from_native_entries(entries.clone());
             match (native, checked) {
                 (Ok(native), Ok(checked)) => assert_bits(&native.to_phase(), &checked.to_phase()),
