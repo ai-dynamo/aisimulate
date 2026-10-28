@@ -105,11 +105,13 @@ unsupported capture combinations. The Engine JSON runner rejects telemetry
 capture even though native Rust observers support it.
 
 A factory that sets `supports_deferred_encoder_overlay` accepts
-`defer_encoder_overlay=True`: for an analytical EPD spec, the runner returns
-the normalized language report without the encoder overlay, and rejects the
-flag together with memory diagnostics. Sweeper uses it to replay a language
-deployment once and apply `apply_encoder_overlay` for every encoder pool that
-shares it.
+`defer_encoder_overlay=True`. For an analytical EPD spec, the runner then
+returns the normalized language report, which carries the metrics
+`apply_encoder_overlay` reads, without applying the overlay, and rejects the
+flag together with memory diagnostics. Sweeper fails a report that already
+carries the overlay as a runner contract violation. It reuses a returned
+language report for every encoder pool that shares it and applies the overlay
+per pool; a failed, timed-out or refused replay is not reused.
 
 An optional `estimate_host_resources(workload, *, concurrency=None)` factory
 method participates in [resource admission](../reference/local-resources.md).
