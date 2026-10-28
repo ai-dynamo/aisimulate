@@ -66,10 +66,19 @@ An actual upper median selects a real sample and retains **that sample's own
 workload coordinates**. It does not average latencies, use an unmeasured nominal
 coordinate, or divide the recorded time by the sample count. Preserve raw
 observations and selection provenance alongside the table. The policy does not
-admit AR-labelled rows or scheduler/host wall-time rows; renaming a CPU clock is
-not a valid conversion. Cached prefill and decode must retain the existing
-`real_kv` provenance requirement. Missing or fabricated state cannot be healed
-into these measured-only cells.
+admit AR-labelled rows (use `vllm_native_ar_model_step_cuda_v1`) or
+scheduler/host wall-time rows; renaming a CPU clock is not a valid conversion.
+Cached prefill and decode must retain the existing `real_kv` provenance
+requirement. Missing or fabricated state cannot be healed into these
+measured-only cells.
+
+Autoregressive native CUDA samples use schema 7 and the separate
+`vllm_native_ar_model_step_cuda_v1` policy. They require the full text AR
+execution identity, `timing_scope: model_step_cuda`, and the same sample fields
+listed above. Decode and cached-prefill rows must carry
+`kv_seed_regime: real_kv`. This policy records the complete model step,
+including sampling. It cannot supply speculative-round timing. Keep these
+observations separate from Dynamo scheduler wall-time measurements.
 
 ### Consuming a measured round
 

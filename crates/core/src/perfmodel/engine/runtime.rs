@@ -5018,6 +5018,7 @@ pub(crate) mod tests {
                 row.execution = Some(["", selector, "none", "text"]);
                 row.kv_seed_regime = Some("real_kv");
                 row.native_cuda = Some(NativeCudaSampleSpec {
+                    policy: crate::perf_database::fpm_forward::FPM_NATIVE_CUDA_MEASUREMENT_POLICY,
                     scope: "model_step_cuda",
                     reduction: "single_sample",
                     source_sample_count: 1,
@@ -5092,6 +5093,7 @@ pub(crate) mod tests {
             execution: Some(["", selector, "none", "text"]),
             kv_seed_regime: (kv > 0).then_some("real_kv"),
             native_cuda: Some(NativeCudaSampleSpec {
+                policy: crate::perf_database::fpm_forward::FPM_NATIVE_CUDA_MEASUREMENT_POLICY,
                 scope: "model_step_cuda",
                 reduction: "single_sample",
                 source_sample_count: 1,
