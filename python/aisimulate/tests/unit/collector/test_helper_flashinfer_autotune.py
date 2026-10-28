@@ -405,3 +405,30 @@ def test_newly_enumerated_tactic_tables_are_printed_per_instance_key(fake_flashi
         "FlashInfer autotune tactics at num_tokens=768 sglang_flashinfer_trtllm_moe: trtllm_sm100 "
         "('E2m1', 6, 2688, 1920, 32, 'Relu2', 768) -> 1 tactics [(64, 3)]"
     ]
+
+
+def test_autotune_lines_carry_the_cuda_device_tag(fake_flashinfer, monkeypatch, capsys):
+    """Parallel workers share one log and tune the same key independently; the device tag
+    is what lets a per-worker tactic choice be reconstructed afterwards (gb200 sglang part07
+    could not be: no worker tag on the autotune lines)."""
+
+    class _Cuda:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def current_device():
+            return 3
+
+    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(cuda=_Cuda))
+
+    def tune_fn():
+        fake_flashinfer.tuner.get().profiling_cache[("moe", 96)] = ((128, 2), None)
+
+    with flashinfer_autotuned(96, tune_fn, label="sglang_flashinfer_trtllm_moe"):
+        pass
+    out = capsys.readouterr().out
+    assert "FlashInfer autotune: 1 new tactic entries at num_tokens=96 sglang_flashinfer_trtllm_moe [" in out
+    assert "delay_us=1000] dev3\n" in out
+    assert "-> tactic (128, 2) dev3\n" in out

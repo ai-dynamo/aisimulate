@@ -727,6 +727,19 @@ def _flashinfer_new_tactic_entries(before: dict[str, set]) -> list[str]:
     return lines
 
 
+def _flashinfer_device_tag() -> str:
+    """`` dev<N>`` for the current CUDA device, so the per-process tuning decisions of
+    parallel workers can be told apart in a shared log; empty without CUDA."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return f" dev{torch.cuda.current_device()}"
+    except Exception:  # diagnostics only
+        pass
+    return ""
+
+
 def _flashinfer_autotune_api():
     """FlashInfer's ``autotune`` context manager and ``AutoTuner`` class, or ``(None, None)``."""
     try:
@@ -811,9 +824,10 @@ def flashinfer_autotuned(num_tokens: int, tune_fn: Callable[[], None], *, label:
         outcome = f"{len(cache) - entries_before} new tactic entries"
     else:
         outcome = "tuning pass done"
+    dev = _flashinfer_device_tag()
     print(
         f"FlashInfer autotune: {outcome} at num_tokens={num_tokens} {label}".rstrip()
-        + f" [{elapsed:.2f}s, {budget_desc}]"
+        + f" [{elapsed:.2f}s, {budget_desc}]{dev}"
     )
     # An op the tuner could not enumerate tactics for is timed on the untuned fallback
     # with no visible trace (b300 sglang 0.5.21 Nemotron-3-Nano nvfp4 relu2 shape,
@@ -830,13 +844,13 @@ def flashinfer_autotuned(num_tokens: int, tune_fn: Callable[[], None], *, label:
             tactic = entry[0] if isinstance(entry, (tuple, list)) and entry else entry
             print(
                 f"FlashInfer autotune chosen at num_tokens={num_tokens} {label}".rstrip()
-                + f": {' '.join(str(key).split())[:300]} -> tactic {tactic!r}"
+                + f": {' '.join(str(key).split())[:300]} -> tactic {tactic!r}{dev}"
             )
     # What the tuner had to choose from: the launcher-enumerated tactic list per instance
     # key (shows the intermediate size / activation the kernel really saw and whether the
     # candidate set was a single tactic, i.e. tuned == untuned by construction).
     for line in _flashinfer_new_tactic_entries(tactic_keys_before):
-        print(f"FlashInfer autotune tactics at num_tokens={num_tokens} {label}".rstrip() + f": {line}")
+        print(f"FlashInfer autotune tactics at num_tokens={num_tokens} {label}".rstrip() + f": {line}{dev}")
     diagnostics = _flashinfer_tuner_diagnostics(tuner_log)
     failed_after = _flashinfer_failed_tactic_counts(tuner)
     newly_failed = {k: n - failed_before.get(k, 0) for k, n in failed_after.items() if n > failed_before.get(k, 0)}
@@ -849,7 +863,8 @@ def flashinfer_autotuned(num_tokens: int, tune_fn: Callable[[], None], *, label:
         if diagnostics:
             more = f" (+{len(diagnostics) - 4} more)" if len(diagnostics) > 4 else ""
             parts.append(f"{len(diagnostics)} autotuner messages: " + "; ".join(diagnostics[:4]) + more)
-        print(f"FlashInfer autotune WARNING at num_tokens={num_tokens} {label}".rstrip() + ": " + " | ".join(parts))
+        head = f"FlashInfer autotune WARNING at num_tokens={num_tokens} {label}".rstrip()
+        print(f"{head}: " + " | ".join(parts) + dev)
     with autotune(False, tuning_buckets=buckets):
         yield True
 
