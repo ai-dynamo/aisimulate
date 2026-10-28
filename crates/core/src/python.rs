@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::engine::{
-    Backend, EngineConfig, MixedPassMs, PrefillTotals, TimingEvidenceAccumulator,
+    Backend, EngineConfig, MixedPassMs, OperationValues, PrefillTotals, TimingEvidenceAccumulator,
     TimingEvidenceSource, TimingEvidenceSummary, TimingModel, TimingModelConfig,
     TimingOperationEvidence, TimingPhaseEvidence, ValidatedTimingPhase, VisionShape,
 };
@@ -795,7 +795,7 @@ impl AicTimingModel {
                     .and_then(|mode| {
                         engine.reset_provenance();
                         engine
-                            .run_static_per_op(
+                            .run_static_slot_values(
                                 &runtime,
                                 mode,
                                 crate::perfmodel::engine::DEFAULT_STATIC_STRIDE,
@@ -803,12 +803,12 @@ impl AicTimingModel {
                             .map_err(crate::py::aic_to_py)
                     })
                     .map_err(|error| anyhow!("AIC {mode} evidence prediction failed: {error}"))?;
-                let entries = if prefill { context } else { generation };
+                let values = if prefill { context } else { generation };
                 ensure!(
-                    !entries.is_empty(),
+                    !values.is_empty(),
                     "AIC {mode} returned empty operation evidence for nonzero work"
                 );
-                phase_evidence_from_native_entries(entries)?
+                phase_evidence_from_native_slots(engine.static_slot_names(prefill), values)?
             }
             #[cfg(test)]
             AicPhaseProvider::Python => {
@@ -990,7 +990,7 @@ impl AicTimingModel {
                 self.predict_phase_evidence(batch_size, mean_isl, 1, mean_prefix, "static_ctx")?,
                 correction,
             )?;
-            let latency_ms = evidence.as_phase().latency_ms;
+            let latency_ms = evidence.latency_ms();
             self.record_evidence(&evidence, true)?;
             return Ok(latency_ms);
         }
@@ -1058,6 +1058,31 @@ fn corrected_estimate(
     estimate
 }
 
+/// [`phase_evidence_from_native_entries`] over the engine's slot-indexed
+/// values: entry `k` is named `names[k]`, which every pass shares.
+fn phase_evidence_from_native_slots(
+    names: &Arc<[String]>,
+    values: Vec<crate::perfmodel::engine::PerOpSlotValue>,
+) -> Result<ValidatedTimingPhase> {
+    let operations = names
+        .iter()
+        .zip(values)
+        .map(|(name, (latency_ms, energy_wms, source))| {
+            ensure!(
+                energy_wms.is_finite() && energy_wms >= 0.0,
+                "AIC operation {name:?} returned invalid energy {energy_wms}W-ms"
+            );
+            OperationValues::new(
+                name,
+                latency_ms,
+                Some(energy_wms),
+                TimingEvidenceSource::from_native(source),
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ValidatedTimingPhase::from_slot_operations(names, operations)
+}
+
 fn phase_evidence_from_native_entries(
     entries: Vec<crate::perfmodel::engine::PerOpValue>,
 ) -> Result<ValidatedTimingPhase> {
@@ -1109,7 +1134,7 @@ impl TimingModel for AicTimingModel {
         let mut latency_ms = 0.0;
         for shape in shapes {
             let phase = self.vision_phase(*shape)?;
-            latency_ms += phase.as_phase().latency_ms;
+            latency_ms += phase.latency_ms();
             // The encoder runs inside the prefill forward; its operations join
             // that phase's evidence under their own `encoder_*` names.
             self.record_evidence(&phase, true)?;
@@ -1276,7 +1301,7 @@ impl TimingModel for AicTimingModel {
             self.predict_phase_evidence(batch_size, mean_past_kv, 2, 0, "static_gen")?,
             correction,
         )?;
-        let latency_ms = evidence.as_phase().latency_ms;
+        let latency_ms = evidence.latency_ms();
         self.record_evidence(&evidence, false)?;
         Ok(latency_ms)
     }
@@ -4480,8 +4505,8 @@ mod tests {
                 assert_eq!(provenance, raw.last_provenance());
                 match (actual, expected) {
                     (Ok(actual), Ok(expected)) => {
-                        let a = actual.as_phase();
-                        let b = expected.as_phase();
+                        let (a, b) = (actual.to_phase(), expected.to_phase());
+                        let (a, b) = (a.as_ref(), b.as_ref());
                         assert_eq!(a, b);
                         let bits =
                             |phase: &TimingPhaseEvidence| {
@@ -5160,9 +5185,9 @@ mod tests {
             ("no-op".into(), 0.0, 0.0, "silicon".into()),
         ])
         .unwrap();
-        assert_eq!(summary.as_phase().energy_wms, Some(50_000.0));
-        assert_eq!(summary.as_phase().latency_ms, 125.0);
-        assert_eq!(summary.as_phase().covered_latency_ms, 100.0);
+        assert_eq!(summary.to_phase().energy_wms, Some(50_000.0));
+        assert_eq!(summary.to_phase().latency_ms, 125.0);
+        assert_eq!(summary.to_phase().covered_latency_ms, 100.0);
     }
 
     #[test]
@@ -6185,7 +6210,7 @@ mod tests {
         let cached = timing.phase_cache.get(&(2, 127, 2, 0, false)).unwrap();
         let again = timing.phase_cache.get(&(2, 127, 2, 0, false)).unwrap();
         assert!(Arc::ptr_eq(&cached, &again));
-        assert_eq!(cached.as_phase().energy_wms, Some(1_600.0));
+        assert_eq!(cached.to_phase().energy_wms, Some(1_600.0));
         // Distinct coordinates must never reuse the preceding shape's result.
         timing.predict_decode_ms(2, 260, 129, 1024).unwrap();
         Python::with_gil(|py| {
@@ -6287,8 +6312,7 @@ mod tests {
                     timing
                         .predict_phase_evidence(0, 128, 2, 0, mode)
                         .unwrap()
-                        .as_phase()
-                        .latency_ms,
+                        .latency_ms(),
                     0.0
                 );
             }
@@ -6296,8 +6320,7 @@ mod tests {
                 timing
                     .predict_phase_evidence(1, 128, 2, 128, "static_ctx")
                     .unwrap()
-                    .as_phase()
-                    .latency_ms,
+                    .latency_ms(),
                 0.0
             );
             assert_eq!(
@@ -6449,9 +6472,32 @@ mod tests {
                     })
                     .collect(),
             );
+            // The slot builder shares names across passes but is otherwise
+            // the native builder, including its error order.
+            let names: Arc<[String]> = entries.iter().map(|(name, ..)| name.clone()).collect();
+            let slotted = phase_evidence_from_native_slots(
+                &names,
+                entries
+                    .iter()
+                    .map(|&(_, latency, energy, source)| (latency, energy, source))
+                    .collect(),
+            );
+            match (&slotted, &checked) {
+                (Ok(slotted), Ok(checked)) => {
+                    assert_bits(&slotted.to_phase(), &checked.to_phase());
+                    assert_eq!(
+                        slotted.latency_ms().to_bits(),
+                        checked.latency_ms().to_bits()
+                    );
+                }
+                (Err(slotted), Err(checked)) => {
+                    assert_eq!(slotted.to_string(), checked.to_string())
+                }
+                mismatch => panic!("slot builder mismatch: {mismatch:?}"),
+            }
             let native = phase_evidence_from_native_entries(entries.clone());
             match (native, checked) {
-                (Ok(native), Ok(checked)) => assert_bits(native.as_phase(), checked.as_phase()),
+                (Ok(native), Ok(checked)) => assert_bits(&native.to_phase(), &checked.to_phase()),
                 (Err(native), Err(checked)) => {
                     assert_eq!(native.to_string(), checked.to_string());
                     timing.phase_provider = AicPhaseProvider::NativeEntries(entries);

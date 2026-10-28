@@ -128,6 +128,11 @@ pub(crate) type MoeCommFallbackValues = (MoeCommFallbackValue, Vec<MoeCommFallba
 /// the provenance tag (`silicon|empirical|sol|estimated|mixed`).
 pub type PerOpValue = (String, f64, f64, &'static str);
 
+/// One op name's folded `(latency_ms, energy_wms, source)`, addressed by its
+/// [`OpListPlan`] name slot instead of carrying the name. Folded exactly like
+/// [`PerOpValue`].
+pub(crate) type PerOpSlotValue = (f64, f64, &'static str);
+
 /// Internal per-op value used by the provenance-aware engine walk. The fifth
 /// field is `None` or `(first_record, additional_records)` in deterministic
 /// encounter order; public Rust and Python methods strip it and retain their
@@ -261,6 +266,51 @@ impl PerOpFold {
 
     fn into_values(self) -> Vec<PerOpValueWithMetadata> {
         self.entries
+    }
+}
+
+/// [`PerOpFold`] by name slot, without names or fallback records. Static
+/// walks visit every op in order, so each slot first arrives as the next
+/// entry and entry `k` is name slot `k`.
+#[derive(Default)]
+struct PerOpSlotFold {
+    entries: Vec<PerOpSlotValue>,
+    /// A slot arrived ahead of its first-encounter position.
+    misordered: bool,
+}
+
+impl PerOpSlotFold {
+    /// A fold sized for every name of `plan` when its phase runs.
+    fn for_plan(plan: &OpListPlan, runs: bool) -> Self {
+        Self {
+            entries: Vec::with_capacity(if runs { plan.names() } else { 0 }),
+            misordered: false,
+        }
+    }
+
+    fn add(&mut self, slot: usize, r: PerformanceResult) {
+        let source = r.source.as_str();
+        if let Some(entry) = self.entries.get_mut(slot) {
+            entry.0 += r.latency_ms;
+            entry.1 += r.energy_wms;
+            if entry.2 != source {
+                entry.2 = "mixed";
+            }
+        } else if slot == self.entries.len() {
+            self.entries.push((r.latency_ms, r.energy_wms, source));
+        } else {
+            self.misordered = true;
+        }
+    }
+
+    /// The folded values, once every name slot of `plan` was visited in order.
+    fn into_values(self, plan: &OpListPlan) -> Result<Vec<PerOpSlotValue>, AicError> {
+        if self.misordered || (!self.entries.is_empty() && self.entries.len() != plan.names()) {
+            return Err(AicError::InvalidEngineConfig(
+                "static phase did not fold every operation name in slot order".into(),
+            ));
+        }
+        Ok(self.entries)
     }
 }
 
@@ -2254,8 +2304,71 @@ impl Engine {
         mode: StaticMode,
         stride: u32,
     ) -> Result<(Vec<PerOpValueWithMetadata>, Vec<PerOpValueWithMetadata>), AicError> {
-        self.reject_full_round_surface("per-operation static phases")?;
         let mut context = PerOpFold::for_plan("context", &self.context_plan);
+        let mut generation = PerOpFold::for_plan("generation", &self.generation_plan);
+        self.run_static_per_op_with(
+            runtime,
+            mode,
+            stride,
+            |slot, op, r| context.add_slot(slot, op, r),
+            |slot, op, r| generation.add_slot(slot, op, r),
+        )?;
+        Ok((context.into_values(), generation.into_values()))
+    }
+
+    /// [`Self::run_static_per_op`] with each phase's values indexed by name
+    /// slot instead of named: entry `k` of a nonempty phase belongs to
+    /// [`Self::static_slot_names`]`[k]`. Values, sources and order are those
+    /// of [`Self::run_static_per_op`]; callers that keep names apart skip
+    /// allocating them on every call.
+    pub(crate) fn run_static_slot_values(
+        &self,
+        runtime: &RuntimeConfig,
+        mode: StaticMode,
+        stride: u32,
+    ) -> Result<(Vec<PerOpSlotValue>, Vec<PerOpSlotValue>), AicError> {
+        let mut context = PerOpSlotFold::for_plan(
+            &self.context_plan,
+            matches!(mode, StaticMode::Context | StaticMode::Both),
+        );
+        let mut generation = PerOpSlotFold::for_plan(
+            &self.generation_plan,
+            matches!(mode, StaticMode::Generation | StaticMode::Both),
+        );
+        self.run_static_per_op_with(
+            runtime,
+            mode,
+            stride,
+            |slot, _, r| context.add(slot, r),
+            |slot, _, r| generation.add(slot, r),
+        )?;
+        Ok((
+            context.into_values(&self.context_plan)?,
+            generation.into_values(&self.generation_plan)?,
+        ))
+    }
+
+    /// Distinct context (`prefill`) or generation op names in name-slot order,
+    /// shared by every [`Self::run_static_slot_values`] call.
+    pub(crate) fn static_slot_names(&self, prefill: bool) -> &Arc<[String]> {
+        if prefill {
+            self.context_plan.slot_names()
+        } else {
+            self.generation_plan.slot_names()
+        }
+    }
+
+    /// The static per-op walk: `on_context` and `on_generation` observe each
+    /// op's name slot and result in [`Self::run_static_per_op`] fold order.
+    fn run_static_per_op_with(
+        &self,
+        runtime: &RuntimeConfig,
+        mode: StaticMode,
+        stride: u32,
+        mut on_context: impl FnMut(usize, &Op, PerformanceResult),
+        on_generation: impl FnMut(usize, &Op, PerformanceResult),
+    ) -> Result<(), AicError> {
+        self.reject_full_round_surface("per-operation static phases")?;
         if matches!(mode, StaticMode::Context | StaticMode::Both) {
             self.check_profile_phase(true)?;
             if runtime.prefix >= runtime.isl {
@@ -2273,16 +2386,13 @@ impl Engine {
                 runtime.prefix,
                 runtime.seq_imbalance_correction_scale,
                 ContextOpFilter::All,
-                |index, op, r| context.add_slot(self.context_plan.name_slot(index), op, r),
+                |index, op, r| on_context(self.context_plan.name_slot(index), op, r),
             )?;
         }
-        let mut generation = PerOpFold::for_plan("generation", &self.generation_plan);
         if matches!(mode, StaticMode::Generation | StaticMode::Both) {
-            self.run_generation_phase_with(runtime, stride, |slot, op, r| {
-                generation.add_slot(slot, op, r)
-            })?;
+            self.run_generation_phase_with(runtime, stride, on_generation)?;
         }
-        Ok((context.into_values(), generation.into_values()))
+        Ok(())
     }
 
     /// [`Self::mixed_step_breakdown`] with the per-op values kept:
@@ -3692,6 +3802,131 @@ pub(crate) mod tests {
             .iter()
             .map(|e| (e.0.clone(), e.1.to_bits(), e.2.to_bits(), e.3))
             .collect()
+    }
+
+    #[test]
+    fn static_slot_values_are_the_named_per_op_values_by_slot() {
+        // Repeated GLM names, multi-step decode quadrature and MTP scaling.
+        for engine in [
+            build_engine(None),
+            build_engine(Some(1)),
+            glm_layer_engine(),
+        ] {
+            for (osl, prefix, mode) in [
+                (40, 200, StaticMode::Context),
+                (40, 0, StaticMode::Generation),
+                (2, 0, StaticMode::Generation),
+                (40, 200, StaticMode::Both),
+                (1, 0, StaticMode::Both),
+            ] {
+                let rt = RuntimeConfig {
+                    batch_size: 3,
+                    isl: 700,
+                    osl,
+                    prefix,
+                    ..Default::default()
+                };
+                let (named_context, named_generation) =
+                    engine.run_static_per_op(&rt, mode, 32).unwrap();
+                let (slot_context, slot_generation) =
+                    engine.run_static_slot_values(&rt, mode, 32).unwrap();
+                for (prefill, named, slots) in [
+                    (true, named_context, slot_context),
+                    (false, named_generation, slot_generation),
+                ] {
+                    let names = engine.static_slot_names(prefill);
+                    if !named.is_empty() {
+                        assert_eq!(slots.len(), names.len());
+                    }
+                    let actual = names
+                        .iter()
+                        .zip(&slots)
+                        .map(|(name, &(latency, energy, source))| {
+                            (name.clone(), latency.to_bits(), energy.to_bits(), source)
+                        })
+                        .collect::<Vec<_>>();
+                    let expected = named
+                        .into_iter()
+                        .map(|(name, latency, energy, source)| {
+                            (name, latency.to_bits(), energy.to_bits(), source)
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(actual, expected, "prefill={prefill} {mode:?} osl={osl}");
+                }
+            }
+            // Every pass shares the plan's names.
+            assert!(Arc::ptr_eq(
+                engine.static_slot_names(false),
+                engine.generation_plan.slot_names()
+            ));
+            let invalid = RuntimeConfig {
+                batch_size: 1,
+                isl: 4,
+                prefix: 4,
+                ..Default::default()
+            };
+            assert_eq!(
+                engine
+                    .run_static_slot_values(&invalid, StaticMode::Context, 32)
+                    .unwrap_err()
+                    .to_string(),
+                engine
+                    .run_static_per_op(&invalid, StaticMode::Context, 32)
+                    .unwrap_err()
+                    .to_string()
+            );
+        }
+        // 19 GLM ops fold to 18 names; the trailing "gemm_0" joins slot 2.
+        let glm = glm_layer_engine();
+        let names = glm.static_slot_names(true);
+        assert_eq!(names.len(), 18);
+        assert_eq!(
+            names[..3],
+            ["mhc_0", "attention_0", "gemm_0"].map(String::from)
+        );
+        let decode = measured_profile_engine(false, false);
+        assert_eq!(
+            decode
+                .run_static_slot_values(&runtime(2, 4, 2), StaticMode::Context, 32)
+                .unwrap_err()
+                .to_string(),
+            decode
+                .run_static_per_op(&runtime(2, 4, 2), StaticMode::Context, 32)
+                .unwrap_err()
+                .to_string()
+        );
+    }
+
+    #[test]
+    fn slot_fold_accumulates_by_slot_and_rejects_misordered_slots() {
+        use crate::operators::base::Source;
+        let gemm = |name: &str| Op::Gemm(GemmOp::new(name, 64, 64, GemmQuantMode::Bfloat16));
+        let plan = OpListPlan::new(&[gemm("a"), gemm("b"), gemm("a")]);
+        let mut fold = PerOpSlotFold::default();
+        fold.add(0, PerformanceResult::with_energy(1.0, 2.0, Source::Silicon));
+        fold.add(1, PerformanceResult::with_energy(0.5, 0.0, Source::Sol));
+        fold.add(
+            0,
+            PerformanceResult::with_energy(0.25, 4.0, Source::Empirical),
+        );
+        // "a": 1.0 + 0.25 ms and 2.0 + 4.0 W-ms; its sources differ.
+        assert_eq!(
+            fold.into_values(&plan).unwrap(),
+            [(1.25, 6.0, "mixed"), (0.5, 0.0, "sol")]
+        );
+        let mut fold = PerOpSlotFold::default();
+        fold.add(1, PerformanceResult::new(1.0, Source::Sol));
+        fold.add(0, PerformanceResult::new(1.0, Source::Sol));
+        assert!(fold.into_values(&plan).is_err(), "slot 1 before slot 0");
+        let mut fold = PerOpSlotFold::default();
+        fold.add(0, PerformanceResult::new(1.0, Source::Sol));
+        assert!(fold.into_values(&plan).is_err(), "unvisited name slot");
+        assert!(
+            PerOpSlotFold::default()
+                .into_values(&plan)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

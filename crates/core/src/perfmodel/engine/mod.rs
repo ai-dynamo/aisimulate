@@ -14,6 +14,8 @@ mod readiness;
 pub mod runtime;
 pub mod spec;
 
+#[cfg(feature = "python")]
+pub(crate) use runtime::PerOpSlotValue;
 pub use runtime::{
     DEFAULT_STATIC_STRIDE, Engine, PerOpValue, RuntimeConfig, StaticMode, StaticResult,
 };
