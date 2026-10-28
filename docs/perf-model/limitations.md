@@ -44,6 +44,27 @@ which contributes to the decoder context but not the encoder embeddings.
 For example, a 70×70 image with patch size 14 and merge size 2 gives 36 encoder
 patches, 9 embeddings, and 12 context tokens.
 
+## Nemotron-H latent-MoE projection precision
+
+The shared-expert and `fc1`/`fc2` latent projections of latent-MoE Nemotron-H
+models each use one precision for all MoE layers. The SDK reads it from the
+checkpoint's per-layer metadata (`quantized_layers`, `config_groups`, exclusions),
+so the result depends on the checkpoint and not on the model name. A projection
+that a MIXED_PRECISION listing leaves out is BF16, the rule vLLM and SGLang
+apply. Metadata that is not a MIXED_PRECISION listing leaves it on the global
+mode. On non-Blackwell systems an NVFP4 projection runs weight-only (`nvfp4_wo`),
+as the global NVFP4 mode does.
+
+If layers disagree, loading fails and names the projection and the per-layer
+counts. A partially listed export does this. For example, a public Super NVFP4
+export that lists most shared experts as FP8, one `down_proj` as NVFP4 and most
+latent projections not at all fails to load without an explicit
+`gemm_quant_mode`. That setting prices all four projections with one mode.
+
+The bundled `*-NVFP4` copies of Nemotron-3 Super and Ultra hold only
+`quant_algo: NVFP4`, so they use the global mode. Metadata that lists the
+projections applies to local or downloaded checkpoints.
+
 ## Other scoped boundaries
 
 - [Support](support-matrix.md) distinguishes engine queries from Replay and accuracy.
