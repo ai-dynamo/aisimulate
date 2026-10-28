@@ -265,9 +265,7 @@ model_case_values:
         nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
       framework_quantization:
         vllm:
-          # Ultra NVFP4 on vLLM stays unscheduled until its latent geometry is
-          # qualified. AIC-1743/AIC-1748.
-          allowed_modes: []
+          allowed_modes: [nvfp4]
   mamba2:
     - model_path: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
       model_aliases:

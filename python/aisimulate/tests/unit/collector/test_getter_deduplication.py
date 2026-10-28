@@ -469,6 +469,7 @@ def test_vllm_sm100_repository_moe_getter_expands_native_dsv4_w4a8_cases(monkeyp
         ("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4", "nvfp4", 1024),
         ("nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16", "bfloat16", 2048),
         ("nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8", "fp8", 2048),
+        ("nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4", "nvfp4", 2048),
     ],
 )
 def test_vllm_nemotron_uses_latent_moe_width(monkeypatch, model_path, moe_type, expected_hidden_size):
@@ -599,20 +600,6 @@ def test_vllm_nemotron_nvfp4_guard_uses_packaged_metadata(monkeypatch):
         "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
     ):
         module._require_native_nemotron_h_nvfp4_dispatch(unchanged)
-
-
-@pytest.mark.parametrize(
-    "model_path",
-    [
-        "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4",
-    ],
-)
-def test_vllm_nemotron_topk22_nvfp4_artifacts_are_not_scheduled(monkeypatch, model_path):
-    monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
-    _install_vllm_stubs(monkeypatch)
-    module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
-
-    assert module.get_moe_test_cases() == []
 
 
 @pytest.mark.parametrize(
