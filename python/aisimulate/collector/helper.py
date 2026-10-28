@@ -776,6 +776,7 @@ def flashinfer_autotuned(num_tokens: int, tune_fn: Callable[[], None], *, label:
     tuner = auto_tuner_cls.get()
     cache = getattr(tuner, "profiling_cache", None)
     entries_before = len(cache) if hasattr(cache, "__len__") else None
+    cache_keys_before = set(cache.keys()) if isinstance(cache, dict) else set()
     buckets = (int(num_tokens),)
     started = time.perf_counter()
     tune_error: BaseException | None = None
@@ -818,6 +819,19 @@ def flashinfer_autotuned(num_tokens: int, tune_fn: Callable[[], None], *, label:
     # with no visible trace (b300 sglang 0.5.21 Nemotron-3-Nano nvfp4 relu2 shape,
     # 2026-10-28: unchanged against the untuned table while every other shape moved).
     # Surface FlashInfer's own DEBUG explanation next to the case.
+    # What the tuner chose: every cache entry this pass added, with its tactic. Two worker
+    # processes tune the same key independently (per-process cache), so a slow cell whose
+    # sibling distributions are fine is told apart from a slow kernel by comparing these.
+    if isinstance(cache, dict):
+        for key in cache:
+            if key in cache_keys_before:
+                continue
+            entry = cache[key]
+            tactic = entry[0] if isinstance(entry, (tuple, list)) and entry else entry
+            print(
+                f"FlashInfer autotune chosen at num_tokens={num_tokens} {label}".rstrip()
+                + f": {' '.join(str(key).split())[:300]} -> tactic {tactic!r}"
+            )
     # What the tuner had to choose from: the launcher-enumerated tactic list per instance
     # key (shows the intermediate size / activation the kernel really saw and whether the
     # candidate set was a single tactic, i.e. tuned == untuned by construction).

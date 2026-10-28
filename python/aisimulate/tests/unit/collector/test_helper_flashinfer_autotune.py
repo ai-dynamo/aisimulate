@@ -80,11 +80,14 @@ def fake_flashinfer(monkeypatch):
 def test_tunes_once_at_the_exact_token_count_then_times_under_lookup_only(fake_flashinfer, capsys):
     seen: list[tuple] = []
 
+    # A key tuned by an earlier case on this worker is not reported again.
+    fake_flashinfer.tuner.get().profiling_cache[("moe", 64)] = ((64, 1), None)
+
     def tune_fn():
         # The tuning forward runs inside tune_mode=True with the exact bucket and
         # stands in for the autotuner filling its cache.
         seen.append((tuple(fake_flashinfer.active), fake_flashinfer.tuner.get().budget()))
-        fake_flashinfer.tuner.get().profiling_cache[("moe", 320)] = "tactic"
+        fake_flashinfer.tuner.get().profiling_cache[("moe", 320)] = ("tactic", "profile")
 
     with flashinfer_autotuned(320, tune_fn, label="vllm_trtllm_nvfp4") as tuned:
         assert tuned is True
@@ -105,6 +108,7 @@ def test_tunes_once_at_the_exact_token_count_then_times_under_lookup_only(fake_f
     out = capsys.readouterr().out
     assert "FlashInfer autotune: 1 new tactic entries at num_tokens=320 vllm_trtllm_nvfp4 [" in out
     assert "s, warmup=1 repeat=3 delay_us=1000]" in out
+    assert "FlashInfer autotune chosen at num_tokens=320 vllm_trtllm_nvfp4: ('moe', 320) -> tactic 'tactic'" in out
     assert "WARNING" not in out
 
 
