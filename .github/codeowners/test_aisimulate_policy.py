@@ -331,6 +331,8 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
         "readme-commands",
         "application-wheel",
         "python-compliance",
+        "license-crate-inventory",
+        "license-evidence",
     }
     assert set(full_readiness["needs"]) == set(full_config["jobs"]) - {"readiness", "stage-application-wheel"}
     full_readiness_script = full_readiness["steps"][0]["run"]
