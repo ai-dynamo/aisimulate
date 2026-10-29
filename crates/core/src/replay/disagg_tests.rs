@@ -2399,6 +2399,10 @@ fn same_instant_transfers_compute_rates_once() {
     // The step to the shared instant reuses the earlier rates; the new
     // transfers need one snapshot for the next event.
     assert_eq!(links.transfers.rate_refreshes.get() - before, 1);
+    // Landing the first transfer changes the job set and needs one more.
+    links.advance(1.0);
+    assert_eq!(links.completed, [HandoffId::new(Uuid::from_u128(1))]);
+    assert_eq!(links.transfers.rate_refreshes.get() - before, 2);
 }
 
 #[test]

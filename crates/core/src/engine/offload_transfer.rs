@@ -121,12 +121,14 @@ fn fair_rates(jobs: &[Job], now: f64) -> Vec<f64> {
     rates
 }
 
-/// Write the max-min fair rate of every job at `now` into `rates`.
+/// Write the max-min fair rate of every job at `now` into `rates` and return
+/// the earliest first byte still to come, or infinity.
 ///
 /// Progressive filling: repeatedly fix the jobs of the link with the smallest
-/// equal share, then charge their rate to their other link. Rates are a
-/// snapshot and never retained across events.
-fn fair_rates_into(jobs: &[Job], now: f64, scratch: &mut RateScratch, rates: &mut Vec<f64>) {
+/// equal share, then charge their rate to their other link. Rates depend only
+/// on the jobs and which are past their first byte, so they stay exact until
+/// the job set changes or the clock reaches the returned first byte.
+fn fair_rates_into(jobs: &[Job], now: f64, scratch: &mut RateScratch, rates: &mut Vec<f64>) -> f64 {
     let RateScratch {
         index,
         budgets,
@@ -143,6 +145,7 @@ fn fair_rates_into(jobs: &[Job], now: f64, scratch: &mut RateScratch, rates: &mu
     rates.clear();
     rates.resize(jobs.len(), 0.0);
     let mut coupled = false;
+    let mut first_byte = f64::INFINITY;
     for (job_index, job) in jobs.iter().enumerate() {
         let mut own = [None; 2];
         if job.ready <= now {
@@ -165,6 +168,8 @@ fn fair_rates_into(jobs: &[Job], now: f64, scratch: &mut RateScratch, rates: &mu
                 own[slot] = Some(budget);
             }
             coupled |= own.iter().all(Option::is_some);
+        } else {
+            first_byte = first_byte.min(job.ready);
         }
         job_budgets.push(own);
     }
@@ -176,7 +181,7 @@ fn fair_rates_into(jobs: &[Job], now: f64, scratch: &mut RateScratch, rates: &mu
                 *rate = budget.remaining / budget.active as f64;
             }
         }
-        return;
+        return first_byte;
     }
     member_starts.clear();
     let mut start = 0;
@@ -217,7 +222,7 @@ fn fair_rates_into(jobs: &[Job], now: f64, scratch: &mut RateScratch, rates: &mu
                 |_, _| {},
             );
         }
-        return;
+        return first_byte;
     }
     // A change to a budget queues its new share, and a popped share that no
     // longer matches its budget is stale. Each round thus fixes the jobs of
@@ -258,6 +263,7 @@ fn fair_rates_into(jobs: &[Job], now: f64, scratch: &mut RateScratch, rates: &mu
             },
         );
     }
+    first_byte
 }
 
 /// Fix the unfixed jobs of `bottleneck` at `share` and charge their other
@@ -312,14 +318,18 @@ pub(crate) struct FairTransfers {
     scratch: Box<RefCell<RateScratch>>,
     rates: RefCell<Vec<f64>>,
     /// `rates` hold the current jobs' rates while the clock is before this
-    /// first-byte time; a job set change resets it.
+    /// first-byte time. A new waiter appends a zero rate and can lower it; any
+    /// other job set change resets it.
     rates_valid_until: Cell<f64>,
-    /// Earliest event, kept until the clock or the job set changes; every
-    /// client of a shared pool asks between changes.
-    next_event: Cell<Option<Option<f64>>>,
+    /// `next_event`, kept until the clock or the job set changes; every client
+    /// of a shared pool asks between changes.
+    cached_event: Cell<Option<Option<f64>>>,
     events: Vec<f64>,
     #[cfg(test)]
     pub(crate) rate_refreshes: Cell<usize>,
+    /// Iterations of the `advance` loop.
+    #[cfg(test)]
+    steps: usize,
 }
 
 impl FairTransfers {
@@ -335,8 +345,17 @@ impl FairTransfers {
     /// Caller must first advance to the submission time.
     pub(crate) fn submit(&mut self, job: Job) {
         debug_assert!(job.ready >= self.now);
+        if job.ready > self.now && self.now < self.rates_valid_until.get() {
+            // A waiter holds no share before its first byte, so the other
+            // jobs keep their rates.
+            self.rates.get_mut().push(0.0);
+            let valid_until = self.rates_valid_until.get_mut();
+            *valid_until = valid_until.min(job.ready);
+            *self.cached_event.get_mut() = None;
+        } else {
+            self.invalidate();
+        }
         self.jobs.push(job);
-        self.invalidate_rates();
     }
 
     pub(crate) fn cancel(&mut self, id: u64) -> bool {
@@ -344,14 +363,15 @@ impl FairTransfers {
         self.jobs.retain(|job| job.id != id);
         let canceled = self.jobs.len() != before;
         if canceled {
-            self.invalidate_rates();
+            self.invalidate();
         }
         canceled
     }
 
-    fn invalidate_rates(&self) {
-        self.rates_valid_until.set(f64::NEG_INFINITY);
-        self.next_event.set(None);
+    /// Forget the rates and the next event after a job set change.
+    fn invalidate(&mut self) {
+        *self.rates_valid_until.get_mut() = f64::NEG_INFINITY;
+        *self.cached_event.get_mut() = None;
     }
 
     fn event_time(&self, job: &Job, rate: f64) -> f64 {
@@ -369,39 +389,40 @@ impl FairTransfers {
             .map(|(job, &rate)| self.event_time(job, rate))
     }
 
-    /// Rates depend only on the job set and which jobs are past their first
-    /// byte, so they are recomputed only after either changes.
+    /// Recompute `rates` unless they still hold at the current instant.
     fn refresh_rates(&self) {
         if self.now < self.rates_valid_until.get() {
+            debug_assert_eq!(self.rates.borrow().len(), self.jobs.len());
             return;
         }
         #[cfg(test)]
         self.rate_refreshes.set(self.rate_refreshes.get() + 1);
-        fair_rates_into(
+        let first_byte = fair_rates_into(
             &self.jobs,
             self.now,
             &mut self.scratch.borrow_mut(),
             &mut self.rates.borrow_mut(),
         );
-        let first_byte = self
-            .jobs
-            .iter()
-            .map(|job| job.ready)
-            .filter(|&ready| ready > self.now)
-            .fold(f64::INFINITY, f64::min);
         self.rates_valid_until.set(first_byte);
     }
 
     /// Earliest first-byte or completion event under the current job set.
     pub(crate) fn next_event(&self) -> Option<f64> {
-        if let Some(event) = self.next_event.get() {
+        if let Some(event) = self.cached_event.get() {
             return event;
         }
         self.refresh_rates();
-        let rates = self.rates.borrow();
-        let event = self.event_times(&rates).min_by(f64::total_cmp);
-        self.next_event.set(Some(event));
+        let event = self
+            .event_times(&self.rates.borrow())
+            .min_by(f64::total_cmp);
+        self.cached_event.set(Some(event));
         event
+    }
+
+    /// Whether an already computed next event is due by `target`. Computes
+    /// nothing, so callers can skip a step without pricing the job set.
+    pub(crate) fn known_event_due(&self, target: f64) -> bool {
+        matches!(self.cached_event.get(), Some(Some(event)) if event <= target)
     }
 
     /// Earliest first-byte or completion event of each client with jobs, as
@@ -444,21 +465,38 @@ impl FairTransfers {
     pub(crate) fn advance(&mut self, target: f64) -> Vec<(u64, f64)> {
         let target = target.max(self.now);
         let mut completed = Vec::new();
-        if target == self.now && self.next_event().is_none_or(|event| event > target) {
-            // Nothing moves or becomes due at the current instant.
+        if target > self.now {
+            // Service ends at `target`, so every remaining event moves.
+            *self.cached_event.get_mut() = None;
+        } else if self
+            .cached_event
+            .get()
+            .is_some_and(|event| event.is_none_or(|event| event > target))
+        {
+            // A known event after the current instant leaves nothing to do.
             return completed;
         }
         let mut events = std::mem::take(&mut self.events);
         loop {
+            #[cfg(test)]
+            {
+                self.steps += 1;
+            }
             self.refresh_rates();
-            let rates = std::mem::take(self.rates.get_mut());
             events.clear();
-            events.extend(self.event_times(&rates));
+            events.extend(self.event_times(&self.rates.borrow()));
             let event = events.iter().copied().min_by(f64::total_cmp);
+            if self.now == target && event.is_none_or(|time| time > target) {
+                // Nothing moves or becomes due at `target`, including waiters
+                // a step to it made eligible; keep the event for the next poll.
+                *self.cached_event.get_mut() = Some(event);
+                break;
+            }
             let next = event.unwrap_or(target).min(target);
             let elapsed = next - self.now;
             let now = self.now;
-            for ((job, &rate), &event) in self.jobs.iter_mut().zip(&rates).zip(&events) {
+            let rates = self.rates.get_mut();
+            for ((job, &rate), &event) in self.jobs.iter_mut().zip(rates.iter()).zip(&events) {
                 if job.ready > now {
                     continue;
                 }
@@ -471,7 +509,6 @@ impl FairTransfers {
                     (job.bytes - elapsed * rate).max(0.0)
                 };
             }
-            *self.rates.get_mut() = rates;
             self.now = next;
             let before = completed.len();
             let now = self.now;
@@ -483,20 +520,10 @@ impl FairTransfers {
                 !done
             });
             if completed.len() != before {
-                self.invalidate_rates();
-            } else if elapsed != 0.0 {
-                self.next_event.set(None);
+                self.invalidate();
             }
             if event.is_none_or(|time| time > target) {
                 break;
-            }
-            if self.now == target && completed.len() == before {
-                // Advancing time can make first-byte waiters eligible at this boundary.
-                self.refresh_rates();
-                let rates = self.rates.borrow();
-                if self.event_times(&rates).all(|time| time > target) {
-                    break;
-                }
             }
         }
         self.events = events;
@@ -611,11 +638,25 @@ mod tests {
     }
 
     #[test]
+    fn a_completion_reflows_its_link() {
+        // Two reads share 1 GB/s until the 1 MB one lands at 2; the other's
+        // last MB then moves alone.
+        let mut long = job(1, 0, Direction::Read, 0.0, (1.0, 0.0));
+        long.bytes = 2.0 * MB;
+        assert_eq!(
+            run(vec![job(0, 0, Direction::Read, 0.0, (1.0, 0.0)), long]),
+            [(0, 2.0), (1, 3.0)]
+        );
+    }
+
+    #[test]
     fn rates_are_reused_until_a_first_byte() {
         let mut transfers = FairTransfers::default();
         let mut moving = job(0, 0, Direction::Read, 0.0, (1.0, 0.0));
         moving.bytes = 2.0 * MB;
         transfers.submit(moving);
+        assert_eq!(transfers.next_event(), Some(2.0));
+        // A waiter holds no share, so submitting it keeps the moving rate.
         transfers.submit(job(1, 0, Direction::Read, 1.0, (1.0, 0.0)));
         assert_eq!(transfers.next_event(), Some(1.0));
         assert!(transfers.advance(0.5).is_empty());
@@ -632,11 +673,12 @@ mod tests {
     fn next_event_follows_same_instant_changes() {
         let mut transfers = FairTransfers::default();
         transfers.submit(job(0, 0, Direction::Read, 0.0, (1.0, 0.0)));
-        assert_eq!(transfers.next_event(), Some(1.0));
-        // Nothing is due now, so this neither moves bytes nor recomputes.
+        // Nothing is due now: the first advance scans once and keeps the
+        // event, so polls and later advances at this instant do no work.
         assert!(transfers.advance(0.0).is_empty());
-        assert_eq!(transfers.next_event(), Some(1.0));
-        assert_eq!(transfers.rate_refreshes.get(), 1);
+        assert_eq!(transfers.cached_event.get(), Some(Some(1.0)));
+        assert!(transfers.advance(0.0).is_empty());
+        assert_eq!((transfers.steps, transfers.rate_refreshes.get()), (1, 1));
         // A peer on the same link halves the share; its removal restores it.
         transfers.submit(job(1, 0, Direction::Read, 0.0, (1.0, 0.0)));
         assert_eq!(transfers.next_event(), Some(2.0));
