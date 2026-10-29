@@ -602,8 +602,9 @@ mod tests {
             head_dim: 64,
             n_groups: 8,
             chunk_size: 256,
-            state_dtype: "unrecorded".into(),
-            token_width: 1,
+            // Non-default values, so a round trip cannot pass on serde defaults.
+            state_dtype: "float16".into(),
+            token_width: 4,
         }
     }
 
@@ -1363,10 +1364,11 @@ mod tests {
 
     #[test]
     fn qualified_mamba_round_trips_and_schema_29_layout_is_rejected() {
-        let mut op = mamba2();
-        op.state_dtype = "float16".into();
-        op.token_width = 4;
-        let spec = EngineSpec::new(sample_engine_config(), vec![], vec![OpSpec::Mamba2(op)]);
+        let spec = EngineSpec::new(
+            sample_engine_config(),
+            vec![],
+            vec![OpSpec::Mamba2(mamba2())],
+        );
         let bytes = spec.to_bincode().unwrap();
         assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
         // The op ends in state_dtype (8-byte length + "float16") and
