@@ -142,3 +142,17 @@ test("manual migration previews pin an exact dataset revision", async () => {
   await assert.rejects(resolve({ event: "workflow_dispatch", inputs: {...inputs, HF_REVISION: "migration-branch"} }), /full commit SHA/);
   await assert.rejects(resolve({ event: "workflow_dispatch", inputs: {...inputs, HF_REVISION: "e".repeat(40)} }), /differs/);
 });
+
+test("complete scenario campaigns use the pinned HF revision and exact installed branch wheel", () => {
+  const branch = readFileSync(new URL('../.github/workflows/fpm-accuracy-branch.yml', import.meta.url), 'utf8');
+  const evaluation = branch.match(/python -m scripts\.fpm_accuracy\.run_fpm_accuracy[\s\S]*?--comparison-output[^\n]*/)[0];
+  assert.match(evaluation, /--scenarios/);
+  assert.match(evaluation, /--wheel "\$\{RUNNER_TEMP\}"\/accuracy-wheel\/\*\.whl/);
+  assert.match(evaluation, /--commit "\$\{EXPECTED_SHA\}" --branch "\$\{EVALUATED_BRANCH\}"/);
+  assert.match(evaluation, /--evaluator-sha "\$\{GITHUB_SHA\}" --hf-revision "\$\{HF_REVISION\}"/);
+  assert.doesNotMatch(evaluation, /--local-dataset|--configuration/);
+  assert.match(branch, /timeout-minutes: 360/);
+  assert.doesNotMatch(branch, /continue-on-error|if: always\(\)/);
+  const pages = readFileSync(new URL('../.github/workflows/pages.yml', import.meta.url), 'utf8');
+  assert.match(pages, /python scripts\/pages\/check_fpm_scenarios_browser\.py/);
+});

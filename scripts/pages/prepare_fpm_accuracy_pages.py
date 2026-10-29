@@ -36,6 +36,7 @@ from scripts.fpm_accuracy.dashboard_contract import (
     validate_details,
     validate_visualization,
 )
+from scripts.fpm_accuracy.scenario_contract import validate_scenarios
 from scripts.pages.prepare_e2e_accuracy_pages import ancestor, api, api_items
 
 WORKFLOW = ".github/workflows/fpm-accuracy.yml"
@@ -63,24 +64,36 @@ def unpack(archive: bytes) -> dict:
     summary = validate_summary(strict_json(raw))
     qualification = strict_json(files["qualification.json"])
     version = qualification.get("schema_version")
-    require(type(version) is int and version in (1, 2), "invalid qualification schema")
+    require(type(version) is int and version in (1, 2, 3), "invalid qualification schema")
     expected = ("schema_version", "snapshot", "summary_sha256")
-    keys(qualification, (*expected, "details_sha256") if version == 2 else expected)
+    if version >= 2:
+        expected += ("details_sha256",)
+    if version >= 3:
+        expected += ("scenarios_sha256",)
+    keys(qualification, expected)
     require(
         set(files)
         == (
-            {"qualification.json", "summary.json", "details.json"}
+            {"qualification.json", "summary.json", "details.json", "scenarios.json"}
+            if version == 3
+            else {"qualification.json", "summary.json", "details.json"}
             if version == 2
             else {"qualification.json", "summary.json"}
         ),
         "unexpected FPM artifact files",
     )
-    if version == 2:
+    if version >= 2:
         require(
             hashlib.sha256(files["details.json"]).hexdigest() == qualification["details_sha256"],
             "detail checksum mismatch",
         )
         validate_details(strict_json(files["details.json"]), summary)
+    if version == 3:
+        require(
+            hashlib.sha256(files["scenarios.json"]).hexdigest() == qualification["scenarios_sha256"],
+            "scenario checksum mismatch",
+        )
+        validate_scenarios(strict_json(files["scenarios.json"]), summary)
 
     require(qualification["snapshot"] == summary["snapshot"], "qualification identity mismatch")
     require(qualification["summary_sha256"] == hashlib.sha256(raw).hexdigest(), "summary checksum mismatch")
@@ -130,6 +143,7 @@ def prepare(repo: Path, output: Path):
     ).splitlines()
     branches = {"main", *(name for name in refs if eligible_branch(name))}
     selected = {}
+    selected_scenarios = {}
     history = {}
     measurements = []
     run_revisions = {}
@@ -196,12 +210,15 @@ def prepare(repo: Path, output: Path):
                 ):
                     continue
             selected[branch] = summary
+            selected_scenarios[branch] = files.get("scenarios.json")
     output.mkdir(parents=True, exist_ok=True)
     require(not any(output.iterdir()), "FPM output must be empty")
     for branch, summary in selected.items():
         (output / (artifact_key(branch) + ".json")).write_text(
             json.dumps(summary, allow_nan=False, sort_keys=True) + "\n"
         )
+        if selected_scenarios[branch] is not None:
+            (output / (artifact_key(branch) + "-scenarios.json")).write_bytes(selected_scenarios[branch])
     dashboard = output / "dashboard"
     dashboard.mkdir()
     entries = []
