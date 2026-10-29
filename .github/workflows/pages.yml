@@ -50,6 +50,8 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/pages.yml"
+      # Refresh the Feature Support Matrix's commit-pinned docs links.
+      - "docs/**"
       - "scripts/pyproject.toml"
       - "scripts/notifications/**"
       - "scripts/e2e_accuracy/**"

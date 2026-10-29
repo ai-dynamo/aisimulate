@@ -110,11 +110,24 @@ def load(text: str, *, source: str) -> dict:
     return data
 
 
+def _heading_text(heading: str) -> str:
+    """Reduce a Markdown heading to the text GitHub renders: no link, emphasis or HTML markup."""
+    heading = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", heading)
+    parts = re.split(r"(`[^`]*`)", heading)
+    for index, part in enumerate(parts):
+        if index % 2:
+            parts[index] = part.strip("`")
+        else:
+            part = re.sub(r"<[^>]+>", "", part)
+            parts[index] = re.sub(r"(\*{1,3}|_{1,3})(\S(?:.*?\S)?)\1", r"\2", part)
+    return "".join(parts)
+
+
 def anchors(markdown: str) -> set[str]:
     """Return a page's explicit ``<a id>`` targets and GitHub heading slugs."""
     found = set(re.findall(r'<a id="([^"]+)"', markdown))
     for heading in re.findall(r"^#+ (.+)$", markdown, re.MULTILINE):
-        found.add(re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-"))
+        found.add(re.sub(r"[^\w\- ]", "", _heading_text(heading).strip().lower()).replace(" ", "-"))
     return found
 
 

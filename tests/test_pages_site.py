@@ -1302,6 +1302,23 @@ def render_main(text: str, template: str | None = None) -> str:
     return FEATURES.render(template, [FEATURES.Snapshot("main", None, data)])
 
 
+@pytest.mark.parametrize(
+    ("heading", "slug"),
+    [
+        ("## Request tokenization", "request-tokenization"),
+        ("## _Tokenization_", "tokenization"),
+        ("## **Bold** and *emphasis*", "bold-and-emphasis"),
+        ("## [Linked text](other.md) here", "linked-text-here"),
+        ("## `host_offload` scope", "host_offload-scope"),
+        ("## GPU cache (G1)", "gpu-cache-g1"),
+        ("### MTP / EAGLE", "mtp--eagle"),
+        ('## Fields <a id="custom"></a>', "fields"),
+    ],
+)
+def test_feature_matrix_anchors_follow_github_heading_slugs(heading: str, slug: str) -> None:
+    assert slug in FEATURES.anchors(heading + "\n")
+
+
 def test_feature_matrix_links_resolve_to_documentation() -> None:
     data = FEATURES.load(FEATURE_DATA.read_text(encoding="utf-8"), source=FEATURES.DATA_PATH)
     FEATURES.check_docs(data, PAGES._feature_doc_reader(ROOT, None), source=FEATURES.DATA_PATH)
