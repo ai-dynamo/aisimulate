@@ -399,7 +399,7 @@ class RunnerCapabilities:
     supports_agentic_live_warmup: bool = False
     supports_generic_speculation: bool = False
     supports_tokenization: bool = False
-    supports_client_path: bool = False
+    supports_detokenization: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -572,7 +572,7 @@ class RunnerCapabilities:
         if deployment.detokenization is not None:
             if is_afd:
                 raise ValueError("engine.detokenization is unsupported for AFD")
-            if not self.supports_client_path:
+            if not self.supports_detokenization:
                 raise ValueError("runner does not support engine.detokenization; use --stack engine")
             if spec.execution_mode != "offline":
                 raise ValueError("engine.detokenization requires offline replay")

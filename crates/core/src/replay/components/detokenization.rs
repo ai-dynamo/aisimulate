@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The response path from a worker to the client.
+//! Response detokenization: the path from a worker to the client.
 //!
 //! A serving engine returns a pass's outputs through its server processes,
 //! which detokenize each request's new tokens, format streamed chunks and write
@@ -91,7 +91,7 @@ impl PassReceipt {
 
 /// Outputs on their way to the client, and finished requests the client has
 /// not received yet.
-pub(crate) struct ClientPath {
+pub(crate) struct DetokenizationStage {
     detokenization: DetokenizationLatency,
     /// Time each `(worker, server)` finishes the jobs it has taken. Only
     /// servers that have taken a job are tracked.
@@ -100,7 +100,7 @@ pub(crate) struct ClientPath {
     next_entry: u64,
 }
 
-impl ClientPath {
+impl DetokenizationStage {
     pub(crate) fn new(detokenization: DetokenizationLatency) -> Self {
         Self {
             detokenization,
@@ -247,8 +247,10 @@ impl Ord for PendingTerminal {
 mod tests {
     use super::*;
 
-    fn path(workers: usize, base_ms: f64, per_output_ms: f64) -> ClientPath {
-        ClientPath::new(DetokenizationLatency::new(workers, base_ms, per_output_ms).unwrap())
+    fn path(workers: usize, base_ms: f64, per_output_ms: f64) -> DetokenizationStage {
+        DetokenizationStage::new(
+            DetokenizationLatency::new(workers, base_ms, per_output_ms).unwrap(),
+        )
     }
 
     fn ids(range: std::ops::Range<u128>) -> impl Iterator<Item = Uuid> {

@@ -19,9 +19,9 @@ pub(super) use super::components::ReplayMode;
 #[cfg(test)]
 use super::components::TrafficStats;
 use super::components::{
-    AdmissionEvent, AdmissionQueue, ClientPath, EngineComponent, EngineEffects, EnginePassMode,
-    PassReceipt, ReplayAdmissionMetadata, ReplayEngineObservation, TokenizationLatency,
-    TokenizationStage, TrafficAccumulators,
+    AdmissionEvent, AdmissionQueue, DetokenizationStage, EngineComponent, EngineEffects,
+    EnginePassMode, PassReceipt, ReplayAdmissionMetadata, ReplayEngineObservation,
+    TokenizationLatency, TokenizationStage, TrafficAccumulators,
 };
 #[cfg(test)]
 use super::core::NoEngineEvents;
@@ -829,7 +829,7 @@ impl DisaggFlowState {
         self.retire_completed_request(uuid)
     }
 
-    /// `record_terminal: false` leaves the collector's terminal to the client path.
+    /// `record_terminal: false` leaves the collector's terminal to detokenization.
     #[inline(never)]
     fn record_decode_terminal(
         &mut self,
@@ -968,11 +968,11 @@ where
     /// Optional per-worker tokenization between prefill placement and the prefill engine.
     tokenization: Option<TokenizationStage<TokenizingPrefill>>,
     /// Optional detokenization after the decode engine.
-    client: Option<ClientPath>,
+    detokenization: Option<DetokenizationStage>,
     /// Requests whose decode terminal the client has not received yet, and
     /// whether they became quiescent meanwhile. The workload sees their
     /// quiescence only after their causal terminal.
-    client_awaiting: HashMap<Uuid, bool>,
+    awaiting_receipt: HashMap<Uuid, bool>,
     /// Optional scaling component. When set, `run()` seeds recurring `ScalingTick` events.
     scaling_policy: Option<Box<dyn ReplayScalingPolicy>>,
     /// Optional policy-neutral virtual-time telemetry sampler.
@@ -1123,8 +1123,8 @@ where
             traffic: TrafficAccumulators::new(),
             max_sim_time_ms: None,
             tokenization: None,
-            client: None,
-            client_awaiting: HashMap::new(),
+            detokenization: None,
+            awaiting_receipt: HashMap::new(),
             scaling_policy: None,
             telemetry: None,
             collect_fpm: false,
@@ -1194,8 +1194,11 @@ where
     }
 
     /// Detokenize decode outputs for the client and hold finished requests until the client receives them.
-    pub(crate) fn with_client_path(mut self, client: Option<ClientPath>) -> Self {
-        self.client = client;
+    pub(crate) fn with_detokenization(
+        mut self,
+        detokenization: Option<DetokenizationStage>,
+    ) -> Self {
+        self.detokenization = detokenization;
         self
     }
 
@@ -1239,7 +1242,10 @@ where
     fn cluster_in_flight(&self) -> usize {
         self.flow.logical_in_flight
             + self.encoder.as_ref().map_or(0, EncoderPool::parked_count)
-            + self.client.as_ref().map_or(0, ClientPath::len)
+            + self
+                .detokenization
+                .as_ref()
+                .map_or(0, DetokenizationStage::len)
     }
 
     fn record_prefill_fpm(
@@ -1333,23 +1339,23 @@ where
     }
 
     /// Notify the workload of the terminal of `uuid`, whose response ended in a
-    /// decode pass and reaches the client at `received_ms`. With a client path
+    /// decode pass and reaches the client at `received_ms`. With detokenization
     /// the client records and acts on it then.
     fn notify_received_terminal(&mut self, uuid: Uuid, received_ms: f64) -> Result<()> {
-        let Some(client) = &mut self.client else {
+        let Some(detokenization) = &mut self.detokenization else {
             return self.notify_causal_terminal(uuid);
         };
         let status = self.flow.state_mut(uuid)?.take_unnotified_terminal_status();
         let Some(status) = status else {
             return Ok(());
         };
-        client.defer_terminal(received_ms, uuid, status);
-        self.client_awaiting.insert(uuid, false);
+        detokenization.defer_terminal(received_ms, uuid, status);
+        self.awaiting_receipt.insert(uuid, false);
         Ok(())
     }
 
     fn notify_quiescent(&mut self, uuid: Uuid) -> Result<()> {
-        match self.client_awaiting.get_mut(&uuid) {
+        match self.awaiting_receipt.get_mut(&uuid) {
             // Released right after the client receives the request.
             Some(quiescent) => *quiescent = true,
             None => self.admission.defer_quiescent(uuid, self.now_ms)?,
@@ -2146,7 +2152,9 @@ where
                     .as_ref()
                     .and_then(TokenizationStage::next_release_ms),
             ),
-            self.client.as_ref().and_then(ClientPath::next_release_ms),
+            self.detokenization
+                .as_ref()
+                .and_then(DetokenizationStage::next_release_ms),
         );
         let next_event_ms = self.events.peek().map(|event| event.at_ms);
         let next_canonical_event_ms = if self.telemetry.is_some() {
@@ -2292,7 +2300,7 @@ where
             // attention-DP group boundary. Recording the token here therefore
             // preserves the old EngineComponent::align_pass_token_times
             // semantics without giving the engine ownership of report state.
-            if self.client.is_some() {
+            if self.detokenization.is_some() {
                 self.collector
                     .on_detokenized_token(signal.uuid, self.now_ms, received_ms);
             } else {
@@ -2316,15 +2324,15 @@ where
         }
         self.record_router_pending();
         // A rejection carries no output and skips detokenization.
-        let via_client = self.client.is_some() && !signal.rejected;
+        let via_detokenization = self.detokenization.is_some() && !signal.rejected;
         self.flow.record_decode_terminal(
             &signal,
             self.now_ms,
             &mut self.collector,
             &mut self.traffic,
-            !via_client,
+            !via_detokenization,
         )?;
-        if via_client {
+        if via_detokenization {
             self.notify_received_terminal(signal.uuid, received_ms)?;
         } else {
             self.notify_causal_terminal(signal.uuid)?;
@@ -2384,7 +2392,7 @@ where
         rank_id: usize,
         signals: &[OutputSignal],
     ) -> Result<PassReceipt> {
-        let Some(client) = &mut self.client else {
+        let Some(detokenization) = &mut self.detokenization else {
             return Ok(PassReceipt::Together(self.now_ms));
         };
         // The detokenizer servers belong to the decode worker, shared by its attention-DP ranks.
@@ -2400,22 +2408,22 @@ where
             .chunk_by(|left, right| left.uuid == right.uuid)
             .filter(|output| !output.iter().any(|signal| signal.rejected))
             .map(|output| output[0].uuid);
-        client.receive_pass(worker_id, self.now_ms, outputs)
+        detokenization.receive_pass(worker_id, self.now_ms, outputs)
     }
 
     /// Record every response the client has received by now and hand its
     /// request back to the workload.
-    fn release_client_terminals(&mut self) -> Result<bool> {
-        let Some(client) = &mut self.client else {
+    fn release_received_terminals(&mut self) -> Result<bool> {
+        let Some(detokenization) = &mut self.detokenization else {
             return Ok(false);
         };
-        let released = client.release_due(self.now_ms);
+        let released = detokenization.release_due(self.now_ms);
         let changed = !released.is_empty();
         for (at_ms, uuid, status) in released {
             self.collector.on_terminal(uuid, at_ms, status);
             self.admission
                 .defer_causal_terminal(uuid, self.now_ms, status)?;
-            if self.client_awaiting.remove(&uuid) == Some(true) {
+            if self.awaiting_receipt.remove(&uuid) == Some(true) {
                 self.admission.defer_quiescent(uuid, self.now_ms)?;
             }
         }
@@ -2887,7 +2895,7 @@ where
                 // Pass completion can expose another deadline at this timestamp.
                 changed |= settle(self)?;
             }
-            changed |= self.release_client_terminals()?;
+            changed |= self.release_received_terminals()?;
             changed |= self.apply_worker_ready_events()?;
             changed |= self.apply_transfer_completions()?;
             changed |= self.drive_pending_actions()?;
@@ -3802,7 +3810,7 @@ where
             bail!("agentic_profile cannot be combined with an encoder pool");
         }
         // Profile cancellation does not know about responses still on their way to the client.
-        if self.client.is_some() && self.admission.agentic_profile_report().is_some() {
+        if self.detokenization.is_some() && self.admission.agentic_profile_report().is_some() {
             bail!("agentic_profile cannot be combined with detokenization");
         }
         if let Some(cap_ms) = self.max_sim_time_ms

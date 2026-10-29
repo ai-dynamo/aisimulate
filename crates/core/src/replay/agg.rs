@@ -26,9 +26,9 @@ use super::telemetry::{
 };
 use super::{
     components::{
-        AdmissionQueue, ClientPath, EngineComponent, EngineEffects, EnginePassMode, PassReceipt,
-        ReplayAdmissionMetadata, ReplayEngineObservation, ReplayReadyArrival, TokenizationLatency,
-        TokenizationStage, TrafficAccumulators,
+        AdmissionQueue, DetokenizationStage, EngineComponent, EngineEffects, EnginePassMode,
+        PassReceipt, ReplayAdmissionMetadata, ReplayEngineObservation, ReplayReadyArrival,
+        TokenizationLatency, TokenizationStage, TrafficAccumulators,
     },
     state::AggRequestState,
 };
@@ -81,7 +81,7 @@ where
     /// Optional per-worker tokenization between placement and the engine.
     tokenization: Option<TokenizationStage<TokenizingDispatch>>,
     /// Optional detokenization after the engine.
-    client: Option<ClientPath>,
+    detokenization: Option<DetokenizationStage>,
     progress: ReplayProgress,
     stats: AggRuntimeStats,
     /// Latest forward pass metric per worker/rank since the previous scaling tick.
@@ -170,7 +170,7 @@ where
             events: BinaryHeap::new(),
             placement,
             tokenization: None,
-            client: None,
+            detokenization: None,
             progress,
             stats: AggRuntimeStats::default(),
             fpm_buffer: LatestFpmBuffer::default(),
@@ -259,8 +259,11 @@ where
     }
 
     /// Detokenize outputs for the client and hold finished requests until the client receives them.
-    pub(crate) fn with_client_path(mut self, client: Option<ClientPath>) -> Self {
-        self.client = client;
+    pub(crate) fn with_detokenization(
+        mut self,
+        detokenization: Option<DetokenizationStage>,
+    ) -> Self {
+        self.detokenization = detokenization;
         self
     }
 
@@ -293,7 +296,10 @@ where
             + self.placement.pending_count()
             + self.encoder.as_ref().map_or(0, EncoderPool::parked_count)
             + self.tokenization.as_ref().map_or(0, TokenizationStage::len)
-            + self.client.as_ref().map_or(0, ClientPath::len)
+            + self
+                .detokenization
+                .as_ref()
+                .map_or(0, DetokenizationStage::len)
     }
 
     /// Preserve the live `(worker_id, dp_rank)` identity when forwarding a
@@ -565,7 +571,9 @@ where
                     .as_ref()
                     .and_then(TokenizationStage::next_release_ms),
             ),
-            self.client.as_ref().and_then(ClientPath::next_release_ms),
+            self.detokenization
+                .as_ref()
+                .and_then(DetokenizationStage::next_release_ms),
         );
         let next_event_ms = self.events.peek().map(|event| event.at_ms);
         let next_canonical_event_ms = if self.telemetry.is_some() {
@@ -626,7 +634,7 @@ where
         }
         if let Some(token_id) = signal.token_id {
             self.admission.defer_output_token(signal.uuid, token_id)?;
-            if self.client.is_some() {
+            if self.detokenization.is_some() {
                 self.collector
                     .on_detokenized_token(signal.uuid, self.now_ms, received_ms);
             } else {
@@ -645,10 +653,10 @@ where
             // The client records and acts on a response when it receives its
             // end. A rejection carries no output: the client learns of it when
             // the engine rejects the request.
-            let via_client = self.client.is_some() && !signal.rejected;
-            match &mut self.client {
-                Some(client) if via_client => {
-                    client.defer_terminal(received_ms, signal.uuid, status)
+            let via_detokenization = self.detokenization.is_some() && !signal.rejected;
+            match &mut self.detokenization {
+                Some(detokenization) if via_detokenization => {
+                    detokenization.defer_terminal(received_ms, signal.uuid, status)
                 }
                 _ => self.collector.on_terminal(signal.uuid, self.now_ms, status),
             }
@@ -681,7 +689,7 @@ where
                     latencies,
                 );
             }
-            if !via_client {
+            if !via_detokenization {
                 self.admission
                     .defer_terminal(signal.uuid, self.now_ms, status)?;
             }
@@ -744,7 +752,7 @@ where
         rank_id: usize,
         signals: &[OutputSignal],
     ) -> anyhow::Result<PassReceipt> {
-        let Some(client) = &mut self.client else {
+        let Some(detokenization) = &mut self.detokenization else {
             return Ok(PassReceipt::Together(self.now_ms));
         };
         // The detokenizer servers belong to the worker, shared by its attention-DP ranks.
@@ -760,16 +768,16 @@ where
             .chunk_by(|left, right| left.uuid == right.uuid)
             .filter(|output| !output.iter().any(|signal| signal.rejected))
             .map(|output| output[0].uuid);
-        client.receive_pass(worker_id, self.now_ms, outputs)
+        detokenization.receive_pass(worker_id, self.now_ms, outputs)
     }
 
     /// Record every response the client has received by now and hand its
     /// request back to the workload.
-    fn release_client_terminals(&mut self) -> anyhow::Result<bool> {
-        let Some(client) = &mut self.client else {
+    fn release_received_terminals(&mut self) -> anyhow::Result<bool> {
+        let Some(detokenization) = &mut self.detokenization else {
             return Ok(false);
         };
-        let released = client.release_due(self.now_ms);
+        let released = detokenization.release_due(self.now_ms);
         let changed = !released.is_empty();
         for (at_ms, uuid, status) in released {
             self.collector.on_terminal(uuid, at_ms, status);
@@ -1142,7 +1150,7 @@ where
                 // Pass completion can expose another deadline at this timestamp.
                 changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;
             }
-            changed |= self.release_client_terminals()?;
+            changed |= self.release_received_terminals()?;
             changed |= self.apply_worker_ready_events()?;
             changed |= self.admission.flush_agentic_runtime_feedback(self.now_ms)?;
             changed |= self.finish_agentic_preparation()?;
@@ -1759,7 +1767,7 @@ where
             bail!("agentic_profile cannot be combined with an encoder pool");
         }
         // Profile cancellation does not know about responses still on their way to the client.
-        if self.client.is_some() && self.admission.agentic_profile_report().is_some() {
+        if self.detokenization.is_some() && self.admission.agentic_profile_report().is_some() {
             bail!("agentic_profile cannot be combined with detokenization");
         }
         if let Some(cap_ms) = self.max_sim_time_ms

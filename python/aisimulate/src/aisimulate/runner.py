@@ -392,7 +392,7 @@ class EngineReplayRunnerFactory:
             supports_state_cache=True,
             supports_grouped_kv_cache=True,
             supports_tokenization=True,
-            supports_client_path=True,
+            supports_detokenization=True,
             supports_sglang_host_loop=True,
             supported_trace_formats=(
                 "mooncake",

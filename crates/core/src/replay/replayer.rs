@@ -17,8 +17,8 @@ use crate::replay::artifact::{
     ReplayArtifactKvEventVisibility, ReplayArtifactSink, ReplayArtifacts,
 };
 use crate::replay::components::{
-    AdmissionQueue, ClientPath, DetokenizationLatency, NoReplayMetadata, ReplayAdmissionMetadata,
-    ReplayEngineObservation, ReplayMode, TokenizationLatency,
+    AdmissionQueue, DetokenizationLatency, DetokenizationStage, NoReplayMetadata,
+    ReplayAdmissionMetadata, ReplayEngineObservation, ReplayMode, TokenizationLatency,
 };
 use crate::replay::core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlacement};
 use crate::replay::core::{NoEngineEvents, PlacementPolicy, WorkerTopology};
@@ -528,8 +528,9 @@ impl<C: ReplayComposition> Replayer<C> {
                 "tokenization does not support worker scaling".to_string(),
             ));
         }
-        let client = self.detokenization.map(ClientPath::new);
-        if client.is_some() && (scaling.is_some() || self.spec.adapters.scaling.provider != "none")
+        let detokenization = self.detokenization.map(DetokenizationStage::new);
+        if detokenization.is_some()
+            && (scaling.is_some() || self.spec.adapters.scaling.provider != "none")
         {
             return Err(ReplayError::InvalidSpec(
                 "detokenization does not support worker scaling".to_string(),
@@ -596,7 +597,7 @@ impl<C: ReplayComposition> Replayer<C> {
                 .with_max_sim_time_ms(self.spec.max_sim_time_ms)
                 .with_encoder(encoder.clone())
                 .with_tokenization(tokenization)
-                .with_client_path(client);
+                .with_detokenization(detokenization);
                 if let Some(sink) = artifact_sink {
                     runtime = runtime.with_artifact_sink(sink);
                 }
@@ -674,7 +675,7 @@ impl<C: ReplayComposition> Replayer<C> {
                 .with_max_sim_time_ms(self.spec.max_sim_time_ms)
                 .with_encoder(encoder.clone())
                 .with_tokenization(tokenization)
-                .with_client_path(client);
+                .with_detokenization(detokenization);
                 if let Some(policy) = scaling {
                     runtime = runtime.with_scaling_policy(Box::new(ScalingPolicyBoundary(policy)));
                 }

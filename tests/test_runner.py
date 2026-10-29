@@ -2973,7 +2973,7 @@ def test_canonical_replay_spec_json_omits_unset_tokenization() -> None:
     assert configured["backend_deployment"]["tokenization"] == tokenization
 
 
-def _client_path_prediction(detokenization: dict | None = None) -> CorePredictionConfig:
+def _detokenization_prediction(detokenization: dict | None = None) -> CorePredictionConfig:
     config = {
         "engine": {
             "model": "example/model",
@@ -3001,7 +3001,7 @@ def _client_path_prediction(detokenization: dict | None = None) -> CorePredictio
     ],
 )
 def test_prediction_compiler_carries_detokenization(detokenization, expected) -> None:
-    deployment = prediction_to_replay_spec(_client_path_prediction(detokenization)).backend_deployment
+    deployment = prediction_to_replay_spec(_detokenization_prediction(detokenization)).backend_deployment
 
     assert deployment.detokenization == (pytest.approx(expected) if expected else None)
 
@@ -3019,7 +3019,7 @@ def test_prediction_compiler_carries_detokenization(detokenization, expected) ->
 )
 def test_prediction_rejects_invalid_detokenization(detokenization) -> None:
     with pytest.raises(ValidationError):
-        _client_path_prediction(detokenization)
+        _detokenization_prediction(detokenization)
 
 
 def test_zero_detokenization_costs_are_the_same_as_omitting_detokenization() -> None:
@@ -3038,7 +3038,7 @@ def test_recommendation_rejects_detokenization() -> None:
         )
 
 
-def _client_path_deployment(detokenization: dict | None = None, num_workers: int = 2) -> BackendDeploymentSpec:
+def _detokenization_deployment(detokenization: dict | None = None, num_workers: int = 2) -> BackendDeploymentSpec:
     return BackendDeploymentSpec(
         deployment_mode="agg",
         backend="vllm",
@@ -3052,7 +3052,7 @@ def _client_path_deployment(detokenization: dict | None = None, num_workers: int
 def test_engine_runner_sends_detokenization_in_the_execution_envelope() -> None:
     runtime = RecordingRuntime()
     detokenization = {"workers": 2, "base_ms": 1.0, "per_output_ms": 0.04}
-    deployment = _client_path_deployment(detokenization)
+    deployment = _detokenization_deployment(detokenization)
     workload = {"source_type": "synthetic", "load_type": "concurrency", "isl": 8, "osl": 2, "concurrency": 1}
 
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(
@@ -3067,7 +3067,7 @@ def test_detokenization_requires_capability_and_offline_replay() -> None:
     from aisimulate.sweeper import RunnerCapabilities
 
     detokenization = {"workers": 1, "base_ms": 1.0, "per_output_ms": 0.0}
-    spec = _spec(deployment=_client_path_deployment(detokenization, 1))
+    spec = _spec(deployment=_detokenization_deployment(detokenization, 1))
     with pytest.raises(ValueError, match="does not support engine.detokenization"):
         RunnerCapabilities(supported_backend_topologies=(("*", "*"),)).require_compatible(spec)
     engine = EngineReplayRunnerFactory(runtime=RecordingRuntime()).capabilities()
@@ -3081,7 +3081,7 @@ def test_detokenization_requires_capability_and_offline_replay() -> None:
 def test_detokenization_rejects_afd() -> None:
     engine = EngineReplayRunnerFactory(runtime=RecordingRuntime()).capabilities()
     detokenization = {"workers": 1, "base_ms": 1.0, "per_output_ms": 0.0}
-    afd = replace(_client_path_deployment(detokenization, 1), deployment_mode="afd")
+    afd = replace(_detokenization_deployment(detokenization, 1), deployment_mode="afd")
     with pytest.raises(ValueError, match="engine.detokenization is unsupported for AFD"):
         engine.require_compatible(_spec(deployment=afd))
 
@@ -3094,7 +3094,7 @@ def test_native_replay_detokenizes_outputs_for_the_client() -> None:
             EngineReplayRunnerFactory()
             .create(0)
             .run(
-                _spec(deployment=_client_path_deployment(detokenization, 1), workload=workload),
+                _spec(deployment=_detokenization_deployment(detokenization, 1), workload=workload),
                 output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_per_request=True),
             )
         )

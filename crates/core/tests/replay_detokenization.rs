@@ -403,7 +403,7 @@ fn a_response_not_received_by_the_time_cap_is_incomplete() {
 }
 
 #[test]
-fn agentic_requests_complete_through_the_client_path() {
+fn agentic_requests_complete_through_detokenization() {
     for disagg in [false, true] {
         let graph = ValidatedAgenticGraph::from_agentic_mooncake_rows(
             AgenticMooncakeHeader {
