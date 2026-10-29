@@ -96,6 +96,14 @@ frameworks:
           default: "lmsysorg/sglang:v0.5.20@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f"
           cu130: "lmsysorg/sglang:v0.5.20-cu130@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f"
       "nvidia/GLM-5.3-Flash-NVFP4": *glm53flash_sglang_runtime
+      # AgentX GLM DSA collection: match the replay's runtime independently
+      # of the older framework default and preserve the checkpoint identity.
+      "nvidia/GLM-5.2-NVFP4":
+        version: "0.5.20"
+        source_commit: "94602c9c2b7cbdb8efd5c52802dac6a1c180089e"
+        images:
+          default: "lmsysorg/sglang:v0.5.20@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f"
+          cu130: "lmsysorg/sglang:v0.5.20-cu130@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f"
   trtllm:
     source_repo: "https://github.com/NVIDIA/TensorRT-LLM.git"
     default:

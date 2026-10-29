@@ -33,6 +33,62 @@ docker run -itd --shm-size 32g --gpus all --ipc=host --network=host --name sglan
   `../framework_manifest.yaml`; WideEP MLA is not registered for stock v0.5.14.
 - DeepSeek model config (or use dummy weights)
 
+## GLM AgentX collection branch
+
+`simonec/glm-agentx-op-collection` is a collection-only development branch.
+Its SGLang generation sweep replaces the general sweep with the AgentX target
+below. It preserves the prefill batch and context grids, other backends, and
+the output schema. Do not merge this narrowed sweep as a general default.
+
+- Checkpoint: `nvidia/GLM-5.2-NVFP4`; B300 (SM103), TP8 geometry with 8 local
+  attention heads, FP8 KV, BF16 attention/projections, TRTLLM DSA backend.
+- Runtime: SGLang 0.5.20, source
+  [`94602c9c2b7cbdb8efd5c52802dac6a1c180089e`](https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e).
+  The model-scoped manifest pin and image digest must agree with the pipeline.
+- Decode op batches: `4, 8, 16, 32, 52`. These bracket the sampled AgentX
+  running-request maximum of 13 with the replay's `nextn=3` approximation.
+- Past-KV lengths: `1, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096,
+  8192, 16384, 32768, 65536, 131072, 262144, 393216, 524288, 655360, 720896`.
+- Both `dsa_generation_module` and `dsa_generation_module_skip_indexer`:
+  **110 measurements per variant, 220 total**. Persisted rows use `isl=1`
+  and `step=past_KV`, so the predictor's context coordinate is `past_KV+1`.
+- Generation budget: `52 * 720896 = 37486592` tokens. The declaration admits
+  these cases; GPU execution must establish feasibility and timing validity.
+  Retain classified failures rather than treating absent rows as successful.
+
+The checked SGLang APIs changed between 0.5.14 and 0.5.20. The module collector
+uses the latter's published runtime context, resolved config, `ParallelState`,
+GEMM initialization, request extension range, and explicit decode token input.
+Source citations at those calls identify the serving contracts; the older
+0.5.14 path remains available. This collection does not validate native MTP
+verification or the replay's equivalent autoregressive approximation.
+
+Use [agentx_dsa_shards.yaml](agentx_dsa_shards.yaml) with auto-collector commit
+`25af03d2e22f88e186e2f2ede3466d4fa6349548`, frozen on a run branch. Set
+`AISIM_SHARD_PLAN` to this file's SHA-pinned raw GitHub URL, and set:
+
+```yaml
+AISIM_REPO: ai-dynamo/aisimulate
+AISIM_REVISION: <signed source commit>
+AISIM_FRAMEWORKS: sglang:0.5.20
+AISIM_SYSTEMS: b300_sxm
+AISIM_OPS: dsa_generation_module,dsa_generation_module_skip_indexer
+AISIM_MODEL_FILTER: nvidia/GLM-5.2-NVFP4
+AISIM_GPU_NUM: "1"
+AISIM_CLUSTER_OVERRIDE: computelab-aus-01.nvidia.com
+AISIM_SHARDS_PER_JOB: "1"
+AISIM_BACKEND_DOCKER_IMAGE: lmsysorg/sglang:v0.5.20-cu130@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f
+RUN_JOBS_FOR_MISSING_DATA_ONLY: "0"
+CREATE_GITHUB_PR: "0"
+```
+
+Each shard reserves one B300 and measures one attention module with local TP8
+dimensions; this is not an eight-rank communication benchmark. Separate shard
+jobs preserve `--model-path` before model deduplication. The exact case filter
+selects only the requested heads and precision. Leave collection limits empty.
+Validate the two collection summaries and all 220 row identities before data
+publication; a green parent pipeline is not evidence of complete coverage.
+
 ## Execution Modes
 
 Stock diagnostics and the independent WideEP MoE collector use these modes:

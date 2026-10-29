@@ -61,6 +61,10 @@ common_case_values:
     # top_level_head_counts keep ModelRunner-loading subprocess counts manageable.
   mla_module_sglang:
     description: SGLang full MLA/DSA module sweep. Quantized DSA checkpoints keep DSA projections in bf16 but may use fp8 KV cache.
+    # Collection-only branch: AgentX decode coverage through sampled request
+    # batch 13 (nextn=3 -> op batch 52). Keep the prefill grid unchanged.
+    context_batch_sizes: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+    generation_batch_sizes: [4, 8, 16, 32, 52]
     module_tp_sizes:
       - 1
       - 2
@@ -121,6 +125,11 @@ common_case_values:
       - 32768
       - 65536
       - 131072
+      - 262144
+      - 393216
+      - 524288
+      - 655360
+      - 720896
     context:
       max_tokens: 131072
       large_sequence_min: 8192
@@ -155,13 +164,9 @@ common_case_values:
         - 1000000
         - 1048575
     generation:
-      # max_tokens is the MLA/DSA collectors' decode memory contract
-      # (b*kv <= 256K; their guard tests pin it). The MSA decode sweep needs
-      # the large-batch x long-kv corner, so it carries its own budget below
-      # (2026-08-09 raise, spot-measured on hardware; documented in the
-      # b200_sxm msa collection_meta coverage note) — scoped to msa so the
-      # MLA/DSA plans keep their contract.
-      max_tokens: 262144
+      # Targeted B300 collection: 52 * 720896 past-KV tokens. This is a
+      # generation budget, not a claim that every shape is GPU-qualified.
+      max_tokens: 37486592
       msa_max_tokens: 33554432
       large_sequence_min: 8192
       large_sequence_max_batch_size: 1024
