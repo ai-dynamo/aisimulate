@@ -63,7 +63,7 @@ pub const FPM_FORWARD_PARTITION_POLICY: &str = "balanced_v1";
 /// latency is already reduced.
 pub const FPM_FORWARD_MEASUREMENT_POLICY: &str = "dynamo_native_single_sample_v1";
 pub const FPM_NATIVE_CUDA_MEASUREMENT_POLICY: &str = "vllm_native_fpm_model_step_cuda_v1";
-const FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY: &str = "vllm_native_ar_model_step_cuda_v1";
+pub const FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY: &str = "vllm_native_ar_model_step_cuda_v1";
 const FPM_ROW_MEASUREMENT_POLICY: &str = "per_row_single_sample_or_median_of_3";
 const FPM_FULL_GRID_MEASUREMENT_POLICY: &str = "per_row_single_sample_or_full_grid_median_v1";
 
@@ -237,6 +237,8 @@ pub struct FpmForwardCell {
     /// do not inherit the fabricated rows' extrapolated KV ceilings.
     pub direct_decode: BTreeMap<u32, BTreeMap<u32, f64>>,
     pub direct_decode_rungs: Vec<u32>,
+    /// Loaded under the autoregressive native CUDA policy: no speculative timing.
+    pub native_ar_only: bool,
     /// Diagnostic state only; no change to table identity, values, or schema.
     warned_fmha_model_modes: Mutex<BTreeSet<String>>,
 }
@@ -1299,6 +1301,7 @@ fn load_pair(
                 direct_prefill_by_tokens: OnceLock::new(),
                 direct_decode: BTreeMap::new(),
                 direct_decode_rungs: Vec::new(),
+                native_ar_only: measurement_policy == MeasurementPolicy::NativeArCudaActualSample,
                 warned_fmha_model_modes: Mutex::new(BTreeSet::new()),
             },
         });
