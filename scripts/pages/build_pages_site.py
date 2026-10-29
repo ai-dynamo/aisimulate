@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.e2e_accuracy.build_e2e_accuracy_overview import measurement_source_url
 from scripts.fpm_accuracy.contract import artifact_key, eligible_branch, strict_json, validate_summary
+from scripts.pages import feature_support_matrix as feature_matrix
 
 ROOT = Path(__file__).resolve().parents[2]
 PAGES_ROOT = Path("pages")
@@ -642,6 +643,46 @@ def _build_fpm_catalog(repo_root: Path, output_dir: Path, include_refs: bool, ar
     (output_dir / "fpm-accuracy/branches.json").write_text(json.dumps(catalog, indent=2) + "\n")
 
 
+def _build_feature_matrix(repo_root: Path, output_dir: Path, include_refs: bool) -> None:
+    """Render main's data and each fetched release's committed data into one static page.
+
+    Releases cut before the page existed have no data file and stay out of the selector.
+    """
+    sources = [repo_root / feature_matrix.TEMPLATE_PATH, repo_root / feature_matrix.DATA_PATH]
+    for source in sources:
+        if source.is_symlink():
+            raise PagesBuildError(f"public artifact source cannot be a symlink: {source}")
+    try:
+        template, main_text = (source.read_text() for source in sources)
+        main = feature_matrix.load(main_text, source=feature_matrix.DATA_PATH)
+    except OSError as exc:
+        raise PagesBuildError(f"feature support matrix source is unreadable: {exc}") from exc
+    except feature_matrix.FeatureMatrixError as exc:
+        raise PagesBuildError(f"invalid feature support matrix: {exc}") from exc
+    try:
+        head = _git(repo_root, "rev-parse", "HEAD")
+    except PagesBuildError:
+        head = None  # A source archive has no commit to show.
+    snapshots = [feature_matrix.Snapshot("main", head, main)]
+    if include_refs:
+        refs = _git(repo_root, "for-each-ref", "--format=%(refname:strip=3)", "refs/remotes/origin/release/")
+        for branch in sorted(refs.splitlines(), key=feature_matrix.release_sort_key, reverse=True):
+            ref = "origin/" + branch
+            entry = _git(repo_root, "ls-tree", ref, "--", feature_matrix.DATA_PATH)
+            if not entry:
+                continue
+            if not entry.startswith("100644 blob "):
+                raise PagesBuildError(f"{ref}: feature support matrix data must be a regular file")
+            try:
+                data = feature_matrix.load(_git(repo_root, "show", f"{ref}:{feature_matrix.DATA_PATH}"), source=ref)
+            except feature_matrix.FeatureMatrixError as exc:
+                raise PagesBuildError(f"invalid feature support matrix: {exc}") from exc
+            snapshots.append(feature_matrix.Snapshot(branch, _git(repo_root, "rev-parse", ref), data))
+    destination = output_dir / "feature-support-matrix" / "index.html"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(feature_matrix.render(template, snapshots))
+
+
 def build_site(
     repo_root: Path,
     output_dir: Path,
@@ -692,6 +733,7 @@ def build_site(
             elif public_name == "support-matrix":
                 _record_legacy_snapshot(repo_root, output_dir / "data" / public_name)
 
+    _build_feature_matrix(repo_root, output_dir, accuracy_refs)
     _build_accuracy_catalog(repo_root, output_dir, accuracy_refs, accuracy_artifacts)
     _build_fpm_catalog(repo_root, output_dir, accuracy_refs, fpm_artifacts)
 
@@ -704,7 +746,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--fpe-data-dir", type=Path, help="Qualified FPE data prepared for this deployment")
     parser.add_argument(
-        "--accuracy-refs", action="store_true", help="Include fetched origin/release/* accuracy snapshots"
+        "--accuracy-refs", action="store_true", help="Include fetched origin/release/* accuracy and feature snapshots"
     )
     parser.add_argument("--accuracy-artifacts", type=Path, help="Validated nightly accuracy summaries")
     parser.add_argument("--fpm-artifacts", type=Path, help="Validated FPM overview artifacts")

@@ -41,6 +41,7 @@ on:
       - "pages/support-matrix/**"
       - "pages/e2e-accuracy/**"
       - "pages/fpe-support-matrix/**"
+      - "pages/feature-support-matrix/**"
       - "python/aisimulate/src/aisimulate_core/systems/support_matrix/**"
       - "python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix/**"
   push:
@@ -69,6 +70,7 @@ on:
       - "pages/support-matrix/**"
       - "pages/e2e-accuracy/**"
       - "pages/fpe-support-matrix/**"
+      - "pages/feature-support-matrix/**"
       - "python/aisimulate/src/aisimulate_core/systems/support_matrix/**"
       - "python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix/**"
 

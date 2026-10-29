@@ -8,6 +8,8 @@ automatically. The deployed paths remain stable across the move from docs.
 - `e2e-accuracy/`: E2E accuracy overview and retained historical snapshot.
 - `fpm-accuracy/`: daily FPM accuracy overview; generated data comes from Actions.
 - `fpe-support-matrix/`: current forward-pass support matrix.
+- `feature-support-matrix/`: serving techniques per engine, rendered from
+  `features.toml`.
 - `support-matrix/`: legacy compatibility matrix.
 - `universe/`: unpublished architecture explorer, retained for local use.
 
@@ -25,6 +27,14 @@ Retained qualified bundles may use the former `aiconfigurator_core` package
 path or the current `aisimulate_core` path. Pages requires exactly one indexed
 layout and validates its qualification and CSV identities before serving the
 same public URLs. It never combines files from both layouts.
+
+The Feature Support Matrix is static HTML that
+`scripts/pages/feature_support_matrix.py` renders from
+`feature-support-matrix/template.html` and `features.toml`. A pull request that
+adds, removes or restricts a feature updates the affected cells in
+`features.toml`; each cell states what that branch's configuration validators
+accept. The publisher renders main's file and each release branch's committed
+file as one view per branch. A release cut before the file existed has no view.
 
 Build an empty output directory and serve it locally:
 

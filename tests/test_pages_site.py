@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,8 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -870,6 +873,9 @@ class LegacySnapshotTest(unittest.TestCase):
             dataset.mkdir(parents=True)
             (dataset / "index.json").write_text(json.dumps({"files": ["b200_sxm.csv"]}))
             (dataset / "b200_sxm.csv").write_text("Model,Status\nexample/model,PASS\n")
+        for relative in (PAGES.feature_matrix.DATA_PATH, PAGES.feature_matrix.TEMPLATE_PATH):
+            (self.repository / relative).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / relative, self.repository / relative)
         self.dataset = self.repository / PAGES.SYSTEMS_ROOT / "support_matrix"
         self.data_sha = self.commit("2026-09-04T11:42:50-07:00", "legacy data")
         (docs / "support-matrix/index.html").write_text("new website, same data")
@@ -985,6 +991,9 @@ class PagesSiteTest(unittest.TestCase):
             self.assertIn(Path("e2e-accuracy/summary.json"), files)
             self.assertIn(Path("fpe-support-matrix/index.html"), files)
             self.assertIn(Path("fpe-support-matrix/fpe-support-matrix-preview.png"), files)
+            self.assertIn(Path("feature-support-matrix/index.html"), files)
+            feature_files = {path for path in files if path.parts[0] == "feature-support-matrix"}
+            self.assertEqual(feature_files, {Path("feature-support-matrix/index.html")})
             self.assertIn(Path("support-matrix/index.html"), files)
             self.assertIn(Path("data/fpe-support-matrix/index.json"), files)
             self.assertIn(Path("data/support-matrix/index.json"), files)
@@ -998,6 +1007,7 @@ class PagesSiteTest(unittest.TestCase):
             landing_page = (output_dir / "index.html").read_text()
             self.assertIn('href="./e2e-accuracy/"', landing_page)
             self.assertIn('href="./fpe-support-matrix/"', landing_page)
+            self.assertIn('href="./feature-support-matrix/"', landing_page)
             self.assertIn('href="./support-matrix/"', landing_page)
             self.assertNotIn('href="./universe/"', landing_page)
 
@@ -1256,3 +1266,139 @@ def test_accuracy_gpu_count_is_validated_without_multinode_flag():
         topology["total_gpus"] = value
         with unittest.TestCase().assertRaisesRegex(PAGES.PagesBuildError, "GPU count"):
             PAGES._accuracy_summary(json.dumps(summary))
+
+
+FEATURES = PAGES.feature_matrix
+FEATURE_DATA = ROOT / FEATURES.DATA_PATH
+ALL_SUPPORTED = 'cells = ["supported", "supported", "supported"]'
+
+
+def _markdown_anchors(markdown: str) -> set[str]:
+    anchors = set(re.findall(r'<a id="([^"]+)"', markdown))
+    for heading in re.findall(r"^#+ (.+)$", markdown, re.MULTILINE):
+        anchors.add(re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-"))
+    return anchors
+
+
+def test_feature_matrix_links_resolve_to_documentation() -> None:
+    data = FEATURES.load(FEATURE_DATA.read_text(), source=FEATURES.DATA_PATH)
+    for section in data["sections"]:
+        for row in section["rows"]:
+            path, _, anchor = row["doc"].partition("#")
+            document = ROOT / "docs" / path
+            assert document.is_file(), row["doc"]
+            assert not anchor or anchor in _markdown_anchors(document.read_text()), row["doc"]
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        (ALL_SUPPORTED, 'cells = ["planned", "supported", "supported"]', "invalid cell"),
+        (ALL_SUPPORTED, 'cells = ["supported", "supported"]', "one cell per column"),
+        (ALL_SUPPORTED, 'cells = ["supported:", "supported", "supported"]', "invalid cell"),
+        ('doc = "replay/engine/workers.md"', 'doc = "../../README.md"', "Markdown path"),
+        ('doc = "replay/engine/workers.md"', 'doc = "https://example.com/a.md"', "Markdown path"),
+        ('note = "Engine-specific', 'notes = "Engine-specific', "unknown keys"),
+        ("schema_version = 1", "schema_version = 2", "schema_version"),
+        ('id = "scheduling"', 'id = "topology"', "duplicate section id"),
+    ],
+)
+def test_feature_matrix_rejects_invalid_data(old: str, new: str, message: str) -> None:
+    text = FEATURE_DATA.read_text()
+    assert old in text
+    with pytest.raises(FEATURES.FeatureMatrixError, match=message):
+        FEATURES.load(text.replace(old, new, 1), source="test")
+
+
+def test_feature_matrix_escapes_text() -> None:
+    text = FEATURE_DATA.read_text().replace('name = "Aggregated serving"', 'name = "<script>x</script>"', 1)
+    template = (ROOT / FEATURES.TEMPLATE_PATH).read_text()
+    page = FEATURES.render(template, [FEATURES.Snapshot("main", None, FEATURES.load(text, source="test"))])
+    assert "<script>x</script>" not in page
+    assert "&lt;script&gt;x&lt;/script&gt;" in page
+    assert "{{" not in page
+
+
+def test_feature_matrix_renders_main_and_release_views(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
+
+    git("init", "-b", "main")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test")
+    (repo / "README.md").write_text("before the matrix\n")
+    git("add", ".")
+    git("commit", "-qm", "release without matrix data")
+    git("update-ref", "refs/remotes/origin/release/0.12.0", git("rev-parse", "HEAD"))
+    data = repo / FEATURES.DATA_PATH
+    data.parent.mkdir(parents=True)
+    shutil.copy(ROOT / FEATURES.TEMPLATE_PATH, repo / FEATURES.TEMPLATE_PATH)
+    shipped = (
+        'name = "Frontend tokenization cost"\ndoc = "replay/engine/README.md#request-tokenization"\n' + ALL_SUPPORTED
+    )
+    assert shipped in FEATURE_DATA.read_text()
+    data.write_text(FEATURE_DATA.read_text().replace(shipped, shipped.replace('"supported"', '"not_supported"')))
+    git("add", ".")
+    git("commit", "-qm", "release matrix data")
+    release_sha = git("rev-parse", "HEAD")
+    git("update-ref", "refs/remotes/origin/release/0.13.0", release_sha)
+    git("update-ref", "refs/remotes/origin/release/0.9.0", release_sha)
+    shutil.copy(FEATURE_DATA, data)
+
+    output = tmp_path / "site"
+    PAGES._build_feature_matrix(repo, output, True)
+    page = (output / "feature-support-matrix/index.html").read_text()
+
+    options = re.findall(r'<option value="([^"]+)">', page)
+    assert options == ["main", "release/0.13.0", "release/0.9.0"]
+    views = dict(re.findall(r'<div data-branch="([^"]+)"( hidden)?>', page))
+    assert views == {"main": "", "release/0.13.0": " hidden", "release/0.9.0": " hidden"}
+    main_view, release_view = page.split('data-branch="release/0.13.0"')
+    release_view = release_view.split('data-branch="release/0.9.0"')[0]
+    assert f"/commit/{release_sha}" in release_view
+    assert "/blob/release/0.13.0/docs/replay/engine/README.md#request-tokenization" in release_view
+    assert 'id="release-0-13-0-kv-cache"' in release_view
+    assert 'id="kv-cache"' in main_view
+    tokenization = re.compile(r"Frontend tokenization cost</a></th>(.*?)</tr>", re.DOTALL)
+    assert tokenization.search(main_view).group(1).count("Not supported") == 0
+    assert tokenization.search(release_view).group(1).count("Not supported") == 3
+
+    output_without_refs = tmp_path / "site-main"
+    PAGES._build_feature_matrix(repo, output_without_refs, False)
+    page = (output_without_refs / "feature-support-matrix/index.html").read_text()
+    assert re.findall(r'<option value="([^"]+)">', page) == ["main"]
+
+
+def test_feature_matrix_builds_from_a_source_archive(tmp_path: Path) -> None:
+    for relative in (FEATURES.DATA_PATH, FEATURES.TEMPLATE_PATH):
+        (tmp_path / relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(ROOT / relative, tmp_path / relative)
+    PAGES._build_feature_matrix(tmp_path, tmp_path / "site", False)
+    page = (tmp_path / "site/feature-support-matrix/index.html").read_text()
+    assert "/commit/" not in page
+    assert 'data-branch="main"' in page
+
+
+def test_feature_matrix_rejects_invalid_release_data(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
+
+    git("init", "-b", "main")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test")
+    for relative in (FEATURES.DATA_PATH, FEATURES.TEMPLATE_PATH):
+        (repo / relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(ROOT / relative, repo / relative)
+    (repo / FEATURES.DATA_PATH).write_text("schema_version = 1\n")
+    git("add", ".")
+    git("commit", "-qm", "broken release data")
+    git("update-ref", "refs/remotes/origin/release/0.13.0", git("rev-parse", "HEAD"))
+    shutil.copy(FEATURE_DATA, repo / FEATURES.DATA_PATH)
+    with pytest.raises(PAGES.PagesBuildError, match="origin/release/0.13.0"):
+        PAGES._build_feature_matrix(repo, tmp_path / "site", True)
