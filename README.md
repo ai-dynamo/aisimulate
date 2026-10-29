@@ -155,6 +155,12 @@ report to `<output-dir>/prediction.json`. Add `--capture-per-request` to also
 write `requests.jsonl`, or use `--format json` for machine-readable standard
 output.
 
+For offline vLLM/SGLang engine replay, `--capture-telemetry` also exports
+all-phase request records, periodic scheduler/cache/traffic samples, and agentic
+lifecycle events. Sampling defaults to 1,000 simulated milliseconds; adjust it
+with `--telemetry-sample-interval-ms`. See the
+[telemetry output contract](docs/getting-started/understand-results.md#replay-telemetry).
+
 For example, use two-way tensor parallelism, capture requests, and replace the
 previous output with a JSON summary:
 

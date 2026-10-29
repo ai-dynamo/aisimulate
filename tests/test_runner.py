@@ -1379,20 +1379,151 @@ def test_runner_preserves_withheld_power_without_raw_report():
     assert report.metadata["power"]["publication_status"] == "withheld"
 
 
-def test_engine_runner_rejects_unsupported_telemetry_before_runtime_invocation():
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("topology", ["agg", "disagg"])
+@pytest.mark.parametrize("capture_per_request", [False, True])
+@pytest.mark.parametrize("workload_driver", [False, True])
+def test_engine_runner_passes_telemetry_without_changing_profile_record_opt_in(
+    backend, topology, capture_per_request, workload_driver
+):
+    telemetry = {
+        "schema": "aisimulate.replay.telemetry.v1",
+        "clock": "absolute_virtual_ms",
+        "sample_interval_ms": 250.0,
+        "profile_start_ms": 10.0,
+        "requests": [{"phase": "warmup", "arrival_time_ms": 1.0, "tpot_ms": None}],
+        "samples": [],
+        "lifecycle": [],
+    }
+
+    class TelemetryRuntime(RecordingRuntime):
+        def run_replay_json(self, execution_spec_json):
+            payload = json.loads(super().run_replay_json(execution_spec_json))
+            return json.dumps({**payload, "telemetry": telemetry})
+
+    runtime = TelemetryRuntime()
+    roles = (
+        {"agg_engine_args": _engine_args(backend=backend), "num_workers": 1}
+        if topology == "agg"
+        else {
+            "prefill_engine_args": _engine_args(role="prefill", backend=backend),
+            "decode_engine_args": _engine_args(role="decode", backend=backend),
+            "num_prefill_workers": 1,
+            "num_decode_workers": 1,
+        }
+    )
+    spec = _spec(
+        deployment=BackendDeploymentSpec(deployment_mode=topology, backend=backend, backend_version="test", **roles),
+        workload={"isl": 8, "osl": 2, "request_count": 2, "source_type": "synthetic"} if workload_driver else None,
+    )
+    report = (
+        EngineReplayRunnerFactory(runtime=runtime)
+        .create(0)
+        .run(
+            spec,
+            output_requirements=ReplayOutputRequirements(
+                capture_telemetry=True,
+                telemetry_sample_interval_ms=250.0,
+                capture_per_request=capture_per_request,
+            ),
+        )
+    )
+    assert runtime.execution_spec["capture_telemetry"] is True
+    assert runtime.execution_spec["telemetry_sample_interval_ms"] == 250.0
+    assert runtime.execution_spec["spec"]["record_per_request"] is capture_per_request
+    assert ("traffic" in runtime.execution_spec) is workload_driver
+    assert report.metadata["native_report"]["telemetry"] == telemetry
+
+
+def test_engine_runner_requires_requested_telemetry_in_native_response():
+    with pytest.raises(InvalidRunnerError, match="did not provide requested telemetry"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(), output_requirements=ReplayOutputRequirements(capture_telemetry=True)
+        )
+
+
+@pytest.mark.parametrize("unsupported", ["trtllm", "afd", "online"])
+def test_engine_runner_rejects_unsupported_telemetry_before_runtime_invocation(unsupported):
     runtime = RecordingRuntime()
     runner = EngineReplayRunnerFactory(runtime=runtime).create(worker_id=7)
+    spec = _spec()
+    if unsupported == "online":
+        spec = replace(spec, execution_mode="online")
+    else:
+        spec = replace(
+            spec,
+            backend_deployment=replace(
+                spec.backend_deployment,
+                **({"backend": unsupported} if unsupported == "trtllm" else {"deployment_mode": unsupported}),
+            ),
+        )
 
     with pytest.raises(
         InvalidRunnerError,
-        match="JSON runtime does not yet expose replay telemetry",
+        match="telemetry capture requires offline native vLLM/SGLang",
     ):
         runner.run(
-            _spec(),
+            spec,
             output_requirements=ReplayOutputRequirements(capture_telemetry=True),
         )
 
     assert runtime.execution_spec_json is None
+
+
+def test_engine_runner_telemetry_disabled_preserves_wire_format():
+    runtime = RecordingRuntime()
+    report = EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec())
+    assert "capture_telemetry" not in runtime.execution_spec
+    assert "telemetry_sample_interval_ms" not in runtime.execution_spec
+    assert "spec" not in runtime.execution_spec
+    assert runtime.execution_spec["record_per_request"] is False
+    assert "native_report" not in report.metadata
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("topology", ["agg", "disagg"])
+@pytest.mark.parametrize("capture_per_request", [False, True])
+def test_native_telemetry_matches_fixed_timing_replay(backend, topology, capture_per_request):
+    roles = (
+        {"agg_engine_args": _engine_args(backend=backend), "num_workers": 1}
+        if topology == "agg"
+        else {
+            "prefill_engine_args": _engine_args(role="prefill", backend=backend),
+            "decode_engine_args": _engine_args(role="decode", backend=backend),
+            "num_prefill_workers": 1,
+            "num_decode_workers": 1,
+        }
+    )
+    spec = _spec(
+        deployment=BackendDeploymentSpec(deployment_mode=topology, backend=backend, backend_version="test", **roles),
+        workload={"isl": 8, "osl": 3, "concurrency": 2, "num_request_ratio": 2},
+    )
+    requirements = ReplayOutputRequirements(include_raw_report=True, capture_per_request=capture_per_request)
+    plain = EngineReplayRunnerFactory(determinism="canonical_v1").create(0).run(spec, output_requirements=requirements)
+    captured = (
+        EngineReplayRunnerFactory(determinism="canonical_v1")
+        .create(0)
+        .run(spec, output_requirements=replace(requirements, capture_telemetry=True, telemetry_sample_interval_ms=0.75))
+    )
+    # Host execution speed is intentionally observational; virtual-time GPU
+    # integrals may differ by floating-point summation at additional sample ticks.
+    wall_metrics = {"wall_time_ms", "processed_tokens_per_s", "processed_output_tokens_per_s"}
+    assert {key: value for key, value in captured.metrics.items() if key not in wall_metrics} == pytest.approx(
+        {key: value for key, value in plain.metrics.items() if key not in wall_metrics}, rel=1e-12, abs=1e-12
+    )
+    raw = captured.metadata["native_report"]
+    assert raw.get("per_request", []) == plain.metadata["native_report"].get("per_request", [])
+    assert ("per_request" in raw) is capture_per_request
+    telemetry = raw["telemetry"]
+    assert telemetry["schema"] == "aisimulate.replay.telemetry.v1"
+    assert telemetry["sample_interval_ms"] == 0.75
+    assert telemetry["clock"] == "absolute_virtual_ms"
+    assert len(telemetry["requests"]) == 4
+    assert {row["phase"] for row in telemetry["requests"]} == {"profile"}
+    assert telemetry["samples"]
+    assert {row["phase"] for row in telemetry["samples"]} == {"profile"}
+    assert sum(row["traffic"]["delivered_output_tokens"] for row in telemetry["samples"]) == 12
+    assert "performance_diagnostics" not in raw
 
 
 @pytest.mark.parametrize(

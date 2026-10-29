@@ -108,7 +108,7 @@ impl RankMetricsState {
                 .checked_add_assign(ReplaySchedulerIntervalMetrics {
                     cache_hit_tokens: metrics.sglang_cache_hit_tokens,
                     cache_total_tokens: metrics.sglang_cache_total_tokens,
-                    preemptions: 0,
+                    ..ReplaySchedulerIntervalMetrics::default()
                 })?;
         }
         self.latest = metrics.clone();
@@ -293,6 +293,37 @@ where
             )
             .into_iter()
             .collect()
+    }
+
+    /// Observe each host ownership domain once. A disaggregated deployment
+    /// disables `include_shared` for its second role when the first role
+    /// already sampled the deployment's shared pool.
+    pub(crate) fn host_cache_snapshots(
+        &self,
+        include_shared: bool,
+    ) -> Vec<crate::engine::HostCacheMetrics> {
+        if self.telemetry.is_none() {
+            return Vec::new();
+        }
+        let mut snapshots = Vec::new();
+        if include_shared
+            && let Some(metrics) = self
+                .factory
+                .g2_registry()
+                .and_then(|registry| registry.metrics())
+        {
+            snapshots.push(metrics);
+        }
+        for (worker_id, worker) in self.workers.iter().enumerate() {
+            let Some(worker) = worker else { continue };
+            for rank in worker.engine.ranks() {
+                if let Some(mut metrics) = rank.private_host_cache_metrics() {
+                    metrics.worker_id = Some(worker_id);
+                    snapshots.push(metrics);
+                }
+            }
+        }
+        snapshots
     }
 
     pub(crate) fn reset_timing_evidence(&self) -> Result<()> {
@@ -920,6 +951,14 @@ where
 
             let mut effects: EngineEffects<Observation::Batch> = EngineEffects::default();
             for rank in started.by_rank {
+                if let Some(telemetry) = self.required_worker_mut(worker_id)?.telemetry.as_mut() {
+                    telemetry[rank.dp_rank as usize]
+                        .interval
+                        .checked_add_assign(ReplaySchedulerIntervalMetrics {
+                            native_prefix_cache_lookup: rank.effects.native_prefix_cache_lookup,
+                            ..ReplaySchedulerIntervalMetrics::default()
+                        })?;
+                }
                 if pending.committed_requests.is_empty() {
                     pending.committed_requests = rank.effects.committed_requests;
                 } else {
@@ -1872,6 +1911,139 @@ mod tests {
             assert_eq!(row.physical_cache_usage, 0.0);
             assert_eq!(row.running_requests, 0);
             assert_eq!(row.waiting_requests, 0);
+        }
+    }
+
+    #[test]
+    fn host_cache_snapshots_follow_pool_ownership_without_shared_duplicates() {
+        for dp_size in [2, 4] {
+            for scope in ["dp_rank_local", "cluster_shared"] {
+                let config = serde_json::from_value(serde_json::json!({
+                    "dp_size": dp_size,
+                    "rank": {
+                        "num_gpu_blocks": 8, "block_size": 4,
+                        "max_num_seqs": 1, "max_num_batched_tokens": 8,
+                        "enable_prefix_caching": true,
+                        "kv_cache_bytes_per_token": 256,
+                        "native_host_offload": {
+                            "scope": scope, "num_host_blocks": 16, "kv_layout_id": "tp1"
+                        },
+                        "timing_model": {"type": "fixed", "prefill_ms": 0.0, "decode_ms": 0.0}
+                    }
+                }))
+                .unwrap();
+                let factory = ReplayEngineFactory::new()
+                    .role_factory(&config, WorkerStage::Aggregated, false)
+                    .unwrap();
+                let mut component: EngineComponent = EngineComponent::new_with_factory(
+                    SimulationWorkerStage::Aggregated,
+                    EnginePassMode::Visible,
+                    factory,
+                    2,
+                    None,
+                )
+                .unwrap();
+                assert!(component.host_cache_snapshots(true).is_empty());
+                component.enable_telemetry();
+                let snapshots = component.host_cache_snapshots(true);
+                let shared = scope == "cluster_shared";
+                assert_eq!(snapshots.len(), if shared { 1 } else { 2 * dp_size });
+                for (index, row) in snapshots.iter().enumerate() {
+                    assert_eq!(row.capacity_blocks, 16);
+                    assert_eq!(row.capacity_bytes, 16 * 4 * 256);
+                    assert_eq!(row.used_blocks, 0);
+                    assert_eq!(row.resident_bytes, 0);
+                    assert_eq!(row.worker_id, (!shared).then_some(index / dp_size));
+                    assert_eq!(row.dp_rank, (!shared).then_some((index % dp_size) as u32));
+                }
+                assert_eq!(
+                    component.host_cache_snapshots(false).len(),
+                    if shared { 0 } else { 2 * dp_size }
+                );
+                component
+                    .dispatch(
+                        0,
+                        DirectRequest {
+                            tokens: vec![1, 2, 3, 4],
+                            max_output_tokens: 0,
+                            uuid: Some(Uuid::from_u128(32)),
+                            ..Default::default()
+                        },
+                        None,
+                        0.0,
+                    )
+                    .unwrap();
+                component.drive_ready(0.0, None).unwrap();
+                let occupied = component.host_cache_snapshots(true);
+                assert_eq!(occupied.iter().map(|row| row.used_blocks).sum::<u64>(), 1);
+                assert_eq!(occupied.iter().map(|row| row.used_bytes).sum::<u64>(), 1024);
+            }
+        }
+    }
+
+    #[test]
+    fn native_lookup_observations_do_not_make_a_blocked_worker_progress() {
+        for capture in [false, true] {
+            let config = ReplayEngineConfig {
+                rank: EngineConfig {
+                    num_gpu_blocks: 16,
+                    block_size: 4,
+                    max_num_batched_tokens: 4,
+                    max_num_seqs: 1,
+                    enable_prefix_caching: true,
+                    enable_chunked_prefill: false,
+                    timing_model: TimingModelConfig::Fixed {
+                        prefill_ms: 1.0,
+                        decode_ms: 1.0,
+                    },
+                    ..EngineConfig::for_backend(Backend::Vllm)
+                },
+                ..ReplayEngineConfig::default()
+            };
+            let factory = ReplayEngineFactory::new()
+                .role_factory(&config, WorkerStage::Aggregated, false)
+                .unwrap();
+            let mut component: EngineComponent = EngineComponent::new_with_factory(
+                SimulationWorkerStage::Aggregated,
+                EnginePassMode::Visible,
+                factory,
+                1,
+                None,
+            )
+            .unwrap();
+            if capture {
+                component.enable_telemetry();
+            }
+            component
+                .dispatch(
+                    0,
+                    DirectRequest {
+                        tokens: (0..8).collect(),
+                        max_output_tokens: 1,
+                        uuid: Some(Uuid::from_u128(33)),
+                        ..Default::default()
+                    },
+                    None,
+                    0.0,
+                )
+                .unwrap();
+            for _ in 0..2 {
+                let effects = component.drive_ready(0.0, None).unwrap();
+                assert!(effects.is_empty());
+                assert!(!effects.progress.made_progress);
+                assert_eq!(component.in_flight(), 1);
+                let (_, interval) = component.take_telemetry_snapshot().unwrap();
+                assert_eq!(
+                    interval.native_prefix_cache_lookup,
+                    capture.then_some(crate::engine::PrefixCacheLookupCounts {
+                        query_count: 1,
+                        queried_tokens: 8,
+                        matched_tokens: 0,
+                    })
+                );
+                assert_eq!(interval.cache_hit_tokens, 0);
+                assert_eq!(interval.cache_total_tokens, 0);
+            }
         }
     }
 

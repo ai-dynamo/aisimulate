@@ -45,11 +45,19 @@ enum ExecutionPayload {
         #[serde(default)]
         capture_performance_diagnostics: bool,
         #[serde(default)]
+        capture_telemetry: bool,
+        #[serde(default = "default_telemetry_sample_interval_ms")]
+        telemetry_sample_interval_ms: f64,
+        #[serde(default)]
         determinism: ReplayDeterminism,
         #[serde(default)]
         tokenization: Option<TokenizationPayload>,
     },
     Legacy(ReplaySpec),
+}
+
+fn default_telemetry_sample_interval_ms() -> f64 {
+    1000.0
 }
 
 /// Per-worker tokenization applied between placement and the engine.
@@ -2409,6 +2417,7 @@ fn run_with_input(
     capture_artifacts: bool,
     determinism: ReplayDeterminism,
     tokenization: Option<TokenizationPayload>,
+    telemetry_sample_interval_ms: Option<f64>,
 ) -> crate::replay::ReplayResult<(crate::replay::ReplayReport, Option<ReplayArtifacts>)> {
     let mut replayer = match input {
         Some(input) => Replayer::new(spec, factory)?.with_runtime_input(input),
@@ -2418,6 +2427,9 @@ fn run_with_input(
         determinism,
         ..ReplayCaptureOptions::default()
     });
+    if let Some(interval_ms) = telemetry_sample_interval_ms {
+        replayer = replayer.with_telemetry_capture(interval_ms)?;
+    }
     if let Some(tokenization) = tokenization {
         replayer = replayer.with_tokenization(
             tokenization.workers,
@@ -2904,25 +2916,40 @@ fn replay_fpm_coverage(
 }
 
 fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
-    let (mut spec, mut traffic, capture_performance_diagnostics, determinism, tokenization) =
-        match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
-            ExecutionPayload::Configured {
-                spec,
-                traffic,
-                capture_performance_diagnostics,
-                determinism,
-                tokenization,
-            } => (
-                spec,
-                traffic.map(|t| *t),
-                capture_performance_diagnostics,
-                determinism,
-                tokenization,
-            ),
-            ExecutionPayload::Legacy(spec) => {
-                (spec, None, false, ReplayDeterminism::default(), None)
-            }
-        };
+    let (
+        mut spec,
+        mut traffic,
+        capture_performance_diagnostics,
+        determinism,
+        tokenization,
+        telemetry_sample_interval_ms,
+    ) = match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
+        ExecutionPayload::Configured {
+            spec,
+            traffic,
+            capture_performance_diagnostics,
+            capture_telemetry,
+            telemetry_sample_interval_ms,
+            determinism,
+            tokenization,
+        } => (
+            spec,
+            traffic.map(|t| *t),
+            capture_performance_diagnostics,
+            determinism,
+            tokenization,
+            capture_telemetry.then_some(telemetry_sample_interval_ms),
+        ),
+        ExecutionPayload::Legacy(spec) => {
+            (spec, None, false, ReplayDeterminism::default(), None, None)
+        }
+    };
+    if let Some(interval_ms) = telemetry_sample_interval_ms {
+        ensure!(
+            interval_ms.is_finite() && interval_ms > 0.0,
+            "telemetry_sample_interval_ms must be finite and positive"
+        );
+    }
     ensure!(
         spec.max_sim_time_ms.is_none()
             || traffic
@@ -2966,6 +2993,33 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         serde_json::from_value(spec.engine.clone())
             .context("invalid native engine descriptor in execution ReplaySpec")?
     };
+    if telemetry_sample_interval_ms.is_some() {
+        ensure!(
+            spec.encoder.is_none(),
+            "replay telemetry capture does not support encoder pools"
+        );
+        let supported = |backend| matches!(backend, Backend::Vllm | Backend::Sglang);
+        let supported_backends = match &spec.topology {
+            ReplayTopology::Aggregated { .. } => supported(engine_config.rank.backend),
+            ReplayTopology::Disaggregated { .. } => {
+                supported(
+                    engine_config
+                        .prefill
+                        .as_ref()
+                        .map_or(engine_config.rank.backend, |role| role.rank.backend),
+                ) && supported(
+                    engine_config
+                        .decode
+                        .as_ref()
+                        .map_or(engine_config.rank.backend, |role| role.rank.backend),
+                )
+            }
+        };
+        ensure!(
+            supported_backends,
+            "replay telemetry capture requires vLLM or SGLang on every role"
+        );
+    }
     let mut coverage_sources = Vec::new();
     let encoder_timing = spec
         .encoder
@@ -3052,7 +3106,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             if let Some(timing) = &encoder_timing {
                 factory = factory.with_encoder_timing(Arc::clone(timing));
             }
-            run_with_input(spec, factory, input, capture_artifacts, determinism, tokenization)
+            run_with_input(spec, factory, input, capture_artifacts, determinism, tokenization, telemetry_sample_interval_ms)
                 .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
         ReplayTopology::Disaggregated { .. } => {
@@ -3172,7 +3226,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             if let Some(timing) = &encoder_timing {
                 factory = factory.with_encoder_timing(Arc::clone(timing));
             }
-            run_with_input(spec, factory, input, capture_artifacts, determinism, tokenization)
+            run_with_input(spec, factory, input, capture_artifacts, determinism, tokenization, telemetry_sample_interval_ms)
             .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
         }
@@ -3209,8 +3263,13 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         timing_evidence.as_ref(),
         unavailable_reason,
     )?));
+    // Keep large capture arrays out of the intermediate summary Value tree.
+    let telemetry = report.telemetry.take();
     let mut report_json =
         serde_json::to_value(&report).context("serializing AISimulate replay report summary")?;
+    if telemetry.is_some() {
+        report_json["telemetry"] = serde_json::Value::Null;
+    }
     report_json["prediction_provenance"] = prediction_provenance.into();
     if let Some(coverage) = replay_fpm_coverage(&coverage_sources, Some(&report))? {
         report_json["fpm_query_coverage"] = coverage;
@@ -3279,6 +3338,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     let report_json = ReportWithRecords {
         report: &report_json,
         records: &report.per_request,
+        telemetry: telemetry.as_ref(),
     };
     if let Some(artifacts) = artifacts {
         let output = serde_json::json!({
@@ -3297,6 +3357,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
 struct ReportWithRecords<'a> {
     report: &'a serde_json::Value,
     records: &'a [crate::replay::PerRequestRecord],
+    telemetry: Option<&'a crate::replay::ReplayTelemetryCapture>,
 }
 
 impl serde::Serialize for ReportWithRecords<'_> {
@@ -3313,6 +3374,8 @@ impl serde::Serialize for ReportWithRecords<'_> {
         for (key, value) in object {
             if key == "per_request" {
                 map.serialize_entry(key, &RecordValues(self.records))?;
+            } else if key == "telemetry" {
+                map.serialize_entry(key, &self.telemetry)?;
             } else {
                 map.serialize_entry(key, value)?;
             }
@@ -6560,6 +6623,7 @@ mod tests {
         let streamed = ReportWithRecords {
             report: &summary,
             records: &replayed.per_request,
+            telemetry: None,
         };
         assert_eq!(
             serde_json::to_string(&streamed).unwrap(),
@@ -6582,6 +6646,48 @@ mod tests {
             captured["report"]["per_request"][0]["uuid"]
         );
 
+        for record_per_request in [false, true] {
+            spec.record_per_request = record_per_request;
+            for interval_ms in [0.5, 1000.0] {
+                let payload = serde_json::json!({
+                    "spec": spec,
+                    "capture_telemetry": true,
+                    "telemetry_sample_interval_ms": interval_ms,
+                });
+                let output: serde_json::Value =
+                    serde_json::from_str(&execute_json(&payload.to_string(), false).unwrap())
+                        .unwrap();
+                assert_eq!(output["completed_requests"], report["completed_requests"]);
+                assert_eq!(output.get("per_request").is_some(), record_per_request);
+                let telemetry = &output["telemetry"];
+                assert_eq!(telemetry["schema"], "aisimulate.replay.telemetry.v1");
+                assert_eq!(telemetry["sample_interval_ms"], interval_ms);
+                assert_eq!(telemetry["clock"], "absolute_virtual_ms");
+                assert_eq!(telemetry["requests"].as_array().unwrap().len(), 1);
+                assert_eq!(telemetry["requests"][0]["request_id"], "authored-id");
+                assert_eq!(
+                    telemetry["requests"][0]["metadata"]["caller_tag"],
+                    "binding"
+                );
+                assert_eq!(telemetry["requests"][0]["output_length"], 1);
+                assert!(telemetry["requests"][0]["itl_ms"].is_null());
+                assert!(!telemetry["samples"].as_array().unwrap().is_empty());
+            }
+        }
+        for interval_ms in [0.0, -1.0] {
+            let payload = serde_json::json!({
+                "spec": spec,
+                "capture_telemetry": true,
+                "telemetry_sample_interval_ms": interval_ms,
+            });
+            assert!(
+                execute_json(&payload.to_string(), false)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("telemetry_sample_interval_ms must be finite and positive")
+            );
+        }
+
         spec.requests.clear();
         for record_per_request in [false, true] {
             spec.record_per_request = record_per_request;
@@ -6596,6 +6702,7 @@ mod tests {
                     &output
                 };
                 assert_eq!(report["completed_requests"], 0);
+                assert!(report.get("telemetry").is_none());
                 assert!(report.get("agentic_phases").is_none());
                 if record_per_request {
                     assert_eq!(report["per_request"], serde_json::json!([]));

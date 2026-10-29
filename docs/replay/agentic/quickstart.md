@@ -221,6 +221,12 @@ qualification boundaries.
 | `prediction.json` | Aggregate predictions, snapshot information, preparation/barrier audit, profile duration/cutoff accounting, and play outcomes |
 | `requests.jsonl` | Measured profile requests, including per-request timing and identity |
 
+Add `--capture-telemetry` to export all-phase request records,
+scheduler/cache/traffic samples, and agentic lifecycle events. The interval
+defaults to 1,000 simulated milliseconds and can be set with
+`--telemetry-sample-interval-ms`. See the
+[native telemetry contract](../../getting-started/understand-results.md#replay-telemetry).
+
 Check `agentic_phases` for preparation success and barrier state, and
 `agentic_play_outcomes` for completed or incomplete plays. Check `agentic_profile`
 for the resolved duration and grace settings, admission cutoff, recycled play

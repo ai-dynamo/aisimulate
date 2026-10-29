@@ -51,6 +51,93 @@ fn prefix_cache_args() -> MockEngineArgs {
         .unwrap()
 }
 
+#[test]
+fn native_prefix_lookup_counts_raw_hits_before_recomputation_clipping() {
+    let mut core = VllmCore::new(prefix_cache_args());
+    let request = |id, output| DirectRequest {
+        uuid: Some(Uuid::from_u128(id)),
+        tokens: (0..8).collect(),
+        max_output_tokens: output,
+        ..Default::default()
+    };
+    core.receive(request(82_001, 0));
+    let cold = core.try_execute_hidden_pass(0.0).unwrap();
+    assert_eq!(
+        cold.native_prefix_cache_lookup,
+        Some(crate::engine::PrefixCacheLookupCounts {
+            query_count: 1,
+            queried_tokens: 8,
+            matched_tokens: 0,
+        })
+    );
+    core.receive(request(82_002, 2));
+    let hit = core.try_execute_hidden_pass(0.0).unwrap();
+    assert_eq!(
+        hit.native_prefix_cache_lookup,
+        Some(crate::engine::PrefixCacheLookupCounts {
+            query_count: 1,
+            queried_tokens: 8,
+            matched_tokens: 8,
+        })
+    );
+    assert_eq!(hit.admissions[0].reused_input_tokens, 4);
+    // The next decode uses existing request state, not another prefix lookup.
+    let decode = core.try_execute_hidden_pass(0.0).unwrap();
+    assert_eq!(decode.native_prefix_cache_lookup, Some(Default::default()));
+}
+
+#[test]
+fn native_prefix_lookup_counts_each_effect_free_admission_retry() {
+    let mut args = prefix_cache_args();
+    args.enable_chunked_prefill = false;
+    args.max_num_batched_tokens = Some(4);
+    let mut core = VllmCore::new(args);
+    core.receive(DirectRequest {
+        tokens: (0..8).collect(),
+        max_output_tokens: 1,
+        ..Default::default()
+    });
+    for _ in 0..2 {
+        let retry = core.try_execute_hidden_pass(0.0).unwrap();
+        assert!(retry.committed_requests.is_empty());
+        assert!(retry.admissions.is_empty());
+        assert!(retry.output_signals.is_empty());
+        assert_eq!(retry.end_ms, 0.0);
+        assert_eq!(
+            retry.native_prefix_cache_lookup,
+            Some(crate::engine::PrefixCacheLookupCounts {
+                query_count: 1,
+                queried_tokens: 8,
+                matched_tokens: 0,
+            })
+        );
+    }
+}
+
+#[rstest]
+#[case::disabled(EngineType::Vllm, false)]
+#[case::trtllm(EngineType::Trtllm, true)]
+fn native_prefix_lookup_unavailable_outside_vllm_prefix_cache(
+    #[case] engine_type: EngineType,
+    #[case] caching: bool,
+) {
+    let mut args = prefix_cache_args();
+    args.engine_type = engine_type;
+    args.enable_prefix_caching = caching;
+    let mut core = VllmCore::new(args);
+    core.receive(DirectRequest {
+        tokens: (0..8).collect(),
+        max_output_tokens: 1,
+        ..Default::default()
+    });
+    assert_eq!(
+        core.try_execute_hidden_pass(0.0)
+            .unwrap()
+            .native_prefix_cache_lookup,
+        None
+    );
+}
+
 #[rstest]
 #[case::vllm(EngineType::Vllm)]
 #[case::trtllm(EngineType::Trtllm)]

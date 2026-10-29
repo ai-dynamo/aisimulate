@@ -255,7 +255,13 @@ class ReplayReport:
 
 @dataclass(frozen=True)
 class ReplayOutputRequirements:
-    """Optional detail requested from a Runner without changing replay semantics."""
+    """Optional detail requested from a Runner without changing replay semantics.
+
+    ``capture_telemetry`` retains native all-phase request, sample, and lifecycle
+    records under ``metadata["native_report"]["telemetry"]``. It collects request
+    detail internally without enabling the separate profiling-only
+    ``capture_per_request`` output. Sampling uses the absolute virtual clock.
+    """
 
     include_raw_report: bool = False
     capture_per_request: bool = False

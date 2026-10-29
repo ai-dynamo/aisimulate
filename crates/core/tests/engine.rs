@@ -2327,8 +2327,7 @@ fn requests_parked_in_the_encoder_pool_are_reported_when_the_run_is_cut_short() 
     assert_eq!(report.request_counts.completed_requests, 0);
 }
 
-#[test]
-fn chunked_recompute_of_a_preempted_request_completes_its_generated_final_block() {
+fn chunked_recompute_spec() -> ReplaySpec {
     // r9 (13 prompt tokens) is preempted right after its third output token
     // fills block 3, before that token is computed. Readmitted with a 12-token
     // prefix hit and a 3-token budget, it recomputes 12..13 and then 13..15
@@ -2347,7 +2346,7 @@ fn chunked_recompute_of_a_preempted_request_completes_its_generated_final_block(
             })
         },
     );
-    let spec: ReplaySpec = serde_json::from_value(serde_json::json!({
+    serde_json::from_value(serde_json::json!({
         "version": 1,
         "topology": {"kind": "aggregated", "workers": {"initial_workers": 1}},
         "engine": {
@@ -2363,7 +2362,12 @@ fn chunked_recompute_of_a_preempted_request_completes_its_generated_final_block(
         "requests": requests,
         "record_per_request": true,
     }))
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn chunked_recompute_of_a_preempted_request_completes_its_generated_final_block() {
+    let spec = chunked_recompute_spec();
     let report = run_canonical_engine_replay(spec);
     let requests = report
         .per_request
@@ -2384,5 +2388,112 @@ fn chunked_recompute_of_a_preempted_request_completes_its_generated_final_block(
             (Some("r8"), 1, 8, 12.25),
             (Some("r9"), 1, 12, 12.25),
         ]
+    );
+}
+
+#[test]
+fn telemetry_counts_chunked_prefill_and_readmission_once() {
+    let spec = chunked_recompute_spec();
+    let baseline = run_canonical_engine_replay(spec.clone());
+    let mut report = Replayer::new(spec, ReplayEngineFactory::new())
+        .unwrap()
+        .with_capture_options(ReplayCaptureOptions {
+            determinism: ReplayDeterminism::CanonicalV1,
+            ..ReplayCaptureOptions::default()
+        })
+        .with_telemetry_capture(1.0)
+        .unwrap()
+        .run()
+        .unwrap();
+    let capture = report.telemetry.take().unwrap();
+    assert_eq!(
+        serde_json::to_value(&report.per_request).unwrap(),
+        serde_json::to_value(&baseline.per_request).unwrap()
+    );
+    assert_eq!(
+        report.throughput.duration_ms,
+        baseline.throughput.duration_ms
+    );
+    assert_eq!(report.request_counts.completed_requests, 3);
+    assert_eq!(
+        report.request_counts.total_output_tokens,
+        baseline.request_counts.total_output_tokens
+    );
+    assert_eq!(
+        report.committed_prefill_tokens,
+        baseline.committed_prefill_tokens
+    );
+    assert_eq!(
+        report
+            .per_request
+            .iter()
+            .map(|request| request.readmission_count)
+            .sum::<usize>(),
+        2
+    );
+    assert_eq!(
+        capture
+            .samples
+            .iter()
+            .map(|sample| sample.sample.decode_interval_metrics.preemptions)
+            .sum::<u64>(),
+        2
+    );
+    let traffic = capture
+        .samples
+        .iter()
+        .map(|sample| &sample.sample.traffic)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        traffic
+            .iter()
+            .map(|sample| sample.delivered_output_tokens)
+            .sum::<u64>(),
+        24
+    );
+    let executed_prefill = traffic
+        .iter()
+        .map(|sample| sample.committed_prefill_tokens)
+        .sum::<u64>();
+    assert_eq!(executed_prefill, baseline.committed_prefill_tokens);
+    assert_eq!(
+        traffic
+            .iter()
+            .map(|sample| sample.first_admission.requests)
+            .sum::<u64>(),
+        3
+    );
+    assert_eq!(
+        traffic
+            .iter()
+            .map(|sample| sample.first_admission.input_tokens)
+            .sum::<u64>(),
+        32
+    );
+    let uncached = traffic
+        .iter()
+        .map(|sample| sample.first_admission.uncached_tokens)
+        .sum::<u64>();
+    // The three-token budget chunks each original prompt. Preempted r8/r9
+    // execute additional chunks on readmission; first-admission counters
+    // must not recount those requests or their recomputed prompt tokens.
+    assert!(
+        executed_prefill > uncached,
+        "expected recomputation: {executed_prefill} executed vs {uncached} initial uncached tokens"
+    );
+    assert_eq!(
+        traffic
+            .iter()
+            .map(|sample| sample.first_admission.hbm_reused_tokens)
+            .sum::<u64>()
+            + uncached,
+        32
+    );
+    assert_eq!(
+        traffic
+            .iter()
+            .map(|sample| sample.first_admission.host_reused_tokens)
+            .sum::<u64>(),
+        0
     );
 }

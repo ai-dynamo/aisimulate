@@ -1299,6 +1299,23 @@ impl HostTier {
         self.config.block_bytes
     }
 
+    /// Called by telemetry sampling, never by individual forward passes.
+    pub(crate) fn metrics(&self, scope: crate::engine::G2Scope) -> crate::engine::HostCacheMetrics {
+        let (resident, used) = self.occupancy();
+        let block_bytes = self.block_bytes() as u64;
+        crate::engine::HostCacheMetrics {
+            scope,
+            worker_id: None,
+            dp_rank: None,
+            capacity_blocks: self.capacity_blocks() as u64,
+            resident_blocks: resident as u64,
+            used_blocks: used as u64,
+            capacity_bytes: self.capacity_blocks() as u64 * block_bytes,
+            resident_bytes: resident as u64 * block_bytes,
+            used_bytes: used as u64 * block_bytes,
+        }
+    }
+
     /// `(resident, used)` blocks; used includes pending destinations.
     pub(crate) fn occupancy(&self) -> (usize, usize) {
         let resident = self

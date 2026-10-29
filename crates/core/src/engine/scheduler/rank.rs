@@ -74,6 +74,14 @@ impl SchedulerRank {
         self.core.set_host_offload_observer(observer);
     }
 
+    /// Private G2 only. Shared G2 is observed through its deployment registry.
+    pub(crate) fn private_host_cache_metrics(&self) -> Option<crate::engine::HostCacheMetrics> {
+        match &self.core {
+            EngineCore::Vllm(core) => core.private_host_cache_metrics(),
+            EngineCore::Sglang(_) => None,
+        }
+    }
+
     pub fn new_with_timing_model(
         identity: RankIdentity,
         config: &EngineConfig,
@@ -643,6 +651,7 @@ fn split_pass(
         same_timestamp_retry,
         output_signals,
         admissions,
+        native_prefix_cache_lookup,
         pressure_events,
         lifecycle_events,
         mocker_metrics,
@@ -667,6 +676,7 @@ fn split_pass(
             .collect(),
         pressure_events,
         kv_events: start_kv,
+        native_prefix_cache_lookup,
     };
     let completion = PassCompletionEffects {
         outputs: output_signals

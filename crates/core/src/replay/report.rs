@@ -39,6 +39,8 @@ pub struct G2DomainStats {
 /// Canonical replay result returned by [`crate::replay::Replayer`].
 #[derive(Debug, Clone)]
 pub struct ReplayReport {
+    /// Opt-in all-phase native observation capture; independent of summary epochs.
+    pub telemetry: Option<super::telemetry::ReplayTelemetryCapture>,
     pub kv_eviction_policy: crate::engine::KvEvictionPolicy,
     /// Versioned forecast contract, present only for a lookahead eviction policy.
     pub kv_eviction_assumption: Option<&'static str>,
@@ -470,6 +472,9 @@ impl Serialize for ReplayReport {
             power.validate().map_err(serde::ser::Error::custom)?;
         }
         let mut map = serializer.serialize_map(None)?;
+        if let Some(telemetry) = &self.telemetry {
+            map.serialize_entry("telemetry", telemetry)?;
+        }
         map.serialize_entry("kv_eviction_policy", &self.kv_eviction_policy)?;
         if let Some(assumption) = self.kv_eviction_assumption {
             map.serialize_entry("kv_eviction_assumption", assumption)?;
@@ -1017,6 +1022,50 @@ pub struct PerRequestRecord {
     pub readmission_count: usize,
     pub pressure_record_ordinals: Vec<u64>,
     pub terminal_status: ReplayTerminalStatus,
+}
+
+impl PerRequestRecord {
+    pub(crate) fn shift_timestamps(&mut self, delta_ms: f64) {
+        self.arrival_time_ms += delta_ms;
+        self.terminal_time_ms += delta_ms;
+        for timestamp in [
+            &mut self.dispatched_at_ms,
+            &mut self.tokenized_ms,
+            &mut self.first_admit_ms,
+            &mut self.first_token_ms,
+            &mut self.last_token_ms,
+            &mut self.prefill_admit_ms,
+            &mut self.source_held_ms,
+            &mut self.destination_reserved_ms,
+            &mut self.destination_activated_ms,
+            &mut self.decode_admit_ms,
+            &mut self.source_released_ms,
+            &mut self.encoder_ready_ms,
+            &mut self.frontend_ready_ms,
+            &mut self.scheduler_received_ms,
+            &mut self.selected_ms,
+            &mut self.prefill_complete_ms,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *timestamp += delta_ms;
+        }
+        for routing in &mut self.routing_history {
+            for time in [
+                &mut routing.queue_entered_at_ms,
+                &mut routing.released_at_ms,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                *time += delta_ms;
+            }
+        }
+        for admission in &mut self.admission_history {
+            admission.at_ms += delta_ms;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1907,6 +1956,13 @@ impl TraceCollector {
         ))
     }
 
+    pub(crate) fn first_admission_input(&self, uuid: Uuid) -> Option<usize> {
+        self.requests
+            .get(&uuid)
+            .filter(|stats| stats.first_admit_ms.is_none())
+            .map(|stats| stats.input_length)
+    }
+
     /// Drain measurements while retaining the configuration that applies to
     /// each reporting epoch of a reusable runtime. The absolute report boundary
     /// includes idle time in this epoch and starts the next one.
@@ -2167,6 +2223,7 @@ impl TraceCollector {
             output_throughput_tok_s: goodput_output_tokens as f64 / duration_s,
         });
         ReplayReport {
+            telemetry: None,
             kv_eviction_policy: crate::engine::KvEvictionPolicy::Lru,
             kv_eviction_assumption: None,
             committed_prefill_tokens: self.committed_prefill_tokens,

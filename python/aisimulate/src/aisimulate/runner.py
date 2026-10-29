@@ -474,8 +474,16 @@ class EngineReplayRunner:
             spec.backend_deployment.deployment_mode in {"afd", "afd+pd"} or spec.backend_deployment.encoder is not None
         ):
             raise InvalidRunnerError("canonical determinism requires native text replay")
-        if output_requirements.capture_telemetry:
-            raise InvalidRunnerError("EngineReplayRunner's JSON runtime does not yet expose replay telemetry")
+        if output_requirements.capture_telemetry and (
+            spec.execution_mode != "offline"
+            or spec.backend_deployment.backend not in {"vllm", "sglang"}
+            or spec.backend_deployment.deployment_mode not in {"agg", "disagg"}
+            or spec.backend_deployment.encoder is not None
+        ):
+            raise InvalidRunnerError(
+                "telemetry capture requires offline native vLLM/SGLang aggregated or disaggregated replay "
+                "without an encoder pool"
+            )
         if spec.workload.get("source_type") is not None and "length_sampler" in spec.workload:
             raise ValueError("length_sampler requires materialized direct synthetic replay without source_type")
         self.capabilities.require_compatible(spec)
@@ -577,6 +585,11 @@ class EngineReplayRunner:
             if "spec" not in execution_spec:
                 execution_spec = {"spec": execution_spec}
             execution_spec["capture_performance_diagnostics"] = True
+        if output_requirements.capture_telemetry:
+            if "spec" not in execution_spec:
+                execution_spec = {"spec": execution_spec}
+            execution_spec["capture_telemetry"] = True
+            execution_spec["telemetry_sample_interval_ms"] = output_requirements.telemetry_sample_interval_ms
         if self.determinism != "random":
             if "spec" not in execution_spec:
                 execution_spec = {"spec": execution_spec}
@@ -616,6 +629,8 @@ class EngineReplayRunner:
         del report_json
         if not isinstance(report, Mapping):
             raise InvalidRunnerError("AISimulate engine replay runtime report must be a JSON object")
+        if output_requirements.capture_telemetry and not isinstance(report.get("telemetry"), Mapping):
+            raise InvalidRunnerError("AISimulate engine replay runtime did not provide requested telemetry")
         resolved_basis = report.get("weka_nested_timestamp_basis")
         if isinstance(resolved_basis, str):
             logger.info(
@@ -637,6 +652,7 @@ class EngineReplayRunner:
             include_native_report=(
                 output_requirements.include_raw_report
                 or output_requirements.capture_per_request
+                or output_requirements.capture_telemetry
                 or output_requirements.capture_memory_diagnostics
                 or output_requirements.capture_performance_diagnostics
             ),

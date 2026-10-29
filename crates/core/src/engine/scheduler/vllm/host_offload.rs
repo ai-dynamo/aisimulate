@@ -222,6 +222,15 @@ pub(super) struct VllmHostOffloadAdapter {
 }
 
 impl VllmHostOffloadAdapter {
+    /// Shared pools are sampled by the deployment registry, not once per rank.
+    pub(super) fn private_cache_metrics(&self) -> Option<crate::engine::HostCacheMetrics> {
+        (!self.shared).then(|| {
+            self.host
+                .lock()
+                .metrics(crate::engine::G2Scope::DpRankLocal)
+        })
+    }
+
     pub(super) fn set_g3(
         &mut self,
         registry: crate::engine::g3_offload::SharedG3Tier,

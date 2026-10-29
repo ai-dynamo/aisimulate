@@ -236,6 +236,7 @@ pub(crate) struct EnginePassResult {
     pub(crate) completed_requests: usize,
     pub(crate) output_signals: Vec<OutputSignal>,
     pub(crate) admissions: Vec<AdmissionEvent>,
+    pub(crate) native_prefix_cache_lookup: Option<crate::engine::PrefixCacheLookupCounts>,
     /// KV-pressure actions committed while selecting this pass.
     pub(crate) pressure_events: Vec<PressureEvent>,
     pub(crate) lifecycle_events: Vec<SchedulerLifecycleEvent>,
