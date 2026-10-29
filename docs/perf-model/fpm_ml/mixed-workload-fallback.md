@@ -279,9 +279,16 @@ sources and causal admissions.
 
 Standalone `save_online_checkpoint()` includes the mixed state along with the
 online learner. An online checkpoint containing mixed state cannot be loaded
-as frozen inference or with the mixed policy disabled. Frozen hybrid callers
-can save the mixed snapshot explicitly, but must also preserve ordinary
-calibration and their admission cursor for a complete continuation.
+as frozen inference or with the mixed policy disabled. Its manifest marks
+`has_mixed_composition_state` so frozen loading can reject it without reading
+the training-state payload. Ordinary checkpoints, including legacy manifests
+without that marker, still support frozen inference from their exported
+forests when `state.bin` is unavailable. Online continuation checks the marker
+against the saved state when present. Pre-release mixed checkpoints without
+the marker must be resumed online and saved again to gain the frozen-load
+guard. Frozen hybrid callers can save the mixed snapshot
+explicitly, but must also preserve ordinary calibration and their admission
+cursor for a complete continuation.
 
 Portable `save_state_snapshot()` and `estimator_config.state_snapshot` reject
 this policy explicitly. Their existing format does not package the extra

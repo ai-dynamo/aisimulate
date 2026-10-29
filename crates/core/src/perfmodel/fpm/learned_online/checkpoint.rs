@@ -33,6 +33,8 @@ struct Manifest {
     state_file: Option<String>,
     state_sha256: Option<String>,
     anchor_manifest_sha256: Option<String>,
+    #[serde(default)]
+    has_mixed_composition_state: Option<bool>,
     #[serde(skip)]
     source_sha256: String,
 }
@@ -234,7 +236,20 @@ fn runtime_state(path: &Path, m: &Manifest) -> Result<LoadState, AicError> {
             "runtime state anchor identity differs from its manifest",
         ));
     }
+    if let Some(has_mixed) = m.has_mixed_composition_state
+        && has_mixed != has_saved_corrections(&state.correction_json)?
+    {
+        return Err(invalid(
+            "runtime mixed composition state differs from its manifest",
+        ));
+    }
     Ok(state)
+}
+
+fn has_saved_corrections(corrections: &str) -> Result<bool, AicError> {
+    let corrections: serde_json::Value = serde_json::from_str(corrections)
+        .map_err(|e| invalid(format!("invalid saved correction state: {e}")))?;
+    Ok(corrections != serde_json::json!({}))
 }
 
 pub(crate) fn checkpoint_model(path: &Path) -> Result<LearnedForwardPassModel, AicError> {
@@ -258,18 +273,14 @@ pub(crate) fn checkpoint_model_for_config(
     let model = manifest_model(path, &m)?;
     if m.schema == RUNTIME_SCHEMA
         && config.estimator_config.fpm_learned.adaptation == LearnedAdaptation::Frozen
+        && m.has_mixed_composition_state == Some(true)
     {
-        // The mixed policy lives outside FpmLearnedConfig to preserve the v5
-        // binary layout. Inspect the authenticated payload even when the new
-        // caller omits that policy, so Frozen cannot silently discard it.
-        let state = runtime_state(path, &m)?;
-        let corrections: serde_json::Value = serde_json::from_str(&state.correction_json)
-            .map_err(|e| invalid(format!("invalid saved correction state: {e}")))?;
-        if corrections != serde_json::json!({}) {
-            return Err(invalid(
-                "frozen inference cannot discard saved mixed composition state; use online continuation or the original seed with explicit mixed-state restoration",
-            ));
-        }
+        // Frozen inference must remain independent of the training-state bytes.
+        // Keep this requirement in the source-pinned manifest; online loading
+        // additionally checks it against the authenticated binary payload.
+        return Err(invalid(
+            "frozen inference cannot discard saved mixed composition state; use online continuation or the original seed with explicit mixed-state restoration",
+        ));
     }
     Ok(model)
 }
@@ -1115,6 +1126,7 @@ pub(super) fn save_with(
             "checkpoint destination already exists; use a new snapshot directory",
         ));
     }
+    let has_mixed_composition_state = has_saved_corrections(corrections)?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
     let staging = tempfile::Builder::new()
@@ -1162,6 +1174,7 @@ pub(super) fn save_with(
         "state_file": "state.bin", "state_sha256": hash(&state_path)?,
         "identity": serde_json::from_str::<serde_json::Value>(&learner.identity_json).map_err(|e| invalid(e.to_string()))?,
         "anchor_manifest_sha256": learner.anchor_manifest_sha256,
+        "has_mixed_composition_state": has_mixed_composition_state,
     });
     let manifest_path = staging.path().join("manifest.json");
     let mut file = File::create(&manifest_path).map_err(|e| io(&manifest_path, e))?;

@@ -764,24 +764,76 @@ fn frozen_runtime_checkpoint_rejects_saved_mixed_state_even_without_policy() {
     learner
         .save(&mixed, &seed_model, &saved_mixed.to_string())
         .unwrap();
-    config.estimator_config.fpm_learned.checkpoint_path = Some(mixed);
+    config.estimator_config.fpm_learned.checkpoint_path = Some(mixed.clone());
     let error = ForwardPassPerfModel::best_available(config.clone()).unwrap_err();
     assert!(
         error
             .to_string()
             .contains("cannot discard saved mixed composition state")
     );
-
-    // Detection authenticates the binary payload; it does not trust an
-    // unverified manifest flag or inspect only the exported forest.
-    std::fs::write(ordinary.join("state.bin"), b"corrupted runtime state").unwrap();
-    config.estimator_config.fpm_learned.checkpoint_path = Some(ordinary);
+    std::fs::remove_file(mixed.join("state.bin")).unwrap();
     assert!(
-        ForwardPassPerfModel::best_available(config)
+        ForwardPassPerfModel::best_available(config.clone())
             .unwrap_err()
             .to_string()
-            .contains("checksum mismatch")
+            .contains("cannot discard saved mixed composition state")
     );
+
+    // Frozen inference needs only the saved forest, including when the online
+    // training state is corrupt or omitted from a deployment.
+    std::fs::write(ordinary.join("state.bin"), b"corrupted runtime state").unwrap();
+    config.estimator_config.fpm_learned.checkpoint_path = Some(ordinary.clone());
+    assert!(ForwardPassPerfModel::best_available(config.clone()).is_ok());
+    std::fs::remove_file(ordinary.join("state.bin")).unwrap();
+    assert!(ForwardPassPerfModel::best_available(config.clone()).is_ok());
+    // Version-5 checkpoints written before mixed composition have no marker.
+    let manifest_path = ordinary.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest
+        .as_object_mut()
+        .unwrap()
+        .remove("has_mixed_composition_state");
+    std::fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    assert!(ForwardPassPerfModel::best_available(config).is_ok());
+}
+
+#[test]
+fn runtime_checkpoint_rejects_inconsistent_mixed_state_marker() {
+    let (learner, seed_model) = fixture(
+        controls(LearnedUpdateMode::LeafOnly, LearnedDerivativeRefresh::Eager),
+        &[&[1.0]],
+        &[10.0],
+        10.0,
+        vec![leaf(0.0)],
+        settings(1.0, 0.0),
+    );
+    let directory = tempfile::tempdir().unwrap();
+    for (name, corrections, expected) in [
+        ("ordinary", "{}", false),
+        (
+            "mixed",
+            r#"{"version":"original_a_composition_attention_moe_v1"}"#,
+            true,
+        ),
+    ] {
+        let path = directory.path().join(name);
+        learner.save(&path, &seed_model, corrections).unwrap();
+        let manifest_path = path.join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        assert_eq!(manifest["has_mixed_composition_state"], expected);
+        manifest["has_mixed_composition_state"] = (!expected).into();
+        std::fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let mut model = checkpoint_model(&path).unwrap();
+        let error =
+            OnlineLearner::load(&path, &mut model, &learner.config, &canonical()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("mixed composition state differs from its manifest")
+        );
+    }
 }
 
 #[test]
