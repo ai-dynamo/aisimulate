@@ -12,13 +12,13 @@ tables:
     rows: 8487
     status: complete
     collections:
-    - collector_ref: unknown
+    - collector_ref: 4ff777c61ca928312a2b2d45f243312cfafc97d4
       collector_hash: sha256:33c3645b583404c4472d10e4513215b86dee45f4adaa578dbee8081f810dafb9
       case_plan_hash: sha256:95cd6a6afb4dfd6bfda35c018ec9ce08ceb65807d32ca5eb508ec00a1627d863
       collected_at: '2026-10-06'
       rows: 4392
       status: complete
-    - collector_ref: unknown
+    - collector_ref: 4ff777c61ca928312a2b2d45f243312cfafc97d4
       collector_hash: sha256:33c3645b583404c4472d10e4513215b86dee45f4adaa578dbee8081f810dafb9
       case_plan_hash: sha256:79982f2c2fffd86801273730a3e85780fdc10cd03829916b292ad5364236e6d7
       collected_at: '2026-10-06'
@@ -28,13 +28,13 @@ tables:
     rows: 7132
     status: complete
     collections:
-    - collector_ref: unknown
+    - collector_ref: 4ff777c61ca928312a2b2d45f243312cfafc97d4
       collector_hash: sha256:33c3645b583404c4472d10e4513215b86dee45f4adaa578dbee8081f810dafb9
       case_plan_hash: sha256:19febde65c4c4ab6a86d9daf0276cb200eb2482eca5c463b385bd0d6dedba490
       collected_at: '2026-10-06'
       rows: 6580
       status: complete
-    - collector_ref: unknown
+    - collector_ref: 4ff777c61ca928312a2b2d45f243312cfafc97d4
       collector_hash: sha256:33c3645b583404c4472d10e4513215b86dee45f4adaa578dbee8081f810dafb9
       case_plan_hash: sha256:7a6bb3e665c12d0b074a1a5363b8f4f892a6ce1c57bcf756617ed30e270ef9cc
       collected_at: '2026-10-06'
