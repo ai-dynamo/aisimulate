@@ -36,12 +36,6 @@ tables:
       collected_at: '2026-10-09'
       rows: 22860
       status: complete
-    - collector_ref: a8d79b2b806615ffddc296b4abd7643a083833df
-      collector_hash: null
-      case_plan_hash: null
-      collected_at: '2026-10-29'
-      rows: 0
-      status: complete
     - collector_ref: 4e7eb49fc31218861cb20740205d9986ddc53ca5
       collector_hash: sha256:4e04552bd52fbf699220c079af0a014bab2f882af2f007df6e0e696f51f56c6a
       case_plan_hash: sha256:74a437665d5ed591fef780e568eb902d0edca23a0e6cf132d6ea25e5fd05c359
