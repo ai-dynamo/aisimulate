@@ -263,7 +263,7 @@ def modelopt_mixed_precision_targets(raw_config: dict) -> dict[str, str | None] 
     2. a non-empty ``quantized_layers`` map exists in either source (the two
        are merged; one module with two different algorithms is an error);
     3. the language ``quantization_config.quant_method`` is absent,
-       ``modelopt`` or ``mixed_precision``, i.e. the header declares no base
+       ``modelopt*`` or ``mixed_precision``, i.e. the header declares no base
        lane. Expert-only requants that keep a base lane (DeepSeek-V4-*-NVFP4:
        ``quant_method: fp8`` + ``weight_block_size``) quantize their
        non-expert GEMMs through that lane and are out of scope.
@@ -282,7 +282,9 @@ def modelopt_mixed_precision_targets(raw_config: dict) -> dict[str, str | None] 
     )
     if algo != "mixed_precision":
         return None
-    if _normalize_quant_algo(quant_config.get("quant_method")) not in (None, "modelopt", "mixed_precision"):
+    method = _normalize_quant_algo(quant_config.get("quant_method"))
+    # Any vLLM ModelOpt method spelling (``modelopt``, ``modelopt_mixed``, ...) declares no base lane.
+    if method not in (None, "mixed_precision") and not method.startswith("modelopt"):
         return None
     targets: dict[str, str | None] = {}
     for layer_map in (hf_section.get("quantized_layers"), quant_config.get("quantized_layers")):

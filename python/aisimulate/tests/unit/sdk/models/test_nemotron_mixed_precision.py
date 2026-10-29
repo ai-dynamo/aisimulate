@@ -748,3 +748,50 @@ def test_config_only_modelopt_mixed_keeps_w4a16_experts(monkeypatch, tmp_path, a
     assert model_config.moe_quant_mode == common.MoEQuantMode.w4a16_nvfp4
     model = get_model(model_path, model_config, "vllm")
     assert {op._quant_mode for op in model.context_ops if op._name == "context_moe"} == expected
+
+
+def test_config_only_modelopt_mixed_partial_listing_prices_unlisted_layers_bf16(monkeypatch, tmp_path):
+    from aisimulate.sdk.task_v2 import Task
+
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    path = files("aisimulate_core") / "model_configs/nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4_config.json"
+    data = json.loads(path.read_text())
+    pattern = data["hybrid_override_pattern"]
+    m_layer, e_layer = pattern.index("M"), pattern.index("E")
+    # Self-contained modelopt_mixed export: one Mamba in_proj FP8 and one MoE layer's experts NVFP4; the rest unlisted.
+    data["quantization_config"] = {
+        "quant_method": "modelopt_mixed",
+        "quant_algo": "MIXED_PRECISION",
+        "quantized_layers": {
+            f"backbone.layers.{m_layer}.mixer.in_proj": {"quant_algo": "FP8"},
+            **{
+                f"backbone.layers.{e_layer}.mixer.experts.0.{p}": {"quant_algo": "NVFP4"}
+                for p in ("up_proj", "down_proj")
+            },
+        },
+    }
+    (tmp_path / "config.json").write_text(json.dumps(data))
+    model_path = str(tmp_path)
+    task = Task(
+        serving_mode="agg",
+        model_path=model_path,
+        system_name="gb200",
+        backend_name="vllm",
+        backend_version="0.31.0",
+        database_mode="SOL",
+    )
+    configs = (
+        ModelConfig(tp_size=2, moe_tp_size=2, system="gb200"),
+        task.build_model_config(role="agg", parallel=(1, 1, 1, 1, 1, 1)),
+    )
+    for config in configs:
+        model = get_model(model_path, config, "vllm")
+        buckets = _projection_buckets(model.context_ops, _ALL_PROJECTIONS)
+        m_layers = pattern.count("M")
+        assert buckets["mamba_in_proj_gemm"] == {FP8: 1, BF16: m_layers - 1}
+        assert buckets["mamba_out_proj_gemm"] == {BF16: m_layers}
+        assert set(buckets["qkv_gemm"]) == set(buckets["shared_up_gemm"]) == {BF16}
+        moe = {op._quant_mode: op._scale_factor for op in model.context_ops if op._name == "context_moe"}
+        assert moe == pytest.approx(
+            {common.MoEQuantMode.nvfp4: 1, common.MoEQuantMode.bfloat16: pattern.count("E") - 1}
+        )
