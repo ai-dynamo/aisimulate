@@ -1168,7 +1168,9 @@ def setup_logging(scope=["all"], debug=False, worker_id=None):
 
     # Create log directory
     time_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    _LOG_DIR = Path(f"{log_scope_dirname(scope)}_{time_stamp}")
+    # Absolute: workers and the profiler read it back from the environment,
+    # possibly after the working directory changed.
+    _LOG_DIR = Path.cwd() / f"{log_scope_dirname(scope)}_{time_stamp}"
     if not _LOG_DIR.is_dir():
         _LOG_DIR.mkdir()
 

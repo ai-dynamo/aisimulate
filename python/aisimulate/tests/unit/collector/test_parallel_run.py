@@ -46,9 +46,9 @@ _COLLECTOR_DIR = str(Path(__file__).resolve().parents[3] / "collector")
 if _COLLECTOR_DIR not in sys.path:
     sys.path.insert(0, _COLLECTOR_DIR)
 
+_torch = MagicMock()
+_torch.AcceleratorError = type("AcceleratorError", (Exception,), {})
 if "torch" not in sys.modules:
-    _torch = MagicMock()
-    _torch.AcceleratorError = type("AcceleratorError", (Exception,), {})
     sys.modules["torch"] = _torch
 
 import collect as _collect_mod
@@ -188,6 +188,12 @@ def _fork_mp(monkeypatch):
     warnings.filterwarnings("ignore", message=".*fork.*", category=DeprecationWarning)
     ctx = mp.get_context("fork")
     monkeypatch.setattr(_collect_mod, "mp", ctx)
+    # In a full run other test modules import collect before this one without a
+    # torch stub (collect.torch stays None) or swap the stub in sys.modules; the
+    # fork'd workers would then die in _require_torch and be restarted until the
+    # restart cap, which looks like a hang. Pin the stub in both places per test.
+    monkeypatch.setitem(sys.modules, "torch", _torch)
+    monkeypatch.setattr(_collect_mod, "torch", _torch)
 
 
 @pytest.fixture(autouse=True)
