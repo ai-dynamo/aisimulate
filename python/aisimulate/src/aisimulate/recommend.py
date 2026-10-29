@@ -30,6 +30,7 @@ from .sweeper.config import SmartSearchConfig
 from .sweeper.provider import InfeasibleCandidate, SweepContext
 from .sweeper.replay import ReplayOutputRequirements, ReplaySpec, RunnerFactory
 from .sweeper.result import SweepResult
+from .sweeper.state_snapshot import state_snapshot_reference
 
 
 def run_recommendation(
@@ -256,6 +257,14 @@ def recommendation_to_sweeper(
         and not set(modes) & {"afd", "afd+pd"}
         and workers.get("encoder") is None
     }
+    active_roles = ({"agg"} if "agg" in modes else set()) | ({"prefill", "decode"} if "disagg" in modes else set())
+    if "backend" not in config.engine.model_fields_set and any(
+        role in active_roles and state_snapshot_reference(controls) is not None
+        for role, controls in search_space["role_estimator_controls"].items()
+    ):
+        # A role timed by a state snapshot takes the backend from the snapshot,
+        # not from the default backend domain.
+        del search_space["backend"]
     if engine.get("speculation") is not None:
         search_space["speculation"] = deepcopy(engine["speculation"])
     for role in ("prefill", "decode"):

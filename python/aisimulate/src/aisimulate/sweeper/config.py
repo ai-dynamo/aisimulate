@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_serializer, model_validator
 
 from aisimulate.config.traffic import AgenticProfileOptions, AgenticSnapshotOptions
 
@@ -692,12 +692,17 @@ class SearchSpace(BaseModel):
     engine_log_ranges: list[str] = Field(default_factory=list)
     engine_log_discrete: list[str] = Field(default_factory=list)
     engine_integer_log_ranges: dict[str, list[int]] = Field(default_factory=dict)
+    # Validated snapshots of roles whose estimator controls name one.
+    _state_snapshots: dict[str, Any] = PrivateAttr(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
     def _migrate_legacy_estimator_selection(cls, value):
+        from .state_snapshot import derive_snapshot_roles, reject_engine_wide_snapshot
+
         if not isinstance(value, dict):
             return value
+        reject_engine_wide_snapshot(value)
         modes = value.get("deployment_mode")
         if (isinstance(modes, list) and any(mode in ("afd", "afd+pd") for mode in modes)) or value.get(
             "encoder"
@@ -719,7 +724,9 @@ class SearchSpace(BaseModel):
                     "estimation_mode", "fpm_interpolation" if legacy == "fpm" else "op_level"
                 )
         value["role_estimator_controls"] = controls
-        return value
+        # Roles timed by a state snapshot take their engine identity from it
+        # before any field is validated or defaulted.
+        return derive_snapshot_roles(value)
 
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
@@ -831,7 +838,15 @@ class SearchSpace(BaseModel):
         raise ValueError(f"unknown engine role {role!r}")
 
     def systems_paths_for(self, role: str) -> list[str] | None:
+        snapshot = self._state_snapshots.get(role)
+        if snapshot is not None and snapshot.packed_root is not None:
+            return [snapshot.packed_root]
         return self.role_estimator_controls.get(role, {}).get("systems_paths", self.systems_paths)
+
+    def state_snapshot_role(self, role: str) -> Any:
+        """The validated state snapshot timing ``role``, if its estimator controls name one."""
+
+        return self._state_snapshots.get(role)
 
     @field_validator(
         "afd_tp_a_candidates",
@@ -992,6 +1007,30 @@ class SearchSpace(BaseModel):
             or any(getattr(self, f"{role}_timing_model") is not None for role in roles)
         ):
             raise ValueError("estimator policies require regular language workers with default timing in every role")
+        return self
+
+    @model_validator(mode="after")
+    def _bind_state_snapshots(self) -> SearchSpace:
+        """Keep each snapshot role's validated snapshot for estimator construction."""
+        from .forward_pass_estimator import resolve_systems_paths
+        from .state_snapshot import load_snapshot_role, state_snapshot_reference
+
+        if self._uses_legacy_estimator_provider():
+            return self
+        roles = ({"agg"} if "agg" in self.deployment_mode else set()) | (
+            {"prefill", "decode"} if "disagg" in self.deployment_mode else set()
+        )
+        self._state_snapshots = {
+            role: load_snapshot_role(role, reference)
+            for role, controls in self.role_estimator_controls.items()
+            if role in roles and (reference := state_snapshot_reference(controls)) is not None
+        }
+        for role, snapshot in self._state_snapshots.items():
+            if snapshot.packed_root is None and len(resolve_systems_paths(self.systems_paths_for(role))) != 1:
+                raise ValueError(
+                    f"{snapshot.describe()} references performance data outside the snapshot; give the "
+                    f"{role} role exactly one systems root holding that data"
+                )
         return self
 
     @model_validator(mode="after")

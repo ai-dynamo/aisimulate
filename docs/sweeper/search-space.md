@@ -198,6 +198,11 @@ parallelism:
 Omitted parallelism knobs then use their table-defined default ranges, and the Sweeper evaluates the
 Cartesian product before feasibility filtering.
 
+A role timed by a [calibrated state snapshot](../perf-model/configuration.md#recommending-with-a-calibrated-snapshot)
+searches only the snapshot's tensor, pipeline, attention-data and MoE shape and its KV block size.
+A preset list keeps only matching mappings, and per-knob domains must include the saved values;
+replicas keep their domain.
+
 <a id="optimizer-controls"></a>
 
 ## Optimizer Controls

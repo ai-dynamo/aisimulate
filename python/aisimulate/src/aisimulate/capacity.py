@@ -124,11 +124,27 @@ def materialize_aic_num_gpu_blocks(
                 from aisimulate_core.sdk.fpm_profile import _require_forward_pass_profile_memory
 
                 _require_forward_pass_profile_memory(RustForwardPassPerfModel.normalize_config(request))
-            model = RustForwardPassPerfModel.best_available(request)
-            try:
-                diagnostics = model.diagnostics()
-            finally:
-                model.close()
+            snapshot = (request.get("estimator_config") or {}).get("state_snapshot")
+            # Normalization validates the reference and compares the configuration
+            # with the snapshot's saved identity.
+            resolved = RustForwardPassPerfModel.normalize_config(request) if snapshot is not None else None
+            if (
+                resolved is not None
+                and RustForwardPassPerfModel.inspect_state_snapshot(
+                    resolved["estimator_config"]["state_snapshot"]["path"]
+                )["kind"]
+                == "native"
+            ):
+                # Replay restores the snapshot with every integrity check. Lowering needs
+                # only the configuration that restoration records, which normalization
+                # resolves identically; native models are always ready.
+                diagnostics = {"readiness": "ready", "provenance": {"config": resolved}}
+            else:
+                model = RustForwardPassPerfModel.best_available(request)
+                try:
+                    diagnostics = model.diagnostics()
+                finally:
+                    model.close()
             if diagnostics.get("readiness") != "ready":
                 from .estimator_readiness import unready_estimator_message
 

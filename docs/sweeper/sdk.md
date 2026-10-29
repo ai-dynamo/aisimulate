@@ -101,6 +101,7 @@ spaces. Public config adapters and SDK providers are distinct contracts; see
 | `fallback_policy` | `deny` | constrain explicit estimator selection; auto always searches the full priority order |
 | `estimator_config` | `{}` (Core defaults) | runtime tuning controls such as observation limits, regression buckets, correction bounds, and workload-axis capacity |
 | `systems_paths` | omitted | preserve configured SDK/environment discovery; an explicit list sets ordered request-scoped roots, with `default` selecting the packaged Core root |
+| `role_estimator_controls` | `{}` | per-role (`agg`, `prefill`, `decode`) `estimation_mode`, `fallback_policy`, `estimator_config`, `systems_paths`, `database_mode` and `transfer_policy` overrides. `{"estimator_config": {"state_snapshot": {"path": ...}}}` times the role with a calibrated snapshot and pins the role's engine identity to it; see [snapshot roles](../perf-model/configuration.md#recommending-with-a-calibrated-snapshot) |
 | `gpu_budget` | `32` | maximum GPUs per candidate |
 | `min_gpu_budget` | `None` | optional lower bound during enumeration |
 | `context_length` | `None` | optional KV-feasibility and runtime prompt-plus-output token limit |

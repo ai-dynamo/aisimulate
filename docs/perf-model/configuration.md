@@ -801,6 +801,7 @@ concrete-only.
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.forward_model` | `op_level` | `x` | `-` | `op_level` or `fpm`; `default` timing only. `fpm` replays whole-forward (FPM) latency measured for the role's exact model, hardware, backend version, parallel shape and quantization, and fails closed when no such cell exists. |
 | `engine.workers.<role>.timing.fpm_parquet_path` | `null` | `x` | `-` | External FPM parquet for `forward_model: fpm`; the adjacent same-stem `.metadata.json` sidecar is required. Relative paths are anchored to the working directory when the engine is constructed. Preserved per role in recommendations, candidate YAML, and regular prefill/decode companions in AFD+PD. |
+| `engine.workers.<role>.timing.estimator_config.state_snapshot` | `null` | `x` | `-` | `recommend`: `{path, sha256}` of a calibrated native snapshot; the role takes its estimator and engine identity from it. See [snapshot roles](#recommending-with-a-calibrated-snapshot). `predict` requires the complete saved configuration, as for any `state_snapshot`. |
 
 The supported `estimation_mode`, `fallback_policy`, `estimator_config`, and
 `fpm_profile` controls pass through the CLI into the same native constructor.
@@ -812,6 +813,67 @@ A role's `timing.estimator_config` replaces the global dictionary for that role;
 include all required controls in that override. Legacy `timing.forward_model: fpm`
 and `timing.fpm_parquet_path` normalize to FPM interpolation and its external pair.
 The mode does not fall back to op-level on a missing measured cell.
+
+### Recommending with a calibrated snapshot
+
+A `recommend` role can be timed by a model calibrated online, such as a
+Dynamo planner's, by naming only its [state snapshot](#state-snapshots):
+
+```yaml
+engine:
+  mode: disaggregated
+  model: Qwen/Qwen3-32B
+  hardware: h200_sxm
+  workers:
+    prefill: {}
+    decode:
+      timing:
+        estimator_config:
+          state_snapshot:
+            path: /mnt/planner/decode-snapshot  # sha256 optional
+```
+
+A snapshot restores exactly one engine identity, so the role is pinned to it.
+Before the search starts, the backend and backend version, the role's tensor,
+pipeline, attention-data and MoE parallelism, its KV block size, the
+engine-wide quantization and model controls and the MTP depth (`nextn`) are
+taken from the snapshot; omit them, or give values that include the saved
+ones. A conflicting explicit value fails configuration validation and names
+the snapshot's value. Replicas, scheduler limits (`max_batched_tokens`,
+`max_sequences`), KV memory, prefix caching and the other roles are still
+searched. Scheduler limits are not capped at the snapshot's correction grid:
+outside the observed region a fixed correction applies factor 1.0 and a
+dynamic or hybrid correction a constant recent ratio. The engine-wide values
+also apply to roles without a snapshot, and two snapshot roles must agree on
+them. A snapshot with `nextn > 0` needs `engine.nextn` set to the saved depth
+and `engine.nextn_accepted`, which a snapshot does not record.
+
+The role takes every estimator control from the snapshot, so `timing` may
+name only the snapshot, plus `estimation_mode` equal to the saved mode,
+`fallback_policy: deny` and, for a snapshot saved without `include_perf_db`,
+`systems_paths` naming one root that holds the referenced data. A packed
+snapshot also serves as the role's systems root for enumeration and capacity.
+Each candidate restores the snapshot through `best_available`, which compares
+its complete engine identity with the saved one and rejects any difference;
+the sweeper restores each role's snapshot once per run, and replay once per
+candidate. The recommended deployment's prediction YAML keeps the restored
+configuration, so `predict` replays the same calibrated model. For a role whose
+timing names a snapshot, `predict` takes `decoder_replay`,
+`enable_shared_layer`, `strict_provenance` and `fpm_fmha_quant_mode` from the
+snapshot unless the engine sets them, and reads packed data from the snapshot
+wherever `systems_paths` points.
+
+Configuration validation rejects snapshots replay cannot use:
+`fpm_regression` and learned models, because replay prices phases with a native
+`op_level` or `fpm_interpolation` engine (a Dynamo planner without an
+`ais_perf_model` role configuration saves an `fpm_regression` model); a native
+snapshot without an enabled, ready correction store for the iterations replay
+prices for the role (prefill, decode, or any of prefill, decode and mixed for an
+aggregated worker); a snapshot without `kv_block_size`; one saved for another
+worker role, model or hardware; and snapshots with an FPM profile, speculation,
+pipeline parallelism (engine replay runs only `pipeline: 1`) or context
+parallelism. `engine.estimator_config.state_snapshot` is rejected:
+a snapshot belongs to one role.
 
 ## Flat engine precision and execution controls
 

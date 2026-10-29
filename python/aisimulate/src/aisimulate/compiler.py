@@ -832,9 +832,15 @@ def _worker_engine_args(
         from aisimulate_core.sdk import ForwardPassPerfModelConfig
 
         from .sweeper.forward_pass_estimator import resolve_systems_paths
+        from .sweeper.state_snapshot import snapshot_pinned_controls
 
         timing = worker.timing
         sharded_moe = parallel.moe_tensor * parallel.moe_expert > 1
+        estimator_config = timing.estimator_config if timing.estimator_config is not None else engine.estimator_config
+        # A role timed by a state snapshot reads controls the sweeper never
+        # searches from the snapshot unless the engine states them, and its
+        # packed data from the snapshot wherever the configuration places it.
+        snapshot = snapshot_pinned_controls(estimator_config)
         canonical = ForwardPassPerfModelConfig(
             model=engine.model,
             fpm_profile=engine.fpm_profile.model_dump(mode="json") if engine.fpm_profile is not None else None,
@@ -842,9 +848,14 @@ def _worker_engine_args(
             backend=backend,
             backend_version=engine.backend_version,
             worker_type=role,
-            decoder_replay=engine.decoder_replay,
-            enable_shared_layer=engine.enable_shared_layer,
-            strict_provenance=bool(engine.strict_provenance),
+            decoder_replay=engine.decoder_replay or bool(snapshot.get("decoder_replay")),
+            enable_shared_layer=engine.enable_shared_layer
+            if engine.enable_shared_layer is not None
+            else snapshot.get("enable_shared_layer"),
+            strict_provenance=bool(
+                engine.strict_provenance if engine.strict_provenance is not None else snapshot.get("strict_provenance")
+            ),
+            fpm_fmha_quant_mode=snapshot.get("fpm_fmha_quant_mode"),
             tp=parallel.tensor,
             pp=parallel.pipeline,
             attention_dp=parallel.attention_data,
@@ -861,12 +872,12 @@ def _worker_engine_args(
             speculation=engine.speculation.cost_config() if engine.speculation is not None else None,
             estimation_mode=timing.estimation_mode or engine.estimation_mode,
             fallback_policy=timing.fallback_policy or engine.fallback_policy,
-            estimator_config=timing.estimator_config
-            if timing.estimator_config is not None
-            else engine.estimator_config,
+            estimator_config=estimator_config,
             database_mode=timing.database_mode or engine.database_mode,
             transfer_policy=timing.transfer_policy if timing.transfer_policy is not None else engine.transfer_policy,
-            systems_paths=resolve_systems_paths(timing.systems_paths or engine.systems_paths),
+            systems_paths=resolve_systems_paths(
+                timing.systems_paths or engine.systems_paths, require_directories=not snapshot
+            ),
             # A rank hosting the vision tower prices encoder calls through the same estimator.
             encoder_parallel=vision.encoder_parallel if vision is not None else None,
         )
