@@ -112,11 +112,10 @@ pub fn load_agentic_mooncake(path: &Path, legacy_trace_block_size: usize) -> Res
             )
         })?);
     }
-    let anonymous_requests: std::collections::HashSet<_> = raw_rows
+    let synthetic_session_ids = raw_rows
         .iter()
-        .filter(|row| row.session_id.is_none())
-        .map(|row| row.request_id.clone())
-        .collect();
+        .map(|row| row.session_id.is_none())
+        .collect::<Vec<_>>();
     let recorded_starts = raw_rows
         .iter()
         .filter_map(|raw| raw.timestamp.map(|start| (raw.request_id.clone(), start)))
@@ -181,29 +180,30 @@ pub fn load_agentic_mooncake(path: &Path, legacy_trace_block_size: usize) -> Res
         })
         .collect::<Result<Vec<_>>>()?;
     assign_dependency_component_play_ids(&mut rows, "legacy-play");
-    let mut graph = AgenticTrace::from_agentic_mooncake_rows(
-        AgenticMooncakeHeader {
-            schema: AGENTIC_MOONCAKE_SCHEMA.to_string(),
-            version: AGENTIC_MOONCAKE_VERSION,
-            block_size: legacy_trace_block_size,
-            hash_id_scope: AgenticHashIdScope::Local,
-            source: AgenticSourceProvenance {
-                format: "legacy_agentic_mooncake".to_string(),
-                digest: format!("{}:{}", path.display(), rows.len()),
-            },
+    let mut builder = AgenticTraceBuilder::new(AgenticMooncakeHeader {
+        schema: AGENTIC_MOONCAKE_SCHEMA.to_string(),
+        version: AGENTIC_MOONCAKE_VERSION,
+        block_size: legacy_trace_block_size,
+        hash_id_scope: AgenticHashIdScope::Local,
+        source: AgenticSourceProvenance {
+            format: "legacy_agentic_mooncake".to_string(),
+            digest: format!("{}:{}", path.display(), rows.len()),
         },
-        rows,
-    )?;
+    })?;
+    // Mark anonymous sessions before `finish` so its graph digest covers them.
+    for (line_idx, (row, synthetic_session_id)) in
+        rows.into_iter().zip(synthetic_session_ids).enumerate()
+    {
+        builder.push(line_idx + 1, row, synthetic_session_id)?;
+    }
+    let mut graph = builder.finish()?;
     // Dependent requests execute relative to completion, but snapshots need
     // their original starts. Legacy rows do not record completion timestamps.
     for node in &mut graph.nodes {
-        node.synthetic_session_id = anonymous_requests.contains(&node.request_id);
         node.recorded_interval_ms = recorded_starts
             .get(&node.request_id)
             .map(|&start| (start, None));
     }
-    graph.graph_digest =
-        canonical_agentic_graph_digest(graph.block_size, &mut graph.nodes, &graph.hash_values)?;
     Ok(graph)
 }
 
@@ -1420,7 +1420,7 @@ impl AgenticGraphBuilder {
     }
 
     pub fn push(&mut self, row: AgenticMooncakeRow) -> Result<()> {
-        self.inner.push(self.row_count + 1, row)?;
+        self.inner.push(self.row_count + 1, row, false)?;
         self.row_count += 1;
         Ok(())
     }
@@ -1468,7 +1468,12 @@ impl AgenticTraceBuilder {
         self.nodes.is_empty()
     }
 
-    fn push(&mut self, line_idx: usize, raw: AgenticMooncakeRow) -> Result<()> {
+    fn push(
+        &mut self,
+        line_idx: usize,
+        raw: AgenticMooncakeRow,
+        synthetic_session_id: bool,
+    ) -> Result<()> {
         if raw.request_id.trim().is_empty() {
             bail!("trace line {} has empty request_id", line_idx + 1);
         }
@@ -1593,7 +1598,7 @@ impl AgenticTraceBuilder {
             play_id: raw.play_id,
             source_play_ordinal: raw.source_play_ordinal,
             session_id: raw.session_id,
-            synthetic_session_id: false,
+            synthetic_session_id,
             model: raw.model,
             input_length,
             max_output_tokens: output_length,
@@ -1790,7 +1795,7 @@ impl AgenticTrace {
             builder
                 .as_mut()
                 .expect("builder was initialized from the v2 header")
-                .push(line_idx, row)?;
+                .push(line_idx, row, false)?;
         }
 
         let Some(builder) = builder else {
@@ -1815,7 +1820,7 @@ impl AgenticTrace {
     ) -> Result<Self> {
         let mut builder = AgenticTraceBuilder::new(header)?;
         for (line_idx, row) in rows.into_iter().enumerate() {
-            builder.push(line_idx + 1, row)?;
+            builder.push(line_idx + 1, row, false)?;
         }
         if builder.is_empty() {
             bail!("agentic Mooncake rows did not contain any requests");

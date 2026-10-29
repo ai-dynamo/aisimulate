@@ -1731,3 +1731,29 @@ fn legacy_anonymous_session_marker_is_part_of_graph_digest() {
     );
     assert_ne!(authored.graph_digest(), digest);
 }
+
+#[test]
+fn legacy_loader_marks_anonymous_rows_before_the_graph_digest() {
+    let row = |id: &str, session: Option<&str>| {
+        let mut row = serde_json::json!({
+            "request_id": id, "timestamp": 0.0,
+            "input_length": 4, "output_length": 1, "hash_ids": [1]
+        });
+        if let Some(session) = session {
+            row["session_id"] = session.into();
+        }
+        row
+    };
+    // File order differs from the graph's request-ID order.
+    let file = write_trace(&[row("b", None), row("c", Some("s")), row("a", Some("s"))]);
+    let trace = load_agentic_mooncake(file.path(), 4).unwrap();
+    let marked = trace
+        .nodes()
+        .iter()
+        .map(|node| (node.request_id.as_str(), node.synthetic_session_id))
+        .collect::<Vec<_>>();
+    assert_eq!(marked, [("a", false), ("b", true), ("c", false)]);
+
+    let digest = trace.graph_digest().to_owned();
+    assert_eq!(trace.speed_up_timing(1.0).unwrap().graph_digest(), digest);
+}
