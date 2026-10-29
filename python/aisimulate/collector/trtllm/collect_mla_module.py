@@ -1026,6 +1026,9 @@ def run_mla_module(
         device=torch_device,
         kernel_func=kernel_func,
         num_warmups=warming_up,
+        # The case's dry run already executed this forward; three eager passes
+        # cover lazily initialised paths before capture.
+        num_eager_warmups=3,
         num_runs=test_ite,
         repeat_n=1,
         allow_graph_fail=False,

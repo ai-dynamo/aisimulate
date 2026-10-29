@@ -19,7 +19,7 @@ COLLECTOR = Path(__file__).resolve().parents[3] / "collector"
 SOURCE = COLLECTOR / "helper.py"
 
 
-def trace_benchmark(monkeypatch, *, source=SOURCE, failure=None, explicit=None, eager=False, fallback=False):
+def trace_benchmark(monkeypatch, *, source=SOURCE, failure=None, explicit=None, eager=False, fallback=False, **extra):
     """Execute a helper source snapshot; retain graph references like a traceback."""
     events, graphs = [], []
     state = {"stream": "caller", "replays": 0, "fault_fired": False}
@@ -114,6 +114,7 @@ def trace_benchmark(monkeypatch, *, source=SOURCE, failure=None, explicit=None, 
     }
     if explicit is not None:
         kwargs["explicit_graph_cleanup"] = explicit
+    kwargs.update(extra)
     result, caught = None, None
     try:
         with namespace["benchmark_with_power"](**kwargs) as result:
@@ -179,6 +180,17 @@ def test_cleanup_after_capture_keeps_caller_and_replay_errors(monkeypatch, failu
 
 def test_default_is_identical_to_explicit_false(monkeypatch):
     assert trace_benchmark(monkeypatch) == trace_benchmark(monkeypatch, explicit=False)
+
+
+def test_eager_warmups_can_be_fewer_than_replay_warmups(monkeypatch):
+    observed = trace_benchmark(monkeypatch, num_eager_warmups=1)
+    assert observed["events"].count("kernel") == 2  # one eager warmup + capture
+    assert observed["events"].count("graph:replay") == 5  # replay warmups stay at num_warmups (2) + three runs
+    assert observed["result"]["used_cuda_graph"] is True
+    zero = trace_benchmark(monkeypatch, num_eager_warmups=0)
+    assert zero["events"].count("kernel") == 1  # capture only
+    default = trace_benchmark(monkeypatch)
+    assert default["events"].count("kernel") == 3  # num_warmups eager passes + capture, unchanged
 
 
 def test_eager_does_not_touch_graph_lifetime_in_either_mode(monkeypatch):

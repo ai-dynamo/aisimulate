@@ -315,6 +315,7 @@ def benchmark_with_power(
     use_cuda_graph: bool = True,  # Set False only for explicitly eager measurements.
     *,
     explicit_graph_cleanup: bool = False,
+    num_eager_warmups: int | None = None,
 ):
     """
     Context manager that handles warmup, graph capture, timing, and power monitoring.
@@ -338,6 +339,10 @@ def benchmark_with_power(
                          when capture fails or a traceback retains it. Opted into
                          by the vLLM MLA/DSA collector; other callers retain their
                          existing graph lifetime and synchronization behavior.
+        num_eager_warmups: Eager passes before capture (default: num_warmups). Graph
+                         replay warmups stay at num_warmups. Set lower when the
+                         kernel already ran (a dry run) and the measurement is
+                         graph-based; eager measurements should keep the default.
 
     Yields:
         dict with keys:
@@ -357,6 +362,11 @@ def benchmark_with_power(
 
     # Adaptive num_runs calculation
     actual_num_runs = num_runs
+    # Eager passes before capture. They exist so lazily initialised paths (JIT,
+    # autotune, plan caches) run outside the capture; a caller whose kernel
+    # already executed (a dry run) can ask for fewer than the replay warmups,
+    # since the Python-heavy eager forward costs several times a graph replay.
+    eager_warmups = num_warmups if num_eager_warmups is None else max(int(num_eager_warmups), 0)
     # Wall time of each protocol phase, reported as results["phase_seconds"].
     phase_seconds: dict[str, float] = {}
     _phase_start = time.perf_counter()
@@ -372,14 +382,15 @@ def benchmark_with_power(
         start_warmup = torch.cuda.Event(enable_timing=True)
         end_warmup = torch.cuda.Event(enable_timing=True)
 
+        estimate_runs = max(eager_warmups, 1)
         torch.cuda.synchronize()
         start_warmup.record()
-        for _ in range(num_warmups):
+        for _ in range(estimate_runs):
             kernel_func()
         end_warmup.record()
         torch.cuda.synchronize()
 
-        single_iter_time = start_warmup.elapsed_time(end_warmup) / num_warmups / 1000.0  # seconds
+        single_iter_time = start_warmup.elapsed_time(end_warmup) / estimate_runs / 1000.0  # seconds
 
         # Adaptive duration: use shorter duration for very fast kernels to reduce memory pressure
         target_duration = power_min_duration
@@ -395,7 +406,7 @@ def benchmark_with_power(
     else:
         # Normal warmup
         get_device_module().synchronize()
-        for _ in range(num_warmups):
+        for _ in range(eager_warmups):
             kernel_func()
         get_device_module().synchronize()
 

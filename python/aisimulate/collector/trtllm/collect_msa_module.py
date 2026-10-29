@@ -992,6 +992,10 @@ def run_msa_module(
             device=torch_device,
             kernel_func=kernel_func,
             num_warmups=warming_up,
+            # Graph-timed cases: the dry run already executed this forward, three
+            # eager passes suffice before capture. Eager-timed MSA prefill keeps
+            # the full warmup since it IS the measurement's warmup.
+            num_eager_warmups=3 if use_cuda_graph else warming_up,
             num_runs=test_ite,
             repeat_n=1,
             allow_graph_fail=False,

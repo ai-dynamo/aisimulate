@@ -1608,6 +1608,10 @@ def run_mla_module(
                 device=torch.device(device),
                 kernel_func=kernel_func,
                 num_warmups=warming_up,
+                # The point's dry run already executed this forward; three eager
+                # passes cover lazily initialised paths (eager_warmup was ~40% of a
+                # measurement's wall time at ten).
+                num_eager_warmups=3,
                 num_runs=test_ite,
                 repeat_n=1,
                 use_cuda_graph=True,
