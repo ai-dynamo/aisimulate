@@ -58,6 +58,9 @@ def _offline(monkeypatch):
         cached.cache_clear()
 
 
+# The op graph prices these GEMMs as fp8_static today. The export stores the shared experts as NVFP4 and
+# the latent projections as BF16, so per-layer pricing would move four of these eight GEMMs off that lane.
+# The assertion that reads this tuple is a tripwire for that change.
 _FP8_STATIC_GEMMS = (
     "mamba_in_proj_gemm",
     "mamba_out_proj_gemm",
@@ -103,6 +106,7 @@ def test_bundle_loads_offline_with_the_text_geometry():
     [
         ("trtllm", common.FMHAQuantMode.fp8),
         ("sglang", common.FMHAQuantMode.fp8),
+        # vLLM FMHA is bfloat16 because of the SDK guard for the vLLM tables (helpers.py:1089-1092), not the recipe.
         ("vllm", common.FMHAQuantMode.bfloat16),
     ],
 )

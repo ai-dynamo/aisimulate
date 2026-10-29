@@ -13,10 +13,12 @@ https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4/tree/
 The files describe an NVIDIA ModelOpt MIXED_PRECISION export of the
 Nemotron-H text model inside the `NemotronH_Omni_Reasoning_V3`
 vision-language wrapper (text configuration under `llm_config`). Routed
-and shared experts are NVFP4 with 4-bit activations. The Mamba, attention
-and LM-head projections are static per-tensor FP8. The latent projections,
-the router, `conv1d`, the embeddings and the vision tower stay BF16, and
-the KV cache is FP8. AISimulate models the text path only.
+and shared experts are NVFP4 with 4-bit activations. In the 88 decoder
+layers, the Mamba and attention projections are static per-tensor FP8, and
+so is the LM head. The latent projections, the router, `conv1d`, the
+embeddings, the attention projections and `eh_proj` of the multi-token
+prediction (MTP) layer, and the vision tower and projector modules stay
+BF16. The KV cache is FP8. AISimulate models the text path only.
 
 Copyright owner: NVIDIA CORPORATION & AFFILIATES.
 
