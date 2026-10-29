@@ -641,17 +641,38 @@ def test_parent_module_exclusion_covers_its_projections():
     }
 
 
-def test_routed_experts_follow_the_global_mode_lane_mapping():
-    vllm = lambda mode: resolve_vllm_moe_execution_mode(mode, "vllm", "NemotronHForCausalLM")
-    mixed = _expert_listing({1: "W4A16_NVFP4", 3: "FP8"})
-    assert _moe_modes(mixed, "MEME", common.MoEQuantMode.nvfp4, "gb200", execution_mode=vllm) == {
+def test_modelopt_w4a16_and_nvfp4_experts_keep_distinct_vllm_buckets():
+    w4a16 = common.MoEQuantMode.w4a16_nvfp4
+    raw = _expert_listing({1: "W4A16_NVFP4", 3: "NVFP4", 5: "FP8"})
+
+    def vllm(mode):
+        return resolve_vllm_moe_execution_mode(mode, "vllm", "NemotronHForCausalLM", raw)
+
+    # vLLM runs ModelOpt W4A16_NVFP4 experts weight-only on Marlin, unlike W4A4 NVFP4 layers.
+    assert _moe_modes(raw, "MEMEME", w4a16, "gb200", execution_mode=vllm) == {
+        w4a16: 1,
         common.MoEQuantMode.nvfp4: 1,
         common.MoEQuantMode.fp8: 1,
     }
-    # Per-layer experts reuse the global mode's vLLM mapping (resolve_vllm_moe_execution_mode),
-    # so W4A16 and NVFP4 layers resolve to the global mode and no split is priced.
-    same_lane = _expert_listing({1: "W4A16_NVFP4", 3: "NVFP4"})
-    assert _moe_modes(same_lane, "MEME", common.MoEQuantMode.nvfp4, "gb200", execution_mode=vllm) == {}
+
+
+def test_model_prices_w4a16_and_nvfp4_expert_layers_apart(tmp_path):
+    path = files("aisimulate_core") / "model_configs/nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4_config.json"
+    data = json.loads(path.read_text())
+    e_layers = [i for i, kind in enumerate(data["hybrid_override_pattern"]) if kind == "E"]
+    listing = _expert_listing({layer: "W4A16_NVFP4" if n < 10 else "NVFP4" for n, layer in enumerate(e_layers)})
+    data["quantization_config"] = listing["hf_quant_config"]["quantization"]
+    (tmp_path / "config.json").write_text(json.dumps(data))
+    (tmp_path / "hf_quant_config.json").write_text(json.dumps(listing["hf_quant_config"]))
+    model = get_model(str(tmp_path), ModelConfig(tp_size=2, moe_tp_size=2, system="gb200"), backend_name="vllm")
+    mtp = model._mtp_scale_factor
+    for pipeline, scale in ((model.context_ops, 1), (model.generation_ops, mtp)):
+        moe = {op._quant_mode: op._scale_factor for op in pipeline if op._name.split("_", 1)[1] == "moe"}
+        assert moe == pytest.approx(
+            {common.MoEQuantMode.w4a16_nvfp4: 10 * scale, common.MoEQuantMode.nvfp4: 30 * scale}
+        )
+        dispatch = {op._quant_mode for op in pipeline if "moe_pre_dispatch" in op._name}
+        assert dispatch == {common.MoEQuantMode.w4a16_nvfp4, common.MoEQuantMode.nvfp4}
 
 
 def test_untargeted_routed_experts_keep_the_global_mode():

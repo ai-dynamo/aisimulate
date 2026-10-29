@@ -229,6 +229,15 @@ def _hf_quant_section(raw_config: dict) -> dict:
     return section if isinstance(section, dict) else {}
 
 
+def _is_modelopt_checkpoint(raw_config: dict | None) -> bool:
+    """Whether a ModelOpt export: an ``hf_quant_config.json`` quantization section or a ``modelopt`` quant_method."""
+    if not isinstance(raw_config, dict):
+        return False
+    return bool(_hf_quant_section(raw_config)) or (
+        str(_language_quant_config(raw_config).get("quant_method", "")).lower() == "modelopt"
+    )
+
+
 def _language_quant_config(raw_config: dict) -> dict:
     quant_config = _get_language_quantization_config(raw_config)
     return quant_config if isinstance(quant_config, dict) else {}
@@ -985,7 +994,7 @@ def _infer_quant_modes_from_raw_config(raw_config: dict, architecture: str | Non
 
 
 # Architectures whose vLLM MoE dispatch is PROVEN w4a4 for W4A16_NVFP4-labeled
-# checkpoints: the collected kernel_source is
+# non-ModelOpt checkpoints: the collected kernel_source is
 # ``vllm_compressedtensorsw4a4nvfp4moe_*`` (activations quantized at run time,
 # FP4 tensor cores), so the storage label misdescribes the execution lane.
 # Scoped per-architecture deliberately: Qwen3.6-style checkpoints stay on the
@@ -999,6 +1008,7 @@ def resolve_vllm_moe_execution_mode(
     moe_quant_mode: common.MoEQuantMode | None,
     backend_name: str | None,
     architecture: str | None,
+    raw_config: dict | None = None,
 ) -> common.MoEQuantMode | None:
     """Map an HF/label-derived MoE mode to the lane vLLM actually executes.
 
@@ -1012,11 +1022,16 @@ def resolve_vllm_moe_execution_mode(
     HYBRID XPROFILE relation by design). Callers apply this to HF-DERIVED
     modes only — a truly explicit user mode must bypass it
     (AIC-1748/AIC-1743).
+
+    A ModelOpt export keeps ``w4a16_nvfp4``: vLLM 0.24.0, 0.30.0 and 0.31.0
+    build ``ModelOptNvFp4FusedMoE`` with ``use_a16`` for ``W4A16_NVFP4``
+    experts, and only the Marlin weight-only backend accepts that scheme.
     """
     if (
         backend_name == "vllm"
         and architecture in _VLLM_W4A4_MOE_ARCHITECTURES
         and moe_quant_mode == common.MoEQuantMode.w4a16_nvfp4
+        and not _is_modelopt_checkpoint(raw_config)
     ):
         return common.MoEQuantMode.nvfp4
     return moe_quant_mode
@@ -1085,7 +1100,7 @@ def _apply_model_quant_defaults(
     # explicit-is-the-user's-contract doctrine.
     if moe_was_unset:
         model_config.moe_quant_mode = resolve_vllm_moe_execution_mode(
-            model_config.moe_quant_mode, backend_name, architecture
+            model_config.moe_quant_mode, backend_name, architecture, raw_config
         )
 
     # Only log if model_config was modified
@@ -1246,7 +1261,9 @@ def resolve_nvfp4_for_system(
         if gemm_q is None:
             gemm_q = inferred.get("gemm_quant_mode")
         if moe_q is None:
-            moe_q = resolve_vllm_moe_execution_mode(inferred.get("moe_quant_mode"), backend_name, architecture)
+            moe_q = resolve_vllm_moe_execution_mode(
+                inferred.get("moe_quant_mode"), backend_name, architecture, info.get("raw_config", {})
+            )
 
     if gemm_q == common.GEMMQuantMode.nvfp4:
         model_config.gemm_quant_mode = common.GEMMQuantMode.nvfp4_wo

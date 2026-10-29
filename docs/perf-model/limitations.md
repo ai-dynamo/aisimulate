@@ -65,9 +65,11 @@ on the checkpoint and not on the model name.
   BF16 compute, the FP4 Marlin path that vLLM runs. vLLM has no collected
   `w4a16_nvfp4` GEMM data. Strict SILICON prediction fails for such a
   projection, and HYBRID estimates it from another quantization profile.
-- Per-layer routed experts use the same backend mapping as the global MoE
-  mode. On vLLM, that mapping prices `W4A16_NVFP4` Nemotron-H experts as
-  `nvfp4`.
+- Routed experts of a ModelOpt export that are listed `W4A16_NVFP4` are
+  priced as `w4a16_nvfp4`, in uniform and mixed listings. vLLM runs them
+  weight-only on Marlin. No vLLM MoE table has `w4a16_nvfp4` rows. Strict
+  SILICON prediction fails for them, and HYBRID estimates them from another
+  quantization profile.
 
 If layers give a projection or the routed experts different precisions, the
 SDK prices each precision for its own count of layers. The MoE dispatch ops
@@ -81,9 +83,6 @@ Known limits:
   precisions for experts of one layer are not modeled.
 - An FP8 projection is dynamic FP8 only when the global mode is dynamic FP8.
   Otherwise it is static FP8.
-- The vLLM ModelOpt dispatcher runs `W4A16_NVFP4` experts weight-only on FP4
-  Marlin. The `nvfp4` mapping that the experts inherit from the global MoE
-  mode does not match that kernel.
 
 An explicit `gemm_quant_mode` prices all projections with one mode. An
 explicit `moe_quant_mode` prices all routed experts with one mode. Metadata

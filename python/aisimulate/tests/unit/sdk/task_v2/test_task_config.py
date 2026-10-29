@@ -1070,10 +1070,10 @@ def test_dsv4_native_sglang_moe_remap():
     ("backend", "version", "expected_moe"),
     [
         # The Task/cli-default path resolves HF modes BEFORE get_model(), so
-        # the backend-aware W4A16_NVFP4 remap must act at Task's HF-base
-        # layer too (PR #1574 review P1): vLLM executes these experts on the
-        # w4a4 nvfp4 lane; trtllm keeps the weight-only label mode.
-        ("vllm", "0.24.0", common.MoEQuantMode.nvfp4),
+        # the backend-aware W4A16_NVFP4 remap acts at Task's HF-base layer
+        # too (PR #1574 review P1). Lightning is a ModelOpt export, which vLLM
+        # runs weight-only on Marlin, so every backend keeps the label mode.
+        ("vllm", "0.24.0", common.MoEQuantMode.w4a16_nvfp4),
         ("trtllm", "1.3.0rc20", common.MoEQuantMode.w4a16_nvfp4),
     ],
 )

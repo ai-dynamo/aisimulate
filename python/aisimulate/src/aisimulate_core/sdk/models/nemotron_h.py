@@ -286,7 +286,7 @@ class NemotronHModel(BaseModel):
                 model_config.moe_quant_mode,
                 model_config.system,
                 checkpoint,
-                lambda mode: resolve_vllm_moe_execution_mode(mode, backend_name, model_info["architecture"]),
+                lambda mode: resolve_vllm_moe_execution_mode(mode, backend_name, model_info["architecture"], raw),
             )
         model.set_hybrid_config(model_info["extra_params"])
         return model

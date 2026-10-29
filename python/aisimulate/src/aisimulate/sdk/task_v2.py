@@ -1178,7 +1178,8 @@ class Task:
                     if arch_mode is not None:
                         from_hf = arch_mode
                     # HF-base-layer remap: vLLM executes W4A16_NVFP4-labeled
-                    # experts on the w4a4 nvfp4 lane (see the helper). Applied
+                    # experts of non-ModelOpt checkpoints on the w4a4 nvfp4
+                    # lane (see the helper). Applied
                     # to the HF-derived value only, so an explicit field still
                     # overrides it — and validate fails fast on an explicit
                     # w4a16_nvfp4, which vLLM has no data lane for.
@@ -1188,6 +1189,7 @@ class Task:
                         self._raw_config.get("architectures", [None])[0]
                         if isinstance(self._raw_config.get("architectures"), list)
                         else self._raw_config.get("architecture"),
+                        self._raw_config,
                     )
                 fallback = _QUANT_FALLBACKS[key]
 
