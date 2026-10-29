@@ -1615,6 +1615,11 @@ def run_mla_module(
             ) as results:
                 pass
             _lap(point_phase, "measure_skip" if skip_indexer else "measure_full")
+            # Protocol phases of this measurement (eager_warmup, capture, graph_warmup,
+            # timed, cleanup) on the point's timing line, prefixed by the measurement.
+            _bench_prefix = "skip" if skip_indexer else "full"
+            for _phase_name, _phase_secs in (results.get("phase_seconds") or {}).items():
+                point_phase[f"{_bench_prefix}_{_phase_name}"] = _phase_secs
 
             if results.get("used_cuda_graph") is not True:
                 raise RuntimeError("vLLM MLA/DSA module requires CUDA graph timing; refusing to publish eager timing")
