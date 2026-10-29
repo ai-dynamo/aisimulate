@@ -17,7 +17,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from collector.fpm_forward.capabilities import resolve_model_capability
+from collector.fpm_forward import capabilities
+from collector.fpm_forward.capabilities import GENERIC_RUNTIME_TEMPLATE_ID, resolve_model_capability
 from collector.fpm_forward.config import (
     FPMCollectionOptions,
     PrefillSamplingProfile,
@@ -1043,6 +1044,632 @@ def _unknown_fp8_moe_config(*, hidden_size: int = 4096) -> dict[str, object]:
     }
 
 
+_MODEL_CONFIGS = Path(__file__).parents[3] / "src/aisimulate_core/model_configs"
+_LAYOUT_REFUSAL = (
+    "FPM attention templates cannot represent the cache layout of {architecture!r} ({reasons}). "
+    "Collect it with --fpm-model-profile or --fpm-backend-version. Then precision comes from the checkpoint, "
+    "and the runtime measures the cache."
+)
+
+
+def _layout_capability(model_path, architecture=None, *, native, has_model_cases=False, model_config_path=None):
+    """Resolve on one collection path: ``native`` stands for --fpm-model-profile or --fpm-backend-version."""
+    return resolve_model_capability(
+        backend="vllm",
+        model_path=str(model_path),
+        model_architecture=architecture,
+        selected_ops={"attention_context", "attention_generation"},
+        has_model_cases=has_model_cases,
+        system="b200_sxm",
+        requested_weight_quantizations=(),
+        requested_kv_cache_dtypes=("auto",),
+        model_config_path=model_config_path,
+        database_version="0.27.0" if native else None,
+        checkpoint_native_dtypes=native,
+    )
+
+
+def _forbid_templates_and_timing_data(monkeypatch):
+    """A detected layout gets no attention template and, without a flag, is refused before any AIC table loads."""
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("a detected cache layout used an attention template or AIC timing data")
+
+    for name in ("_attention_template", "_attention_ops", "get_database", "get_latest_database_version"):
+        monkeypatch.setattr(capabilities, name, forbidden)
+
+
+def _assert_native_runtime(capability, reasons, *, is_moe):
+    assert capability.attention_source == "native_runtime"
+    assert capability.attention_kind == ("moe" if is_moe else "dense") + "_native_runtime"
+    assert capability.support_level == "native_runtime"
+    assert capability.template_id == GENERIC_RUNTIME_TEMPLATE_ID == "generic:native_runtime"
+    assert capability.support_reason == (
+        f"config.json cannot describe this cache layout ({reasons}). The native runtime measures every cell."
+    )
+    assert capability.is_moe is is_moe
+    assert capability.allow_pure_tp is is_moe
+    assert capability.aic_database_version == "0.27.0"
+    # Precision comes from the checkpoint, as on every --fpm-model-profile or --fpm-backend-version path.
+    assert capability.dtype.kv_cache_dtypes == (capability.dtype.native_kv_cache_dtype,)
+    assert capability.dtype.fmha_resolution == "checkpoint_native"
+
+
+def _mixed_attention_config(tmp_path, architecture, mixed):
+    config = _unknown_fp8_moe_config()
+    config.update(
+        architectures=[architecture],
+        layer_types=(
+            ["linear_attention", "deepseek_sparse_attention"] * 2 if mixed else ["deepseek_sparse_attention"] * 4
+        ),
+    )
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    return path
+
+
+_MIXED_REASONS = {
+    True: "layer_types deepseek_sparse_attention x2, layer_types linear_attention x2",
+    False: "layer_types deepseek_sparse_attention x4",
+}
+
+
+@pytest.mark.parametrize("architecture", ["UnknownMixedForCausalLM", "Glm5NextForConditionalGeneration"])
+@pytest.mark.parametrize("mixed", [True, False])
+def test_mixed_attention_without_a_profile_or_version_is_refused(tmp_path, monkeypatch, architecture, mixed):
+    path = _mixed_attention_config(tmp_path, architecture, mixed)
+    _forbid_templates_and_timing_data(monkeypatch)
+    with pytest.raises(ValueError) as error:
+        _layout_capability(path, architecture, native=False)
+    assert str(error.value) == _LAYOUT_REFUSAL.format(architecture=architecture, reasons=_MIXED_REASONS[mixed])
+
+
+@pytest.mark.parametrize("architecture", ["UnknownMixedForCausalLM", "Glm5NextForConditionalGeneration"])
+@pytest.mark.parametrize("mixed", [True, False])
+def test_mixed_attention_with_a_profile_or_version_gets_the_native_runtime_capability(
+    tmp_path, monkeypatch, architecture, mixed
+):
+    path = _mixed_attention_config(tmp_path, architecture, mixed)
+    _forbid_templates_and_timing_data(monkeypatch)
+    _assert_native_runtime(_layout_capability(path, architecture, native=True), _MIXED_REASONS[mixed], is_moe=True)
+
+
+def _qwen_gdn_hybrid_config(tmp_path, architecture):
+    config = {
+        "architectures": [architecture],
+        "text_config": {
+            "num_hidden_layers": 4,
+            "hidden_size": 4096,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 4,
+            "head_dim": 128,
+            "layer_types": ["linear_attention"] * 3 + ["full_attention"],
+        },
+    }
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    return path
+
+
+@pytest.mark.parametrize("architecture", ["Qwen3_5ForConditionalGeneration", "Qwen3_5MoeForConditionalGeneration"])
+def test_qwen_gdn_hybrid_without_a_profile_or_version_is_refused(tmp_path, monkeypatch, architecture):
+    path = _qwen_gdn_hybrid_config(tmp_path, architecture)
+    _forbid_templates_and_timing_data(monkeypatch)
+    with pytest.raises(ValueError) as error:
+        _layout_capability(path, architecture, native=False, has_model_cases=True)
+    assert str(error.value) == _LAYOUT_REFUSAL.format(
+        architecture=architecture, reasons="layer_types linear_attention x3"
+    )
+
+
+@pytest.mark.parametrize("architecture", ["Qwen3_5ForConditionalGeneration", "Qwen3_5MoeForConditionalGeneration"])
+def test_qwen_gdn_hybrid_model_cases_cannot_select_exact_dense_attention(tmp_path, monkeypatch, architecture):
+    path = _qwen_gdn_hybrid_config(tmp_path, architecture)
+    _forbid_templates_and_timing_data(monkeypatch)
+    # The native runtime capability takes precedence over the exact, family and bootstrap levels.
+    capability = _layout_capability(path, architecture, native=True, has_model_cases=True)
+    _assert_native_runtime(capability, "layer_types linear_attention x3", is_moe=False)
+
+
+@pytest.mark.parametrize(
+    "model,architecture,reasons,is_moe",
+    [
+        ("moonshotai/Kimi-K3", "KimiLinearForCausalLM", "recurrent-state field linear_attn_config", True),
+        (
+            "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+            "NemotronHForCausalLM",
+            "recurrent-state field mamba_num_heads, recurrent-state field ssm_state_size",
+            True,
+        ),
+        (
+            "nvidia/Nemotron-H-56B-Base-8K",
+            "NemotronHForCausalLM",
+            "recurrent-state field mamba_num_heads, recurrent-state field ssm_state_size",
+            False,
+        ),
+    ],
+)
+@pytest.mark.parametrize("has_model_cases", [False, True])
+def test_packaged_recurrent_state_configs_get_no_attention_template(
+    monkeypatch, model, architecture, reasons, is_moe, has_model_cases
+):
+    # Kimi K3 declares KDA state and Nemotron-H Mamba state without any layer_types marker.
+    path = str(_MODEL_CONFIGS / f"{model.replace('/', '--')}_config.json")
+    _forbid_templates_and_timing_data(monkeypatch)
+    with pytest.raises(ValueError) as error:
+        _layout_capability(model, native=False, has_model_cases=has_model_cases, model_config_path=path)
+    assert str(error.value) == _LAYOUT_REFUSAL.format(architecture=architecture, reasons=reasons)
+    capability = _layout_capability(model, native=True, has_model_cases=has_model_cases, model_config_path=path)
+    assert capability.architecture == architecture
+    _assert_native_runtime(capability, reasons, is_moe=is_moe)
+
+
+_ENTRY_ERROR = "layer_types entries must be nonempty strings"
+# Config intake's message for a layer count field that is not an integer of at least 1.
+_COUNT_ERROR = "{field} must be an integer >=1, not a boolean, float or numeric string"
+
+
+@pytest.mark.parametrize(
+    "declared_layers,layer_types,error",
+    [(4, ["linear_attention"] * count, "layer_types must have one entry per num_hidden_layers") for count in (0, 1, 5)]
+    + [
+        (value, ["linear_attention"] * 4, _COUNT_ERROR.format(field="num_hidden_layers"))
+        for value in (4.5, 4.0, "4", True, 0, -1, None)
+    ]
+    # A marker does not excuse an entry that is not a nonempty string.
+    + [(4, ["linear_attention", entry, "full_attention", "full_attention"], _ENTRY_ERROR) for entry in (1, "")],
+)
+@pytest.mark.parametrize("native", [False, True])
+def test_detected_layout_keeps_the_layer_structure_checks(tmp_path, declared_layers, layer_types, error, native):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    config = _unknown_fp8_moe_config()
+    config.update(num_hidden_layers=declared_layers, layer_types=layer_types)
+    if not layer_types:
+        config["ssm_state_size"] = 16  # An empty layer list declares no marker; recurrent state still does.
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError) as collector:
+        _layout_capability(path, "NewMoeDsaForCausalLM", native=native)
+    # Config intake refuses the same config with the same message.
+    with pytest.raises(ValueError) as intake:
+        load_intake_config(path)
+    assert str(collector.value) == str(intake.value) == error
+
+
+def _layer_config(tmp_path, declarations, layer_count=None):
+    """A small 2-layer config. ``layer_count`` states the layer count in place of num_hidden_layers."""
+    config = {
+        **({"num_hidden_layers": 2} if layer_count is None else layer_count),
+        "hidden_size": 128,
+        "num_attention_heads": 4,
+        "num_key_value_heads": 2,
+        "head_dim": 32,
+        "intermediate_size": 256,
+        "vocab_size": 1024,
+        "max_position_embeddings": 4096,
+        "torch_dtype": "bfloat16",
+        **declarations,
+    }
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    return path
+
+
+_GDN_LAYERS = {
+    "architectures": ["Qwen3_5ForConditionalGeneration"],
+    "layer_types": ["linear_attention", "full_attention"],
+}
+_LENGTH_ERROR = "attn_type_list must have one entry per num_hidden_layers"
+
+
+@pytest.mark.parametrize(
+    "declarations,error",
+    [
+        ({**_GDN_LAYERS, "attn_type_list": [0]}, _LENGTH_ERROR),
+        ({**_GDN_LAYERS, "attn_type_list": [0, "bad"]}, "attn_type_list entries must be integers"),
+        ({"architectures": ["MiniMaxText01ForCausalLM"], "attn_type_list": [0, 1, 1]}, _LENGTH_ERROR),
+        # One entry per layer, but a boolean is not an integer entry.
+        (
+            {"architectures": ["MiniMaxText01ForCausalLM"], "attn_type_list": [0, True]},
+            "attn_type_list entries must be integers",
+        ),
+    ],
+    ids=["one-entry-for-two-layers", "string-entry", "three-entries-for-two-layers", "boolean-entry"],
+)
+@pytest.mark.parametrize("native", [False, True])
+def test_detected_layout_keeps_the_attn_type_list_checks_of_intake(tmp_path, declarations, error, native):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    path = _layer_config(tmp_path, declarations)
+    # Intake refuses each config with this message, and the collector must give the same one.
+    with pytest.raises(ValueError) as intake:
+        load_intake_config(path)
+    assert str(intake.value) == error
+    with pytest.raises(ValueError) as collector:
+        _layout_capability(path, native=native)
+    assert str(collector.value) == error
+
+
+@pytest.mark.parametrize(
+    "layer_count,declarations,error",
+    [
+        (
+            {"num_layers": 2},
+            {**_GDN_LAYERS, "layer_types": ["linear_attention"]},
+            "layer_types must have one entry per num_hidden_layers",
+        ),
+        ({"n_layer": 2}, {"architectures": ["MiniMaxText01ForCausalLM"], "attn_type_list": [0]}, _LENGTH_ERROR),
+        (
+            {"num_hidden_layers": 2, "n_layer": 3},
+            _GDN_LAYERS,
+            "conflicting num_hidden_layers fields: {'num_hidden_layers': 2, 'n_layer': 3}",
+        ),
+        ({"num_layers": "2"}, _GDN_LAYERS, _COUNT_ERROR.format(field="num_layers")),
+        ({"n_layer": 2.0}, _GDN_LAYERS, _COUNT_ERROR.format(field="n_layer")),
+        ({"num_hidden_layers": "x", "num_layers": 2}, _GDN_LAYERS, _COUNT_ERROR.format(field="num_hidden_layers")),
+    ],
+    ids=[
+        "num-layers-with-short-layer-types",
+        "n-layer-with-short-attn-type-list",
+        "conflicting-counts",
+        "string-count",
+        "float-count",
+        "malformed-count-before-a-valid-one",
+    ],
+)
+@pytest.mark.parametrize("native", [False, True])
+def test_detected_layout_reads_the_layer_count_as_intake_does(tmp_path, layer_count, declarations, error, native):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    path = _layer_config(tmp_path, declarations, layer_count)
+    with pytest.raises(ValueError) as intake:
+        load_intake_config(path)
+    assert str(intake.value) == error
+    with pytest.raises(ValueError) as collector:
+        _layout_capability(path, native=native)
+    assert str(collector.value) == error
+
+
+def test_detected_layout_reads_every_layer_count_field_of_intake(tmp_path):
+    from aisimulate.support.config_profile import _INT_ALIASES
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    # The collector copies intake's list of layer count fields; a field that intake adds must count here too.
+    for field in _INT_ALIASES["num_hidden_layers"]:
+        directory = tmp_path / field
+        directory.mkdir()
+        path = _layer_config(directory, _GDN_LAYERS, {field: 3})
+        with pytest.raises(ValueError) as intake:
+            load_intake_config(path)
+        with pytest.raises(ValueError) as collector:
+            _layout_capability(path, native=True)
+        assert str(collector.value) == str(intake.value) == "layer_types must have one entry per num_hidden_layers"
+
+
+# Config intake's message for a window field that is not an integer of at least 0.
+_WINDOW_ERROR = "{field} must be an integer >=0, not a boolean, float or numeric string"
+
+
+@pytest.mark.parametrize(
+    "layer_count,window,error",
+    [
+        (None, {"sliding_window": "128"}, _WINDOW_ERROR.format(field="sliding_window")),
+        (None, {"sliding_window_size": 128.0}, _WINDOW_ERROR.format(field="sliding_window_size")),
+        (None, {"sliding_window": -1}, _WINDOW_ERROR.format(field="sliding_window")),
+        (None, {"sliding_window": True}, _WINDOW_ERROR.format(field="sliding_window")),
+        (
+            None,
+            {"sliding_window": 128, "sliding_window_size": 256},
+            "conflicting sliding-window fields: {'sliding_window': 128, 'sliding_window_size': 256}",
+        ),
+        # Intake checks the window fields before the layer count: here the layer_types list is also short.
+        ({"num_hidden_layers": 3}, {"sliding_window": "128"}, _WINDOW_ERROR.format(field="sliding_window")),
+    ],
+    ids=["string", "float", "negative", "boolean", "conflicting-values", "window-before-the-layer-count"],
+)
+@pytest.mark.parametrize("native", [False, True])
+def test_detected_layout_checks_the_window_fields_as_intake_does(tmp_path, layer_count, window, error, native):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    path = _layer_config(tmp_path, {**_GDN_LAYERS, **window}, layer_count)
+    with pytest.raises(ValueError) as intake:
+        load_intake_config(path)
+    assert str(intake.value) == error
+    with pytest.raises(ValueError) as collector:
+        _layout_capability(path, native=native)
+    assert str(collector.value) == error
+
+
+@pytest.mark.parametrize(
+    "declarations,reasons",
+    [
+        # Intake ignores a null window field and takes an integer of at least 0 that the other field agrees with.
+        ({**_GDN_LAYERS, "sliding_window": None}, "layer_types linear_attention x1"),
+        ({**_GDN_LAYERS, "sliding_window": 0}, "layer_types linear_attention x1"),
+        ({**_GDN_LAYERS, "sliding_window": 128, "sliding_window_size": 128}, "layer_types linear_attention x1"),
+        # A well-formed attn_type_list, one entry per layer, with an integer other than 1.
+        ({"architectures": ["MiniMaxText01ForCausalLM"], "attn_type_list": [0, 1]}, "attn_type_list 0 x1"),
+    ],
+    ids=["null-window", "zero-window", "agreeing-windows", "attn-type-list-marker"],
+)
+@pytest.mark.parametrize("native", [False, True])
+def test_well_formed_marker_layout_needs_a_flag_for_the_native_runtime(tmp_path, declarations, reasons, native):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    path = _layer_config(tmp_path, declarations)
+    # Intake accepts the config and leaves its cache layout to the runtime probe, for the same reasons.
+    assert load_intake_config(path).runtime_layout == (reasons,)
+    if native:
+        _assert_native_runtime(_layout_capability(path, native=True), reasons, is_moe=False)
+    else:
+        with pytest.raises(ValueError) as refusal:
+            _layout_capability(path, native=False)
+        architecture = declarations["architectures"][0]
+        assert str(refusal.value) == _LAYOUT_REFUSAL.format(architecture=architecture, reasons=reasons)
+
+
+@pytest.mark.parametrize(
+    "layer_count,declarations",
+    [
+        (None, {"attn_type_list": [1, 1, 1]}),
+        (None, {"attn_type_list": [1, "bad"]}),
+        ({"num_layers": 2}, {"layer_types": ["full_attention"]}),
+        ({"num_hidden_layers": 2, "n_layer": 3}, {}),
+        (None, {"sliding_window": "128"}),
+        (None, {"sliding_window": 128, "sliding_window_size": 256}),
+    ],
+    ids=[
+        "three-entries-for-two-layers",
+        "string-entry",
+        "num-layers-with-short-layer-types",
+        "conflicting-counts",
+        "string-window",
+        "conflicting-windows",
+    ],
+)
+def test_config_without_markers_keeps_the_checks_of_main(tmp_path, layer_count, declarations):
+    # Main's collector read only num_hidden_layers and checked neither attn_type_list nor the window fields. The
+    # checks above apply to the marker path only.
+    path = _layer_config(tmp_path, {"architectures": ["MiniMaxText01ForCausalLM"], **declarations}, layer_count)
+    capability = _layout_capability(path, native=True)
+    assert (capability.support_level, capability.template_id) == ("bootstrap_template", "generic:dense_gqa")
+
+
+# Captured with resolve_model_capability(...).to_dict() at 4cb2b7d6, before the collector checked cache layout
+# markers. These configs have none, so their template selection and precision stay unchanged. The native path
+# loads no AIC timing tables, so a table update does not change these fields.
+_GOLDEN_CAPABILITIES = Path(__file__).parent / "fixtures/fpm_capability_golden.json"
+_GOLDEN_FIELDS = (
+    "attention_source",
+    "attention_kind",
+    "support_level",
+    "template_id",
+    "support_reason",
+    "allow_pure_tp",
+    "dtype",
+)
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "meta-llama/Meta-Llama-3.1-8B",
+        "Qwen/Qwen3-30B-A3B",
+        "deepseek-ai/DeepSeek-V3",
+        "deepseek-ai/DeepSeek-V4.1-Flash",
+        "MiniMaxAI/MiniMax-M3",
+        "openai/gpt-oss-20b",
+    ],
+)
+def test_capability_without_cache_layout_markers_is_unchanged(model):
+    capability = resolve_model_capability(
+        backend="vllm",
+        model_path=model,
+        model_architecture=None,
+        selected_ops={"attention_context", "attention_generation"},
+        has_model_cases=True,
+        system="b200_sxm",
+        requested_weight_quantizations=(),
+        requested_kv_cache_dtypes=("auto",),
+        database_version="0.27.0",
+        checkpoint_native_dtypes=True,
+    ).to_dict()
+    golden = json.loads(_GOLDEN_CAPABILITIES.read_text())["capabilities"][model]
+    assert {field: capability[field] for field in _GOLDEN_FIELDS} == golden
+
+
+def test_collector_cache_layout_markers_match_config_intake_for_packaged_configs():
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    detected, unrecognized_only = set(), set()
+    # ModelOpt sidecars share the file suffix but are not model configs.
+    for path in sorted(p for p in _MODEL_CONFIGS.glob("*_config.json") if not p.name.endswith("_hf_quant_config.json")):
+        name = path.name.removesuffix("_config.json")
+        try:
+            intake = load_intake_config(path)
+        except ValueError:
+            continue
+        markers = tuple(
+            reason for reason in intake.runtime_layout if not reason.startswith("unrecognized architecture")
+        )
+        if intake.runtime_layout and not markers:
+            unrecognized_only.add(name)
+        capability = _layout_capability(name.replace("--", "/", 1), native=True, model_config_path=str(path))
+        if markers:
+            detected.add(name)
+            assert capability.template_id == GENERIC_RUNTIME_TEMPLATE_ID, name
+            assert capability.support_reason == (
+                f"config.json cannot describe this cache layout ({', '.join(markers)}). "
+                "The native runtime measures every cell."
+            ), name
+        else:
+            # The rule for unrecognized architectures stays in intake; AIC model families handle them here.
+            assert capability.template_id != GENERIC_RUNTIME_TEMPLATE_ID, name
+    assert {
+        "zai-org--GLM-5.3-Flash",
+        "moonshotai--Kimi-K3",
+        "nvidia--NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+        "Qwen--Qwen3.5-27B",
+    } <= detected
+    assert {"Qwen--Qwen3-VL-8B-Instruct", "XiaomiMiMo--MiMo-7B-Base", "MiniMaxAI--MiniMax-M3"} <= unrecognized_only
+
+
+def _packaged_config(name):
+    return json.loads((_MODEL_CONFIGS / f"{name}_config.json").read_text())
+
+
+def _unnamed_dsa_config():
+    config = _packaged_config("nvidia--GLM-5.3-NVFP4")
+    del config["architectures"]  # model_type glm_moe_dsa still names the decoder for intake.
+    return config
+
+
+def _dsa_text_config_under_a_wrapper():
+    glm = _packaged_config("nvidia--GLM-5.3-NVFP4")
+    text = {key: value for key, value in glm.items() if key not in ("architectures", "quantization_config")}
+    return {
+        "architectures": ["GlmMoeDsaVisionForConditionalGeneration"],
+        "model_type": "glm_moe_dsa_vision",
+        "text_config": text,
+    }
+
+
+def _llama_under_a_mamba_wrapper():
+    llama = _packaged_config("meta-llama--Meta-Llama-3.1-8B")
+    text = {key: value for key, value in llama.items() if key != "architectures"}
+    return {"architectures": ["LlavaMambaForConditionalGeneration"], "model_type": "llava_mamba", "text_config": text}
+
+
+def _dsa_layers(config):
+    layer_types = config.get("text_config", config)["layer_types"]
+    return f"layer_types deepseek_sparse_attention x{layer_types.count('deepseek_sparse_attention')}"
+
+
+def _mamba_wrapper(_config):
+    return "recurrent architecture LlavaMambaForConditionalGeneration"
+
+
+@pytest.mark.parametrize(
+    "build,reason",
+    [
+        (_unnamed_dsa_config, _dsa_layers),
+        (_dsa_text_config_under_a_wrapper, _dsa_layers),
+        (_llama_under_a_mamba_wrapper, _mamba_wrapper),
+    ],
+    ids=["unnamed-dsa-config", "dsa-text-config-under-a-wrapper", "llama-under-a-mamba-wrapper"],
+)
+def test_collector_checks_cache_layout_markers_with_its_own_architecture(tmp_path, build, reason):
+    """Intake checks the decoder architecture, which model_type can name. The collector checks the config's
+    architectures entry, which can name a wrapper, or --model-architecture. In these shapes the collector is
+    stricter."""
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    # The packaged config is read here, so a missing file fails only the tests that use it.
+    config = build()
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    assert load_intake_config(path).runtime_layout == ()
+    capability = _layout_capability(path, native=True)
+    assert capability.template_id == GENERIC_RUNTIME_TEMPLATE_ID
+    assert capability.support_reason == (
+        f"config.json cannot describe this cache layout ({reason(config)}). The native runtime measures every cell."
+    )
+
+
+def test_model_architecture_names_an_unnamed_config_as_intake_does(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(_unnamed_dsa_config()))
+    # Onboarding passes the decoder architecture with --model-architecture, so the DSA layers are recognized.
+    capability = _layout_capability(path, "GlmMoeDsaForCausalLM", native=True)
+    assert capability.template_id == "aic_family:deepseekv32:moe_dsa"
+
+
+def _detected_layout_plan(tmp_path, monkeypatch, generator_overrides):
+    config = _unknown_fp8_moe_config()
+    config["layer_types"] = ["linear_attention", "full_attention"] * 2
+    (tmp_path / "config.json").write_text(json.dumps(config))
+
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("the checkpoint is accessible only inside the runtime Pod")
+
+    monkeypatch.setattr("collector.fpm_forward.memory_admission.KVCacheEstimator.from_request", unavailable)
+    return build_collection_plan(
+        backend="vllm",
+        model_path=str(tmp_path),
+        model_architecture="NewMoeDsaForCausalLM",
+        system="b200_sxm",
+        selected_ops={"attention_context", "attention_generation"},
+        has_model_cases=False,
+        options=FPMCollectionOptions.from_args(_args()),
+        collector_config={"aic_database_version": "0.27.0"},  # --fpm-backend-version
+        generator_overrides=generator_overrides,
+    )
+
+
+@pytest.mark.parametrize("value", ["off", "OFF", "0", "false", "False"])
+def test_detected_layout_refuses_disabled_prefix_seeding_at_plan_time(tmp_path, monkeypatch, value):
+    overrides = {"K8sConfig": {"extra_env": [{"name": "DYN_BENCH_PREFILL_REAL_SEED", "value": value}]}}
+    with pytest.raises(ValueError) as error:
+        _detected_layout_plan(tmp_path, monkeypatch, overrides)
+    assert str(error.value) == (
+        f"DYN_BENCH_PREFILL_REAL_SEED={value} is not allowed for this cache layout (layer_types linear_attention x2). "
+        "Its cached prefill needs real prefix seeding. Remove the override."
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        None,
+        {
+            "K8sConfig": {
+                "extra_env": [
+                    {"name": "DYN_BENCH_KV_WARMUP", "value": "TRUE"},
+                    {"name": "DYN_BENCH_PREFILL_REAL_SEED", "value": "1"},
+                ]
+            }
+        },
+        # Decode keeps the existing classification, so decode warm-up may be off.
+        {"K8sConfig": {"extra_env": [{"name": "DYN_BENCH_KV_WARMUP", "value": "off"}]}},
+    ],
+)
+def test_detected_layout_plans_with_real_prefix_seeding(tmp_path, monkeypatch, overrides):
+    plan = _detected_layout_plan(tmp_path, monkeypatch, overrides)
+    assert plan.capability.template_id == GENERIC_RUNTIME_TEMPLATE_ID
+    assert plan.cells
+
+
+@pytest.mark.parametrize(
+    "declared_layers,layer_types,error",
+    [(4, ["full_attention"] * count, "layer_types must have one entry per num_hidden_layers") for count in (0, 1, 5)]
+    + [
+        (value, ["full_attention"] * 4, "num_hidden_layers must be a positive integer")
+        for value in (4.5, 4.0, "4", True, 0, -1, None)
+    ]
+    + [(4, ["full_attention", entry, "full_attention", "full_attention"], _ENTRY_ERROR) for entry in (1, "")],
+)
+def test_invalid_layer_declarations_cannot_select_a_generic_template(tmp_path, declared_layers, layer_types, error):
+    config = _unknown_fp8_moe_config()
+    config["num_hidden_layers"] = declared_layers
+    config["layer_types"] = layer_types
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match=error):
+        resolve_model_capability(
+            backend="vllm",
+            model_path=str(path),
+            model_architecture="NewMoeDsaForCausalLM",
+            selected_ops={"attention_context", "attention_generation"},
+            has_model_cases=False,
+            system="b200_sxm",
+            requested_weight_quantizations=(),
+            requested_kv_cache_dtypes=("auto",),
+            database_version="0.27.0",
+            checkpoint_native_dtypes=True,
+        )
+
+
 def test_explicit_real_config_keeps_unregistered_fp8_moe_bootstrap(monkeypatch, tmp_path):
     config_dir = tmp_path / "private-model-config"
     config_dir.mkdir()
@@ -1795,6 +2422,89 @@ def test_non_protocol_kvwarm_skips_remain_fake_fallback(tmp_path, skip_reason):
     rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
 
     assert {row["kv_seed_regime"] for row in rows} == {"fake_fallback"}
+
+
+def _seeded_prefill_cell(tmp_path, regime, *, kv_tokens=128):
+    """Two-rank prefill whose native rows report ``regime`` (None: a row without a regime) with its stamp."""
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    stamp = {"real_prefix": "prefill_real_seed", "fake_prefix": "prefill_fake_prefix"}.get(regime)
+
+    def seed(value):
+        if isinstance(value, dict):
+            if "point_type" in value:
+                value["total_kv_read_tokens"] = kv_tokens
+                value["sample_reasons"] = [*value["sample_reasons"], *([stamp] if stamp else [])]
+            if "sum_prefill_kv_tokens" in value:
+                value["sum_prefill_kv_tokens"] = kv_tokens
+            for child in value.values():
+                seed(child)
+        elif isinstance(value, list):
+            for child in value:
+                seed(child)
+
+    for path in (cell_dir / "raw").glob("*/benchmark*.json"):
+        payload = json.loads(path.read_text())
+        seed(payload)
+        if regime is not None:
+            for row in payload["results"]:
+                row["kv_seed_regime"] = regime
+        path.write_text(json.dumps(payload))
+    return plan, cell, cell_dir
+
+
+@pytest.mark.parametrize("regime", ["fake_prefix", "not_applicable", None])
+def test_detected_layout_publishes_cached_prefill_only_with_real_prefix_seeding(tmp_path, regime):
+    plan, cell, cell_dir = _seeded_prefill_cell(tmp_path, regime)
+    # Other models keep their classification: the formal prefill regime stays n/a.
+    assert [row["kv_seed_regime"] for row in aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")] == [
+        "n/a"
+    ]
+    plan.capability.template_id = GENERIC_RUNTIME_TEMPLATE_ID
+    with pytest.raises(ValueError) as error:
+        aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert str(error.value) == (
+        f"cached prefill for this cache layout requires real_prefix seeding, got {regime or 'unreported'}"
+    )
+
+
+@pytest.mark.parametrize("regime,kv_tokens", [("real_prefix", 128), (None, 0)])
+def test_detected_layout_publishes_real_prefix_and_uncached_prefill(tmp_path, regime, kv_tokens):
+    plan, cell, cell_dir = _seeded_prefill_cell(tmp_path, regime, kv_tokens=kv_tokens)
+    plan.capability.template_id = GENERIC_RUNTIME_TEMPLATE_ID
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert [(row["total_kv_read_tokens"], row["kv_seed_regime"]) for row in rows] == [(kv_tokens, "n/a")]
+
+
+_WARM_ELIGIBLE = {"enabled": True, "warm_eligible": True, "skip_reason": None}
+_DENSE_LABEL = {"enabled": True, "warm_eligible": False, "skip_reason": "dense_model_content_insensitive"}
+
+
+@pytest.mark.parametrize(
+    "kvwarm,marker,strategy,regime",
+    [
+        (_WARM_ELIGIBLE, "kvwarm_real_kv", "tep", "real_kv"),
+        (
+            {"enabled": True, "warm_eligible": False, "skip_reason": "moe_tp_balanced_by_construction"},
+            "kvwarm_fake_fallback",
+            "tp",
+            "skip:moe_tp_balanced_by_construction",
+        ),
+        # Dynamo labels every dense model content-insensitive before it considers recurrent state. For this
+        # capability the label is fake_fallback, and the row publishes with it.
+        (_DENSE_LABEL, "kvwarm_fake_fallback", "tp", "fake_fallback"),
+        (_WARM_ELIGIBLE, "kvwarm_fake_fallback", "tep", "fake_fallback"),
+        (None, None, "tp", "legacy"),
+    ],
+)
+def test_detected_layout_decode_keeps_the_existing_classification(tmp_path, kvwarm, marker, strategy, regime):
+    plan, cell, cell_dir = _synthetic_decode_cell(
+        tmp_path, kvwarm=kvwarm, markers=(marker,), parallel_strategy=strategy
+    )
+    plan.capability.template_id = GENERIC_RUNTIME_TEMPLATE_ID
+    plan.capability.attention_source = "native_runtime"
+    plan.capability.is_moe = False
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert {row["kv_seed_regime"] for row in rows} == {regime}
 
 
 def test_native_validation_rejects_cross_rank_kvwarm_disagreement(tmp_path):
@@ -2814,6 +3524,30 @@ def test_v41_reader_rejects_unqualified_graph_or_missing_execution_mode(tmp_path
     payload = {"execution_identity": dict(zip(EXECUTION_COLUMNS, identity, strict=True)), "execution_mode": mode}
     with pytest.raises(ValueError, match="verified eager"):
         _validate_execution_provenance(cell, payload, tmp_path / "rank.json")
+
+
+@pytest.mark.parametrize("architecture", ["LlamaForCausalLM", "DeepseekV3ForCausalLM", None])
+def test_none_graph_policy_does_not_select_eager_for_other_models(architecture):
+    options = FPMCollectionOptions.from_args(
+        _args(fpm_worker_type="aggregated", fpm_cudagraph_mode="NONE", fpm_prefill_cudagraph_policy="runtime")
+    )
+    assert options.resolve_model_execution(architecture).enforce_eager is False
+
+
+@pytest.mark.parametrize(
+    "graph_args",
+    [
+        {"fpm_cudagraph_mode": "FULL"},
+        {"fpm_cudagraph_capture_sizes": [1, 2]},
+        {"fpm_max_cudagraph_capture_size": 8},
+        {"fpm_prefill_cudagraph_policy": "explicit", "fpm_max_prefill_cudagraph_size": 128},
+    ],
+)
+def test_v41_auto_eager_rejects_capture_requests(graph_args):
+    args = {"fpm_worker_type": "aggregated", "fpm_prefill_cudagraph_policy": "runtime", **graph_args}
+    options = FPMCollectionOptions.from_args(_args(**args))
+    with pytest.raises(ValueError, match="DeepSeek V4.1 requires eager execution"):
+        options.resolve_model_execution("DeepseekV41ForCausalLM")
 
 
 @pytest.mark.parametrize("v41,eager", [(True, False), (False, True)])

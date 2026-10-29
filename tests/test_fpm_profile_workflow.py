@@ -206,6 +206,120 @@ def test_prediction_materializes_rank_local_capacity_without_a_model(profile, ti
     assert reserved["num_gpu_blocks"] < lowered["num_gpu_blocks"]
 
 
+def test_speculative_round_prediction_preserves_progress_identity_and_observed_capacity(profile, timing_systems):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from aisimulate import _runtime
+    from aisimulate.runner import EngineReplayRunnerFactory
+    from aisimulate.sweeper import ReplayOutputRequirements
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
+    from aisimulate_core.sdk.fpm_profile import load_fpm_profile
+
+    profile["model_revision"] = "1" * 40
+    profile["deployments"] = profile["deployments"][:1]
+    _observed_profile(profile, context=4096)
+    execution = {
+        "kind": "speculative_round",
+        "method": "eagle3",
+        "num_draft_tokens": 3,
+        "draft_model": "test/draft",
+        "draft_revision": "2" * 40,
+        "timing_scope": "model_step_cuda",
+    }
+    profile["deployments"][0]["execution_profile"] = execution
+    deployment = load_fpm_profile(profile).deployments[0]
+    execution_identity = dict(
+        zip(EXECUTION_COLUMNS, deployment.execution_identity(profile["model_revision"]), strict=True)
+    )
+    path = Path(timing_systems) / "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet"
+    rows = [row for row in pq.read_table(path).to_pylist() if row["dp"] == 1]
+    for row in rows:
+        row.update(
+            **execution_identity,
+            measurement_policy="vllm_native_fpm_model_step_cuda_v1",
+            timing_scope="model_step_cuda",
+            measurement_reduction="single_sample",
+            source_sample_count=1,
+            # Deliberately synthetic per-round times, not an analytical estimate.
+            latency_ms=7.0 if row["workload_kind"] == "prefill" else 11.0,
+        )
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    metadata = json.loads(path.with_suffix(".metadata.json").read_text())
+    metadata.update(
+        schema_version=7,
+        measurement_policy="vllm_native_fpm_model_step_cuda_v1",
+        timing_scope="model_step_cuda",
+        row_count=len(rows),
+        parquet_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+    path.with_suffix(".metadata.json").write_text(json.dumps(metadata))
+    public = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                **_engine(profile),
+                "systems_paths": [timing_systems],
+                "context_length": 4096,
+                "nextn": 3,
+                "nextn_accepted": 1.78,
+            },
+            "traffic": {
+                "source": {"type": "synthetic", "input_tokens": 1, "output_tokens": 7},
+                "load": {"type": "concurrency", "concurrency": 1},
+                "stop": {"requests": 2},
+            },
+        }
+    )
+    restored = CorePredictionConfig.model_validate_json(public.model_dump_json())
+    spec = prediction_to_replay_spec(restored)
+    diagnostics = {}
+    materialized = materialize_aic_num_gpu_blocks(
+        spec.backend_deployment.agg_engine_args, memory_diagnostics=diagnostics
+    )
+    # Observed 1 GiB / 512 bytes per token / 64 tokens per block; no draft or graph charge is added.
+    assert materialized["num_gpu_blocks"] == 32768
+    assert diagnostics["total_kv_size_bytes"] == 1024**3
+    assert diagnostics["memory_breakdown"] is None
+    canonical_only = deepcopy(spec.backend_deployment.agg_engine_args)
+    canonical_only.pop("aic_nextn")
+    assert materialize_aic_num_gpu_blocks(canonical_only)["num_gpu_blocks"] == 32768
+    for legacy_name in ("aic_nextn", "nextn"):
+        conflicting_depth = deepcopy(canonical_only)
+        conflicting_depth[legacy_name] = 2
+        with pytest.raises(ValueError, match="conflicts with canonical"):
+            materialize_aic_num_gpu_blocks(conflicting_depth)
+    seen = []
+
+    class NativeCapture:
+        def run_replay_json(self, serialized):
+            seen.append(json.loads(serialized))
+            return _runtime.run_replay_json(serialized)
+
+    report = (
+        EngineReplayRunnerFactory(runtime=NativeCapture())
+        .create(0)
+        .run(spec, output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_per_request=True))
+    )
+    rank = seen[0]["spec"]["engine"]["rank"]
+    assert rank["aic_nextn"] == 3
+    # 1.78 accepted drafts plus the mandatory base token means 2.78 output tokens per round.
+    assert [float(rate) for rate in rank["aic_nextn_accept_rates"].split(",")] == [1.0, 0.78, 0.0]
+    assert rank["num_gpu_blocks"] == 32768
+    assert rank["timing_model"]["config"]["fpm_profile"]["deployments"][0]["execution_profile"] == execution
+    assert report.metrics["completed_requests"] == 2
+    assert report.metrics["mean_ttft_ms"] == pytest.approx(7.0)
+    records = report.metadata["native_report"]["per_request"]
+    assert len(records) == 2
+    for record in records:
+        assert record["output_length"] == 7
+        assert record["ttft_ms"] == pytest.approx(7.0)
+        # One prefill token leaves six outputs: 2-3 tokens per round require
+        # two or three measured 11 ms rounds, with no extra draft charge.
+        rounds = (record["e2e_latency_ms"] - 7.0) / 11.0
+        assert rounds == pytest.approx(2.0) or rounds == pytest.approx(3.0)
+        assert record["itl_ms"] == pytest.approx(11.0 * rounds / 6.0)
+
+
 @pytest.mark.parametrize("memory_state", ["pending", "runtime"])
 def test_profile_memory_cannot_be_bypassed_by_explicit_blocks(profile, timing_systems, memory_state):
     config = CorePredictionConfig.model_validate({"engine": {**_engine(profile), "systems_paths": [timing_systems]}})
@@ -490,6 +604,14 @@ def test_native_disaggregated_capacity_keeps_canonical_worker_role(profile, timi
     assert result.metrics["completed_requests"] == 1
     assert "prefill" in roles and "decode" in roles
     assert set(roles) == {"prefill", "decode"}
+    provenance = result.metadata["prediction_provenance"]
+    assert set(provenance) == {"prefill", "decode"}
+    for role in provenance.values():
+        assert role["estimator"] == "fpm_interpolation"
+        assert role["timing_source"] == "aic"
+        assert role["data_version"] == profile["model_revision"]
+        assert role["data_identity"] == {"model": profile["model"], "model_revision": profile["model_revision"]}
+        assert role["data_version_unavailable_reason"] is None
 
 
 @pytest.mark.parametrize("mode,budget,expected", [("agg", 2, 2), ("disagg", 4, 4)])

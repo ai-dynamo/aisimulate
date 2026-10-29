@@ -243,10 +243,12 @@ def _route_lane_density_through_the_stub(monkeypatch):
     monkeypatch.setattr(_etv, "fetch_attention_lane_density", _fetch)
 
 
-def test_engine_spec_schema_version_is_twenty_seven():
+def test_engine_spec_schema_version_is_twenty_nine():
+    """The optional vision section closes the positional engine payload
+    (v29) on top of the schema-28 layout."""
     from aisimulate.sdk import engine
 
-    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 27
+    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 29
 
 
 def test_lanes_outside_the_known_vocabulary_stay_reachable():
@@ -443,13 +445,23 @@ def test_explicit_override_is_translated_to_the_backends_stored_labels(lane_syst
     assert order[0] == "vllm_triton_attn"
     assert order.pinned_count == 1
 
-    # The flashinfer pin covers every shipped label spelling, most specific
-    # first: 0.24.0 splits the lane into trtllm prefill/decode kernels,
-    # 0.22.0-era tables carry the single vllm_flashinfer label. The table walk
-    # serves the first pinned lane that exists, so one order fits all.
+    # The flashinfer pin covers every shipped label spelling, newest first:
+    # 0.30.0 persists the FlashInfer trtllm-gen decode kernel, 0.25.0 the
+    # flashinfertrtllmapidecode kernel, 0.24.0 splits the lane into trtllm
+    # prefill/decode kernels, 0.22.0-era tables carry the single
+    # vllm_flashinfer label. The table walk serves the first pinned lane that
+    # exists (requested-version lanes first, see
+    # test_pinned_override_prefers_the_requested_versions_own_label), so one
+    # order fits all.
     order = resolve_attention_lane_order("vllm", "0.24.0", 100, "flashinfer", lane_systems_root)
-    assert order[:3] == ("vllm_flashinfer_trtllmprefill", "vllm_flashinfer_trtllmdecode", "vllm_flashinfer")
-    assert order.pinned_count == 3
+    assert order[:5] == (
+        "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+        "vllm_flashinfer_flashinfertrtllmapidecode",
+        "vllm_flashinfer_trtllmprefill",
+        "vllm_flashinfer_trtllmdecode",
+        "vllm_flashinfer",
+    )
+    assert order.pinned_count == 5
 
     # sglang collects under the user-facing names themselves.
     order = resolve_attention_lane_order("sglang", "0.5.14", 103, "fa3", lane_systems_root)
@@ -624,13 +636,19 @@ def test_real_shipped_vllm_0220_b200_table_unset_override_fails_closed_and_trito
         resolved_lane_order_for_op(db, table_attr, "fa3")
 
 
-def test_real_shipped_vllm_0220_b200_donor_only_override_pin_stays_first():
-    """A pin is explicit intent even when only an inherited version carries it.
+def test_real_shipped_vllm_0220_b200_override_pin_heads_the_walk_with_its_own_label_first():
+    """A pin is explicit intent even when only an inherited version carries it,
+    but inside the pinned head the requested version's own label comes first.
 
-    vLLM's ``flashinfer`` override expands to the 0.24 split labels before the
-    0.22 monolithic label. On the requested 0.22 context table the first split
-    label exists only in the shared layer, but provenance tiering must not
-    move it behind requested-version lanes.
+    vLLM's ``flashinfer`` override expands to every label the backend has
+    collected under. On the requested 0.22 context table only the monolithic
+    ``vllm_flashinfer`` label is the version's own measurement; the 0.24 split
+    labels exist only in the shared layer. The pinned head stays ahead of
+    every non-pinned lane (density tiering must not demote an explicit
+    override), and within it the own label leads so the override never
+    serves another version's rows while the requested version has its own
+    (PR #517 review, simone-chen: on 0.30.0 the 0.24 ``trtllmdecode`` donor
+    rows were shadowing the new ``..._trtllm_gen`` primary rows).
     """
     from aisimulate_core.sdk.engine_table_view import fetch_attention_lane_density
     from aisimulate_core.sdk.operations.attention import resolved_lane_order_for_op
@@ -644,12 +662,21 @@ def test_real_shipped_vllm_0220_b200_donor_only_override_pin_stays_first():
 
     order = resolved_lane_order_for_op(db, table_attr, "flashinfer")
 
-    assert order[:3] == [
+    pinned = {
+        "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+        "vllm_flashinfer_flashinfertrtllmapidecode",
         "vllm_flashinfer_trtllmprefill",
         "vllm_flashinfer_trtllmdecode",
         "vllm_flashinfer",
-    ]
-    assert order[0] in donor_only_lanes
+    }
+    assert order[0] == "vllm_flashinfer"
+    assert order[0] in primary_lanes
+    assert set(order[: len(pinned)]) == pinned, order
+    # The donor-only split labels are still pinned (an explicit override may
+    # be served by an inherited version when the requested one lacks the
+    # slice), just behind the own label.
+    assert "vllm_flashinfer_trtllmprefill" in donor_only_lanes
+    assert order.index("vllm_flashinfer_trtllmprefill") < order.index("vllm_triton_attn")
 
 
 @pytest.mark.parametrize("table_attr", ["_context_attention_data", "_generation_attention_data"])
@@ -956,3 +983,92 @@ def test_generation_qk_norm_contributes_latency_through_python_query():
 
     assert float(normalized_result) > float(plain_result)
     assert normalized_result.energy == pytest.approx(plain_result.energy)
+
+
+def test_pinned_override_prefers_the_requested_versions_own_label():
+    """An override maps to every label the backend has collected under across
+    versions. With shared-layer loading an older version's label is still
+    present through backward fill, so the pinned head must rank the labels
+    the requested version collected itself first — otherwise an explicit
+    ``attention_backend="flashinfer"`` on vLLM 0.30.0 would be served by the
+    0.24.0 ``vllm_flashinfer_trtllmdecode`` donor rows instead of the new
+    ``..._trtllm_gen`` primary rows (PR #517 review, simone-chen)."""
+    from aisimulate_core.sdk.attention_lanes import LaneOrder
+    from aisimulate_core.sdk.operations.attention import _source_tiered_lane_walk_order
+
+    pinned = (
+        "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+        "vllm_flashinfer_flashinfertrtllmapidecode",
+        "vllm_flashinfer_trtllmprefill",
+        "vllm_flashinfer_trtllmdecode",
+        "vllm_flashinfer",
+    )
+    order = LaneOrder(pinned + ("vllm_triton_attn",), pinned_count=len(pinned))
+    # Shared view: the donor's old label is denser than the new primary one.
+    density = {
+        "vllm_flashinfer_trtllmdecode": (40, 4000),
+        "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen": (10, 1000),
+        "vllm_triton_attn": (10, 1000),
+    }
+    # Requested version (0.30.0) collected only the new label.
+    primary = {"vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen": (10, 1000), "vllm_triton_attn": (10, 1000)}
+    walk = _source_tiered_lane_walk_order(density, primary, order, pinned)
+    assert walk[0] == "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen"
+    assert walk.index("vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen") < walk.index(
+        "vllm_flashinfer_trtllmdecode"
+    )
+    assert set(walk[: len(pinned)]) == set(pinned), "the pinned head stays a head; only its internal order changes"
+
+    # 0.24.0 as the requested version: its own split labels lead, the newer
+    # labels (reachable only through a newer donor, if at all) follow.
+    primary_024 = {"vllm_flashinfer_trtllmdecode": (40, 4000), "vllm_triton_attn": (10, 1000)}
+    walk_024 = _source_tiered_lane_walk_order(density, primary_024, order, pinned)
+    assert walk_024[0] == "vllm_flashinfer_trtllmdecode"
+
+    # Without a primary view nothing is re-tiered.
+    assert _source_tiered_lane_walk_order(density, {}, order, pinned)[: len(pinned)] == pinned
+
+
+def test_explicit_override_stays_ahead_of_the_framework_default_lane(lane_systems_root):
+    """The pinned head holds the explicit override AND the framework-default
+    lane, which is a different backend. Only the override's own synonymous
+    labels are re-ranked by primary presence: requesting ``trtllm_mha`` where
+    the requested version collected only the framework-default Triton lane
+    (``trtllm_mha`` inherited from a donor version) must still walk
+    ``trtllm_mha`` first, not silently switch to Triton (PR #517 review,
+    simone-chen: B200 SGLang 0.5.21 Triton rows + inherited 0.5.14
+    ``trtllm_mha`` rows returned Triton's 0.008434 ms instead of the
+    requested lane's 0.010391 ms)."""
+    from aisimulate_core.sdk.operations.attention import resolve_lane_order, resolved_lane_order_for_op
+
+    db = _StubDatabase(
+        lane_systems_root,
+        context_lanes={"triton": _ctx_lane(_FAST_LATENCY), "trtllm_mha": _ctx_lane(_SLOW_LATENCY)},
+        primary_context_lanes={"triton": _ctx_lane(_FAST_LATENCY)},
+    )
+    order = resolve_lane_order(db, "trtllm_mha")
+    assert order[: order.pinned_count] == ("trtllm_mha", "triton"), "override first, framework default second"
+
+    walk = resolved_lane_order_for_op(db, "_context_attention_data", "trtllm_mha")
+    assert walk[:2] == ["trtllm_mha", "triton"], walk
+
+
+@pytest.mark.parametrize(
+    ("version", "expected_head"),
+    [
+        ("0.30.0", "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen"),
+        ("0.25.0", "vllm_flashinfer_flashinfertrtllmapidecode"),
+        ("0.24.0", "vllm_flashinfer_trtllmdecode"),
+    ],
+)
+def test_explicit_flashinfer_override_resolves_the_shipped_b200_generation_label(version, expected_head):
+    """Real-data companion: on b200 the explicit FlashInfer override must head
+    the generation walk with the label the requested vLLM version collected
+    (0.30.0 and 0.25.0 are outside the slots on this tree, hence the
+    allow_unlisted_version load)."""
+    from aisimulate.sdk.perf_database import get_database
+    from aisimulate_core.sdk.operations.attention import resolved_lane_order_for_op
+
+    db = get_database("b200_sxm", "vllm", version, allow_unlisted_version=True)
+    walk = resolved_lane_order_for_op(db, "_generation_attention_data", "flashinfer")
+    assert walk[0] == expected_head, walk

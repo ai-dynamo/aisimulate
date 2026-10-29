@@ -31,6 +31,7 @@ configurations offline, without bringing up a GPU serving cluster.
 [Website](https://ai-dynamo.org/aisimulate/) ·
 [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/) ·
 [FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/) ·
+[FPM Dataset](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset) ·
 [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/) ·
 [Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
 
@@ -43,6 +44,12 @@ See the [migration guide](docs/aic-backward-compatibility/migration.md) for comm
 The performance-modeling methodology is described in
 [AIConfigurator: Lightning-Fast Configuration Optimization for Multi-Framework
 LLM Serving](https://arxiv.org/abs/2601.06288).
+
+Versioned FPM libraries and measurement evidence are available in the
+[Hugging Face FPM dataset](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset).
+Pin a full dataset commit SHA, select the matching runtime configuration, and
+verify the recorded file hashes. To contribute data, follow the dataset
+[developer guide and schema contracts](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset#developer-guide-contribute-a-dataset).
 
 ## Install
 
@@ -76,7 +83,7 @@ Install this pair on Linux with Python 3.12 in a **separate environment**:
 <!-- readme-check: dynamo-install -->
 ```bash
 python3 -m pip install --extra-index-url https://pypi.nvidia.com \
-  "aisimulate==0.13.0.dev202609270000000058" "ai-dynamo==1.6.0.dev20260930"
+  "aisimulate==0.13.0.dev202610240000000082" "ai-dynamo==1.7.0.dev20261028"
 python3 -m pip check
 aisimulate predict --help
 ```

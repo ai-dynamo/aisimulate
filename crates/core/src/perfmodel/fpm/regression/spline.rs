@@ -27,13 +27,13 @@ mod tests;
 use fit::{Model, Row};
 use recursive::RecursiveSpline;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 struct RetainedObservation {
     sequence: u64,
     observation: RegressionObservation,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct ErrorMonitor {
     errors: VecDeque<bool>,
     pub(super) bad: usize,
@@ -52,11 +52,26 @@ impl ErrorMonitor {
         self.errors.clear();
         self.bad = 0;
     }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.errors.is_empty() && self.bad == 0
+    }
+
+    pub(super) fn validate_restored(&self, window: usize) -> Result<(), String> {
+        if self.errors.len() > window || self.bad != self.errors.iter().filter(|bad| **bad).count()
+        {
+            return Err("error monitor window is inconsistent".into());
+        }
+        Ok(())
+    }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct BucketedSpline {
     samples: BucketedSamples<RetainedObservation>,
+    /// Configuration-only and internally tagged; snapshots rebuild it from
+    /// the canonical configuration.
+    #[serde(skip)]
     config: SplineFitConfig,
     min_observations: usize,
     rebuild_interval: Option<usize>,
@@ -305,6 +320,85 @@ impl BucketedSpline {
     #[cfg(test)]
     pub(super) fn mutations_since_rebuild(&self) -> usize {
         self.linear.mutations_since_rebuild()
+    }
+}
+
+impl BucketedSpline {
+    /// Adopt configuration-only fields from a freshly configured store and
+    /// validate every invariant later updates and predictions rely on.
+    pub(super) fn restore_snapshot(&mut self, fresh: &Self) -> Result<(), String> {
+        self.config = fresh.config.clone();
+        if self.min_observations != fresh.min_observations
+            || self.rebuild_interval != fresh.rebuild_interval
+        {
+            return Err("spline controls differ from configuration".into());
+        }
+        let total = self.samples.total_observations;
+        let accepted = self.accepted;
+        let mut sequences = std::collections::BTreeSet::new();
+        let mut minimum = [f64::INFINITY; 2];
+        let mut maximum = [f64::NEG_INFINITY; 2];
+        self.samples.validate_restored(&fresh.samples, |x, entry| {
+            let raw_x = entry.observation.raw_x;
+            if !entry.observation.is_valid()
+                || x.len() != 2
+                || x.iter()
+                    .zip(raw_x)
+                    .any(|(bucket, raw)| bucket.to_bits() != raw.ln_1p().to_bits())
+            {
+                return Err("retained spline observation is invalid".into());
+            }
+            if entry.sequence >= accepted || !sequences.insert(entry.sequence) {
+                return Err("retained spline sequence numbers are inconsistent".into());
+            }
+            for axis in 0..2 {
+                minimum[axis] = minimum[axis].min(raw_x[axis]);
+                maximum[axis] = maximum[axis].max(raw_x[axis]);
+            }
+            Ok(())
+        })?;
+        // The retained-range guard always equals the retained extremes.
+        let bits = |values: [f64; 2]| values.map(f64::to_bits);
+        if bits(self.minimum) != bits(minimum) || bits(self.maximum) != bits(maximum) {
+            return Err("spline retained-range guard differs from retained samples".into());
+        }
+        if (total as u64) > accepted {
+            return Err("spline accepted clock is behind its retained samples".into());
+        }
+        self.linear.validate_restored(&fresh.linear, total)?;
+        if let Some(fit) = &self.linear_fit {
+            fit.validate(self.linear.non_negative())?;
+        }
+        if self
+            .scale
+            .iter()
+            .any(|scale| !scale.is_finite() || *scale < 1.0)
+        {
+            return Err("spline feature scale is invalid".into());
+        }
+        if self.last_search.is_some_and(|last| last > accepted)
+            || self.recursive.is_some() != self.last_search.is_some()
+            || self.searches < u64::from(self.last_search.is_some())
+        {
+            return Err("spline search clock is inconsistent".into());
+        }
+        if let Some(state) = &self.recursive {
+            state.validate_restored(total, self.rebuild_interval)?;
+        }
+        if let Some(model) = &self.spline_fit {
+            model.validate_shape()?;
+        }
+        match self.config.search {
+            SplineSearchConfig::Periodic { .. } => {
+                if !self.monitor.is_empty() {
+                    return Err("periodic spline search carries adaptive monitor state".into());
+                }
+            }
+            SplineSearchConfig::Adaptive { window, .. } => {
+                self.monitor.validate_restored(window)?;
+            }
+        }
+        Ok(())
     }
 }
 

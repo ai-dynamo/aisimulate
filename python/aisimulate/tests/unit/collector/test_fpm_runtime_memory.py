@@ -286,6 +286,37 @@ def test_resolver_rejects_consistent_but_unsupported_runtime_policy(tmp_path, mo
         _resolve(cell, tmp_path)
 
 
+@pytest.mark.parametrize("cache_dtype", ["auto", "bfloat16", "fp8"])
+def test_fp8_block_weights_preserve_and_verify_selected_bf16_cache(tmp_path, monkeypatch, cache_dtype):
+    cell = replace(
+        _evidence(tmp_path, monkeypatch),
+        gemm_quant_mode="fp8_block",
+        weight_quantization="fp8_block",
+        moe_quant_mode="fp8_block",
+    )
+
+    def edit(evidence):
+        config = evidence["resolved_config"]
+        config["model_config"]["quantization"] = "fp8"
+        config["cache_config"]["cache_dtype"] = cache_dtype
+        config["quantization_config"] = {
+            "type": "vllm.model_executor.layers.quantization.fp8.Fp8Config",
+            "activation_scheme": "dynamic",
+            "weight_block_size": [128, 128],
+        }
+
+    _edit_memory(tmp_path, edit)
+    if cache_dtype == "fp8":
+        with pytest.raises(ValueError, match="KV precision differs from the planned identity"):
+            _resolve(cell, tmp_path)
+    else:
+        resources = FpmResourceProfile.model_validate(_resolve(cell, tmp_path))
+        settings = json.loads(resources.runtime_memory.provenance)["runtime_settings"]
+        assert settings["cache_config"]["cache_dtype"] == cache_dtype
+        assert settings["model_config"]["dtype"] == "torch.bfloat16"
+        assert settings["quantization_config"]["weight_block_size"] == [128, 128]
+
+
 def test_modelopt_nvfp4_allows_bfloat16_attention_and_shared_experts(tmp_path, monkeypatch):
     cell = _evidence(tmp_path, monkeypatch)
     cell = replace(cell, gemm_quant_mode="bfloat16", weight_quantization="bfloat16", moe_quant_mode="nvfp4")

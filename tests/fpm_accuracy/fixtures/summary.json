@@ -16,7 +16,8 @@
   "methods": [
     "warmup",
     "nowarmup",
-    "regression"
+    "regression",
+    "learned"
   ],
   "rows": [
     {
@@ -154,6 +155,44 @@
               "error_count": 0,
               "tuning_error_count": 0,
               "mape_pct": 12.5
+            },
+            "mixed": {
+              "measured_count": 0,
+              "predicted_count": 0,
+              "unavailable_count": 0,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": null
+            }
+          }
+        },
+        "learned": {
+          "status": "evaluated",
+          "artifact": null,
+          "metrics": {
+            "all": {
+              "measured_count": 100,
+              "predicted_count": 50,
+              "unavailable_count": 50,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": 1.5
+            },
+            "prefill": {
+              "measured_count": 0,
+              "predicted_count": 0,
+              "unavailable_count": 0,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": null
+            },
+            "decode": {
+              "measured_count": 100,
+              "predicted_count": 50,
+              "unavailable_count": 50,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": 1.5
             },
             "mixed": {
               "measured_count": 0,
@@ -302,6 +341,44 @@
               "error_count": 0,
               "tuning_error_count": 0,
               "mape_pct": 12.5
+            },
+            "mixed": {
+              "measured_count": 0,
+              "predicted_count": 0,
+              "unavailable_count": 0,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": null
+            }
+          }
+        },
+        "learned": {
+          "status": "evaluated",
+          "artifact": null,
+          "metrics": {
+            "all": {
+              "measured_count": 100,
+              "predicted_count": 50,
+              "unavailable_count": 50,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": 1.5
+            },
+            "prefill": {
+              "measured_count": 0,
+              "predicted_count": 0,
+              "unavailable_count": 0,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": null
+            },
+            "decode": {
+              "measured_count": 100,
+              "predicted_count": 50,
+              "unavailable_count": 50,
+              "error_count": 0,
+              "tuning_error_count": 0,
+              "mape_pct": 1.5
             },
             "mixed": {
               "measured_count": 0,

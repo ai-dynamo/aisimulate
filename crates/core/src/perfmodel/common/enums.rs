@@ -17,8 +17,28 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// Inference backend.
+/// How a VL model's vision tower is laid out over the tensor-parallel group.
 ///
+/// Mirrors `ModelConfig.enable_encoder_dp` in the Python model layer: `Tp`
+/// shards the tower's heads and MLP over the group so every rank encodes every
+/// image (SGLang's default), `Dp` gives every rank a whole tower and a ceil
+/// share of the images (`--mm-enable-dp-encoder`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EncoderParallel {
+    Tp,
+    Dp,
+}
+
+impl EncoderParallel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Tp => "tp",
+            Self::Dp => "dp",
+        }
+    }
+}
+
 /// Mirrors `common.BackendName`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -549,6 +569,7 @@ pub enum ModelFamily {
     Qwen3Vl,
     Qwen3VlMoe,
     DeepSeekV41,
+    Glm53Flash,
 }
 
 impl ModelFamily {
@@ -563,6 +584,7 @@ impl ModelFamily {
             Self::DeepSeekV32 => "DEEPSEEKV32",
             Self::DeepSeekV4 => "DEEPSEEKV4",
             Self::DeepSeekV41 => "DEEPSEEKV41",
+            Self::Glm53Flash => "GLM53FLASH",
             Self::KimiK25 => "KIMIK25",
             Self::NemotronNas => "NEMOTRONNAS",
             Self::NemotronH => "NEMOTRONH",

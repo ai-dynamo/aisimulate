@@ -36,12 +36,18 @@ def _load_functions(*names: str, namespace: dict | None = None) -> dict:
     tree = ast.parse(SOURCE_PATH.read_text(), filename=str(SOURCE_PATH))
     selected = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
     from collector.helper import WORKER_RESTART
+    from collector.sglang.moe_config_observation import observe_triton_config_selection
 
     # Guard behavior has dedicated tests; return the 0.5.14 series here so
     # the alignment tests exercise the legacy probed constraints.
     loaded = {
         "WORKER_RESTART": WORKER_RESTART,
         "_raise_if_unverified_moe_lane": lambda _moe_type: "0.5.14",
+        # Record-only Triton config observation (own tests in
+        # test_moe_config_observation.py); no SGLang module to observe here.
+        "_triton_config_namespaces": lambda: [],
+        "observe_triton_config_selection": observe_triton_config_selection,
+        "append_triton_config_record": lambda *_args, **_kwargs: None,
         **(namespace or {}),
     }
     exec(compile(ast.Module(body=selected, type_ignores=[]), str(SOURCE_PATH), "exec"), loaded)
@@ -516,7 +522,7 @@ def test_quantized_moe_uses_framework_path_and_fails_closed(
             "_fmoe_kernels_mod": SimpleNamespace(_B_DESC_CACHE=SimpleNamespace(clear=lambda: None)),
             "gc": SimpleNamespace(collect=lambda: None),
             "log_perf": lambda **kwargs: logged.append(kwargs) or persisted,
-            "pkg_resources": SimpleNamespace(get_distribution=lambda _name: SimpleNamespace(version="0.5.14")),
+            "_dist_version": lambda _name: "0.5.14",
             "EXIT_CODE_RESTART": 10,
         },
     )["run_moe_torch"]
@@ -585,7 +591,7 @@ def test_raw_moe_case_cleans_gpu_state_and_fails_closed():
             "gc": SimpleNamespace(collect=lambda: collected.append(True)),
             "get_sm_version": lambda: 90,
             "log_perf": lambda **_kwargs: False,
-            "pkg_resources": SimpleNamespace(get_distribution=lambda _name: SimpleNamespace(version="0.5.14")),
+            "_dist_version": lambda _name: "0.5.14",
             "EXIT_CODE_RESTART": 10,
         },
     )["run_moe_torch"]

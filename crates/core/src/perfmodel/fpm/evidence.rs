@@ -26,6 +26,8 @@ pub enum FpmQueryResolution {
     WithinCurveInterpolation,
     CrossKvInterpolation,
     CrossBatchInterpolation,
+    /// Prefill fallback that interpolates KV at each supported token count first.
+    KvFirstInterpolation,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -94,4 +96,47 @@ pub(crate) fn accumulate_fpm_estimates(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FpmQueryResolution;
+
+    #[test]
+    fn query_resolution_wire_values_preserve_existing_indices() {
+        for (resolution, name, index) in [
+            (FpmQueryResolution::ExactLookup, "exact_lookup", 0u32),
+            (
+                FpmQueryResolution::WithinCurveInterpolation,
+                "within_curve_interpolation",
+                1,
+            ),
+            (
+                FpmQueryResolution::CrossKvInterpolation,
+                "cross_kv_interpolation",
+                2,
+            ),
+            (
+                FpmQueryResolution::CrossBatchInterpolation,
+                "cross_batch_interpolation",
+                3,
+            ),
+            (
+                FpmQueryResolution::KvFirstInterpolation,
+                "kv_first_interpolation",
+                4,
+            ),
+        ] {
+            let json = serde_json::to_string(&resolution).unwrap();
+            assert_eq!(json, format!("\"{name}\""));
+            assert_eq!(
+                serde_json::from_str::<FpmQueryResolution>(&json).unwrap(),
+                resolution
+            );
+            assert_eq!(
+                bincode::serialize(&resolution).unwrap(),
+                index.to_le_bytes()
+            );
+        }
+    }
 }

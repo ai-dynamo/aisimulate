@@ -102,7 +102,7 @@ def trace_benchmark(monkeypatch, *, source=SOURCE, failure=None, explicit=None, 
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "benchmark_with_power")
     namespace = {
         "contextmanager": contextmanager,
-        "get_device_module": lambda: cuda,
+        "get_device_module": lambda device=None: cuda,
         "logging": logging,
         "time": time,
         "worker_heartbeat": lambda: events.append("heartbeat"),

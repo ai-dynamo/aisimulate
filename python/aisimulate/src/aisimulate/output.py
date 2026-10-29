@@ -9,7 +9,7 @@ import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TextIO
 
 import yaml
 
@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from .sweeper.result import SweepResult
 
 _RECOMMENDATION_NAME = re.compile(r"^[0-9]{4}\.yaml$")
+_COMPACT_JSON = json.JSONEncoder(sort_keys=True, separators=(",", ":"))
 
 
 def prepare_output_directory(path: str | Path, *, overwrite: bool) -> Path:
@@ -57,7 +58,15 @@ def prepare_output_directory(path: str | Path, *, overwrite: bool) -> Path:
 
 def write_prediction_report(root: Path, report: dict[str, Any]) -> Path:
     path = root / "prediction.json"
-    path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    # json.dump writes the chunks json.dumps would join, so a large per-request
+    # report is never held as one string. A failed encoding leaves no report, as before.
+    try:
+        with path.open("w", encoding="utf-8") as output:
+            json.dump(report, output, indent=2, sort_keys=True)
+            output.write("\n")
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
     return path
 
 
@@ -123,14 +132,7 @@ def format_prediction_stdout(
     from .replay.reporting import format_power_diagnostics, format_report_table
 
     if output_format == "json":
-        payload = summary if details is None else {"summary": summary, "details": details}
-        if power_diagnostics is not None:
-            payload = {
-                "summary": summary,
-                "power_diagnostics": power_diagnostics,
-                **({"details": details} if details is not None else {}),
-            }
-        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return _COMPACT_JSON.encode(_prediction_json_payload(summary, details, power_diagnostics))
     if details is not None:
         rendered = (
             format_prediction_stdout(summary, output_format)
@@ -146,6 +148,24 @@ def format_prediction_stdout(
             + "\n\n"
             + format_power_diagnostics(power_diagnostics, top_n=diagnostics_top_n)
         )
+    provenance_lines = [
+        f"KV cache ({role}): {precision['dtype']} (source: {precision['source']})"
+        for role, precision in summary.get("kv_cache_precision", {}).items()
+    ]
+    for role, provenance in summary.get("prediction_provenance", {}).items():
+        if reason := provenance.get("unavailable_reason"):
+            provenance_lines.append(f"Timing ({role}): unavailable ({reason})")
+            continue
+        version = provenance.get("data_version")
+        if version is None:
+            version = f"unavailable ({provenance['data_version_unavailable_reason']})"
+        provenance_lines.append(
+            f"Timing ({role}): estimator={provenance['estimator']}; "
+            f"source={provenance['timing_source']}; data_version={version}"
+        )
+    invalid_banner = ""
+    if summary.get("prediction_status") == "invalid":
+        invalid_banner = f"INVALID prediction ({summary['stop_reason']}): {summary['diagnostic']}\n"
     if summary.get("metric_semantics") == "analytical_epd_overlay":
         lines = ["AISimulate analytical EPD (aggregate estimates; no encoder queue simulation)"]
         for name in (
@@ -161,13 +181,86 @@ def format_prediction_stdout(
         ):
             lines.append(f"{name}: {summary.get(name, 'N/A')}")
         lines.append(format_power_summary(summary))
+        lines.extend(provenance_lines)
         lines.append("duration_ms is a rate-derived accounting interval, not an EPD event timeline.")
-        return "\n".join(lines)
+        return invalid_banner + "\n".join(lines)
 
-    table = format_report_table(summary)
+    table = invalid_banner + format_report_table(summary)
+    if provenance_lines:
+        table += "\n" + "\n".join(provenance_lines)
     if summary.get("agentic_qualification") == "functional_only":
         return "AgentX functional replay only; not an AgentX benchmark result.\n" + table
     return table
+
+
+def write_prediction_stdout(
+    output: TextIO,
+    summary: dict[str, Any],
+    output_format: str,
+    *,
+    details: dict[str, Any] | None = None,
+    power_diagnostics: dict[str, Any] | None = None,
+    diagnostics_top_n: int = 12,
+) -> None:
+    """Write format_prediction_stdout's text without building JSON output as one string."""
+
+    if output_format == "json":
+        _write_compact_json(output, _prediction_json_payload(summary, details, power_diagnostics))
+        return
+    output.write(
+        format_prediction_stdout(
+            summary,
+            output_format,
+            details=details,
+            power_diagnostics=power_diagnostics,
+            diagnostics_top_n=diagnostics_top_n,
+        )
+    )
+
+
+def _prediction_json_payload(
+    summary: dict[str, Any],
+    details: dict[str, Any] | None,
+    power_diagnostics: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if power_diagnostics is not None:
+        return {
+            "summary": summary,
+            "power_diagnostics": power_diagnostics,
+            **({"details": details} if details is not None else {}),
+        }
+    return summary if details is None else {"summary": summary, "details": details}
+
+
+def _write_compact_json(output: TextIO, value: Any, _enclosing: frozenset[int] = frozenset()) -> None:
+    """Write _COMPACT_JSON.encode(value) piecewise.
+
+    Objects are walked key by key and lists element by element, so a large
+    per-request list is never one string. Every leaf and list element goes
+    through the same encoder, keeping the bytes identical.
+    """
+
+    if isinstance(value, dict) and all(isinstance(key, str) for key in value):
+        if id(value) in _enclosing:
+            raise ValueError("Circular reference detected")
+        enclosing = _enclosing | {id(value)}
+        output.write("{")
+        for index, key in enumerate(sorted(value)):
+            if index:
+                output.write(",")
+            output.write(_COMPACT_JSON.encode(key))
+            output.write(":")
+            _write_compact_json(output, value[key], enclosing)
+        output.write("}")
+    elif isinstance(value, list):
+        output.write("[")
+        for index, item in enumerate(value):
+            if index:
+                output.write(",")
+            output.write(_COMPACT_JSON.encode(item))
+        output.write("]")
+    else:
+        output.write(_COMPACT_JSON.encode(value))
 
 
 def format_recommendation_stdout(rows: list[dict[str, Any]], output_format: str) -> str:

@@ -43,6 +43,7 @@ from .parallel_enum import (
     ReplicaParallelConfig,
     enumerate_disagg_configs,
     enumerate_parallel_configs,
+    enumerate_worker_shapes,
 )
 
 # GQA+MoE architectures. Pure expert-TP is no longer gated on this list; it is
@@ -188,7 +189,30 @@ def parallel_configs_for(
     # MoE tensor-parallel (moe_ep == 1) is enabled for every MoE model, MLA
     # included: real deployments (e.g. InferenceX GLM-5, reported as EP=1) run it,
     # so the search must be able to find it rather than have it filtered out here.
-    if profile is None:
+    if profile is None and candidate_configs is not None:
+        # Explicit pins need not occur in the automatic pure-pattern menu.
+        # Reuse its width/backend checks, then apply the usual KV feasibility.
+        shape_support: dict[ParallelShape, bool] = {}
+        configs = []
+        for candidate in candidate_configs:
+            if candidate.total_gpus > gpu_budget or (
+                min_gpu_budget is not None and candidate.total_gpus < min_gpu_budget
+            ):
+                continue
+            roles = (candidate,) if deployment_mode == "agg" else (candidate.prefill, candidate.decode)
+            for role in roles:
+                shape = role.shape
+                if shape not in shape_support:
+                    shape_support[shape] = shape in enumerate_worker_shapes(
+                        is_moe=mh.is_moe,
+                        backend=backend,
+                        gpus_per_worker=shape.gpus_per_worker,
+                        enable_wideep=mh.enable_wideep,
+                        allow_hybrid=True,
+                    )
+            if all(shape_support[role.shape] for role in roles):
+                configs.append(candidate)
+    elif profile is None:
         common = dict(
             is_moe=mh.is_moe,
             backend=backend,

@@ -14,7 +14,7 @@ from aisimulate.sweeper.model_hw import (
     parallel_configs_for,
     resolve_model_hardware,
 )
-from aisimulate.sweeper.parallel_enum import ParallelShape
+from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
 
 DEEPSEEK = "deepseek-ai/DeepSeek-V3"
 QWEN = "Qwen/Qwen3-32B"
@@ -307,3 +307,37 @@ def test_tp_that_does_not_split_heads_is_skipped_not_fatal(caplog):
     assert {c.shape.tp for c in cfgs} <= {1, 2, 4, 8}
     assert "num_heads 40 should be divisible by tp_size 16" in caplog.text
     assert "tp=16 dp=1 moe_tp=1 moe_ep=16" in caplog.text
+
+
+@pytest.mark.parametrize("tp", [0, 1])
+def test_explicit_dense_pin_requires_positive_width_with_fixed_kv(monkeypatch, tp):
+    monkeypatch.setattr(
+        mh_mod,
+        "resolve_model_hardware",
+        lambda *args, **kwargs: ModelHardware(
+            model_name="model",
+            hardware_sku="hardware",
+            backend="vllm",
+            is_moe=False,
+            mla=False,
+            enable_wideep=False,
+            weight_bytes=1,
+            vram_per_gpu=80,
+            gpus_per_node=8,
+            max_context=2048,
+        ),
+    )
+    pin = ReplicaParallelConfig(ParallelShape(tp=tp, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    kwargs = dict(
+        gpu_budget=1,
+        deployment_mode="agg",
+        backend="vllm",
+        max_seq_len=1024,
+        role_runtime={"agg": (4096, 32, 0.75, 4096)},
+        candidate_configs=[pin],
+    )
+    if tp == 0:
+        with pytest.raises(NoViableParallelConfig):
+            parallel_configs_for("model", "hardware", **kwargs)
+    else:
+        assert parallel_configs_for("model", "hardware", **kwargs) == [pin]

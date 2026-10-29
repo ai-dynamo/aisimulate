@@ -19,20 +19,28 @@
 //! - [`model`]: the public [`ForwardPassPerfModel`] and its diagnostics.
 //! - [`correction`]: the native online-correction grid.
 //! - [`regression`]: the regression fallback.
+//! - [`learned`]: offline-trained tree-ensemble model over FPM features.
 //! - [`samples`]: shared bucketed-sample infrastructure.
 //! - [`options`]: tuning controls.
+//! - [`snapshot`]: the on-disk state snapshot format.
 
 mod config;
 mod correction;
 pub(crate) mod coverage;
+mod dynamic_correction;
 mod estimator;
 mod evidence;
+mod execution;
+mod learned;
+mod learned_online;
 mod metrics;
 mod model;
 mod options;
 mod regression;
 mod resources;
 mod samples;
+mod selector;
+mod snapshot;
 
 #[cfg(test)]
 mod tests;
@@ -45,16 +53,28 @@ pub use coverage::{FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQue
 pub use estimator::*;
 pub(crate) use evidence::accumulate_fpm_estimates;
 pub use evidence::*;
+pub use execution::{
+    FPM_SPECULATIVE_ROUND_PREFIX, FpmExecutionBinding, FpmExecutionKind, FpmExecutionProfile,
+    FpmSpeculativeMethod, FpmTimingScope,
+};
+pub use learned::LEARNED_SCHEMA_VERSION;
+#[cfg(feature = "python")]
+pub(crate) use learned_online::canonical_learned_identity;
 pub(crate) use metrics::validate_forward_pass_metrics;
 pub use metrics::{FPM_VERSION, ForwardPassMetrics, QueuedRequestMetrics, ScheduledRequestMetrics};
 pub use model::{
-    ForwardPassPerfDiagnostics, ForwardPassPerfModel, ForwardPassPerfProvenance,
-    ForwardPassPerfReadiness, ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
-    ForwardPassRegressionWorkloadKind, ForwardPassWorkerType,
+    ForwardPassCorrectionLimits, ForwardPassCorrectionQueryType, ForwardPassCorrectionReadiness,
+    ForwardPassDeploymentTopology, ForwardPassPerfDiagnostics, ForwardPassPerfModel,
+    ForwardPassPerfProvenance, ForwardPassPerfReadiness, ForwardPassPerfSource,
+    ForwardPassReadinessReport, ForwardPassRegressionStoreDiagnostics,
+    ForwardPassRegressionWorkloadKind, ForwardPassStateSnapshotSummary,
+    ForwardPassStoreNotReadyReason, ForwardPassStoreReadiness, ForwardPassWorkerType,
+    StateSnapshotOptions,
 };
-pub use options::ForwardPassPerfOptions;
+pub use options::{CorrectionMode, ForwardPassPerfOptions};
 pub use regression::ForwardPassSplineDiagnostics;
 pub use resources::{
     FpmCacheBudget, FpmCacheBudgetAdjusted, FpmCacheBudgetRequest, FpmCacheGroup, FpmCacheKind,
     FpmCacheLayout, FpmResourceConfig, FpmRuntimeMemoryConfig,
 };
+pub use snapshot::{STATE_SNAPSHOT_LAYOUT_VERSION, StateSnapshotKind};

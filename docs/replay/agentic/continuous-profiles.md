@@ -35,9 +35,11 @@ The same controls are preserved by prediction, recommendation, saved YAML,
 Sweeper workloads, and the native JSON execution boundary.
 
 The built-in engine supports offline vLLM and SGLang with aggregated or separate
-prefill/decode workers, HBM-only KV cache, and speculative decoding disabled.
+prefill/decode workers and HBM-only KV cache, including speculative decoding
+with explicit acceptance assumptions and a compatible timing model.
 vLLM also supports local or shared [G2 host offload](../engine/kv-cache.md#agentic-g2) on a static
-single aggregated worker or 1P1D, with attention DP=1 on every role.
+single aggregated worker or 1P1D, with attention DP=1 on every role and
+speculative decoding disabled.
 Weka, Agentic Mooncake, and agentic Dynamo traces share this path. Online execution,
 other backends, and Dynamo-owned routing need their own qualified integration.
 
@@ -50,11 +52,27 @@ corpus cursor. The cursor wraps at the end of the corpus. New plays start at
 turn zero with fresh request, conversation, play, and cache identities. Native
 server cleanup from an earlier play may continue after its lane is reused.
 
+Inside a play, requests follow AIPerf's release rules. A request that depends
+on other requests in its play starts from their actual dispatch or completion
+plus the recorded delay, never at its authored source offset, so a server that
+answers faster than the recorded API shortens the play. A turn that joins
+children waits for them and for its own recorded delay after its predecessor.
+The first request of a detected chain, which the trace anchors only with a
+replay barrier, starts when that barrier clears. Only play roots and, after a
+snapshot cut, each stream's next request whose predecessor lies before the cut
+keep a source-clock timer. Finite replay without a profile still waits for
+authored offsets.
+
 Idle guards advance pending workload timers after a tree or the whole client
 workload has no outstanding requests for its configured cap. Requests queued
 for placement and requests between prefill and decode still count as outstanding.
-The timer shift preserves relative delays and dependencies. It does not move
-engine completions, KV transfers, or server cleanup events.
+Pending timers include a blocked request's own delay once its predecessor
+completes, such as a joining turn's delay while its children are pending or a
+turn's think time while its replay barrier is pending. The timer shift moves
+every pending timer by the same amount, preserving relative delays and
+dependencies. It does not move engine completions, KV transfers, or server
+cleanup events. When the earliest shifted timer belongs to a request that is
+still blocked, the guard shifts again at the same time.
 
 At the admission deadline, no new workload request or replacement play is
 issued. Previously submitted requests may complete during the response grace
@@ -87,10 +105,11 @@ is zero.
 The report keeps the admission cutoff separately. A configured one-hour run can
 have a request observation interval shorter or longer than one hour.
 
-The warmup policy is to repeat saved primer inputs and keep
-the original snapshot frontier. The referenced AgentX executor advances its live
-trajectory during warmup. Initial snapshot sampling also retains AISimulate's
-existing deterministic algorithm. These differences remain explicit; this is
+The default warmup policy repeats saved primer inputs and keeps the original
+snapshot frontier. The opt-in [live trajectory policy](warmup.md#live-trajectory-policy)
+advances the dependency graph during warmup and preserves its surviving frontier.
+Initial sampling retains AISimulate's existing deterministic algorithm unless
+reference cuts and the shared sequential cursor are explicitly imported. This is
 functional qualification of profile control, not complete AgentX parity or
 hardware performance accuracy. Long profiles retain lifecycle evidence and can
 use more host memory than a finite corpus replay. Resource admission still checks
@@ -129,8 +148,10 @@ The reference executor is SemiAnalysisAI's AIPerf fork
 [`agentx-harness` at `754356e9a39acc6cc6afb242d123bb57c3fb6f75`](https://github.com/SemiAnalysisAI/agentx-harness/tree/754356e9a39acc6cc6afb242d123bb57c3fb6f75),
 licensed [Apache-2.0](https://github.com/SemiAnalysisAI/agentx-harness/blob/754356e9a39acc6cc6afb242d123bb57c3fb6f75/LICENSE).
 Its timing modules are `src/aiperf/timing/phase/runner.py`,
-`src/aiperf/timing/strategies/agentic_replay.py`, and
-`src/aiperf/timing/replay_dependencies.py`; request observation duration is
+`src/aiperf/timing/strategies/agentic_replay.py`,
+`src/aiperf/timing/branch_orchestrator.py`,
+`src/aiperf/timing/replay_dependencies.py`, and
+`src/aiperf/common/loop_scheduler.py`; request observation duration is
 defined in `src/aiperf/metrics/types/benchmark_duration_metric.py`.
 InferenceX [`4ab85c1e33b66d6bd5a3087b3de5ba3e86cbbe80`](https://github.com/SemiAnalysisAI/InferenceX/tree/4ab85c1e33b66d6bd5a3087b3de5ba3e86cbbe80)
 pins that executor under `utils/aiperf` and supplies the AgentX recipe in
@@ -138,3 +159,20 @@ pins that executor under `utils/aiperf` and supplies the AgentX recipe in
 The AISimulate implementation uses its native dependency graph and virtual event
 loop; the tests and example workload are locally authored. Source and attribution evidence is retained in the
 [replay evidence record](../../../benchmarks/evidence/accuracy/replay-evidence.md).
+
+Known release differences:
+
+- Upstream AIPerf releases on PyPI (0.12.0 and 0.13.0) resume a turn blocked
+  on a join as soon as its children complete, without the turn's own recorded
+  delay. AISimulate follows the pinned fork, which waits for both. Compare
+  against a live run only with the matching executor.
+- The Weka import keeps recorded gaps that the fork drops. A joining turn also
+  waits its recorded gap after each child ends. A subagent's start offset is
+  measured from its parent request's recorded end, while the fork measures it
+  from the earliest subagent spawned with it. An inner subagent chain without a
+  detected fork is anchored to the play root instead of the subagent's spawn.
+- The fork's per-tree guard shifts again only when its earliest timer lands on
+  a request held by a replay barrier. When it lands on a joining turn whose
+  children still wait on later timers, the fork leaves that tree idle until its
+  next timer fires. AISimulate shifts again in both cases, as the fork's global
+  guard does.

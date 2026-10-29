@@ -121,7 +121,16 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // - 26 (decode context parallelism): the context/generation attention, MLA,
 //   MLA-module, wide-EP MLA and DSA ops gained a tail-appended `dcp_size`
 //   (gathered query heads over a 1/dcp KV stripe; striped-context gather).
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 27;
+// - 28 (GLM-5.3-Flash Ops): Glm53Attention, Glm53Ffn and Glm53Primitive gained
+//   a tail-appended `measured` generic composition priced in SILICON/HYBRID.
+//   The serde default covers JSON only; schema-27 bincode payloads are rejected.
+// - 29 (SGLang VL host loop): `EngineSpec` gained the optional `vision`
+//   section (encoder parallelism plus the tower's ops grouped by the token
+//   count they run on), appended to the bincode wire so a VL estimator can
+//   price encoder calls through the canonical model. Claimed 21, 27 and 28 on
+//   its own branch while 21 through 28 landed; renumbered at merge (precedent:
+//   15, 18, 26).
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 29;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].

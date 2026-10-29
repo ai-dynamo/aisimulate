@@ -12,7 +12,7 @@ import aisimulate.sweeper.search_space as search_space_module
 from aisimulate.sweeper.config import SmartSearchConfig
 from aisimulate.sweeper.deploy import build_backend_deployment
 from aisimulate.sweeper.kv_estimate import NoPerfDatabase, resolve_backend_version
-from aisimulate.sweeper.model_hw import NoViableParallelConfig
+from aisimulate.sweeper.model_hw import ModelHardware, NoViableParallelConfig
 from aisimulate.sweeper.parallel_enum import (
     DisaggParallelConfig,
     ParallelShape,
@@ -683,6 +683,68 @@ def test_pinned_parallel_configs_replace_generated_menu():
     assert all(item.total_gpus == 8 for item in branch.parallel_configs)
 
 
+@pytest.mark.parametrize(
+    "backend,budget,has_capacity,accepted",
+    [("vllm", 8, True, True), ("trtllm", 8, True, False), ("vllm", 7, True, False), ("vllm", 8, False, False)],
+)
+def test_explicit_hybrid_pin_uses_backend_and_capacity_checks(monkeypatch, backend, budget, has_capacity, accepted):
+    monkeypatch.setattr(
+        "aisimulate.sweeper.model_hw.resolve_model_hardware",
+        lambda *args, **kwargs: ModelHardware(
+            model_name="model",
+            hardware_sku="hardware",
+            backend=backend,
+            is_moe=True,
+            mla=False,
+            enable_wideep=False,
+            weight_bytes=1,
+            vram_per_gpu=80,
+            gpus_per_node=8,
+            max_context=2048,
+        ),
+    )
+    seen = []
+
+    def feasible(shapes, **kwargs):
+        seen.extend(shapes)
+        return dict.fromkeys(shapes, 4096) if has_capacity else {}
+
+    monkeypatch.setattr("aisimulate.sweeper.model_hw.feasible_shape_tokens", feasible)
+    config = _config(
+        deployment_mode=["agg"],
+        backend=[backend],
+        gpu_budget=budget,
+        parallel_configs=[{"tp": 2, "attention_dp": 4, "moe_tp": 1, "moe_ep": 8, "replicas": 1}],
+    )
+    if not accepted:
+        with pytest.raises(NoViableParallelConfig):
+            enumerate_branches(config)
+        return
+    (branch,) = enumerate_branches(config)
+    expected = ReplicaParallelConfig(ParallelShape(tp=2, dp=4, moe_tp=1, moe_ep=8), replicas=1)
+    assert branch.parallel_configs == (expected,)
+    assert seen == [expected.shape]
+
+
+@pytest.mark.parametrize("replicas", [[3], [1, 2, 3]])
+def test_pinned_gpu_budget_rejection_names_requirement_and_limit(monkeypatch, replicas):
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        lambda *args, **kwargs: [_AGG_CFG],
+    )
+    config = _config(
+        deployment_mode=["agg"],
+        backend=["vllm"],
+        gpu_budget=2,
+        parallel_configs=[{"tp": 1, "replicas": n} for n in replicas],
+    )
+    with pytest.raises(
+        NoViableParallelConfig,
+        match=r"used_gpus=3 exceeds gpu_budget=2 \(optimization.constraints.max_candidate_gpus in recommend\)",
+    ):
+        enumerate_branches(config)
+
+
 def test_illegal_pinned_parallel_config_is_rejected():
     config = _config(
         model_name="meta-llama/Meta-Llama-3.1-8B",
@@ -892,3 +954,15 @@ def test_partial_illegal_pin_preserves_runner_details(monkeypatch):
         )
 
     assert calls == ["trtllm"]
+
+
+@pytest.mark.parametrize("field", ["tp", "pp", "attention_dp", "moe_tp", "moe_ep", "replicas"])
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "2", None])
+@pytest.mark.parametrize("role", ["agg", "prefill", "decode"])
+def test_explicit_pin_rejects_invalid_dimensions(field, value, role):
+    shape = {"tp": 2, "attention_dp": 4, "moe_tp": 1, "moe_ep": 8, "replicas": 1}
+    shape[field] = value
+    mode = "agg" if role == "agg" else "disagg"
+    pin = shape if mode == "agg" else {"prefill": {"tp": 1}, "decode": {"tp": 1}, role: shape}
+    with pytest.raises(ValueError, match=f"{field} must be a positive integer"):
+        _config(deployment_mode=[mode], parallel_configs=[pin])

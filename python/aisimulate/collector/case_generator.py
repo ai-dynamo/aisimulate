@@ -19,6 +19,16 @@ from typing import Optional
 
 import yaml
 
+
+def _xpu_available() -> bool:
+    try:
+        import torch
+
+        return hasattr(torch, "xpu") and torch.xpu.is_available()
+    except Exception:
+        return False
+
+
 COLLECTOR_ROOT = Path(__file__).resolve().parent
 BASE_OP_CASES_DIR = COLLECTOR_ROOT / "cases" / "base_ops"
 MODEL_CASES_DIR = COLLECTOR_ROOT / "cases" / "models"
@@ -264,6 +274,7 @@ def get_attention_head_configs(
             num_kv_heads=num_kv_heads,
             head_dim=head_dim,
             window_size=window_size,
+            has_attention_sink=bool(profile.get("has_attention_sink", False)),
         )
         if backend == "sglang":
             attention_chunk_size = profile.get("sglang_attention_chunk_size")
@@ -312,6 +323,13 @@ def get_attention_head_configs(
                 f"different runtime semantics: {population_key=}, previous={previous_signature}, "
                 f"current={current_signature}"
             )
+
+        # XPU-only: a non-None sinks selects a distinct kernel there, so the sink
+        # case wins the shared key. On CUDA sink is a same-kernel runtime arg, so
+        # NV/TRT-LLM keep the upstream first-seen behavior (this branch excluded).
+        if _xpu_available() and config.has_attention_sink and not previous.has_attention_sink:
+            seen[population_key] = config
+            configs[configs.index(previous)] = config
 
     profiles = (
         _sglang_attention_profiles(
@@ -2115,19 +2133,23 @@ class GdnCommonTestCase:
 
 
 # =============================================================================
-# MHC (DeepSeek-V4 Hash-Compressed attention) Test Cases
+# MHC (manifold-constrained hyper-connection) Test Cases
 # =============================================================================
 
 
 @dataclasses.dataclass
 class MhcCommonTestCase:
-    """Test case configuration for DeepSeek-V4 mHC pre/post kernel benchmarking."""
+    """Test case configuration for mHC pre/post kernel benchmarking."""
 
     phase: str  # "pre" or "post"
     hidden_size: int
     hc_mult: int
     num_tokens_list: list[int]
     model_name: str
+    # Model-file architecture (config.json ``architectures[0]``). Collectors
+    # use it to select the framework's call sites for that model family; it
+    # is part of the invocation identity, not of the persisted table key.
+    architecture: str
 
 
 def get_common_mhc_test_cases() -> list[MhcCommonTestCase]:
@@ -2142,6 +2164,9 @@ def get_common_mhc_test_cases() -> list[MhcCommonTestCase]:
         hidden_size = int(model_config["hidden_size"])
         hc_mult = int(model_config["hc_mult"])
         model_name = str(model_config["model_path"])
+        architecture = model_config.get("architecture")
+        if not architecture:
+            raise ValueError(f"model_case_values.mhc row for {model_name!r} has no architecture")
         for phase in ("pre", "post"):
             test_cases.append(
                 MhcCommonTestCase(
@@ -2150,6 +2175,7 @@ def get_common_mhc_test_cases() -> list[MhcCommonTestCase]:
                     hc_mult=hc_mult,
                     num_tokens_list=num_tokens_list,
                     model_name=model_name,
+                    architecture=str(architecture),
                 )
             )
     return test_cases

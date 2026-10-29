@@ -25,6 +25,7 @@ pub mod fpm_forward;
 pub(crate) mod fpm_sol;
 pub mod gemm;
 pub mod mamba;
+pub mod measured_composite;
 pub mod mhc;
 pub mod mla;
 pub mod moe;
@@ -62,3 +63,6 @@ pub use msa::MsaModuleOp;
 pub use op::{FallbackOp, Op, OverlapOp, RuntimeContext};
 pub use vision::VisionEncoderOp;
 pub use wideep_mla::{WideEpContextMlaOp, WideEpGenerationMlaOp};
+
+pub mod glm53flash;
+pub use glm53flash::{Glm53AttentionOp, Glm53FfnOp, Glm53MhcOp, Glm53PrimitiveOp, Glm53RouterOp};

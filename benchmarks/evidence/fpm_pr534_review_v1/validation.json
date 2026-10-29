@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "implementation_commit": "160ff6e941107b0805f70be2fb8b1a6bed5aa7d3",
+  "implementation_tree": "e4a61885ec26a41b93367f13c20d83f3eda41c49",
+  "previous_pr534_head": "f57cac9ccbf732d84502181212e39637145a0fb6",
+  "integrated_pr533_head": "f2fa38494c77f3ce428552096613338d2cf8859f",
+  "native_module_sha256": "5f045509d809e299afc099eb51f6ecb6430f3f7835da83e7cfb8f465a07eac88",
+  "native_build_command": "CARGO_TARGET_DIR=/Users/yueqiz/Documents/ChatGPT/AISimulate/target /Users/yueqiz/Documents/ChatGPT/AISimulate/python/aisimulate/.venv/bin/maturin build --release --locked --offline --out /private/tmp/pr534-review-evidence/wheels --interpreter /Users/yueqiz/Documents/ChatGPT/AISimulate/python/aisimulate/.venv/bin/python",
+  "native_build_cwd": "python/aisimulate",
+  "native_build_log_sha256": "0add35af669afd46d94a60f8f4ae316b2a90d0b488f1298e85fe501c807db358",
+  "native_build_source_binding": "Fresh release build before the implementation merge commit; git hooks left all tracked source files unchanged. The Python suites imported the candidate worktree extension.",
+  "platform": "macOS-26.7.1-arm64-arm-64bit",
+  "python_environment": {
+    "executable": "/Users/yueqiz/Documents/ChatGPT/AISimulate/python/aisimulate/.venv/bin/python",
+    "version": "3.12.13",
+    "PYTHONPATH": "$PWD/python/aisimulate/src",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1"
+  },
+  "checks": [
+    {
+      "name": "Rust FPM",
+      "passed": 283,
+      "status": "passed",
+      "command": "CARGO_TARGET_DIR=/Users/yueqiz/Documents/ChatGPT/AISimulate/target cargo test --locked --offline -p aisimulate-core --lib --no-default-features perfmodel::fpm:: -- --nocapture",
+      "log_sha256": "d9755e08c96673b8a643bba98860309444fd1dc1e07451fc14a212f097028c9f",
+      "log_summary": "test result: ok. 283 passed; 0 failed; 0 ignored; 0 measured; 1889 filtered out; finished in 10.83s"
+    },
+    {
+      "name": "Python SDK and public API",
+      "passed": 189,
+      "status": "passed",
+      "command": "python -m pytest -c python/aisimulate/pytest.ini -p no:timeout python/aisimulate/tests/unit/sdk/test_fpm_selector_integration.py python/aisimulate/tests/unit/sdk/test_fpm_online_export.py python/aisimulate/tests/unit/sdk/test_fpm_online_integration.py python/aisimulate/tests/unit/sdk/test_fpm_online_structural_reference.py python/aisimulate/tests/unit/sdk/test_fpm_learned.py python/aisimulate/tests/cross_package/test_core_public_api.py -q",
+      "log_sha256": "fe0c7fe0a44ae2f8c32f92c19ff574c25718af13b8f703c417d3e0f5761606ff",
+      "log_summary": "======================== 189 passed, 1 warning in 6.22s ========================"
+    },
+    {
+      "name": "Configuration, Sweeper, CLI and Runner callers",
+      "passed": 888,
+      "status": "passed",
+      "command": "python -m pytest -c pytest.ini -p no:timeout tests/test_cli_config.py tests/sweeper/test_config.py tests/sweeper/test_learned_estimator.py tests/test_runner.py -q",
+      "log_sha256": "4482a16294f5a119887a8b524b0b5e201c7576bd879865064f4f4a1b8fa9a7e8",
+      "log_summary": "888 passed in 21.25s"
+    },
+    {
+      "name": "Frozen parity",
+      "passed": 389,
+      "status": "passed",
+      "command": "python -m pytest -c python/aisimulate/pytest.ini -p no:timeout crates/core/parity_tests/perfmodel/test_engine_step_parity.py crates/core/parity_tests/perfmodel/test_compile_engine_parity.py -q",
+      "log_sha256": "c516a00180aaa64fa27cf341ac2f31cff95a47e3d56615e476bc31fc86096d01",
+      "log_summary": "================== 389 passed, 1 warning in 143.18s (0:02:23) =================="
+    }
+  ],
+  "compatibility": {
+    "receipt": "compatibility/result.json",
+    "receipt_sha256": "0ed155f4a4f9de89a577727e728b7040209924f82489486664ef3a9ad9eb9581",
+    "summary": {
+      "prior_reader_accepted_default_selector_configurations": 21,
+      "candidate_causal_configurations_rejected_by_prior_reader": 6,
+      "candidate_roundtrips": 27,
+      "standalone_learned_behavior_matches_prior_reader": 9,
+      "runtime_checkpoint_directions_passed": 2
+    },
+    "command": "/Users/yueqiz/Documents/ChatGPT/AISimulate/python/aisimulate/.venv/bin/python benchmarks/evidence/fpm_pr534_review_v1/compatibility/compare_readers.py --candidate /private/tmp/aisimulate-pr534-review/python/aisimulate/src/aisimulate/_runtime.abi3.so --baseline /private/tmp/aisimulate-pr533-review/python/aisimulate/src/aisimulate/_runtime.abi3.so --fixture /private/tmp/pr533-review-evidence/fixture --baseline-validation benchmarks/evidence/fpm_pr533_review_v1/validation.json --candidate-revision 160ff6e941107b0805f70be2fb8b1a6bed5aa7d3 --runtime-dir /private/tmp/pr534-review-evidence/runtime-checkpoints --out benchmarks/evidence/fpm_pr534_review_v1/compatibility/result.json"
+  },
+  "source_sha256": {
+    "crates/core/src/perfmodel/fpm/config.rs": "ec23b55f08f037b9e701fb619f0191d9ca8c6e7b50c3cbac8c69559649a329e2",
+    "crates/core/src/perfmodel/fpm/estimator.rs": "6739bc9c020cc8f31a7ebf33975b5d1b6d6512550033a75c23ff23391e67a2ce",
+    "crates/core/src/perfmodel/fpm/combined_tests.rs": "26f2e31f2b79cd47821164d0bd6ab6e82a42516403c40ad4bed09dde016cedbf",
+    "crates/core/src/perfmodel/fpm/learned_online/fitting.rs": "f5edbefc491d01842c78e5d88dd09cf90dcc50ab8db569227e3afa7cbba2cf2d",
+    "crates/core/src/perfmodel/fpm/learned_online/checkpoint.rs": "b85f1cc0f3645d0bb12af7a82be80676e90f177ebc297231c38e45ab5156439a",
+    "python/aisimulate/src/aisimulate_core/_native.pyi": "bfd584618f1edb7c320e656de0d01df89a0cae736fa4c1b8e0ade85243dc5c44",
+    "python/aisimulate/src/aisimulate_core/sdk/rust_engine_step.py": "a29215a86d720dbb4b5801288223c54d746d381307348de5222c5649927945bf",
+    "python/aisimulate/tests/unit/sdk/test_fpm_selector_integration.py": "4fbcc56850c1d303affa50400ae93bb2cf2d49ee20540191a83a4424b8bb6ae2",
+    "python/aisimulate/tests/cross_package/test_core_public_api.py": "30ac5b7d661179d13a627594faaefd5a9d65d645698b7b07d8f00aea55e67f71",
+    "docs/perf-model/fpm_ml/configuration.md": "af0d11f7c6384773d5edb6236dd577ee752ce35a04c1ebe046b1cba1ab067b64"
+  },
+  "format_checks": [
+    "cargo fmt --all -- --check",
+    "ruff check --config python/aisimulate/pyproject.toml (four changed Python/stub files and compatibility probe)",
+    "ruff format --check --config python/aisimulate/pyproject.toml (same files)",
+    "git diff --check",
+    "CODEOWNERS and CONTRIBUTORS regeneration into temporary files exactly matches tracked files",
+    "CODEOWNERS strict coverage: 3931/3931 tracked files explicitly owned, zero catch-all-only files"
+  ],
+  "frozen_goldens_changed": false,
+  "dependency_manifests_changed": false,
+  "limits": [
+    "Local macOS correctness and compatibility validation, not a claim about GitHub CI on this commit.",
+    "The new guard and default omission compare four scalar selector controls only during construction/serialization; no new prediction or feedback work.",
+    "Inherited fitter cost evidence belongs to PR533. No fresh combined-model timing or serving-accuracy measurements.",
+    "Prior-reader compatibility applies to ordinary and standalone learned modes; causal_selector is a new feature and correctly rejected by PR533.",
+    "Runtime checkpoint proof covers standalone online models. Combined-model persistence continues to reject explicitly."
+  ]
+}

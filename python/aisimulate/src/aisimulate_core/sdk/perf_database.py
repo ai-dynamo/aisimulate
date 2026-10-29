@@ -222,6 +222,11 @@ def _load_query_slots_doc(systems_paths: tuple[str, ...]) -> dict | None:
 def get_version_slots(system: str, backend: str, systems_paths: str | list[str] | None = None) -> dict[str, str] | None:
     """Resolved slots for (system, backend): {'current': v[, 'previous': v][, 'next': v]}.
 
+    Defaults-governed systems always carry 'next': the fleet's highest
+    data-backed version newer than current, or current itself when nothing
+    newer has data. Override-governed systems (frozen baselines) carry no
+    'next'.
+
     None when the slots file is absent (gate off) or the combination has no
     authored entry (e.g. a framework never maintained on that system).
     """
@@ -272,8 +277,10 @@ def get_version_slots(system: str, backend: str, systems_paths: str | list[str] 
             name for name, per_backend in (doc.get("overrides") or {}).items() if (per_backend or {}).get(backend)
         )
         nxt = _derive_fleet_next(tuple(systems_paths), backend, slots["current"], override_systems)
-        if nxt is not None:
-            slots["next"] = nxt
+        # next is the in-development version. When no version newer than
+        # current has data anywhere on the fleet, there is nothing in
+        # development and next resolves to current (query_versions.yaml).
+        slots["next"] = nxt if nxt is not None else slots["current"]
     return slots
 
 
@@ -394,6 +401,28 @@ def is_hopper_system(system_name: str | None) -> bool:
         return False
     spec = load_system_spec(system_name)
     return int(spec.get("gpu", {}).get("sm_version", -1)) == 90
+
+
+def _gpu_is_xpu(gpu: object, label: str) -> bool:
+    # XPU specs omit sm_version; NVIDIA specs carry it.
+    if not isinstance(gpu, dict):
+        raise ValueError(f"Cannot resolve GPU spec for {label}")
+    return "sm_version" not in gpu
+
+
+def is_xpu_system(system_name: str | None) -> bool:
+    """True for XPU systems. NVIDIA specs carry ``sm_version``; XPU specs do not."""
+    if not system_name:
+        return False
+    return _gpu_is_xpu(load_system_spec(system_name).get("gpu"), f"system {system_name!r}")
+
+
+def is_xpu_system_spec(system_spec: object) -> bool:
+    """Classify an already-loaded spec — avoids re-loading with a different
+    systems_paths than the database used."""
+    if not system_spec:
+        return False
+    return _gpu_is_xpu(system_spec.get("gpu"), "the loaded system spec")
 
 
 def build_no_databases_message() -> str:

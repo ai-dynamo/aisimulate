@@ -24,6 +24,16 @@ def normalize_backend(backend: Optional[str], default: str = DEFAULT_BACKEND) ->
     return default
 
 
+def has_fixed_request_lengths(bench_config: Optional[dict], sla_config: Optional[dict]) -> bool:
+    """Return whether a request has the fixed ISL/OSL that benchmarks replay.
+
+    A trace workload has none, so no fixed-length benchmark is generated for it.
+    """
+    bench_config = bench_config or {}
+    sla_config = sla_config or {}
+    return all(bench_config.get(key) or sla_config.get(key) for key in ("isl", "osl"))
+
+
 def coerce_bool(value: Optional[Any]) -> Optional[bool]:
     """Best-effort conversion of user input into booleans."""
     if value is None:

@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import copy
+import shlex
 from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+import yaml
 
 from aisimulate.generator.module_bridge import task_config_to_generator_config
+from aisimulate.generator.rendering.engine import render_backend_templates
 from aisimulate.generator.rendering.rule_engine import apply_rule_plugins
 from aisimulate.generator.request import from_legacy_params, to_legacy_params
 
@@ -80,6 +83,70 @@ def test_default_vllm_rules_still_resize_unpinned_requests():
     assert result["params"]["decode"]["max_num_tokens"] == 512
 
 
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+def test_trtllm_preserved_limits_still_default_missing_transfer_buffer(rule):
+    params = _params(preserve=True, rule=rule)
+    params["params"]["prefill"].pop("cache_transceiver_max_tokens_in_buffer")
+
+    result = apply_rule_plugins(copy.deepcopy(params), "trtllm")
+
+    assert result["params"]["prefill"]["cache_transceiver_max_tokens_in_buffer"] > 0
+    assert result["params"]["decode"]["cache_transceiver_max_tokens_in_buffer"] == 8192
+    for role in ("prefill", "decode"):
+        for key in ("max_batch_size", "max_num_tokens", "max_seq_len"):
+            assert result["params"][role][key] == params["params"][role][key]
+
+
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+def test_trtllm_transfer_buffer_is_not_sized_without_request_lengths(rule):
+    params = _params(preserve=True, rule=rule)
+    params["SlaConfig"] = {}
+    for role in ("prefill", "decode"):
+        params["params"][role].pop("cache_transceiver_max_tokens_in_buffer")
+
+    result = apply_rule_plugins(copy.deepcopy(params), "trtllm")
+
+    for role in ("prefill", "decode"):
+        assert result["params"][role].get("cache_transceiver_max_tokens_in_buffer") is None
+        assert result["params"][role]["cache_transceiver_backend"] == "DEFAULT"
+
+
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+def test_trtllm_explicit_transfer_backend_is_rendered(rule):
+    params = _params(preserve=True, rule=rule)
+    for role in ("prefill", "decode"):
+        params["params"][role]["cache_transceiver_backend"] = "NIXL"
+
+    artifacts = render_backend_templates(apply_rule_plugins(copy.deepcopy(params), "trtllm"), "trtllm")
+
+    for role in ("prefill", "decode"):
+        engine = yaml.safe_load(artifacts[f"extra_engine_args_{role}.yaml"])
+        assert engine["cache_transceiver_config"]["backend"] == "NIXL"
+
+
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+def test_trtllm_transfer_settings_stay_off_aggregated_workers(rule):
+    params = _params(preserve=True, rule=rule)
+    params["DynConfig"] = {"mode": "agg"}
+    params["WorkerConfig"] = {"agg_workers": 1}
+    params["params"] = {"agg": params["params"]["prefill"]}
+    params["params"]["agg"].pop("cache_transceiver_max_tokens_in_buffer")
+
+    result = apply_rule_plugins(copy.deepcopy(params), "trtllm")
+
+    assert "cache_transceiver_backend" not in result["params"]["agg"]
+    assert result["params"]["agg"].get("cache_transceiver_max_tokens_in_buffer") is None
+
+
+@pytest.mark.parametrize("backend", ["vllm", "trtllm"])
+def test_sflow_benchmark_replays_sla_lengths_without_benchmark_lengths(backend):
+    artifacts = render_backend_templates(apply_rule_plugins(_params(preserve=True), backend), backend)
+
+    sflow = yaml.safe_load(artifacts["sflow.yaml"])
+    assert "name: benchmark" in artifacts["sflow.yaml"]
+    assert (sflow["variables"]["ISL"]["value"], sflow["variables"]["OSL"]["value"]) == (128, 16)
+
+
 def test_preserve_engine_limits_survives_typed_request_round_trip():
     params = _params(preserve=True)
 
@@ -117,3 +184,38 @@ def test_module_bridge_propagates_preserve_engine_limits(value: bool):
     )
 
     assert result["preserve_engine_limits"] is value
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "version",
+    [
+        None,
+        "current",
+        "0.10.2",
+        "0.11.0",
+        "0.12.0",
+        "0.14.1",
+        "0.16.0",
+        "0.19.0",
+        "0.20.1",
+        "0.24.0",
+        "0.25.1",
+        "0.26.0",
+        "0.27.0",
+        "0.27.0+cu128",
+        "0.28.0",
+    ],
+)
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+@pytest.mark.parametrize("dtype", ["bfloat16", "fp8", "auto"])
+def test_vllm_cache_dtype_preserves_explicit_selection(version, rule, dtype):
+    params = _params(preserve=True, rule=rule)
+    params["ServiceConfig"]["model_path"] = "example/model"
+    for role in ("prefill", "decode"):
+        params["params"][role]["kv_cache_dtype"] = dtype
+    artifacts = render_backend_templates(params, "vllm", version=version)
+    expected = "auto" if dtype == "bfloat16" and version == "0.10.2" else dtype
+    for role in ("prefill", "decode"):
+        tokens = shlex.split(artifacts[f"cli_args_{role}"])
+        assert tokens[tokens.index("--kv-cache-dtype") + 1] == expected

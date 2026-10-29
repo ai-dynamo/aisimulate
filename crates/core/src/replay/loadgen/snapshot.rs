@@ -24,10 +24,33 @@ use crate::replay::AgenticRuntimeIdentity;
 
 pub const AGENTIC_SNAPSHOT_SCHEMA_V1: &str = "aisimulate.agentic.snapshot.v1";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgenticSnapshotSelection {
+    pub source_play_id: String,
+    /// Loaded graph clock: per-play-relative for Weka, source clock for Mooncake.
+    pub t_star_ms: f64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgenticSnapshotOptions {
     pub seed: u64,
+    /// Exact, externally sampled cuts in lane order. Unset preserves v1 draws.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_selections: Option<Vec<AgenticSnapshotSelection>>,
+    /// Next draw from the shared sequential corpus sampler, including skipped draws.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corpus_cursor: Option<u64>,
+}
+
+impl AgenticSnapshotOptions {
+    pub fn seeded(seed: u64) -> Self {
+        Self {
+            seed,
+            ..Self::default()
+        }
+    }
 }
 
 /// Recorded provenance and the independent benchmark request boundary.
@@ -73,10 +96,14 @@ pub struct AgenticSnapshotEvidence {
 /// Token ranges are functions of lane/ordinal, never runtime completion order.
 #[derive(Debug)]
 pub struct AgenticReplayContext {
+    /// The source graph, except that each node's `hash_ids` holds play-local
+    /// ranks (first-seen order within its play) instead of graph-wide IDs, and
+    /// `hash_values` is empty.
     pub(super) graph: ValidatedAgenticGraph,
+    graph_identity: AgenticGraphIdentity,
     pub(super) lanes: usize,
     seed: u64,
-    ranks: Vec<Vec<u32>>,
+    initial_corpus_cursor: u64,
     index_by_id: FxHashMap<String, usize>,
     node_to_play: Vec<usize>,
     topological_rank: Vec<usize>,
@@ -113,8 +140,30 @@ impl ValidatedAgenticGraph {
         lanes: usize,
         options: AgenticSnapshotOptions,
     ) -> Result<PreparedAgenticSnapshots> {
+        self.clone().into_prepared_snapshots(lanes, options)
+    }
+
+    /// [`Self::prepare_snapshots`] for a caller that no longer needs the graph:
+    /// the replay context reuses it instead of holding a second copy.
+    pub fn into_prepared_snapshots(
+        mut self,
+        lanes: usize,
+        options: AgenticSnapshotOptions,
+    ) -> Result<PreparedAgenticSnapshots> {
         if lanes == 0 || self.plays.is_empty() {
             bail!("agentic snapshots require positive lanes and a nonempty corpus");
+        }
+        match (&options.initial_selections, options.corpus_cursor) {
+            (Some(selections), Some(cursor)) => {
+                if selections.len() != lanes {
+                    bail!("initial_selections must contain exactly one selection per lane");
+                }
+                if cursor < lanes as u64 {
+                    bail!("corpus_cursor cannot precede the initial lane draws");
+                }
+            }
+            (None, None) => {}
+            _ => bail!("initial_selections and corpus_cursor must be specified together"),
         }
         let index_by_id = self
             .nodes
@@ -153,22 +202,24 @@ impl ValidatedAgenticGraph {
         if ordinal != self.nodes.len() {
             bail!("snapshot source graph contains a dependency cycle");
         }
-        let mut ranks = vec![Vec::new(); self.nodes.len()];
+        // Replace graph-wide hash IDs with play-local ranks in place; token
+        // identities are derived from these ranks and the play's slot.
         let mut token_stride = 1_u64;
         let mut node_to_play = vec![0; self.nodes.len()];
         for (play_index, play) in self.plays.iter().enumerate() {
             let mut interner = FxHashMap::default();
             for &index in &play.nodes {
                 node_to_play[index] = play_index;
-                for hash in &self.nodes[index].hash_ids {
+                for hash in &mut self.nodes[index].hash_ids {
                     let next = u32::try_from(interner.len()).context(
                         "source play contains more unique hash IDs than u32 can represent",
                     )?;
-                    ranks[index].push(*interner.entry(*hash).or_insert(next));
+                    *hash = *interner.entry(*hash).or_insert(next);
                 }
             }
             token_stride = token_stride.max(interner.len() as u64);
         }
+        self.hash_values = Arc::default();
         let recorded_intervals = self
             .nodes
             .iter()
@@ -192,41 +243,94 @@ impl ValidatedAgenticGraph {
         let mut rng = StdRng::seed_from_u64(SYNTHETIC_OUTPUT_SEED);
         let outputs = self
             .nodes
-            .iter()
+            .iter_mut()
             .map(|node| {
                 planned_output_token_ids(
-                    node.output_token_ids.clone(),
+                    node.output_token_ids.take(),
                     node.max_output_tokens,
                     &mut rng,
                 )
             })
             .collect();
         let context = Arc::new(AgenticReplayContext {
-            graph: self.clone(),
+            graph_identity: self.identity(),
+            request_stride: self.nodes.len() as u128 + 1,
+            graph: self,
             lanes,
             seed: options.seed,
-            ranks,
+            initial_corpus_cursor: options.corpus_cursor.unwrap_or(lanes as u64),
             outputs,
             index_by_id,
             node_to_play,
             topological_rank,
             recorded_intervals,
             token_stride,
-            request_stride: self.nodes.len() as u128 + 1,
         });
-        let plays = (0..lanes)
-            .map(|lane| context.prepare_play(lane, 0, None))
-            .collect::<Result<Vec<_>>>()?;
+        let plays = if let Some(selections) = options.initial_selections {
+            let play_by_id = context
+                .graph
+                .plays
+                .iter()
+                .enumerate()
+                .map(|(index, play)| (play.play_id.as_str(), index))
+                .collect::<FxHashMap<_, _>>();
+            selections
+                .into_iter()
+                .enumerate()
+                .map(|(lane, selection)| {
+                    let source = *play_by_id
+                        .get(selection.source_play_id.as_str())
+                        .with_context(|| {
+                            format!("unknown snapshot source play {}", selection.source_play_id)
+                        })?;
+                    context.prepare_play_with_cut(
+                        lane,
+                        0,
+                        PlayCut::Absolute(selection.t_star_ms),
+                        Some(source),
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            (0..lanes)
+                .map(|lane| context.prepare_play(lane, 0, None))
+                .collect::<Result<Vec<_>>>()?
+        };
         PreparedAgenticSnapshots::from_plays(plays)
     }
 }
 
 impl AgenticReplayContext {
     pub fn graph_identity(&self) -> AgenticGraphIdentity {
-        self.graph.identity()
+        self.graph_identity.clone()
+    }
+
+    /// Token identities for source node `index` in the play instance `slot`.
+    /// The caller passes the slot of a prepared play, whose range check bounds
+    /// `(slot + 1) * token_stride` by 2^32; every rank is below the stride.
+    pub(super) fn token_ids(&self, slot: u64, index: usize) -> Vec<u32> {
+        debug_assert!(
+            slot.checked_add(1)
+                .and_then(|next| next.checked_mul(self.token_stride))
+                .is_some_and(|end| end <= 1 << 32)
+        );
+        let base = (slot * self.token_stride) as u32;
+        self.graph.nodes[index]
+            .hash_ids
+            .iter()
+            .map(|&rank| base + rank)
+            .collect()
     }
     pub fn lane_count(&self) -> usize {
         self.lanes
+    }
+
+    pub fn initial_corpus_cursor(&self) -> u64 {
+        self.initial_corpus_cursor
+    }
+
+    pub(super) fn recorded_start_ms(&self, index: usize) -> f64 {
+        self.recorded_intervals[index].0
     }
 
     /// Prepare a deterministic corpus-cycle instance. `None` samples an initial
@@ -350,7 +454,7 @@ impl AgenticReplayContext {
             slot,
             evidence: AgenticSnapshotEvidence {
                 schema: AGENTIC_SNAPSHOT_SCHEMA_V1,
-                graph: self.graph.identity(),
+                graph: self.graph_identity.clone(),
                 seed: self.seed,
                 lane_id,
                 play_ordinal,
@@ -493,19 +597,21 @@ impl AgenticPlaySnapshot {
                 .then(|| self.instance_request_id(&graph.nodes[play.root_nodes[0]].request_id)),
             parent_id: parent.map(|e| self.instance_request_id(&e.request_id)),
             cache_id: Some(self.evidence.cache_id.clone()),
+            lineage: graph.conversation_lineage[index].as_ref().map(|lineage| {
+                crate::replay::AgenticConversationLineage {
+                    schema: lineage.schema.clone(),
+                    root_conversation_id: self
+                        .instance_conversation_id(&lineage.root_conversation_id),
+                    parent_conversation_id: lineage
+                        .parent_conversation_id
+                        .as_ref()
+                        .map(|parent| self.instance_conversation_id(parent)),
+                }
+            }),
         }
     }
-    pub(super) fn token_ids(&self, index: usize) -> Result<Vec<u32>> {
-        let base = self
-            .slot
-            .checked_mul(self.context.token_stride)
-            .context("token range overflow")?;
-        self.context.ranks[index]
-            .iter()
-            .map(|&rank| {
-                u32::try_from(base + u64::from(rank)).context("token identity exceeds u32 capacity")
-            })
-            .collect()
+    pub(super) fn token_ids(&self, index: usize) -> Vec<u32> {
+        self.context.token_ids(self.slot, index)
     }
     pub(super) fn request_uuid(&self, index: usize) -> Result<Uuid> {
         let ordinal = u128::from(self.slot)
@@ -520,7 +626,7 @@ impl AgenticPlaySnapshot {
         if length > node.input_length {
             bail!("prefix length exceeds original input length");
         }
-        let ids = self.token_ids(index)?;
+        let ids = self.token_ids(index);
         super::trace::validate_synthesizable_prompt(
             node.input_length,
             &ids,

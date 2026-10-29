@@ -13,12 +13,14 @@ import json
 import math
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, TextIO
 
 from scripts.fpm_accuracy.exceptions import DataError
+from scripts.fpm_accuracy.hf import parquet
 from scripts.fpm_accuracy.hf.models import MeasurementFile, MeasurementIssue, MeasurementState
 from scripts.fpm_accuracy.types.forward_pass import (
     ForwardPassIteration,
@@ -131,9 +133,9 @@ def _parse_forward_pass_measurements(
     for file in files:
         if file.representation == "pre_grouped_rank_lists":
             pre_grouped_files.append(file)
-        elif file.local_path.name.endswith(_MEASUREMENT_STREAM_SUFFIXES):
+        elif file.source_layout == "stream" or file.local_path.name.endswith(_MEASUREMENT_STREAM_SUFFIXES):
             stream_files.append(file)
-        elif file.local_path.name.endswith(_SYNCHRONIZED_ITERATION_SUFFIXES):
+        elif file.source_layout == "benchmark" or file.local_path.name.endswith(_SYNCHRONIZED_ITERATION_SUFFIXES):
             benchmark_files.append(file)
         else:
             raise DataError(f"measurement protocol forward-pass-measurement-v1 does not support file {file.path!r}")
@@ -157,7 +159,8 @@ def _parse_pre_grouped_files(
         iteration_count = 0
         rank_record_count = 0
         seen: set[tuple[str, int, int]] = set()
-        for source_row, group in enumerate(_iter_json_array(file), start=1):
+        groups = _stream_records(file) if file.storage_format == "parquet" else enumerate(_iter_json_array(file), 1)
+        for source_row, group in groups:
             if not isinstance(group, list) or not group:
                 raise DataError(f"measurement file {file.path} iteration {source_row} must be a non-empty rank array")
             if not all(isinstance(value, Mapping) for value in group):
@@ -295,6 +298,17 @@ def _combine(*results: ParseResult) -> ParseResult:
     )
 
 
+def _stream_records(file):
+    if file.storage_format == "parquet":
+        for row in parquet.rows(file):
+            yield row["source_row"], parquet.iteration(row)
+    else:
+        with _open_text(file.local_path) as handle:
+            for source_row, line in enumerate(handle, 1):
+                if line.strip():
+                    yield source_row, _json_line(line, file, source_row)
+
+
 def _parse_fpm_streams(
     configuration_id: str,
     files: Sequence[MeasurementFile],
@@ -306,73 +320,67 @@ def _parse_fpm_streams(
         excluded: Counter[str] = Counter()
         unavailable: Counter[str] = Counter()
         stream_layout: str | None = None
-        with _open_text(file.local_path) as handle:
-            for source_row, line in enumerate(handle, start=1):
-                if not line.strip():
-                    continue
-                payload = _json_line(line, file, source_row)
-                record_layout = (
-                    "canonical_iteration" if _looks_like_canonical_iteration(payload) else "rank_observation"
+        for source_row, payload in _stream_records(file):
+            record_layout = "canonical_iteration" if _looks_like_canonical_iteration(payload) else "rank_observation"
+            if stream_layout is None:
+                stream_layout = record_layout
+            elif stream_layout != record_layout:
+                raise DataError(f"measurement file {file.path} mixes rank and canonical iteration records")
+            if record_layout == "canonical_iteration":
+                observation, issue = _canonical_iteration(
+                    configuration_id,
+                    file,
+                    source_row,
+                    payload,
+                    attention_dp_size,
                 )
-                if stream_layout is None:
-                    stream_layout = record_layout
-                elif stream_layout != record_layout:
-                    raise DataError(f"measurement file {file.path} mixes rank and canonical iteration records")
-                if record_layout == "canonical_iteration":
-                    observation, issue = _canonical_iteration(
-                        configuration_id,
-                        file,
-                        source_row,
-                        payload,
-                        attention_dp_size,
-                    )
-                    if observation is not None:
-                        observations.append(observation)
-                    elif issue is not None:
-                        state, reason = issue
-                        (excluded if state is MeasurementState.EXCLUDED else unavailable)[reason] += 1
-                    continue
+                if observation is not None:
+                    observations.append(observation)
+                elif issue is not None:
+                    state, reason = issue
+                    (excluded if state is MeasurementState.EXCLUDED else unavailable)[reason] += 1
+                continue
 
-                rank = _rank_measurement(payload, file, source_row)
-                if attention_dp_size is None or attention_dp_size <= 0:
-                    raise DataError(f"cannot validate rank stream {file.path} without attention_dp_size")
-                # A rank-local counter is not a cross-rank iteration key. Raw
-                # multi-rank streams must be materialized by the dataset using
-                # their declared synchronization rule before Gym can score them.
-                if attention_dp_size > 1:
-                    unavailable["unsynchronized_attention_dp_stream"] += 1
-                    continue
-                if rank.dp_rank != 0:
-                    unavailable["unexpected_dp_rank"] += 1
-                    continue
-                if rank.wall_time_s == 0:
-                    excluded["non_positive_latency"] += 1
-                    continue
-                if _workload(rank.scheduled) is WorkloadKind.EMPTY:
-                    excluded["empty_scheduler_heartbeat"] += 1
-                    continue
-                chronology_key: tuple[int | float | str, ...] | None = None
-                event_time: str | None = None
-                if rank.observed_at_unix_ms is not None:
-                    chronology_key = (rank.observed_at_unix_ms, rank.counter_id)
-                    event_time = str(int(rank.observed_at_unix_ms))
-                metric = _metric(
-                    configuration_id=configuration_id,
-                    file=file,
+            rank = _rank_measurement(payload, file, source_row)
+            if attention_dp_size is None or attention_dp_size <= 0:
+                raise DataError(f"cannot validate rank stream {file.path} without attention_dp_size")
+            # A rank-local counter is not a cross-rank iteration key. Raw
+            # multi-rank streams must be materialized by the dataset using
+            # their declared synchronization rule before Gym can score them.
+            if attention_dp_size > 1:
+                unavailable["unsynchronized_attention_dp_stream"] += 1
+                continue
+            if rank.dp_rank != 0:
+                unavailable["unexpected_dp_rank"] += 1
+                continue
+            if rank.wall_time_s == 0:
+                excluded["non_positive_latency"] += 1
+                continue
+            if _workload(rank.scheduled) is WorkloadKind.EMPTY:
+                excluded["empty_scheduler_heartbeat"] += 1
+                continue
+            chronology_key: tuple[int | float | str, ...] | None = None
+            event_time: str | None = None
+            if rank.observed_at_unix_ms is not None:
+                chronology_key = (rank.observed_at_unix_ms, rank.counter_id)
+                event_time = str(int(rank.observed_at_unix_ms))
+            metric = _metric(
+                configuration_id=configuration_id,
+                file=file,
+                source_row=source_row,
+                rank_index=0,
+                rank=rank,
+            )
+            observations.append(
+                ParsedObservation(
+                    source_file=file,
                     source_row=source_row,
-                    rank_index=0,
-                    rank=rank,
+                    identity_hint=f"{rank.worker_id}:{rank.counter_id}:rank{rank.dp_rank}",
+                    iteration=ForwardPassIteration.single_rank(metric),
+                    event_time=event_time,
+                    chronology_key=chronology_key,
                 )
-                observations.append(
-                    ParsedObservation(
-                        source_file=file,
-                        source_row=source_row,
-                        identity_hint=f"{rank.worker_id}:{rank.counter_id}:rank{rank.dp_rank}",
-                        iteration=ForwardPassIteration.single_rank(metric),
-                        event_time=event_time,
-                        chronology_key=chronology_key,
-                    )
-                )
+            )
         issues.extend(_issues(file, excluded, MeasurementState.EXCLUDED))
         issues.extend(_issues(file, unavailable, MeasurementState.MEASUREMENT_UNAVAILABLE))
     return ParseResult(tuple(observations), issues=tuple(issues))
@@ -710,7 +718,12 @@ def _parse_benchmark_files(
     observations: list[ParsedObservation] = []
     issues: list[MeasurementIssue] = []
     for file in files:
-        payload = _read_json(file)
+        if file.storage_format == "parquet":
+            payload = parquet.file_metadata(file)
+            if payload.get("has_iteration_groups"):
+                payload["iteration_groups"] = _stream_records(file)
+        else:
+            payload = _read_json(file)
         if not isinstance(payload, Mapping):
             raise DataError(f"measurement file {file.path} must contain a JSON object")
         groups = payload.get("iteration_groups")
@@ -724,11 +737,13 @@ def _parse_benchmark_files(
                 )
             )
             continue
-        if not isinstance(groups, list):
-            raise DataError(f"measurement file {file.path} field iteration_groups must be an array")
+        if file.storage_format != "parquet":
+            if not isinstance(groups, list):
+                raise DataError(f"measurement file {file.path} field iteration_groups must be an array")
+            groups = enumerate(groups, 1)
 
         unavailable = 0
-        for source_row, row in enumerate(groups, start=1):
+        for source_row, row in groups:
             if not isinstance(row, Mapping):
                 raise DataError(f"measurement file {file.path} record {source_row} must be an object")
             _validate_group_record(row, file, source_row)
@@ -803,6 +818,27 @@ def _parse_benchmark_files(
     return ParseResult(tuple(observations), issues=tuple(issues))
 
 
+@contextmanager
+def _record_reader(file):
+    if file.storage_format != "parquet":
+        with _open_text(file.local_path) as stream:
+            reader = csv.DictReader(stream)
+            yield reader.fieldnames or (), enumerate(reader, 2)
+        return
+
+    def records():
+        for row in parquet.rows(file):
+            source_row = row.pop("source_row")
+            original_source_row = row.pop("original_source_row")
+            if original_source_row is not None:
+                row["source_row"] = original_source_row
+            if row.get("source_file") is None:
+                row.pop("source_file", None)
+            yield source_row, {k: "" if v is None else str(v) for k, v in row.items()}
+
+    yield _FORWARD_PASS_RECORD_FIELDS, records()
+
+
 def _parse_evaluation_records(
     configuration_id: str,
     files: Sequence[MeasurementFile],
@@ -810,17 +846,15 @@ def _parse_evaluation_records(
 ) -> ParseResult:
     observations: list[ParsedObservation] = []
     for file in files:
-        if not file.local_path.name.endswith(_FORWARD_PASS_RECORD_SUFFIXES):
+        if file.storage_format != "parquet" and not file.local_path.name.endswith(_FORWARD_PASS_RECORD_SUFFIXES):
             raise DataError(f"measurement protocol forward-pass-record-v1 does not support file {file.path!r}")
-        with _open_text(file.local_path) as handle:
-            reader = csv.DictReader(handle)
-            fieldnames = reader.fieldnames or ()
+        with _record_reader(file) as (fieldnames, records):
             if len(fieldnames) != len(set(fieldnames)):
                 raise DataError(f"derived truth {file.path} contains duplicate columns")
             if not _FORWARD_PASS_RECORD_FIELDS.issubset(fieldnames):
                 missing = sorted(_FORWARD_PASS_RECORD_FIELDS - set(fieldnames))
                 raise DataError(f"derived truth {file.path} is missing columns: {missing}")
-            for source_row, row in enumerate(reader, start=2):
+            for counter_id, (source_row, row) in enumerate(records):
                 measurement_id = row["measurement_id"]
                 if not isinstance(measurement_id, str) or not measurement_id:
                     raise DataError(f"derived truth {file.path} row {source_row} has an empty measurement_id")
@@ -850,7 +884,7 @@ def _parse_evaluation_records(
                             f"derived truth {file.path} row {source_row} must use zero total_prefill_tokens for decode"
                         )
                     scheduled = RequestMetrics(num_decode_requests=batch, sum_decode_kv_tokens=kv_tokens)
-                _validate_optional_csv_provenance(row, fieldnames, file, source_row)
+                _validate_optional_csv_provenance(row, file, source_row)
                 truth_latency_ms = _csv_finite_number(row.get("truth_latency_ms"), file, source_row, "truth_latency_ms")
                 if truth_latency_ms <= 0:
                     raise DataError(f"derived truth {file.path} row {source_row} has non-positive truth_latency_ms")
@@ -858,7 +892,7 @@ def _parse_evaluation_records(
                     version=1,
                     worker_id="derived-truth",
                     dp_rank=0,
-                    counter_id=source_row - 2,
+                    counter_id=counter_id,
                     wall_time_s=truth_latency_ms / 1000.0,
                     observed_at_unix_ms=None,
                     scheduled=scheduled,
@@ -1226,15 +1260,14 @@ def _csv_finite_number(value: Any, file: MeasurementFile, source_row: int, field
 
 def _validate_optional_csv_provenance(
     row: Mapping[str, Any],
-    fieldnames: Sequence[str],
     file: MeasurementFile,
     source_row: int,
 ) -> None:
-    if "source_file" in fieldnames:
+    if "source_file" in row:
         source_file = row.get("source_file")
         if not isinstance(source_file, str) or not source_file:
             raise DataError(f"derived truth {file.path} row {source_row} has an empty source_file")
-    if "source_row" in fieldnames:
+    if "source_row" in row:
         _positive_csv_int(row.get("source_row"), file, source_row, "source_row")
 
 

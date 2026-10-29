@@ -38,82 +38,75 @@ First [prepare the environment](implementation.md#prepare-the-environment) and
 review the retained collection identity, resource evidence and coverage against
 your intended deployment. It runs on CPU and downloads
 the published
-[Kimi K3 profile](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/tree/6fad3f9a0df5a24603108dcea0d201259254b904/data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8),
+[Kimi K3 profile](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/tree/dbfcdd9eb62ea733efbc3f0cbd78277f2960061a/data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8),
 checks one measured point from each phase, and completes a small Replay run.
 It models **eight GB300 GPUs**: DCP8 reuses the TP8 group.
 
 ### A1. Import the measured pair
 
-Choose a new output directory. The public download uses Python's standard
-library; no Hugging Face login or additional download package is required.
+Choose a new output directory and an AISimulate build with the
+[`kimi_k3_fpm` pin manifest and materializer](README.md#reuse-a-published-profile).
+The materializer verifies the pinned files and reuses a verified cache on later
+calls. This historical profile is marked `development`: the explicit
+`allow_unqualified=True` below permits this reproduction without granting serving
+admission. No Hugging Face login or additional download package is required for
+the public files.
 
 ```bash
 export FPM_RUN="$PWD/kimi-k3-fpm"
 mkdir "$FPM_RUN"
 python - <<'PY'
-import hashlib
 import json
 import os
 import shutil
-from importlib.resources import files
 from pathlib import Path
-from urllib.request import urlopen
+
+from aisimulate_core.sdk.fpm_dataset import list_fpm_profiles, materialize_fpm_profile
 
 run = Path(os.environ["FPM_RUN"]).resolve()
-revision = "6fad3f9a0df5a24603108dcea0d201259254b904"
-base = f"https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/resolve/{revision}/"
-config_path = "data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8"
+key = "gb300-vllm-mxfp4-tp8-dcp8-primary-v0.29.0"
+pin = next(item for item in list_fpm_profiles("kimi_k3_fpm") if item["profile"] == key)
+systems = materialize_fpm_profile(pin["manifest"], key, allow_unqualified=True)
+(run / "systems").symlink_to(systems, target_is_directory=True)
 
-def download(path):
-    with urlopen(base + path, timeout=60) as response:
-        return response.read()
-
-manifest_bytes = download(f"{config_path}/manifest.json")
-manifest = json.loads(manifest_bytes)
-primary = next(item for item in manifest["fpm"] if item["role"] == "primary")
-parquet = download(primary["path"])
-sidecar = download(primary["metadata_path"])
-metadata = json.loads(sidecar)
-assert hashlib.sha256(parquet).hexdigest() == primary["sha256"] == metadata["parquet_sha256"]
+metadata = json.loads((systems / "data/gb300/vllm/0.29.0/fpm_forward_perf.metadata.json").read_text())
+manifest = json.loads((systems / "provenance/manifest.json").read_text())
 assert metadata["schema_name"] == "aic_fpm_forward_perf" and metadata["schema_version"] == 6
-assert primary["row_count"] == metadata["row_count"] == 669
+assert metadata["row_count"] == 669
 assert manifest["dcp"] == metadata["configuration_selector"]["dcp"] == 8
 
-systems = run / "systems"
-target = systems / "data/gb300/vllm/0.29.0"
-target.mkdir(parents=True)
-(target / "fpm_forward_perf.parquet").write_bytes(parquet)
-(target / "fpm_forward_perf.metadata.json").write_bytes(sidecar)
-packaged = files("aisimulate_core") / "systems"
-for name in ("gb300.yaml", "query_versions.yaml", "attention_lane_defaults.yaml"):
-    shutil.copyfile(str(packaged / name), systems / name)
-(run / "manifest.json").write_bytes(manifest_bytes)
-(run / "engine-config.json").write_bytes(download(f"{config_path}/fpm/provenance/engine-config.json"))
-(run / "dataset-revision.txt").write_text(revision + "\n")
-print(f"Installed {primary['row_count']} primary rows under {systems}")
+shutil.copyfile(pin["manifest"], run / "pin-manifest.json")
+for name in ("manifest.json", "engine-config.json"):
+    shutil.copyfile(systems / "provenance" / name, run / name)
+(run / "dataset-revision.txt").write_text(pin["revision"] + "\n")
+print(f"Installed {metadata['row_count']} primary rows under {run / 'systems'}")
 PY
 ```
 
 **Expected:** 669 primary rows: 338 balanced prefill points and 331 decode
 points. Only the filenames change to the loader's canonical names; the Parquet
-and sidecar contents remain unchanged. Retain the manifest, dataset revision,
+and sidecar contents remain unchanged. `$FPM_RUN/systems` links to the immutable
+materialized root; keep that cache directory available for subsequent commands.
+Retain `pin-manifest.json`, the published `manifest.json`, dataset revision,
 and engine configuration beside the imported data. The separate comparator
 with synthetic attention KV and the nonuniform prefill records are not part of
 this primary profile.
+
+The publication lacks a collection-time system YAML. This development pin
+uses `packaged_system: gb300` to copy the installed canonical `gb300.yaml` into
+the root. Its actual hash participates in cache identity and verification.
+The manifest marks it as `packaged_reference_not_collection`: this current
+hardware reference does not establish the collected runtime's system or
+communication-library configuration. If the installed hardware YAML changes,
+materialize a new root before using it offline.
 
 The decode measurements use warmed MLA KV and **random KDA state**. They are
 calibration data, not held-out accuracy evidence. See the retained
 `engine-config.json` for measurement conditions and known unknowns.
 
-This profile uses a custom vLLM `0.29.0` build. Allow its literal version to be
-queried outside the copied version-slot policy for this session:
-
-```bash
-export AIC_ALLOW_UNLISTED_VERSIONS=1
-```
-
-This permits version selection; model/topology/precision matching stays strict.
-For another profile whose backend version is already queryable, omit the override.
+This profile uses a custom vLLM `0.29.0` build. The materialized root has no
+release-slot policy, so use that exact `backend_version` below. No version-policy
+override is needed; model, topology and precision matching remain strict.
 
 ### A2. Query the canonical model
 
@@ -271,6 +264,12 @@ replace every placeholder with inspected deployment facts. This example does
 not collect DCP or compose independent P/D workers.
 
 ### B1. Prepare the campaign
+
+For a new MiniMax-M2.7 campaign, keep the selected KV precision in the request
+and profile. FP8 weights do not require FP8 KV: an explicit BF16 KV selection
+plans BF16 attention and cache identity. Runtime initialization and readiness
+checks must verify the actual precision before collection. Use a fresh output
+directory when changing precision; do not relabel existing measurements.
 
 Keep the local `config.json` and any quantization sidecar from the immutable
 checkpoint. Derive supported precision/cache geometry and prepare a reviewed

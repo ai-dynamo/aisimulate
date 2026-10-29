@@ -4,9 +4,15 @@
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
-use crate::engine::{Backend, Command, CommandResult, LifecycleEvent};
+use crate::engine::offload_transfer::{Direction, FairTransfers, Job, Link};
+use crate::engine::{Backend, Command, CommandResult, KvHintSource, LifecycleEvent};
 use anyhow::{Context, Result, anyhow, bail};
+use rustc_hash::FxHashMap;
 use uuid::Uuid;
+
+use super::components::EncoderPool;
+use super::spec::EncoderSpec;
+use crate::engine::TimingModel;
 
 #[cfg(test)]
 use super::components::NoReplayMetadata;
@@ -16,7 +22,8 @@ pub(super) use super::components::ReplayMode;
 use super::components::TrafficStats;
 use super::components::{
     AdmissionEvent, AdmissionQueue, EngineComponent, EngineEffects, EnginePassMode,
-    ReplayAdmissionMetadata, ReplayEngineObservation, TrafficAccumulators,
+    ReplayAdmissionMetadata, ReplayEngineObservation, TokenizationLatency, TokenizationStage,
+    TrafficAccumulators,
 };
 #[cfg(test)]
 use super::core::NoEngineEvents;
@@ -33,10 +40,11 @@ use super::evidence::{
 };
 use super::progress::ReplayProgress;
 use super::runtime_utils::{
-    ReplayStepOutcome, next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp,
-    pop_ready_scaling_tick, pop_ready_telemetry_tick, pop_ready_transfer_complete,
-    pop_ready_worker_completions, pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick,
-    push_transfer_complete, push_worker_completions, push_worker_ready, settle_internal_work,
+    ReplayStepOutcome, dispatch_failure, next_non_telemetry_event_ms,
+    next_timestamp as choose_next_timestamp, pop_ready_scaling_tick, pop_ready_telemetry_tick,
+    pop_ready_transfer_complete, pop_ready_worker_completions, pop_ready_worker_ready,
+    push_scaling_tick, push_telemetry_tick, push_transfer_complete, push_worker_completions,
+    push_worker_ready, settle_internal_work,
 };
 use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot};
 #[cfg(test)]
@@ -283,6 +291,8 @@ struct DisaggFlowState {
     action_queues: DisaggActionQueues,
     logical_in_flight: usize,
     stale_transfer_events: usize,
+    /// Shared links for bandwidth-priced transfers; `None` keeps fixed delays.
+    links: Option<TransferLinks>,
     conformance_capture: Option<HandoffConformanceCapture>,
 }
 
@@ -297,10 +307,144 @@ struct ScheduledTransfer {
     handoff_id: HandoffId,
 }
 
+enum TransferStart {
+    Completed,
+    Scheduled(ScheduledTransfer),
+    Linked,
+}
+
+/// Bandwidth-priced P/D transfers in flight.
+///
+/// Each prefill rank sends and each decode rank receives over one link at its
+/// role's `kv_transfer_bandwidth`, and concurrent transfers share those links
+/// max-min fairly. Work is measured in milliseconds at the source bandwidth:
+/// a sending link moves 1 unit per ms and a receiving link its bandwidth
+/// relative to the source. A transfer alone on its links therefore finishes
+/// exactly at its standalone delay unless the destination link is slower.
+struct TransferLinks {
+    /// Receiving link rate relative to the sending link.
+    destination_rate: f64,
+    transfers: FairTransfers,
+    handoffs: FxHashMap<u64, HandoffId>,
+    jobs: FxHashMap<HandoffId, u64>,
+    next_job: u64,
+    completed: Vec<HandoffId>,
+    /// Next event, cached because the event loop asks on every iteration;
+    /// `None` after a change, so same-instant changes recompute once.
+    next_event_ms: Option<Option<f64>>,
+}
+
+impl TransferLinks {
+    /// Links exist only when the prefill role prices transfers by bandwidth;
+    /// a decode role without bandwidth leaves receivers unlimited.
+    fn new(source_gbps: Option<f64>, destination_gbps: Option<f64>) -> Option<Self> {
+        let source_gbps = source_gbps.filter(|gbps| *gbps > 0.0)?;
+        Some(Self {
+            destination_rate: destination_gbps
+                .filter(|gbps| *gbps > 0.0)
+                .map_or(f64::INFINITY, |gbps| gbps / source_gbps),
+            transfers: FairTransfers::default(),
+            handoffs: FxHashMap::default(),
+            jobs: FxHashMap::default(),
+            next_job: 0,
+            completed: Vec::new(),
+            next_event_ms: None,
+        })
+    }
+
+    fn next_event_ms(&mut self) -> Option<f64> {
+        *self
+            .next_event_ms
+            .get_or_insert_with(|| self.transfers.next_event())
+    }
+
+    fn submit(
+        &mut self,
+        handoff_id: HandoffId,
+        delay_ms: f64,
+        source: usize,
+        destination: usize,
+        now_ms: f64,
+    ) {
+        self.advance(now_ms);
+        let id = self.next_job;
+        self.next_job += 1;
+        self.transfers.submit(Job {
+            id,
+            direction: Direction::Write,
+            ready: now_ms,
+            bytes: delay_ms,
+            links: [
+                Link {
+                    id: source as u64,
+                    rate: 1.0,
+                },
+                Link {
+                    id: destination as u64,
+                    rate: self.destination_rate,
+                },
+            ],
+        });
+        self.handoffs.insert(id, handoff_id);
+        self.jobs.insert(handoff_id, id);
+        self.next_event_ms = None;
+    }
+
+    /// Release the share of a retiring handoff's transfer, if still in flight.
+    fn cancel(&mut self, handoff_id: HandoffId, now_ms: f64) {
+        if self.jobs.contains_key(&handoff_id) {
+            // The transfer may finish at `now_ms`; settle it before removal.
+            self.advance(now_ms);
+        }
+        self.completed.retain(|completed| *completed != handoff_id);
+        let Some(id) = self.jobs.remove(&handoff_id) else {
+            return;
+        };
+        self.handoffs.remove(&id);
+        self.transfers.cancel(id);
+        self.next_event_ms = None;
+    }
+
+    /// Report transfers finished by `now_ms`. Service between events is
+    /// linear, so the clock only moves once an event is due.
+    fn complete_due(&mut self, now_ms: f64) {
+        if self
+            .next_event_ms()
+            .is_some_and(|event_ms| event_ms <= now_ms)
+        {
+            self.advance(now_ms);
+        }
+    }
+
+    /// Move service to `now_ms`, as required before the transfer set changes.
+    fn advance(&mut self, now_ms: f64) {
+        // Changes at the links' own instant need no service. A step that
+        // stopped short of an event can leave a residual below one clock ULP,
+        // so a known event due at this instant still needs a step.
+        let due = matches!(self.next_event_ms, Some(Some(event_ms)) if event_ms <= now_ms);
+        if now_ms < self.transfers.now() || (now_ms == self.transfers.now() && !due) {
+            return;
+        }
+        let first = self.completed.len();
+        for (id, _) in self.transfers.advance(now_ms) {
+            let handoff_id = self
+                .handoffs
+                .remove(&id)
+                .expect("linked transfer must have a handoff");
+            self.jobs.remove(&handoff_id);
+            self.completed.push(handoff_id);
+        }
+        // Same-time completions follow handoff order, as heap events do.
+        self.completed[first..].sort_unstable();
+        self.next_event_ms = None;
+    }
+}
+
 impl DisaggFlowState {
     fn new(
         handoff_order: HandoffOrder,
         handoff_latency_ms: f64,
+        links: Option<TransferLinks>,
         capture_conformance: bool,
     ) -> Self {
         Self {
@@ -312,6 +456,7 @@ impl DisaggFlowState {
             action_queues: DisaggActionQueues::default(),
             logical_in_flight: 0,
             stale_transfer_events: 0,
+            links,
             conformance_capture: capture_conformance.then(HandoffConformanceCapture::default),
         }
     }
@@ -608,6 +753,11 @@ impl DisaggFlowState {
                         collector,
                     )?;
                 }
+                LifecycleEvent::TtftMilestone {
+                    request_id,
+                    stage,
+                    at_ms,
+                } => collector.on_ttft_milestone(request_id, stage, at_ms),
             }
         }
         Ok(())
@@ -620,6 +770,7 @@ impl DisaggFlowState {
         arrival_time_ms: f64,
         replay_hashes: Option<ReplayRequestHashes>,
         session_id: Option<String>,
+        registered: bool,
         collector: &mut TraceCollector,
     ) -> Result<Uuid> {
         let uuid = request.metadata().uuid.unwrap_or_else(Uuid::new_v4);
@@ -628,9 +779,12 @@ impl DisaggFlowState {
         request.metadata_mut().uuid = Some(uuid);
         request.metadata_mut().arrival_timestamp_ms = Some(arrival_time_ms);
 
-        collector.try_on_arrival(uuid, arrival_time_ms, input_length, output_length)?;
-        if let Some(context) = request.metadata().replay_context.as_ref() {
-            collector.on_request_context(uuid, context);
+        // A request parked in the encoder pool was registered when it arrived.
+        if !registered {
+            collector.try_on_arrival(uuid, arrival_time_ms, input_length, output_length)?;
+            if let Some(context) = request.metadata().replay_context.as_ref() {
+                collector.on_request_context(uuid, context);
+            }
         }
         if self.requests.contains_key(&uuid) {
             bail!("offline disagg replay request {uuid} is already active");
@@ -705,7 +859,7 @@ impl DisaggFlowState {
         delay_ms: f64,
         now_ms: f64,
         collector: &mut TraceCollector,
-    ) -> Result<Option<ScheduledTransfer>> {
+    ) -> Result<TransferStart> {
         self.acknowledge_action(
             uuid,
             action,
@@ -714,12 +868,21 @@ impl DisaggFlowState {
             collector,
         )?;
         self.state_mut(uuid)?.transfer_pending();
-        let handoff_id = self.state(uuid)?.handoff_id;
+        let state = self.state(uuid)?;
+        let handoff_id = state.handoff_id;
+        let ranks = (state.prefill_worker_idx(), state.decode_worker_idx());
         if delay_ms > 0.0 {
-            return Ok(Some(ScheduledTransfer {
-                at_ms: now_ms + delay_ms,
-                handoff_id,
-            }));
+            let Some(links) = &mut self.links else {
+                return Ok(TransferStart::Scheduled(ScheduledTransfer {
+                    at_ms: now_ms + delay_ms,
+                    handoff_id,
+                }));
+            };
+            let (Some(source), Some(destination)) = ranks else {
+                bail!("offline disagg transfer for {uuid} has no prefill or decode rank");
+            };
+            links.submit(handoff_id, delay_ms, source, destination, now_ms);
+            return Ok(TransferStart::Linked);
         }
         self.apply_handoff_fact(
             uuid,
@@ -727,7 +890,7 @@ impl DisaggFlowState {
             now_ms,
             collector,
         )?;
-        Ok(None)
+        Ok(TransferStart::Completed)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -798,12 +961,12 @@ impl DisaggFlowState {
     fn complete_successful_handoff(
         &mut self,
         uuid: Uuid,
-        _now_ms: f64,
+        now_ms: f64,
         _stats: &mut DisaggRuntimeStats,
     ) -> Result<bool> {
         #[cfg(test)]
         {
-            _stats.handoff_ms.insert(uuid, _now_ms);
+            _stats.handoff_ms.insert(uuid, now_ms);
             _stats
                 .transition_log
                 .push(DisaggTransition::HandoffCompleted { uuid });
@@ -811,7 +974,7 @@ impl DisaggFlowState {
         if let Some(capture) = self.conformance_capture.as_mut() {
             capture.lifecycle.push(NormalizedHandoffEvent::Completed);
         }
-        self.retire_completed_request(uuid)
+        self.retire_completed_request(uuid, now_ms)
     }
 
     #[inline(never)]
@@ -873,7 +1036,9 @@ impl DisaggFlowState {
             .logical_in_flight
             .checked_sub(1)
             .expect("logical in-flight request count underflow");
-        if transfer_was_pending {
+        // With links, every priced transfer is linked and keeps moving until
+        // its handoff retires; only heap completion events can go stale.
+        if transfer_was_pending && self.links.is_none() {
             self.stale_transfer_events = self
                 .stale_transfer_events
                 .checked_add(1)
@@ -886,7 +1051,7 @@ impl DisaggFlowState {
     }
 
     #[inline(never)]
-    fn retire_completed_request(&mut self, uuid: Uuid) -> Result<bool> {
+    fn retire_completed_request(&mut self, uuid: Uuid, now_ms: f64) -> Result<bool> {
         let ready = {
             let state = self.state(uuid)?;
             !state.counted_in_flight && state.coordinator.is_complete()
@@ -900,6 +1065,9 @@ impl DisaggFlowState {
 
         let handoff_id = self.state(uuid)?.handoff_id;
         self.state_mut(uuid)?.mark_done();
+        if let Some(links) = &mut self.links {
+            links.cancel(handoff_id, now_ms);
+        }
         let removed = self.requests_by_handoff.remove(&handoff_id);
         if removed != Some(uuid) {
             bail!("offline disagg replay handoff index is inconsistent for {uuid}");
@@ -912,6 +1080,9 @@ impl DisaggFlowState {
 pub(crate) type RoundRobinDisaggRuntime =
     DisaggRuntimeImpl<PoolRoundRobinPlacement<()>, NoEngineEvents, NoReplayMetadata>;
 
+/// A placed prefill waiting for tokenization: id, worker, handoff action and resolved KV hint.
+type TokenizingPrefill = (Uuid, usize, IssuedHandoffAction, Option<KvHintSource>);
+
 pub(crate) struct DisaggRuntimeImpl<PlacementPolicyImpl, Observation, Metadata>
 where
     Observation: ReplayEngineObservation,
@@ -922,6 +1093,8 @@ where
     next_event_seq: u64,
     next_scaling_tick_ordinal: u64,
     admission: AdmissionQueue<Metadata>,
+    /// Encoder pool every arrival crosses before the language workers, if any.
+    encoder: Option<EncoderPool<ReadyArrival<ReplayRequestPayload, Metadata>>>,
     prefill_engine: EngineComponent<Observation>,
     decode_engine: EngineComponent<Observation>,
     prefill_placement: PlacementPolicyImpl,
@@ -941,6 +1114,8 @@ where
     /// gracefully once the next scheduled timestamp exceeds this cap, leaving
     /// any in-flight requests as incomplete in the report.
     max_sim_time_ms: Option<f64>,
+    /// Optional per-worker tokenization between prefill placement and the prefill engine.
+    tokenization: Option<TokenizationStage<TokenizingPrefill>>,
     /// Optional scaling component. When set, `run()` seeds recurring `ScalingTick` events.
     scaling_policy: Option<Box<dyn ReplayScalingPolicy>>,
     /// Optional policy-neutral virtual-time telemetry sampler.
@@ -1034,6 +1209,8 @@ where
             CoreAdmissionSource::total_requests(&admission),
             "offline disagg replay",
         );
+        let prefill_bandwidth = prefill_factory.kv_transfer_bandwidth();
+        let decode_bandwidth = decode_factory.kv_transfer_bandwidth();
         let prefill_dp_size = prefill_factory.dp_size();
         let decode_dp_size = decode_factory.dp_size();
         let prefill_gpus = prefill_factory.gpus_per_worker()?;
@@ -1076,6 +1253,7 @@ where
             flow: DisaggFlowState::new(
                 handoff_order,
                 config.handoff_latency_ms(),
+                TransferLinks::new(prefill_bandwidth, decode_bandwidth),
                 capture_conformance,
             ),
             collector,
@@ -1090,6 +1268,7 @@ where
             decode_fpm_buffer: LatestFpmBuffer::default(),
             traffic: TrafficAccumulators::new(),
             max_sim_time_ms: None,
+            tokenization: None,
             scaling_policy: None,
             telemetry: None,
             collect_fpm: false,
@@ -1098,6 +1277,7 @@ where
             profile_observers_started: false,
             profile_cancel_started: false,
             profile_canceled_requests: 0,
+            encoder: None,
         })
     }
 
@@ -1111,6 +1291,19 @@ where
     /// have `per_request` populated. Default `false` (cheap).
     pub(crate) fn with_per_request_records(mut self, capture: bool) -> Self {
         self.collector.set_capture_per_request(capture);
+        self
+    }
+
+    /// Route every arrival through an encoder pool before the language workers.
+    pub(crate) fn with_encoder(
+        mut self,
+        encoder: Option<(EncoderSpec, Arc<dyn TimingModel>)>,
+    ) -> Self {
+        if let Some((spec, timing)) = encoder {
+            self.collector
+                .set_encoder_gpus(spec.instances * spec.gpus_per_instance);
+            self.encoder = Some(EncoderPool::new(spec, timing));
+        }
         self
     }
 
@@ -1135,6 +1328,12 @@ where
     /// it for the calibration use case this exists to serve.
     pub(crate) fn with_max_sim_time_ms(mut self, ms: Option<f64>) -> Self {
         self.max_sim_time_ms = ms;
+        self
+    }
+
+    /// Tokenize each request on its prefill worker before the prefill engine sees it.
+    pub(crate) fn with_tokenization(mut self, latency: Option<TokenizationLatency>) -> Self {
+        self.tokenization = latency.map(TokenizationStage::new);
         self
     }
 
@@ -1176,7 +1375,7 @@ where
 
     /// Count all requests consuming cluster capacity across prefill, decode, and router queues.
     fn cluster_in_flight(&self) -> usize {
-        self.flow.logical_in_flight
+        self.flow.logical_in_flight + self.encoder.as_ref().map_or(0, EncoderPool::parked_count)
     }
 
     fn record_prefill_fpm(
@@ -1286,24 +1485,75 @@ where
         Ok(())
     }
 
-    /// Submit a coordinator-owned prefill onto a selected worker.
+    /// Submit a coordinator-owned prefill onto a selected worker, after
+    /// tokenization on that worker when it is configured.
     fn dispatch_prefill(
         &mut self,
         uuid: Uuid,
         worker_idx: usize,
         action: IssuedHandoffAction,
+        kv_hint: Option<KvHintSource>,
+    ) -> Result<()> {
+        if self.tokenization.is_none() {
+            return self.submit_prefill(uuid, worker_idx, action, kv_hint);
+        }
+        let (logical_worker_id, _) =
+            self.prefill_engine
+                .rank_identity(worker_idx)
+                .ok_or_else(|| {
+                    anyhow!("offline prefill placement references unknown scheduler {worker_idx}")
+                })?;
+        let input_tokens = self.state(uuid)?.input_length()?;
+        let tokenization = self
+            .tokenization
+            .as_mut()
+            .expect("tokenization is configured");
+        tokenization.enter(
+            self.now_ms,
+            logical_worker_id,
+            input_tokens,
+            uuid,
+            (uuid, worker_idx, action, kv_hint),
+        )?;
+        Ok(())
+    }
+
+    /// Hand every request whose tokenization has finished to its prefill engine.
+    fn release_tokenized(&mut self) -> Result<bool> {
+        let Some(tokenization) = &mut self.tokenization else {
+            return Ok(false);
+        };
+        let released = tokenization.release_due(self.now_ms);
+        let changed = !released.is_empty();
+        for (tokenized_ms, (uuid, worker_idx, action, kv_hint)) in released {
+            let kv_hint = self.prefill_engine.live_kv_hint(kv_hint);
+            self.collector.on_tokenized(uuid, tokenized_ms);
+            self.submit_prefill(uuid, worker_idx, action, kv_hint)?;
+        }
+        Ok(changed)
+    }
+
+    fn submit_prefill(
+        &mut self,
+        uuid: Uuid,
+        worker_idx: usize,
+        action: IssuedHandoffAction,
+        kv_hint: Option<KvHintSource>,
     ) -> Result<()> {
         let (request, handoff_id) = self.flow.prepare_prefill_submission(uuid)?;
         let effects = match self.prefill_engine.apply_command(
             worker_idx,
             Command::SubmitHandoffPrefill {
                 handoff_id,
-                request: direct_to_native(request)?,
+                request: direct_to_native(request, kv_hint)?,
             },
             self.now_ms,
         ) {
             Ok(effects) => effects,
             Err(error) => {
+                if let Err(abort) = self.prefill_placement.dispatch_aborted(uuid, self.now_ms) {
+                    return Err(dispatch_failure(error, Err(abort)));
+                }
                 self.acknowledge_action(
                     uuid,
                     action,
@@ -1314,6 +1564,12 @@ where
         };
         if !matches!(effects.result, CommandResult::Submitted(id) if id == uuid) {
             bail!("offline disagg replay prefill submission returned an unexpected result");
+        }
+        if let Err(error) = self.prefill_placement.dispatch_committed(uuid, self.now_ms) {
+            return Err(dispatch_failure(
+                error,
+                self.prefill_placement.dispatch_aborted(uuid, self.now_ms),
+            ));
         }
         self.flow.finish_prefill_submission(
             uuid,
@@ -1338,12 +1594,15 @@ where
             worker_idx,
             Command::ReserveDestination {
                 handoff_id,
-                request: direct_to_native(request)?,
+                request: direct_to_native(request, None)?,
             },
             self.now_ms,
         ) {
             Ok(effects) => effects,
             Err(error) => {
+                if let Err(abort) = self.decode_placement.dispatch_aborted(uuid, self.now_ms) {
+                    return Err(dispatch_failure(error, Err(abort)));
+                }
                 self.acknowledge_action(
                     uuid,
                     action,
@@ -1357,6 +1616,12 @@ where
             CommandResult::DestinationAccepted { request_id } if request_id == uuid
         ) {
             bail!("offline disagg replay destination acceptance returned an unexpected result");
+        }
+        if let Err(error) = self.decode_placement.dispatch_committed(uuid, self.now_ms) {
+            return Err(dispatch_failure(
+                error,
+                self.decode_placement.dispatch_aborted(uuid, self.now_ms),
+            ));
         }
         let stored_hashes = self
             .flow
@@ -1396,6 +1661,7 @@ where
                         placement.scheduler_id
                     )
                 })?;
+            let kv_hint = self.prefill_engine.kv_hint_source(&placement)?;
             self.collector.on_route_released(
                 placement.request_id,
                 ReplayRequestPool::Prefill,
@@ -1412,7 +1678,7 @@ where
                 &mut self.traffic,
                 &mut self.collector,
             )?;
-            self.dispatch_prefill(uuid, worker_idx, action)?;
+            self.dispatch_prefill(uuid, worker_idx, action, kv_hint)?;
         }
         Ok(())
     }
@@ -1475,6 +1741,7 @@ where
                             placement.scheduler_id
                         )
                     })?;
+                let kv_hint = self.prefill_engine.kv_hint_source(&placement)?;
                 self.collector.on_route_immediate(
                     uuid,
                     ReplayRequestPool::Prefill,
@@ -1486,7 +1753,7 @@ where
                     placement.placement_replica_id,
                 );
                 self.record_prefill_placement(placement)?;
-                self.dispatch_prefill(uuid, placement.scheduler_id, action)?;
+                self.dispatch_prefill(uuid, placement.scheduler_id, action, kv_hint)?;
             }
             PlacementDecision::Queued => {
                 self.collector
@@ -1612,20 +1879,23 @@ where
                 self.route_destination(uuid, issued)?;
             }
             HandoffAction::StartTransfer { delay_ms, .. } => {
-                if let Some(transfer) = self.flow.start_transfer(
+                let start = self.flow.start_transfer(
                     uuid,
                     issued,
                     delay_ms,
                     self.now_ms,
                     &mut self.collector,
-                )? {
+                )?;
+                if let TransferStart::Scheduled(transfer) = &start {
                     push_transfer_complete(
                         &mut self.events,
                         &mut self.next_event_seq,
                         transfer.at_ms,
                         transfer.handoff_id,
                     );
-                    #[cfg(test)]
+                }
+                #[cfg(test)]
+                if !matches!(start, TransferStart::Completed) {
                     self.stats
                         .transition_log
                         .push(DisaggTransition::TransferQueued { uuid });
@@ -1785,6 +2055,11 @@ where
         if !self.state(uuid)?.prefill_routed {
             return Ok(());
         }
+        // Like a router-queued prefill, a request still being tokenized drops
+        // its unsubmitted prefill action.
+        if let Some(tokenization) = &mut self.tokenization {
+            tokenization.cancel(uuid);
+        }
         self.state_mut(uuid)?.pending_prefill_action = None;
         let placements = if self.prefill_placement.cancel_pending(uuid) {
             Vec::new()
@@ -1859,7 +2134,7 @@ where
                     // argument above would have. A request retired twice still
                     // fails loudly on the handoff index.
                     self.flow.action_queues.remove(uuid);
-                    if self.flow.retire_completed_request(uuid)? {
+                    if self.flow.retire_completed_request(uuid, self.now_ms)? {
                         self.notify_quiescent(uuid)?;
                     }
                 }
@@ -1885,7 +2160,7 @@ where
                     .push(DisaggTransition::WorkloadCompleted { uuid });
             }
         }
-        if self.flow.retire_completed_request(uuid)? {
+        if self.flow.retire_completed_request(uuid, self.now_ms)? {
             self.notify_quiescent(uuid)?;
         }
         Ok(())
@@ -1898,15 +2173,19 @@ where
         arrival_time_ms: f64,
         replay_hashes: Option<ReplayRequestHashes>,
         session_id: Option<String>,
+        registered: bool,
     ) -> Result<Uuid> {
         let uuid = self.flow.on_external_arrival(
             request,
             arrival_time_ms,
             replay_hashes,
             session_id,
+            registered,
             &mut self.collector,
         )?;
-        self.traffic.on_arrival();
+        if !registered {
+            self.traffic.on_arrival();
+        }
         Ok(uuid)
     }
 
@@ -1974,19 +2253,38 @@ where
                     (deadline > self.now_ms).then_some(deadline)
                 });
         let next_arrival_ms = choose_next_timestamp(
-            CoreAdmissionSource::next_ready_time_ms(&mut self.admission),
-            profile_deadline,
+            choose_next_timestamp(
+                CoreAdmissionSource::next_ready_time_ms(&mut self.admission),
+                profile_deadline,
+            ),
+            self.tokenization
+                .as_ref()
+                .and_then(TokenizationStage::next_release_ms),
         );
+        let next_transfer_ms = self
+            .flow
+            .links
+            .as_mut()
+            .and_then(TransferLinks::next_event_ms);
         let next_event_ms = self.events.peek().map(|event| event.at_ms);
         let next_canonical_event_ms = if self.telemetry.is_some() {
             next_non_telemetry_event_ms(&mut self.events)
         } else {
             next_event_ms
         };
-        // Host transfers are engine-internal deadlines for either role.
+        let next_event_ms = choose_next_timestamp(next_event_ms, next_transfer_ms);
+        let next_canonical_event_ms =
+            choose_next_timestamp(next_canonical_event_ms, next_transfer_ms);
+        // Host transfers and frontend deliveries are engine-internal deadlines
+        // for either role; the encoder pool delivers embeddings on its own clock.
         let next_internal_deadline_ms = choose_next_timestamp(
-            self.prefill_engine.next_internal_deadline_ms(),
-            self.decode_engine.next_internal_deadline_ms(),
+            choose_next_timestamp(
+                self.prefill_engine.next_internal_deadline_ms(),
+                self.decode_engine.next_internal_deadline_ms(),
+            ),
+            self.encoder
+                .as_ref()
+                .and_then(EncoderPool::next_deadline_ms),
         );
         (
             choose_next_timestamp(
@@ -2254,6 +2552,16 @@ where
     /// Drain transfer completions scheduled for the current logical timestamp.
     fn apply_transfer_completions(&mut self) -> Result<bool> {
         let mut changed = false;
+        if let Some(links) = &mut self.flow.links {
+            links.complete_due(self.now_ms);
+            for handoff_id in std::mem::take(&mut links.completed) {
+                let Some(uuid) = self.flow.requests_by_handoff.get(&handoff_id).copied() else {
+                    continue;
+                };
+                self.apply_handoff_fact(uuid, HandoffFact::TransferCompleted { handoff_id })?;
+                changed = true;
+            }
+        }
         while let Some(handoff_id) = pop_ready_transfer_complete(&mut self.events, self.now_ms) {
             let Some(uuid) = self.flow.requests_by_handoff.get(&handoff_id).copied() else {
                 continue;
@@ -2264,43 +2572,113 @@ where
         Ok(changed)
     }
 
-    /// Release every admission made ready by the shared admission queue.
+    /// Release every admission made ready by the shared admission queue. With an
+    /// encoder pool the language workers see a request once its embeddings arrive.
     fn release_ready_arrivals(&mut self) -> Result<bool> {
         let mut released_any = false;
         let cluster_in_flight = self.cluster_in_flight();
-        for ready in
+        for mut ready in
             CoreAdmissionSource::drain_ready(&mut self.admission, self.now_ms, cluster_in_flight)?
         {
-            let ReadyArrival {
-                request,
-                arrival_time_ms,
-                metadata,
-                authored_request_id,
-                play_id,
-                dispatched_at_ms,
-                session_id,
-                turn_index,
-                synthetic_session_id,
-            } = ready;
-            let session_metadata = session_id.clone().zip(turn_index);
-            let placement_session_id = session_id.filter(|_| !synthetic_session_id);
-            let uuid = self.on_external_arrival(
-                request,
-                arrival_time_ms,
-                metadata.into_hashes(),
-                placement_session_id,
-            )?;
-            if let Some((session_id, turn_index)) = session_metadata {
-                self.collector
-                    .on_session_metadata(uuid, session_id, turn_index);
-            }
-            if let (Some(request_id), Some(play_id)) = (authored_request_id, play_id) {
-                self.collector
-                    .on_agentic_metadata(uuid, request_id, play_id, dispatched_at_ms);
+            if self.encoder.is_some() {
+                self.register_parked_arrival(&mut ready)?;
+                self.encoder
+                    .as_mut()
+                    .expect("encoder pool checked")
+                    .submit(ready);
+            } else {
+                self.admit_ready(ready, false)?;
             }
             released_any = true;
         }
         Ok(released_any)
+    }
+
+    /// A request entering the encoder pool has arrived: the collector and the
+    /// traffic statistics see it now, not when its embeddings are delivered.
+    /// The pool encodes `images_per_request` per request, so a request carrying
+    /// its own image placeholders is invalid here.
+    fn register_parked_arrival(
+        &mut self,
+        ready: &mut ReadyArrival<ReplayRequestPayload, Metadata>,
+    ) -> Result<()> {
+        if !ready.request.metadata().images.is_empty() {
+            return Err(crate::replay::ReplayError::InvalidSpec(
+                "encoder pool runs take requests without image placeholders; \
+                 the pool encodes images_per_request per request"
+                    .to_string(),
+            )
+            .into());
+        }
+        let uuid = ready.request.metadata().uuid.unwrap_or_else(Uuid::new_v4);
+        ready.request.metadata_mut().uuid = Some(uuid);
+        self.collector.try_on_arrival(
+            uuid,
+            ready.arrival_time_ms,
+            ready.request.input_length(),
+            ready.request.metadata().effective_max_output_tokens(),
+        )?;
+        if let Some(context) = ready.request.metadata().replay_context.as_ref() {
+            self.collector.on_request_context(uuid, context);
+        }
+        self.traffic.on_arrival();
+        Ok(())
+    }
+
+    /// Admit the requests whose embeddings the encoder pool delivered by now.
+    fn release_encoded_arrivals(&mut self) -> Result<bool> {
+        let ready = match &mut self.encoder {
+            Some(encoder) => encoder.take_ready(self.now_ms)?,
+            None => return Ok(false),
+        };
+        let released_any = !ready.is_empty();
+        for (arrival, ready_ms) in ready {
+            let uuid = self.admit_ready(arrival, true)?;
+            self.collector.on_encoder_ready(uuid, ready_ms);
+        }
+        Ok(released_any)
+    }
+
+    /// Admit one ready arrival: it enters the handoff flow at its arrival instant;
+    /// `registered` marks a request the encoder pool already registered.
+    fn admit_ready(
+        &mut self,
+        ready: ReadyArrival<ReplayRequestPayload, Metadata>,
+        registered: bool,
+    ) -> Result<Uuid> {
+        let ReadyArrival {
+            request,
+            arrival_time_ms,
+            metadata,
+            authored_request_id,
+            play_id,
+            dispatched_at_ms,
+            session_id,
+            turn_index,
+        } = ready;
+        let session_metadata = session_id.clone().zip(turn_index);
+        let placement_session_id = request
+            .metadata()
+            .replay_context
+            .as_ref()
+            .and_then(|context| context.session_id())
+            .map(str::to_owned);
+        let uuid = self.on_external_arrival(
+            request,
+            arrival_time_ms,
+            metadata.into_hashes(),
+            placement_session_id,
+            registered,
+        )?;
+        if let Some((session_id, turn_index)) = session_metadata {
+            self.collector
+                .on_session_metadata(uuid, session_id, turn_index);
+        }
+        if let (Some(request_id), Some(play_id)) = (authored_request_id, play_id) {
+            self.collector
+                .on_agentic_metadata(uuid, request_id, play_id, dispatched_at_ms);
+        }
+        Ok(uuid)
     }
 
     /// Start passes on every idle prefill worker that can make progress at the current timestamp.
@@ -2556,18 +2934,25 @@ where
         }
         let mut consecutive_internal_steps = 0usize;
         loop {
-            let mut changed = self.prune_stale_transfer_events();
             let now_ms = self.now_ms;
             let mut settle = |runtime: &mut Self| {
                 settle_internal_work(now_ms, &mut consecutive_internal_steps, || {
                     runtime.apply_internal_work()
                 })
             };
-            // Settle idle deadlines first, then any exposed by pass completion.
-            changed |= settle(self)?;
+            // Settle idle deadlines first: a frontend delivery may hand the
+            // request to an idle prefill worker at this same timestamp.
+            let mut changed = settle(self)?;
+            changed |= self.prune_stale_transfer_events();
+            let prefill = self.prefill_placement.advance_clock(self.now_ms)?;
+            let decode = self.decode_placement.advance_clock(self.now_ms)?;
+            changed |= !prefill.is_empty() || !decode.is_empty();
+            self.dispatch_prefill_placements(prefill)?;
+            self.dispatch_decode_placements(decode)?;
             let completed = self.apply_worker_completions()?;
             changed |= completed;
             if completed {
+                // Pass completion can expose another deadline at this timestamp.
                 changed |= settle(self)?;
             }
             changed |= self.apply_worker_ready_events()?;
@@ -2581,7 +2966,9 @@ where
             if self.admission.agentic_profile_client_complete(self.now_ms) {
                 return Ok(());
             }
+            changed |= self.release_encoded_arrivals()?;
             changed |= self.release_ready_arrivals()?;
+            changed |= self.release_tokenized()?;
             changed |= self.drive_prefill_workers()?;
             changed |= self.drive_decode_workers()?;
             let removed_prefill = self
@@ -2594,6 +2981,7 @@ where
                     WorkerTopology {
                         worker_id: *worker_id,
                         scheduler_ids: Vec::new(),
+                        router_hint: self.prefill_engine.accepts_kv_hints(),
                     },
                     self.now_ms,
                 )?;
@@ -2640,6 +3028,7 @@ where
                     WorkerTopology {
                         worker_id: *worker_id,
                         scheduler_ids: Vec::new(),
+                        router_hint: self.decode_engine.accepts_kv_hints(),
                     },
                     self.now_ms,
                 )?;
@@ -3072,9 +3461,10 @@ where
     // ------------------------------------------------------------------
 
     /// Advance the sim clock to `new_now_ms`, integrating provisioned
-    /// worker-seconds for both pools over the interval just elapsed.
-    /// `worker_count()` counts active + starting-up + draining workers, so this
-    /// captures the startup ramp and the scale-down drain tail.
+    /// worker-seconds for both pools and the encoder pool's GPU-seconds over
+    /// the interval just elapsed. `worker_count()` counts active + starting-up
+    /// + draining workers, so this captures the startup ramp and the
+    /// scale-down drain tail.
     fn advance_now_ms(&mut self, new_now_ms: f64) {
         let dt_ms = (new_now_ms - self.now_ms).max(0.0);
         if dt_ms > 0.0 {
@@ -3082,6 +3472,7 @@ where
             let decode_worker_seconds = self.decode_engine.worker_count() as f64 * dt_ms / 1000.0;
             self.collector
                 .add_worker_seconds(prefill_worker_seconds, decode_worker_seconds);
+            self.collector.add_encoder_gpu_seconds(dt_ms / 1000.0);
         }
         self.now_ms = new_now_ms;
     }
@@ -3182,6 +3573,7 @@ where
                 .unwrap_or(WorkerTopology {
                     worker_id: id,
                     scheduler_ids: Vec::new(),
+                    router_hint: self.prefill_engine.accepts_kv_hints(),
                 });
             let placements = self
                 .prefill_placement
@@ -3198,6 +3590,7 @@ where
                 WorkerTopology {
                     worker_id: id,
                     scheduler_ids: Vec::new(),
+                    router_hint: self.prefill_engine.accepts_kv_hints(),
                 },
                 self.now_ms,
             )?;
@@ -3265,6 +3658,7 @@ where
                 .unwrap_or(WorkerTopology {
                     worker_id: id,
                     scheduler_ids: Vec::new(),
+                    router_hint: self.decode_engine.accepts_kv_hints(),
                 });
             let placements = self
                 .decode_placement
@@ -3280,6 +3674,7 @@ where
                 WorkerTopology {
                     worker_id: id,
                     scheduler_ids: Vec::new(),
+                    router_hint: self.decode_engine.accepts_kv_hints(),
                 },
                 self.now_ms,
             )?;
@@ -3468,6 +3863,11 @@ where
         if self.max_sim_time_ms.is_some() && self.admission.agentic_profile_report().is_some() {
             bail!("agentic_profile cannot be combined with max_sim_time_ms");
         }
+        // Requests parked in the pool are not in `self.requests` yet, which the
+        // grace cancellation reads.
+        if self.encoder.is_some() && self.admission.agentic_profile_report().is_some() {
+            bail!("agentic_profile cannot be combined with an encoder pool");
+        }
         if let Some(cap_ms) = self.max_sim_time_ms
             && (!cap_ms.is_finite() || cap_ms < 0.0)
         {
@@ -3597,6 +3997,8 @@ where
             self.collector.set_agentic_play_outcomes(outcomes);
         }
         self.collector.set_runtime_evidence(self.evidence.finish());
+        // Only the prefill pool can configure KVCR.
+        self.collector.kvcr = self.prefill_engine.kvcr_stats();
         // Both roles reference the same deployment pool; report it once.
         self.collector.g2_domains = match self.prefill_engine.g2_domains() {
             domains if domains.is_empty() => self.decode_engine.g2_domains(),
@@ -3659,7 +4061,10 @@ fn command_cleanup_outcome(result: CommandResult) -> Result<HandoffActionOutcome
     }
 }
 
-fn direct_to_native(request: DirectRequest) -> Result<crate::engine::Request> {
+fn direct_to_native(
+    request: DirectRequest,
+    kv_hint: Option<KvHintSource>,
+) -> Result<crate::engine::Request> {
     Ok(crate::engine::Request {
         request_id: request
             .uuid
@@ -3667,6 +4072,11 @@ fn direct_to_native(request: DirectRequest) -> Result<crate::engine::Request> {
         tokens: request.tokens,
         max_output_tokens: request.max_output_tokens,
         output_token_ids: request.output_token_ids,
+        session_id: request
+            .replay_context
+            .and_then(|context| context.session_id().map(str::to_owned)),
+        images: request.images,
+        kv_hint,
     })
 }
 

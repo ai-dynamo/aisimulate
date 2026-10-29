@@ -69,7 +69,7 @@ concurrency:
 jobs:
   changes-guard:
     name: Resolve target and skip unchanged nightlies
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -195,7 +195,7 @@ jobs:
     if: >-
       needs.changes-guard.outputs.should-build == 'true' &&
       (github.event_name != 'schedule' || github.run_attempt != '1')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment: manual-release-approver
     outputs:
@@ -219,7 +219,7 @@ jobs:
       (needs.manual-approval.result == 'success' &&
       needs.manual-approval.outputs.approved-attempt == github.run_attempt)) &&
       vars.GITLAB_SECURITY_TRIGGER_ENABLED == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment: automated-release
     permissions:
@@ -791,7 +791,7 @@ jobs:
       !cancelled() &&
       needs.build-artifacts.result == 'success' &&
       needs.python-compliance.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -961,7 +961,7 @@ jobs:
     name: Notify Slack — staging complete
     needs: [slack-thread-start, build-artifacts]
     if: always() && needs.slack-thread-start.outputs.thread-ts != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment: automated-release
     permissions:
@@ -1154,7 +1154,7 @@ jobs:
     name: Notify Slack — nightly stopped
     needs: [slack-thread-start, trigger-gitlab-security]
     if: always() && needs.slack-thread-start.outputs.thread-ts != '' && needs.trigger-gitlab-security.result != 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment: automated-release
     permissions:
@@ -1204,7 +1204,7 @@ jobs:
     name: Notify Slack
     if: always()
     needs: [changes-guard, manual-approval, slack-thread-start, python-compliance, build-artifacts, slack-staging-reply, license-evidence, fpe-support-matrix, trigger-gitlab-security, slack-thread-stopped]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read

@@ -9,6 +9,7 @@ Tests model validation, default models, and model-specific configurations.
 
 import json
 from collections import Counter
+from importlib.resources import files
 from typing import ClassVar
 from unittest.mock import patch
 
@@ -351,6 +352,11 @@ class TestHFModelSupport:
         assert hasattr(common, "DefaultHFModels")
         assert isinstance(common.DefaultHFModels, set)
         assert len(common.DefaultHFModels) > 0
+
+    def test_mistral3_is_not_a_bundled_default_model(self):
+        assert "mistralai/Mistral-Medium-3.5-128B" not in common.DefaultHFModels
+        config_path = files("aisimulate_core") / "model_configs" / "mistralai--Mistral-Medium-3.5-128B_config.json"
+        assert not config_path.is_file()
 
     def test_hf_models_have_valid_architecture(self):
         """Test that all HF model IDs have valid architecture mapping."""
@@ -902,6 +908,23 @@ class TestKVCacheElementsPerToken:
         model = self._build_model(hf_id, tp, **moe_kw)
         assert model.model_family == expected_family
         assert model.get_kvcache_elements_per_token() == expected_elems
+
+    @pytest.mark.parametrize("tp,expected_elements", [(1, 4096), (2, 2048), (4, 2048)])
+    @pytest.mark.parametrize("kv_dtype", [common.KVCacheQuantMode.fp8, common.KVCacheQuantMode.bfloat16])
+    def test_nemotron_h_counts_only_attention_kv(self, tp, expected_elements, kv_dtype):
+        model = self._build_model(
+            "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
+            tp,
+            kvcache_quant_mode=kv_dtype,
+            moe_tp_size=1,
+            moe_ep_size=tp,
+        )
+        # The bundled config has 8 attention layers, 2 KV heads, and 128-wide heads.
+        # TP >= 2 retains one KV head per rank, including replicated heads at TP4.
+        assert model.get_kvcache_elements_per_token() == expected_elements
+        bytes_per_token = expected_elements * kv_dtype.value.memory
+        assert model.get_kvcache_bytes_per_sequence(64) == 64 * bytes_per_token
+        assert model.get_kvcache_max_tokens(64 * bytes_per_token) == 64
 
     @pytest.mark.parametrize(
         "hf_id",
@@ -2073,6 +2096,51 @@ class TestBundledModelConfigsOffline:
         assert model_config.moe_quant_mode == common.MoEQuantMode.nvfp4
         assert model_config.kvcache_quant_mode == common.KVCacheQuantMode.bfloat16
         assert model_config.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+
+    @pytest.mark.parametrize(
+        "model_path,gemm,moe,kv",
+        [
+            # Z.AI publishes the FP8-block release under the plain name and the
+            # BF16 weights under the -BF16 suffix (GLM-5.2 used the reverse
+            # convention, and no zai-org/GLM-5.3-FP8 repository exists). The
+            # NVIDIA ModelOpt MIXED_PRECISION export lists FP8 dense layers 0-2
+            # and NVFP4 routed experts; its per-module modes are pinned in
+            # test_modelopt_mixed_precision_targets.py.
+            # The FP8 checkpoint declares no KV scheme; its fp8 KV mode is the
+            # backend default for fp8_block, not a checkpoint fact, so it is
+            # not asserted here.
+            ("zai-org/GLM-5.3", "fp8_block", "fp8_block", None),
+            ("zai-org/GLM-5.3-BF16", "bfloat16", "bfloat16", "bfloat16"),
+            ("nvidia/GLM-5.3-NVFP4", "fp8_static", "nvfp4", "fp8"),
+        ],
+    )
+    def test_glm53_bundles_resolve_checkpoint_quant_modes(self, monkeypatch, model_path, gemm, moe, kv):
+        """The GLM-5.3 bundles must be the real checkpoint configs, not GLM-5.2 copies."""
+        import aisimulate.sdk.utils as sdk_utils
+
+        def _no_network(*a, **k):
+            raise AssertionError("network path reached")
+
+        monkeypatch.setattr(sdk_utils, "_download_hf_config", _no_network, raising=False)
+        sdk_utils.get_model_config_from_model_path.cache_clear()
+        sdk_utils._load_model_config_from_model_path.cache_clear()
+        try:
+            cfg = sdk_utils.get_model_config_from_model_path(model_path)
+            assert cfg["architecture"] == "GlmMoeDsaForCausalLM"
+            model_config = config.ModelConfig(tp_size=8, moe_tp_size=1, moe_ep_size=8)
+            get_model(model_path, model_config, backend_name="sglang")
+        finally:
+            sdk_utils.get_model_config_from_model_path.cache_clear()
+            sdk_utils._load_model_config_from_model_path.cache_clear()
+
+        assert model_config.gemm_quant_mode == common.GEMMQuantMode[gemm]
+        assert model_config.moe_quant_mode == common.MoEQuantMode[moe]
+        if kv is not None:
+            assert model_config.kvcache_quant_mode == common.KVCacheQuantMode[kv]
+
+    def test_glm53_registered_identifiers_match_the_published_repositories(self):
+        assert "zai-org/GLM-5.3-BF16" in common.DefaultHFModels
+        assert "zai-org/GLM-5.3-FP8" not in common.DefaultHFModels
 
     def test_qwen38max_loads_from_bundle_with_gdn_and_moe_fields(self, monkeypatch):
         import aisimulate.sdk.utils as sdk_utils

@@ -273,6 +273,12 @@ def get_model(
     # The materialized graph and its cache identity own the same snapshot.
     # Callers may reuse and edit nested speculative inputs for another build.
     if model_config.speculation is not None:
+        from aisimulate_core.sdk.common import DSPARK_ARCHITECTURES
+
+        if model_config.speculation.kind == "mtp" and architecture in DSPARK_ARCHITECTURES:
+            raise InvalidEngineConfigurationError(
+                f"Explicit MTP modeling is unsupported for {architecture}: its legacy nextn graph models DSPARK"
+            )
         model_config = copy.copy(model_config)
         model_config.speculation = copy.deepcopy(model_config.speculation)
     spec_config = resolve_speculation(model_config)
@@ -314,6 +320,7 @@ from aisimulate_core.sdk.models.gemma4 import Gemma4MixModel
 from aisimulate_core.sdk.models.gpt import GPTModel
 from aisimulate_core.sdk.models.hybrid_moe import HybridMoEModel
 from aisimulate_core.sdk.models.llama import LLAMAModel
+from aisimulate_core.sdk.models.mistral3 import Mistral3Model
 from aisimulate_core.sdk.models.moe import MOEModel
 from aisimulate_core.sdk.models.nemotron_h import NemotronHModel
 from aisimulate_core.sdk.models.nemotron_nas import NemotronNas
@@ -330,6 +337,7 @@ __all__ = [
     "HybridMoEModel",
     "LLAMAModel",
     "MOEModel",
+    "Mistral3Model",
     "NemotronHModel",
     "NemotronNas",
     "Qwen3VLMoEModel",

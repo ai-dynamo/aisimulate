@@ -19,6 +19,8 @@ checkable parity assertion for the port.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 pytestmark = pytest.mark.unit
@@ -31,6 +33,7 @@ pytestmark = pytest.mark.unit
 pytest.importorskip("aisimulate_core")
 
 from aisimulate.sdk import memory
+from aisimulate_core.sdk.models.helpers import _apply_model_quant_defaults
 
 _GIB = 1 << 30
 
@@ -68,6 +71,15 @@ def test_naive_reservation_validation_rejects_out_of_range():
     for bad in (-0.1, 1.5, float("nan"), float("inf")):
         with pytest.raises(ValueError, match="naive_kv_reservation"):
             memory._validate_naive_reservation(bad)
+
+
+def test_vision_rank_inputs_are_validated_up_front():
+    for bad in ("TP", "tensor", ""):
+        with pytest.raises(ValueError, match="encoder_parallel"):
+            memory._validate_encoder_parallel(bad)
+    for bad in (-1, 1.5, True):
+        with pytest.raises(ValueError, match="reserved_bytes"):
+            memory._validate_reserved_bytes(bad)
 
 
 def test_estimate_num_gpu_blocks_rejects_non_positive_or_non_integer_block_size():
@@ -179,6 +191,97 @@ def test_native_zero_per_token_raises():
             fraction=0.9,
             gpu_memory_capacity_bytes_override=None,
         )
+
+
+@pytest.mark.parametrize(
+    "override, resolved, token_capacity",
+    [(None, "fp8", 2097152), ("fp8", "fp8", 2097152), ("bfloat16", "bfloat16", 1048576)],
+)
+def test_native_capacity_discloses_resolved_kv_precision(monkeypatch, override, resolved, token_capacity):
+    def get_model(_path, config, backend):
+        # Exercise real default resolution for an FP8 checkpoint with no KV declaration.
+        _apply_model_quant_defaults(config, {"quant_algo": "fp8"}, "Qwen3ForCausalLM", backend)
+        # K and V, eight layers, two KV heads, head dimension 64.
+        bytes_per_token = 2 * 8 * 2 * 64 * config.kvcache_quant_mode.value.memory
+        return SimpleNamespace(
+            config=config,
+            get_kvcache_bytes_per_sequence=lambda length: length * bytes_per_token,
+            get_kvcache_batch_capacity=lambda budget, _batch: int(budget // bytes_per_token),
+        )
+
+    monkeypatch.setattr(memory, "get_model", get_model)
+    monkeypatch.setattr(
+        memory,
+        "get_backend",
+        lambda _: SimpleNamespace(_get_memory_usage=lambda *_a, **_k: dict(weights=1, activations=1, others=1, nccl=1)),
+    )
+    monkeypatch.setattr(
+        memory.perf_database,
+        "get_database",
+        lambda *_a, **_k: SimpleNamespace(version="0.19.0", system_spec={"gpu": {"mem_capacity": 8 * _GIB}}),
+    )
+    diagnostics = {}
+    blocks = memory.estimate_num_gpu_blocks(
+        "test/fp8-checkpoint",
+        "test_gpu",
+        "vllm",
+        "0.19.0",
+        max_num_tokens=128,
+        max_batch_size=1,
+        memory_fraction_kind="of_total",
+        memory_fraction_value=1.0,
+        scheduler_block_size=64,
+        kvcache_quant_mode=override,
+        diagnostics=diagnostics,
+    )
+    # Identical 4 GiB cache budgets: FP8 uses 2048 bytes/token, BF16 uses 4096.
+    assert diagnostics["total_kv_size_bytes"] == 4 * _GIB
+    assert diagnostics["total_kv_size_tokens"] == token_capacity
+    assert blocks == token_capacity // 64
+    assert diagnostics["kvcache_quant_mode"] == resolved
+
+
+@pytest.mark.parametrize("selector", ["omitted", None, "current", "literal"])
+def test_native_capacity_defaults_backend_version_to_current(monkeypatch, selector):
+    # Keep real version resolution and database lookup; isolate model weights.
+    seen_versions = []
+    monkeypatch.setattr(
+        memory,
+        "get_model",
+        lambda *_args: SimpleNamespace(
+            get_kvcache_bytes_per_sequence=lambda length: 128 * length,
+            get_kvcache_batch_capacity=lambda budget, _batch: int(budget // 128),
+        ),
+    )
+
+    def memory_usage(_model, database, **_kwargs):
+        seen_versions.append(database.version)
+        return dict(weights=1, activations=1, others=1, nccl=1)
+
+    monkeypatch.setattr(memory, "get_backend", lambda _: SimpleNamespace(_get_memory_usage=memory_usage))
+    literal = memory.perf_database.resolve_query_version("h200_sxm", "vllm", "current")
+    options = dict(max_num_tokens=8192, max_batch_size=256, memory_fraction_kind="of_total", memory_fraction_value=0.9)
+    expected = memory.estimate_kv_cache("test/model", "h200_sxm", "vllm", literal, **options)
+    version = {} if selector == "omitted" else {"backend_version": literal if selector == "literal" else selector}
+    actual = memory.estimate_kv_cache("test/model", "h200_sxm", "vllm", **version, **options)
+    assert actual == expected
+    assert actual["source"] == "native"
+    assert seen_versions == [literal, literal]
+
+
+def test_native_capacity_rejects_unavailable_backend_version():
+    with pytest.raises(ValueError, match="9.9.9") as error:
+        memory.estimate_kv_cache(
+            "test/model",
+            "h200_sxm",
+            "vllm",
+            "9.9.9",
+            max_num_tokens=8192,
+            max_batch_size=256,
+            memory_fraction_kind="of_total",
+            memory_fraction_value=0.9,
+        )
+    assert "NoneType" not in str(error.value)
 
 
 def test_breakdown_applies_nextn_to_model_config(monkeypatch):
@@ -901,6 +1004,7 @@ def test_estimate_kv_cache_falls_back_when_breakdown_raises(monkeypatch):
     )
     assert out["source"] == "naive_fallback"
     assert out["tolerance_adjusted"] is None
+    assert "kvcache_quant_mode" not in out
 
 
 @pytest.mark.parametrize("knob", ["cp_size", "dcp_size"])
@@ -1302,3 +1406,79 @@ def test_tolerance_zero_is_noop_margin(monkeypatch):
     adj = out["tolerance_adjusted"]
     assert adj is not None
     assert adj["total_kv_size_bytes"] == out["total_kv_size_bytes"]
+
+
+def test_breakdown_charges_a_colocated_encoder_and_reserved_bytes(monkeypatch):
+    # A rank hosting the vision tower keeps its weights and the multimodal
+    # embedding cache outside the KV pool.
+    class _EncoderOp:
+        def get_weights(self):
+            return 2 * _GIB
+
+    class _StubModel:
+        def __init__(self):
+            self.encoder_ops = [_EncoderOp()]
+
+        def get_kvcache_bytes_per_sequence(self, seq_len):
+            return 100.0 * seq_len
+
+        def get_kvcache_max_tokens(self, budget):
+            return int(budget // 100)
+
+        def get_kvcache_batch_capacity(self, budget, batch_size):
+            return int(budget // 100)
+
+    class _StubBackend:
+        def _get_memory_usage(self, *a, **k):
+            return {"weights": 1.0, "activations": 1.0, "others": 1.0, "nccl": 1.0, "kvcache": 0.0}
+
+    class _StubDB:
+        def __init__(self):
+            self.version = "1.3.0rc20"
+            self.system_spec = {"gpu": {"mem_capacity": 100 * _GIB}}
+
+    monkeypatch.setattr(memory, "get_model", lambda *a, **k: _StubModel())
+    monkeypatch.setattr(memory, "get_backend", lambda backend: _StubBackend())
+    monkeypatch.setattr(memory.perf_database, "get_database", lambda *a, **k: _StubDB())
+    built = {}
+    real_build = memory.build_model_config
+
+    def _build(**kwargs):
+        built.update(kwargs)
+        return real_build(**kwargs)
+
+    monkeypatch.setattr(memory, "build_model_config", _build)
+
+    plain = memory.KVCacheEstimator.from_request(
+        "Qwen/Qwen3-VL-8B-Instruct", "h200_sxm", "sglang", max_num_tokens=8192, max_batch_size=8
+    ).breakdown
+    assert "enable_encoder_dp" not in built
+    hosted = memory.KVCacheEstimator.from_request(
+        "Qwen/Qwen3-VL-8B-Instruct",
+        "h200_sxm",
+        "sglang",
+        max_num_tokens=8192,
+        max_batch_size=8,
+        colocated_encoder=True,
+        reserved_bytes=100 << 20,
+    ).breakdown
+    assert hosted["weights_bytes"] - plain["weights_bytes"] == 2 * _GIB
+    assert hosted["non_kv_bytes"] - plain["non_kv_bytes"] == 2 * _GIB + (100 << 20)
+    # A hosted tower is sharded unless dp is asked for, as SGLang lays it out.
+    assert built["enable_encoder_dp"] is False
+
+    common = dict(
+        model_path="Qwen/Qwen3-VL-8B-Instruct",
+        system="h200_sxm",
+        backend="sglang",
+        max_num_tokens=8192,
+        max_batch_size=8,
+        memory_fraction_kind="of_total",
+        memory_fraction_value=0.9,
+        colocated_encoder=True,
+    )
+    plain_estimate = memory.estimate_kv_cache(**common)
+    reserved_estimate = memory.estimate_kv_cache(**common, reserved_bytes=100 << 20)
+    assert plain_estimate["total_kv_size_bytes"] - reserved_estimate["total_kv_size_bytes"] == 100 << 20
+    assert plain_estimate["memory_breakdown"]["reserved_bytes"] == 0
+    assert reserved_estimate["memory_breakdown"]["reserved_bytes"] == 100 << 20

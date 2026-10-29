@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+provenance: collected
+runtime:
+  framework: sglang
+  version: 0.5.20
+  image: lmsysorg/sglang:v0.5.20
+  image_digest: sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f
+  source_commit: 94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+tables:
+  gemm_perf:
+    # GLM-5.3-Flash: base GEMM grid + GLM off-grid widths at k=4096 (collect_gemm_0520 serving-built layers), one job per dtype; per-tensor fp8 is not collected at this version (head f8e8535c).
+    # Framework-classified failures (e.g. fp8_block K < 128) are recorded in each job's errors file.
+    # gb200 (SM100, ocics001), 4 GPUs/node, stock image arm64 child sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862 (no overlay) run via pyxis; launcher audits/glm53flash-multigpu/tools/ops/launcher; collector source 97efc7406b6025e94565dfcec63d7b7dd84000ad; Slurm job(s) 7925141, 7925142, 7925144.
+    # data_sha256: 7be60e05be231c99e125112666519203a7e3d85ebb07a927cb4b8b07e64eec1a
+    rows: 106634
+    status: complete
+    collections:
+    - collector_ref: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      collector_hash: sha256:8ab3ce96d9383bd29d85a8b9d71dbcb826124ddada0ee944b7d980184dcd8e42
+      case_plan_hash: sha256:b5cb8ab8129f6b4ee95cbc33f38c9677f7447d66721def0ec3479b76b09bc312
+      collected_at: '2026-10-13'
+      rows: 36630
+      status: complete
+    - collector_ref: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      collector_hash: sha256:8ab3ce96d9383bd29d85a8b9d71dbcb826124ddada0ee944b7d980184dcd8e42
+      case_plan_hash: sha256:8b4b9c6cffc0efcccfe905dd66d193776ec062b168525734ffce84ccbedbb72e
+      collected_at: '2026-10-13'
+      rows: 33374
+      status: complete
+    - collector_ref: 97efc7406b6025e94565dfcec63d7b7dd84000ad
+      collector_hash: sha256:8ab3ce96d9383bd29d85a8b9d71dbcb826124ddada0ee944b7d980184dcd8e42
+      case_plan_hash: sha256:efeb5b17963f1b7f7f2bd297f27ecead13712d44c2bfa929eed731a90e98dfef
+      collected_at: '2026-10-13'
+      rows: 36630
+      status: complete

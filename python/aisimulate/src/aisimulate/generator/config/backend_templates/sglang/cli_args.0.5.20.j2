@@ -14,6 +14,14 @@ boundary from v0.5.20 server_args.py (Struct form, no alias).
 {%- if sglang['tensor-parallel-size'] is defined and sglang['tensor-parallel-size'] is not none -%}{%- set _ = args.append('--tensor-parallel-size "' ~ sglang['tensor-parallel-size'] ~ '"') -%}{%- endif -%}
 {%- if sglang['pipeline-parallel-size'] is defined and sglang['pipeline-parallel-size'] is not none -%}{%- set _ = args.append('--pipeline-parallel-size "' ~ sglang['pipeline-parallel-size'] ~ '"') -%}{%- endif -%}
 {%- if sglang['data-parallel-size'] is defined and sglang['data-parallel-size'] is not none -%}{%- set _ = args.append('--data-parallel-size "' ~ sglang['data-parallel-size'] ~ '"') -%}{%- endif -%}
+{#- Guard: context-parallel flags appear only when the request carries the knob (>1).
+    --attn-cp-size is inert without --enable-prefill-cp, so the pair is emitted together;
+    --cp-strategy must be "interleave" for DSA architectures (generator/context_parallel.py).
+    --dcp-size (>= 0.5.15) and --dcp-comm-backend (>= 0.5.17) are the SGLang decode CP flags. -#}
+{%- if sglang['attn-cp-size'] is defined and sglang['attn-cp-size'] is not none -%}{%- set _ = args.append('--enable-prefill-cp') -%}{%- set _ = args.append('--attn-cp-size "' ~ sglang['attn-cp-size'] ~ '"') -%}{%- endif -%}
+{%- if sglang['cp-strategy'] is defined and sglang['cp-strategy'] is not none -%}{%- set _ = args.append('--cp-strategy "' ~ sglang['cp-strategy'] ~ '"') -%}{%- endif -%}
+{%- if sglang['dcp-size'] is defined and sglang['dcp-size'] is not none -%}{%- set _ = args.append('--dcp-size "' ~ sglang['dcp-size'] ~ '"') -%}{%- endif -%}
+{%- if sglang['dcp-comm-backend'] is defined and sglang['dcp-comm-backend'] is not none -%}{%- set _ = args.append('--dcp-comm-backend "' ~ sglang['dcp-comm-backend'] ~ '"') -%}{%- endif -%}
 {%- if sglang['page-size'] is defined and sglang['page-size'] is not none -%}{%- set _ = args.append('--page-size "' ~ sglang['page-size'] ~ '"') -%}{%- endif -%}
 {%- if sglang['kv-cache-dtype'] is defined and sglang['kv-cache-dtype'] is not none -%}{%- set _ = args.append('--kv-cache-dtype "' ~ sglang['kv-cache-dtype'] ~ '"') -%}{%- endif -%}
 {%- if sglang['mem-fraction-static'] is defined and sglang['mem-fraction-static'] is not none -%}{%- set _ = args.append('--mem-fraction-static "' ~ sglang['mem-fraction-static'] ~ '"') -%}{%- endif -%}
@@ -36,6 +44,9 @@ boundary from v0.5.20 server_args.py (Struct form, no alias).
 {%- if sglang['disaggregation-bootstrap-port'] is defined and sglang['disaggregation-bootstrap-port'] is not none -%}{%- set _ = args.append('--disaggregation-bootstrap-port "' ~ sglang['disaggregation-bootstrap-port'] ~ '"') -%}{%- endif -%}
 {%- if sglang['elastic-ep-backend'] is defined and sglang['elastic-ep-backend'] is not none -%}{%- set _ = args.append('--elastic-ep-backend "' ~ sglang['elastic-ep-backend'] ~ '"') -%}{%- endif -%}
 {%- if sglang['disable-cuda-graph'] -%}{%- set _ = args.append('--disable-cuda-graph') -%}{%- endif -%}
+{#- SGLang >=0.5.20 removed the legacy decode graph aliases. These inputs
+    count requests, not prefill tokens: keep the unified mapping keys and
+    translate only the emitted flags. Prefill capture stays at runtime defaults. -#}
 {%- if sglang['cuda-graph-bs'] is defined and sglang['cuda-graph-bs'] is not none -%}{%- set _ = args.append('--cuda-graph-bs-decode ' ~ (sglang['cuda-graph-bs'] | join(' '))) -%}{%- endif -%}
 {%- if sglang['disable-cuda-graph-padding'] -%}{%- set _ = args.append('--disable-cuda-graph-padding') -%}{%- endif -%}
 {%- if sglang['cuda-graph-max-bs'] is defined and sglang['cuda-graph-max-bs'] is not none -%}{%- set _ = args.append('--cuda-graph-max-bs-decode "' ~ sglang['cuda-graph-max-bs'] ~ '"') -%}{%- endif -%}

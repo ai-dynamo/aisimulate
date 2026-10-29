@@ -32,6 +32,7 @@ from scripts.fpm_accuracy.hf.models import (
     OrderingKind,
 )
 from scripts.fpm_accuracy.hf.overrides import HfCaseOverride, HfOverrides, load_overrides
+from scripts.fpm_accuracy.hf.parquet import validate_collection_manifest
 from scripts.fpm_accuracy.hf.protocols import (
     SUPPORTED_EVIDENCE_FORMAT_IDS,
     ParsedObservation,
@@ -65,6 +66,17 @@ _FPM_V7_SELECTOR_FIELDS = frozenset(
         "input_modality",
         "engram_residency",
         "fmha_resolution",
+    }
+)
+_FPM_V7_OPTIONAL_SELECTOR_FIELDS = frozenset(
+    {
+        "measurement_policy",
+        "measurement_repeats",
+        "warmup_repeats",
+        "state_protocol",
+        "timing_boundary",
+        "sglang_allocator_max_split_size_mb",
+        "sglang_allocator_policy_sha256",
     }
 )
 _FPM_CONFIGURATION_FIELDS = (
@@ -107,7 +119,7 @@ class HfDataset:
         self._overrides = overrides
         self._overrides_sha256 = overrides_sha256
         self._index = self._read_json("catalog/index.json")
-        if self._index.get("catalog_version") != 5:
+        if self._index.get("catalog_version") not in (5, 6):
             raise DataError(f"unsupported HF catalog version: {self._index.get('catalog_version')!r}")
         if self._index.get("dataset_id") != repo_id:
             raise DataError(
@@ -338,6 +350,7 @@ class HfDataset:
             parser_policy_id=parser_policy_id,
             warnings=tuple(dict.fromkeys(warnings)),
             issues=parsed.issues,
+            collection_runs=tuple(manifest.get("collection_runs", ())),
         )
 
     def _case_id(
@@ -393,7 +406,7 @@ class HfDataset:
 
     def _load_configuration(self, manifest_path: str) -> ConfigurationSnapshot:
         manifest = self._read_json(manifest_path)
-        if manifest.get("manifest_version") != 3:
+        if manifest.get("manifest_version") not in (3, 4):
             raise DataError(f"unsupported configuration manifest version in {manifest_path}")
         configuration_path = _required_str(manifest, "configuration_path", manifest_path)
         snapshot_id = _required_str(manifest, "snapshot_id", manifest_path)
@@ -491,7 +504,7 @@ class HfDataset:
             expected_sha256=configuration.measurements.manifest_sha256,
         )
         expected = {
-            "manifest_version": 4,
+            "manifest_version": manifest.get("manifest_version") if manifest.get("manifest_version") in (4, 5) else 4,
             "measurement_artifact_id": configuration.measurements.artifact_id,
             "measurement_protocol_id": configuration.measurements.protocol_id,
             "evidence_format_id": configuration.measurements.evidence_format_id,
@@ -516,6 +529,8 @@ class HfDataset:
                 f"measurement manifest {configuration.measurements.manifest_path} file count does not match "
                 f"the configuration manifest"
             )
+        if manifest["manifest_version"] == 5:
+            validate_collection_manifest(manifest)
         return manifest
 
     def _measurement_files(
@@ -588,6 +603,11 @@ class HfDataset:
                     source_path=_optional_str(value.get("source_path")),
                     source_sha256=source_sha256,
                     derived=derived,
+                    storage_format=value.get("format"),
+                    storage_schema=value.get("storage_schema"),
+                    logical_row_count=value.get("logical_row_count"),
+                    source_layout=value.get("source_layout"),
+                    ordering_index=value.get("ordering_index"),
                     representation=representation,
                     iteration_count=iteration_count,
                     rank_record_count=rank_record_count,
@@ -705,7 +725,7 @@ class HfDataset:
         selector_fields = set(selector)
         expected_fields = set(expected_identity)
         if metadata["schema_version"] == 7:
-            expected_fields |= _FPM_V7_SELECTOR_FIELDS
+            expected_fields |= _FPM_V7_SELECTOR_FIELDS | (_FPM_V7_OPTIONAL_SELECTOR_FIELDS & selector_fields)
         if selector_fields != expected_fields:
             missing = sorted(expected_fields - selector_fields)
             unknown = sorted(selector_fields - expected_fields)
@@ -722,10 +742,16 @@ class HfDataset:
             raise DataError(f"FPM sidecar {artifact.metadata_path} selects a different configuration: {mismatches}")
         parquet_identity = dict(expected_identity)
         if metadata["schema_version"] == 7:
-            for field in _FPM_V7_SELECTOR_FIELDS:
+            execution_fields = expected_fields - set(expected_identity)
+            for field in execution_fields:
                 value = selector[field]
                 if field in {"enable_wideep", "enable_eplb"}:
                     valid = type(value) is bool
+                elif field in {"measurement_repeats", "warmup_repeats", "sglang_allocator_max_split_size_mb"}:
+                    minimum = 0 if field == "warmup_repeats" else 1
+                    valid = type(value) is int and value >= minimum
+                elif field == "sglang_allocator_policy_sha256":
+                    valid = isinstance(value, str) and _SHA256.fullmatch(value) is not None
                 elif field == "model_config_sha256":
                     # Empty is the producer's legacy model-config identity.
                     valid = isinstance(value, str) and (value == "" or _SHA256.fullmatch(value) is not None)
@@ -736,7 +762,7 @@ class HfDataset:
             # Check pair consistency only: these values are not an authoritative
             # configuration-to-execution binding. Native staging rejects every
             # v7 pair, even if all rows agree, until that binding is available.
-            parquet_identity.update({field: selector[field] for field in _FPM_V7_SELECTOR_FIELDS})
+            parquet_identity.update({field: selector[field] for field in execution_fields})
         try:
             parquet = pq.ParquetFile(artifact.local_path)
             physical_rows = parquet.metadata.num_rows
@@ -804,7 +830,13 @@ class HfDataset:
                 tuple(
                     sorted(
                         observations,
-                        key=lambda item: (item.chronology_key, item.source_file.path, item.source_row),
+                        key=lambda item: (
+                            item.chronology_key,
+                            item.source_file.ordering_index
+                            if item.source_file.ordering_index is not None
+                            else item.source_file.path,
+                            item.source_row,
+                        ),
                     )
                 ),
                 OrderingKind.CHRONOLOGICAL,
@@ -819,7 +851,13 @@ class HfDataset:
                 tuple(
                     sorted(
                         observations,
-                        key=lambda item: (item.chronology_key, item.source_file.path, item.source_row),
+                        key=lambda item: (
+                            item.chronology_key,
+                            item.source_file.ordering_index
+                            if item.source_file.ordering_index is not None
+                            else item.source_file.path,
+                            item.source_row,
+                        ),
                     )
                 ),
                 OrderingKind.CHRONOLOGICAL,

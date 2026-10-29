@@ -24,6 +24,7 @@ from aisimulate.generator.dynamo_features import (
     kvbm_shell_exports_from_dyn_config,
     vllm_worker_role_args,
 )
+from aisimulate.generator.utils import has_fixed_request_lengths
 
 from .rule_engine import apply_rule_plugins
 
@@ -493,6 +494,7 @@ def render_backend_templates(
         _set_nested("cuda_graph_config", "enable_padding", "cuda_graph_enable_padding")
         _set_nested("cuda_graph_config", "batch_sizes", "cuda_graph_batch_sizes")
         _set_nested("cache_transceiver_config", "max_tokens_in_buffer", "cache_transceiver_max_tokens_in_buffer")
+        _set_nested("cache_transceiver_config", "backend", "cache_transceiver_backend")
 
         if wc.get("disable_prefix_cache") is False:
             kv_cache_config = dict(wc.get("kv_cache_config") or {})
@@ -767,8 +769,11 @@ def render_backend_templates(
         except Exception as e:
             logger.warning(f"Failed to build k8s_deploy.yaml: {e}")
 
-    # Benchmark templates (Dynamo-specific)
-    if deployment_target in ("dynamo-j2", "dynamo-python"):
+    # Benchmark templates (Dynamo-specific). They benchmark one fixed ISL/OSL,
+    # so a request without lengths, such as a trace, gets none.
+    if deployment_target in ("dynamo-j2", "dynamo-python") and has_fixed_request_lengths(
+        context.get("BenchConfig"), context.get("SlaConfig")
+    ):
         # benchmark job: single file from shared benchmark template folder
         bench_dir = _TEMPLATE_ROOT / "benchmark"
         bench_aux = bench_dir / "k8s_bench.yaml.j2"

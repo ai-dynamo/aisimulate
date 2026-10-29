@@ -44,6 +44,10 @@ pub struct MhcTable {
 
 struct MhcGrids {
     by_keys: BTreeMap<MhcKey, LeafAxisCurve>,
+    /// The same rows keyed by their `architecture` column as well, for
+    /// consumers whose rows are model-specific call-site compositions (GLM
+    /// mHC rows time GLM's fused sites). Rows without the column are absent.
+    by_architecture: BTreeMap<(String, MhcKey), LeafAxisCurve>,
 }
 
 /// Python `load_mhc_module_data` keys `data[op][hc_mult][hidden_size]` — NO
@@ -112,6 +116,57 @@ impl MhcTable {
             });
         }
         self.query_single(op, num_tokens, hc_mult, hidden_size, sol, grids)
+    }
+
+    /// Query one op whose rows must carry `architecture` (model-specific
+    /// call-site rows). Unlike [`Self::query_module`], rows from another
+    /// architecture never answer, even when they share the compute shape;
+    /// a miss is a typed `PerfDatabase` error.
+    pub fn query_architecture_module(
+        &self,
+        architecture: &str,
+        op: &str,
+        num_tokens: u32,
+        hc_mult: u32,
+        hidden_size: u32,
+        sol: &dyn Fn(&str, f64) -> f64,
+    ) -> Result<LeafValue, AicError> {
+        let key = MhcKey {
+            op_name: op.to_string(),
+            hc_mult,
+            hidden_size,
+        };
+        let by_tokens = self
+            .load()?
+            .by_architecture
+            .get(&(architecture.to_owned(), key.clone()))
+            .ok_or_else(|| {
+                AicError::PerfDatabase(format!(
+                    "MHC module data missing for {architecture} {key:?} at {}",
+                    self.data_root.display()
+                ))
+            })?;
+        by_tokens.query(num_tokens as f64, &|t| sol(op, t))
+    }
+
+    /// Whether rows tagged `architecture` exist for this op and shape.
+    pub fn has_architecture_rows(
+        &self,
+        architecture: &str,
+        op: &str,
+        hc_mult: u32,
+        hidden_size: u32,
+    ) -> Result<bool, AicError> {
+        let key = MhcKey {
+            op_name: op.to_string(),
+            hc_mult,
+            hidden_size,
+        };
+        Ok(self
+            .load()?
+            .by_architecture
+            .get(&(architecture.to_owned(), key))
+            .is_some_and(|curve| !curve.is_empty()))
     }
 
     fn query_single(
@@ -191,6 +246,7 @@ impl MhcTable {
 /// is returned only when no source yields rows.
 fn load_mhc_parquet(sources: &[PerfSource]) -> Result<MhcGrids, AicError> {
     let mut by_keys: BTreeMap<MhcKey, BTreeMap<u32, LeafValue>> = BTreeMap::new();
+    let mut by_architecture: BTreeMap<(String, MhcKey), BTreeMap<u32, LeafValue>> = BTreeMap::new();
     let mut any_source = false;
     for source in sources {
         let path = source.path();
@@ -206,6 +262,7 @@ fn load_mhc_parquet(sources: &[PerfSource]) -> Result<MhcGrids, AicError> {
         let latency_col = reader.col("latency")?;
         let power_col = reader.col_optional("power");
         let ks_col = reader.col_optional("kernel_source");
+        let architecture_col = reader.col_optional("architecture");
 
         for row in reader.rows()? {
             let row = row?;
@@ -225,13 +282,21 @@ fn load_mhc_parquet(sources: &[PerfSource]) -> Result<MhcGrids, AicError> {
             };
             let latency = row.f64(latency_col)?;
             let power = row.f64_optional(power_col)?.unwrap_or(0.0);
+            let num_tokens = row.u32(num_tokens_col)?;
+            if let Some(architecture) = row.str_optional(architecture_col)? {
+                by_architecture
+                    .entry((architecture.to_owned(), key.clone()))
+                    .or_default()
+                    .entry(num_tokens)
+                    .or_insert(LeafValue::with_power(latency, power));
+            }
             // First-wins parity with Python `load_mhc_module_data`, which now
             // guards with the standard skip-on-key-conflict idiom
             // (shared-layer contract, design §6.1).
             by_keys
                 .entry(key)
                 .or_default()
-                .entry(row.u32(num_tokens_col)?)
+                .entry(num_tokens)
                 .or_insert(LeafValue::with_power(latency, power));
         }
     }
@@ -247,6 +312,10 @@ fn load_mhc_parquet(sources: &[PerfSource]) -> Result<MhcGrids, AicError> {
     }
     Ok(MhcGrids {
         by_keys: by_keys
+            .into_iter()
+            .map(|(key, curve)| (key, LeafAxisCurve::from_map("num_tokens", curve)))
+            .collect(),
+        by_architecture: by_architecture
             .into_iter()
             .map(|(key, curve)| (key, LeafAxisCurve::from_map("num_tokens", curve)))
             .collect(),

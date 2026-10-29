@@ -50,8 +50,9 @@ pub(crate) fn resolve_op_sources(
 /// function of the load identity + policy; a fixed map renders its full
 /// contents. `\x1f` (unit separator) keeps boundaries unambiguous; non-UTF-8
 /// paths degrade lossily instead of failing.
-/// Process-global (or test-private) memo behind [`PerfDatabase::load_resolved_shared`].
-type SharedTablesMemo = Mutex<HashMap<String, Weak<PerfTables>>>;
+/// Process-global (or test-private) memo behind [`PerfDatabase::load_resolved_shared`],
+/// keeping the systems root each entry was loaded from.
+type SharedTablesMemo = Mutex<HashMap<String, (PathBuf, Weak<PerfTables>)>>;
 
 fn shared_tables_key(
     systems_root: &Path,
@@ -67,6 +68,32 @@ fn shared_tables_key(
         resolver.identity_key(),
         fpm_parquet_path.map_or_else(String::new, |path| path.display().to_string())
     )
+}
+
+fn global_shared_tables() -> &'static SharedTablesMemo {
+    static SHARED_TABLES: OnceLock<SharedTablesMemo> = OnceLock::new();
+    SHARED_TABLES.get_or_init(Default::default)
+}
+
+/// Stop sharing the tables loaded for `system` from `systems_root`, under any
+/// spelling of that directory. Databases that hold them keep them; the next
+/// shared load parses the files again. A state snapshot fingerprints the data
+/// before its estimator loads it, so the estimator must not adopt tables that
+/// another engine parsed before that fingerprint.
+pub(crate) fn unshare_tables(systems_root: &Path, system: &str) {
+    unshare_tables_in(global_shared_tables(), systems_root, system);
+}
+
+fn unshare_tables_in(memo: &SharedTablesMemo, systems_root: &Path, system: &str) {
+    let identity = |path: &Path| std::fs::canonicalize(path).or_else(|_| std::path::absolute(path));
+    let Ok(target) = identity(systems_root) else {
+        return;
+    };
+    memo.lock().unwrap().retain(|_, (root, tables)| {
+        tables.upgrade().is_some_and(|tables| {
+            tables.system != system || identity(root).map_or(true, |root| root != target)
+        })
+    });
 }
 
 /// Whether a version dir is excluded from data loading wholesale: a legacy
@@ -194,6 +221,7 @@ pub mod dsv41;
 pub mod dsv4_megamoe;
 pub mod fpm_forward;
 pub mod gemm;
+pub mod glm53flash;
 mod interpolation;
 pub mod mhc;
 pub mod mla;
@@ -219,6 +247,7 @@ pub use dsv4_megamoe::Dsv4MegaMoeTable;
 pub use dsv41::Dsv41Table;
 pub use fpm_forward::FpmForwardTable;
 pub use gemm::GemmTable;
+pub use glm53flash::Glm53AttentionTable;
 pub use mhc::MhcTable;
 pub use mla::MlaTable;
 pub use moe::MoeTable;
@@ -252,6 +281,8 @@ pub struct PerfTables {
     pub msa: MsaTable,
     pub dsv4: Dsv4Table,
     pub dsv41: Dsv41Table,
+    /// GLM-5.3-Flash sparse-MLA attention module (exact runtime only).
+    pub glm53_attention: Glm53AttentionTable,
     pub dsv4_megamoe: Dsv4MegaMoeTable,
     pub mhc: MhcTable,
     pub trtllm_alltoall: TrtllmAlltoallTable,
@@ -537,6 +568,9 @@ impl PerfDatabase {
             // Exact backend/version only: V41 module provenance must not be
             // inherited from legacy or sibling runtime measurements.
             dsv41: Dsv41Table::with_sources(&data_root, &resolver)?,
+            // Exact backend/version only, like V41: GLM attention is never
+            // borrowed from sibling runtimes.
+            glm53_attention: Glm53AttentionTable::with_sources(&data_root, &resolver)?,
             // Single-primary by design: the MegaMoE loader reads one unified
             // path and never the shared-layer source list (see
             // `dsv4_megamoe.rs`) — but that one path IS family-first
@@ -635,9 +669,8 @@ impl PerfDatabase {
         tolerate_missing_data: bool,
         fpm_parquet_path: Option<&Path>,
     ) -> Result<Self, AicError> {
-        static SHARED_TABLES: OnceLock<SharedTablesMemo> = OnceLock::new();
         Self::load_resolved_shared_in(
-            SHARED_TABLES.get_or_init(Default::default),
+            global_shared_tables(),
             systems_root,
             system,
             backend,
@@ -718,7 +751,12 @@ impl PerfDatabase {
             &resolver,
             fpm_parquet_path,
         );
-        if let Some(tables) = memo.lock().unwrap().get(&key).and_then(Weak::upgrade) {
+        if let Some(tables) = memo
+            .lock()
+            .unwrap()
+            .get(&key)
+            .and_then(|(_, tables)| tables.upgrade())
+        {
             return Ok(Self::from_tables(tables));
         }
         let db = Self::load_with_resolver(
@@ -731,8 +769,11 @@ impl PerfDatabase {
             fpm_parquet_path,
         )?;
         let mut map = memo.lock().unwrap();
-        map.retain(|_, weak| weak.strong_count() > 0);
-        map.insert(key, Arc::downgrade(&db.tables));
+        map.retain(|_, (_, tables)| tables.strong_count() > 0);
+        map.insert(
+            key,
+            (systems_root.to_path_buf(), Arc::downgrade(&db.tables)),
+        );
         Ok(db)
     }
 
@@ -1169,6 +1210,34 @@ mod tests {
         assert_eq!(db2.worst_provenance(), ProvenanceTier::Silicon);
         assert!(!Arc::ptr_eq(&db1.util_grids, &db2.util_grids));
         assert!(!Arc::ptr_eq(&db1.delta_lookups, &db2.delta_lookups));
+    }
+
+    #[test]
+    fn unsharing_a_root_under_another_spelling_reloads_only_that_system() {
+        let memo = SharedTablesMemo::default();
+        let load = |system: &str| {
+            PerfDatabase::load_resolved_shared_in(
+                &memo,
+                &systems_root(),
+                system,
+                "vllm",
+                "0.24.0",
+                false,
+                false,
+                false,
+                None,
+            )
+            .expect("shared load must succeed")
+        };
+        let (b200, h200) = (load("b200_sxm"), load("h200_sxm"));
+        // `systems_root()` is spelled with `..`; the canonical path is the same root.
+        unshare_tables_in(
+            &memo,
+            &std::fs::canonicalize(systems_root()).unwrap(),
+            "b200_sxm",
+        );
+        assert!(!Arc::ptr_eq(&load("b200_sxm").tables, &b200.tables));
+        assert!(Arc::ptr_eq(&load("h200_sxm").tables, &h200.tables));
     }
 
     #[test]

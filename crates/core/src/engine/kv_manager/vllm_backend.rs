@@ -135,6 +135,7 @@ pub(crate) struct BlockRequestLease {
     pending_capacity_writes: Option<Box<PendingCapacityWrites>>,
     grouped: Option<GroupedLease>,
     state: Option<Box<StateRequest>>,
+    pub(crate) session_id: Option<String>,
 }
 
 impl BlockRequestLease {
@@ -154,6 +155,7 @@ impl BlockRequestLease {
             pending_capacity_writes: None,
             grouped: None,
             state: None,
+            session_id: None,
         }
     }
 
@@ -1031,7 +1033,7 @@ impl VllmKvManager {
             sequence.discard_completed_block(position);
         }
         if let Some(stores) = stores {
-            self.publish_store_sequence(stores);
+            self.publish_store_sequence(stores, lease.session_id.as_deref());
         }
         let computed_state_hash = lease.state_hash(computed_after, self.block_size);
         if let (Some(manager), Some(state)) = (&mut self.state_cache, &mut lease.state) {
@@ -1484,7 +1486,7 @@ impl VllmKvManager {
             }));
         }
         if let Some(stores) = stores {
-            self.publish_store_sequence(stores);
+            self.publish_store_sequence(stores, lease.session_id.as_deref());
         }
     }
 
@@ -1625,28 +1627,32 @@ impl VllmKvManager {
         !self.kv_event_publishers.is_empty() || *kv_cache_trace::KV_CACHE_TRACE_ENABLED
     }
 
-    fn publish_store_sequence(&mut self, stores: Vec<Option<StoredBlock>>) {
+    fn publish_store_sequence(
+        &mut self,
+        stores: Vec<Option<StoredBlock>>,
+        session_id: Option<&str>,
+    ) {
         let mut group: Option<StoreGroup> = None;
         for store in stores {
             let Some(store) = store else {
-                self.flush_store_group(&mut group);
+                self.flush_store_group(&mut group, session_id);
                 continue;
             };
             if group
                 .as_ref()
                 .is_some_and(|current| !current.can_append(&store))
             {
-                self.flush_store_group(&mut group);
+                self.flush_store_group(&mut group, session_id);
             }
             match &mut group {
                 Some(current) => current.push(store),
                 None => group = Some(StoreGroup::from_block(store)),
             }
         }
-        self.flush_store_group(&mut group);
+        self.flush_store_group(&mut group, session_id);
     }
 
-    fn flush_store_group(&mut self, group: &mut Option<StoreGroup>) {
+    fn flush_store_group(&mut self, group: &mut Option<StoreGroup>, session_id: Option<&str>) {
         let Some(group) = group.take() else {
             return;
         };
@@ -1656,12 +1662,13 @@ impl VllmKvManager {
             group.parent_hash,
             true,
             group.token_ids,
+            session_id,
         );
     }
 
     fn publish_removed(&mut self, hashes: Vec<SequenceHash>) {
         if !hashes.is_empty() {
-            self.publish_kv_event(hashes, &[], None, false, None);
+            self.publish_kv_event(hashes, &[], None, false, None, None);
         }
     }
 
@@ -1672,6 +1679,7 @@ impl VllmKvManager {
         parent_hash: Option<SequenceHash>,
         is_store: bool,
         token_ids: Option<Vec<Vec<u32>>>,
+        session_id: Option<&str>,
     ) {
         if !self.enable_prefix_caching || full_blocks.is_empty() {
             return;
@@ -1709,6 +1717,7 @@ impl VllmKvManager {
                         token_ids: token_ids.as_ref().and_then(|ids| ids.get(index).cloned()),
                     })
                     .collect(),
+                session_id: session_id.map(str::to_owned),
             })
         } else {
             KvEventData::Removed {

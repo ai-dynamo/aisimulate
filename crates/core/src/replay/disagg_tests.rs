@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, VecDeque};
@@ -65,6 +68,8 @@ impl ReplayTelemetryObserver for CaptureTelemetryObserver {
 struct QueueUntilWorkerPlacement {
     scheduler_id: Option<usize>,
     pending: VecDeque<Uuid>,
+    abort_count: usize,
+    fail_abort: bool,
 }
 
 impl QueueUntilWorkerPlacement {
@@ -72,6 +77,8 @@ impl QueueUntilWorkerPlacement {
         Self {
             scheduler_id: None,
             pending: VecDeque::new(),
+            abort_count: 0,
+            fail_abort: false,
         }
     }
 
@@ -86,6 +93,7 @@ impl QueueUntilWorkerPlacement {
                 scheduler_id,
                 reported_overlap_tokens: 0,
                 cache_sample: None,
+                kv_hints: None,
                 placement_replica_id: None,
             })
             .collect()
@@ -110,6 +118,7 @@ impl PlacementPolicy<ReplayRequestPayload> for QueueUntilWorkerPlacement {
                 scheduler_id,
                 reported_overlap_tokens: 0,
                 cache_sample: None,
+                kv_hints: None,
                 placement_replica_id: None,
             }),
             None => {
@@ -131,6 +140,13 @@ impl PlacementPolicy<ReplayRequestPayload> for QueueUntilWorkerPlacement {
         let before = self.pending.len();
         self.pending.retain(|pending| *pending != request_id);
         self.pending.len() != before
+    }
+
+    fn dispatch_aborted(&mut self, request_id: Uuid, _now_ms: f64) -> anyhow::Result<()> {
+        self.abort_count += 1;
+        self.cancel_pending(request_id);
+        anyhow::ensure!(!self.fail_abort, "injected abort failure");
+        Ok(())
     }
 
     fn request_terminal(
@@ -259,17 +275,20 @@ impl TestDisaggConfig {
             kv_eviction_policy: crate::engine::KvEvictionPolicy::Lru,
             dp_size: 1,
             tensor_parallel_size: 1,
+            prefill_context_parallel_size: 1,
             num_gpu_blocks_is_explicit: None,
             rank: MockEngineArgs::default(),
             prefill: Some(ReplayRoleConfig {
                 dp_size: self.prefill_dp_size,
                 tensor_parallel_size: 1,
+                prefill_context_parallel_size: 1,
                 num_gpu_blocks_is_explicit: None,
                 rank: self.prefill_args.clone(),
             }),
             decode: Some(ReplayRoleConfig {
                 dp_size: self.decode_dp_size,
                 tensor_parallel_size: 1,
+                prefill_context_parallel_size: 1,
                 num_gpu_blocks_is_explicit: None,
                 rank: self.decode_args.clone(),
             }),
@@ -437,6 +456,30 @@ fn trtllm_disaggregation_runs_source_first_handoff_to_completion() {
     assert!(conformance.destination_drained);
 }
 
+#[test]
+fn sglang_destination_stores_nothing_before_running_admission() {
+    let mut config = sglang_disagg_config();
+    config.num_prefill_workers = 1;
+    config.num_decode_workers = 1;
+    let runtime =
+        new_handoff_conformance(&config, VecDeque::from([request(1, 128, 2, 0.0)])).unwrap();
+
+    let conformance = runtime.run_handoff_conformance(EngineType::Sglang).unwrap();
+
+    assert_eq!(conformance.order, HandoffOrder::DestinationFirst);
+    assert_eq!(
+        conformance.lifecycle,
+        crate::replay::expected_normalized_handoff(HandoffOrder::DestinationFirst)
+    );
+    assert_eq!(
+        conformance.destination_stored,
+        crate::replay::NormalizedStoredTiming::default()
+    );
+    assert_eq!(conformance.completed_requests, 1);
+    assert!(conformance.source_drained);
+    assert!(conformance.destination_drained);
+}
+
 fn request(
     uuid: u128,
     prompt_tokens: usize,
@@ -457,7 +500,7 @@ fn request(
 fn simultaneous_handoffs_follow_arrival_order_across_replays() {
     let request_ids = [3, 1, 2].map(Uuid::from_u128);
     let run = || {
-        let mut flow = DisaggFlowState::new(HandoffOrder::SourceFirst, 0.0, false);
+        let mut flow = DisaggFlowState::new(HandoffOrder::SourceFirst, 0.0, None, false);
         let mut collector = TraceCollector::default();
         let handoffs = request_ids.map(|uuid| {
             flow.on_external_arrival(
@@ -465,6 +508,7 @@ fn simultaneous_handoffs_follow_arrival_order_across_replays() {
                 0.0,
                 None,
                 None,
+                false,
                 &mut collector,
             )
             .unwrap();
@@ -1262,6 +1306,8 @@ fn canceled_handoff_completion_does_not_refinalize_a_finished_request() {
     );
     assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
     assert!(runtime.is_done(), "cancellation cleanup must fully drain");
+    let links = runtime.flow.links.as_mut().unwrap();
+    assert!(links.jobs.is_empty() && links.next_event_ms().is_none());
     // Tolerating an already finalized request must not hide double retirement.
     let error = runtime.complete_handoff(uuid).unwrap_err();
     assert_eq!(
@@ -2098,6 +2144,92 @@ fn per_request_handoff_detail_preserves_backend_causality_and_stage_reuse() {
     }
 }
 
+#[rstest::rstest]
+#[case::prefill(true, disagg_config())]
+#[case::decode(false, sglang_disagg_config())]
+fn command_failure_aborts_placement_and_preserves_request_failure(
+    #[case] prefill: bool,
+    #[case] config: TestDisaggConfig,
+    #[values(false, true)] fail_abort: bool,
+) {
+    let config = config.runtime_config(false).unwrap();
+    let mut runtime =
+        DisaggRuntimeImpl::<QueueUntilWorkerPlacement, NoEngineEvents, ()>::new_composed(
+            &config,
+            AdmissionQueue::new_requests(
+                VecDeque::from([request(1, 64, 2, 0.0), request(2, 64, 2, 100.0)]),
+                ReplayMode::Trace,
+            ),
+            false,
+            |_, prefill_topology, _, decode_topology| {
+                Ok((
+                    QueueUntilWorkerPlacement::initially_blocked(prefill_topology),
+                    QueueUntilWorkerPlacement::initially_blocked(decode_topology),
+                ))
+            },
+        )
+        .unwrap()
+        .with_per_request_records(true);
+    runtime.step().unwrap();
+    let uuid = Uuid::from_u128(1);
+    let state = runtime.state_mut(uuid).unwrap();
+    let action = if prefill {
+        state.pending_prefill_action.take()
+    } else {
+        state.pending_destination_action.take()
+    }
+    .unwrap();
+    runtime.prefill_placement.fail_abort = fail_abort;
+    runtime.decode_placement.fail_abort = fail_abort;
+    // Inject failure at the command boundary after a real route/action exists.
+    // No engine accepts ownership, so cleanup must not block subsequent requests.
+    let result = if prefill {
+        runtime.submit_prefill(uuid, usize::MAX, action, None)
+    } else {
+        runtime.reserve_destination(uuid, usize::MAX, action)
+    };
+    assert_eq!(
+        (
+            runtime.prefill_placement.abort_count,
+            runtime.decode_placement.abort_count
+        ),
+        (usize::from(prefill), usize::from(!prefill))
+    );
+    if fail_abort {
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(
+            error.contains("unknown rank") && error.contains("injected abort failure"),
+            "{error}"
+        );
+    } else {
+        result.unwrap();
+        assert_eq!(
+            runtime.state(uuid).unwrap().terminal_status(),
+            Some(ReplayTerminalStatus::Failed)
+        );
+        runtime.prefill_placement.scheduler_id = Some(0);
+        runtime.decode_placement.scheduler_id = Some(0);
+        runtime.run_to_completion().unwrap();
+        assert_eq!(
+            runtime.prefill_placement.abort_count + runtime.decode_placement.abort_count,
+            1
+        );
+        let report = runtime.run().unwrap().0.finish();
+        assert_eq!(report.request_counts.completed_requests, 1);
+        assert_eq!(
+            report
+                .per_request
+                .iter()
+                .map(|r| r.terminal_status)
+                .collect::<Vec<_>>(),
+            [
+                ReplayTerminalStatus::Failed,
+                ReplayTerminalStatus::Completed
+            ],
+        );
+    }
+}
+
 #[test]
 fn rejected_prefill_remains_rejected_during_failed_handoff_cleanup() {
     let mut config = disagg_config();
@@ -2250,6 +2382,117 @@ fn state_cache_handoff_adds_one_state_copy_to_transfer_time() {
     // One 8 MB state at 1 GB/s on top of 128 tokens x 1 MB.
     let delta = handoff_ms(true) - handoff_ms(false);
     assert!((delta - 8.0).abs() < 1e-6, "delta={delta}");
+}
+
+#[test]
+fn same_instant_transfers_compute_rates_once() {
+    let mut links = TransferLinks::new(Some(1.0), Some(1.0)).unwrap();
+    links.submit(HandoffId::new(Uuid::from_u128(1)), 1.0, 0, 0, 0.0);
+    assert_eq!(links.next_event_ms(), Some(1.0));
+    let before = links.transfers.rate_refreshes.get();
+    // Independent pairs submitted later at one instant.
+    for pair in 1..=64u32 {
+        let handoff_id = HandoffId::new(Uuid::from_u128(u128::from(pair) + 1));
+        links.submit(handoff_id, 2.0, pair as usize, pair as usize, 0.5);
+    }
+    assert_eq!(links.next_event_ms(), Some(1.0));
+    // One step to the shared instant and one snapshot for the next event.
+    assert_eq!(links.transfers.rate_refreshes.get() - before, 2);
+}
+
+#[test]
+fn an_uncontended_transfer_finishes_exactly_at_its_standalone_delay() {
+    // Unlinked replay schedules a handoff at `now + delay`; a transfer alone on
+    // its links must land on the same bits so same-instant ordering is kept.
+    let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+    let mut unit = || {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    for destination_gbps in [None, Some(1.7), Some(32.0)] {
+        for _ in 0..1_000 {
+            let mut links = TransferLinks::new(Some(1.7), destination_gbps).unwrap();
+            let (now_ms, delay_ms) = (1.0e6 * unit(), 1.0e3 * unit());
+            links.submit(HandoffId::new(Uuid::from_u128(1)), delay_ms, 0, 0, now_ms);
+            assert_eq!(links.next_event_ms(), Some(now_ms + delay_ms));
+        }
+    }
+}
+
+#[test]
+fn a_sub_ulp_transfer_residual_completes_at_the_current_time() {
+    // Stopping one ULP short of a completion can leave a residual whose event
+    // is the links' own clock. That event must still complete instead of
+    // pinning the replay to one timestamp. A slower receiving link makes the
+    // rate inexact, which is what leaves such residuals.
+    let mut residuals = 0;
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut unit = || {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    for _ in 0..20_000 {
+        let mut links = TransferLinks::new(Some(1.0), Some(0.7)).unwrap();
+        let handoff_id = HandoffId::new(Uuid::from_u128(1));
+        let start_ms = 1.0e6 * unit();
+        links.submit(handoff_id, 1.0e3 * unit(), 0, 0, start_ms);
+        let event_ms = links.next_event_ms().unwrap();
+        let before_ms = event_ms.next_down();
+        links.advance(before_ms);
+        if links.completed.is_empty() && links.next_event_ms() == Some(before_ms) {
+            residuals += 1;
+            links.complete_due(before_ms);
+            assert_eq!(links.completed, [handoff_id]);
+            assert!(links.next_event_ms().is_none());
+        }
+    }
+    assert!(residuals > 0, "no sub-ULP residual case was exercised");
+}
+
+/// Two 128-token prompts on separate prefill workers hand off together. Alone,
+/// each transfer takes 128 ms at 1 GB/s.
+fn concurrent_handoff_delays(
+    engine_type: EngineType,
+    decode_workers: usize,
+    decode_bandwidth: Option<f64>,
+) -> Vec<f64> {
+    let mut config = transfer_timing_config(engine_type, KvTransferTimingMode::FullPrompt, 1);
+    config.num_prefill_workers = 2;
+    config.num_decode_workers = decode_workers;
+    config.decode_args.kv_transfer_bandwidth = decode_bandwidth;
+    let distinct = |uuid: u128| DirectRequest {
+        tokens: vec![uuid as u32; 128],
+        ..request(uuid, 128, 2, 0.0)
+    };
+    let (_, alone) = run_trace_collect(&config, vec![distinct(1)], None, 1.0);
+    let (_, together) = run_trace_collect(&config, vec![distinct(1), distinct(2)], None, 1.0);
+    let alone_ms = alone.handoff_ms[&Uuid::from_u128(1)];
+    [1, 2]
+        .map(|uuid| together.handoff_ms[&Uuid::from_u128(uuid)] - alone_ms + 128.0)
+        .to_vec()
+}
+
+#[test]
+fn concurrent_handoffs_into_one_decode_rank_share_its_link() {
+    for engine_type in [EngineType::Vllm, EngineType::Sglang] {
+        // Both transfers share the decode rank's 1 GB/s, so both finish
+        // after 256 ms instead of 128 ms.
+        for delay in concurrent_handoff_delays(engine_type, 1, Some(1.0)) {
+            assert!((delay - 256.0).abs() < 1e-6, "{engine_type:?}: {delay}");
+        }
+        // Separate decode ranks give each transfer its own links.
+        for delay in concurrent_handoff_delays(engine_type, 2, Some(1.0)) {
+            assert!((delay - 128.0).abs() < 1e-6, "{engine_type:?}: {delay}");
+        }
+        // Without decode bandwidth only the distinct prefill links bind.
+        for delay in concurrent_handoff_delays(engine_type, 1, None) {
+            assert!((delay - 128.0).abs() < 1e-6, "{engine_type:?}: {delay}");
+        }
+    }
 }
 
 #[test]
@@ -3116,7 +3359,7 @@ mod agentic_pd_qualification {
 
     fn prepared(graph: AgenticTrace, lanes: usize) -> PreparedAgenticSnapshots {
         let prepared = graph
-            .prepare_snapshots(lanes, AgenticSnapshotOptions { seed: 42 })
+            .prepare_snapshots(lanes, AgenticSnapshotOptions::seeded(42))
             .unwrap();
         PreparedAgenticSnapshots::from_plays(
             (0..lanes)

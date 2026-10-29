@@ -14,13 +14,12 @@ model_paths:
   - zai-org/GLM-5.2
   - zai-org/GLM-5.2-FP8
   - nvidia/GLM-5.2-NVFP4
-  # GLM-5.3 inverted the 5.x naming: the un-suffixed 5.3 repo IS the FP8
-  # artifact (config quantization_config fp8 e4m3 block 128) and the -BF16
-  # repo the bf16 one; no "-FP8" 5.3 repo exists on the Hub (owner decision
-  # 2026-09-24). Do not spell the non-existent name here: the roster derives
-  # the coverage floor from repo mentions in these files.
-  - zai-org/GLM-5.3-BF16
+  # GLM-5.3: the plain zai-org repository is the FP8-block release and the
+  # BF16 weights carry the -BF16 suffix (no zai-org/GLM-5.3-FP8 exists).
+  # Do not spell the non-existent name here: the roster derives the coverage
+  # floor from repo mentions in these files.
   - zai-org/GLM-5.3
+  - zai-org/GLM-5.3-BF16
   - nvidia/GLM-5.3-NVFP4
 include_base: false
 description: >

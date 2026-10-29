@@ -133,7 +133,7 @@ Present a concise **options table with one row per joint combination**, includin
 | Collector compatibility | Compatible with the current profile collector's identity checks, blocked, or unresolved, independently of runtime support. |
 | Resource effects and limits | Expected changes to weights, attention cache, fixed state, workspaces/padding and memory fit; retain unknown bounds. Accuracy remains unmeasured without matched evidence. |
 
-The current profile collector requires KV dtype to equal its checkpoint-inferred native dtype and checks GEMM, MoE, FMHA and communication identities against its resolved configuration. Those checks restrict collection even when the pinned runtime supports another combination. Mark any blocked alternative with its precise limitation; user selection or a schema-valid profile does not override serving dispatch. Do not relabel checkpoint data or use extra launch arguments to disguise an unsupported identity. See [profile collection constraints](#plan-preview-and-explicitly-execute).
+The profile collector preserves the selected KV dtype and checks GEMM, MoE, FMHA and communication identities against its resolved configuration. Checkpoint-inferred KV defaults do not restrict explicit selections. The pinned runtime must support the selected combination, and observed precision must match the plan. Mark any blocked alternative with its precise limitation; a schema-valid profile does not prove runtime support. Do not relabel checkpoint data or use extra launch arguments to disguise an unsupported identity. See [profile collection constraints](#plan-preview-and-explicitly-execute).
 
 Treat runtime defaults as one proposal and let the user choose the precision combination(s) to cover, preserving prior explicit choices. Record the choice, rationale, sources and unresolved conditions in profile provenance. A blocked selection stays blocked until the required capability is available; do not substitute a default silently. For multiple selected combinations, use a separate fresh output root per precision combination and the existing `--parallel-configs` topology list within each. Duplicate resolved topologies within the same serving role are rejected even if their precision overrides differ. This is agent orchestration over the existing CLI, not a new precision-matrix command or schema. Recompute resources and review each exact precision/topology profile in stage 3 before accepting it.
 
@@ -457,7 +457,7 @@ Onboarding takes no GPU-pool or node-allocation inputs. The selected topology es
 | DEP8 | `--tensor-parallel 1 --attention-data-parallel 8 --moe-tensor-parallel 1 --moe-expert-parallel 8` | `(1, 1, 8, 1, 8, 1)` |
 | TEP8 | `--tensor-parallel 8 --attention-data-parallel 1 --moe-tensor-parallel 1 --moe-expert-parallel 8` | `(8, 1, 1, 1, 8, 1)` |
 
-The profile route supports vLLM text decoders, including the text portion of multimodal checkpoints, and linear or grouped cache storage. Its current parallelism constraints are listed below. Groups describe full attention, sliding-window attention and supported short-convolution state. Grouped execution currently requires cold aggregated workers, HBM-only cache, no speculative decoding and `prefix_caching: false`. Prefix reuse, host/G3 offload, disaggregation and scalar cache-capacity overrides are rejected for grouped profiles. AFD, encoder pools, unsupported recurrent state, wide EP and EPLB remain outside this route.
+The profile route supports vLLM text decoders, including the text portion of multimodal checkpoints, and linear or grouped cache storage. Its current parallelism constraints are listed below. Groups describe full attention, sliding-window attention and supported short-convolution state. Grouped execution currently requires cold aggregated workers, HBM-only cache, no speculative decoding and `prefix_caching: false`. Prefix reuse, host/G3 offload, disaggregation and scalar cache-capacity overrides are rejected for grouped profiles. AFD, encoder pools, wide EP and EPLB remain outside this route. Config intake does not derive cache geometry for linear-attention or recurrent state. It leaves that [cache geometry pending the runtime probe](#cache-geometry-pending-the-runtime-probe). Runtime observation import does not accept their cache groups yet. The measured Kimi K3 profile route in the table below is not affected.
 
 ### Parallelism support and guided CLI coverage
 
@@ -500,6 +500,26 @@ These settings define the runtime envelope used for profile sizing, collection a
 For example, add `--gpu-memory-utilization 0.92 --prefill-cudagraph-policy runtime` to review a different memory fraction while retaining engine-selected graphs, or `--max-prefill-cudagraph-size 2048` for the explicit extension. Runtime policy with a numeric capture size is rejected. Old saved requests that omit `collection.prefill_cudagraph_policy` retain the prior explicit policy and 2,048-token default; they are not reinterpreted as runtime-policy requests. An omitted legacy memory fraction retains the prior collector-argument omission and the existing 0.90 simulation budget. Review changes in a new request/collection directory.
 
 ### Serving roles and CUDA graph settings
+
+DeepSeek V4.1 requires eager execution to avoid the graph-compilation startup
+timeout that motivated this collection policy; see the
+[historical startup evidence](../../../benchmarks/evidence/dsv41-eager-startup.md).
+Compiled and CUDA-graph execution still need separate qualification for this
+collection path.
+In vLLM, `--enforce-eager` disables both CUDA graphs and `torch.compile`;
+`cudagraph_mode=NONE` only disables CUDA graphs and may leave compilation enabled. See the
+[CLI flag comparison](../../reference/cli.md#eager-execution-and-cuda-graphs).
+
+For direct `collector --fpm` calls, pass `--fpm-enforce-eager`, or select
+`--fpm-prefill-cudagraph-policy runtime` without CUDA graph capture flags.
+
+The collector and runtime probe recognize `DeepseekV41ForCausalLM` from the
+resolved model config
+and automatically pass `--enforce-eager` to the worker. No extra onboarding flag
+is needed. Use the default `runtime` prefill policy, with graph mode omitted or
+`NONE` and no capture sizes. Explicit graph requests fail with a diagnostic;
+they are not silently overridden. This model-specific rule does not make `NONE`
+select eager execution for other models.
 
 Use `--worker-type prefill`, `decode` or `aggregated` to bind new collection and memory evidence to its serving role. `prefill` and `decode` requests collect only their own phase and use separate output roots. Their configured graph modes, capture limits and usable KV capacities need not agree with each other. Within each role, observed settings and rank-local cache evidence must match that role's accepted launch; an unexpected runtime change still fails validation. Aggregated requests exercise both phases with one shared serving configuration and combine compatible memory observations conservatively. A batch selecting PIECEWISE during prefill and FULL during decode is not itself a configuration mismatch.
 
@@ -558,7 +578,7 @@ With no parallelism flags, guided setup asks for missing shared precision/layout
 
 When present, `text_config` must be one nonempty decoder configuration object. Only its geometry is used; wrapper and encoder dimensions are never merged into it. Otherwise, setup reads the flat decoder fields even when vision or audio metadata is present. Nested decoder architecture/model-type declarations select supported decoder validation and resource estimates. The profile preserves the declared architecture used by collection: nested `architectures` when present, otherwise the wrapper architecture. Provenance records both identities when they differ. A wrapper architecture never establishes an unknown nested decoder's resource layout. Shared outer dtype and quantization metadata are inherited only when the text section does not declare that metadata. The checkpoint identity hint and SHA-256 remain those of the original document. `model_max_length` is accepted as a context-limit alias; conflicting context declarations fail explicitly.
 
-Scripted intake and interactive final review state that FPM models the text decoder only. Config-derived estimates exclude multimodal encoders, projectors, preprocessing and other non-text components. Observed runtime cache capacity accounts for all components actually loaded by the worker, while timing describes the text decoder only. The saved profile preserves that notice in provenance through planning and generated prediction/recommendation configurations. Known incompatible text-decoder cache layouts remain rejected, and unknown layouts require explicit resource accounting.
+Scripted intake and interactive final review state that FPM models the text decoder only. Config-derived estimates exclude multimodal encoders, projectors, preprocessing and other non-text components. Observed runtime cache capacity accounts for all components actually loaded by the worker, while timing describes the text decoder only. The saved profile preserves that notice in provenance through planning and generated prediction/recommendation configurations. Text-decoder cache layouts that `config.json` cannot establish, such as linear-attention, recurrent state or an architecture that intake does not recognize, are not rejected: their [cache geometry stays pending the runtime probe](#cache-geometry-pending-the-runtime-probe). Other known incompatible layouts remain rejected. MLA/DSA layouts and configs that name no architecture require explicit resource accounting.
 
 Memory remains pending for the selected TP, DEP or TEP worker until collection. Prompts request only unresolved identity, precision and supported cache geometry. Optional legacy byte overrides describe a conservative per-rank estimate. Enter integer bytes or an explicit unit such as `70 GiB`, `512 MiB`, or `1.5 GB`; the conversion must produce a whole number of bytes. Invalid individual values are prompted again. Model revision, backend identity, and deployment conflicts return to the corresponding option while retaining accepted resource answers. During initial input collection, incompatible config facts or combined resource bounds fail with the reason and leave no request; correct the source or overrides and rerun setup. Ctrl-C or end-of-input exits 130 and leaves no partial request or replacement of an existing request.
 
@@ -609,7 +629,7 @@ aisimulate onboard init \
 
 Replace the model, revision, runtime and hardware inputs with the worker you will actually run. `--model-config` and `--fpm-profile` are mutually exclusive; `--resource-overrides` requires `--model-config` and also works with guided setup. Flat per-rank byte overrides require an explicit topology because the same byte bound cannot be transferred or rescaled across candidate tuples. For multiple configurations, place them in each `--parallel-configs` entry's `resource_overrides` instead. Shared precision/layout overrides can be used for automatic suggestions. Scripted setup never reads terminal input. It exits 2 without writing a request when required inputs remain unresolved or no fully assessed automatic default exists. Validation first lists all missing or invalid target identity and collection options. Once that stage is valid, it lists unresolved profile fields, or candidate-specific gaps and exact topology flags, and asks for the necessary inputs or guided setup.
 
-The flat override fields are `architecture`, `context_length`, `num_experts`, every precision and resource field shown above, `cache_block_sizes`, `cache_groups`, `moe_backend`, `attention_backend`, and optional `provenance`. For grouped resources, replace `cache_layout: linear` and `kv_bytes_per_token` with the declarations described below. Unknown fields, duplicate fields, invalid types, unsupported values, and incompatible cache semantics are rejected. Overrides are recorded with per-field provenance rather than discarded. Profile `context_length` is the model's declared maximum; the CLI `--context-length` selects a runtime limit that cannot exceed it. Scheduler limits are per attention-DP rank, as described in [Runtime and collection limits](#runtime-and-collection-limits).
+The flat override fields are `architecture`, `context_length`, `num_experts`, every precision and resource field shown above, `cache_block_sizes`, `cache_groups`, `moe_backend`, `attention_backend`, and optional `provenance`. For grouped resources, replace `cache_layout: linear` and `kv_bytes_per_token` with the declarations described below. Unknown fields, duplicate fields, invalid types, unsupported values, and incompatible cache semantics are rejected. For a layout [pending the runtime probe](#cache-geometry-pending-the-runtime-probe), `cache_layout`, `kv_bytes_per_token` and `cache_groups` are claims that observation import checks, and `cache_block_sizes` is rejected. Overrides are recorded with per-field provenance rather than discarded. Profile `context_length` is the model's declared maximum; the CLI `--context-length` selects a runtime limit that cannot exceed it. Scheduler limits are per attention-DP rank, as described in [Runtime and collection limits](#runtime-and-collection-limits).
 
 Reusing an observed profile with `onboard init --fpm-profile` defaults to its recorded memory utilization and limits context to its observed `max_model_len`. An explicit smaller context is allowed; changing utilization or exceeding the observed context requires new runtime memory evidence.
 
@@ -624,13 +644,194 @@ Derivation is deliberately limited. Unambiguous architecture, context, expert co
 | Runtime overhead | The selected packaged hardware specification's per-rank `misc.other_mem` estimate when present. It excludes the separate CUDA graph reservation. |
 | Communication overhead | The exact `misc.nccl_mem` TP entry for a pure-TP worker when present. DEP and TEP estimates remain unavailable; total GPU count does not establish their communication storage. These estimates are optional. |
 
-Source notes identify assumptions and packaged hardware hashes. Weight precision does not establish runtime FMHA or KV precision. Config intake proposes the current collector communication identity `half` with its source. Other schema-valid communication overrides remain recorded for review, with a warning that the current collector rejects them for new collection. Recognized quantization declarations can establish checkpoint/FPM precision identities or an explicit KV dtype independently of the unknown quantized storage size; a checkpoint label does not mean every tensor has that dtype. Configs may supply useful identity facts while weight or activation estimates remain unavailable. Only unsupported cache semantics require additional geometry; non-KV estimates never become required questions. These estimates do not certify runtime memory fit. Unknown layouts must supply the remaining supported semantics explicitly; known incompatible layouts are rejected.
+Source notes identify assumptions and packaged hardware hashes. Weight precision does not establish runtime FMHA or KV precision. Config intake proposes the current collector communication identity `half` with its source. Other schema-valid communication overrides remain recorded for review, with a warning that the current collector rejects them for new collection. Recognized quantization declarations can establish checkpoint/FPM precision identities or an explicit KV dtype independently of the unknown quantized storage size; a checkpoint label does not mean every tensor has that dtype. Configs may supply useful identity facts while weight or activation estimates remain unavailable. Only unsupported cache semantics require additional geometry; non-KV estimates never become required questions. These estimates do not certify runtime memory fit. MLA/DSA layouts and configs that name no architecture must supply the remaining supported semantics explicitly. `config.json` cannot establish the cache geometry of some layouts, such as linear-attention, recurrent state or an architecture that intake does not recognize. Such a layout leaves that geometry [pending the runtime probe](#cache-geometry-pending-the-runtime-probe). For that layout, a cache geometry override is a claim that observation import checks against the probe's measurement. Other known incompatible layouts are rejected.
 
 The saved request embeds the complete profile and its provenance. The original model config and override file are no longer needed by `onboard plan`, generated prediction and recommendation configs, or request replay. You can inspect or supply the complete profile directly as described next.
 
+### Cache geometry pending the runtime probe
+
+Config intake does not reject a model config whose cache layout `config.json`
+cannot establish. It loads the config and leaves the cache geometry pending the
+runtime probe, which measures it from the selected runtime. Any one of these
+makes a layout pending:
+
+- a `layer_types` entry other than `full_attention` or `sliding_attention`;
+  `deepseek_sparse_attention` counts as recognized only for
+  `GlmMoeDsaForCausalLM` and `DeepseekV32ForCausalLM`;
+- a non-null recurrent-state field: `ssm_cfg`, `mamba_d_state`,
+  `linear_conv_kernel_dim`, `linear_attn_config`, `ssm_state_size` or
+  `mamba_num_heads`;
+- an architecture name containing `mamba`, `jamba` or `rwkv` in any letter case,
+  including one supplied by an `architecture` resource override when the config
+  declares no architecture;
+- an integer `attn_type_list` entry other than 1.
+
+Without any of these markers, an architecture that intake does not recognize
+also makes a config pending. The reason reads
+`unrecognized architecture <name>`. The name is the decoder's own architecture.
+If the text config names none, the multimodal wrapper's architecture is used.
+If the config names no architecture, an `architecture` resource override counts.
+This rule has limits:
+
+- It does not apply to the known full-attention architectures:
+  `LlamaForCausalLM`, `MistralForCausalLM`, `Qwen2ForCausalLM`,
+  `Qwen3ForCausalLM`, `MixtralForCausalLM`, `Qwen3MoeForCausalLM` and
+  `MiniMaxM2ForCausalLM`.
+- It does not apply to the MLA/DSA families `DeepseekV3ForCausalLM`,
+  `DeepseekV32ForCausalLM` and `GlmMoeDsaForCausalLM`. Intake asks for their
+  `cache_layout` and `kv_bytes_per_token`.
+- If the config's own fields declare sliding-window layers in use or
+  convolution state, it does not apply. Intake derives the cache groups of
+  these layouts, such as gpt-oss, Gemma 4, Step-3.7-Flash, Muse Glimmer,
+  DeepSeek V4 and Inkling. If intake cannot derive the sliding-window
+  layers, the rule still applies. Examples:
+  - Only a schedule field, such as `sliding_window_pattern` or
+    `hybrid_layer_pattern`, selects them.
+  - Sliding layers, or `use_sliding_window: true`, come without a window size.
+  - `local_layer_ids` is malformed or disagrees with `layer_types`.
+  - Sliding layers come with `use_sliding_window: false`.
+- A config that names no architecture still asks for its cache layout.
+- Cache geometry overrides never change the classification.
+
+For example, these packaged configs are pending: GLM-5.3-Flash (KDA and
+sparse-attention layers), Kimi K3 (KDA), the Qwen3.5 Gated DeltaNet hybrids and
+NemotronH hybrids such as Nemotron-3 Nano. The rule for unrecognized
+architectures adds configs such as Qwen3-VL, Llama 4, MiniMax-M3, MiMo-7B,
+MiMo-V2-Flash and Llama-3.3-Nemotron-Super.
+For these layouts, a zero `head_dim`, `num_key_value_heads` or MLA/DSA head
+dimension is accepted, not rejected.
+
+For such a config, `onboard init` cannot write a request yet, so it stops with
+guidance. It prints the facts it resolved with their sources and lists any
+unresolved profile fields (for GLM-5.3-Flash, `fmha_quant_mode` and
+`kv_cache_dtype`), then reports `Cache geometry: pending runtime probe` with the
+reasons. It exits 2 and writes nothing: no request, no profile and no
+`--output-dir` root, with or without `--parallel-configs`. `--interactive`
+prompts for missing inputs such as identity and precision, and never for cache
+geometry or topology, before it stops the same way.
+
+To continue, record the deployment, the model config path and the precision in
+the [onboarding checkpoint](#save-the-launch-inputs-in-the-existing-checkpoint),
+then run `onboard probe-runtime` and `onboard import-observations` as described
+in [Resolve cache geometry with a runtime probe](#resolve-cache-geometry-with-a-runtime-probe).
+
+`--suggest-parallel` still prints its shortlist, with each candidate's cache
+geometry reported under `pending_runtime` and no default selected. Automatic
+topology selection stops with the same guidance, because the probe takes an
+explicit topology: record one of the shortlisted starting points or your own.
+If the shortlist rejects every candidate, the guidance says that no usable
+starting point exists. Record your own topology.
+
+For these layouts, `--resource-overrides` can state `cache_layout`,
+`kv_bytes_per_token` or `cache_groups` only as a claim. Intake checks the value
+like any other override and records it with its source. The claim never
+completes a profile, and declaring every non-KV memory field does not change
+that. The guidance then says that `onboard import-observations` checks each
+cache geometry override against the probe's measurement. For that check, keep
+the claim in the configuration's `resource_overrides` in the checkpoint.
+
+Overrides that state different cache layouts are an error, because
+`kv_bytes_per_token` describes a linear cache and `cache_groups` a grouped one.
+Intake and import refuse three pairs: `cache_groups` with
+`cache_layout: linear`, `cache_groups` with `kv_bytes_per_token`, and
+`kv_bytes_per_token` with `cache_layout: grouped`.
+
+The vLLM probe always reports a grouped cache. Without a matching
+`cache_layout: linear` or `kv_bytes_per_token` claim, the imported profile is
+grouped, and the [limits of grouped profiles](#create-the-request) apply to it:
+prefix reuse, host offload and disaggregation are not available for it yet. A
+matching claim of either kind gives a linear profile, as described below.
+Import checks each kind of claim against the measured groups:
+
+- A `cache_groups` claim must have the same groups as the measurement: the same
+  kinds, layer counts, block sizes, page sizes and windows. Import does not
+  compare group names or order. A group without a `sliding_window` has a null
+  window.
+- A `cache_layout: grouped` claim matches the grouped measurement.
+- A `cache_layout: linear` claim needs every measured group to be an attention
+  group without a window.
+- A `kv_bytes_per_token` claim also needs only attention groups without a
+  window, and it must equal the sum of `page_size_bytes / block_size_tokens`
+  over the measured groups. Both values are per rank, and a group's page size
+  covers all of its layers.
+
+The measurement is authoritative. If a claim does not match, import names
+both values and stops that configuration.
+For a `cache_layout: linear` or `kv_bytes_per_token` claim, import gives the
+measured bytes per token. If these are not a whole number, import says that no
+integer claim can match. If the measurement has no per-token cache size, import
+names the first measured group that has a window or convolution state. Correct
+or remove the override. If the runtime changed, run
+`onboard probe-runtime` again. Import also compares the scheduler limits and
+the precision with the probe's values. Provenance records each override that
+matches as checked against the probe.
+
+If a `cache_layout: linear` or `kv_bytes_per_token` claim matches, import writes
+the measurement in the linear layout. Its `kv_bytes_per_token` is the measured
+bytes per token, and it has no `cache_groups`. The scheduler limits, the runtime
+memory and the resource provenance stay as measured. The profile provenance
+keeps the measured cache groups with their block sizes, and its
+`cache_layout_reason` says why import wrote the linear layout. For the linear
+layout, all measured groups need one block size of at least 2 tokens. A
+`cache_layout: linear` claim without `kv_bytes_per_token` also needs a whole
+number of measured bytes per token. Otherwise import keeps the grouped layout,
+and `cache_layout_reason` gives the reason. In both cases, the result that
+`onboard import-observations` prints and writes to `import.json` gives the
+same `cache_layout_reason` for the configuration.
+
+A `cache_layout: grouped` or `cache_groups` claim keeps the grouped layout.
+Acceptance takes either layout, because both come from the probe evidence.
+Finalization keeps such an imported linear profile linear. The token capacity
+of the two layouts differs by less than one block. Replay of such a linear
+profile uses the measured block size, because the generated configurations set
+it as `kv_cache.block_size`.
+
+A `cache_block_sizes` override is an error for these layouts, at intake and at
+import. It names cache groups that intake derives from `config.json`, and these
+layouts have none. `onboard probe-runtime` reports the runtime cache groups with
+their block sizes. For other layouts, import accepts the override but does not
+use it, because the probe measured the block sizes. Provenance records it that
+way. Precision and the other overrides are still accepted.
+
+Structural errors still fail for every layout. An explicit `layer_types`
+list must have one entry per declared model layer, and an `attn_type_list` must
+have one integer per layer. The declared `num_hidden_layers` must be a positive
+integer; fractional counts are rejected rather than rounded or truncated.
+Conflicting window fields and encoder-decoder configs also fail.
+
+One limit applies today. Runtime observation import accepts only vLLM
+`FullAttentionSpec` and `SlidingWindowSpec` cache groups, so a probe whose
+runtime reports another cache spec, such as vLLM's `MambaSpec` for its Mamba,
+Gated DeltaNet and KDA layers, is imported as incomplete with a diagnostic
+naming the spec, and no profile draft is written.
+
+The direct `collector --fpm` path detects these layouts with the same markers.
+The rule for unrecognized architectures applies only at intake. No FPM attention
+template represents these layouts. Without `--fpm-model-profile` or
+`--fpm-backend-version`, the collector refuses them, and registered model cases
+do not change this. With one of these options, precision comes from the
+checkpoint, and the native runtime measures every cell. A cached prefill needs
+real prefix seeding, as described in
+[How the collection grid is determined](#how-the-collection-grid-is-determined).
+
+The collector checks the markers against its own architecture: the config's
+`architectures` entry, which can name a multimodal wrapper, or else
+`--model-architecture`. Intake checks them against the decoder architecture,
+which the text config's `model_type` can also name. So the collector can detect
+a layout that intake derives. Examples are a Llama text config under a wrapper
+whose name contains `mamba`, and `deepseek_sparse_attention` layers in a config
+that names no architecture. Onboarding passes the profile's architecture with
+`--model-architecture`, so the second example differs only on the direct
+collector path.
+
+Planned work covers per-request state in the FPM profile, importing cache groups
+other than full or sliding attention, and guided collection for these layouts.
+Until then, use a qualified model-specific collection path and verified
+cache profile.
+
 ### Review grouped cache resources
 
-Config intake recognizes unambiguous full/sliding layer declarations, including `sliding_window`/`layer_types` and supported `sliding_window_size`/`local_layer_ids` aliases. It also recognizes the supported `use_sconv` and convolution-kernel metadata. It derives available layer/head geometry and records the source. Runtime attention block sizes after page unification, effective KV dtype and allocation padding are not established by the model config. Unknown resource assumptions remain explicit; unsupported recurrent semantics and contradictory layer/window declarations fail.
+Config intake recognizes unambiguous full/sliding layer declarations, including `sliding_window`/`layer_types` and supported `sliding_window_size`/`local_layer_ids` aliases. It also recognizes the supported `use_sconv` and convolution-kernel metadata. It derives available layer/head geometry and records the source. Runtime attention block sizes after page unification, effective KV dtype and allocation padding are not established by the model config. Unknown resource assumptions remain explicit, and contradictory layer/window declarations fail for recognized architectures. Unrecognized layer types and recurrent state are not derived here; they leave the cache geometry [pending the runtime probe](#cache-geometry-pending-the-runtime-probe).
 
 After selecting precision and topology, investigate the pinned cache/backend implementation and available allocation metadata for block sizes after page unification; ask only for values that remain unresolved. The model config's omission does not imply that the user must supply them. Supply `cache_block_sizes` using the generated group names listed by intake. For example, a mixed full/sliding model might require this JSON answer, or the equivalent mapping in a `--resource-overrides` file:
 
@@ -683,7 +884,7 @@ aisimulate onboard init \
   --suggest-parallel
 ```
 
-The report includes hardware/config provenance, exact `cli_flags`, required GPUs, resolved fields and sources, `missing` inputs, rejected candidates and a nullable `default`. Without explicit runtime precision, the example can report `needs_inputs` candidates and no default; use those diagnostics to collect shared facts in a flat `--resource-overrides` file and rerun. The preview does not validate or write `--output`, even if that request path already exists. It cannot be combined with `--interactive`, profile options, explicit topology flags, `--output-dir` or `--parallel-configs`. To save a request, remove `--suggest-parallel`; use a fully assessed automatic default or select a candidate by adding its exact flags. To save several configurations, use directory output below. Rank-local byte overrides require an explicit choice. A pending-input candidate can be selected in guided setup, which asks for its missing bounds before final review.
+The report includes hardware/config provenance, exact `cli_flags`, required GPUs, resolved fields and sources, `missing` inputs, [`pending_runtime`](#cache-geometry-pending-the-runtime-probe) cache geometry, rejected candidates and a nullable `default`. Without explicit runtime precision, the example can report `needs_inputs` candidates and no default; use those diagnostics to collect shared facts in a flat `--resource-overrides` file and rerun. The preview does not validate or write `--output`, even if that request path already exists. It cannot be combined with `--interactive`, profile options, explicit topology flags, `--output-dir` or `--parallel-configs`. To save a request, remove `--suggest-parallel`; use a fully assessed automatic default or select a candidate by adding its exact flags. To save several configurations, use directory output below. Rank-local byte overrides require an explicit choice. A candidate whose missing inputs are memory bounds can be selected in guided setup, which asks for them before final review. Guided setup cannot select a candidate whose cache geometry is [pending the runtime probe](#cache-geometry-pending-the-runtime-probe). `init` stops with the probe guidance instead.
 
 Dense decoders consider TP; MoE decoders consider pure TP, DEP and TEP. The shortlist contains at most two choices per family and six distinct tuples overall, preferring the smallest estimated fit and the next one. Widths are powers of two within the packaged node domain. A declared NVLink/NVSwitch fabric can use a packaged fast rack domain when its inter-node bandwidth matches or exceeds its intra-node bandwidth; a declared `none` interconnect permits only one GPU automatically. This is hardware architecture, not an available GPU allocation. Explicit topology choices may exceed the shortlist.
 
@@ -833,11 +1034,32 @@ Retain the immutable image/build identity and actual runtime observations when r
 
 For a profile-based campaign, the collector validates its resolved topology and precision against the supplied profile before execution. It does not relabel an FP8 cell as BF16 or change checkpoint quantization to satisfy the profile. A mismatch reports the conflicting field and requires a matching profile/runtime or a supported collector configuration. Pending profiles defer memory admission to the initialized runtime; complete declared profiles retain CPU admission without constructing an analytical model. Profile contents participate in the collector's frozen-plan identity.
 
-New profile-based collection currently uses checkpoint-native weight, FMHA and KV precision without consulting op-level timing tables. The requested KV dtype must match that checkpoint-native dtype. An older FPM profile can still be valid for prediction while being unsuitable for new collection: the historical MiniMax/H200 BF16 FMHA fallback cell differs from its checkpoint-native FP8 inference. Use the historical identity to query those timings and a matching native profile for new collection; the collector rejects that mismatch. Publish the new FP8 campaign into a clean, separate dataset using a new onboarding output directory. Existing cell IDs omit FMHA precision, and publication retains the first published run for a cell ID. If the historical BF16 dataset already holds that cell ID, publication skips the new FP8 run. A collection profile must resolve to one backend identity label for the target hardware/backend before publication.
+Profile-based collection retains checkpoint weight quantization and the selected KV precision without consulting op-level timing tables. An explicit BF16 KV selection uses BF16 attention/cache identity even when FP8 weights caused the default inference to choose FP8 KV. This does not prove runtime support: initialization, observed cache precision and readiness checks must agree with the plan before measurements are accepted. Model-specific native-cache requirements still apply, including DeepSeek V4.1's FP8 KV path. The vLLM collector rejects the unsupported literal `int8` cache option; explicit BF16 and FP8 selections remain available independently of the inferred default.
+
+The current unversioned vLLM template used by FPM collection, and explicit
+vLLM 0.11.0 and newer templates, render an explicit BF16 KV
+selection as `--kv-cache-dtype bfloat16`. This preserves the selection when
+checkpoint metadata declares FP8 KV. See the pinned runtime's
+[accepted cache dtypes](https://github.com/vllm-project/vllm/blob/v0.11.0/vllm/config/cache.py)
+and [dtype resolution](https://github.com/vllm-project/vllm/blob/v0.20.1/vllm/utils/torch_utils.py).
+Only the 0.10.2 template retains `--kv-cache-dtype auto` because that runtime
+does not accept literal `bfloat16`. Observed-precision checks must still reject
+any runtime mismatch. Preview success does not qualify GPU execution.
+Explicit FP8 and runtime `auto` selections retain their existing meanings.
+
+Use a fresh onboarding output directory and dataset when changing collection precision. Do not relabel historical timings or reuse their memory bounds without validation. Existing cell IDs omit FMHA precision, and publication retains the first published run for a cell ID. A collection profile must resolve to one backend identity label for the target hardware/backend before publication.
 
 Successful formal collection and resume verify that the published data uses the selected backend identity label. Actual runtime provenance remains separate; generated configs are not retargeted to the observed package version when an explicit label was supplied. Changed collection identity requires a new request and plan. Diagnostic smoke runs do not publish or verify formal data.
 
 ### Check timing readiness before full collection
+
+For a request containing an FPM profile, `onboard collect-fpm` preview runs the
+collector's CPU planning checks before printing the command. A mismatch between
+the requested KV precision and the profile fails here, before workers launch.
+Planning may resolve checkpoint metadata from local files, the packaged cache or Hugging Face. It does not verify
+GPU execution or make a historical profile invalid for prediction.
+The checkpoint config must remain resolvable through the saved model identity;
+an embedded resource profile does not replace that runtime metadata.
 
 Apply this procedure independently to every selected precision/topology configuration before new full collection. The readiness gate governs collection; it does not require recollecting compatible historical formal data that can already be used by ordinary prediction/recommendation. Historical data reuse retains the separate identity, memory, query-coverage and accuracy checks, including recorded provenance gaps. First inspect any saved native campaign artifacts:
 
@@ -869,6 +1091,7 @@ Execution saves `fpm-readiness.json` in the onboarding output directory and retu
 | Direct-eligible point counts | Formal `fake_fallback` rows are excluded. Zero eligible decode points blocks full collection and direct prediction. Mixed usable/fallback data covers only the reported samples and is not complete query coverage. |
 | Available execution-worker observations | Inspect observed attention groups, resolved cache settings and graph configuration. Contradictions in these checked observations are blockers. Missing optional observations remain unqualified without requiring completed memory sizing or serving validation before timing collection. Referenced `fpm-memory-*.json` files are unvalidated sources retained for separate runtime import/finalization checks; their presence does not qualify allocation or memory. |
 | CPU allocation and affinity | For new Slurm campaigns, inspect `execution.cpu_affinity` and the per-node launcher, per-rank worker and scheduler sidecars. The actual step must expose the requested CPU pool; local schedulers must have sufficient distinct CPUs available, and observed threads must stay within that pool. Missing evidence is incomplete; contradictions or insufficient capacity block full collection. A shared pool does not mean dedicated per-rank pinning. |
+| Imported runtime memory profile | For a request backed by accepted probe observations, readiness also verifies the smoke or source collection's raw memory evidence against that profile. Missing phase/rank evidence, changed settings or insufficient usable capacity blocks full collection. This uses the same verifier as explicit independent-phase bindings below. |
 
 Zero-KV prefill can retain a native `real_prefix` path stamp while its formal seed regime is `n/a`; the stamp alone does not establish that cached tokens were read. Keep the native provenance and use the validated phase/token counts and formal regime when interpreting readiness.
 
@@ -876,7 +1099,7 @@ Dense decode can be synthetic by design only when the producer reports enabled w
 
 Readiness counts describe the current reaggregation of verified native artifacts. They do not relabel an existing formal pair. Historical publications without the dense classification marker retain their recorded regimes during verification, finalization and validation; any revised publication needs a fresh output tree while preserving the original pair.
 
-`ready_for_full_collection` permits the next collection step only for the verified sampled scope. It does not establish memory readiness, interpolation coverage, repeatability or workload accuracy. Full execution checks matching usable smoke or formal evidence for every current cell before launching new GPU work; it does not treat a completed memory probe, process exit or existing report file as sufficient. Continue the existing collection-quality, memory-finalization, replay and matched-serving steps afterward.
+`ready_for_full_collection` permits the next collection step only for the verified sampled scope. For imported runtime profiles, `runtime_compatibility` separately reports whether the actual collection observations preserve accepted memory; requests without those observations retain the timing-only assessment. Readiness does not establish interpolation coverage, repeatability or workload accuracy. Full execution checks matching usable smoke or formal evidence for every current cell before launching new GPU work; it does not treat a completed memory probe, process exit or existing report file as sufficient. Continue the existing collection-quality, memory-finalization, replay and matched-serving steps afterward.
 
 If no usable decode exists, inspect the pinned runtime, exact warm-up flags, eligibility/skip reason and worker logs before deciding why. `fake_fallback` alone does not prove unsupported convolution: TP eligibility, prefix settings, capacity and transient execution failures can also matter. Preserve raw results and completed prefill. Record a deterministic capability failure as blocked and stop unchanged automatic retries. Unsupported convolution or other recurrent-state seeding needs a separate Dynamo/runtime implementation and bounded qualification of the resulting runtime; disabling required warm-up or relabeling synthetic state does not provide support. Continue independent configurations under their own checks.
 
@@ -1127,7 +1350,7 @@ Native artifact completion and skip checks account for the generated grid. A com
 
 Direct collector callers can set the same shared runtime flags. Omitting `--fpm-prefill-cudagraph-policy` retains the standalone collector's explicit 2,048-token capture default; select `runtime` deliberately to defer captures. Runtime policy with a numeric capture size is rejected. Omitting `--fpm-gpu-memory-utilization` preserves the existing runtime/default behavior; an explicit value must be finite and in `(0, 1]`. With a supplied FPM profile, omitted scheduler/context limits use that profile's bounds; without one, an omitted context retains the existing vLLM `-1` auto-fit behavior. Explicit limits must be positive and cannot exceed the supplied profile or contradict the prefill sampling bounds. Inspect the generated command and collector plan before committing GPU time. Successful formal collection publishes the FPM Parquet file and metadata pair into the plan's local systems data directory; diagnostic success alone does not provide that pair. Validate the worker's actual FPM query shapes afterward, including summed queries for DEP.
 
-New collection campaigns request KV preparation in both phases by default: `DYN_BENCH_PREFILL_REAL_SEED=on` for cached prefill and `DYN_BENCH_KV_WARMUP=on` for decode. Cached prefill computes the required prefix before timing the forward pass; prefill with no existing KV has no prefix to seed. Requested prefill seeding requires a compatible runtime and is checked before model loading. Explicit deployment environment overrides remain explicit, subject to the existing collection protocol checks. These defaults are part of the collection identity; preserve old campaigns and use a fresh campaign when changing the policy.
+New collection campaigns request KV preparation in both phases by default: `DYN_BENCH_PREFILL_REAL_SEED=on` for cached prefill and `DYN_BENCH_KV_WARMUP=on` for decode. Cached prefill computes the required prefix before timing the forward pass; prefill with no existing KV has no prefix to seed. Requested prefill seeding requires a compatible runtime and is checked before model loading. Explicit deployment environment overrides remain explicit, subject to the existing collection protocol checks. For a [cache layout that `config.json` cannot describe](#cache-geometry-pending-the-runtime-probe), planning refuses an override that sets `DYN_BENCH_PREFILL_REAL_SEED` to `off`, `0` or `false`. Publication then requires the native `real_prefix` regime for every cached prefill. Its decode points keep the ordinary classification. These defaults are part of the collection identity; preserve old campaigns and use a fresh campaign when changing the policy.
 
 Decode warm-up still depends on the deployed runtime's eligibility and available cache capacity. An enabled switch does not prove real KV was used for every point: inspect raw `kv_seed_regime`, warm-up eligibility, skip reasons and fallback evidence. The current formal table labels ordinary prefill seeding `n/a`; retain the raw artifacts to distinguish `real_prefix` from `fake_prefix`. No successful collection establishes prediction accuracy by itself.
 
@@ -1252,9 +1475,51 @@ Use the [existing Slurm or Kubernetes deployment prerequisites](#choose-the-coll
 
 `observations.json` is a runner-owned index of immutable launch manifests, frozen bundles and raw artifacts. CPU import rechecks their hashes, exact identity/build/precision/settings, ranks and lifecycle, actual tensor/storage accounting, retention and pool reservations. It compares compatible phases/ranks and retains their individual values before taking the limiting usable capacity. An observer's `passed` or `status` field cannot authorize a profile.
 
-Import writes a validation result for every selected configuration and fresh `request.yaml`/`fpm-model-profile.json` drafts for complete configurations. Partial success is preserved and the command exits nonzero for any incomplete configuration. It registers evidence and drafts in the same checkpoint without accepting them or overwriting prior accepted profiles. Present each complete draft for the existing [review/edit/accept workflow](#preserve-partial-profile-review). Preserve observed values and provenance when recording user overrides. Runtime-affecting edits require a fresh compatible probe. Bundle/evidence changes invalidate dependent acceptance and collection references while preserving history.
+Import writes a validation result for every selected configuration and fresh `request.yaml`/`fpm-model-profile.json` drafts for complete configurations. Partial success is preserved and the command exits nonzero for any incomplete configuration. It registers evidence and drafts in the same checkpoint without accepting them or overwriting prior accepted profiles. Present each complete draft for the existing [review/edit/accept workflow](#preserve-partial-profile-review). Preserve observed values and provenance when recording user overrides. For a linear profile, a `kv_cache_bytes` override must be a whole multiple of the smallest capacity that fills whole cache blocks in every measured group. vLLM allocates whole blocks. Runtime-affecting edits require a fresh compatible probe. Bundle/evidence changes invalidate dependent acceptance and collection references while preserving history.
 
 After acceptance, continue ordinary planning and formal timing collection. Observed memory/layout does not establish timing availability, query coverage or serving accuracy. Formal collection automatically inherits the imported profile’s verified bundle and launch evidence; no extra public instrumentation flag is needed on `collect-fpm`. Its deployment options must match the accepted probe. After collection, `runtime-compatibility.json` checks the actual runtime, group geometry and usable capacity against that accepted bound. The existing timing publication and accuracy stages still apply.
+
+#### Bind independently collected phases to an accepted profile
+
+Campaign orchestration may record a different configuration label or collect prefill and decode in separate successful attempts. Use the shared Python API in `aisimulate.support.runtime` to bind those records explicitly. The default `verify_collection_runtime(request, observations, ...)` remains strict: it requires the original configuration and launch, unchanged runtime and instrumentation, and every required phase in one active attempt. Configuration labels are never interpreted as topology or repaired by stripping suffixes.
+
+The campaign recorder supplies a list with exactly one binding per phase required by the accepted request. Each binding has these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `phase` | `prefill` or `decode`, present in the selected frozen plan. Aggregated requests require both, even when their attempts differ. |
+| `plan` | `{ "path": ".../collection-plan.json", "sha256": "..." }`. This digest is the producer's semantic plan SHA, independently recomputed from its immutable inputs. The plan supplies the recorded configuration, launch, bundle and unique phase cell. |
+| `review` | Required when runtime, instrumentation, AISimulate source revision, deployment or supported collection controls differ from the accepted probe. Exact review record described below; no wildcard or mismatch bypass exists. |
+| `checkpoint` | `{ "path": ".../fpm_forward.json", "sha256": "..." }`, with the byte SHA of the completed collector checkpoint. |
+| `observations` | `{ "path": ".../runtime-observations.json", "sha256": "..." }`, with the byte SHA of the immutable observation index inside that plan's campaign directory. |
+| `attempt_id` | The index's active runtime observation attempt, also recorded in the checkpoint. |
+| `collector_attempt_id` | The checkpoint's successful native attempt for that phase's planned cell, also recorded in the phase launch manifest. |
+
+Before GPU work, pass bindings containing `phase`, `plan` and any `review` to `verify_collection_runtime_plans(request, bindings)`. It checks the frozen plan, archived deployment inputs, local model configuration bytes, precision and launch settings without running observers or workers. This preflight does not establish observed memory. After the bounded smoke or source collection completes, add the checkpoint, index and attempt fields and call `verify_collection_runtime_bindings(request, bindings)` before full-grid repeats. Programmatic readiness uses the same contract through `assess_readiness(request, root, checkpoint_root, runtime_bindings=bindings)`, combining raw memory validation with the ordinary native timing checks. Guided `collect-fpm --check-readiness` builds bindings from its own unchanged campaign automatically; custom campaign recorders supply their explicit bindings through the Python API.
+
+Use absolute paths in binding references. The collector writes an absolute `runtime_observations` path in its checkpoint; a custom recorder's relative value is resolved against the checkpoint file's resolved parent directory, independently of the working directory. Directory symlinks are resolved before comparing index paths, while the index itself must remain a regular file inside the frozen campaign directory. Hash and attempt checks still apply. Guided `collect-fpm --check-readiness` preserves all per-cell timing reports when an observation index is missing or unusable. It retains historical index errors in campaign diagnostics; an index error blocks runtime-memory readiness only while the affected campaign supplies a selected cell. Once a formal cell attempt is recorded, its missing or invalid memory evidence cannot fall back to an older smoke attempt.
+
+The `expected_plan` and `runtime_bindings` arguments are mutually exclusive; passing both raises `ValueError`.
+
+To inspect a changed runtime, `collection_runtime_review(request, binding)` returns its exact accepted/collection bundle hashes, collector revision, generator configuration hash, and complete sorted `changes` of `{field, accepted, collection}` for runtime source/build metadata, launch `identity.aisimulate_revision` and deployment settings. Absent values are represented as `{ "missing": true }`. `collector_revision` remains the frozen plan's `aic_revision`; each launch retains its own recorded AISimulate source revision. Inspect the actual source changes, including scheduler patches, mounts and CPU policy, and save this record with a nonempty `rationale` in `review`. Computing that record alone is not a compatibility verdict. Verification recomputes it and rejects missing, altered or stale expectations. Equal cache capacity cannot authorize an unreviewed source change, and reviewed source changes cannot override incompatible model, precision, scheduler, graph or cache properties.
+
+Explicit bindings also review these archived collection controls under `/collection_controls`, preserving their exact values and the original plan and generator hashes:
+
+| Control | Validation and review scope |
+| --- | --- |
+| Backend-policy `params.agg.extra_cli_args` option `--benchmark-timeout` | One positive integer deadline, in split or `=value` form. The exact argument tokens are recorded; `[]` means the probe declared no override. Duplicate, conflicting or malformed options fail. An explicitly empty argument list is equivalent to no policy override for comparison. |
+| `K8sConfig.extra_env.FPM_RESULT_WAIT_TIMEOUT_SECONDS` | One literal integer from 1 through 43,200 seconds for the outer result wait. This checks an archived control; it does not change current rendering or transport limits. |
+| `K8sConfig.extra_env.FPM_FINALIZATION_TIMEOUT_SECONDS` | One literal ASCII integer from 1 through 3,600 seconds for artifact finalization after local rank outputs complete. Leading zeros, signs and whitespace are invalid, matching the execution harness. The collection deadline still applies. |
+| `DYN_BENCH_CONTENT_SEED`, `DYN_BENCH_POOL_TAG` | Literal strings, including an empty pool tag. |
+| `DYN_BENCH_PREFILL_CONTENT` | `random`, `sharegpt`, `sharegpt_chain` or `zeros`. |
+| `DYN_BENCH_GIANT_KV_THRESHOLD`, `DYN_BENCH_GIANT_KV_REPEATS` | Literal nonnegative integers. |
+| `DYN_FORWARDPASS_METRIC_PORT` | Literal integer from 1 through 65,535. |
+
+The environment controls above must each appear at most once as an exact `{name, value}` entry. Their absence from the probe is recorded as `{ "missing": true }`, without inferring a historical default. All remaining backend policy and deployment fields pass the strict launch comparison, including `DYN_BENCH_KV_WARMUP` and `DYN_BENCH_PREFILL_REAL_SEED`; unknown CLI or environment overrides fail. Collection-control review authorizes only a memory compatibility comparison. It does not establish timing or measurement equivalence: preserve the original source artifacts and independently require the ordinary timing, measurement-quality and repeatability checks. No archived policy or request is rewritten.
+
+Each phase is independently checked under its own frozen launch and instrumentation, including artifact containment and hashes, worker/scheduler ranks, tensor geometry and physical capacity. The serving role qualifies only after every required phase passes against the same accepted profile. A Hugging Face repository name and its exact local snapshot spelling can compare as the same model only after their immutable revision, configuration hash and sidecar hashes agree and each observed spelling independently passes the checkpoint-path validator. The report retains those spelling differences and original runtime settings. Other effective settings and geometry remain exact; every phase/rank must provide at least the accepted usable capacity.
+
+The result contains per-phase `provenance`, original `binding` and compatibility details, the minimum compatible capacity, and an absolute `inputs` list of byte hashes for all consulted source, plan, checkpoint, index, launch, raw and instrumentation files. Save the report separately and recheck those inputs before subsequent CPU prediction or publication. Distinct historical attempts remain distinct; do not merge indexes, rewrite old labels or modify accepted values to make a comparison pass. This compatibility report does not change profile acceptance, timing measurements, estimator behavior, repeatability policy or accuracy qualification.
 
 | Diagnostic | Investigate and retain |
 | --- | --- |
@@ -1354,7 +1619,7 @@ The command verifies the immutable onboarding and collector plans, passed cell a
 
 Saved effective collection options must match the reviewed request, including capture policy and explicit capture sizes. Finalization also rejects an observed immutable model revision or loaded-config commit that contradicts the requested immutable revision. Local PVC model paths and missing revision metadata remain valid; this check does not prove weight contents.
 
-The fresh directory contains `request.yaml`, `fpm-model-profile.json`, ordinary prediction/recommendation configs and a verified copy of the formal data pair. The original collection is unchanged. Runtime cache groups preserve allocation padding and shared-pool slot costs, including null/permanent reservations, instead of deriving an invented non-KV breakdown. Runtime memory is tied to the recorded scheduler, context, precision, topology and memory policy; changing these settings requires new compatible memory evidence.
+The fresh directory contains `request.yaml`, `fpm-model-profile.json`, ordinary prediction/recommendation configs and a verified copy of the formal data pair. The original collection is unchanged. Runtime cache groups preserve allocation padding and shared-pool slot costs, including null/permanent reservations, instead of deriving an invented non-KV breakdown. A linear profile that has runtime-probe evidence stays linear. Finalization writes the merged groups in the linear layout and keeps those groups in the profile provenance. If a linear layout cannot describe them, finalization stops with the reason. Runtime memory is tied to the recorded scheduler, context, precision, topology and memory policy; changing these settings requires new compatible memory evidence.
 
 If formal observations show less usable cache capacity than the accepted runtime probe, preserve the original collection and import its complete formal runtime observation index through `onboard import-observations`. Review and explicitly accept the resulting capacity revision in the same configuration's checkpoint. Then finalize with both requests:
 
@@ -1723,7 +1988,7 @@ The generated configurations select `engine.workers.aggregated.timing.estimation
 
 These configurations target AISimulate's standalone `predict` and `recommend` commands. Dynamo's replay Planner AIC session adapter does not currently forward custom systems roots; using that downstream path requires a separate adapter update.
 
-Grouped configurations also set `engine.workers.aggregated.kv_cache.prefix_caching: false`; preserve it in prediction, recommendation and `validate-fpm` replay. The same reviewed groups and byte budget reach native allocation in each path. Changing cache layout does not introduce a new collection grid or change the FPM timing-table coordinates: use the [shared AISimulate/Dynamo collection policy](#how-the-collection-grid-is-determined) and validate the resulting logical-context queries.
+Grouped configurations also set `engine.workers.aggregated.kv_cache.prefix_caching: false`; preserve it in prediction, recommendation and `validate-fpm` replay. The same reviewed groups and byte budget reach native allocation in each path. Configurations of a linear profile with runtime probe evidence set `engine.workers.aggregated.kv_cache.block_size` to the measured block size, and each path must keep it. Changing cache layout does not introduce a new collection grid or change the FPM timing-table coordinates: use the [shared AISimulate/Dynamo collection policy](#how-the-collection-grid-is-determined) and validate the resulting logical-context queries.
 
 Ordinary `predict` and `recommend` retain their existing defaults when no profile is supplied. Generated configs can be edited through the public schema. A recommendation with a profile enumerates only its declared deployment tuples that fit the GPU budget; it preserves the complete inline profile and interpolation choice in exported prediction configs. Default scheduler search ranges may exceed a profile's envelope, so pin or bound those domains explicitly. A successful simulation is not an accuracy result. Compare its output with an independent run of the same model, runtime, topology, and workload to assess accuracy.
 
@@ -1748,7 +2013,7 @@ Within `estimator_config.fpm_interpolation`, `method: auto` retains SOL for a re
 
 Direct readiness requires genuine measurements for each operation's phase. Prefill rows cannot make an operation with no genuine decode rows ready, and vice versa. Construction tries later configured systems roots when a root lacks a required phase; if none is usable, it reports the missing phase. An operation that needs only prefill does not require decode measurements, and vice versa. Readiness does not guarantee coverage of every subsequent query.
 
-Direct timing first uses an exact point or interpolation within a measured curve. For cross-KV prefill interpolation, it selects the nearest measured KV curve on each side at the same batch size, considering only curves that cover the requested total new-token count. This direct bracket has no KV distance limit; SOL's site-distance guard is separate. Decode interpolation respects the measured batch/capture domain. Both phases exclude synthetic `fake_fallback` rows, including healed/extrapolated values. Missing two-sided support, unmeasured prefill batches and out-of-domain queries fail explicitly. The direct route does not apply SOL-dependent prefill batch clamping or general extrapolation; 2D interpolation remains experimental.
+Direct timing first uses an exact point or interpolation within a measured curve. For cross-KV prefill interpolation, it selects the nearest measured KV curve on each side at the same batch size, considering only curves that cover the requested total new-token count. If that cannot bracket the query, it first interpolates KV at fixed measured token counts, then interpolates between the nearest token counts that cover the query's KV. This accommodates irregular collection boundaries without changing previously supported results. Both orders require measured bounds at the same batch and cell; neither has a KV distance limit, and SOL's site-distance guard is separate. Decode interpolation respects the measured batch/capture domain. Both phases exclude synthetic `fake_fallback` rows, including healed/extrapolated values. Missing two-sided support, unmeasured prefill batches and out-of-domain queries fail explicitly. The direct route does not apply SOL-dependent prefill batch clamping or general extrapolation; general scattered 2D interpolation remains experimental.
 
 Use `predict --detail source --format json` to inspect executed direct lookups and their measured support, or inspect the saved `prediction.json` after requesting source details. The default text output shows operation sources and fallbacks. The canonical model's `estimate_forward_pass_detailed(metrics)` provides the same lookup evidence with rank reduction, mixed-pass baseline and online-correction context. Replay and recommendation APIs accept `ReplayOutputRequirements(capture_performance_diagnostics=True)` to retain counted query records in their returned metadata. Ordinary runs keep no query history; requested capture retains every distinct query without truncation. See [Direct FPM query evidence](../api/python.md#direct-fpm-query-evidence) for the result fields and recommendation API. Exact and interpolated values keep the existing `silicon` source tag. Provenance alone does not qualify interpolation accuracy or prove which CUDA graph a measured forward used; accuracy gates and graph-aware interpolation remain deferred until new measurements establish the relevant behavior.
 

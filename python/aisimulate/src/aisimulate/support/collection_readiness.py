@@ -225,6 +225,7 @@ def assess_readiness(
     checkpoint_root: Path,
     *,
     expected_plan=None,
+    runtime_bindings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Inspect saved sources without model fetching, reruns or checkpoint writes.
 
@@ -235,9 +236,19 @@ def assess_readiness(
     from collector.fpm_forward.repeatability import load_repeatability_deployment, load_repeatability_source
     from collector.fpm_forward.runner import CHECKPOINT_SCHEMA
 
+    from .runtime import runtime_probe_manifest, verify_collection_runtime_bindings
+    from .runtime_collection import checkpoint_observation_index
+
+    if runtime_bindings is not None:
+        if expected_plan is not None:
+            raise ValueError("expected_plan and runtime_bindings are mutually exclusive")
+        return _bound_readiness(request, runtime_bindings)
     campaigns = []
     selected = {}
+    selected_runtime = {}
+    selected_runtime_errors = {}
     blockers = []
+    requires_runtime = runtime_probe_manifest(request) is not None
     for smoke in (True, False):
         checkpoint_path = checkpoint_root / ("fpm_forward_smoke.json" if smoke else "fpm_forward.json")
         if not checkpoint_path.exists():
@@ -286,12 +297,41 @@ def assess_readiness(
                     "scope": "frozen requested identity; observed backend and launch evidence are reported per cell",
                 },
             )
+            runtime_binding = None
+            runtime_error = None
+            if requires_runtime and any(
+                cell.cell_id not in selected or cell.cell_id in checkpoint["cells"] for cell in plan.cells
+            ):
+                try:
+                    index = checkpoint_observation_index(checkpoint_path, checkpoint)
+                    evidence = file_evidence(index)
+                    runtime_binding = {
+                        "plan": {"path": str(campaign / "collection-plan.json"), "sha256": plan.sha256},
+                        "checkpoint": {key: report["checkpoint"][key] for key in ("path", "sha256")},
+                        "observations": {key: evidence[key] for key in ("path", "sha256")},
+                        "attempt_id": checkpoint.get("runtime_observation_attempt_id"),
+                    }
+                except (OSError, TypeError, ValueError, KeyError) as error:
+                    report["errors"].append(f"runtime memory: {error}")
+                    runtime_error = f"{report['kind']}: runtime memory: {error}"
             for cell in plan.cells:
                 entry = checkpoint["cells"].get(cell.cell_id)
                 cell_report = _cell_report(plan, cell, campaign, entry)
                 report["cells"].append(cell_report)
                 if cell.cell_id not in selected or cell.cell_id in checkpoint["cells"]:
                     selected[cell.cell_id] = {"campaign": report["kind"], "plan_sha256": plan.sha256, **cell_report}
+                    # A later formal attempt supersedes its smoke memory evidence
+                    # even when its observation index is missing or unreadable.
+                    selected_runtime.pop(cell.cell_id, None)
+                    selected_runtime_errors.pop(cell.cell_id, None)
+                    if runtime_error is not None:
+                        selected_runtime_errors[cell.cell_id] = runtime_error
+                    if runtime_binding is not None:
+                        selected_runtime[cell.cell_id] = {
+                            **runtime_binding,
+                            "phase": cell.workload_kind,
+                            "collector_attempt_id": entry.get("attempt_id") if isinstance(entry, dict) else None,
+                        }
         except (OSError, TypeError, ValueError, KeyError) as error:
             report["errors"].append(str(error))
             blockers.append(f"{report['kind']}: {error}")
@@ -305,15 +345,56 @@ def assess_readiness(
         blockers.extend(
             f"{item['cell']['workload_kind']} {item['cell']['cell_id']}: {reason}" for reason in item["blockers"]
         )
+    runtime = None
+    if requires_runtime:
+        blockers.extend(dict.fromkeys(selected_runtime_errors.values()))
+        try:
+            runtime = verify_collection_runtime_bindings(request, list(selected_runtime.values()))
+        except (OSError, TypeError, ValueError, KeyError) as error:
+            blockers.append(f"runtime memory: {error}")
     ready = bool(selected) and not blockers and all(item["status"] == "ready" for item in selected.values())
     return {
         "status": "ready" if ready else "blocked" if campaigns else "incomplete",
         "ready_for_full_collection": ready,
-        "scope": "sampled native timing readiness only; not complete query coverage, memory or serving accuracy",
+        "scope": "sampled native timing readiness with runtime memory checks for imported profiles; "
+        "not complete query coverage, repeatability or serving accuracy",
         "request_identity": request.identity.model_dump(mode="json"),
         "blockers": blockers,
         "selected_cells": list(selected.values()),
         "campaigns": campaigns,
+        "runtime_compatibility": runtime,
+    }
+
+
+def _bound_readiness(request: SupportRequest, bindings: list[dict[str, Any]]) -> dict[str, Any]:
+    """Apply the same timing and memory gates to explicitly selected phase plans."""
+    from collector.fpm_forward.repeatability import load_repeatability_source
+
+    from .runtime import verify_collection_runtime_bindings
+
+    cells, blockers = [], []
+    runtime = None
+    try:
+        runtime = verify_collection_runtime_bindings(request, bindings)
+        for binding in bindings:
+            campaign = Path(binding["plan"]["path"]).parent
+            plan = load_repeatability_source(campaign)
+            cell = next(cell for cell in plan.cells if cell.workload_kind == binding["phase"])
+            checkpoint = json.loads(Path(binding["checkpoint"]["path"]).read_text())
+            result = _cell_report(plan, cell, campaign, checkpoint["cells"][cell.cell_id])
+            cells.append({"campaign": str(campaign), "plan_sha256": plan.sha256, **result})
+            blockers.extend(f"{binding['phase']}: {message}" for message in result["blockers"])
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        blockers.append(str(error))
+    ready = bool(cells) and not blockers and all(item["status"] == "ready" for item in cells)
+    return {
+        "status": "ready" if ready else "blocked",
+        "ready_for_full_collection": ready,
+        "scope": "sampled native timing and compatible runtime memory; not complete query coverage or serving accuracy",
+        "request_identity": request.identity.model_dump(mode="json"),
+        "blockers": blockers,
+        "selected_cells": cells,
+        "runtime_compatibility": runtime,
     }
 
 

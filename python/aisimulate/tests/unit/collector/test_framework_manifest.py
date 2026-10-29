@@ -52,8 +52,8 @@ def test_manifest_exposes_pinned_vllm_xpu_runtime_identity():
 
     assert runtime.framework == "vllm_xpu"
     assert runtime.data_backend == "vllm"
-    assert runtime.version == "0.26.0"
-    assert runtime.image().startswith("vllm/vllm-openai-xpu:v0.26.0@sha256:")
+    assert runtime.version == "0.28.0"
+    assert runtime.image().startswith("vllm/vllm-openai-xpu:v0.28.0@sha256:")
 
 
 def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
@@ -84,6 +84,9 @@ def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
 )
 def test_vllm_target_lane_collectors_declare_the_exact_bumped_compat_range(module):
     expected = '__compat__ = "vllm>=0.24.0,<=0.30.0,!=0.25.1,!=0.26.0,!=0.27.0"'
+    if module in {"collector.vllm.collect_gemm", "collector.vllm.collect_moe"}:
+        # GLM-5.3-Flash model pin: 0.31.0 is admitted on top of the 0.30.0 default lanes.
+        expected = '__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0"'
     source = (REPO_ROOT / f"{module.replace('.', '/')}.py").read_text(encoding="utf-8")
     declarations = [line.strip() for line in source.splitlines() if line.startswith("__compat__")]
     assert declarations == [expected], module
@@ -316,15 +319,15 @@ def test_runtime_selection_accepts_only_the_matching_pin(installed_version, requ
 
 
 def test_vllm_xpu_runtime_selection_uses_xpu_registry_and_accepts_local_version_metadata():
-    runtime = require_collector_runtime("vllm_xpu", "0.26.0+xpu", requested_ops={"gemm"}, wideep_ops=set())
+    runtime = require_collector_runtime("vllm_xpu", "0.28.0+xpu", requested_ops={"gemm"}, wideep_ops=set())
 
     assert runtime.framework == "vllm_xpu"
-    assert runtime.version == "0.26.0"
-    assert runtime.image().startswith("vllm/vllm-openai-xpu:v0.26.0@sha256:")
+    assert runtime.version == "0.28.0"
+    assert runtime.image().startswith("vllm/vllm-openai-xpu:v0.28.0@sha256:")
 
 
 def test_vllm_xpu_runtime_selection_rejects_version_mismatch():
-    with pytest.raises(RuntimeError, match=r"vllm_xpu stock collector requires exactly 0\.26\.0"):
+    with pytest.raises(RuntimeError, match=r"vllm_xpu stock collector requires exactly 0\.28\.0"):
         require_collector_runtime("vllm_xpu", "0.24.0", requested_ops={"gemm"}, wideep_ops=set())
 
 
@@ -785,7 +788,19 @@ frameworks:
 
 @pytest.mark.parametrize(
     "version,accepted",
-    [("0.24.0", True), ("0.25.0", True), ("0.25.1", False), ("0.26.0", False), ("0.27.0", False), ("0.27.1", True)],
+    [
+        ("0.24.0", True),
+        ("0.25.0", True),
+        ("0.25.1", False),
+        ("0.26.0", False),
+        ("0.27.0", False),
+        ("0.27.1", True),
+        ("0.28.0", True),
+        ("0.29.0", True),
+        ("0.30.0", True),
+        ("0.31.0", True),
+        ("0.31.1", False),
+    ],
 )
 def test_gemm_025_qualification_preserves_other_release_gaps(version, accepted):
     import ast

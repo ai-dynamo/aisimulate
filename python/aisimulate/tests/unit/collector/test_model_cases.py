@@ -519,8 +519,10 @@ def test_moe_model_quantization_policy_is_yaml_backed():
     assert not moe_model_allows_quantization("sglang", "nvidia/GLM-5.2-NVFP4", "bfloat16")
     assert moe_model_allows_quantization("sglang", "zai-org/GLM-5-FP8", "fp8_block")
     assert not moe_model_allows_quantization("sglang", "zai-org/GLM-5-FP8", "nvfp4")
-    # zai-org/GLM-5.3 is the FP8 artifact, GLM-5.3-BF16 the bf16 one (Hub facts, 2026-09-24)
+    # zai-org/GLM-5.3 is Z.AI's FP8-block release; the BF16 weights carry the
+    # -BF16 suffix (there is no zai-org/GLM-5.3-FP8 repository).
     assert moe_model_allows_quantization("sglang", "zai-org/GLM-5.3", "fp8_block")
+    assert not moe_model_allows_quantization("sglang", "zai-org/GLM-5.3", "bfloat16")
     assert not moe_model_allows_quantization("sglang", "zai-org/GLM-5.3", "nvfp4")
     assert moe_model_allows_quantization("sglang", "zai-org/GLM-5.3-BF16", "bfloat16")
     assert not moe_model_allows_quantization("sglang", "zai-org/GLM-5.3-BF16", "fp8_block")
@@ -875,13 +877,16 @@ def test_gemm_common_cases_expand_from_base_op_yaml_shape_specs():
     # adds two output widths across the base token-count grid. DeepSeek-V4 Pro
     # adds (n, k) = (7168, 384) for all 74 standard / 21 XPU token counts;
     # its other shared-expert projections overlap the existing base shapes.
-    assert len(cases) == 37518
+    # GLM-5.3-Flash adds ten new off-grid output widths at k=4096 (its
+    # declared widths minus those another model already declares) across the
+    # 74 standard / 21 XPU token counts.
+    assert len(cases) == 38258
     assert cases[0] == GemmCommonTestCase(x=32768, n=65536, k=51200)
     assert cases[-1] == GemmCommonTestCase(x=1, n=1, k=4096)
     assert not any(case.n == 65536 and case.k == 65536 for case in cases)
 
-    assert len(xpu_cases) == 9681
-    assert xpu_cases[0] == GemmCommonTestCase(x=8192, n=65536, k=12288)
+    assert len(xpu_cases) == 10857
+    assert xpu_cases[0] == GemmCommonTestCase(x=8192, n=65536, k=32768)
     assert xpu_cases[-1] == GemmCommonTestCase(x=1, n=1, k=4096)
     assert get_gemm_type_specs("vllm_xpu") == ["bfloat16", "fp8"]
 
@@ -943,8 +948,9 @@ def test_cross_model_common_cases_expand_from_base_op_yaml_sweeps(monkeypatch):
     # test_qwen35_397b_nvfp4_moe_row_is_nvfp4_only_on_every_backend, the
     # actual regression); the row's own count (117, pinned separately below)
     # is unaffected either way. Qwen3.8-Max contributes one 117-case base
-    # row and one 117-case RadixArk NVFP4 row.
-    assert len(moe_cases) == 6954
+    # row and one 117-case RadixArk NVFP4 row. GLM-5.3-Flash adds two 99-case
+    # rows (zai-org FP8 and nvidia NVFP4 checkpoints, 288 experts x 4096/2048).
+    assert len(moe_cases) == 7152
 
     assert any(
         case.model_name == "nvidia/DeepSeek-V4-Flash-NVFP4"
@@ -1031,14 +1037,16 @@ def test_cross_model_common_cases_expand_from_base_op_yaml_sweeps(monkeypatch):
     # Qwen3.8-Max adds context/generation at TP 1/2/4/8/16.
     assert len(get_common_gdn_test_cases()) == 84
     mhc_cases = get_common_mhc_test_cases()
-    assert len(mhc_cases) == 8
-    assert {(case.model_name, case.phase, case.hidden_size, case.hc_mult) for case in mhc_cases} == {
-        (model_name, phase, hidden_size, 4)
-        for model_name, hidden_size in (
-            ("deepseek-ai/DeepSeek-V4-Flash", 4096),
-            ("sgl-project/DeepSeek-V4-Flash-FP8", 4096),
-            ("deepseek-ai/DeepSeek-V4-Pro", 7168),
-            ("sgl-project/DeepSeek-V4-Pro-FP8", 7168),
+    # GLM-5.3-Flash adds one aliased (FP8/NVFP4) mHC row.
+    assert len(mhc_cases) == 10
+    assert {(case.model_name, case.architecture, case.phase, case.hidden_size, case.hc_mult) for case in mhc_cases} == {
+        (model_name, architecture, phase, hidden_size, 4)
+        for model_name, architecture, hidden_size in (
+            ("deepseek-ai/DeepSeek-V4-Flash", "DeepseekV4ForCausalLM", 4096),
+            ("sgl-project/DeepSeek-V4-Flash-FP8", "DeepseekV4ForCausalLM", 4096),
+            ("deepseek-ai/DeepSeek-V4-Pro", "DeepseekV4ForCausalLM", 7168),
+            ("sgl-project/DeepSeek-V4-Pro-FP8", "DeepseekV4ForCausalLM", 7168),
+            ("zai-org/GLM-5.3-Flash", "Glm5NextForConditionalGeneration", 4096),
         )
         for phase in ("pre", "post")
     }
@@ -1541,9 +1549,8 @@ def test_vllm_dsa_reference_covers_native_full_and_reuse_without_duplicate_artif
     assert max(0 - config["index_skip_topk_offset"] + 1, 0) % config["index_topk_freq"] == 0
     all_specs = get_mla_module_model_specs(attention_type="dsa", backend="vllm", apply_model_filter=False)
     assert len(all_specs) == len(set(all_specs))
-    # GLM-5.3 inverted the 5.x naming: the un-suffixed 5.3 repo IS the FP8
-    # artifact and the -BF16 repo the bf16 one; no "-FP8" 5.3 repo exists
-    # (GlmMoeDsaForCausalLM_cases.yaml, owner decision 2026-09-24).
+    # GLM-5.3 reverses the zai-org naming: the plain repository is the FP8
+    # release and the BF16 weights carry -BF16 (no zai-org/GLM-5.3-FP8 exists).
     assert {s.model_path for s in all_specs if s.architecture == "GlmMoeDsaForCausalLM"} == {
         f"{prefix}/GLM-{version}{suffix}"
         for version in ("5", "5.1", "5.2")

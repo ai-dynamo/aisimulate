@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import logging
 import math
@@ -79,11 +80,16 @@ def _run_recommendation(
 
     checkpoint("requested_config", config.model_dump(mode="json"))
     budget = resolve_budget(config.execution.resources, discover_host())
+    from .runner import EngineReplayRunnerFactory
     from .sweeper.search import Sweeper
 
+    if isinstance(runner_factory, EngineReplayRunnerFactory):
+        # Every candidate replays the same traffic, so each sweep worker keeps
+        # the trace graphs it loads instead of rebuilding them per candidate.
+        runner_factory = dataclasses.replace(runner_factory, trace_graph_cache=True)
     runner_factory = GuardedRunnerFactory(runner_factory, stack, config.execution.resources)
     if config.engine.workers.encoder is not None and (stack != "engine" or adapter_configs):
-        raise ValueError("analytical EPD requires --stack engine without adapters")
+        raise ValueError("encoder pools require --stack engine without adapters")
     if config.engine.speculation is not None and (stack != "engine" or adapter_configs):
         raise ValueError("ngram speculation requires --stack engine without adapters")
     smart = recommendation_to_sweeper(config, adapter_configs=adapter_configs, stack=stack)
@@ -143,12 +149,25 @@ def _run_recommendation(
         injected=output_adapters,
         context=RecommendationOutputContext(workload=smart.workload),
     )
-    return sweeper.run(
-        smart,
-        top_n=None,
-        on_candidate=output_callbacks.on_candidate,
-        on_round=output_callbacks.on_round,
-    )
+    try:
+        result = sweeper.run(
+            smart,
+            top_n=None,
+            on_candidate=output_callbacks.on_candidate,
+            on_round=output_callbacks.on_round,
+        )
+        if output_callbacks.on_complete is not None:
+            output_callbacks.on_complete()
+    except Exception as exc:
+        if output_callbacks.on_failure is not None:
+            try:
+                output_callbacks.on_failure(exc)
+            except Exception as callback_exc:
+                exc.add_note(
+                    f"output adapter failure handling also failed: {type(callback_exc).__name__}: {callback_exc}"
+                )
+        raise
+    return result
 
 
 def recommendation_to_sweeper(
@@ -264,6 +283,7 @@ def recommendation_to_sweeper(
             afd_phase=afd.get("phase") if isinstance(afd, dict) else None,
         )
     )
+    search_space.update(_native_vl_search_space(config, workers))
     if engine.get("workers", {}).get("encoder") is not None:
         encoder = workers["encoder"]
         search_space["encoder"] = {
@@ -274,6 +294,10 @@ def recommendation_to_sweeper(
             "batch_size": _choices(encoder["batch_size"], default=[1]),
             "latency_correction": encoder["latency_correction"],
             "rate_degradation": encoder["rate_degradation"],
+            "mode": encoder.get("mode", "analytical"),
+            "host_profile": encoder.get("host_profile"),
+            "frontend": encoder.get("frontend"),
+            "transfer_bandwidth_gb_per_second": (encoder.get("transfer") or {}).get("bandwidth_gb_per_second"),
         }
     transfer = engine.get("kv_transfer")
     if isinstance(transfer, dict):
@@ -507,6 +531,83 @@ def _role_search_space(
     return result
 
 
+def _tensor_domain(raw_worker: dict[str, Any]) -> list[int]:
+    """Tensor widths a worker's search covers; a log range contributes its bounds."""
+    tensors, log_range = _integer_domain((raw_worker.get("parallelism") or {}).get("tensor"), default=[1, 2, 4, 8])
+    return sorted(set(tensors) | set(log_range or ()))
+
+
+def _native_vl_search_space(config: CoreRecommendationConfig, workers: dict[str, Any]) -> dict[str, Any]:
+    """Pinned host, frontend and vision settings shared by every host-aware candidate.
+
+    Frontend stages are measured data, not search dimensions. A host cost table
+    is resolved here once per feature transport the tensor-parallel candidates
+    need, so candidates score rows that matched the workload shape and never a
+    file that may change later; only the vision tower needs an image workload.
+    The aggregated or the prefill worker hosts the loop, keyed by its legacy role.
+    A native encoder pool leaves the loop on the language worker and takes the tower.
+    """
+    encoder = config.engine.workers.encoder
+    if encoder is not None and encoder.mode == "analytical":
+        return {}
+    result: dict[str, Any] = {}
+    for public_role, role in (("aggregated", "agg"), ("prefill", "prefill")):
+        worker = getattr(config.engine.workers, public_role)
+        raw = workers.get(public_role) if isinstance(workers, dict) else None
+        if worker is None or not isinstance(raw, dict):
+            continue
+        source = config.traffic.source if config.traffic is not None else None
+        images = getattr(source, "images", None)
+        if images is not None and encoder is None:
+            from .config.engine import VisionPredictionConfig
+
+            result[f"{role}_vision"] = (worker.vision or VisionPredictionConfig()).model_dump(mode="json")
+        if worker.host_loop:
+            result[f"{role}_host_loop"] = True
+        if worker.frontend is not None:
+            measured = worker.frontend.measured_for
+            if measured is not None:
+                # Explicit stages carry their measurement like a table row; every searched
+                # width must still be the one they were measured for.
+                if images is None:
+                    raise ValueError(
+                        f"frontend stages were measured for {measured.describe()}; this workload has no images"
+                    )
+                from .config.engine import FrontendMeasurementConfig
+
+                for tensor in _tensor_domain(raw):
+                    needed = FrontendMeasurementConfig.for_workload(
+                        config.engine.model, measured.frontend, images.model_dump(mode="json"), tensor
+                    )
+                    if needed != measured:
+                        raise ValueError(
+                            f"frontend stages were measured for {measured.describe()}; this search needs "
+                            f"{needed.describe()}"
+                        )
+            result[f"{role}_frontend"] = worker.frontend.model_dump(mode="json", exclude_none=True)
+        if worker.host_profile is None:
+            continue
+        if images is None:
+            raise ValueError("host_profile requires an image workload")
+        from .config.engine import feature_transport
+        from .vl.table import resolve_frontend
+
+        # The transport only depends on whether a candidate runs on one rank, so the
+        # domain's members decide which rows exist.
+        by_tensor = {feature_transport(worker.host_profile.frontend, tensor): tensor for tensor in _tensor_domain(raw)}
+        by_transport: dict[str, Any] = {}
+        for transport, tensor in sorted(by_tensor.items()):
+            frontend, digest = resolve_frontend(
+                worker.host_profile,
+                model=config.engine.model,
+                images=images.model_dump(mode="json"),
+                tensor=tensor,
+            )
+            by_transport[transport] = {"frontend": frontend.model_dump(mode="json"), "digest": digest}
+        result[f"{role}_frontend_by_transport"] = by_transport
+    return result
+
+
 _PARALLEL_KEYS = (
     "replicas",
     "tensor",
@@ -726,6 +827,8 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
                 result["agentic_snapshot"] = deepcopy(load["agentic_snapshot"])
             if load.get("agentic_warmup"):
                 result["agentic_warmup"] = True
+            if load.get("agentic_warmup_policy", "repeated_prefixes") != "repeated_prefixes":
+                result["agentic_warmup_policy"] = load["agentic_warmup_policy"]
             if load.get("agentic_profile") is not None:
                 result["agentic_profile"] = deepcopy(load["agentic_profile"])
         if isinstance(stop, dict) and stop.get("max_virtual_time_seconds") is not None:
@@ -1009,6 +1112,20 @@ def _candidate_prediction(
         engine["workers"][public_role] = worker_config
         if deployment.deployment_mode == "disagg" and raw_worker.get("hardware") is not None:
             engine["workers"][public_role]["hardware"] = sample[f"{role}_hardware_sku"]
+        if role in ("agg", "prefill"):
+            from .sweeper.deploy import sample_frontend
+
+            rendered = engine["workers"][public_role]
+            # The stages are written out as the candidate ran them, with the workload
+            # they were measured for: a saved candidate must not depend on a table
+            # file that can change or disappear after scoring.
+            frontend = sample_frontend(sample, role)
+            if frontend is not None:
+                rendered["frontend"] = deepcopy(frontend)
+            elif sample.get(f"{role}_host_loop"):
+                rendered["host_loop"] = True
+            if sample.get(f"{role}_vision") is not None:
+                rendered["vision"] = deepcopy(sample[f"{role}_vision"])
     if deployment.deployment_mode == "disagg" and raw_engine.get("kv_transfer") is not None:
         engine["kv_transfer"] = deepcopy(raw_engine["kv_transfer"])
 

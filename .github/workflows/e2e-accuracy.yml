@@ -45,7 +45,7 @@ jobs:
       github.repository == 'ai-dynamo/aisimulate' &&
       (github.ref == 'refs/heads/main' ||
       (github.event_name == 'workflow_dispatch' && inputs.preview && startsWith(github.ref, 'refs/heads/pull-request/')))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -138,9 +138,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Resolve latest database dump once for all branches
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Install HF input tooling
+        run: |
+          python -m venv "${RUNNER_TEMP}/accuracy-venv"
+          "${RUNNER_TEMP}/accuracy-venv/bin/pip" install --require-hashes -r scripts/e2e_accuracy/requirements.txt
+          echo "${RUNNER_TEMP}/accuracy-venv/bin" >> "${GITHUB_PATH}"
+      - name: Resolve the reviewed HF revision once for all branches
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_READ_AISIM_INFX_CACHE }}
+          HF_HOME: ${{ runner.temp }}/accuracy-hf
         run: |
           python3 scripts/e2e_accuracy/fetch_accuracy_measurements.py \
             --manifest .github/e2e-accuracy-dataset.json --resolve-latest \
@@ -161,6 +170,8 @@ jobs:
       max-parallel: 2
       matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
     uses: ./.github/workflows/e2e-accuracy-branch.yml
+    secrets:
+      HF_READ_AISIM_INFX_CACHE: ${{ secrets.HF_READ_AISIM_INFX_CACHE }}
     permissions:
       contents: read
       actions: read

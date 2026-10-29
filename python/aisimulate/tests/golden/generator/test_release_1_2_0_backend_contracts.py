@@ -311,7 +311,7 @@ def test_vllm_0_20_1_cli_args_golden_contract():
     _assert_generated_flags_are_known("vllm", _BACKEND_VERSIONS["vllm"], flags)
     assert _value_after(tokens, "--tensor-parallel-size") == "8"
     assert _value_after(tokens, "--data-parallel-size") == "1"
-    assert _value_after(tokens, "--kv-cache-dtype") == "auto"
+    assert _value_after(tokens, "--kv-cache-dtype") == "bfloat16"
     assert _value_after(tokens, "--gpu-memory-utilization") == "0.82"
     assert _value_after(tokens, "--max-num-batched-tokens") == "4060"
     assert "--enable-expert-parallel" in flags

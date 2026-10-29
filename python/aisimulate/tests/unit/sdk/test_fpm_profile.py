@@ -273,6 +273,8 @@ def test_unknown_profile_auto_compiles_without_operations(profile_dict, direct_c
     assert json.loads(spec["engine"]["extra"]["fpm_profile"]) == profile.model_dump(mode="json")
     assert json.loads(spec["engine"]["extra"]["estimator_config"])["fpm_interpolation"]["method"] == "direct"
     assert spec["engine"]["activation_dtype"] == "fp8"
+    assert "nextn" not in spec["engine"]
+    assert "fpm_execution_profile" not in spec["engine"]["extra"]
     for key, phase in (("context_ops", "prefill"), ("generation_ops", "decode")):
         assert len(spec[key]) == 1
         op = spec[key][0]["FpmForward"]
@@ -370,6 +372,23 @@ def test_profile_compilation_rejects_op_level_controls_before_graph_construction
             fpm_profile=profile_dict,
             fpm_interpolation="direct",
             **{control: "explicit-selection"},
+        )
+
+
+def test_direct_compilation_rejects_encoder_parallel(profile_dict, direct_compile):
+    with pytest.raises(ValueError, match="does not support encoder_parallel"):
+        engine.compile_engine(
+            "test/unknown-decoder",
+            "test_gpu",
+            "vllm",
+            "0.25.1",
+            tp_size=2,
+            moe_tp_size=2,
+            moe_ep_size=1,
+            forward_model="fpm",
+            fpm_profile=profile_dict,
+            fpm_interpolation="direct",
+            encoder_parallel="tp",
         )
 
 
@@ -680,6 +699,7 @@ def profile_memory(profile_dict, monkeypatch):
 def test_profile_memory_uses_declared_bounds_without_graph_or_timing_data(profile_memory):
     result = profile_memory(cuda_graph_reserved_bytes=20, tolerance_fraction=0.1)
     assert result["source"] == "profile"
+    assert result["kvcache_quant_mode"] == "fp8"
     assert result["total_gpu_capacity_bytes"] == 1000
     assert result["total_kv_size_bytes"] == 580  # 1000 * .8 - 200 - 20
     assert result["kv_size_per_token_bytes"] == 10
@@ -741,6 +761,7 @@ def grouped_profile(profile_dict):
 
 def test_grouped_profile_memory_keeps_byte_budget_and_context_bound(grouped_profile, profile_memory):
     result = profile_memory(max_num_tokens=16, context_length=64, cuda_graph_reserved_bytes=20, tolerance_fraction=0.1)
+    assert result["kvcache_quant_mode"] == "fp8"
     assert result["total_kv_size_bytes"] == 580
     assert result["tolerance_adjusted"]["total_kv_size_bytes"] == 522
     assert result["total_kv_size_tokens"] is None
@@ -810,6 +831,139 @@ def runtime_profile(profile_dict):
     return profile_dict
 
 
+@pytest.fixture
+def speculative_profile(runtime_profile, monkeypatch):
+    runtime_profile["model_revision"] = "1" * 40
+    runtime_profile["deployments"][0]["execution_profile"] = {
+        "kind": "speculative_round",
+        "method": "eagle3",
+        "num_draft_tokens": 3,
+        "draft_model": "test/draft",
+        "draft_revision": "2" * 40,
+        "timing_scope": "model_step_cuda",
+    }
+
+    def download(model, filename, *, revision):
+        assert (model, filename, revision) == (runtime_profile["model"], "config.json", "1" * 40)
+        return {"architectures": [runtime_profile["architecture"]]}
+
+    monkeypatch.setattr(utils, "_download_hf_json", download)
+    return runtime_profile
+
+
+def test_speculative_round_direct_spec_preserves_identity_and_raw_batch_width(speculative_profile, direct_compile):
+    spec = direct_compile(speculative_profile, fpm_interpolation="direct", nextn=3)
+    profile = load_fpm_profile(speculative_profile)
+    deployment = profile.deployments[0]
+    binding = {
+        "model_revision": profile.model_revision,
+        "execution_profile": deployment.execution_profile.model_dump(mode="json"),
+    }
+    assert spec["engine"]["nextn"] == 3
+    assert json.loads(spec["engine"]["extra"]["fpm_execution_profile"]) == binding
+    saved = json.loads(spec["engine"]["extra"]["fpm_profile"])
+    assert _normalize(_request(saved, "direct", nextn=3))["fpm_profile"] == saved
+    expected_identity = deployment.match_identity() + list(deployment.execution_identity(profile.model_revision))
+    assert len(expected_identity) == 19
+    for phase in ("context_ops", "generation_ops"):
+        assert len(spec[phase]) == 1
+        op = spec[phase][0]["FpmForward"]
+        assert op["match_identity"] == expected_identity
+        assert op["verify_width"] == 1  # Full-round curves already use request count, not verify-token count.
+        assert op["interpolation"] == "direct"
+        assert op["sol_ops"] == []
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"nextn": 0},
+        {"nextn": 2},
+        {"estimation_mode": "auto"},
+        {"fallback_policy": "allow"},
+        {"nextn": 0, "speculation": {"kind": "mtp", "params": {"depth": 3}}},
+        {"nextn": 0, "speculation": {"kind": "ngram", "params": {"num_speculative_tokens": 3}}},
+    ],
+)
+def test_speculative_round_profile_rejects_implicit_or_mismatched_execution(speculative_profile, overrides):
+    config = _request(speculative_profile, "direct", nextn=3)
+    config.update(overrides)
+    with pytest.raises(ValueError):
+        _normalize(config)
+
+
+def test_speculative_round_memory_forwards_depth_and_uses_observed_pool(
+    speculative_profile, profile_memory, monkeypatch
+):
+    calls = []
+    estimate = RustForwardPassPerfModel.estimate_cache_budget
+
+    def observe(config, request):
+        calls.append(copy.deepcopy(config))
+        return estimate(config, request)
+
+    monkeypatch.setattr(RustForwardPassPerfModel, "estimate_cache_budget", observe)
+    monkeypatch.setattr(memory.KVCacheEstimator, "_estimate_from_breakdown", _fail_graph)
+    result = profile_memory(nextn=3, context_length=1024, gpu_memory_capacity_bytes_override=2000)
+    assert calls[0]["nextn"] == 3
+    assert calls[0]["estimation_mode"] == "fpm_interpolation"
+    assert calls[0]["fallback_policy"] == "deny"
+    assert calls[0]["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+    assert (
+        calls[0]["fpm_profile"]["deployments"][0]["execution_profile"]
+        == (speculative_profile["deployments"][0]["execution_profile"])
+    )
+    assert result["total_kv_size_bytes"] == 600  # Recorded pool, independent of the 2000-byte device bound.
+    assert result["total_kv_size_tokens"] == 60  # The fixture records ten bytes per token.
+    assert result["memory_breakdown"] is None
+    with pytest.raises(ValueError):
+        profile_memory(nextn=0, context_length=1024, allow_naive_fallback=True)
+
+
+def test_speculative_round_memory_rejects_declared_budget_without_analytical_fallback(
+    speculative_profile, profile_memory, monkeypatch
+):
+    resources = speculative_profile["deployments"][0]["resources"]
+    resources.pop("runtime_memory")
+    resources.update(weights_bytes=100, activations_bytes=20, runtime_overhead_bytes=30, comm_overhead_bytes=50)
+    monkeypatch.setattr(memory.KVCacheEstimator, "_estimate_from_breakdown", _fail_graph)
+    monkeypatch.setattr(memory.NaiveKVCacheEstimator, "from_model_path", _fail_graph)
+    with pytest.raises(ValueError, match="runtime|observed"):
+        profile_memory(nextn=3, context_length=1024, allow_naive_fallback=True)
+
+
+@pytest.mark.parametrize("entry", [memory.estimate_kv_cache, memory.estimate_num_gpu_blocks])
+@pytest.mark.parametrize("dcp", [None, 1, 2])
+def test_speculative_round_standalone_memory_preserves_dcp(speculative_profile, profile_memory, entry, dcp):
+    kwargs = dict(
+        max_num_tokens=8192,
+        max_batch_size=256,
+        memory_fraction_kind="of_total",
+        memory_fraction_value=0.8,
+        tp_size=2,
+        moe_tp_size=2,
+        nextn=3,
+        fpm_profile=speculative_profile,
+        context_length=1024,
+        allow_naive_fallback=True,
+    )
+    if dcp is not None:
+        kwargs["dcp_size"] = dcp
+    if entry is memory.estimate_num_gpu_blocks:
+        kwargs["scheduler_block_size"] = 16
+
+    def estimate():
+        return entry("test/unknown-decoder", "test_gpu", "vllm", "0.25.1", **kwargs)
+
+    if dcp == 2:
+        with pytest.raises(ValueError, match="DCP"):
+            estimate()
+    elif entry is memory.estimate_kv_cache:
+        assert estimate()["total_kv_size_tokens"] == 60  # Observed 600-byte pool / 10 bytes per token.
+    else:
+        assert estimate() == 3  # floor(60 tokens / 16 tokens per block), not another draft deduction.
+
+
 def test_runtime_memory_selects_exact_role_capacity_and_scheduler(runtime_profile, profile_memory):
     prefill = runtime_profile["deployments"][0]
     prefill["worker_type"] = "prefill"
@@ -866,6 +1020,7 @@ def test_runtime_linear_memory_uses_observation_and_canonical_budget(runtime_pro
         _ = parsed.non_kv_bytes
     monkeypatch.setattr(memory.KVCacheEstimator, "_estimate_from_breakdown", _fail_graph)
     result = profile_memory(context_length=1024, gpu_memory_capacity_bytes_override=2000, tolerance_fraction=0.1)
+    assert result["kvcache_quant_mode"] == "fp8"
     # The observed 600-byte pool remains fixed on a larger modeled device.
     # Ten bytes/token gives 60 raw tokens and 54 after a 10% safety margin.
     assert result["total_kv_size_bytes"] == 600
@@ -897,6 +1052,8 @@ def test_runtime_grouped_memory_keeps_layout_and_transient_pages(grouped_profile
         ({"memory_fraction_value": 0.9}, "gpu_memory_utilization"),
         ({"context_length": 2049}, "max_model_len"),
         ({"cuda_graph_reserved_bytes": 1}, "graph reservations"),
+        ({"reserved_bytes": 100}, "model build path only"),
+        ({"colocated_encoder": True, "encoder_parallel": "tp"}, "model build path only"),
         ({"gpu_memory_capacity_bytes_override": 599}, "smaller than"),
         ({"gpu_memory_capacity_bytes_override": 749}, "smaller than"),
     ],
@@ -1192,8 +1349,8 @@ def test_saved_profile_compiler_controls_merge_with_caller_options(native_profil
     assert controls["features"]["attention_kv_weight"] == 7
 
 
-def _write_external_profile_pair(profile, directory):
-    """Generate routing/identity evidence; these 2/3 ms rows are not silicon data."""
+def _write_external_profile_pair(profile, directory, *, prefill_points=None):
+    """Generate routing/identity evidence; these synthetic rows are not silicon data."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -1208,12 +1365,16 @@ def _write_external_profile_pair(profile, directory):
             "workload_kind": phase,
             "partition_policy": "balanced_v1",
             "batch_size": 1,
-            "total_prefill_tokens": 1 if phase == "prefill" else 0,
+            "total_prefill_tokens": tokens,
             "total_kv_read_tokens": kv,
             "latency_ms": latency,
             "kv_seed_regime": "real_kv",
         }
-        for phase, kv, latency in [("prefill", 0, 2.0), ("decode", 1, 3.0), ("decode", 64, 3.0)]
+        for phase, tokens, kv, latency in [
+            *[("prefill", *point) for point in (prefill_points or [(1, 0, 2.0)])],
+            ("decode", 0, 1, 3.0),
+            ("decode", 0, 64, 3.0),
+        ]
     ]
     path = directory / "synthetic-profile.parquet"
     pq.write_table(pa.Table.from_pylist(rows), path)
@@ -1233,6 +1394,164 @@ def _write_external_profile_pair(profile, directory):
         )
     )
     return path
+
+
+@pytest.fixture
+def full_grid_median_profile(profile_dict, monkeypatch, tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    profile_dict["deployments"][0]["system"] = "h200_sxm"
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    monkeypatch.setattr(engine, "get_model", _fail_graph)
+    monkeypatch.setattr(engine, "build_model_config", _fail_graph)
+    monkeypatch.setattr(engine, "_maybe_load_database", _fail_graph)
+    path = _write_external_profile_pair(profile_dict, tmp_path)
+    rows = pq.read_table(path).to_pylist()
+    for row in rows:
+        row.update(measurement_policy="independent_full_grid_median_of_3", measurement_repeats=3)
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    metadata = json.loads(path.with_suffix(".metadata.json").read_text())
+    metadata.update(
+        measurement_policy="per_row_single_sample_or_full_grid_median_v1",
+        parquet_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+    path.with_suffix(".metadata.json").write_text(json.dumps(metadata))
+    config = _request(
+        profile_dict,
+        estimator_config={
+            "fpm_interpolation": {"method": "direct", "fpm_parquet_path": str(path), "collect_coverage": True},
+            "correction": {"enabled": False},
+        },
+    )
+    return config, path
+
+
+def test_full_grid_medians_query_and_reload_without_campaign_files(full_grid_median_profile, tmp_path):
+    config, path = full_grid_median_profile
+    originals = {file: file.read_bytes() for file in (path, path.with_suffix(".metadata.json"))}
+    # Only the aggregate pair is distributed: these are synthetic stored medians,
+    # not a test of the publisher's aggregation or quality qualification.
+    assert set(tmp_path.iterdir()) == set(originals)
+    queries = [
+        ({"scheduled_requests": {"num_prefill_requests": 1, "sum_prefill_tokens": 1}}, 2.0),
+        ({"scheduled_requests": {"num_decode_requests": 1, "sum_decode_kv_tokens": 1}}, 3.0),
+    ]
+    model = RustForwardPassPerfModel.best_available(config)
+    try:
+        for query, expected in queries:
+            assert model.estimate_forward_pass_time_ms(query) == expected
+        assert model.fpm_query_coverage()["queries"] == {"measured": 2, "interpolated": 0, "unsupported": 0}
+        saved_path = tmp_path / "saved-config.json"
+        saved_path.write_text(json.dumps(model.diagnostics()["provenance"]["config"]))
+    finally:
+        model.close()
+    restored = RustForwardPassPerfModel.best_available(json.loads(saved_path.read_text()))
+    try:
+        assert restored.diagnostics()["provenance"]["config"]["estimator_config"]["fpm_interpolation"][
+            "fpm_parquet_path"
+        ] == str(path)
+        for query, expected in queries:
+            assert restored.estimate_forward_pass_time_ms(query) == expected
+    finally:
+        restored.close()
+    assert {file: file.read_bytes() for file in originals} == originals
+
+
+@pytest.mark.parametrize(
+    "row_changes,sidecar_policy",
+    [
+        ({"measurement_repeats": 1}, "per_row_single_sample_or_full_grid_median_v1"),
+        ({"measurement_repeats": 6}, "per_row_single_sample_or_full_grid_median_v1"),
+        ({"measurement_repeats": None}, "per_row_single_sample_or_full_grid_median_v1"),
+        ({"measurement_policy": "unknown"}, "per_row_single_sample_or_full_grid_median_v1"),
+        ({"measurement_policy": "kvwarm_median_of_3"}, "per_row_single_sample_or_full_grid_median_v1"),
+        ({}, "per_row_single_sample_or_median_of_3"),
+    ],
+)
+def test_full_grid_medians_reject_inconsistent_provenance(full_grid_median_profile, row_changes, sidecar_policy):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    config, path = full_grid_median_profile
+    rows = pq.read_table(path).to_pylist()
+    rows[-1].update(row_changes)
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    metadata = json.loads(path.with_suffix(".metadata.json").read_text())
+    metadata.update(measurement_policy=sidecar_policy, parquet_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+    path.with_suffix(".metadata.json").write_text(json.dumps(metadata))
+    with pytest.raises(PerfDataNotAvailableError, match="policy/repeats"):
+        RustForwardPassPerfModel.best_available(config)
+
+
+def test_direct_prefill_kv_first_preserves_public_evidence_and_saved_config(profile_dict, monkeypatch, tmp_path):
+    # An irregular collection boundary: each prompt length has its own upper
+    # KV coordinate. Synthetic latency is P/256 + K/8192 ms, so the query is
+    # 10.5 + 18 = 28.5 ms; these values are not an accuracy qualification.
+    points = [
+        (2048, 131072, 24.0),
+        (2048, 253920, 38.99609375),
+        (4096, 131072, 32.0),
+        (4096, 251872, 46.74609375),
+    ]
+    profile_dict["context_length"] = 256000
+    profile_dict["deployments"][0]["system"] = "h200_sxm"
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    monkeypatch.setattr(engine, "get_model", _fail_graph)
+    monkeypatch.setattr(engine, "build_model_config", _fail_graph)
+    monkeypatch.setattr(engine, "_maybe_load_database", _fail_graph)
+    path = _write_external_profile_pair(profile_dict, tmp_path, prefill_points=points)
+    config = _request(
+        profile_dict,
+        estimator_config={
+            "fpm_interpolation": {"method": "direct", "fpm_parquet_path": str(path), "collect_coverage": True},
+            "correction": {"enabled": False},
+        },
+    )
+    metrics = {
+        "scheduled_requests": {
+            "num_prefill_requests": 1,
+            "sum_prefill_tokens": 2688,
+            "sum_prefill_kv_tokens": 147456,
+        }
+    }
+    model = RustForwardPassPerfModel.best_available(config)
+    try:
+        detailed = model.estimate_forward_pass_detailed(metrics)
+        assert detailed["latency_ms"] == pytest.approx(28.5)
+        query = detailed["ranks"][0]["queries"][0]
+        assert query["resolution"] == "kv_first_interpolation"
+        assert query["query"] == {
+            "batch_size": 1.0,
+            "total_prefill_tokens": 2688.0,
+            "total_kv_read_tokens": 147456.0,
+        }
+        assert [
+            (
+                point["coordinates"]["total_prefill_tokens"],
+                point["coordinates"]["total_kv_read_tokens"],
+                point["latency_ms"],
+            )
+            for point in query["support"]
+        ] == points
+        weights = [point["weight"] for point in query["support"]]
+        # Token weights are 11/16 and 5/16; the KV upper weights are
+        # 512/3839 and 512/3775 respectively. These are their leaf products.
+        assert weights == pytest.approx([36597 / 61424, 5632 / 61424, 16315 / 60400, 2560 / 60400])
+        assert all(0.0 <= weight <= 1.0 for weight in weights)
+        assert sum(weights) == pytest.approx(1.0)
+        assert sum(point["latency_ms"] * point["weight"] for point in query["support"]) == pytest.approx(28.5)
+        assert model.fpm_query_coverage()["queries"] == {"measured": 0, "interpolated": 1, "unsupported": 0}
+        saved = json.loads(json.dumps(model.diagnostics()["provenance"]["config"]))
+        assert saved["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+    finally:
+        model.close()
+    reloaded = RustForwardPassPerfModel.best_available(saved)
+    try:
+        assert reloaded.estimate_forward_pass_detailed(metrics) == detailed
+        assert reloaded.estimate_forward_pass_time_ms(metrics) == pytest.approx(28.5)
+    finally:
+        reloaded.close()
 
 
 @pytest.mark.parametrize(
@@ -1666,11 +1985,17 @@ def test_coverage_wrappers_preserve_existing_engine_queries_on_external_cells(
             1, 1 + prefix, prefix
         )
         assert covered.predict_prefill_latency(1, 1 + prefix, prefix) == latency
+        assert (
+            covered.predict_prefill_latency_total(1, 1, prefix)
+            == original.predict_prefill_latency_total(1, 1, prefix)
+            == latency
+        )
+    assert covered.predict_prefill_latency_total(0, 0, 0) == original.predict_prefill_latency_total(0, 0, 0) == 0.0
     assert covered.predict_decode_latency_total(1, 1) == original.predict_decode_latency_total(1, 1) == 3.0
     assert covered.predict_decode_latency_total(0, 0) == original.predict_decode_latency_total(0, 0) == 0.0
     assert covered.fpm_decode_kv_ceiling() == original.fpm_decode_kv_ceiling()
     report = covered.fpm_query_coverage()
-    assert report["queries"] == {"measured": 5, "interpolated": 0, "unsupported": 0}
+    assert report["queries"] == {"measured": 7, "interpolated": 0, "unsupported": 0}
 
 
 @pytest.mark.parametrize("fallback", ["deny", "allow"])

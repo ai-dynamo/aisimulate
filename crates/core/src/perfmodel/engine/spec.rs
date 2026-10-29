@@ -27,6 +27,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ENGINE_SPEC_SCHEMA_VERSION;
+use crate::common::enums::EncoderParallel;
 use crate::common::error::AicError;
 use crate::perfmodel::EngineConfig;
 
@@ -60,6 +61,42 @@ pub struct EngineSpec {
     pub context_ops: Vec<OpSpec>,
     /// Generation-phase ops, in execution order.
     pub generation_ops: Vec<OpSpec>,
+    /// The vision tower of a VL model, present when the estimator was asked to
+    /// price encoder calls (`ForwardPassPerfModelConfig::encoder_parallel`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision: Option<VisionSpec>,
+}
+
+/// Vision-encoder ops grouped by the token count each group runs on. Image
+/// shapes arrive at query time ([`EncoderImageShape`]), so the compiled spec
+/// needs no image configuration.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VisionSpec {
+    pub encoder_parallel: EncoderParallel,
+    /// Patch embedding, on the pre-merge patch sequence.
+    pub patch_ops: Vec<OpSpec>,
+    /// The ViT blocks, on the transformer sequence (patches plus any CLS token).
+    pub transformer_ops: Vec<OpSpec>,
+    /// Projector and DP exit, on the merged output tokens.
+    pub output_ops: Vec<OpSpec>,
+}
+
+/// One homogeneous group of images in a vision-encoder call.
+///
+/// The processor turns an image into `sequences` independent encoder sequences
+/// (tiles, or one for a dynamic-resolution tower); ViT attention never crosses
+/// them. Token counts are per sequence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EncoderImageShape {
+    pub sequences: u32,
+    /// Patch-embedding tokens per sequence.
+    pub patch_tokens: u32,
+    /// Transformer tokens per sequence (patches plus any CLS token).
+    pub transformer_tokens: u32,
+    /// Merged output tokens per sequence, as the projector sees them.
+    pub output_tokens: u32,
+    /// Images of this shape in the call.
+    pub images: u32,
 }
 
 /// Private bincode payload. `engine` is carried as a JSON string so the
@@ -72,9 +109,59 @@ struct BincodeWire {
     engine_json: String,
     context_ops: Vec<OpSpec>,
     generation_ops: Vec<OpSpec>,
+    vision: Option<VisionSpec>,
+}
+
+/// Borrowed twin of [`BincodeWire`]; identical encoding without cloning ops.
+#[derive(Serialize)]
+struct BincodeWireRef<'a> {
+    schema_version: u32,
+    engine_json: String,
+    context_ops: &'a [OpSpec],
+    generation_ops: &'a [OpSpec],
+    vision: &'a Option<VisionSpec>,
 }
 
 impl EngineSpec {
+    /// SHA-256 of this spec's bincode wire encoding with every storage
+    /// location cleared: `systems_path`, `fpm_parquet_path` and the copy of
+    /// the FPM parquet path inside the `extra["estimator_config"]` controls
+    /// the Python compiler embeds. Their contents are fingerprinted
+    /// separately, so a relocated copy of the same data compiles to the same
+    /// digest.
+    pub(crate) fn content_sha256(&self) -> Result<String, AicError> {
+        use sha2::{Digest, Sha256};
+        let mut engine = self.engine.clone();
+        engine.systems_path = None;
+        engine.fpm_parquet_path = None;
+        if let Some(controls) = engine.extra.get_mut("estimator_config") {
+            let mut value: serde_json::Value = serde_json::from_str(controls)
+                .map_err(|e| AicError::EngineSpec(format!("extra.estimator_config: {e}")))?;
+            if let Some(settings) = value
+                .get_mut("fpm_interpolation")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                settings.remove("fpm_parquet_path");
+            }
+            *controls = value.to_string();
+        }
+        let engine_json = serde_json::to_string(&engine)
+            .map_err(|e| AicError::EngineSpec(format!("engine JSON encode: {e}")))?;
+        let mut digest = Sha256::new();
+        bincode::serialize_into(
+            &mut digest,
+            &BincodeWireRef {
+                schema_version: self.schema_version,
+                engine_json,
+                context_ops: &self.context_ops,
+                generation_ops: &self.generation_ops,
+                vision: &self.vision,
+            },
+        )
+        .map_err(|e| AicError::EngineSpec(format!("bincode encode: {e}")))?;
+        Ok(format!("{:x}", digest.finalize()))
+    }
+
     /// Build a spec, stamping the current [`ENGINE_SPEC_SCHEMA_VERSION`].
     pub fn new(
         engine: EngineConfig,
@@ -86,6 +173,7 @@ impl EngineSpec {
             engine,
             context_ops,
             generation_ops,
+            vision: None,
         }
     }
 
@@ -100,6 +188,7 @@ impl EngineSpec {
             engine_json,
             context_ops: self.context_ops.clone(),
             generation_ops: self.generation_ops.clone(),
+            vision: self.vision.clone(),
         };
         bincode::serialize(&wire).map_err(|e| AicError::EngineSpec(format!("bincode encode: {e}")))
     }
@@ -151,6 +240,7 @@ impl EngineSpec {
             engine,
             context_ops: wire.context_ops,
             generation_ops: wire.generation_ops,
+            vision: wire.vision,
         })
     }
 }
@@ -774,6 +864,78 @@ mod tests {
                 k: 5120,
                 quant_mode: GemmQuantMode::Fp8Block,
             }),
+            OpSpec::Glm53Attention(crate::operators::glm53flash::tests::attention("kda")),
+            OpSpec::Glm53Mhc(crate::operators::Glm53MhcOp {
+                name: "mhc_pre_attn_0".into(),
+                role: "pre".into(),
+                backend: "vllm".into(),
+                checkpoint_format: "nvfp4".into(),
+                tp_size: 2,
+                is_context: true,
+                hidden_size: 4096,
+                hc_mult: 4,
+                sinkhorn_iters: 20,
+            }),
+            OpSpec::Glm53Router(crate::operators::Glm53RouterOp {
+                name: "router_3".into(),
+                backend: "vllm".into(),
+                checkpoint_format: "nvfp4".into(),
+                hidden_size: 4096,
+                num_experts: 288,
+                topk: 8,
+            }),
+            OpSpec::Glm53Ffn(crate::operators::Glm53FfnOp {
+                name: "ffn_0".into(),
+                backend: "vllm".into(),
+                checkpoint_format: "nvfp4".into(),
+                is_context: true,
+                is_dense: true,
+                hidden_size: 4096,
+                intermediate_size: 12288,
+                num_experts: 288,
+                topk: 8,
+                tp_size: 2,
+                n_shared_experts: 1,
+                swiglu_limit: 10.0,
+                scoring_func: "sigmoid".into(),
+                routed_scaling_factor: 2.5,
+                n_group: 1,
+                topk_group: 1,
+                norm_topk_prob: true,
+                gemm_quant_mode: GemmQuantMode::Nvfp4,
+                shared_quant_mode: GemmQuantMode::Bfloat16,
+                moe_quant_mode: MoeQuantMode::Nvfp4,
+                children: vec![OpSpec::Gemm(gemm())],
+                measured: vec![],
+            }),
+            OpSpec::Glm53Primitive(crate::operators::Glm53PrimitiveOp {
+                name: "embedding".into(),
+                role: "embedding".into(),
+                backend: "vllm".into(),
+                checkpoint_format: "fp8".into(),
+                tp_size: 2,
+                is_context: true,
+                hidden_size: 4096,
+                vocab_size: 154880,
+                token_selection: "all_scheduled".into(),
+                output_dtype: "bfloat16".into(),
+                collective: "none".into(),
+                children: vec![],
+                measured: vec![],
+            }),
+            OpSpec::MeasuredComposite(crate::operators::measured_composite::MeasuredCompositeOp {
+                name: "measured".into(),
+                system: "testsys".into(),
+                backend: "vllm".into(),
+                version: "1.0".into(),
+                is_context: true,
+                weight_bytes: 0.0,
+                scale_factor: 1.0,
+                cells: vec![crate::operators::measured_composite::MeasuredCell {
+                    shape: [1, 4, 0],
+                    latency_ms: 2.0,
+                }],
+            }),
         ];
 
         // Exhaustiveness guard: if a variant is added to `Op`, this match
@@ -819,6 +981,12 @@ mod tests {
                 | OpSpec::Dsv41Mhc(_)
                 | OpSpec::Dsv41Engram(_)
                 | OpSpec::Dsv41Stage(_)
+                | OpSpec::Glm53Attention(_)
+                | OpSpec::Glm53Mhc(_)
+                | OpSpec::Glm53Router(_)
+                | OpSpec::Glm53Ffn(_)
+                | OpSpec::Glm53Primitive(_)
+                | OpSpec::MeasuredComposite(_)
                 | OpSpec::Dsv41Linear(_)
                 | OpSpec::TokenScale(_) => {}
             }
@@ -928,7 +1096,24 @@ mod tests {
             "V41 appended indices moved"
         );
         assert_eq!(
-            41,
+            index_of(all_op_variants().last().unwrap()),
+            46,
+            "MeasuredComposite index moved"
+        );
+        // GLM-5.3-Flash variants append after the V41 variants.
+        let glm_appended: Vec<_> = all_op_variants()
+            .iter()
+            .skip(41)
+            .take(5)
+            .map(index_of)
+            .collect();
+        assert_eq!(
+            glm_appended,
+            vec![41, 42, 43, 44, 45],
+            "GLM appended indices moved"
+        );
+        assert_eq!(
+            47,
             all_op_variants().len(),
             "all_op_variants() must cover exactly the pinned variant count"
         );
@@ -941,6 +1126,38 @@ mod tests {
             let decoded: OpSpec = bincode::deserialize(&bytes).expect("deserialize op");
             assert_eq!(op, decoded, "round-trip mismatch for {:?}", op);
         }
+    }
+
+    #[test]
+    fn content_digest_ignores_every_data_location() {
+        let spec = |systems: &str, parquet: &str, method: &str| {
+            let mut engine = sample_engine_config();
+            engine.systems_path = Some(systems.into());
+            engine.fpm_parquet_path = Some(parquet.into());
+            engine.extra.insert(
+                "estimator_config".into(),
+                serde_json::json!({"fpm_interpolation": {
+                    "fpm_parquet_path": parquet,
+                    "method": method,
+                }})
+                .to_string(),
+            );
+            EngineSpec::new(engine, all_op_variants(), Vec::new())
+                .content_sha256()
+                .unwrap()
+        };
+        let base = spec("/a/systems", "/a/fpm.parquet", "direct");
+        assert_eq!(spec("/b/systems", "/b/other.parquet", "direct"), base);
+        assert_ne!(spec("/a/systems", "/a/fpm.parquet", "sol"), base);
+        let mut engine = sample_engine_config();
+        engine
+            .extra
+            .insert("estimator_config".into(), "{not json".into());
+        assert!(
+            EngineSpec::new(engine, Vec::new(), Vec::new())
+                .content_sha256()
+                .is_err()
+        );
     }
 
     #[test]
@@ -1106,13 +1323,17 @@ mod tests {
         let bytes = spec.to_bincode().unwrap();
         assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
         // The final op ends in interpolation (4 bytes), empty sol_ops (8),
-        // original-FMHA None (1), and recorded-DCP None (1).
-        let selector = bytes.len() - 14;
+        // original-FMHA None (1), and recorded-DCP None (1); the absent vision
+        // section (1) follows it.
+        let selector = bytes.len() - 15;
         assert_eq!(&bytes[selector..selector + 4], &1u32.to_le_bytes());
         // Recreate both branches' incompatible payloads, not just their stamps.
-        for version in [20u32, 21, 22, 23, 24, 25, 26] {
+        for version in [20u32, 21, 22, 23, 24, 25, 26, 27, 28] {
             let mut stale = bytes.clone();
-            if !matches!(version, 21 | 25 | 26) {
+            // Schemas before 29 end with the last op.
+            stale.pop();
+            // The decoupling branch's 21 and the merged 25 through 28 carry the selector.
+            if !matches!(version, 21 | 25 | 26 | 27 | 28) {
                 stale.drain(selector..selector + 4);
             }
             if version < 24 {
@@ -1175,6 +1396,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn vision_section_round_trips_through_bincode() {
+        let ops = all_op_variants();
+        let mut spec = EngineSpec::new(sample_engine_config(), vec![], vec![]);
+        spec.vision = Some(VisionSpec {
+            encoder_parallel: EncoderParallel::Dp,
+            patch_ops: vec![ops[0].clone()],
+            transformer_ops: Vec::new(),
+            output_ops: vec![ops[1].clone()],
+        });
+        let bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+    }
+
     /// The backend layout is positional even though legacy JSON has a default.
     #[test]
     fn dsv41_layout_round_trip_and_stale_v18_payload_rejection() {
@@ -1185,10 +1420,16 @@ mod tests {
         let spec = EngineSpec::new(sample_engine_config(), vec![], vec![attention]);
         let mut bytes = spec.to_bincode().unwrap();
         assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
-        // SglangFp8Bf16 is enum1 (four bytes), the final field of the final op.
-        // Removing it restores the actual prior Dsv41Attention schema18 shape.
-        assert_eq!(&bytes[bytes.len() - 4..], &1u32.to_le_bytes());
-        bytes.truncate(bytes.len() - 4);
+        // The optional vision section closes the wire (`None` is one zero byte);
+        // before it, SglangFp8Bf16 is enum1 (four bytes), the final field of the
+        // final op. Removing both restores the actual prior Dsv41Attention
+        // schema18 shape.
+        assert_eq!(bytes[bytes.len() - 1], 0u8);
+        assert_eq!(
+            &bytes[bytes.len() - 5..bytes.len() - 1],
+            &1u32.to_le_bytes()
+        );
+        bytes.truncate(bytes.len() - 5);
         bytes[..4].copy_from_slice(&18u32.to_le_bytes());
         assert!(matches!(
             EngineSpec::from_bincode(&bytes),
@@ -1312,6 +1553,7 @@ mod tests {
             engine_json: "this is not json".to_string(),
             context_ops: vec![],
             generation_ops: vec![],
+            vision: None,
         };
         let bytes = bincode::serialize(&wire).expect("serialize wire");
 
@@ -1359,6 +1601,44 @@ mod tests {
             })
         ));
     }
+    /// GLM `measured` compositions are positional: they round-trip under the
+    /// current schema and a schema-27 stamp is rejected before decoding.
+    #[test]
+    fn glm53_measured_round_trip_and_stale_v27_rejection() {
+        let measured = vec![OpSpec::Gemm(gemm())];
+        let ops: Vec<OpSpec> = all_op_variants()
+            .into_iter()
+            .filter_map(|op| match op {
+                OpSpec::Glm53Attention(mut o) => {
+                    o.measured = measured.clone();
+                    Some(OpSpec::Glm53Attention(o))
+                }
+                OpSpec::Glm53Ffn(mut o) => {
+                    o.measured = measured.clone();
+                    Some(OpSpec::Glm53Ffn(o))
+                }
+                OpSpec::Glm53Primitive(mut o) => {
+                    o.measured = measured.clone();
+                    Some(OpSpec::Glm53Primitive(o))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ops.len(), 3);
+        let spec = EngineSpec::new(sample_engine_config(), ops, vec![]);
+        let mut bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+        bytes[..4].copy_from_slice(&27u32.to_le_bytes());
+        assert!(matches!(
+            EngineSpec::from_bincode(&bytes),
+            Err(AicError::UnsupportedSchemaVersion {
+                kind: "EngineSpec",
+                got: 27,
+                expected: ENGINE_SPEC_SCHEMA_VERSION
+            })
+        ));
+    }
+
     #[test]
     fn merged_schema_preserves_fpm_selectors() {
         let mut fpm_config = sample_engine_config();
@@ -1371,7 +1651,7 @@ mod tests {
 
         let bytes = spec.to_bincode().unwrap();
         assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
-        for previous_version in [20u32, 21, 22, 23, 24, 25, 26] {
+        for previous_version in [20u32, 21, 22, 23, 24, 25, 26, 27] {
             let mut stale = bytes.clone();
             stale[..4].copy_from_slice(&previous_version.to_le_bytes());
             for input in [stale.as_slice(), &stale[..4]] {

@@ -56,22 +56,56 @@ rank-local workload construction, quantized weight setup, and perf logging.
 # upstream and only ever supplies exactly 0.5.14 or 0.5.17 in a sanctioned
 # run, so the leak is unreachable there.
 # 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image; findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
-__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.18,!=0.5.19,!=0.5.20"
+# 0.5.20 audit (2026-09-30; source tag v0.5.20 == 94602c9c2b7c vs v0.5.17,
+# source-only). 0.5.18/0.5.19
+# were never verified and are carved out with != (same caveat as above).
+# Unchanged vs 0.5.17: ServerArgs/set_global_server_args_for_scheduler
+# (server_args.py:195,635; publish() now runs resolve_once(), which returns
+# early for model_path="dummy", arg_groups/pipeline.py:121); get_server_args
+# raises ValueError when unset (runtime_context.py:1031-1037); MoeFlags
+# override (runtime_context.py:489-507,532) read by get_moe_runner_backend
+# (layers/moe/utils.py:472-476); _B_DESC_CACHE (sglang/kernels/ops/moe/
+# fused_moe_triton_kernels.py); FusedMoE.__init__ kwargs (fused_moe_triton/
+# layer.py:302-330, swiglu_limit -> MoeRunnerConfig :436); TopK.__init__
+# (topk.py:518, BYPASSED for flashinfer_trtllm :655-658); get_parallel()
+# reads identical in the patched layer/dispatch/topk/fp8/modelopt modules.
+# GLM-5.3-Flash dispatch: Glm5NextMoE is DeepseekV2MoE (models/glm5_next.py:
+# 88): routing_method_type defaults to DeepSeekV3 and swiglu_limit comes from
+# the config (deepseek_v2.py:631-645); grouped noaux_tc TopK with
+# n_group=topk_group=1, sigmoid, correction bias, renormalize (:659-676).
+# SM100/103 runner: Glm5Next is in the DeepSeek-family override list
+# (arg_groups/overrides.py:806); with moe_runner_backend auto and
+# quantization fp8 (FP8 checkpoint) or modelopt_fp4 (the NVFP4 serving
+# launch passes --quantization modelopt_fp4) it resolves to
+# flashinfer_trtllm (:866-879), which disables shared-expert fusion
+# (:1586-1590) -> 288 experts / top-8 as collected. GLM NVFP4 serving
+# resolved-args dumps on this runtime record moe_runner_backend
+# 'flashinfer_trtllm'. swiglu_limit: FP8 -> per-expert gemm1_clamp_limit
+# (quantization/fp8.py:2310-2331 -> moe_runner/flashinfer_trtllm.py:885-888,
+# new at 0.5.20); NVFP4 -> gemm1_clamp_limit / g1_alphas
+# (modelopt_quant.py:2673-2686,3024,3044). The case rows carry it via
+# sglang_moe_swiglu_limit. Known gap, not fixed here (no GLM lane uses it):
+# since 0.5.17 the flashinfer_cutlass runner calls get_tp_group()
+# (moe_runner/flashinfer_cutlass.py:17,208-209), which the single-rank
+# parallel patch below does not replace, so flashinfer_cutlass lanes (the
+# SM120 nvfp4 map) are expected to fail until that module is added.
+__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.18,!=0.5.19"
 
 import gc
 import importlib
 import os
+import sys
 import tempfile
 from collections.abc import Callable
 from contextlib import contextmanager
+
+# The SGLang 0.5.20 image ships setuptools without pkg_resources; the
+# stdlib reads the same installed distribution metadata.
+from importlib.metadata import version as _dist_version
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TypedDict
 from unittest.mock import MagicMock
-
-from importlib.metadata import (
-    version as _dist_version,
-)  # setuptools/pkg_resources is absent from recent framework images
 
 # Mock global server args before importing MOE modules (required by SGLang 0.5.5+)
 # The fused_moe_triton_config module now requires get_global_server_args() to be set
@@ -216,6 +250,8 @@ except ImportError:
         get_default_config,
         get_moe_configs,
     )
+from collector.sglang.moe_config_observation import append_record as append_triton_config_record
+from collector.sglang.moe_config_observation import observe_triton_config_selection
 from collector.version_resolver import _check_compat
 from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
 from sglang.srt.layers.moe.moe_runner.base import MoeRunnerConfig
@@ -1371,6 +1407,11 @@ def _raise_if_unverified_moe_lane(moe_type: str) -> str:
     return installed_version
 
 
+def _triton_config_namespaces() -> list:
+    """SGLang's config module (framework runner) and this module (direct path)."""
+    return [sys.modules[get_config_dtype_str.__module__], globals()]
+
+
 def run_moe_torch(
     moe_type,
     num_tokens_list,
@@ -1564,119 +1605,146 @@ def run_moe_torch(
     )
     distribution = "power_law_" + str(power_law_alpha) if distributed == "power_law" else distributed
 
-    def _persist(num_tokens: int, latency: float, power_stats: dict, kernel_source: str) -> None:
-        persisted = log_perf(
-            item_list=[
-                {
-                    "moe_dtype": moe_type,
-                    "num_tokens": num_tokens,
-                    "hidden_size": hidden_size,
-                    "inter_size": inter_size,
-                    "topk": topk,
-                    "num_experts": num_experts,
-                    "moe_tp_size": moe_tp_size,
-                    "moe_ep_size": moe_ep_size,
-                    "distribution": distribution,
-                    "latency": latency,
-                }
-            ],
-            framework="SGLang",
-            version=installed_sglang_version,
-            device_name=torch.cuda.get_device_name(device),
-            op_name="moe",
-            kernel_source=kernel_source,
-            perf_filename=perf_filename,
-            power_stats=power_stats,
-        )
-        if not persisted:
-            raise RuntimeError("Failed to persist SGLang MoE performance row")
+    # Record (never choose) whether each timed Triton call used a tuned JSON or
+    # SGLang's default config; both the framework runner and the direct path
+    # resolve it through the same two config functions. One task times a whole
+    # num_tokens series, so the counters cover one point at a time: _persist
+    # hands them to the sidecar with that point's row and resets them.
+    with observe_triton_config_selection(_triton_config_namespaces()) as triton_config_observed:
 
-    if use_framework_layer:
-        _benchmark_framework_quantized_moe(
-            moe_type=moe_type,
-            moe_backend=moe_backend,
-            num_tokens_list=num_tokens_list,
-            on_result=_persist,
-            hidden_size=hidden_size,
-            inter_size=inter_size,
-            topk=topk,
-            num_experts=num_experts,
-            moe_tp_size=moe_tp_size,
-            moe_ep_size=moe_ep_size,
-            model_name=model_name,
-            distributed=distributed,
-            power_law_alpha=power_law_alpha,
-            activation=activation,
-            is_gated=is_gated,
-            has_bias=has_bias,
-            gemm1_alpha=gemm1_alpha,
-            gemm1_clamp_limit=gemm1_clamp_limit,
-            swiglu_limit=swiglu_limit,
-            scoring_func=scoring_func,
-            routing_method_type=routing_method_type,
-            routed_scaling_factor=routed_scaling_factor,
-            renormalize=renormalize,
-            has_correction_bias=has_correction_bias,
-            num_expert_group=num_expert_group,
-            topk_group=topk_group,
-            apply_router_weight_on_input=apply_router_weight_on_input,
-            is_fp4_experts=is_fp4_experts,
-            int4_group_size=int4_group_size,
-            device=device,
-        )
-    else:
-        kernel_source = {
-            "triton": "sglang_fused_moe_triton",
-            "triton_kernel": "sglang_triton_kernel_moe",
-            "marlin": "sglang_marlin_moe",
-            "flashinfer_trtllm": "sglang_flashinfer_trtllm_moe",
-            "flashinfer_cutlass": "sglang_flashinfer_cutlass_moe",
-        }[moe_backend]
-        try:
-            for num_tokens in num_tokens_list:
-                rank0_workloads: list[Rank0Workload] | None = None
-                if moe_ep_size > 1 and distributed in ("power_law", "balanced"):
-                    rank0_workloads = build_rank0_workloads(
-                        num_workloads=5,
-                        num_tokens=num_tokens,
-                        hidden_size=hidden_size,
-                        topk=topk,
-                        num_experts=num_experts,
-                        moe_ep_size=moe_ep_size,
-                        distributed=distributed,
-                        power_law_alpha=power_law_alpha if distributed == "power_law" else None,
-                        dtype=torch.bfloat16,
-                        device=torch.device(device),
-                    )
-                latency, power_stats = benchmark(
-                    num_tokens,
-                    num_local_experts,
-                    (2 if is_gated else 1) * local_inter_size,
-                    hidden_size,
-                    topk,
-                    torch.bfloat16,
-                    moe_type == "fp8_block",
-                    False,
-                    False,
-                    block_shape=block_shape,
-                    distributed=distributed,
-                    power_law_alpha=power_law_alpha,
-                    workloads=rank0_workloads,
-                    swiglu_limit=swiglu_limit,
-                    activation=activation,
-                    is_gated=is_gated,
-                    gemm1_alpha=gemm1_alpha,
-                    gemm1_clamp_limit=gemm1_clamp_limit,
+        def _persist(num_tokens: int, latency: float, power_stats: dict, kernel_source: str) -> None:
+            persisted = log_perf(
+                item_list=[
+                    {
+                        "moe_dtype": moe_type,
+                        "num_tokens": num_tokens,
+                        "hidden_size": hidden_size,
+                        "inter_size": inter_size,
+                        "topk": topk,
+                        "num_experts": num_experts,
+                        "moe_tp_size": moe_tp_size,
+                        "moe_ep_size": moe_ep_size,
+                        "distribution": distribution,
+                        "latency": latency,
+                    }
+                ],
+                framework="SGLang",
+                version=installed_sglang_version,
+                device_name=torch.cuda.get_device_name(device),
+                op_name="moe",
+                kernel_source=kernel_source,
+                perf_filename=perf_filename,
+                power_stats=power_stats,
+            )
+            if not persisted:
+                raise RuntimeError("Failed to persist SGLang MoE performance row")
+            point_observed = dict(triton_config_observed)
+            for key in triton_config_observed:
+                triton_config_observed[key] = 0
+            if moe_backend == "triton":
+                append_triton_config_record(
+                    perf_filename,
+                    {
+                        "moe_dtype": moe_type,
+                        "num_tokens": num_tokens,
+                        "hidden_size": hidden_size,
+                        "inter_size": inter_size,
+                        "topk": topk,
+                        "num_experts": num_experts,
+                        "moe_tp_size": moe_tp_size,
+                        "moe_ep_size": moe_ep_size,
+                        "device_name": torch.cuda.get_device_name(device),
+                    },
+                    kernel_source,
+                    point_observed,
                 )
-                _persist(num_tokens, latency, power_stats, kernel_source)
-        except Exception:
+
+        if use_framework_layer:
+            _benchmark_framework_quantized_moe(
+                moe_type=moe_type,
+                moe_backend=moe_backend,
+                num_tokens_list=num_tokens_list,
+                on_result=_persist,
+                hidden_size=hidden_size,
+                inter_size=inter_size,
+                topk=topk,
+                num_experts=num_experts,
+                moe_tp_size=moe_tp_size,
+                moe_ep_size=moe_ep_size,
+                model_name=model_name,
+                distributed=distributed,
+                power_law_alpha=power_law_alpha,
+                activation=activation,
+                is_gated=is_gated,
+                has_bias=has_bias,
+                gemm1_alpha=gemm1_alpha,
+                gemm1_clamp_limit=gemm1_clamp_limit,
+                swiglu_limit=swiglu_limit,
+                scoring_func=scoring_func,
+                routing_method_type=routing_method_type,
+                routed_scaling_factor=routed_scaling_factor,
+                renormalize=renormalize,
+                has_correction_bias=has_correction_bias,
+                num_expert_group=num_expert_group,
+                topk_group=topk_group,
+                apply_router_weight_on_input=apply_router_weight_on_input,
+                is_fp4_experts=is_fp4_experts,
+                int4_group_size=int4_group_size,
+                device=device,
+            )
+        else:
+            kernel_source = {
+                "triton": "sglang_fused_moe_triton",
+                "triton_kernel": "sglang_triton_kernel_moe",
+                "marlin": "sglang_marlin_moe",
+                "flashinfer_trtllm": "sglang_flashinfer_trtllm_moe",
+                "flashinfer_cutlass": "sglang_flashinfer_cutlass_moe",
+            }[moe_backend]
+            try:
+                for num_tokens in num_tokens_list:
+                    rank0_workloads: list[Rank0Workload] | None = None
+                    if moe_ep_size > 1 and distributed in ("power_law", "balanced"):
+                        rank0_workloads = build_rank0_workloads(
+                            num_workloads=5,
+                            num_tokens=num_tokens,
+                            hidden_size=hidden_size,
+                            topk=topk,
+                            num_experts=num_experts,
+                            moe_ep_size=moe_ep_size,
+                            distributed=distributed,
+                            power_law_alpha=power_law_alpha if distributed == "power_law" else None,
+                            dtype=torch.bfloat16,
+                            device=torch.device(device),
+                        )
+                    latency, power_stats = benchmark(
+                        num_tokens,
+                        num_local_experts,
+                        (2 if is_gated else 1) * local_inter_size,
+                        hidden_size,
+                        topk,
+                        torch.bfloat16,
+                        moe_type == "fp8_block",
+                        False,
+                        False,
+                        block_shape=block_shape,
+                        distributed=distributed,
+                        power_law_alpha=power_law_alpha,
+                        workloads=rank0_workloads,
+                        swiglu_limit=swiglu_limit,
+                        activation=activation,
+                        is_gated=is_gated,
+                        gemm1_alpha=gemm1_alpha,
+                        gemm1_clamp_limit=gemm1_clamp_limit,
+                    )
+                    _persist(num_tokens, latency, power_stats, kernel_source)
+            except Exception:
+                _fmoe_kernels_mod._B_DESC_CACHE.clear()
+                gc.collect()
+                torch.cuda.empty_cache()
+                raise
             _fmoe_kernels_mod._B_DESC_CACHE.clear()
             gc.collect()
             torch.cuda.empty_cache()
-            raise
-        _fmoe_kernels_mod._B_DESC_CACHE.clear()
-        gc.collect()
-        torch.cuda.empty_cache()
 
     restart_worker = torch.cuda.memory_allocated(device) > torch.cuda.get_device_properties(device).total_memory // 4
     if restart_worker:

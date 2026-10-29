@@ -102,6 +102,6 @@ def test_bridge_wrapper_passes_task_facts_through():
 def test_fp8_kv_dtype_renders_as_the_explicit_vllm_flag():
     out = render_backend_parameters({"kv_cache_dtype": "fp8"}, "vllm")
     assert out["kv_cache_dtype"]["kv-cache-dtype"] == "fp8"
-    # and the bf16 modelling default still renders as auto
+    # and BF16 renders literally: vLLM >= 0.11 accepts it (backend_config_mapping.yaml guard, #487)
     out = render_backend_parameters({"kv_cache_dtype": "bfloat16"}, "vllm")
-    assert out["kv_cache_dtype"]["kv-cache-dtype"] == "auto"
+    assert out["kv_cache_dtype"]["kv-cache-dtype"] == "bfloat16"
