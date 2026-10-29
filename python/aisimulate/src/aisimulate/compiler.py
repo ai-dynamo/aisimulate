@@ -226,6 +226,11 @@ def _deployment(
             performance_model=afd_performance_model or AICAFDPerformanceModel(),
         )
     mode = "agg" if engine.mode == "aggregated" else "disagg"
+    # Check every replayed role before any role sizes its state or KV cache.
+    for role in ("aggregated",) if mode == "agg" else ("prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is not None:
+            reject_pipeline_parallelism(role, worker.parallelism.pipeline)
     if mode == "disagg":
         from aisimulate_core.sdk.perf_database import load_system_spec
 
@@ -692,9 +697,6 @@ def _worker_engine_args(
     cache = worker.kv_cache
     capacity = cache.capacity
     memory_fraction = capacity.memory_fraction
-    if engine.mode != "afd":
-        # AFD only compiles its analytically priced PD companion here, which supports pipeline stages.
-        reject_pipeline_parallelism(role, parallel.pipeline)
     identity_fields = (
         "gemm_quant_mode",
         "moe_quant_mode",

@@ -1284,7 +1284,7 @@ def _forbid_capacity(monkeypatch):
 @pytest.mark.parametrize(
     ("role", "source"),
     [(role, "deployment") for role in ("aggregated", "prefill", "decode")]
-    + [("aggregated", source) for source in ("flat", "nested", "canonical", "canonical_alias")],
+    + [("aggregated", source) for source in ("flat", "null_rank", "nested", "canonical", "canonical_alias")],
 )
 def test_runner_rejects_pipeline_parallelism_before_capacity(monkeypatch, role, source):
     _forbid_capacity(monkeypatch)
@@ -1298,6 +1298,8 @@ def test_runner_rejects_pipeline_parallelism_before_capacity(monkeypatch, role, 
         parallel["pp" if role == "aggregated" else f"{role}_pp"] = 2
     elif source == "flat":
         args["aic_pp_size"] = 2
+    elif source == "null_rank":
+        args.update(rank=None, aic_pp_size=2)
     elif source == "nested":
         args = {"rank": {**rank, "aic_pp_size": 2}}
     else:
@@ -1309,6 +1311,24 @@ def test_runner_rejects_pipeline_parallelism_before_capacity(monkeypatch, role, 
         args = {"rank": rank}
     with pytest.raises(ValueError, match=f"does not support pipeline parallelism for {role}"):
         _materialize_engine_role("vllm", "test", parallel, args, role)
+
+
+def test_runner_rejects_decode_pipeline_parallelism_before_prefill_capacity(monkeypatch):
+    _forbid_capacity(monkeypatch)
+    prefill = _engine_args(role="prefill")
+    prefill.pop("num_gpu_blocks")
+    decode = {**_engine_args(role="decode"), "aic_pp_size": 2}
+    deployment = BackendDeploymentSpec(
+        deployment_mode="disagg",
+        backend="vllm",
+        backend_version="test",
+        prefill_engine_args=prefill,
+        decode_engine_args=decode,
+        num_prefill_workers=1,
+        num_decode_workers=1,
+    )
+    with pytest.raises(ValueError, match="does not support pipeline parallelism for decode"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
 
 
 def test_runner_rejects_nested_inferred_capacity_when_fixed_timing_discards_reservation():
@@ -3038,7 +3058,9 @@ def test_gym_mtp_acceptance_reaches_runner_scheduler_and_timing(accepted, rates)
 def test_prediction_compile_rejects_pipeline_parallelism_before_capacity(monkeypatch, role):
     _forbid_capacity(monkeypatch)
     roles = ["aggregated"] if role == "aggregated" else ["prefill", "decode"]
-    workers = {name: {"parallelism": {"pipeline": 2}} if name == role else {} for name in roles}
+    # Fixed timing sizes each role's KV cache at compile time, so a late check would reach the stub.
+    fixed = {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
+    workers = {name: {"timing": fixed, "parallelism": {"pipeline": 2 if name == role else 1}} for name in roles}
     engine = {"model": "example/model", "hardware": "h200_sxm", "context_length": 1024, "workers": workers}
     if role != "aggregated":
         engine["mode"] = "disaggregated"
