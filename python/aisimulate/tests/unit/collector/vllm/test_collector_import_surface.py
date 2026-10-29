@@ -305,6 +305,7 @@ _GEMM_SURFACE = {
         "CompressedTensorsConfig": _Dummy
     },
     "vllm.model_executor.layers.quantization.fp8": {"Fp8Config": _Dummy},
+    "vllm.model_executor.layers.quantization.modelopt": {"ModelOptMixedPrecisionConfig": _Dummy},
     "vllm.utils.deep_gemm": {"per_block_cast_to_fp8": _dummy},
 }
 
@@ -327,6 +328,23 @@ class TestCollectGemmImportSurface:
     def test_imports_cleanly_against_0271_shaped_vllm(self, monkeypatch):
         _install_fake_vllm(monkeypatch, _GEMM_SURFACE)
         _import_fresh(monkeypatch, _COLLECT_GEMM_DOTTED, _COLLECT_GEMM_PATH)
+
+    @pytest.mark.parametrize(("sm", "expected"), [(75, False), (80, True), (90, True), (100, True)])
+    def test_w4a16_nvfp4_lane_follows_capability_floor(self, monkeypatch, sm, expected):
+        from collector.capabilities import unsupported_reason
+
+        _install_fake_vllm(monkeypatch, _GEMM_SURFACE)
+        module = _import_fresh(monkeypatch, _COLLECT_GEMM_DOTTED, _COLLECT_GEMM_PATH)
+        monkeypatch.setattr(module, "get_sm_version", lambda: sm)
+        cases = [case for case in module.get_gemm_test_cases() if case[0] == "w4a16_nvfp4"]
+
+        assert bool(cases) is expected
+        floor_case = types.SimpleNamespace(gemm_type="w4a16_nvfp4")
+        assert (unsupported_reason(floor_case, "gemm", sm) is None) is expected
+        if expected:
+            sites = {(n, k) for _, _, n, k in cases}
+            assert {(3712, 2688), (2688, 3712), (928, 2688), (2688, 928), (464, 2688), (2688, 464)} <= sites
+            assert len(cases) == len({tuple(case) for case in cases})
 
 
 # ---------------------------------------------------------------------------

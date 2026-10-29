@@ -59,8 +59,9 @@ quantized-weight preparation, and selected-kernel reporting.
 # (schemes/compressed_tensors_w4a4_nvfp4.py:29-31,95-141). This adds the
 # exact 0.25.0 release to the existing lane, not 0.25.1/0.26.0/0.27.0.
 # 0.30.0 source audit (2026-09-30: tag v0.30.0 == ced6857afa0e vs v0.27.1),
-# the baseline of the 0.31.0 audit below. 0.28.0, 0.29.0 and 0.30.0 itself
-# are not admitted: no consumer reads their tables.
+# the baseline of the 0.31.0 audit below. 0.30.0 is admitted because it is
+# now the vLLM query slot's current version (systems/query_versions.yaml).
+# 0.28.0 and 0.29.0 are not admitted: no consumer reads their tables.
 # bf16: UnquantizedLinearMethod now binds its GEMM at __init__ from
 #   kernel_config.linear_backend (layers/linear.py:169-174, apply :234-238);
 #   dispatch_unquantized_gemm (layers/utils.py:584-616) returns
@@ -129,7 +130,25 @@ quantized-weight preparation, and selected-kernel reporting.
 # Helpers with identical bodies: scaled_fp4_quant (_custom_ops.py:1513-1588),
 #   per_block_cast_to_fp8 (utils/deep_gemm.py:983-1002). All imports below
 #   resolve at 0.31.0. 0.28.0/0.29.0 are still not audited.
-__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0,!=0.28.0,!=0.29.0,!=0.30.0"
+# w4a16_nvfp4 audit (2026-10-29, source-only, every admitted tag). The lane
+# builds the layer through ModelOptMixedPrecisionConfig, as a ModelOpt
+# MIXED_PRECISION checkpoint whose layer declares W4A16_NVFP4 (Nemotron 3.5
+# Lightning). get_quant_method resolves the per-layer algo (modelopt.py
+# :2487 @0.24.0, :2527 @0.25.0, :2423 @0.27.1, :1797 @0.30.0, :1793
+# @0.31.0). Activations stay BF16; no input scale is kept.
+#   0.24.0/0.25.0: ModelOptNvFp4W4A16LinearMethod pins MarlinNvFp4LinearKernel
+#     (modelopt.py:1243-1277 @0.24.0, :1245-1279 @0.25.0).
+#   0.27.1: the same method calls init_nvfp4_linear_kernel(use_a16=True)
+#     (modelopt.py:1265), which forces Marlin for linear_backend "auto"
+#     (kernels/linear/__init__.py:1017).
+#   0.30.0/0.31.0: resolve() maps the algo to QuantSpec(kNvfp4Static, None)
+#     (modelopt.py:2622 @0.30.0, :2627 @0.31.0) and select_linear_kernel
+#     calls init_nvfp4_linear_kernel(use_a16=True) (:2324, :2320). Under
+#     "auto" it picks FlashInferCuteDslNvFp4W4A16LinearKernel on SM100/103
+#     when FlashInfer exposes mm_bf16_fp4, else Marlin
+#     (kernels/linear/__init__.py:1114 @0.30.0, :1120 @0.31.0;
+#     utils/flashinfer.py:429-436). kernel_source records the live kernel.
+__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0,!=0.28.0,!=0.29.0"
 
 from types import SimpleNamespace
 
@@ -148,10 +167,12 @@ from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tenso
     CompressedTensorsConfig as _CompressedTensorsConfig,
 )
 from vllm.model_executor.layers.quantization.fp8 import Fp8Config
+from vllm.model_executor.layers.quantization.modelopt import ModelOptMixedPrecisionConfig
 from vllm.utils.deep_gemm import per_block_cast_to_fp8
 from vllm.version import __version__ as vllm_version
 
 FP8_BLOCK_SHAPE = (128, 128)
+GEMM_SEED = 0
 
 # NVFP4 is source-supported by vLLM 0.24.0 on datacenter and RTX Blackwell
 # (SM100+). The SM100/SM103/SM120 paths remain hardware-unvalidated in this
@@ -164,6 +185,17 @@ _NVFP4_QUANT_ARGS = {
     "group_size": 16,
     "symmetric": True,
     "dynamic": False,
+}
+
+# A W4A16_NVFP4 layer as Lightning's hf_quant_config.json declares it.
+_W4A16_NVFP4_PREFIX = "backbone.layers.1.mixer.shared_experts.down_proj"
+_W4A16_NVFP4_QUANT_CONFIG = {
+    "quantization": {
+        "quant_algo": "MIXED_PRECISION",
+        "kv_cache_quant_algo": None,
+        "exclude_modules": [],
+        "quantized_layers": {_W4A16_NVFP4_PREFIX: {"quant_algo": "W4A16_NVFP4", "group_size": 16}},
+    }
 }
 
 
@@ -189,6 +221,10 @@ def get_gemm_test_cases():
 
     if sm >= 100:
         gemm_list += ["nvfp4"]
+    # Marlin FP4 runs from SM75 (is_fp4_marlin_supported); the BF16
+    # activations set the floor (capabilities.yaml w4a16_nvfp4: 80).
+    if sm >= 80:
+        gemm_list += ["w4a16_nvfp4"]
 
     test_cases = []
 
@@ -222,6 +258,8 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
     torch.set_default_dtype(dtype)
     torch.cuda.set_device(device)
     torch.set_default_device(device)
+    # Reproducible synthetic inputs and weights; values do not select kernels.
+    torch.manual_seed(GEMM_SEED)
 
     x = torch.randn((m, k), dtype=dtype, device=torch.device(device))
 
@@ -286,6 +324,8 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
                 },
             }
         )
+    elif gemm_type == "w4a16_nvfp4":
+        qc = ModelOptMixedPrecisionConfig.from_config(_W4A16_NVFP4_QUANT_CONFIG)
     else:
         qc = None
 
@@ -297,7 +337,7 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
             skip_bias_add=True,
             params_dtype=dtype,
             quant_config=qc,
-            prefix="",
+            prefix=_W4A16_NVFP4_PREFIX if gemm_type == "w4a16_nvfp4" else "",
             return_bias=True,
             disable_tp=True,
         )
@@ -334,6 +374,26 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
                 gemm.weight_global_scale.data.fill_(1.0 / w_gscale_val)
                 gemm.input_global_scale.data.fill_(1.0 / in_gscale_val)
             gemm.scheme.process_weights_after_loading(gemm)
+        elif gemm_type == "w4a16_nvfp4":
+            with torch.no_grad():
+                weight_bf16 = torch.randn(n, k, dtype=torch.bfloat16, device=device)
+                # Checkpoint layout the loader fills: packed uint8 weight,
+                # unswizzled per-16 fp8 weight_scale, and weight_scale_2 =
+                # amax / (6 * 448), unreciprocated (modelopt.py:1305-1339,
+                # 1369-1376 @0.24.0; KNvfp4Static :1909-1986 @0.31.0).
+                weight_scale_2 = float(weight_bf16.abs().max()) / 2688.0
+                weight_fp4, weight_scale_fp8 = _scaled_fp4_quant(
+                    weight_bf16,
+                    torch.tensor(1.0 / weight_scale_2, dtype=torch.float32, device=device),
+                    is_sf_swizzled_layout=False,
+                )
+                gemm.weight.data.copy_(weight_fp4)
+                gemm.weight_scale.data.copy_(weight_scale_fp8)
+                gemm.weight_scale_2.data.fill_(weight_scale_2)
+            gemm.quant_method.process_weights_after_loading(gemm)
+            # W4A4 NVFP4 keeps input_global_scale for activation quantization.
+            if hasattr(gemm, "input_global_scale"):
+                raise RuntimeError("vLLM built an activation-quantized NVFP4 layer for W4A16_NVFP4")
 
         gemm.forward(x)  # dry run to init
 
@@ -348,7 +408,7 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
         )
     exit_stack.enter_context(set_current_vllm_config(vllm_config))
 
-    outside_loop_count = 1 if gemm_type in ("fp8_block", "nvfp4") else 6
+    outside_loop_count = 1 if gemm_type in ("fp8_block", "nvfp4", "w4a16_nvfp4") else 6
     op_list = []
     for i in range(outside_loop_count):
         op_list.append(create_gemm())
@@ -369,6 +429,8 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
             kernel_sources.add(type(selected_kernel).__name__)
     elif gemm_type == "nvfp4":
         kernel_sources = {type(op.scheme.kernel).__name__ for op in op_list}
+    elif gemm_type == "w4a16_nvfp4":
+        kernel_sources = {type(op.quant_method.kernel).__name__ for op in op_list}
     else:
         # From 0.30.0 UnquantizedLinearMethod binds its GEMM at __init__
         # (layers/linear.py:169-174 -> layers/utils.py:584-616; :171-175 ->
