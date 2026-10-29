@@ -171,8 +171,73 @@ model = RustForwardPassPerfModel.best_available(
 )
 ```
 
-Hopper deployments pass `kvcache_quant_mode="bfloat16"`. The packaged systems
-keep their own `nccl_version`, so the NCCL vocab gather is priced from the
+Hopper deployments using these pinned runtimes pass
+`kvcache_quant_mode="bfloat16"`. FP8 KV is also available for op-level modeling
+on H100/H200 with **vLLM >= 0.32.0** or **SGLang >= 0.5.22**. Select the
+`backend_version` explicitly and retain `kvcache_quant_mode="fp8"`; the engine
+does not silently convert KV precision. Earlier runtimes still reject the
+FP8 request with a version-specific diagnostic.
+
+These newer versions are not yet in the packaged queryable-version slots.
+For an analytical evaluation, opt in with `AIC_ALLOW_UNLISTED_VERSIONS=1`
+and select `database_mode="SOL"`. For example:
+
+```bash
+AIC_ALLOW_UNLISTED_VERSIONS=1 python - <<'PY'
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+model = RustForwardPassPerfModel.best_available(
+    ForwardPassPerfModelConfig(
+        model="zai-org/GLM-5.3-Flash",
+        system="h200_sxm",
+        backend="sglang",
+        backend_version="0.5.22",  # "0.32.0" for vLLM
+        worker_type="aggregated",
+        tp=8,
+        moe_tp_size=8,
+        moe_ep_size=1,
+        kvcache_quant_mode="fp8",
+        database_mode="SOL",
+        estimation_mode="op_level",
+        fallback_policy="deny",
+    )
+)
+try:
+    print(model.static_phase_latency(
+        batch_size=32, input_tokens=4096, output_tokens=2, prefill=False
+    ))
+finally:
+    model.close()
+PY
+```
+
+SGLang serving requires all three flags below. Its Hopper default backend
+does not select this path automatically:
+
+```bash
+--kv-cache-dtype fp8_e4m3 \
+--dsa-prefill-backend tilelang \
+--dsa-decode-backend tilelang
+```
+
+The SGLang CUDA TileLang path excludes decode context parallelism greater than
+one and HiSparse; the modeled TP-attention baseline uses neither. Support
+comes from [SGLang #42957](https://github.com/sgl-project/sglang/pull/42957)
+(merge `9336681310c7a7153c4fbd7c2b9ae62011899014`, included in v0.5.22).
+The vLLM SM90 plan-dtype fix is
+[#55222](https://github.com/vllm-project/vllm/pull/55222)
+(merge `c37f86e5721f089a27c8e4358c30e435805fcaab`, included in v0.32.0).
+
+Opening this runtime path does not add performance measurements. SOL remains
+an analytical estimate; for Hopper SGLang FP8 KV, its latent attention QK/PV
+terms use FP8 tensor-core throughput to match the TileLang implementation.
+Projection and KDA precision remain unchanged. SILICON still requires
+exact-runtime FP8-KV rows;
+the packaged Hopper BF16-KV data cannot satisfy an FP8 request, and prior
+runtime data cannot establish coverage for the new version. HYBRID retains
+its existing source labels and fallback behavior.
+
+The packaged systems keep their own `nccl_version`, so the NCCL vocab gather is priced from the
 packaged NCCL table, not from the campaign's NCCL 2.30.7 collection.
 
 An external systems root remains optional: a root with its own `<system>.yaml`

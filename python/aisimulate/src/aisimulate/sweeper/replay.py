@@ -209,6 +209,9 @@ class BackendDeploymentSpec:
     # Per-worker tokenization: ``{"workers", "base_ms", "per_input_token_ms"}``.
     # Omitted from canonical JSON when unset, so existing spec identities hold.
     tokenization: dict[str, JSONValue] | None = field(default=None, metadata={OMIT_IF_NONE: True})
+    # Per-worker detokenization: ``{"workers", "base_ms", "per_output_ms"}``.
+    # Omitted from canonical JSON when unset.
+    detokenization: dict[str, JSONValue] | None = field(default=None, metadata={OMIT_IF_NONE: True})
 
 
 @dataclass(frozen=True)
@@ -402,6 +405,7 @@ class RunnerCapabilities:
     supports_agentic_live_warmup: bool = False
     supports_generic_speculation: bool = False
     supports_tokenization: bool = False
+    supports_detokenization: bool = False
     supports_deferred_encoder_overlay: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
@@ -572,6 +576,13 @@ class RunnerCapabilities:
                 raise ValueError("runner does not support engine.tokenization; use --stack engine")
             if spec.execution_mode != "offline":
                 raise ValueError("engine.tokenization requires offline replay")
+        if deployment.detokenization is not None:
+            if is_afd:
+                raise ValueError("engine.detokenization is unsupported for AFD")
+            if not self.supports_detokenization:
+                raise ValueError("runner does not support engine.detokenization; use --stack engine")
+            if spec.execution_mode != "offline":
+                raise ValueError("engine.detokenization requires offline replay")
         if deployment.encoder is not None and deployment.deployment_mode not in {"agg", "disagg"}:
             raise ValueError("encoder pools support only agg/disagg language deployments; AFD is unsupported")
         if deployment.encoder is not None:

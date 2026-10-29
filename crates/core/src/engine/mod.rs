@@ -15,7 +15,7 @@ mod kv_manager;
 pub(crate) mod kvcr;
 mod launch;
 mod offload_lru;
-mod offload_transfer;
+pub(crate) mod offload_transfer;
 mod protocol;
 mod runtime;
 mod scheduler;
@@ -54,12 +54,12 @@ pub use protocol::{
 };
 pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;
+pub use timing::{
+    MixedPassMs, PrefillTotals, TimingEvidenceSource, TimingEvidenceSummary, TimingModel,
+    TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence, VisionShape,
+};
 #[cfg(feature = "python")]
 pub(crate) use timing::{TimingEvidenceAccumulator, ValidatedTimingPhase, mean_prefill_shape};
-pub use timing::{
-    TimingEvidenceSource, TimingEvidenceSummary, TimingModel, TimingModelConfig,
-    TimingOperationEvidence, TimingPhaseEvidence, VisionShape,
-};
 
 #[doc(hidden)]
 pub use protocol::PendingPass;

@@ -48,6 +48,19 @@ print(model.diagnostics()["provenance"])
 
 ### Engine identity controls
 
+Canonical JSON/YAML requires string values for text fields. Numeric-looking YAML
+identities must be quoted to preserve their exact spelling:
+
+| Field | Default | Input requirement |
+| --- | --- | --- |
+| `model` | Required | String model name or path; write a numeric identifier as `model: "123"`. |
+| `backend_version` | `null` | Optional string version; write `backend_version: "0.10"` to preserve the trailing zero. |
+
+This is an intentional compatibility change for direct Rust YAML parsing:
+earlier parsing accepted numeric scalars for string fields, while canonical
+normalization now rejects them. Quote numeric, Boolean, or null-like values
+when they represent text. An actual `backend_version: null` still means unset.
+
 The canonical configuration also carries quantization overrides and `attention_backend`, `moe_backend`, `moe_kernel_source` (default absent), `enable_eplb` (default `false`), and `wideep_num_slots` (default absent). These controls reach model construction, KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend or kernel-source selection require an MoE model. Collected FPM interpolation cannot represent EPLB, slots, MoE backend, or kernel-source overrides; it rejects an explicit incompatible request and is skipped during automatic selection for those identities.
 
 `encoder_parallel` (default absent) compiles a VL model's vision tower in the given layout, `tp` (sharded over the tensor-parallel group) or `dp` (replicated, images split across ranks), so the estimator can price encoder calls. It requires a model with a vision encoder, is omitted from the serialized payload when unset, and is part of the estimator identity, cache keys and provenance. Llama 4 rejects `dp`.
@@ -81,8 +94,9 @@ at construction; queries do not silently switch estimators on a data-domain erro
 
 `fpm_learned` requires explicit selection and `fallback_policy: deny`; it is
 never an automatic or fallback candidate. Supply exactly one of
-`estimator_config.fpm_learned.artifact_path` and `checkpoint_path`. Frozen
-adaptation accepts either source, online adaptation requires a training or
+`estimator_config.fpm_learned.artifact_path` and `checkpoint_path`. Online
+adaptation is the default; set `adaptation: frozen` explicitly for a fixed forest.
+Frozen adaptation accepts either source, online adaptation requires a training or
 runtime checkpoint, and `causal_selector` requires a training seed checkpoint.
 Learned models support the standalone canonical API with complete per-iteration
 `ForwardPassMetrics` for prediction and feedback. Replay, engine CLI prediction
@@ -184,20 +198,25 @@ KV length `s`, use `num_decode_requests = B*v` and
 the width again. `predict_decode_latency_total()` wraps the same counters.
 `static_phase_latency()` instead takes the real request batch and applies the
 configured verification width internally. This OP telemetry convention is
-distinct from the proposed speculative FPM mapping, which remains unsupported.
+distinct from the [STP FPM speculative approximation](methods/whole-forward.md#estimate-speculative-decode-from-an-stp-fpm):
+that per-query `draft_length` option takes logical decode request counts and
+total past KV, widens the former and preserves the latter.
 
 The canonical constructor currently supports explicit speculative schemes with
 OP/SOL timing. FPM interpolation and regression are unsupported candidates for
 these schemes. An explicit FPM request with `fallback_policy="deny"` fails;
 `auto` or an explicit mode with `fallback_policy="allow"` can select a supported
 OP candidate while preserving the complete speculative identity. They do not
-drop speculation to obtain an autoregressive estimate. FPM profiles remain
-autoregressive-only. Lower-level FPM hybrid code does not imply support through
-the canonical ForwardPassMetrics query API.
+drop speculation to obtain an autoregressive estimate. Separately, an ordinary
+STP FPM can estimate pure speculative decode via the query-only `draft_length`
+option without setting `speculation` or `nextn`. Explicit measured
+[speculative-round profiles](methods/whole-forward.md#recorded-speculative-round-identity)
+have their own identity contract. Lower-level FPM hybrid code does not imply
+support through the canonical ForwardPassMetrics query API.
 
 Acceptance assumptions and scheduler seeds belong to the prediction/Replay
 layer, not this cost configuration. The returned model continues to estimate
-iteration latency; its constructor and query signatures are unchanged. For
+iteration latency; the existing calls remain supported. For
 prediction and AgentX, the [registered-scheme Replay input](../replay/engine/speculation.md#registered-schemes)
 adds acceptance and a seed while retaining this cost identity. That path uses
 the existing linear 1–5-token executor and requires fixed KV capacity; broader
@@ -232,7 +251,10 @@ fields report their nested paths. The supported namespaces are:
   [learned configuration field tables](fpm_ml/configuration.md).
 - `selector`: expert selection controls for learned
   `adaptation: causal_selector`, documented on the same learned configuration page.
-- `correction`: `enabled` (true), `mode` (`auto`), independent `sampling`, `min_observations`
+- `state_snapshot`: restores a model saved by `save_state_snapshot`,
+  including its tuned state. See [state snapshots](#state-snapshots).
+- `correction`: `enabled` (false for standalone online learned mode, true otherwise),
+  `mode` (`auto`), independent `sampling`, `min_observations`
   (5), `factor_bounds` (min 0.5, max 2.0), and the existing `max_num_tokens`
   (8192), `max_batch_size` (512), and `max_kv_tokens` (2000000) fixed-policy ranges.
 - `fpm_interpolation.method`: `auto` (default), `sol`, or `direct`. Rust selects
@@ -320,6 +342,7 @@ sample from the most populated cell when the store exceeds its budget.
 
 | Correction field | Default | Behavior |
 | --- | --- | --- |
+| `estimator_config.correction.enabled` | `false` for standalone online learned mode; `true` otherwise | Standalone online learned mode requires disabled correction; the combined selector requires enabled correction. Explicit values override the default and are validated for the selected mode. |
 | `estimator_config.correction.mode` | `auto` | `auto` keeps fixed correction for native AIC estimates and selects `hybrid` for learned forests. `hybrid` uses the fixed grid inside its configured limits and dynamic local correction outside. `fixed` and `dynamic_local` explicitly select a single policy. |
 | `estimator_config.correction.sampling.max_observations` | `64` | Sample-slot budget per workload kind and policy. Hybrid retains independent fixed and dynamic budgets, up to `2 * M` slots per kind (128 by default). Dynamic and hybrid updates take `O(M log M)` time and `O(M)` temporary storage; measure update cost before increasing capacity. |
 
@@ -356,6 +379,161 @@ computation are owned by Rust.
 
 For fit configuration see [Online regression](methods/online-regression.md).
 For direct measurement coverage see [Whole-forward FPM](methods/whole-forward.md).
+
+### State snapshots
+
+Configuration describes a cold model. To keep what a model has learned from
+`tune_with_fpms()`, save it with `model.save_state_snapshot(path)` (Rust:
+`ForwardPassPerfModel::save_state_snapshot(path, &StateSnapshotOptions)`).
+Saving atomically writes a new directory and returns the pinned canonical
+configuration, which is also written to `path/config.json`. Restore through
+the same constructor: `RustForwardPassPerfModel.best_available(state_snapshot=path)`
+reads that file, and passing the returned configuration is equivalent. There is no
+separate loader; `best_available` restores whenever
+`estimator_config.state_snapshot` is present.
+
+```python
+config = model.save_state_snapshot("/tmp/decode-snapshot")
+frozen = RustForwardPassPerfModel.best_available(state_snapshot="/tmp/decode-snapshot")
+config["estimator_config"]["state_snapshot"]["on_tune"] = "continue"
+resumed = RustForwardPassPerfModel.best_available(config)
+```
+
+| Field | Default | Behavior |
+| --- | --- | --- |
+| `estimator_config.state_snapshot.path` | required | Snapshot directory written by `save_state_snapshot`. Normalization makes it absolute against the working directory and removes `.` and `..` lexically; symbolic links are kept, so a stable mount alias stays valid. |
+| `estimator_config.state_snapshot.sha256` | `null` | SHA-256 of `path/manifest.json`. Normalization fills it; a supplied value that differs is an error. |
+| `estimator_config.state_snapshot.on_tune` | `reject` | `reject` makes `tune_with_fpms()` and `flush_updates()` return an error. `continue` resumes tuning from the saved state exactly as the saving model would have continued. |
+
+A snapshot covers every estimator kind. The returned configuration is the
+model's resolved provenance configuration plus `state_snapshot`; files the
+snapshot owns are redirected into it:
+
+| Saved model | Snapshot contents |
+| --- | --- |
+| Native `op_level` or `fpm_interpolation` | Correction stores (fixed, dynamic local or hybrid). The engine is recompiled from the configuration; the manifest records the compiled engine-specification digest from construction and a performance-data fingerprint. A configured `op_level.execution_profile` file is copied. |
+| `fpm_regression` | Every workload store: retained samples, fits, incremental statistics, lazy-update and spline search clocks. |
+| `fpm_learned`, `frozen` | The forest (an artifact's exact bytes, or the checkpoint's forest exported unchanged) and correction stores. |
+| `fpm_learned`, `online` | An online runtime checkpoint with the current forest, retained and pending rows and fitting state. |
+| `fpm_learned`, `causal_selector` | The frozen expert, the adaptive expert's runtime checkpoint, every calibration store and all twelve selector evidence keys. |
+| `from_learned` model | The forest, its constructor options and correction stores. |
+
+Saving does not fit pending online rows or change the model. Every staged
+file and directory is synced to disk before the staging directory is renamed
+into place, and the parent directory after. A restored model
+predicts bit-identically, reports the same readiness, store and correction
+diagnostics, and after the same later feedback holds byte-identical state,
+including in another process. Readiness follows the restored state: a cold
+regression saved before it fit is restored cold. The restored provenance
+describes the snapshot construction, so it records the explicit mode, no
+selection failures and no fallback warning; a not-ready regression that was
+originally selected by fallback therefore reports `insufficient_data`
+instead of `unsupported_config`. Direct-FPM query coverage counters and two
+online learner diagnostics are not model state: the coverage counters restart
+empty, `training_state_bytes` reflects the restored allocation, and
+`history_grouping_ms` is the time this process spent grouping history rows.
+
+Restoration requires an explicit `estimation_mode` and `fallback_policy: deny`
+and fails, without selecting another estimator, when:
+
+- the manifest digest, a pinned file's size or digest, or the snapshot format
+  differs: snapshots load only in the same `aisimulate-core` version with the
+  same state layout and engine-specification schema;
+- the configuration, compared field by field after normalization, differs
+  from the saved identity (the error names the first differing field);
+- a native engine compiles to a different specification, its performance
+  data no longer matches the fingerprint (checked before any of it is loaded),
+  or this process loaded that data before it changed;
+- saved state is truncated, corrupt or internally inconsistent, for example a
+  sample stored under the wrong bucket, a dynamic correction row outside its
+  bounds, spline knots that do not fit the basis, or store kinds that do not
+  match the worker role; or
+- the restored diagnostics differ from those recorded when saving.
+
+Native snapshots reference performance data by content fingerprint: every
+file directly under the systems root, the system's `data_dir` resolved as the
+loader resolves it (every directory and file below it, or its absence when an
+external parquet needs no operation tables), and an external
+`fpm_parquet_path` with its `.metadata.json` sidecar. Source resolution
+depends on which files and directories exist, not only on those read so far,
+so additions, removals and new empty version directories invalidate the
+fingerprint too. Like the resolvers, the fingerprint follows symbolic links,
+records an unresolvable link without reading it, and skips dot-prefixed and
+non-UTF-8 names. A native model fingerprints its data when the process first
+loads that systems root; later constructions reuse that result. Performance
+tables that another engine in the process parsed before then are not shared
+with the model, so it reads the fingerprinted data; restoration does the same
+after its check.
+`save_state_snapshot` fingerprints the data again and fails if it changed
+since it was loaded; restart the process to save a model of the current data. Pass
+`include_perf_db=True` (Rust: `StateSnapshotOptions { include_perf_db: true }`)
+to copy exactly the fingerprinted entries into the snapshot, pointing
+`systems_paths` (and `fpm_parquet_path`) at the copy. The hardware YAML is
+copied unchanged, so packing requires its `data_dir` to be a relative path of
+plain directory names; a `data_dir` with `..` components, an absolute path or
+one outside the systems root can be referenced but not packed. A packed snapshot holds a
+copy of the system's whole data directory, so its size follows that data.
+Learned forests and online checkpoints are always copied. The model
+configuration is not: native restoration reads `model` again, from a
+configuration bundled with the package, a local directory or Hugging Face, so
+a packed native snapshot still needs it, and restoration fails if it compiles
+a different engine specification from the saved one.
+
+Snapshot configurations pin absolute paths. Restoration reads the pinned
+`state_snapshot.path`, so `best_available(state_snapshot=path)` raises
+`ValueError` unless `path` is the directory the snapshot was saved to (compared with
+`os.path.samefile`) rather than silently restoring the original. A
+configuration is not compared with that location. Edited to name a copy, a
+snapshot with a deployment identity restores the copy after verifying it
+against its manifest, but its other pinned paths (packed performance data, an
+execution profile, learned artifacts and checkpoints) belong to that identity
+and must keep naming the original directory. A `from_learned` snapshot derives
+its artifact path from `state_snapshot.path`, so it rejects the edit unless
+`fpm_learned.artifact_path` names the copy too. Save a new snapshot instead of
+moving one. Snapshot
+I/O failures raise an `OSError` subclass (for example `FileNotFoundError` for
+a missing snapshot or a missing learned artifact or checkpoint inside it)
+through both `state_snapshot=` and a configuration, never the skippable
+`PerfDataNotAvailableError`. A manifest from another release
+reports its versions even when it has fields this release does not know.
+Online learner state, including the causal selector's adaptive expert, is
+always saved in full, so its size grows with the forest and its retained
+training history. Native restoration recompiles through Python like any
+native construction. A `from_learned`
+model has no deployment identity: its snapshot configuration carries the
+placeholder identity `model: from_learned`, `system: from_learned`,
+`backend: vllm`, restoration checks only its estimator controls and files, and
+`deployment_topology()` returns `None`.
+
+Engine replay restores a snapshot named by its AIC timing configuration like
+any other `best_available` call. It prices prefill and decode phases with the
+native engine and applies the saved online correction, the same with and
+without `capture_performance_diagnostics`. A pass that computes only prefill
+or only decode takes that phase's correction. With whole-model FPM
+interpolation, a vLLM or TensorRT-LLM pass that computes both runs as one
+forward and takes the correction of that mixed iteration. Where replay prices
+the phases of a pass separately, as for MTP drafts or operation-level timing,
+each takes its pure correction. Replay times each rank alone, so cross-rank
+corrections never apply. Operation evidence and its energy scale with the
+correction, so reported power is unchanged.
+
+Gates for replaying a saved model read the snapshot without loading it.
+`RustForwardPassPerfModel.inspect_state_snapshot(path)` returns the snapshot
+kind, versions, pinned identity, deployment topology and the readiness report
+recorded at save time. `model.readiness_report()` lists, for every logical
+workload store of the worker role, whether its iterations receive an estimate
+and why not (`insufficient_data`, `no_usable_fit` or `untrained_forest_store`),
+plus every correction store's readiness; native estimators are always ready.
+`model.deployment_topology()` reports the identity's worker role, parallelism,
+speculation, KV block size and fixed correction limits.
+`RustForwardPassPerfModel.config_engine_launch_mismatches(engine_args, state_snapshot=path)`
+and `model.engine_launch_mismatches(engine_args)` apply the engine launch rules
+(for example `dp_size` against `attention_dp`) to the canonical launch arguments
+with the snapshot as the timing model and return every rule that fails; an
+empty list means the launch accepts the combination. Launch arguments that are
+invalid on their own, such as `dp_size: 0` or `gpu_memory_utilization: 2.0`,
+raise with the launch's own message instead. The Rust equivalent is
+`EngineLaunchConfig::timing_config_mismatches`.
 
 ## Unified CLI timing fields
 

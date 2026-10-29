@@ -86,9 +86,10 @@ impl LeafValue {
     }
 }
 
-/// Flattened leaf data for repeated multi-axis Grid hold searches.
+/// Flattened leaf data for repeated multi-axis Grid hold searches. Leaf keys
+/// are stored as `f64` (exact for `u32`), the form `sol_fn` reads them in.
 struct FlatHoldIndex {
-    coords: Box<[u32]>,
+    coords: Box<[f64]>,
     log_coords: Box<[f64]>,
     offsets: Box<[usize]>,
     leaves: Box<[LeafValue]>,
@@ -102,9 +103,9 @@ impl FlatHoldIndex {
     fn build(node: &Node) -> Self {
         fn visit(
             node: &Node,
-            path: &mut Vec<u32>,
+            path: &mut Vec<f64>,
             log_path: &mut Vec<f64>,
-            coords: &mut Vec<u32>,
+            coords: &mut Vec<f64>,
             log_coords: &mut Vec<f64>,
             offsets: &mut Vec<usize>,
             leaves: &mut Vec<LeafValue>,
@@ -118,7 +119,7 @@ impl FlatHoldIndex {
                 }
                 Node::Branch(branch) => {
                     for (&key, child) in branch {
-                        path.push(key);
+                        path.push(key as f64);
                         log_path.push(((key as f64).max(1e-12)).log2());
                         visit(child, path, log_path, coords, log_coords, offsets, leaves);
                         path.pop();
@@ -162,7 +163,7 @@ impl FlatHoldIndex {
         self.leaves.is_empty()
     }
 
-    fn coords(&self, leaf_idx: usize) -> &[u32] {
+    fn coords(&self, leaf_idx: usize) -> &[f64] {
         &self.coords[self.offsets[leaf_idx]..self.offsets[leaf_idx + 1]]
     }
 
@@ -533,59 +534,26 @@ fn grid_interior(
         }
     }
 
-    let keys: Vec<u32> = map.keys().copied().collect();
-    let (lo, hi) = (keys[0] as f64, keys[keys.len() - 1] as f64);
+    let (lo, hi) = (
+        *map.first_key_value().expect("non-empty branch").0 as f64,
+        *map.last_key_value().expect("non-empty branch").0 as f64,
+    );
     if c < lo || c > hi {
         return Err(GridErr::OutOfRange(OutOfRange));
     }
-    let idx = keys.partition_point(|&k| (k as f64) < c);
-    let (k_lo, k_hi) = (keys[idx - 1], keys[idx]);
+    // NaN passes the range check above and has no bracket.
+    assert!(!c.is_nan(), "NaN coordinate at axis '{}'", cfg.axes[depth]);
+    // Keys are integers and lo < c < hi here (an existing key took the exact
+    // path), so the keys below ceil(c) are exactly the keys below c.
+    let ceil = c.ceil() as u32;
+    let (&k_lo, lo_child) = map.range(..ceil).next_back().expect("lo < c");
+    let (&k_hi, hi_child) = map.range(ceil..).next().expect("c < hi");
 
-    let mut results: Vec<(u32, (f64, f64))> = Vec::with_capacity(2);
-    let mut saw_out_of_range = false;
-    for k in [k_lo, k_hi] {
-        match grid_interior(cfg, &map[&k], coords, depth + 1) {
-            Ok(pair) => results.push((k, pair)),
-            Err(GridErr::OutOfRange(_)) => saw_out_of_range = true, // ragged branch: drop
-            Err(GridErr::Miss(_)) => {}                             // ragged branch: drop
-        }
-    }
-    match results.len() {
-        0 => {
-            // Both branches failed. Out-of-range anywhere below means the query
-            // sits past the staircase frontier -> let util-hold anchor it.
-            if saw_out_of_range {
-                Err(GridErr::OutOfRange(OutOfRange))
-            } else {
-                Err(GridErr::Miss(miss(
-                    cfg,
-                    coords,
-                    &format!("no usable branch at axis '{}'", cfg.axes[depth]),
-                )))
-            }
-        }
-        1 => {
-            // One bracket branch dropped (ragged table). Returning the survivor
-            // verbatim would CLAMP this axis with no correction (measured -41%
-            // median on one-sided seq-row folds). Keep the survivor's resolved
-            // value (it carries the measured inner-axis structure) and re-scale
-            // along THIS axis by the SOL ratio, i.e. hold the survivor's util
-            // across the dropped axis. Power passes through unscaled (it is a
-            // bounded intensive quantity; the Python engine does the same).
-            let (k_surv, (lat, p)) = results[0];
-            let mut snapped = coords.to_vec();
-            snapped[depth] = k_surv as f64;
-            let sol_q = (cfg.sol_fn)(coords);
-            let sol_s = (cfg.sol_fn)(&snapped);
-            if sol_q.is_finite() && sol_s.is_finite() && sol_q > 0.0 && sol_s > 0.0 {
-                Ok((lat * (sol_q / sol_s), p))
-            } else {
-                Ok((lat, p))
-            }
-        }
-        _ => {
-            let (_, (lat_lo, p_lo)) = results[0];
-            let (_, (lat_hi, p_hi)) = results[1];
+    // A failed branch (out of range or missing) is dropped as ragged.
+    let lo_result = grid_interior(cfg, lo_child, coords, depth + 1);
+    let hi_result = grid_interior(cfg, hi_child, coords, depth + 1);
+    let (k_surv, (lat, p)) = match (lo_result, hi_result) {
+        (Ok((lat_lo, p_lo)), Ok((lat_hi, p_hi))) => {
             let w = (c - k_lo as f64) / (k_hi as f64 - k_lo as f64);
             // Curvature is per-axis: apply the transform only when blending
             // along the configured axis; other axes are ~linear -> raw.
@@ -594,14 +562,47 @@ fn grid_interior(
                 Some(axis) if axis != depth => ValueTransform::Raw,
                 _ => cfg.value_transform,
             };
-            Ok((
+            return Ok((
                 from_space(
                     vt,
                     to_space(vt, lat_lo) + (to_space(vt, lat_hi) - to_space(vt, lat_lo)) * w,
                 ),
                 p_lo + (p_hi - p_lo) * w,
-            ))
+            ));
         }
+        (Ok(survivor), Err(_)) => (k_lo, survivor),
+        (Err(_), Ok(survivor)) => (k_hi, survivor),
+        (Err(lo_err), Err(hi_err)) => {
+            // Both branches failed. Out-of-range anywhere below means the query
+            // sits past the staircase frontier -> let util-hold anchor it.
+            return if matches!(lo_err, GridErr::OutOfRange(_))
+                || matches!(hi_err, GridErr::OutOfRange(_))
+            {
+                Err(GridErr::OutOfRange(OutOfRange))
+            } else {
+                Err(GridErr::Miss(miss(
+                    cfg,
+                    coords,
+                    &format!("no usable branch at axis '{}'", cfg.axes[depth]),
+                )))
+            };
+        }
+    };
+    // One bracket branch dropped (ragged table). Returning the survivor
+    // verbatim would CLAMP this axis with no correction (measured -41%
+    // median on one-sided seq-row folds). Keep the survivor's resolved
+    // value (it carries the measured inner-axis structure) and re-scale
+    // along THIS axis by the SOL ratio, i.e. hold the survivor's util
+    // across the dropped axis. Power passes through unscaled (it is a
+    // bounded intensive quantity; the Python engine does the same).
+    let mut snapped = coords.to_vec();
+    snapped[depth] = k_surv as f64;
+    let sol_q = (cfg.sol_fn)(coords);
+    let sol_s = (cfg.sol_fn)(&snapped);
+    if sol_q.is_finite() && sol_s.is_finite() && sol_q > 0.0 && sol_s > 0.0 {
+        Ok((lat * (sol_q / sol_s), p))
+    } else {
+        Ok((lat, p))
     }
 }
 
@@ -708,7 +709,7 @@ fn grid_hold_1d(
 
 /// One selected hold anchor: a measured leaf with its blend weight.
 struct HoldAnchor {
-    coords: Vec<u32>,
+    leaf_idx: usize,
     latency: f64,
     power: f64,
     sol: f64,
@@ -795,9 +796,10 @@ impl NeighborCollector for HoldCandidates {
 /// radius R = the next valid leaf's distance; leaves at d == R weigh zero, so
 /// no tie-ordering rule is needed).
 /// Selection uses an exact k-d tree over a lazily prepared flat leaf index. The
-/// index stores coordinates and their log2 values in contiguous arrays. The
-/// bounded result carries `SLACK` extra candidates so validity filtering
-/// (lat/sol > 0) almost never needs the full-collect fallback below.
+/// index stores coordinates and their log2 values in contiguous arrays, so
+/// anchors read their SOL coordinates in place. The bounded result carries
+/// `SLACK` extra candidates so validity filtering (lat/sol > 0) almost never
+/// needs the full-collect fallback below.
 fn hold_anchor_weights_prepared(
     cfg: &OpInterpConfig,
     index: &FlatHoldIndex,
@@ -838,20 +840,16 @@ fn hold_anchor_weights_prepared(
     let mut picked: Vec<HoldAnchor> = Vec::with_capacity(nn_leaves);
     let mut support_r = f64::INFINITY;
     let mut support_found = false;
-    let mut anchor = Vec::with_capacity(coords.len());
     for candidate in best.into_sorted_values() {
-        let c = index.coords(candidate.leaf_idx);
         let leaf = index.leaves[candidate.leaf_idx];
-        anchor.clear();
-        anchor.extend(c.iter().map(|&v| v as f64));
-        let sol = (cfg.sol_fn)(&anchor);
+        let sol = (cfg.sol_fn)(index.coords(candidate.leaf_idx));
         if !(leaf.latency.is_finite() && leaf.latency > 0.0 && sol.is_finite() && sol > 0.0) {
             continue;
         }
         let distance = candidate.distance_sq.sqrt();
         if picked.len() < nn_leaves {
             picked.push(HoldAnchor {
-                coords: c.to_vec(),
+                leaf_idx: candidate.leaf_idx,
                 latency: leaf.latency,
                 power: leaf.blend_power(),
                 sol,
@@ -905,20 +903,16 @@ fn hold_anchor_weights_exhaustive(
 
     let mut picked: Vec<HoldAnchor> = Vec::with_capacity(nn_leaves);
     let mut support_r = f64::INFINITY;
-    let mut anchor = Vec::with_capacity(coords.len());
     for candidate in ranked {
-        let c = index.coords(candidate.leaf_idx);
         let leaf = index.leaves[candidate.leaf_idx];
-        anchor.clear();
-        anchor.extend(c.iter().map(|&v| v as f64));
-        let sol = (cfg.sol_fn)(&anchor);
+        let sol = (cfg.sol_fn)(index.coords(candidate.leaf_idx));
         if !(leaf.latency.is_finite() && leaf.latency > 0.0 && sol.is_finite() && sol > 0.0) {
             continue;
         }
         let distance = candidate.distance_sq.sqrt();
         if picked.len() < nn_leaves {
             picked.push(HoldAnchor {
-                coords: c.to_vec(),
+                leaf_idx: candidate.leaf_idx,
                 latency: leaf.latency,
                 power: leaf.blend_power(),
                 sol,
@@ -1572,6 +1566,58 @@ mod tests {
         let t = Node::branch();
         let cfg = attn_cfg(&attn_lat);
         assert!(query(&cfg, &t, &[8.0, 512.0, 1.0]).is_err());
+    }
+
+    #[test]
+    fn grid_brackets_fractional_coords_by_hand() {
+        // (x, y) -> (latency, power). x=1 and x=8 are ragged single-y rows.
+        let mut t = Node::branch();
+        for (x, y, lat, power) in [
+            (1, 32, 2.0, 50.0),
+            (2, 16, 1.0, 100.0),
+            (2, 32, 3.0, 200.0),
+            (4, 16, 5.0, 300.0),
+            (4, 32, 9.0, 400.0),
+            (8, 16, 13.0, 500.0),
+        ] {
+            t.insert_value(&[x, y], LeafValue::with_power(lat, power));
+        }
+        let sol = |c: &[f64]| c[0] * c[1];
+        let cfg = OpInterpConfig::grid(&["x", "y"], &sol);
+        // Every weight and value below is dyadic, so the blends are exact.
+        for (coords, lat, power) in [
+            // Just above lo on x: (1, 2) at w=0.25 on the y=32 leaves.
+            ([1.25, 32.0], 2.0 + 1.0 * 0.25, 50.0 + 150.0 * 0.25),
+            // Just below hi on x: (4, 8) at w=3.5/4 on the y=16 leaves.
+            ([7.5, 16.0], 5.0 + 8.0 * 0.875, 300.0 + 200.0 * 0.875),
+            // Just above lo and below hi on y under the exact x=4 key.
+            ([4.0, 16.25], 5.0 + 4.0 / 64.0, 300.0 + 100.0 / 64.0),
+            ([4.0, 31.5], 5.0 + 4.0 * 0.96875, 300.0 + 100.0 * 0.96875),
+            // Between adjacent keys on both axes. x=3 is an integer non-key:
+            // x=2 gives (1.0625, 103.125), x=4 gives (5.125, 303.125), w=0.5.
+            ([3.0, 16.5], 3.09375, 203.125),
+            // Ragged hi branch: x=8 has no y=24, so the x=4 survivor (7, 350)
+            // holds util across x: 7 * SOL(6, 24) / SOL(4, 24) = 7 * 1.5.
+            ([6.0, 24.0], 10.5, 350.0),
+            // Ragged lo branch: x=1 has no y=20, so the x=2 survivor
+            // (1.5, 125) scales by SOL(1.5, 20) / SOL(2, 20) = 0.75.
+            ([1.5, 20.0], 1.125, 125.0),
+        ] {
+            let value = query_value(&cfg, &t, &coords).unwrap();
+            assert_eq!(value.latency.to_bits(), f64::to_bits(lat), "{coords:?}");
+            assert_eq!(value.power.to_bits(), f64::to_bits(power), "{coords:?}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "NaN coordinate at axis 'x'")]
+    fn grid_nan_coordinate_panics() {
+        let mut t = Node::branch();
+        t.insert(&[1, 1], 1.0);
+        t.insert(&[2, 1], 2.0);
+        let sol = |_: &[f64]| 1.0;
+        let cfg = OpInterpConfig::grid(&["x", "y"], &sol);
+        let _ = query(&cfg, &t, &[f64::NAN, 1.0]);
     }
 
     // 4-axis (DSA/CSA-like): [num_heads][prefix][seq][batch]
@@ -2278,6 +2324,13 @@ mod tests {
 
     #[test]
     fn flat_hold_index_preserves_ties_and_invalid_fallback() {
+        fn leaf_keys(index: &FlatHoldIndex, anchor: &HoldAnchor) -> Vec<u32> {
+            index
+                .coords(anchor.leaf_idx)
+                .iter()
+                .map(|&v| v as u32)
+                .collect()
+        }
         let sol = |_: &[f64]| 1.0;
 
         // Sixteen equal-distance leaves exceed the 12-entry bounded set.
@@ -2299,7 +2352,10 @@ mod tests {
         assert!(tied_index.kd_tree.is_some());
         let anchors =
             hold_anchor_weights_prepared(&tied_cfg, &tied_index, &[2.0, 2.0, 2.0, 2.0], 4).unwrap();
-        let selected: Vec<Vec<u32>> = anchors.iter().map(|anchor| anchor.coords.clone()).collect();
+        let selected: Vec<Vec<u32>> = anchors
+            .iter()
+            .map(|anchor| leaf_keys(&tied_index, anchor))
+            .collect();
         assert_eq!(
             selected,
             vec![
@@ -2320,7 +2376,10 @@ mod tests {
         let invalid_index = FlatHoldIndex::build(&invalid);
         let anchors =
             hold_anchor_weights_prepared(&invalid_cfg, &invalid_index, &[1.0, 1.0], 4).unwrap();
-        let selected: Vec<Vec<u32>> = anchors.iter().map(|anchor| anchor.coords.clone()).collect();
+        let selected: Vec<Vec<u32>> = anchors
+            .iter()
+            .map(|anchor| leaf_keys(&invalid_index, anchor))
+            .collect();
         assert_eq!(
             selected,
             vec![vec![12, 2], vec![13, 2], vec![14, 2], vec![15, 2]]
@@ -2360,7 +2419,7 @@ mod tests {
         }
 
         fn assert_same_anchor(left: &HoldAnchor, right: &HoldAnchor) {
-            assert_eq!(left.coords, right.coords);
+            assert_eq!(left.leaf_idx, right.leaf_idx);
             assert_eq!(left.latency.to_bits(), right.latency.to_bits());
             assert_eq!(left.power.to_bits(), right.power.to_bits());
             assert_eq!(left.sol.to_bits(), right.sol.to_bits());
@@ -2435,7 +2494,7 @@ mod tests {
                     hold_anchor_weights_exhaustive(&cfg, index, &query, width, &q_log).unwrap();
                 assert_eq!(actual.len(), expected.len());
                 for (a, b) in actual.iter().zip(&expected) {
-                    assert_eq!(a.coords, b.coords);
+                    assert_eq!(a.leaf_idx, b.leaf_idx);
                     for (x, y) in [
                         (a.latency, b.latency),
                         (a.power, b.power),
@@ -2634,7 +2693,7 @@ mod tests {
                                 (Ok(actual), Ok(expected)) => {
                                     assert_eq!(actual.len(), expected.len());
                                     for (a, b) in actual.iter().zip(&expected) {
-                                        assert_eq!(a.coords, b.coords);
+                                        assert_eq!(a.leaf_idx, b.leaf_idx);
                                         for (x, y) in [
                                             (a.latency, b.latency),
                                             (a.power, b.power),

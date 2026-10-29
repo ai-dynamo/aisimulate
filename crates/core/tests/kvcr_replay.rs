@@ -58,7 +58,7 @@ fn seed_then_pull() -> Vec<Value> {
 }
 
 fn run(topology: Value, engine: Value, requests: Vec<Value>) -> anyhow::Result<ReplayReport> {
-    run_with(RoundRobinComposition, topology, engine, requests)
+    run_with(RoundRobinComposition::default(), topology, engine, requests)
 }
 
 fn run_with(
@@ -88,12 +88,16 @@ fn run_tokenized(topology: Value, engine: Value, requests: Vec<Value>) -> Replay
         "requests": requests, "record_per_request": true,
     }))
     .unwrap();
-    Replayer::with_composition(spec, ReplayEngineFactory::new(), RoundRobinComposition)
-        .unwrap()
-        .with_tokenization(1, 5.0, 0.0)
-        .unwrap()
-        .run()
-        .unwrap()
+    Replayer::with_composition(
+        spec,
+        ReplayEngineFactory::new(),
+        RoundRobinComposition::default(),
+    )
+    .unwrap()
+    .with_tokenization(1, 5.0, 0.0)
+    .unwrap()
+    .run()
+    .unwrap()
 }
 
 fn host_reuse(report: &ReplayReport) -> Vec<Option<usize>> {

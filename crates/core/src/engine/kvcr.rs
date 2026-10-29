@@ -17,7 +17,7 @@ use crate::engine::g3_offload::is_zero;
 use crate::engine::host_offload::HostTierHandle;
 use rustc_hash::FxHashMap;
 
-use crate::engine::offload_transfer::{self, ClientEvent, Direction, FairTransfers};
+use crate::engine::offload_transfer::{self, ClientEvent, Direction, FairTransfers, Link};
 use crate::engine::{KvHintSource, KvcrConfig};
 
 pub(crate) type SharedKvcrRegistry = Arc<Mutex<KvcrRegistry>>;
@@ -272,12 +272,16 @@ impl KvcrRegistry {
             .or_default() += 1;
         self.transfers.submit(offload_transfer::Job {
             id,
-            client: pull.client,
             direction: Direction::Read,
             ready: start_ms + self.config.latency_to_first_byte_ms,
             bytes: pull.bytes as f64,
-            client_rate: offload_transfer::bytes_per_ms(self.config.bandwidth_gbps),
-            shared_rate: f64::INFINITY,
+            links: [
+                Link {
+                    id: pull.client,
+                    rate: offload_transfer::bytes_per_ms(self.config.bandwidth_gbps),
+                },
+                Link::UNLIMITED,
+            ],
         });
         self.client_events_stale = true;
     }
@@ -355,6 +359,8 @@ impl KvcrRegistry {
     /// Pulls into `target` that landed by `now`, in landing order, as
     /// `(pull id, landed at)`. Later landings stay queued for the next deadline.
     pub(crate) fn take_landed(&mut self, target: KvHintSource, now: f64) -> Vec<(u64, f64)> {
+        // TODO: Skip idle targets (no landed/moving/parked pulls): baseline hinted/G2-only was 1.17/1.23/1.18/1.98/3.17x at W=8/32/128/512/2048.
+        // Invalidate only on start/land and split FairTransfers by source; preserve CanonicalV1 bytes.
         self.advance(now);
         let taken: Vec<_> = self
             .landed

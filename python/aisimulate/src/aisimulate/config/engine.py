@@ -146,6 +146,13 @@ class SchedulerPredictionConfig(StrictModel):
             "Rounds may be idle and do not count output tokens; zero disables the interval."
         ),
     )
+    async_scheduling: StrictBool | None = Field(
+        default=None,
+        description=(
+            "vLLM only: model vLLM's --async-scheduling, under which an arrival at a busy engine misses the "
+            "batch vLLM has already queued. Unset uses vLLM's default: on, except with ngram drafts."
+        ),
+    )
 
 
 class KvCapacityPredictionConfig(StrictModel):
@@ -740,6 +747,16 @@ class TokenizationConfig(StrictModel):
     per_input_token_us: NonNegativeFloat = 0.0
 
 
+class DetokenizationConfig(StrictModel):
+    workers: PositiveInt = 1
+    base_ms: NonNegativeFloat = 0.0
+    per_output_us: NonNegativeFloat = 0.0
+
+    @property
+    def active(self) -> bool:
+        return bool(self.base_ms or self.per_output_us)
+
+
 class EstimatorPolicyConfig(StrictModel):
     nextn: NonNegativeInt = Field(default=0, le=5)
     nextn_accepted: NonNegativeFloat | None = None
@@ -873,6 +890,7 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
     workers: WorkersPredictionConfig = Field(default_factory=WorkersPredictionConfig)
     kv_transfer: KvTransferConfig | None = None
     tokenization: TokenizationConfig | None = None
+    detokenization: DetokenizationConfig | None = None
     afd: AFDTopologyPredictionConfig | None = None
 
     @field_validator("model", "hardware")
@@ -903,6 +921,12 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
         _validate_worker_hardware(modes={self.mode}, workers=self.workers)
         if self.tokenization is not None and (self.mode == "afd" or self.workers.encoder is not None):
             raise ValueError("engine.tokenization requires token replay; AFD and analytical EPD are unsupported")
+        if (
+            self.detokenization is not None
+            and self.detokenization.active
+            and (self.mode == "afd" or self.workers.encoder is not None)
+        ):
+            raise ValueError("engine.detokenization requires token replay; AFD and analytical EPD are unsupported")
         if self.tokenization is not None and any(
             worker is not None and (worker.frontend is not None or worker.host_profile is not None)
             for worker in (self.workers.aggregated, self.workers.prefill)
@@ -1297,6 +1321,7 @@ def _validate_prediction_scheduler_backend(engine: EnginePredictionConfig) -> No
         for field, backend, default in (
             ("prefill_schedule_interval", "vllm", 1),
             ("prefill_decode_interval", "sglang", 0),
+            ("async_scheduling", "vllm", None),
         ):
             if engine.backend != backend and getattr(worker.scheduler, field) != default:
                 raise ValueError(f"workers.{role}.scheduler.{field} is supported only for backend={backend}")
@@ -1364,6 +1389,10 @@ def _validate_prediction_afd(engine: EnginePredictionConfig) -> None:
         companion = "decode" if afd.phase == "prefill" else "prefill"
         if configured != {companion}:
             raise ValueError(f"AFD phase={afd.phase!r} combined_with_pd=true requires only workers.{companion}")
+        # The AFD replay prices its companion from the companion model, which
+        # does not model async-scheduling admission.
+        if getattr(engine.workers, companion).scheduler.async_scheduling:
+            raise ValueError(f"AFD companion workers.{companion}.scheduler.async_scheduling=true is not modeled")
     else:
         if afd.phase != "both":
             raise ValueError("pure AFD prediction requires phase='both'; use combined_with_pd=true for one phase")

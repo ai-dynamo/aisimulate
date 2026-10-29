@@ -8,11 +8,13 @@
 //! keeps independent full-budget stores and selects fixed correction inside the
 //! configured grid, including empty/cold cells, and dynamic correction outside.
 
+use serde::{Deserialize, Serialize};
+
 use super::dynamic_correction::DynamicCorrection;
 use super::options::{CorrectionMode, ForwardPassPerfOptions};
 use super::samples::{AxisRange, BucketedSamples, StoreStats, WithOptions, median_ratio};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct FixedCorrectionBuckets {
     samples: BucketedSamples<CorrectionObservation>,
     min_observations: usize,
@@ -20,7 +22,7 @@ pub(crate) struct FixedCorrectionBuckets {
     max_slower_correction_factor: Option<f64>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 struct CorrectionObservation {
     correction_factor: f64,
 }
@@ -127,17 +129,81 @@ impl FixedCorrectionBuckets {
 
 /// Dispatch keeps native fixed calibration unchanged while allowing learned
 /// forests to retain and calibrate observations beyond the old grid limits.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) enum CorrectionBuckets {
     Fixed(FixedCorrectionBuckets),
     Dynamic(DynamicCorrection),
     Hybrid(Box<HybridCorrection>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct HybridCorrection {
     fixed: FixedCorrectionBuckets,
     dynamic: DynamicCorrection,
+}
+
+pub(crate) fn same_optional_bits(left: Option<f64>, right: Option<f64>) -> bool {
+    left.map(f64::to_bits) == right.map(f64::to_bits)
+}
+
+/// A ratio admitted by dynamic correction: finite, positive, and inside the
+/// configured directional bounds.
+pub(crate) fn valid_bounded_ratio(ratio: f64, lower: Option<f64>, upper: Option<f64>) -> bool {
+    ratio.is_finite()
+        && ratio > 0.0
+        && lower.is_none_or(|bound| ratio >= bound)
+        && upper.is_none_or(|bound| ratio <= bound)
+}
+
+impl FixedCorrectionBuckets {
+    fn validate_restored(&self, fresh: &Self) -> Result<(), String> {
+        if self.min_observations != fresh.min_observations
+            || !same_optional_bits(
+                self.min_faster_correction_factor,
+                fresh.min_faster_correction_factor,
+            )
+            || !same_optional_bits(
+                self.max_slower_correction_factor,
+                fresh.max_slower_correction_factor,
+            )
+        {
+            return Err("fixed correction controls differ from configuration".into());
+        }
+        let (lower, upper) = (
+            self.min_faster_correction_factor,
+            self.max_slower_correction_factor,
+        );
+        self.samples
+            .validate_restored(&fresh.samples, |_, observation| {
+                // Ratios of finite positive latencies may overflow to infinity
+                // or underflow to zero when a bound is disabled; never NaN.
+                let ratio = observation.correction_factor;
+                if !ratio.is_nan()
+                    && ratio >= 0.0
+                    && lower.is_none_or(|bound| ratio >= bound)
+                    && upper.is_none_or(|bound| ratio <= bound)
+                {
+                    Ok(())
+                } else {
+                    Err("fixed correction ratio is outside its admitted range".into())
+                }
+            })
+    }
+}
+
+impl CorrectionBuckets {
+    /// Validate a decoded store against one built from the same configuration.
+    pub(crate) fn validate_restored(&self, fresh: &Self) -> Result<(), String> {
+        match (self, fresh) {
+            (Self::Fixed(saved), Self::Fixed(fresh)) => saved.validate_restored(fresh),
+            (Self::Dynamic(saved), Self::Dynamic(fresh)) => saved.validate_restored(fresh),
+            (Self::Hybrid(saved), Self::Hybrid(fresh)) => {
+                saved.fixed.validate_restored(&fresh.fixed)?;
+                saved.dynamic.validate_restored(&fresh.dynamic)
+            }
+            _ => Err("correction policy differs from configuration".into()),
+        }
+    }
 }
 
 impl WithOptions for CorrectionBuckets {
@@ -278,12 +344,12 @@ mod tests {
             };
             let ranges = vec![AxisRange::from_zero_to(100); ndim];
             let mut hybrid = CorrectionBuckets::with_options(&options, &ranges);
-            let CorrectionBuckets::Hybrid(stores) = &hybrid else {
+            let CorrectionBuckets::Hybrid(_) = &hybrid else {
                 panic!("hybrid must construct both stores");
             };
-            // Clone the sampler seed to avoid pre-existing fixed eviction tie
-            // nondeterminism obscuring a change in history or policy selection.
-            let mut fixed = stores.fixed.clone();
+            // An independently constructed fixed store must break eviction
+            // ties exactly like the hybrid's own fixed store.
+            let mut fixed = FixedCorrectionBuckets::with_options(&options, &ranges);
             let mut dynamic = DynamicCorrection::new(&options, ndim);
             for i in 0..80 {
                 let x = vec![[0.0, 25.0, 100.0, 200.0][i % 4]; ndim];

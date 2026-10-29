@@ -132,6 +132,14 @@ parameters:
   sglang: null
   trtllm: cache_transceiver_max_tokens_in_buffer
 
+# Why separate from kv_transfer_backend: TRT-LLM nests this value under
+# cache_transceiver_config and takes upper-case names (DEFAULT/UCX/NIXL/MPI),
+# while SGLang's --disaggregation-transfer-backend takes lower-case ones.
+- param_key: cache_transceiver_backend
+  vllm: null
+  sglang: null
+  trtllm: cache_transceiver_backend
+
 # Cuda Graph
 - param_key: disable_cuda_graph
   vllm: enforce-eager

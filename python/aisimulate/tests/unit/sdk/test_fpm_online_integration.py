@@ -79,10 +79,56 @@ def load(path, mode, refresh="eager", *, identity=IDENTITY):
                     "recent_window": 5,
                     "update_every": 3,
                     "eager_refresh_interval": 4,
+                    # The independent reference below uses unit observation weights.
+                    "history_weight": None,
+                    "history_weight_ramp_observations": 0,
+                    "history_bin_grouping": False,
+                    "split_sampling_rate": 1.0,
+                    "split_rank_tolerance": 0.0,
                 },
             },
         }
     )
+
+
+@pytest.mark.parametrize(
+    "adaptation,window,weight,ramp,every",
+    [(None, 64, 0.1, 32, 1), ("causal_selector", 8, 0.25, 8, 4)],
+)
+def test_learned_defaults_match_explicit_recipes(tmp_path, adaptation, window, weight, ramp, every):
+    _, seed, _ = train(tmp_path)
+    learned = {"checkpoint_path": str(seed)}
+    if adaptation is not None:
+        learned["adaptation"] = adaptation
+    config = {**IDENTITY, "estimation_mode": "fpm_learned", "estimator_config": {"fpm_learned": learned}}
+    explicit = copy.deepcopy(config)
+    explicit["estimator_config"]["correction"] = {"enabled": adaptation == "causal_selector"}
+    if adaptation == "causal_selector":
+        explicit["estimator_config"]["selector"] = {"alpha": 0.4, "warmup": 5, "margin": 0.05, "persistence": 1}
+    explicit["estimator_config"]["fpm_learned"].update(
+        adaptation=adaptation or "online",
+        recent_window=window,
+        history_weight=weight,
+        history_weight_ramp_observations=ramp,
+        history_bin_grouping=True,
+        update_every=every,
+        derivative_refresh="lazy",
+        split_sampling_rate=0.5,
+        split_rank_tolerance=0.01,
+    )
+    normalized = RustForwardPassPerfModel.normalize_config(config)
+    assert normalized == RustForwardPassPerfModel.normalize_config(explicit)
+    assert normalized == RustForwardPassPerfModel.normalize_config(ForwardPassPerfModelConfig(**normalized))
+    models = [RustForwardPassPerfModel.best_available(settings) for settings in (config, explicit)]
+    for index in range(39):
+        row = iteration(index, shifted=True)
+        assert models[0].estimate_forward_pass_time_ms(row) == models[1].estimate_forward_pass_time_ms(row)
+        for model in models:
+            model.tune_with_fpms([row])
+    state = models[0].learned_online_diagnostics()["stores"]["pure_decode"]
+    assert state["recent_rows"] == min(39 - 39 % every, window)
+    assert state["pending_rows"] == 39 % every
+    assert state["publications"] == 39 // every
 
 
 def test_native_identity_projection_preserves_export_and_load_compatibility(tmp_path):

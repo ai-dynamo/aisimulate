@@ -53,11 +53,17 @@ checkpoint precision, or backends outside vLLM/SGLang are `SDK_UNREPRESENTABLE`.
 The backend rejection describes AISimulate's modeling coverage; it does not
 establish that the backend itself cannot run the model.
 These rows retain their diagnostics and phases,
-with no latency or `PASS` status. Only the recognized `NotImplementedError`
-diagnostics receive these categories. Unexpected build errors and query-time
+with no latency or `PASS` status. Only recognized build-time diagnostics
+receive these categories. Unexpected build errors and query-time
 failures still block nightly qualification. Matching currently uses the exact
-exception type and message. Other restrictions (nextn/decoder replay,
-megamoe/wideep, and non-FP8 KV) and changed diagnostics remain blocking until
+exception type and message. The native build-time GLM-5.3-Flash Hopper FP8-KV
+rejection for vLLM before 0.32.0 or SGLang before 0.5.22 is
+`FRAMEWORK_INCOMPATIBLE`; this is a runtime-version limitation, not a hardware
+prohibition. Newer runtimes remain subject to exact-runtime performance-data
+coverage. See the [KV runtime requirements](../glm53flash-native-contract.md)
+for SGLang's required TileLang launch flags. Other restrictions
+(nextn/decoder replay, megamoe/wideep, and unsupported KV dtypes) and changed
+diagnostics remain blocking until
 explicitly classified; adding those probe axes requires extending coverage.
 
 The site's branch selector identifies the tested main or release snapshot.
@@ -69,15 +75,25 @@ Pages publication belong to [CI accuracy](../ci/accuracy.md).
 
 The matrix probes every backend version that has bundled performance data.
 `aisimulate predict` and `aisimulate recommend` accept only the queryable
-versions of each GPU and backend: `current`, plus `previous` when configured in
-[`query_versions.yaml`](../../python/aisimulate/src/aisimulate_core/systems/query_versions.yaml),
-and `next` when a newer data-backed version is available. A `PASS` row at
+versions of each GPU and backend, defined in
+[`query_versions.yaml`](../../python/aisimulate/src/aisimulate_core/systems/query_versions.yaml):
+`current` (the newest completed full collection), `previous` (the full
+collection it replaced, when configured) and `next` (the in-development
+version: the highest version newer than `current` with any measurements
+landed, or `current` itself when nothing newer has data). A `PASS` row at
 any other version is SDK coverage only; the CLI rejects it with an error that
 names the accepted versions. To run the same model, GPU and backend from the
 CLI, set `engine.backend_version: current` or a version the error names.
 `AIC_ALLOW_UNLISTED_VERSIONS=1` lifts the version check for raw data access,
 but it does not qualify that version for the CLI and later stages can still
 fail.
+
+Older, unlisted data versions can still fill missing shapes in a queryable
+version. For example, B60 vLLM `previous` (0.26.0) needs the retained 0.20.0
+GEMM table for `k=16384` and `k=32768`; its primary grid stops at `k=12288`.
+The 0.28.0 measurements cannot fill those gaps because automatic fallback
+only uses earlier versions. Keep this older table until the supported versions
+have replacement coverage. Primary measurements still take precedence.
 
 ## Accuracy and replay
 

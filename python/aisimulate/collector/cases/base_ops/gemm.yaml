@@ -164,9 +164,13 @@ framework_specific_op_cases:
         - 8192
         - 10240
         - 12288
+        # k = inter_size/tp or attn_dim/tp; 12288 left llama3-8B tp1 (14336) and
+        # every 70B+ inter extrapolating. 32768 covers the roster down to tp2.
+        - 16384
+        - 32768
         # Extend the output (n) axis to vocab scale for LM-head coverage
         # (vocab/tp = 128256/tp; tp2=64128, tp1=128256 exceed the 2-octave
-        # interp cap over 12288). k stays capped at 12288
+        # interp cap over 12288).
         output_feature_sizes:
         - 32
         - 64

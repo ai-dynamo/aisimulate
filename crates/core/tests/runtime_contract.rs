@@ -12,10 +12,10 @@ use aisimulate_core::replay::{
     AggregatedRoundRobinPlacement, AuthoredKvHints, NoEngineEvents, NoReplayMetadata, Placement,
     PlacementEffects, PlacementPolicy, PoolRoundRobinPlacement, ProviderSpec, ReplayAdapters,
     ReplayCaptureOptions, ReplayComposition, ReplayDeterminism, ReplayEngineConfig,
-    ReplayEngineFactory, ReplayError, ReplayRequest, ReplayScalingDecision, ReplayScalingPolicy,
-    ReplayScalingSnapshot, ReplaySpec, ReplayTelemetryObserver, ReplayTelemetrySampleKind,
-    ReplayTelemetrySnapshot, ReplayTopology, Replayer, WorkerLifecycleTransitionKind, WorkerPool,
-    WorkerPoolSpec, WorkerTopology,
+    ReplayEngineFactory, ReplayError, ReplayRequest, ReplayRequestPool, ReplayScalingDecision,
+    ReplayScalingPolicy, ReplayScalingSnapshot, ReplaySpec, ReplayTelemetryObserver,
+    ReplayTelemetrySampleKind, ReplayTelemetrySnapshot, ReplayTopology, Replayer,
+    WorkerLifecycleTransitionKind, WorkerPool, WorkerPoolSpec, WorkerTopology,
 };
 use uuid::Uuid;
 
@@ -661,7 +661,20 @@ impl ReplayComposition for GeneralRoundRobinComposition {
     }
 }
 
-struct FailingPlacement;
+#[derive(Default)]
+struct DispatchProbe {
+    calls: Vec<(&'static str, f64)>,
+    fail: bool,
+}
+
+#[derive(Default)]
+struct FailingPlacement {
+    probe: Option<Rc<RefCell<DispatchProbe>>>,
+    pending: Vec<Placement>,
+    selected: bool,
+    committed: bool,
+    queue_on_clock: bool,
+}
 
 impl PlacementPolicy<ReplayRequestPayload> for FailingPlacement {
     type Metadata = NoReplayMetadata;
@@ -669,12 +682,64 @@ impl PlacementPolicy<ReplayRequestPayload> for FailingPlacement {
 
     fn place(
         &mut self,
-        _request: &ReplayRequestPayload,
+        request: &ReplayRequestPayload,
         _metadata: Self::Metadata,
         _session_id: Option<String>,
         _now_ms: f64,
     ) -> anyhow::Result<PlacementEffects> {
-        anyhow::bail!("router placement callback failed")
+        anyhow::ensure!(self.probe.is_some(), "router placement callback failed");
+        let placement = Placement {
+            request_id: request.metadata().uuid.unwrap(),
+            scheduler_id: 0,
+            reported_overlap_tokens: 0,
+            cache_sample: None,
+            kv_hints: None,
+            placement_replica_id: None,
+        };
+        let decision = if self.selected && (!self.committed || self.queue_on_clock) {
+            self.pending.push(placement);
+            aisimulate_core::replay::PlacementDecision::Queued
+        } else {
+            self.selected = true;
+            aisimulate_core::replay::PlacementDecision::Immediate(placement)
+        };
+        Ok(PlacementEffects {
+            decision,
+            released: Vec::new(),
+        })
+    }
+
+    fn dispatch_committed(&mut self, _: Uuid, now_ms: f64) -> anyhow::Result<()> {
+        let mut probe = self.probe.as_ref().unwrap().borrow_mut();
+        probe.calls.push(("commit", now_ms));
+        anyhow::ensure!(!probe.fail, "commit failed");
+        self.committed = true;
+        Ok(())
+    }
+
+    fn dispatch_aborted(&mut self, _: Uuid, now_ms: f64) -> anyhow::Result<()> {
+        let mut probe = self.probe.as_ref().unwrap().borrow_mut();
+        probe.calls.push(("abort", now_ms));
+        anyhow::ensure!(!probe.fail, "abort failed");
+        Ok(())
+    }
+
+    fn advance_clock(&mut self, now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+        if self.committed && !self.pending.is_empty() {
+            let event = if self.queue_on_clock {
+                "decode_release"
+            } else {
+                "release"
+            };
+            self.probe
+                .as_ref()
+                .unwrap()
+                .borrow_mut()
+                .calls
+                .push((event, now_ms));
+            return Ok(std::mem::take(&mut self.pending));
+        }
+        Ok(Vec::new())
     }
 
     fn observe(
@@ -706,7 +771,7 @@ impl PlacementPolicy<ReplayRequestPayload> for FailingPlacement {
     }
 
     fn pending_count(&self) -> usize {
-        0
+        self.pending.len()
     }
 
     fn worker_ready(
@@ -738,8 +803,10 @@ impl PlacementPolicy<ReplayRequestPayload> for FailingPlacement {
     }
 }
 
+#[derive(Default)]
 struct FailingPlacementComposition {
     fail_construction: bool,
+    probe: Option<Rc<RefCell<DispatchProbe>>>,
 }
 
 impl ReplayComposition for FailingPlacementComposition {
@@ -756,7 +823,10 @@ impl ReplayComposition for FailingPlacementComposition {
         if self.fail_construction {
             anyhow::bail!("router placement construction failed");
         }
-        Ok(FailingPlacement)
+        Ok(FailingPlacement {
+            probe: self.probe.clone(),
+            ..Default::default()
+        })
     }
 
     fn create_disaggregated_placements(
@@ -769,7 +839,78 @@ impl ReplayComposition for FailingPlacementComposition {
         if self.fail_construction {
             anyhow::bail!("router placement construction failed");
         }
-        Ok((FailingPlacement, FailingPlacement))
+        Ok((
+            FailingPlacement {
+                probe: self.probe.clone(),
+                ..Default::default()
+            },
+            FailingPlacement {
+                probe: self.probe.clone(),
+                queue_on_clock: true,
+                ..Default::default()
+            },
+        ))
+    }
+}
+
+#[test]
+fn dispatch_hooks_commit_after_tokenization_and_release_waiters_at_the_same_time() {
+    for disagg in [false, true] {
+        for fail in [false, true] {
+            let probe = Rc::new(RefCell::new(DispatchProbe {
+                fail,
+                ..Default::default()
+            }));
+            let mut spec = aggregated_spec(
+                Backend::Vllm,
+                1,
+                0.0,
+                vec![request("first", 0.0, 4, 2), request("waiter", 0.0, 4, 2)],
+            );
+            if disagg {
+                spec.topology = ReplayTopology::Disaggregated {
+                    prefill: WorkerPoolSpec::default(),
+                    decode: WorkerPoolSpec::default(),
+                    handoff_latency_ms: 0.0,
+                };
+            }
+            let result = Replayer::with_composition(
+                spec,
+                ReplayEngineFactory::new(),
+                FailingPlacementComposition {
+                    probe: Some(probe.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .with_tokenization(1, 3.0, 0.0)
+            .unwrap()
+            .run();
+            let calls = &probe.borrow().calls;
+            if fail {
+                let error = result.unwrap_err().to_string();
+                assert!(
+                    error.contains("commit failed") && error.contains("abort failed"),
+                    "{error}"
+                );
+                assert_eq!(
+                    calls.iter().map(|call| call.0).collect::<Vec<_>>(),
+                    ["commit", "abort"]
+                );
+            } else {
+                assert_eq!(result.unwrap().request_counts.completed_requests, 2);
+                assert_eq!(
+                    calls.iter().filter(|call| call.0 == "commit").count(),
+                    if disagg { 4 } else { 2 }
+                );
+                assert!(calls.contains(&("commit", 3.0)));
+                assert!(calls.contains(&("release", 3.0)));
+                assert!(calls.contains(&("commit", 6.0)));
+                if disagg {
+                    assert!(calls.contains(&("decode_release", 23.0)), "{calls:?}");
+                }
+            }
+        }
     }
 }
 
@@ -830,6 +971,7 @@ fn placement_construction_failure_retains_its_error_provenance() {
         ReplayEngineFactory::new(),
         FailingPlacementComposition {
             fail_construction: true,
+            ..Default::default()
         },
     )
     .unwrap()
@@ -854,6 +996,7 @@ fn placement_callback_failure_retains_its_error_provenance() {
         ReplayEngineFactory::new(),
         FailingPlacementComposition {
             fail_construction: false,
+            ..Default::default()
         },
     )
     .unwrap()
@@ -1521,6 +1664,147 @@ fn canceled_startup_is_captured_without_unregistering_an_unready_worker() {
                 WorkerPool::Agg | WorkerPool::Decode => report.throughput.decode_worker_seconds,
             };
             assert!((native_worker_seconds - captured_worker_seconds).abs() < 1e-9);
+        }
+    }
+}
+
+#[test]
+fn round_robin_session_affinity_routes_turns_through_the_public_replayer() {
+    for (config, expected) in [
+        (serde_json::Value::Null, vec![Some(0), Some(1), Some(0)]),
+        (
+            serde_json::json!({"session_affinity": false}),
+            vec![Some(0), Some(1), Some(0)],
+        ),
+        (
+            serde_json::json!({"session_affinity": true}),
+            vec![Some(0), Some(0), Some(1)],
+        ),
+    ] {
+        let requests = ["a", "a", "b"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, session)| {
+                let mut req = request(&format!("turn-{i}"), i as f64 * 30.0, 8, 3);
+                req.session_id = Some(session.into());
+                req
+            })
+            .collect();
+        let mut spec = aggregated_spec(Backend::Vllm, 2, 0.0, requests);
+        spec.adapters.placement.config = config;
+        let report = Replayer::new(spec, ReplayEngineFactory::new())
+            .unwrap()
+            .run()
+            .unwrap();
+        assert_eq!(report.request_counts.completed_requests, 3);
+        let workers: Vec<_> = report
+            .per_request
+            .iter()
+            .map(|record| record.decode_worker_idx)
+            .collect();
+        assert_eq!(workers, expected);
+    }
+}
+
+#[test]
+fn round_robin_rejects_invalid_session_configuration() {
+    for config in [
+        serde_json::json!({"session_affinity": "true"}),
+        serde_json::json!({"session_affinty": true}),
+    ] {
+        let mut spec = aggregated_spec(Backend::Vllm, 1, 0.0, Vec::new());
+        spec.adapters.placement.config = config;
+        assert!(matches!(
+            Replayer::new(spec, ReplayEngineFactory::new()),
+            Err(ReplayError::InvalidSpec(_))
+        ));
+    }
+}
+
+#[test]
+fn disaggregated_session_affinity_routes_turns_and_preserves_cache_reuse() {
+    for backend in [Backend::Vllm, Backend::Sglang] {
+        for (prefill_workers, decode_workers, prefill_dp, decode_dp) in
+            [(2, 2, 1, 1), (1, 4, 1, 1), (2, 2, 2, 3)]
+        {
+            for explicit_rank in [false, true] {
+                for affinity in [false, true] {
+                    let requests = (0..8)
+                        .map(|i| {
+                            let session = i / 2;
+                            let input = 12 + (i % 2) * 4;
+                            let mut req = request(&format!("turn-{i}"), i as f64 * 100.0, input, 3);
+                            req.input_token_ids = Some(vec![session as u32 + 1; input]);
+                            req.session_id = Some(format!("session-{session}"));
+                            if explicit_rank {
+                                req.prefill_dp_rank = Some(prefill_dp - 1);
+                                req.dp_rank = Some(decode_dp - 1);
+                            }
+                            req
+                        })
+                        .collect();
+                    let mut spec = aggregated_spec(backend, 1, 0.0, requests);
+                    spec.adapters.placement.config =
+                        serde_json::json!({"session_affinity": affinity});
+                    spec.topology = ReplayTopology::Disaggregated {
+                        prefill: WorkerPoolSpec {
+                            initial_workers: prefill_workers,
+                            startup_delay_ms: 0.0,
+                        },
+                        decode: WorkerPoolSpec {
+                            initial_workers: decode_workers,
+                            startup_delay_ms: 0.0,
+                        },
+                        handoff_latency_ms: 1.0,
+                    };
+                    spec.engine["rank"]["enable_prefix_caching"] = true.into();
+                    let rank = spec.engine["rank"].clone();
+                    spec.engine["prefill"] =
+                        serde_json::json!({"dp_size": prefill_dp, "rank": rank});
+                    spec.engine["decode"] = serde_json::json!({"dp_size": decode_dp, "rank": rank});
+                    let report = Replayer::new(spec, ReplayEngineFactory::new())
+                        .unwrap()
+                        .run()
+                        .unwrap();
+                    assert_eq!(report.request_counts.completed_requests, 8);
+                    assert_eq!(report.request_counts.total_output_tokens, 24);
+                    for turns in report.per_request.chunks_exact(2) {
+                        assert_eq!(turns[0].routing_history.len(), 2);
+                        assert_eq!(turns[1].routing_history.len(), 2);
+                        for (first, next) in turns[0]
+                            .routing_history
+                            .iter()
+                            .zip(&turns[1].routing_history)
+                        {
+                            assert_eq!(first.pool, next.pool);
+                            if explicit_rank {
+                                let rank = match first.pool {
+                                    ReplayRequestPool::Prefill => prefill_dp - 1,
+                                    ReplayRequestPool::Decode => decode_dp - 1,
+                                    ReplayRequestPool::Agg => unreachable!(),
+                                };
+                                assert_eq!(first.dp_rank, Some(rank));
+                                assert_eq!(next.dp_rank, Some(rank));
+                            }
+                            if affinity {
+                                assert_eq!(
+                                    (first.logical_worker_id, first.dp_rank),
+                                    (next.logical_worker_id, next.dp_rank)
+                                );
+                            }
+                        }
+                        if affinity {
+                            assert!(
+                                turns[1].reused_input_tokens >= 8,
+                                "{backend:?}: expected a resident prefix"
+                            );
+                        } else if prefill_workers > 1 && prefill_dp == 1 {
+                            assert_ne!(turns[0].prefill_worker_idx, turns[1].prefill_worker_idx);
+                            assert_eq!(turns[1].reused_input_tokens, 0);
+                        }
+                    }
+                }
+            }
         }
     }
 }

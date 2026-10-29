@@ -75,17 +75,38 @@ on. Partial blocks are never reused. When G1 is full, each backend applies its
 own policy: requests wait or are preempted, and unused cached blocks are
 evicted least recently used first.
 
+For SGLang, complete prompt pages enter the radix cache after prefill; decoded
+pages enter when a request finishes or a running request is cancelled. In overlap
+mode, prefill reuse becomes visible when the forward result is observed. A
+completed disaggregated source publishes its prompt before the transfer hold;
+the hold retains its path lock and partial tail. A transferred destination keeps
+its prompt private until running admission, or caches its full pages when a
+ready request is cancelled.
+
+SGLang KV events follow those radix insertions, rather than page allocation.
+Compatible consecutive stores and removals are batched, with stores retaining
+their parent links and session IDs. Events flush after prefill, every 40 decode
+forwards and on idle. Under memory pressure, decode retraction stably orders
+requests by descending output length and then ascending prompt length, retracts
+from the end, and evicts unused cache toward a 20-token reserve per survivor.
+These contracts follow [SGLang v0.5.20](https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e).
+
 To see what was reused, run with `--capture-per-request` and read these fields
 in `requests.jsonl`:
 
 | Field | Meaning |
 | --- | --- |
+| `first_admission_reused_input_tokens` | Prompt tokens reused from all tiers when the request was first admitted; later readmissions do not change it. |
+| `reused_input_tokens` | Largest reuse across the request's prefill admissions, or across all admissions without a prefill stage. |
 | `first_admission_g1_reused_input_tokens` | Prompt tokens served from G1 when the request was first admitted. |
 | `first_admission_host_reused_input_tokens` | Prompt tokens restored from G2, including G3 restores and KVCR pulls. |
 | `admission_history` | Every admission of the request, including after preemption, with the pool it reused from. |
 
 The Dynamo KV Router's overlap score is a routing estimate; these fields record
-what Replay actually reused.
+what Replay actually reused. A readmission after preemption can reuse KV the
+request itself computed, which raises `reused_input_tokens` but not
+`first_admission_reused_input_tokens`; the summary's
+`first_admission_prefix_cache_reused_ratio` aggregates the latter.
 
 <a id="host-offload-g2"></a>
 <a id="native-vllm-host-offload-prediction"></a>
@@ -163,8 +184,12 @@ aisimulate predict --stack engine --config host-offload-prediction.yaml --captur
 For example, two replicas with `attention_data: 2` and `num_host_blocks: 4096`
 get four private 4096-block caches with `dp_rank_local`, or one 4096-block
 cache with `cluster_shared`. In a shared pool, transfers in the same direction
-share bandwidth equally: four ranks at 32 GB/s under an 80 GB/s pool each move
-at 20 GB/s while all four transfer.
+share bandwidth max-min fairly per transfer, not per rank: four ranks at
+32 GB/s, each running one transfer under an 80 GB/s pool, each move at 20 GB/s.
+Pool bandwidth a rank cannot use because its own limit binds goes to the other
+ranks: with one rank running nine transfers and another running one, both at
+32 GB/s, each rank moves 32 GB/s in total. Under a 20 GB/s pool the same ten
+transfers each get 2 GB/s, so the busier rank moves 18 GB/s.
 
 `cluster_shared` models a deployment-wide host cache such as Mooncake Store or
 LMCache. vLLM's native offload has no equivalent, so it has no native parity
@@ -216,7 +241,8 @@ These defaults are modeling assumptions, not measured values.
   `worker_local`, workers cannot read each other's blocks.
 - G3 evicts least recently used blocks that are not being transferred.
 - With `worker_local`, total bandwidth grows with the worker count (16 workers
-  at 10 GB/s reach 160 GB/s). `cluster_shared` caps it at the shared limits.
+  at 10 GB/s reach 160 GB/s). `cluster_shared` caps it at the shared limits and
+  divides them max-min fairly, as in a [shared G2 pool](#g2-scope).
 
 To compare scopes at equal total capacity with `N` workers, use
 `num_g3_blocks: C` for `worker_local` and `N × C` for `cluster_shared`. Set the
@@ -313,6 +339,11 @@ appears only when it is nonzero. The counters update as the pool's ranks run.
 A run stopped by `traffic.stop.max_virtual_time_seconds` (native
 `max_sim_time_ms`) can miss pulls that landed during a pass still running at
 the cutoff; a run that completes counts every pull.
+
+Ranks without incoming pulls skip shared KVCR deadline lookups. Other KVCR
+bookkeeping still queries shared pool state from per-rank calls. Large worker
+or attention-DP pools can substantially increase replay wall time. Further
+overhead reductions are deferred; they must preserve CanonicalV1 replay output bytes.
 
 ### Supported
 

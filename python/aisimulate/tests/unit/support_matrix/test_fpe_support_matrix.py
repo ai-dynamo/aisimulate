@@ -358,6 +358,28 @@ def test_classify_failure(error, stage, expected):
 
 
 @pytest.mark.parametrize(
+    "backend,version,minimum,expected",
+    [
+        ("vllm", "0.31.0", "0.32.0", STATUS_FRAMEWORK_INCOMPATIBLE),
+        ("sglang", "0.5.20", "0.5.22", STATUS_FRAMEWORK_INCOMPATIBLE),
+        ("vllm", "0.31.0", "0.5.22", STATUS_BUILD_FAILED),
+        ("sglang", "0.5.20", "0.32.0", STATUS_BUILD_FAILED),
+    ],
+)
+def test_hopper_fp8_kv_runtime_rejection_requires_exact_build_diagnostic(backend, version, minimum, expected):
+    message = (
+        "invalid engine config: GLM-5.3-Flash on GPU h200_sxm (SM90) cannot use FP8 "
+        f"sparse-MLA KV with {backend}: the requested backend_version={version} "
+        f"requires {backend} >= {minimum}. Select a supported runtime "
+        '(SGLang requires TileLang DSA prefill and decode), or pass kvcache_quant_mode="bfloat16".'
+    )
+    assert classify_failure(ValueError(message), stage="build") == expected
+    assert classify_failure(ValueError(message), stage="query") == STATUS_QUERY_FAILED
+    assert classify_failure(RuntimeError(message), stage="build") == STATUS_BUILD_FAILED
+    assert classify_failure(ValueError(message + " unexpected failure"), stage="build") == STATUS_BUILD_FAILED
+
+
+@pytest.mark.parametrize(
     "error",
     [
         AssertionError("num_heads 24 should be divisible by tp_size 16 "),

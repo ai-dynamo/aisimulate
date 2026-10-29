@@ -64,6 +64,12 @@ pub use fpm::{
     UnrecordedFpmQuantMode,
 };
 pub use fpm::{
+    ForwardPassCorrectionLimits, ForwardPassCorrectionQueryType, ForwardPassCorrectionReadiness,
+    ForwardPassDeploymentTopology, ForwardPassReadinessReport, ForwardPassStateSnapshotSummary,
+    ForwardPassStoreNotReadyReason, ForwardPassStoreReadiness, STATE_SNAPSHOT_LAYOUT_VERSION,
+    StateSnapshotConfig, StateSnapshotKind, StateSnapshotOptions, StateSnapshotTuning,
+};
+pub use fpm::{
     FpmCacheBudget, FpmCacheBudgetAdjusted, FpmCacheBudgetRequest, FpmCacheGroup, FpmCacheKind,
     FpmCacheLayout, FpmResourceConfig, FpmRuntimeMemoryConfig,
 };
@@ -121,5 +127,5 @@ pub fn register_python(module: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3:
 
 pub use fpm::{
     DirectFpmQueryEvidence, ForwardPassEstimate, FpmCoordinates, FpmEstimateEvidence,
-    FpmMeasurementSupport, FpmQueryResolution, FpmRankEstimate,
+    FpmMeasurementSupport, FpmQueryResolution, FpmRankEstimate, SpeculativeForwardPassEstimate,
 };

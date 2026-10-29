@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Typed estimator-specific controls. Defaults preserve the existing algorithms.
+//! Typed estimator-specific controls with Rust-owned defaults.
 
 use std::path::PathBuf;
 
@@ -22,14 +22,96 @@ pub struct EstimatorConfig {
     #[serde(skip_serializing_if = "SelectorConfig::is_default")]
     pub selector: SelectorConfig,
     pub correction: CorrectionConfig,
+    /// Restore tuned state written by `ForwardPassPerfModel::save_state_snapshot`.
+    /// Absent for ordinary construction and omitted from serialization.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_snapshot: Option<StateSnapshotConfig>,
+}
+
+/// Saved model state restored by
+/// [`ForwardPassPerfModel::best_available`](crate::ForwardPassPerfModel::best_available).
+///
+/// `path` names a directory written by
+/// [`ForwardPassPerfModel::save_state_snapshot`](crate::ForwardPassPerfModel::save_state_snapshot).
+/// Normalization makes it absolute (lexically normalized, symlinks kept) and
+/// pins `sha256` to the exact bytes of
+/// `<path>/manifest.json`; a supplied digest that differs is an error. The
+/// rest of the configuration must equal the identity recorded in that
+/// manifest. Restoration requires an explicit `estimation_mode` and
+/// `fallback_policy: deny`, so a snapshot failure never selects another model.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StateSnapshotConfig {
+    pub path: PathBuf,
+    /// Lowercase or uppercase hexadecimal SHA-256 of `<path>/manifest.json`.
+    #[serde(default)]
+    pub sha256: Option<String>,
+    #[serde(default)]
+    pub on_tune: StateSnapshotTuning,
+}
+
+/// Whether a restored model accepts further feedback.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StateSnapshotTuning {
+    /// `tune_with_fpms` and `flush_updates` return an error; the restored
+    /// state is read-only.
+    #[default]
+    Reject,
+    /// Feedback continues from the restored state exactly as it would have
+    /// continued in the saving model.
+    Continue,
+}
+
+impl StateSnapshotConfig {
+    pub(crate) fn validate(&self) -> Result<(), AicError> {
+        let invalid = |reason: &str| {
+            AicError::InvalidEngineConfig(format!("estimator_config.state_snapshot: {reason}"))
+        };
+        if self.path.as_os_str().is_empty() {
+            return Err(invalid("path cannot be empty"));
+        }
+        if self.path.to_str().is_none() {
+            return Err(invalid("path must be valid UTF-8"));
+        }
+        if self.sha256.as_ref().is_some_and(|digest| {
+            digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit())
+        }) {
+            return Err(invalid("sha256 must contain 64 hexadecimal characters"));
+        }
+        Ok(())
+    }
+
+    /// Anchor the directory and bind the manifest bytes before caller caches
+    /// use the resolved configuration. Relative paths resolve against the
+    /// working directory and are normalized lexically, without resolving
+    /// symlinks, matching the path `save_state_snapshot` records. The manifest read is
+    /// bounded.
+    pub(crate) fn resolve_source(&mut self) -> Result<(), AicError> {
+        use sha2::{Digest, Sha256};
+        self.path = super::snapshot::normalized_absolute(&self.path)?;
+        let bytes = super::snapshot::read_manifest_bytes(&self.path)?;
+        let actual = format!("{:x}", Sha256::digest(&bytes));
+        if self
+            .sha256
+            .as_ref()
+            .is_some_and(|expected| !expected.eq_ignore_ascii_case(&actual))
+        {
+            return Err(AicError::InvalidEngineConfig(
+                "estimator_config.state_snapshot.sha256 does not match manifest.json".into(),
+            ));
+        }
+        self.sha256 = Some(actual);
+        Ok(())
+    }
 }
 
 /// How a learned model adapts after construction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LearnedAdaptation {
-    #[default]
     Frozen,
+    #[default]
     Online,
     CausalSelector,
 }
@@ -48,9 +130,9 @@ pub struct SelectorConfig {
 impl Default for SelectorConfig {
     fn default() -> Self {
         Self {
-            alpha: 0.025,
-            warmup: 10,
-            margin: 0.025,
+            alpha: 0.4,
+            warmup: 5,
+            margin: 0.05,
             persistence: 1,
         }
     }
@@ -132,19 +214,19 @@ impl Default for FpmLearnedConfig {
             artifact_path: None,
             checkpoint_path: None,
             source_sha256: None,
-            adaptation: LearnedAdaptation::Frozen,
+            adaptation: LearnedAdaptation::Online,
             update_mode: LearnedUpdateMode::Structural,
-            recent_window: 2048,
-            history_weight: None,
-            history_weight_ramp_observations: 0,
-            history_bin_grouping: false,
+            recent_window: 64,
+            history_weight: Some(0.1),
+            history_weight_ramp_observations: 32,
+            history_bin_grouping: true,
             mutable_tree_tail: None,
             update_step: 1.0,
             recent_max_age_observations: None,
-            update_every: 64,
-            derivative_refresh: LearnedDerivativeRefresh::Eager,
-            split_sampling_rate: 1.0,
-            split_rank_tolerance: 0.0,
+            update_every: 1,
+            derivative_refresh: LearnedDerivativeRefresh::Lazy,
+            split_sampling_rate: 0.5,
+            split_rank_tolerance: 0.01,
             eager_refresh_interval: 32,
             seed: 0,
         }
@@ -831,6 +913,58 @@ impl Default for CorrectionConfig {
 }
 
 impl EstimatorConfig {
+    /// Apply defaults before parsing so explicit choices, including values equal
+    /// to another recipe's defaults, are never mistaken for omitted fields.
+    pub(crate) fn apply_context_defaults(
+        estimator: &mut serde_json::Value,
+        mode: super::EstimationMode,
+    ) {
+        if mode != super::EstimationMode::FpmLearned {
+            return;
+        }
+        let Some(estimator) = estimator.as_object_mut() else {
+            return;
+        };
+        let adaptation = estimator
+            .get("fpm_learned")
+            .and_then(|learned| learned.get("adaptation"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("online");
+        let enabled = adaptation != "online";
+        let selector = adaptation == "causal_selector";
+        if let Some(learned) = estimator
+            .get_mut("fpm_learned")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            if learned
+                .get("history_weight")
+                .is_some_and(serde_json::Value::is_null)
+            {
+                learned
+                    .entry("history_weight_ramp_observations")
+                    .or_insert(serde_json::json!(0));
+            }
+            if selector {
+                for (key, value) in [
+                    ("recent_window", serde_json::json!(8)),
+                    ("history_weight", serde_json::json!(0.25)),
+                    ("history_weight_ramp_observations", serde_json::json!(8)),
+                    ("update_every", serde_json::json!(4)),
+                ] {
+                    learned.entry(key).or_insert(value);
+                }
+            }
+        }
+        let correction = estimator
+            .entry("correction")
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(correction) = correction.as_object_mut() {
+            correction
+                .entry("enabled")
+                .or_insert(serde_json::json!(enabled));
+        }
+    }
+
     pub(crate) fn resolve_defaults(&mut self) {
         if self.fpm_regression.fit.kind == RegressionFitKind::Spline {
             self.fpm_regression
@@ -1011,6 +1145,9 @@ impl EstimatorConfig {
     pub(crate) fn validate(&self) -> Result<(), AicError> {
         self.fpm_learned.validate()?;
         self.selector.validate()?;
+        if let Some(snapshot) = &self.state_snapshot {
+            snapshot.validate()?;
+        }
         self.fpm_regression.sampling.validate()?;
         validate_rebuild_interval(self.fpm_regression.fit.rebuild_interval)?;
         self.validate_linear()?;
@@ -1502,6 +1639,31 @@ pub(super) fn validate_rebuild_interval(interval: Option<usize>) -> Result<(), A
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn null_history_weight_defaults_only_an_omitted_ramp_to_zero() {
+        for adaptation in ["online", "frozen", "causal_selector"] {
+            for ramp in [None, Some(0), Some(8)] {
+                let mut value = serde_json::json!({"fpm_learned": {
+                    "adaptation": adaptation, "history_weight": null
+                }});
+                if let Some(ramp) = ramp {
+                    value["fpm_learned"]["history_weight_ramp_observations"] = ramp.into();
+                }
+                EstimatorConfig::apply_context_defaults(
+                    &mut value,
+                    super::super::EstimationMode::FpmLearned,
+                );
+                let config: EstimatorConfig = serde_json::from_value(value).unwrap();
+                assert_eq!(config.fpm_learned.history_weight, None);
+                assert_eq!(
+                    config.fpm_learned.history_weight_ramp_observations,
+                    ramp.unwrap_or(0)
+                );
+                assert_eq!(config.validate().is_ok(), ramp != Some(8));
+            }
+        }
+    }
 
     #[test]
     fn default_selector_controls_preserve_previous_reader_configuration() {

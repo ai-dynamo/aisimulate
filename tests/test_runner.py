@@ -1196,9 +1196,14 @@ engine:
 
 
 @pytest.mark.parametrize(
-    "backend,field,value", [("vllm", "prefill_schedule_interval", 4), ("sglang", "prefill_decode_interval", 20)]
+    "backend,field,value",
+    [
+        ("vllm", "prefill_schedule_interval", 4),
+        ("sglang", "prefill_decode_interval", 20),
+        ("vllm", "async_scheduling", False),
+    ],
 )
-def test_public_prefill_interval_reaches_native_execution_rank(tmp_path, backend, field, value):
+def test_public_scheduler_control_reaches_native_execution_rank(tmp_path, backend, field, value):
     path = tmp_path / "prediction.yaml"
     path.write_text(
         f"""\
@@ -2822,6 +2827,23 @@ def test_flat_active_controls_reject_fixed_timing():
         )
 
 
+@pytest.mark.parametrize("value", [1, "true", 0.0])
+def test_runner_rejects_non_boolean_async_scheduling(value):
+    args = {**_engine_args(), "async_scheduling": value}
+    with pytest.raises(ValueError, match="async_scheduling must be a boolean"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(
+                deployment=BackendDeploymentSpec(
+                    deployment_mode="agg",
+                    backend="vllm",
+                    backend_version="test",
+                    agg_engine_args=args,
+                    num_workers=1,
+                )
+            )
+        )
+
+
 @pytest.mark.parametrize("retain_raw", [False, True])
 @pytest.mark.parametrize("polynomial", [False, True])
 def test_native_fixed_timing_provenance_without_diagnostics(retain_raw, polynomial):
@@ -2971,6 +2993,143 @@ def test_canonical_replay_spec_json_omits_unset_tokenization() -> None:
     tokenization = {"workers": 1, "base_ms": 1.0, "per_input_token_ms": 0.0}
     configured = json.loads(canonical_json(_spec(deployment=_tokenization_deployment(tokenization))))
     assert configured["backend_deployment"]["tokenization"] == tokenization
+
+
+def _detokenization_prediction(detokenization: dict | None = None) -> CorePredictionConfig:
+    config = {
+        "engine": {
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "context_length": 1024,
+            "workers": {"aggregated": {}},
+        }
+    }
+    if detokenization is not None:
+        config["engine"]["detokenization"] = detokenization
+    return CorePredictionConfig.model_validate(config)
+
+
+@pytest.mark.parametrize(
+    ("detokenization", "expected"),
+    [
+        (None, None),
+        ({}, None),
+        ({"workers": 4}, None),
+        (
+            {"workers": 2, "base_ms": 1.29, "per_output_us": 39},
+            {"workers": 2, "base_ms": 1.29, "per_output_ms": 0.039},
+        ),
+        ({"per_output_us": 20}, {"workers": 1, "base_ms": 0.0, "per_output_ms": 0.02}),
+    ],
+)
+def test_prediction_compiler_carries_detokenization(detokenization, expected) -> None:
+    deployment = prediction_to_replay_spec(_detokenization_prediction(detokenization)).backend_deployment
+
+    assert deployment.detokenization == (pytest.approx(expected) if expected else None)
+
+
+@pytest.mark.parametrize(
+    "detokenization",
+    [
+        {"workers": 0},
+        {"workers": 1.5},
+        {"base_ms": -1},
+        {"per_output_us": -0.5},
+        {"per_output_us": math.inf},
+        {"final_output_us": 1},
+    ],
+)
+def test_prediction_rejects_invalid_detokenization(detokenization) -> None:
+    with pytest.raises(ValidationError):
+        _detokenization_prediction(detokenization)
+
+
+def test_zero_detokenization_costs_are_the_same_as_omitting_detokenization() -> None:
+    from aisimulate.config.engine import DetokenizationConfig
+
+    assert not DetokenizationConfig(workers=4).active
+    assert DetokenizationConfig(per_output_us=1).active
+
+
+def test_recommendation_rejects_detokenization() -> None:
+    from aisimulate.config.engine import EngineRecommendationConfig
+
+    with pytest.raises(ValidationError, match="detokenization"):
+        EngineRecommendationConfig.model_validate(
+            {"model": "example/model", "hardware": "h200_sxm", "detokenization": {"base_ms": 1}}
+        )
+
+
+def _detokenization_deployment(detokenization: dict | None = None, num_workers: int = 2) -> BackendDeploymentSpec:
+    return BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=_engine_args(),
+        num_workers=num_workers,
+        detokenization=detokenization,
+    )
+
+
+def test_engine_runner_sends_detokenization_in_the_execution_envelope() -> None:
+    runtime = RecordingRuntime()
+    detokenization = {"workers": 2, "base_ms": 1.0, "per_output_ms": 0.04}
+    deployment = _detokenization_deployment(detokenization)
+    workload = {"source_type": "synthetic", "load_type": "concurrency", "isl": 8, "osl": 2, "concurrency": 1}
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(deployment=deployment, workload={**workload, "request_count": 2})
+    )
+
+    assert runtime.execution_spec["detokenization"] == detokenization
+    assert "tokenization" not in runtime.execution_spec
+
+
+def test_detokenization_requires_capability_and_offline_replay() -> None:
+    from aisimulate.sweeper import RunnerCapabilities
+
+    detokenization = {"workers": 1, "base_ms": 1.0, "per_output_ms": 0.0}
+    spec = _spec(deployment=_detokenization_deployment(detokenization, 1))
+    with pytest.raises(ValueError, match="does not support engine.detokenization"):
+        RunnerCapabilities(supported_backend_topologies=(("*", "*"),)).require_compatible(spec)
+    engine = EngineReplayRunnerFactory(runtime=RecordingRuntime()).capabilities()
+    engine.require_compatible(spec)
+    with pytest.raises(ValueError, match="offline"):
+        replace(engine, supported_execution_modes=("offline", "online")).require_compatible(
+            replace(spec, execution_mode="online")
+        )
+
+
+def test_detokenization_rejects_afd() -> None:
+    engine = EngineReplayRunnerFactory(runtime=RecordingRuntime()).capabilities()
+    detokenization = {"workers": 1, "base_ms": 1.0, "per_output_ms": 0.0}
+    afd = replace(_detokenization_deployment(detokenization, 1), deployment_mode="afd")
+    with pytest.raises(ValueError, match="engine.detokenization is unsupported for AFD"):
+        engine.require_compatible(_spec(deployment=afd))
+
+
+def test_native_replay_detokenizes_outputs_for_the_client() -> None:
+    def run(detokenization=None):
+        workload = {"source_type": "synthetic", "load_type": "concurrency", "isl": 8, "osl": 2}
+        workload.update(concurrency=1, request_count=2)
+        report = (
+            EngineReplayRunnerFactory()
+            .create(0)
+            .run(
+                _spec(deployment=_detokenization_deployment(detokenization, 1), workload=workload),
+                output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_per_request=True),
+            )
+        )
+        return sorted(report.metadata["native_report"]["per_request"], key=lambda record: record["arrival_time_ms"])
+
+    direct = run()
+    # Each pass has one output, which takes 0.5 + 0.25 ms on the detokenizer
+    # before the next pass ends.
+    detokenized = run({"workers": 1, "base_ms": 0.5, "per_output_ms": 0.25})
+    assert detokenized[0]["first_token_ms"] == pytest.approx(direct[0]["first_token_ms"] + 0.75)
+    assert detokenized[0]["terminal_time_ms"] == pytest.approx(direct[0]["terminal_time_ms"] + 0.75)
+    # The client sends its next request when it receives the end of the response.
+    assert detokenized[1]["arrival_time_ms"] == pytest.approx(detokenized[0]["terminal_time_ms"])
 
 
 @pytest.mark.parametrize("accepted,rates", [(0.25, "0.25,0"), (1.25, "1,0.25")])

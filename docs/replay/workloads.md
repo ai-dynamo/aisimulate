@@ -76,7 +76,7 @@ the current SA convention.
 | `traffic.load.agentic_snapshot.corpus_cursor` | unset | `x` | `-` | Unsigned 64-bit next sequential corpus draw, including any skipped initial draws. Requires `initial_selections` and must be at least the lane count. Recycled plays start at turn zero. |
 | `traffic.load.agentic_warmup` | `false` | `x` | `-` | Optional boolean; `true` requires `agentic_snapshot` and positive `agentic_lanes`. Primes caches before measurement; see [warmup](#agentic-warmup). |
 | `traffic.load.agentic_warmup_policy` | `repeated_prefixes` | `x` | `-` | `repeated_prefixes` preserves the original frontier; `live_trajectory_v1` advances the live dependency graph during ten additional one-token requests per lane. The live policy requires `agentic_warmup: true` and `agentic_profile`; initially offline `--stack engine` only. |
-| `traffic.load.agentic_profile` | `null` (unset) | `x` | `-` | Optional object; `{}` enables continuous lane replenishment with the defaults below. Requires `trace_timestamps`, positive `agentic_lanes`, and `agentic_snapshot`; cannot be combined with `traffic.stop.max_virtual_time_seconds`. Unset preserves finite replay. See [continuous profile](#agentic-profile). |
+| `traffic.load.agentic_profile` | `null` (unset) | `x` | `-` | Optional object; `{}` enables continuous lane replenishment with the defaults below and releases requests that depend on others in their play from dependency events alone, as AIPerf does. Requires `trace_timestamps`, positive `agentic_lanes`, and `agentic_snapshot`; cannot be combined with `traffic.stop.max_virtual_time_seconds`. Unset preserves finite replay. See [continuous profile](#agentic-profile). |
 | `traffic.load.agentic_profile.duration_seconds` | `3600` when enabled | `x` | `-` | Positive finite admission duration, starting at the preparation barrier or simulation start without warmup. No new workload requests or replacement plays are issued after the deadline. |
 | `traffic.load.agentic_profile.response_grace_seconds` | `30` when enabled | `x` | `-` | Nonnegative finite time for already submitted requests to respond after the admission deadline; remaining client requests are then canceled. |
 | `traffic.load.agentic_profile.cancel_drain_seconds` | `10` when enabled | `x` | `-` | Nonnegative finite upper bound for cancellation acknowledgements. The supported offline runtimes acknowledge synchronously; this does not guarantee server/GPU cleanup. |
@@ -322,7 +322,11 @@ holds, can continue after the lane moves on.
 
 Inside a play, a child request starts when the source request it depends on is
 dispatched or completes, as the trace records, plus the recorded delay.
-Background children run without a join.
+Background children run without a join. Without `agentic_profile`, a request
+also waits for its authored offset from the play start (or snapshot cut), so a
+play never runs ahead of its source clock. A
+[continuous profile](#agentic-profile) drops that wait for requests that depend
+on other requests.
 
 <a id="agentic-snapshot"></a>
 
@@ -480,6 +484,16 @@ explicitly advertise `supports_agentic_live_warmup` and forward the policy.
 `agentic_profile` keeps every lane busy until an admission deadline. When a
 play finishes, its lane takes the next play from the corpus, wrapping at the
 end. Replacement plays start at turn zero with fresh identities.
+
+A profile releases requests as AIPerf's agentic replay does. A request that
+depends on other requests in its play starts when they are dispatched or
+complete, plus the recorded delay; its authored offset no longer holds it
+back. A follow-up turn therefore starts its recorded think time after its
+predecessor actually completes, and a subagent starts from its parent's actual
+completion. A turn that joins children waits for both their completion and its
+own recorded delay after its predecessor. Only play roots and, after a snapshot
+cut, each stream's next request whose predecessor lies before the cut keep
+their source-clock timers.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
