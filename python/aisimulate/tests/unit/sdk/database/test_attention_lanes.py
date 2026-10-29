@@ -1012,7 +1012,7 @@ def test_pinned_override_prefers_the_requested_versions_own_label():
     }
     # Requested version (0.30.0) collected only the new label.
     primary = {"vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen": (10, 1000), "vllm_triton_attn": (10, 1000)}
-    walk = _source_tiered_lane_walk_order(density, primary, order)
+    walk = _source_tiered_lane_walk_order(density, primary, order, pinned)
     assert walk[0] == "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen"
     assert walk.index("vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen") < walk.index(
         "vllm_flashinfer_trtllmdecode"
@@ -1022,11 +1022,35 @@ def test_pinned_override_prefers_the_requested_versions_own_label():
     # 0.24.0 as the requested version: its own split labels lead, the newer
     # labels (reachable only through a newer donor, if at all) follow.
     primary_024 = {"vllm_flashinfer_trtllmdecode": (40, 4000), "vllm_triton_attn": (10, 1000)}
-    walk_024 = _source_tiered_lane_walk_order(density, primary_024, order)
+    walk_024 = _source_tiered_lane_walk_order(density, primary_024, order, pinned)
     assert walk_024[0] == "vllm_flashinfer_trtllmdecode"
 
     # Without a primary view nothing is re-tiered.
-    assert _source_tiered_lane_walk_order(density, {}, order)[: len(pinned)] == pinned
+    assert _source_tiered_lane_walk_order(density, {}, order, pinned)[: len(pinned)] == pinned
+
+
+def test_explicit_override_stays_ahead_of_the_framework_default_lane(lane_systems_root):
+    """The pinned head holds the explicit override AND the framework-default
+    lane, which is a different backend. Only the override's own synonymous
+    labels are re-ranked by primary presence: requesting ``trtllm_mha`` where
+    the requested version collected only the framework-default Triton lane
+    (``trtllm_mha`` inherited from a donor version) must still walk
+    ``trtllm_mha`` first, not silently switch to Triton (PR #517 review,
+    simone-chen: B200 SGLang 0.5.21 Triton rows + inherited 0.5.14
+    ``trtllm_mha`` rows returned Triton's 0.008434 ms instead of the
+    requested lane's 0.010391 ms)."""
+    from aisimulate_core.sdk.operations.attention import resolve_lane_order, resolved_lane_order_for_op
+
+    db = _StubDatabase(
+        lane_systems_root,
+        context_lanes={"triton": _ctx_lane(_FAST_LATENCY), "trtllm_mha": _ctx_lane(_SLOW_LATENCY)},
+        primary_context_lanes={"triton": _ctx_lane(_FAST_LATENCY)},
+    )
+    order = resolve_lane_order(db, "trtllm_mha")
+    assert order[: order.pinned_count] == ("trtllm_mha", "triton"), "override first, framework default second"
+
+    walk = resolved_lane_order_for_op(db, "_context_attention_data", "trtllm_mha")
+    assert walk[:2] == ["trtllm_mha", "triton"], walk
 
 
 @pytest.mark.parametrize(
