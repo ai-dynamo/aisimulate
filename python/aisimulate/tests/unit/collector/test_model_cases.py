@@ -1855,12 +1855,24 @@ def test_trtllm_mla_module_getter_requests_backend_canonicalization():
 
 
 def _load_module_case_builder(backend: str, namespace: dict):
+    from types import SimpleNamespace
+
     source_path = REPO_ROOT / f"collector/{backend}/collect_mla_module.py"
     tree = ast.parse(source_path.read_text(), filename=str(source_path))
-    function = next(
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_build_module_test_cases"
-    )
-    exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)
+    wanted = {"_build_module_test_cases"}
+    if backend == "vllm":
+        # the DSA context grouping expands each series through the plan predicate
+        wanted |= {"_dsa_context_point_allowed", "_dsa_context_budgets"}
+        namespace.setdefault(
+            "get_mla_module_sweep_spec",
+            lambda _backend=None: SimpleNamespace(
+                context_dsa_chunk_prefill_size=16384,
+                context_max_tokens=131072,
+                context_dsa_max_full_sequence_length=1048576,
+            ),
+        )
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
+    exec(compile(ast.Module(body=functions, type_ignores=[]), str(source_path), "exec"), namespace)
     return namespace["_build_module_test_cases"]
 
 
@@ -1929,7 +1941,9 @@ def test_vllm_module_plan_groups_the_seq_len_points_of_one_module_into_one_case(
         [128, 1, 64, "bfloat16", "bfloat16", "bfloat16", 0],
         [16, 1, 64, "bfloat16", "bfloat16", "bfloat16", 0],
         [1024, 1, 64, "bfloat16", "bfloat16", "bfloat16", 0],
-        [16, 1, 64, "bfloat16", "bfloat16", "bfloat16", 4096],  # other prefix -> other case
+        [128, 1, 64, "bfloat16", "bfloat16", "bfloat16", 4096],  # other prefix -> same module series
+        [16, 1, 64, "bfloat16", "bfloat16", "bfloat16", 4096],
+        [1024, 1, 64, "bfloat16", "bfloat16", "bfloat16", 4096],
         [16, 8, 64, "bfloat16", "bfloat16", "bfloat16", 0],  # other batch -> other case
         [16, 1, 64, "fp8", "bfloat16", "bfloat16", 0],  # other kv dtype -> other case
     ]
@@ -1944,15 +1958,39 @@ def test_vllm_module_plan_groups_the_seq_len_points_of_one_module_into_one_case(
     }
     build = _load_module_case_builder("vllm", ns)
     cases = build("dsa", "context")
+    # DSA context: the module series carries its isl list AND its prefix list (the plan's
+    # isl x prefix grid); the runner expands the grid through the same predicate.
     assert cases == [
-        [[1024, 128, 16], 1, 64, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", "dsa", 0],
-        [[16], 1, 64, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", "dsa", 4096],
-        [[16], 8, 64, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", "dsa", 0],
-        [[16], 1, 64, "fp8", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", "dsa", 0],
+        [[1024, 128, 16], 1, 64, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", "dsa", [4096, 0]],
+        [[16], 8, 64, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", "dsa", [0]],
+        [[16], 1, 64, "fp8", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", "dsa", [0]],
     ]
     # the trtllm planner keeps one case per point
     trt = _load_module_case_builder("trtllm", dict(ns))
-    assert [c[0] for c in trt("dsa", "context")] == [128, 16, 1024, 16, 16, 16]
+    assert [c[0] for c in trt("dsa", "context")] == [128, 16, 1024, 128, 16, 1024, 16, 16]
+
+
+def test_vllm_dsa_module_plan_refuses_a_grid_the_runner_would_not_reproduce():
+    """The plan generator and run_mla_module share _dsa_context_point_allowed; a base list whose
+    (isl, prefix) points are not that predicate's product cannot be expressed as a series."""
+    from types import SimpleNamespace
+
+    base = [
+        [1024, 1, 64, "bfloat16", "bfloat16", "bfloat16", 0],
+        [16, 1, 64, "bfloat16", "bfloat16", "bfloat16", 4096],  # (1024, 4096) and (16, 0) missing
+    ]
+    ns = {
+        "get_context_test_cases": lambda _t: base,
+        "get_generation_test_cases": lambda _t: [],
+        "get_mla_module_model_specs": lambda **_k: [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3.2")],
+        "get_sm_version": lambda: 100,
+        "_DSA_SPARSE_DECODE_MIN_HEADS": 8,
+        "_DSA_SPARSE_DECODE_MIN_HEADS_SMS": (100, 103),
+        "_model_max_position_embeddings": lambda _m: None,
+    }
+    build = _load_module_case_builder("vllm", ns)
+    with pytest.raises(RuntimeError, match="expands to 4 points but the plan holds 2"):
+        build("dsa", "context")
 
 
 def test_vllm_dsa_module_plan_caps_prefix_at_the_model_max_position():
@@ -1972,9 +2010,9 @@ def test_vllm_dsa_module_plan_caps_prefix_at_the_model_max_position():
         "_model_max_position_embeddings": lambda _m: 163840,
     }
     build = _load_module_case_builder("vllm", ns)
-    assert [c[-1] for c in build("dsa", "context")] == [0, 4096, 163824]
+    assert [c[-1] for c in build("dsa", "context")] == [[163824, 4096, 0]]
     ns["_model_max_position_embeddings"] = lambda _m: None  # unknown ceiling -> no cap
-    assert len(build("dsa", "context")) == 5
+    assert [c[-1] for c in build("dsa", "context")] == [[262144, 163825, 163824, 4096, 0]]
 
 
 def test_support_matrix_models_have_model_case_aliases():

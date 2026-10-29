@@ -158,11 +158,23 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
         "time": time,
     }
     _load_function(COLLECTOR / "vllm/utils.py", "with_exit_stack", namespace)
-    for helper in ("_series_seq_lens", "_is_fatal_cuda_error"):
+    # A prefix list expands through the plan predicate: budgets from the sweep spec,
+    # ceiling from the model config (both faked here).
+    namespace["get_mla_module_sweep_spec"] = lambda _backend=None: SimpleNamespace(
+        context_dsa_chunk_prefill_size=16384, context_max_tokens=131072, context_dsa_max_full_sequence_length=1048576
+    )
+    namespace["_model_max_position_embeddings"] = lambda _model: None
+    for helper in (
+        "_series_seq_lens",
+        "_dsa_context_point_allowed",
+        "_dsa_context_budgets",
+        "_series_points",
+        "_is_fatal_cuda_error",
+    ):
         _load_function(COLLECTOR / "vllm/collect_mla_module.py", helper, namespace)
     run = _load_function(COLLECTOR / "vllm/collect_mla_module.py", "run_mla_module", namespace)
 
-    def execute(attn_type="dsa", phase="context", seq_len=16):
+    def execute(attn_type="dsa", phase="context", seq_len=16, prefix_len=128):
         return run(
             seq_len=seq_len,
             batch_size=2,
@@ -171,7 +183,7 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
             compute_dtype="bfloat16",
             gemm_type="bfloat16",
             perf_filename=f"{attn_type}_{phase}_module_perf.txt",
-            prefix_len=128,
+            prefix_len=prefix_len,
             model_path="fixture/model",
             attn_type=attn_type,
         )
@@ -270,6 +282,28 @@ def test_series_builds_the_module_once_and_measures_every_point_largest_first(ca
     assert len(series_lines) == 1 and "2/2 points" in series_lines[0]
 
 
+def test_series_sweeps_the_isl_x_prefix_grid_of_one_module_largest_total_context_first(capsys):
+    """A DSA context case carries its prefix list: one module, every (isl, prefix) point of the
+    plan grid measured on it, largest total context first (module build was 0.9-1.2 s/pt under
+    the campaign's 8 workers when it was amortised over one prefix only, 2026-10-29)."""
+    execute, events, published, calls, _ = _module_runner(reuse_frequency=4)
+    assert execute(seq_len=[8, 16], prefix_len=[0, 128]) == [0.015] * 4
+    assert events.count("workspace init") == 1
+    kv_events = [e for e in events if isinstance(e, tuple) and e[0] == "kv"]
+    assert kv_events == [("kv", 16), ("kv", 8), ("kv", 16), ("kv", 8)]
+    rows = [
+        (row["item_list"][0]["isl"], row["item_list"][0]["step"])
+        for row in published
+        if row["op_name"] == "dsa_context_module"
+    ]
+    assert rows == [(16, 128), (8, 128), (16, 0), (8, 0)]
+    out = capsys.readouterr().out
+    assert "[DSA module] context b=2, s=[16, 8], prefix=[128, 0]," in out
+    series_lines = [line for line in out.splitlines() if "[DSA module series] context b=2, prefix=[128, 0]" in line]
+    assert len(series_lines) == 1 and "4/4 points" in series_lines[0]
+    assert len(calls) == 8 and events.count("cleanup") == 1
+
+
 def test_series_keeps_measuring_after_a_non_fatal_point_failure_and_raises_it_afterwards():
     oom = MemoryError("CUDA out of memory (fixture)")
     execute, events, published, calls, _ = _module_runner(point_failures={16: oom})
@@ -287,8 +321,8 @@ def test_series_summarises_several_point_failures_in_one_classified_error():
     execute, _, published, _, _ = _module_runner(point_failures=failures)
     with pytest.raises(RuntimeError, match=r"2/3 point\(s\) of the module series failed") as caught:
         execute(seq_len=[16, 8, 4])
-    assert "s=16: MemoryError: oom at 16" in str(caught.value)
-    assert "s=4: RuntimeError: Missing TRTLLM-GEN kernel" in str(caught.value)
+    assert "s=16 prefix=128: MemoryError: oom at 16" in str(caught.value)
+    assert "s=4 prefix=128: RuntimeError: Missing TRTLLM-GEN kernel" in str(caught.value)
     assert [row["item_list"][0]["isl"] for row in published] == [8]
 
 

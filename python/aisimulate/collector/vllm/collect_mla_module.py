@@ -210,6 +210,34 @@ def _generation_kv_footprint_bytes(total_tokens: int, kv_cache_dtype: str) -> in
     return 2 * total_tokens * _MLA_KV_ENTRY_ELEMS * bytes_per_elem
 
 
+def _dsa_context_point_allowed(
+    batch_size: int,
+    seq_len: int,
+    prefix_len: int,
+    *,
+    new_token_budget: int,
+    full_seq_budget: int | None,
+    max_position: int | None,
+) -> bool:
+    """Whether one DSA context point (new tokens ``seq_len`` behind ``prefix_len`` cached
+    tokens, ``batch_size`` requests) is in the plan: serving's chunked-prefill new-token
+    budget, the full-sequence budget and the model's max_position_embeddings. The plan
+    generator and ``run_mla_module`` (which expands a case's isl x prefix grid) share it, so
+    a series measures exactly the points the plan declared."""
+    if batch_size * seq_len > new_token_budget:
+        return False
+    if full_seq_budget and batch_size * (seq_len + prefix_len) > full_seq_budget:
+        return False
+    return max_position is None or prefix_len + seq_len <= max_position
+
+
+def _dsa_context_budgets(sweep=None) -> tuple[int, int | None]:
+    """(new-token budget, full-sequence budget) of the vLLM DSA context sweep."""
+    sweep = sweep or get_mla_module_sweep_spec("vllm")
+    new_token_budget = getattr(sweep, "context_dsa_chunk_prefill_size", None) or sweep.context_max_tokens
+    return int(new_token_budget), getattr(sweep, "context_dsa_max_full_sequence_length", None)
+
+
 def get_context_test_cases(attn_type: str):
     """Context-phase test cases.
 
@@ -225,19 +253,25 @@ def get_context_test_cases(attn_type: str):
     # engine's query shape (isl=chunk, prefix=context) and keeps the fp8
     # sparse-decode q stride int32-safe. Falls back to the shared context
     # axes when the DSA-specific budgets are not declared.
-    dsa_new_token_budget = getattr(sweep, "context_dsa_chunk_prefill_size", None) or sweep.context_max_tokens
-    dsa_full_seq_budget = getattr(sweep, "context_dsa_max_full_sequence_length", None)
+    dsa_new_token_budget, dsa_full_seq_budget = _dsa_context_budgets(sweep)
     dsa_prefixes = getattr(sweep, "context_dsa_prefix_lengths", None) or sweep.context_prefix_lengths
     for compute_dtype, kv_dtype, gemm_type in _get_precision_combos("context", attn_type):
         for num_heads in sweep.inner_sweep_head_counts:
             for b in sweep.context_batch_sizes:
                 for s in sweep.context_sequence_lengths:
                     if attn_type == "dsa":
-                        # new-token budget per chunk (not the shared memory cap)
-                        if b * s > dsa_new_token_budget:
-                            continue
+                        # new-token budget per chunk (not the shared memory cap) and the
+                        # full-sequence budget; the per-model max_position cap is applied
+                        # by _build_module_test_cases with the same predicate.
                         for prefix_len in dsa_prefixes:
-                            if dsa_full_seq_budget and b * (s + prefix_len) > dsa_full_seq_budget:
+                            if not _dsa_context_point_allowed(
+                                b,
+                                s,
+                                prefix_len,
+                                new_token_budget=dsa_new_token_budget,
+                                full_seq_budget=dsa_full_seq_budget,
+                                max_position=None,
+                            ):
                                 continue
                             cases.append([s, b, num_heads, kv_dtype, compute_dtype, gemm_type, prefix_len])
                     else:
@@ -466,10 +500,46 @@ def _build_module_test_cases(attn_type: str, mode: str):
             f"{dropped_over_ceiling} cases whose prefix+isl exceeds the model's max_position_embeddings and "
             f"{dropped_non_shard_heads} cases whose per-rank heads no declared tensor_parallel_sizes shard produces"
         )
-    # One case per (batch, heads, kv, compute, gemm, model, attn_type[, prefix]) carrying
-    # its seq_len points in slot 0: run_mla_module builds the module once per case and
-    # measures every point on it (largest first). Every point keeps its own KV cache,
-    # metadata and rows; only the module build is shared.
+    # One case per (batch, heads, kv, compute, gemm, model, attn_type) carrying its
+    # seq_len points in slot 0 and, for DSA context, its prefix points in the last slot:
+    # run_mla_module builds the module once per case and measures every (isl, prefix)
+    # point on it (largest total context first). Every point keeps its own KV cache,
+    # metadata and rows; only the module build is shared. The runner expands the
+    # isl x prefix grid through _dsa_context_point_allowed, the same predicate that
+    # built ``cases`` above, and the check below pins that the two agree.
+    if attn_type == "dsa" and mode == "context":
+        grid: dict[tuple, set[tuple[int, int]]] = {}
+        for s, b, h, kv_dtype, compute_dtype, gemm_type, model_path, attn, prefix_len in cases:
+            key = (b, h, kv_dtype, compute_dtype, gemm_type, model_path, attn)
+            grid.setdefault(key, set()).add((int(s), int(prefix_len)))
+        new_token_budget, full_seq_budget = _dsa_context_budgets()
+        grouped = []
+        for key, points in grid.items():
+            b, model_path = key[0], key[5]
+            seq_lens = sorted({s for s, _ in points}, reverse=True)
+            prefixes = sorted({p for _, p in points}, reverse=True)
+            max_position = _model_max_position_embeddings(model_path)
+            expanded = {
+                (s, p)
+                for s in seq_lens
+                for p in prefixes
+                if _dsa_context_point_allowed(
+                    b,
+                    s,
+                    p,
+                    new_token_budget=new_token_budget,
+                    full_seq_budget=full_seq_budget,
+                    max_position=max_position,
+                )
+            }
+            if expanded != points:
+                raise RuntimeError(
+                    f"vllm dsa context series {key}: the isl x prefix grid expands to {len(expanded)} points "
+                    f"but the plan holds {len(points)}; _dsa_context_point_allowed and get_context_test_cases "
+                    "disagree"
+                )
+            grouped.append([seq_lens, *key, prefixes])
+        return grouped
     series: dict[tuple, list[int]] = {}
     for s, *rest in cases:
         series.setdefault(tuple(rest), []).append(int(s))
@@ -1291,6 +1361,47 @@ def _series_seq_lens(seq_len) -> list[int]:
     return seq_lens
 
 
+def _series_points(
+    seq_lens: list[int],
+    prefix_len,
+    *,
+    batch_size: int,
+    model_path: str,
+) -> list[tuple[int, int]]:
+    """The (seq_len, prefix_len) points a case measures on one module, largest total
+    context first (a capacity failure shows up on the first point).
+
+    ``prefix_len`` is one prefix (int: every seq_len behind it) or the case's prefix
+    list (the plan's isl x prefix grid, expanded through _dsa_context_point_allowed
+    exactly as the plan generator filtered it)."""
+    if isinstance(prefix_len, bool):
+        raise TypeError("prefix_len must be an int or a list of ints")
+    if isinstance(prefix_len, int):
+        points = [(s, int(prefix_len)) for s in seq_lens]
+    else:
+        prefixes = sorted({int(value) for value in prefix_len}, reverse=True)
+        if not prefixes:
+            raise ValueError("a module series needs at least one prefix_len")
+        new_token_budget, full_seq_budget = _dsa_context_budgets()
+        max_position = _model_max_position_embeddings(model_path)
+        points = [
+            (s, p)
+            for s in seq_lens
+            for p in prefixes
+            if _dsa_context_point_allowed(
+                batch_size,
+                s,
+                p,
+                new_token_budget=new_token_budget,
+                full_seq_budget=full_seq_budget,
+                max_position=max_position,
+            )
+        ]
+        if not points:
+            raise ValueError("the module series' isl x prefix grid has no point inside the plan budgets")
+    return sorted(points, key=lambda sp: (sp[0] + sp[1], sp[0]), reverse=True)
+
+
 def _is_fatal_cuda_error(exc: BaseException) -> bool:
     """A sticky CUDA failure: nothing measured on this context afterwards is trustworthy."""
     accelerator_error = getattr(torch, "AcceleratorError", None)
@@ -1311,7 +1422,7 @@ def run_mla_module(
     compute_dtype: str,
     gemm_type: str,
     perf_filename: str,
-    prefix_len: int = 0,
+    prefix_len: int | list[int] = 0,
     *,
     model_path: str,
     attn_type: str,
@@ -1319,12 +1430,14 @@ def run_mla_module(
     warming_up: int = 10,
     test_ite: int = 6,
 ):
-    """Run one MLA / DSA module series: one module, one measured point per ``seq_len``.
+    """Run one MLA / DSA module series: one module, one measured point per (``seq_len``, prefix).
 
     ``seq_len`` is the query length (context) or the KV length (generation) of a
-    point, or the list of them that share (batch, heads, dtypes, gemm, model,
-    prefix). The module (vLLM config, synthetic/quantized weights, rope shims) is
-    built once for the largest point; the KV cache, the indexer cache and the
+    point, or the list of them that share (batch, heads, dtypes, gemm, model);
+    ``prefix_len`` is one cached-prefix length or, for a DSA context series, the
+    case's prefix list (the points are the isl x prefix grid inside the plan
+    budgets, see _series_points). The module (vLLM config, synthetic/quantized
+    weights, rope shims) is built once for the largest point; the KV cache, the indexer cache and the
     attention metadata are still built per point exactly as a single-point run
     does, so every row keeps its serving-parity construction. A point that fails
     for a non-fatal reason (OOM, a kernel limit) is recorded and the remaining
@@ -1373,13 +1486,18 @@ def run_mla_module(
     use_fp8_kv_cache = kv_cache_dtype == "fp8"
     use_prefill_fp8 = compute_dtype == "fp8"
     is_context = "context" in perf_filename
-    prefix_len = int(prefix_len) if is_context else 0
+    points = _series_points(
+        seq_lens, prefix_len if is_context else 0, batch_size=batch_size, model_path=model_path
+    )
+    prefix_lens = sorted({p for _, p in points}, reverse=True)
+    prefix_desc = prefix_lens[0] if len(prefix_lens) == 1 else prefix_lens
     phase = "context" if is_context else "generation"
     variant = attn_type.upper()
-    max_seq_len = max(seq_lens)
+    max_seq_len = max(s for s, _ in points)
+    max_total_len = max(s + p for s, p in points)
     print(
         f"\n[{variant} module] {phase} b={batch_size}, s={seq_lens if len(seq_lens) > 1 else seq_lens[0]}, "
-        f"prefix={prefix_len}, heads={num_heads}, gemm={gemm_type}, "
+        f"prefix={prefix_desc}, heads={num_heads}, gemm={gemm_type}, "
         f"compute={compute_dtype}, kv={kv_cache_dtype}, model={model_path}"
     )
 
@@ -1394,7 +1512,7 @@ def run_mla_module(
         num_heads=num_heads,
         use_fp8_kv_cache=use_fp8_kv_cache,
         use_prefill_fp8=use_prefill_fp8,
-        max_seq_len=prefix_len + max_seq_len,
+        max_seq_len=max_total_len,
         max_batch_size=batch_size,
         max_query_len=max_seq_len,
         gemm_type=gemm_type,
@@ -1474,7 +1592,7 @@ def run_mla_module(
     mla_layer = attn_module if not hasattr(attn_module, "mla_attn") else attn_module.mla_attn.mla_attn
     actual_kv_cache_dtype = "fp8" if mla_layer.kv_cache_dtype.startswith("fp8") else "bfloat16"
 
-    def _run_point(point_stack, seq_len: int, point_phase: dict[str, float]) -> float:
+    def _run_point(point_stack, seq_len: int, prefix_len: int, point_phase: dict[str, float]) -> float:
         # 2. Create KV cache + metadata for this point
         kv_cache, attn_metadata, common_attn_metadata, indexer_kv_cache, indexer_metadata = (
             _create_kv_cache_and_metadata(
@@ -1698,19 +1816,19 @@ def run_mla_module(
         return full_latency
 
     latencies: list[float] = []
-    failures: list[tuple[int, BaseException]] = []
-    for index, point_seq_len in enumerate(seq_lens):
+    failures: list[tuple[tuple[int, int], BaseException]] = []
+    for index, (point_seq_len, point_prefix) in enumerate(points):
         _t_point = _t_last = time.perf_counter()
         point_phase: dict[str, float] = dict(_setup_phase) if index == 0 else {}
         try:
             with ExitStack() as point_stack:
-                latencies.append(_run_point(point_stack, point_seq_len, point_phase))
+                latencies.append(_run_point(point_stack, point_seq_len, point_prefix, point_phase))
         except Exception as exc:
-            if _is_fatal_cuda_error(exc) or len(seq_lens) == 1:
+            if _is_fatal_cuda_error(exc) or len(points) == 1:
                 raise
-            failures.append((point_seq_len, exc))
+            failures.append(((point_seq_len, point_prefix), exc))
             print(
-                f"  [{variant} module] {phase} b={batch_size}, s={point_seq_len}, prefix={prefix_len}: "
+                f"  [{variant} module] {phase} b={batch_size}, s={point_seq_len}, prefix={point_prefix}: "
                 f"point failed ({type(exc).__name__}: {str(exc)[:200]}); the series continues"
             )
             gc.collect()
@@ -1718,22 +1836,24 @@ def run_mla_module(
             continue
         point_phase["indexer_fill"] = globals().get("_PHASE_TIMINGS", {}).get("indexer_fill", 0.0)
         print(
-            f"  [{variant} module timing] {phase} b={batch_size}, s={point_seq_len}, prefix={prefix_len}, "
+            f"  [{variant} module timing] {phase} b={batch_size}, s={point_seq_len}, prefix={point_prefix}, "
             f"heads={num_heads}, gemm={gemm_type}, kv={kv_cache_dtype}: "
             + " ".join(f"{name}={seconds:.2f}s" for name, seconds in point_phase.items())
             + f" total={time.perf_counter() - _t_point:.2f}s"
         )
-    if len(seq_lens) > 1:
+    if len(points) > 1:
         print(
-            f"  [{variant} module series] {phase} b={batch_size}, prefix={prefix_len}, heads={num_heads}, "
-            f"gemm={gemm_type}, kv={kv_cache_dtype}: {len(latencies)}/{len(seq_lens)} points in "
+            f"  [{variant} module series] {phase} b={batch_size}, prefix={prefix_desc}, heads={num_heads}, "
+            f"gemm={gemm_type}, kv={kv_cache_dtype}: {len(latencies)}/{len(points)} points in "
             f"{time.perf_counter() - _t_series:.1f}s"
         )
     if failures:
         if len(failures) == 1:
             raise failures[0][1]
-        summary = "; ".join(f"s={s}: {type(exc).__name__}: {str(exc)[:200]}" for s, exc in failures)
-        raise RuntimeError(f"{len(failures)}/{len(seq_lens)} point(s) of the module series failed: {summary}")
+        summary = "; ".join(
+            f"s={s} prefix={p}: {type(exc).__name__}: {str(exc)[:200]}" for (s, p), exc in failures
+        )
+        raise RuntimeError(f"{len(failures)}/{len(points)} point(s) of the module series failed: {summary}")
     return latencies
 
 
@@ -1746,7 +1866,7 @@ def run_mla_module_worker(
     gemm_type: str,
     model_path: str,
     attn_type: str,
-    prefix_len: int = 0,
+    prefix_len: int | list[int] = 0,
     *,
     perf_filename: str,
     device: str = "cuda:0",
