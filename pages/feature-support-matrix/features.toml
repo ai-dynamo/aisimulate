@@ -77,6 +77,13 @@ cells = ["supported", "supported", "supported"]
 note = "Backend block and admission rules apply."
 
 [[sections.rows]]
+name = "Hybrid KV cache (per-request state)"
+doc = "replay/engine/kv-cache.md#state-cache"
+# config/engine.py: state_cache requires backend=vllm, aggregated or disaggregated, G1 only.
+cells = ["supported", "not_supported", "not_supported"]
+note = "Kimi K3 and DeepSeek V4 state kept in G1, aggregated and P/D; prefix reuse resumes from state snapshots."
+
+[[sections.rows]]
 name = "Frontend tokenization cost"
 doc = "replay/engine/README.md#request-tokenization"
 cells = ["supported", "supported", "supported"]
