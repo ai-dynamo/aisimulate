@@ -198,20 +198,25 @@ KV length `s`, use `num_decode_requests = B*v` and
 the width again. `predict_decode_latency_total()` wraps the same counters.
 `static_phase_latency()` instead takes the real request batch and applies the
 configured verification width internally. This OP telemetry convention is
-distinct from the proposed speculative FPM mapping, which remains unsupported.
+distinct from the [STP FPM speculative approximation](methods/whole-forward.md#estimate-speculative-decode-from-an-stp-fpm):
+that per-query `draft_length` option takes logical decode request counts and
+total past KV, widens the former and preserves the latter.
 
 The canonical constructor currently supports explicit speculative schemes with
 OP/SOL timing. FPM interpolation and regression are unsupported candidates for
 these schemes. An explicit FPM request with `fallback_policy="deny"` fails;
 `auto` or an explicit mode with `fallback_policy="allow"` can select a supported
 OP candidate while preserving the complete speculative identity. They do not
-drop speculation to obtain an autoregressive estimate. FPM profiles remain
-autoregressive-only. Lower-level FPM hybrid code does not imply support through
-the canonical ForwardPassMetrics query API.
+drop speculation to obtain an autoregressive estimate. Separately, an ordinary
+STP FPM can estimate pure speculative decode via the query-only `draft_length`
+option without setting `speculation` or `nextn`. Explicit measured
+[speculative-round profiles](methods/whole-forward.md#recorded-speculative-round-identity)
+have their own identity contract. Lower-level FPM hybrid code does not imply
+support through the canonical ForwardPassMetrics query API.
 
 Acceptance assumptions and scheduler seeds belong to the prediction/Replay
 layer, not this cost configuration. The returned model continues to estimate
-iteration latency; its constructor and query signatures are unchanged. For
+iteration latency; the existing calls remain supported. For
 prediction and AgentX, the [registered-scheme Replay input](../replay/engine/speculation.md#registered-schemes)
 adds acceptance and a seed while retaining this cost identity. That path uses
 the existing linear 1–5-token executor and requires fixed KV capacity; broader

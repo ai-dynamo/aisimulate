@@ -76,31 +76,12 @@ SD-round profiles retain their existing contracts.
 
 ### Calibration and limitations
 
-The two fixed coefficients were compared against protocol-5 measurements of
-Qwen3.5-4B native MTP and Qwen3-8B EAGLE3 on H100, H200, B200 and GB200:
-TP1 BF16, top-k 1, `d=1/2/3/4`, batch `1/4/8`, initial context `1024/4096`,
-two repetitions and 256 generated tokens. The CUDA interval brackets the
-model-worker forward call, including possible host launch gaps; it excludes
-prefill and scheduler work outside that call. Offload, overlap scheduling and
-radix caching were disabled.
-
-![Repetition-1 MAPE by GPU, model/method and draft depth](sd-fpm-depth-mape.svg)
-
-The proposed fixed rule has **8.08% round-weighted MAPE**, **7.33%
-equal-configuration MAPE**, **18.19% P90 absolute error**, and **31.53%
-worst-configuration MAPE** over 18,836 repetition-1 rounds / 192 configurations.
-Repetition 0 defines the frozen measured STP reference. These data were already
-inspected during the study; they are not a new blind test. Errors exclude
-actual FPM prediction error and do not establish accuracy on every supported
-model. One model per method confounds model/method effects. Hopper MTP used
-FlashInfer, while Blackwell MTP used TRT-LLM MHA; EAGLE3 used FlashInfer on both.
-The family comparison includes runtime/backend differences. Depths beyond
-1–4, other models and production workloads are extrapolation.
-
-The figure records the study values supplied with this change. Full observations,
-exclusions and fitting comparisons are in the
-[study report](https://gitlab-pages-72a7bf.gitlab-master-pages.nvidia.com/sd-unified-depth.html)
-(NVIDIA access; report revision `19ff8f8a4d6018fe0d2009af1013aae90df882a6`).
+This empirical approximation was compared with two models (native MTP and
+EAGLE3) on H100, H200, B200 and GB200 at depths 1–4. Other models, depths and
+production workloads are extrapolation; measured-reference errors exclude
+actual FPM prediction error. Model/method and runtime/backend differences
+confound comparisons. See the committed [calibration evidence](../../../benchmarks/evidence/sd-fpm-depth-v1/README.md)
+for the setup, exclusions, error statistics, chart and provenance.
 
 ## Recorded speculative-round identity
 
