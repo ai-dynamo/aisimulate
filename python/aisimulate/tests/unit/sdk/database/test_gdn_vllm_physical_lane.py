@@ -9,8 +9,11 @@ layer queries the logical ``chunk_gated_delta_rule``. The alias walk in
 ``perf_database/state_space.rs`` (``GdnAliasProfile``) must therefore serve
 the physical row for every such version — 0.24.0, 0.27.1 and the 2026-10
 campaign's 0.30.0 — and, since that campaign, the TRT-LLM 1.3.0rc29
-FlashInfer labels and the SGLang 0.5.21 fused decode convolution as well
-(PR #517 review, simone-chen).
+context scan and decode recurrence (FlashInfer, or Triton on L40S / RTX PRO
+6000) and the SGLang 0.5.21 fused decode convolution and Hopper FlashInfer
+context scan as well (PR #517 review, simone-chen). When the shared layer
+adds a donor's physical label next to the requested version's own one, the
+own row wins instead of the pair failing as ambiguous.
 
 Same real-data engine-query pattern as ``test_gdn_flashinfer_lane.py``
 (``Operation._engine_query`` — the sanctioned single-op plumbing — plus
@@ -124,5 +127,55 @@ def test_query_gdn_sglang_0521_conv_update_resolves_the_fused_kernel():
 
     own_raw = _raw_generation_latency(db, "fused_qkvzba_causal_conv1d_update_contiguous", model_key, 1)
     result = _gdn_generation_op("causal_conv1d_update", model_key)._engine_query(db, batch_size=1, s=1)
+    assert result.source == "silicon"
+    assert float(result) == pytest.approx(own_raw, rel=1e-9)
+
+
+# Qwen3.5 GDN shape of the second review round: (d_model, nk, hk, nv, hv, conv).
+_QWEN35_REVIEW_KEY = (2048, 16, 128, 32, 128, 4)
+
+
+@pytest.mark.parametrize(
+    ("version", "own_label"),
+    [("0.24.0", "chunk_gated_delta_rule_triton"), ("0.30.0", "chunk_gated_delta_rule_flashinfer")],
+)
+def test_query_gdn_rtx_vllm_context_scan_prefers_own_label_over_donor_label(version, own_label):
+    """RTX PRO 6000 vLLM 0.24.0 collected the Triton context scan, 0.30.0 the
+    FlashInfer one; through the shared layer each also sees the other's label
+    (and TRT-LLM rc29's FlashInfer label). Both are vLLM physical labels, so
+    the lookup used to reject the pair as ambiguous and fall to SOL
+    (0.035109 ms instead of 0.101526 / 0.116720 ms)."""
+    db = get_database("rtx_pro_6000_server", "vllm", version, allow_unlisted_version=True)
+
+    own_raw = _raw_context_latency(db, own_label, _QWEN35_REVIEW_KEY, 1, 1024)
+    result = _gdn_context_op("chunk_gated_delta_rule", _QWEN35_REVIEW_KEY)._engine_query(db, batch_size=1, s=1024)
+    assert result.source == "silicon"
+    assert float(result) == pytest.approx(own_raw, rel=1e-9)
+
+
+@pytest.mark.parametrize("system", ["h100_sxm", "h200_sxm"])
+def test_query_gdn_sglang_0521_hopper_context_scan_resolves_flashinfer_label(system):
+    """SGLang 0.5.21 on Hopper persists ``flashinfer_chunk_gated_delta_rule``;
+    without the mapping H100 served a donor row (0.132997 ms instead of its
+    own 0.093043 ms)."""
+    db = get_database(system, "sglang", "0.5.21", allow_unlisted_version=True)
+
+    own_raw = _raw_context_latency(db, "flashinfer_chunk_gated_delta_rule", _QWEN35_REVIEW_KEY, 1, 1024)
+    result = _gdn_context_op("chunk_gated_delta_rule", _QWEN35_REVIEW_KEY)._engine_query(db, batch_size=1, s=1024)
+    assert result.source == "silicon"
+    assert float(result) == pytest.approx(own_raw, rel=1e-9)
+
+
+@pytest.mark.parametrize("system", ["l40s", "rtx_pro_6000_server"])
+def test_query_gdn_trtllm_rc29_resolves_the_triton_decode_recurrence(system):
+    """L40S and RTX PRO 6000 TRT-LLM rc29 persist
+    ``fused_sigmoid_gating_delta_rule_update_triton``; without the mapping
+    L40S served a donor row (0.006557 ms instead of its own 0.005315 ms)."""
+    db = get_database(system, "trtllm", "1.3.0rc29", allow_unlisted_version=True)
+
+    own_raw = _raw_generation_latency(db, "fused_sigmoid_gating_delta_rule_update_triton", _QWEN35_REVIEW_KEY, 1)
+    result = _gdn_generation_op("fused_sigmoid_gating_delta_rule_update", _QWEN35_REVIEW_KEY)._engine_query(
+        db, batch_size=1, s=1
+    )
     assert result.source == "silicon"
     assert float(result) == pytest.approx(own_raw, rel=1e-9)
