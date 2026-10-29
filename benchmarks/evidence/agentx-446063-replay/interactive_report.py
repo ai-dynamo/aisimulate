@@ -12,6 +12,7 @@ import math
 from pathlib import Path
 
 import plotly
+from chart_comparisons import build_comparisons
 from plotly.offline import get_plotlyjs
 
 REQUEST_FIELDS = (
@@ -201,10 +202,58 @@ def build_dataset(identifier, prediction, measurement, requests, reference, life
     }
 
 
-def build_report_data(output, prediction, measurement, requests, reference, lifecycle, samples, provenance):
+def with_reference_workers(reference, reference_path):
+    """Enrich a copy only when source lineage uniquely identifies a worker."""
+    if not reference_path:
+        return reference
+    reference_path = Path(reference_path)
+    timeline_path = reference_path.parent / "request-timeline.json"
+    if timeline_path.is_file():
+        timeline = read_json(timeline_path)
+        workers = {}
+        for row in timeline.get("requests", []):
+            key = (
+                row.get("phase"),
+                row.get("srcTrace"),
+                row.get("srcOuter"),
+                row.get("srcInner"),
+                row.get("cid"),
+                row.get("ti"),
+            )
+            workers.setdefault(key, []).append(row.get("wid"))
+        reference = [dict(row) for row in reference]
+        for row in reference:
+            key = (
+                row.get("phase"),
+                row.get("source_trace_id"),
+                row.get("source_outer_idx"),
+                row.get("source_inner_idx"),
+                row.get("conversation_id"),
+                row.get("turn_index"),
+            )
+            matches = workers.get(key, [])
+            if len(matches) == 1 and matches[0] is not None:
+                row["worker_id"] = matches[0]
+    return reference
+
+
+def build_report_data(
+    output,
+    prediction,
+    measurement,
+    requests,
+    reference,
+    lifecycle,
+    samples,
+    provenance,
+    *,
+    silicon=None,
+    namespace_map=None,
+):
     output = Path(output)
     variant = measurement.get("variant", "").lower()
     identifier = "observed" if "observed" in variant else "raw" if variant == "unmodified_full_corpus" else output.name
+    reference = with_reference_workers(reference, provenance.get("reference_requests"))
     datasets = [build_dataset(identifier, prediction, measurement, requests, reference, lifecycle, samples, output)]
     current_prediction = measurement.get("provenance", {}).get("prediction", {}).get("path")
     for sibling in ("observed", "raw"):
@@ -224,7 +273,9 @@ def build_report_data(output, prediction, measurement, requests, reference, life
             continue
         reference_path = sibling_measurement.get("provenance", {}).get("reference", {}).get("path")
         sibling_reference = (
-            read_json(Path(reference_path)) if reference_path and Path(reference_path).exists() else reference
+            with_reference_workers(read_json(Path(reference_path)), reference_path)
+            if reference_path and Path(reference_path).exists()
+            else reference
         )
         datasets.append(
             build_dataset(
@@ -238,12 +289,15 @@ def build_report_data(output, prediction, measurement, requests, reference, life
                 report_dir,
             )
         )
+    for dataset in datasets:
+        dataset["comparison"] = build_comparisons(dataset, silicon, namespace_map)
     return browser_values(
         {
             "schema": "aisimulate.agentx.interactive-report.v1",
             "activeVariant": identifier,
             "datasets": datasets,
             "provenance": provenance,
+            "silicon": silicon,
             "plotly_python_version": plotly.__version__,
         }
     )
@@ -258,8 +312,31 @@ def script_json(value):
     )
 
 
-def write_interactive_report(output, prediction, measurement, requests, reference, lifecycle, samples, provenance):
-    data = build_report_data(output, prediction, measurement, requests, reference, lifecycle, samples, provenance)
+def write_interactive_report(
+    output,
+    prediction,
+    measurement,
+    requests,
+    reference,
+    lifecycle,
+    samples,
+    provenance,
+    *,
+    silicon=None,
+    namespace_map=None,
+):
+    data = build_report_data(
+        output,
+        prediction,
+        measurement,
+        requests,
+        reference,
+        lifecycle,
+        samples,
+        provenance,
+        silicon=silicon,
+        namespace_map=namespace_map,
+    )
     directory = Path(__file__).resolve().parent
     template = (directory / "report_template.html").read_text()
     substitutions = {
@@ -277,6 +354,18 @@ def write_interactive_report(output, prediction, measurement, requests, referenc
     document = substitutions["__REPORT_DATA_JSON__"].join(chunks)
     path = Path(output) / "report.html"
     path.write_text(document)
+    comparisons = {
+        "schema": "aisimulate.agentx.chart-comparisons.v1",
+        "point_id": measurement.get("point_id", 446063),
+        "activeVariant": data["activeVariant"],
+        "silicon_provenance": silicon.get("provenance") if silicon else None,
+        "datasets": [{"id": item["id"], "comparison": item["comparison"]} for item in data["datasets"]],
+    }
+    (Path(output) / "chart-comparisons.json").write_text(script_json(comparisons) + "\n")
+    if silicon is not None:
+        (Path(output) / "silicon-telemetry.json").write_text(script_json(silicon) + "\n")
+    else:
+        (Path(output) / "silicon-telemetry.json").unlink(missing_ok=True)
     return path
 
 

@@ -178,6 +178,71 @@ Keep `observed-replay`, `raw-replay`, `observed-report`, and `raw-report` under 
 
 Open `report.html` directly in a browser. Plotly, chart data, styles, and the license are embedded, so viewing and downloading report data require no network or local server. Reference links open external sites only when followed. The self-authored interface follows AgentX interaction patterns without copying its UI code or assets.
 
+### Silicon overlays and chart accuracy
+
+Pass `--silicon-metrics /path/to/server_metrics_export.json` to `render_report.py`
+to compare the replay with the original AIPerf server metrics. The renderer also
+accepts the resulting `silicon-telemetry.json`, which retains only the required
+series, exact phase origins, units, ownership labels, and source hash. Include
+that compact file when sharing or regenerating a report; the original large
+export is not required for viewing. `chart-comparisons.json` records the plotted
+series, aligned observations, scores, and exclusions for both replay variants.
+Existing `measurement.json`, replay outputs, and recorded wall times are unchanged.
+
+Silicon lines are solid and simulated lines are dotted, with the same color for
+the same metric. The ISL/OSL distributions remain unchanged; their in-flight
+views compare both datasets. The request timeline contains separate silicon and
+simulation lanes, including unmatched requests, and preserves their worker
+identities. Its header reports matched-request E2E MAPE.
+
+Chart headers show **Curve MAPE** for each comparable series. These scores compare
+the displayed curves at aligned elapsed times and therefore include differences
+in scheduling and replay progress. They follow phase, metric, and percentile
+controls, but not zoom. Expand the comparison details for coverage, exclusions,
+aligned observations, and **matched-request MAPE** for TTFT, E2E, and interactivity.
+Matched-request scores require unique source lineage, successful outcomes, and
+equal output lengths; input-length differences remain disclosed. Primer and
+warmup are matched as preparation, while their original labels remain available.
+
+Each run uses its actual phase origin, without fitting a lag or stretching time.
+Profiling scores cover the common 3,600-second window; grace tails remain visible.
+Warmup shows both full durations and scores their common duration. System metrics
+use one-second intervals. Cache, queue, prefix-hit, and throughput curves use
+identical trailing 50-second smoothing; cumulative completions, cumulative prompt
+sources, and conversation input footprints retain their unsmoothed values. Counter
+rebinning conserves counts using interval overlap and assumes uniform activity
+within each source interval; gauges use time weighting. Missing observations
+remain unavailable. When initial capture has a gap, both smoothers start at the
+first common fully covered interval; windows crossing later gaps remain unavailable.
+SGLang's documented no-query null counters contribute zero to additive pass totals
+only after pass-counter support is established; absent intervals remain missing.
+Request percentiles use 50-request windows and step curves;
+interactivity applies the percentile to TPOT before inversion.
+
+MAPE is the arithmetic mean of `100 * abs(simulated - silicon) / silicon` over
+valid aligned observations with positive silicon values. Zero silicon denominators
+and missing observations are excluded explicitly, with their counts and simulated
+activity disclosed. No epsilon is substituted for zero. Separate metric scores
+are never averaged together. A chart with no comparable observations reports
+unavailable instead of zero error.
+
+| View | Comparison semantics |
+|---|---|
+| KV utilization | Resident used plus evictable cache; replicated TP capacity counted once. |
+| Queues / completed | Scheduler running/waiting gauges; successful completion counts from request records. |
+| Prefix hits | Pass-local cached tokens divided by cached plus computed tokens. Native lookup statistics remain a distinct, unscored series. |
+| Throughput | Executed prefill and successful completion-accounted output. Native delivered-token throughput remains a separate unscored view because silicon lacks exact delivery timestamps. |
+| Prompt sources | Effective first-admission compute/HBM/host attribution, excluding retraction recounts. |
+| Conversation-level input footprint | Sum of maximum active ISL per conversation, calculated identically on both sides; this is a proxy, not unique physical KV occupancy. |
+| Acceptance | Silicon retained gauge versus native interval mean; overlay is descriptive and MAPE is unavailable. |
+| Completion status | Grouped counts preserve client failures and scheduler terminal states; categorical MAPE is unavailable. |
+
+The compact dashboard API is not a substitute for raw server metrics: its input
+throughput counts full prompts, its decode series accounts at request completion,
+and its cache utilization measures active slots instead of retained occupancy.
+Missing silicon inputs leave simulated views usable with unavailable comparisons.
+No new GPU measurements or replay executions are required to render overlays.
+
 - Select an available replay variant, sort by latency or throughput, and use the Profiling/Warmup tabs. Warmup includes primers and ten live requests per lane.
 - Hover for values, drag or scroll to zoom, double-click to reset, expand a chart, or export its PNG. Controls switch Distribution/In-flight average, P75/P90, TTFT/E2E, queue/completed requests, and input/decode throughput.
 - Open Request timeline to group by conversation or worker, filter request IDs, pan or zoom, and click a request for timing, lengths, status, and source lineage.
@@ -199,6 +264,21 @@ mobile layout, and offline operation. Only Chromium/Chrome is browser-qualified.
 The native data adapter also has an executable self-check:
 `python/aisimulate/.venv/bin/python benchmarks/evidence/agentx-446063-replay/interactive_report.py`.
 
+The silicon comparison checks run without GPU access:
+
+```bash
+python/aisimulate/.venv/bin/python -m pytest -q -p no:timeout \
+  benchmarks/evidence/agentx-446063-replay/test_silicon_metrics.py \
+  benchmarks/evidence/agentx-446063-replay/test_chart_comparisons.py \
+  benchmarks/evidence/agentx-446063-replay/test_interactive_report.py
+```
+
+Thirty focused tests cover raw/compact input, ownership, time alignment, counter
+conservation, missing and zero observations, source matching, warmup, overwrite
+cleanup, and CLI passthrough. Both point-446063 report entrypoints pass twenty-one
+Chrome checks, including origin styling, exported chart scores, paired request
+details, and mobile layout. Original replay/scoring artifacts retain their hashes.
+
 ## Accuracy definitions
 
 `APE = 100 × abs(simulated − measured) / measured`, for positive measured values. Request MAPE is the arithmetic mean of individual request APEs. A single point's mean-latency or throughput comparison is explicitly **N=1 APE**, not a request MAPE. There is no numerical acceptance threshold or timing-accuracy qualification in this experiment.
@@ -215,7 +295,7 @@ The raw benchmark has 326 profiling rows: 324 successes and 2 no-content errors.
 | Input throughput | 29,117.080868 tokens/s |
 | Total throughput | 29,205.618800 tokens/s |
 
-These denominators match the dashboard. AIPerf's raw aggregate uses approximately 3,600 seconds and reports a slightly different throughput; do not mix the two definitions. Sampled throughput plots instead use native delivered output/executed prefill counters divided by each interval's exact duration. Executed prefill excludes cache hits and is not input-sequence-length throughput.
+These denominators match the dashboard. AIPerf's raw aggregate uses approximately 3,600 seconds and reports a slightly different throughput; do not mix the two definitions. Static throughput figures use native delivered output/executed prefill counters divided by each interval's exact duration. The interactive comparison defaults to successful completion-accounted output on both sides; native delivered output remains a separate unscored option. Executed prefill excludes cache hits and is not input-sequence-length throughput.
 
 The scorer retains request pairs and exclusions, reports exact-source and output-length-matched subsets, flags input differences and ambiguous repeated instances, and records actual cohort sizes. Different simulated completion times change which requests fit inside the profile window; independent point aggregates therefore have different cohorts. Errors and cancellations are retained, not silently converted into successful measurements.
 

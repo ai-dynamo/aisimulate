@@ -24,6 +24,7 @@ import numpy as np
 from interactive_report import write_interactive_report
 from matplotlib.collections import LineCollection
 from matplotlib.lines import Line2D
+from silicon_metrics import load_silicon_metrics
 
 COLORS = {"primer": "#a55a05", "warmup": "#df8d22", "profile": "#147d92"}
 INK = "#17324d"
@@ -532,7 +533,17 @@ def comparison_plot(rows, output, figures):
 
 
 def render_html(
-    output, figures, prediction, measurement, requests, reference, lifecycle, samples, run_dir, reference_path
+    output,
+    figures,
+    prediction,
+    measurement,
+    requests,
+    reference,
+    lifecycle,
+    samples,
+    run_dir,
+    reference_path,
+    silicon=None,
 ):
     provenance = {
         "run_directory": str(run_dir.resolve()),
@@ -547,7 +558,23 @@ def render_html(
             "reference_requests": len(reference),
         },
     }
-    write_interactive_report(output, prediction, measurement, requests, reference, lifecycle, samples, provenance)
+    namespace_path = reference_path.parent / "source_namespace_map.json"
+    if not namespace_path.exists():
+        recorded = measurement.get("provenance", {}).get("namespace_map", {}).get("path")
+        namespace_path = Path(recorded) if recorded else namespace_path
+    namespace_map = read_json(namespace_path) if namespace_path.is_file() else None
+    write_interactive_report(
+        output,
+        prediction,
+        measurement,
+        requests,
+        reference,
+        lifecycle,
+        samples,
+        provenance,
+        silicon=silicon,
+        namespace_map=namespace_map,
+    )
     (output / "analysis-summary.json").write_text(json.dumps(provenance, indent=2) + "\n")
 
 
@@ -557,6 +584,11 @@ def main():
     parser.add_argument("--reference", type=Path, required=True)
     parser.add_argument("--measurement", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--silicon-metrics",
+        type=Path,
+        help="Original AIPerf server-metrics export or prepared silicon-telemetry.json for overlays",
+    )
     args = parser.parse_args()
     prediction = read_json(args.run_dir / "prediction.json")
     manifest = prediction.get("telemetry")
@@ -569,6 +601,7 @@ def main():
     measurement = read_json(args.measurement)
     if not isinstance(reference, list) or not isinstance(measurement, dict):
         raise ValueError("Expected reference request array and measurement object")
+    silicon = load_silicon_metrics(args.silicon_metrics, measurement.get("point_id", 446063))
     if any(
         not finite(row.get("arrival_time_ms"))
         or not finite(row.get("terminal_time_ms"))
@@ -629,6 +662,7 @@ def main():
         samples,
         args.run_dir,
         args.reference,
+        silicon,
     )
     print(
         json.dumps(

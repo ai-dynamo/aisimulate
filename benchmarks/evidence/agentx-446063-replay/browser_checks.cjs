@@ -101,6 +101,7 @@ async function main() {
     const report = JSON.parse(initial);
     const primaryId = report.activeVariant;
     const primary = report.datasets.find((d) => d.id === primaryId);
+    const hasComparison = Boolean(primary.comparison);
     const pointId = primary.measurement.point_id ?? 446063;
     const variants = report.datasets.map((d) => d.id);
     const supplied = process.argv[4]
@@ -207,8 +208,9 @@ async function main() {
             .click();
           await page.waitForFunction(
             (id) =>
-              document.getElementById(`plot-${id}`).data[0].name ===
-              "In-flight avg",
+              document
+                .getElementById(`plot-${id}`)
+                .data.some((trace) => /in.flight/i.test(trace.name)),
             id,
           );
           await page
@@ -246,19 +248,24 @@ async function main() {
       async () => {
         const selector = page.getByLabel("Throughput series");
         await selector.selectOption("decode");
-        assert.deepEqual(
-          await plot("throughput").evaluate((el) => el.data.map((t) => t.name)),
-          ["Decode / delivered output (avg n=50)"],
-        );
+        const decode = await plot("throughput").evaluate((el) => el.data);
+        if (hasComparison) {
+          assert.equal(decode.length, 2);
+          assert(decode.every((trace) => /completion/i.test(trace.name)));
+        } else
+          assert.deepEqual(
+            decode.map((t) => t.name),
+            ["Decode / delivered output (avg n=50)"],
+          );
         await selector.selectOption("prefill");
         assert.equal(
           await plot("throughput").evaluate((el) => el.data.length),
-          1,
+          hasComparison ? 2 : 1,
         );
         await selector.selectOption("both");
         assert.equal(
           await plot("throughput").evaluate((el) => el.data.length),
-          3,
+          hasComparison ? 4 : 3,
         );
         await page
           .locator('[data-mode="queue"][data-value="completed"]')
@@ -289,12 +296,12 @@ async function main() {
           );
           assert(
             names.every((name) =>
-              /^1 \/ (rolling|cumulative) P75 TPOT$/.test(name),
+              /1 \/ (rolling(?: 50-request)?|cumulative) P75 TPOT/i.test(name),
             ),
           );
           assert.match(
             await page.locator("#foot-interactivity").textContent(),
-            /TPOT before inversion/,
+            /TPOT.*(before inversion|before.*invert|percentile)/i,
           );
         }
       },
@@ -304,6 +311,21 @@ async function main() {
       async () => {
         for (const id of variants) {
           await variant(id);
+          if (hasComparison) {
+            await page
+              .getByLabel("Throughput series")
+              .selectOption("delivered");
+            const plotted = await plot("throughput").evaluate((el) => el.data);
+            const saved = report.datasets.find((d) => d.id === id).comparison
+              .phases.profile.charts.throughput_delivered;
+            assert.deepEqual(
+              plotted.map((trace) => trace.y),
+              saved.series.map((trace) => trace.y),
+            );
+            assert(saved.scores.every((score) => score.mape_percent === null));
+            await page.getByLabel("Throughput series").selectOption("both");
+            continue;
+          }
           const samples = report.datasets
             .find((d) => d.id === id)
             .samples.filter((s) => s.phase === "profile");
@@ -339,6 +361,107 @@ async function main() {
         );
       }
     });
+    if (hasComparison) {
+      await check(
+        "silicon is solid and simulation dotted with unchanged metric colors",
+        async () => {
+          for (const id of variants) {
+            await variant(id);
+            for (const phase of ["profile", "preparation"]) {
+              await stage(phase);
+              for (const card of [
+                "latency",
+                "cache",
+                "queue",
+                "throughput",
+                "source",
+                "unique",
+                "acceptance",
+              ]) {
+                const traces = await plot(card).evaluate((el) => el.data || []);
+                for (const trace of traces.filter((t) => t.meta?.origin)) {
+                  assert.equal(
+                    trace.line?.dash || "solid",
+                    trace.meta.origin === "simulated" ? "dot" : "solid",
+                  );
+                  const counterpart = traces.find(
+                    (t) =>
+                      t.meta?.metric === trace.meta.metric &&
+                      t.meta?.origin !== trace.meta.origin,
+                  );
+                  if (counterpart)
+                    assert.equal(trace.line.color, counterpart.line.color);
+                }
+                assert.match(
+                  await page.locator(`#scores-${card}`).textContent(),
+                  /MAPE/,
+                );
+              }
+              assert.match(
+                await page.locator("#scores-acceptance").textContent(),
+                /(unavailable|N\/A)/i,
+              );
+              assert.match(
+                await page.locator("#scores-completion").textContent(),
+                /(unavailable|N\/A)/i,
+              );
+            }
+          }
+          await variant(primaryId);
+          await stage("profile");
+        },
+      );
+      await check(
+        "visible cache curves and title MAPE use the exported observations",
+        async () => {
+          const chart = primary.comparison.phases.profile.charts.cache;
+          const traces = await plot("cache").evaluate((el) => el.data);
+          assert.deepEqual(
+            traces.map((t) => t.x),
+            chart.series.map((s) => s.x),
+          );
+          assert.deepEqual(
+            traces.map((t) => t.y),
+            chart.series.map((s) => s.y),
+          );
+          const badges = await page.locator("#scores-cache").textContent();
+          for (const score of chart.scores.filter((s) =>
+            Number.isFinite(s.mape_percent),
+          )) {
+            assert(
+              badges.includes(
+                score.mape_percent.toLocaleString("en-US", {
+                  maximumFractionDigits: 2,
+                }),
+              ),
+            );
+          }
+          await page.locator("#comparison-latency > details > summary").click();
+          assert.match(
+            await page.locator("#comparison-latency").textContent(),
+            /matched.request MAPE/i,
+          );
+          await page.locator("#comparison-latency > details > summary").click();
+        },
+      );
+      await check(
+        "chart comparison download preserves aligned scores and plotted series",
+        async () => {
+          const chart = primary.comparison.phases.profile.charts.cache;
+          await page.locator("#comparison-cache > details > summary").click();
+          const downloading = page.waitForEvent("download");
+          await page.locator('[data-download-comparison="cache"]').click();
+          const download = await downloading;
+          const target = path.join(outputDir, download.suggestedFilename());
+          await download.saveAs(target);
+          const data = JSON.parse(await fs.readFile(target, "utf8"));
+          assert.deepEqual(data.scores, chart.scores);
+          assert.deepEqual(data.series, chart.series);
+          assert.equal(data.point_id, pointId);
+          await page.locator("#comparison-cache > details > summary").click();
+        },
+      );
+    }
     await check(
       "timeline grouping, request search, and request details work",
       async () => {
@@ -358,7 +481,7 @@ async function main() {
             await page
               .locator("#timeline-plot")
               .evaluate((el) => el.data.flatMap((t) => t.y))
-          ).every((v) => v.startsWith("Worker ")),
+          ).every((v) => /Worker /i.test(v)),
         );
         await page.locator('[data-group="conversation"]').click();
         await screenshot("timeline");
@@ -371,7 +494,7 @@ async function main() {
         await page.waitForFunction(() =>
           document
             .getElementById("timeline-summary")
-            .textContent.startsWith("1 requests"),
+            .textContent.includes("1 requests"),
         );
         await page.locator('#timeline-plot[aria-busy="false"]').waitFor();
         const bars = page.locator("#timeline-plot .barlayer .point path");
@@ -391,6 +514,21 @@ async function main() {
             request.request_id,
           ),
         );
+        if (
+          hasComparison &&
+          (await page.locator("#request-dialog [data-counterpart]").count())
+        ) {
+          await page.locator("#request-dialog [data-counterpart]").click();
+          assert.match(
+            await page.locator("#request-title").textContent(),
+            /Silicon/,
+          );
+          await page.locator("#request-dialog [data-counterpart]").click();
+          assert.match(
+            await page.locator("#request-title").textContent(),
+            /Simulated/,
+          );
+        }
         await close("request-dialog");
         await page.getByLabel("Filter requests by ID or conversation").fill("");
       },
@@ -436,6 +574,36 @@ async function main() {
         );
       },
     );
+    if (hasComparison) {
+      await check(
+        "a missing silicon clock is unavailable rather than a zero-request measurement",
+        async () => {
+          await page.evaluate(() => {
+            const p = phaseComparison();
+            window.testClock = p.alignment.silicon_origin_ns;
+            window.testTimelineRows = p.timeline.reference_requests;
+            p.alignment.silicon_origin_ns = null;
+            p.timeline.reference_requests = [];
+            renderTimeline();
+          });
+          try {
+            assert.match(
+              await page.locator("#timeline-summary").textContent(),
+              /Silicon: unavailable/,
+            );
+          } finally {
+            await page.evaluate(() => {
+              const p = phaseComparison();
+              p.alignment.silicon_origin_ns = window.testClock;
+              p.timeline.reference_requests = window.testTimelineRows;
+              delete window.testClock;
+              delete window.testTimelineRows;
+              renderTimeline();
+            });
+          }
+        },
+      );
+    }
     await check(
       "accuracy tables preserve available variants and metric values",
       async () => {

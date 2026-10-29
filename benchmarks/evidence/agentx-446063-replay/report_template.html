@@ -370,6 +370,44 @@
         margin: 0 4px 5px;
         min-height: 15px;
       }
+      .score-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        margin: 6px 0;
+      }
+      .score-badge {
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        color: var(--text);
+        background: var(--raised);
+        padding: 3px 6px;
+        font-size: 10px;
+      }
+      .score-badge.unavailable {
+        color: var(--muted);
+        background: transparent;
+      }
+      .comparison-details {
+        border-top: 1px solid var(--border);
+        padding-top: 8px;
+        margin-top: 8px;
+      }
+      .comparison-details .table-wrap {
+        margin: 8px 0;
+      }
+      .comparison-details th,
+      .comparison-details td {
+        padding: 8px;
+        font-size: 10px;
+      }
+      .comparison-details p {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .comparison-details button {
+        font-size: 11px;
+      }
       .empty {
         height: 246px;
         display: flex;
@@ -675,7 +713,7 @@
       <div class="subnav">
         <strong>Inference Performance</strong
         ><span>Agentic benchmark replay</span
-        ><span class="badge">SIMULATED METRICS</span>
+        ><span class="badge" id="data-origin">SIMULATED METRICS</span>
       </div>
       <div class="breadcrumb">
         <a id="reference-benchmark" target="_blank" rel="noopener"
@@ -794,6 +832,8 @@
           />
         </div>
         <div id="timeline-summary" class="hint"></div>
+        <div id="timeline-scores" class="score-badges"></div>
+        <div id="timeline-comparison"></div>
         <div class="timeline-panel">
           <div class="timeline-help">
             <span class="hint"
@@ -811,6 +851,7 @@
               ><i class="dot" style="background: var(--red)"></i>Canceled /
               failed</span
             >
+            <span>Silicon: filled · Simulated: outlined · Separate lanes</span>
           </div>
           <div
             id="timeline-plot"
@@ -844,7 +885,9 @@
         <button aria-label="Close expanded chart" data-close>×</button>
       </div>
       <div id="expanded-note" class="hint"></div>
+      <div id="expanded-scores" class="score-badges"></div>
       <div id="expanded-plot" class="dialog-plot"></div>
+      <div id="expanded-comparison"></div>
     </dialog>
     <dialog id="request-dialog" aria-labelledby="request-title">
       <div class="dialog-head">
@@ -871,20 +914,28 @@
         </li>
         <li>
           Distribution / In-flight avg, P75 / P90, TTFT / E2E, and queue /
-          throughput controls change the plotted metric.
+          throughput controls change the plotted metric and its comparison
+          scores. Zoom changes the view only; it does not recalculate scores.
         </li>
         <li>
-          Request timeline groups work by conversation or worker. Click a
-          request to inspect its timestamps, lengths, status, and source
-          identity.
+          Silicon curves are solid and simulated curves are dotted, using the
+          same color for each metric. Curve MAPE compares aligned phase-time
+          observations; matched-request MAPE compares exact source requests.
+          Open comparison details for counts, coverage, exclusions, and exports.
+        </li>
+        <li>
+          Request timeline groups both origins by conversation or worker, in
+          separate lanes. Unmatched requests remain visible. Click a request to
+          inspect its timestamps, lengths, status, and source identity.
         </li>
         <li>
           Charts use seconds since the selected phase began. Original absolute
           virtual timestamps remain in exported data.
         </li>
         <li>
-          Missing metrics remain unavailable. No unique in-flight prompt count
-          can be inferred from retained cache occupancy.
+          Missing reference metrics and zero denominators do not receive
+          invented scores. The conversation-level input footprint is a proxy; it
+          does not measure unique tokens or cache occupancy.
         </li>
         <li>
           Aggregates retain request matching, coverage, and the distinction
@@ -1056,7 +1107,7 @@
           control: "throughput",
         },
         { id: "source", title: "Cumulative prompt token source breakdown" },
-        { id: "unique", title: "Unique input tokens in flight" },
+        { id: "unique", title: "Conversation-level input footprint proxy" },
         { id: "acceptance", title: "Speculative acceptance length" },
         { id: "completion", title: "Request completion status" },
       ];
@@ -1126,6 +1177,7 @@
             ["both", "Input, Decode"],
             ["prefill", "Input only"],
             ["decode", "Decode only"],
+            ["delivered", "Native token delivery"],
           ]
             .map(
               ([v, l]) =>
@@ -1134,7 +1186,197 @@
             .join("")}</select>`;
         return "";
       }
+      const phaseComparison = () => dataset().comparison?.phases?.[state.stage];
+      function comparisonKey(id) {
+        if (id === "input" || id === "output")
+          return state.modes[id] === "inflight" ? id + "_inflight" : null;
+        if (id === "interactivity")
+          return `interactivity_p${state.percentiles.interactivity}`;
+        if (id === "latency")
+          return `latency_${state.modes.latency}_p${state.percentiles.latency}`;
+        if (id === "queue") return state.modes.queue;
+        if (id === "throughput") return "throughput_" + state.modes.throughput;
+        return id;
+      }
+      function matchedScore(id) {
+        const metric =
+          id === "latency"
+            ? state.modes.latency
+            : id === "interactivity"
+              ? "interactivity"
+              : id === "timeline"
+                ? "e2e_latency_ms"
+                : null;
+        return metric ? phaseComparison()?.matched?.[metric] : null;
+      }
+      function scoreBadges(scores, kind = "Curve MAPE") {
+        return scores
+          .map((score) => {
+            const available = finite(score.mape_percent);
+            const label = score.label || score.metric || "Selected metric";
+            return `<span class="score-badge${available ? "" : " unavailable"}" title="${esc(score.reason || "Scores use the full selected phase; zoom does not change the cohort.")}">${esc(label)} · ${esc(kind)} ${available ? fmt(score.mape_percent) + "%" : "N/A"} · N=${fmt(score.count, 0)}</span>`;
+          })
+          .join("");
+      }
+      function comparisonScores(id, chart) {
+        if (chart?.scores?.length) return chart.scores;
+        const histogram =
+          (id === "input" || id === "output") &&
+          state.modes[id] === "distribution";
+        return [
+          {
+            label: histogram ? "Distribution" : "Selected metric",
+            mape_percent: null,
+            count: 0,
+            reason: histogram
+              ? "Request-length histograms are descriptive; no aligned-curve MAPE is defined."
+              : "No compatible silicon comparison is available for this phase and metric.",
+          },
+        ];
+      }
+      function scoreRows(scores) {
+        return scores
+          .map(
+            (score) =>
+              `<tr><td class="wrap">${esc(score.label || score.metric || "Selected metric")}</td><td>${finite(score.mape_percent) ? fmt(score.mape_percent) + "%" : "N/A"}</td><td>${fmt(score.count, 0)}</td><td class="wrap" title="${esc(score.coverage_definition || "")}">${finite(score.coverage) ? fmt(score.coverage * 100) + "%" : "Unavailable"}${finite(score.denominator_count) ? " of " + fmt(score.denominator_count, 0) : ""}${score.coverage_definition ? " · " + esc(score.coverage_definition) : ""}</td><td>${fmt(score.zero_reference_count, 0)}</td><td>${fmt(score.missing_count, 0)}</td><td class="wrap">${esc(score.reason || "—")}</td></tr>`,
+          )
+          .join("");
+      }
+      function comparisonDetails(id, chart) {
+        const scores = comparisonScores(id, chart);
+        const matched = matchedScore(id);
+        const table = (items) =>
+          `<div class="table-wrap"><table><thead><tr><th>Metric</th><th>MAPE</th><th>Scored N</th><th>Coverage</th><th>Zero reference</th><th>Missing</th><th>Reason / exclusions</th></tr></thead><tbody>${scoreRows(items)}</tbody></table></div>`;
+        return `<details class="comparison-details"><summary>Comparison details, request matching, and exclusions</summary>${id === "timeline" ? "" : `<p>Curve MAPE uses the supplied aligned observations over the common covered phase interval. Missing values and zero reference denominators are excluded from MAPE; no score is recomputed when zooming.</p>${table(scores)}<button data-download-comparison="${esc(id)}">Download aligned observations and scores</button>`}${matched ? `<p>Matched-request MAPE uses exact source identities across the full selected phase. Its pairing cohort is separate from the time-aligned curve observations.</p>${table([matched])}<button data-matched-download="${esc(id)}">Download matched pairs, coverage, and exclusions</button><details><summary>Raw matched-request coverage and exclusions</summary><pre>${esc(JSON.stringify(Object.fromEntries(Object.entries(matched).filter(([key]) => key !== "pairs" && key !== "aligned")), null, 2))}</pre></details>` : `<p>Matched-request MAPE: N/A for this metric. Request-length distributions and scheduler/cache curves do not establish request latency pairing.</p>`}</details>`;
+      }
+      function comparisonChartData(id) {
+        const key = comparisonKey(id);
+        const chart = key && phaseComparison()?.charts?.[key];
+        if (!chart) return null;
+        const series = chart.series || [];
+        const hasBars = series.some((item) => item.kind === "bar");
+        const traces = series.map((item) => {
+          const simulated = item.origin === "simulated";
+          const c = color(item.color || "accent") || color("accent");
+          const label = `${item.label || item.metric} · ${simulated ? "Simulated" : "Silicon"}`;
+          const common = {
+            name: label,
+            x: item.x,
+            y: item.y,
+            legendgroup: item.id || `${item.metric}-${item.origin}`,
+            meta: {
+              origin: item.origin,
+              metric: item.metric,
+              series_id: item.id,
+            },
+            connectgaps: false,
+            hovertemplate: `%{x}<br>%{y:,.3f} ${esc(chart.unit || "")}<extra>${esc(label)}</extra>`,
+          };
+          return item.kind === "bar"
+            ? {
+                ...common,
+                type: "bar",
+                offsetgroup: item.origin,
+                marker: {
+                  color: simulated ? "rgba(0,0,0,0)" : c,
+                  line: { color: c, width: simulated ? 2 : 0 },
+                },
+              }
+            : {
+                ...common,
+                type: "scatter",
+                mode:
+                  ["hits", "acceptance"].includes(id) ||
+                  item.y?.filter(finite).length === 1
+                    ? "lines+markers"
+                    : "lines",
+                marker: {
+                  color: c,
+                  size: 4,
+                  symbol: simulated ? "circle-open" : "circle",
+                },
+                line: {
+                  color: c,
+                  width: simulated ? 2 : 1.5,
+                  dash: simulated ? "dot" : "solid",
+                  shape: item.step ? "hv" : "linear",
+                },
+              };
+        });
+        const hasTruth = series.some(
+          (item) => item.origin === "silicon" && item.y?.some(finite),
+        );
+        const hasValues = series.some((item) => item.y?.some(finite));
+        const scoreWindow = chart.scores?.find(
+          (score) => score.window_seconds,
+        )?.window_seconds;
+        const windowStart = chart.score_window_start_s ?? scoreWindow?.[0];
+        const windowEnd = chart.score_window_end_s ?? scoreWindow?.[1];
+        const times = series.flatMap((item) => item.x || []).filter(finite);
+        const bands = [];
+        if (
+          !hasBars &&
+          times.length &&
+          finite(windowStart) &&
+          finite(windowEnd) &&
+          windowEnd > windowStart
+        ) {
+          const first = Math.min(...times),
+            last = Math.max(...times);
+          if (first < windowStart)
+            bands.push([first, windowStart, "Unscored lead-in"]);
+          if (last > windowEnd) bands.push([windowEnd, last, "Unscored tail"]);
+        }
+        return {
+          title: chart.title,
+          traces,
+          layout: layout(chart.unit || "Value", {
+            barmode: "group",
+            ...(hasBars
+              ? { xaxis: { gridcolor: color("grid"), type: "category" } }
+              : {}),
+            shapes: bands.map(([start, end]) => ({
+              type: "rect",
+              xref: "x",
+              yref: "paper",
+              x0: start,
+              x1: end,
+              y0: 0,
+              y1: 1,
+              fillcolor: "rgba(128,128,128,0.14)",
+              line: { width: 0 },
+              layer: "below",
+            })),
+            annotations: bands.map(([start, end, label]) => ({
+              xref: "x",
+              yref: "paper",
+              x: (start + end) / 2,
+              y: 1,
+              text: label,
+              showarrow: false,
+              font: { color: color("muted"), size: 9 },
+              yanchor: "bottom",
+            })),
+          }),
+          note: chart.note || "",
+          foot: [
+            chart.foot,
+            hasTruth
+              ? "Silicon: solid / filled. Simulated: dotted / outlined. Same color identifies the same metric."
+              : "Silicon reference unavailable for this view; curve MAPE is N/A.",
+            bands.length
+              ? `Shaded regions fall outside the ${fmt(windowStart)}–${fmt(windowEnd)}s scoring window; grace and other phase tails remain visible.`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(" "),
+          empty: hasValues ? null : "No comparable observations in this phase.",
+          comparison: chart,
+        };
+      }
       function chartData(id) {
+        const compared = comparisonChartData(id);
+        if (compared) return compared;
         const r = rows(),
           ss = samples(),
           x = ss.map(relative),
@@ -1421,7 +1663,7 @@
                 ? w.reduce((n, q) => n + q[key], 0) / duration
                 : null;
             });
-          if (state.modes.throughput !== "decode")
+          if (!["decode", "delivered"].includes(state.modes.throughput))
             traces.push(
               line(
                 "Input / executed prefill (avg n=50)",
@@ -1495,10 +1737,10 @@
           foot =
             "Readmissions do not increase the first-admission denominator.";
         } else if (id === "unique") {
-          empty = "Unique in-flight prompt tokens are not captured.";
+          empty = "Conversation-level input footprint proxy is unavailable.";
           foot =
-            "Retained cache occupancy cannot substitute for unique active prompt identities.";
-          note = "Unavailable in this native telemetry schema";
+            "The proxy needs conversation identities and active request lengths; retained cache occupancy is not a substitute.";
+          note = "No prepared conversation-footprint comparison for this phase";
         } else if (id === "acceptance") {
           traces = [
             line(
@@ -1510,7 +1752,7 @@
             ),
           ];
           axes = layout("tokens / forward");
-          note = "Includes the base token; configured expectation 2.99";
+          note = "Native observed acceptance length includes the base token";
           if (!ss.some((v) => finite(v.accept)))
             empty = "No decode acceptance observations in this phase.";
         } else if (id === "completion") {
@@ -1544,13 +1786,42 @@
           foot =
             "Unavailable latency is excluded from accuracy scoring, not from this status count.";
         }
+        const histogram =
+          (id === "input" || id === "output") &&
+          state.modes[id] === "distribution";
+        if (!histogram) {
+          foot += " Silicon comparison unavailable; curve MAPE is N/A.";
+          for (const trace of traces) {
+            trace.name = (trace.name || "Selected metric") + " · Simulated";
+            if (trace.type === "scatter")
+              trace.line = { ...trace.line, dash: "dot" };
+          }
+        }
         return { traces, layout: axes, note, foot, empty };
       }
       function renderCard(id) {
         const d = chartData(id),
           s = specs.find((v) => v.id === id);
+        $("title-" + id).textContent =
+          d.title ||
+          (id === "latency"
+            ? state.modes.latency === "ttft_ms"
+              ? "TTFT over time"
+              : "End-to-end latency over time"
+            : id === "input" || id === "output"
+              ? `${id === "input" ? "Input" : "Output"} sequence length ${state.modes[id] === "inflight" ? "in-flight average" : "distribution"}`
+              : s.title);
         $("note-" + id).textContent = d.note;
         $("foot-" + id).textContent = d.foot;
+        const histogram =
+          (id === "input" || id === "output") &&
+          state.modes[id] === "distribution";
+        $("scores-" + id).hidden = histogram;
+        $("comparison-" + id).hidden = histogram;
+        $("scores-" + id).innerHTML = scoreBadges(
+          comparisonScores(id, d.comparison),
+        );
+        $("comparison-" + id).innerHTML = comparisonDetails(id, d.comparison);
         const el = $("plot-" + id);
         if (d.empty) {
           Plotly.purge(el);
@@ -1559,18 +1830,13 @@
           if (el.querySelector(".empty")) el.replaceChildren();
           Plotly.react(el, d.traces, d.layout, config);
         }
-        if (id === "latency")
-          $("title-latency").textContent =
-            state.modes.latency === "ttft_ms"
-              ? "TTFT over time"
-              : "End-to-end latency over time";
       }
       function renderGrid() {
         if (!$("chart-grid").children.length)
           $("chart-grid").innerHTML = specs
             .map(
               (s) =>
-                `<article class="chart-card" id="card-${s.id}"><div class="chart-head"><h2 id="title-${s.id}">${s.title}</h2><div class="chart-controls" id="controls-${s.id}"></div><button class="expand" data-expand="${s.id}" aria-label="Expand ${s.title}">⤢</button></div><p class="chart-note" id="note-${s.id}"></p><div class="plot" id="plot-${s.id}" aria-label="${s.title}"></div><p class="chart-foot" id="foot-${s.id}"></p></article>`,
+                `<article class="chart-card" id="card-${s.id}"><div class="chart-head"><h2 id="title-${s.id}">${s.title}</h2><div class="chart-controls" id="controls-${s.id}"></div><button class="expand" data-expand="${s.id}" aria-label="Expand ${s.title}">⤢</button></div><div class="score-badges" id="scores-${s.id}"></div><p class="chart-note" id="note-${s.id}"></p><div class="plot" id="plot-${s.id}" aria-label="${s.title}"></div><p class="chart-foot" id="foot-${s.id}"></p><div id="comparison-${s.id}"></div></article>`,
             )
             .join("");
         for (const s of specs) {
@@ -1581,80 +1847,168 @@
       function conversation(r) {
         return r.agentic?.conversation_id || r.session_id || "Unassigned";
       }
+      const originLabel = (value) =>
+        value === "silicon" ? "Silicon" : "Simulated";
+      function workerIdentity(r) {
+        const ids = [];
+        if (r.prefill_worker_idx != null)
+          ids.push("Prefill " + r.prefill_worker_idx);
+        if (r.decode_worker_idx != null)
+          ids.push("Decode " + r.decode_worker_idx);
+        if (!ids.length && r.worker_id != null) ids.push(String(r.worker_id));
+        for (const field of ["dp_rank", "tp_rank", "rank"])
+          if (r[field] != null) ids.push(field + " " + r[field]);
+        return ids.length ? "Worker " + ids.join(" / ") : "Worker unavailable";
+      }
+      function timelineRows() {
+        const timeline = phaseComparison()?.timeline;
+        const simulated = rows().map((r, index) => ({
+          ...r,
+          origin: "simulated",
+          timeline_id: r.uuid || "simulated:" + index,
+          canonical_conversation:
+            timeline?.native_groups?.[r.uuid] || conversation(r),
+          matched_request_uuid: timeline?.native_matches?.[r.uuid] || null,
+          pairing_available: Boolean(timeline),
+        }));
+        const reference = (timeline?.reference_requests || []).map(
+          (r, index) => ({
+            ...r,
+            origin: "silicon",
+            timeline_id: r.uuid || "silicon:" + index,
+            canonical_conversation: r.canonical_conversation || conversation(r),
+            matched_request_uuid: r.matched_simulated_uuid || null,
+            pairing_available: true,
+          }),
+        );
+        return [...simulated, ...reference];
+      }
       function renderTimeline() {
-        const all = rows(),
-          ordered = [...all].sort(
-            (a, b) => a.arrival_time_ms - b.arrival_time_ms,
-          ),
-          conversations = [...new Set(ordered.map(conversation))];
+        const all = timelineRows();
+        const ordered = [...all].sort(
+          (a, b) => a.arrival_time_ms - b.arrival_time_ms,
+        );
+        const canonical = (r) => r.canonical_conversation || conversation(r);
+        const conversations = [...new Set(ordered.map(canonical))];
         const names = new Map(
           conversations.map((c, i) => [c, `Conversation ${i + 1}`]),
         );
+        const key = (r) =>
+          state.group === "worker"
+            ? `${originLabel(r.origin)} · ${workerIdentity(r)}`
+            : `${names.get(canonical(r))} · ${originLabel(r.origin)}`;
         const filtered = ordered.filter(
           (r) =>
             !state.search ||
             JSON.stringify([
               r.request_id,
               r.uuid,
+              canonical(r),
               conversation(r),
-              names.get(conversation(r)),
+              key(r),
+              names.get(canonical(r)),
             ])
               .toLowerCase()
               .includes(state.search),
         );
-        const key = (r) =>
+        const keySet = new Set(filtered.map(key));
+        const keys =
           state.group === "worker"
-            ? `Worker ${r.decode_worker_idx ?? r.prefill_worker_idx ?? 0}`
-            : names.get(conversation(r));
-        const keys = [...new Set(filtered.map(key))],
-          times = filtered.flatMap((r) => [
-            r.arrival_time_ms,
-            r.terminal_time_ms,
-          ]);
+            ? [...keySet].sort()
+            : conversations.flatMap((c) =>
+                ["Silicon", "Simulated"]
+                  .map((label) => `${names.get(c)} · ${label}`)
+                  .filter((k) => keySet.has(k)),
+              );
+        const times = filtered
+          .flatMap((r) => [r.arrival_time_ms, r.terminal_time_ms])
+          .filter(finite);
         const span = times.length
           ? (Math.max(...times) - Math.min(...times)) / 1000
           : 0;
+        const referenceCount = filtered.filter(
+          (r) => r.origin === "silicon",
+        ).length;
+        const matchedCount = filtered.filter(
+          (r) => r.matched_request_uuid,
+        ).length;
+        const hasSiliconClock =
+          phaseComparison()?.alignment?.silicon_origin_ns != null;
         $("timeline-summary").textContent =
-          `${fmt(filtered.length, 0)} requests · ${fmt(new Set(filtered.map(conversation)).size, 0)} conversations · ${fmt(span)}s span · phase-relative virtual clock`;
+          `Simulated: ${fmt(filtered.length - referenceCount, 0)} requests · Silicon: ${hasSiliconClock ? fmt(referenceCount, 0) + " requests" : "unavailable (phase origin missing)"} · ${fmt(new Set(filtered.map(canonical)).size, 0)} conversations · ${fmt(span)}s span · ${hasSiliconClock ? fmt(filtered.length - matchedCount, 0) + " unmatched request rows retained" : "Silicon timeline / pairing unavailable"} · phase-aligned display clock`;
+        const matched = matchedScore("timeline");
+        $("timeline-scores").innerHTML = scoreBadges(
+          [
+            matched || {
+              label: "E2E",
+              mape_percent: null,
+              count: 0,
+              reason:
+                "No matched silicon request cohort is available for this phase.",
+            },
+          ],
+          "Matched-request MAPE",
+        );
+        $("timeline-comparison").innerHTML = comparisonDetails(
+          "timeline",
+          null,
+        );
         const traces = [];
-        for (const [label, c, part] of [
-          ["Arrival → first token", color("accent"), "prefill"],
-          ["Decode", color("blue"), "decode"],
-          ["Canceled / failed", color("red"), "failed"],
-        ]) {
-          const rr = filtered.filter((r) =>
-            part === "failed"
-              ? r.terminal_status !== "completed"
-              : r.terminal_status === "completed",
-          );
-          const start = (r) =>
-            part === "decode"
-              ? (r.first_token_ms ?? r.terminal_time_ms)
-              : r.arrival_time_ms;
-          const end = (r) =>
-            part === "prefill"
-              ? (r.first_token_ms ?? r.terminal_time_ms)
-              : r.terminal_time_ms;
-          traces.push({
-            type: "bar",
-            orientation: "h",
-            name: label,
-            y: rr.map(key),
-            x: rr.map((r) => Math.max(0, (end(r) - start(r)) / 1000)),
-            base: rr.map((r) => start(r) / 1000 - origin()),
-            width: 0.55,
-            textposition: "none",
-            marker: { color: c },
-            customdata: rr.map((r) => r.uuid),
-            text: rr.map(
+        for (const source of ["silicon", "simulated"]) {
+          for (const [label, c, part] of [
+            ["Arrival → first token", color("accent"), "prefill"],
+            ["Decode", color("blue"), "decode"],
+            ["Canceled / failed", color("red"), "failed"],
+          ]) {
+            const rr = filtered.filter(
               (r) =>
-                `${names.get(conversation(r))}<br>${esc(r.request_id)}<br>${esc(r.phase)} · ${esc(r.terminal_status)}<br>Input ${fmt(r.input_length, 0)} · Output ${fmt(r.output_length, 0)}<br>TTFT ${fmt(r.ttft_ms)} ms · E2E ${fmt(r.e2e_latency_ms)} ms`,
-            ),
-            hovertemplate: "%{text}<extra>" + label + "</extra>",
-          });
+                r.origin === source &&
+                finite(r.arrival_time_ms) &&
+                finite(r.terminal_time_ms) &&
+                (part === "failed"
+                  ? r.terminal_status !== "completed"
+                  : r.terminal_status === "completed"),
+            );
+            if (!rr.length) continue;
+            const start = (r) =>
+              part === "decode"
+                ? (r.first_token_ms ?? r.terminal_time_ms)
+                : r.arrival_time_ms;
+            const end = (r) =>
+              part === "prefill"
+                ? (r.first_token_ms ?? r.terminal_time_ms)
+                : r.terminal_time_ms;
+            traces.push({
+              type: "bar",
+              orientation: "h",
+              name: `${originLabel(source)} · ${label}`,
+              meta: {
+                origin: source,
+                metric: part,
+                series_id: `${part}:${source}`,
+              },
+              y: rr.map(key),
+              x: rr.map((r) => Math.max(0, (end(r) - start(r)) / 1000)),
+              base: rr.map((r) => start(r) / 1000 - origin()),
+              width: 0.6,
+              textposition: "none",
+              marker: {
+                color: source === "simulated" ? "rgba(0,0,0,0)" : c,
+                line: { color: c, width: source === "simulated" ? 2 : 0 },
+              },
+              customdata: rr.map((r) => r.timeline_id),
+              text: rr.map(
+                (r) =>
+                  `${originLabel(source)} · ${names.get(canonical(r))}<br>${esc(r.request_id)}<br>${esc(r.phase)} · ${esc(r.terminal_status)} · ${r.matched_request_uuid ? "Source matched" : r.pairing_available ? "Unmatched" : "Pairing unavailable"}<br>Input ${fmt(r.input_length, 0)} · Output ${fmt(r.output_length, 0)}<br>TTFT ${fmt(r.ttft_ms)} ms · E2E ${fmt(r.e2e_latency_ms)} ms`,
+              ),
+              hovertemplate: "%{text}<extra>" + label + "</extra>",
+            });
+          }
         }
         const instantaneous = filtered.filter(
-          (r) => r.terminal_time_ms === r.arrival_time_ms,
+          (r) =>
+            finite(r.arrival_time_ms) &&
+            r.terminal_time_ms === r.arrival_time_ms,
         );
         if (instantaneous.length)
           traces.push({
@@ -1663,16 +2017,22 @@
             name: "Zero-duration terminal",
             x: instantaneous.map((r) => r.arrival_time_ms / 1000 - origin()),
             y: instantaneous.map(key),
-            customdata: instantaneous.map((r) => r.uuid),
-            marker: { color: color("muted"), symbol: "diamond", size: 7 },
+            customdata: instantaneous.map((r) => r.timeline_id),
+            marker: {
+              color: color("muted"),
+              symbol: instantaneous.map((r) =>
+                r.origin === "silicon" ? "diamond" : "diamond-open",
+              ),
+              size: 7,
+            },
             hovertemplate:
               "Zero-duration request · click for details<extra></extra>",
           });
         const counts = keys.map(
-            (k) => filtered.filter((r) => key(r) === k).length,
-          ),
-          el = $("timeline-plot");
-        const height = Math.max(350, keys.length * 34 + 90);
+          (k) => filtered.filter((r) => key(r) === k).length,
+        );
+        const el = $("timeline-plot"),
+          height = Math.max(350, keys.length * 34 + 90);
         el.style.height = height + "px";
         el.setAttribute("aria-busy", "true");
         Plotly.react(
@@ -1683,7 +2043,8 @@
             dragmode: "pan",
             barmode: "overlay",
             showlegend: false,
-            margin: { l: 185, r: 20, t: 30, b: 50 },
+            margin: { l: 250, r: 20, t: 30, b: 50 },
+            uirevision: `${state.variant}:${state.stage}:${state.group}`,
             yaxis: {
               categoryorder: "array",
               categoryarray: [...keys].reverse(),
@@ -1693,7 +2054,7 @@
               fixedrange: true,
             },
             xaxis: {
-              title: "time since phase start (s)",
+              title: { text: "time since each phase started (s)" },
               side: "top",
               gridcolor: color("grid"),
               zeroline: false,
@@ -1705,7 +2066,7 @@
           el.removeAllListeners("plotly_click");
           el.on("plotly_click", (event) => {
             const id = event.points[0]?.customdata;
-            const row = all.find((r) => r.uuid === id);
+            const row = all.find((r) => r.timeline_id === id);
             if (row) showRequest(row);
           });
           el.setAttribute("aria-busy", "false");
@@ -1713,25 +2074,56 @@
       }
       function showRequest(r) {
         $("request-title").textContent =
-          r.phase === "primer"
+          originLabel(r.origin) +
+          " · " +
+          (r.phase === "primer"
             ? "Primer"
             : r.phase === "warmup"
               ? "Warmup request"
-              : "Profiling request";
+              : "Profiling request");
         const fields = [
+          ["Origin", originLabel(r.origin)],
           ["Status", r.terminal_status],
+          ["Worker", workerIdentity(r)],
+          [
+            "Source pairing",
+            r.matched_request_uuid
+              ? "Matched"
+              : r.pairing_available
+                ? "Unmatched"
+                : "Unavailable",
+          ],
           ["Input tokens", fmt(r.input_length, 0)],
           ["Output tokens", fmt(r.output_length, 0)],
           ["TTFT", fmt(r.ttft_ms) + " ms"],
           ["E2E latency", fmt(r.e2e_latency_ms) + " ms"],
           ["TPOT", finite(r.itl_ms) ? fmt(r.itl_ms) + " ms" : "Unavailable"],
-          ["Absolute arrival", fmt(r.arrival_time_ms) + " ms"],
-          ["Absolute terminal", fmt(r.terminal_time_ms) + " ms"],
+          [
+            "Arrival in phase",
+            fmt(
+              finite(r.arrival_time_ms)
+                ? r.arrival_time_ms - origin() * 1000
+                : null,
+            ) + " ms",
+          ],
+          [
+            "Terminal in phase",
+            fmt(
+              finite(r.terminal_time_ms)
+                ? r.terminal_time_ms - origin() * 1000
+                : null,
+            ) + " ms",
+          ],
           [
             "First-admission reuse",
             fmt(r.first_admission_reused_input_tokens, 0) + " tokens",
           ],
         ];
+        if (r.origin !== "silicon")
+          fields.push(
+            ["Absolute virtual arrival", fmt(r.arrival_time_ms) + " ms"],
+            ["Absolute virtual terminal", fmt(r.terminal_time_ms) + " ms"],
+          );
         $("request-details").innerHTML =
           '<div class="request-grid">' +
           fields
@@ -1740,9 +2132,16 @@
                 `<div><small>${k}</small><strong>${esc(v)}</strong></div>`,
             )
             .join("") +
-          '</div><p class="hint">Source request</p><pre>' +
+          "</div>" +
+          (r.origin === "silicon"
+            ? '<p class="hint">Silicon timestamps are aligned to the simulated phase origin for display. Original source timestamps and phase-relative offsets remain in the record below.</p>'
+            : "") +
+          (r.matched_request_uuid
+            ? `<p><button data-counterpart="${esc(r.matched_request_uuid)}">Inspect matched ${r.origin === "silicon" ? "simulated" : "silicon"} request</button></p>`
+            : "") +
+          '<p class="hint">Source request</p><pre>' +
           esc(r.request_id) +
-          "</pre><details><summary>Native request record and lineage</summary><pre>" +
+          "</pre><details><summary>Request record and lineage</summary><pre>" +
           esc(JSON.stringify(r, null, 2)) +
           "</pre></details>";
         $("request-dialog").showModal();
@@ -1808,7 +2207,7 @@
       function renderEvidence() {
         const d = dataset();
         $("view-evidence").innerHTML =
-          `<h2 class="section-title">Replay evidence and methodology</h2><p class="comparison-lede">This report contains simulated observations from the complete benchmark replay. The source corpus contains 393 plays and 98,827 requests; only work reached during the 3,600-second profiling window is executed.</p><div class="downloads"><button data-download="requests">Download request records</button><button data-download="samples">Download chart samples</button><button data-download="measurement">Download accuracy & wall time</button></div><div class="evidence-box"><h2>Timing and capture</h2><div class="stats"><div class="stat"><small>Full CLI wall time</small><strong>${fmt(d.measurement.wall_time_seconds)} s</strong></div><div class="stat"><small>Native simulation timer</small><strong>${fmt(d.prediction.wall_time_ms / 1000)} s</strong></div><div class="stat"><small>Sample interval</small><strong>${fmt(d.telemetry.sample_interval_ms, 0)} ms</strong></div><div class="stat"><small>Completion</small><strong>${esc(d.telemetry.completion_status)}</strong></div></div><p class="hint">${esc(d.measurement.wall_time_scope)}</p></div><div class="evidence-box"><h2>Methods</h2><ul>${(d.measurement.methodology || []).map((v) => "<li>" + esc(v) + "</li>").join("")}</ul></div><div class="evidence-box"><h2>Known limitations</h2><ul>${(d.measurement.limitations || []).map((v) => "<li>" + esc(v) + "</li>").join("")}</ul><p class="hint">Unique in-flight input-token counts are unavailable. Cache utilization is resident occupancy, not active-request occupancy. Warmup includes primers and live requests across all lanes. No server logs or power data are displayed.</p></div><div class="evidence-box"><details><summary>Native telemetry manifest, execution provenance, and comparison scope</summary><pre>${esc(JSON.stringify({ telemetry: d.telemetry, measurement: d.measurement, provenance: report.provenance }, null, 2))}</pre></details></div><div class="evidence-box"><details><summary>Plotting library license and attribution</summary><pre>__PLOTLY_LICENSE__</pre></details></div>`;
+          `<h2 class="section-title">Replay evidence and methodology</h2><p class="comparison-lede">This report contains simulated observations from the complete benchmark replay. The source corpus contains 393 plays and 98,827 requests; only work reached during the 3,600-second profiling window is executed.</p><div class="downloads"><button data-download="requests">Download request records</button><button data-download="samples">Download chart samples</button><button data-download="measurement">Download accuracy & wall time</button><button data-download="comparison">Download chart comparisons</button></div><div class="evidence-box"><h2>Timing and capture</h2><div class="stats"><div class="stat"><small>Full CLI wall time</small><strong>${fmt(d.measurement.wall_time_seconds)} s</strong></div><div class="stat"><small>Native simulation timer</small><strong>${fmt(d.prediction.wall_time_ms / 1000)} s</strong></div><div class="stat"><small>Sample interval</small><strong>${fmt(d.telemetry.sample_interval_ms, 0)} ms</strong></div><div class="stat"><small>Completion</small><strong>${esc(d.telemetry.completion_status)}</strong></div></div><p class="hint">${esc(d.measurement.wall_time_scope)}</p></div><div class="evidence-box"><h2>Methods</h2><ul>${(d.measurement.methodology || []).map((v) => "<li>" + esc(v) + "</li>").join("")}</ul></div><div class="evidence-box"><h2>Known limitations</h2><ul>${(d.measurement.limitations || []).map((v) => "<li>" + esc(v) + "</li>").join("")}</ul><p class="hint">The conversation-level input footprint is a proxy, not a count of unique tokens. Cache utilization is resident occupancy, not active-request occupancy. Curve MAPE and matched-request MAPE use separate cohorts; missing reference data stays unavailable. Warmup includes primers and live requests across all lanes. No server logs or power data are displayed.</p></div><div class="evidence-box"><details><summary>Native telemetry manifest, execution provenance, and comparison scope</summary><pre>${esc(JSON.stringify({ telemetry: d.telemetry, measurement: d.measurement, provenance: report.provenance }, null, 2))}</pre></details></div><div class="evidence-box"><details><summary>Plotting library license and attribution</summary><pre>__PLOTLY_LICENSE__</pre></details></div>`;
       }
       function sortedDatasets() {
         const key = $("sort").value;
@@ -1824,6 +2223,9 @@
       }
       function renderHeader() {
         const d = dataset();
+        $("data-origin").textContent = report.silicon
+          ? "SIMULATION + SILICON"
+          : "SIMULATED METRICS";
         document.title = `AgentX ${d.point_id} · AISim replay`;
         $("reference-benchmark").href =
           `https://inferencex.semianalysis.com/inference/agentic/${d.point_id}`;
@@ -1927,7 +2329,21 @@
           const s = specs.find((v) => v.id === b.dataset.expand),
             d = chartData(s.id);
           $("expanded-title").textContent = $("title-" + s.id).textContent;
-          $("expanded-note").textContent = d.note;
+          $("expanded-note").textContent = [d.note, d.foot]
+            .filter(Boolean)
+            .join(" ");
+          const histogram =
+            (s.id === "input" || s.id === "output") &&
+            state.modes[s.id] === "distribution";
+          $("expanded-scores").hidden = histogram;
+          $("expanded-comparison").hidden = histogram;
+          $("expanded-scores").innerHTML = scoreBadges(
+            comparisonScores(s.id, d.comparison),
+          );
+          $("expanded-comparison").innerHTML = comparisonDetails(
+            s.id,
+            d.comparison,
+          );
           $("chart-dialog").showModal();
           if (d.empty) {
             Plotly.purge("expanded-plot");
@@ -1948,6 +2364,38 @@
             .querySelectorAll("[data-group]")
             .forEach((v) => v.setAttribute("aria-pressed", v === b));
           renderTimeline();
+        } else if (b.dataset.downloadComparison) {
+          const id = b.dataset.downloadComparison;
+          const key = comparisonKey(id);
+          const chart = key && phaseComparison()?.charts?.[key];
+          download(
+            `agentx-${dataset().point_id}-${state.variant}-${state.stage}-${key || id}-comparison.json`,
+            {
+              point_id: dataset().point_id,
+              variant: state.variant,
+              phase: state.stage,
+              chart_key: key,
+              unit: chart?.unit || null,
+              scores: comparisonScores(id, chart),
+              series: chart?.series || [],
+            },
+          );
+        } else if (b.dataset.matchedDownload) {
+          const id = b.dataset.matchedDownload;
+          download(
+            `agentx-${dataset().point_id}-${state.variant}-${state.stage}-${id}-matched-requests.json`,
+            {
+              point_id: dataset().point_id,
+              variant: state.variant,
+              phase: state.stage,
+              matched: matchedScore(id) || null,
+            },
+          );
+        } else if (b.dataset.counterpart) {
+          const counterpart = timelineRows().find(
+            (r) => r.uuid === b.dataset.counterpart,
+          );
+          if (counterpart) showRequest(counterpart);
         } else if (b.hasAttribute("data-close")) b.closest("dialog").close();
         else if (b.dataset.download)
           download(
