@@ -8,6 +8,8 @@ these tests check the collector-owned packing and branch selection, not
 vLLM's quantizer numerics.
 """
 
+import importlib
+import importlib.metadata
 import importlib.util
 import sys
 import types
@@ -16,7 +18,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-torch = pytest.importorskip("torch")
+# Ask the installed distributions, not sys.modules: other collector test
+# modules cache a MagicMock under sys.modules["torch"] at collection time.
+try:
+    importlib.metadata.version("torch")
+except importlib.metadata.PackageNotFoundError:
+    pytest.skip("torch is not installed", allow_module_level=True)
 
 pytestmark = pytest.mark.unit
 
@@ -25,15 +32,43 @@ COLLECT_GEMM = Path(__file__).resolve().parents[4] / "collector" / "vllm" / "col
 E2M1 = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
 
 
-def _decode(packed):
+def _decode(torch, packed):
     """Independent decoder: low nibble is the even element, high nibble the odd one."""
     codes = torch.stack((packed & 0x0F, packed >> 4), dim=-1).reshape(packed.shape[0], -1).long()
     magnitude = torch.tensor(E2M1)[codes & 0x7]
     return torch.where((codes & 0x8).bool(), -magnitude, magnitude)
 
 
+def _initialized_torch():
+    """The real torch package if this process already initialized it, else None.
+
+    A later fake can hide it under sys.modules["torch"], but its loaded
+    submodules keep a reference to the package.
+    """
+    tensor_module = sys.modules.get("torch._tensor")
+    package = getattr(tensor_module, "torch", None)
+    return package if isinstance(package, types.ModuleType) else None
+
+
 @pytest.fixture
-def collect_gemm(monkeypatch):
+def torch(monkeypatch):
+    """The real torch, also when another test module cached a MagicMock as torch.
+
+    torch can be initialized only once per process, so an initialized package
+    is reused instead of being imported again.
+    """
+    module = sys.modules.get("torch")
+    if not isinstance(module, types.ModuleType):
+        module = _initialized_torch()
+    if module is None:
+        monkeypatch.delitem(sys.modules, "torch", raising=False)
+        module = importlib.import_module("torch")
+    monkeypatch.setitem(sys.modules, "torch", module)
+    return module
+
+
+@pytest.fixture
+def collect_gemm(torch, monkeypatch):
     for name in [
         "vllm",
         "vllm.envs",
@@ -72,7 +107,7 @@ def collect_gemm(monkeypatch):
     return module
 
 
-def test_pack_e2m1_round_trips_through_an_independent_decoder(collect_gemm):
+def test_pack_e2m1_round_trips_through_an_independent_decoder(torch, collect_gemm):
     generator = torch.Generator().manual_seed(0)
     signs = torch.where(torch.rand(4, 32, generator=generator) < 0.5, -1.0, 1.0)
     values = signs * torch.tensor(E2M1)[torch.randint(0, 8, (4, 32), generator=generator)]
@@ -81,11 +116,11 @@ def test_pack_e2m1_round_trips_through_an_independent_decoder(collect_gemm):
 
     assert packed.dtype == torch.uint8
     assert packed.shape == (4, 16)
-    assert torch.equal(_decode(packed), values)
+    assert torch.equal(_decode(torch, packed), values)
 
 
 @pytest.mark.parametrize("sm", [80, 89, 90])
-def test_pre_blackwell_weights_use_the_reference_quantizer(collect_gemm, monkeypatch, sm):
+def test_pre_blackwell_weights_use_the_reference_quantizer(torch, collect_gemm, monkeypatch, sm):
     n, k = 8, 64
     weight = torch.randn(n, k, generator=torch.Generator().manual_seed(1)).to(torch.bfloat16)
     calls = []
@@ -110,11 +145,11 @@ def test_pre_blackwell_weights_use_the_reference_quantizer(collect_gemm, monkeyp
     assert x is weight and block_size == 16
     assert float(global_scale) == pytest.approx(2688.0 / amax)
     assert weight_fp4.dtype == torch.uint8 and weight_fp4.shape == (n, k // 2)
-    assert torch.equal(_decode(weight_fp4), torch.tensor(E2M1).repeat(n, k // len(E2M1)))
+    assert torch.equal(_decode(torch, weight_fp4), torch.tensor(E2M1).repeat(n, k // len(E2M1)))
     assert weight_scale.dtype == torch.float8_e4m3fn and weight_scale.shape == (n, k // 16)
 
 
-def test_blackwell_keeps_the_scaled_fp4_quant_kernel(collect_gemm, monkeypatch):
+def test_blackwell_keeps_the_scaled_fp4_quant_kernel(torch, collect_gemm, monkeypatch):
     weight = torch.randn(4, 32).to(torch.bfloat16)
     sentinel = (torch.zeros(4, 16, dtype=torch.uint8), torch.zeros(4, 2))
     calls = []
