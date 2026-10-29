@@ -6,6 +6,7 @@
 //!
 //! Each wraps `db.state_space.query_*` with `scale_factor` + `clamp`.
 
+use crate::common::enums::DatabaseMode;
 use crate::common::error::AicError;
 use crate::operators::base::{PerformanceResult, Source};
 use crate::perf_database::PerfDatabase;
@@ -36,6 +37,19 @@ impl Mamba2Op {
         batch_size: u32,
         seq_len: u32,
     ) -> Result<PerformanceResult, AicError> {
+        // SOL (and the retired SOL_FULL alias) never reads the table, as in
+        // the GEMM, attention, MoE and mHC operators. Mamba2 has no util-space
+        // empirical layer, so EMPIRICAL answers with the same analytic SOL
+        // instead of reading measured rows.
+        if matches!(
+            db.database_mode,
+            DatabaseMode::Sol | DatabaseMode::SolFull | DatabaseMode::Empirical
+        ) {
+            let latency = self.sol_latency_ms(db, batch_size as f64, seq_len as f64);
+            return Ok(PerformanceResult::new(latency, Source::Sol)
+                .clamp_non_negative()
+                .scaled(self.scale_factor));
+        }
         // Mirrors Python `Mamba2Kernel.query`: silicon-first, SOL fallback
         // on perf-DB miss. The op's arg-style SOL is threaded into the table
         // query so the perf_interp engine can util-hold beyond-range queries
@@ -799,5 +813,105 @@ mod tests {
         assert_eq!(measured.latency_ms, 0.5);
         let analytic = op("selective_state_update").query(&db, 2, 1024).unwrap();
         assert_eq!(analytic.source, Source::Sol);
+    }
+
+    /// Mamba2 follows the database-mode semantics of the other table-backed
+    /// operators: SILICON and HYBRID read measured rows, while SOL, the
+    /// retired SOL_FULL alias and EMPIRICAL never read them. Mamba2 has no
+    /// util-space empirical layer, so EMPIRICAL answers with the analytic SOL.
+    ///
+    /// Synthetic fixture: one context row at `[batch=2][seq=512]` and one
+    /// decode row at `[batch=2]`; both queries hit them exactly, so a row
+    /// read returns the stored value times `scale_factor` (2.0). Hand-derived
+    /// SOL for this shape: conv_dim = 16*64 + 2*4*64 = 1536 channels and
+    /// bytes = x*conv_dim*(d_conv+1)*2 + x*conv_dim*2, with x = b*s = 1024 for
+    /// context (18_874_368 bytes) and x = b = 2 for decode (36_864 bytes),
+    /// over the fixture's 7.7e12 B/s memory bandwidth.
+    #[test]
+    fn mamba2_reads_measured_rows_only_in_silicon_and_hybrid() {
+        use crate::common::enums::{DatabaseMode, TransferPolicy};
+        use crate::perf_database::energy_test_fixtures::{
+            Col, write_energy_systems_root, write_parquet,
+        };
+        let root = tempfile::tempdir().expect("tmpdir");
+        write_energy_systems_root(root.path());
+        let data = root.path().join("data/test/1.0");
+        std::fs::create_dir_all(&data).expect("mkdir data");
+        write_parquet(
+            &data.join("mamba2_perf.parquet"),
+            &[
+                Col::Str(
+                    "kernel_source",
+                    vec!["causal_conv1d_fn", "causal_conv1d_update"],
+                ),
+                Col::Str("phase", vec!["context", "generation"]),
+                Col::I64("batch_size", vec![2, 2]),
+                Col::I64("seq_len", vec![512, 1]),
+                Col::I64("d_model", vec![1024, 1024]),
+                Col::I64("d_state", vec![64, 64]),
+                Col::I64("d_conv", vec![4, 4]),
+                Col::I64("nheads", vec![16, 16]),
+                Col::I64("head_dim", vec![64, 64]),
+                Col::I64("n_groups", vec![4, 4]),
+                Col::I64("chunk_size", vec![128, 128]),
+                Col::F64("latency", vec![0.5, 0.25]),
+            ],
+        );
+        let op = |kernel_source: &str, phase: &str| Mamba2Op {
+            name: format!("{phase}_mamba"),
+            scale_factor: 2.0,
+            kernel_source: kernel_source.into(),
+            phase: phase.into(),
+            d_model: 1024,
+            d_state: 64,
+            d_conv: 4,
+            nheads: 16,
+            head_dim: 64,
+            n_groups: 4,
+            chunk_size: 128,
+        };
+        let context = op("causal_conv1d_fn", "context");
+        let decode = op("causal_conv1d_update", "generation");
+        let sol_ms = |bytes: f64| bytes / 7.7e12 * 1000.0 * 2.0;
+        for mode in [
+            DatabaseMode::Silicon,
+            DatabaseMode::Hybrid,
+            DatabaseMode::Empirical,
+            DatabaseMode::Sol,
+            DatabaseMode::SolFull,
+        ] {
+            let db = PerfDatabase::load(root.path(), "testsys", "test", "1.0")
+                .expect("load")
+                .with_mode(mode, TransferPolicy::ALL);
+            let ctx = context.query(&db, 2, 512).unwrap();
+            let dec = decode.query(&db, 2, 1024).unwrap();
+            if matches!(mode, DatabaseMode::Silicon | DatabaseMode::Hybrid) {
+                assert_eq!(
+                    (ctx.source, ctx.latency_ms),
+                    (Source::Silicon, 1.0),
+                    "{mode:?}"
+                );
+                assert_eq!(
+                    (dec.source, dec.latency_ms),
+                    (Source::Silicon, 0.5),
+                    "{mode:?}"
+                );
+            } else {
+                assert_eq!(
+                    (ctx.source, dec.source),
+                    (Source::Sol, Source::Sol),
+                    "{mode:?}"
+                );
+                let (ctx_sol, dec_sol) = (sol_ms(18_874_368.0), sol_ms(36_864.0));
+                assert!(
+                    (ctx.latency_ms - ctx_sol).abs() <= 1e-12 * ctx_sol,
+                    "{mode:?}"
+                );
+                assert!(
+                    (dec.latency_ms - dec_sol).abs() <= 1e-12 * dec_sol,
+                    "{mode:?}"
+                );
+            }
+        }
     }
 }
