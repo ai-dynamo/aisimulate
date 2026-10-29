@@ -6617,6 +6617,51 @@ pub(crate) mod tests {
         }
     }
 
+    #[test]
+    fn fpm_readiness_rejects_speculative_verify_on_ar_native_cuda_table() {
+        use crate::perf_database::fpm_forward::tests::{
+            NativeCudaSampleSpec, default_rows, write_pair,
+        };
+        for ar in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let (spec, db) = fpm_hybrid_spec(
+                tmp.path(),
+                Some(1),
+                2,
+                vec![generation_ops().remove(0)],
+                vec![],
+            );
+            if ar {
+                let rows: Vec<_> = default_rows()
+                    .into_iter()
+                    .map(|mut row| {
+                        row.execution = Some(["", "full", "none", "text"]);
+                        row.kv_seed_regime = Some("real_kv");
+                        row.native_cuda = Some(NativeCudaSampleSpec {
+                            policy: crate::perf_database::fpm_forward::FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY,
+                            scope: "model_step_cuda",
+                            reduction: "single_sample",
+                            source_sample_count: 1,
+                        });
+                        row
+                    })
+                    .collect();
+                write_pair(tmp.path(), &rows);
+            }
+            let engine = Engine::build(spec, Arc::new(db)).unwrap();
+            let result =
+                engine.validate_forward_pass_readiness(crate::ForwardPassWorkerType::Decode);
+            if ar {
+                assert!(
+                    result.unwrap_err().to_string().contains("verify_width=2"),
+                    "AR table must reject a speculative verify step"
+                );
+            } else {
+                result.unwrap();
+            }
+        }
+    }
+
     /// Hybrid shape validation: draft tails are legal; a width/nextn
     /// mismatch (plain MTP) stays rejected; FpmForward in a tail is illegal.
     #[test]
