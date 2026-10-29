@@ -111,15 +111,19 @@ def load(text: str, *, source: str) -> dict:
 
 
 def _heading_text(heading: str) -> str:
-    """Reduce a Markdown heading to the text GitHub renders: no link, emphasis or HTML markup."""
-    heading = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", heading)
+    """Reduce a Markdown heading to the text GitHub renders: no link, emphasis or HTML markup.
+
+    Code spans keep their text verbatim, and an underscore inside a word is not emphasis.
+    """
     parts = re.split(r"(`[^`]*`)", heading)
     for index, part in enumerate(parts):
         if index % 2:
             parts[index] = part.strip("`")
-        else:
-            part = re.sub(r"<[^>]+>", "", part)
-            parts[index] = re.sub(r"(\*{1,3}|_{1,3})(\S(?:.*?\S)?)\1", r"\2", part)
+            continue
+        part = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", part)
+        part = re.sub(r"<[^>]+>", "", part)
+        part = re.sub(r"(\*{1,3})(\S(?:.*?\S)?)\1", r"\2", part)
+        parts[index] = re.sub(r"(?<!\w)(_{1,3})(\S(?:.*?\S)?)\1(?!\w)", r"\2", part)
     return "".join(parts)
 
 

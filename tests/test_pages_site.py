@@ -1313,6 +1313,9 @@ def render_main(text: str, template: str | None = None) -> str:
         ("## GPU cache (G1)", "gpu-cache-g1"),
         ("### MTP / EAGLE", "mtp--eagle"),
         ('## Fields <a id="custom"></a>', "fields"),
+        ("## `client[0](request)`", "client0request"),
+        ("## gpu_cache_policy", "gpu_cache_policy"),
+        ("## __Strong__ snake_case", "strong-snake_case"),
     ],
 )
 def test_feature_matrix_anchors_follow_github_heading_slugs(heading: str, slug: str) -> None:
