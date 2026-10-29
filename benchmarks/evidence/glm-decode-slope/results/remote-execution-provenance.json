@@ -1,0 +1,7 @@
+{
+  "base_commit": "c34a4cf7f81a64bef02227fdaa35cf74f4e8e190",
+  "native_sha256": "415400fd7259b18e4e8305c2bca6d980284597584062c7a187f8c2e887f3d688",
+  "runtime_source_patch_sha256": "421096c42c0df9ee6b7c5eef0ebbff5098a85e1592f9c43924a3e249b634457b",
+  "parallel_replays": 2,
+  "scope": "CPU simulation only; same recorded-output-length inputs and benchmark windows"
+}

@@ -1,0 +1,2808 @@
+{
+  "schema_version": 1,
+  "label": "corrected-sglang-reuse",
+  "status": "completed",
+  "units": {
+    "latency": "milliseconds",
+    "context": "tokens"
+  },
+  "scope": "Static native op-level decode queries; no scheduler, cache lookup, or GPU measurement",
+  "semantics": {
+    "context_length": "Past context; native decode query evaluates context_length + 1",
+    "cycle_latency_ms": "One configured native generation timing round, including MTP composition",
+    "full_skip_attribution": "Checkpoint uses native blended DSA; all_full/all_skip change only index_topk_pattern in synthetic copies",
+    "measured_dsa_table": "Explicit baseline candidate table; presence is not proof of execution at every query",
+    "acceptance": "No accepted-token conversion; cycle latency is not TPOT"
+  },
+  "python": "3.12.14 (main, Aug 14 2026, 15:24:41) [Clang 22.1.3 ]",
+  "executable": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/.venv/bin/python",
+  "native": {
+    "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate/_runtime.abi3.so",
+    "size_bytes": 14372528,
+    "sha256": "94c868c0a9f24244bec40bb127bad85d5fe7498b724631547821de1156bba776"
+  },
+  "script": {
+    "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/benchmarks/evidence/glm-decode-slope/diagnose_decode.py",
+    "size_bytes": 12570,
+    "sha256": "116ad19a352178448f8fa3ba8e28a9b0894eb015f4066284eb9e93930aa5e146"
+  },
+  "source_checkout": {
+    "root": "/Users/simonec/repo/aisimulate-glm-decode-slope",
+    "head": "c34a4cf7f81a64bef02227fdaa35cf74f4e8e190",
+    "status": "M ../../../../crates/core/src/perfmodel/operators/dsa.rs\n M ../../../../crates/core/src/perfmodel/perf_database/dsa.rs\n M ../../../../docs/perf-model/methods/op-level.md\n?? ../../../../benchmarks/evidence/glm-decode-slope/"
+  },
+  "script_checkout": {
+    "root": "/Users/simonec/repo/aisimulate-glm-decode-slope",
+    "head": "c34a4cf7f81a64bef02227fdaa35cf74f4e8e190",
+    "status": "M ../../../crates/core/src/perfmodel/operators/dsa.rs\n M ../../../crates/core/src/perfmodel/perf_database/dsa.rs\n M ../../../docs/perf-model/methods/op-level.md\n?? ./"
+  },
+  "model_files": [
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/model_configs/nvidia--GLM-5.3-NVFP4_config.json",
+      "size_bytes": 24476,
+      "sha256": "b0b6b9ab922a82e3688bc39a4117bc443e106fcf88969ef48b3627778f4bdf7b"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/model_configs/nvidia--GLM-5.3-NVFP4_hf_quant_config.json",
+      "size_bytes": 11506,
+      "sha256": "13799d4fed353c20dde2264fbdd7f68a780b514782f8d80bba96ac5e44aa9bba"
+    }
+  ],
+  "data_files": [
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/sglang/0.5.14/collection_meta.yaml",
+      "size_bytes": 690,
+      "sha256": "e8fa7dfc0c865ece82becbf696223b1d3909cb84e98e1acbe6a1d06aeaf7c247"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/sglang/0.5.14/context_attention_perf.parquet",
+      "size_bytes": 285393,
+      "sha256": "da62cdb3431878bff65bb26fe1493a2e6c857437d005b7778a24288e94fe15e3"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/sglang/0.5.14/generation_attention_perf.parquet",
+      "size_bytes": 209200,
+      "sha256": "588f01da4ceaacd8979ef15d2e535cd6f926266f161cece8f05442c8a67cdb68"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/trtllm/1.3.0rc20/collection_meta.yaml",
+      "size_bytes": 333,
+      "sha256": "056f8635964c99c5dd0106367dfb00227a28fb4e9cd0874d4c7ee5732b60b591"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/trtllm/1.3.0rc20/context_attention_perf.parquet",
+      "size_bytes": 420011,
+      "sha256": "9f3b237bdf8e34b4edf4a698c1eaaa55a92ba0aa2a4a4cfa8222e368f5b080e2"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/trtllm/1.3.0rc20/generation_attention_perf.parquet",
+      "size_bytes": 203036,
+      "sha256": "e16a1205d3af00865ac2296020a2d1f7cfcf43403521a617185676c1bd9fe685"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.24.0/collection_meta.yaml",
+      "size_bytes": 325,
+      "sha256": "0cc7dd9ea578fe78d40c33bb8ed644a96c700c24b59e1a62b59360d9335cb73d"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.24.0/context_attention_perf.parquet",
+      "size_bytes": 267400,
+      "sha256": "e83d02034e362b07460403657b30aeb0143344739760aa3fc6b25462e336e1b7"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.24.0/generation_attention_perf.parquet",
+      "size_bytes": 194774,
+      "sha256": "1b038a3ef0f9de49e831148a649de8a75c955f2507815491e6b34dec99fd9daa"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.25.0/collection_meta.yaml",
+      "size_bytes": 1152,
+      "sha256": "2dba7dd74ad73045010b63954f0f7ee668b2f7a3b4d91af527631215af6034ad"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.25.0/context_attention_perf.parquet",
+      "size_bytes": 286985,
+      "sha256": "776e970fb25532c0480f1bb3b666c9f34b83408bc0af7ab106bb3a01e53a1239"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.25.0/generation_attention_perf.parquet",
+      "size_bytes": 213450,
+      "sha256": "74db4d37d7f75bb709e7ef24e0ea55c90138fa85a85752f7406588ffc708f2e3"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/nccl/2.27/collection_meta.yaml",
+      "size_bytes": 262,
+      "sha256": "2ee5317afedacd056c90da0c6c1f7ec910d79a5966a33d3455271b92f0426f2f"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/nccl/2.27/nccl_perf.parquet",
+      "size_bytes": 7055,
+      "sha256": "2e8ecb7a6cd9916e55f316d5f4b9b566df1a56a345bdaf7ed7279cd540c430a7"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/nccl/2.29.2/collection_meta.yaml",
+      "size_bytes": 265,
+      "sha256": "726e840dca1cb0ca2452ea9080994abebb739da166560ecf32d3a027d4fd5190"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/nccl/2.29.2/nccl_perf.parquet",
+      "size_bytes": 10076,
+      "sha256": "c9f68eaa55f746c9a5ec2a9e57f332d9c39661b3cfe15910f716dec04b7cb62d"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/sglang/0.5.10/collection_meta.yaml",
+      "size_bytes": 276,
+      "sha256": "1f539fa280fe89953c6ce7d5655691702e8572e2f33f9ab7a6c34b34ac4993e9"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/sglang/0.5.10/custom_allreduce_perf.parquet",
+      "size_bytes": 4423,
+      "sha256": "0751d107a8e2c54df14558b94585624b0de5e09f1ce0356f8132ab0a1e2a7f2d"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/sglang/0.5.12/collection_meta.yaml",
+      "size_bytes": 1019,
+      "sha256": "1fbcb155d7b0b7388896334bc347a9ded8b1065d1a8502673e1e5852072886f0"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/sglang/0.5.12/wideep_deepep_ll_perf.parquet",
+      "size_bytes": 10318,
+      "sha256": "a30b3fd3c656d975350f5d4bee66ec3f3372012620c7cc6cf8627fde41094fda"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/sglang/0.5.12/wideep_deepep_normal_perf.parquet",
+      "size_bytes": 49964,
+      "sha256": "181453bd67a8f8c8cd1d1664b434845897e9b40802eb851a868068b759b85b33"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/sglang/0.5.14/collection_meta.yaml",
+      "size_bytes": 276,
+      "sha256": "7fde4cb955fb23b33c1dcb52528f19ea87c1b312cbb57c32093530fc9db6a1d9"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/sglang/0.5.14/custom_allreduce_perf.parquet",
+      "size_bytes": 4435,
+      "sha256": "fda78312580ed4045af875f90500d3292235ea00552ec62cd56e0a1492aa2cea"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/sglang/0.5.20/collection_meta.yaml",
+      "size_bytes": 1528,
+      "sha256": "8cc0bdf0d18e2469648e231b0bb045355535a77a77cd9fa34f6ef7b9797340b2"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/sglang/0.5.20/custom_allreduce_perf.parquet",
+      "size_bytes": 7554,
+      "sha256": "08e7a9efafb6b5e0b1b2a9e0c8579e45a1028ad3aa48029c5767f883cd47eacd"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/sglang/0.5.9/collection_meta.yaml",
+      "size_bytes": 275,
+      "sha256": "afa1efd375d2c9d0f1db64e375505ec3a5559e01d531875c11d6155ec4ecf151"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/sglang/0.5.9/custom_allreduce_perf.parquet",
+      "size_bytes": 4409,
+      "sha256": "f725994d03729449e002b21f48aafcc20d9b2eeba38ebcf095850999356a2031"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/trtllm/1.3.0rc10/collection_meta.yaml",
+      "size_bytes": 313,
+      "sha256": "6eaf53388ac9b57bf88e3c41816713339df298901e82ffc565834795f8e2a205"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/trtllm/1.3.0rc10/custom_allreduce_perf.parquet",
+      "size_bytes": 3843,
+      "sha256": "b4d4650ca45945524aeef7786e9bf918e476291dfa6b2048e3e72ab4b89b4525"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/trtllm/1.3.0rc10/nccl_perf.parquet",
+      "size_bytes": 13381,
+      "sha256": "36ad5b7891fe79d786b5ae1fe270dd98124996bcfced54ffb134253e98e18703"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/trtllm/1.3.0rc11/collection_meta.yaml",
+      "size_bytes": 1788,
+      "sha256": "5c330fa02a83f472a5c144fab3e1699f39702bbf3b929268dfe94c6116ee979a"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/trtllm/1.3.0rc11/errors_moe_a2a_trtllm.trtllm_deepep_ll.json",
+      "size_bytes": 36735,
+      "sha256": "d8ebc80e3baf1bac80888d40b601b953a70af22f6a4bf18a6c9837fb3062fcda"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/trtllm/1.3.0rc11/moe_a2a_perf.parquet",
+      "size_bytes": 22812,
+      "sha256": "952e8285bc537b0aafe87cf8e0477ff55cc50314f2d55344dbde516167c0eb85"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/trtllm/1.3.0rc20/collection_meta.yaml",
+      "size_bytes": 282,
+      "sha256": "6369885f231da641c21d58b3c9fb1a90912159e505d6bff326330e2fcc10b32b"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/trtllm/1.3.0rc20/custom_allreduce_perf.parquet",
+      "size_bytes": 7090,
+      "sha256": "360881049ee6c47485ff63baab4a8b4d19561ba51aff991d4da75f80e4fe105e"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/vllm/0.19.0/collection_meta.yaml",
+      "size_bytes": 274,
+      "sha256": "cd1074be35d141bbbe3b58cbdec42940a7e283c808c700c5604f7db3ec60ecb6"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/vllm/0.19.0/custom_allreduce_perf.parquet",
+      "size_bytes": 4348,
+      "sha256": "ea9b3f889115c087447f048fd7dc28218c7de68172afb50a8e847455ec96d614"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/vllm/0.24.0/collection_meta.yaml",
+      "size_bytes": 3177,
+      "sha256": "58e8b626b922a11c68e5dc3fac31e46944ccefbf308434933d8e3568eed3e23e"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/vllm/0.24.0/custom_allreduce_perf.parquet",
+      "size_bytes": 4354,
+      "sha256": "eb93eee30e9185a62b4664b548e20d30e245e54272210b18f97f1db470484b08"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/vllm/0.24.0/moe_a2a_perf.parquet",
+      "size_bytes": 16389,
+      "sha256": "46aa8486f1fffa787ed2c5d7e0178824ef54e168a95aa756619da454c1ca90b5"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/vllm/0.31.0/collection_meta.yaml",
+      "size_bytes": 1557,
+      "sha256": "f28b18033326b21e48ad996b035540794254c35e084af57a52d137e9a31cd67f"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/vllm/0.31.0/custom_allreduce_perf.parquet",
+      "size_bytes": 7477,
+      "sha256": "e999a3001073d41df5120d7dd00ef186fab28cbbd6c79415c930e81ea167ccd4"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/encoder_attention/sglang/0.5.14/collection_meta.yaml",
+      "size_bytes": 1214,
+      "sha256": "9f542e6b801e8c10b81b5133cd8fb6c03b926de6896d1cfc2320a87442c76d49"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/encoder_attention/sglang/0.5.14/encoder_attention_perf.parquet",
+      "size_bytes": 57869,
+      "sha256": "9175b22129bd1225b909a58ce7104eb6bb9bd6e13be2bd3e933f931db42098a4"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/encoder_attention/trtllm/1.3.0rc20/collection_meta.yaml",
+      "size_bytes": 283,
+      "sha256": "d4cf5c3c02554dd06f563fcea4210ded9f91c6f68815db648ec9f9325511422d"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/encoder_attention/trtllm/1.3.0rc20/encoder_attention_perf.parquet",
+      "size_bytes": 48736,
+      "sha256": "2945ed1f75a37d2d8dfb04f20c3bbca378b17e50e45b0b454e13820abcce1dd7"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/encoder_attention/vllm/0.24.0/collection_meta.yaml",
+      "size_bytes": 275,
+      "sha256": "c029aa7e544a3408e6d20d083120d52ff38b5f9fdc3cc74e66ed1e249776d2f0"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/encoder_attention/vllm/0.24.0/encoder_attention_perf.parquet",
+      "size_bytes": 50999,
+      "sha256": "4666ebba1f6e038db9bf10447bb107147159a15916082ce9166be939d96e1a6b"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/encoder_attention/vllm/0.25.0/collection_meta.yaml",
+      "size_bytes": 743,
+      "sha256": "d3b0b41bfa78a4974778e34b4a5de8f8c984e9be143b9ed1e025f849d33e7247"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/encoder_attention/vllm/0.25.0/encoder_attention_perf.parquet",
+      "size_bytes": 51198,
+      "sha256": "16be054bba772c137db5f34774627410626c15eb6c3e4ba2f0d07418eddfbaac"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/sglang/0.5.14/collection_meta.yaml",
+      "size_bytes": 3870,
+      "sha256": "27cea70ce1c98d20a0e38cc32ded1357d6ddacd204e5bf8519f40f732a203e94"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/sglang/0.5.14/gemm_perf.parquet",
+      "size_bytes": 985861,
+      "sha256": "54d5ab40ff8e405c786fd7a6034345c29d865df6df4d2911a267dee731443726"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/sglang/0.5.17/collection_meta.yaml",
+      "size_bytes": 1543,
+      "sha256": "94a6ac7215c11b4e116ede6daef48bdbd0752d0c33588250379f8eeec257e861"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/sglang/0.5.17/gemm_perf.parquet",
+      "size_bytes": 973476,
+      "sha256": "947b1f19e8545b044afcca8883b013c7e34ccfa6794c5390ecb8e1ba2a03372a"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/sglang/0.5.20/collection_meta.yaml",
+      "size_bytes": 2159,
+      "sha256": "5c7d886c4ffa5c16236422729ab3499ad57c21c0ebd278172f70407e02d49e4e"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/sglang/0.5.20/gemm_perf.parquet",
+      "size_bytes": 761290,
+      "sha256": "d07b38841150a5af951fa8696856a6945e2a42a1d71c92b57f8f43ddb610a6d0"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/trtllm/1.3.0rc20/collection_meta.yaml",
+      "size_bytes": 270,
+      "sha256": "6f9acb89d039741d1a07e02b693b91a27a32d3c195eec7315c6c176e285423a2"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/trtllm/1.3.0rc20/gemm_perf.parquet",
+      "size_bytes": 794461,
+      "sha256": "18f2532e6474940c6c2a872c5ce734182178167a2170de96084da4db1928b189"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/trtllm/1.3.0rc23/reuse.yaml",
+      "size_bytes": 737,
+      "sha256": "474bd5ba18db1aa93897db49d58e38252b3f3fb1137cc3a3a1b2d0c7b71001cf"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.24.0/collection_meta.yaml",
+      "size_bytes": 355,
+      "sha256": "c1bcca18872fddde0d84891cd1a9ce351f9f12aa77b45856e6f464a133ab8a10"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.24.0/gemm_perf.parquet",
+      "size_bytes": 649411,
+      "sha256": "18aca3c786a24f3a6b758d43a179bda59080b17e1694b633dfe79c1ccb3b0a43"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.24.0/reuse.yaml",
+      "size_bytes": 450,
+      "sha256": "49fb0fe44a5a50b93eed6472ffd04a067537133485ba1cf7cf36a49cbba7d004"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.25.0/collection_meta.yaml",
+      "size_bytes": 2673,
+      "sha256": "119d284bcbcce5ec6194e674ea51e9a0c6b7ce5759099cc4a11faa7ba8a113dd"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.25.0/gemm_perf.parquet",
+      "size_bytes": 784814,
+      "sha256": "21328b3f7937c336452368337385f91e0e5e9f9ce067cce48a959ab9d43f014a"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.27.1/collection_meta.yaml",
+      "size_bytes": 2471,
+      "sha256": "52209d99748e7fdbc118ce9fc873ea126db24ac7bf10fd7a79a9dcbfa169429b"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.27.1/gemm_perf.parquet",
+      "size_bytes": 892459,
+      "sha256": "f7210ff306cf9a308e71292fed983e8c4a897bf34f99de5f18ee92beb6e4a8a3"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.31.0/collection_meta.yaml",
+      "size_bytes": 1674,
+      "sha256": "00d12c1ae09f16abc4ed861d2f0ddc42f9b3f3297989a2b58f7a77c886acd80e"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.31.0/gemm_perf.parquet",
+      "size_bytes": 823385,
+      "sha256": "bc14e8e583de3d117c15e2c49f82249974602065edab0628c2f19091ebdce168"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/glm53_attention/sglang/0.5.20/collection_meta.yaml",
+      "size_bytes": 35332,
+      "sha256": "6f725d2f5bfb3337abd803bf1691fc303da70a6bfb72138228ed0f3f512dc00c"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/glm53_attention/sglang/0.5.20/glm53_attention_module_perf.parquet",
+      "size_bytes": 20775,
+      "sha256": "5cf6e5b9ef14e1b2da8c566d8aa6e901c4f8a940227bbcf902ef78606464f51c"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/glm53_attention/vllm/0.31.0/collection_meta.yaml",
+      "size_bytes": 36456,
+      "sha256": "e498ff358a191c77980a8e9a8f5c1c153595da3004ae038734deabdb7b213774"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/glm53_attention/vllm/0.31.0/glm53_attention_module_perf.parquet",
+      "size_bytes": 26836,
+      "sha256": "341db247660af7af02a60c00eed5f4c2d251c9fd2ae73a219c364d245aa23820"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/kda/sglang/0.5.16/collection_meta.yaml",
+      "size_bytes": 1223,
+      "sha256": "f09dc10a7fe65a6b17b0ea5efedf7776b4dcd813d28a068554d09af642fdfd26"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/kda/sglang/0.5.16/kda_perf.parquet",
+      "size_bytes": 13125,
+      "sha256": "7f07a09594dce2e5cb788b68dc25a9dd3dac00f6189c292d485943ef6ad44307"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/kda/sglang/0.5.20/collection_meta.yaml",
+      "size_bytes": 1353,
+      "sha256": "b04c82c5dfdb7df0f263ea4103db3439bae50f96f40d33a047263661b94d1d77"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/kda/sglang/0.5.20/kda_perf.parquet",
+      "size_bytes": 17987,
+      "sha256": "28aed76a1c8574f75bb609a92cfe7404b9cce36101b73d97857c4aadf46bbe87"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/kda/vllm/0.1.dev19262/collection_meta.yaml",
+      "size_bytes": 631,
+      "sha256": "b087ccb4638ea6705d924e5655543ceee3e6f6481dd3b5a68163e8fcceec5075"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/kda/vllm/0.1.dev19262/kda_perf.parquet",
+      "size_bytes": 22458,
+      "sha256": "ee2da9c94b72793ced99f8a5e1bc8c6df09e9706317ea2b6f9050d47d2d54929"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/kda/vllm/0.31.0/collection_meta.yaml",
+      "size_bytes": 1509,
+      "sha256": "16a1ae952f32702bd2269838a52436a5fa3407d1e16cafdfa9581c36259c7d6f"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/kda/vllm/0.31.0/kda_perf.parquet",
+      "size_bytes": 18505,
+      "sha256": "f8b5a9defce39b94a202a78a099d1db211d911efc25b7aa20f9c679f0664a172"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/sglang/0.5.14/collection_meta.yaml",
+      "size_bytes": 822,
+      "sha256": "f3aea56d17116582bd149e08a1b63d467265a91780c19e27aadf57dc1a116d08"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/sglang/0.5.14/gdn_perf.parquet",
+      "size_bytes": 63496,
+      "sha256": "2715b6d08c00deb59872eebfd245a6791ac940104c728cf74f038b8809f134dd"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/sglang/0.5.17/collection_meta.yaml",
+      "size_bytes": 1510,
+      "sha256": "ecdf2813461c12e5799f06f12aeaf851ba1ff718278534666b67e858d5cfcb00"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/sglang/0.5.17/gdn_perf.parquet",
+      "size_bytes": 16048,
+      "sha256": "35296832c746c3c3e8e5423f8fb007e3d7b82359b6efb50a2238c95d421b90db"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/trtllm/1.3.0rc20/collection_meta.yaml",
+      "size_bytes": 305,
+      "sha256": "ee478037a14c79743750e176eb31f018ed1b1d78b17d69d72a873f36c01a66b3"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/trtllm/1.3.0rc20/gdn_perf.parquet",
+      "size_bytes": 21228,
+      "sha256": "77c0a3b1032b04b5b77f25ca2950df546ddc5e2ff99aeffae6d149ca25cd99d2"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/trtllm/1.3.0rc20/mamba2_perf.parquet",
+      "size_bytes": 15435,
+      "sha256": "f0236803e3caa686e1f036f1b7df5207ea8d2a71366bb01940becd9da64026dd"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/vllm/0.24.0/collection_meta.yaml",
+      "size_bytes": 757,
+      "sha256": "fda70302af3ed3f9fc9da29199cf89eb0bd4bb4bf5dafc99b20e97a35ea92603"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/vllm/0.24.0/gdn_perf.parquet",
+      "size_bytes": 64452,
+      "sha256": "860383a4df6818ec4dc353d7a9d0698fce6eb3c4bc3c12f83bb8261ae7d240c7"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/vllm/0.25.0/collection_meta.yaml",
+      "size_bytes": 731,
+      "sha256": "d27183136fd884307945d6de8c27e9c9fd8c11cee0fb6ca46db9bd13b74f1a0a"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/vllm/0.25.0/gdn_perf.parquet",
+      "size_bytes": 102407,
+      "sha256": "3348d7f8adb0515980553aa288473f8db9fb861b37f42e84c7a4c56024c37845"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/vllm/0.27.1/collection_meta.yaml",
+      "size_bytes": 2244,
+      "sha256": "70a61c680e257dab7ffd191c217609310f9fb7aff714860d9cb075b9b77fb094"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/vllm/0.27.1/gdn_perf.parquet",
+      "size_bytes": 15614,
+      "sha256": "3ec837d234dd61c339cafd48040472185d6d1796840d70909d5505700d18f954"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mhc/sglang/0.5.14/collection_meta.yaml",
+      "size_bytes": 1206,
+      "sha256": "dec37320b12b1291cec5ce085409a4f3fa8960f77a6361bff4e2ee9fad6760bc"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mhc/sglang/0.5.14/mhc_module_perf.parquet",
+      "size_bytes": 8911,
+      "sha256": "32bb3438115ac81d812cc860fef442830bba06d341059dba93d179e4fe934484"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mhc/sglang/0.5.20/collection_meta.yaml",
+      "size_bytes": 1222,
+      "sha256": "e78c500e5f4cc45ae45c158108dfa300f3bb19ab49d990f2480f7b1bf610cf74"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mhc/sglang/0.5.20/mhc_module_perf.parquet",
+      "size_bytes": 9080,
+      "sha256": "8119653e068d43299932c39290a6e70da439768eec92fc6f0265679966c59773"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mhc/trtllm/1.3.0rc20/collection_meta.yaml",
+      "size_bytes": 687,
+      "sha256": "86fefb9ac104e3b596a4e8f4ba0d673e9e24809b1156a588f4c3dbeffc512578"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mhc/trtllm/1.3.0rc20/mhc_module_perf.parquet",
+      "size_bytes": 5311,
+      "sha256": "9032b83874c999cb923d0f937a72a0933d8311ff66488d5dda2cdf8fdf70bfdc"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mhc/trtllm/1.3.0rc23/reuse.yaml",
+      "size_bytes": 1017,
+      "sha256": "16395440f39a7d5eaca401a83e8086ea3cd90c64a93819d280c563a9fc11ad0e"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mhc/vllm/0.24.0/collection_meta.yaml",
+      "size_bytes": 268,
+      "sha256": "79a01216534574c387f1e4307536815830fa3b2d9bb86c121eaebc7b17481d50"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mhc/vllm/0.24.0/mhc_module_perf.parquet",
+      "size_bytes": 5338,
+      "sha256": "d6505ff10f7c6ded41abc5db1f52666871addd5cca05f47ed566632a97648fe0"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mhc/vllm/0.25.0/collection_meta.yaml",
+      "size_bytes": 734,
+      "sha256": "7d57a17bd15a97a5c0f32c2f926cecb2f2aa9fc4ad063c251b4f2d68f08cfd39"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mhc/vllm/0.25.0/mhc_module_perf.parquet",
+      "size_bytes": 5409,
+      "sha256": "48480b7339c39be668c083ae42a0e2d7ef769fe6dfec453999c2ab2d33892c7e"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mhc/vllm/0.31.0/collection_meta.yaml",
+      "size_bytes": 1245,
+      "sha256": "d9bd1512ee796fb2636750206f431e29c0e239b5d23db6f635061e4141b7fc76"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mhc/vllm/0.31.0/mhc_module_perf.parquet",
+      "size_bytes": 9449,
+      "sha256": "4a141d1ec054d0f4c78d49a0a88dee613d94ec5ca6a91c12b3fa51a627b0d9ba"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/sglang/0.5.10/collection_meta.yaml",
+      "size_bytes": 414,
+      "sha256": "02fcc55c088c770911334bc9aa274fa6ade733d6aaa1f360e8ac10bd6eded099"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/sglang/0.5.10/wideep_context_mla_perf.parquet",
+      "size_bytes": 10087,
+      "sha256": "073e56726ccac844ef3a98bc51ad97c48eac80406c48a0773f2389427c64a56a"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/sglang/0.5.10/wideep_generation_mla_perf.parquet",
+      "size_bytes": 9222,
+      "sha256": "b0c63fe5cfa9a496e782215d7767811080946d5d388a44aab78cb2200f59cf9b"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/sglang/0.5.14/collection_meta.yaml",
+      "size_bytes": 995,
+      "sha256": "341c65a1437cc7d36f6f0a165c2057887dc129f0de0975f58301fbae5cd954c8"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/sglang/0.5.14/context_mla_perf.parquet",
+      "size_bytes": 26205,
+      "sha256": "c5ceb7a4a3211f66587d90986f3647f29f8927003643a31aec70419f14cf96a0"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/sglang/0.5.14/generation_mla_perf.parquet",
+      "size_bytes": 30754,
+      "sha256": "12070ef29a3d074644518b970b5c5e7b8ef6bae773f2d7db2c13a5668172f6a6"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/sglang/0.5.14/mla_context_module_perf.parquet",
+      "size_bytes": 6933,
+      "sha256": "7631fddf0ba5651e3bd651417fbf9f3687b1f931d8950d2ee1a4edb3d4e529c6"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/sglang/0.5.9/collection_meta.yaml",
+      "size_bytes": 413,
+      "sha256": "ebfdd8e8e85b206b58ff1c45417cddabed915640682be2f13966036e01d6c218"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/sglang/0.5.9/wideep_context_mla_perf.parquet",
+      "size_bytes": 8993,
+      "sha256": "a0721292c17c99b26ac7ab88efeeb6ceee0eb7767fcd1c8df4c7f22518895056"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/sglang/0.5.9/wideep_generation_mla_perf.parquet",
+      "size_bytes": 8527,
+      "sha256": "114c23cf6353be10f7791e9a723e200b8fdc29d111c3151a50ab32091a2ebd36"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/trtllm/1.3.0rc20/collection_meta.yaml",
+      "size_bytes": 420,
+      "sha256": "6ba85f0431c084e09002a26f368fa1963d5614e228270692c5881aa80e26a754"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/trtllm/1.3.0rc20/context_mla_perf.parquet",
+      "size_bytes": 17687,
+      "sha256": "e935714ecb717a5700d0b714f8d6b5fb9e13c7d34bb70ff2f2adddc4b1d7013d"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/trtllm/1.3.0rc20/generation_mla_perf.parquet",
+      "size_bytes": 20448,
+      "sha256": "f164ea94122e957d365a556785e4d2d23e4af46ef9904978c7493b0c65eccc6d"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/trtllm/1.3.0rc20/mla_context_module_perf.parquet",
+      "size_bytes": 42276,
+      "sha256": "f5b32d47e1ca9f9460ec59a9795429178d5f680d238e06d35fb76b9002282c53"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/trtllm/1.3.0rc20/mla_generation_module_perf.parquet",
+      "size_bytes": 36308,
+      "sha256": "fdb2fcc8a2a04d3a856849d398c3359a539b45ab0cf733748145c1147c896696"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/vllm/0.24.0/collection_meta.yaml",
+      "size_bytes": 327,
+      "sha256": "58f4524dca5582a61aff0aea3a99ea45a435ee5e281de1396b7b2e3102755fbf"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/vllm/0.24.0/mla_context_module_perf.parquet",
+      "size_bytes": 60474,
+      "sha256": "786331601ba0a99f8324dba97518b2e3934d1c94b00557305b0e8b79db0bb54d"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/vllm/0.24.0/mla_generation_module_perf.parquet",
+      "size_bytes": 37204,
+      "sha256": "79b4d43dfc4f2dedf0b4a3a8fffc63b222c48971d7555d1332493391a9793635"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/vllm/0.25.0/collection_meta.yaml",
+      "size_bytes": 1154,
+      "sha256": "74f1f2cfd37deb66e5ca7c145faaf43b96cc0d0b4c23574067ea8242933bcc74"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/vllm/0.25.0/mla_context_module_perf.parquet",
+      "size_bytes": 81461,
+      "sha256": "fa7f3d1a0d1975795be09471015c7244029bfa6d56db5ad78d3bade0fc60c3fe"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla/vllm/0.25.0/mla_generation_module_perf.parquet",
+      "size_bytes": 42816,
+      "sha256": "e563ccadb8ce7a83e4f9db434ad006b6e17ed8ae864588a56a73ccb8e060a21d"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla_bmm/sglang/0.5.14/collection_meta.yaml",
+      "size_bytes": 267,
+      "sha256": "a250c933eb64dda6a63c13d44be6ffe84af5b7ad4998bba7c8eeacb941961b24"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla_bmm/sglang/0.5.14/mla_bmm_perf.parquet",
+      "size_bytes": 9754,
+      "sha256": "f5978e6a0ed03fd3e36262e02d76c75a5d8e40c7f6f1ce7edaf82c75cb0825ae"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla_bmm/trtllm/1.3.0rc20/collection_meta.yaml",
+      "size_bytes": 273,
+      "sha256": "d54d5b72cd6ac5c15e373a9ba936792157c001cfac71d8805b1b914b2af40168"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla_bmm/trtllm/1.3.0rc20/mla_bmm_perf.parquet",
+      "size_bytes": 9030,
+      "sha256": "995f64ce84fc4fbc092a96687bc5656ee647f29797cdf3385d10f59293eeabae"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla_bmm/vllm/0.24.0/collection_meta.yaml",
+      "size_bytes": 836,
+      "sha256": "ed1565cc844a682712d4858bb135cc20ef76f521235de92d058d8b27233e8e56"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla_bmm/vllm/0.24.0/mla_bmm_perf.parquet",
+      "size_bytes": 5578,
+      "sha256": "b83403f9c3e8109696c4cc2306d863e5b93ed428ae911a436b06a7313c82062e"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla_bmm/vllm/0.25.0/collection_meta.yaml",
+      "size_bytes": 1053,
+      "sha256": "005809cc03ea968a721e7df4b6916b98c13458c36d77987807b36129f65db2e4"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/mla_bmm/vllm/0.25.0/mla_bmm_perf.parquet",
+      "size_bytes": 6145,
+      "sha256": "1e640e27a40c8ce1e9edd7f3366f5535f39d565fd667887c98a52645cf14c90d"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/sglang/0.5.10/collection_meta.yaml",
+      "size_bytes": 362,
+      "sha256": "80973da827d710967492ad968972d176eff8581253a99f6dd276e6c018f55429"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/sglang/0.5.10/wideep_context_moe_perf.parquet",
+      "size_bytes": 8717,
+      "sha256": "b56aacc1df0f3c693532d40913c8667c590958f0594ccb3af22890d3a7e3d17e"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/sglang/0.5.10/wideep_generation_moe_perf.parquet",
+      "size_bytes": 7358,
+      "sha256": "105e3383d41bad25b02b576833016521b5122ec1571b4906b30040e3e8c83b27"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/sglang/0.5.14/collection_meta.yaml",
+      "size_bytes": 1828,
+      "sha256": "96ba16f76fdb67e5edefbcf9d3ba41a955d4a234b49995c72e45da1329d5ee50"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/sglang/0.5.14/moe_perf.parquet",
+      "size_bytes": 2027556,
+      "sha256": "e51de901466beeca9c7bf805edcbf79f3ddbf2f6b2f09f0a1e7baf372e3902de"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/sglang/0.5.17/collection_meta.yaml",
+      "size_bytes": 2747,
+      "sha256": "f6d4e091a2a0e1d69e33ae926e9a1ed7fcf757470db30de1075b97ef6dafccc7"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/sglang/0.5.17/moe_perf.parquet",
+      "size_bytes": 85110,
+      "sha256": "376b81d024c6b7f7c0ee065a09ed2c2d1f74ffe211e6833fa61bddc221fc1886"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/sglang/0.5.20/collection_meta.yaml",
+      "size_bytes": 1661,
+      "sha256": "ab879e9d8641b9c059e018e37406470011d419bcc6ff1f2d7778b508a4e717a4"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/sglang/0.5.20/moe_perf.parquet",
+      "size_bytes": 53535,
+      "sha256": "030a665f9cc6500e20a5977b0b12fd65b7a9d946157e48bc460f4a175592c960"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/trtllm/1.3.0rc10/collection_meta.yaml",
+      "size_bytes": 306,
+      "sha256": "36a3b040116f60ae0352af26a266488f322c43a80bb3d2e3f9d42441f4596014"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/trtllm/1.3.0rc10/wideep_moe_perf.parquet",
+      "size_bytes": 47104,
+      "sha256": "8475acd2594378fbad4d0a53a516c077725e2152dd7e03db94240fa79fb349a7"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/trtllm/1.3.0rc20/collection_meta.yaml",
+      "size_bytes": 680,
+      "sha256": "7208bbb0b905f1996cf5e1d52b805e1408a6421e9cf21749a9bf61daff303112"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/trtllm/1.3.0rc20/moe_perf.parquet",
+      "size_bytes": 1170185,
+      "sha256": "dd70c272093675ff325fe5d60c929a34fbc350dc8cdd6fc1fbf881ccc734be39"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/trtllm/1.3.0rc23/collection_meta.yaml",
+      "size_bytes": 681,
+      "sha256": "d1ad0f241fafaec85da9cd1e8d7a0ccc722c5091dcc4d65b5fde8823e127bb60"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/trtllm/1.3.0rc23/moe_perf.parquet",
+      "size_bytes": 51061,
+      "sha256": "134396a693b861cbcfb0aad0d8429f27f10581499acc84f5dab0b5ca2906fa4f"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/trtllm/1.3.0rc23/reuse.yaml",
+      "size_bytes": 1172,
+      "sha256": "92aeab147a83bdea7d173af009b648ef665d57a5110439b7c9b0fa600f089550"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.24.0/collection_meta.yaml",
+      "size_bytes": 1588,
+      "sha256": "e7fec80972f717b9e0be5d04279707f719b6f2fc6ffcedd8dc77b1de2b5cbafe"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.24.0/moe_perf.parquet",
+      "size_bytes": 552413,
+      "sha256": "d73cceda298720557743a9a75e37048228ea413eb9308c4a87ee240d66a57cc8"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.25.0/collection_meta.yaml",
+      "size_bytes": 1053,
+      "sha256": "76d34fca2d48c7d0e575305d1ae2f688f697d2e6fd75d67d7cab7577cf36a378"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.25.0/moe_perf.parquet",
+      "size_bytes": 628468,
+      "sha256": "49e0d74f2b8cb39f8f93623e2fd6445b1310c2644bb25e1a3d18703dd07e0c71"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.27.1/collection_meta.yaml",
+      "size_bytes": 2719,
+      "sha256": "aa4b6de85163170bd568e1f240bd21d133006da4153267fa4c95577b29af6300"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.27.1/moe_perf.parquet",
+      "size_bytes": 21779,
+      "sha256": "a8344ae07b596d7bd240add952d8dcb71c1d6b6508f2acb0ab8ffa92fff3d8d6"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.31.0/collection_meta.yaml",
+      "size_bytes": 1622,
+      "sha256": "f5d9c0cbe82434ecaf3a569f6b01623ae86e9ba0d0639e728e26cc04ce469618"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.31.0/moe_perf.parquet",
+      "size_bytes": 22665,
+      "sha256": "b378b668bfc8396f4f6b61af500be6b15235d658d6562cbfa3f6ee3723405c6a"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/msa/sglang/0.5.16/collection_meta.yaml",
+      "size_bytes": 1345,
+      "sha256": "ead769821cae40f29aa57e4914f9fb612a194786421aeb8dc3d5b46e82a0ecab"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/msa/sglang/0.5.16/msa_context_module_perf.parquet",
+      "size_bytes": 179235,
+      "sha256": "77fca10d613df069fb92153ff8b04ad4ca2b5172412af19a8c20ba0a8b81d907"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/msa/sglang/0.5.16/msa_generation_module_perf.parquet",
+      "size_bytes": 13375,
+      "sha256": "64b84a03bf1b348bd2d7e3f2144f36c0879fbc9f16ce1f021ff72a318ec7452d"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/msa/trtllm/1.3.0rc23/collection_meta.yaml",
+      "size_bytes": 1861,
+      "sha256": "32598fc0dd416dc90ea976a73191804fc6c884e124861ca7d99994cf4d355318"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/msa/trtllm/1.3.0rc23/msa_context_module_perf.parquet",
+      "size_bytes": 44035,
+      "sha256": "2a46687f6dc71c4c7cc53d8f6e5485a0575a029aede03798de95ce716fc5beab"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/msa/trtllm/1.3.0rc23/msa_generation_module_perf.parquet",
+      "size_bytes": 31919,
+      "sha256": "f2ac042b43bb44b4e18dccd2dd5cff0578034db64dd4f33d63ee80d146664daa"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/msa/vllm/0.24.0/collection_meta.yaml",
+      "size_bytes": 1121,
+      "sha256": "9301dec73dfe57287fc0c8794aa9cd069594417ba15438208d372fe86a935199"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/msa/vllm/0.24.0/msa_context_module_perf.parquet",
+      "size_bytes": 69237,
+      "sha256": "adb6dbbdd04e165e31764e271e2c2daddbd35f2bfa51c481fab7e1c26422a3a3"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/msa/vllm/0.24.0/msa_generation_module_perf.parquet",
+      "size_bytes": 45709,
+      "sha256": "e9149c042fe81fb9417a2cfcf0b0469b731cef2594bed414ae1a6330a22960fe"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/msa/vllm/0.25.0/collection_meta.yaml",
+      "size_bytes": 1067,
+      "sha256": "824731a27227fe2c49473d07ee68c1d31ea2d48a322a39fc5d08e6faeaf94414"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/msa/vllm/0.25.0/msa_context_module_perf.parquet",
+      "size_bytes": 85034,
+      "sha256": "ac08db7b62fa3becfa748ce943cc5e139dec54d387787236dea15e2f179f494a"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/quantize/sglang/0.5.14/collection_meta.yaml",
+      "size_bytes": 2002,
+      "sha256": "44de68e9b62661264b1b4f53773c8b228290652cb2e2bfa99e19c91cd12dfa08"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/quantize/sglang/0.5.14/computescale_perf.parquet",
+      "size_bytes": 7421,
+      "sha256": "fbfb00c6e8c954baeb8f88589365203fc6fa99b039aa714ea16c392567fb1268"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/quantize/sglang/0.5.14/scale_matrix_perf.parquet",
+      "size_bytes": 15168,
+      "sha256": "0cab5f21092e3d3aad5650028ca5ae15a3187b0258994c93b1f3eb059cc2676c"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/quantize/trtllm/1.3.0rc20/collection_meta.yaml",
+      "size_bytes": 320,
+      "sha256": "fe47358f868c58dba26440197818e32a88b5e4a67bc03bb68b6cdbbee01b5ac8"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/quantize/trtllm/1.3.0rc20/computescale_perf.parquet",
+      "size_bytes": 16025,
+      "sha256": "7d082e111a54d143365fe91df0a2b9d5feb691405caa9e23d717091cc889489e"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/quantize/trtllm/1.3.0rc20/scale_matrix_perf.parquet",
+      "size_bytes": 12175,
+      "sha256": "a60a2933875cee5bab7f8cc9b16ab2f40f7a01faa89de8869209943c00fca646"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/quantize/trtllm/1.3.0rc23/reuse.yaml",
+      "size_bytes": 1097,
+      "sha256": "506d31420414a4d5ede60fd5f68d429b0aaa58d6b64cdbbfc59d315499aa41d5"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/quantize/vllm/0.24.0/collection_meta.yaml",
+      "size_bytes": 312,
+      "sha256": "371b78a48e5db265c0cab68ef29a232b3bff68b2d5e90037edf8e29637b38a54"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/quantize/vllm/0.24.0/computescale_perf.parquet",
+      "size_bytes": 14437,
+      "sha256": "fd677a21568a6f2b11f9793cb480677d5741a7d1bc75783306d26ef4d89d366f"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/quantize/vllm/0.24.0/scale_matrix_perf.parquet",
+      "size_bytes": 11668,
+      "sha256": "03ef3fec0ab6a9d861157f6d4b9b9499dd1036c69d6e37fd98b52bc5c391c24d"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/sglang/0.5.14/collection_meta.yaml",
+      "size_bytes": 802,
+      "sha256": "158ed84a685dbb6c0094d79074ced5bf924352ed7de5698743442bb482659c5b"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/sglang/0.5.14/dsa_context_module_perf.parquet",
+      "size_bytes": 501903,
+      "sha256": "ad8cf57a1a44e9a2bb0a56a957c7441257b5ae2a89fb9c52608a768702ba3cf3"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/sglang/0.5.14/dsa_generation_module_perf.parquet",
+      "size_bytes": 34939,
+      "sha256": "2976cb819bba29e0ec2a367b8311a509205fd05282c255c1549c8f4ca3e16dfe"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/sglang/0.5.14/dsv4_csa_context_module_perf.parquet",
+      "size_bytes": 382347,
+      "sha256": "c3b531a3d55bb279710c1dbb14a9a964673e195922c84a689b99bfd11741b5e7"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/sglang/0.5.14/dsv4_csa_generation_module_perf.parquet",
+      "size_bytes": 17124,
+      "sha256": "135e5dbc1eeb073c8dd0dfda67e7173bad312ede22eba85466f20c5433603b61"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/sglang/0.5.14/dsv4_csa_topk_calib_perf.parquet",
+      "size_bytes": 52514,
+      "sha256": "6f79cb05126f587743b63057755357c91868671c92694ecdfe9e6e7460afb949"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/sglang/0.5.14/dsv4_hca_context_module_perf.parquet",
+      "size_bytes": 253781,
+      "sha256": "f8f46c545759f50e443acf7894ad585a98dfe50777d14662119f97cc866e20a7"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/sglang/0.5.14/dsv4_hca_generation_module_perf.parquet",
+      "size_bytes": 15787,
+      "sha256": "87256fdbf8e287fd2c994f16376b86cc03645b1b17380b104ef8b2344d3c6b74"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/sglang/0.5.14/dsv4_paged_mqa_logits_module_perf.parquet",
+      "size_bytes": 33503,
+      "sha256": "b2930c02b5e35362f3ac2d20aaeb72ed2da3a97da006401a701e0a96e24d8cbf"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/sglang/0.5.14/glm5_dsa_attn_module_perf.parquet",
+      "size_bytes": 39005,
+      "sha256": "30219997cd52821d7ececa559b43269d8e13980be54fb596b5829563c8c802ae"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/sglang/0.5.14/glm5_mqa_logits_module_perf.parquet",
+      "size_bytes": 34644,
+      "sha256": "96904ba6b1fbbb041271a288fdda693781c75e95f309855bd7f57fbe95c9bb5e"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/sglang/0.5.14/glm5_topk_module_perf.parquet",
+      "size_bytes": 44347,
+      "sha256": "7bbf76861be87ad06f8f0e94b46498e961374eb32dd9a31ee44d3da6b8621c7b"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/trtllm/1.3.0rc20/collection_meta.yaml",
+      "size_bytes": 335,
+      "sha256": "e0229dd30f67473c9cef1c1dae000ec2e2966a518f0f7d30374ac9ad143739cc"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/trtllm/1.3.0rc20/dsa_context_module_perf.parquet",
+      "size_bytes": 98301,
+      "sha256": "152ab9b9562f621d44198f54f7cdd40117f9cb5e4db1094815a3495523ca2e7f"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/trtllm/1.3.0rc20/dsa_generation_module_perf.parquet",
+      "size_bytes": 41396,
+      "sha256": "98a08369b809e9292b0c7c3fc851ffece422efaeca990857031904c279506675"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/trtllm/1.3.0rc23/collection_meta.yaml",
+      "size_bytes": 1736,
+      "sha256": "a2069ca7f6c759b4e7e681afe1e67070719dbd7bcb9cdadc74c7e4eebc92a95f"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/trtllm/1.3.0rc23/dsv4_csa_context_module_perf.parquet",
+      "size_bytes": 56321,
+      "sha256": "bbad11f0e778efc05d95c528bf4d66e551eaff10d589badf7681375be84c9333"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/trtllm/1.3.0rc23/dsv4_csa_generation_module_perf.parquet",
+      "size_bytes": 19653,
+      "sha256": "daa9dcbb944fd5072b0017ca160ae698a03bf6ceb8bd3d9841ed19f3ab5c1fcb"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/trtllm/1.3.0rc23/dsv4_hca_context_module_perf.parquet",
+      "size_bytes": 52857,
+      "sha256": "8ad6e9e5f3080a9d7190195c015ea3502667ead94bfbfc3802572d4987e9ba11"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/trtllm/1.3.0rc23/dsv4_hca_generation_module_perf.parquet",
+      "size_bytes": 18053,
+      "sha256": "431f6e2d8d7a69b225c8416b629154854e11b27ff721c74aa540d0fdb12f2f06"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/vllm/0.22.0/reuse.yaml",
+      "size_bytes": 1516,
+      "sha256": "7cfc8afda896b63199a6106847bc34fcd3411d0bee1e7c01c57828d1f5fef7b8"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/vllm/0.24.0/collection_meta.yaml",
+      "size_bytes": 1703,
+      "sha256": "fd00e0368f67e5825380faf6ce691cbc987714ae2ee26be70380cabb9fb769d6"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/vllm/0.24.0/dsa_context_module_perf.parquet",
+      "size_bytes": 195385,
+      "sha256": "94d707e238eb6d8a06a7c9d77da39f8493411680ffd69bc2e580a09ecd3c591b"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/vllm/0.24.0/dsa_generation_module_perf.parquet",
+      "size_bytes": 112292,
+      "sha256": "39044934473599b90f82b1b27ea759ed1e3080dec385f84cbec0aac4fb77266a"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/vllm/0.24.0/dsv4_csa_context_module_perf.parquet",
+      "size_bytes": 47077,
+      "sha256": "4f50ab746db099665ab76f8d2b03362629b6d63d9c7f2a007585839b2d7d378b"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/vllm/0.24.0/dsv4_csa_generation_module_perf.parquet",
+      "size_bytes": 11493,
+      "sha256": "190b3fb079b416d7324baa4d10a44e35acbed068e46a290277f14b6aa4660cb3"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/vllm/0.24.0/dsv4_hca_attn_module_perf.parquet",
+      "size_bytes": 14614,
+      "sha256": "106e9e2ec48cda20b3691880426eec26a141c57087acd65de1c1c76ef29ae5ca"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/vllm/0.24.0/dsv4_hca_context_module_perf.parquet",
+      "size_bytes": 45404,
+      "sha256": "6f1c7486ed2165855ee62f0392239da9533865344e589d38242b80a660eaaa6e"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/vllm/0.24.0/dsv4_hca_generation_module_perf.parquet",
+      "size_bytes": 12179,
+      "sha256": "aa2da57a11159029f76e6b4aebc4bd41e68a0f53e5dc34c8a38ac3560e2d12e8"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/vllm/0.24.0/dsv4_paged_mqa_logits_module_perf.parquet",
+      "size_bytes": 12164,
+      "sha256": "43be0f1925c3b7961ad71176c909a42f371e552d344cf3d3a13d321287a257b9"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/vllm/0.25.0/collection_meta.yaml",
+      "size_bytes": 2797,
+      "sha256": "bebbf880c0df4effe3b4d384e67984ddd36e254a83de2f0504e792646d6c8061"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/vllm/0.25.0/dsv4_csa_context_module_perf.parquet",
+      "size_bytes": 49397,
+      "sha256": "63e9b6b89418403e1998e691e2f93a5be67fd930a7997dac0d248ba0f577d7c3"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/vllm/0.25.0/dsv4_csa_generation_module_perf.parquet",
+      "size_bytes": 13177,
+      "sha256": "632a9063ce5f857ab95731449176045fbde3551efcaefb35a93feea29549e5da"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/vllm/0.25.0/dsv4_hca_attn_module_perf.parquet",
+      "size_bytes": 21277,
+      "sha256": "cc616dbae378df19da3788d0d0b632b220144a60fb6067bbcb95cc94afe79513"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/vllm/0.25.0/dsv4_hca_context_module_perf.parquet",
+      "size_bytes": 46215,
+      "sha256": "fe349c63ed6445f442f2298e47456c37ffef5f1c43d458cf5d57538d282e581e"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/vllm/0.25.0/dsv4_hca_generation_module_perf.parquet",
+      "size_bytes": 12645,
+      "sha256": "cdc48ea8a89e6b5543720df991f5f11d691b56349b1ab6a042bf6cbb550e6f62"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/vllm/0.25.0/dsv4_paged_mqa_logits_module_perf.parquet",
+      "size_bytes": 16634,
+      "sha256": "64de2420ed80948ca068da0fc1e014734e53e6a77d71ab224e566b350be2280f"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/a100_pcie.yaml",
+      "size_bytes": 1247,
+      "sha256": "5eb859ec4c87566e43c1aaba9d39df0689676b1735fc7a3244893652fa6790cf"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/a100_sxm.yaml",
+      "size_bytes": 1454,
+      "sha256": "b322d16e565e2f7e7d9fe23efee32bbabf24b7186d9dbc58ea5c5b9e35a2fe30"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/a30.yaml",
+      "size_bytes": 1238,
+      "sha256": "36b6c9657ec0acd0c13ab7177fc7fd12ebc2785b208dc01b40f29d790c3ba7b0"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/attention_lane_defaults.yaml",
+      "size_bytes": 5350,
+      "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/b200_sxm.yaml",
+      "size_bytes": 1799,
+      "sha256": "2cf8081b7a78da88cc332d4fdaf4259ba7b47f48397f9c100bbf7206e5245cfd"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/b300_sxm.yaml",
+      "size_bytes": 1994,
+      "sha256": "1d1a193aeb61b21ced4504c4ad93f8cc00f3e61c6b2df3d2e33ca34590afb4c2"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/b60.yaml",
+      "size_bytes": 1766,
+      "sha256": "4e445b14d1a8776777297b44a028b7b8111766862e4f2c7d8bf40b0d655553de"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/dsv41_fpm_hf.json",
+      "size_bytes": 8404,
+      "sha256": "b8c52ec2119acc2eddfde557ff9ba78296b3dde21e8026b5c2c9128fc02757a9"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/gb200.yaml",
+      "size_bytes": 2256,
+      "sha256": "0eae1446798493cf7d2b60b5edcf22f7eebe9d6ece3edd7216347c9b453309f1"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/gb300.yaml",
+      "size_bytes": 2113,
+      "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/h100_pcie.yaml",
+      "size_bytes": 1447,
+      "sha256": "694f83ef10cee8dfc8d9d78957757371daef75cd0bc1e3917b74f04082d1a6fe"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/h100_sxm.yaml",
+      "size_bytes": 1607,
+      "sha256": "bbbe72e97e0271364ec047d94bade25d03f0ef9c43981b0a81cd86ae4fe1f039"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/h200_sxm.yaml",
+      "size_bytes": 1609,
+      "sha256": "1d7359c1a6615efb6c09bb0edcac05fd35ba0a3743a9908e041c4a6c1ec3909d"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/l4.yaml",
+      "size_bytes": 1416,
+      "sha256": "b04da82cf260c154c9bdfc24aafa7c59af5caed97010fef79f0dafafe6172a9b"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/l40s.yaml",
+      "size_bytes": 1515,
+      "sha256": "f526e6735f407cf92af7c5a45e4fc51bcda3128a793e17a4bb90d1a920c314c9"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/perf_data_reuse_manifest.yaml",
+      "size_bytes": 64948,
+      "sha256": "5afc178ba09a1c2b302942c705183ae9634efe1a0a5c46031be1379e5759edae"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/query_versions.yaml",
+      "size_bytes": 2087,
+      "sha256": "b7d04cadeb57362c043d1579e1f46fa1041bec9755b9e6eaf62286062b53c17a"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/rtx_pro_6000_server.yaml",
+      "size_bytes": 2266,
+      "sha256": "c95c843cff8c30c797c69c43131ac4ac91c8afd83704d79f38f5b70906f01460"
+    },
+    {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/silicon_sample.csv",
+      "size_bytes": 1895632,
+      "sha256": "4240bfaf555b6f8b2c62512074e5efbb7791cdbb0344b068408f397588499adb"
+    }
+  ],
+  "grid": {
+    "contexts": [
+      32768,
+      65536,
+      131072,
+      262144,
+      393216,
+      524288,
+      600000
+    ],
+    "batches": [
+      1,
+      2,
+      4,
+      8,
+      13,
+      14
+    ],
+    "nextn": [
+      0,
+      3
+    ],
+    "variants": [
+      "checkpoint",
+      "all_full",
+      "all_skip"
+    ]
+  },
+  "models": [
+    {
+      "variant": "checkpoint",
+      "nextn": 0,
+      "requested_config": {
+        "model": "nvidia/GLM-5.3-NVFP4",
+        "system": "b300_sxm",
+        "backend": "sglang",
+        "worker_type": "aggregated",
+        "backend_version": "0.5.20",
+        "fpm_profile": null,
+        "tp": 8,
+        "pp": 1,
+        "attention_dp": 1,
+        "dcp": null,
+        "moe_tp_size": 8,
+        "moe_ep_size": 1,
+        "cp_size": null,
+        "gemm_quant_mode": null,
+        "moe_quant_mode": null,
+        "fmha_quant_mode": null,
+        "fpm_fmha_quant_mode": null,
+        "kvcache_quant_mode": null,
+        "comm_quant_mode": null,
+        "nextn": 0,
+        "speculation": null,
+        "kv_block_size": 64,
+        "decoder_replay": false,
+        "estimation_mode": "op_level",
+        "database_mode": "SILICON",
+        "transfer_policy": null,
+        "systems_paths": [
+          "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems"
+        ],
+        "fallback_policy": "deny",
+        "estimator_config": {
+          "correction": {
+            "enabled": false
+          }
+        },
+        "attention_backend": null,
+        "moe_kernel_source": null,
+        "enable_shared_layer": null,
+        "strict_provenance": false,
+        "moe_backend": null,
+        "enable_eplb": false,
+        "wideep_num_slots": null
+      },
+      "diagnostics": {
+        "source": "aic",
+        "readiness": "ready",
+        "retained_observations": 0,
+        "correction_ready_buckets": 0,
+        "last_warning": null,
+        "provenance": {
+          "config": {
+            "model": "nvidia/GLM-5.3-NVFP4",
+            "system": "b300_sxm",
+            "backend": "sglang",
+            "worker_type": "aggregated",
+            "backend_version": "0.5.20",
+            "fpm_profile": null,
+            "tp": 8,
+            "pp": 1,
+            "attention_dp": 1,
+            "dcp": null,
+            "moe_tp_size": 8,
+            "moe_ep_size": 1,
+            "gemm_quant_mode": null,
+            "moe_quant_mode": null,
+            "fmha_quant_mode": null,
+            "fpm_fmha_quant_mode": null,
+            "kvcache_quant_mode": null,
+            "comm_quant_mode": null,
+            "nextn": 0,
+            "speculation": null,
+            "kv_block_size": 64,
+            "decoder_replay": false,
+            "estimation_mode": "op_level",
+            "database_mode": "SILICON",
+            "transfer_policy": [
+              "xshape",
+              "xquant",
+              "xprofile",
+              "xop"
+            ],
+            "systems_paths": [
+              "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems"
+            ],
+            "fallback_policy": "deny",
+            "estimator_config": {
+              "features": {
+                "attention_kv_weight": 1.0,
+                "prefill_attention_pair_weight": 1.0,
+                "ffn_token_weight": 1.0
+              },
+              "op_level": {},
+              "fpm_interpolation": {
+                "method": "sol"
+              },
+              "fpm_regression": {
+                "sampling": {
+                  "bins_per_axis": [
+                    4,
+                    4
+                  ],
+                  "max_observations": 64
+                },
+                "min_observations": 5,
+                "fit": {
+                  "kind": "standardized_nnls",
+                  "singular_ridge_scale": 1e-09,
+                  "rebuild_interval": null
+                }
+              },
+              "correction": {
+                "enabled": false,
+                "feature_space": "legacy_workload",
+                "sampling": {
+                  "bins_per_axis": [
+                    4,
+                    4
+                  ],
+                  "max_observations": 64
+                },
+                "min_observations": 5,
+                "factor_bounds": {
+                  "min": 0.5,
+                  "max": 2.0
+                },
+                "max_num_tokens": 8192,
+                "max_batch_size": 512,
+                "max_kv_tokens": 2000000
+              }
+            },
+            "attention_backend": null,
+            "moe_kernel_source": null,
+            "moe_backend": null,
+            "enable_eplb": false,
+            "wideep_num_slots": null,
+            "enable_shared_layer": null,
+            "strict_provenance": false
+          },
+          "selected_systems_root": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems",
+          "requested_estimation_mode": "op_level",
+          "selected_estimation_mode": "op_level",
+          "selection_failures": []
+        }
+      },
+      "topology": {
+        "worker_type": "aggregated",
+        "tp": 8,
+        "pp": 1,
+        "attention_dp": 1,
+        "dcp": null,
+        "cp_size": null,
+        "moe_tp_size": 8,
+        "moe_ep_size": 1,
+        "nextn": 0,
+        "speculation": null,
+        "kv_block_size": 64,
+        "correction_limits": null
+      }
+    },
+    {
+      "variant": "checkpoint",
+      "nextn": 3,
+      "requested_config": {
+        "model": "nvidia/GLM-5.3-NVFP4",
+        "system": "b300_sxm",
+        "backend": "sglang",
+        "worker_type": "aggregated",
+        "backend_version": "0.5.20",
+        "fpm_profile": null,
+        "tp": 8,
+        "pp": 1,
+        "attention_dp": 1,
+        "dcp": null,
+        "moe_tp_size": 8,
+        "moe_ep_size": 1,
+        "cp_size": null,
+        "gemm_quant_mode": null,
+        "moe_quant_mode": null,
+        "fmha_quant_mode": null,
+        "fpm_fmha_quant_mode": null,
+        "kvcache_quant_mode": null,
+        "comm_quant_mode": null,
+        "nextn": 3,
+        "speculation": null,
+        "kv_block_size": 64,
+        "decoder_replay": false,
+        "estimation_mode": "op_level",
+        "database_mode": "SILICON",
+        "transfer_policy": null,
+        "systems_paths": [
+          "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems"
+        ],
+        "fallback_policy": "deny",
+        "estimator_config": {
+          "correction": {
+            "enabled": false
+          }
+        },
+        "attention_backend": null,
+        "moe_kernel_source": null,
+        "enable_shared_layer": null,
+        "strict_provenance": false,
+        "moe_backend": null,
+        "enable_eplb": false,
+        "wideep_num_slots": null
+      },
+      "diagnostics": {
+        "source": "aic",
+        "readiness": "ready",
+        "retained_observations": 0,
+        "correction_ready_buckets": 0,
+        "last_warning": null,
+        "provenance": {
+          "config": {
+            "model": "nvidia/GLM-5.3-NVFP4",
+            "system": "b300_sxm",
+            "backend": "sglang",
+            "worker_type": "aggregated",
+            "backend_version": "0.5.20",
+            "fpm_profile": null,
+            "tp": 8,
+            "pp": 1,
+            "attention_dp": 1,
+            "dcp": null,
+            "moe_tp_size": 8,
+            "moe_ep_size": 1,
+            "gemm_quant_mode": null,
+            "moe_quant_mode": null,
+            "fmha_quant_mode": null,
+            "fpm_fmha_quant_mode": null,
+            "kvcache_quant_mode": null,
+            "comm_quant_mode": null,
+            "nextn": 3,
+            "speculation": null,
+            "kv_block_size": 64,
+            "decoder_replay": false,
+            "estimation_mode": "op_level",
+            "database_mode": "SILICON",
+            "transfer_policy": [
+              "xshape",
+              "xquant",
+              "xprofile",
+              "xop"
+            ],
+            "systems_paths": [
+              "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems"
+            ],
+            "fallback_policy": "deny",
+            "estimator_config": {
+              "features": {
+                "attention_kv_weight": 1.0,
+                "prefill_attention_pair_weight": 1.0,
+                "ffn_token_weight": 1.0
+              },
+              "op_level": {},
+              "fpm_interpolation": {
+                "method": "sol"
+              },
+              "fpm_regression": {
+                "sampling": {
+                  "bins_per_axis": [
+                    4,
+                    4
+                  ],
+                  "max_observations": 64
+                },
+                "min_observations": 5,
+                "fit": {
+                  "kind": "standardized_nnls",
+                  "singular_ridge_scale": 1e-09,
+                  "rebuild_interval": null
+                }
+              },
+              "correction": {
+                "enabled": false,
+                "feature_space": "legacy_workload",
+                "sampling": {
+                  "bins_per_axis": [
+                    4,
+                    4
+                  ],
+                  "max_observations": 64
+                },
+                "min_observations": 5,
+                "factor_bounds": {
+                  "min": 0.5,
+                  "max": 2.0
+                },
+                "max_num_tokens": 8192,
+                "max_batch_size": 512,
+                "max_kv_tokens": 2000000
+              }
+            },
+            "attention_backend": null,
+            "moe_kernel_source": null,
+            "moe_backend": null,
+            "enable_eplb": false,
+            "wideep_num_slots": null,
+            "enable_shared_layer": null,
+            "strict_provenance": false
+          },
+          "selected_systems_root": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems",
+          "requested_estimation_mode": "op_level",
+          "selected_estimation_mode": "op_level",
+          "selection_failures": []
+        }
+      },
+      "topology": {
+        "worker_type": "aggregated",
+        "tp": 8,
+        "pp": 1,
+        "attention_dp": 1,
+        "dcp": null,
+        "cp_size": null,
+        "moe_tp_size": 8,
+        "moe_ep_size": 1,
+        "nextn": 3,
+        "speculation": null,
+        "kv_block_size": 64,
+        "correction_limits": null
+      }
+    },
+    {
+      "variant": "all_full",
+      "nextn": 0,
+      "requested_config": {
+        "model": "/Users/simonec/.codex/.chatgpt-projects/g-p-6ae11856b9ec8191a0715553f1b57b54/outputs/glm-decode-slope/corrected-static/synthetic-models/all_full",
+        "system": "b300_sxm",
+        "backend": "sglang",
+        "worker_type": "aggregated",
+        "backend_version": "0.5.20",
+        "fpm_profile": null,
+        "tp": 8,
+        "pp": 1,
+        "attention_dp": 1,
+        "dcp": null,
+        "moe_tp_size": 8,
+        "moe_ep_size": 1,
+        "cp_size": null,
+        "gemm_quant_mode": null,
+        "moe_quant_mode": null,
+        "fmha_quant_mode": null,
+        "fpm_fmha_quant_mode": null,
+        "kvcache_quant_mode": null,
+        "comm_quant_mode": null,
+        "nextn": 0,
+        "speculation": null,
+        "kv_block_size": 64,
+        "decoder_replay": false,
+        "estimation_mode": "op_level",
+        "database_mode": "SILICON",
+        "transfer_policy": null,
+        "systems_paths": [
+          "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems"
+        ],
+        "fallback_policy": "deny",
+        "estimator_config": {
+          "correction": {
+            "enabled": false
+          }
+        },
+        "attention_backend": null,
+        "moe_kernel_source": null,
+        "enable_shared_layer": null,
+        "strict_provenance": false,
+        "moe_backend": null,
+        "enable_eplb": false,
+        "wideep_num_slots": null
+      },
+      "diagnostics": {
+        "source": "aic",
+        "readiness": "ready",
+        "retained_observations": 0,
+        "correction_ready_buckets": 0,
+        "last_warning": null,
+        "provenance": {
+          "config": {
+            "model": "/Users/simonec/.codex/.chatgpt-projects/g-p-6ae11856b9ec8191a0715553f1b57b54/outputs/glm-decode-slope/corrected-static/synthetic-models/all_full",
+            "system": "b300_sxm",
+            "backend": "sglang",
+            "worker_type": "aggregated",
+            "backend_version": "0.5.20",
+            "fpm_profile": null,
+            "tp": 8,
+            "pp": 1,
+            "attention_dp": 1,
+            "dcp": null,
+            "moe_tp_size": 8,
+            "moe_ep_size": 1,
+            "gemm_quant_mode": null,
+            "moe_quant_mode": null,
+            "fmha_quant_mode": null,
+            "fpm_fmha_quant_mode": null,
+            "kvcache_quant_mode": null,
+            "comm_quant_mode": null,
+            "nextn": 0,
+            "speculation": null,
+            "kv_block_size": 64,
+            "decoder_replay": false,
+            "estimation_mode": "op_level",
+            "database_mode": "SILICON",
+            "transfer_policy": [
+              "xshape",
+              "xquant",
+              "xprofile",
+              "xop"
+            ],
+            "systems_paths": [
+              "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems"
+            ],
+            "fallback_policy": "deny",
+            "estimator_config": {
+              "features": {
+                "attention_kv_weight": 1.0,
+                "prefill_attention_pair_weight": 1.0,
+                "ffn_token_weight": 1.0
+              },
+              "op_level": {},
+              "fpm_interpolation": {
+                "method": "sol"
+              },
+              "fpm_regression": {
+                "sampling": {
+                  "bins_per_axis": [
+                    4,
+                    4
+                  ],
+                  "max_observations": 64
+                },
+                "min_observations": 5,
+                "fit": {
+                  "kind": "standardized_nnls",
+                  "singular_ridge_scale": 1e-09,
+                  "rebuild_interval": null
+                }
+              },
+              "correction": {
+                "enabled": false,
+                "feature_space": "legacy_workload",
+                "sampling": {
+                  "bins_per_axis": [
+                    4,
+                    4
+                  ],
+                  "max_observations": 64
+                },
+                "min_observations": 5,
+                "factor_bounds": {
+                  "min": 0.5,
+                  "max": 2.0
+                },
+                "max_num_tokens": 8192,
+                "max_batch_size": 512,
+                "max_kv_tokens": 2000000
+              }
+            },
+            "attention_backend": null,
+            "moe_kernel_source": null,
+            "moe_backend": null,
+            "enable_eplb": false,
+            "wideep_num_slots": null,
+            "enable_shared_layer": null,
+            "strict_provenance": false
+          },
+          "selected_systems_root": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems",
+          "requested_estimation_mode": "op_level",
+          "selected_estimation_mode": "op_level",
+          "selection_failures": []
+        }
+      },
+      "topology": {
+        "worker_type": "aggregated",
+        "tp": 8,
+        "pp": 1,
+        "attention_dp": 1,
+        "dcp": null,
+        "cp_size": null,
+        "moe_tp_size": 8,
+        "moe_ep_size": 1,
+        "nextn": 0,
+        "speculation": null,
+        "kv_block_size": 64,
+        "correction_limits": null
+      }
+    },
+    {
+      "variant": "all_full",
+      "nextn": 3,
+      "requested_config": {
+        "model": "/Users/simonec/.codex/.chatgpt-projects/g-p-6ae11856b9ec8191a0715553f1b57b54/outputs/glm-decode-slope/corrected-static/synthetic-models/all_full",
+        "system": "b300_sxm",
+        "backend": "sglang",
+        "worker_type": "aggregated",
+        "backend_version": "0.5.20",
+        "fpm_profile": null,
+        "tp": 8,
+        "pp": 1,
+        "attention_dp": 1,
+        "dcp": null,
+        "moe_tp_size": 8,
+        "moe_ep_size": 1,
+        "cp_size": null,
+        "gemm_quant_mode": null,
+        "moe_quant_mode": null,
+        "fmha_quant_mode": null,
+        "fpm_fmha_quant_mode": null,
+        "kvcache_quant_mode": null,
+        "comm_quant_mode": null,
+        "nextn": 3,
+        "speculation": null,
+        "kv_block_size": 64,
+        "decoder_replay": false,
+        "estimation_mode": "op_level",
+        "database_mode": "SILICON",
+        "transfer_policy": null,
+        "systems_paths": [
+          "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems"
+        ],
+        "fallback_policy": "deny",
+        "estimator_config": {
+          "correction": {
+            "enabled": false
+          }
+        },
+        "attention_backend": null,
+        "moe_kernel_source": null,
+        "enable_shared_layer": null,
+        "strict_provenance": false,
+        "moe_backend": null,
+        "enable_eplb": false,
+        "wideep_num_slots": null
+      },
+      "diagnostics": {
+        "source": "aic",
+        "readiness": "ready",
+        "retained_observations": 0,
+        "correction_ready_buckets": 0,
+        "last_warning": null,
+        "provenance": {
+          "config": {
+            "model": "/Users/simonec/.codex/.chatgpt-projects/g-p-6ae11856b9ec8191a0715553f1b57b54/outputs/glm-decode-slope/corrected-static/synthetic-models/all_full",
+            "system": "b300_sxm",
+            "backend": "sglang",
+            "worker_type": "aggregated",
+            "backend_version": "0.5.20",
+            "fpm_profile": null,
+            "tp": 8,
+            "pp": 1,
+            "attention_dp": 1,
+            "dcp": null,
+            "moe_tp_size": 8,
+            "moe_ep_size": 1,
+            "gemm_quant_mode": null,
+            "moe_quant_mode": null,
+            "fmha_quant_mode": null,
+            "fpm_fmha_quant_mode": null,
+            "kvcache_quant_mode": null,
+            "comm_quant_mode": null,
+            "nextn": 3,
+            "speculation": null,
+            "kv_block_size": 64,
+            "decoder_replay": false,
+            "estimation_mode": "op_level",
+            "database_mode": "SILICON",
+            "transfer_policy": [
+              "xshape",
+              "xquant",
+              "xprofile",
+              "xop"
+            ],
+            "systems_paths": [
+              "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems"
+            ],
+            "fallback_policy": "deny",
+            "estimator_config": {
+              "features": {
+                "attention_kv_weight": 1.0,
+                "prefill_attention_pair_weight": 1.0,
+                "ffn_token_weight": 1.0
+              },
+              "op_level": {},
+              "fpm_interpolation": {
+                "method": "sol"
+              },
+              "fpm_regression": {
+                "sampling": {
+                  "bins_per_axis": [
+                    4,
+                    4
+                  ],
+                  "max_observations": 64
+                },
+                "min_observations": 5,
+                "fit": {
+                  "kind": "standardized_nnls",
+                  "singular_ridge_scale": 1e-09,
+                  "rebuild_interval": null
+                }
+              },
+              "correction": {
+                "enabled": false,
+                "feature_space": "legacy_workload",
+                "sampling": {
+                  "bins_per_axis": [
+                    4,
+                    4
+                  ],
+                  "max_observations": 64
+                },
+                "min_observations": 5,
+                "factor_bounds": {
+                  "min": 0.5,
+                  "max": 2.0
+                },
+                "max_num_tokens": 8192,
+                "max_batch_size": 512,
+                "max_kv_tokens": 2000000
+              }
+            },
+            "attention_backend": null,
+            "moe_kernel_source": null,
+            "moe_backend": null,
+            "enable_eplb": false,
+            "wideep_num_slots": null,
+            "enable_shared_layer": null,
+            "strict_provenance": false
+          },
+          "selected_systems_root": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems",
+          "requested_estimation_mode": "op_level",
+          "selected_estimation_mode": "op_level",
+          "selection_failures": []
+        }
+      },
+      "topology": {
+        "worker_type": "aggregated",
+        "tp": 8,
+        "pp": 1,
+        "attention_dp": 1,
+        "dcp": null,
+        "cp_size": null,
+        "moe_tp_size": 8,
+        "moe_ep_size": 1,
+        "nextn": 3,
+        "speculation": null,
+        "kv_block_size": 64,
+        "correction_limits": null
+      }
+    },
+    {
+      "variant": "all_skip",
+      "nextn": 0,
+      "requested_config": {
+        "model": "/Users/simonec/.codex/.chatgpt-projects/g-p-6ae11856b9ec8191a0715553f1b57b54/outputs/glm-decode-slope/corrected-static/synthetic-models/all_skip",
+        "system": "b300_sxm",
+        "backend": "sglang",
+        "worker_type": "aggregated",
+        "backend_version": "0.5.20",
+        "fpm_profile": null,
+        "tp": 8,
+        "pp": 1,
+        "attention_dp": 1,
+        "dcp": null,
+        "moe_tp_size": 8,
+        "moe_ep_size": 1,
+        "cp_size": null,
+        "gemm_quant_mode": null,
+        "moe_quant_mode": null,
+        "fmha_quant_mode": null,
+        "fpm_fmha_quant_mode": null,
+        "kvcache_quant_mode": null,
+        "comm_quant_mode": null,
+        "nextn": 0,
+        "speculation": null,
+        "kv_block_size": 64,
+        "decoder_replay": false,
+        "estimation_mode": "op_level",
+        "database_mode": "SILICON",
+        "transfer_policy": null,
+        "systems_paths": [
+          "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems"
+        ],
+        "fallback_policy": "deny",
+        "estimator_config": {
+          "correction": {
+            "enabled": false
+          }
+        },
+        "attention_backend": null,
+        "moe_kernel_source": null,
+        "enable_shared_layer": null,
+        "strict_provenance": false,
+        "moe_backend": null,
+        "enable_eplb": false,
+        "wideep_num_slots": null
+      },
+      "diagnostics": {
+        "source": "aic",
+        "readiness": "ready",
+        "retained_observations": 0,
+        "correction_ready_buckets": 0,
+        "last_warning": null,
+        "provenance": {
+          "config": {
+            "model": "/Users/simonec/.codex/.chatgpt-projects/g-p-6ae11856b9ec8191a0715553f1b57b54/outputs/glm-decode-slope/corrected-static/synthetic-models/all_skip",
+            "system": "b300_sxm",
+            "backend": "sglang",
+            "worker_type": "aggregated",
+            "backend_version": "0.5.20",
+            "fpm_profile": null,
+            "tp": 8,
+            "pp": 1,
+            "attention_dp": 1,
+            "dcp": null,
+            "moe_tp_size": 8,
+            "moe_ep_size": 1,
+            "gemm_quant_mode": null,
+            "moe_quant_mode": null,
+            "fmha_quant_mode": null,
+            "fpm_fmha_quant_mode": null,
+            "kvcache_quant_mode": null,
+            "comm_quant_mode": null,
+            "nextn": 0,
+            "speculation": null,
+            "kv_block_size": 64,
+            "decoder_replay": false,
+            "estimation_mode": "op_level",
+            "database_mode": "SILICON",
+            "transfer_policy": [
+              "xshape",
+              "xquant",
+              "xprofile",
+              "xop"
+            ],
+            "systems_paths": [
+              "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems"
+            ],
+            "fallback_policy": "deny",
+            "estimator_config": {
+              "features": {
+                "attention_kv_weight": 1.0,
+                "prefill_attention_pair_weight": 1.0,
+                "ffn_token_weight": 1.0
+              },
+              "op_level": {},
+              "fpm_interpolation": {
+                "method": "sol"
+              },
+              "fpm_regression": {
+                "sampling": {
+                  "bins_per_axis": [
+                    4,
+                    4
+                  ],
+                  "max_observations": 64
+                },
+                "min_observations": 5,
+                "fit": {
+                  "kind": "standardized_nnls",
+                  "singular_ridge_scale": 1e-09,
+                  "rebuild_interval": null
+                }
+              },
+              "correction": {
+                "enabled": false,
+                "feature_space": "legacy_workload",
+                "sampling": {
+                  "bins_per_axis": [
+                    4,
+                    4
+                  ],
+                  "max_observations": 64
+                },
+                "min_observations": 5,
+                "factor_bounds": {
+                  "min": 0.5,
+                  "max": 2.0
+                },
+                "max_num_tokens": 8192,
+                "max_batch_size": 512,
+                "max_kv_tokens": 2000000
+              }
+            },
+            "attention_backend": null,
+            "moe_kernel_source": null,
+            "moe_backend": null,
+            "enable_eplb": false,
+            "wideep_num_slots": null,
+            "enable_shared_layer": null,
+            "strict_provenance": false
+          },
+          "selected_systems_root": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems",
+          "requested_estimation_mode": "op_level",
+          "selected_estimation_mode": "op_level",
+          "selection_failures": []
+        }
+      },
+      "topology": {
+        "worker_type": "aggregated",
+        "tp": 8,
+        "pp": 1,
+        "attention_dp": 1,
+        "dcp": null,
+        "cp_size": null,
+        "moe_tp_size": 8,
+        "moe_ep_size": 1,
+        "nextn": 0,
+        "speculation": null,
+        "kv_block_size": 64,
+        "correction_limits": null
+      }
+    },
+    {
+      "variant": "all_skip",
+      "nextn": 3,
+      "requested_config": {
+        "model": "/Users/simonec/.codex/.chatgpt-projects/g-p-6ae11856b9ec8191a0715553f1b57b54/outputs/glm-decode-slope/corrected-static/synthetic-models/all_skip",
+        "system": "b300_sxm",
+        "backend": "sglang",
+        "worker_type": "aggregated",
+        "backend_version": "0.5.20",
+        "fpm_profile": null,
+        "tp": 8,
+        "pp": 1,
+        "attention_dp": 1,
+        "dcp": null,
+        "moe_tp_size": 8,
+        "moe_ep_size": 1,
+        "cp_size": null,
+        "gemm_quant_mode": null,
+        "moe_quant_mode": null,
+        "fmha_quant_mode": null,
+        "fpm_fmha_quant_mode": null,
+        "kvcache_quant_mode": null,
+        "comm_quant_mode": null,
+        "nextn": 3,
+        "speculation": null,
+        "kv_block_size": 64,
+        "decoder_replay": false,
+        "estimation_mode": "op_level",
+        "database_mode": "SILICON",
+        "transfer_policy": null,
+        "systems_paths": [
+          "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems"
+        ],
+        "fallback_policy": "deny",
+        "estimator_config": {
+          "correction": {
+            "enabled": false
+          }
+        },
+        "attention_backend": null,
+        "moe_kernel_source": null,
+        "enable_shared_layer": null,
+        "strict_provenance": false,
+        "moe_backend": null,
+        "enable_eplb": false,
+        "wideep_num_slots": null
+      },
+      "diagnostics": {
+        "source": "aic",
+        "readiness": "ready",
+        "retained_observations": 0,
+        "correction_ready_buckets": 0,
+        "last_warning": null,
+        "provenance": {
+          "config": {
+            "model": "/Users/simonec/.codex/.chatgpt-projects/g-p-6ae11856b9ec8191a0715553f1b57b54/outputs/glm-decode-slope/corrected-static/synthetic-models/all_skip",
+            "system": "b300_sxm",
+            "backend": "sglang",
+            "worker_type": "aggregated",
+            "backend_version": "0.5.20",
+            "fpm_profile": null,
+            "tp": 8,
+            "pp": 1,
+            "attention_dp": 1,
+            "dcp": null,
+            "moe_tp_size": 8,
+            "moe_ep_size": 1,
+            "gemm_quant_mode": null,
+            "moe_quant_mode": null,
+            "fmha_quant_mode": null,
+            "fpm_fmha_quant_mode": null,
+            "kvcache_quant_mode": null,
+            "comm_quant_mode": null,
+            "nextn": 3,
+            "speculation": null,
+            "kv_block_size": 64,
+            "decoder_replay": false,
+            "estimation_mode": "op_level",
+            "database_mode": "SILICON",
+            "transfer_policy": [
+              "xshape",
+              "xquant",
+              "xprofile",
+              "xop"
+            ],
+            "systems_paths": [
+              "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems"
+            ],
+            "fallback_policy": "deny",
+            "estimator_config": {
+              "features": {
+                "attention_kv_weight": 1.0,
+                "prefill_attention_pair_weight": 1.0,
+                "ffn_token_weight": 1.0
+              },
+              "op_level": {},
+              "fpm_interpolation": {
+                "method": "sol"
+              },
+              "fpm_regression": {
+                "sampling": {
+                  "bins_per_axis": [
+                    4,
+                    4
+                  ],
+                  "max_observations": 64
+                },
+                "min_observations": 5,
+                "fit": {
+                  "kind": "standardized_nnls",
+                  "singular_ridge_scale": 1e-09,
+                  "rebuild_interval": null
+                }
+              },
+              "correction": {
+                "enabled": false,
+                "feature_space": "legacy_workload",
+                "sampling": {
+                  "bins_per_axis": [
+                    4,
+                    4
+                  ],
+                  "max_observations": 64
+                },
+                "min_observations": 5,
+                "factor_bounds": {
+                  "min": 0.5,
+                  "max": 2.0
+                },
+                "max_num_tokens": 8192,
+                "max_batch_size": 512,
+                "max_kv_tokens": 2000000
+              }
+            },
+            "attention_backend": null,
+            "moe_kernel_source": null,
+            "moe_backend": null,
+            "enable_eplb": false,
+            "wideep_num_slots": null,
+            "enable_shared_layer": null,
+            "strict_provenance": false
+          },
+          "selected_systems_root": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems",
+          "requested_estimation_mode": "op_level",
+          "selected_estimation_mode": "op_level",
+          "selection_failures": []
+        }
+      },
+      "topology": {
+        "worker_type": "aggregated",
+        "tp": 8,
+        "pp": 1,
+        "attention_dp": 1,
+        "dcp": null,
+        "cp_size": null,
+        "moe_tp_size": 8,
+        "moe_ep_size": 1,
+        "nextn": 3,
+        "speculation": null,
+        "kv_block_size": 64,
+        "correction_limits": null
+      }
+    }
+  ],
+  "record_count": 252,
+  "synthetic_model_variants": [
+    {
+      "variant": "all_full",
+      "kind": "synthetic_layer_reuse_ablation",
+      "source": {
+        "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/model_configs/nvidia--GLM-5.3-NVFP4_config.json",
+        "size_bytes": 24476,
+        "sha256": "b0b6b9ab922a82e3688bc39a4117bc443e106fcf88969ef48b3627778f4bdf7b"
+      },
+      "quantization_source": {
+        "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/model_configs/nvidia--GLM-5.3-NVFP4_hf_quant_config.json",
+        "size_bytes": 11506,
+        "sha256": "13799d4fed353c20dde2264fbdd7f68a780b514782f8d80bba96ac5e44aa9bba"
+      },
+      "changes": {
+        "index_topk_pattern": {
+          "before": null,
+          "after": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+        }
+      },
+      "files": [
+        {
+          "path": "/Users/simonec/.codex/.chatgpt-projects/g-p-6ae11856b9ec8191a0715553f1b57b54/outputs/glm-decode-slope/corrected-static/synthetic-models/all_full/config.json",
+          "size_bytes": 19871,
+          "sha256": "67141986987ae33e0c29ce6a4eae3343316dedc79b7d5f283baf1a961ac66a33"
+        },
+        {
+          "path": "/Users/simonec/.codex/.chatgpt-projects/g-p-6ae11856b9ec8191a0715553f1b57b54/outputs/glm-decode-slope/corrected-static/synthetic-models/all_full/hf_quant_config.json",
+          "size_bytes": 11506,
+          "sha256": "13799d4fed353c20dde2264fbdd7f68a780b514782f8d80bba96ac5e44aa9bba"
+        }
+      ]
+    },
+    {
+      "variant": "all_skip",
+      "kind": "synthetic_layer_reuse_ablation",
+      "source": {
+        "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/model_configs/nvidia--GLM-5.3-NVFP4_config.json",
+        "size_bytes": 24476,
+        "sha256": "b0b6b9ab922a82e3688bc39a4117bc443e106fcf88969ef48b3627778f4bdf7b"
+      },
+      "quantization_source": {
+        "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/model_configs/nvidia--GLM-5.3-NVFP4_hf_quant_config.json",
+        "size_bytes": 11506,
+        "sha256": "13799d4fed353c20dde2264fbdd7f68a780b514782f8d80bba96ac5e44aa9bba"
+      },
+      "changes": {
+        "index_topk_pattern": {
+          "before": null,
+          "after": "SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS"
+        }
+      },
+      "files": [
+        {
+          "path": "/Users/simonec/.codex/.chatgpt-projects/g-p-6ae11856b9ec8191a0715553f1b57b54/outputs/glm-decode-slope/corrected-static/synthetic-models/all_skip/config.json",
+          "size_bytes": 19871,
+          "sha256": "8f8ee5483c27f1e87df286e2ae50132a99d165f5a09f8ca5ee6e5497c1822926"
+        },
+        {
+          "path": "/Users/simonec/.codex/.chatgpt-projects/g-p-6ae11856b9ec8191a0715553f1b57b54/outputs/glm-decode-slope/corrected-static/synthetic-models/all_skip/hf_quant_config.json",
+          "size_bytes": 11506,
+          "sha256": "13799d4fed353c20dde2264fbdd7f68a780b514782f8d80bba96ac5e44aa9bba"
+        }
+      ]
+    }
+  ],
+  "measured_dsa": {
+    "table": {
+      "path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/sglang/0.5.14/dsa_generation_module_perf.parquet",
+      "size_bytes": 34939,
+      "sha256": "2976cb819bba29e0ec2a367b8311a509205fd05282c255c1549c8f4ca3e16dfe"
+    },
+    "filter": {
+      "architecture": "GlmMoeDsaForCausalLM",
+      "num_heads": 8,
+      "kv_cache_dtype": "fp8",
+      "gemm_type": "bfloat16"
+    },
+    "rows": 306,
+    "domains": [
+      {
+        "op_name": "dsa_generation_module",
+        "batch_size": 1,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 1048576,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257,
+          513,
+          1025,
+          1537,
+          2049,
+          3073,
+          4097,
+          6145,
+          8193,
+          10001,
+          10241,
+          12289,
+          16385,
+          32769,
+          65537,
+          131073,
+          163840,
+          202752,
+          262145,
+          524289,
+          1000001,
+          1048576
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module",
+        "batch_size": 2,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 131073,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257,
+          513,
+          1025,
+          2049,
+          4097,
+          8193,
+          16385,
+          32769,
+          65537,
+          131073
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module",
+        "batch_size": 4,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 65537,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257,
+          513,
+          1025,
+          2049,
+          4097,
+          8193,
+          16385,
+          32769,
+          65537
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module",
+        "batch_size": 8,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 32769,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257,
+          513,
+          1025,
+          2049,
+          4097,
+          8193,
+          16385,
+          32769
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module",
+        "batch_size": 16,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 16385,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257,
+          513,
+          1025,
+          2049,
+          4097,
+          8193,
+          16385
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module",
+        "batch_size": 32,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 4097,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257,
+          513,
+          1025,
+          2049,
+          4097
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module",
+        "batch_size": 64,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 4097,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257,
+          513,
+          1025,
+          2049,
+          4097
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module",
+        "batch_size": 128,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 2049,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257,
+          513,
+          1025,
+          2049
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module",
+        "batch_size": 256,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 1025,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257,
+          513,
+          1025
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module",
+        "batch_size": 512,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 513,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257,
+          513
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module",
+        "batch_size": 1024,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 257,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module_skip_indexer",
+        "batch_size": 1,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 1048576,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257,
+          513,
+          1025,
+          1537,
+          2049,
+          3073,
+          4097,
+          6145,
+          8193,
+          10001,
+          10241,
+          12289,
+          16385,
+          32769,
+          65537,
+          131073,
+          163840,
+          202752,
+          262145,
+          524289,
+          1000001,
+          1048576
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module_skip_indexer",
+        "batch_size": 2,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 131073,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257,
+          513,
+          1025,
+          2049,
+          4097,
+          8193,
+          16385,
+          32769,
+          65537,
+          131073
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module_skip_indexer",
+        "batch_size": 4,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 65537,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257,
+          513,
+          1025,
+          2049,
+          4097,
+          8193,
+          16385,
+          32769,
+          65537
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module_skip_indexer",
+        "batch_size": 8,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 32769,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257,
+          513,
+          1025,
+          2049,
+          4097,
+          8193,
+          16385,
+          32769
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module_skip_indexer",
+        "batch_size": 16,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 16385,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257,
+          513,
+          1025,
+          2049,
+          4097,
+          8193,
+          16385
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module_skip_indexer",
+        "batch_size": 32,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 4097,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257,
+          513,
+          1025,
+          2049,
+          4097
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module_skip_indexer",
+        "batch_size": 64,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 4097,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257,
+          513,
+          1025,
+          2049,
+          4097
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module_skip_indexer",
+        "batch_size": 128,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 2049,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257,
+          513,
+          1025,
+          2049
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module_skip_indexer",
+        "batch_size": 256,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 1025,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257,
+          513,
+          1025
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module_skip_indexer",
+        "batch_size": 512,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 513,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257,
+          513
+        ]
+      },
+      {
+        "op_name": "dsa_generation_module_skip_indexer",
+        "batch_size": 1024,
+        "min_sequence_tokens": 2,
+        "max_sequence_tokens": 257,
+        "measured_coordinates": [
+          2,
+          5,
+          9,
+          17,
+          33,
+          65,
+          129,
+          257
+        ]
+      }
+    ]
+  },
+  "wall_seconds": 17.606221792055294,
+  "non_attention_ablation_comparisons": 168
+}

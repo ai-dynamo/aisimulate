@@ -745,9 +745,9 @@ fn query_generation_table_raw(
     match db.database_mode {
         // Python `_query_generation_dsa_module_table`: `get_sol(b, s,
         // num_heads, kv_cache_dtype)[0]` — the attention group is hardcoded
-        // bfloat16 inside. The vLLM reuse policy omits indexer work in the
-        // analytic result and extrapolation; other backends retain the legacy
-        // full-indexer approximation for generation.
+        // bfloat16 inside. The vLLM and SGLang reuse policies omit indexer work
+        // in the analytic result and extrapolation; other backends retain
+        // the legacy full-indexer approximation for generation.
         DatabaseMode::Sol | DatabaseMode::SolFull => {
             let spec = &db.system_spec;
             let dims = dsa_dims(&op.architecture);

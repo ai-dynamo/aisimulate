@@ -33,6 +33,23 @@ Data-source inheritance and empirical transfer are different. A row inherited
 from an approved measured donor is still collected data. An estimated
 cross-shape or cross-precision transfer must retain its transfer provenance.
 
+### DSA layers that reuse selected indices
+
+DSA models blend measured full-indexer and skip-indexer module timings according
+to the model's layer pattern. For vLLM and SGLang decode, the analytical roofline
+and out-of-range table scaling omit indexer projections, scoring, and cache reads
+from skip-indexer layers. Once the context exceeds the selected-key count, this
+analytical cost at fixed batch does not grow with context length. Full-indexer layers still
+score the full context. Exact measured rows and interpolation inside their
+covered curves retain their measured values.
+
+This distinction describes reuse of attention indices across layers, separate
+from prompt-prefix caching. Reusing a prompt's KV avoids its prefill computation
+but does not remove that context from subsequent decode queries. SGLang prefill
+retains its existing approximation. Long-context decode accuracy still depends
+on measured coverage at the actual batch, and on matching speculative execution;
+correcting a reuse-layer roofline does not qualify those unmeasured shapes.
+
 ## External execution profiles
 
 An externally stored profile can supply a qualified operation graph and exact

@@ -1,0 +1,34 @@
+{
+  "rust_dsa_tests": {
+    "database": 16,
+    "operators": 16,
+    "failures": 0,
+    "commands": [
+      "cargo test -p aisimulate-core perfmodel::perf_database::dsa::tests --lib",
+      "cargo test -p aisimulate-core perfmodel::operators::dsa::tests --lib"
+    ]
+  },
+  "parity": {
+    "passed": 389,
+    "warnings": 5,
+    "failures": 0,
+    "goldens_changed": false,
+    "command": "python/aisimulate/.venv/bin/python -m pytest -q -rx -n 4 -p no:timeout -c python/aisimulate/pytest.ini crates/core/parity_tests/perfmodel/test_engine_step_parity.py crates/core/parity_tests/perfmodel/test_compile_engine_parity.py"
+  },
+  "static": {
+    "baseline_queries": 252,
+    "candidate_queries": 252,
+    "non_attention_op_maps_unchanged": 252,
+    "all_full_variants_unchanged": 84,
+    "batch1_nextn0_variants_unchanged": 21,
+    "measured_rows_unchanged": true
+  },
+  "checks": [
+    "compare_replays.py --self-check passed",
+    "Ruff check and format passed for evidence scripts",
+    "cargo fmt --check --all passed",
+    "git diff --check passed",
+    "packaged legal files match"
+  ],
+  "new_gpu_measurements": false
+}

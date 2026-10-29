@@ -1,0 +1,249 @@
+diff --git a/crates/core/src/perfmodel/perf_database/dsa.rs b/crates/core/src/perfmodel/perf_database/dsa.rs
+index 4a35f462..8ee9bed2 100644
+--- a/crates/core/src/perfmodel/perf_database/dsa.rs
++++ b/crates/core/src/perfmodel/perf_database/dsa.rs
+@@ -81,12 +81,13 @@ pub struct DsaTable {
+     sparse: Mutex<BTreeMap<(String, u32), Arc<DsaSparseTables>>>,
+ }
+ 
+-/// The vLLM collector/engine correction is backend scoped. Other backends keep
+-/// their calibrated roofline, including the historical reuse approximation.
++/// Reuse-layer rooflines follow the serving backend. SGLang keeps the legacy
++/// prefill approximation but omits the unexecuted indexer during decode.
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub(crate) enum DsaReuseSolPolicy {
+     Legacy,
+     Vllm,
++    Sglang,
+ }
+ 
+ /// One CP sparse sub-kernel grid: `bs -> {(isl, step) -> latency_ms}`.
+@@ -309,10 +310,10 @@ impl DsaTable {
+ 
+     /// Opt in using the serving backend, never the kernel bucket or data path.
+     pub(crate) fn with_backend(mut self, backend: &str) -> Self {
+-        self.reuse_sol_policy = if backend == "vllm" {
+-            DsaReuseSolPolicy::Vllm
+-        } else {
+-            DsaReuseSolPolicy::Legacy
++        self.reuse_sol_policy = match backend {
++            "vllm" => DsaReuseSolPolicy::Vllm,
++            "sglang" => DsaReuseSolPolicy::Sglang,
++            _ => DsaReuseSolPolicy::Legacy,
+         };
+         self
+     }
+@@ -1026,9 +1027,9 @@ pub(crate) fn dsa_generation_sol(
+     reuse_policy: DsaReuseSolPolicy,
+     flops: DsaSolFlops,
+ ) -> SolComponents {
+-    // The historical decode roofline charges indexer work for both variants.
+-    // Only vLLM opts in to the executed reuse-layer ledger in this change.
+-    let skip_indexer = skip_indexer && reuse_policy == DsaReuseSolPolicy::Vllm;
++    // SGLang and vLLM reuse layers bypass the indexer, including its projections.
++    // Preserve the historical approximation for unqualified serving backends.
++    let skip_indexer = skip_indexer && reuse_policy != DsaReuseSolPolicy::Legacy;
+     let (b, s, num_heads) = (b as i128, s as i128, num_heads as i128);
+     // Decode CP: the global top-k is filtered to this rank's owned slots
+     // (vLLM `triton_filter_and_convert_dcp_index` + compact), so the sparse
+@@ -1505,22 +1506,30 @@ mod tests {
+             indexer_fp8: 1e12,
+             attn: 1e12,
+         };
+-        for sequence in [8193, 131073, 1048576] {
+-            let got = dsa_generation_sol(
+-                &spec,
+-                dsa_dims("GlmMoeDsaForCausalLM"),
+-                KvCacheQuantMode::Bfloat16,
+-                GemmQuantMode::Bfloat16,
+-                1,
+-                sequence,
+-                8,
+-                1,
+-                true,
+-                DsaReuseSolPolicy::Vllm,
+-                flops,
+-            );
+-            approx_rel(got.math_ms, 0.105119744);
+-            approx_rel(got.mem_ms, 0.068157440);
++        for policy in [DsaReuseSolPolicy::Vllm, DsaReuseSolPolicy::Sglang] {
++            for sequence in [8193, 131073, 1048576] {
++                for (kv_quant, expected_mem_ms) in [
++                    (KvCacheQuantMode::Bfloat16, 0.068157440),
++                    // FP8 halves only the 2,359,296 latent-KV bytes above.
++                    (KvCacheQuantMode::Fp8, 0.066977792),
++                ] {
++                    let got = dsa_generation_sol(
++                        &spec,
++                        dsa_dims("GlmMoeDsaForCausalLM"),
++                        kv_quant,
++                        GemmQuantMode::Bfloat16,
++                        1,
++                        sequence,
++                        8,
++                        1,
++                        true,
++                        policy,
++                        flops,
++                    );
++                    approx_rel(got.math_ms, 0.105119744);
++                    approx_rel(got.mem_ms, expected_mem_ms);
++                }
++            }
+         }
+         // Full indexer adds 9,371,648 weight elements, their projection
+         // FLOPs, 67,117,056 logit FLOPs and 1,081,476 history-cache bytes.
+@@ -1557,25 +1566,27 @@ mod tests {
+         );
+         approx_rel(context.math_ms, 0.105119744);
+ 
+-        // The pre-existing context approximation omits indexer logits/cache,
+-        // but retains 18,743,296 projection FLOPs. Decode retains the entire
+-        // full-indexer ledger above. Preserve both for non-vLLM backends.
+-        let legacy_context = dsa_context_sol(
+-            &spec,
+-            dsa_dims("GlmMoeDsaForCausalLM"),
+-            2048,
+-            KvCacheQuantMode::Bfloat16,
+-            FmhaQuantMode::Bfloat16,
+-            GemmQuantMode::Bfloat16,
+-            1,
+-            1,
+-            8192,
+-            8,
+-            true,
+-            DsaReuseSolPolicy::Legacy,
+-            flops,
+-        );
+-        approx_rel(legacy_context.math_ms, 0.123863040);
++        // SGLang prefill retains its existing approximation: no indexer
++        // logits/cache, but 18,743,296 indexer projection FLOPs remain.
++        for policy in [DsaReuseSolPolicy::Legacy, DsaReuseSolPolicy::Sglang] {
++            let legacy_context = dsa_context_sol(
++                &spec,
++                dsa_dims("GlmMoeDsaForCausalLM"),
++                2048,
++                KvCacheQuantMode::Bfloat16,
++                FmhaQuantMode::Bfloat16,
++                GemmQuantMode::Bfloat16,
++                1,
++                1,
++                8192,
++                8,
++                true,
++                policy,
++                flops,
++            );
++            approx_rel(legacy_context.math_ms, 0.123863040);
++        }
++        // Unqualified serving backends retain the full-indexer decode ledger.
+         let legacy_generation = dsa_generation_sol(
+             &spec,
+             dsa_dims("GlmMoeDsaForCausalLM"),
+@@ -1603,6 +1614,7 @@ mod tests {
+             &tmp.path().join("dsa_generation_module_perf.parquet"),
+             &[
+                 ("dsa_generation_module", "default", "bfloat16", 8193, 3.0),
++                ("dsa_generation_module", "default", "bfloat16", 65537, 4.0),
+                 (
+                     "dsa_generation_module_skip_indexer",
+                     "default",
+@@ -1610,54 +1622,54 @@ mod tests {
+                     8193,
+                     2.0,
+                 ),
++                (
++                    "dsa_generation_module_skip_indexer",
++                    "default",
++                    "bfloat16",
++                    65537,
++                    2.0,
++                ),
+             ],
+         );
+-        let table = DsaTable::new(tmp.path().to_path_buf()).with_backend("vllm");
+         let spec = b200_sxm_spec();
+-        let query = |s, skip| {
+-            table
+-                .query_generation(
+-                    &spec,
+-                    1,
+-                    s,
+-                    128,
+-                    KvCacheQuantMode::Bfloat16,
+-                    FmhaQuantMode::Bfloat16,
+-                    GemmQuantMode::Bfloat16,
+-                    "DeepseekV32ForCausalLM",
+-                    "trtllm",
+-                    skip,
+-                )
+-                .unwrap()
+-                .latency
+-        };
+-        approx_rel(query(8193, false), 3.0);
+-        approx_rel(query(8193, true), 2.0);
+-        approx_rel(query(131073, true), 2.0);
+-        assert!(query(131073, false) > 3.0);
+-
+-        // The same raw rows and coordinates retain legacy extrapolation for
+-        // SGLang/TRTLLM. A kernel bucket named "trtllm" does not select the
+-        // serving backend's policy: the vLLM query above uses that bucket too.
+-        for backend in ["sglang", "trtllm"] {
++        for backend in ["vllm", "sglang", "trtllm"] {
+             let table = DsaTable::new(tmp.path().to_path_buf()).with_backend(backend);
+-            assert_eq!(table.reuse_sol_policy, DsaReuseSolPolicy::Legacy);
+-            let latency = table
+-                .query_generation(
+-                    &spec,
+-                    1,
+-                    131073,
+-                    128,
+-                    KvCacheQuantMode::Bfloat16,
+-                    FmhaQuantMode::Bfloat16,
+-                    GemmQuantMode::Bfloat16,
+-                    "DeepseekV32ForCausalLM",
+-                    "trtllm",
+-                    true,
+-                )
+-                .unwrap()
+-                .latency;
+-            assert!(latency > 2.0, "{backend}: {latency}");
++            let query = |s, skip| {
++                table
++                    .query_generation(
++                        &spec,
++                        1,
++                        s,
++                        128,
++                        KvCacheQuantMode::Bfloat16,
++                        FmhaQuantMode::Bfloat16,
++                        GemmQuantMode::Bfloat16,
++                        "DeepseekV32ForCausalLM",
++                        "trtllm",
++                        skip,
++                    )
++                    .unwrap()
++                    .latency
++            };
++            // Measured anchors and interior interpolation are unchanged on
++            // every backend. The midpoint is the raw mean of the two rows.
++            approx_rel(query(8193, false), 3.0);
++            approx_rel(query(8193, true), 2.0);
++            approx_rel(query(65537, false), 4.0);
++            approx_rel(query(65537, true), 2.0);
++            approx_rel(query(36865, false), 3.5);
++            approx_rel(query(36865, true), 2.0);
++            for sequence in [131073, 384000, 1048576] {
++                assert!(query(sequence, false) > 4.0);
++                let latency = query(sequence, true);
++                if backend == "trtllm" {
++                    // Kernel bucket "trtllm" does not select the serving
++                    // backend policy. Only this serving backend stays legacy.
++                    assert!(latency > 2.0, "{backend}: {latency}");
++                } else {
++                    approx_rel(latency, 2.0);
++                }
++            }
+         }
+     }
+ 
