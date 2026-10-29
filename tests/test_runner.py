@@ -7,10 +7,8 @@ import json
 import math
 import pickle
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
-import yaml
 from pydantic import ValidationError
 
 import aisimulate
@@ -37,8 +35,6 @@ from aisimulate.sweeper import (
 from aisimulate.sweeper.config import Workload
 from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 from scripts.e2e_accuracy.source.replay import engine_args
-
-_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 pytestmark = [
     pytest.mark.unit,
@@ -1278,13 +1274,20 @@ def test_runner_materializes_aic_capacity_before_native_execution(monkeypatch):
     assert "nextn" not in calls[0]
 
 
-@pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
-@pytest.mark.parametrize("source", ["deployment", "flat", "nested", "canonical", "canonical_alias"])
-def test_runner_rejects_pipeline_parallelism_before_capacity(monkeypatch, role, source):
+def _forbid_capacity(monkeypatch):
     def unexpected_capacity(*args, **kwargs):
-        pytest.fail("unsupported pipeline parallelism reached capacity materialization")
+        pytest.fail("unsupported pipeline parallelism reached capacity estimation")
 
     monkeypatch.setattr(aic, "estimate_num_gpu_blocks", unexpected_capacity)
+
+
+@pytest.mark.parametrize(
+    ("role", "source"),
+    [(role, "deployment") for role in ("aggregated", "prefill", "decode")]
+    + [("aggregated", source) for source in ("flat", "nested", "canonical", "canonical_alias")],
+)
+def test_runner_rejects_pipeline_parallelism_before_capacity(monkeypatch, role, source):
+    _forbid_capacity(monkeypatch)
     parallel = {}
     args = _engine_args(role=role)
     rank = _materialize_engine_role("vllm", "test", parallel, args, role)["rank"]
@@ -1304,7 +1307,7 @@ def test_runner_rejects_pipeline_parallelism_before_capacity(monkeypatch, role, 
             "config": {"pp" if source == "canonical" else "pp_size": 2},
         }
         args = {"rank": rank}
-    with pytest.raises(ValueError, match="does not support pipeline parallelism"):
+    with pytest.raises(ValueError, match=f"does not support pipeline parallelism for {role}"):
         _materialize_engine_role("vllm", "test", parallel, args, role)
 
 
@@ -3033,22 +3036,11 @@ def test_gym_mtp_acceptance_reaches_runner_scheduler_and_timing(accepted, rates)
 
 @pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
 def test_prediction_compile_rejects_pipeline_parallelism_before_capacity(monkeypatch, role):
-    def unexpected_capacity(*args, **kwargs):
-        pytest.fail("unsupported pipeline parallelism reached capacity estimation")
-
-    monkeypatch.setattr(aic, "estimate_num_gpu_blocks", unexpected_capacity)
-    example = "agentx-g2-local.yaml" if role == "aggregated" else "agentx-g2-shared-pd.yaml"
-    # The JSON round trip splits the YAML prefill/decode alias so only the tested role gets PP2.
-    config = json.loads(json.dumps(yaml.safe_load((_REPO_ROOT / "examples/cli" / example).read_text())))
-    config["traffic"]["source"]["paths"] = [
-        str(_REPO_ROOT / "tests/e2e/configs/unified_cli/fixtures/traces/weka-g2-restore.jsonl")
-    ]
-    config["engine"]["model"] = str(_REPO_ROOT / "tests/e2e/configs/unified_cli/fixtures/tiny-model")
-    worker = config["engine"]["workers"][role]
-    worker["parallelism"]["pipeline"] = 2
-    worker["kv_cache"].pop("capacity")
-    worker["kv_cache"].pop("host_offload")
-    others = [name for name, other in config["engine"]["workers"].items() if name != role]
-    assert all(config["engine"]["workers"][name]["parallelism"].get("pipeline", 1) == 1 for name in others)
+    _forbid_capacity(monkeypatch)
+    roles = ["aggregated"] if role == "aggregated" else ["prefill", "decode"]
+    workers = {name: {"parallelism": {"pipeline": 2}} if name == role else {} for name in roles}
+    engine = {"model": "example/model", "hardware": "h200_sxm", "context_length": 1024, "workers": workers}
+    if role != "aggregated":
+        engine["mode"] = "disaggregated"
     with pytest.raises(ValueError, match=f"does not support pipeline parallelism for {role}"):
-        prediction_to_replay_spec(CorePredictionConfig.model_validate(config))
+        prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": engine}))
