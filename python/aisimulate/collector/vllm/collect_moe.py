@@ -281,6 +281,13 @@ def _modelopt_mixed_expert_prefix(model_name: str) -> str | None:
     ]
     if not experts or any(str(algo).upper() != "NVFP4" for _, algo in experts):
         raise ValueError(f"The nvfp4 MoE collector requires uniformly NVFP4 routed experts for {model_name!r}")
+    # Serving builds the routed-expert prefix as "<layer>.mixer.experts"
+    # (models/nemotron_h.py:242 under the ".mixer" prefix at :357 @v0.31.0) and
+    # renames "backbone" to "model" in both the weights and quantized_layers
+    # (nemotron_h.py:734-735; ModelOptMixedPrecisionConfig.apply_vllm_mapper,
+    # modelopt.py:1807-1810), then matches "<prefix>." keys (modelopt.py:1692-1697).
+    # The collector never applies that mapper, so the checkpoint "backbone" names
+    # are the pair that resolves the same per-layer algorithm.
     return experts[0][0]
 
 
