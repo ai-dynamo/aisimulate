@@ -78,7 +78,10 @@ or mixed calibration stores.
 ## Source binding and construction
 
 `fpm_learned.write_original_a_manifest(...)` exports the accepted A groups using
-the trainer's eligibility rules. It writes exclusively to a new file and returns
+the trainer's eligibility rules for the seed artifacts' ordered feature list.
+All referenced seeds must agree on that list. This preserves request-list
+requirements for the default aggregated `atomic10` features and aggregate-only
+eligibility for `fpm5`. It writes exclusively to a new file and returns
 the path and SHA-256 for `temporary_mixed_composition.original_a`. It must run
 before C data is mixed into the training population.
 
@@ -188,6 +191,13 @@ mutation. It rejects duplicate stores, multiple stores, an unrelated class,
 runtime checkpoints and frozen adaptation. It adds only the new online forest
 and learner state. Existing forests, pending online rows, original-A identity,
 calibration and selector histories remain in place.
+
+Imported anchor IDs are source positions, including gaps from skipped inputs.
+If they require a higher internal observation clock, append translates all
+existing recent and pending feedback IDs by the same offset. This preserves
+their ages and expiry schedule while retaining the imported anchors' provenance.
+Diagnostic retained IDs and their membership hashes change with that translation;
+predictions, feedback counters and relative ages do not change on append.
 
 The query associated with the twentieth training label is predicted before
 fitting. Those training labels are not replayed into paired-loss evidence.

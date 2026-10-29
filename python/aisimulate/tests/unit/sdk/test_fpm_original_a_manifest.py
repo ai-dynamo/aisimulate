@@ -36,7 +36,7 @@ def test_manifest_preserves_subthreshold_mixed_groups_and_zero_rank_label(tmp_pa
 
     groups = [group(0), group(1, mixed=True), group(2, wall=0.0)]
     seed = tmp_path / "seed.json"
-    seed.write_text('{"seed":true}')
+    seed.write_text(json.dumps({"features": fpm_learned.FEATURE_PRESETS["fpm5"]}))
     destination = tmp_path / "original-a.json"
     kwargs = dict(identity=identity, min_store_rows=20, seed_artifact_paths=[seed], provenance={"grouping": {}})
     source = fpm_learned.write_original_a_manifest(destination, groups, "aggregated", **kwargs)
@@ -73,7 +73,7 @@ def test_original_a_records_training_checkpoint_anchor(tmp_path, monkeypatch):
     monkeypatch.setattr(fpm_learned, "_checkpoint_identity", lambda config, role: {})
     group = [{"version": 1, "wall_time": 0.01, "scheduled_requests": {"num_decode_requests": 1}}]
     seed = tmp_path / "model.json"
-    seed.write_text("{}")
+    seed.write_text(json.dumps({"features": fpm_learned.FEATURE_PRESETS["fpm5"]}))
     checkpoint = tmp_path / "manifest.json"
     checkpoint.write_text('{"schema":"aisimulate_fpm_training_checkpoint"}')
     output = tmp_path / "original-a.json"
@@ -101,7 +101,7 @@ def test_streamed_manifest_matches_legacy_canonical_bytes(tmp_path, monkeypatch)
         for index, wall in enumerate((0.00125, 0.0, 0.02, 0.5))
     ]
     seed = tmp_path / "seed.json"
-    seed.write_text('{"seed":true}')
+    seed.write_text(json.dumps({"features": fpm_learned.FEATURE_PRESETS["fpm5"]}))
     provenance = {"z": [2.5, {"b": False, "a": "é"}], "grouping": {"balanced": True}}
     expected = {
         "schema_version": 1,
@@ -131,7 +131,7 @@ def test_streamed_manifest_failure_removes_only_its_partial_output(tmp_path, mon
     monkeypatch.setattr(fpm_learned, "_checkpoint_identity", lambda config, role: {})
     group = [{"version": 1, "wall_time": 0.01, "scheduled_requests": {"num_decode_requests": 1}}]
     seed = tmp_path / "seed.json"
-    seed.write_text("{}")
+    seed.write_text(json.dumps({"features": fpm_learned.FEATURE_PRESETS["fpm5"]}))
     destination = tmp_path / "original-a.json"
     kwargs = dict(identity={}, min_store_rows=20, seed_artifact_paths=[seed], provenance={"invalid": float("nan")})
     with pytest.raises(ValueError):
@@ -141,3 +141,67 @@ def test_streamed_manifest_failure_removes_only_its_partial_output(tmp_path, mon
     with pytest.raises(FileExistsError):
         fpm_learned.write_original_a_manifest(destination, [group], "aggregated", **kwargs)
     assert destination.read_bytes() == b"existing manifest"
+
+
+@pytest.mark.parametrize(
+    "seed_content",
+    [
+        [],
+        {},
+        {"features": []},
+        {"features": "num_decode_requests"},
+        {"features": ["unknown_feature"]},
+        {"features": [None]},
+        {"features": ["num_decode_requests", "num_decode_requests"]},
+    ],
+)
+def test_original_a_rejects_invalid_seed_features_without_creating_output(tmp_path, monkeypatch, seed_content):
+    monkeypatch.setattr(fpm_learned, "_checkpoint_identity", lambda config, role: {})
+    group = [{"version": 1, "wall_time": 0.01, "scheduled_requests": {"num_decode_requests": 1}}]
+    seed = tmp_path / "seed.json"
+    seed.write_text(json.dumps(seed_content))
+    destination = tmp_path / "original-a.json"
+    with pytest.raises(ValueError, match="features"):
+        fpm_learned.write_original_a_manifest(
+            destination,
+            [group],
+            "aggregated",
+            identity={},
+            min_store_rows=20,
+            seed_artifact_paths=[seed],
+            provenance={},
+        )
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize(
+    "second_features",
+    [fpm_learned.FEATURE_PRESETS["atomic10"], tuple(reversed(fpm_learned.FEATURE_PRESETS["fpm5"]))],
+)
+def test_original_a_rejects_different_seed_feature_lists(tmp_path, monkeypatch, second_features):
+    monkeypatch.setattr(fpm_learned, "_checkpoint_identity", lambda config, role: {})
+    group = [{"version": 1, "wall_time": 0.01, "scheduled_requests": {"num_decode_requests": 1}}]
+    seeds = [tmp_path / "seed-1.json", tmp_path / "seed-2.json"]
+    for seed, features in zip(seeds, [fpm_learned.FEATURE_PRESETS["fpm5"], second_features], strict=True):
+        seed.write_text(json.dumps({"features": features}))
+    destination = tmp_path / "original-a.json"
+    with pytest.raises(ValueError, match="same ordered features"):
+        fpm_learned.write_original_a_manifest(
+            destination, [group], "aggregated", identity={}, min_store_rows=20, seed_artifact_paths=seeds, provenance={}
+        )
+    assert not destination.exists()
+
+
+def test_original_a_accepts_seeds_with_matching_features(tmp_path, monkeypatch):
+    monkeypatch.setattr(fpm_learned, "_checkpoint_identity", lambda config, role: {})
+    group = [{"version": 1, "wall_time": 0.01, "scheduled_requests": {"num_decode_requests": 1}}]
+    seeds = [tmp_path / "seed-1.json", tmp_path / "seed-2.json"]
+    for seed in seeds:
+        seed.write_text(json.dumps({"features": fpm_learned.FEATURE_PRESETS["fpm5"]}))
+    destination = tmp_path / "original-a.json"
+    fpm_learned.write_original_a_manifest(
+        destination, [group], "aggregated", identity={}, min_store_rows=20, seed_artifact_paths=seeds, provenance={}
+    )
+    manifest = json.loads(destination.read_text())
+    assert manifest["accepted_iterations"] == [group]
+    assert [seed["path"] for seed in manifest["seed_artifacts"]] == [str(path.resolve()) for path in seeds]

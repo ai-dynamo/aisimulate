@@ -122,6 +122,52 @@ def _load(fixture, checkpoint=None, **kwargs):
     return RustForwardPassPerfModel.best_available(_config(fixture, checkpoint, **kwargs))
 
 
+def test_original_a_manifest_matches_default_aggregated_training_eligibility(tmp_path, phase_roots):
+    config, make_root = phase_roots
+    config["systems_paths"] = [make_root("default-features")]
+    groups = [_iteration("decode", wall_ms=3.0, index=index) for index in range(21)]
+    for group in groups[:20]:
+        group[0]["scheduled_requests"].update(extend_lengths=[1], past_kv_lengths=[1])
+    seed = tmp_path / "default-seed"
+    artifact = fpm_learned.train(
+        groups,
+        "aggregated",
+        max_iter=3,
+        max_leaf_nodes=3,
+        min_samples_leaf=2,
+        min_store_rows=20,
+        online_checkpoint_dir=seed,
+        identity=config,
+    )
+    assert artifact["features"] == list(fpm_learned.FEATURE_PRESETS["atomic10"])
+    assert artifact["metadata"]["train_rows"] == {"pure_decode": 20}
+    source_path = tmp_path / "original-groups.json"
+    source_path.write_text(json.dumps(groups))
+    source_digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    manifest = tmp_path / "original-a-default.json"
+    source = fpm_learned.write_original_a_manifest(
+        manifest,
+        groups,
+        "aggregated",
+        identity=config,
+        min_store_rows=20,
+        seed_artifact_paths=[seed / "model.json"],
+        provenance={
+            "source_sha256": source_digest,
+            "grouping": {"coordinate_system": "iteration_totals_balanced_v1", "synthetic_fixture": True},
+            "sources": [{"path": str(source_path), "sha256": source_digest}],
+        },
+    )
+    # Both the exporter and the native source binding must agree with the
+    # default trainer's 20 usable request-list groups, excluding the 21st.
+    model = _load((config, seed, source))
+    try:
+        assert json.loads(manifest.read_text())["accepted_iterations"] == groups[:20]
+        assert model.estimate_forward_pass_time_ms(groups[0]) == pytest.approx(3.0)
+    finally:
+        model.close()
+
+
 def test_frozen_hybrid_calibrates_missing_mixed_store_without_training_it(mixed_seed):
     config = _config(mixed_seed, adaptation="frozen")
     estimator = config["estimator_config"]

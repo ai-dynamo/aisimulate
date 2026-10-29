@@ -194,6 +194,96 @@ def test_ready_mixed_online_expert_covers_prior_miss_without_inventing_paired_ev
         prior.close()
 
 
+@pytest.mark.parametrize("adaptation", ["online", "causal_selector"])
+@pytest.mark.parametrize("group_history", [False, True])
+@pytest.mark.parametrize("refresh", ["eager", "lazy"])
+def test_mixed_append_preserves_recent_feedback_ages(mixed_seed, tmp_path, adaptation, group_history, refresh):
+    identity, _, _ = mixed_seed
+    checkpoint = tmp_path / "sparse-c-seed"
+    # Training IDs are positions in the source, not accepted online labels.
+    # Skipped inputs give these 20 anchors IDs 1000..1019.
+    rows = [[] for _ in range(1000)] + [_iteration(wall_ms=12.0, index=i) for i in range(20)]
+    fpm_learned.train(
+        rows,
+        "aggregated",
+        features=fpm_learned.FEATURE_PRESETS["fpm5"],
+        max_iter=3,
+        max_leaf_nodes=3,
+        min_samples_leaf=2,
+        min_store_rows=20,
+        online_checkpoint_dir=checkpoint,
+        identity=identity,
+    )
+    config = _selector_config(mixed_seed)
+    estimator = config["estimator_config"]
+    estimator["fpm_learned"].update(
+        adaptation=adaptation,
+        update_every=2,
+        recent_max_age_observations=3,
+        history_bin_grouping=group_history,
+        derivative_refresh=refresh,
+    )
+    if adaptation == "online":
+        estimator.pop("selector")
+        estimator["correction"]["enabled"] = False
+    control_config = deepcopy(config)
+    control_config["estimator_config"].pop("temporary_mixed_composition")
+    model = RustForwardPassPerfModel.best_available(config)
+    control = RustForwardPassPerfModel.best_available(control_config)
+    resumed = None
+    try:
+        for index, wall_ms in enumerate([7.0, 9.0, 11.0]):
+            for current in (model, control):
+                current.tune_with_fpms([_iteration("decode", wall_ms=wall_ms, index=index)])
+        pure = "pure_decode"
+        before = model.learned_online_diagnostics()["stores"][pure]
+        assert before["recent_rows"] == 2 and before["pending_rows"] == 1
+        assert model.append_mixed_learned_checkpoint(checkpoint) == 1
+        if adaptation == "online":
+            # The shifted clock and IDs must also survive serialized continuation.
+            saved = tmp_path / "appended-runtime"
+            model.save_online_checkpoint(saved)
+            resume_config = deepcopy(config)
+            resume_config["estimator_config"]["fpm_learned"]["checkpoint_path"] = str(saved)
+            resumed = RustForwardPassPerfModel.best_available(resume_config)
+        candidates = [model] + ([resumed] if resumed else [])
+        for current in [control, *candidates]:
+            current.flush_updates()
+        assert control.learned_online_diagnostics()["stores"][pure]["recent_rows"] == 3
+
+        def assert_pure_matches_control():
+            expected = control.learned_online_diagnostics()["stores"][pure]
+            for candidate in candidates:
+                actual = candidate.learned_online_diagnostics()["stores"][pure]
+                for field in ("recent_rows", "pending_rows", "accepted_observations", "evicted_observations"):
+                    assert actual[field] == expected[field]
+                query = _iteration("decode")
+                assert candidate.estimate_forward_pass_time_ms(query) == control.estimate_forward_pass_time_ms(query)
+                if adaptation == "online":
+                    assert (
+                        candidate.export_learned_artifact()["stores"][pure]
+                        == control.export_learned_artifact()["stores"][pure]
+                    )
+                else:
+                    assert (
+                        candidate.learned_expert_artifacts()["online"]["stores"][pure]
+                        == control.learned_expert_artifacts()["online"]["stores"][pure]
+                    )
+
+        assert_pure_matches_control()
+        # Continue past the age boundary: translation must not postpone expiry.
+        for index in range(6):
+            for current in [control, *candidates]:
+                current.tune_with_fpms([_iteration("decode", wall_ms=13.0 + index, index=3 + index)])
+                current.flush_updates()
+            assert_pure_matches_control()
+        assert control.learned_online_diagnostics()["stores"][pure]["evicted_observations"] == 6
+    finally:
+        for current in (model, control, resumed):
+            if current is not None:
+                current.close()
+
+
 def test_mixed_append_and_legacy_snapshot_fail_atomically_and_selector_checkpoint_remains_unsupported(
     mixed_seed, c_checkpoint, tmp_path
 ):

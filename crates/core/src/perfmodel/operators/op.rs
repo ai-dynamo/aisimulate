@@ -691,7 +691,7 @@ impl Op {
                     // Primary result passes through verbatim — its energy
                     // rides along (Python returns `self._primary.query(...)`).
                     Ok(r) => Ok(r),
-                    Err(AicError::PerfDatabase(_)) | Err(AicError::Io { .. }) => {
+                    Err(error) if error.is_missing_perf_data() => {
                         // Fallback chain: Python sums PerformanceResults
                         // from a zero/empirical seed (`total =
                         // PerformanceResult(0.0, energy=0.0,
@@ -738,7 +738,7 @@ impl Op {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::enums::GemmQuantMode;
+    use crate::common::enums::{DatabaseMode, GemmQuantMode};
     use crate::operators::gemm::GemmOp;
     use crate::perf_database::PerfDatabase;
     use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
@@ -924,5 +924,59 @@ mod tests {
         let r = op.query(&db, &ctx()).expect("query");
         assert!((r.latency_ms - 1.0).abs() < 1e-12);
         assert_eq!(r.source, Source::Silicon);
+    }
+
+    #[test]
+    fn fallback_uses_chain_for_gemm_interpolation_coverage_miss() {
+        for mode in [DatabaseMode::Silicon, DatabaseMode::Hybrid] {
+            let (_tmp, mut db) = one_row_gemm_db();
+            db.database_mode = mode;
+            // The only collected (n, k) site is (1024, 1024). This
+            // otherwise valid bf16 query is beyond its two-octave radius.
+            let primary = Op::Gemm(GemmOp::new(
+                "outside_collected_sites",
+                16384,
+                16384,
+                GemmQuantMode::Bfloat16,
+            ));
+            assert!(matches!(
+                primary.query(&db.silicon_view(), &ctx()),
+                Err(AicError::InterpolationCoverage(_))
+            ));
+            let op = Op::Fallback(FallbackOp::new(
+                "coverage_fallback",
+                primary,
+                vec![silicon_leaf(), silicon_leaf()],
+            ));
+            let result = op.query(&db, &ctx()).expect("usable fallback chain");
+            // Two exact measured rows, each 1 ms at 100 W, sum to
+            // 2 ms and 200 W*ms; no empirical primary estimate is used.
+            assert_eq!(result.latency_ms, 2.0, "{mode:?}");
+            assert_eq!(result.energy_wms, 200.0, "{mode:?}");
+            assert_eq!(result.source, Source::Silicon, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn fallback_preserves_invalid_primary_configuration() {
+        for mode in [DatabaseMode::Silicon, DatabaseMode::Hybrid] {
+            let (_tmp, mut db) = one_row_gemm_db();
+            db.database_mode = mode;
+            let primary = Op::TokenScale(TokenScaleOp {
+                op: Box::new(silicon_leaf()),
+                numerator: 0,
+                denominator: 1,
+            });
+            let op = Op::Fallback(FallbackOp::new(
+                "invalid_primary",
+                primary,
+                vec![silicon_leaf()],
+            ));
+            assert!(matches!(
+                op.query(&db, &ctx()),
+                Err(AicError::InvalidEngineConfig(message))
+                    if message == "draft token widths must be positive"
+            ));
+        }
     }
 }

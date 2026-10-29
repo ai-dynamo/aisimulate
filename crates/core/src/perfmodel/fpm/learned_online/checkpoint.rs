@@ -358,7 +358,21 @@ pub(super) fn append_mixed_training_checkpoint(
         "stable_source":"interpolation","online_only":true});
     // No operation after this point can fail. Never replace the original-A
     // anchor digest: this C source is recorded separately by the selector.
-    learner.next_row_id = learner.next_row_id.max(incoming.next_row_id);
+    let next_row_id = learner.next_row_id.max(incoming.next_row_id);
+    let offset = next_row_id - learner.next_row_id;
+    if offset != 0 {
+        // Incoming anchor IDs are source positions, not online admissions.
+        // Translate the live clock and feedback together so importing sparse
+        // source IDs cannot age or expire unrelated recent/pending rows.
+        // Valid live IDs are below the old clock, so adding offset cannot
+        // overflow or reach the new clock. Anchor IDs/provenance stay intact.
+        for existing in learner.stores.values_mut() {
+            for row in existing.recent.iter_mut().chain(&mut existing.pending) {
+                row.id += offset;
+            }
+        }
+    }
+    learner.next_row_id = next_row_id;
     learner.stores.insert(kind, state);
     learned.append_store_from(seed, kind, rows);
     Ok((kind, provenance))
