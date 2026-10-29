@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import psutil
@@ -492,18 +493,11 @@ def test_sdk_recommendation_is_supervised_and_refuses_oversized_input():
     assert result.execution_resources["peak_observed_rss_bytes"] > 0
 
 
-@pytest.mark.parametrize("proc_children", [True, False])
-def test_owned_tree_close_stops_an_observed_descendant_after_its_parent_exits(monkeypatch, proc_children):
+@contextmanager
+def _child_with_grandchild():
+    """Yield a child and its detached grandchild's PID; the child exits when its stdin closes."""
     import subprocess
 
-    from aisimulate import resources
-    from aisimulate.supervision import OwnedTree
-
-    if proc_children and not resources._PROC_CHILDREN:
-        pytest.skip("this kernel has no /proc/<pid>/task/<tid>/children files")
-    monkeypatch.setattr(resources, "_PROC_CHILDREN", proc_children)
-    # The grandchild leaves the session and outlives its parent, so neither the
-    # process group nor a later discovery reaches it; only its observed identity does.
     source = """import subprocess, sys
 child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
 print(child.pid, flush=True)
@@ -514,15 +508,8 @@ sys.stdin.readline()
     )
     grandchild = None
     try:
-        tree = OwnedTree(process)
         grandchild = int(process.stdout.readline())
-        tree.sample()
-        process.stdin.close()
-        process.wait(timeout=5)
-        tree.sample()
-        assert grandchild in {pid for pid, _ in tree.known}
-        tree.close()
-        assert not psutil.pid_exists(grandchild) or psutil.Process(grandchild).status() == psutil.STATUS_ZOMBIE
+        yield process, grandchild
     finally:
         if grandchild is not None and psutil.pid_exists(grandchild):
             psutil.Process(grandchild).kill()
@@ -530,6 +517,48 @@ sys.stdin.readline()
         process.wait()
         process.stdin.close()
         process.stdout.close()
+
+
+@pytest.mark.parametrize("proc_children", [True, False])
+def test_owned_tree_close_stops_an_observed_descendant_after_its_parent_exits(monkeypatch, proc_children):
+    from aisimulate import resources
+    from aisimulate.supervision import OwnedTree
+
+    if proc_children and not resources._PROC_CHILDREN:
+        pytest.skip("this kernel has no /proc/<pid>/task/<tid>/children files")
+    monkeypatch.setattr(resources, "_PROC_CHILDREN", proc_children)
+    # The grandchild leaves the session and outlives its parent, so neither the
+    # process group nor a later discovery reaches it; only its observed identity does.
+    with _child_with_grandchild() as (process, grandchild):
+        tree = OwnedTree(process)
+        tree.sample()
+        process.stdin.close()
+        process.wait(timeout=5)
+        tree.sample()
+        assert grandchild in {pid for pid, _ in tree.known}
+        tree.close()
+        assert not psutil.pid_exists(grandchild) or psutil.Process(grandchild).status() == psutil.STATUS_ZOMBIE
+
+
+def test_descendants_fall_back_instead_of_dropping_an_unreadable_subtree(monkeypatch):
+    import errno
+
+    from aisimulate import resources
+
+    if not resources._PROC_CHILDREN:
+        pytest.skip("this kernel has no /proc/<pid>/task/<tid>/children files")
+    iterdir = Path.iterdir
+    with _child_with_grandchild() as (process, grandchild):
+        unreadable = Path(f"/proc/{process.pid}/task")
+
+        def fail(path):
+            if path == unreadable:
+                raise OSError(errno.EMFILE, "Too many open files")
+            return iterdir(path)
+
+        monkeypatch.setattr(Path, "iterdir", fail)
+        # A live child whose threads cannot be listed must not hide its subtree.
+        assert grandchild in {child.pid for child in resources.descendants_of(psutil.Process())}
 
 
 def test_pool_termination_reaps_before_shutdown_returns():
