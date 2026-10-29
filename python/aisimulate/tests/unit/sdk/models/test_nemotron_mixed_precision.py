@@ -576,7 +576,7 @@ def test_routed_expert_split_latency_sums_the_per_precision_layers(monkeypatch, 
             assert mixed[prefill][name] == pytest.approx(reference, rel=1e-9), (prefill, name)
 
 
-@pytest.mark.parametrize("explicit_moe", [None, "fp8"])
+@pytest.mark.parametrize("explicit_moe", [None, common.MoEQuantMode.fp8])
 def test_task_path_preserves_explicit_moe_mode(monkeypatch, tmp_path, explicit_moe):
     from aisimulate.sdk.task_v2 import Task
 
