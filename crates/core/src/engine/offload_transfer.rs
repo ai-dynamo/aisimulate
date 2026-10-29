@@ -14,7 +14,7 @@
 //! consume no bandwidth, and admission, completion or cancellation reflows
 //! service.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
@@ -311,9 +311,12 @@ pub(crate) struct FairTransfers {
     /// Boxed so an idle tier stays small.
     scratch: Box<RefCell<RateScratch>>,
     rates: RefCell<Vec<f64>>,
+    /// `rates` hold the current jobs' rates while the clock is before this
+    /// first-byte time; a job set change resets it.
+    rates_valid_until: Cell<f64>,
     events: Vec<f64>,
     #[cfg(test)]
-    pub(crate) rate_refreshes: std::cell::Cell<usize>,
+    pub(crate) rate_refreshes: Cell<usize>,
 }
 
 impl FairTransfers {
@@ -330,12 +333,21 @@ impl FairTransfers {
     pub(crate) fn submit(&mut self, job: Job) {
         debug_assert!(job.ready >= self.now);
         self.jobs.push(job);
+        self.invalidate_rates();
     }
 
     pub(crate) fn cancel(&mut self, id: u64) -> bool {
         let before = self.jobs.len();
         self.jobs.retain(|job| job.id != id);
-        self.jobs.len() != before
+        let canceled = self.jobs.len() != before;
+        if canceled {
+            self.invalidate_rates();
+        }
+        canceled
+    }
+
+    fn invalidate_rates(&self) {
+        self.rates_valid_until.set(f64::NEG_INFINITY);
     }
 
     fn event_time(&self, job: &Job, rate: f64) -> f64 {
@@ -353,7 +365,12 @@ impl FairTransfers {
             .map(|(job, &rate)| self.event_time(job, rate))
     }
 
+    /// Rates depend only on the job set and which jobs are past their first
+    /// byte, so they are recomputed only after either changes.
     fn refresh_rates(&self) {
+        if self.now < self.rates_valid_until.get() {
+            return;
+        }
         #[cfg(test)]
         self.rate_refreshes.set(self.rate_refreshes.get() + 1);
         fair_rates_into(
@@ -362,6 +379,13 @@ impl FairTransfers {
             &mut self.scratch.borrow_mut(),
             &mut self.rates.borrow_mut(),
         );
+        let first_byte = self
+            .jobs
+            .iter()
+            .map(|job| job.ready)
+            .filter(|&ready| ready > self.now)
+            .fold(f64::INFINITY, f64::min);
+        self.rates_valid_until.set(first_byte);
     }
 
     /// Earliest first-byte or completion event under the current job set.
@@ -445,6 +469,9 @@ impl FairTransfers {
                 }
                 !done
             });
+            if completed.len() != before {
+                self.invalidate_rates();
+            }
             if event.is_none_or(|time| time > target) {
                 break;
             }
@@ -566,6 +593,24 @@ mod tests {
         ];
         assert_eq!(fair_rates(&jobs, 0.0), [MB, 0.0]);
         assert_eq!(fair_rates(&jobs, 1.0), [MB / 2.0; 2]);
+    }
+
+    #[test]
+    fn rates_are_reused_until_a_first_byte() {
+        let mut transfers = FairTransfers::default();
+        let mut moving = job(0, 0, Direction::Read, 0.0, (1.0, 0.0));
+        moving.bytes = 2.0 * MB;
+        transfers.submit(moving);
+        transfers.submit(job(1, 0, Direction::Read, 1.0, (1.0, 0.0)));
+        assert_eq!(transfers.next_event(), Some(1.0));
+        assert!(transfers.advance(0.5).is_empty());
+        assert_eq!(transfers.next_event(), Some(1.0));
+        assert_eq!(transfers.rate_refreshes.get(), 1);
+        // The waiter's first byte halves the moving job's share.
+        assert!(transfers.advance(1.0).is_empty());
+        assert_eq!(transfers.next_event(), Some(3.0));
+        assert_eq!(transfers.rate_refreshes.get(), 2);
+        assert_eq!(transfers.advance(f64::MAX), [(0, 3.0), (1, 3.0)]);
     }
 
     #[test]
