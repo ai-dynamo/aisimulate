@@ -161,6 +161,10 @@ def _filter_shapes(mode: str, drops: dict[str, int] | None = None):
     return shapes
 
 
+# Perf-row / case label of each KV pool dtype = the SDK's KVCacheQuantMode member name.
+_KV_CACHE_DTYPE_LABELS = {"bf16": "bfloat16", "bfloat16": "bfloat16", "fp8": "fp8"}
+
+
 def _serving_kv_cache_dtype() -> str:
     """KV pool dtype the deployment actually serves DSV4 with on this SM.
 
@@ -171,13 +175,15 @@ def _serving_kv_cache_dtype() -> str:
     request"); the only configuration that boots is kv dtype auto -> bf16 (DeepseekV4CacheManager
     BF16), which serves fmhaSm100f QkvBfloat16 ... DynamicTokenSparse cubins (B200 2026-10-04,
     opharness finding sm100_trtllm_dsv4_facts_unservable_2026_10_04). Mirror that: the sm100
-    collector lane is bf16-KV; the perf row carries kv_cache_dtype accordingly.
-    AIS_DSV4_KV_CACHE_DTYPE=fp8|bf16 is the A/B hook.
+    collector lane is bf16-KV; the perf row carries kv_cache_dtype accordingly, spelled as the
+    SDK's KVCacheQuantMode member name ("bfloat16" / "fp8": engine_table_view rehydrates the
+    column through that enum, and "bf16" raised KeyError on every SM100 DSV4 table, Full CI
+    2026-10-29). AIS_DSV4_KV_CACHE_DTYPE=fp8|bfloat16 (alias bf16) is the A/B hook.
     """
     override = os.environ.get("AIS_DSV4_KV_CACHE_DTYPE")
     if override:
-        return override
-    return "fp8" if get_sm_version() in (90, 120, 121) else "bf16"
+        return _KV_CACHE_DTYPE_LABELS.get(override, override)
+    return "fp8" if get_sm_version() in (90, 120, 121) else "bfloat16"
 
 
 def _build_dsv4_test_cases(mode: str, attn_kind: str) -> list[dict]:
@@ -667,7 +673,7 @@ def create_dsv4_kv_cache_and_metadata(
     kv_cache_manager_cls = get_kv_cache_manager_cls(model_config, kv_cache_config)
     # fp8 KV rows -> DataType.FP8, matching serving's kv_cache_dtype
     # resolution from kv_cache_quant_algo (set by _apply_gemm_type_quant).
-    kv_cache_dtype = DataType.BF16 if kv_cache_dtype_str == "bf16" else DataType.FP8
+    kv_cache_dtype = DataType.BF16 if kv_cache_dtype_str == "bfloat16" else DataType.FP8
 
     # Serving construction site: pyexecutor/_util.py:1843-1867 @1.3.0rc23
     # (is_mla branch): CacheType.SELFKONLY :1846, num_kv_heads=1 :1848,
@@ -826,8 +832,8 @@ def run_dsv4_attn(
 
     if attn_kind not in ATTN_KIND_TO_COMPRESS_RATIO:
         raise ValueError(f"unsupported DSV4 attn_kind: {attn_kind}")
-    if kv_cache_dtype not in ("fp8", "bf16"):
-        raise ValueError(f"DSV4 module rows are fp8-KV or bf16-KV only (got {kv_cache_dtype!r})")
+    if kv_cache_dtype not in ("fp8", "bfloat16"):
+        raise ValueError(f"DSV4 module rows are fp8-KV or bfloat16-KV only (got {kv_cache_dtype!r})")
     if compute_dtype != "bfloat16":
         raise ValueError(f"DSV4 module rows are bfloat16-compute only (got {compute_dtype!r})")
     if gemm_type != "fp8_block":

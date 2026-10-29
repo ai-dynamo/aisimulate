@@ -490,3 +490,26 @@ def test_kv_quota_is_capped_by_this_batch_s_tokens(monkeypatch, bs, sl, is_ctx, 
     assert expected <= kw["max_tokens"] <= max(2 * (needed + bs * tpb) + tpb, floor)
     # the floor keeps the footer-scale pool past inductor's int64 threshold
     assert floor > 1_572_864  # H20 calibration: 1,048,576 tokens -> i32, 1,572,864 -> i64
+
+
+@pytest.mark.parametrize(
+    ("sm", "expected"), [(100, "bfloat16"), (103, "bfloat16"), (90, "fp8"), (120, "fp8"), (121, "fp8")]
+)
+def test_serving_kv_cache_dtype_is_an_sdk_enum_member_name(monkeypatch, sm, expected):
+    # engine_table_view rehydrates kv_cache_dtype through KVCacheQuantMode; "bf16" raised
+    # KeyError on every SM100 DSV4 table in Full CI (2026-10-29).
+    from aisimulate_core.quantization import KVCacheQuantMode
+
+    module = _load_module_with_torch_stub(monkeypatch)
+    monkeypatch.delenv("AIS_DSV4_KV_CACHE_DTYPE", raising=False)
+    monkeypatch.setattr(module, "get_sm_version", lambda: sm)
+    label = module._serving_kv_cache_dtype()
+    assert label == expected
+    assert label in KVCacheQuantMode.__members__
+
+
+@pytest.mark.parametrize(("override", "expected"), [("bf16", "bfloat16"), ("bfloat16", "bfloat16"), ("fp8", "fp8")])
+def test_serving_kv_cache_dtype_override_normalises_the_bf16_alias(monkeypatch, override, expected):
+    module = _load_module_with_torch_stub(monkeypatch)
+    monkeypatch.setenv("AIS_DSV4_KV_CACHE_DTYPE", override)
+    assert module._serving_kv_cache_dtype() == expected
