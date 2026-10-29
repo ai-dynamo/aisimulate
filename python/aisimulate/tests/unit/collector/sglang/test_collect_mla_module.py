@@ -323,6 +323,7 @@ class TestDsaRuntimeLimits:
         assert required_swa_kv_alloc_tokens(2, 256, 0, 256, 128, is_prefill=False) == 1024
 
 
+@pytest.mark.unit
 class TestDsaCudaGraph:
     def test_generation_cuda_graph_uses_max_batch_tokens(self):
         mod = _import_module()
@@ -336,19 +337,38 @@ class TestDsaCudaGraph:
 
         assert mod._generation_cuda_graph_enabled_for_tokens(runner, 256)
         assert not mod._generation_cuda_graph_enabled_for_tokens(runner, 257)
+        assert not mod._generation_cuda_graph_enabled_for_tokens(runner, 0)
 
     def test_generation_cuda_graph_uses_explicit_batch_list(self):
         mod = _import_module()
         runner = types.SimpleNamespace(
             server_args=types.SimpleNamespace(
+                disable_cuda_graph_padding=True,
                 cuda_graph_config=types.SimpleNamespace(
                     decode=types.SimpleNamespace(backend="cudagraphs", bs=[1, 4, 16], max_bs=None)
-                )
+                ),
             )
         )
 
         assert mod._generation_cuda_graph_enabled_for_tokens(runner, 4)
         assert not mod._generation_cuda_graph_enabled_for_tokens(runner, 8)
+        assert not mod._generation_cuda_graph_enabled_for_tokens(runner, 17)
+
+    @pytest.mark.parametrize("batch_size", [4, 8, 16, 32, 52])
+    def test_agentx_batches_use_exact_shape_graph_with_default_bucket_coverage(self, batch_size):
+        mod = _import_module()
+        capture_bs = [1, 2, 4, 8, 12, *range(16, 257, 8)]
+        assert 52 not in capture_bs
+        runner = types.SimpleNamespace(
+            server_args=types.SimpleNamespace(
+                disable_cuda_graph_padding=False,
+                cuda_graph_config=types.SimpleNamespace(
+                    decode=types.SimpleNamespace(backend="cudagraphs", bs=capture_bs, max_bs=256)
+                ),
+            )
+        )
+        assert mod._generation_cuda_graph_enabled_for_tokens(runner, batch_size)
+        assert not mod._generation_cuda_graph_enabled_for_tokens(runner, 257)
 
     def test_generation_cuda_graph_can_be_disabled(self):
         mod = _import_module()

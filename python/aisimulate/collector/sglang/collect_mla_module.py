@@ -211,21 +211,26 @@ def _dsa_skip_indexer_enabled(attn_type: str, model_path: str) -> bool:
 
 
 def _generation_cuda_graph_enabled_for_tokens(model_runner, num_tokens: int) -> bool:
-    """Match SGLang decode CUDA graph coverage for the decode microbench.
-
-    SGLang captures decode CUDA graphs for batch sizes up to
-    server_args.cuda_graph_max_bs (or the resolved cuda_graph_bs list); mirror
-    that coverage using sglang's own settings -- no AIC env override -- so the
-    decode benchmark uses graph timing exactly where serve would.
-    """
-    decode_config = _resolved_server_args(model_runner.server_args).cuda_graph_config.decode
+    """Use SGLang's graph eligibility for an exact-shape module capture."""
+    resolved_args = _resolved_server_args(model_runner.server_args)
+    decode_config = resolved_args.cuda_graph_config.decode
     if decode_config.backend == "disabled":
         return False
+    num_tokens = int(num_tokens)
+    if num_tokens <= 0:
+        return False
     capture_bs = decode_config.bs
-    if capture_bs:
-        return int(num_tokens) in set(capture_bs)
-    max_bs = decode_config.max_bs or 256
-    return 0 < int(num_tokens) <= int(max_bs)
+    if capture_bs and getattr(resolved_args, "disable_cuda_graph_padding", False):
+        return num_tokens in capture_bs
+    # SGLang v0.5.20 runner/decode_cuda_graph_runner.py:675-680 accepts
+    # every batch through max_bs when padding is enabled, not just captured
+    # bucket sizes. The module benchmark creates its own CUDA graph for the
+    # actual tensors; it does not replay a whole-model bucket or pad the shape.
+    # This matters at batch 52: the non-speculative defaults bracket it with
+    # 48/56 (arg_groups/cuda_graph_hook.py:587-593), but serving still uses a
+    # graph. Exact membership would incorrectly collect this row eagerly.
+    max_bs = max(capture_bs) if capture_bs else decode_config.max_bs or 256
+    return num_tokens <= int(max_bs)
 
 
 def _resolved_server_args(server_args):

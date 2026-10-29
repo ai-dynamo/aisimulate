@@ -63,8 +63,18 @@ Source citations at those calls identify the serving contracts; the older
 0.5.14 path remains available. This collection does not validate native MTP
 verification or the replay's equivalent autoregressive approximation.
 
+Decode measurements capture the module's **exact requested shape** in a CUDA
+graph when that batch is within SGLang's graph-covered range. Batch 52 is
+eligible even though the non-speculative serving buckets bracket it with
+48 and 56. The microbenchmark creates its own graph at 52; it does not pad the
+tensors or label a padded batch as 52. Disabling graph padding restricts
+eligibility to the explicit capture list, and disabling graphs selects eager
+timing. This follows the serving eligibility check in
+[SGLang's decode runner](https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py#L675).
+
 Use [agentx_dsa_shards.yaml](agentx_dsa_shards.yaml) with auto-collector commit
-`25af03d2e22f88e186e2f2ede3466d4fa6349548`, frozen on a run branch. Set
+`f3ce58a3e20c29c9b31221073182956efd556324`, which includes the model-filter
+launcher fix, frozen on a run branch. Set
 `AISIM_SHARD_PLAN` to this file's SHA-pinned raw GitHub URL, and set:
 
 ```yaml
