@@ -591,6 +591,56 @@ class RustForwardPassPerfModel:
         """Fit partial pending batches and expire globally aged feedback in every store."""
         self._inner.flush_updates()
 
+    def append_mixed_learned_checkpoint(self, path: str | os.PathLike[str]) -> int:
+        """Add one eligible mixed class's C-trained online GBDT or selector store.
+
+        The existing A+C mixed selector keeps calibrated interpolation as its
+        stable expert. The checkpoint must contain exactly one absent eligible
+        mixed store with at least 20 training rows and match the model's identity,
+        features, and target. Rust validates the complete training checkpoint
+        before changing either expert.
+        Bootstrap labels are training data, not retrospective selector evidence.
+        Online GBDT also preserves its calibration and optional quality gate.
+        Returns the number of added stores (one); frozen models reject this call.
+        """
+        return self._inner.append_mixed_learned_checkpoint(os.fspath(path))
+
+    def estimate_forward_pass_with_route(self, metrics_by_rank: Any) -> dict[str, Any]:
+        """Predict once and return latency with the actual mixed expert route.
+
+        The result contains ``latency_ms`` and ``temporary_mixed_composition``.
+        Expert availability is ``None`` when that expert was not queried.
+        The returned route describes this prediction; it admits no feedback.
+        """
+        return json.loads(self._inner.estimate_forward_pass_with_route(_json_dumps(metrics_by_rank)))
+
+    def learned_expert_artifacts(self) -> dict[str, Any]:
+        """Inspect frozen and online selector forests; not a resumable checkpoint."""
+        return json.loads(self._inner.learned_expert_artifacts())
+
+    def mixed_composition_route(self, metrics_by_rank: Any) -> dict[str, Any] | None:
+        """Resolve mixed eligibility and the current route without learning.
+
+        This may query an expert. Use ``estimate_forward_pass_with_route`` when
+        both the prediction and its actual route are needed in one dispatch.
+        """
+        raw = self._inner.mixed_composition_route(_json_dumps(metrics_by_rank))
+        return None if raw is None else json.loads(raw)
+
+    def mixed_composition_diagnostics(self) -> dict[str, Any] | None:
+        """Inspect mixed routes, pinned sources, score bounds, and calibration."""
+        raw = self._inner.mixed_composition_diagnostics()
+        return None if raw is None else json.loads(raw)
+
+    def mixed_composition_state(self) -> dict[str, Any] | None:
+        """Snapshot mixed calibration and quality evidence, without ordinary or selector state."""
+        raw = self._inner.mixed_composition_state()
+        return None if raw is None else json.loads(raw)
+
+    def restore_mixed_composition_state(self, state: dict[str, Any]) -> None:
+        """Restore matching mixed state atomically; caller owns admission replay."""
+        self._inner.restore_mixed_composition_state(_json_dumps(state))
+
     def export_learned_artifact(self) -> dict[str, Any]:
         """Return the current forest as an inference artifact, without fitting state.
 

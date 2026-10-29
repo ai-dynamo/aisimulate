@@ -18,12 +18,33 @@ fn hash(path: &Path) -> String {
 // A constant 10 ms forest exactly fitted to two 10 ms historical rows.
 // This is a real training checkpoint, so tests exercise canonical validation,
 // payload hashes, feature projection, fitting and publication together.
-fn checkpoint(role: ForwardPassWorkerType) -> (tempfile::TempDir, ForwardPassPerfModelConfig) {
+pub(in crate::perfmodel::fpm::model) fn checkpoint(
+    role: ForwardPassWorkerType,
+) -> (tempfile::TempDir, ForwardPassPerfModelConfig) {
     checkpoint_with_forest(role, 10.0, &[0.0])
 }
 
 fn checkpoint_with_forest(
     role: ForwardPassWorkerType,
+    baseline: f64,
+    tree_values: &[f64],
+) -> (tempfile::TempDir, ForwardPassPerfModelConfig) {
+    checkpoint_with_stores_and_forest(role, workload_kinds_for(role), 2, baseline, tree_values)
+}
+
+pub(in crate::perfmodel::fpm::model) fn checkpoint_with_stores(
+    role: ForwardPassWorkerType,
+    kinds: &[ForwardPassRegressionWorkloadKind],
+    row_count: usize,
+    baseline: f64,
+) -> (tempfile::TempDir, ForwardPassPerfModelConfig) {
+    checkpoint_with_stores_and_forest(role, kinds, row_count, baseline, &[0.0])
+}
+
+fn checkpoint_with_stores_and_forest(
+    role: ForwardPassWorkerType,
+    kinds: &[ForwardPassRegressionWorkloadKind],
+    row_count: usize,
     baseline: f64,
     tree_values: &[f64],
 ) -> (tempfile::TempDir, ForwardPassPerfModelConfig) {
@@ -67,10 +88,15 @@ fn checkpoint_with_forest(
     let mut column = group.next_column().unwrap().unwrap();
     column
         .typed::<Int64Type>()
-        .write_batch(&[0, 1], None, None)
+        .write_batch(&(0..row_count as i64).collect::<Vec<_>>(), None, None)
         .unwrap();
     column.close().unwrap();
-    for values in [[10.0, 10.0], [10.0, 10.0], [0.0, 1.0]] {
+    let target = baseline + tree_values.iter().sum::<f64>();
+    for values in [
+        vec![target; row_count],
+        vec![target; row_count],
+        (0..row_count).map(|i| (i % 2) as f64).collect(),
+    ] {
         let mut column = group.next_column().unwrap().unwrap();
         column
             .typed::<DoubleType>()
@@ -91,14 +117,14 @@ fn checkpoint_with_forest(
         .collect();
     let store = serde_json::json!({"baseline": baseline, "trees": trees});
     let seed_store = serde_json::json!({
-        "rows_file": "rows.parquet", "rows_sha256": hash(&rows), "row_count": 2,
+        "rows_file": "rows.parquet", "rows_sha256": hash(&rows), "row_count": row_count,
         "bin_thresholds": [[0.5]], "n_bins_non_missing": [2], "missing_values_bin_idx": 255,
         "loss": "squared_error", "learning_rate": 1.0, "l2_regularization": 0.0,
         "min_samples_leaf": 1, "max_depth": null, "max_leaf_nodes": 2
     });
     let mut stores = serde_json::Map::new();
     let mut seeds = serde_json::Map::new();
-    for kind in workload_kinds_for(role) {
+    for kind in kinds {
         let name = serde_json::to_value(kind)
             .unwrap()
             .as_str()

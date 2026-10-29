@@ -36,6 +36,7 @@ mod learned_online;
 mod metrics;
 mod model;
 mod options;
+mod quality_gate;
 mod regression;
 mod resources;
 mod samples;

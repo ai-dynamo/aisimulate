@@ -261,6 +261,46 @@ fields report their nested paths. The supported namespaces are:
   evidence from actual direct-FPM lookups, as described below. It requires
   explicit `estimation_mode: fpm_interpolation`, resolved `method: direct`, and
   `fallback_policy: deny`. It is omitted from normalized serialization when false.
+- `temporary_mixed_composition`: absent by default. An explicit learned-model
+  policy for original self-benchmark A/A+C workloads. It pins missing mixed
+  classes to the configured FPM interpolation method and optionally independent hybrid correction;
+  it does not change automatic estimator selection. See the
+  [mixed policy configuration](fpm_ml/configuration.md#temporary-mixed-composition-for-self-benchmark-seeds).
+
+| Temporary mixed policy field | Default | Behavior |
+| --- | --- | --- |
+| `estimator_config.temporary_mixed_composition` | Absent | Opt-in original-A fallback eligibility for aggregated GBDT A/A+C, frozen hybrid A+C, and selector A+C. Requires `scenario`, `mode` and `original_a.manifest_path`. A+C GBDT can require a continuous quality check before selecting ordinary predictions. Frozen hybrid calibrates interpolation for missing mixed stores. For eligible selector classes, calibrated interpolation replaces the frozen/calibrated expert and competes causally with online GBDT after its C bootstrap. |
+| `estimator_config.temporary_mixed_composition.original_a.source_sha256` | `null` | Pins the original-A manifest; normalization verifies or fills its digest. C updates cannot change its capability decisions. |
+| `estimator_config.temporary_mixed_composition.calibration` | Hybrid; `[4, 4]` bins, 64 slots per policy/class, 5 observations, factors `[0.5, 2.0]` | Independent attention/MoE correction for missing mixed classes in A+C. Its fixed score bounds come from original A and do not reuse ordinary correction geometry. |
+
+The optional `temporary_mixed_composition.quality_gate` checks eligible A+C
+mixed classes on standalone online GBDT. Selector retains its existing causal
+gate; frozen hybrid retains calibrated interpolation. Configuring this quality
+gate on either of those adaptations is an error.
+
+| Mixed quality gate field | Default | Behavior |
+| --- | --- | --- |
+| `estimator_config.temporary_mixed_composition.quality_gate` | Absent | Preserve existing availability-first GBDT and causal selector behavior. An object enables the check for A+C only. |
+| `estimator_config.temporary_mixed_composition.quality_gate.alpha` | `0.05` | EWMA weight in `(0, 1]` for paired, unbounded fractional absolute percentage errors. The first pair initializes each mean. |
+| `estimator_config.temporary_mixed_composition.quality_gate.min_comparisons` | `5` | Positive number of future paired admitted observations required before GBDT may qualify. Bootstrap training rows do not contribute. |
+
+For each forest store and critical-rank query type, interpolation stays selected
+until GBDT is ready and its EWMA error is less than or equal to interpolation's.
+The check continues after selection and returns to interpolation when its error
+is lower. Set `min_comparisons: 1` to qualify on the first subsequent paired label.
+Predictions for each comparison precede both expert updates; the resulting choice
+applies to future queries. The fallback prediction includes its current independent
+calibration. Both experts continue learning even while unselected. This checks
+past performance and cannot guarantee lower error on future labels. A typed
+interpolation coverage miss can use ready GBDT without advancing paired evidence;
+route metadata marks this coverage exception. Hard prior errors remain errors.
+C-only has no original-A interpolation table and is unaffected.
+
+`append_mixed_learned_checkpoint` supports online GBDT and selector, preserving
+calibration and quality evidence as a missing class becomes ready. Mixed snapshots
+include the quality gate and reject mismatched or incomplete saved state. They
+must be restored together with the matching ordinary learner and admission cursor;
+a mixed snapshot alone is not a full model checkpoint.
 
 The top-level `fpm_profile` contains the complete profile dictionary: pinned
 model revision, architecture, context length, expert count, deployment precision
@@ -412,6 +452,12 @@ snapshot owns are redirected into it:
 | `fpm_learned`, `online` | An online runtime checkpoint with the current forest, retained and pending rows and fitting state. |
 | `fpm_learned`, `causal_selector` | The frozen expert, the adaptive expert's runtime checkpoint, every calibration store and all twelve selector evidence keys. |
 | `from_learned` model | The forest, its constructor options and correction stores. |
+
+Models with `estimator_config.temporary_mixed_composition` reject portable
+snapshot saving and restoration because this format does not package their
+interpolation prior and additional source/state dependencies. See the
+[mixed-policy persistence contract](fpm_ml/mixed-workload-fallback.md#diagnostics-persistence-and-compatibility)
+for online checkpoint and partial mixed-state alternatives.
 
 Saving does not fit pending online rows or change the model. Every staged
 file and directory is synced to disk before the staging directory is renamed

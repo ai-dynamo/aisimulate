@@ -329,6 +329,7 @@ fn static_prefill_estimate(
 ) -> crate::ForwardPassEstimate {
     let latency_ms = prefill_ms + 0.0; // same context + generation sum as run_static
     crate::ForwardPassEstimate {
+        unavailable_reason: None,
         latency_ms: Some(latency_ms),
         native_latency_ms: Some(latency_ms),
         correction_factor: Some(1.0),
@@ -1481,6 +1482,7 @@ impl Engine {
         };
         rank.latency_ms = latency_ms;
         Ok(Some(crate::ForwardPassEstimate {
+            unavailable_reason: None,
             latency_ms: Some(latency_ms),
             native_latency_ms: Some(latency_ms),
             correction_factor: Some(1.0),
@@ -2878,6 +2880,7 @@ impl Engine {
             }
         }
         Ok(crate::ForwardPassEstimate {
+            unavailable_reason: None,
             latency_ms: Some(max_latency),
             native_latency_ms: Some(max_latency),
             correction_factor: Some(1.0),

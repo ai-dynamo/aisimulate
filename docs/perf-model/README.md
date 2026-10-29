@@ -38,6 +38,8 @@ A cold regression is not usable for offline prediction.
   online fitting controls and causal selector settings.
 - [Online learned-model mathematics](fpm_ml/online-gbdt-and-causal-selection.md):
   online GBDT updates, hybrid calibration and causal expert selection.
+- [Mixed-workload fallback design](fpm_ml/mixed-workload-fallback.md): original-A
+  eligibility, interpolation, hybrid calibration and causal expert routing.
 - [Collector](collector/README.md): operation data, runtime pins, and publication.
 - [Extend the model](extending.md): model structure, native operations, and SOL integration.
 - [DeepSeek-V4.1](models/deepseek-v41.md): model-specific execution and physical memory contracts.

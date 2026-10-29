@@ -207,6 +207,36 @@ fn manifest_model(path: &Path, m: &Manifest) -> Result<LearnedForwardPassModel, 
     LearnedForwardPassModel::from_json(text)
 }
 
+fn runtime_state(path: &Path, m: &Manifest) -> Result<LoadState, AicError> {
+    let (state_path, file) = checked_file(
+        path,
+        m.state_file
+            .as_deref()
+            .ok_or_else(|| invalid("missing state_file"))?,
+        m.state_sha256
+            .as_deref()
+            .ok_or_else(|| invalid("missing state_sha256"))?,
+    )?;
+    let bytes = file.metadata().map_err(|e| io(&state_path, e))?.len();
+    let state: LoadState = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .with_limit(bytes)
+        .reject_trailing_bytes()
+        .deserialize_from(BufReader::new(file))
+        .map_err(|e| invalid(format!("invalid runtime checkpoint: {e}")))?;
+    if state.artifact_sha256 != m.artifact_sha256 {
+        return Err(invalid(
+            "runtime state predictor checksum differs from its manifest",
+        ));
+    }
+    if m.anchor_manifest_sha256.as_deref() != Some(&state.learner.anchor_manifest_sha256) {
+        return Err(invalid(
+            "runtime state anchor identity differs from its manifest",
+        ));
+    }
+    Ok(state)
+}
+
 pub(crate) fn checkpoint_model(path: &Path) -> Result<LearnedForwardPassModel, AicError> {
     let m = manifest(path)?;
     manifest_model(path, &m)
@@ -225,7 +255,23 @@ pub(crate) fn checkpoint_model_for_config(
             "checkpoint deployment/store identity does not match resolved configuration",
         ));
     }
-    manifest_model(path, &m)
+    let model = manifest_model(path, &m)?;
+    if m.schema == RUNTIME_SCHEMA
+        && config.estimator_config.fpm_learned.adaptation == LearnedAdaptation::Frozen
+    {
+        // The mixed policy lives outside FpmLearnedConfig to preserve the v5
+        // binary layout. Inspect the authenticated payload even when the new
+        // caller omits that policy, so Frozen cannot silently discard it.
+        let state = runtime_state(path, &m)?;
+        let corrections: serde_json::Value = serde_json::from_str(&state.correction_json)
+            .map_err(|e| invalid(format!("invalid saved correction state: {e}")))?;
+        if corrections != serde_json::json!({}) {
+            return Err(invalid(
+                "frozen inference cannot discard saved mixed composition state; use online continuation or the original seed with explicit mixed-state restoration",
+            ));
+        }
+    }
+    Ok(model)
 }
 
 pub(crate) fn canonical_learned_identity(
@@ -247,6 +293,75 @@ pub(crate) fn canonical_learned_identity(
         object.remove(key);
     }
     Ok(value)
+}
+
+/// Append is deliberately training-only and online-only. All validation and
+/// allocations precede publication; errors leave the live model untouched.
+pub(super) fn append_mixed_training_checkpoint(
+    path: &Path,
+    learner: &mut OnlineLearner,
+    learned: &mut LearnedForwardPassModel,
+    eligible: &[Kind],
+) -> Result<(Kind, serde_json::Value), AicError> {
+    let manifest = manifest(path)?;
+    if manifest.schema != INITIAL_SCHEMA {
+        return Err(invalid(
+            "mixed selector append requires a training checkpoint",
+        ));
+    }
+    let identity: serde_json::Value =
+        serde_json::from_str(&learner.identity_json).map_err(|e| invalid(e.to_string()))?;
+    let mut seed = manifest_model(path, &manifest)?;
+    if manifest.identity != identity
+        || seed.metadata().get("identity") != Some(&identity)
+        || seed.worker_type() != learned.worker_type()
+        || seed.feature_names() != learned.feature_names()
+        || seed.target() != learned.target()
+    {
+        return Err(invalid(
+            "mixed selector append identity, features, or target mismatch",
+        ));
+    }
+    let kinds = seed.store_kinds();
+    if kinds.len() != 1 || !eligible.contains(&kinds[0]) {
+        return Err(invalid(
+            "mixed selector append requires exactly one original-A-missing mixed store",
+        ));
+    }
+    let kind = kinds[0];
+    if learned.has_store(kind) || learner.stores.contains_key(&kind) {
+        return Err(invalid(
+            "mixed selector append cannot replace an existing online store",
+        ));
+    }
+    let mut canonical: ForwardPassPerfModelConfig =
+        serde_json::from_value(identity).map_err(|e| invalid(e.to_string()))?;
+    let mut controls = learner.config.clone();
+    controls.adaptation = LearnedAdaptation::Online;
+    controls.artifact_path = None;
+    controls.checkpoint_path = Some(path.to_owned());
+    controls.source_sha256 = Some(manifest.source_sha256.clone());
+    canonical.estimator_config.fpm_learned = controls.clone();
+    let mut incoming = load(path, &mut seed, &controls, &canonical)?;
+    let state = incoming
+        .stores
+        .remove(&kind)
+        .expect("validated single training store");
+    let rows = state.anchors.original_rows();
+    if rows < 20 {
+        return Err(invalid(
+            "mixed selector online bootstrap requires at least 20 C rows",
+        ));
+    }
+    let provenance = serde_json::json!({"manifest_sha256":manifest.source_sha256,
+        "artifact_sha256":manifest.artifact_sha256,"training_rows":rows,
+        "stable_source":"interpolation","online_only":true});
+    // No operation after this point can fail. Never replace the original-A
+    // anchor digest: this C source is recorded separately by the selector.
+    learner.next_row_id = learner.next_row_id.max(incoming.next_row_id);
+    learner.stores.insert(kind, state);
+    learned.append_store_from(seed, kind, rows);
+    Ok((kind, provenance))
 }
 
 pub(super) fn load(
@@ -296,32 +411,7 @@ pub(super) fn load_with(
                 "causal_selector requires a training checkpoint; online runtime snapshots do not contain frozen calibration and selector state",
             ));
         }
-        let (state_path, file) = checked_file(
-            path,
-            m.state_file
-                .as_deref()
-                .ok_or_else(|| invalid("missing state_file"))?,
-            m.state_sha256
-                .as_deref()
-                .ok_or_else(|| invalid("missing state_sha256"))?,
-        )?;
-        let bytes = file.metadata().map_err(|e| io(&state_path, e))?.len();
-        let mut state: LoadState = bincode::DefaultOptions::new()
-            .with_fixint_encoding()
-            .with_limit(bytes)
-            .reject_trailing_bytes()
-            .deserialize_from(BufReader::new(file))
-            .map_err(|e| invalid(format!("invalid runtime checkpoint: {e}")))?;
-        if state.artifact_sha256 != m.artifact_sha256 {
-            return Err(invalid(
-                "runtime state predictor checksum differs from its manifest",
-            ));
-        }
-        if m.anchor_manifest_sha256.as_deref() != Some(&state.learner.anchor_manifest_sha256) {
-            return Err(invalid(
-                "runtime state anchor identity differs from its manifest",
-            ));
-        }
+        let mut state = runtime_state(path, &m)?;
         let mut saved = state.learner.config.clone();
         saved.artifact_path = config.artifact_path.clone();
         saved.checkpoint_path = config.checkpoint_path.clone();
