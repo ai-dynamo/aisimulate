@@ -106,9 +106,13 @@ layers (0, 5, 11, ..., 47) and 39 sliding-window layers. The SDK used to model
 attention. The SDK used to model every odd layer (24 layers) as full
 attention.
 
-Only the four `mimo-v2-flash-b200-vllm-hybrid-attn-xshape` records failed.
-They were refreshed from `38e518543f18e53c6c8a127ddb2c1d5830fa5a58` with a
-matching native build:
+Eight engine-step records were refreshed. The four
+`mimo-v2-flash-b200-vllm-hybrid-attn-xshape` records failed their 1%
+tolerance. The four `llama4-scout-b200-vllm-isl1024-osl2` records still passed
+it, but they moved. Rule 1 in
+`python/aisimulate/.claude/rules/rust-core/parity.md` asks a PR to refresh
+every record that its change affects. The MiMo records were refreshed from
+`38e518543f18e53c6c8a127ddb2c1d5830fa5a58` with a matching native build:
 
 | Metric (ms) | Before | After |
 | --- | ---: | ---: |
@@ -147,18 +151,69 @@ type:
   (13.311 against 14.961 µs), which is −0.0495 ms for 30 layers. Request
   latency is TTFT + TPOT.
 
-The `llama4-scout-b200-vllm-isl1024-osl2` records still pass within their 1%
-tolerance, so they were not refreshed. At ISL 1024, the 8,192-token chunk
-never limits attention. The largest live change is −0.22%, in disaggregated
-TPOT. Memory predictions do not change, because HybridMoE KV-cache memory is
-the same for every layer type.
+The `llama4-scout-b200-vllm-isl1024-osl2` records were refreshed the same way.
+"Recorded before" is the old fixture value. "Live at base" is the live engine
+on the base revision, read with the same `pin_goldens.py --refresh` command.
+"After" is the live engine with the layer types corrected, and it is the new
+fixture value:
+
+| Metric (ms) | Recorded before | Live at base | After |
+| --- | ---: | ---: | ---: |
+| Static context | 21.297 | 21.297 | 21.298 |
+| Static generation | 4.619 | 4.619 | 4.615 |
+| Static total | 25.916 | 25.916 | 25.913 |
+| Mixed step | 22.020 | 22.061 | 22.059 |
+| Aggregated TTFT | 67.973 | 68.019 | 68.016 |
+| Aggregated TPOT | 22.020 | 22.061 | 22.059 |
+| Aggregated request | 89.994 | 90.081 | 90.075 |
+| Disaggregated TTFT | 42.169 | 42.169 | 42.170 |
+| Disaggregated TPOT | 7.233 | 7.233 | 7.217 |
+| Disaggregated request | 49.402 | 49.402 | 49.387 |
+
+The move from "Live at base" to "After" comes from the layer-type correction.
+The 24 odd layers used to be global. Now only layers 3, 7, ..., 47 are global,
+so 12 layers change type. At ISL 1024, the 8,192-token chunk never limits
+attention. The change therefore comes only from the attention lookup. The
+window-8192 lookup costs a little more than the window-0 lookup in the context
+phase and a little less in the decode step. Llama 4 gives a global layer and a
+chunked layer the same projection and MoE shapes. Every other operation
+therefore keeps its total. Only the split of that total between the `global_*`
+and `swa_*` operations changes. The two layer plans give the cost of one layer
+of each type:
+
+- Static context: attention costs 38.411 µs per chunked layer and 38.283 µs per
+  global layer, so the phase rises by 1.536 µs.
+- Static generation: in the decode step at batch 1, attention costs 10.730 µs
+  per chunked layer and 11.061 µs per global layer, so the phase falls by
+  3.969 µs.
+- Mixed step: the 1,024-token prefill plus one decode token, −2.437 µs.
+
+The largest relative move is −0.22%, in disaggregated TPOT. Memory predictions
+do not change, because HybridMoE KV-cache memory is the same for every layer
+type.
+
+The difference between "Recorded before" and "Live at base" is older than the
+layer-type correction. The `post_freeze_pins` commits of the old Scout records
+are not in this repository's history. The static and
+disaggregated records were last pinned in PR #244. At the base, they match the
+live values to the three decimals that they store. The mixed and aggregated
+records still hold the values from the sync in PR #73. At the base, the live
+engine gives a mixed step that is 0.186% higher than those records. This is the
+largest difference, in `mixed_step`, which is also the aggregated TPOT. The
+aggregated TTFT and request differ too, because they follow from the mixed
+step. The difference stayed inside the 1% tolerance, so no PR refreshed these
+records.
 
 ```bash
 python/aisimulate/.venv/bin/python crates/core/parity_tests/perfmodel/pin_goldens.py \
   --refresh mimo-v2-flash-b200-vllm-hybrid-attn-xshape::static \
   mimo-v2-flash-b200-vllm-hybrid-attn-xshape::mixed \
   mimo-v2-flash-b200-vllm-hybrid-attn-xshape::agg \
-  mimo-v2-flash-b200-vllm-hybrid-attn-xshape::disagg
+  mimo-v2-flash-b200-vllm-hybrid-attn-xshape::disagg \
+  llama4-scout-b200-vllm-isl1024-osl2::static \
+  llama4-scout-b200-vllm-isl1024-osl2::mixed \
+  llama4-scout-b200-vllm-isl1024-osl2::agg \
+  llama4-scout-b200-vllm-isl1024-osl2::disagg
 ```
 
 ### GLM-5.3-Flash Ops data and the fleet `next` slot

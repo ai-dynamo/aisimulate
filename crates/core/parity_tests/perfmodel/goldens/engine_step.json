@@ -592,28 +592,28 @@
     "llama4-scout-b200-vllm-isl1024-osl2": {
       "agg": {
         "values": {
-          "agg_request": 89.99355929832745,
-          "agg_tpot": 22.02049849333056,
-          "agg_ttft": 67.97306080499689
+          "agg_request": 90.07547533849579,
+          "agg_tpot": 22.05904721811567,
+          "agg_ttft": 68.01642812038013
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 49.402,
-          "disagg_tpot": 7.233,
-          "disagg_ttft": 42.169
+          "disagg_request": 49.387,
+          "disagg_tpot": 7.217,
+          "disagg_ttft": 42.17
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 22.020498493330564
+          "mixed_step": 22.059047218115673
         }
       },
       "static": {
         "values": {
-          "static_ctx": 21.297,
-          "static_gen": 4.619,
-          "static_total": 25.916
+          "static_ctx": 21.298,
+          "static_gen": 4.615,
+          "static_total": 25.912999999999997
         }
       }
     },
@@ -2219,19 +2219,19 @@
     },
     "llama4-scout-b200-vllm-isl1024-osl2::agg": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "ae1ff037d982ed624df66b0b9cf07870ca67c167"
     },
     "llama4-scout-b200-vllm-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "ae1ff037d982ed624df66b0b9cf07870ca67c167"
     },
     "llama4-scout-b200-vllm-isl1024-osl2::mixed": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "ae1ff037d982ed624df66b0b9cf07870ca67c167"
     },
     "llama4-scout-b200-vllm-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "ae1ff037d982ed624df66b0b9cf07870ca67c167"
     },
     "mimo-v2-flash-b200-vllm-hybrid-attn-xshape::agg": {
       "engine": "rust",
