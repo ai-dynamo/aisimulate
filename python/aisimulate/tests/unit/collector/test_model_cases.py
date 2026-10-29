@@ -1889,6 +1889,36 @@ def test_dsa_module_plan_drops_sub_8_head_cells_on_sm100_only(backend):
         assert [c[2] for c in build("mla", "context")] == heads, (backend, sm)  # dense MLA untouched
 
 
+@pytest.mark.parametrize("backend", ["vllm", "trtllm"])
+def test_module_plan_keeps_only_the_heads_of_declared_tensor_parallel_shards(backend):
+    """A model row that declares tensor_parallel_sizes (case_authoring model-correlated
+    narrowing, as the MSA rows do) measures only native_num_heads // tp; the shared head
+    grid's other entries (96/48/24/12 for the 96-head Kimi-K3 MLA module, 128 for a 64-head
+    model) were 40-50% of the b200 vllm dsa_context rows (2026-10-29). Rows without the
+    declaration keep the full grid."""
+    from types import SimpleNamespace
+
+    heads = [128, 96, 64, 48, 32, 24, 16, 12, 8]
+    base = [[1, 1, h, "bfloat16", "bfloat16", "bfloat16", 0] for h in heads]
+    glm = SimpleNamespace(model_path="zai-org/GLM-5.2", native_num_heads=64, tensor_parallel_sizes=(1, 2, 4, 8))
+    kimi = SimpleNamespace(model_path="moonshotai/Kimi-K3", native_num_heads=96, tensor_parallel_sizes=None)
+    ns = {
+        "get_context_test_cases": lambda _t: base,
+        "get_generation_test_cases": lambda _t: [],
+        "get_mla_module_model_specs": lambda **_k: [glm, kimi],
+        "get_sm_version": lambda: 100,
+        "_DSA_SPARSE_DECODE_MIN_HEADS": 8,
+        "_DSA_SPARSE_DECODE_MIN_HEADS_SMS": (100, 103),
+        "_model_max_position_embeddings": lambda _m: None,
+    }
+    build = _load_module_case_builder(backend, ns)
+    by_model = {}
+    for case in build("dsa", "context"):
+        by_model.setdefault(case[6], []).append(case[2])
+    assert by_model["zai-org/GLM-5.2"] == [64, 32, 16, 8]
+    assert by_model["moonshotai/Kimi-K3"] == heads
+
+
 def test_vllm_module_plan_groups_the_seq_len_points_of_one_module_into_one_case():
     """One case per (batch, heads, dtypes, gemm, model, attn, prefix) with its seq_len points
     in slot 0, largest first: run_mla_module builds the module once per case (the module

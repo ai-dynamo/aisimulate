@@ -414,11 +414,27 @@ def _build_module_test_cases(attn_type: str, mode: str):
     cases = []
     dropped_small_heads = 0
     dropped_over_ceiling = 0
+    dropped_non_shard_heads = 0
     sm_version = get_sm_version()
     for model_spec in get_mla_module_model_specs(attention_type=attn_type, backend="vllm"):
         max_position = _model_max_position_embeddings(model_spec.model_path) if attn_type == "dsa" else None
+        # Model-correlated narrowing (case_authoring.md; the MSA collectors'
+        # get_msa_head_counts precedent): a row that declares its real
+        # tensor_parallel_sizes only measures the per-rank head counts those
+        # shards produce. The shared inner head grid also carries 96/48/24/12
+        # for the 96-head Kimi-K3 MLA module and 128 for 128-head models; on
+        # the 64-head GLM-5.x and the 128-head DeepSeek-V3.2 DSA rows those
+        # were 40-50% of the b200 dsa_context rows with no deployment behind
+        # them (2026-10-29). Rows without the declaration keep the full grid.
+        shard_heads = None
+        declared_tp_sizes = getattr(model_spec, "tensor_parallel_sizes", None)
+        if declared_tp_sizes:
+            shard_heads = {model_spec.native_num_heads // tp for tp in declared_tp_sizes}
         for base_case in base_cases:
             s, b, h, kv_dtype, compute_dtype, gemm_type, *rest = base_case
+            if shard_heads is not None and h not in shard_heads:
+                dropped_non_shard_heads += 1
+                continue
             small_head_hole = sm_version in _DSA_SPARSE_DECODE_MIN_HEADS_SMS and h < _DSA_SPARSE_DECODE_MIN_HEADS
             if attn_type == "dsa" and small_head_hole:
                 # FIXME(kernel-limit): FlashInfer's trtllm-gen sparse-MLA decode ships no kernel for
@@ -443,11 +459,12 @@ def _build_module_test_cases(attn_type: str, mode: str):
             if rest:
                 case.append(rest[0])
             cases.append(case)
-    if dropped_small_heads or dropped_over_ceiling:
+    if dropped_small_heads or dropped_over_ceiling or dropped_non_shard_heads:
         print(
             f"[vllm-mla-module-cases] {attn_type}/{mode}: dropped {dropped_small_heads} cases with per-rank heads "
-            f"< {_DSA_SPARSE_DECODE_MIN_HEADS} (SM{sm_version} sparse-MLA decode kernel domain) and "
-            f"{dropped_over_ceiling} cases whose prefix+isl exceeds the model's max_position_embeddings"
+            f"< {_DSA_SPARSE_DECODE_MIN_HEADS} (SM{sm_version} sparse-MLA decode kernel domain), "
+            f"{dropped_over_ceiling} cases whose prefix+isl exceeds the model's max_position_embeddings and "
+            f"{dropped_non_shard_heads} cases whose per-rank heads no declared tensor_parallel_sizes shard produces"
         )
     # One case per (batch, heads, kv, compute, gemm, model, attn_type[, prefix]) carrying
     # its seq_len points in slot 0: run_mla_module builds the module once per case and

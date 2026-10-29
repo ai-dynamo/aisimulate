@@ -277,10 +277,23 @@ def _build_module_test_cases(attn_type: str, mode: str):
     model_specs = get_mla_module_model_specs(attention_type=attn_type, backend="trtllm")
     cases = []
     dropped_small_heads = 0
+    dropped_non_shard_heads = 0
     sm_version = get_sm_version()
     for model_spec in model_specs:
+        # Model-correlated narrowing (case_authoring.md; get_msa_head_counts
+        # precedent): a row declaring its real tensor_parallel_sizes measures
+        # only the per-rank head counts those shards produce; the shared head
+        # grid otherwise sweeps 128..1 for the 64-head GLM-5.x too. Rows without
+        # the declaration keep the full grid.
+        shard_heads = None
+        declared_tp_sizes = getattr(model_spec, "tensor_parallel_sizes", None)
+        if declared_tp_sizes:
+            shard_heads = {model_spec.native_num_heads // tp for tp in declared_tp_sizes}
         for base_case in base_cases:
             s, b, h, kv_dtype, compute_dtype, gemm_type, *rest = base_case
+            if shard_heads is not None and h not in shard_heads:
+                dropped_non_shard_heads += 1
+                continue
             if attn_type == "dsa" and sm_version in (100, 103) and h < 8:
                 # FIXME(kernel-limit): TRT-LLM's sparse-MLA path on SM100/103 falls back to the FMHA
                 # that requires "Num. rows must be a multiple of 8" — per-rank heads 1/2/4 (TP 32/64/128
@@ -293,10 +306,11 @@ def _build_module_test_cases(attn_type: str, mode: str):
             if rest:
                 case.append(rest[0])
             cases.append(case)
-    if dropped_small_heads:
+    if dropped_small_heads or dropped_non_shard_heads:
         print(
             f"[trtllm-mla-module-cases] {attn_type}/{mode}: dropped {dropped_small_heads} cases with per-rank "
-            f"heads < 8 (SM{sm_version} sparse-MLA FMHA row-multiple-of-8 domain)"
+            f"heads < 8 (SM{sm_version} sparse-MLA FMHA row-multiple-of-8 domain) and {dropped_non_shard_heads} "
+            "cases whose per-rank heads no declared tensor_parallel_sizes shard produces"
         )
     return cases
 
