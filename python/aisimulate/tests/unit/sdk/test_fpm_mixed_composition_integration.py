@@ -207,6 +207,70 @@ def test_frozen_hybrid_calibrates_missing_mixed_store_without_training_it(mixed_
         control.close()
 
 
+def test_mixed_support_miss_survives_prediction_details_contract(mixed_seed):
+    import jsonschema
+
+    from aisimulate.detail import build_prediction_details
+
+    model = _load(mixed_seed, adaptation="frozen")
+    try:
+        unsupported = _iteration()
+        unsupported[0]["scheduled_requests"].update(num_decode_requests=8, sum_decode_kv_tokens=256)
+        estimates = [
+            model.estimate_forward_pass_detailed(query) for query in (_iteration("prefill"), _iteration(), unsupported)
+        ]
+    finally:
+        model.close()
+    assert all("unavailable_reason" not in estimate for estimate in estimates[:2])
+    assert estimates[-1]["latency_ms"] is None
+    assert estimates[-1]["unavailable_reason"]
+    assert not estimates[-1]["ranks"]
+
+    # Publish genuine SDK estimates through both consumers of the shared
+    # diagnostics contract; the enclosing diagnostic record is synthetic.
+    evidence = [{"estimate": estimate, "count": 1, "latency_scale": 1.0} for estimate in estimates]
+    timing = {"latency_ms": 0.0, "sol": None, "sol_unavailable_reason": "learned FPM has no SOL evidence"}
+    report = {
+        "performance_diagnostics": {
+            "status": "available",
+            "scope": "accumulated_active_forward_pass_per_gpu",
+            "latency_unit": "ms",
+            "phases": [
+                {
+                    **timing,
+                    "name": "generation",
+                    "operations": [
+                        {
+                            **timing,
+                            "name": "fpm_forward",
+                            "source": "silicon",
+                            "fallbacks": [],
+                            "latency_to_sol_ratio": None,
+                            "fpm_estimates": evidence,
+                        }
+                    ],
+                }
+            ],
+        }
+    }
+    original = deepcopy(report)
+    details = build_prediction_details(report, ("source", "time"))
+    schema = json.loads(
+        (Path(__file__).resolve().parents[5] / "docs/reference/schemas/prediction-details.schema.json").read_text()
+    )
+    jsonschema.validate(details, schema)
+    for section in (details["sections"]["source"], details["sections"]["time"]["diagnostics"]):
+        assert section["phases"][0]["operations"][0]["fpm_estimates"] == evidence
+    assert report == original
+
+    estimate_schema = {"$ref": "#/$defs/fpmEstimate", "$defs": schema["$defs"]}
+    for value in (None, False, 1, {}, [], "", " \t"):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({**estimates[-1], "unavailable_reason": value}, estimate_schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({**estimates[-1], "unknown": None}, estimate_schema)
+
+
 @pytest.fixture
 def c_augmented_artifact(mixed_seed, tmp_path):
     """Represent an already fitted C store without changing authenticated A."""

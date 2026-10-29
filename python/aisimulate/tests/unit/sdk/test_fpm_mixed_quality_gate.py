@@ -29,6 +29,33 @@ def config(seed):
     return value
 
 
+@pytest.mark.parametrize("adaptation", ["frozen", "online", "quality_gate", "causal_selector"])
+def test_zero_time_mixed_feedback_does_not_interrupt_public_batch(mixed_seed, adaptation):
+    authored = config(mixed_seed) if adaptation == "quality_gate" else shared._config(mixed_seed, adaptation=adaptation)
+    if adaptation == "frozen":
+        authored["estimator_config"]["correction"] = {"enabled": True, "mode": "hybrid"}
+    model = RustForwardPassPerfModel.best_available(authored)
+    control = RustForwardPassPerfModel.best_available(authored)
+    try:
+        first = shared._iteration(wall_ms=6.0, index=1)
+        zero = shared._iteration(wall_ms=0.0, index=2)
+        last = shared._iteration(wall_ms=8.0, index=3)
+        control.tune_with_fpms([first, last])
+        model.tune_with_fpms([first, zero, last])
+        assert model.mixed_composition_state() == control.mixed_composition_state()
+        route = model.estimate_forward_pass_with_route(last)
+        assert route["temporary_mixed_composition"]["calibration_admissions"] == 2
+        assert route == control.estimate_forward_pass_with_route(last)
+        if adaptation == "causal_selector":
+            assert model.learned_expert_artifacts() == control.learned_expert_artifacts()
+            assert model.learned_selector_diagnostics() == control.learned_selector_diagnostics()
+        else:
+            assert model.export_learned_artifact() == control.export_learned_artifact()
+    finally:
+        model.close()
+        control.close()
+
+
 def test_quality_gate_preserves_bootstrap_and_checks_future_labels(mixed_seed, c_checkpoint, tmp_path):
     authored = config(mixed_seed)
     normalized = RustForwardPassPerfModel.normalize_config(authored)

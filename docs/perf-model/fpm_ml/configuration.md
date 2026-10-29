@@ -156,6 +156,18 @@ that online continuation state in a new checkpoint directory without implicitly
 flushing pending observations. Resume through the same canonical constructor with matching
 identity and fitting controls. The combined selector rejects both export
 methods because neither format preserves all its state.
+
+For `causal_selector`, `learned_expert_artifacts()` inspects both forests without
+fitting pending observations or changing calibration or selection. The Python
+SDK returns a dictionary with exactly two keys, `stable` and `online`; the raw
+native binding returns the same object as a JSON string. Each value is a
+version-1 `aic_fpm_learned_forward_perf` inference artifact: `stable` contains
+the frozen seed forest, and `online` contains the currently published adaptive
+forest, including any appended mixed store. These artifacts exclude calibration,
+pending feedback and selector evidence. They cannot resume the selector or
+reproduce its complete predictions, including an interpolation fallback. Other
+adaptation modes reject this inspection method.
+
 [State snapshots](../configuration.md#state-snapshots) save every adaptation,
 including the combined selector, with calibration and pending rows, unless
 `temporary_mixed_composition` is enabled. See
@@ -383,6 +395,14 @@ including when ordinary execution is selected. Selector route metadata also
 identifies the selected expert, critical-rank query type and online readiness;
 its paired-loss counters belong to that store/query-type key. Availability of an expert
 not queried is unknown rather than an asserted successful prediction.
+
+When a mixed query has neither prior coverage nor an available learned expert,
+`estimate_forward_pass_detailed(metrics_by_rank)` returns `latency_ms: null`
+with an `unavailable_reason` string explaining the prior's support miss. The
+field is omitted when there is no such reason. Prediction-details source/time
+diagnostics preserve it; invalid configuration or corrupt data still raises an
+error.
+
 `mixed_composition_diagnostics()` reports
 the eligibility reasons, selection policy, accepted A counts, pinned sources, score bounds and retained
 calibration state. `mixed_composition_state()` and
