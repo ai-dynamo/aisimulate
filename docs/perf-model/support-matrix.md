@@ -27,10 +27,20 @@ Explicit invalid configuration is not converted into a fallback estimator.
 
 Nemotron Super 3.5 checkpoints that declare `NemotronH_Omni_Reasoning_V3`
 use the NemotronH text model. AISimulate reads the nested `llm_config` and
-accepts `linear_attention` and `full_attention` layer names. Inferred
-`W4A16_NVFP4` MoE precision selects the vLLM `nvfp4` execution lane.
-Explicit precision overrides retain their values. This recognition does not
-add vision modeling or measured timing coverage.
+accepts `linear_attention` and `full_attention` layer names. The bundled
+`nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` export stores routed
+and shared experts as NVFP4 with 4-bit activations. Its Mamba, attention
+and LM-head projections are static per-tensor FP8, and its KV cache is
+FP8. AISimulate infers `nvfp4` for the routed experts. It prices the
+Mamba, attention, shared-expert and latent projections as `fp8_static`,
+and the router and LM-head GEMMs in BF16. An inferred `W4A16_NVFP4` MoE
+label, which this export does not use, selects the vLLM `nvfp4` execution
+lane. Explicit precision overrides retain their values. The checkpoint
+also carries one multi-token prediction (MTP) layer. AISimulate does not
+build that layer as its own attention and MoE block. With `nextn` above
+zero, it scales the decode graph by `(nextn + L) / L` for `L` decoder
+layers and does not count the MTP weights or KV cache. This recognition
+does not add vision modeling or measured timing coverage.
 
 ## Published FPE matrix
 
