@@ -74,10 +74,7 @@ dev = [
     "uv",
     "ruff==0.14.1",
     "pre-commit==4.3.0",
-    # <9.2: pytest 9.2.0 (2026-10-27) records monkeypatch.setattr old values from the
-    # instance __dict__, so attributes served by a module-level __getattr__ (e.g.
-    # aisimulate_core.sdk.memory.get_model -> kv_cache) are restored by delattr,
-    # which deletes the real function for the rest of the xdist worker.
+    # 9.2 monkeypatch cleanup deletes forwarded compatibility-module attributes.
     "pytest>=9.0.3,<9.2",
     "pytest-asyncio>=0.26.0",
     "pytest-cov>=6.1.1",

@@ -7,9 +7,23 @@ use super::*;
 
 macro_rules! stores {
     ($($variant:ident: $d:literal, $s:literal);+ $(;)?) => {
-        #[derive(Clone, Debug)]
+        #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
         enum Fits { $($variant(BucketedRegression<$d, $s>)),+ }
         impl Fits {
+            fn restore_snapshot(&mut self, fresh: &Self, sampling: &[usize]) -> Result<(), String> {
+                match (self, fresh) {
+                    $((Self::$variant(saved), Self::$variant(fresh)) => saved.restore_snapshot(fresh, |x, raw_x| {
+                        // Fitted coordinates come first in the projection; extra
+                        // sampling-only coordinates are not recoverable from the fit row.
+                        x.len() == sampling.len()
+                            && x.iter().zip(sampling).all(|(bucket, index)| {
+                                *bucket >= 0.0 && raw_x.get(*index).is_none_or(|raw| bucket.to_bits() == raw.ln_1p().to_bits())
+                            })
+                    }),)+
+                    #[allow(unreachable_patterns)]
+                    _ => Err("selected regression dimension differs from configuration".into()),
+                }
+            }
             fn new(options: &ForwardPassPerfOptions, fit: &RegressionFitConfig, sampling: &RegressionSamplingConfig, dimensions: usize) -> Self {
                 match dimensions { $($d => Self::$variant(BucketedRegression::configured(options, fit, sampling)),)+ _ => unreachable!("validated feature dimension") }
             }
@@ -30,7 +44,7 @@ macro_rules! stores {
 }
 stores! { One:1,2; Two:2,3; Three:3,4; Four:4,5; Five:5,6; Six:6,7; }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SelectedRegression {
     fit_axes: Vec<RegressionFeatureAxis>,
     projection_axes: Vec<RegressionFeatureAxis>,
@@ -94,6 +108,19 @@ impl SelectedRegression {
         self.fits.mutations_since_rebuild()
     }
 }
+impl SelectedRegression {
+    pub(super) fn restore_snapshot(&mut self, fresh: &Self) -> Result<(), String> {
+        if self.fit_axes != fresh.fit_axes
+            || self.projection_axes != fresh.projection_axes
+            || self.sampling_indices != fresh.sampling_indices
+        {
+            return Err("selected regression axes differ from configuration".into());
+        }
+        self.fits
+            .restore_snapshot(&fresh.fits, &self.sampling_indices)
+    }
+}
+
 impl StoreStats for SelectedRegression {
     fn observation_count(&self) -> usize {
         self.fits.observation_count()

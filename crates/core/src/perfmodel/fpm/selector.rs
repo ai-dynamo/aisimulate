@@ -21,9 +21,9 @@ const STORES: [Store; 4] = [
     Store::PurePrefill,
 ];
 const QUERIES: [Query; 3] = [Query::Prefill, Query::Decode, Query::Mixed];
-const KEY_COUNT: usize = STORES.len() * QUERIES.len();
+pub(crate) const KEY_COUNT: usize = STORES.len() * QUERIES.len();
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum SelectedExpert {
     #[default]
     Stable,
@@ -46,8 +46,8 @@ impl SelectedExpert {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct Evidence {
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Evidence {
     observations: u64,
     stable_ewma: f64,
     online_ewma: f64,
@@ -172,6 +172,49 @@ impl CausalSelector {
         let update = self.stage(store, query, stable_ms, online_ms, wall_ms)?;
         self.commit(update);
         Ok(())
+    }
+
+    /// Every per-(store, query) evidence key, in the fixed key order.
+    pub(crate) fn states(&self) -> &[Evidence; KEY_COUNT] {
+        &self.states
+    }
+
+    /// Validate saved evidence against this selector's configuration and the
+    /// forest stores that can receive feedback.
+    pub(crate) fn validate_states(
+        &self,
+        states: &[Evidence; KEY_COUNT],
+        stores: &[Store],
+    ) -> Result<(), String> {
+        for store in STORES {
+            for query in QUERIES {
+                let evidence = states[index(store, query)];
+                if evidence.observations == 0 || !stores.contains(&store) {
+                    if evidence != Evidence::default() {
+                        return Err(
+                            "selector evidence exists for a key without admitted feedback".into(),
+                        );
+                    }
+                    continue;
+                }
+                let switched = evidence.switches % 2 == 1;
+                if !evidence.stable_ewma.is_finite()
+                    || !evidence.online_ewma.is_finite()
+                    || evidence.stable_ewma < 0.0
+                    || evidence.online_ewma < 0.0
+                    || evidence.streak >= self.config.persistence as u64
+                    || evidence.switches > evidence.observations
+                    || (evidence.active == SelectedExpert::Online) != switched
+                {
+                    return Err("selector evidence is inconsistent".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_states(&mut self, states: [Evidence; KEY_COUNT]) {
+        self.states = states;
     }
 
     /// Diagnostics allocate only on request, never while selecting or updating.

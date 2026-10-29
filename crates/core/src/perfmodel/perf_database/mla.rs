@@ -27,6 +27,7 @@
 //! SOL keeps using the REQUESTED quant (Python passes `quant_mode`, not the
 //! lookup fallback, into its `get_sol`).
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -159,10 +160,21 @@ struct ModuleKey {
     gemm_quant: String,
 }
 
+/// Loaded keys own the parquet strings; per-query lookups borrow the static
+/// quant names, so the hot generation path builds its key without allocating.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct GenModuleKey {
-    kv_quant: String,
-    gemm_quant: String,
+    kv_quant: Cow<'static, str>,
+    gemm_quant: Cow<'static, str>,
+}
+
+impl GenModuleKey {
+    fn lookup(kv_quant: KvCacheQuantMode, gemm_quant: GemmQuantMode) -> Self {
+        Self {
+            kv_quant: Cow::Borrowed(kv_quant.name()),
+            gemm_quant: Cow::Borrowed(gemm_quant.name()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -399,10 +411,7 @@ impl MlaTable {
         let attn_flops = generation_attn_flops(&self.system_spec, kv_quant)?;
         let bmm_flops = quant_tc_flops(&self.system_spec, gemm_quant.mapping())?;
         let grids = self.load_generation_module()?;
-        let key = GenModuleKey {
-            kv_quant: kv_quant.name().to_string(),
-            gemm_quant: gemm_quant.name().to_string(),
-        };
+        let key = GenModuleKey::lookup(kv_quant, gemm_quant);
         let buckets = grids
             .by_keys
             .get(&key)
@@ -595,10 +604,7 @@ impl MlaTable {
         native_heads: Option<u32>,
     ) -> Result<Vec<(Vec<f64>, f64)>, AicError> {
         let grids = self.load_generation_module()?;
-        let key = GenModuleKey {
-            kv_quant: kv_quant.name().to_string(),
-            gemm_quant: gemm_quant.name().to_string(),
-        };
+        let key = GenModuleKey::lookup(kv_quant, gemm_quant);
         let buckets = grids
             .by_keys
             .get(&key)
@@ -1135,8 +1141,8 @@ fn load_generation_module_parquet(sources: &[PerfSource]) -> Result<GenModuleGri
                 continue;
             }
             let key = GenModuleKey {
-                kv_quant: row.str_owned(kv_cache_dtype_col)?,
-                gemm_quant: row.str_owned(gemm_type_col)?,
+                kv_quant: Cow::Owned(row.str_owned(kv_cache_dtype_col)?),
+                gemm_quant: Cow::Owned(row.str_owned(gemm_type_col)?),
             };
             let num_heads = row.u32(num_heads_col)?;
             let tp_size = match tp_size_col {

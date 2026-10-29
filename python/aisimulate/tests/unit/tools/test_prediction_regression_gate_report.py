@@ -59,6 +59,21 @@ def test_tier1_and_tier2_both_compared(tmp_path: Path) -> None:
     assert categories == ["REGRESSION", "REGRESSION"]  # one tier-1, one tier-2
 
 
+def test_declared_rename_reported_not_blocking(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(compare, "MODEL_RELABELS", {"org/m-FP8": "org/m", "org/m": "org/m-BF16"})
+    old = _write_snapshot(
+        tmp_path / "old",
+        {COMBO: [_tier1_row(model="org/m-FP8", status="DATA_MISS", value_ms=""), _tier1_row(model="org/m")]},
+    )
+    new = _write_snapshot(
+        tmp_path / "new",
+        {COMBO: [_tier1_row(model="org/m", status="DATA_MISS", value_ms=""), _tier1_row(model="org/m-BF16")]},
+    )
+    results = report.compare_snapshots(old, new, rtol=1e-4)
+    assert [d.category for r in results for d in r.diffs] == ["RELABELED", "RELABELED"]
+    assert "| RELABELED | 2 | report-only |" in report.render_markdown(results, blocking=[])
+
+
 def test_main_exit_codes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def run(old: Path, new: Path) -> int:
         monkeypatch.setattr(

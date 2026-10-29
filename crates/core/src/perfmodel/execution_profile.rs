@@ -42,6 +42,8 @@ struct ExecutionProfile {
     basis: EngineSpec,
     worker_type: ForwardPassWorkerType,
     ops: Vec<Op>,
+    /// Aggregated profiles use `ops` for prefill and this graph for decode.
+    generation_ops: Option<Vec<Op>>,
     /// Every file needed to load the private systems root, including hardware
     /// YAML, version/source metadata and all retained operation measurements.
     retained_files: Vec<RetainedFile>,
@@ -67,7 +69,6 @@ pub(crate) fn validate_config(config: &ForwardPassPerfModelConfig) -> Result<(),
         || config.database_mode != DatabaseMode::Silicon
         || config.enable_shared_layer != Some(false)
         || config.estimator_config.correction.enabled
-        || config.worker_type == ForwardPassWorkerType::Aggregated
         || config.nextn != 0
         || config.speculation.is_some()
         || config.fpm_profile.is_some()
@@ -85,7 +86,7 @@ pub(crate) fn validate_config(config: &ForwardPassPerfModelConfig) -> Result<(),
         || !is_digest(&selection.sha256)
     {
         return Err(invalid(
-            "requires explicit op_level/SILICON, fallback deny, shared layer and correction disabled, a single prefill or decode worker, PP1/DP1/CP1/DCP1, no speculation or vision encoder, a literal backend version, and an absolute path with a lowercase SHA-256 pin",
+            "requires explicit op_level/SILICON, fallback deny, shared layer and correction disabled, PP1/DP1/CP1/DCP1, no speculation or vision encoder, a literal backend version, and an absolute path with a lowercase SHA-256 pin",
         ));
     }
     Ok(())
@@ -124,15 +125,24 @@ impl ExecutionProfileSelection {
             return Err(invalid("profile SHA-256 does not match its pin"));
         }
         let profile: ExecutionProfile = serde_json::from_slice(&bytes).map_err(invalid)?;
-        if profile.schema_version != 1
+        if !matches!(profile.schema_version, 1 | 2)
             || profile.basis.schema_version != crate::ENGINE_SPEC_SCHEMA_VERSION
-            || profile.worker_type == ForwardPassWorkerType::Aggregated
             || profile.ops.is_empty()
             || profile.retained_files.is_empty()
         {
             return Err(invalid(
                 "unsupported profile schema, phase or empty graph/bundle",
             ));
+        }
+        if profile.worker_type == ForwardPassWorkerType::Aggregated {
+            if profile.schema_version == 1 {
+                return Err(invalid("aggregated profiles require schema_version 2"));
+            }
+            if profile.generation_ops.as_ref().is_none_or(Vec::is_empty) {
+                return Err(invalid("aggregated profiles require generation_ops"));
+            }
+        } else if profile.generation_ops.is_some() {
+            return Err(invalid("generation_ops require an aggregated profile"));
         }
         Ok(profile)
     }
@@ -182,21 +192,11 @@ impl ExecutionProfileSelection {
                 "baseline requires op_level SILICON with primary sources only",
             ));
         }
-        let context = profile.worker_type == ForwardPassWorkerType::Prefill;
-        let baseline = if context {
-            &spec.context_ops
-        } else {
-            &spec.generation_ops
-        };
-        let weights = |ops: &[Op]| ops.iter().map(Op::weight_bytes).sum::<f64>();
-        if !weights(&profile.ops).is_finite()
-            || (weights(baseline) - weights(&profile.ops)).abs() > 1.0
-        {
-            return Err(invalid(
-                "replacement graph must preserve the baseline resident weights",
-            ));
+        let context = profile.worker_type != ForwardPassWorkerType::Decode;
+        validate_replacement(&profile.ops, &spec, context)?;
+        if let Some(generation) = &profile.generation_ops {
+            validate_replacement(generation, &spec, false)?;
         }
-        validate_ops(&profile.ops, &spec, context)?;
         let snapshot = tempfile::Builder::new()
             .prefix("aisimulate-op-profile-")
             .tempdir()
@@ -249,21 +249,47 @@ impl ExecutionProfileSelection {
         }
         if context {
             spec.context_ops = profile.ops;
-            spec.generation_ops.clear();
+            spec.generation_ops = profile.generation_ops.unwrap_or_default();
         } else {
             spec.generation_ops = profile.ops;
             spec.context_ops.clear();
         }
         spec.engine.extra.insert(
             "execution_profile_phase".into(),
-            if context { "prefill" } else { "decode" }.into(),
+            match profile.worker_type {
+                ForwardPassWorkerType::Prefill => "prefill",
+                ForwardPassWorkerType::Decode => "decode",
+                ForwardPassWorkerType::Aggregated => "aggregated",
+            }
+            .into(),
         );
         spec.engine
             .extra
             .insert("execution_profile_sha256".into(), self.sha256.clone());
+        // Keep v1 EngineSpec hashes compatible with existing saved model states.
+        if profile.schema_version == 2 {
+            spec.engine
+                .extra
+                .insert("execution_profile_schema_version".into(), "2".into());
+        }
         spec.engine.systems_path = Some(snapshot.path().to_path_buf());
         Ok((spec, snapshot))
     }
+}
+
+fn validate_replacement(ops: &[Op], spec: &EngineSpec, context: bool) -> Result<(), AicError> {
+    let baseline = if context {
+        &spec.context_ops
+    } else {
+        &spec.generation_ops
+    };
+    let weights = |ops: &[Op]| ops.iter().map(Op::weight_bytes).sum::<f64>();
+    if !weights(ops).is_finite() || (weights(baseline) - weights(ops)).abs() > 1.0 {
+        return Err(invalid(
+            "replacement graph must preserve the baseline resident weights",
+        ));
+    }
+    validate_ops(ops, spec, context)
 }
 
 /// Path of the first field where the actual compiled spec differs from the

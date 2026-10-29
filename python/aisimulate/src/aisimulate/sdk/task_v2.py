@@ -1621,7 +1621,9 @@ class Task:
         """Whether the checkpoint's attention projections diverge in dtype
         (some excluded from quantization, some not) under this role's gemm
         mode — the condition that makes DeepSeek-family models bypass the
-        profiled MLA-module row (see DeepSeekModel.__init__)."""
+        profiled MLA-module row (see DeepSeekModel.__init__). Targets-only
+        ModelOpt MIXED_PRECISION exports count groups absent from
+        ``quantized_layers`` as excluded (helpers.attention_projection_exclusions)."""
         from aisimulate_core.sdk.models.helpers import attention_projection_exclusions
 
         if self._role_attr(role, "gemm_quant_mode") == common.GEMMQuantMode.bfloat16:
