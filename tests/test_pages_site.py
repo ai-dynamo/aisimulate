@@ -1400,5 +1400,5 @@ def test_feature_matrix_rejects_invalid_release_data(tmp_path: Path) -> None:
     git("commit", "-qm", "broken release data")
     git("update-ref", "refs/remotes/origin/release/0.13.0", git("rev-parse", "HEAD"))
     shutil.copy(FEATURE_DATA, repo / FEATURES.DATA_PATH)
-    with pytest.raises(PAGES.PagesBuildError, match="origin/release/0.13.0"):
+    with pytest.raises(PAGES.PagesBuildError, match="refs/remotes/origin/release/0.13.0"):
         PAGES._build_feature_matrix(repo, tmp_path / "site", True)

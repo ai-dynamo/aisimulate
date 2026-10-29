@@ -665,9 +665,10 @@ def _build_feature_matrix(repo_root: Path, output_dir: Path, include_refs: bool)
         head = None  # A source archive has no commit to show.
     snapshots = [feature_matrix.Snapshot("main", head, main)]
     if include_refs:
-        refs = _git(repo_root, "for-each-ref", "--format=%(refname:strip=3)", "refs/remotes/origin/release/")
-        for branch in sorted(refs.splitlines(), key=feature_matrix.release_sort_key, reverse=True):
-            ref = "origin/" + branch
+        refs = _git(repo_root, "for-each-ref", "--format=%(refname)", "refs/remotes/origin/release/").splitlines()
+        branches = {ref.removeprefix("refs/remotes/origin/"): ref for ref in refs}
+        for branch in sorted(branches, key=feature_matrix.release_sort_key, reverse=True):
+            ref = branches[branch]
             entry = _git(repo_root, "ls-tree", ref, "--", feature_matrix.DATA_PATH)
             if not entry:
                 continue
