@@ -103,7 +103,7 @@ aisimulate predict --config observed-remote.yaml \
 
 Its adjacent `*-execution.json` records the full process wall time, command, config hash, host, commit, dirty status, exit status, and UTC boundaries. Wall time includes startup, resource preflight, full-corpus import, preparation, profiling/grace, and telemetry serialization. It excludes downloads/transfers, builds, scoring, and plotting. `prediction.json.wall_time_ms` is the narrower native simulation timer; report both separately. Reuse a fresh output name to preserve earlier evidence.
 
-After scoring, render the standalone HTML and PNG/SVG figures:
+After scoring, render the standalone interactive HTML and PNG/SVG figures:
 
 ```bash
 python/aisimulate/.venv/bin/python \
@@ -123,7 +123,32 @@ python/aisimulate/.venv/bin/python \
   --output-dir /path/to/results/observed-report
 ```
 
-Repeat with the original trace config and separate output/report directories for the control. Rendering requires the development environment's Matplotlib and NumPy.
+Repeat with the original trace config and separate output/report directories for the control. Rendering requires the development environment's Matplotlib, NumPy, and Plotly (recorded version 6.6.0, with Plotly.js 3.4.0).
+
+Keep `observed-replay`, `raw-replay`, `observed-report`, and `raw-report` under the same results directory. Once both runs are scored, rendering either report discovers the sibling variant and embeds both in `report.html`. Rendering reads saved results; it does not rerun the simulation or change the scored metrics. The existing PNG/SVG figures remain alongside the interactive report.
+
+Open `report.html` directly in a browser. Plotly, chart data, styles, and the license are embedded, so viewing and downloading report data require no network or local server. Reference links open external sites only when followed. The self-authored interface follows AgentX interaction patterns without copying its UI code or assets.
+
+- Select either replay variant, sort by latency or throughput, and use the Profiling/Warmup tabs. Warmup includes the primer and ten live requests.
+- Hover for values, drag or scroll to zoom, double-click to reset, expand a chart, or export its PNG. Controls switch Distribution/In-flight average, P75/P90, TTFT/E2E, queue/completed requests, and input/decode throughput.
+- Open Request timeline to group by conversation or worker, filter request IDs, pan or zoom, and click a request for timing, lengths, status, and source lineage.
+- Open Aggregates across replays for MAPE, point APE, pairing coverage, and wall time. Evidence provides local JSON downloads of the report's request records, normalized chart samples, and accuracy/wall-time measurements; original native JSONL artifacts remain in each replay directory.
+- Toggle the light/dark theme or open How to read for metric semantics. Unavailable metrics stay explicitly unavailable.
+
+The browser checks use Playwright and Chromium (or an existing Chrome executable):
+
+```bash
+NODE_PATH=/path/to/node_modules \
+AISIM_BROWSER_EXECUTABLE=/path/to/chrome \
+node benchmarks/evidence/agentx-446063-replay/browser_checks.cjs \
+  /path/to/results/observed-report/report.html /path/to/browser-checks
+```
+
+Checks cover both embedded variants, unchanged metrics, phase counts, chart controls,
+request details, real timeline zoom/reset, JSON downloads, keyboard navigation,
+mobile layout, and offline operation. Only Chromium/Chrome is browser-qualified.
+The native data adapter also has an executable self-check:
+`python/aisimulate/.venv/bin/python benchmarks/evidence/agentx-446063-replay/interactive_report.py`.
 
 ## Accuracy definitions
 
@@ -147,7 +172,7 @@ The scorer retains request pairs and exclusions, reports exact-source and output
 
 ## Reading the plots and limits
 
-- Request timelines separate primer/warmup and profiling. Dots and bars use the absolute virtual clock; the phase boundary aligns existing barrier-relative request output.
+- Request timelines separate primer/warmup and profiling. Static figures use the absolute virtual clock. Interactive charts use seconds since the selected phase began; request details and exports retain absolute timestamps, and the profiling origin aligns existing barrier-relative request output.
 - Dedicated preparation request and cache figures keep the brief warmup interval readable alongside the hour-long profile.
 - Request plots show input/output lengths, TTFT, E2E, TPOT, and token rate. TPOT is absent for fewer than two delivered tokens.
 - Sample plots show output/prefill rates, arrivals/completions, queues, per-rank KV occupancy, prefix lookup, first-admission attribution, and speculative acceptance. Unavailable counters remain absent. This configuration has no host cache.

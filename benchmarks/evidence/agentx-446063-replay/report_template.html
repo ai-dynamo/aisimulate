@@ -1,0 +1,2027 @@
+<!doctype html>
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+     SPDX-License-Identifier: Apache-2.0
+     Original implementation of the observed AgentX dashboard interaction pattern. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>AgentX 446063 · AISim replay</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #111315;
+        --panel: #111315;
+        --raised: #232527;
+        --border: #34373b;
+        --text: #e2e3e5;
+        --muted: #a0a4a9;
+        --grid: #24272b;
+        --accent: #ffb432;
+        --blue: #528de0;
+        --cyan: #18b7ce;
+        --red: #ef5959;
+        --green: #50b377;
+        --purple: #aa77e3;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font:
+          14px/1.5 system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+      body.light {
+        color-scheme: light;
+        --bg: #fafafa;
+        --panel: #fff;
+        --raised: #e8e9eb;
+        --border: #d6d8dc;
+        --text: #24272b;
+        --muted: #606770;
+        --grid: #e8eaed;
+        --accent: #c77b00;
+      }
+      button,
+      select,
+      input {
+        font: inherit;
+        color: inherit;
+      }
+      button,
+      select {
+        border: 1px solid var(--border);
+        background: var(--panel);
+        border-radius: 7px;
+        padding: 6px 11px;
+        cursor: pointer;
+      }
+      button:hover,
+      select:hover {
+        background: var(--raised);
+      }
+      button:focus-visible,
+      select:focus-visible,
+      a:focus-visible,
+      input:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 3px;
+      }
+      button:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      a {
+        color: var(--muted);
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+      a:hover {
+        color: var(--accent);
+      }
+      [hidden] {
+        display: none !important;
+      }
+      .topbar {
+        border-bottom: 1px solid var(--border);
+        height: 57px;
+      }
+      .topinner {
+        max-width: 1216px;
+        margin: auto;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        gap: 30px;
+        padding: 0 24px;
+      }
+      .brand {
+        color: var(--accent);
+        font-size: 18px;
+        font-weight: 750;
+        white-space: nowrap;
+      }
+      .brand small {
+        font-size: 11px;
+        color: var(--muted);
+        font-weight: 400;
+        margin-left: 8px;
+      }
+      .toplinks {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        flex: 1;
+      }
+      .navbutton {
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        padding: 7px 9px;
+      }
+      .navbutton.active {
+        color: var(--accent);
+        background: #ffb43212;
+      }
+      .topright {
+        margin-left: auto;
+        display: flex;
+        gap: 8px;
+      }
+      .topright button {
+        font-size: 13px;
+      }
+      main {
+        max-width: 1200px;
+        margin: auto;
+        padding: 32px 24px 70px;
+      }
+      .subnav {
+        display: flex;
+        align-items: center;
+        gap: 30px;
+        border: 1px solid var(--border);
+        border-radius: 11px;
+        padding: 20px 28px;
+        margin: 0 0 54px;
+      }
+      .subnav strong {
+        font-weight: 550;
+        color: var(--accent);
+        border-bottom: 2px solid var(--accent);
+        padding: 0 0 9px;
+      }
+      .subnav span {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .badge {
+        font-size: 11px;
+        letter-spacing: 0.05em;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 3px 6px;
+        color: var(--muted);
+      }
+      .subnav .badge {
+        margin-left: auto;
+      }
+      .breadcrumb {
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 17px;
+      }
+      .heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+      }
+      h1 {
+        font-size: 23px;
+        font-weight: 650;
+        margin: 0;
+      }
+      .meta {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .configrow {
+        display: flex;
+        gap: 7px;
+        align-items: center;
+        margin: 17px 0 8px;
+        flex-wrap: wrap;
+      }
+      .configrow label {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .chips {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin-bottom: 22px;
+      }
+      .chip {
+        font-size: 12px;
+        padding: 4px 9px;
+        border-radius: 6px;
+      }
+      .chip[aria-pressed="true"] {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #181a1c;
+      }
+      .selection {
+        border-top: 1px solid var(--border);
+        padding: 23px 0 28px;
+      }
+      .selectedline {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        margin: 8px 0 12px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .selectedlinks {
+        display: flex;
+        gap: 18px;
+        flex-wrap: wrap;
+      }
+      .stats {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 24px 55px;
+      }
+      .stat small {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        margin-bottom: 3px;
+      }
+      .stat strong {
+        font-size: 14px;
+        font-weight: 500;
+      }
+      .hint {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .segments {
+        display: inline-flex;
+        border: 1px solid #656b73;
+        border-radius: 9px;
+        padding: 2px;
+        gap: 1px;
+        max-width: 100%;
+        vertical-align: middle;
+      }
+      .segments button {
+        border: 0;
+        background: transparent;
+        padding: 4px 10px;
+        font-size: 13px;
+        white-space: nowrap;
+        border-radius: 6px;
+        color: var(--muted);
+      }
+      .segments button[aria-selected="true"],
+      .segments button[aria-pressed="true"] {
+        background: var(--raised);
+        color: var(--text);
+      }
+      .segments button:hover {
+        color: var(--text);
+      }
+      .main-tabs {
+        margin: 0 0 16px;
+      }
+      .stagebar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 9px 12px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+      }
+      .stagebar > span {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .stagebar .clock {
+        margin-left: auto;
+      }
+      .stagebar .segments button {
+        font-size: 12px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 16px;
+      }
+      .chart-card {
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        min-width: 0;
+        background: var(--panel);
+        padding: 14px 15px 9px;
+      }
+      .chart-head {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        min-height: 32px;
+      }
+      .chart-head h2 {
+        font-size: 13px;
+        font-weight: 600;
+        margin: 3px 0 0;
+        flex: 1;
+      }
+      .chart-controls {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+      .chart-controls .segments button {
+        font-size: 11px;
+        padding: 3px 7px;
+      }
+      .chart-controls select {
+        font-size: 11px;
+        padding: 5px;
+        max-width: 150px;
+      }
+      .expand {
+        border: 0;
+        padding: 1px 2px;
+        background: transparent;
+        color: var(--muted);
+        font-size: 20px;
+        line-height: 25px;
+      }
+      .chart-note {
+        font-size: 11px;
+        color: var(--muted);
+        min-height: 19px;
+        margin: 4px 0 0;
+      }
+      .plot {
+        height: 246px;
+        width: 100%;
+      }
+      .chart-foot {
+        font-size: 10px;
+        color: var(--muted);
+        margin: 0 4px 5px;
+        min-height: 15px;
+      }
+      .empty {
+        height: 246px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        text-align: center;
+        color: var(--muted);
+        padding: 30px;
+        gap: 9px;
+      }
+      .empty strong {
+        font-size: 13px;
+        font-weight: 500;
+      }
+      .empty span {
+        font-size: 12px;
+        max-width: 330px;
+      }
+      .modebar {
+        background: transparent !important;
+      }
+      .plotly-notifier {
+        display: none;
+      }
+      .timeline-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin: 18px 0 8px;
+      }
+      .timeline-toolbar input {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        padding: 7px 10px;
+        border-radius: 7px;
+        width: 260px;
+      }
+      .timeline-panel {
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        margin-top: 13px;
+        padding: 14px;
+        overflow: auto;
+      }
+      .timeline-panel .plot {
+        min-width: 650px;
+        height: 500px;
+      }
+      .timeline-help {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 8px;
+      }
+      .legend {
+        display: flex;
+        gap: 14px;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .dot {
+        display: inline-block;
+        width: 9px;
+        height: 9px;
+        margin-right: 5px;
+        border-radius: 2px;
+      }
+      .table-wrap {
+        overflow: auto;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        margin: 16px 0;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--border);
+      }
+      th {
+        font-weight: 550;
+        color: var(--muted);
+        background: var(--raised);
+      }
+      tbody tr:last-child td {
+        border-bottom: 0;
+      }
+      tbody tr:hover {
+        background: var(--raised);
+      }
+      td.wrap {
+        white-space: normal;
+        min-width: 250px;
+      }
+      .section-title {
+        font-size: 18px;
+        margin: 23px 0 8px;
+      }
+      .comparison-lede {
+        color: var(--muted);
+        font-size: 13px;
+        max-width: 850px;
+      }
+      .evidence-box {
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 20px;
+        margin: 16px 0;
+      }
+      .evidence-box h2 {
+        font-size: 14px;
+        margin: 0 0 10px;
+      }
+      .evidence-box li {
+        font-size: 12px;
+        margin: 8px 0;
+        color: var(--muted);
+      }
+      pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font:
+          11px/1.6 ui-monospace,
+          SFMono-Regular,
+          monospace;
+        color: var(--muted);
+      }
+      summary {
+        cursor: pointer;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .downloads {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin: 15px 0;
+      }
+      .downloads button {
+        font-size: 12px;
+      }
+      footer {
+        border-top: 1px solid var(--border);
+        margin-top: 55px;
+        padding-top: 20px;
+        display: flex;
+        gap: 25px;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      dialog {
+        background: var(--panel);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        width: min(1320px, 94vw);
+        max-height: 92vh;
+        padding: 20px;
+      }
+      dialog::backdrop {
+        background: #000b;
+      }
+      .dialog-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 15px;
+        margin-bottom: 12px;
+      }
+      .dialog-head h2 {
+        font-size: 17px;
+        margin: 0;
+      }
+      .dialog-head button {
+        font-size: 19px;
+        padding: 2px 10px;
+      }
+      .dialog-plot {
+        height: 70vh;
+      }
+      .request-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 20px;
+        padding: 15px 0 20px;
+      }
+      .request-grid small {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .request-grid strong {
+        font-weight: 500;
+        font-size: 14px;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+      }
+      @media (max-width: 800px) {
+        main {
+          padding: 20px 14px;
+        }
+        .topinner {
+          padding: 0 14px;
+          gap: 10px;
+        }
+        .brand small,
+        .toplinks,
+        .subnav span {
+          display: none;
+        }
+        .subnav {
+          padding: 15px;
+          margin-bottom: 28px;
+          gap: 10px;
+        }
+        .heading {
+          align-items: flex-start;
+          flex-direction: column;
+          gap: 6px;
+        }
+        h1 {
+          font-size: 20px;
+        }
+        .grid {
+          grid-template-columns: 1fr;
+        }
+        .selectedline {
+          flex-direction: column;
+        }
+        .stats {
+          gap: 16px 25px;
+        }
+        .main-tabs {
+          overflow: auto;
+          width: 100%;
+        }
+        .main-tabs button {
+          font-size: 12px;
+          padding: 5px 9px;
+        }
+        .stagebar .clock {
+          width: 100%;
+          margin: 0;
+        }
+        .request-grid {
+          grid-template-columns: 1fr 1fr;
+        }
+        .chart-head h2 {
+          font-size: 12px;
+        }
+        .plot {
+          height: 260px;
+        }
+        .timeline-toolbar input {
+          width: 100%;
+        }
+        .configrow {
+          font-size: 12px;
+        }
+      }
+    </style>
+    <script>
+      __PLOTLY_JS__;
+    </script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topinner">
+        <div class="brand">
+          AISim<span style="color: var(--text)">ulate</span
+          ><small>AgentX replay</small>
+        </div>
+        <nav class="toplinks" aria-label="Report navigation">
+          <button class="navbutton active" data-view="point">Dashboard</button
+          ><button class="navbutton" data-view="timeline">
+            Request timeline</button
+          ><button class="navbutton" data-view="accuracy">Accuracy</button>
+        </nav>
+        <div class="topright">
+          <button id="help" aria-label="How to use these charts">
+            How to read</button
+          ><button id="theme" aria-label="Toggle light theme">☾</button>
+        </div>
+      </div>
+    </header>
+    <main>
+      <div class="subnav">
+        <strong>Inference Performance</strong
+        ><span>Agentic benchmark replay</span
+        ><span class="badge">SIMULATED METRICS</span>
+      </div>
+      <div class="breadcrumb">
+        <a
+          href="https://inferencex.semianalysis.com/inference/agentic/446063"
+          target="_blank"
+          rel="noopener"
+          >↗ Reference benchmark</a
+        >
+        <span> · AgentX 446063</span>
+      </div>
+      <div class="heading">
+        <h1>B300 · GLM 5.3 · NVFP4 · SGLang</h1>
+        <span class="meta" id="run-meta"></span>
+      </div>
+      <div class="configrow">
+        <label for="sort">Sort by</label
+        ><select id="sort">
+          <option value="default">Default</option>
+          <option value="latency">Mean E2E latency</option>
+          <option value="throughput">Output throughput</option></select
+        ><button id="prev" class="chip" aria-label="Previous replay variant">
+          ‹ prev</button
+        ><button id="next" class="chip" aria-label="Next replay variant">
+          next ›
+        </button>
+      </div>
+      <div id="variants" class="chips" aria-label="Replay variants"></div>
+      <section class="selection" aria-label="Selected replay configuration">
+        <div class="selectedline">
+          <span id="selected-label"></span>
+          <div class="selectedlinks">
+            <a
+              href="https://github.com/SemiAnalysisAI/InferenceX/actions/runs/39551262792/attempts/1"
+              target="_blank"
+              rel="noopener"
+              >Reference GitHub Actions run ↗</a
+            ><a href="#evidence" id="evidence-link">Replay evidence →</a>
+          </div>
+        </div>
+        <div class="stats" id="stats"></div>
+      </section>
+      <nav class="segments main-tabs" role="tablist" aria-label="Detail view">
+        <button
+          role="tab"
+          id="tab-point"
+          aria-controls="view-point"
+          data-view="point"
+          aria-selected="true"
+        >
+          Per-point</button
+        ><button
+          role="tab"
+          id="tab-timeline"
+          aria-controls="view-timeline"
+          data-view="timeline"
+          aria-selected="false"
+        >
+          Request timeline</button
+        ><button
+          role="tab"
+          id="tab-accuracy"
+          aria-controls="view-accuracy"
+          data-view="accuracy"
+          aria-selected="false"
+        >
+          Aggregates across replays</button
+        ><button
+          role="tab"
+          id="tab-evidence"
+          aria-controls="view-evidence"
+          data-view="evidence"
+          aria-selected="false"
+        >
+          Evidence
+        </button>
+      </nav>
+      <div class="stagebar" id="stagebar">
+        <span>Stage</span>
+        <div class="segments" role="tablist" aria-label="Benchmark stage">
+          <button
+            id="stage-profile"
+            role="tab"
+            aria-selected="true"
+            data-stage="profile"
+          >
+            Profiling</button
+          ><button
+            id="stage-preparation"
+            role="tab"
+            aria-selected="false"
+            data-stage="preparation"
+          >
+            Warmup
+          </button>
+        </div>
+        <span id="stage-count"></span
+        ><span class="clock" id="clock-note"></span>
+      </div>
+      <section id="view-point" role="tabpanel" aria-labelledby="tab-point">
+        <div class="grid" id="chart-grid"></div>
+      </section>
+      <section
+        id="view-timeline"
+        role="tabpanel"
+        aria-labelledby="tab-timeline"
+        hidden
+      >
+        <div class="timeline-toolbar">
+          <div class="segments" aria-label="Timeline grouping">
+            <button data-group="conversation" aria-pressed="true">
+              By conversation</button
+            ><button data-group="worker" aria-pressed="false">By worker</button>
+          </div>
+          <input
+            id="request-search"
+            type="search"
+            aria-label="Filter requests by ID or conversation"
+            placeholder="Filter requests or conversations…"
+          />
+        </div>
+        <div id="timeline-summary" class="hint"></div>
+        <div class="timeline-panel">
+          <div class="timeline-help">
+            <span class="hint"
+              >Drag to pan · wheel to zoom · double-click to reset · click a
+              request for details</span
+            ><button class="chip" id="reset-timeline">Reset zoom</button>
+          </div>
+          <div class="legend">
+            <span
+              ><i class="dot" style="background: var(--accent)"></i>Arrival →
+              first token</span
+            ><span
+              ><i class="dot" style="background: var(--blue)"></i>Decode</span
+            ><span
+              ><i class="dot" style="background: var(--red)"></i>Canceled /
+              failed</span
+            >
+          </div>
+          <div
+            id="timeline-plot"
+            class="plot"
+            aria-label="Interactive request timeline"
+          ></div>
+        </div>
+      </section>
+      <section
+        id="view-accuracy"
+        role="tabpanel"
+        aria-labelledby="tab-accuracy"
+        hidden
+      ></section>
+      <section
+        id="view-evidence"
+        role="tabpanel"
+        aria-labelledby="tab-evidence"
+        hidden
+      ></section>
+      <footer>
+        <span
+          >Native AISim telemetry · Original implementation of the AgentX
+          dashboard interaction pattern</span
+        ><span>CPU replay · No server logs or power data</span>
+      </footer>
+    </main>
+    <dialog id="chart-dialog" aria-labelledby="expanded-title">
+      <div class="dialog-head">
+        <h2 id="expanded-title"></h2>
+        <button aria-label="Close expanded chart" data-close>×</button>
+      </div>
+      <div id="expanded-note" class="hint"></div>
+      <div id="expanded-plot" class="dialog-plot"></div>
+    </dialog>
+    <dialog id="request-dialog" aria-labelledby="request-title">
+      <div class="dialog-head">
+        <h2 id="request-title">Request details</h2>
+        <button aria-label="Close request details" data-close>×</button>
+      </div>
+      <div id="request-details"></div>
+    </dialog>
+    <dialog id="help-dialog" aria-labelledby="help-title">
+      <div class="dialog-head">
+        <h2 id="help-title">How to read the replay</h2>
+        <button aria-label="Close chart guide" data-close>×</button>
+      </div>
+      <p>
+        Choose a replay variant, then switch between
+        <strong>Profiling</strong> and <strong>Warmup</strong>. Warmup includes
+        the primer and ten live requests.
+      </p>
+      <ul>
+        <li>
+          Hover to inspect values. Drag inside a chart to zoom; double-click to
+          reset. Use the expand icon for a full-size view and the chart toolbar
+          to export PNG.
+        </li>
+        <li>
+          Distribution / In-flight avg, P75 / P90, TTFT / E2E, and queue /
+          throughput controls change the plotted metric.
+        </li>
+        <li>
+          Request timeline groups work by conversation or worker. Click a
+          request to inspect its timestamps, lengths, status, and source
+          identity.
+        </li>
+        <li>
+          Charts use seconds since the selected phase began. Original absolute
+          virtual timestamps remain in exported data.
+        </li>
+        <li>
+          Missing metrics remain unavailable. No unique in-flight prompt count
+          can be inferred from retained cache occupancy.
+        </li>
+        <li>
+          Aggregates retain request matching, coverage, and the distinction
+          between request MAPE and one-point APE.
+        </li>
+      </ul>
+      <p class="hint">
+        The complete one-hour benchmark replay used no new GPU measurements.
+        Recorded output lengths match the reference workload where available;
+        prompt tokenization still differs.
+      </p>
+    </dialog>
+    <script id="report-data" type="application/json">
+      __REPORT_DATA_JSON__
+    </script>
+    <script>
+      "use strict";
+      const report = JSON.parse(
+        document.getElementById("report-data").textContent,
+      );
+      const datasets = report.datasets;
+      const state = {
+        variant: report.activeVariant,
+        view: "point",
+        stage: "profile",
+        group: "conversation",
+        search: "",
+        modes: {
+          input: "distribution",
+          output: "distribution",
+          latency: "ttft_ms",
+          queue: "queue",
+          throughput: "both",
+        },
+        percentiles: { interactivity: 90, latency: 90 },
+      };
+      const $ = (id) => document.getElementById(id);
+      const finite = (v) => typeof v === "number" && Number.isFinite(v);
+      const fmt = (v, d = 2) =>
+        finite(v)
+          ? v.toLocaleString("en-US", { maximumFractionDigits: d })
+          : "Unavailable";
+      const esc = (v) =>
+        String(v ?? "").replace(
+          /[&<>"']/g,
+          (c) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            })[c],
+        );
+      const color = (key) =>
+        getComputedStyle(document.body)
+          .getPropertyValue("--" + key)
+          .trim();
+      const dataset = () =>
+        datasets.find((d) => d.id === state.variant) || datasets[0];
+      const origin = () =>
+        state.stage === "profile"
+          ? (dataset().telemetry.profile_start_ms || 0) / 1000
+          : 0;
+      const rows = () =>
+        dataset().requests.filter((r) =>
+          state.stage === "profile"
+            ? r.phase === "profile"
+            : r.phase !== "profile",
+        );
+      const samples = () =>
+        dataset().samples.filter((s) => s.phase === state.stage);
+      const relative = (s) => s.t - origin();
+      const quantile = (values, p) => {
+        const a = values.filter(finite).sort((x, y) => x - y);
+        if (!a.length) return null;
+        const i = ((a.length - 1) * p) / 100,
+          k = Math.floor(i);
+        return a[k] + (a[Math.ceil(i)] - a[k]) * (i - k);
+      };
+      const average = (a) => {
+        const v = a.filter(finite);
+        return v.length ? v.reduce((x, y) => x + y, 0) / v.length : null;
+      };
+      const rolling = (values, n = 50) =>
+        values.map((_, i) =>
+          average(values.slice(Math.max(0, i - n + 1), i + 1)),
+        );
+      const line = (name, x, y, c, extra = {}) => ({
+        type: "scatter",
+        mode: "lines",
+        name,
+        x,
+        y,
+        connectgaps: false,
+        line: { color: c, width: 1.5 },
+        hovertemplate: "%{x:.2f}s<br>%{y:,.3f}<extra>" + name + "</extra>",
+        ...extra,
+      });
+      const config = {
+        responsive: true,
+        displaylogo: false,
+        scrollZoom: true,
+        modeBarButtonsToRemove: ["lasso2d", "select2d"],
+        toImageButtonOptions: { format: "png", scale: 2 },
+      };
+      function layout(y = "Value", extra = {}) {
+        return {
+          paper_bgcolor: color("panel"),
+          plot_bgcolor: color("panel"),
+          showlegend: true,
+          font: {
+            family: "system-ui, sans-serif",
+            size: 10,
+            color: color("muted"),
+          },
+          margin: { l: 56, r: 15, t: 12, b: 66 },
+          xaxis: {
+            title: { text: "time", font: { size: 10 } },
+            gridcolor: color("grid"),
+            zeroline: false,
+            ticksuffix: "s",
+            rangemode: "tozero",
+          },
+          yaxis: {
+            title: { text: y, font: { size: 10 } },
+            gridcolor: color("grid"),
+            zeroline: false,
+            rangemode: "tozero",
+          },
+          legend: {
+            orientation: "h",
+            x: 0,
+            y: -0.26,
+            font: { size: 9 },
+            bgcolor: "rgba(0,0,0,0)",
+          },
+          hoverlabel: {
+            bgcolor: color("raised"),
+            font: { color: color("text"), size: 12 },
+          },
+          dragmode: "zoom",
+          ...extra,
+        };
+      }
+      const specs = [
+        {
+          id: "input",
+          title: "Input sequence length distribution",
+          control: "shape",
+        },
+        {
+          id: "output",
+          title: "Output sequence length distribution",
+          control: "shape",
+        },
+        {
+          id: "interactivity",
+          title: "Interactivity over time",
+          control: "percentile",
+        },
+        { id: "latency", title: "TTFT over time", control: "latency" },
+        { id: "cache", title: "KV cache utilization over time" },
+        { id: "queue", title: "Request queue depth", control: "queue" },
+        { id: "hits", title: "Prefix cache hit rate per interval" },
+        {
+          id: "throughput",
+          title: "Throughput (input & decode)",
+          control: "throughput",
+        },
+        { id: "source", title: "Cumulative prompt token source breakdown" },
+        { id: "unique", title: "Unique input tokens in flight" },
+        { id: "acceptance", title: "Speculative acceptance length" },
+        { id: "completion", title: "Request completion status" },
+      ];
+      function segments(id, options, selected, kind = "mode") {
+        return (
+          '<div class="segments">' +
+          options
+            .map(
+              ([value, label]) =>
+                `<button data-${kind}="${id}" data-value="${value}" aria-pressed="${String(selected) === String(value)}">${label}</button>`,
+            )
+            .join("") +
+          "</div>"
+        );
+      }
+      function controls(s) {
+        if (s.control === "shape")
+          return segments(
+            s.id,
+            [
+              ["distribution", "Distribution"],
+              ["inflight", "In-flight avg"],
+            ],
+            state.modes[s.id],
+          );
+        if (s.control === "percentile")
+          return segments(
+            s.id,
+            [
+              [75, "P75"],
+              [90, "P90"],
+            ],
+            state.percentiles[s.id],
+            "percentile",
+          );
+        if (s.control === "latency")
+          return (
+            segments(
+              "latency",
+              [
+                ["ttft_ms", "TTFT"],
+                ["e2e_latency_ms", "E2E"],
+              ],
+              state.modes.latency,
+            ) +
+            segments(
+              "latency",
+              [
+                [75, "P75"],
+                [90, "P90"],
+              ],
+              state.percentiles.latency,
+              "percentile",
+            )
+          );
+        if (s.control === "queue")
+          return segments(
+            "queue",
+            [
+              ["queue", "Queue depth"],
+              ["completed", "Completed"],
+            ],
+            state.modes.queue,
+          );
+        if (s.control === "throughput")
+          return `<select data-mode="throughput" aria-label="Throughput series">${[
+            ["both", "Input, Decode"],
+            ["prefill", "Input only"],
+            ["decode", "Decode only"],
+          ]
+            .map(
+              ([v, l]) =>
+                `<option value="${v}" ${v === state.modes.throughput ? "selected" : ""}>${l}</option>`,
+            )
+            .join("")}</select>`;
+        return "";
+      }
+      function chartData(id) {
+        const r = rows(),
+          ss = samples(),
+          x = ss.map(relative),
+          blue = color("blue"),
+          red = color("red"),
+          orange = color("accent"),
+          green = color("green");
+        let traces = [],
+          note = "",
+          foot = "",
+          axes = layout(),
+          empty = null;
+        if (id === "input" || id === "output") {
+          const key = id === "input" ? "input_length" : "output_length",
+            vals = r.map((v) => v[key]).filter(finite);
+          if (state.modes[id] === "inflight") {
+            const t = ss.map((v) => v.t * 1000),
+              y = t.map((at) =>
+                average(
+                  r
+                    .filter(
+                      (q) => q.arrival_time_ms <= at && at < q.terminal_time_ms,
+                    )
+                    .map((q) => q[key]),
+                ),
+              );
+            traces = [line("In-flight avg", x, y, blue)];
+            axes = layout("tokens");
+            note = "Mean request length among active requests at each sample";
+            foot =
+              id === "output"
+                ? "Delivered final length of in-flight requests; not output generated so far."
+                : "Shared prefixes are counted per request; this is not unique-token occupancy.";
+          } else if (vals.length) {
+            const positive = vals.filter((v) => v > 0),
+              lo = Math.min(...positive),
+              hi = Math.max(...positive),
+              log = positive.length && hi / lo > 20;
+            if (!positive.length) {
+              traces = [
+                {
+                  type: "bar",
+                  x: [0],
+                  y: [vals.length],
+                  marker: { color: "#8b8d90" },
+                  name: "Requests",
+                },
+              ];
+              axes = layout("count", {
+                xaxis: { title: "tokens", gridcolor: color("grid") },
+              });
+            } else {
+              const n = 32,
+                a = log ? Math.log10(lo) : Math.min(...vals),
+                b = log ? Math.log10(hi) : hi,
+                width = (b - a || 1) / n,
+                bins = Array(n).fill(0);
+              for (const v of vals) {
+                if (log && v <= 0) continue;
+                bins[
+                  Math.max(
+                    0,
+                    Math.min(
+                      n - 1,
+                      Math.floor(((log ? Math.log10(v) : v) - a) / width),
+                    ),
+                  )
+                ] += 1;
+              }
+              const centers = bins.map((_, i) =>
+                log ? 10 ** (a + (i + 0.5) * width) : a + (i + 0.5) * width,
+              );
+              traces = [
+                {
+                  type: "bar",
+                  x: centers,
+                  y: bins,
+                  width: bins.map((_, i) =>
+                    log
+                      ? (10 ** (a + (i + 1) * width) - 10 ** (a + i * width)) *
+                        0.92
+                      : width * 0.92,
+                  ),
+                  marker: { color: "#8b8d90" },
+                  showlegend: false,
+                  hovertemplate:
+                    "%{x:,.0f} tokens<br>%{y} requests<extra></extra>",
+                },
+              ];
+              axes = layout("count", {
+                xaxis: {
+                  title: {
+                    text: log ? "value (tokens, log scale)" : "value (tokens)",
+                  },
+                  type: log ? "log" : "linear",
+                  dtick: log ? 1 : undefined,
+                  gridcolor: color("grid"),
+                  zeroline: false,
+                },
+              });
+              for (const [p, c] of [
+                [50, blue],
+                [75, green],
+                [90, orange],
+                [95, red],
+              ]) {
+                const q = quantile(vals, p);
+                if (log && q <= 0) continue;
+                traces.push(
+                  line(
+                    "p" + p + " " + fmt(q, 0),
+                    [q, q],
+                    [0, Math.max(...bins) * 1.03],
+                    c,
+                    {
+                      line: { color: c, width: 1, dash: "dot" },
+                      hoverinfo: "skip",
+                    },
+                  ),
+                );
+              }
+            }
+            note = `${fmt(vals.length, 0)} requests · range ${fmt(Math.min(...vals), 0)}–${fmt(Math.max(...vals), 0)} tokens${log ? " · log scale" : ""}`;
+            foot =
+              log && vals.some((v) => v === 0)
+                ? "Zero-length requests are retained in exports and excluded from the log histogram."
+                : "";
+          } else empty = "No request length observations in this phase.";
+        } else if (id === "interactivity" || id === "latency") {
+          const key = id === "interactivity" ? "itl_ms" : state.modes.latency,
+            p = state.percentiles[id];
+          const good = r
+            .filter(
+              (q) => finite(q[key]) && (id !== "interactivity" || q[key] > 0),
+            )
+            .sort((a, b) => a.arrival_time_ms - b.arrival_time_ms);
+          const xx = good.map((q) => q.arrival_time_ms / 1000 - origin()),
+            values = good.map((q) => q[key]);
+          const yy = values.map((_, i) =>
+              quantile(values.slice(Math.max(0, i - 49), i + 1), p),
+            ),
+            cum = values.map((_, i) => quantile(values.slice(0, i + 1), p));
+          const convert = (v) => (id === "interactivity" ? 1000 / v : v / 1000);
+          traces = [
+            line(
+              id === "interactivity"
+                ? `1 / rolling P${p} TPOT`
+                : `P${p} (rolling 50 req)`,
+              xx,
+              yy.map(convert),
+              id === "interactivity" ? color("cyan") : orange,
+            ),
+            line(
+              id === "interactivity"
+                ? `1 / cumulative P${p} TPOT`
+                : `Cumulative P${p} ${key === "ttft_ms" ? "TTFT" : "E2E"}`,
+              xx,
+              cum.map(convert),
+              red,
+            ),
+          ];
+          axes = layout(
+            id === "interactivity"
+              ? "Interactivity (tok/s/user)"
+              : `${key === "ttft_ms" ? "TTFT" : "E2E"} (s)`,
+          );
+          note = `${fmt(good.length, 0)} valid points`;
+          foot =
+            id === "interactivity"
+              ? "Percentiles apply to TPOT before inversion; a high TPOT percentile gives lower interactivity. Rolling window: 50 requests."
+              : "Time is request arrival; percentiles are unweighted across requests.";
+          if (!good.length)
+            empty =
+              id === "interactivity"
+                ? "TPOT requires at least two output tokens; no valid observations."
+                : "No latency observations in this phase.";
+        } else if (id === "cache") {
+          traces = [
+            line(
+              "Chip KV cache (avg n=50)",
+              x,
+              rolling(ss.map((v) => v.cache_pct)),
+              blue,
+            ),
+          ];
+          axes = layout("KV cache (%)", {
+            yaxis: {
+              range: [0, 100],
+              gridcolor: color("grid"),
+              ticksuffix: "%",
+            },
+          });
+          note = "Resident cache occupancy / modeled rank capacity";
+          foot = "Includes cached prefixes retained after requests finish.";
+        } else if (id === "queue") {
+          if (state.modes.queue === "completed") {
+            let count = 0;
+            traces = [
+              line(
+                "Completed (cumulative)",
+                x,
+                ss.map((v) => (count += v.completed ?? 0)),
+                green,
+              ),
+            ];
+            note = "Terminal completions from interval counters";
+          } else {
+            for (const [key, label, c] of [
+              ["running", "Running", green],
+              ["waiting", "Waiting", red],
+            ])
+              traces.push(
+                line(
+                  label + " (avg n=50)",
+                  x,
+                  rolling(ss.map((v) => v[key])),
+                  c,
+                ),
+              );
+            traces.push(
+              line(
+                "Total (avg n=50)",
+                x,
+                rolling(
+                  ss.map((v) =>
+                    finite(v.running) && finite(v.waiting)
+                      ? v.running + v.waiting
+                      : null,
+                  ),
+                ),
+                blue,
+              ),
+            );
+            note = "Scheduler gauges; router and server state remain distinct";
+          }
+          axes = layout("Requests");
+        } else if (id === "hits") {
+          const native = ss.map((v) =>
+              v.lookup_queries > 0
+                ? (100 * v.lookup_hits) / v.lookup_queries
+                : null,
+            ),
+            scheduler = ss.map((v) =>
+              v.scheduler_queries > 0
+                ? (100 * v.scheduler_hits) / v.scheduler_queries
+                : null,
+            );
+          if (native.some(finite))
+            traces.push(
+              line("Native lookup hit rate", x, native, color("purple"), {
+                mode: "lines+markers",
+                marker: { size: 3 },
+              }),
+            );
+          if (scheduler.some(finite))
+            traces.push(
+              line("Scheduler prefix reuse", x, scheduler, blue, {
+                mode: "lines+markers",
+                marker: { size: 3 },
+              }),
+            );
+          axes = layout("Hit rate (%)", {
+            yaxis: {
+              range: [0, 100],
+              gridcolor: color("grid"),
+              ticksuffix: "%",
+            },
+          });
+          note = "Ratios use each interval’s native denominator";
+          foot =
+            "Lookup, pass-local reuse, and first-admission attribution are different metrics.";
+          if (!traces.length)
+            empty =
+              "No cache lookup or scheduler reuse denominator is available.";
+        } else if (id === "throughput") {
+          const rate = (key) =>
+            ss.map((v, i) => {
+              if (!(v.duration > 0)) return null;
+              const w = ss
+                .slice(Math.max(0, i - 49), i + 1)
+                .filter((q) => q.duration > 0 && finite(q[key]));
+              const duration = w.reduce((n, q) => n + q.duration, 0);
+              return duration > 0
+                ? w.reduce((n, q) => n + q[key], 0) / duration
+                : null;
+            });
+          if (state.modes.throughput !== "decode")
+            traces.push(
+              line(
+                "Input / executed prefill (avg n=50)",
+                x,
+                rate("prefill_tokens"),
+                blue,
+              ),
+            );
+          if (state.modes.throughput !== "prefill")
+            traces.push(
+              line(
+                "Decode / delivered output (avg n=50)",
+                x,
+                rate("output_tokens"),
+                orange,
+              ),
+            );
+          let tokens = 0,
+            duration = 0;
+          const cum = ss.map((v) => {
+            if (v.duration > 0) {
+              tokens += (v.prefill_tokens || 0) + (v.output_tokens || 0);
+              duration += v.duration;
+            }
+            return duration > 0 ? tokens / duration : null;
+          });
+          if (state.modes.throughput === "both")
+            traces.push(line("Total cumulative average", x, cum, red));
+          axes = layout("Tokens / sec");
+          note =
+            "Exact interval token counters; display smoothing uses 50 samples";
+          foot =
+            "Input means executed prefill, excluding hits; dashboard aggregate input counts full prompt lengths.";
+        } else if (id === "source") {
+          let hbm = 0,
+            host = 0,
+            miss = 0,
+            total = 0;
+          const a = [],
+            b = [],
+            c = [];
+          for (const v of ss) {
+            hbm += v.hbm ?? 0;
+            host += v.host ?? 0;
+            miss += v.miss ?? 0;
+            total += v.admission_input ?? 0;
+            a.push(total > 0 ? (100 * miss) / total : null);
+            b.push(total > 0 ? (100 * hbm) / total : null);
+            c.push(total > 0 ? (100 * host) / total : null);
+          }
+          for (const [name, yy, cc] of [
+            ["compute (miss)", a, orange],
+            ["cache hit (HBM)", b, blue],
+            ["cache hit (host)", c, color("purple")],
+          ])
+            traces.push(
+              line(name, x, yy, cc, {
+                stackgroup: "source",
+                fillcolor: cc,
+                line: { width: 0, color: cc },
+              }),
+            );
+          axes = layout("% of admitted prompt tokens", {
+            yaxis: {
+              range: [0, 100],
+              gridcolor: color("grid"),
+              ticksuffix: "%",
+            },
+          });
+          note = "Cumulative first-admission prompt attribution";
+          foot =
+            "Readmissions do not increase the first-admission denominator.";
+        } else if (id === "unique") {
+          empty = "Unique in-flight prompt tokens are not captured.";
+          foot =
+            "Retained cache occupancy cannot substitute for unique active prompt identities.";
+          note = "Unavailable in this native telemetry schema";
+        } else if (id === "acceptance") {
+          traces = [
+            line(
+              "Accepted tokens per decode forward",
+              x,
+              ss.map((v) => v.accept),
+              color("purple"),
+              { mode: "lines+markers", marker: { size: 3 } },
+            ),
+          ];
+          axes = layout("tokens / forward");
+          note = "Includes the base token; configured expectation 2.99";
+          if (!ss.some((v) => finite(v.accept)))
+            empty = "No decode acceptance observations in this phase.";
+        } else if (id === "completion") {
+          const counts = {};
+          r.forEach(
+            (v) =>
+              (counts[v.terminal_status] =
+                (counts[v.terminal_status] || 0) + 1),
+          );
+          traces = [
+            {
+              type: "bar",
+              x: Object.keys(counts),
+              y: Object.values(counts),
+              marker: {
+                color: Object.keys(counts).map((v) =>
+                  v === "completed" ? green : red,
+                ),
+              },
+              text: Object.values(counts),
+              textposition: "outside",
+              hovertemplate: "%{x}: %{y}<extra></extra>",
+            },
+          ];
+          axes = layout("requests", {
+            xaxis: { gridcolor: color("grid") },
+            showlegend: false,
+          });
+          note =
+            "All terminal request records, including zero-output completions";
+          foot =
+            "Unavailable latency is excluded from accuracy scoring, not from this status count.";
+        }
+        return { traces, layout: axes, note, foot, empty };
+      }
+      function renderCard(id) {
+        const d = chartData(id),
+          s = specs.find((v) => v.id === id);
+        $("note-" + id).textContent = d.note;
+        $("foot-" + id).textContent = d.foot;
+        const el = $("plot-" + id);
+        if (d.empty) {
+          Plotly.purge(el);
+          el.innerHTML = `<div class="empty"><strong>${esc(d.empty)}</strong><span>${esc(d.foot)}</span></div>`;
+        } else {
+          if (el.querySelector(".empty")) el.replaceChildren();
+          Plotly.react(el, d.traces, d.layout, config);
+        }
+        if (id === "latency")
+          $("title-latency").textContent =
+            state.modes.latency === "ttft_ms"
+              ? "TTFT over time"
+              : "End-to-end latency over time";
+      }
+      function renderGrid() {
+        if (!$("chart-grid").children.length)
+          $("chart-grid").innerHTML = specs
+            .map(
+              (s) =>
+                `<article class="chart-card" id="card-${s.id}"><div class="chart-head"><h2 id="title-${s.id}">${s.title}</h2><div class="chart-controls" id="controls-${s.id}"></div><button class="expand" data-expand="${s.id}" aria-label="Expand ${s.title}">⤢</button></div><p class="chart-note" id="note-${s.id}"></p><div class="plot" id="plot-${s.id}" aria-label="${s.title}"></div><p class="chart-foot" id="foot-${s.id}"></p></article>`,
+            )
+            .join("");
+        for (const s of specs) {
+          $("controls-" + s.id).innerHTML = controls(s);
+          renderCard(s.id);
+        }
+      }
+      function conversation(r) {
+        return r.agentic?.conversation_id || r.session_id || "Unassigned";
+      }
+      function renderTimeline() {
+        const all = rows(),
+          ordered = [...all].sort(
+            (a, b) => a.arrival_time_ms - b.arrival_time_ms,
+          ),
+          conversations = [...new Set(ordered.map(conversation))];
+        const names = new Map(
+          conversations.map((c, i) => [c, `Conversation ${i + 1}`]),
+        );
+        const filtered = ordered.filter(
+          (r) =>
+            !state.search ||
+            JSON.stringify([
+              r.request_id,
+              r.uuid,
+              conversation(r),
+              names.get(conversation(r)),
+            ])
+              .toLowerCase()
+              .includes(state.search),
+        );
+        const key = (r) =>
+          state.group === "worker"
+            ? `Worker ${r.decode_worker_idx ?? r.prefill_worker_idx ?? 0}`
+            : names.get(conversation(r));
+        const keys = [...new Set(filtered.map(key))],
+          times = filtered.flatMap((r) => [
+            r.arrival_time_ms,
+            r.terminal_time_ms,
+          ]);
+        const span = times.length
+          ? (Math.max(...times) - Math.min(...times)) / 1000
+          : 0;
+        $("timeline-summary").textContent =
+          `${fmt(filtered.length, 0)} requests · ${fmt(new Set(filtered.map(conversation)).size, 0)} conversations · ${fmt(span)}s span · phase-relative virtual clock`;
+        const traces = [];
+        for (const [label, c, part] of [
+          ["Arrival → first token", color("accent"), "prefill"],
+          ["Decode", color("blue"), "decode"],
+          ["Canceled / failed", color("red"), "failed"],
+        ]) {
+          const rr = filtered.filter((r) =>
+            part === "failed"
+              ? r.terminal_status !== "completed"
+              : r.terminal_status === "completed",
+          );
+          const start = (r) =>
+            part === "decode"
+              ? (r.first_token_ms ?? r.terminal_time_ms)
+              : r.arrival_time_ms;
+          const end = (r) =>
+            part === "prefill"
+              ? (r.first_token_ms ?? r.terminal_time_ms)
+              : r.terminal_time_ms;
+          traces.push({
+            type: "bar",
+            orientation: "h",
+            name: label,
+            y: rr.map(key),
+            x: rr.map((r) => Math.max(0, (end(r) - start(r)) / 1000)),
+            base: rr.map((r) => start(r) / 1000 - origin()),
+            width: 0.55,
+            textposition: "none",
+            marker: { color: c },
+            customdata: rr.map((r) => r.uuid),
+            text: rr.map(
+              (r) =>
+                `${names.get(conversation(r))}<br>${esc(r.request_id)}<br>${esc(r.phase)} · ${esc(r.terminal_status)}<br>Input ${fmt(r.input_length, 0)} · Output ${fmt(r.output_length, 0)}<br>TTFT ${fmt(r.ttft_ms)} ms · E2E ${fmt(r.e2e_latency_ms)} ms`,
+            ),
+            hovertemplate: "%{text}<extra>" + label + "</extra>",
+          });
+        }
+        const instantaneous = filtered.filter(
+          (r) => r.terminal_time_ms === r.arrival_time_ms,
+        );
+        if (instantaneous.length)
+          traces.push({
+            type: "scatter",
+            mode: "markers",
+            name: "Zero-duration terminal",
+            x: instantaneous.map((r) => r.arrival_time_ms / 1000 - origin()),
+            y: instantaneous.map(key),
+            customdata: instantaneous.map((r) => r.uuid),
+            marker: { color: color("muted"), symbol: "diamond", size: 7 },
+            hovertemplate:
+              "Zero-duration request · click for details<extra></extra>",
+          });
+        const counts = keys.map(
+            (k) => filtered.filter((r) => key(r) === k).length,
+          ),
+          el = $("timeline-plot");
+        el.style.height = Math.max(350, keys.length * 34 + 90) + "px";
+        Plotly.react(
+          el,
+          traces,
+          layout("", {
+            dragmode: "pan",
+            barmode: "overlay",
+            showlegend: false,
+            margin: { l: 185, r: 20, t: 30, b: 50 },
+            yaxis: {
+              categoryorder: "array",
+              categoryarray: [...keys].reverse(),
+              tickvals: keys,
+              ticktext: keys.map((k, i) => `${k}  (${counts[i]})`),
+              gridcolor: color("grid"),
+              fixedrange: true,
+            },
+            xaxis: {
+              title: "time since phase start (s)",
+              side: "top",
+              gridcolor: color("grid"),
+              zeroline: false,
+            },
+            hovermode: "closest",
+          }),
+          config,
+        ).then(() => {
+          el.removeAllListeners("plotly_click");
+          el.on("plotly_click", (event) => {
+            const id = event.points[0]?.customdata;
+            const row = all.find((r) => r.uuid === id);
+            if (row) showRequest(row);
+          });
+        });
+      }
+      function showRequest(r) {
+        $("request-title").textContent =
+          r.phase === "primer"
+            ? "Primer"
+            : r.phase === "warmup"
+              ? "Warmup request"
+              : "Profiling request";
+        const fields = [
+          ["Status", r.terminal_status],
+          ["Input tokens", fmt(r.input_length, 0)],
+          ["Output tokens", fmt(r.output_length, 0)],
+          ["TTFT", fmt(r.ttft_ms) + " ms"],
+          ["E2E latency", fmt(r.e2e_latency_ms) + " ms"],
+          ["TPOT", finite(r.itl_ms) ? fmt(r.itl_ms) + " ms" : "Unavailable"],
+          ["Absolute arrival", fmt(r.arrival_time_ms) + " ms"],
+          ["Absolute terminal", fmt(r.terminal_time_ms) + " ms"],
+          [
+            "First-admission reuse",
+            fmt(r.first_admission_reused_input_tokens, 0) + " tokens",
+          ],
+        ];
+        $("request-details").innerHTML =
+          '<div class="request-grid">' +
+          fields
+            .map(
+              ([k, v]) =>
+                `<div><small>${k}</small><strong>${esc(v)}</strong></div>`,
+            )
+            .join("") +
+          '</div><p class="hint">Source request</p><pre>' +
+          esc(r.request_id) +
+          "</pre><details><summary>Native request record and lineage</summary><pre>" +
+          esc(JSON.stringify(r, null, 2)) +
+          "</pre></details>";
+        $("request-dialog").showModal();
+      }
+      function renderAccuracy() {
+        const d = dataset(),
+          c = d.measurement.comparisons || [],
+          coverage = d.measurement.coverage || {};
+        let html =
+          '<h2 class="section-title">Latency and throughput comparison</h2><p class="comparison-lede">Reference: AgentX 446063, concurrency 1. Point metrics use each replay’s successful profile cohort and observed span. Request MAPE uses exact source IDs; output-length matching and coverage are reported separately.</p><div class="table-wrap"><table><thead><tr><th>Replay</th><th>Mean E2E</th><th>Output throughput</th><th>Full CLI wall time</th><th>Matched E2E MAPE</th></tr></thead><tbody>';
+        for (const v of datasets) {
+          const metric = v.measurement.comparisons.find((q) =>
+            q.metric.includes("output-length matched"),
+          );
+          html += `<tr><td>${esc(v.label)}</td><td>${fmt(v.prediction.mean_e2e_latency_ms / 1000, 3)} s</td><td>${fmt(v.prediction.output_throughput_tok_s)} tok/s</td><td>${fmt(v.measurement.wall_time_seconds)} s</td><td>${fmt(metric?.mape_percent)}% · ${fmt(metric?.count, 0)} pairs</td></tr>`;
+        }
+        html += "</tbody></table></div>";
+        html += `<p class="hint">Selected replay: ${esc(d.label)} · ${fmt(coverage.successful_source_matched_requests, 0)} / ${fmt(coverage.reference_successes, 0)} successful reference requests matched · ${fmt(coverage.source_match_coverage_percent)}% coverage.</p><div class="table-wrap"><table><thead><tr><th>Metric</th><th>Reference</th><th>Simulated</th><th>Error</th><th>N</th><th>Scope</th></tr></thead><tbody>`;
+        for (const r of c)
+          html += `<tr><td>${esc(r.metric)}</td><td>${fmt(r.reference)} ${esc(r.unit)}</td><td>${fmt(r.simulated)} ${esc(r.unit)}</td><td>${fmt(r.mape_percent)}%</td><td>${fmt(r.count, 0)}</td><td class="wrap">${esc(r.scope)}</td></tr>`;
+        html +=
+          '</tbody></table></div><p class="hint">An aggregate comparison with N=1 is APE, not request-level MAPE. Different replay variants reach different request cohorts within the same one-hour admission window.</p><div class="chart-card"><div class="chart-head"><h2>Error by metric · selected replay</h2></div><div class="plot" id="accuracy-plot" style="height:360px"></div></div>';
+        $("view-accuracy").innerHTML = html;
+        Plotly.react(
+          "accuracy-plot",
+          [
+            {
+              type: "bar",
+              orientation: "h",
+              y: c.map((r) => r.metric),
+              x: c.map((r) => r.mape_percent),
+              marker: { color: color("purple") },
+              hovertemplate: "%{y}<br>%{x:.2f}%<extra></extra>",
+            },
+          ],
+          layout("", {
+            margin: { l: 215, r: 25, t: 15, b: 45 },
+            xaxis: {
+              title: "Error (%) · see scope table",
+              gridcolor: color("grid"),
+            },
+            yaxis: { autorange: "reversed" },
+            showlegend: false,
+          }),
+          config,
+        );
+      }
+      function download(name, value, type = "application/json") {
+        const blob = new Blob(
+          [
+            type === "application/json"
+              ? JSON.stringify(value, null, 2)
+              : value,
+          ],
+          { type },
+        );
+        const url = URL.createObjectURL(blob),
+          a = document.createElement("a");
+        a.href = url;
+        a.download = name;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+      function renderEvidence() {
+        const d = dataset();
+        $("view-evidence").innerHTML =
+          `<h2 class="section-title">Replay evidence and methodology</h2><p class="comparison-lede">This report contains simulated observations from the complete benchmark replay. The source corpus contains 393 plays and 98,827 requests; only work reached during the 3,600-second profiling window is executed.</p><div class="downloads"><button data-download="requests">Download request records</button><button data-download="samples">Download chart samples</button><button data-download="measurement">Download accuracy & wall time</button></div><div class="evidence-box"><h2>Timing and capture</h2><div class="stats"><div class="stat"><small>Full CLI wall time</small><strong>${fmt(d.measurement.wall_time_seconds)} s</strong></div><div class="stat"><small>Native simulation timer</small><strong>${fmt(d.prediction.wall_time_ms / 1000)} s</strong></div><div class="stat"><small>Sample interval</small><strong>${fmt(d.telemetry.sample_interval_ms, 0)} ms</strong></div><div class="stat"><small>Completion</small><strong>${esc(d.telemetry.completion_status)}</strong></div></div><p class="hint">${esc(d.measurement.wall_time_scope)}</p></div><div class="evidence-box"><h2>Methods</h2><ul>${(d.measurement.methodology || []).map((v) => "<li>" + esc(v) + "</li>").join("")}</ul></div><div class="evidence-box"><h2>Known limitations</h2><ul>${(d.measurement.limitations || []).map((v) => "<li>" + esc(v) + "</li>").join("")}</ul><p class="hint">Unique in-flight input-token counts are unavailable. Cache utilization is resident occupancy, not active-request occupancy. Warmup includes the primer and ten live requests. No server logs or power data are displayed.</p></div><div class="evidence-box"><details><summary>Native telemetry manifest, execution provenance, and comparison scope</summary><pre>${esc(JSON.stringify({ telemetry: d.telemetry, measurement: d.measurement, provenance: report.provenance }, null, 2))}</pre></details></div><div class="evidence-box"><details><summary>Plotting library license and attribution</summary><pre>__PLOTLY_LICENSE__</pre></details></div>`;
+      }
+      function sortedDatasets() {
+        const key = $("sort").value;
+        return [...datasets].sort((a, b) =>
+          key === "latency"
+            ? a.prediction.mean_e2e_latency_ms -
+              b.prediction.mean_e2e_latency_ms
+            : key === "throughput"
+              ? b.prediction.output_throughput_tok_s -
+                a.prediction.output_throughput_tok_s
+              : 0,
+        );
+      }
+      function renderHeader() {
+        const d = dataset();
+        $("variants").innerHTML = sortedDatasets()
+          .map(
+            (v) =>
+              `<button class="chip" data-variant="${esc(v.id)}" aria-pressed="${v.id === d.id}">TP8 · c=1 · ${esc(v.label)}</button>`,
+          )
+          .join("");
+        $("run-meta").textContent =
+          `${datasets.length} replay variants · 2026-10-29`;
+        $("selected-label").textContent =
+          `Selected point · spec=mtp · ${d.label}`;
+        const fields = [
+          ["Offload type", "None"],
+          ["Concurrency", "1"],
+          [
+            "Chip cache hit",
+            fmt(d.prediction.first_admission_prefix_cache_reused_ratio * 100) +
+              "%",
+          ],
+          [
+            "Full replay wall time",
+            fmt(d.measurement.wall_time_seconds) + " s",
+          ],
+          [
+            "Output throughput",
+            fmt(d.prediction.output_throughput_tok_s) + " tok/s",
+          ],
+        ];
+        $("stats").innerHTML = fields
+          .map(
+            ([k, v]) =>
+              `<div class="stat"><small>${k}</small><strong>${esc(v)}</strong></div>`,
+          )
+          .join("");
+        $("stage-count").textContent = fmt(rows().length, 0) + " requests";
+        $("clock-note").textContent =
+          state.stage === "profile"
+            ? `Profile starts at absolute ${fmt(origin(), 3)}s · charts use phase-relative time`
+            : "Primer + 10 live warmup requests · absolute virtual time";
+        $("prev").disabled = datasets.length < 2;
+        $("next").disabled = datasets.length < 2;
+      }
+      function render() {
+        renderHeader();
+        document.querySelectorAll("[data-view]").forEach((b) => {
+          const active = b.dataset.view === state.view;
+          if (b.getAttribute("role") === "tab")
+            b.setAttribute("aria-selected", active);
+          b.classList.toggle("active", active);
+        });
+        document
+          .querySelectorAll("[data-stage]")
+          .forEach((b) =>
+            b.setAttribute("aria-selected", b.dataset.stage === state.stage),
+          );
+        for (const v of ["point", "timeline", "accuracy", "evidence"])
+          $("view-" + v).hidden = state.view !== v;
+        $("stagebar").hidden = !["point", "timeline"].includes(state.view);
+        if (state.view === "point") renderGrid();
+        else if (state.view === "timeline") renderTimeline();
+        else if (state.view === "accuracy") renderAccuracy();
+        else renderEvidence();
+        try {
+          const u = new URL(location.href);
+          u.hash = new URLSearchParams({
+            view: state.view,
+            stage: state.stage,
+            variant: state.variant,
+          }).toString();
+          history.replaceState(null, "", u);
+        } catch {}
+      }
+      document.addEventListener("click", (event) => {
+        const b = event.target.closest("button");
+        if (!b) return;
+        if (b.dataset.view) {
+          state.view = b.dataset.view;
+          render();
+        } else if (b.dataset.stage) {
+          state.stage = b.dataset.stage;
+          render();
+        } else if (b.dataset.variant) {
+          state.variant = b.dataset.variant;
+          render();
+        } else if (b.dataset.mode) {
+          state.modes[b.dataset.mode] = b.dataset.value;
+          $("controls-" + b.dataset.mode).innerHTML = controls(
+            specs.find((s) => s.id === b.dataset.mode),
+          );
+          renderCard(b.dataset.mode);
+        } else if (b.dataset.percentile) {
+          state.percentiles[b.dataset.percentile] = Number(b.dataset.value);
+          $("controls-" + b.dataset.percentile).innerHTML = controls(
+            specs.find((s) => s.id === b.dataset.percentile),
+          );
+          renderCard(b.dataset.percentile);
+        } else if (b.dataset.expand) {
+          const s = specs.find((v) => v.id === b.dataset.expand),
+            d = chartData(s.id);
+          $("expanded-title").textContent = $("title-" + s.id).textContent;
+          $("expanded-note").textContent = d.note;
+          $("chart-dialog").showModal();
+          if (d.empty) {
+            Plotly.purge("expanded-plot");
+            $("expanded-plot").innerHTML =
+              '<div class="empty">' + esc(d.empty) + "</div>";
+          } else {
+            $("expanded-plot").replaceChildren();
+            Plotly.newPlot(
+              "expanded-plot",
+              d.traces,
+              { ...d.layout, margin: { l: 70, r: 30, t: 25, b: 80 } },
+              config,
+            );
+          }
+        } else if (b.dataset.group) {
+          state.group = b.dataset.group;
+          document
+            .querySelectorAll("[data-group]")
+            .forEach((v) => v.setAttribute("aria-pressed", v === b));
+          renderTimeline();
+        } else if (b.hasAttribute("data-close")) b.closest("dialog").close();
+        else if (b.dataset.download)
+          download(
+            "agentx-446063-" + b.dataset.download + ".json",
+            dataset()[b.dataset.download],
+          );
+      });
+      document.addEventListener("change", (event) => {
+        const t = event.target;
+        if (t.matches("select[data-mode]")) {
+          state.modes[t.dataset.mode] = t.value;
+          renderCard(t.dataset.mode);
+        }
+      });
+      $("sort").addEventListener("change", renderHeader);
+      for (const [id, step] of [
+        ["prev", -1],
+        ["next", 1],
+      ])
+        $(id).onclick = () => {
+          const a = sortedDatasets();
+          state.variant =
+            a[
+              (a.findIndex((d) => d.id === state.variant) + step + a.length) %
+                a.length
+            ].id;
+          render();
+        };
+      $("request-search").oninput = (event) => {
+        state.search = event.target.value.toLowerCase();
+        renderTimeline();
+      };
+      $("reset-timeline").onclick = () =>
+        Plotly.relayout("timeline-plot", { "xaxis.autorange": true });
+      $("theme").onclick = () => {
+        document.body.classList.toggle("light");
+        $("theme").textContent = document.body.classList.contains("light")
+          ? "☀"
+          : "☾";
+        render();
+      };
+      $("help").onclick = () => $("help-dialog").showModal();
+      $("evidence-link").onclick = (event) => {
+        event.preventDefault();
+        state.view = "evidence";
+        render();
+      };
+      document.querySelectorAll("[role=tablist]").forEach((list) =>
+        list.addEventListener("keydown", (event) => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key))
+            return;
+          const tabs = [...list.querySelectorAll("[role=tab]")];
+          const i = tabs.indexOf(document.activeElement);
+          if (i < 0) return;
+          event.preventDefault();
+          const next =
+            event.key === "Home"
+              ? 0
+              : event.key === "End"
+                ? tabs.length - 1
+                : (i + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) %
+                  tabs.length;
+          tabs[next].focus();
+          tabs[next].click();
+        }),
+      );
+      try {
+        const q = new URLSearchParams(location.hash.slice(1));
+        if (
+          ["point", "timeline", "accuracy", "evidence"].includes(q.get("view"))
+        )
+          state.view = q.get("view");
+        if (["profile", "preparation"].includes(q.get("stage")))
+          state.stage = q.get("stage");
+        if (datasets.some((d) => d.id === q.get("variant")))
+          state.variant = q.get("variant");
+      } catch {}
+      render();
+    </script>
+  </body>
+</html>

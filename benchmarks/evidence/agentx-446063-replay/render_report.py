@@ -9,8 +9,6 @@ request identity match. The measurement JSON supplies the comparison scope.
 """
 
 import argparse
-import base64
-import html
 import json
 import math
 import textwrap
@@ -23,6 +21,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from interactive_report import write_interactive_report
 from matplotlib.collections import LineCollection
 from matplotlib.lines import Line2D
 
@@ -535,70 +534,12 @@ def comparison_plot(rows, output, figures):
 def render_html(
     output, figures, prediction, measurement, requests, reference, lifecycle, samples, run_dir, reference_path
 ):
-    manifest = prediction["telemetry"]
-    title = measurement.get("title", "AgentX-inspired replay analysis · AISimulate")
-    wall = measurement.get("wall_time_seconds", measurement.get("elapsed_wall_seconds"))
-    if not finite(wall):
-        wall = prediction.get("wall_time_ms", 0) / 1000 if finite(prediction.get("wall_time_ms")) else None
-    duration = prediction.get("duration_ms")
-    cards = [
-        ("Terminal requests", f"{len(requests):,}"),
-        ("Profile completed", number(prediction.get("completed_requests"))),
-        ("Profile simulated time", f"{number(duration / 1000 if finite(duration) else None)} s"),
-        ("Measured run wall time", f"{number(wall)} s"),
-        ("Output throughput", f"{number(prediction.get('output_throughput_tok_s'))} tok/s"),
-        ("Capture status", manifest.get("completion_status", "Unavailable")),
-    ]
-    esc = lambda value: html.escape(str(value))
-    cards_html = "".join(
-        f"<div class='card'><span>{esc(label)}</span><strong>{esc(value)}</strong></div>" for label, value in cards
-    )
-    figures_html = "".join(
-        f"<figure id='{item['name']}'><h2>{esc(item['title'])}</h2><img alt='{esc(item['title'] + '. ' + item['caption'])}' src='data:image/png;base64,{base64.b64encode((output / (item['name'] + '.png')).read_bytes()).decode()}'><figcaption>{esc(item['caption'])}</figcaption></figure>"
-        for item in figures
-    )
-    rows = comparison_rows(measurement)
-    body = "".join(
-        f"<tr><th>{esc(row.get('metric', ''))}</th><td>{esc(row.get('unit', ''))}</td><td>{number(row.get('reference'))}</td><td>{number(row.get('simulated'))}</td><td>{number(row.get('mape_percent'))}</td><td>{esc(row.get('count', row.get('n', '—')))}</td><td>{esc(row.get('scope', 'See measurement provenance'))}</td></tr>"
-        for row in rows
-    )
-    comparison_html = (
-        (
-            "<section><h2>Comparison values</h2><div class='table-wrap'><table><thead><tr><th>Metric</th><th>Unit</th><th>Reference</th><th>Simulated</th><th>Error (%)</th><th>Count</th><th>Scope</th></tr></thead><tbody>"
-            + body
-            + "</tbody></table></div></section>"
-        )
-        if rows
-        else "<section><h2>Comparison values</h2><p>No comparison measurements were supplied. The descriptive distributions do not substitute for an accuracy calculation.</p></section>"
-    )
-    notes = measurement.get("methodology", [])
-    if isinstance(notes, str):
-        notes = [notes]
-    limitations = measurement.get("limitations", [])
-    if isinstance(limitations, str):
-        limitations = [limitations]
-    notes = list(notes)
-    notes += [
-        "Plots use native AISim virtual-clock telemetry; wall time is the measured host process duration, shown separately.",
-        "Preparation and profile use the same absolute clock. Orange shading ends at the profile barrier; preparation rates are separate from profile rates.",
-        "Null values are unavailable observations and are omitted. They are never converted to measured zeros. Positive-duration intervals alone define sampled rates.",
-        "The request file contains terminal outcomes. A time-limited run can have unfinished work visible only in gauges and its completion status.",
-        "The renderer consumes supplied comparison results; it does not infer per-request matching from the shape of two distributions.",
-        "No server logs or power data are displayed.",
-    ]
-    methods = "".join(f"<li>{esc(note)}</li>" for note in notes)
-    limits = "".join(f"<li>{esc(note)}</li>" for note in limitations)
-    benchmark = measurement.get("benchmark_url")
-    link = (
-        f"<a href='{esc(benchmark)}'>Reference benchmark</a> · "
-        if isinstance(benchmark, str) and benchmark.startswith("https://")
-        else ""
-    )
     provenance = {
         "run_directory": str(run_dir.resolve()),
         "reference_requests": str(reference_path.resolve()),
-        "telemetry": manifest,
+        "telemetry": prediction["telemetry"],
         "measurement": measurement,
+        "static_figures": figures,
         "record_counts_read": {
             "requests": len(requests),
             "samples": len(samples),
@@ -606,10 +547,7 @@ def render_html(
             "reference_requests": len(reference),
         },
     }
-    document = f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)}</title>
-<style>:root{{color-scheme:light}}*{{box-sizing:border-box}}body{{margin:0;background:#f4f7fa;color:{INK};font:16px/1.55 system-ui,-apple-system,sans-serif}}main{{max-width:1450px;margin:auto;padding:34px 24px 70px}}h1{{font-size:32px;line-height:1.2;margin:8px 0 12px}}h2{{font-size:22px;margin:0 0 12px}}.eyebrow{{font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:{BLUE}}}.lede{{max-width:950px;color:#486176}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:12px;margin:24px 0}}.card,section,figure{{background:white;border:1px solid #dce5ed;border-radius:12px}}.card{{padding:18px}}.card span{{display:block;font-size:12px;color:#587083}}.card strong{{display:block;font-size:22px;margin-top:5px}}section,figure{{padding:24px;margin:22px 0}}figure img{{width:100%;height:auto;display:block}}figcaption{{font-size:14px;color:#52697d;padding-top:12px}}a{{color:#126f87}}table{{border-collapse:collapse;width:100%;font-size:14px}}th,td{{padding:10px;text-align:left;border-bottom:1px solid #e2e9ef;vertical-align:top}}thead{{background:#f1f6f9}}.table-wrap{{overflow:auto}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}}li{{margin:7px 0}}@media print{{body{{background:white}}figure,section{{break-inside:avoid;border:0}}}}</style>
-<main><header><div class="eyebrow">Native AISim telemetry · standalone evidence report</div><h1>{esc(title)}</h1><p class="lede">Phase-aware workload, latency, throughput, scheduling, and cache observations from the simulated run. Reference comparisons retain their declared scope.</p><p>{link}PNG and SVG plots are saved beside this self-contained report.</p></header><div class="cards">{cards_html}</div>{comparison_html}{figures_html}<section><h2>Methods and reading guide</h2><ul>{methods}</ul>{"<h2>Known limitations</h2><ul>" + limits + "</ul>" if limits else ""}</section><section><h2>Provenance</h2><details><summary>Inputs, units, phase boundaries, and supplied measurements</summary><pre>{esc(json.dumps(provenance, indent=2))}</pre></details></section></main></html>"""
-    (output / "report.html").write_text(document)
+    write_interactive_report(output, prediction, measurement, requests, reference, lifecycle, samples, provenance)
     (output / "analysis-summary.json").write_text(json.dumps(provenance, indent=2) + "\n")
 
 

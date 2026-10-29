@@ -1243,6 +1243,24 @@ and does not relicense model weights, producer code or their upstream projects.
 - Copyright 2012–2026 Plotly, Inc.; MIT license preserved in the bundled header
   and `pages/fpm-accuracy/assets/PLOTLY-LICENSE.txt`. The Pages build copies both.
 
+## Plotly.js (AgentX replay report)
+
+- Upstream: https://github.com/plotly/plotly.js/tree/v3.4.0
+- Immutable release tag: `v3.4.0`; original path: `dist/plotly.min.js`.
+- The repository-root helper
+  `benchmarks/evidence/agentx-446063-replay/interactive_report.py` embeds the
+  unmodified bundle supplied by Plotly.py 6.6.0's `get_plotlyjs()` in generated
+  external `report.html` artifacts. The original script header is retained:
+  Copyright 2012-2026, Plotly, Inc. All rights reserved. Licensed under the MIT
+  license.
+- The upstream MIT license identifies Copyright (c) 2016-2024 Plotly
+  Technologies Inc. Its verbatim copy is the repository-root file
+  `benchmarks/evidence/agentx-446063-replay/plotly-js-LICENSE.txt`, fetched from
+  https://github.com/plotly/plotly.js/blob/v3.4.0/LICENSE, and is embedded in each
+  generated report's license section.
+- The surrounding report template and interaction code are self-authored;
+  no InferenceX UI code or assets are copied.
+
 
 ## vLLM Kimi KDA state sizing
 
