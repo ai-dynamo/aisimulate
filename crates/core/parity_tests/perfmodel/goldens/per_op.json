@@ -429,7 +429,7 @@
         },
         "generation_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 2.551590493426754,
+          "latency_ms": 0.9147904934267539,
           "source": "mixed"
         },
         "generation_embedding": {
@@ -560,7 +560,7 @@
         },
         "generation_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 2.3136602801521837,
+          "latency_ms": 0.6768602801521837,
           "source": "mixed"
         },
         "generation_embedding": {
@@ -691,7 +691,7 @@
         },
         "generation_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 8.94131490870533,
+          "latency_ms": 2.3944323487053305,
           "source": "mixed"
         },
         "generation_embedding": {
@@ -822,7 +822,7 @@
         },
         "generation_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 2.3136602801521837,
+          "latency_ms": 0.6768602801521837,
           "source": "mixed"
         },
         "generation_embedding": {
@@ -1089,7 +1089,7 @@
         },
         "generation_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 1.7847456839086753,
+          "latency_ms": 0.5175456839086752,
           "source": "mixed"
         },
         "generation_embedding": {
@@ -1174,19 +1174,19 @@
     },
     "minimax-m25-b200-sglang-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-vllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-vllm-sampled-prefix": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m27-b200-vllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "nemotron-nas-b200-trtllm-isl1024-osl2": {
       "engine": "rust",
@@ -1194,7 +1194,7 @@
     },
     "qwen3-30b-a3b-b200-vllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     }
   }
 }

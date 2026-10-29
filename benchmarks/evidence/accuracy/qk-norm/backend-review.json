@@ -1,0 +1,100 @@
+{
+  "universal_single_kernel_verified": false,
+  "attention_profiles_record_norm_kernel_count": false,
+  "policy": "Bandwidth-only decode Q/K normalization traffic; no inferred kernel-count or fixed-intercept charge.",
+  "scope": "Source inspection and existing profiling evidence; no upstream code copied and no GPU measurement performed.",
+  "sources": [
+    {
+      "repository": "vllm-project/vllm",
+      "tag": "v0.24.0",
+      "commit": "ee0da84ab9e04ac7610e28580af62c365e898389",
+      "files": [
+        {
+          "path": "vllm/model_executor/models/qwen3.py",
+          "url": "https://raw.githubusercontent.com/vllm-project/vllm/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/model_executor/models/qwen3.py",
+          "sha256": "15d7bb3a63d32712a4043cfdde98aa5481e954db505f73b9693be73595ec8dc7"
+        },
+        {
+          "path": "docs/design/fusions.md",
+          "url": "https://raw.githubusercontent.com/vllm-project/vllm/ee0da84ab9e04ac7610e28580af62c365e898389/docs/design/fusions.md",
+          "sha256": "eb1eed0189ee0a79cd61a71a165dc9f7f801739b47b27b9225a8246c0040ec51"
+        },
+        {
+          "path": "vllm/config/vllm.py",
+          "url": "https://raw.githubusercontent.com/vllm-project/vllm/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/config/vllm.py",
+          "sha256": "90dfccb0b67cec8d579281116635db4ce0a065ef6563564f1dbfac30569adaab"
+        }
+      ]
+    },
+    {
+      "repository": "vllm-project/vllm",
+      "tag": "v0.31.0",
+      "commit": "db9527a46873454610df6dbedf79a36d6bf1a7f6",
+      "files": [
+        {
+          "path": "vllm/model_executor/models/qwen3.py",
+          "url": "https://raw.githubusercontent.com/vllm-project/vllm/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/model_executor/models/qwen3.py",
+          "sha256": "05a05b2e00b8b8ac31f8c2508e2f5462a276348439fe8fc565c75510eaca7c81"
+        },
+        {
+          "path": "docs/design/fusions.md",
+          "url": "https://raw.githubusercontent.com/vllm-project/vllm/db9527a46873454610df6dbedf79a36d6bf1a7f6/docs/design/fusions.md",
+          "sha256": "e0af8b7a72ac3c10bfbd11b73b2296904cbf2b464d44e778a3d61c78f10f425b"
+        },
+        {
+          "path": "vllm/config/vllm.py",
+          "url": "https://raw.githubusercontent.com/vllm-project/vllm/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/config/vllm.py",
+          "sha256": "057b0a7f80db28522ee46b41f9ae5bd7a0c1998a08e111c5a6ddcb8c08f07f8d"
+        }
+      ]
+    },
+    {
+      "repository": "sgl-project/sglang",
+      "tag": "v0.5.14",
+      "commit": "49e384ce9d304648e9959666ecb8ce8cd98d0deb",
+      "files": [
+        {
+          "path": "python/sglang/srt/models/utils.py",
+          "url": "https://raw.githubusercontent.com/sgl-project/sglang/49e384ce9d304648e9959666ecb8ce8cd98d0deb/python/sglang/srt/models/utils.py",
+          "sha256": "f040ef267b81a5fb8b71174e0a702f8ac4a8339249299675106845033bfb1124"
+        },
+        {
+          "path": "python/sglang/srt/models/qwen3.py",
+          "url": "https://raw.githubusercontent.com/sgl-project/sglang/49e384ce9d304648e9959666ecb8ce8cd98d0deb/python/sglang/srt/models/qwen3.py",
+          "sha256": "281bc3d67a67341e66134aeda8d1f431c8af653fc8e7f007de4fa45cea83ddbe"
+        },
+        {
+          "path": "python/sglang/jit_kernel/norm.py",
+          "url": "https://raw.githubusercontent.com/sgl-project/sglang/49e384ce9d304648e9959666ecb8ce8cd98d0deb/python/sglang/jit_kernel/norm.py",
+          "sha256": "7223102eded58126acafcc3167291953ce45c7a3959218eaeadd922bbd66134b"
+        }
+      ]
+    },
+    {
+      "repository": "NVIDIA/TensorRT-LLM",
+      "tag": "v1.3.0rc20",
+      "commit": "c25c23f71786bad54d192893d696ce8043426eca",
+      "files": [
+        {
+          "path": "tensorrt_llm/_torch/modules/qk_norm_attention.py",
+          "url": "https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/c25c23f71786bad54d192893d696ce8043426eca/tensorrt_llm/_torch/modules/qk_norm_attention.py",
+          "sha256": "dd3dda7b8e5cd788e5ae5eb659e4c8c8702630d8e45af7c2c22423e9ec7e0aab"
+        },
+        {
+          "path": "tensorrt_llm/_torch/models/modeling_qwen3.py",
+          "url": "https://raw.githubusercontent.com/NVIDIA/TensorRT-LLM/c25c23f71786bad54d192893d696ce8043426eca/tensorrt_llm/_torch/models/modeling_qwen3.py",
+          "sha256": "aab36beced9fad3767a810acc703af197b76dc4855c1dff75130ec41d30ae9aa"
+        }
+      ]
+    }
+  ],
+  "existing_profile": {
+    "path": "python/aisimulate/src/aisimulate_core/systems/data/h200_sxm/attention/vllm/0.24.0/generation_attention_perf.parquet",
+    "sha256": "ea1b6f802bb7b0792a6eaa9b533d5728c2b230749b9673f6553743ddb78837b9",
+    "rows": 63500,
+    "provenance": "legacy",
+    "norm_shape_or_fusion_identity_columns": false,
+    "issue_measurement_runtime": "vLLM main / v0.31.1 dev, exact source commit not provided",
+    "source_comparison_runtime": "v0.31.0 is an adjacent tagged reference, not asserted identical to the issue runtime"
+  }
+}

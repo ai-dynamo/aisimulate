@@ -944,17 +944,20 @@ def test_generation_qk_norm_is_present_in_rust_wire_spec():
     assert spec["use_qk_norm"] is True
 
 
-def test_generation_qk_norm_contributes_latency_through_python_query():
+@pytest.mark.parametrize("batch, expected_extra_ms", [(1, 0.000011733333333333334), (8, 0.00009386666666666667)])
+def test_generation_qk_norm_contributes_latency_through_python_query(batch, expected_extra_ms):
     from aisimulate.sdk import common
     from aisimulate_core.sdk.operations.attention import GenerationAttention
     from aisimulate_core.sdk.perf_database import get_database
 
-    database = get_database("b200_sxm", "vllm", "0.24.0")
-    plain = GenerationAttention("gen", 1.0, 64, 4, common.KVCacheQuantMode.fp8, 0, 128, False)
-    normalized = GenerationAttention("gen", 1.0, 64, 4, common.KVCacheQuantMode.fp8, 0, 128, True)
+    database = get_database("h200_sxm", "vllm", "0.24.0")
+    plain = GenerationAttention("gen", 1.0, 32, 8, common.KVCacheQuantMode.bfloat16, 0, 128, False)
+    normalized = GenerationAttention("gen", 1.0, 32, 8, common.KVCacheQuantMode.bfloat16, 0, 128, True)
 
-    plain_result = plain._engine_query(database, batch_size=32, s=2048, beam_width=1)
-    normalized_result = normalized._engine_query(database, batch_size=32, s=2048, beam_width=1)
+    plain_result = plain._engine_query(database, batch_size=batch, s=576, beam_width=1)
+    normalized_result = normalized._engine_query(database, batch_size=batch, s=576, beam_width=1)
 
-    assert float(normalized_result) > float(plain_result)
+    # Hand-counted H200 / Qwen3-8B: 40,960 bytes/token over four bf16 Q/K
+    # passes at 3.84 TB/s, with the existing 1.1 factor and no fixed intercept.
+    assert float(normalized_result) - float(plain_result) == pytest.approx(expected_extra_ms)
     assert normalized_result.energy == pytest.approx(plain_result.energy)
