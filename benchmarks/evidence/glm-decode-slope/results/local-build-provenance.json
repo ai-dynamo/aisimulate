@@ -1,0 +1,11 @@
+{
+  "base_commit": "c34a4cf7f81a64bef02227fdaa35cf74f4e8e190",
+  "baseline_replay_commit": "6061bfbf11fe7e9651900a96d7f22f227ec2172e",
+  "source_and_data_unchanged_between_baseline_and_base": true,
+  "native_path": "/Users/simonec/repo/aisimulate-glm-decode-slope/python/aisimulate/src/aisimulate/_runtime.abi3.so",
+  "native_sha256": "94c868c0a9f24244bec40bb127bad85d5fe7498b724631547821de1156bba776",
+  "runtime_patch_sha256": "abe44fbf0354f7acb149b821c5b95f61b0ae0af32ce4bc67244b781234230d23",
+  "build_command": "uv pip install --python python/aisimulate/.venv/bin/python -e python/aisimulate",
+  "build_result": "passed; release editable native build",
+  "scope": "SGLang decode skip-indexer SOL policy; unchanged data and measured rows"
+}

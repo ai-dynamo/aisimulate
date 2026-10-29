@@ -1,0 +1,2429 @@
+{
+  "scope": "Complete benchmark CPU replays, original recorded output lengths, 3600-second profile plus preparation and grace; no new GPU measurements",
+  "baseline_replay_commit": "6061bfbf11fe7e9651900a96d7f22f227ec2172e",
+  "candidate_base_commit": "c34a4cf7f81a64bef02227fdaa35cf74f4e8e190",
+  "retained_original_requests": 8260,
+  "parallel_replays": 2,
+  "campaign_wall_seconds": 350.994347,
+  "points": [
+    {
+      "point_id": 446063,
+      "concurrency": 1,
+      "baseline_strict_count": 289,
+      "retained_baseline_count": 289,
+      "candidate_strict_count": 298,
+      "baseline": {
+        "e2e": {
+          "count": 289,
+          "reference_mean_ms": 3603.3580224117645,
+          "simulated_mean_ms": 5422.282378501698,
+          "mape_percent": 36.77528373140383,
+          "signed_mean_percent_error": 20.725273607040275,
+          "ratio_of_means": 1.5047859093592117,
+          "median_request_ratio": 1.1243192621188902
+        },
+        "ttft": {
+          "count": 289,
+          "reference_mean_ms": 872.9192333494809,
+          "simulated_mean_ms": 347.19640442904995,
+          "mape_percent": 74.92809719998078,
+          "signed_mean_percent_error": -52.433889378162725,
+          "ratio_of_means": 0.3977417281743485,
+          "median_request_ratio": 0.3056012678085371
+        },
+        "tpot": {
+          "count": 289,
+          "reference_mean_ms": 2.9155254518496894,
+          "simulated_mean_ms": 4.846027805457894,
+          "mape_percent": 84.87772057654644,
+          "signed_mean_percent_error": 83.04987608141332,
+          "ratio_of_means": 1.6621456013643923,
+          "median_request_ratio": 1.6119341838841637
+        }
+      },
+      "corrected": {
+        "e2e": {
+          "count": 289,
+          "reference_mean_ms": 3603.3580224117645,
+          "simulated_mean_ms": 4844.846292121208,
+          "mape_percent": 28.610905263204547,
+          "signed_mean_percent_error": 9.314589108149127,
+          "ratio_of_means": 1.3445364745850323,
+          "median_request_ratio": 1.0290629775692217
+        },
+        "ttft": {
+          "count": 289,
+          "reference_mean_ms": 872.9192333494809,
+          "simulated_mean_ms": 347.85212561592067,
+          "mape_percent": 74.99743179962019,
+          "signed_mean_percent_error": -52.35549761999985,
+          "ratio_of_means": 0.39849291014149874,
+          "median_request_ratio": 0.3056012678085371
+        },
+        "tpot": {
+          "count": 289,
+          "reference_mean_ms": 2.9155254518496894,
+          "simulated_mean_ms": 4.322287361990864,
+          "mape_percent": 65.95819064808093,
+          "signed_mean_percent_error": 64.04107377649733,
+          "ratio_of_means": 1.4825071615302436,
+          "median_request_ratio": 1.3701962808184762
+        }
+      },
+      "baseline_output_throughput": {
+        "metric": "Output throughput \u00b7 full profile",
+        "unit": "tokens/s",
+        "reference": 88.5379311745509,
+        "simulated": 75.45678568011375,
+        "mape_percent": 14.77462294510577,
+        "count": 1,
+        "scope": "One aggregate data point (N=1): APE, not request-level MAPE; each full successful profile cohort uses its own realized requests and span"
+      },
+      "corrected_output_throughput": {
+        "metric": "Output throughput \u00b7 full profile",
+        "unit": "tokens/s",
+        "reference": 88.5379311745509,
+        "simulated": 77.91204659920412,
+        "mape_percent": 12.00150538236324,
+        "count": 1,
+        "scope": "One aggregate data point (N=1): APE, not request-level MAPE; each full successful profile cohort uses its own realized requests and span"
+      },
+      "wall_seconds": 116.0529131628573,
+      "config_sha256": "ad4bf53bb8c7266bcdde7bd3ed154ce4046ee3d254c0c4b85613e01665c8cbc8",
+      "input_bins": [
+        {
+          "reference_input_tokens_min_inclusive": 0,
+          "reference_input_tokens_max_exclusive": 64000,
+          "count": 15,
+          "baseline": {
+            "e2e": {
+              "count": 15,
+              "reference_mean_ms": 2129.2994536,
+              "simulated_mean_ms": 1855.62782173324,
+              "mape_percent": 29.73648933718205,
+              "signed_mean_percent_error": -2.3783744168652516,
+              "ratio_of_means": 0.8714733940291656,
+              "median_request_ratio": 0.9518230582849103
+            },
+            "ttft": {
+              "count": 15,
+              "reference_mean_ms": 685.4934839333333,
+              "simulated_mean_ms": 557.07420679994,
+              "mape_percent": 227.77719429654454,
+              "signed_mean_percent_error": 166.29108137445962,
+              "ratio_of_means": 0.8126615640508663,
+              "median_request_ratio": 0.8468380711141111
+            },
+            "tpot": {
+              "count": 15,
+              "reference_mean_ms": 3.1142174901948496,
+              "simulated_mean_ms": 2.8436866931899183,
+              "mape_percent": 14.821512647214039,
+              "signed_mean_percent_error": -4.71615254916908,
+              "ratio_of_means": 0.9131304098520091,
+              "median_request_ratio": 0.9344973188557115
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 15,
+              "reference_mean_ms": 2129.2994536,
+              "simulated_mean_ms": 1848.5164521999618,
+              "mape_percent": 29.52828107852068,
+              "signed_mean_percent_error": -2.8591131607779103,
+              "ratio_of_means": 0.8681336244531884,
+              "median_request_ratio": 0.9484325028351399
+            },
+            "ttft": {
+              "count": 15,
+              "reference_mean_ms": 685.4934839333333,
+              "simulated_mean_ms": 556.6803587999932,
+              "mape_percent": 227.56251593351826,
+              "signed_mean_percent_error": 166.05588857490275,
+              "ratio_of_means": 0.8120870173787565,
+              "median_request_ratio": 0.8468380711141111
+            },
+            "tpot": {
+              "count": 15,
+              "reference_mean_ms": 3.1142174901948496,
+              "simulated_mean_ms": 2.8165262862537537,
+              "mape_percent": 14.212532608140439,
+              "signed_mean_percent_error": -5.500404809375251,
+              "ratio_of_means": 0.9044089872083821,
+              "median_request_ratio": 0.9344973188557115
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 64000,
+          "reference_input_tokens_max_exclusive": 128000,
+          "count": 63,
+          "baseline": {
+            "e2e": {
+              "count": 63,
+              "reference_mean_ms": 2548.6082945396824,
+              "simulated_mean_ms": 2444.2587119206105,
+              "mape_percent": 12.332559918132844,
+              "signed_mean_percent_error": -7.902354383898913,
+              "ratio_of_means": 0.9590562493096182,
+              "median_request_ratio": 0.9182443462333678
+            },
+            "ttft": {
+              "count": 63,
+              "reference_mean_ms": 668.5141654920635,
+              "simulated_mean_ms": 497.38423053967944,
+              "mape_percent": 50.345029435601376,
+              "signed_mean_percent_error": -42.35139809265957,
+              "ratio_of_means": 0.744014496945741,
+              "median_request_ratio": 0.4555566517010841
+            },
+            "tpot": {
+              "count": 63,
+              "reference_mean_ms": 2.9644458058990146,
+              "simulated_mean_ms": 3.1013017707569905,
+              "mape_percent": 8.903693280935485,
+              "signed_mean_percent_error": 5.170644373828703,
+              "ratio_of_means": 1.046165784034791,
+              "median_request_ratio": 1.0569814031094154
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 63,
+              "reference_mean_ms": 2548.6082945396824,
+              "simulated_mean_ms": 2389.417171349348,
+              "mape_percent": 13.03830074891882,
+              "signed_mean_percent_error": -9.819207324203417,
+              "ratio_of_means": 0.9375380188743022,
+              "median_request_ratio": 0.9010370261867019
+            },
+            "ttft": {
+              "count": 63,
+              "reference_mean_ms": 668.5141654920635,
+              "simulated_mean_ms": 501.10203450794853,
+              "mape_percent": 50.78241832372331,
+              "signed_mean_percent_error": -41.899159449693045,
+              "ratio_of_means": 0.7495757911713204,
+              "median_request_ratio": 0.4555566517010841
+            },
+            "tpot": {
+              "count": 63,
+              "reference_mean_ms": 2.9644458058990146,
+              "simulated_mean_ms": 3.0167506375153175,
+              "mape_percent": 6.388267724193239,
+              "signed_mean_percent_error": 2.3254259395678862,
+              "ratio_of_means": 1.0176440505379523,
+              "median_request_ratio": 1.0261996519067091
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 128000,
+          "reference_input_tokens_max_exclusive": 256000,
+          "count": 44,
+          "baseline": {
+            "e2e": {
+              "count": 44,
+              "reference_mean_ms": 2829.132866272727,
+              "simulated_mean_ms": 3078.6288308863454,
+              "mape_percent": 17.245319863747255,
+              "signed_mean_percent_error": -1.387498495078737,
+              "ratio_of_means": 1.0881881397611133,
+              "median_request_ratio": 1.0438318980102625
+            },
+            "ttft": {
+              "count": 44,
+              "reference_mean_ms": 721.5439972272727,
+              "simulated_mean_ms": 365.9040307272358,
+              "mape_percent": 57.84946442864607,
+              "signed_mean_percent_error": -55.89030190966833,
+              "ratio_of_means": 0.5071125698963898,
+              "median_request_ratio": 0.36787659763225083
+            },
+            "tpot": {
+              "count": 44,
+              "reference_mean_ms": 2.750042364929268,
+              "simulated_mean_ms": 3.552644544182895,
+              "mape_percent": 134.41048099022262,
+              "signed_mean_percent_error": 134.41048099022262,
+              "ratio_of_means": 1.2918508418230388,
+              "median_request_ratio": 1.2546345014757683
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 44,
+              "reference_mean_ms": 2829.132866272727,
+              "simulated_mean_ms": 2842.7729505000225,
+              "mape_percent": 14.663130395666593,
+              "signed_mean_percent_error": -8.144309383776013,
+              "ratio_of_means": 1.0048212950299735,
+              "median_request_ratio": 0.976708997639983
+            },
+            "ttft": {
+              "count": 44,
+              "reference_mean_ms": 721.5439972272727,
+              "simulated_mean_ms": 365.0219737500513,
+              "mape_percent": 57.75179112840746,
+              "signed_mean_percent_error": -55.94275473704256,
+              "ratio_of_means": 0.5058901122492137,
+              "median_request_ratio": 0.3693789583569348
+            },
+            "tpot": {
+              "count": 44,
+              "reference_mean_ms": 2.750042364929268,
+              "simulated_mean_ms": 3.2731479262930363,
+              "mape_percent": 118.20702561570042,
+              "signed_mean_percent_error": 118.16301076226458,
+              "ratio_of_means": 1.1902172737536074,
+              "median_request_ratio": 1.160677765143576
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 256000,
+          "reference_input_tokens_max_exclusive": 384000,
+          "count": 72,
+          "baseline": {
+            "e2e": {
+              "count": 72,
+              "reference_mean_ms": 3560.1881261805556,
+              "simulated_mean_ms": 4767.072881680654,
+              "mape_percent": 33.6636091535716,
+              "signed_mean_percent_error": 11.79209976046587,
+              "ratio_of_means": 1.3389946577892977,
+              "median_request_ratio": 1.2342351968967509
+            },
+            "ttft": {
+              "count": 72,
+              "reference_mean_ms": 832.4304104305555,
+              "simulated_mean_ms": 266.38912236110167,
+              "mape_percent": 72.5402647807877,
+              "signed_mean_percent_error": -72.5402647807877,
+              "ratio_of_means": 0.32001368405476444,
+              "median_request_ratio": 0.25399103315370447
+            },
+            "tpot": {
+              "count": 72,
+              "reference_mean_ms": 2.91218148307539,
+              "simulated_mean_ms": 4.808650938066107,
+              "mape_percent": 65.42856683276038,
+              "signed_mean_percent_error": 65.42856683276038,
+              "ratio_of_means": 1.651219529418875,
+              "median_request_ratio": 1.6615966861864373
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 72,
+              "reference_mean_ms": 3560.1881261805556,
+              "simulated_mean_ms": 4078.5986282499284,
+              "mape_percent": 23.96199917598356,
+              "signed_mean_percent_error": -3.7538051707934845,
+              "ratio_of_means": 1.1456132326988953,
+              "median_request_ratio": 1.0558533572161286
+            },
+            "ttft": {
+              "count": 72,
+              "reference_mean_ms": 832.4304104305555,
+              "simulated_mean_ms": 266.38912236110167,
+              "mape_percent": 72.5402647807877,
+              "signed_mean_percent_error": -72.5402647807877,
+              "ratio_of_means": 0.32001368405476444,
+              "median_request_ratio": 0.25399103315370447
+            },
+            "tpot": {
+              "count": 72,
+              "reference_mean_ms": 2.91218148307539,
+              "simulated_mean_ms": 4.06666121936943,
+              "mape_percent": 39.921797205305836,
+              "signed_mean_percent_error": 39.915449585273215,
+              "ratio_of_means": 1.396431246817372,
+              "median_request_ratio": 1.3991654529749697
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 384000,
+          "reference_input_tokens_max_exclusive": null,
+          "count": 95,
+          "baseline": {
+            "e2e": {
+              "count": 95,
+              "reference_mean_ms": 4926.876451747368,
+              "simulated_mean_ms": 9542.399738631446,
+              "mape_percent": 65.49983632014288,
+              "signed_mean_percent_error": 60.36996595687549,
+              "ratio_of_means": 1.9368051608534114,
+              "median_request_ratio": 1.6241174372220581
+            },
+            "ttft": {
+              "count": 95,
+              "reference_mean_ms": 1138.8625086736843,
+              "simulated_mean_ms": 267.038390442093,
+              "mape_percent": 76.81631392448682,
+              "signed_mean_percent_error": -76.81631392448682,
+              "ratio_of_means": 0.23447816431597618,
+              "median_request_ratio": 0.21973873752625192
+            },
+            "tpot": {
+              "count": 95,
+              "reference_mean_ms": 2.9308902802282497,
+              "simulated_mean_ms": 6.9465841719682615,
+              "mape_percent": 138.12092531248666,
+              "signed_mean_percent_error": 138.12092531248666,
+              "ratio_of_means": 2.3701276771873157,
+              "median_request_ratio": 2.4675748837728717
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 95,
+              "reference_mean_ms": 4926.876451747368,
+              "simulated_mean_ms": 8454.299355673946,
+              "mape_percent": 48.77655557501338,
+              "signed_mean_percent_error": 41.91617469763007,
+              "ratio_of_means": 1.7159552179709194,
+              "median_request_ratio": 1.419674674675354
+            },
+            "ttft": {
+              "count": 95,
+              "reference_mean_ms": 1138.8625086736843,
+              "simulated_mean_ms": 267.038390442093,
+              "mape_percent": 76.81631392448683,
+              "signed_mean_percent_error": -76.81631392448683,
+              "ratio_of_means": 0.23447816431597618,
+              "median_request_ratio": 0.21973873752625192
+            },
+            "tpot": {
+              "count": 95,
+              "reference_mean_ms": 2.9308902802282497,
+              "simulated_mean_ms": 6.105471016911537,
+              "mape_percent": 109.1662075334344,
+              "signed_mean_percent_error": 109.1662075334344,
+              "ratio_of_means": 2.083145540486101,
+              "median_request_ratio": 2.1735745851053063
+            }
+          }
+        }
+      ]
+    },
+    {
+      "point_id": 446068,
+      "concurrency": 4,
+      "baseline_strict_count": 601,
+      "retained_baseline_count": 601,
+      "candidate_strict_count": 610,
+      "baseline": {
+        "e2e": {
+          "count": 601,
+          "reference_mean_ms": 2895.8841833178035,
+          "simulated_mean_ms": 4134.32240495004,
+          "mape_percent": 37.620200739981065,
+          "signed_mean_percent_error": 14.524469931147664,
+          "ratio_of_means": 1.427654610210745,
+          "median_request_ratio": 0.9952318801619641
+        },
+        "ttft": {
+          "count": 601,
+          "reference_mean_ms": 646.5858771297836,
+          "simulated_mean_ms": 250.7265176838041,
+          "mape_percent": 61.63882560359464,
+          "signed_mean_percent_error": -55.48506947454984,
+          "ratio_of_means": 0.38776986406939096,
+          "median_request_ratio": 0.3654581654011869
+        },
+        "tpot": {
+          "count": 599,
+          "reference_mean_ms": 3.274826885549308,
+          "simulated_mean_ms": 4.75784787803571,
+          "mape_percent": 118.06456017204344,
+          "signed_mean_percent_error": 110.3521208778243,
+          "ratio_of_means": 1.452854775020465,
+          "median_request_ratio": 1.2983456592314646
+        }
+      },
+      "corrected": {
+        "e2e": {
+          "count": 601,
+          "reference_mean_ms": 2895.8841833178035,
+          "simulated_mean_ms": 3617.934836171464,
+          "mape_percent": 30.676887377931305,
+          "signed_mean_percent_error": 3.078597816919495,
+          "ratio_of_means": 1.2493368543580392,
+          "median_request_ratio": 0.9305377152882142
+        },
+        "ttft": {
+          "count": 601,
+          "reference_mean_ms": 646.5858771297836,
+          "simulated_mean_ms": 255.63572860242195,
+          "mape_percent": 62.21175420107583,
+          "signed_mean_percent_error": -53.7433137894014,
+          "ratio_of_means": 0.3953623758953683,
+          "median_request_ratio": 0.3710348428217282
+        },
+        "tpot": {
+          "count": 599,
+          "reference_mean_ms": 3.274826885549308,
+          "simulated_mean_ms": 4.123447416047832,
+          "mape_percent": 92.29242110933559,
+          "signed_mean_percent_error": 83.10983696379068,
+          "ratio_of_means": 1.2591344703572567,
+          "median_request_ratio": 1.1693441182463284
+        }
+      },
+      "baseline_output_throughput": {
+        "metric": "Output throughput \u00b7 full profile",
+        "unit": "tokens/s",
+        "reference": 139.37212092540923,
+        "simulated": 121.68134789986462,
+        "mape_percent": 12.693193522550011,
+        "count": 1,
+        "scope": "One aggregate data point (N=1): APE, not request-level MAPE; each full successful profile cohort uses its own realized requests and span"
+      },
+      "corrected_output_throughput": {
+        "metric": "Output throughput \u00b7 full profile",
+        "unit": "tokens/s",
+        "reference": 139.37212092540923,
+        "simulated": 123.35516666509747,
+        "mape_percent": 11.492222514776754,
+        "count": 1,
+        "scope": "One aggregate data point (N=1): APE, not request-level MAPE; each full successful profile cohort uses its own realized requests and span"
+      },
+      "wall_seconds": 112.92580678127706,
+      "config_sha256": "222c516cdffab41f27f570e7a6c76bfbe7b8c37a25648d6d8251d2389028f445",
+      "input_bins": [
+        {
+          "reference_input_tokens_min_inclusive": 0,
+          "reference_input_tokens_max_exclusive": 64000,
+          "count": 167,
+          "baseline": {
+            "e2e": {
+              "count": 167,
+              "reference_mean_ms": 1468.2853629161675,
+              "simulated_mean_ms": 1469.5523076646452,
+              "mape_percent": 30.612087820456598,
+              "signed_mean_percent_error": -5.714469009432651,
+              "ratio_of_means": 1.000862873648731,
+              "median_request_ratio": 0.862196579262871
+            },
+            "ttft": {
+              "count": 167,
+              "reference_mean_ms": 319.57469265868264,
+              "simulated_mean_ms": 214.72585415564808,
+              "mape_percent": 51.50293384743278,
+              "signed_mean_percent_error": -29.67271354916363,
+              "ratio_of_means": 0.6719113217922518,
+              "median_request_ratio": 0.582351686078004
+            },
+            "tpot": {
+              "count": 167,
+              "reference_mean_ms": 3.870880603782731,
+              "simulated_mean_ms": 3.641507735517126,
+              "mape_percent": 32.33836531071276,
+              "signed_mean_percent_error": 9.902465941461566,
+              "ratio_of_means": 0.9407440084714948,
+              "median_request_ratio": 0.9502409689141674
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 167,
+              "reference_mean_ms": 1468.2853629161675,
+              "simulated_mean_ms": 1274.1344363412416,
+              "mape_percent": 26.211950210607583,
+              "signed_mean_percent_error": -14.882979963220654,
+              "ratio_of_means": 0.8677703044118603,
+              "median_request_ratio": 0.8338639287909512
+            },
+            "ttft": {
+              "count": 167,
+              "reference_mean_ms": 319.57469265868264,
+              "simulated_mean_ms": 214.78091950896612,
+              "mape_percent": 49.78113183009672,
+              "signed_mean_percent_error": -31.32084900182807,
+              "ratio_of_means": 0.6720836300337459,
+              "median_request_ratio": 0.582971444799529
+            },
+            "tpot": {
+              "count": 167,
+              "reference_mean_ms": 3.870880603782731,
+              "simulated_mean_ms": 3.1611253460016413,
+              "mape_percent": 22.612725588686004,
+              "signed_mean_percent_error": -3.775108783793019,
+              "ratio_of_means": 0.8166424309012534,
+              "median_request_ratio": 0.936203206868941
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 64000,
+          "reference_input_tokens_max_exclusive": 128000,
+          "count": 144,
+          "baseline": {
+            "e2e": {
+              "count": 144,
+              "reference_mean_ms": 2326.7573532083334,
+              "simulated_mean_ms": 2652.7495151388807,
+              "mape_percent": 29.836022638238315,
+              "signed_mean_percent_error": 5.619570924759636,
+              "ratio_of_means": 1.1401057834763222,
+              "median_request_ratio": 0.918426156952046
+            },
+            "ttft": {
+              "count": 144,
+              "reference_mean_ms": 438.64930998611106,
+              "simulated_mean_ms": 222.24612443743476,
+              "mape_percent": 56.418773830401946,
+              "signed_mean_percent_error": -56.052380471061845,
+              "ratio_of_means": 0.5066601482730515,
+              "median_request_ratio": 0.38269134123094695
+            },
+            "tpot": {
+              "count": 143,
+              "reference_mean_ms": 2.934135098228467,
+              "simulated_mean_ms": 3.8330994308633377,
+              "mape_percent": 94.92547627109101,
+              "signed_mean_percent_error": 90.46462845111887,
+              "ratio_of_means": 1.3063813705025495,
+              "median_request_ratio": 1.033972699927124
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 144,
+              "reference_mean_ms": 2326.7573532083334,
+              "simulated_mean_ms": 2320.475634618144,
+              "mape_percent": 25.16130082034809,
+              "signed_mean_percent_error": 0.9299448668983927,
+              "ratio_of_means": 0.9973002261789233,
+              "median_request_ratio": 0.9179481452397465
+            },
+            "ttft": {
+              "count": 144,
+              "reference_mean_ms": 438.64930998611106,
+              "simulated_mean_ms": 245.4346596318519,
+              "mape_percent": 60.81505961644931,
+              "signed_mean_percent_error": -46.879882844953,
+              "ratio_of_means": 0.5595236423365697,
+              "median_request_ratio": 0.3832101432154916
+            },
+            "tpot": {
+              "count": 143,
+              "reference_mean_ms": 2.934135098228467,
+              "simulated_mean_ms": 3.4491555362619803,
+              "mape_percent": 102.82359675741408,
+              "signed_mean_percent_error": 97.5970595055961,
+              "ratio_of_means": 1.1755271726732914,
+              "median_request_ratio": 1.0279126717169031
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 128000,
+          "reference_input_tokens_max_exclusive": 256000,
+          "count": 137,
+          "baseline": {
+            "e2e": {
+              "count": 137,
+              "reference_mean_ms": 3420.788026328467,
+              "simulated_mean_ms": 4288.587067050822,
+              "mape_percent": 26.424800490022765,
+              "signed_mean_percent_error": 13.27546377913957,
+              "ratio_of_means": 1.253683956457765,
+              "median_request_ratio": 1.0866554821247547
+            },
+            "ttft": {
+              "count": 137,
+              "reference_mean_ms": 677.606669948905,
+              "simulated_mean_ms": 287.766081262594,
+              "mape_percent": 64.03394472032157,
+              "signed_mean_percent_error": -64.03394472032157,
+              "ratio_of_means": 0.42468011904943764,
+              "median_request_ratio": 0.33471659753791605
+            },
+            "tpot": {
+              "count": 137,
+              "reference_mean_ms": 2.917010198532857,
+              "simulated_mean_ms": 4.401458731851699,
+              "mape_percent": 233.06143661263525,
+              "signed_mean_percent_error": 232.3636119408174,
+              "ratio_of_means": 1.5088938441372135,
+              "median_request_ratio": 1.3450320700379286
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 137,
+              "reference_mean_ms": 3420.788026328467,
+              "simulated_mean_ms": 3866.9303052117248,
+              "mape_percent": 23.465702131814425,
+              "signed_mean_percent_error": 2.0881121276625447,
+              "ratio_of_means": 1.1304209075363558,
+              "median_request_ratio": 0.9995234032153061
+            },
+            "ttft": {
+              "count": 137,
+              "reference_mean_ms": 677.606669948905,
+              "simulated_mean_ms": 290.69473074473115,
+              "mape_percent": 63.26764312069369,
+              "signed_mean_percent_error": -63.26764312069369,
+              "ratio_of_means": 0.42900216842117417,
+              "median_request_ratio": 0.3360032729615353
+            },
+            "tpot": {
+              "count": 137,
+              "reference_mean_ms": 2.917010198532857,
+              "simulated_mean_ms": 3.789507571791395,
+              "mape_percent": 162.17338659619915,
+              "signed_mean_percent_error": 160.75306040110533,
+              "ratio_of_means": 1.2991067270513386,
+              "median_request_ratio": 1.2076552968058574
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 256000,
+          "reference_input_tokens_max_exclusive": 384000,
+          "count": 61,
+          "baseline": {
+            "e2e": {
+              "count": 61,
+              "reference_mean_ms": 2780.298681409836,
+              "simulated_mean_ms": 3485.7138072461544,
+              "mape_percent": 39.52227941595279,
+              "signed_mean_percent_error": 4.468707143589355,
+              "ratio_of_means": 1.253719188716306,
+              "median_request_ratio": 1.0725412762529252
+            },
+            "ttft": {
+              "count": 61,
+              "reference_mean_ms": 883.464023704918,
+              "simulated_mean_ms": 256.86724306582704,
+              "mape_percent": 72.10736273868095,
+              "signed_mean_percent_error": -72.10736273868095,
+              "ratio_of_means": 0.2907500884853486,
+              "median_request_ratio": 0.24701748137598545
+            },
+            "tpot": {
+              "count": 60,
+              "reference_mean_ms": 3.429014259088218,
+              "simulated_mean_ms": 5.559022815149949,
+              "mape_percent": 79.55439136293938,
+              "signed_mean_percent_error": 77.23017929165192,
+              "ratio_of_means": 1.621172265591017,
+              "median_request_ratio": 1.5991478622793383
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 61,
+              "reference_mean_ms": 2780.298681409836,
+              "simulated_mean_ms": 2806.098563639217,
+              "mape_percent": 30.39611559171189,
+              "signed_mean_percent_error": -14.364026595068083,
+              "ratio_of_means": 1.0092795361886437,
+              "median_request_ratio": 0.8873008954650888
+            },
+            "ttft": {
+              "count": 61,
+              "reference_mean_ms": 883.464023704918,
+              "simulated_mean_ms": 245.17100663926857,
+              "mape_percent": 73.71857643240395,
+              "signed_mean_percent_error": -73.71857643240395,
+              "ratio_of_means": 0.277511024853183,
+              "median_request_ratio": 0.22299688997209977
+            },
+            "tpot": {
+              "count": 60,
+              "reference_mean_ms": 3.429014259088218,
+              "simulated_mean_ms": 4.4931033378908705,
+              "mape_percent": 45.06985624245456,
+              "signed_mean_percent_error": 42.54285545512825,
+              "ratio_of_means": 1.3103192341596142,
+              "median_request_ratio": 1.329718228713764
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 384000,
+          "reference_input_tokens_max_exclusive": null,
+          "count": 92,
+          "baseline": {
+            "e2e": {
+              "count": 92,
+              "reference_mean_ms": 5673.081527521739,
+              "simulated_mean_ms": 11490.778580293498,
+              "mape_percent": 77.9356305141284,
+              "signed_mean_percent_error": 73.72798767965803,
+              "ratio_of_means": 2.0254915295238485,
+              "median_request_ratio": 1.7821981135692182
+            },
+            "ttft": {
+              "count": 92,
+              "reference_mean_ms": 1362.3936805869564,
+              "simulated_mean_ms": 301.4252457064304,
+              "mape_percent": 77.7004483686699,
+              "signed_mean_percent_error": -77.7004483686699,
+              "ratio_of_means": 0.22124680259568452,
+              "median_request_ratio": 0.20237128630476112
+            },
+            "tpot": {
+              "count": 92,
+              "reference_mean_ms": 3.154692085014718,
+              "simulated_mean_ms": 8.229833188324928,
+              "mape_percent": 163.51240360534328,
+              "signed_mean_percent_error": 163.51240360534328,
+              "ratio_of_means": 2.60875957670098,
+              "median_request_ratio": 2.674410105738861
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 92,
+              "reference_mean_ms": 5673.081527521739,
+              "simulated_mean_ms": 10070.743805315775,
+              "mape_percent": 58.339370300892625,
+              "signed_mean_percent_error": 52.08605588915741,
+              "ratio_of_means": 1.7751805181116682,
+              "median_request_ratio": 1.512841883921329
+            },
+            "ttft": {
+              "count": 92,
+              "reference_mean_ms": 1362.3936805869564,
+              "simulated_mean_ms": 300.49411769617416,
+              "mape_percent": 77.76028700587003,
+              "signed_mean_percent_error": -77.76028700587003,
+              "ratio_of_means": 0.22056335255952822,
+              "median_request_ratio": 0.20212887303422805
+            },
+            "tpot": {
+              "count": 92,
+              "reference_mean_ms": 3.154692085014718,
+              "simulated_mean_ms": 7.174555327565663,
+              "mape_percent": 129.14255865918133,
+              "signed_mean_percent_error": 129.14255865918133,
+              "ratio_of_means": 2.274249002508335,
+              "median_request_ratio": 2.2951658525634686
+            }
+          }
+        }
+      ]
+    },
+    {
+      "point_id": 446069,
+      "concurrency": 8,
+      "baseline_strict_count": 1352,
+      "retained_baseline_count": 1352,
+      "candidate_strict_count": 1377,
+      "baseline": {
+        "e2e": {
+          "count": 1352,
+          "reference_mean_ms": 2760.0676637855026,
+          "simulated_mean_ms": 4090.8416526904925,
+          "mape_percent": 49.78488103462548,
+          "signed_mean_percent_error": 34.839809023249806,
+          "ratio_of_means": 1.482152668344297,
+          "median_request_ratio": 1.20403972532869
+        },
+        "ttft": {
+          "count": 1352,
+          "reference_mean_ms": 595.8145219704141,
+          "simulated_mean_ms": 237.55298463812534,
+          "mape_percent": 62.36957502859246,
+          "signed_mean_percent_error": -53.09142234617314,
+          "ratio_of_means": 0.3987029115244044,
+          "median_request_ratio": 0.38186122172293124
+        },
+        "tpot": {
+          "count": 1351,
+          "reference_mean_ms": 3.6231682568701675,
+          "simulated_mean_ms": 6.027285930668676,
+          "mape_percent": 135.12346397943605,
+          "signed_mean_percent_error": 130.37812557965736,
+          "ratio_of_means": 1.6635401679841604,
+          "median_request_ratio": 1.5779290899173837
+        }
+      },
+      "corrected": {
+        "e2e": {
+          "count": 1352,
+          "reference_mean_ms": 2760.0676637855026,
+          "simulated_mean_ms": 3271.906485721358,
+          "mape_percent": 32.21734635881792,
+          "signed_mean_percent_error": 10.707152641541269,
+          "ratio_of_means": 1.1854443022001335,
+          "median_request_ratio": 1.031605885767483
+        },
+        "ttft": {
+          "count": 1352,
+          "reference_mean_ms": 595.8145219704141,
+          "simulated_mean_ms": 245.62263045804485,
+          "mape_percent": 66.70630571557334,
+          "signed_mean_percent_error": -49.65939997058265,
+          "ratio_of_means": 0.4122468006414948,
+          "median_request_ratio": 0.3794002051128823
+        },
+        "tpot": {
+          "count": 1351,
+          "reference_mean_ms": 3.6231682568701675,
+          "simulated_mean_ms": 4.839674071596174,
+          "mape_percent": 87.07508257978348,
+          "signed_mean_percent_error": 79.07363678782119,
+          "ratio_of_means": 1.3357574720465428,
+          "median_request_ratio": 1.2805979497482898
+        }
+      },
+      "baseline_output_throughput": {
+        "metric": "Output throughput \u00b7 full profile",
+        "unit": "tokens/s",
+        "reference": 248.73284316085034,
+        "simulated": 235.8679030083356,
+        "mape_percent": 5.17219197474266,
+        "count": 1,
+        "scope": "One aggregate data point (N=1): APE, not request-level MAPE; each full successful profile cohort uses its own realized requests and span"
+      },
+      "corrected_output_throughput": {
+        "metric": "Output throughput \u00b7 full profile",
+        "unit": "tokens/s",
+        "reference": 248.73284316085034,
+        "simulated": 242.834471758192,
+        "mape_percent": 2.3713681425029938,
+        "count": 1,
+        "scope": "One aggregate data point (N=1): APE, not request-level MAPE; each full successful profile cohort uses its own realized requests and span"
+      },
+      "wall_seconds": 113.81403778027743,
+      "config_sha256": "6f2bbb4396cb5df0debe7310a506b9091965bd7d444c7e2afb822728b183f2a1",
+      "input_bins": [
+        {
+          "reference_input_tokens_min_inclusive": 0,
+          "reference_input_tokens_max_exclusive": 64000,
+          "count": 304,
+          "baseline": {
+            "e2e": {
+              "count": 304,
+              "reference_mean_ms": 1856.3543490230263,
+              "simulated_mean_ms": 2203.221635739986,
+              "mape_percent": 37.288704726806344,
+              "signed_mean_percent_error": 19.116179352491926,
+              "ratio_of_means": 1.1868540275726513,
+              "median_request_ratio": 1.079524569997946
+            },
+            "ttft": {
+              "count": 304,
+              "reference_mean_ms": 377.54335944078946,
+              "simulated_mean_ms": 229.71628775320656,
+              "mape_percent": 53.107479902346,
+              "signed_mean_percent_error": -36.99877151452596,
+              "ratio_of_means": 0.6084500813190259,
+              "median_request_ratio": 0.5090109335849631
+            },
+            "tpot": {
+              "count": 304,
+              "reference_mean_ms": 3.640153523816653,
+              "simulated_mean_ms": 5.084501015364088,
+              "mape_percent": 52.52585566518199,
+              "signed_mean_percent_error": 44.20264239242632,
+              "ratio_of_means": 1.396782026389111,
+              "median_request_ratio": 1.2476748506946573
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 304,
+              "reference_mean_ms": 1856.3543490230263,
+              "simulated_mean_ms": 1984.3522340561908,
+              "mape_percent": 29.82173316068662,
+              "signed_mean_percent_error": 6.133940111231291,
+              "ratio_of_means": 1.0689512134903167,
+              "median_request_ratio": 0.9589354022043055
+            },
+            "ttft": {
+              "count": 304,
+              "reference_mean_ms": 377.54335944078946,
+              "simulated_mean_ms": 268.74059063839275,
+              "mape_percent": 62.44246574225094,
+              "signed_mean_percent_error": -25.54415180723255,
+              "ratio_of_means": 0.7118138457962724,
+              "median_request_ratio": 0.5229381778341233
+            },
+            "tpot": {
+              "count": 304,
+              "reference_mean_ms": 3.640153523816653,
+              "simulated_mean_ms": 4.455874097836007,
+              "mape_percent": 36.90647805398004,
+              "signed_mean_percent_error": 24.414513019001078,
+              "ratio_of_means": 1.22408960739768,
+              "median_request_ratio": 1.06886316739901
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 64000,
+          "reference_input_tokens_max_exclusive": 128000,
+          "count": 558,
+          "baseline": {
+            "e2e": {
+              "count": 558,
+              "reference_mean_ms": 2249.7434035071683,
+              "simulated_mean_ms": 3037.0325743474164,
+              "mape_percent": 45.50937164536538,
+              "signed_mean_percent_error": 31.112726193911406,
+              "ratio_of_means": 1.3499462070265116,
+              "median_request_ratio": 1.169796388685458
+            },
+            "ttft": {
+              "count": 558,
+              "reference_mean_ms": 430.81268648207885,
+              "simulated_mean_ms": 214.9603500033521,
+              "mape_percent": 62.478355426869655,
+              "signed_mean_percent_error": -49.818575397771504,
+              "ratio_of_means": 0.49896476298938824,
+              "median_request_ratio": 0.392151826402215
+            },
+            "tpot": {
+              "count": 558,
+              "reference_mean_ms": 3.6589183852449367,
+              "simulated_mean_ms": 5.628768212032491,
+              "mape_percent": 116.40303602635319,
+              "signed_mean_percent_error": 110.89492013294813,
+              "ratio_of_means": 1.5383694358232283,
+              "median_request_ratio": 1.4383548752599875
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 558,
+              "reference_mean_ms": 2249.7434035071683,
+              "simulated_mean_ms": 2430.7807914750697,
+              "mape_percent": 29.472913186933717,
+              "signed_mean_percent_error": 6.763969445576652,
+              "ratio_of_means": 1.080470238377265,
+              "median_request_ratio": 0.9981598111181574
+            },
+            "ttft": {
+              "count": 558,
+              "reference_mean_ms": 430.81268648207885,
+              "simulated_mean_ms": 205.60125894997134,
+              "mape_percent": 66.97324731948511,
+              "signed_mean_percent_error": -49.19814008704159,
+              "ratio_of_means": 0.477240493145329,
+              "median_request_ratio": 0.3862676018420248
+            },
+            "tpot": {
+              "count": 558,
+              "reference_mean_ms": 3.6589183852449367,
+              "simulated_mean_ms": 4.432308263493313,
+              "mape_percent": 73.6218886190733,
+              "signed_mean_percent_error": 64.05115632908685,
+              "ratio_of_means": 1.2113711749808829,
+              "median_request_ratio": 1.1867220634865911
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 128000,
+          "reference_input_tokens_max_exclusive": 256000,
+          "count": 240,
+          "baseline": {
+            "e2e": {
+              "count": 240,
+              "reference_mean_ms": 3202.2069616541667,
+              "simulated_mean_ms": 4833.988156520435,
+              "mape_percent": 52.7648489914312,
+              "signed_mean_percent_error": 37.3936722231171,
+              "ratio_of_means": 1.5095801784227394,
+              "median_request_ratio": 1.244498889166178
+            },
+            "ttft": {
+              "count": 240,
+              "reference_mean_ms": 678.3487288541667,
+              "simulated_mean_ms": 245.16105544986738,
+              "mape_percent": 62.7350861845821,
+              "signed_mean_percent_error": -62.16593322961239,
+              "ratio_of_means": 0.3614085867957347,
+              "median_request_ratio": 0.344442962424407
+            },
+            "tpot": {
+              "count": 240,
+              "reference_mean_ms": 3.558176022989128,
+              "simulated_mean_ms": 6.291904800350752,
+              "mape_percent": 94.89257630796364,
+              "signed_mean_percent_error": 92.38584736630615,
+              "ratio_of_means": 1.7682949802649426,
+              "median_request_ratio": 1.732147144175686
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 240,
+              "reference_mean_ms": 3202.2069616541667,
+              "simulated_mean_ms": 3774.2748507251686,
+              "mape_percent": 32.24576803596507,
+              "signed_mean_percent_error": 10.608077245877663,
+              "ratio_of_means": 1.1786480061786788,
+              "median_request_ratio": 1.0550412868259995
+            },
+            "ttft": {
+              "count": 240,
+              "reference_mean_ms": 678.3487288541667,
+              "simulated_mean_ms": 256.5111459085014,
+              "mape_percent": 64.66396033053826,
+              "signed_mean_percent_error": -58.807478405534155,
+              "ratio_of_means": 0.3781405271323902,
+              "median_request_ratio": 0.3455920673509679
+            },
+            "tpot": {
+              "count": 240,
+              "reference_mean_ms": 3.558176022989128,
+              "simulated_mean_ms": 4.879250452645494,
+              "mape_percent": 59.60420417361389,
+              "signed_mean_percent_error": 54.142129315737805,
+              "ratio_of_means": 1.3712785486499253,
+              "median_request_ratio": 1.2973599143122925
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 256000,
+          "reference_input_tokens_max_exclusive": 384000,
+          "count": 137,
+          "baseline": {
+            "e2e": {
+              "count": 137,
+              "reference_mean_ms": 3714.290969386861,
+              "simulated_mean_ms": 6135.630946641943,
+              "mape_percent": 70.07890632668807,
+              "signed_mean_percent_error": 55.560009977350404,
+              "ratio_of_means": 1.651898302317114,
+              "median_request_ratio": 1.5359677009398252
+            },
+            "ttft": {
+              "count": 137,
+              "reference_mean_ms": 974.9139339708029,
+              "simulated_mean_ms": 276.3051679709486,
+              "mape_percent": 71.17364832026608,
+              "signed_mean_percent_error": -67.91626794578336,
+              "ratio_of_means": 0.28341493371170084,
+              "median_request_ratio": 0.28577217842704183
+            },
+            "tpot": {
+              "count": 136,
+              "reference_mean_ms": 3.625413272428331,
+              "simulated_mean_ms": 7.485473815545809,
+              "mape_percent": 463.4626035662779,
+              "signed_mean_percent_error": 461.9511937966787,
+              "ratio_of_means": 2.064722902758057,
+              "median_request_ratio": 2.100032939265896
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 137,
+              "reference_mean_ms": 3714.290969386861,
+              "simulated_mean_ms": 4573.893492693357,
+              "mape_percent": 37.17797984309127,
+              "signed_mean_percent_error": 18.105272197842236,
+              "ratio_of_means": 1.2314311211456854,
+              "median_request_ratio": 1.1821375084026806
+            },
+            "ttft": {
+              "count": 137,
+              "reference_mean_ms": 974.9139339708029,
+              "simulated_mean_ms": 250.53844723367322,
+              "mape_percent": 71.47670935329829,
+              "signed_mean_percent_error": -71.47670935329829,
+              "ratio_of_means": 0.2569851947989251,
+              "median_request_ratio": 0.28029361431417504
+            },
+            "tpot": {
+              "count": 136,
+              "reference_mean_ms": 3.625413272428331,
+              "simulated_mean_ms": 5.8939217041229,
+              "mape_percent": 299.289224547406,
+              "signed_mean_percent_error": 297.0380416855213,
+              "ratio_of_means": 1.6257240930149472,
+              "median_request_ratio": 1.6348976913348547
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 384000,
+          "reference_input_tokens_max_exclusive": null,
+          "count": 113,
+          "baseline": {
+            "e2e": {
+              "count": 113,
+              "reference_mean_ms": 5615.357580309735,
+              "simulated_mean_ms": 10315.360738335234,
+              "mape_percent": 73.58220901814946,
+              "signed_mean_percent_error": 64.99999433299571,
+              "ratio_of_means": 1.8369908934216534,
+              "median_request_ratio": 1.6720491861054538
+            },
+            "ttft": {
+              "count": 113,
+              "reference_mean_ms": 1362.8997300707963,
+              "simulated_mean_ms": 307.0579392204609,
+              "mape_percent": 75.2996346546407,
+              "signed_mean_percent_error": -75.2996346546407,
+              "ratio_of_means": 0.22529752735699105,
+              "median_request_ratio": 0.23883770082083747
+            },
+            "tpot": {
+              "count": 113,
+              "reference_mean_ms": 3.5362719845753565,
+              "simulated_mean_ms": 8.214519737612017,
+              "mape_percent": 140.0523293130322,
+              "signed_mean_percent_error": 140.0523293130322,
+              "ratio_of_means": 2.3229321085715173,
+              "median_request_ratio": 2.363616586945
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 113,
+              "reference_mean_ms": 5615.357580309735,
+              "simulated_mean_ms": 8243.800311735173,
+              "mape_percent": 46.13975460910582,
+              "signed_mean_percent_error": 33.72298050267863,
+              "ratio_of_means": 1.4680810961428492,
+              "median_request_ratio": 1.3135395767365405
+            },
+            "ttft": {
+              "count": 113,
+              "reference_mean_ms": 1362.8997300707963,
+              "simulated_mean_ms": 351.9709030271475,
+              "mape_percent": 75.41313342307187,
+              "signed_mean_percent_error": -70.93292427902459,
+              "ratio_of_means": 0.25825150248497314,
+              "median_request_ratio": 0.24259688563642334
+            },
+            "tpot": {
+              "count": 113,
+              "reference_mean_ms": 3.5362719845753565,
+              "simulated_mean_ms": 6.5309068456582535,
+              "mape_percent": 91.41159156920453,
+              "signed_mean_percent_error": 90.92603014098817,
+              "ratio_of_means": 1.8468338618027706,
+              "median_request_ratio": 1.8652095082200588
+            }
+          }
+        }
+      ]
+    },
+    {
+      "point_id": 446060,
+      "concurrency": 10,
+      "baseline_strict_count": 1545,
+      "retained_baseline_count": 1545,
+      "candidate_strict_count": 1561,
+      "baseline": {
+        "e2e": {
+          "count": 1545,
+          "reference_mean_ms": 2966.9395611417476,
+          "simulated_mean_ms": 4726.259528638874,
+          "mape_percent": 59.45317145177182,
+          "signed_mean_percent_error": 48.744206777187934,
+          "ratio_of_means": 1.5929746566256642,
+          "median_request_ratio": 1.3930741467140886
+        },
+        "ttft": {
+          "count": 1545,
+          "reference_mean_ms": 609.7002833475727,
+          "simulated_mean_ms": 252.0288069262063,
+          "mape_percent": 62.86112324033785,
+          "signed_mean_percent_error": -51.66296648722394,
+          "ratio_of_means": 0.41336508085979,
+          "median_request_ratio": 0.3793173385352064
+        },
+        "tpot": {
+          "count": 1542,
+          "reference_mean_ms": 3.878359347914046,
+          "simulated_mean_ms": 6.878183476940219,
+          "mape_percent": 192.2841089305623,
+          "signed_mean_percent_error": 188.3705276034825,
+          "ratio_of_means": 1.773477612547587,
+          "median_request_ratio": 1.8178097963288755
+        }
+      },
+      "corrected": {
+        "e2e": {
+          "count": 1545,
+          "reference_mean_ms": 2966.9395611417476,
+          "simulated_mean_ms": 3651.359999840086,
+          "mape_percent": 33.87167416124016,
+          "signed_mean_percent_error": 16.108847220548252,
+          "ratio_of_means": 1.2306822989124042,
+          "median_request_ratio": 1.1052844057240219
+        },
+        "ttft": {
+          "count": 1545,
+          "reference_mean_ms": 609.7002833475727,
+          "simulated_mean_ms": 257.8628381235426,
+          "mape_percent": 64.75183007134883,
+          "signed_mean_percent_error": -49.975101379643434,
+          "ratio_of_means": 0.42293376789615555,
+          "median_request_ratio": 0.3741322554308774
+        },
+        "tpot": {
+          "count": 1542,
+          "reference_mean_ms": 3.878359347914046,
+          "simulated_mean_ms": 5.2292310496246435,
+          "mape_percent": 116.62747726311142,
+          "signed_mean_percent_error": 109.94519646054,
+          "ratio_of_means": 1.3483100921107674,
+          "median_request_ratio": 1.381250552508467
+        }
+      },
+      "baseline_output_throughput": {
+        "metric": "Output throughput \u00b7 full profile",
+        "unit": "tokens/s",
+        "reference": 292.40757109943263,
+        "simulated": 279.49684604704396,
+        "mape_percent": 4.415318318826431,
+        "count": 1,
+        "scope": "One aggregate data point (N=1): APE, not request-level MAPE; each full successful profile cohort uses its own realized requests and span"
+      },
+      "corrected_output_throughput": {
+        "metric": "Output throughput \u00b7 full profile",
+        "unit": "tokens/s",
+        "reference": 292.40757109943263,
+        "simulated": 284.5760854681582,
+        "mape_percent": 2.6782773106142734,
+        "count": 1,
+        "scope": "One aggregate data point (N=1): APE, not request-level MAPE; each full successful profile cohort uses its own realized requests and span"
+      },
+      "wall_seconds": 114.28771833982319,
+      "config_sha256": "d0a456d0882ea1e7c102e9d48273cc85636eecc5a01029bf9a029978edaca28a",
+      "input_bins": [
+        {
+          "reference_input_tokens_min_inclusive": 0,
+          "reference_input_tokens_max_exclusive": 64000,
+          "count": 322,
+          "baseline": {
+            "e2e": {
+              "count": 322,
+              "reference_mean_ms": 1985.2367402391303,
+              "simulated_mean_ms": 2609.8286130807437,
+              "mape_percent": 56.14920302616937,
+              "signed_mean_percent_error": 41.94722710984402,
+              "ratio_of_means": 1.3146183325049579,
+              "median_request_ratio": 1.243659167198436
+            },
+            "ttft": {
+              "count": 322,
+              "reference_mean_ms": 418.53185032298137,
+              "simulated_mean_ms": 281.0475046956195,
+              "mape_percent": 58.61620317135158,
+              "signed_mean_percent_error": -23.503711280219438,
+              "ratio_of_means": 0.671508045274774,
+              "median_request_ratio": 0.5896026833288448
+            },
+            "tpot": {
+              "count": 320,
+              "reference_mean_ms": 4.709694930381248,
+              "simulated_mean_ms": 6.271356048922535,
+              "mape_percent": 222.30494467923066,
+              "signed_mean_percent_error": 213.28601167160852,
+              "ratio_of_means": 1.3315843471022593,
+              "median_request_ratio": 1.537090909581777
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 322,
+              "reference_mean_ms": 1985.2367402391303,
+              "simulated_mean_ms": 2129.588816288572,
+              "mape_percent": 32.21498663433799,
+              "signed_mean_percent_error": 9.766170094991864,
+              "ratio_of_means": 1.072712776830865,
+              "median_request_ratio": 1.0130165104063165
+            },
+            "ttft": {
+              "count": 322,
+              "reference_mean_ms": 418.53185032298137,
+              "simulated_mean_ms": 281.2593897979478,
+              "mape_percent": 58.41698250603932,
+              "signed_mean_percent_error": -26.26778266240767,
+              "ratio_of_means": 0.672014303286356,
+              "median_request_ratio": 0.5633578956444708
+            },
+            "tpot": {
+              "count": 320,
+              "reference_mean_ms": 4.709694930381248,
+              "simulated_mean_ms": 4.68751659470763,
+              "mape_percent": 102.98785940917998,
+              "signed_mean_percent_error": 89.32906770836784,
+              "ratio_of_means": 0.9952909188383837,
+              "median_request_ratio": 1.167662959087616
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 64000,
+          "reference_input_tokens_max_exclusive": 128000,
+          "count": 617,
+          "baseline": {
+            "e2e": {
+              "count": 617,
+              "reference_mean_ms": 2417.504481343598,
+              "simulated_mean_ms": 3548.3585197455195,
+              "mape_percent": 53.460739083908216,
+              "signed_mean_percent_error": 42.59202526325313,
+              "ratio_of_means": 1.467777432111901,
+              "median_request_ratio": 1.2969139248158394
+            },
+            "ttft": {
+              "count": 617,
+              "reference_mean_ms": 430.42316060291733,
+              "simulated_mean_ms": 208.58783403884513,
+              "mape_percent": 59.85002694000005,
+              "signed_mean_percent_error": -51.5806783638509,
+              "ratio_of_means": 0.4846110830715167,
+              "median_request_ratio": 0.3994454494449618
+            },
+            "tpot": {
+              "count": 617,
+              "reference_mean_ms": 3.7426334231885576,
+              "simulated_mean_ms": 6.462998924145846,
+              "mape_percent": 112.56092058616471,
+              "signed_mean_percent_error": 108.49649038758825,
+              "ratio_of_means": 1.7268586562879722,
+              "median_request_ratio": 1.6004223789993557
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 617,
+              "reference_mean_ms": 2417.504481343598,
+              "simulated_mean_ms": 2776.4215492026105,
+              "mape_percent": 31.987552593688367,
+              "signed_mean_percent_error": 14.042694370519673,
+              "ratio_of_means": 1.1484659369315973,
+              "median_request_ratio": 1.0469754705158825
+            },
+            "ttft": {
+              "count": 617,
+              "reference_mean_ms": 430.42316060291733,
+              "simulated_mean_ms": 223.23478831927716,
+              "mape_percent": 64.26346806695912,
+              "signed_mean_percent_error": -47.526933115924564,
+              "ratio_of_means": 0.5186402795021066,
+              "median_request_ratio": 0.3927435669230114
+            },
+            "tpot": {
+              "count": 617,
+              "reference_mean_ms": 3.7426334231885576,
+              "simulated_mean_ms": 4.98908603088425,
+              "mape_percent": 66.0010438861629,
+              "signed_mean_percent_error": 58.96273130123958,
+              "ratio_of_means": 1.3330415957846522,
+              "median_request_ratio": 1.284791709539643
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 128000,
+          "reference_input_tokens_max_exclusive": 256000,
+          "count": 320,
+          "baseline": {
+            "e2e": {
+              "count": 320,
+              "reference_mean_ms": 3355.73672358125,
+              "simulated_mean_ms": 5317.940415384472,
+              "mape_percent": 58.27062571346232,
+              "signed_mean_percent_error": 48.73315370335897,
+              "ratio_of_means": 1.5847311197015341,
+              "median_request_ratio": 1.4447935765082798
+            },
+            "ttft": {
+              "count": 320,
+              "reference_mean_ms": 677.0036410375,
+              "simulated_mean_ms": 249.53541434692715,
+              "mape_percent": 63.44130761152001,
+              "signed_mean_percent_error": -61.32057148530587,
+              "ratio_of_means": 0.36858799454094093,
+              "median_request_ratio": 0.3398840486240212
+            },
+            "tpot": {
+              "count": 319,
+              "reference_mean_ms": 3.542322610192904,
+              "simulated_mean_ms": 6.871012827631491,
+              "mape_percent": 265.9373394975464,
+              "signed_mean_percent_error": 264.26298129919195,
+              "ratio_of_means": 1.9396914351788292,
+              "median_request_ratio": 1.848218069226626
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 320,
+              "reference_mean_ms": 3355.73672358125,
+              "simulated_mean_ms": 4135.388125215692,
+              "mape_percent": 33.46207470249681,
+              "signed_mean_percent_error": 16.88303655301389,
+              "ratio_of_means": 1.2323339003789295,
+              "median_request_ratio": 1.1428896691954047
+            },
+            "ttft": {
+              "count": 320,
+              "reference_mean_ms": 677.0036410375,
+              "simulated_mean_ms": 265.41761416249955,
+              "mape_percent": 64.46669343933047,
+              "signed_mean_percent_error": -57.80088201927952,
+              "ratio_of_means": 0.3920475431354405,
+              "median_request_ratio": 0.33870177423851555
+            },
+            "tpot": {
+              "count": 319,
+              "reference_mean_ms": 3.542322610192904,
+              "simulated_mean_ms": 5.261352721576091,
+              "mape_percent": 183.98136974568703,
+              "signed_mean_percent_error": 180.5603025221717,
+              "ratio_of_means": 1.4852833297669559,
+              "median_request_ratio": 1.3974447039617222
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 256000,
+          "reference_input_tokens_max_exclusive": 384000,
+          "count": 139,
+          "baseline": {
+            "e2e": {
+              "count": 139,
+              "reference_mean_ms": 4115.381940985611,
+              "simulated_mean_ms": 6951.133131712526,
+              "mape_percent": 65.4701230330132,
+              "signed_mean_percent_error": 55.10024171633741,
+              "ratio_of_means": 1.6890614847884005,
+              "median_request_ratio": 1.542289204862764
+            },
+            "ttft": {
+              "count": 139,
+              "reference_mean_ms": 942.4216940431654,
+              "simulated_mean_ms": 314.63476684911046,
+              "mape_percent": 72.11086689996063,
+              "signed_mean_percent_error": -70.57053479388952,
+              "ratio_of_means": 0.33385772933480384,
+              "median_request_ratio": 0.28107047816874886
+            },
+            "tpot": {
+              "count": 139,
+              "reference_mean_ms": 3.6978241434122454,
+              "simulated_mean_ms": 7.728411779943409,
+              "mape_percent": 336.8851149388226,
+              "signed_mean_percent_error": 336.1166966214036,
+              "ratio_of_means": 2.0899889989932983,
+              "median_request_ratio": 2.065125180374604
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 139,
+              "reference_mean_ms": 4115.381940985611,
+              "simulated_mean_ms": 5136.817196201115,
+              "mape_percent": 33.76492637619462,
+              "signed_mean_percent_error": 16.446622321248086,
+              "ratio_of_means": 1.2481993821868391,
+              "median_request_ratio": 1.2001169764838955
+            },
+            "ttft": {
+              "count": 139,
+              "reference_mean_ms": 942.4216940431654,
+              "simulated_mean_ms": 285.4141005535954,
+              "mape_percent": 71.25276257870306,
+              "signed_mean_percent_error": -71.11965639286969,
+              "ratio_of_means": 0.3028517937963795,
+              "median_request_ratio": 0.27662037944033957
+            },
+            "tpot": {
+              "count": 139,
+              "reference_mean_ms": 3.6978241434122454,
+              "simulated_mean_ms": 5.880718495051142,
+              "mape_percent": 241.0281500738945,
+              "signed_mean_percent_error": 237.85829403401658,
+              "ratio_of_means": 1.5903185946599896,
+              "median_request_ratio": 1.5634036851124886
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 384000,
+          "reference_input_tokens_max_exclusive": null,
+          "count": 147,
+          "baseline": {
+            "e2e": {
+              "count": 147,
+              "reference_mean_ms": 5491.16520595238,
+              "simulated_mean_ms": 10914.425261367374,
+              "mape_percent": 88.72709642103936,
+              "signed_mean_percent_error": 83.46918347151448,
+              "ratio_of_means": 1.987633744753522,
+              "median_request_ratio": 1.8159628497366753
+            },
+            "ttft": {
+              "count": 147,
+              "reference_mean_ms": 1319.8014372244897,
+              "simulated_mean_ms": 317.02688029924326,
+              "mape_percent": 74.78858794820275,
+              "signed_mean_percent_error": -74.78858794820275,
+              "ratio_of_means": 0.24020801262797764,
+              "median_request_ratio": 0.24360968017975604
+            },
+            "tpot": {
+              "count": 147,
+              "reference_mean_ms": 3.5382615378794657,
+              "simulated_mean_ms": 9.153417143959457,
+              "mape_percent": 164.9890026918096,
+              "signed_mean_percent_error": 164.9890026918096,
+              "ratio_of_means": 2.5869815009337156,
+              "median_request_ratio": 2.5199854177348953
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 147,
+              "reference_mean_ms": 5491.16520595238,
+              "simulated_mean_ms": 8198.841596660037,
+              "mape_percent": 46.40137592832288,
+              "signed_mean_percent_error": 36.66984733966735,
+              "ratio_of_means": 1.4930968727315936,
+              "median_request_ratio": 1.3896645332733308
+            },
+            "ttft": {
+              "count": 147,
+              "reference_mean_ms": 1319.8014372244897,
+              "simulated_mean_ms": 309.45918696592196,
+              "mape_percent": 75.15151970714318,
+              "signed_mean_percent_error": -75.15151970714318,
+              "ratio_of_means": 0.23447404907870617,
+              "median_request_ratio": 0.2376382453753194
+            },
+            "tpot": {
+              "count": 147,
+              "reference_mean_ms": 3.5382615378794657,
+              "simulated_mean_ms": 6.7306904637026825,
+              "mape_percent": 95.01932681545716,
+              "signed_mean_percent_error": 94.62004549189844,
+              "ratio_of_means": 1.9022591720951438,
+              "median_request_ratio": 1.967925665793277
+            }
+          }
+        }
+      ]
+    },
+    {
+      "point_id": 446061,
+      "concurrency": 13,
+      "baseline_strict_count": 2137,
+      "retained_baseline_count": 2137,
+      "candidate_strict_count": 2162,
+      "baseline": {
+        "e2e": {
+          "count": 2137,
+          "reference_mean_ms": 2837.0336308451097,
+          "simulated_mean_ms": 4768.637396254659,
+          "mape_percent": 85.37121705951216,
+          "signed_mean_percent_error": 72.02738224205267,
+          "ratio_of_means": 1.6808533196112143,
+          "median_request_ratio": 1.4028279027425015
+        },
+        "ttft": {
+          "count": 2137,
+          "reference_mean_ms": 674.6767709925128,
+          "simulated_mean_ms": 522.0379617404435,
+          "mape_percent": 126.78398196013612,
+          "signed_mean_percent_error": 18.27660686901609,
+          "ratio_of_means": 0.7737600939965321,
+          "median_request_ratio": 0.3961916177827809
+        },
+        "tpot": {
+          "count": 2135,
+          "reference_mean_ms": 4.391340392782797,
+          "simulated_mean_ms": 8.255670604904,
+          "mape_percent": 189.00690931073404,
+          "signed_mean_percent_error": 183.94650844425286,
+          "ratio_of_means": 1.879988765724529,
+          "median_request_ratio": 1.820784349863265
+        }
+      },
+      "corrected": {
+        "e2e": {
+          "count": 2137,
+          "reference_mean_ms": 2837.0336308451097,
+          "simulated_mean_ms": 3718.3367068222133,
+          "mape_percent": 55.514053310799476,
+          "signed_mean_percent_error": 34.539225296816625,
+          "ratio_of_means": 1.3106424493510769,
+          "median_request_ratio": 1.103425561445357
+        },
+        "ttft": {
+          "count": 2137,
+          "reference_mean_ms": 674.6767709925128,
+          "simulated_mean_ms": 430.02424357088574,
+          "mape_percent": 91.56012194950827,
+          "signed_mean_percent_error": -17.14275829800592,
+          "ratio_of_means": 0.6373781669380432,
+          "median_request_ratio": 0.39239484718717693
+        },
+        "tpot": {
+          "count": 2135,
+          "reference_mean_ms": 4.391340392782797,
+          "simulated_mean_ms": 6.450135569207636,
+          "mape_percent": 172.88242499181823,
+          "signed_mean_percent_error": 163.96820157595195,
+          "ratio_of_means": 1.4688306968433795,
+          "median_request_ratio": 1.3834556908268594
+        }
+      },
+      "baseline_output_throughput": {
+        "metric": "Output throughput \u00b7 full profile",
+        "unit": "tokens/s",
+        "reference": 325.9538698049617,
+        "simulated": 337.28841561022523,
+        "mape_percent": 3.4773465987827326,
+        "count": 1,
+        "scope": "One aggregate data point (N=1): APE, not request-level MAPE; each full successful profile cohort uses its own realized requests and span"
+      },
+      "corrected_output_throughput": {
+        "metric": "Output throughput \u00b7 full profile",
+        "unit": "tokens/s",
+        "reference": 325.9538698049617,
+        "simulated": 349.13938833100923,
+        "mape_percent": 7.1131287810513975,
+        "count": 1,
+        "scope": "One aggregate data point (N=1): APE, not request-level MAPE; each full successful profile cohort uses its own realized requests and span"
+      },
+      "wall_seconds": 119.32911712583154,
+      "config_sha256": "a50ee389bfeeca54f714fff2f96c201fc36f845c703f1fa364bffe79a0747b24",
+      "input_bins": [
+        {
+          "reference_input_tokens_min_inclusive": 0,
+          "reference_input_tokens_max_exclusive": 64000,
+          "count": 539,
+          "baseline": {
+            "e2e": {
+              "count": 539,
+              "reference_mean_ms": 2072.692575239332,
+              "simulated_mean_ms": 3553.7186001500213,
+              "mape_percent": 95.96979821096302,
+              "signed_mean_percent_error": 81.81735608816369,
+              "ratio_of_means": 1.7145420611832298,
+              "median_request_ratio": 1.4039045895351785
+            },
+            "ttft": {
+              "count": 539,
+              "reference_mean_ms": 503.60825508163265,
+              "simulated_mean_ms": 541.01944659356,
+              "mape_percent": 162.13509995095285,
+              "signed_mean_percent_error": 76.15191342539266,
+              "ratio_of_means": 1.0742862952194125,
+              "median_request_ratio": 0.5451343755499983
+            },
+            "tpot": {
+              "count": 538,
+              "reference_mean_ms": 5.081045738921477,
+              "simulated_mean_ms": 8.546559267224076,
+              "mape_percent": 211.94096426139347,
+              "signed_mean_percent_error": 204.0236981939237,
+              "ratio_of_means": 1.6820473001760858,
+              "median_request_ratio": 1.7644560264954887
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 539,
+              "reference_mean_ms": 2072.692575239332,
+              "simulated_mean_ms": 2439.506930419472,
+              "mape_percent": 54.11982149006138,
+              "signed_mean_percent_error": 28.41005261971976,
+              "ratio_of_means": 1.1769748005865193,
+              "median_request_ratio": 1.052803892364466
+            },
+            "ttft": {
+              "count": 539,
+              "reference_mean_ms": 503.60825508163265,
+              "simulated_mean_ms": 342.23511015227336,
+              "mape_percent": 86.30880011614214,
+              "signed_mean_percent_error": -1.3633888677926431,
+              "ratio_of_means": 0.6795661244607648,
+              "median_request_ratio": 0.5153146409746535
+            },
+            "tpot": {
+              "count": 538,
+              "reference_mean_ms": 5.081045738921477,
+              "simulated_mean_ms": 6.104475424375009,
+              "mape_percent": 162.50265489805858,
+              "signed_mean_percent_error": 146.78987515236796,
+              "ratio_of_means": 1.2014210731491601,
+              "median_request_ratio": 1.2701774927310723
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 64000,
+          "reference_input_tokens_max_exclusive": 128000,
+          "count": 935,
+          "baseline": {
+            "e2e": {
+              "count": 935,
+              "reference_mean_ms": 2399.9361826898394,
+              "simulated_mean_ms": 3930.3370973088327,
+              "mape_percent": 81.07161240111245,
+              "signed_mean_percent_error": 67.5118687537948,
+              "ratio_of_means": 1.6376840041236953,
+              "median_request_ratio": 1.3391467339873606
+            },
+            "ttft": {
+              "count": 935,
+              "reference_mean_ms": 550.4844820609626,
+              "simulated_mean_ms": 416.6374690543097,
+              "mape_percent": 127.9476698978204,
+              "signed_mean_percent_error": 16.935806946463877,
+              "ratio_of_means": 0.756855974385432,
+              "median_request_ratio": 0.3920184423501934
+            },
+            "tpot": {
+              "count": 935,
+              "reference_mean_ms": 4.13856517359424,
+              "simulated_mean_ms": 7.849917338381098,
+              "mape_percent": 177.87034414897502,
+              "signed_mean_percent_error": 173.28575370831197,
+              "ratio_of_means": 1.8967726758217611,
+              "median_request_ratio": 1.689500920119464
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 935,
+              "reference_mean_ms": 2399.9361826898394,
+              "simulated_mean_ms": 3082.042441034133,
+              "mape_percent": 57.14113178203519,
+              "signed_mean_percent_error": 37.097815603799994,
+              "ratio_of_means": 1.284218498501819,
+              "median_request_ratio": 1.0850602546045396
+            },
+            "ttft": {
+              "count": 935,
+              "reference_mean_ms": 550.4844820609626,
+              "simulated_mean_ms": 318.17394332290917,
+              "mape_percent": 91.7484889808516,
+              "signed_mean_percent_error": -19.974822448445888,
+              "ratio_of_means": 0.5779889419074914,
+              "median_request_ratio": 0.3860525913021488
+            },
+            "tpot": {
+              "count": 935,
+              "reference_mean_ms": 4.13856517359424,
+              "simulated_mean_ms": 6.294699482524665,
+              "mape_percent": 122.56682582151365,
+              "signed_mean_percent_error": 114.9186790687076,
+              "ratio_of_means": 1.520985950079379,
+              "median_request_ratio": 1.3354341556601665
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 128000,
+          "reference_input_tokens_max_exclusive": 256000,
+          "count": 474,
+          "baseline": {
+            "e2e": {
+              "count": 474,
+              "reference_mean_ms": 3721.214838742616,
+              "simulated_mean_ms": 5925.030416529065,
+              "mape_percent": 78.86766083677828,
+              "signed_mean_percent_error": 66.29092148997923,
+              "ratio_of_means": 1.5922301380833765,
+              "median_request_ratio": 1.4284560655911003
+            },
+            "ttft": {
+              "count": 474,
+              "reference_mean_ms": 795.1145193818566,
+              "simulated_mean_ms": 476.1721967907179,
+              "mape_percent": 87.58743903546119,
+              "signed_mean_percent_error": -30.907151009373408,
+              "ratio_of_means": 0.5988724707994353,
+              "median_request_ratio": 0.3505255952384998
+            },
+            "tpot": {
+              "count": 473,
+              "reference_mean_ms": 4.217505184122288,
+              "simulated_mean_ms": 8.225665569080734,
+              "mape_percent": 179.69011322914872,
+              "signed_mean_percent_error": 175.70939431394427,
+              "ratio_of_means": 1.950362882788629,
+              "median_request_ratio": 1.8691802620409619
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 474,
+              "reference_mean_ms": 3721.214838742616,
+              "simulated_mean_ms": 4886.223848567586,
+              "mape_percent": 49.78626189293087,
+              "signed_mean_percent_error": 30.865704498427146,
+              "ratio_of_means": 1.3130722251496294,
+              "median_request_ratio": 1.169846650763549
+            },
+            "ttft": {
+              "count": 474,
+              "reference_mean_ms": 795.1145193818566,
+              "simulated_mean_ms": 489.00383826573284,
+              "mape_percent": 93.36313764512543,
+              "signed_mean_percent_error": -22.476265546365532,
+              "ratio_of_means": 0.6150105756412266,
+              "median_request_ratio": 0.35607378969904535
+            },
+            "tpot": {
+              "count": 473,
+              "reference_mean_ms": 4.217505184122288,
+              "simulated_mean_ms": 6.317697544184673,
+              "mape_percent": 110.36242687126938,
+              "signed_mean_percent_error": 104.19699022553155,
+              "ratio_of_means": 1.497970309074904,
+              "median_request_ratio": 1.4586265867932207
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 256000,
+          "reference_input_tokens_max_exclusive": 384000,
+          "count": 112,
+          "baseline": {
+            "e2e": {
+              "count": 112,
+              "reference_mean_ms": 4466.888105535714,
+              "simulated_mean_ms": 7817.880198847432,
+              "mape_percent": 81.93521775105353,
+              "signed_mean_percent_error": 65.99595075616169,
+              "ratio_of_means": 1.7501849193757302,
+              "median_request_ratio": 1.4786908856013956
+            },
+            "ttft": {
+              "count": 112,
+              "reference_mean_ms": 1420.7450674017857,
+              "simulated_mean_ms": 1041.926446606365,
+              "mape_percent": 115.018614765698,
+              "signed_mean_percent_error": -18.730243768229876,
+              "ratio_of_means": 0.7333662248863603,
+              "median_request_ratio": 0.2631144205587709
+            },
+            "tpot": {
+              "count": 112,
+              "reference_mean_ms": 4.070221515452942,
+              "simulated_mean_ms": 8.73971870678351,
+              "mape_percent": 133.70007728668978,
+              "signed_mean_percent_error": 131.19914292412676,
+              "ratio_of_means": 2.1472341673794473,
+              "median_request_ratio": 2.1117427007472056
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 112,
+              "reference_mean_ms": 4466.888105535714,
+              "simulated_mean_ms": 6288.911958258773,
+              "mape_percent": 57.241572758396124,
+              "signed_mean_percent_error": 35.86262438475369,
+              "ratio_of_means": 1.40789556614706,
+              "median_request_ratio": 1.115873925652321
+            },
+            "ttft": {
+              "count": 112,
+              "reference_mean_ms": 1420.7450674017857,
+              "simulated_mean_ms": 756.1846139997631,
+              "mape_percent": 80.76927491151622,
+              "signed_mean_percent_error": -56.03623449148321,
+              "ratio_of_means": 0.5322451095203519,
+              "median_request_ratio": 0.2625878185759734
+            },
+            "tpot": {
+              "count": 112,
+              "reference_mean_ms": 4.070221515452942,
+              "simulated_mean_ms": 8.223463683996464,
+              "mape_percent": 92.40649187973804,
+              "signed_mean_percent_error": 89.65895134081394,
+              "ratio_of_means": 2.020397084722634,
+              "median_request_ratio": 1.5638113650979188
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 384000,
+          "reference_input_tokens_max_exclusive": null,
+          "count": 77,
+          "baseline": {
+            "e2e": {
+              "count": 77,
+              "reference_mean_ms": 5681.453751467532,
+              "simulated_mean_ms": 11898.592267868791,
+              "mape_percent": 108.42332987892692,
+              "signed_mean_percent_error": 102.41455018192087,
+              "ratio_of_means": 2.0942865661443357,
+              "median_request_ratio": 1.7199073589975544
+            },
+            "ttft": {
+              "count": 77,
+              "reference_mean_ms": 1553.619346220779,
+              "simulated_mean_ms": 1195.1717618299517,
+              "mape_percent": 123.59673070413568,
+              "signed_mean_percent_error": -13.973702229327882,
+              "ratio_of_means": 0.7692822342469146,
+              "median_request_ratio": 0.22516660607843583
+            },
+            "tpot": {
+              "count": 77,
+              "reference_mean_ms": 4.176700414549743,
+              "simulated_mean_ms": 10.630478376392434,
+              "mape_percent": 301.674137831159,
+              "signed_mean_percent_error": 300.4418008425891,
+              "ratio_of_means": 2.5451857498231463,
+              "median_request_ratio": 2.527601143698259
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 77,
+              "reference_mean_ms": 5681.453751467532,
+              "simulated_mean_ms": 9468.225728182359,
+              "mape_percent": 78.26293038497265,
+              "signed_mean_percent_error": 67.06351486192608,
+              "ratio_of_means": 1.6665146179772554,
+              "median_request_ratio": 1.4626374881460578
+            },
+            "ttft": {
+              "count": 77,
+              "reference_mean_ms": 1553.619346220779,
+              "simulated_mean_ms": 1565.2461172215144,
+              "mape_percent": 130.62875470809132,
+              "signed_mean_percent_error": -3.8044254776379667,
+              "ratio_of_means": 1.0074836677523473,
+              "median_request_ratio": 0.22515096620941596
+            },
+            "tpot": {
+              "count": 77,
+              "reference_mean_ms": 4.176700414549743,
+              "simulated_mean_ms": 8.986867204896532,
+              "mape_percent": 1357.4884659561046,
+              "signed_mean_percent_error": 1354.8469308648605,
+              "ratio_of_means": 2.1516667016840216,
+              "median_request_ratio": 2.0076423692152807
+            }
+          }
+        }
+      ]
+    },
+    {
+      "point_id": 446062,
+      "concurrency": 14,
+      "baseline_strict_count": 2336,
+      "retained_baseline_count": 2336,
+      "candidate_strict_count": 2405,
+      "baseline": {
+        "e2e": {
+          "count": 2336,
+          "reference_mean_ms": 3326.2598966339897,
+          "simulated_mean_ms": 4827.0649474978545,
+          "mape_percent": 83.1470595734581,
+          "signed_mean_percent_error": 64.25850463474313,
+          "ratio_of_means": 1.4511989734724593,
+          "median_request_ratio": 1.354303944677347
+        },
+        "ttft": {
+          "count": 2336,
+          "reference_mean_ms": 950.9226487872431,
+          "simulated_mean_ms": 514.3842551742719,
+          "mape_percent": 101.11761400384898,
+          "signed_mean_percent_error": -10.453028108762465,
+          "ratio_of_means": 0.5409317527879797,
+          "median_request_ratio": 0.3831327712898298
+        },
+        "tpot": {
+          "count": 2335,
+          "reference_mean_ms": 5.1081394357722845,
+          "simulated_mean_ms": 8.935118421140679,
+          "mape_percent": 209.87597031069646,
+          "signed_mean_percent_error": 202.47643397784785,
+          "ratio_of_means": 1.7491923494820976,
+          "median_request_ratio": 1.7689398740401878
+        }
+      },
+      "corrected": {
+        "e2e": {
+          "count": 2336,
+          "reference_mean_ms": 3326.2598966339897,
+          "simulated_mean_ms": 3868.1561593666206,
+          "mape_percent": 57.0790180103908,
+          "signed_mean_percent_error": 31.70037492831995,
+          "ratio_of_means": 1.162914588628809,
+          "median_request_ratio": 1.089891194349452
+        },
+        "ttft": {
+          "count": 2336,
+          "reference_mean_ms": 950.9226487872431,
+          "simulated_mean_ms": 569.5199054129326,
+          "mape_percent": 111.08136390609083,
+          "signed_mean_percent_error": 0.1061063720403468,
+          "ratio_of_means": 0.5989129674629882,
+          "median_request_ratio": 0.3811193291008723
+        },
+        "tpot": {
+          "count": 2335,
+          "reference_mean_ms": 5.1081394357722845,
+          "simulated_mean_ms": 6.592322432954579,
+          "mape_percent": 124.32297193398003,
+          "signed_mean_percent_error": 113.16052539243405,
+          "ratio_of_means": 1.2905525614255096,
+          "median_request_ratio": 1.3695496702194623
+        }
+      },
+      "baseline_output_throughput": {
+        "metric": "Output throughput \u00b7 full profile",
+        "unit": "tokens/s",
+        "reference": 351.84416260391464,
+        "simulated": 335.0922162813102,
+        "mape_percent": 4.761183530409401,
+        "count": 1,
+        "scope": "One aggregate data point (N=1): APE, not request-level MAPE; each full successful profile cohort uses its own realized requests and span"
+      },
+      "corrected_output_throughput": {
+        "metric": "Output throughput \u00b7 full profile",
+        "unit": "tokens/s",
+        "reference": 351.84416260391464,
+        "simulated": 349.75265105927303,
+        "mape_percent": 0.5944425876396038,
+        "count": 1,
+        "scope": "One aggregate data point (N=1): APE, not request-level MAPE; each full successful profile cohort uses its own realized requests and span"
+      },
+      "wall_seconds": 117.75936138443649,
+      "config_sha256": "a2e598c819a5d29add74c5ce4c8598d12aec5880e3ae27c3d642036fb3aee002",
+      "input_bins": [
+        {
+          "reference_input_tokens_min_inclusive": 0,
+          "reference_input_tokens_max_exclusive": 64000,
+          "count": 664,
+          "baseline": {
+            "e2e": {
+              "count": 664,
+              "reference_mean_ms": 2204.450784207831,
+              "simulated_mean_ms": 2816.0819451244197,
+              "mape_percent": 76.53839883083742,
+              "signed_mean_percent_error": 52.40543388662405,
+              "ratio_of_means": 1.2774528536986043,
+              "median_request_ratio": 1.2265334966682027
+            },
+            "ttft": {
+              "count": 664,
+              "reference_mean_ms": 670.9869256159639,
+              "simulated_mean_ms": 351.0625930430725,
+              "mape_percent": 88.75553214487101,
+              "signed_mean_percent_error": -7.732529243541223,
+              "ratio_of_means": 0.5232033287694812,
+              "median_request_ratio": 0.48416617394171135
+            },
+            "tpot": {
+              "count": 663,
+              "reference_mean_ms": 5.293547634479252,
+              "simulated_mean_ms": 8.829263944914763,
+              "mape_percent": 124.07781693540255,
+              "signed_mean_percent_error": 112.12339134806547,
+              "ratio_of_means": 1.6679294406280212,
+              "median_request_ratio": 1.554603887650681
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 664,
+              "reference_mean_ms": 2204.450784207831,
+              "simulated_mean_ms": 2201.3131619711207,
+              "mape_percent": 54.259287958382686,
+              "signed_mean_percent_error": 24.101150218597905,
+              "ratio_of_means": 0.998576687554475,
+              "median_request_ratio": 1.0398819179055523
+            },
+            "ttft": {
+              "count": 664,
+              "reference_mean_ms": 670.9869256159639,
+              "simulated_mean_ms": 412.05622213982275,
+              "mape_percent": 107.69271478635677,
+              "signed_mean_percent_error": 14.985422125187547,
+              "ratio_of_means": 0.6141046962450967,
+              "median_request_ratio": 0.4951229781580263
+            },
+            "tpot": {
+              "count": 663,
+              "reference_mean_ms": 5.293547634479252,
+              "simulated_mean_ms": 6.192821915816216,
+              "mape_percent": 74.16404519222982,
+              "signed_mean_percent_error": 57.906940721330784,
+              "ratio_of_means": 1.1698812107554464,
+              "median_request_ratio": 1.2367952317481739
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 64000,
+          "reference_input_tokens_max_exclusive": 128000,
+          "count": 906,
+          "baseline": {
+            "e2e": {
+              "count": 906,
+              "reference_mean_ms": 2806.0530715607065,
+              "simulated_mean_ms": 4026.650544938337,
+              "mape_percent": 81.75843335206139,
+              "signed_mean_percent_error": 65.94672852345069,
+              "ratio_of_means": 1.4349873085966771,
+              "median_request_ratio": 1.3582746313702443
+            },
+            "ttft": {
+              "count": 906,
+              "reference_mean_ms": 703.5108722505519,
+              "simulated_mean_ms": 404.1027382187723,
+              "mape_percent": 108.1838043692003,
+              "signed_mean_percent_error": -2.643518332614489,
+              "ratio_of_means": 0.5744086611284852,
+              "median_request_ratio": 0.3835348189681291
+            },
+            "tpot": {
+              "count": 906,
+              "reference_mean_ms": 4.988613898422985,
+              "simulated_mean_ms": 8.238181955051111,
+              "mape_percent": 128.53773617784313,
+              "signed_mean_percent_error": 122.68877950377605,
+              "ratio_of_means": 1.6513969857750244,
+              "median_request_ratio": 1.7304086563349603
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 906,
+              "reference_mean_ms": 2806.0530715607065,
+              "simulated_mean_ms": 3213.3093160526223,
+              "mape_percent": 52.349843265623555,
+              "signed_mean_percent_error": 30.121790236445126,
+              "ratio_of_means": 1.145134904474705,
+              "median_request_ratio": 1.0999982742378145
+            },
+            "ttft": {
+              "count": 906,
+              "reference_mean_ms": 703.5108722505519,
+              "simulated_mean_ms": 413.2682549632752,
+              "mape_percent": 112.78136143379395,
+              "signed_mean_percent_error": -1.2786140027099975,
+              "ratio_of_means": 0.5874369128670577,
+              "median_request_ratio": 0.3776465336136814
+            },
+            "tpot": {
+              "count": 906,
+              "reference_mean_ms": 4.988613898422985,
+              "simulated_mean_ms": 6.252523909414205,
+              "mape_percent": 87.27783435256816,
+              "signed_mean_percent_error": 77.60869357764571,
+              "ratio_of_means": 1.2533589563607581,
+              "median_request_ratio": 1.3467228220033864
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 128000,
+          "reference_input_tokens_max_exclusive": 256000,
+          "count": 553,
+          "baseline": {
+            "e2e": {
+              "count": 553,
+              "reference_mean_ms": 4252.901758110307,
+              "simulated_mean_ms": 6468.459845619125,
+              "mape_percent": 89.52961567244742,
+              "signed_mean_percent_error": 72.20337716428318,
+              "ratio_of_means": 1.5209520965970438,
+              "median_request_ratio": 1.4353507703312423
+            },
+            "ttft": {
+              "count": 553,
+              "reference_mean_ms": 1107.3681172061483,
+              "simulated_mean_ms": 608.8977056860592,
+              "mape_percent": 99.74068071742157,
+              "signed_mean_percent_error": -20.983425177696155,
+              "ratio_of_means": 0.5498602463129308,
+              "median_request_ratio": 0.3408614283970565
+            },
+            "tpot": {
+              "count": 553,
+              "reference_mean_ms": 5.1161482378181535,
+              "simulated_mean_ms": 9.59894067785589,
+              "mape_percent": 408.9561086988529,
+              "signed_mean_percent_error": 403.566739475239,
+              "ratio_of_means": 1.876204564774198,
+              "median_request_ratio": 1.9015006949077322
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 553,
+              "reference_mean_ms": 4252.901758110307,
+              "simulated_mean_ms": 5201.959768956485,
+              "mape_percent": 63.11152911632882,
+              "signed_mean_percent_error": 39.02176718975018,
+              "ratio_of_means": 1.2231554041981616,
+              "median_request_ratio": 1.1098709818950694
+            },
+            "ttft": {
+              "count": 553,
+              "reference_mean_ms": 1107.3681172061483,
+              "simulated_mean_ms": 732.2205449674493,
+              "mape_percent": 115.9426352110816,
+              "signed_mean_percent_error": -2.1098584798785835,
+              "ratio_of_means": 0.6612259587307033,
+              "median_request_ratio": 0.34463558429739133
+            },
+            "tpot": {
+              "count": 553,
+              "reference_mean_ms": 5.1161482378181535,
+              "simulated_mean_ms": 7.163796693771249,
+              "mape_percent": 216.62412601152576,
+              "signed_mean_percent_error": 207.47061661472657,
+              "ratio_of_means": 1.4002324328323883,
+              "median_request_ratio": 1.4311639873692343
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 256000,
+          "reference_input_tokens_max_exclusive": 384000,
+          "count": 139,
+          "baseline": {
+            "e2e": {
+              "count": 139,
+              "reference_mean_ms": 5061.501684748201,
+              "simulated_mean_ms": 7449.633823311291,
+              "mape_percent": 98.12775450212465,
+              "signed_mean_percent_error": 77.99868192525663,
+              "ratio_of_means": 1.471822847705304,
+              "median_request_ratio": 1.5094221723395584
+            },
+            "ttft": {
+              "count": 139,
+              "reference_mean_ms": 2029.447648294964,
+              "simulated_mean_ms": 1201.8614092394575,
+              "mape_percent": 126.24965754648315,
+              "signed_mean_percent_error": -7.362026640885181,
+              "ratio_of_means": 0.5922110926336034,
+              "median_request_ratio": 0.2500397869122808
+            },
+            "tpot": {
+              "count": 139,
+              "reference_mean_ms": 4.6231678022423415,
+              "simulated_mean_ms": 9.451978521562175,
+              "mape_percent": 370.294587554964,
+              "signed_mean_percent_error": 365.45685521143014,
+              "ratio_of_means": 2.0444809545908655,
+              "median_request_ratio": 2.2727368992747614
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 139,
+              "reference_mean_ms": 5061.501684748201,
+              "simulated_mean_ms": 6265.655096949723,
+              "mape_percent": 71.5496460958548,
+              "signed_mean_percent_error": 46.735007537649516,
+              "ratio_of_means": 1.2379043784238957,
+              "median_request_ratio": 1.1730054513011678
+            },
+            "ttft": {
+              "count": 139,
+              "reference_mean_ms": 2029.447648294964,
+              "simulated_mean_ms": 1196.5515626620445,
+              "mape_percent": 110.05004002712063,
+              "signed_mean_percent_error": -25.56600624846431,
+              "ratio_of_means": 0.5895946927565856,
+              "median_request_ratio": 0.2550085986199135
+            },
+            "tpot": {
+              "count": 139,
+              "reference_mean_ms": 4.6231678022423415,
+              "simulated_mean_ms": 7.516325443929401,
+              "mape_percent": 248.79168376226252,
+              "signed_mean_percent_error": 243.45468788314233,
+              "ratio_of_means": 1.625795507635222,
+              "median_request_ratio": 1.7478878925075247
+            }
+          }
+        },
+        {
+          "reference_input_tokens_min_inclusive": 384000,
+          "reference_input_tokens_max_exclusive": null,
+          "count": 74,
+          "baseline": {
+            "e2e": {
+              "count": 74,
+              "reference_mean_ms": 9577.031196945945,
+              "simulated_mean_ms": 15478.952919062074,
+              "mape_percent": 83.61159973372538,
+              "signed_mean_percent_error": 64.76538276129747,
+              "ratio_of_means": 1.6162579614440657,
+              "median_request_ratio": 1.5647638981086707
+            },
+            "ttft": {
+              "count": 74,
+              "reference_mean_ms": 3296.9100915,
+              "simulated_mean_ms": 1332.4298696164294,
+              "mape_percent": 88.61145100819053,
+              "signed_mean_percent_error": -57.59041633324329,
+              "ratio_of_means": 0.40414504267242907,
+              "median_request_ratio": 0.18907509814533918
+            },
+            "tpot": {
+              "count": 74,
+              "reference_mean_ms": 5.7614730928674645,
+              "simulated_mean_ms": 12.484695368341097,
+              "mape_percent": 185.37747688611924,
+              "signed_mean_percent_error": 179.96920053905777,
+              "ratio_of_means": 2.1669276532414576,
+              "median_request_ratio": 2.364467609386943
+            }
+          },
+          "candidate": {
+            "e2e": {
+              "count": 74,
+              "reference_mean_ms": 9577.031196945945,
+              "simulated_mean_ms": 12371.254022688878,
+              "mape_percent": 68.0187089270028,
+              "signed_mean_percent_error": 36.2617139124592,
+              "ratio_of_means": 1.291762944933707,
+              "median_request_ratio": 1.339455141742651
+            },
+            "ttft": {
+              "count": 74,
+              "reference_mean_ms": 3296.9100915,
+              "simulated_mean_ms": 1501.8040536488832,
+              "mape_percent": 86.28320502664971,
+              "signed_mean_percent_error": -51.67033664423822,
+              "ratio_of_means": 0.4555186559441799,
+              "median_request_ratio": 0.20323245340832063
+            },
+            "tpot": {
+              "count": 74,
+              "reference_mean_ms": 5.7614730928674645,
+              "simulated_mean_ms": 8.325628114484228,
+              "mape_percent": 103.70910611675686,
+              "signed_mean_percent_error": 93.95400146004874,
+              "ratio_of_means": 1.4450519824159402,
+              "median_request_ratio": 1.9141886751749038
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "The SGLang decode reuse extrapolation correction is partial; full-indexer/MTP accuracy remains unqualified.",
+    "TPOT and E2E MAPE use identical retained requests; output throughput APE uses each complete realized profile.",
+    "TTFT MAPE worsened at C1,C4,C8,C10,C14.",
+    "C13 output-throughput APE worsened from 3.48% to 7.11%.",
+    "The serving identity is SGLang0.5.20; the relevant DSA measurements are inherited0.5.14 data."
+  ]
+}
