@@ -28,7 +28,7 @@ STATUS = {
 _TOP_KEYS = {"schema_version", "engines", "sections"}
 _SECTION_KEYS = {"id", "title", "intro", "row_header", "columns", "rows"}
 _ROW_KEYS = {"name", "detail", "doc", "cells", "note"}
-_DOC = re.compile(r"(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\.md(?:#[a-z0-9-]+)?")
+_DOC = re.compile(r"(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\.md(?:#[a-z0-9_-]+)?")
 _SECTION_ID = re.compile(r"[a-z][a-z0-9-]*")
 _COLUMN_HEADER = "px-3 py-2 text-center font-semibold text-slate-700 dark:text-slate-200"
 _ROW_HEADER = "px-3 py-2 text-left sticky left-0 bg-slate-50 dark:bg-slate-800"
@@ -115,16 +115,19 @@ def _heading_text(heading: str) -> str:
 
     Code spans keep their text verbatim, and an underscore inside a word is not emphasis.
     """
-    parts = re.split(r"(`[^`]*`)", heading)
-    for index, part in enumerate(parts):
-        if index % 2:
-            parts[index] = part.strip("`")
-            continue
-        part = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", part)
-        part = re.sub(r"<[^>]+>", "", part)
-        part = re.sub(r"(\*{1,3})(\S(?:.*?\S)?)\1", r"\2", part)
-        parts[index] = re.sub(r"(?<!\w)(_{1,3})(\S(?:.*?\S)?)\1(?!\w)", r"\2", part)
-    return "".join(parts)
+    codes: list[str] = []
+
+    def protect(match: re.Match[str]) -> str:
+        codes.append(match.group(1))
+        return chr(0xE000 + len(codes) - 1)
+
+    # Stand-ins keep code text out of the markup rules while links around it still match.
+    text = re.sub(r"`([^`]*)`", protect, heading)
+    text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"(\*{1,3})(\S(?:.*?\S)?)\1", r"\2", text)
+    text = re.sub(r"(?<!\w)(_{1,3})(\S(?:.*?\S)?)\1(?!\w)", r"\2", text)
+    return re.sub("[\ue000-\uf8ff]", lambda match: codes[ord(match.group()) - 0xE000], text)
 
 
 def anchors(markdown: str) -> set[str]:

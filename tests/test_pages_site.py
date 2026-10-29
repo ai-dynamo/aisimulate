@@ -1316,10 +1316,28 @@ def render_main(text: str, template: str | None = None) -> str:
         ("## `client[0](request)`", "client0request"),
         ("## gpu_cache_policy", "gpu_cache_policy"),
         ("## __Strong__ snake_case", "strong-snake_case"),
+        ("## [Run `foo`](other.md)", "run-foo"),
     ],
 )
 def test_feature_matrix_anchors_follow_github_heading_slugs(heading: str, slug: str) -> None:
     assert slug in FEATURES.anchors(heading + "\n")
+
+
+def test_feature_matrix_links_to_an_underscore_anchor() -> None:
+    text = FEATURE_DATA.read_text(encoding="utf-8").replace(
+        'doc = "replay/engine/workers.md"', 'doc = "replay/engine/workers.md#gpu_cache_policy"', 1
+    )
+    data = FEATURES.load(text, source="test")
+    workers = (ROOT / "docs/replay/engine/workers.md").read_text(encoding="utf-8")
+
+    def read_doc(path: str) -> str | None:
+        page = (ROOT / "docs" / path).read_text(encoding="utf-8")
+        return page + "\n## gpu_cache_policy\n" if path == "replay/engine/workers.md" else page
+
+    assert "gpu_cache_policy" not in workers
+    FEATURES.check_docs(data, read_doc, source="test")
+    with pytest.raises(FEATURES.FeatureMatrixError, match="no anchor #gpu_cache_policy"):
+        FEATURES.check_docs(data, PAGES._feature_doc_reader(ROOT, None), source="test")
 
 
 def test_feature_matrix_links_resolve_to_documentation() -> None:
