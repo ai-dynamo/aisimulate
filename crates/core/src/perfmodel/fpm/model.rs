@@ -18,6 +18,7 @@ use mixed_fallback::MixedComposition;
 #[path = "model_snapshot.rs"]
 mod persist;
 pub use persist::{ForwardPassStateSnapshotSummary, StateSnapshotOptions};
+pub(crate) use persist::{relocate_snapshot_inputs, verify_snapshot_identity};
 
 use std::path::PathBuf;
 use std::sync::Arc;

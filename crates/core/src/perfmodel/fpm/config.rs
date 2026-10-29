@@ -337,6 +337,17 @@ impl ForwardPassPerfModelConfig {
 
     fn normalize(mut self) -> Result<(Self, Option<bool>), AicError> {
         self.estimator_config.resolve_defaults();
+        // Resolve the inputs a snapshot owns against its directory before
+        // anything validates or reads them.
+        let manifest = match self.estimator_config.state_snapshot.as_mut() {
+            Some(snapshot) => {
+                snapshot.validate()?;
+                let manifest = snapshot.resolve_source()?;
+                super::model::relocate_snapshot_inputs(&mut self, &manifest)?;
+                Some(manifest)
+            }
+            None => None,
+        };
         if self.estimation_mode == EstimationMode::FpmLearned
             && self.estimator_config.correction.mode == super::CorrectionMode::Auto
         {
@@ -348,9 +359,6 @@ impl ForwardPassPerfModelConfig {
             if let Some(mixed) = &mut self.estimator_config.temporary_mixed_composition {
                 mixed.original_a.resolve_source()?;
             }
-        }
-        if let Some(snapshot) = self.estimator_config.state_snapshot.as_mut() {
-            snapshot.resolve_source()?;
         }
         if let Some(speculation) = &self.speculation {
             #[cfg(feature = "python")]
@@ -425,6 +433,9 @@ impl ForwardPassPerfModelConfig {
             ));
         }
         self.validate()?;
+        if let Some(manifest) = manifest {
+            super::model::verify_snapshot_identity(&self, &manifest)?;
+        }
         Ok((self, registered))
     }
 
@@ -689,7 +700,10 @@ impl ForwardPassPerfModelConfig {
             if root.to_str().is_none() {
                 return Err(invalid_config("systems_paths entries must be valid UTF-8"));
             }
-            if !root.is_dir() {
+            // A snapshot configuration may still name the save location of
+            // packed data; construction points it into the snapshot first and
+            // fingerprints whatever root it reads.
+            if self.estimator_config.state_snapshot.is_none() && !root.is_dir() {
                 return Err(invalid_config(format!(
                     "systems_paths entry is not an existing directory: {}",
                     root.display()

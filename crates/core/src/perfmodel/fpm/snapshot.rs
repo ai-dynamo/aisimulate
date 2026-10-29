@@ -23,6 +23,15 @@
 //! performance-data tree, which is pinned by its tree digest. This module owns
 //! the encoding, version checks, digests and atomic publication; the model
 //! owns state extraction and restoration.
+//!
+//! A snapshot is relocatable (schema version 2): the manifest identity names
+//! the inputs the snapshot owns (packed performance data, an execution
+//! profile, learned artifacts and checkpoints) by their fixed paths relative
+//! to the snapshot directory, and restoration resolves them against the
+//! directory it reads. `config.json` records the absolute configuration at
+//! the save location. Version 1 manifests recorded owned inputs as absolute
+//! paths below the save location; readers recover that location from the
+//! fixed relative suffixes.
 
 pub(crate) mod codec;
 pub(crate) mod perf_db;
@@ -39,7 +48,9 @@ use super::{EstimationMode, ForwardPassPerfModelConfig, ForwardPassPerfOptions};
 use crate::AicError;
 
 pub(crate) const SCHEMA: &str = "aisimulate_fpm_state_snapshot";
-pub(crate) const SCHEMA_VERSION: u32 = 1;
+pub(crate) const SCHEMA_VERSION: u32 = 2;
+/// Manifests whose owned inputs are absolute paths below the save location.
+pub(crate) const PATH_PINNED_SCHEMA_VERSION: u32 = 1;
 /// Positional layout of `state.bin`. Bump it with any change to an encoded
 /// state type (fields, order, types or enum variants); the layout golden test
 /// fails until it is updated.
@@ -186,15 +197,19 @@ impl ManifestHeader {
         let text = |value: &Option<serde_json::Value>| {
             value.as_ref().map_or_else(|| "missing".to_owned(), show)
         };
+        let schema_version = header
+            .schema_version
+            .as_ref()
+            .and_then(serde_json::Value::as_u64);
         if header.schema.as_ref().and_then(serde_json::Value::as_str) != Some(SCHEMA)
-            || header
-                .schema_version
-                .as_ref()
-                .and_then(serde_json::Value::as_u64)
-                != Some(u64::from(SCHEMA_VERSION))
+            || !matches!(
+                schema_version,
+                Some(version) if version == u64::from(SCHEMA_VERSION)
+                    || version == u64::from(PATH_PINNED_SCHEMA_VERSION)
+            )
         {
             return Err(invalid(format!(
-                "unsupported manifest schema {} version {}",
+                "unsupported manifest schema {} version {}; this binary reads {SCHEMA} versions {PATH_PINNED_SCHEMA_VERSION} and {SCHEMA_VERSION}",
                 text(&header.schema),
                 text(&header.schema_version)
             )));
@@ -218,8 +233,9 @@ impl ManifestHeader {
             || field("state_encoding") != current.state_encoding.as_str()
         {
             return Err(invalid(format!(
-                "snapshot was written by aisimulate-core {} (engine spec schema {}, encoding {}); this binary is {} ({}, {})",
+                "snapshot was written by aisimulate-core {} (manifest schema version {}, engine spec schema {}, encoding {}); this binary is {} ({}, {}); a snapshot restores only in the aisimulate-core version that wrote it, so restore it with that version or tune and save a new snapshot with this one",
                 show(&field("aisimulate_core_version")),
+                text(&header.schema_version),
                 show(&field("engine_spec_schema_version")),
                 show(&field("state_encoding")),
                 current.aisimulate_core_version,

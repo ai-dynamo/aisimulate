@@ -1162,7 +1162,28 @@ mod tests {
         assert!(restored.tune_with_fpms(&observations).is_err());
         let report: ForwardPassReadinessReport = restored.readiness_report();
         assert_eq!(report, model.readiness_report());
-        let summary = ForwardPassPerfModel::inspect_state_snapshot(&directory).unwrap();
+        // A copy restores from its own directory once the original is gone.
+        let moved = root.path().join("moved");
+        std::fs::create_dir(&moved).unwrap();
+        for name in ["manifest.json", "config.json", "state.bin"] {
+            std::fs::copy(directory.join(name), moved.join(name)).unwrap();
+        }
+        std::fs::remove_dir_all(&directory).unwrap();
+        let mut config: aisimulate_core::ForwardPassPerfModelConfig =
+            serde_json::from_slice(&std::fs::read(moved.join("config.json")).unwrap()).unwrap();
+        config.estimator_config.state_snapshot.as_mut().unwrap().path = moved.clone();
+        let relocated = ForwardPassPerfModel::best_available(config).unwrap();
+        assert_eq!(
+            relocated
+                .estimate_forward_pass_time_ms(&query)
+                .unwrap()
+                .map(f64::to_bits),
+            model
+                .estimate_forward_pass_time_ms(&query)
+                .unwrap()
+                .map(f64::to_bits)
+        );
+        let summary = ForwardPassPerfModel::inspect_state_snapshot(&moved).unwrap();
         assert_eq!(summary.kind, StateSnapshotKind::Regression);
         assert_eq!(summary.state_layout_version, STATE_SNAPSHOT_LAYOUT_VERSION);
         assert_eq!(summary.topology, model.deployment_topology());

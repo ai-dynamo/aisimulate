@@ -513,9 +513,10 @@ Configuration describes a cold model. To keep what a model has learned from
 Saving atomically writes a new directory and returns the pinned canonical
 configuration, which is also written to `path/config.json`. Restore through
 the same constructor: `RustForwardPassPerfModel.best_available(state_snapshot=path)`
-reads that file, and passing the returned configuration is equivalent. There is no
-separate loader; `best_available` restores whenever
-`estimator_config.state_snapshot` is present.
+reads that file with `state_snapshot.path` naming `path`, wherever the
+directory now is, and passing the returned configuration is equivalent while
+the snapshot stays where it was saved. There is no separate loader;
+`best_available` restores whenever `estimator_config.state_snapshot` is present.
 
 ```python
 config = model.save_state_snapshot("/tmp/decode-snapshot")
@@ -526,7 +527,7 @@ resumed = RustForwardPassPerfModel.best_available(config)
 
 | Field | Default | Behavior |
 | --- | --- | --- |
-| `estimator_config.state_snapshot.path` | required | Snapshot directory written by `save_state_snapshot`. Normalization makes it absolute against the working directory and removes `.` and `..` lexically; symbolic links are kept, so a stable mount alias stays valid. |
+| `estimator_config.state_snapshot.path` | required | Snapshot directory written by `save_state_snapshot`, at its save location or wherever it was copied or moved. Normalization makes it absolute against the working directory and removes `.` and `..` lexically; symbolic links are kept. The inputs the snapshot owns are read from this directory (see [relocation](#relocating-a-snapshot)). |
 | `estimator_config.state_snapshot.sha256` | `null` | SHA-256 of `path/manifest.json`. Normalization fills it; a supplied value that differs is an error. |
 | `estimator_config.state_snapshot.on_tune` | `reject` | `reject` makes `tune_with_fpms()` and `flush_updates()` return an error. `continue` resumes tuning from the saved state exactly as the saving model would have continued. |
 
@@ -594,7 +595,8 @@ non-UTF-8 names. A native model fingerprints its data when the process first
 loads that systems root; later constructions reuse that result. Performance
 tables that another engine in the process parsed before then are not shared
 with the model, so it reads the fingerprinted data; restoration does the same
-after its check.
+after its check, unless this process already loaded the same data, whose
+tables were parsed after that load and stay shared.
 `save_state_snapshot` fingerprints the data again and fails if it changed
 since it was loaded; restart the process to save a model of the current data. Pass
 `include_perf_db=True` (Rust: `StateSnapshotOptions { include_perf_db: true }`)
@@ -610,18 +612,49 @@ configuration bundled with the package, a local directory or Hugging Face, so
 a packed native snapshot still needs it, and restoration fails if it compiles
 a different engine specification from the saved one.
 
-Snapshot configurations pin absolute paths. Restoration reads the pinned
-`state_snapshot.path`, so `best_available(state_snapshot=path)` raises
-`ValueError` unless `path` is the directory the snapshot was saved to (compared with
-`os.path.samefile`) rather than silently restoring the original. A
-configuration is not compared with that location. Edited to name a copy, a
-snapshot with a deployment identity restores the copy after verifying it
-against its manifest, but its other pinned paths (packed performance data, an
-execution profile, learned artifacts and checkpoints) belong to that identity
-and must keep naming the original directory. A `from_learned` snapshot derives
-its artifact path from `state_snapshot.path`, so it rejects the edit unless
-`fpm_learned.artifact_path` names the copy too. Save a new snapshot instead of
-moving one. Snapshot
+#### Relocating a snapshot
+
+A snapshot directory can be copied or moved, for example to another host or
+mount point, and restored after the original is deleted. The manifest names
+the inputs a snapshot owns (packed performance data under `perf_db/`, a
+copied execution profile, learned artifacts and online checkpoints) by their
+fixed paths inside the snapshot, and construction reads them from the
+directory that `state_snapshot.path` names, whatever paths the rest of the
+configuration gives for them. Restore a moved snapshot with
+`best_available(state_snapshot=new_path)`, or set
+`estimator_config.state_snapshot.path` in a saved configuration;
+`config.json` and the returned configuration record the absolute paths at the
+save location. The manifest pins the content of every owned input, so a copy
+is verified exactly like the original.
+
+Where external performance data is found is not identity. A snapshot saved
+without `include_perf_db` reads its data through `systems_paths` (and
+`fpm_parquet_path`), which may name any root with the same content: the
+fingerprint decides. `best_available(state_snapshot=path)` keeps the roots
+recorded at save time, so on another host either save with
+`include_perf_db=True` or pass a configuration with `systems_paths` replaced.
+Regression and learned estimators read no performance data, so their
+`systems_paths` are not compared. Every other field, such as the model,
+hardware, backend version, parallelism, `kv_block_size`, quantization and the
+estimator controls, must still equal the saved identity. A snapshot is
+self-contained only when saved with `include_perf_db=True`: re-saving a model
+restored from a packed snapshot without it references that snapshot's packed
+data as external data.
+
+The manifest schema version is 2. Version 1 manifests, written before
+snapshots were relocatable (for example by nightly
+`0.13.0.dev202610280000000086`), recorded owned inputs as absolute paths below
+the save location. A snapshot restores only in the aisimulate-core version
+that wrote it, so a version 1 snapshot from a published nightly cannot be
+relocated: restore it in place with the build that wrote it, or tune and save
+a new snapshot with a current build, which rejects the old one with an error
+naming the writer's version and manifest schema version. A current build still
+reads a version 1 manifest that carries its own version string, such as one
+from an unstamped local `0.13.0` build, and relocates it by recovering the save
+location from the owned inputs' fixed relative paths. Newer schema versions
+are rejected with the versions this build reads.
+
+Snapshot
 I/O failures raise an `OSError` subclass (for example `FileNotFoundError` for
 a missing snapshot or a missing learned artifact or checkpoint inside it)
 through both `state_snapshot=` and a configuration, never the skippable
