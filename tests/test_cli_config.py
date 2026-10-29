@@ -255,6 +255,16 @@ def test_prediction_rejects_wrong_backend_scheduler_interval(backend, field, val
         CorePredictionConfig.model_validate({"engine": engine})
 
 
+@pytest.mark.parametrize("value", [1, 0, "true", "false"])
+def test_prediction_rejects_non_boolean_async_scheduling(value) -> None:
+    engine = _engine()
+    engine["backend"] = "vllm"
+    engine["workers"]["aggregated"] = {"scheduler": {"async_scheduling": value}}
+
+    with pytest.raises(ValidationError, match="async_scheduling"):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
 def test_prediction_accepts_trtllm_disaggregated_dp1() -> None:
     config = CorePredictionConfig.model_validate(
         {

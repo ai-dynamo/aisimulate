@@ -146,7 +146,7 @@ class SchedulerPredictionConfig(StrictModel):
             "Rounds may be idle and do not count output tokens; zero disables the interval."
         ),
     )
-    async_scheduling: bool | None = Field(
+    async_scheduling: StrictBool | None = Field(
         default=None,
         description=(
             "vLLM only: model vLLM's --async-scheduling, under which an arrival at a busy engine misses the "
