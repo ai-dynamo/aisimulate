@@ -492,6 +492,43 @@ def test_sdk_recommendation_is_supervised_and_refuses_oversized_input():
     assert result.execution_resources["peak_observed_rss_bytes"] > 0
 
 
+def test_owned_tree_close_stops_a_descendant_spawned_between_rescans():
+    import math
+    import subprocess
+
+    from aisimulate.supervision import OwnedTree
+
+    # The grandchild leaves the session, so only cleanup's rescan can find it.
+    source = """import subprocess, sys
+sys.stdin.readline()
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+print(child.pid, flush=True)
+sys.stdin.readline()
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", source], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, start_new_session=True
+    )
+    grandchild = None
+    try:
+        tree = OwnedTree(process)
+        tree.sample()
+        tree.interval = math.inf
+        process.stdin.write("spawn\n")
+        process.stdin.flush()
+        grandchild = int(process.stdout.readline())
+        tree.sample()
+        assert all(pid != grandchild for pid, _ in tree.known)
+        tree.close()
+        assert not psutil.pid_exists(grandchild) or psutil.Process(grandchild).status() == psutil.STATUS_ZOMBIE
+    finally:
+        if grandchild is not None and psutil.pid_exists(grandchild):
+            psutil.Process(grandchild).kill()
+        process.kill()
+        process.wait()
+        process.stdin.close()
+        process.stdout.close()
+
+
 def test_pool_termination_reaps_before_shutdown_returns():
     import multiprocessing
     import time
