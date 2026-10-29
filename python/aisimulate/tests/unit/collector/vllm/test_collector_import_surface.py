@@ -306,6 +306,7 @@ _GEMM_SURFACE = {
     },
     "vllm.model_executor.layers.quantization.fp8": {"Fp8Config": _Dummy},
     "vllm.model_executor.layers.quantization.modelopt": {"ModelOptMixedPrecisionConfig": _Dummy},
+    "vllm.model_executor.layers.quantization.utils.nvfp4_emulation_utils": {"ref_nvfp4_quant": _dummy},
     "vllm.utils.deep_gemm": {"per_block_cast_to_fp8": _dummy},
 }
 

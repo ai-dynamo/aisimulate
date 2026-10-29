@@ -168,6 +168,7 @@ from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tenso
 )
 from vllm.model_executor.layers.quantization.fp8 import Fp8Config
 from vllm.model_executor.layers.quantization.modelopt import ModelOptMixedPrecisionConfig
+from vllm.model_executor.layers.quantization.utils.nvfp4_emulation_utils import ref_nvfp4_quant as _ref_nvfp4_quant
 from vllm.utils.deep_gemm import per_block_cast_to_fp8
 from vllm.version import __version__ as vllm_version
 
@@ -197,6 +198,45 @@ _W4A16_NVFP4_QUANT_CONFIG = {
         "quantized_layers": {_W4A16_NVFP4_PREFIX: {"quant_algo": "W4A16_NVFP4", "group_size": 16}},
     }
 }
+
+# E2M1 magnitudes in code order. vLLM decodes checkpoint bytes with the same
+# table, low nibble first, sign in bit 3 (nvfp4_emulation_utils.py
+# break_fp4_bytes :328-345 @0.24.0, :529-546 @0.31.0).
+_E2M1_MAGNITUDES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
+
+
+def _pack_e2m1(values):
+    """Pack E2M1-valued floats of shape (n, k) into checkpoint bytes (n, k // 2)."""
+    codes = torch.zeros(values.shape, dtype=torch.uint8, device=values.device)
+    magnitudes = values.abs()
+    for code, magnitude in enumerate(_E2M1_MAGNITUDES):
+        codes[magnitudes == magnitude] = code
+    codes |= (values < 0).to(torch.uint8) << 3
+    return codes[:, 0::2] | (codes[:, 1::2] << 4)
+
+
+def _w4a16_nvfp4_checkpoint_weights(weight_bf16):
+    """Return the ModelOpt W4A16_NVFP4 tensors the loader fills for one weight.
+
+    Packed uint8 weight (n, k // 2), unswizzled per-16 fp8 weight_scale
+    (n, k // 16) and weight_scale_2 = amax / (6 * 448), unreciprocated
+    (modelopt.py:1305-1339, 1369-1376 @0.24.0; KNvfp4Static :1909-1986
+    @0.31.0).
+    """
+    weight_scale_2 = float(weight_bf16.abs().max()) / 2688.0
+    global_scale = torch.tensor(1.0 / weight_scale_2, dtype=torch.float32, device=weight_bf16.device)
+    if get_sm_version() >= 100:
+        weight_fp4, weight_scale = _scaled_fp4_quant(weight_bf16, global_scale, is_sf_swizzled_layout=False)
+    else:
+        # scaled_fp4_quant needs an SM100+ quantization kernel
+        # (nvfp4_quant_sm_supported, csrc/libtorch_stable/quantization/fp4/
+        # nvfp4_quant_entry.cu @v0.30.0). Marlin runs from SM75, so build the
+        # same layout with vLLM's PyTorch reference quantizer, identical in
+        # every admitted release (nvfp4_emulation_utils.py ref_nvfp4_quant
+        # :439-453 @0.24.0, :640-654 @0.31.0).
+        values, scales = _ref_nvfp4_quant(weight_bf16, global_scale, 16)
+        weight_fp4, weight_scale = _pack_e2m1(values), scales.to(torch.float8_e4m3fn)
+    return weight_fp4, weight_scale, weight_scale_2
 
 
 def get_gemm_test_cases():
@@ -377,16 +417,7 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
         elif gemm_type == "w4a16_nvfp4":
             with torch.no_grad():
                 weight_bf16 = torch.randn(n, k, dtype=torch.bfloat16, device=device)
-                # Checkpoint layout the loader fills: packed uint8 weight,
-                # unswizzled per-16 fp8 weight_scale, and weight_scale_2 =
-                # amax / (6 * 448), unreciprocated (modelopt.py:1305-1339,
-                # 1369-1376 @0.24.0; KNvfp4Static :1909-1986 @0.31.0).
-                weight_scale_2 = float(weight_bf16.abs().max()) / 2688.0
-                weight_fp4, weight_scale_fp8 = _scaled_fp4_quant(
-                    weight_bf16,
-                    torch.tensor(1.0 / weight_scale_2, dtype=torch.float32, device=device),
-                    is_sf_swizzled_layout=False,
-                )
+                weight_fp4, weight_scale_fp8, weight_scale_2 = _w4a16_nvfp4_checkpoint_weights(weight_bf16)
                 gemm.weight.data.copy_(weight_fp4)
                 gemm.weight_scale.data.copy_(weight_scale_fp8)
                 gemm.weight_scale_2.data.fill_(weight_scale_2)
