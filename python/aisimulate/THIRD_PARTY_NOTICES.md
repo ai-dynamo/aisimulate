@@ -1390,6 +1390,30 @@ Model Agreement does not modify or supersede it. The full texts of both are
 preserved in the adjacent distributed
 `src/aisimulate_core/model_configs/GLM53_NVFP4_PROVENANCE.md`.
 
+## NVIDIA Nemotron 3.5 Super VL NVFP4 model configuration files
+
+The following files are unmodified copies of the named Hugging Face
+configuration files at the immutable revision shown:
+
+| Packaged file | Upstream file and revision |
+| --- | --- |
+| `src/aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4_config.json` | `config.json` from `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4@da5b2650a835292c678994a1fa3fb653250fb508` |
+| `src/aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4_hf_quant_config.json` | `hf_quant_config.json` from `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4@da5b2650a835292c678994a1fa3fb653250fb508` |
+
+Upstream repository:
+https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4/tree/da5b2650a835292c678994a1fa3fb653250fb508
+
+Copyright owner: NVIDIA CORPORATION & AFFILIATES. The copied files are
+unmodified.
+
+License, as declared by the upstream model card at that revision: the
+OpenMDW License Agreement, version 1.1 (OpenMDW-1.1),
+https://openmdw.ai/license/1-1/. The card metadata declares
+`license: other` and `license_name: openmdw-1.1`, and the upstream
+repository ships no separate license file. The full agreement text is
+preserved in the adjacent distributed
+`src/aisimulate_core/model_configs/NEMOTRON35_SUPER_VL_NVFP4_PROVENANCE.md`.
+
 ## vLLM DeepSeek V4 cache sizing
 
 `src/aisimulate_core/sdk/memory/deepseek_v4.py` and the indexer cache-dtype

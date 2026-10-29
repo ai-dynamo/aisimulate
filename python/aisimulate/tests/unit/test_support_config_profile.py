@@ -155,6 +155,7 @@ _UNRECOGNIZED = {
     "XiaomiMiMo--MiMo-7B-Base": "MiMoForCausalLM",
     "XiaomiMiMo--MiMo-V2-Flash": "MiMoV2FlashForCausalLM",
     "nvidia--Llama-3_3-Nemotron-Super-49B-v1": "DeciLMForCausalLM",
+    "nvidia--NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4": "NemotronH_Omni_Reasoning_V3",
 }
 # DeepSeek, Kimi K2 and GLM-5 MLA/DSA configs keep explicit cache accounting.
 _MLA = (
