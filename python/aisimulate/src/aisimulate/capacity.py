@@ -65,6 +65,10 @@ def materialize_aic_num_gpu_blocks(
             "dp_size",
             "kv_cache_groups",
             "kv_cache_capacity_bytes",
+            "state_cache",
+            "prefix_match_unit",
+            "kv_cache_bytes_per_token",
+            "block_size",
         ):
             if name in value:
                 result[name] = value[name]
@@ -323,10 +327,17 @@ def _materialize_profile_cache_groups(raw: dict[str, Any], diagnostics: dict[str
     deployment.resources.require_memory()
     if deployment.resources.runtime_memory is not None and raw.get("num_gpu_blocks") is not None:
         raise ValueError("runtime FPM memory cannot use fixed num_gpu_blocks; use the recorded cache allocation")
-    if deployment.resources.cache_layout != "grouped":
+    if deployment.resources.cache_layout not in ("grouped", "mamba_align"):
         return False
     if raw.get("num_gpu_blocks") is not None:
         raise ValueError("grouped FPM cache requires a byte budget; fixed num_gpu_blocks is unsupported")
+    depth = raw.get("aic_nextn", 0)
+    canonical = raw.get("timing_model", {}).get("config", {})
+    if "nextn" in canonical:
+        depth = canonical["nextn"]
+        for name in ("aic_nextn", "nextn"):
+            if name in raw and raw[name] != depth:
+                raise ValueError(f"{name} conflicts with canonical timing configuration")
     estimate = estimate_kv_cache(
         identity.pop("model"),
         identity.pop("system"),
@@ -340,6 +351,7 @@ def _materialize_profile_cache_groups(raw: dict[str, Any], diagnostics: dict[str
         cuda_graph_reserved_bytes=raw.get("cuda_graph_reserved_bytes", 0),
         systems_path=raw.get("systems_path"),
         fpm_profile=profile,
+        nextn=depth,
         **{
             target: raw[source]
             for target, source in (
@@ -356,10 +368,11 @@ def _materialize_profile_cache_groups(raw: dict[str, Any], diagnostics: dict[str
             if raw.get(source) is not None
         },
     )
-    for name, value in (
-        ("kv_cache_groups", estimate["cache_groups"]),
-        ("kv_cache_capacity_bytes", estimate["total_kv_size_bytes"]),
-    ):
+    geometry = estimate.get("replay_cache") or {
+        "kv_cache_groups": estimate["cache_groups"],
+        "kv_cache_capacity_bytes": estimate["total_kv_size_bytes"],
+    }
+    for name, value in geometry.items():
         if name in raw and raw[name] != value:
             raise ValueError(f"{name} conflicts with the canonical FPM resource budget")
         raw[name] = value

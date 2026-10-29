@@ -94,6 +94,14 @@ list and no scalar token rate. Existing linear profiles keep their serialized
 shape. Python exports `FpmCacheGroup` from `aisimulate.fpm_profile` and
 `aisimulate_core.fpm_profile`; Rust exports it from `aisimulate_core::perfmodel`.
 
+An explicit profile can use `cache_layout: unmodeled` when the runtime cache
+allocator has no AIS model, such as Mamba checkpoint retention.
+This layout requires observed `runtime_memory` and omits both
+`kv_bytes_per_token` and `cache_groups`. Store the native cache descriptors in
+the referenced provenance artifact. Canonical standalone timing queries can
+consume this profile. Cache sizing and replay reject it. An observed allocation
+does not establish how request lengths, cache reuse, or speculation consume it.
+
 Memory can be pending, declared, or observed at runtime. The four legacy fields
 `weights_bytes`, `activations_bytes`, `runtime_overhead_bytes`, and
 `comm_overhead_bytes` are optional. A complete set retains the existing non-KV
@@ -204,3 +212,57 @@ These fields are currently exposed through the Rust observer API, not the Python
 JSON replay runtime. Linear snapshots retain their existing block metrics.
 
 Cache reuse, eviction, and offload lifecycle are documented in [Replay KV cache](../replay/engine/kv-cache.md).
+
+### Observed Mamba align pools
+
+The `mamba_align` layout describes one full-attention group and padded
+Mamba groups that share one physical pool. Supply observed runtime memory,
+physical page bytes, block length, state-group count, prefix unit, and
+speculative state count. Set `mamba_cache.state_storage: full_state` explicitly.
+The count must match the measured draft depth. Internal prefill checkpoint
+slots are unsupported.
+
+| Field under `resources.mamba_cache` | Meaning |
+| --- | --- |
+| `state_storage` | Required `full_state`. Other policies are rejected. |
+| `block_size_tokens` | Physical attention block length, at least two tokens. |
+| `page_size_bytes` | Padded page size shared by attention and state groups. |
+| `state_groups` | Number of state pages in one complete working state. |
+| `prefix_match_unit` | Positive divisor of the block length. |
+| `num_speculative_states` | Full-state scratch copies, equal to the measured draft depth, from zero through five. |
+
+The native budget returns `replay_cache`. This descriptor excludes one reserved
+null page and includes working-state and speculative scratch reservations.
+Do not interpret its allocation byte rate as logical KV bytes per token.
+The profile does not expose an aggregate token capacity.
+
+Use aggregated vLLM replay with the measured block length and scheduler limits.
+Keep prefix caching enabled. Fixed capacity overrides, offload, and disaggregated
+FPM replay are unsupported for this layout. Original timing imports remain valid
+as timing-only evidence.
+
+The current allocator covers state turnover, partial restores, and speculative
+scratch ownership. Shared-prefix junction retention and asynchronous copy
+lifetimes still require validation against the serving runtime. This layout does
+not establish AgentX cache-hit or throughput accuracy.
+
+ReplaySSM changes this contract. At vLLM PR [#55688](https://github.com/vllm-project/vllm/pull/55688)
+revision `d9cd1fd1fcfc5a08d14ff29ba7439f76ad42d628`, ReplaySSM sets
+`MambaSpec.num_speculative_blocks` to zero instead of the draft depth.
+The page contains replay rings in addition to the base state.
+FlashInfer uses a physical ring length of `buffer_len + 1 + draft_depth`.
+Therefore, zero scratch copies do not imply zero speculative memory cost.
+
+PR [#52962](https://github.com/vllm-project/vllm/pull/52962) adds quantized shared
+and separate checkpoints. PR [#62625](https://github.com/vllm-project/vllm/pull/62625)
+moves GDN RecoverSSM records outside the page into buffers sized by request slots.
+These policies change page padding, allocation, or both. They require new
+memory observations and timing profiles for the exact backend and revision.
+Use `cache_layout: unmodeled` for timing-only profiles until AIS models their
+lifecycles. Do not relabel them as `full_state` or subtract a draft-depth
+multiplier from an existing profile.
+
+The full-state implementation preserves vLLM's logits cap before the MTP
+hash-unit drop. Some exactly aligned prompts therefore miss the cached tail.
+It retains both full-page boundaries for repeated and extended prompts.
+These rules follow vLLM revision `db9527a46873454610df6dbedf79a36d6bf1a7f6`.

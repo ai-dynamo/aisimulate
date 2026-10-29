@@ -1628,3 +1628,26 @@ The modified behavior and synthetic tests in `crates/core/src/engine/kv_manager/
 Running-request cancellation retains its KV lease until the in-flight forward
 is observed, adapting `Scheduler.abort_request` and result-time
 `release_kv_cache` from the same pinned scheduler and batch-result sources.
+
+## vLLM speculative Mamba state reservations
+
+The private scratch reservations in `crates/core/src/engine/kv_manager/state_cache_manager.rs`
+and `vllm_backend.rs` adapt the align-mode allocation lifecycle from vLLM revision
+`db9527a46873454610df6dbedf79a36d6bf1a7f6`,
+`vllm/v1/core/single_type_kv_cache_manager.py` (`MambaManager`).
+AISimulate models ownership and capacity without allocating GPU tensors.
+
+Source: https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/single_type_kv_cache_manager.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0.
+The full license text is reproduced in `LICENSE`.
+
+The same revision supplies the fine-grained MTP lookup and prefill-boundary
+behavior in `vllm_backend.rs` and `crates/core/src/engine/scheduler/vllm/core.rs`.
+The source paths are `vllm/v1/core/single_type_kv_cache_manager.py`,
+`vllm/v1/core/kv_cache_coordinator.py`, `vllm/v1/core/kv_cache_manager.py`,
+`vllm/v1/core/sched/scheduler.py`, and `vllm/v1/kv_cache_interface.py`.
+The modified tests in `state_cache_tests.rs` and the scheduler use synthetic
+fixtures derived from the same lookup and retention rules.
+The shared-pool geometry in `crates/core/src/perfmodel/fpm/resources.rs`
+adapts `vllm/v1/core/kv_cache_utils.py` at that revision.

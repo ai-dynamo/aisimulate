@@ -701,3 +701,35 @@ def test_auto_state_matches_manual_partial_prefix_replay(auto_k3_payload, forbid
         assert metrics["total_output_tokens"] == 4
         assert metrics["committed_prefill_tokens"] == 48600 - 24192
         assert metrics["prefix_cache_reused_ratio"] == pytest.approx(24192 / 48600)
+
+
+@pytest.mark.parametrize("depth", [1, 2, 3])
+def test_speculative_state_reservations_reach_native_rank(forbid_estimators, depth):
+    state = {"bytes_per_request": 1500, "num_speculative_states": depth}
+    raw = _public(
+        timing="default",
+        state_cache=state,
+        prefix_match_unit=16,
+        capacity={"type": "fixed", "blocks": 32},
+    )
+    raw["engine"].update(nextn=depth, nextn_accepted=float(depth))
+    config = CorePredictionConfig.model_validate(raw)
+    spec = prediction_to_replay_spec(config)
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    assert runtime.execution_spec["spec"]["engine"]["rank"]["state_cache"] == state
+
+
+def test_speculative_states_require_capacity_and_matching_depth():
+    with pytest.raises(ValidationError, match="must fit"):
+        KvCachePredictionConfig.model_validate({**KV, "state_cache": {**STATE, "num_speculative_states": 3}})
+    raw = _public(state_cache={**STATE, "num_speculative_states": 1})
+    with pytest.raises(ValidationError, match="must match"):
+        CorePredictionConfig.model_validate(raw)
+
+
+def test_speculative_states_do_not_multiply_inferred_state_geometry():
+    raw = _public(timing="default", state_cache={"num_speculative_states": 1})
+    raw["engine"].update(nextn=1, nextn_accepted=1.0)
+    with pytest.raises(ValidationError, match="requires explicit bytes_per_request"):
+        CorePredictionConfig.model_validate(raw)
