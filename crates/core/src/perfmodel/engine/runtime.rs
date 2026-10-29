@@ -545,21 +545,8 @@ impl Engine {
             .as_ref()
             .and_then(|s| s.nextn)
             .unwrap_or(0);
-        // Generation Mamba queries carry `requests * (nextn + 1)` flattened
-        // tokens and the op divides by its own width; the two must agree.
-        for op in &spec.generation_ops {
-            if let Op::Mamba2(m) = op
-                && op.is_qualified_mamba()
-                && m.token_width != nextn.saturating_add(1)
-            {
-                return Err(AicError::InvalidEngineConfig(format!(
-                    "qualified Mamba op {} has token_width {} but speculative nextn+1 is {}",
-                    m.name,
-                    m.token_width,
-                    nextn.saturating_add(1)
-                )));
-            }
-        }
+        Self::validate_mamba_ops(&spec.context_ops, None, true)?;
+        Self::validate_mamba_ops(&spec.generation_ops, Some(nextn.saturating_add(1)), true)?;
         super::readiness::validate_glm53_kv(
             &db,
             spec.context_ops.iter().chain(&spec.generation_ops),
@@ -614,6 +601,84 @@ impl Engine {
             vision: spec.vision,
             tp_size: spec.engine.parallel.tp_size,
         })
+    }
+
+    /// Mixed steps price only top-level qualified Mamba ops per phase, so a
+    /// qualified op inside a composite is rejected. Generation Mamba queries
+    /// carry `requests * (nextn + 1)` flattened tokens and the op divides by
+    /// its own width (`decode_width`); the two must agree. Whole-model FPM
+    /// `sol_ops` use a separate path and are not walked.
+    fn validate_mamba_ops(
+        ops: &[Op],
+        decode_width: Option<u32>,
+        top_level: bool,
+    ) -> Result<(), AicError> {
+        let invalid = |name: &str, why: String| {
+            Err(AicError::InvalidEngineConfig(format!(
+                "Mamba op {name}: {why}"
+            )))
+        };
+        for op in ops {
+            match op {
+                Op::Mamba2(m) => {
+                    let qualified = op.is_qualified_mamba();
+                    if !matches!(
+                        m.state_dtype.as_str(),
+                        "unrecorded" | "float16" | "bfloat16" | "float32"
+                    ) {
+                        return invalid(
+                            &m.name,
+                            format!("unsupported state_dtype {:?}", m.state_dtype),
+                        );
+                    }
+                    if m.token_width == 0 || (!qualified && m.token_width != 1) {
+                        return invalid(
+                            &m.name,
+                            format!(
+                                "token_width {} must be positive, and 1 for an unrecorded state_dtype",
+                                m.token_width
+                            ),
+                        );
+                    }
+                    if qualified && !top_level {
+                        return invalid(
+                            &m.name,
+                            "a qualified op cannot be nested in a composite".into(),
+                        );
+                    }
+                    if let Some(width) = decode_width
+                        && qualified
+                        && m.token_width != width
+                    {
+                        return invalid(
+                            &m.name,
+                            format!(
+                                "qualified op has token_width {} but speculative nextn+1 is {width}",
+                                m.token_width
+                            ),
+                        );
+                    }
+                }
+                Op::TokenScale(o) => {
+                    Self::validate_mamba_ops(std::slice::from_ref(&o.op), decode_width, false)?
+                }
+                Op::Dsv41Stage(o) => Self::validate_mamba_ops(&o.children, decode_width, false)?,
+                Op::Overlap(o) => {
+                    Self::validate_mamba_ops(&o.group_a, decode_width, false)?;
+                    Self::validate_mamba_ops(&o.group_b, decode_width, false)?;
+                }
+                Op::Fallback(o) => {
+                    Self::validate_mamba_ops(
+                        std::slice::from_ref(&o.primary),
+                        decode_width,
+                        false,
+                    )?;
+                    Self::validate_mamba_ops(&o.fallback, decode_width, false)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     fn reject_sd_round_ops(ops: &[Op]) -> Result<(), AicError> {
@@ -3578,22 +3643,42 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn qualified_mamba_token_width_must_match_speculative_width() {
-        let mut ops = generation_ops();
-        ops.push(qualified_mamba(false, 1));
+    fn mamba_ops_are_validated_at_build() {
         let db = build_engine(None).db;
-        let err = Engine::build(
-            EngineSpec::new(fixture_engine_config(Some(3)), context_ops(), ops.clone()),
-            db.clone(),
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("token_width 1"), "{err}");
-        // Width one matches a non-speculative engine.
-        Engine::build(
-            EngineSpec::new(fixture_engine_config(None), context_ops(), ops),
-            db,
-        )
-        .unwrap();
+        let build = |nextn: Option<u32>, op: Op| {
+            let mut ops = generation_ops();
+            ops.push(op);
+            Engine::build(
+                EngineSpec::new(fixture_engine_config(nextn), context_ops(), ops),
+                db.clone(),
+            )
+        };
+        let with = |state_dtype: &str, token_width: u32| match qualified_mamba(false, token_width) {
+            Op::Mamba2(mut m) => {
+                m.state_dtype = state_dtype.into();
+                Op::Mamba2(m)
+            }
+            _ => unreachable!(),
+        };
+        // Width one matches a non-speculative engine; MTP3 needs width four.
+        build(None, qualified_mamba(false, 1)).unwrap();
+        build(Some(3), qualified_mamba(false, 4)).unwrap();
+        build(None, with("unrecorded", 1)).unwrap();
+        let nested = Op::Overlap(crate::operators::op::OverlapOp::new(
+            "pair",
+            vec![qualified_mamba(false, 1)],
+            vec![],
+        ));
+        for (nextn, op, message) in [
+            (Some(3), qualified_mamba(false, 1), "token_width 1"),
+            (None, with("fp16", 1), "unsupported state_dtype"),
+            (None, with("float16", 0), "must be positive"),
+            (None, with("unrecorded", 4), "unrecorded"),
+            (None, nested, "nested"),
+        ] {
+            let err = build(nextn, op).unwrap_err().to_string();
+            assert!(err.contains(message), "{err}");
+        }
     }
 
     fn runtime(batch_size: u32, isl: u32, osl: u32) -> RuntimeConfig {
