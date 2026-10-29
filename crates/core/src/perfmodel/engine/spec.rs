@@ -1418,6 +1418,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn qualified_mamba_round_trips_and_schema_30_layout_is_rejected() {
+        let mut op = mamba2();
+        op.state_dtype = "float16".into();
+        op.token_width = 4;
+        let spec = EngineSpec::new(sample_engine_config(), vec![], vec![OpSpec::Mamba2(op)]);
+        let bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+        // The op ends in state_dtype (8-byte length + "float16") and
+        // token_width (4); the absent vision and AFD plan sections (1 each)
+        // follow it.
+        let tail = bytes.len() - 2 - (8 + 7 + 4);
+        assert_eq!(&bytes[tail..tail + 8], &7u64.to_le_bytes());
+        let mut stale = bytes.clone();
+        stale.drain(tail..bytes.len() - 2);
+        stale[..4].copy_from_slice(&30u32.to_le_bytes());
+        assert!(matches!(
+            EngineSpec::from_bincode(&stale),
+            Err(AicError::UnsupportedSchemaVersion {
+                kind: "EngineSpec",
+                got: 30,
+                expected: ENGINE_SPEC_SCHEMA_VERSION,
+            })
+        ));
+    }
+
     /// A buffer too short to even hold the 4-byte version prefix must fail at the
     /// prefix stage, not deep in the (absent) payload.
     #[test]
@@ -1833,13 +1859,13 @@ mod tests {
         let start = bytes.windows(op.len()).position(|x| x == op).unwrap();
         // The baseline v27 P2P op has neither span Option tag nor force-scale-out bool.
         bytes.drain(start + op.len() - 2..start + op.len());
-        for version in [27_u32, 28, 29, 31] {
+        for version in [27_u32, 28, 29, 30] {
             bytes[..4].copy_from_slice(&version.to_le_bytes());
             assert!(matches!(
                 EngineSpec::from_bincode(&bytes),
                 Err(AicError::UnsupportedSchemaVersion {
                     got,
-                    expected: 30,
+                    expected: ENGINE_SPEC_SCHEMA_VERSION,
                     ..
                 }) if got == version
             ));
