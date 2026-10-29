@@ -10,7 +10,8 @@ import aisimulate_core.sdk.operations as ops
 from aisimulate_core.sdk import common
 from aisimulate_core.sdk.config import ModelConfig
 from aisimulate_core.sdk.models import get_model
-from aisimulate_core.sdk.models.nemotron_h import _moe_modes, _projection_modes
+from aisimulate_core.sdk.models.helpers import resolve_vllm_moe_execution_mode
+from aisimulate_core.sdk.models.nemotron_h import _checkpoint_precision, _moe_modes, _projection_modes
 
 pytestmark = pytest.mark.unit
 
@@ -28,12 +29,12 @@ def _modes(raw, pattern, default, system=None):
     return {suffix: next(iter(layers)) for suffix, layers in buckets.items()}
 
 
-def _projection_buckets(pipeline):
+def _projection_buckets(pipeline, projections=PROJECTIONS):
     """``{projection: {mode: scale factor}}`` over the ops that price each projection."""
     buckets = {}
     for op in pipeline:
         name = op._name.split("_", 1)[1]
-        if name in PROJECTIONS:
+        if name in projections:
             buckets.setdefault(name, {})[op._quant_mode] = op._scale_factor
     return buckets
 
@@ -266,7 +267,7 @@ def test_rejects_conflicting_or_unsupported_algorithms():
         "hf_quant_config": {"quantization": {"quantized_layers": {path: "NVFP4"}}},
         "quantization_config": {"quantized_layers": {path: "FP8"}},
     }
-    with pytest.raises(ValueError, match="Unsupported mixed precision"):
+    with pytest.raises(ValueError, match="Conflicting checkpoint precisions"):
         _projection_modes(conflict, "E", FP8)
     with pytest.raises(ValueError, match="Unsupported mixed precision"):
         _projection_modes({"quantization_config": {"quantized_layers": {path: "int4_awq"}}}, "E", FP8)
@@ -299,13 +300,18 @@ def test_model_uses_checkpoint_projection_precision_and_preserves_override(check
         assert by_name["mamba_in_proj_gemm"]._quant_mode == (explicit or FP8)
 
 
-def test_non_latent_nemotron_prices_its_listed_projections():
+@pytest.mark.parametrize(("backend", "system"), [("vllm", "gb200"), ("vllm", "h200_sxm"), ("trtllm", "gb200")])
+def test_non_latent_nemotron_prices_its_listed_projections(backend, system):
     model = get_model(
-        "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", ModelConfig(moe_tp_size=1), backend_name="vllm"
+        "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+        ModelConfig(moe_tp_size=1, system=system),
+        backend_name=backend,
     )
     by_name = {op._name: op._quant_mode for op in model.context_ops if hasattr(op, "_quant_mode")}
-    # Shared experts are listed W4A16_NVFP4; attention is unlisted in the targets-only export.
-    assert by_name["context_shared_up_gemm"] == by_name["context_shared_down_gemm"] == common.GEMMQuantMode.w4a16_nvfp4
+    # Shared experts are listed W4A16_NVFP4 and run weight-only on every backend and system
+    # (vLLM: FP4 Marlin with BF16 activations); attention is unlisted in the targets-only export.
+    w4a16 = common.GEMMQuantMode.w4a16_nvfp4
+    assert by_name["context_shared_up_gemm"] == by_name["context_shared_down_gemm"] == w4a16
     assert by_name["context_qkv_gemm"] == by_name["context_proj_gemm"] == BF16
 
 
@@ -321,7 +327,7 @@ def test_non_latent_nemotron_prices_its_listed_projections():
 def test_nemotron_without_per_layer_metadata_keeps_one_op_per_projection(model_path):
     model = get_model(model_path, ModelConfig(moe_tp_size=1), backend_name="vllm")
     for pipeline in (model.context_ops, model.generation_ops):
-        for name, modes in _all_projection_buckets(pipeline).items():
+        for name, modes in _projection_buckets(pipeline, _ALL_PROJECTIONS).items():
             assert set(modes) == {model.config.gemm_quant_mode}, name
     assert not model._moe_quant_modes
 
@@ -429,15 +435,6 @@ def test_explicit_gemm_mode_overrides_system_resolution(tmp_path):
 _ALL_PROJECTIONS = PROJECTIONS + ("mamba_in_proj_gemm", "mamba_out_proj_gemm", "qkv_gemm", "proj_gemm")
 
 
-def _all_projection_buckets(pipeline):
-    buckets = {}
-    for op in pipeline:
-        name = op._name.split("_", 1)[1]
-        if name in _ALL_PROJECTIONS:
-            buckets.setdefault(name, {})[op._quant_mode] = op._scale_factor
-    return buckets
-
-
 _PUBLISHED_PROJECTIONS = {
     "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4": lambda nvfp4: {
         "mamba_in_proj_gemm": {FP8: 28, BF16: 12},
@@ -469,7 +466,7 @@ def test_published_nvfp4_exports_price_each_projection_at_its_listed_precision(m
     expected = _PUBLISHED_PROJECTIONS[model_path](nvfp4)
     mtp = model._mtp_scale_factor
     for pipeline, scale in ((model.context_ops, 1), (model.generation_ops, mtp)):
-        assert _all_projection_buckets(pipeline) == {
+        assert _projection_buckets(pipeline, _ALL_PROJECTIONS) == {
             name: {mode: count * scale for mode, count in layers.items()} for name, layers in expected.items()
         }
     # Every routed-expert layer is NVFP4, so the MoE stays on the single global mode.
@@ -481,7 +478,7 @@ def test_published_nvfp4_exports_keep_explicit_modes(model_path):
     config = ModelConfig(tp_size=2, moe_tp_size=2, gemm_quant_mode=BF16, moe_quant_mode=common.MoEQuantMode.fp8)
     model = get_model(model_path, config, backend_name="vllm")
     for pipeline in (model.context_ops, model.generation_ops):
-        for name, modes in _all_projection_buckets(pipeline).items():
+        for name, modes in _projection_buckets(pipeline, _ALL_PROJECTIONS).items():
             assert set(modes) == {BF16}, name
         assert {op._quant_mode for op in pipeline if op._name.split("_", 1)[1] == "moe"} == {common.MoEQuantMode.fp8}
 
@@ -617,3 +614,74 @@ def test_fused_qkv_modules_must_share_a_precision():
     }
     with pytest.raises(ValueError, match="disagree on precision"):
         _projection_modes(raw, "*", FP8)
+
+
+def test_checkpoint_parse_is_cached_per_config_object():
+    raw = _expert_listing({1: "NVFP4"})
+    parsed = _checkpoint_precision(raw)
+    assert _checkpoint_precision(raw) is parsed
+    # An equal but distinct config is parsed again: the cache keys on identity, not content.
+    assert _checkpoint_precision(json.loads(json.dumps(raw))) is not parsed
+    keep = [_expert_listing({1: "FP8"}) for _ in range(8)]
+    for other in keep:
+        _checkpoint_precision(other)
+    assert _checkpoint_precision(raw) is not parsed
+
+
+def test_parent_module_exclusion_covers_its_projections():
+    raw = {
+        "quantization_config": {
+            "config_groups": {"all": {"weights": {"num_bits": 8, "type": "float"}, "targets": ["Linear"]}},
+            "ignore": ["backbone.layers.0.mixer"],
+        }
+    }
+    assert _projection_modes(raw, "MM", FP8) == {
+        "in_proj": {BF16: 1, FP8: 1},
+        "out_proj": {BF16: 1, FP8: 1},
+    }
+
+
+def test_routed_experts_follow_the_global_mode_lane_mapping():
+    vllm = lambda mode: resolve_vllm_moe_execution_mode(mode, "vllm", "NemotronHForCausalLM")
+    mixed = _expert_listing({1: "W4A16_NVFP4", 3: "FP8"})
+    assert _moe_modes(mixed, "MEME", common.MoEQuantMode.nvfp4, "gb200", execution_mode=vllm) == {
+        common.MoEQuantMode.nvfp4: 1,
+        common.MoEQuantMode.fp8: 1,
+    }
+    # Per-layer experts reuse the global mode's vLLM mapping (resolve_vllm_moe_execution_mode),
+    # so W4A16 and NVFP4 layers resolve to the global mode and no split is priced.
+    same_lane = _expert_listing({1: "W4A16_NVFP4", 3: "NVFP4"})
+    assert _moe_modes(same_lane, "MEME", common.MoEQuantMode.nvfp4, "gb200", execution_mode=vllm) == {}
+
+
+def test_untargeted_routed_experts_keep_the_global_mode():
+    def group(num_bits, layer):
+        return {
+            "weights": {"num_bits": num_bits, "type": "float"},
+            "targets": [f"backbone.layers.{layer}.mixer.experts.*"],
+        }
+
+    raw = {"quantization_config": {"config_groups": {"fp8": group(8, 1), "nvfp4": group(4, 3)}}}
+    # Layer 5 is not targeted: outside a targets-only export it is priced at the global mode, not BF16.
+    assert _moe_modes(raw, "MEMEME", common.MoEQuantMode.fp8, "gb200") == {
+        common.MoEQuantMode.fp8: 2,
+        common.MoEQuantMode.nvfp4: 1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("ignore", "expected"),
+    [
+        (["backbone.layers.1.mixer.experts.*"], {common.MoEQuantMode.fp8: 2, common.MoEQuantMode.bfloat16: 1}),
+        (["*.experts.*"], {common.MoEQuantMode.bfloat16: 3}),
+    ],
+)
+def test_excluded_routed_experts_are_bf16_in_a_group_checkpoint(ignore, expected):
+    raw = {
+        "quantization_config": {
+            "config_groups": {"fp8": {"weights": {"num_bits": 8, "type": "float"}, "targets": ["Linear"]}},
+            "ignore": ignore,
+        }
+    }
+    # An exclusion is explicit BF16, unlike an untargeted layer; a full exclusion overrides the FP8 global mode.
+    assert _moe_modes(raw, "MEMEME", common.MoEQuantMode.fp8, "gb200") == expected

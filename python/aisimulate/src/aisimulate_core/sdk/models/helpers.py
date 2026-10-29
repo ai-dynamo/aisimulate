@@ -803,8 +803,9 @@ def _iter_mixed_precision_layer_algos(raw_config: dict):
     if isinstance(groups, dict):
         for group in groups.values():
             if isinstance(group, dict):
+                algo = _infer_mixed_precision_group_algo(group)
                 for target in group.get("targets") or []:
-                    yield target, _infer_mixed_precision_group_algo(group), False
+                    yield target, algo, False
 
 
 def _collect_mixed_precision_layer_algos(raw_config: dict) -> tuple[set[str], set[str]]:

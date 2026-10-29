@@ -16,6 +16,7 @@ from aisimulate_core.sdk.models.helpers import (
     modelopt_mixed_precision_targets,
     mtp_scale_factor,
     quant_exclude_patterns,
+    resolve_vllm_moe_execution_mode,
 )
 from aisimulate_core.sdk.perf_database import is_blackwell_system
 
@@ -48,7 +49,10 @@ def _target_regex(targets) -> re.Pattern | None:
     """One compiled matcher for ``Linear``, ``re:`` and glob targets."""
     # ``re:`` targets keep re.match prefix semantics; globs match the whole path.
     parts = [".*" if t == "Linear" else f"(?:{t[3:]}).*" if t.startswith("re:") else translate(t) for t in targets]
-    return re.compile("|".join(f"(?:{part})" for part in parts)) if parts else None
+    try:
+        return re.compile("|".join(f"(?:{part})" for part in parts)) if parts else None
+    except re.error as error:
+        raise ValueError(f"Invalid quantization target in {targets!r}: {error}") from error
 
 
 class _CheckpointPrecision:
@@ -65,13 +69,19 @@ class _CheckpointPrecision:
             self.listed |= listed
             (listed_entries if listed else group_targets).append((target, algo))
         # A layer listing is authoritative: group targets only apply without one.
-        self.exact, patterns = {}, []
+        # One algorithm string per listed path keeps the cached form small; a path
+        # listed with two algorithms is rejected only if a modeled module uses it.
+        self.exact, self.conflicts, patterns = {}, {}, []
         for target, algo in listed_entries if self.listed else group_targets:
+            if algo is None:
+                continue
             if _is_pattern(target):
                 patterns.append((target, algo))
-            else:
-                self.exact.setdefault(target, set()).add(algo)
+            elif self.exact.setdefault(target, algo) != algo:
+                self.conflicts.setdefault(target, {self.exact[target]}).add(algo)
         self.patterns = [(_target_regex([target]), algo) for target, algo in patterns]
+        # Same coverage as helpers._modelopt_key_excluded, precompiled for per-layer lookups:
+        # a bare module path also excludes its submodules.
         exclusions = quant_exclude_patterns(raw)
         self.excluded_exact = {t for t in exclusions if not _is_pattern(t)}
         self.excluded_regex = _target_regex([t for t in exclusions if _is_pattern(t)])
@@ -79,13 +89,18 @@ class _CheckpointPrecision:
     def module(self, layer: int, module: str):
         """``(excluded, algos)`` of one decoder module across the known layer prefixes."""
         paths = [f"{prefix}.layers.{layer}.mixer.{module}" for prefix in _LAYER_PREFIXES]
-        if any(path in self.excluded_exact for path in paths) or (
-            self.excluded_regex and any(self.excluded_regex.fullmatch(path) for path in paths)
-        ):
+        if any(self._excluded(path) for path in paths):
             return True, set()
-        algos = {algo for path in paths for algo in self.exact.get(path, ())}
+        algos = {self.exact[path] for path in paths if path in self.exact}
+        algos.update(algo for path in paths for algo in self.conflicts.get(path, ()))
         algos.update(algo for regex, algo in self.patterns if any(regex.fullmatch(path) for path in paths))
         return False, algos
+
+    def _excluded(self, path: str) -> bool:
+        parts = path.split(".")
+        if any(".".join(parts[:end]) in self.excluded_exact for end in range(1, len(parts) + 1)):
+            return True
+        return bool(self.excluded_regex and self.excluded_regex.fullmatch(path))
 
     def rows(self, pattern: str, kinds_to_modules: dict) -> list:
         """``[(projection, algo or None, excluded)]`` per decoder layer.
@@ -100,7 +115,8 @@ class _CheckpointPrecision:
                     excluded, algos = self.module(layer, module)
                     if len(algos) > 1:
                         raise ValueError(
-                            f"Unsupported mixed precision for Nemotron-H module {module} in layer {layer}: {algos}"
+                            f"Conflicting checkpoint precisions for Nemotron-H module {module} "
+                            f"in layer {layer}: {algos}"
                         )
                     states.add("excluded" if excluded else next(iter(algos), None))
                 if len(states) > 1:
@@ -135,7 +151,11 @@ def _is_pattern(target: str) -> bool:
 
 
 def _projection_modes(
-    raw: dict, pattern: str, default: common.GEMMQuantMode, system: str | None = None, checkpoint=None
+    raw: dict,
+    pattern: str,
+    default: common.GEMMQuantMode,
+    system: str | None = None,
+    checkpoint=None,
 ) -> dict:
     """Resolve every decoder GEMM projection from checkpoint metadata.
 
@@ -154,10 +174,13 @@ def _projection_modes(
     # Non-Blackwell systems have no native FP4 tensor cores: NVFP4 runs weight-only, as
     # resolve_nvfp4_for_system does for the global mode. Without a system, keep native NVFP4.
     nvfp4 = common.GEMMQuantMode.nvfp4_wo if system and not is_blackwell_system(system) else common.GEMMQuantMode.nvfp4
+    # shortcut: FP8 is dynamic only when the global mode already is; per-layer activation
+    # scaling is not read from the checkpoint. Upgrade if an export mixes static and dynamic FP8.
     modes = {
         "fp8": common.GEMMQuantMode.fp8 if default == common.GEMMQuantMode.fp8 else common.GEMMQuantMode.fp8_static,
         "mxfp8": common.GEMMQuantMode.fp8_block,
         "nvfp4": nvfp4,
+        # vLLM runs W4A16_NVFP4 linears weight-only (FP4 Marlin, BF16 activations).
         "w4a16_nvfp4": common.GEMMQuantMode.w4a16_nvfp4,
     }
     checkpoint = checkpoint or _checkpoint_precision(raw)
@@ -173,12 +196,21 @@ def _projection_modes(
 
 
 def _moe_modes(
-    raw: dict, pattern: str, default: common.MoEQuantMode, system: str | None = None, checkpoint=None
+    raw: dict,
+    pattern: str,
+    default: common.MoEQuantMode,
+    system: str | None = None,
+    checkpoint=None,
+    execution_mode=lambda mode: mode,
 ) -> dict:
     """Resolve the routed-expert precision of each MoE layer from checkpoint metadata.
 
-    Returns ``{mode: number of MoE layers}`` only when MoE layers differ; a uniform
-    checkpoint keeps ``default``, the system- and backend-resolved global mode.
+    Returns ``{mode: number of MoE layers}`` unless every MoE layer resolves to ``default``,
+    the system- and backend-resolved global mode.
+    ``execution_mode`` applies the same backend lane mapping as the global mode.
+
+    shortcut: a layer's precision is read from expert 0; per-expert precision within
+    one layer is not modeled. Upgrade if an export quantizes experts of a layer differently.
     """
     nvfp4 = common.MoEQuantMode.nvfp4_wo if system and not is_blackwell_system(system) else common.MoEQuantMode.nvfp4
     modes = {
@@ -189,24 +221,18 @@ def _moe_modes(
     }
     checkpoint = checkpoint or _checkpoint_precision(raw)
     rows = checkpoint.rows(pattern, {"E": {"experts": ("experts.0.up_proj", "experts.0.down_proj")}})
-    targets_only = checkpoint.targets_only
-    algos = Counter(algo for _, algo, excluded in rows if not excluded and algo)
-    unlisted = sum(1 for _, algo, excluded in rows if excluded or not algo)
-    if len(algos) + bool(unlisted) <= 1:
-        return {}
-    if unlisted and not targets_only:
-        raise ValueError("Nemotron-H routed experts mix listed and unlisted precisions without a targets-only listing")
-    if any(algo not in modes for algo in algos):
-        raise ValueError(f"Unsupported routed-expert precision for Nemotron-H: {sorted(algos)}")
-    resolved = Counter({modes[algo]: count for algo, count in algos.items()})
-    if unlisted:
-        resolved[common.MoEQuantMode.bfloat16] += unlisted
-    # Keep the system/backend-resolved global mode for the precision it already prices.
+    # Unlisted experts are BF16 only in a targets-only export; otherwise they keep the global mode.
+    unlisted = common.MoEQuantMode.bfloat16 if checkpoint.targets_only else default
+    # Keep the system-resolved global mode for the precision it already prices.
     family = {common.MoEQuantMode.nvfp4_wo: common.MoEQuantMode.nvfp4}
-    return {
-        default if family.get(mode, mode) == family.get(default, default) else mode: count
-        for mode, count in resolved.items()
-    }
+    resolved = Counter()
+    for _, algo, excluded in rows:
+        if algo is not None and algo not in modes:
+            raise ValueError(f"Unsupported routed-expert precision for Nemotron-H: {algo}")
+        # An explicit exclusion is BF16 in every metadata format.
+        mode = common.MoEQuantMode.bfloat16 if excluded else execution_mode(modes[algo]) if algo else unlisted
+        resolved[default if family.get(mode, mode) == family.get(default, default) else mode] += 1
+    return {} if set(resolved) <= {default} else dict(resolved)
 
 
 @register_model("NEMOTRONH")
@@ -248,12 +274,20 @@ class NemotronHModel(BaseModel):
         # per-layer metadata every projection keeps the global mode.
         raw = model_info.get("raw_config", {})
         pattern = model_info["extra_params"].hybrid_override_pattern
+        checkpoint = _checkpoint_precision(raw)
         if not model_info["gemm_quant_mode_is_explicit"]:
             model._projection_quant_modes = _projection_modes(
-                raw, pattern, model_config.gemm_quant_mode, model_config.system
+                raw, pattern, model_config.gemm_quant_mode, model_config.system, checkpoint
             )
-        if not model_info.get("moe_quant_mode_is_explicit", False):
-            model._moe_quant_modes = _moe_modes(raw, pattern, model_config.moe_quant_mode, model_config.system)
+        if not model_info["moe_quant_mode_is_explicit"]:
+            model._moe_quant_modes = _moe_modes(
+                raw,
+                pattern,
+                model_config.moe_quant_mode,
+                model_config.system,
+                checkpoint,
+                lambda mode: resolve_vllm_moe_execution_mode(mode, backend_name, model_info["architecture"]),
+            )
         model.set_hybrid_config(model_info["extra_params"])
         return model
 
