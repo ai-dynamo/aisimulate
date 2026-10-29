@@ -706,3 +706,45 @@ def test_excluded_routed_experts_are_bf16_in_a_group_checkpoint(ignore, expected
     }
     # An exclusion is explicit BF16, unlike an untargeted layer; a full exclusion overrides the FP8 global mode.
     assert _moe_modes(raw, "MEMEME", common.MoEQuantMode.fp8, "gb200") == expected
+
+
+@pytest.mark.parametrize(
+    ("algos", "expected"),
+    [
+        ("W4A16_NVFP4", {common.MoEQuantMode.w4a16_nvfp4}),
+        ("mixed", {common.MoEQuantMode.w4a16_nvfp4, common.MoEQuantMode.nvfp4}),
+    ],
+)
+def test_config_only_modelopt_mixed_keeps_w4a16_experts(monkeypatch, tmp_path, algos, expected):
+    from aisimulate.sdk.task_v2 import Task
+
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    path = files("aisimulate_core") / "model_configs/nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4_config.json"
+    data = json.loads(path.read_text())
+    e_layers = [i for i, kind in enumerate(data["hybrid_override_pattern"]) if kind == "E"]
+    layer_algos = {
+        layer: "W4A16_NVFP4" if algos == "W4A16_NVFP4" or n < 10 else "NVFP4" for n, layer in enumerate(e_layers)
+    }
+    # Self-contained config.json: no hf_quant_config.json companion, quant_method modelopt_mixed.
+    data["quantization_config"] = {
+        "quant_method": "modelopt_mixed",
+        **_expert_listing(layer_algos)["hf_quant_config"]["quantization"],
+    }
+    (tmp_path / "config.json").write_text(json.dumps(data))
+    model_path = str(tmp_path)
+
+    model = get_model(model_path, ModelConfig(tp_size=2, moe_tp_size=2, system="gb200"), backend_name="vllm")
+    assert {op._quant_mode for op in model.context_ops if op._name == "context_moe"} == expected
+
+    task = Task(
+        serving_mode="agg",
+        model_path=model_path,
+        system_name="gb200",
+        backend_name="vllm",
+        backend_version="0.31.0",
+        database_mode="SOL",
+    )
+    model_config = task.build_model_config(role="agg", parallel=(1, 1, 1, 1, 1, 1))
+    assert model_config.moe_quant_mode == common.MoEQuantMode.w4a16_nvfp4
+    model = get_model(model_path, model_config, "vllm")
+    assert {op._quant_mode for op in model.context_ops if op._name == "context_moe"} == expected

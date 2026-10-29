@@ -293,6 +293,7 @@ def test_w4a16_nvfp4_label_resolves_to_the_backend_execution_lane(hf_id, backend
         (None, common.MoEQuantMode.nvfp4),
         ({"hf_quant_config": {"quantization": {"quant_algo": "MIXED_PRECISION"}}}, common.MoEQuantMode.w4a16_nvfp4),
         ({"quantization_config": {"quant_method": "modelopt"}}, common.MoEQuantMode.w4a16_nvfp4),
+        ({"quantization_config": {"quant_method": "modelopt_mixed"}}, common.MoEQuantMode.w4a16_nvfp4),
     ],
 )
 def test_vllm_w4a4_remap_skips_modelopt_exports(raw_config, expected):

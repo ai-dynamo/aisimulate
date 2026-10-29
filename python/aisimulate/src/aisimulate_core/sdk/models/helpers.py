@@ -230,11 +230,14 @@ def _hf_quant_section(raw_config: dict) -> dict:
 
 
 def _is_modelopt_checkpoint(raw_config: dict | None) -> bool:
-    """Whether a ModelOpt export: an ``hf_quant_config.json`` quantization section or a ``modelopt`` quant_method."""
+    """Whether a ModelOpt export: an ``hf_quant_config.json`` quantization section or a ``modelopt*`` quant_method.
+
+    The prefix matches vLLM's ModelOpt method family (``modelopt``, ``modelopt_fp4``, ``modelopt_mixed``).
+    """
     if not isinstance(raw_config, dict):
         return False
     return bool(_hf_quant_section(raw_config)) or (
-        str(_language_quant_config(raw_config).get("quant_method", "")).lower() == "modelopt"
+        str(_language_quant_config(raw_config).get("quant_method", "")).lower().startswith("modelopt")
     )
 
 
