@@ -392,6 +392,7 @@ class EngineReplayRunnerFactory:
             supports_state_cache=True,
             supports_grouped_kv_cache=True,
             supports_tokenization=True,
+            supports_detokenization=True,
             supports_sglang_host_loop=True,
             supported_trace_formats=(
                 "mooncake",
@@ -587,6 +588,10 @@ class EngineReplayRunner:
             if "spec" not in execution_spec:
                 execution_spec = {"spec": execution_spec}
             execution_spec["tokenization"] = dict(spec.backend_deployment.tokenization)
+        if spec.backend_deployment.detokenization is not None:
+            if "spec" not in execution_spec:
+                execution_spec = {"spec": execution_spec}
+            execution_spec["detokenization"] = dict(spec.backend_deployment.detokenization)
         execution_spec_json = json.dumps(
             execution_spec,
             allow_nan=False,
@@ -1867,6 +1872,19 @@ def _materialize_engine_role(
         supported = {"vllm"} if kind == "ngram" else {"vllm", "sglang"}
         if backend not in supported or rank.get("native_host_offload") is not None:
             raise ValueError(f"{kind} speculation requires a supported backend without host_offload")
+    if rank.get("async_scheduling") is not None and not isinstance(rank["async_scheduling"], bool):
+        raise ValueError(f"engine provider {role} async_scheduling must be a boolean")
+    if kind == "ngram":
+        # vLLM turns async scheduling off for ngram drafts and rejects it when
+        # requested. Resolve that here, where the speculation kind is still
+        # known: later stages see only generic draft settings, whatever timing
+        # model prices the replay.
+        if rank.get("async_scheduling") is True:
+            raise ValueError(
+                f"engine provider {role} async_scheduling: vLLM does not support async scheduling "
+                "with ngram speculative decoding"
+            )
+        rank["async_scheduling"] = False
 
     nextn = _pop_alias(rank, "aic_nextn", ("aic_nextn", "nextn"))
     if nextn is not None:

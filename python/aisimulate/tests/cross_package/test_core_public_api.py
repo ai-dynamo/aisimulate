@@ -514,6 +514,39 @@ def test_learned_model_stubs_match_native_contract(method_name, annotations, ret
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "method_name,return_type",
+    [("estimate_forward_pass_time_ms", "float | None"), ("estimate_forward_pass_detailed", "str")],
+)
+def test_forward_query_stubs_match_native_contract(method_name: str, return_type: str) -> None:
+    root = importlib.resources.files("aisimulate_core")
+    stub = ast.parse((root / "_native.pyi").read_text(encoding="utf-8"))
+    model = next(
+        node for node in stub.body if isinstance(node, ast.ClassDef) and node.name == "RustForwardPassPerfModel"
+    )
+    method = next(node for node in model.body if isinstance(node, ast.FunctionDef) and node.name == method_name)
+    arguments = method.args
+    native_class = importlib.import_module("aisimulate_core._native").RustForwardPassPerfModel
+    parameters = list(inspect.signature(getattr(native_class, method_name)).parameters.values())
+    stub_parameters = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
+    assert [argument.arg for argument in stub_parameters] == [parameter.name for parameter in parameters]
+    assert [parameter.kind for parameter in parameters] == [
+        *[inspect.Parameter.POSITIONAL_ONLY] * len(arguments.posonlyargs),
+        *[inspect.Parameter.POSITIONAL_OR_KEYWORD] * len(arguments.args),
+        *[inspect.Parameter.KEYWORD_ONLY] * len(arguments.kwonlyargs),
+    ]
+    assert arguments.vararg is None and arguments.kwarg is None
+    assert not arguments.defaults
+    assert all(parameter.default is inspect.Parameter.empty for parameter in parameters[:-1])
+    assert [ast.literal_eval(default) for default in arguments.kw_defaults] == [parameters[-1].default] == [None]
+    assert {argument.arg: ast.unparse(argument.annotation) for argument in stub_parameters[1:]} == {
+        "fpm_json": "str",
+        "draft_length": "int | None",
+    }
+    assert ast.unparse(method.returns) == return_type
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("namespace", ["aisimulate_core", "aisimulate_core"])
 def test_regression_bucket_diagnostics_stub_matches_native_contract(namespace: str) -> None:
     root = importlib.resources.files("aisimulate_core")

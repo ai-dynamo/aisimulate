@@ -212,6 +212,17 @@ def _tokenization(engine: EnginePredictionConfig) -> dict[str, JSONValue] | None
     }
 
 
+def _detokenization(engine: EnginePredictionConfig) -> dict[str, JSONValue] | None:
+    detokenization = getattr(engine, "detokenization", None)
+    if detokenization is None or not detokenization.active:
+        return None
+    return {
+        "workers": detokenization.workers,
+        "base_ms": detokenization.base_ms,
+        "per_output_ms": detokenization.per_output_us / 1000.0,
+    }
+
+
 def _deployment(
     engine: EnginePredictionConfig,
     *,
@@ -264,6 +275,7 @@ def _deployment(
         "backend": engine.backend,
         "backend_version": engine.backend_version or "",
         "tokenization": _tokenization(engine),
+        "detokenization": _detokenization(engine),
     }
     if mode == "agg":
         assert engine.workers.aggregated is not None
@@ -727,6 +739,8 @@ def _worker_engine_args(
         "enable_prefix_caching": cache.prefix_caching,
         "startup_time": worker.startup_seconds,
     }
+    if worker.scheduler.async_scheduling is not None:
+        payload["async_scheduling"] = worker.scheduler.async_scheduling
     if engine.speculation is not None:
         payload["speculation"] = engine.speculation.model_dump(mode="json")
     if engine.backend_version is not None:

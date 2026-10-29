@@ -13,8 +13,8 @@
           "source": "empirical"
         },
         "context_attention": {
-          "energy_wms": 443.84428875568517,
-          "latency_ms": 0.9006829618708475,
+          "energy_wms": 0.0,
+          "latency_ms": 0.9027949630514962,
           "source": "mixed"
         },
         "context_embedding": {
@@ -28,8 +28,8 @@
           "source": "silicon"
         },
         "context_moe": {
-          "energy_wms": 4650.878357851409,
-          "latency_ms": 7.353446388244628,
+          "energy_wms": 0.0,
+          "latency_ms": 6.392370986938477,
           "source": "silicon"
         },
         "context_moe_post_dispatch": {
@@ -48,18 +48,18 @@
           "source": "silicon"
         },
         "context_proj_gemm": {
-          "energy_wms": 93.16542583139285,
-          "latency_ms": 0.11741446954220959,
+          "energy_wms": 0.0,
+          "latency_ms": 0.11961665123772866,
           "source": "silicon"
         },
         "context_qkv_gemm": {
-          "energy_wms": 113.38631237263097,
-          "latency_ms": 0.14492136634260264,
+          "energy_wms": 0.0,
+          "latency_ms": 0.15047922400768357,
           "source": "silicon"
         },
         "context_router_gemm": {
-          "energy_wms": 47.88824307017971,
-          "latency_ms": 0.11833338558861847,
+          "energy_wms": 0.0,
+          "latency_ms": 0.12551335107756642,
           "source": "silicon"
         }
       },
@@ -75,8 +75,8 @@
           "source": "empirical"
         },
         "generation_attention": {
-          "energy_wms": 89.15719848399121,
-          "latency_ms": 0.25956955552101135,
+          "energy_wms": 0.0,
+          "latency_ms": 0.23627979521406814,
           "source": "silicon"
         },
         "generation_embedding": {
@@ -90,13 +90,13 @@
           "source": "silicon"
         },
         "generation_logits_gemm": {
-          "energy_wms": 24.87529863166794,
-          "latency_ms": 0.027535857502495716,
+          "energy_wms": 0.0,
+          "latency_ms": 0.02803717958325411,
           "source": "silicon"
         },
         "generation_moe": {
-          "energy_wms": 318.0664717176676,
-          "latency_ms": 1.2002304553985597,
+          "energy_wms": 0.0,
+          "latency_ms": 1.239552068710327,
           "source": "silicon"
         },
         "generation_moe_post_dispatch": {
@@ -115,18 +115,18 @@
           "source": "silicon"
         },
         "generation_proj_gemm": {
-          "energy_wms": 50.82092526538146,
-          "latency_ms": 0.07705356162073414,
+          "energy_wms": 0.0,
+          "latency_ms": 0.08503175190858764,
           "source": "silicon"
         },
         "generation_qkv_gemm": {
-          "energy_wms": 88.990814270938,
-          "latency_ms": 0.12188329205904243,
+          "energy_wms": 0.0,
+          "latency_ms": 0.12790297433587666,
           "source": "silicon"
         },
         "generation_router_gemm": {
-          "energy_wms": 35.89557796639745,
-          "latency_ms": 0.09948333535383398,
+          "energy_wms": 0.0,
+          "latency_ms": 0.10083566050031123,
           "source": "silicon"
         }
       }
@@ -150,17 +150,17 @@
         },
         "context_logits_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.04746523642642996,
+          "latency_ms": 0.047473884039582,
           "source": "silicon"
         },
         "context_mla_block": {
           "energy_wms": 0.0,
-          "latency_ms": 4.752650938077485,
+          "latency_ms": 4.770061219363664,
           "source": "silicon"
         },
         "context_moe": {
           "energy_wms": 0.0,
-          "latency_ms": 24.93937660217285,
+          "latency_ms": 25.844519577026368,
           "source": "silicon"
         },
         "context_moe_post_dispatch": {
@@ -180,7 +180,7 @@
         },
         "context_router_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.6613304090431316,
+          "latency_ms": 0.7081162324816835,
           "source": "silicon"
         },
         "context_shared_act_gate": {
@@ -190,12 +190,12 @@
         },
         "context_shared_ffn2_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.41431201125184697,
+          "latency_ms": 0.4078053455385897,
           "source": "silicon"
         },
         "context_shared_gate_up_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.7378017778197924,
+          "latency_ms": 0.7423022439082464,
           "source": "silicon"
         }
       },
@@ -217,17 +217,17 @@
         },
         "generation_logits_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.04746523642642996,
+          "latency_ms": 0.047473884039582,
           "source": "silicon"
         },
         "generation_mla_block": {
           "energy_wms": 0.0,
-          "latency_ms": 2.7387758844116146,
+          "latency_ms": 2.6122195499922465,
           "source": "silicon"
         },
         "generation_moe_overlap": {
           "energy_wms": 0.0,
-          "latency_ms": 3.3353160560710147,
+          "latency_ms": 3.170468646668096,
           "source": "mixed"
         },
         "generation_p2p": {
@@ -256,17 +256,17 @@
         },
         "context_logits_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.0465270626830045,
+          "latency_ms": 0.04676351429845448,
           "source": "silicon"
         },
         "context_mla_block": {
           "energy_wms": 0.0,
-          "latency_ms": 5.2948,
+          "latency_ms": 5.923100000000001,
           "source": "silicon"
         },
         "context_moe": {
           "energy_wms": 0.0,
-          "latency_ms": 66.97351198196411,
+          "latency_ms": 50.255412101745605,
           "source": "silicon"
         },
         "context_moe_post_dispatch": {
@@ -286,7 +286,7 @@
         },
         "context_router_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.6061366325254043,
+          "latency_ms": 0.6070299944367081,
           "source": "silicon"
         },
         "context_shared_act_gate": {
@@ -296,12 +296,12 @@
         },
         "context_shared_ffn2_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.4055279948645168,
+          "latency_ms": 0.4029795436395539,
           "source": "silicon"
         },
         "context_shared_gate_up_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.7168177821569972,
+          "latency_ms": 0.7252764627337456,
           "source": "silicon"
         },
         "context_tp_allreduce": {
@@ -328,17 +328,17 @@
         },
         "generation_logits_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.0465270626830045,
+          "latency_ms": 0.04676351429845448,
           "source": "silicon"
         },
         "generation_mla_block": {
           "energy_wms": 0.0,
-          "latency_ms": 2.2814,
+          "latency_ms": 2.4278,
           "source": "silicon"
         },
         "generation_moe_overlap": {
           "energy_wms": 0.0,
-          "latency_ms": 4.973221004383295,
+          "latency_ms": 4.885251458598429,
           "source": "mixed"
         },
         "generation_p2p": {
@@ -367,7 +367,7 @@
         },
         "context_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 4.378710653449075,
+          "latency_ms": 4.119500996733682,
           "source": "mixed"
         },
         "context_embedding": {
@@ -382,7 +382,7 @@
         },
         "context_moe": {
           "energy_wms": 0.0,
-          "latency_ms": 14.602319259643556,
+          "latency_ms": 14.439036636352538,
           "source": "silicon"
         },
         "context_moe_post_dispatch": {
@@ -402,17 +402,17 @@
         },
         "context_proj_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.6143235498004489,
+          "latency_ms": 0.5436159819364548,
           "source": "silicon"
         },
         "context_qkv_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.6969902300172383,
+          "latency_ms": 0.6207715604040358,
           "source": "silicon"
         },
         "context_router_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.36913421005010605,
+          "latency_ms": 0.36764621155129545,
           "source": "silicon"
         }
       },
@@ -429,7 +429,7 @@
         },
         "generation_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 2.551590493426754,
+          "latency_ms": 2.1702700298122157,
           "source": "mixed"
         },
         "generation_embedding": {
@@ -444,12 +444,12 @@
         },
         "generation_logits_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.027021467449039823,
+          "latency_ms": 0.02890205175327146,
           "source": "silicon"
         },
         "generation_moe": {
           "energy_wms": 0.0,
-          "latency_ms": 2.6080474758148195,
+          "latency_ms": 2.4443673658370972,
           "source": "silicon"
         },
         "generation_moe_post_dispatch": {
@@ -469,17 +469,17 @@
         },
         "generation_proj_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.41030222839779323,
+          "latency_ms": 0.34907376683420605,
           "source": "silicon"
         },
         "generation_qkv_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.503715541627672,
+          "latency_ms": 0.4301422254906761,
           "source": "silicon"
         },
         "generation_router_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.30619732952780193,
+          "latency_ms": 0.3039928939607408,
           "source": "silicon"
         }
       }
@@ -498,7 +498,7 @@
         },
         "context_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 4.03723407700697,
+          "latency_ms": 4.132796778430933,
           "source": "mixed"
         },
         "context_embedding": {
@@ -513,7 +513,7 @@
         },
         "context_moe": {
           "energy_wms": 0.0,
-          "latency_ms": 10.724710392951964,
+          "latency_ms": 11.40522267818451,
           "source": "silicon"
         },
         "context_moe_post_dispatch": {
@@ -533,17 +533,17 @@
         },
         "context_proj_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.8412160153190296,
+          "latency_ms": 0.9347947016358376,
           "source": "silicon"
         },
         "context_qkv_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.9480213150382042,
+          "latency_ms": 1.1771733661492667,
           "source": "silicon"
         },
         "context_router_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.36814222815963954,
+          "latency_ms": 0.3684728973441654,
           "source": "silicon"
         }
       },
@@ -560,7 +560,7 @@
         },
         "generation_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 2.3136602801521837,
+          "latency_ms": 2.4160554583372416,
           "source": "mixed"
         },
         "generation_embedding": {
@@ -575,12 +575,12 @@
         },
         "generation_logits_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.026514363978156354,
+          "latency_ms": 0.027807992432936333,
           "source": "silicon"
         },
         "generation_moe": {
           "energy_wms": 0.0,
-          "latency_ms": 1.863769656419754,
+          "latency_ms": 1.8340095221996309,
           "source": "silicon"
         },
         "generation_moe_post_dispatch": {
@@ -600,17 +600,17 @@
         },
         "generation_proj_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.5525440114239852,
+          "latency_ms": 0.552874680608511,
           "source": "silicon"
         },
         "generation_qkv_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.5651093249519665,
+          "latency_ms": 0.5733760160704453,
           "source": "silicon"
         },
         "generation_router_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.28354665719800526,
+          "latency_ms": 0.2828853444920646,
           "source": "silicon"
         }
       }
@@ -629,7 +629,7 @@
         },
         "context_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 5.017660818150038,
+          "latency_ms": 5.133538791065806,
           "source": "mixed"
         },
         "context_embedding": {
@@ -644,7 +644,7 @@
         },
         "context_moe": {
           "energy_wms": 0.0,
-          "latency_ms": 27.531174778938293,
+          "latency_ms": 27.996224594116214,
           "source": "silicon"
         },
         "context_moe_post_dispatch": {
@@ -664,17 +664,17 @@
         },
         "context_proj_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 1.4360852589209876,
+          "latency_ms": 1.5739733080069223,
           "source": "silicon"
         },
         "context_qkv_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 1.8361920466025672,
+          "latency_ms": 2.203893408179283,
           "source": "silicon"
         },
         "context_router_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.4931893547375997,
+          "latency_ms": 0.4935199982590146,
           "source": "silicon"
         }
       },
@@ -691,7 +691,7 @@
         },
         "generation_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 8.94131490870533,
+          "latency_ms": 9.278525771226136,
           "source": "mixed"
         },
         "generation_embedding": {
@@ -706,12 +706,12 @@
         },
         "generation_logits_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.1077692437635705,
+          "latency_ms": 0.10798802079989608,
           "source": "silicon"
         },
         "generation_moe": {
           "energy_wms": 0.0,
-          "latency_ms": 8.018534111976622,
+          "latency_ms": 7.951871943473816,
           "source": "silicon"
         },
         "generation_moe_post_dispatch": {
@@ -731,17 +731,17 @@
         },
         "generation_proj_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 3.770922740300496,
+          "latency_ms": 3.790762583414714,
           "source": "silicon"
         },
         "generation_qkv_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 3.727274715900421,
+          "latency_ms": 3.802666674057643,
           "source": "silicon"
         },
         "generation_router_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 1.2219235698382058,
+          "latency_ms": 1.3138489358954957,
           "source": "silicon"
         }
       }
@@ -760,7 +760,7 @@
         },
         "context_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 4.03723407700697,
+          "latency_ms": 4.132796778430933,
           "source": "mixed"
         },
         "context_embedding": {
@@ -775,7 +775,7 @@
         },
         "context_moe": {
           "energy_wms": 0.0,
-          "latency_ms": 10.724710392951964,
+          "latency_ms": 11.40522267818451,
           "source": "silicon"
         },
         "context_moe_post_dispatch": {
@@ -795,17 +795,17 @@
         },
         "context_proj_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.8412160153190296,
+          "latency_ms": 0.9347947016358376,
           "source": "silicon"
         },
         "context_qkv_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.9480213150382042,
+          "latency_ms": 1.1771733661492667,
           "source": "silicon"
         },
         "context_router_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.36814222815963954,
+          "latency_ms": 0.3684728973441654,
           "source": "silicon"
         }
       },
@@ -822,7 +822,7 @@
         },
         "generation_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 2.3136602801521837,
+          "latency_ms": 2.4160554583372416,
           "source": "mixed"
         },
         "generation_embedding": {
@@ -837,12 +837,12 @@
         },
         "generation_logits_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.026514363978156354,
+          "latency_ms": 0.027807992432936333,
           "source": "silicon"
         },
         "generation_moe": {
           "energy_wms": 0.0,
-          "latency_ms": 1.863769656419754,
+          "latency_ms": 1.8340095221996309,
           "source": "silicon"
         },
         "generation_moe_post_dispatch": {
@@ -862,17 +862,17 @@
         },
         "generation_proj_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.5525440114239852,
+          "latency_ms": 0.552874680608511,
           "source": "silicon"
         },
         "generation_qkv_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.5651093249519665,
+          "latency_ms": 0.5733760160704453,
           "source": "silicon"
         },
         "generation_router_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.28354665719800526,
+          "latency_ms": 0.2828853444920646,
           "source": "silicon"
         }
       }
@@ -905,8 +905,8 @@
           "source": "silicon"
         },
         "context_attention": {
-          "energy_wms": 1258.3229783233753,
-          "latency_ms": 2.0995968487705867,
+          "energy_wms": 0.0,
+          "latency_ms": 2.1257301377103808,
           "source": "mixed"
         },
         "context_embedding": {
@@ -915,18 +915,18 @@
           "source": "empirical"
         },
         "context_ffn2_gemm": {
-          "energy_wms": 2412.4856061005785,
-          "latency_ms": 2.465787113521622,
+          "energy_wms": 0.0,
+          "latency_ms": 2.4757041742152226,
           "source": "silicon"
         },
         "context_gate_ffn1_gemm": {
-          "energy_wms": 5370.3208732571675,
-          "latency_ms": 5.50227539102377,
+          "energy_wms": 0.0,
+          "latency_ms": 5.1183377408829696,
           "source": "silicon"
         },
         "context_logits_gemm": {
-          "energy_wms": 36.3816553055184,
-          "latency_ms": 0.04490145929010149,
+          "energy_wms": 0.0,
+          "latency_ms": 0.04653291515724624,
           "source": "silicon"
         },
         "context_p2p": {
@@ -935,13 +935,13 @@
           "source": "silicon"
         },
         "context_proj_gemm": {
-          "energy_wms": 687.0389489479833,
-          "latency_ms": 0.704659186800321,
+          "energy_wms": 0.0,
+          "latency_ms": 0.7307402451833088,
           "source": "silicon"
         },
         "context_qkv_gemm": {
-          "energy_wms": 900.8384159623752,
-          "latency_ms": 0.9238646324744872,
+          "energy_wms": 0.0,
+          "latency_ms": 0.9264316654150679,
           "source": "silicon"
         }
       },
@@ -972,8 +972,8 @@
           "source": "silicon"
         },
         "generation_attention": {
-          "energy_wms": 413.1342389794529,
-          "latency_ms": 0.5440381292355596,
+          "energy_wms": 0.0,
+          "latency_ms": 0.5328351680606527,
           "source": "silicon"
         },
         "generation_embedding": {
@@ -982,18 +982,18 @@
           "source": "empirical"
         },
         "generation_ffn2_gemm": {
-          "energy_wms": 681.5905006091823,
-          "latency_ms": 0.755631020623632,
+          "energy_wms": 0.0,
+          "latency_ms": 0.7259954261384673,
           "source": "silicon"
         },
         "generation_gate_ffn1_gemm": {
-          "energy_wms": 1339.3268222872184,
-          "latency_ms": 1.5073875994774963,
+          "energy_wms": 0.0,
+          "latency_ms": 1.4693237819649396,
           "source": "silicon"
         },
         "generation_logits_gemm": {
-          "energy_wms": 36.3816553055184,
-          "latency_ms": 0.04490145929010149,
+          "energy_wms": 0.0,
+          "latency_ms": 0.04653291515724624,
           "source": "silicon"
         },
         "generation_p2p": {
@@ -1002,13 +1002,13 @@
           "source": "silicon"
         },
         "generation_proj_gemm": {
-          "energy_wms": 138.43094306704904,
-          "latency_ms": 0.20666239162286126,
+          "energy_wms": 0.0,
+          "latency_ms": 0.20760319878657663,
           "source": "silicon"
         },
         "generation_qkv_gemm": {
-          "energy_wms": 291.73523112528625,
-          "latency_ms": 0.40689951426000137,
+          "energy_wms": 0.0,
+          "latency_ms": 0.41639084351554,
           "source": "silicon"
         }
       }
@@ -1027,7 +1027,7 @@
         },
         "context_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 3.10181890470398,
+          "latency_ms": 3.1502028558911137,
           "source": "mixed"
         },
         "context_embedding": {
@@ -1042,7 +1042,7 @@
         },
         "context_moe": {
           "energy_wms": 0.0,
-          "latency_ms": 3.73831672668457,
+          "latency_ms": 3.9309310913085938,
           "source": "silicon"
         },
         "context_moe_post_dispatch": {
@@ -1062,17 +1062,17 @@
         },
         "context_proj_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.2670080065727234,
+          "latency_ms": 0.26794666051864624,
           "source": "silicon"
         },
         "context_qkv_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.3084186775432465,
+          "latency_ms": 0.3112001386602202,
           "source": "silicon"
         },
         "context_router_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.2210133274396261,
+          "latency_ms": 0.21845332781473795,
           "source": "silicon"
         }
       },
@@ -1089,7 +1089,7 @@
         },
         "generation_attention": {
           "energy_wms": 0.0,
-          "latency_ms": 1.7847456839086753,
+          "latency_ms": 1.7918450022034613,
           "source": "mixed"
         },
         "generation_embedding": {
@@ -1104,12 +1104,12 @@
         },
         "generation_logits_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.02717842079981671,
+          "latency_ms": 0.027105982432708432,
           "source": "silicon"
         },
         "generation_moe": {
           "energy_wms": 0.0,
-          "latency_ms": 0.726528024673462,
+          "latency_ms": 0.7532544136047363,
           "source": "silicon"
         },
         "generation_moe_post_dispatch": {
@@ -1129,17 +1129,17 @@
         },
         "generation_proj_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.21747199694315592,
+          "latency_ms": 0.15338666240374246,
           "source": "silicon"
         },
         "generation_qkv_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.2596069468286869,
+          "latency_ms": 0.26521217470560626,
           "source": "silicon"
         },
         "generation_router_gemm": {
           "energy_wms": 0.0,
-          "latency_ms": 0.2035199999809265,
+          "latency_ms": 0.20241065820058188,
           "source": "silicon"
         }
       }
@@ -1162,39 +1162,39 @@
   "post_freeze_pins": {
     "gpt-oss-20b-b200-trtllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "36dcc8f3afe9e6e2e9de976737b6337fad8c4d74"
+      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
     },
     "kimi-k25-b200-sglang-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
     },
     "kimi-k25-b200-vllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
     },
     "minimax-m25-b200-sglang-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
     },
     "minimax-m25-b200-vllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
     },
     "minimax-m25-b200-vllm-sampled-prefix": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
     },
     "minimax-m27-b200-vllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
     },
     "nemotron-nas-b200-trtllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "36dcc8f3afe9e6e2e9de976737b6337fad8c4d74"
+      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
     },
     "qwen3-30b-a3b-b200-vllm-isl1024-osl2": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
     }
   }
 }

@@ -582,6 +582,8 @@ fn snapshot_pin_report(
         block_size: 4,
         max_num_seqs: 4,
         max_num_batched_tokens: 64,
+        // The pins cover snapshot plays, not async-scheduling admission.
+        async_scheduling: Some(false),
         timing_model: TimingModelConfig::Fixed {
             prefill_ms: 2.0,
             decode_ms: 1.0,

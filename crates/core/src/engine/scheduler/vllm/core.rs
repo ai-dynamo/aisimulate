@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright contributors to the vLLM project.
 // Modified Rust simulation of vLLM b3563fc65ae0f5359802593d78e7ea097e1fed31
-// scheduling contracts; immutable sources and license: THIRD_PARTY_NOTICES.md.
+// scheduling contracts and of the v0.28.0 (2cf0a6915ce544dc493a0990f2ea38d81601128a)
+// async-scheduling batch queue; immutable sources and license: THIRD_PARTY_NOTICES.md.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -64,6 +65,9 @@ pub(crate) struct VllmRequestState {
     /// `pending_destinations`, outside the physical waiting queues, so
     /// activation restores this ordinal. It is not activation priority.
     waiting_order: u64,
+    /// First pass, counted by `VllmCore::passes_executed`, that may admit the
+    /// request: vLLM had already committed the passes before it on arrival.
+    admissible_from_pass: u64,
     is_decode_handoff: bool,
     pub(crate) num_computed_tokens: usize,
     /// Cleared on preemption: recomputation has no draft IDs to verify.
@@ -174,6 +178,19 @@ struct ScheduledWork {
     /// decode KV context in FPM. Captured here because completed requests are
     /// removed from state before `compute_fpm` runs.
     sequence_len: usize,
+}
+
+/// One ready request's speculative burst inputs for a pass.
+struct SpeculativeBurst {
+    uuid: Uuid,
+    limit: usize,
+    remaining: usize,
+    records_acceptance: bool,
+    /// Sequence length priced as decode work; `None` when the first token
+    /// comes from the prefill forward.
+    decode_length: Option<usize>,
+    /// Tokens to emit, set once acceptance is sampled.
+    burst: usize,
 }
 
 enum ScheduleOutcome {
@@ -660,6 +677,7 @@ pub(crate) struct VllmCore {
     wave_step: u64,
     attention_dp_size: u32,
     prefill_capacity_bound: bool,
+    passes_executed: u64,
     belady_oracle: Option<BeladyOracle>,
 }
 
@@ -900,6 +918,7 @@ impl VllmCore {
             wave_step: 0,
             attention_dp_size: 1,
             prefill_capacity_bound: false,
+            passes_executed: 0,
         })
     }
 
@@ -1004,8 +1023,10 @@ impl VllmCore {
                 let uuid = request.uuid.unwrap_or_else(Uuid::new_v4);
                 request.uuid = Some(uuid);
                 self.validate_request_id(uuid)?;
+                let admissible_from_pass =
+                    self.first_pass_admitting_arrival(!allow_destination_admission);
                 Ok(SchedulerCommandEffects::new(
-                    SchedulerCommandResult::Submitted(self.submit(request)?),
+                    SchedulerCommandResult::Submitted(self.submit(request, admissible_from_pass)?),
                 ))
             }
             SchedulerCommand::CancelRequest { request_id } => {
@@ -1035,8 +1056,10 @@ impl VllmCore {
                 request.uuid = Some(uuid);
                 self.validate_request_id(uuid)?;
                 self.source_holds.register(uuid, handoff_id)?;
+                let admissible_from_pass =
+                    self.first_pass_admitting_arrival(!allow_destination_admission);
                 let submitted = self
-                    .submit(request)
+                    .submit(request, admissible_from_pass)
                     .expect("prevalidated handoff request must submit");
                 Ok(SchedulerCommandEffects::new(
                     SchedulerCommandResult::Submitted(submitted),
@@ -1349,14 +1372,35 @@ impl VllmCore {
         order
     }
 
-    fn submit(&mut self, mut request: DirectRequest) -> anyhow::Result<Uuid> {
+    /// First pass that may admit a request arriving now, either while a pass
+    /// is in flight or at a pass boundary. With async scheduling, a busy vLLM
+    /// engine keeps the next batch committed behind the running one, and it
+    /// commits the batch after that as soon as it has processed a batch's
+    /// outputs, before any client can react to them. An arrival can join only
+    /// a batch committed after it, so it skips the queued batches and, at a
+    /// pass boundary, also the one committed there. A synchronous engine and
+    /// an idle engine admit it at the next pass.
+    fn first_pass_admitting_arrival(&self, pass_in_flight: bool) -> u64 {
+        let queued = self.args.max_concurrent_batches.saturating_sub(1) as u64;
+        if queued == 0 || (!pass_in_flight && self.state.running.is_empty()) {
+            return self.passes_executed;
+        }
+        self.passes_executed + queued + u64::from(!pass_in_flight)
+    }
+
+    fn submit(
+        &mut self,
+        mut request: DirectRequest,
+        admissible_from_pass: u64,
+    ) -> anyhow::Result<Uuid> {
         let uuid = request.uuid.unwrap_or_else(Uuid::new_v4);
         request.uuid = Some(uuid);
         if self.state.requests.contains_key(&uuid) {
             anyhow::bail!("request {uuid} is already active");
         }
         let waiting_order = self.allocate_waiting_order();
-        let request = self.make_request_state(request, RequestStatus::Waiting, waiting_order);
+        let mut request = self.make_request_state(request, RequestStatus::Waiting, waiting_order);
+        request.admissible_from_pass = admissible_from_pass;
         self.state.insert_waiting(uuid, request);
         if let Some(request) = self.state.requests.get(&uuid) {
             request.debug_assert_progress(uuid);
@@ -1435,6 +1479,7 @@ impl VllmCore {
             sequence,
             status,
             waiting_order,
+            admissible_from_pass: 0,
             is_decode_handoff: false,
             num_computed_tokens: 0,
             drafts_ready: false,
@@ -1930,6 +1975,8 @@ impl VllmCore {
         } else {
             0
         };
+        let mut admit_queued_arrivals = false;
+        let mut stopped_at_queued_arrival = false;
         while !preempted_any
             && self.state.running.len() < max_num_running
             // vLLM does not call connector lookup after the current batch has
@@ -1979,7 +2026,7 @@ impl VllmCore {
                 .as_ref()
                 .map(|_| self.request_prefill_reservation_blocks(uuid))
                 .unwrap_or_default();
-            let (reject_before_admission, admission_stage) = {
+            let (reject_before_admission, admission_stage, admissible_from_pass) = {
                 let request = self
                     .state
                     .requests
@@ -1991,8 +2038,19 @@ impl VllmCore {
                             .kv_manager
                             .accepts_sequence_length(request.sequence.len()),
                     admission.stage_for(request.prompt_is_prebuilt()),
+                    request.admissible_from_pass,
                 )
             };
+            // vLLM committed this pass before the request arrived; FCFS keeps
+            // later arrivals behind it. A committed batch without other work
+            // runs no forward, so the arrivals then run in this pass.
+            if !admit_queued_arrivals && admissible_from_pass > self.passes_executed {
+                if !scheduled.is_empty() {
+                    stopped_at_queued_arrival = true;
+                    break;
+                }
+                admit_queued_arrivals = true;
+            }
             if !reject_before_admission
                 && matches!(admission_stage, AdmissionStage::PendingDestinationHead)
             {
@@ -2244,7 +2302,9 @@ impl VllmCore {
         }
 
         if !defer_prefills && !preempted_any {
-            self.prefill_capacity_bound = !self.state.waiting_members.is_empty();
+            // Queued arrivals are not waiting for scheduler capacity.
+            self.prefill_capacity_bound =
+                !stopped_at_queued_arrival && !self.state.waiting_members.is_empty();
         }
 
         if let Some(adapter) = self.native_host_offload.as_mut() {
@@ -2354,6 +2414,7 @@ impl VllmCore {
         }
         committed_requests.sort_unstable();
         committed_requests.dedup();
+        self.passes_executed += 1;
         self.state.debug_assert_invariants();
         Ok(EnginePassResult {
             committed_requests,
@@ -2971,9 +3032,8 @@ impl VllmCore {
 
     fn is_first_token_from_prefill(
         &self,
-        uuid: &Uuid,
         request: &VllmRequestState,
-        scheduled: &FxHashMap<Uuid, ScheduledWork>,
+        work: Option<&ScheduledWork>,
     ) -> bool {
         // The final prefill forward already includes the output head. First
         // tokens sampled from it do not require a second full forward pass.
@@ -2983,9 +3043,7 @@ impl VllmCore {
                 self.speculative_sampler.is_some(),
             )
             && request.sequence.generated_tokens() == 0
-            && scheduled
-                .get(uuid)
-                .is_some_and(|work| work.prompt_tokens > 0)
+            && work.is_some_and(|work| work.prompt_tokens > 0)
     }
 
     fn emit_ready_tokens(
@@ -2999,6 +3057,8 @@ impl VllmCore {
     ) -> anyhow::Result<(ForwardTime, Vec<OutputSignal>)> {
         let mut ready = Vec::with_capacity(self.state.running.len());
         let mut already_complete = Vec::new();
+        // Speculative emission prices its own decode work after reservation.
+        let speculative = self.speculative_sampler.is_some();
         let mut total_length = 0usize;
         let mut decode_count = 0usize;
         for uuid in self.state.running.iter().copied() {
@@ -3020,7 +3080,7 @@ impl VllmCore {
                 continue;
             }
             ready.push(uuid);
-            if !self.is_first_token_from_prefill(&uuid, request, scheduled) {
+            if !speculative && !self.is_first_token_from_prefill(request, scheduled.get(&uuid)) {
                 decode_count += 1;
                 total_length += request.sequence.len();
             }
@@ -3160,6 +3220,63 @@ impl VllmCore {
         Ok((forward_time, output_signals))
     }
 
+    /// Burst inputs for each ready request, in `ready` order, from one request
+    /// and one scheduled-work lookup each. Requests whose lookahead cannot fit
+    /// go to `impossible` instead. Returns the blocks the survivors require.
+    fn speculative_bursts(
+        &self,
+        ready: &[Uuid],
+        scheduled: &FxHashMap<Uuid, ScheduledWork>,
+        nextn: usize,
+        bursts: &mut Vec<SpeculativeBurst>,
+        impossible: &mut Vec<Uuid>,
+    ) -> usize {
+        let scheduling_policy = self.args.scheduling_policy();
+        let worker_type = self.args.worker_type;
+        bursts.clear();
+        let mut required_blocks = 0;
+        for &uuid in ready {
+            let Some(request) = self.state.requests.get(&uuid) else {
+                continue;
+            };
+            let work = scheduled.get(&uuid);
+            let limit = policy::speculative_burst_limit(
+                scheduling_policy,
+                worker_type,
+                nextn,
+                work.map_or(0, |work| work.draft_tokens),
+            );
+            let remaining =
+                policy::remaining_generation_tokens(&request.sequence, self.args.max_model_len);
+            match self.kv_manager.decode_requirement(
+                &request.sequence.lease,
+                request.sequence.len(),
+                limit.min(remaining),
+            ) {
+                AllocationRequirement::Blocks(count) => required_blocks += count,
+                AllocationRequirement::Impossible => {
+                    impossible.push(uuid);
+                    continue;
+                }
+            }
+            bursts.push(SpeculativeBurst {
+                uuid,
+                limit,
+                remaining,
+                // Record only surviving decode work, after reservation succeeds.
+                // FPM demand can still contain requests preempted before then.
+                records_acceptance: worker_type != WorkerType::Prefill
+                    && work.is_some_and(|work| {
+                        work.prompt_tokens == 0 && !work.terminal_after_schedule
+                    }),
+                decode_length: (!self.is_first_token_from_prefill(request, work))
+                    .then(|| request.sequence.len()),
+                burst: 0,
+            });
+        }
+        required_blocks
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn emit_speculative_ready_tokens(
         &mut self,
@@ -3175,41 +3292,14 @@ impl VllmCore {
             .args
             .aic_nextn
             .expect("speculative sampler requires nextn");
-        let scheduling_policy = self.args.scheduling_policy();
         let worker_type = self.args.worker_type;
-        let burst_limit = |uuid: &Uuid| {
-            policy::speculative_burst_limit(
-                scheduling_policy,
-                worker_type,
-                nextn,
-                scheduled.get(uuid).map_or(0, |work| work.draft_tokens),
-            )
-        };
+        let mut bursts = Vec::with_capacity(ready.len());
         let mut rejected_signals = Vec::new();
         let mut running_changed = false;
         let mut reservation = loop {
             let mut impossible = Vec::new();
-            let required_blocks = ready
-                .iter()
-                .filter_map(|uuid| self.state.requests.get(uuid).map(|r| (*uuid, r)))
-                .map(|(uuid, request)| {
-                    let burst = burst_limit(&uuid).min(policy::remaining_generation_tokens(
-                        &request.sequence,
-                        self.args.max_model_len,
-                    ));
-                    match self.kv_manager.decode_requirement(
-                        &request.sequence.lease,
-                        request.sequence.len(),
-                        burst,
-                    ) {
-                        AllocationRequirement::Blocks(count) => count,
-                        AllocationRequirement::Impossible => {
-                            impossible.push(uuid);
-                            0
-                        }
-                    }
-                })
-                .sum();
+            let required_blocks =
+                self.speculative_bursts(&ready, scheduled, nextn, &mut bursts, &mut impossible);
             if !impossible.is_empty() {
                 for uuid in impossible {
                     tracing::warn!(%uuid, "lookahead exceeds the cache allocation limit");
@@ -3260,13 +3350,10 @@ impl VllmCore {
             }
         };
 
-        let (decode_count, total_length) = ready
+        let (decode_count, total_length) = bursts
             .iter()
-            .filter_map(|uuid| self.state.requests.get(uuid).map(|request| (uuid, request)))
-            .filter(|(uuid, request)| !self.is_first_token_from_prefill(uuid, request, scheduled))
-            .fold((0, 0), |(count, total), (_, request)| {
-                (count + 1, total + request.sequence.len())
-            });
+            .filter_map(|burst| burst.decode_length)
+            .fold((0, 0), |(count, total), length| (count + 1, total + length));
         let decode_count = if worker_type == WorkerType::Prefill {
             0
         } else {
@@ -3275,59 +3362,40 @@ impl VllmCore {
         let forward_time = self.forward_time(prefill, decode_count, total_length)?;
         let pass_end_ms = forward_time.end_ms(compute_start_ms);
 
-        let sampled_bursts = {
-            let sampler = self
-                .speculative_sampler
-                .as_mut()
-                .expect("speculative sampler checked above");
-            ready
-                .iter()
-                .map(|uuid| {
-                    let request = self
-                        .state
-                        .requests
-                        .get(uuid)
-                        .expect("ready request must remain active");
-                    let remaining = policy::remaining_generation_tokens(
-                        &request.sequence,
-                        self.args.max_model_len,
-                    );
-                    let limit = burst_limit(uuid);
-                    let accepted = if limit == 1 {
-                        remaining.min(1)
-                    } else if remaining == 0 {
-                        0
-                    } else {
-                        sampler.sample_accepted_tokens_up_to(limit)
-                    };
-                    // Record only surviving decode work, after reservation succeeds.
-                    // FPM demand can still contain requests preempted above.
-                    if accepted > 0
-                        && self.args.worker_type != WorkerType::Prefill
-                        && scheduled.get(uuid).is_some_and(|work| {
-                            work.prompt_tokens == 0 && !work.terminal_after_schedule
-                        })
-                    {
-                        decode_acceptance.accepted_tokens += accepted;
-                        decode_acceptance.forwards += 1;
-                    }
-                    (*uuid, accepted.min(remaining))
-                })
-                .collect::<Vec<_>>()
-        };
+        let sampler = self
+            .speculative_sampler
+            .as_mut()
+            .expect("speculative sampler checked above");
+        for burst in &mut bursts {
+            let accepted = if burst.limit == 1 {
+                burst.remaining.min(1)
+            } else if burst.remaining == 0 {
+                0
+            } else {
+                sampler.sample_accepted_tokens_up_to(burst.limit)
+            };
+            if accepted > 0 && burst.records_acceptance {
+                decode_acceptance.accepted_tokens += accepted;
+                decode_acceptance.forwards += 1;
+            }
+            burst.burst = accepted.min(burst.remaining);
+        }
 
-        let mut output_signals =
-            Vec::with_capacity(sampled_bursts.iter().map(|(_, burst)| *burst).sum());
-        for (uuid, burst) in sampled_bursts {
-            let mut completed = false;
-            for index in 0..burst {
-                let (token_id, is_complete) = {
-                    let kv_manager = &mut self.kv_manager;
-                    let request = self
-                        .state
-                        .requests
-                        .get_mut(&uuid)
-                        .expect("sampled request must remain active");
+        let max_model_len = self.args.max_model_len;
+        let kv_transfer_bandwidth = self.args.kv_transfer_bandwidth;
+        let kv_transfer_bytes_per_token = self.args.kv_transfer_bytes_per_token;
+        let mut output_signals = Vec::with_capacity(bursts.iter().map(|burst| burst.burst).sum());
+        for &SpeculativeBurst { uuid, burst, .. } in &bursts {
+            let completed = {
+                let kv_manager = &mut self.kv_manager;
+                let request = self
+                    .state
+                    .requests
+                    .get_mut(&uuid)
+                    .expect("sampled request must remain active");
+                let prompt_tokens = request.sequence.num_input_tokens();
+                let mut completed = false;
+                for index in 0..burst {
                     kv_manager.finalize_speculative_prefix(
                         uuid,
                         &mut request.sequence.sequence,
@@ -3336,75 +3404,59 @@ impl VllmCore {
                         index + 1 == burst,
                     );
                     let token_id = request.sequence.generate_token();
-                    let is_complete =
-                        policy::generation_complete(&request.sequence, self.args.max_model_len);
-                    (token_id, is_complete)
-                };
-                if let Some(request) = self.state.requests.get_mut(&uuid)
-                    && request.sequence.lease.allocated_tokens() < request.sequence.sequence.len()
-                {
-                    let allocation = self.kv_manager.use_native_decode_reservation(
+                    let is_complete = policy::generation_complete(&request.sequence, max_model_len);
+                    if request.sequence.lease.allocated_tokens() < request.sequence.sequence.len() {
+                        let allocation = kv_manager.use_native_decode_reservation(
+                            uuid,
+                            &mut request.sequence.lease,
+                            request.sequence.sequence.len(),
+                            &mut reservation,
+                        );
+                        assert!(matches!(
+                            allocation,
+                            NativeAllocation::Ready { dependencies, .. } if dependencies.is_empty()
+                        ));
+                    }
+                    output_signals.push(OutputSignal {
                         uuid,
-                        &mut request.sequence.lease,
-                        request.sequence.sequence.len(),
-                        &mut reservation,
+                        token_id: Some(token_id),
+                        completed: is_complete,
+                        rejected: false,
+                        cached_tokens: request.take_cached_tokens_for_signal(),
+                        // Only a completed prefill-worker request carries a handoff delay.
+                        handoff_delay_ms: if is_complete {
+                            compute_prefill_handoff_delay_ms(
+                                worker_type,
+                                true,
+                                prompt_tokens,
+                                kv_transfer_bandwidth,
+                                kv_transfer_bytes_per_token,
+                            )
+                        } else {
+                            None
+                        },
+                    });
+                    if is_complete {
+                        completed = true;
+                        break;
+                    }
+                }
+                if !completed {
+                    request.num_computed_tokens = request.sequence.len().saturating_sub(1);
+                    request.drafts_ready = true;
+                    request.debug_assert_progress(uuid);
+                    debug_assert_eq!(
+                        request.sequence.len() - request.num_computed_tokens,
+                        1,
+                        "nonterminal speculative decode must leave exactly one dangling token"
                     );
-                    assert!(matches!(
-                        allocation,
-                        NativeAllocation::Ready { dependencies, .. } if dependencies.is_empty()
-                    ));
                 }
-
-                let (prompt_tokens, cached_tokens) = {
-                    let request = self
-                        .state
-                        .requests
-                        .get_mut(&uuid)
-                        .expect("sampled request must remain active");
-                    (
-                        request.sequence.num_input_tokens(),
-                        request.take_cached_tokens_for_signal(),
-                    )
-                };
-                output_signals.push(OutputSignal {
-                    uuid,
-                    token_id: Some(token_id),
-                    completed: is_complete,
-                    rejected: false,
-                    cached_tokens,
-                    handoff_delay_ms: compute_prefill_handoff_delay_ms(
-                        self.args.worker_type,
-                        is_complete,
-                        prompt_tokens,
-                        self.args.kv_transfer_bandwidth,
-                        self.args.kv_transfer_bytes_per_token,
-                    ),
-                });
-                if is_complete {
-                    completed = true;
-                    break;
-                }
-            }
-
+                completed
+            };
             if completed {
                 self.complete_source(uuid);
                 running_changed = true;
-                continue;
             }
-
-            let request = self
-                .state
-                .requests
-                .get_mut(&uuid)
-                .expect("nonterminal sampled request must remain active");
-            request.num_computed_tokens = request.sequence.len().saturating_sub(1);
-            request.drafts_ready = true;
-            request.debug_assert_progress(uuid);
-            debug_assert_eq!(
-                request.sequence.len() - request.num_computed_tokens,
-                1,
-                "nonterminal speculative decode must leave exactly one dangling token"
-            );
         }
 
         self.kv_manager.release_decode_reservation(reservation);
