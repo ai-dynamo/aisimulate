@@ -33,7 +33,7 @@ verification round, including draft operations for schemes that model them.
 | `engine.speculation.num_speculative_tokens` | Required for flat ngram input | fixed | Integer from 1 to 5. |
 | `engine.speculation.acceptance_rates` | Required for flat ngram input | fixed | Exactly one conditional acceptance probability per draft token, each in `[0, 1]`. |
 | `engine.speculation.seed` | `42` | fixed | Unsigned 64-bit sampling seed. |
-| `engine.nextn` | `0` (off) | fixed | MTP/EAGLE draft tokens, 0 to 5. For a measured SD-round FPM profile, must equal its recorded draft depth. |
+| `engine.nextn` | `0` (off) | fixed | MTP/EAGLE draft tokens, 0 to 5. For a measured SD-round FPM profile, must equal its recorded draft depth. AFD decode communication also uses the model’s MTP work scale. |
 | `engine.nextn_accepted` | Unset | fixed | Required when `nextn > 0`. Expected accepted **draft** tokens per round, excluding the base token, in `[0, nextn]`. |
 
 `recommend` retains the flat ngram and legacy `nextn` inputs, fixed for every
@@ -203,6 +203,16 @@ when benchmarking tiny token budgets.
 HBM-only agentic MTP/EAGLE replay is supported by the offline engine stack,
 including aggregated and P/D configurations supported by the selected backend.
 This is functional replay, not a claim of AgentX hardware accuracy.
+For AFD, decode verification widens each request to `nextn + 1` tokens.
+Injected A/F transfers, F-node collectives, A-side combine, shared merge and
+all-gather also scale latency and energy by `(num_layers + nextn) / num_layers`,
+as generation compute does. This draft-work approximation distributes work
+across the target source layout, including its routed-layer fraction. It applies
+before pipeline evaluation and evidence, independently of `comm_overhead_factor`;
+compiled A-local TP collectives already carry the scale. Prefill and `nextn: 0`
+are unchanged. See [AFD batch pricing](../../sweeper/afd-topology.md#batch-pricing).
+
+
 Rejected with MTP: grouped caches, G2/G3 offload, and state-cache prefix matching
 with `prefix_match_unit` smaller than `block_size`. Full-block alignment is supported.
 Combinations accepted by the

@@ -10,6 +10,14 @@ identical workers. This page covers the role's shape and scheduler. KV cache,
 timing and P/D transfer have their own pages; see the
 [engine overview](README.md#read-by-block).
 
+<a id="worker-types"></a>
+
+`workers.aggregated`, `workers.prefill`, and `workers.decode` default to
+`type: monolithic`; existing ordinary worker configurations need no changes.
+`type: afd` uses a separate A/F configuration and supports the four combinations
+in [AFD](analytical.md#deployment-combinations). Its public phase is determined
+by the role, not a second configuration field.
+
 Merge this fragment into an existing `engine` block from the [engine overview](README.md):
 
 ```yaml
@@ -30,8 +38,10 @@ engine:
 
 | Knob | Default | Recommend | Rules |
 |---|---|---|---|
+| `workers.<role>.type` | `monolithic` | fixed | `monolithic` uses the ordinary fields below; `afd` requires a role-local `afd` block described in [AFD](analytical.md#afd). |
+| `workers.<role>.afd` | Required for `type: afd` | Topology domain | An independent A/F pool pair. AFD accepts this block, `context_length` and `startup_seconds`; the ordinary hardware, parallelism, scheduler, KV cache and timing blocks are rejected. A/F hardware lives inside `afd`. |
 | `workers.<role>.hardware` | `engine.hardware` | fixed | `prefill` and `decode` in disaggregated mode only. One concrete system identifier; `auto` is rejected. |
-| `workers.<role>.context_length` | `engine.context_length` | fixed | Positive token limit. Recommendation accepts it for `prefill` and `decode`; aggregated recommendations use `engine.context_length`. See [Context limits](#context-limits). |
+| `workers.<role>.context_length` | `engine.context_length` | fixed | Positive token limit. Recommendation accepts it for `prefill` and `decode` and for every AFD role; ordinary aggregated recommendations use `engine.context_length`. See [Context limits](#context-limits). |
 | `workers.<role>.startup_seconds` | `0` | fixed | Nonnegative. Delay before a worker added during the run becomes ready. Initial workers are ready at time zero. |
 | `workers.<role>.parallelism.preset` | Not applicable | `default` | Recommend only. `default` searches the generated parallelism space; a list pins candidate shapes; `false` or `{}` disables presets so the individual fields below define the space. See [search space](../../sweeper/search-space.md). |
 | `workers.<role>.parallelism.replicas` | `1` | Searched | Number of workers in this role. |
@@ -48,10 +58,16 @@ engine:
 | `workers.<role>.scheduler.prefill_decode_interval` | `0` | predict only | SGLang only. See [SGLang prefill/decode interval](#sglang-prefilldecode-interval). |
 | `workers.{aggregated,prefill}.host_loop` | `false` | fixed | SGLang only; `aggregated` in aggregated mode, `prefill` in disaggregated mode. Each pass is one overlap-scheduler iteration. Implied by `frontend` and `host_profile`. See [SGLang host loop, frontend and vision](#sglang-host-loop-frontend-and-vision). |
 | `workers.{aggregated,prefill}.frontend` | Unset | fixed | Ordered `stages`, each `{workers, service_ms, concurrency_scale}`, plus optional `measured_for` (model, frontend, feature transport and image shape the stages were measured on). Exclusive with `host_profile`. Unset together with `host_profile`, a worker with images encodes them on the GPU and prices no frontend stage, so its TTFT starts at the scheduler. |
-| `workers.{aggregated,prefill}.host_profile` | Unset | fixed | `{path, frontend}` with `frontend` `python` (SGLang's default HTTP server with its `TokenizerManager`) or `rust` (the embedded Rust server, `SGLANG_RUST_SERVER=1`, whose Rust extensions are built from an SGLang source tree). Frontend stages from a host cost table written by `python -m aisimulate.vl.collect`; a relative `path` resolves against the working directory of `collect` and `predict` alike. The table describes SGLang's CPU image-processor path (`--image-processor-backend pil`); SGLang 0.5.19's default `auto` on a GPU host runs the fast torchvision processor on the serving GPU, which is not priced, so a deployment matches its table only when launched with that flag. No table is read or measured unless this field is set. |
-| `workers.{aggregated,prefill}.vision.cache_mib` | `100` | fixed | Non-negative MiB; `0` disables the embedding cache. SGLang multimodal embedding cache (`SGLANG_VLM_CACHE_SIZE_MB`) for images encoded on the worker. |
+| `workers.{aggregated,prefill}.host_profile` | Unset | fixed | `{path, frontend}` with `frontend` `python` (SGLang's default HTTP server with its `TokenizerManager`) or `rust` (the embedded Rust server, `SGLANG_RUST_SERVER=1`, whose Rust extensions are built from an SGLang source tree). Frontend stages from a host cost table written by `python -m aisimulate.vl.collect`; a relative `path` resolves against the working directory of `collect` and `predict` alike. The table describes SGLang's CPU image-processor path (`--image-processor-backend pil`); SGLang 0.5.19's default `auto` on a GPU host runs the fast torchvision processor on the serving GPU, which is not priced, so a deployment matches its table only when launched with that flag. No table is read or measured unless this field is set. Unavailable on a monolithic prefill companion of an AFD role. |
+| `workers.{aggregated,prefill}.vision.cache_mib` | `100` | fixed | Non-negative MiB; `0` disables the embedding cache. SGLang multimodal embedding cache (`SGLANG_VLM_CACHE_SIZE_MB`) for images encoded on the worker. AFD deployments reject `vision`, including on an ordinary companion. |
 | `workers.{aggregated,prefill}.vision.encoder_parallel` | `tp` | fixed | `tp` shards the vision tower over the tensor-parallel group; `dp` (`--mm-enable-dp-encoder`) replicates it and splits the images. Sets encoder timing, collectives and per-rank tower weights. Adds no ranks; see the four parallelism knobs under [Compatibility and scope](sglang-vl-host-loop.md#compatibility-and-scope). |
 | `engine.enable_chunked_prefill` | Backend default (on) | fixed | Boolean. Applies to aggregated and prefill roles; `false` is rejected for SGLang and for AFD. |
+
+In mixed AFD/monolithic prediction, the ordinary prefill companion can use
+`host_loop` and explicit `frontend` stages. A frontend's `measured_for` must match
+the actual workload; an image measurement cannot price text-only traffic.
+`vision` and `host_profile` are rejected on the companion because AFD deployments
+do not support image workloads. AFD workers themselves do not accept these fields.
 
 A backend-specific scheduler field set to a non-default value on another
 backend fails validation.
@@ -59,8 +75,9 @@ backend fails validation.
 ## Context limits
 
 Each worker's `context_length` overrides `engine.context_length` for that role.
-Prediction supports the override on aggregated, prefill and decode workers;
-aggregated recommendations must use the shared engine field.
+Prediction supports the override on aggregated, prefill and decode workers.
+Ordinary aggregated recommendations use the shared engine field; AFD
+recommendations accept a local limit on every role.
 Saved candidate YAML keeps inherited limits unset on the worker, so editing
 `engine.context_length` still updates every worker without an explicit override.
 
@@ -72,8 +89,8 @@ Trace traffic is checked by runtime admission, not this fixed-length validator.
 Sweeper uses the role limit, then the shared limit, then the model's maximum
 context for KV-feasibility filtering. Generated worker payloads use the role
 or shared limit; if both are unset, `max_model_len` remains unset. The model
-fallback used for filtering is not copied into that payload. AFD companion
-workers follow the same rule for their role. These are serving limits, not
+fallback used for filtering is not copied into that payload. Ordinary roles
+paired with AFD follow the same rule for their role. These are serving limits, not
 measured performance data.
 
 ## Parallelism

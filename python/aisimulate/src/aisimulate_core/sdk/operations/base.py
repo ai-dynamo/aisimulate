@@ -172,10 +172,11 @@ class OpShellKit:
     - the DATA-PLANE surface: class-level ``_data_cache`` + ``load_data`` /
       ``clear_cache`` / ``supported_quant_modes`` / ``_record_load`` — the
       engine-table-view binding conventions (see the package README);
-    - the ``_engine_query`` kwarg mapping: how the Python-side ORCHESTRATION
-      callers (the ``_sum_latency`` fallback loop, the AFD comm ops, the
-      pareto A/F probe) express legacy phase kwargs as one engine
-      evaluation. Declared per shell via ``_ENGINE_QUERY_SHAPE``.
+    - the ``_engine_query`` kwarg mapping: how Python-side ORCHESTRATION
+      callers express legacy phase kwargs as one engine evaluation (no
+      production caller remains; the surface stays pinned by the
+      single-oracle contract and its regression tests). Declared per shell
+      via ``_ENGINE_QUERY_SHAPE``.
     """
 
     # The call-shape label ``_ENGINE_QUERY_SHAPE`` ("tokens" / "context" /
@@ -196,12 +197,11 @@ class OpShellKit:
     def _engine_query(self, database: PerfDatabase, **kwargs) -> PerformanceResult:
         """Evaluate this op through the compiled engine's single-op plumbing.
 
-        The permanent internal surface behind the Python-side ORCHESTRATION
-        callers (the ``_sum_latency`` fallback loop, the AFD comm ops, the
-        pareto A/F balance probe). The public deprecated ``query()`` wrapper
-        that used to front this was removed after its one-release window;
-        external callers use ``EngineHandle.evaluate_ops_json`` (op-list) or
-        the phase/run surface."""
+        The internal surface behind Python-side ORCHESTRATION callers (no
+        production caller remains; the mapping stays pinned by the
+        single-oracle contract tests). External callers use
+        ``EngineHandle.evaluate_ops_json`` (op-list) or the phase/run
+        surface."""
         from aisimulate_core.sdk.engine import _evaluate_single_op
 
         op, eval_kwargs = self._engine_query_plan(kwargs)
@@ -320,12 +320,13 @@ class OpShellKit:
 
 
 class PythonOperation(OpShellKit):
-    """Base for the PYTHON-side orchestration ops (the AFD comm ops,
-    ``FPMForwardOp``) — the only op classes that are not Rust-backed: their
-    state includes things the engine wire cannot carry (a Python config
-    object, a retired callable slot) or their surface is pinned by the
-    public-SDK import contract. Carries the retired base class's
-    construction contract (audit gate + ``_name``/``_scale_factor``/
+    """Base for the PYTHON-side orchestration ops (today only
+    ``FPMForwardOp``; the Python AFD comm ops were retired when they became
+    native Rust ``Op`` variants) — the only op classes that are not
+    Rust-backed: their state includes things the engine wire cannot carry
+    (a Python config object, a retired callable slot) or their surface is
+    pinned by the public-SDK import contract. Carries the retired base
+    class's construction contract (audit gate + ``_name``/``_scale_factor``/
     ``_seq_split``) without any engine identity."""
 
     # Context-parallel opt-in (the retired audit gate): constructing with

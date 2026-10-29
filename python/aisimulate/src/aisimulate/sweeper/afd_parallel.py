@@ -1,44 +1,58 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Modified native port; original paths and license: root THIRD_PARTY_NOTICES.md.
+# Source: https://github.com/LPhgh/aisimulate/tree/af56328c4ba7ffa1b8c42c8375244568c2e7bb8c
 
 """Attention--FFN parallel topology contracts for the AISimulate Sweeper.
 
 This module owns only the backend-neutral A/F parallel shape, validation, GPU
 accounting, and complete finite enumeration. Performance measurement, staged
 evaluation, search integration, replay, and deployment generation live in their
-own layers. The default candidate order follows the imported legacy AIC
-implementation in ``aisimulate.sdk.task_v2.build_afd_parallel_lists``.
+own layers. Candidates are enumerated in deterministic node, batch, and
+microbatch order.
 """
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
 from typing import Any
 
-from .parallel_enum import ReplicaParallelConfig
+from aisimulate_core._native import (
+    AFD_DEFAULT_ROUTING_LOCATION,
+    resolve_afd_parallelism,
+    validate_afd_attention_tp,
+    validate_afd_model_shape,
+    validate_afd_routing_location,
+)
 
-AFD_SCHEMA_VERSION = 1
-_LEGACY_SOURCE = "aisimulate.sdk.task_v2.build_afd_parallel_lists"
-
-
-class AFDPhase(str, Enum):
-    """The inference phase covered by an AFD pool."""
-
-    PREFILL = "prefill"
-    DECODE = "decode"
-    BOTH = "both"
+AFD_SCHEMA_VERSION = 2
+_SOURCE = "aisimulate.sweeper.afd_parallel.enumerate_afd_topologies"
 
 
-class AFDPipelineModel(str, Enum):
-    """How A/F compute and activation transfers overlap."""
+def validate_afd_model(model: str) -> dict[str, Any]:
+    """Validate cached source metadata before preparing performance databases."""
+    from aisimulate_core.sdk.models.afd import layer_layout
+    from aisimulate_core.sdk.models.helpers import _get_model_info
 
-    OPTIMISTIC = "optimistic"
-    CONSERVATIVE = "conservative"
-    SERIAL = "serial"
+    info = _get_model_info(model)
+    required = ("layers", "num_experts", "topk", "num_shared_experts", "num_moe_layers")
+    missing = [name for name in required if name not in info]
+    if missing:
+        raise ValueError(f"AFD source metadata for {model!r} is missing {missing}")
+    validate_afd_model_shape(
+        info["layers"],
+        info.get("num_experts") or 0,
+        info.get("topk") or 0,
+        info["num_shared_experts"],
+        info["num_moe_layers"],
+    )
+    layer_layout(info)
+    return info
 
 
 class AFDReasonCategory(str, Enum):
@@ -47,7 +61,6 @@ class AFDReasonCategory(str, Enum):
     INVALID_TOPOLOGY = "invalid_topology"
     GPU_BUDGET = "gpu_budget"
     EXPERT_DIVISIBILITY = "expert_divisibility"
-    INCOMPATIBLE_PHASE = "incompatible_phase"
     CANDIDATE_LIMIT = "candidate_limit"
     NO_FEASIBLE_TOPOLOGY = "no_feasible_topology"
     INVALID_MEASUREMENT = "invalid_measurement"
@@ -99,50 +112,47 @@ def _positive_finite(name: str, value: float) -> None:
         )
 
 
-def _enum_value(enum_type, value, name: str):
-    try:
-        return enum_type(value)
-    except (TypeError, ValueError) as exc:
-        choices = [item.value for item in enum_type]
-        raise AFDInfeasible(
-            AFDReasonCategory.INVALID_TOPOLOGY,
-            f"{name} must be one of {choices}, got {value!r}",
-            provenance={"field": name, "value": value},
-        ) from exc
-
-
 @dataclass(frozen=True)
 class AFDTopology:
     """One concrete A/F topology.
 
-    Phase-1 legacy semantics are retained: one F replica spans every F GPU, so
-    ``ffn_tp == ffn_workers == n_f_nodes * gpus_per_node``.  A workers use TP
-    ``tp_a`` and data-parallel replicas across the A pool.
+    A replicas own independent token batches. F ranks are physical GPU ranks
+    sharing one expert pool. A supports attention TP; F uses pure expert parallelism.
     """
 
     n_a_nodes: int
     n_f_nodes: int
     gpus_per_node: int
-    tp_a: int
-    a_batch_size: int
-    f_moe_ep_size: int = 1
+    a_tp_size: int
+    batch_size_per_a_replica: int
+    f_moe_ep_size: int | None = None
     num_microbatches: int = 3
-    pipeline_model: AFDPipelineModel | str = AFDPipelineModel.OPTIMISTIC
-    phase: AFDPhase | str = AFDPhase.DECODE
-    combined_with_pd: bool = True
+    pipeline_layout: str = "four_stage"
     comm_overhead_factor: float = 1.0
-    boundary_on_attn: bool = True
+    routing_location: str = AFD_DEFAULT_ROUTING_LOCATION
     is_moe: bool = False
     num_experts: int = 0
+    # Per-pool perf-DB systems (hetero support). ``None`` inherits
+    # the deployment's top-level hardware. Each width is validated against
+    # its own pool's selected perf-DB system spec.
+    a_system: str | None = None
+    f_system: str | None = None
+    f_gpus_per_node: int | None = None
 
     def __post_init__(self) -> None:
+        if self.f_gpus_per_node is None:
+            object.__setattr__(self, "f_gpus_per_node", self.gpus_per_node)
+        _positive_int("f_gpus_per_node", self.f_gpus_per_node)
+        if self.routing_location not in ("a", "f"):
+            raise AFDInfeasible(AFDReasonCategory.INVALID_TOPOLOGY, "routing_location must be a or f")
+        if self.pipeline_layout not in ("four_stage", "two_stage"):
+            raise AFDInfeasible(AFDReasonCategory.INVALID_TOPOLOGY, "pipeline_layout must be four_stage or two_stage")
         for name in (
             "n_a_nodes",
             "n_f_nodes",
             "gpus_per_node",
-            "tp_a",
-            "a_batch_size",
-            "f_moe_ep_size",
+            "a_tp_size",
+            "batch_size_per_a_replica",
             "num_microbatches",
         ):
             _positive_int(name, getattr(self, name))
@@ -156,11 +166,6 @@ class AFDTopology:
                 AFDReasonCategory.INVALID_TOPOLOGY,
                 f"num_experts must be non-negative, got {self.num_experts}",
             )
-        if type(self.combined_with_pd) is not bool or type(self.boundary_on_attn) is not bool:
-            raise AFDInfeasible(
-                AFDReasonCategory.INVALID_TOPOLOGY,
-                "combined_with_pd and boundary_on_attn must be booleans",
-            )
         if type(self.is_moe) is not bool:
             raise AFDInfeasible(
                 AFDReasonCategory.INVALID_TOPOLOGY,
@@ -168,92 +173,80 @@ class AFDTopology:
             )
         _positive_finite("comm_overhead_factor", self.comm_overhead_factor)
 
-        phase = _enum_value(AFDPhase, self.phase, "phase")
-        pipeline = _enum_value(AFDPipelineModel, self.pipeline_model, "pipeline_model")
-        object.__setattr__(self, "phase", phase)
-        object.__setattr__(self, "pipeline_model", pipeline)
-
-        if self.gpus_per_node % self.tp_a:
+        if self.gpus_per_node % self.a_tp_size:
             raise AFDInfeasible(
                 AFDReasonCategory.INVALID_TOPOLOGY,
-                f"tp_a={self.tp_a} must divide gpus_per_node={self.gpus_per_node}",
-                provenance={"tp_a": self.tp_a, "gpus_per_node": self.gpus_per_node},
+                f"a_tp_size={self.a_tp_size} must divide gpus_per_node={self.gpus_per_node}",
+                provenance={"a_tp_size": self.a_tp_size, "gpus_per_node": self.gpus_per_node},
             )
-        if phase is AFDPhase.BOTH and self.combined_with_pd:
-            raise AFDInfeasible(
-                AFDReasonCategory.INCOMPATIBLE_PHASE,
-                "combined_with_pd=True is incompatible with phase='both'; "
-                "use a single AFD phase plus a P/D companion, or set combined_with_pd=False",
-                provenance={"phase": phase.value, "combined_with_pd": True},
+        if self.f_moe_ep_size is not None:
+            _positive_int("f_moe_ep_size", self.f_moe_ep_size)
+        resolved = json.loads(
+            resolve_afd_parallelism(
+                self.a_tp_size,
+                self.n_a_nodes,
+                self.n_f_nodes,
+                self.gpus_per_node,
+                self.f_moe_ep_size,
+                self.num_experts if self.is_moe else 0,
+                f_gpus_per_node=self.f_gpus_per_node,
             )
-        if not self.is_moe and self.f_moe_ep_size != 1:
-            raise AFDInfeasible(
-                AFDReasonCategory.EXPERT_DIVISIBILITY,
-                "dense AFD topologies require f_moe_ep_size=1",
-                provenance={"f_moe_ep_size": self.f_moe_ep_size},
-            )
-        if self.ffn_tp % self.f_moe_ep_size:
-            raise AFDInfeasible(
-                AFDReasonCategory.EXPERT_DIVISIBILITY,
-                f"f_moe_ep_size={self.f_moe_ep_size} must divide ffn_tp={self.ffn_tp}",
-                provenance={
-                    "f_moe_ep_size": self.f_moe_ep_size,
-                    "ffn_tp": self.ffn_tp,
-                },
-            )
-        if self.num_experts and (self.f_moe_ep_size > self.num_experts or self.num_experts % self.f_moe_ep_size):
-            raise AFDInfeasible(
-                AFDReasonCategory.EXPERT_DIVISIBILITY,
-                f"f_moe_ep_size={self.f_moe_ep_size} must divide num_experts={self.num_experts}",
-                provenance={
-                    "f_moe_ep_size": self.f_moe_ep_size,
-                    "num_experts": self.num_experts,
-                },
-            )
+        )
+        object.__setattr__(self, "f_moe_ep_size", resolved["f_moe_ep_size"])
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> AFDTopology:
+        values = dict(value)
+        derived = {
+            name: values.pop(name)
+            for name in ("a_replica_count", "f_rank_count", "a_gpu_count", "f_gpu_count", "f_moe_tp_size")
+            if name in values
+        }
+        topology = cls(**values)
+        for name, count in derived.items():
+            if count != getattr(topology, name):
+                raise ValueError(f"AFD {name} disagrees with the pool geometry")
+        return topology
 
     @property
-    def attention_workers(self) -> int:
-        return self.n_a_nodes * self.gpus_per_node // self.tp_a
+    def a_replica_count(self) -> int:
+        return self.n_a_nodes * self.gpus_per_node // self.a_tp_size
 
     @property
-    def ffn_workers(self) -> int:
-        return self.n_f_nodes * self.gpus_per_node
+    def f_rank_count(self) -> int:
+        return self.n_f_nodes * self.f_gpus_per_node
 
     @property
-    def ffn_tp(self) -> int:
-        return self.ffn_workers
+    def a_gpu_count(self) -> int:
+        return self.n_a_nodes * self.gpus_per_node
 
     @property
-    def attention_gpus(self) -> int:
-        return self.attention_workers * self.tp_a
+    def f_gpu_count(self) -> int:
+        return self.n_f_nodes * self.f_gpus_per_node
 
     @property
-    def ffn_gpus(self) -> int:
-        return self.ffn_workers
+    def f_moe_tp_size(self) -> int:
+        return self.f_gpu_count // self.f_moe_ep_size
 
     @property
     def total_gpus(self) -> int:
-        return self.attention_gpus + self.ffn_gpus
+        return self.a_gpu_count + self.f_gpu_count
 
     @property
     def total_batch_size(self) -> int:
-        return self.attention_workers * self.a_batch_size
+        return self.a_replica_count * self.batch_size_per_a_replica
 
     @property
     def microbatch_size(self) -> int:
-        return math.ceil(self.a_batch_size / self.num_microbatches)
+        return math.ceil(self.batch_size_per_a_replica / self.num_microbatches)
 
     @property
     def total_microbatch_size(self) -> int:
-        return self.attention_workers * self.microbatch_size
+        return self.a_replica_count * self.microbatch_size
 
     @property
     def af_node_ratio(self) -> float:
         return self.n_a_nodes / self.n_f_nodes
-
-    @property
-    def adapter_topology(self) -> str:
-        return "afd+pd" if self.combined_with_pd else "afd"
 
     def provenance(self) -> dict[str, Any]:
         return {
@@ -262,68 +255,28 @@ class AFDTopology:
                 "n_a_nodes": self.n_a_nodes,
                 "n_f_nodes": self.n_f_nodes,
                 "gpus_per_node": self.gpus_per_node,
-                "tp_a": self.tp_a,
-                "ffn_tp": self.ffn_tp,
+                "f_gpus_per_node": self.f_gpus_per_node,
+                "a_tp_size": self.a_tp_size,
+                "a_replica_count": self.a_replica_count,
+                "f_rank_count": self.f_rank_count,
+                "a_gpu_count": self.a_gpu_count,
+                "f_gpu_count": self.f_gpu_count,
+                "f_moe_tp_size": self.f_moe_tp_size,
                 "f_moe_ep_size": self.f_moe_ep_size,
-                "a_batch_size": self.a_batch_size,
+                "batch_size_per_a_replica": self.batch_size_per_a_replica,
                 "num_microbatches": self.num_microbatches,
-                "pipeline_model": self.pipeline_model.value,
-                "phase": self.phase.value,
-                "combined_with_pd": self.combined_with_pd,
+                "pipeline_layout": self.pipeline_layout,
                 "comm_overhead_factor": self.comm_overhead_factor,
-                "boundary_on_attn": self.boundary_on_attn,
+                "routing_location": self.routing_location,
                 "is_moe": self.is_moe,
                 "num_experts": self.num_experts,
+                "a_system": self.a_system,
+                "f_system": self.f_system,
             },
             "gpu_accounting": {
-                "attention_gpus": self.attention_gpus,
-                "ffn_gpus": self.ffn_gpus,
+                "a_gpu_count": self.a_gpu_count,
+                "f_gpu_count": self.f_gpu_count,
                 "afd_total_gpus": self.total_gpus,
-            },
-        }
-
-
-@dataclass(frozen=True)
-class AFDParallelConfig:
-    """One Sweeper candidate for pure AFD or AFD plus a P/D companion."""
-
-    topology: AFDTopology
-    companion: ReplicaParallelConfig | None = None
-
-    def __post_init__(self) -> None:
-        if self.topology.combined_with_pd != (self.companion is not None):
-            expected = "an opposite-phase P/D companion" if self.topology.combined_with_pd else "no companion"
-            raise AFDInfeasible(
-                AFDReasonCategory.INCOMPATIBLE_PHASE,
-                f"topology combined_with_pd={self.topology.combined_with_pd} requires {expected}",
-                provenance=self.topology.provenance(),
-            )
-
-    @property
-    def companion_role(self) -> str | None:
-        if self.companion is None:
-            return None
-        return "decode" if self.topology.phase is AFDPhase.PREFILL else "prefill"
-
-    @property
-    def total_gpus(self) -> int:
-        companion_gpus = self.companion.total_gpus if self.companion is not None else 0
-        return self.topology.total_gpus + companion_gpus
-
-    def provenance(self) -> dict[str, Any]:
-        companion_gpus = self.companion.total_gpus if self.companion is not None else 0
-        return {
-            "schema_version": AFD_SCHEMA_VERSION,
-            "source": _LEGACY_SOURCE,
-            "mode": self.topology.adapter_topology,
-            "topology": self.topology.provenance(),
-            "companion_role": self.companion_role,
-            "companion": asdict(self.companion) if self.companion is not None else None,
-            "gpu_accounting": {
-                "attention_gpus": self.topology.attention_gpus,
-                "ffn_gpus": self.topology.ffn_gpus,
-                "companion_gpus": companion_gpus,
-                "total_gpus": self.total_gpus,
             },
         }
 
@@ -333,8 +286,7 @@ class AFDSearchConfig:
     """Finite pinned or generated AFD topology domain.
 
     ``pinned_topologies`` replaces generation when non-empty.  Otherwise each
-    candidate list is searched.  An empty TP/EP list requests the legacy
-    hardware-derived defaults.
+    candidate list is searched.  An empty TP/EP list requests the hardware-derived defaults.
     """
 
     total_gpus: int
@@ -342,23 +294,26 @@ class AFDSearchConfig:
     is_moe: bool
     num_experts: int = 0
     pinned_topologies: tuple[AFDTopology, ...] = ()
-    tp_a_candidates: tuple[int, ...] = ()
-    a_batch_size_candidates: tuple[int, ...] = (128,)
+    a_tp_size_candidates: tuple[int, ...] = ()
+    batch_size_per_a_replica_candidates: tuple[int, ...] = (128,)
     f_moe_ep_size_candidates: tuple[int | str, ...] = ()
     microbatch_candidates: tuple[int, ...] = (2, 3, 4)
-    pipeline_model_candidates: tuple[AFDPipelineModel | str, ...] = (
-        AFDPipelineModel.OPTIMISTIC,
-        AFDPipelineModel.CONSERVATIVE,
-    )
-    phase: AFDPhase | str = AFDPhase.DECODE
-    combined_with_pd: bool = True
+    pipeline_layout: str = "four_stage"
     comm_overhead_factor: float = 1.0
-    boundary_on_attn: bool = True
+    routing_location: str = AFD_DEFAULT_ROUTING_LOCATION
     min_gpu_budget: int | None = None
     max_af_ratio: float = 4.0
     max_candidates: int = 10_000
+    f_gpus_per_node: int | None = None
 
     def __post_init__(self) -> None:
+        if self.f_gpus_per_node is None:
+            object.__setattr__(self, "f_gpus_per_node", self.gpus_per_node)
+        _positive_int("f_gpus_per_node", self.f_gpus_per_node)
+        if self.routing_location not in ("a", "f"):
+            raise AFDInfeasible(AFDReasonCategory.INVALID_TOPOLOGY, "routing_location must be a or f")
+        if self.pipeline_layout not in ("four_stage", "two_stage"):
+            raise AFDInfeasible(AFDReasonCategory.INVALID_TOPOLOGY, "pipeline_layout must be four_stage or two_stage")
         _positive_int("total_gpus", self.total_gpus)
         _positive_int("gpus_per_node", self.gpus_per_node)
         _positive_int("max_candidates", self.max_candidates)
@@ -366,11 +321,6 @@ class AFDSearchConfig:
             raise AFDInfeasible(
                 AFDReasonCategory.INVALID_TOPOLOGY,
                 f"is_moe must be a boolean, got {self.is_moe!r}",
-            )
-        if type(self.combined_with_pd) is not bool or type(self.boundary_on_attn) is not bool:
-            raise AFDInfeasible(
-                AFDReasonCategory.INVALID_TOPOLOGY,
-                "combined_with_pd and boundary_on_attn must be booleans",
             )
         if isinstance(self.num_experts, bool) or not isinstance(self.num_experts, int) or self.num_experts < 0:
             raise AFDInfeasible(
@@ -392,21 +342,12 @@ class AFDSearchConfig:
                 )
         _positive_finite("max_af_ratio", self.max_af_ratio)
         _positive_finite("comm_overhead_factor", self.comm_overhead_factor)
-        phase = _enum_value(AFDPhase, self.phase, "phase")
-        pipelines = tuple(
-            _enum_value(AFDPipelineModel, item, "pipeline_model_candidates") for item in self.pipeline_model_candidates
-        )
-        if not pipelines:
-            raise AFDInfeasible(
-                AFDReasonCategory.INVALID_TOPOLOGY,
-                "pipeline_model_candidates must not be empty",
-            )
         for name, values in (
-            ("tp_a_candidates", self.tp_a_candidates),
-            ("a_batch_size_candidates", self.a_batch_size_candidates),
+            ("a_tp_size_candidates", self.a_tp_size_candidates),
+            ("batch_size_per_a_replica_candidates", self.batch_size_per_a_replica_candidates),
             ("microbatch_candidates", self.microbatch_candidates),
         ):
-            if name != "tp_a_candidates" and not values:
+            if name != "a_tp_size_candidates" and not values:
                 raise AFDInfeasible(
                     AFDReasonCategory.INVALID_TOPOLOGY,
                     f"{name} must not be empty",
@@ -419,11 +360,11 @@ class AFDSearchConfig:
                     f"{name} must not contain duplicates",
                     provenance={"field": name, "values": list(values)},
                 )
-        invalid_tp = [value for value in self.tp_a_candidates if self.gpus_per_node % value]
+        invalid_tp = [value for value in self.a_tp_size_candidates if self.gpus_per_node % value]
         if invalid_tp:
             raise AFDInfeasible(
                 AFDReasonCategory.INVALID_TOPOLOGY,
-                "tp_a_candidates must divide gpus_per_node",
+                "a_tp_size_candidates must divide gpus_per_node",
                 provenance={
                     "gpus_per_node": self.gpus_per_node,
                     "invalid_candidates": invalid_tp,
@@ -432,10 +373,10 @@ class AFDSearchConfig:
         for value in self.f_moe_ep_size_candidates:
             if type(value) is int:
                 _positive_int("f_moe_ep_size_candidates", value)
-            elif type(value) is not str or value not in {"n_f_nodes", "ffn_tp", "tp_f"}:
+            elif type(value) is not str or value not in {"n_f_nodes", "f_gpu_count"}:
                 raise AFDInfeasible(
                     AFDReasonCategory.EXPERT_DIVISIBILITY,
-                    f"f_moe_ep_size_candidates accepts positive integers, 'n_f_nodes', or 'ffn_tp'; got {value!r}",
+                    f"f_moe_ep_size_candidates accepts positive integers, 'n_f_nodes', or 'f_gpu_count'; got {value!r}",
                 )
         if len(set(self.f_moe_ep_size_candidates)) != len(self.f_moe_ep_size_candidates):
             raise AFDInfeasible(
@@ -452,15 +393,6 @@ class AFDSearchConfig:
                 "dense AFD searches require f_moe_ep_size_candidates to be empty or (1,)",
                 provenance={"field": "f_moe_ep_size_candidates", "value": self.f_moe_ep_size_candidates},
             )
-        if len(set(pipelines)) != len(pipelines):
-            raise AFDInfeasible(
-                AFDReasonCategory.INVALID_TOPOLOGY,
-                "pipeline_model_candidates must not contain duplicates",
-                provenance={
-                    "field": "pipeline_model_candidates",
-                    "values": [item.value for item in pipelines],
-                },
-            )
         if any(not isinstance(topology, AFDTopology) for topology in self.pinned_topologies):
             raise AFDInfeasible(
                 AFDReasonCategory.INVALID_TOPOLOGY,
@@ -475,8 +407,6 @@ class AFDSearchConfig:
                     "values": [topology.provenance() for topology in self.pinned_topologies],
                 },
             )
-        object.__setattr__(self, "phase", phase)
-        object.__setattr__(self, "pipeline_model_candidates", pipelines)
 
 
 @dataclass(frozen=True)
@@ -493,41 +423,62 @@ class AFDEnumeration:
         object.__setattr__(self, "provenance", MappingProxyType(dict(self.provenance)))
 
 
-def _valid_ep(ep: int, *, ffn_tp: int, num_experts: int) -> bool:
+def _valid_ep(ep: int, *, f_gpu_count: int, num_experts: int) -> bool:
     return (
         ep >= 1
-        and ep <= ffn_tp
-        and ffn_tp % ep == 0
+        and ep <= f_gpu_count
+        and f_gpu_count % ep == 0
         and (num_experts <= 0 or (ep <= num_experts and num_experts % ep == 0))
     )
 
 
 def _resolve_ep_candidates(config: AFDSearchConfig, *, n_f_nodes: int) -> tuple[int, ...]:
     if not config.is_moe:
-        return (1,)
-    ffn_tp = n_f_nodes * config.gpus_per_node
-    raw = config.f_moe_ep_size_candidates or (1, 2, "n_f_nodes", "ffn_tp")
+        raise NotImplementedError("Dense AFD is not implemented")
+    f_gpu_count = n_f_nodes * config.f_gpus_per_node
+    raw = config.f_moe_ep_size_candidates or ("f_gpu_count",)
     resolved: set[int] = set()
     for value in raw:
         if value == "n_f_nodes":
             resolved.add(n_f_nodes)
-        elif value in {"ffn_tp", "tp_f"}:
-            resolved.add(ffn_tp)
+        elif value == "f_gpu_count":
+            resolved.add(f_gpu_count)
         else:
             resolved.add(value)
-    return tuple(ep for ep in sorted(resolved) if _valid_ep(ep, ffn_tp=ffn_tp, num_experts=config.num_experts))
+    candidates = []
+    for ep in sorted(resolved):
+        if not _valid_ep(ep, f_gpu_count=f_gpu_count, num_experts=config.num_experts):
+            continue
+        try:
+            resolve_afd_parallelism(
+                1,
+                1,
+                n_f_nodes,
+                config.gpus_per_node,
+                ep,
+                None,
+                f_gpus_per_node=config.f_gpus_per_node,
+            )
+        except NotImplementedError:
+            # This generated F width may require unsupported MoE TP while
+            # another width can honor the same authored EP choice.
+            continue
+        candidates.append(ep)
+    return tuple(candidates)
 
 
 def _validate_pinned(config: AFDSearchConfig) -> tuple[AFDTopology, ...]:
     candidates: list[AFDTopology] = []
     for topology in config.pinned_topologies:
-        if topology.gpus_per_node != config.gpus_per_node:
+        if (topology.gpus_per_node, topology.f_gpus_per_node) != (config.gpus_per_node, config.f_gpus_per_node):
             raise AFDInfeasible(
                 AFDReasonCategory.INVALID_TOPOLOGY,
                 "pinned topology gpus_per_node does not match its AFD search hardware",
                 provenance={
                     "topology_gpus_per_node": topology.gpus_per_node,
                     "search_gpus_per_node": config.gpus_per_node,
+                    "topology_f_gpus_per_node": topology.f_gpus_per_node,
+                    "search_f_gpus_per_node": config.f_gpus_per_node,
                 },
             )
         if topology.is_moe != config.is_moe or topology.num_experts != config.num_experts:
@@ -544,21 +495,20 @@ def _validate_pinned(config: AFDSearchConfig) -> tuple[AFDTopology, ...]:
         contract_mismatches = {
             name: {"topology": actual, "search": expected}
             for name, actual, expected in (
-                ("phase", topology.phase.value, config.phase.value),
-                ("combined_with_pd", topology.combined_with_pd, config.combined_with_pd),
                 (
                     "comm_overhead_factor",
                     topology.comm_overhead_factor,
                     config.comm_overhead_factor,
                 ),
-                ("boundary_on_attn", topology.boundary_on_attn, config.boundary_on_attn),
+                ("routing_location", topology.routing_location, config.routing_location),
+                ("pipeline_layout", topology.pipeline_layout, config.pipeline_layout),
             )
             if actual != expected
         }
         if contract_mismatches:
             raise AFDInfeasible(
                 AFDReasonCategory.INVALID_TOPOLOGY,
-                "pinned topology contradicts its AFD search phase, mode, or communication contract",
+                "pinned topology contradicts fixed AFD search settings: " + ", ".join(sorted(contract_mismatches)),
                 provenance={"mismatches": contract_mismatches},
             )
         if topology.total_gpus > config.total_gpus or (
@@ -575,13 +525,19 @@ def _validate_pinned(config: AFDSearchConfig) -> tuple[AFDTopology, ...]:
 
 
 def enumerate_afd_topologies(config: AFDSearchConfig) -> AFDEnumeration:
-    """Enumerate pinned or searched AFD shapes in legacy canonical order."""
+    """Enumerate pinned or searched AFD shapes in deterministic order."""
 
+    validate_afd_routing_location(config.routing_location)
+    for a_tp_size in config.a_tp_size_candidates:
+        validate_afd_attention_tp(a_tp_size)
+    if not config.is_moe:
+        raise NotImplementedError("Dense AFD is not implemented; only pure routed MoE is supported")
+    for topology in config.pinned_topologies:
+        validate_afd_routing_location(topology.routing_location)
     rejections = {
         AFDReasonCategory.GPU_BUDGET.value: 0,
         "af_ratio": 0,
         AFDReasonCategory.EXPERT_DIVISIBILITY.value: 0,
-        "duplicate_pipeline_regime": 0,
     }
     if config.pinned_topologies:
         pinned = _validate_pinned(config)
@@ -602,37 +558,38 @@ def enumerate_afd_topologies(config: AFDSearchConfig) -> AFDEnumeration:
             },
         )
 
-    total_nodes, remainder_gpus = divmod(config.total_gpus, config.gpus_per_node)
-    if total_nodes < 2:
+    max_a_nodes = (config.total_gpus - config.f_gpus_per_node) // config.gpus_per_node
+    if max_a_nodes < 1:
         raise AFDInfeasible(
             AFDReasonCategory.GPU_BUDGET,
             "node-granular AFD needs one full A node and one full F node; "
-            f"need at least {2 * config.gpus_per_node} GPUs, got {config.total_gpus}",
+            f"need at least {config.gpus_per_node + config.f_gpus_per_node} GPUs, got {config.total_gpus}",
             provenance={
                 "total_gpus": config.total_gpus,
                 "gpus_per_node": config.gpus_per_node,
             },
         )
-    if config.tp_a_candidates:
-        tp_candidates = tuple(sorted(config.tp_a_candidates))
+    if config.a_tp_size_candidates:
+        tp_candidates = tuple(sorted(config.a_tp_size_candidates))
     else:
-        tp_candidates = tuple(
-            sorted({value for value in (1, 2, 4, config.gpus_per_node) if config.gpus_per_node % value == 0})
-        )
+        tp_candidates = (1,)
     if not tp_candidates:
         raise AFDInfeasible(
             AFDReasonCategory.INVALID_TOPOLOGY,
-            "no tp_a candidate is a positive divisor of gpus_per_node",
+            "no a_tp_size candidate is a positive divisor of gpus_per_node",
             provenance={
-                "tp_a_candidates": list(config.tp_a_candidates),
+                "a_tp_size_candidates": list(config.a_tp_size_candidates),
                 "gpus_per_node": config.gpus_per_node,
             },
         )
 
     candidates: list[AFDTopology] = []
-    for n_a_nodes in range(1, total_nodes):
-        for n_f_nodes in range(1, total_nodes - n_a_nodes + 1):
-            used_gpus = (n_a_nodes + n_f_nodes) * config.gpus_per_node
+    usable_gpus = 0
+    for n_a_nodes in range(1, max_a_nodes + 1):
+        max_f_nodes = (config.total_gpus - n_a_nodes * config.gpus_per_node) // config.f_gpus_per_node
+        for n_f_nodes in range(1, max_f_nodes + 1):
+            used_gpus = n_a_nodes * config.gpus_per_node + n_f_nodes * config.f_gpus_per_node
+            usable_gpus = max(usable_gpus, used_gpus)
             if config.min_gpu_budget is not None and used_gpus < config.min_gpu_budget:
                 rejections[AFDReasonCategory.GPU_BUDGET.value] += 1
                 continue
@@ -643,52 +600,47 @@ def enumerate_afd_topologies(config: AFDSearchConfig) -> AFDEnumeration:
             if not ep_candidates:
                 rejections[AFDReasonCategory.EXPERT_DIVISIBILITY.value] += 1
                 continue
-            for tp_a in tp_candidates:
-                for a_batch_size in config.a_batch_size_candidates:
+            for a_tp_size in tp_candidates:
+                for batch_size_per_a_replica in config.batch_size_per_a_replica_candidates:
                     for ep in ep_candidates:
                         for num_microbatches in config.microbatch_candidates:
-                            for pipeline in config.pipeline_model_candidates:
-                                if pipeline is AFDPipelineModel.OPTIMISTIC and num_microbatches < 3:
-                                    rejections["duplicate_pipeline_regime"] += 1
-                                    continue
-                                candidates.append(
-                                    AFDTopology(
-                                        n_a_nodes=n_a_nodes,
-                                        n_f_nodes=n_f_nodes,
-                                        gpus_per_node=config.gpus_per_node,
-                                        tp_a=tp_a,
-                                        a_batch_size=a_batch_size,
-                                        f_moe_ep_size=ep,
-                                        num_microbatches=num_microbatches,
-                                        pipeline_model=pipeline,
-                                        phase=config.phase,
-                                        combined_with_pd=config.combined_with_pd,
-                                        comm_overhead_factor=config.comm_overhead_factor,
-                                        boundary_on_attn=config.boundary_on_attn,
-                                        is_moe=config.is_moe,
-                                        num_experts=config.num_experts,
-                                    )
+                            candidates.append(
+                                AFDTopology(
+                                    n_a_nodes=n_a_nodes,
+                                    n_f_nodes=n_f_nodes,
+                                    gpus_per_node=config.gpus_per_node,
+                                    f_gpus_per_node=config.f_gpus_per_node,
+                                    a_tp_size=a_tp_size,
+                                    batch_size_per_a_replica=batch_size_per_a_replica,
+                                    f_moe_ep_size=ep,
+                                    num_microbatches=num_microbatches,
+                                    pipeline_layout=config.pipeline_layout,
+                                    comm_overhead_factor=config.comm_overhead_factor,
+                                    routing_location=config.routing_location,
+                                    is_moe=config.is_moe,
+                                    num_experts=config.num_experts,
                                 )
-                                if len(candidates) > config.max_candidates:
-                                    raise AFDInfeasible(
-                                        AFDReasonCategory.CANDIDATE_LIMIT,
-                                        "AFD search produced at least "
-                                        f"{len(candidates)} candidates, exceeding "
-                                        f"max_candidates={config.max_candidates}; narrow "
-                                        "the domain or increase the limit so the complete "
-                                        "domain can be evaluated",
-                                        provenance={
-                                            "generated_count": len(candidates),
-                                            "count_is_lower_bound": True,
-                                            "max_candidates": config.max_candidates,
-                                        },
-                                    )
+                            )
+                            if len(candidates) > config.max_candidates:
+                                raise AFDInfeasible(
+                                    AFDReasonCategory.CANDIDATE_LIMIT,
+                                    "AFD search produced at least "
+                                    f"{len(candidates)} candidates, exceeding "
+                                    f"max_candidates={config.max_candidates}; narrow "
+                                    "the domain or increase the limit so the complete "
+                                    "domain can be evaluated",
+                                    provenance={
+                                        "generated_count": len(candidates),
+                                        "count_is_lower_bound": True,
+                                        "max_candidates": config.max_candidates,
+                                    },
+                                )
 
     if not candidates:
         raise AFDInfeasible(
             AFDReasonCategory.NO_FEASIBLE_TOPOLOGY,
             "AFD search produced no valid topology; check GPU budget, TP/EP divisibility, "
-            "A:F ratio, microbatch, and pipeline filters",
+            "A:F ratio, and microbatch filters",
             provenance={"rejection_counts": dict(rejections)},
         )
     generated_count = len(candidates)
@@ -699,24 +651,24 @@ def enumerate_afd_topologies(config: AFDSearchConfig) -> AFDEnumeration:
         rejection_counts=rejections,
         provenance={
             "schema_version": AFD_SCHEMA_VERSION,
-            "source": _LEGACY_SOURCE,
+            "source": _SOURCE,
             "domain": "searched",
             "complete": True,
             "gpu_budget": {
                 "granularity": "node",
                 "total_gpus": config.total_gpus,
                 "gpus_per_node": config.gpus_per_node,
-                "usable_gpus": total_nodes * config.gpus_per_node,
-                "remainder_gpus": remainder_gpus,
+                "f_gpus_per_node": config.f_gpus_per_node,
+                "usable_gpus": usable_gpus,
+                "remainder_gpus": config.total_gpus - usable_gpus,
             },
             "candidate_order": [
                 "n_a_nodes",
                 "n_f_nodes",
-                "tp_a",
-                "a_batch_size",
+                "a_tp_size",
+                "batch_size_per_a_replica",
                 "f_moe_ep_size",
                 "num_microbatches",
-                "pipeline_model",
             ],
         },
     )
@@ -726,9 +678,6 @@ __all__ = [
     "AFD_SCHEMA_VERSION",
     "AFDEnumeration",
     "AFDInfeasible",
-    "AFDParallelConfig",
-    "AFDPhase",
-    "AFDPipelineModel",
     "AFDReasonCategory",
     "AFDSearchConfig",
     "AFDTopology",

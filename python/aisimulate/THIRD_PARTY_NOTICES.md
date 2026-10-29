@@ -1628,3 +1628,26 @@ The modified behavior and synthetic tests in `crates/core/src/engine/kv_manager/
 Running-request cancellation retains its KV lease until the in-flight forward
 is observed, adapting `Scheduler.abort_request` and result-time
 `release_kv_cache` from the same pinned scheduler and batch-result sources.
+
+## AISimulate heterogeneous AFD and super-node behavior
+
+The heterogeneous-node and fabric-tier behavior in the repository-root files
+listed below is adapted and reimplemented for the native worker-role architecture
+from the AISimulate fork at immutable commit
+`af56328c4ba7ffa1b8c42c8375244568c2e7bb8c`:
+
+https://github.com/LPhgh/aisimulate/tree/af56328c4ba7ffa1b8c42c8375244568c2e7bb8c
+
+| Derived files (repository-root paths) | Original paths at the pinned revision |
+| --- | --- |
+| `crates/core/src/perfmodel/common/system_spec.rs`, `crates/core/src/perfmodel/operators/communication.rs`, `crates/core/src/perfmodel/operators/afd_comm.rs`, `crates/core/src/perfmodel/afd/model.rs`, `crates/core/src/perfmodel/afd/execution.rs` | `crates/core/src/perfmodel/common/system_spec.rs`, `crates/core/src/perfmodel/operators/communication.rs`, `python/aisimulate/src/aiconfigurator_core/sdk/operations/afd_transfer.py`, `python/aisimulate/src/aiconfigurator/sdk/inference_session.py` |
+| `crates/core/src/engine/config.rs`, `crates/core/src/perfmodel/afd/mod.rs`, `python/aisimulate/src/aisimulate/sweeper/afd_parallel.py`, `python/aisimulate/src/aisimulate/sweeper/search_space.py`, `python/aisimulate/src/aisimulate/compiler.py` | `python/aisimulate/src/aiconfigurator_core/sdk/config.py`, `python/aisimulate/src/aiconfigurator/sdk/task_v2.py`, `python/aisimulate/src/aiconfigurator/sdk/pareto_analysis.py` |
+| `docs/replay/engine/analytical.md`, `docs/sweeper/afd-topology.md` | `docs/cli/legacy-aic-user-guide.md`, `python/aisimulate/docs/advanced_tuning.md` |
+
+All listed derivatives are modified. New rank-mapping preparation and regression
+tests were written for the current implementation; the old Python execution path
+was not imported. Upstream material retains its original copyright:
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Applicable license: Apache License 2.0, preserved in the repository `LICENSE`.
+The upstream license is available at:
+https://github.com/LPhgh/aisimulate/blob/af56328c4ba7ffa1b8c42c8375244568c2e7bb8c/LICENSE

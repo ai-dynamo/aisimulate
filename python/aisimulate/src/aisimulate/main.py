@@ -231,7 +231,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     if details is not None:
         native = {**native, "details": details}
     report_path = write_prediction_report(root, native)
-    write_afd_qualification_artifacts(root, spec)
+    write_afd_qualification_artifacts(root, spec, memory=native.get("afd_memory"))
     if args.capture_per_request:
         records = native.get("per_request")
         if not isinstance(records, list):

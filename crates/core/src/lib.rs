@@ -34,6 +34,7 @@ pub use replay::{ReplayReport, ReplaySpec, Replayer};
 // engine configuration remains available as `engine::EngineConfig` and under
 // the explicit `ReplayEngineConfig` alias above.
 pub use perfmodel::EngineConfig;
+pub use perfmodel::{AfdPoolRole, AfdRoutingLocation};
 pub use perfmodel::{
     AicError, BackendKind, CorrectionConfig, CorrectionMode, DataType, DatabaseMode,
     ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, EncoderImageShape, EncoderParallel,

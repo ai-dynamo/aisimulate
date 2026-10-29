@@ -7,10 +7,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::engine::{
-    Backend, EngineConfig, MixedPassMs, PrefillTotals, TimingEvidenceAccumulator,
+    AfdTimingModel, Backend, EngineConfig, MixedPassMs, PrefillTotals, TimingEvidenceAccumulator,
     TimingEvidenceSource, TimingEvidenceSummary, TimingModel, TimingModelConfig,
     TimingOperationEvidence, TimingPhaseEvidence, ValidatedTimingPhase, VisionShape,
 };
+use crate::perfmodel::afd::model::{AfdForwardPassPerfModel, AfdTimingConfig};
 use crate::perfmodel::engine::{Engine as PerfEngine, RuntimeConfig};
 use crate::replay::{
     EncoderSpec, POWER_DATA_COVERAGE_THRESHOLD, ReplayArtifactKvEventVisibility, ReplayArtifacts,
@@ -30,7 +31,7 @@ use crate::{
     ForwardPassPerfModelConfig, ForwardPassWorkerType,
 };
 use anyhow::{Context, Result, anyhow, ensure};
-use pyo3::exceptions::{PyMemoryError, PyRuntimeError};
+use pyo3::exceptions::{PyMemoryError, PyNotImplementedError, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyModule};
 use serde::Deserialize;
@@ -402,6 +403,8 @@ impl AicTimingConfig {
             self.fpm_parquet_path.as_deref(),
         )?;
         Ok(ForwardPassPerfModelConfig {
+            afd_routing_location: None,
+            afd_pool_role: None,
             model: self.model.clone(),
             system: self.system.clone(),
             backend: serde_json::from_value(serde_json::Value::String(self.backend.clone()))?,
@@ -1822,19 +1825,204 @@ fn timing_provenance(timing: &TimingModelConfig) -> serde_json::Value {
     }
 }
 
+/// Normalize old provider payloads at the boundary. Rank identity is authoritative;
+/// redundant matching inputs are discarded and conflicting inputs fail before loading data.
+fn normalize_afd_timing_config(
+    mut value: serde_json::Value,
+    role: &mut ReplayRoleConfig,
+) -> Result<serde_json::Value> {
+    let config = value
+        .as_object_mut()
+        .context("afd config must be an object")?;
+    // These were required in the old provider schema, whose absent
+    // max_seq_len meant a phase-derived reservation, not the scheduler cap.
+    let legacy_provider = config.contains_key("backend") || config.contains_key("a_pool");
+    let topology = role
+        .rank
+        .afd
+        .as_ref()
+        .context("afd requires rank.afd topology")?;
+    let topology = serde_json::to_value(topology)?;
+    for key in [
+        "a_pool",
+        "f_pool",
+        "gpus_per_node",
+        "f_gpus_per_node",
+        "num_microbatches",
+        "pipeline_layout",
+        "comm_overhead_factor",
+        "routing_location",
+    ] {
+        if let Some(legacy) = config.remove(key) {
+            ensure!(
+                legacy == topology[key]
+                    || (key == "comm_overhead_factor" && legacy.as_f64() == topology[key].as_f64()),
+                "AFD timing {key} conflicts with rank.afd.{key}"
+            );
+        }
+    }
+    for (key, canonical) in [
+        ("backend", serde_json::to_value(role.rank.backend)?),
+        ("nextn", serde_json::json!(role.rank.aic_nextn.unwrap_or(0))),
+    ] {
+        if let Some(legacy) = config.remove(key) {
+            ensure!(
+                legacy == canonical,
+                "AFD timing {key} conflicts with rank configuration"
+            );
+        }
+    }
+    let legacy_window = config
+        .remove("max_seq_len")
+        .or_else(|| legacy_provider.then_some(serde_json::Value::Null));
+    if let Some(legacy) = config.remove("comm_quant_mode") {
+        let quant = config
+            .entry("quant")
+            .or_insert_with(|| serde_json::json!({}));
+        let quant = quant
+            .as_object_mut()
+            .context("AFD quant must be an object")?;
+        if let Some(explicit) = quant.get("comm_quant_mode").filter(|v| !v.is_null()) {
+            ensure!(
+                *explicit == legacy,
+                "conflicting AFD comm_quant_mode inputs"
+            );
+        } else {
+            quant.insert("comm_quant_mode".into(), legacy);
+        }
+    }
+    if let Some(window) = legacy_window {
+        if window.is_null() {
+            // Old lowering serialized the derived scheduler cap as well as an
+            // absent memory window. Keep the declaration; derive the cap only
+            // in the runtime factory. Independent legacy caps cannot be merged.
+            if let Some(limit) = role.rank.max_model_len {
+                ensure!(
+                    limit == EngineConfig::afd_workload_window(&value)?,
+                    "legacy AFD max_seq_len is unset but rank max_model_len differs from isl+osl"
+                );
+            }
+            role.rank.max_model_len = None;
+        } else {
+            ensure!(
+                window == serde_json::to_value(role.rank.max_model_len)?,
+                "AFD timing max_seq_len conflicts with rank configuration"
+            );
+        }
+    }
+    Ok(value)
+}
+
+/// Bound transient prefill work independently of the provider's frozen ISL.
+/// Trace/agentic sources have no declared input bound, so use the scheduler's
+/// chunk/request limits without loading their input a second time.
+fn afd_prefill_memory_tokens(
+    rank: &EngineConfig,
+    isl: u32,
+    osl: u32,
+    input_bound: Option<usize>,
+) -> Result<u32> {
+    let window = rank.max_model_len.unwrap_or(isl as usize + osl as usize);
+    let bound = input_bound
+        .unwrap_or(window)
+        .min(window)
+        .min(rank.sglang.chunked_prefill_size)
+        .min(rank.sglang.max_prefill_tokens);
+    ensure!(bound > 0, "AFD prefill memory bound must be positive");
+    u32::try_from(bound).context("AFD prefill memory bound exceeds u32 range")
+}
+
 fn resolve_role_timing(
     role: &mut ReplayRoleConfig,
     capacity_is_explicit: bool,
     worker_type: ForwardPassWorkerType,
+    prefill_input_bound: Option<usize>,
     capture_performance_diagnostics: bool,
     coverage_sources: &mut Vec<(ForwardPassWorkerType, Arc<ForwardPassPerfModel>)>,
-) -> Result<Option<Arc<dyn TimingModel>>> {
+    afd_memory: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(Option<Arc<dyn TimingModel>>, Option<serde_json::Value>)> {
     let TimingModelConfig::External { provider, config } = role.rank.timing_model.clone() else {
-        return Ok(None);
+        if let Some(afd) = &role.rank.afd {
+            afd.routing_location.ensure_supported()?;
+        }
+        return Ok((None, None));
     };
+    let is_afd = matches!(provider.as_str(), "afd" | "aic-afd");
+    if !is_afd {
+        if let Some(afd) = &role.rank.afd {
+            afd.routing_location.ensure_supported()?;
+        }
+    }
+    if is_afd {
+        // The AFD role's rank config carries the afd pool topology as pure
+        // metadata; this branch materializes the per-pool timing model.
+        // Physical feasibility is enforced by the per-pool memory gate below,
+        // and — unless the caller pinned num_gpu_blocks — the rank's KV
+        // capacity is derived from the gate's own A-pool budget so runtime
+        // retraction reflects physical OOM.
+        ensure!(
+            role.rank.backend == Backend::Sglang,
+            "AFD ranks require backend=sglang"
+        );
+        let config = normalize_afd_timing_config(config, role)?;
+        let topology = role.rank.afd.as_ref().expect("normalized AFD topology");
+        topology.routing_location.ensure_supported()?;
+        let wire: AfdTimingConfig = serde_json::from_value(config.clone())
+            .context("invalid afd timing provider configuration")?;
+        let (isl, osl, frozen) = (wire.isl, wire.osl, wire.frozen_decode_identity);
+        let prefill_tokens = afd_prefill_memory_tokens(&role.rank, isl, osl, prefill_input_bound)?;
+        let nextn = u32::try_from(role.rank.aic_nextn.unwrap_or(0))
+            .context("AFD nextn exceeds u32 range")?;
+        let perf_config = wire
+            .into_perf_config(Arc::clone(topology), crate::BackendKind::Sglang, nextn)
+            .context("invalid afd timing provider configuration")?;
+        role.rank.timing_model = TimingModelConfig::External {
+            provider: "afd".into(),
+            config,
+        };
+        let perf = AfdForwardPassPerfModel::build(perf_config)
+            .context("failed to build the afd per-pool perf model")?;
+        let (kv_budget_bytes, kv_bytes_per_token, memory) = check_afd_memory_fit_and_kv_budget_py(
+            &perf,
+            worker_type,
+            isl,
+            osl,
+            role.rank.max_model_len,
+            prefill_tokens,
+        )?;
+        let role_name = match worker_type {
+            ForwardPassWorkerType::Aggregated => "aggregated",
+            ForwardPassWorkerType::Prefill => "prefill",
+            ForwardPassWorkerType::Decode => "decode",
+        };
+        afd_memory.insert(role_name.to_string(), serde_json::json!({
+            "status": "fits", "phase": if role_name == "aggregated" { "both" } else { role_name },
+            "pools": memory, "kv_budget_bytes_per_a_gpu": kv_budget_bytes,
+            "kv_bytes_per_token_per_a_gpu": kv_bytes_per_token,
+        }));
+        if !capacity_is_explicit {
+            // Physical KV capacity: the A pool's per-GPU budget (the memory
+            // gate's own output) converted to tokens and summed across A
+            // workers. Retraction reflects physical OOM (the memory gate has
+            // already charged weights/activations/NCCL and the backend KV
+            // reserve).
+            role.rank.num_gpu_blocks = afd_derived_kv_blocks(
+                perf.config().topology.a_pool.n_a_nodes,
+                perf.config().topology.gpus_per_node,
+                perf.config().topology.a_pool.a_tp_size,
+                kv_budget_bytes,
+                kv_bytes_per_token,
+            )?;
+        }
+        let provenance = perf.prediction_provenance();
+        return Ok((
+            Some(Arc::new(AfdTimingModel::new(perf, isl, osl, frozen))),
+            Some(provenance),
+        ));
+    }
     ensure!(
         provider == "aic",
-        "native timing provider {provider:?} is not installed; only \"aic\" is \
+        "native timing provider {provider:?} is not installed; only \"aic\" and \"afd\" are \
          available in the AISimulate runtime"
     );
     let mut config: AicTimingConfig =
@@ -1908,7 +2096,215 @@ fn resolve_role_timing(
         provider,
         config: resolved,
     };
-    Ok(Some(Arc::new(timing)))
+    Ok((Some(Arc::new(timing)), None))
+}
+
+/// Native per-pool AFD memory-feasibility gate: the shared backend memory
+/// model computes activations/KV/NCCL/other per pool and the caller adds the
+/// Rust partition weight sums (`Op::weight_bytes`). Runs at provider
+/// construction so infeasible candidates fail at replay start.
+///
+/// On success also returns the A pool's `(kv_budget_bytes_per_gpu,
+/// kv_bytes_per_token_per_gpu)` from the same memory model, so the scheduler
+/// KV capacity is derived from physical memory (retraction reflects real
+/// OOM) rather than a sentinel headroom.
+#[cfg(feature = "python")]
+fn check_afd_memory_fit_and_kv_budget_py(
+    perf: &AfdForwardPassPerfModel,
+    worker_type: ForwardPassWorkerType,
+    isl: u32,
+    osl: u32,
+    max_seq_len: Option<usize>,
+    prefill_tokens: u32,
+) -> Result<(f64, f64, serde_json::Value)> {
+    use pyo3::types::PyDict;
+    let config = perf.config();
+    let phase = match worker_type {
+        ForwardPassWorkerType::Prefill => "prefill",
+        ForwardPassWorkerType::Decode => "decode",
+        ForwardPassWorkerType::Aggregated => "both",
+    };
+    Python::with_gil(|py| {
+        let module = py.import("aisimulate.sdk.afd_memory")?;
+        let common = PyDict::new(py);
+        common.set_item("model_path", &config.model)?;
+        common.set_item("backend_name", config.backend.as_str())?;
+        common.set_item("backend_version", config.backend_version.clone())?;
+        common.set_item("database_mode", config.estimator.database_mode.as_str())?;
+        // Match the timing models' configuration-scoped roots. Empty means
+        // the normal packaged/default discovery, rather than an empty search.
+        let systems_paths =
+            (!config.estimator.systems_paths.is_empty()).then_some(&config.estimator.systems_paths);
+        common.set_item("systems_paths", systems_paths)?;
+        common.set_item("isl", isl)?;
+        common.set_item("osl", osl)?;
+        common.set_item("prefix", 0)?;
+        common.set_item("prefill_tokens", prefill_tokens)?;
+        let a_pool = PyDict::new(py);
+        a_pool.set_item("system", &config.topology.a_pool.system)?;
+        a_pool.set_item("a_tp_size", config.topology.a_pool.a_tp_size)?;
+        a_pool.set_item("n_a_nodes", config.topology.a_pool.n_a_nodes)?;
+        if let Some(root) = perf.pool_systems_root(true) {
+            a_pool.set_item("systems_paths", vec![root])?;
+        }
+        common.set_item("a_pool", a_pool)?;
+        common.set_item("gpus_per_node", config.topology.gpus_per_node)?;
+        common.set_item(
+            "batch_size_per_a_replica",
+            config.topology.a_pool.batch_size_per_a_replica,
+        )?;
+        common.set_item("num_microbatches", config.topology.num_microbatches)?;
+        let phase_weights = |a_pool_side: bool| -> std::result::Result<_, pyo3::PyErr> {
+            let weights = PyDict::new(py);
+            let resident = perf.pool_weight_gb(a_pool_side);
+            weights.set_item("prefill", resident)?;
+            weights.set_item("decode", resident)?;
+            Ok(weights)
+        };
+        let workspace = PyDict::new(py);
+        let batch = config
+            .topology
+            .a_pool
+            .batch_size_per_a_replica
+            .div_ceil(config.topology.num_microbatches);
+        workspace.set_item(
+            "prefill",
+            perf.plan_workspace_bytes(batch.saturating_mul(prefill_tokens)) as f64
+                / (1_u64 << 30) as f64,
+        )?;
+        workspace.set_item(
+            "decode",
+            perf.plan_workspace_bytes(batch.saturating_mul(config.nextn + 1)) as f64
+                / (1_u64 << 30) as f64,
+        )?;
+        common.set_item("a_workspace_gb", workspace)?;
+        common.set_item("nextn", config.nextn)?;
+        common.set_item("enable_shared_layer", config.estimator.enable_shared_layer)?;
+        common.set_item("strict_provenance", config.estimator.strict_provenance)?;
+        let activation = PyDict::new(py);
+        let full_batch = config.topology.a_pool.batch_size_per_a_replica;
+        activation.set_item(
+            "prefill",
+            perf.plan_activation_bytes(
+                batch.saturating_mul(prefill_tokens),
+                full_batch.saturating_mul(prefill_tokens),
+            ) as f64
+                / (1_u64 << 30) as f64,
+        )?;
+        activation.set_item(
+            "decode",
+            perf.plan_activation_bytes(
+                batch.saturating_mul(config.nextn + 1),
+                full_batch.saturating_mul(config.nextn + 1),
+            ) as f64
+                / (1_u64 << 30) as f64,
+        )?;
+        common.set_item("a_activation_gb", activation)?;
+        let quant = PyDict::new(py);
+        for (name, mode) in [
+            ("gemm_quant_mode", &config.quant.gemm_quant_mode),
+            ("moe_quant_mode", &config.quant.moe_quant_mode),
+            ("kvcache_quant_mode", &config.quant.kvcache_quant_mode),
+            ("fmha_quant_mode", &config.quant.fmha_quant_mode),
+            ("comm_quant_mode", &config.quant.comm_quant_mode),
+        ] {
+            if let Some(mode) = mode {
+                quant.set_item(name, mode)?;
+            }
+        }
+        common.set_item("quant_overrides", quant)?;
+
+        common.set_item("max_seq_len", max_seq_len)?;
+        common.set_item("phase", phase)?;
+
+        let check_kwargs = common.call_method0("copy")?.downcast_into::<PyDict>()?;
+        let f_pool = PyDict::new(py);
+        f_pool.set_item("system", &config.topology.f_pool.system)?;
+        f_pool.set_item("f_moe_ep_size", config.topology.f_pool.f_moe_ep_size)?;
+        f_pool.set_item("n_f_nodes", config.topology.f_pool.n_f_nodes)?;
+        if let Some(root) = perf.pool_systems_root(false) {
+            f_pool.set_item("systems_paths", vec![root])?;
+        }
+        check_kwargs.set_item("f_pool", f_pool)?;
+        check_kwargs.set_item(
+            "f_gpus_per_node",
+            config.topology.effective_f_gpus_per_node(),
+        )?;
+        check_kwargs.set_item("a_weight_gb", phase_weights(true)?)?;
+        check_kwargs.set_item("f_weight_gb", phase_weights(false)?)?;
+        let f_workspace = PyDict::new(py);
+        let f_activation = PyDict::new(py);
+        for (phase, tokens) in [
+            ("prefill", batch.saturating_mul(prefill_tokens)),
+            ("decode", batch.saturating_mul(config.nextn + 1)),
+        ] {
+            let (peak, held) = perf.f_plan_buffers(tokens);
+            f_activation.set_item(phase, peak as f64 / (1_u64 << 30) as f64)?;
+            f_workspace.set_item(phase, held as f64 / (1_u64 << 30) as f64)?;
+        }
+        check_kwargs.set_item("f_workspace_gb", f_workspace)?;
+        check_kwargs.set_item("f_activation_gb", f_activation)?;
+
+        let memory = module
+            .getattr("check_afd_memory_fit")?
+            .call((), Some(&check_kwargs))?;
+        let memory_json: String = py
+            .import("json")?
+            .getattr("dumps")?
+            .call1((memory,))?
+            .extract()?;
+        let memory: serde_json::Value = serde_json::from_str(&memory_json)
+            .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+
+        let estimate_kwargs = common.call_method0("copy")?.downcast_into::<PyDict>()?;
+        estimate_kwargs.set_item("a_weight_gb", phase_weights(true)?)?;
+        let budget: (f64, f64) = module
+            .getattr("estimate_afd_kv_budget_bytes")?
+            .call((), Some(&estimate_kwargs))?
+            .extract()?;
+        Ok::<_, pyo3::PyErr>((budget.0, budget.1, memory))
+    })
+    .map_err(|error| anyhow::anyhow!("AFD memory-feasibility check failed: {error}"))
+}
+
+/// Total KV blocks (block_size = 1 token) across the AFD A pool: the
+/// memory gate's per-GPU KV budget converted to tokens and summed over the
+/// A workers (`n_a_nodes * gpus_per_node / a_tp_size`, mirroring the runner's
+/// `a_replica_count` derivation).
+fn afd_derived_kv_blocks(
+    n_a_nodes: u32,
+    gpus_per_node: u32,
+    a_tp_size: u32,
+    kv_budget_bytes_per_gpu: f64,
+    kv_bytes_per_token_per_gpu: f64,
+) -> Result<usize> {
+    ensure!(
+        n_a_nodes > 0 && gpus_per_node > 0 && a_tp_size > 0 && gpus_per_node % a_tp_size == 0,
+        "AFD KV topology requires positive node counts and a_tp_size dividing gpus_per_node"
+    );
+    ensure!(
+        kv_budget_bytes_per_gpu.is_finite()
+            && kv_budget_bytes_per_gpu > 0.0
+            && kv_bytes_per_token_per_gpu.is_finite()
+            && kv_bytes_per_token_per_gpu > 0.0,
+        "AFD KV budget and per-token bytes must be positive and finite"
+    );
+    let tokens_per_gpu = (kv_budget_bytes_per_gpu / kv_bytes_per_token_per_gpu).floor();
+    ensure!(
+        tokens_per_gpu >= 1.0,
+        "AFD A-pool KV budget {kv_budget_bytes_per_gpu:.0} B/GPU does not cover one token \
+         ({kv_bytes_per_token_per_gpu:.0} B/token)"
+    );
+    let a_replica_count = (n_a_nodes as usize)
+        .checked_mul(gpus_per_node as usize)
+        .context("AFD A-pool GPU count exceeds usize range")?
+        / a_tp_size as usize;
+    let total_tokens = a_replica_count as f64 * tokens_per_gpu;
+    ensure!(
+        total_tokens >= 1.0 && total_tokens <= usize::MAX as f64,
+        "AFD derived KV capacity {total_tokens} tokens is out of range"
+    );
+    Ok(total_tokens as usize)
 }
 
 fn runtime_paths(traffic: &RuntimeTraffic) -> Result<Vec<PathBuf>> {
@@ -2979,6 +3375,29 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         })
         .transpose()?
         .flatten();
+    // This is setup-only work for AFD. Runtime traffic is still loaded once;
+    // unknown trace/session lengths use each rank's scheduler bounds instead.
+    let has_afd = engine_config.rank.afd.is_some()
+        || engine_config
+            .prefill
+            .as_ref()
+            .is_some_and(|r| r.rank.afd.is_some())
+        || engine_config
+            .decode
+            .as_ref()
+            .is_some_and(|r| r.rank.afd.is_some());
+    let afd_prefill_input_bound = if !has_afd {
+        None
+    } else if let Some(traffic) = &traffic {
+        (traffic.source_type == "synthetic")
+            .then_some(traffic.isl)
+            .flatten()
+    } else {
+        spec.requests
+            .iter()
+            .map(|request| request.input_tokens)
+            .max()
+    };
     let expected_power_sources = match &spec.topology {
         ReplayTopology::Aggregated { .. } => 1,
         ReplayTopology::Disaggregated { .. } => 2,
@@ -2993,6 +3412,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         });
     }
     let mut prediction_provenance = serde_json::Map::new();
+    let mut afd_memory = serde_json::Map::new();
 
     let replay_result = (|| -> Result<_> {
         match spec.topology.clone() {
@@ -3001,17 +3421,19 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             let capacity_is_explicit = role
                 .num_gpu_blocks_is_explicit
                 .unwrap_or_else(|| role_capacity_is_explicit(&serialized_engine, None));
-            let timing = resolve_role_timing(
+            let (timing, provenance) = resolve_role_timing(
                 &mut role,
                 capacity_is_explicit,
                 ForwardPassWorkerType::Aggregated,
+                afd_prefill_input_bound,
                 capture_performance_diagnostics,
                 &mut coverage_sources,
+                &mut afd_memory,
             )?;
             if let Some(timing) = timing.as_ref() {
                 power_sources.push(TimingPowerSource::new(Arc::clone(timing), &role.rank));
             }
-            prediction_provenance.insert("aggregated".into(), timing_provenance(&role.rank.timing_model));
+            prediction_provenance.insert("aggregated".into(), provenance.unwrap_or_else(|| timing_provenance(&role.rank.timing_model)));
             engine_config.dp_size = role.dp_size;
             engine_config.tensor_parallel_size = role.tensor_parallel_size;
             engine_config.prefill_context_parallel_size = role.prefill_context_parallel_size;
@@ -3106,19 +3528,23 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             let decode_capacity_is_explicit = decode
                 .num_gpu_blocks_is_explicit
                 .unwrap_or_else(|| role_capacity_is_explicit(&serialized_engine, Some("decode")));
-            let prefill_timing = resolve_role_timing(
+            let (prefill_timing, prefill_provenance) = resolve_role_timing(
                 &mut prefill,
                 prefill_capacity_is_explicit,
                 ForwardPassWorkerType::Prefill,
+                afd_prefill_input_bound,
                 capture_performance_diagnostics,
                 &mut coverage_sources,
+                &mut afd_memory,
             )?;
-            let decode_timing = resolve_role_timing(
+            let (decode_timing, decode_provenance) = resolve_role_timing(
                 &mut decode,
                 decode_capacity_is_explicit,
                 ForwardPassWorkerType::Decode,
+                afd_prefill_input_bound,
                 capture_performance_diagnostics,
                 &mut coverage_sources,
+                &mut afd_memory,
             )?;
             if let Some(timing) = prefill_timing.as_ref() {
                 power_sources.push(TimingPowerSource::new(Arc::clone(timing), &prefill.rank));
@@ -3126,8 +3552,8 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             if let Some(timing) = decode_timing.as_ref() {
                 power_sources.push(TimingPowerSource::new(Arc::clone(timing), &decode.rank));
             }
-            prediction_provenance.insert("prefill".into(), timing_provenance(&prefill.rank.timing_model));
-            prediction_provenance.insert("decode".into(), timing_provenance(&decode.rank.timing_model));
+            prediction_provenance.insert("prefill".into(), prefill_provenance.unwrap_or_else(|| timing_provenance(&prefill.rank.timing_model)));
+            prediction_provenance.insert("decode".into(), decode_provenance.unwrap_or_else(|| timing_provenance(&decode.rank.timing_model)));
             engine_config.prefill = Some(prefill);
             engine_config.decode = Some(decode);
             if let Some(traffic) = traffic.as_mut()
@@ -3212,6 +3638,9 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     let mut report_json =
         serde_json::to_value(&report).context("serializing AISimulate replay report summary")?;
     report_json["prediction_provenance"] = prediction_provenance.into();
+    if !afd_memory.is_empty() {
+        report_json["afd_memory"] = serde_json::Value::Object(afd_memory);
+    }
     if let Some(coverage) = replay_fpm_coverage(&coverage_sources, Some(&report))? {
         report_json["fpm_query_coverage"] = coverage;
     }
@@ -3346,6 +3775,13 @@ fn replay_python_error(error: anyhow::Error) -> PyErr {
         )
     }) {
         PyMemoryError::new_err(format!("{error:#}"))
+    } else if error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<crate::AicError>(),
+            Some(crate::AicError::NotImplemented(_))
+        )
+    }) {
+        PyNotImplementedError::new_err(format!("{error:#}"))
     } else {
         PyRuntimeError::new_err(format!("{error:#}"))
     };
@@ -3462,6 +3898,173 @@ mod tests {
         );
     }
 
+    fn afd_resolution_role() -> ReplayRoleConfig {
+        ReplayRoleConfig {
+            rank: serde_json::from_value(serde_json::json!({
+                "backend": "sglang", "block_size": 1, "max_model_len": 2048,
+                "aic_nextn": 2,
+                "afd": {
+                    "a_pool": {"system": "h200_sxm", "a_tp_size": 1, "n_a_nodes": 1, "batch_size_per_a_replica": 18},
+                    "f_pool": {"system": "h200_sxm", "f_moe_ep_size": 8, "n_f_nodes": 1},
+                    "gpus_per_node": 8, "num_microbatches": 3,
+                    "comm_overhead_factor": 1.0,
+                }
+            })).unwrap(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn afd_timing_rejects_removed_boundary_option() {
+        let mut role = afd_resolution_role();
+        for value in [true, false] {
+            let timing = serde_json::json!({
+                "model": "test/model", "isl": 16, "osl": 8,
+                "num_layers": 48, "hidden_size": 256,
+                "boundary_on_attn": value,
+            });
+            let normalized = normalize_afd_timing_config(timing, &mut role).unwrap();
+            let error = serde_json::from_value::<AfdTimingConfig>(normalized)
+                .expect_err("removed timing fields must not be silently discarded");
+            assert!(error.to_string().contains("boundary_on_attn"));
+        }
+    }
+
+    #[test]
+    fn afd_prefill_memory_uses_input_chunk_and_context_bounds() {
+        let mut rank = afd_resolution_role().rank;
+        rank.sglang.chunked_prefill_size = 256;
+        rank.sglang.max_prefill_tokens = 512;
+        // Unknown trace lengths reserve the admitted chunk; fixed input can
+        // only lower that bound. The provider's placeholder ISL is irrelevant.
+        assert_eq!(afd_prefill_memory_tokens(&rank, 1, 2, None).unwrap(), 256);
+        assert_eq!(
+            afd_prefill_memory_tokens(&rank, 1024, 4, Some(128)).unwrap(),
+            128
+        );
+        rank.sglang.max_prefill_tokens = 64;
+        assert_eq!(afd_prefill_memory_tokens(&rank, 1, 2, None).unwrap(), 64);
+        rank.max_model_len = Some(32);
+        assert_eq!(afd_prefill_memory_tokens(&rank, 1, 2, None).unwrap(), 32);
+        rank.max_model_len = None;
+        assert_eq!(afd_prefill_memory_tokens(&rank, 16, 8, None).unwrap(), 24);
+    }
+
+    #[test]
+    fn afd_legacy_inputs_normalize_to_one_source_and_reject_conflicts() {
+        let mut role = afd_resolution_role();
+        let mut legacy = serde_json::to_value(role.rank.afd.as_ref().unwrap()).unwrap();
+        legacy["backend"] = serde_json::json!("sglang");
+        legacy["nextn"] = serde_json::json!(2);
+        legacy["max_seq_len"] = serde_json::json!(2048);
+        legacy["comm_quant_mode"] = serde_json::json!("fp8");
+        let canonical = normalize_afd_timing_config(legacy.clone(), &mut role).unwrap();
+        assert_eq!(
+            canonical,
+            serde_json::json!({"quant": {"comm_quant_mode": "fp8"}})
+        );
+        assert_eq!(
+            normalize_afd_timing_config(canonical.clone(), &mut role).unwrap(),
+            canonical
+        );
+        for pointer in [
+            "/a_pool/n_a_nodes",
+            "/f_pool/n_f_nodes",
+            "/gpus_per_node",
+            "/num_microbatches",
+            "/nextn",
+            "/max_seq_len",
+        ] {
+            let mut conflict = legacy.clone();
+            *conflict.pointer_mut(pointer).unwrap() = serde_json::json!(99);
+            assert!(
+                normalize_afd_timing_config(conflict, &mut role).is_err(),
+                "{pointer}"
+            );
+        }
+        for (key, value) in [
+            ("pipeline_layout", "two_stage"),
+            ("backend", "vllm"),
+            ("routing_location", "f"),
+        ] {
+            let mut conflict = legacy.clone();
+            conflict[key] = serde_json::json!(value);
+            assert!(
+                normalize_afd_timing_config(conflict, &mut role).is_err(),
+                "{key}"
+            );
+        }
+        legacy["quant"] = serde_json::json!({"comm_quant_mode": "half"});
+        assert!(
+            normalize_afd_timing_config(legacy, &mut role)
+                .unwrap_err()
+                .to_string()
+                .contains("comm_quant_mode")
+        );
+    }
+
+    #[test]
+    fn afd_legacy_context_declaration_survives_rank_round_trip() {
+        for (window, explicit) in [
+            (None, false),
+            (Some(serde_json::Value::Null), false),
+            (Some(serde_json::json!(144)), true),
+        ] {
+            let mut role = afd_resolution_role();
+            role.rank.max_model_len = Some(144);
+            let mut legacy = serde_json::json!({"backend": "sglang", "isl": 16, "osl": 128});
+            if let Some(window) = window {
+                legacy["max_seq_len"] = window;
+            }
+            let canonical = normalize_afd_timing_config(legacy, &mut role).unwrap();
+            assert_eq!(canonical, serde_json::json!({"isl": 16, "osl": 128}));
+            let expected = explicit.then_some(144);
+            assert_eq!(role.rank.max_model_len, expected);
+            role = serde_json::from_value(serde_json::to_value(&role).unwrap()).unwrap();
+            assert_eq!(
+                normalize_afd_timing_config(canonical.clone(), &mut role).unwrap(),
+                canonical
+            );
+            assert_eq!(role.rank.max_model_len, expected);
+            let conflicting = serde_json::json!({"max_seq_len": 99});
+            assert!(normalize_afd_timing_config(conflicting, &mut role).is_err());
+            assert_eq!(role.rank.max_model_len, expected);
+        }
+        let mut role = afd_resolution_role();
+        let legacy = serde_json::json!({"backend": "sglang", "isl": 16, "osl": 128});
+        assert!(normalize_afd_timing_config(legacy, &mut role).is_err());
+        assert_eq!(role.rank.max_model_len, Some(2048));
+    }
+
+    #[test]
+    fn afd_derived_kv_blocks_sums_per_gpu_tokens_across_workers() {
+        // 40 GiB budget/GPU at 32 KiB/token -> 1_310_720 tokens/GPU; two A
+        // workers (2 nodes * 8 GPUs / a_tp_size 8) double the pool total.
+        let blocks = afd_derived_kv_blocks(2, 8, 8, 40.0 * (1u64 << 30) as f64, 32768.0).unwrap();
+        assert_eq!(blocks, 2 * 1_310_720);
+        // One worker when the node/TP ratio is unity.
+        let blocks = afd_derived_kv_blocks(1, 8, 8, 32768.0 * 16.0, 32768.0).unwrap();
+        assert_eq!(blocks, 16);
+        // A budget below one token per GPU fails loudly.
+        assert!(
+            afd_derived_kv_blocks(1, 8, 8, 100.0, 32768.0)
+                .unwrap_err()
+                .to_string()
+                .contains("does not cover one token")
+        );
+    }
+
+    #[test]
+    fn afd_kv_capacity_rejects_invalid_topology_and_memory() {
+        for (nodes, gpus, tp) in [(0, 8, 8), (1, 0, 8), (1, 8, 0), (1, 8, 3)] {
+            assert!(afd_derived_kv_blocks(nodes, gpus, tp, 1024., 1.).is_err());
+        }
+        for invalid in [0., -1., f64::NAN, f64::INFINITY] {
+            assert!(afd_derived_kv_blocks(1, 8, 8, invalid, 1.).is_err());
+            assert!(afd_derived_kv_blocks(1, 8, 8, 1024., invalid).is_err());
+        }
+    }
+
     #[test]
     fn replay_python_error_preserves_contextual_resource_failure() {
         pyo3::prepare_freethreaded_python();
@@ -3488,6 +4091,20 @@ mod tests {
         Python::with_gil(|py| {
             let mapped = replay_python_error(error);
             assert!(mapped.is_instance_of::<PyRuntimeError>(py));
+            assert_eq!(mapped.value(py).to_string(), expected_message);
+        });
+    }
+
+    #[test]
+    fn replay_python_error_preserves_unimplemented_routing() {
+        pyo3::prepare_freethreaded_python();
+        let error =
+            anyhow::Error::new(crate::AfdRoutingLocation::F.ensure_supported().unwrap_err())
+                .context("AISimulate replay failed");
+        let expected_message = format!("{error:#}");
+        Python::with_gil(|py| {
+            let mapped = replay_python_error(error);
+            assert!(mapped.is_instance_of::<PyNotImplementedError>(py));
             assert_eq!(mapped.value(py).to_string(), expected_message);
         });
     }

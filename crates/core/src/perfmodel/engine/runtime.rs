@@ -29,6 +29,7 @@ use crate::operators::RuntimeContext;
 use crate::operators::base::PerformanceResult;
 use crate::operators::{FpmForwardOp, FpmPhase, Op};
 use crate::perf_database::PerfDatabase;
+use crate::perfmodel::afd::plan::AfdExecutionPlan;
 use crate::perfmodel::engine::spec::{EncoderImageShape, EngineSpec, VisionSpec};
 use crate::session::{
     ContextOpFilter, OpListPlan, QueryMemo, get_mix_step_ops, query_context_op,
@@ -401,6 +402,9 @@ enum MixedPass {
 /// Parallelism / quant scalars do not enter the latency sum — they drive
 /// throughput and memory, which `StaticResult` omits — so they are not stored.
 pub struct Engine {
+    afd_plan: Option<AfdExecutionPlan>,
+    /// Retain just the compiled parallel identity for AFD construction checks.
+    parallelism: (u32, u32, u32, u32),
     /// Context-phase ops in execution order (from `spec.context_ops`).
     context_ops: Vec<Op>,
     /// Generation-phase ops in execution order (from `spec.generation_ops`).
@@ -552,6 +556,33 @@ impl Engine {
             &db,
             spec.context_ops.iter().chain(&spec.generation_ops),
         )?;
+        let pool_role = spec
+            .engine
+            .extra
+            .get("afd_pool_role")
+            .map(|v| {
+                serde_json::from_value::<crate::AfdPoolRole>(serde_json::Value::String(v.clone()))
+                    .map_err(|_| {
+                        AicError::InvalidEngineConfig("invalid AFD pool role identity".into())
+                    })
+            })
+            .transpose()?;
+        if pool_role != spec.afd_plan.as_ref().map(|plan| plan.role) {
+            return Err(AicError::InvalidEngineConfig(
+                "AFD plan/pool role identity mismatch".into(),
+            ));
+        }
+        if let Some(plan) = &spec.afd_plan {
+            plan.validate(spec.context_ops.len(), spec.generation_ops.len())?;
+            for op in spec.context_ops.iter().chain(&spec.generation_ops) {
+                crate::perfmodel::afd::validation::validate_pool_op(op, plan.role)?;
+            }
+            if plan.model != spec.engine.model_name {
+                return Err(AicError::InvalidEngineConfig(
+                    "AFD plan/model identity mismatch".into(),
+                ));
+            }
+        }
         let spec_sha256 = spec.content_sha256()?;
         Ok(Engine {
             legacy_profile: spec.engine.extra.contains_key("execution_profile_phase")
@@ -573,6 +604,16 @@ impl Engine {
             spec_sha256,
             context_plan: OpListPlan::new(&spec.context_ops),
             generation_plan: OpListPlan::new(&spec.generation_ops),
+            afd_plan: spec.afd_plan,
+            parallelism: (
+                spec.engine.parallel.tp_size,
+                spec.engine.parallel.attention_dp_size.unwrap_or(1),
+                spec.engine
+                    .parallel
+                    .moe_tp_size
+                    .unwrap_or(spec.engine.parallel.tp_size),
+                spec.engine.parallel.moe_ep_size.unwrap_or(1),
+            ),
             context_ops: spec.context_ops,
             generation_ops: spec.generation_ops,
             db,
@@ -972,6 +1013,23 @@ impl Engine {
         Ok(())
     }
 
+    /// Actual compiled operator precision, including mixed-precision exceptions.
+    pub(crate) fn execution_quantization(&self) -> serde_json::Value {
+        let mut modes = std::collections::BTreeMap::<&str, std::collections::BTreeSet<&str>>::new();
+        for op in self.context_ops.iter().chain(&self.generation_ops) {
+            match op {
+                crate::operators::Op::Gemm(g) => {
+                    modes.entry("gemm").or_default().insert(g.quant_mode.name());
+                }
+                crate::operators::Op::Moe(m) => {
+                    modes.entry("moe").or_default().insert(m.quant_mode.name());
+                }
+                _ => {}
+            }
+        }
+        serde_json::to_value(modes).expect("string map")
+    }
+
     pub(crate) fn validate_forward_pass_readiness(
         &self,
         worker_type: crate::ForwardPassWorkerType,
@@ -997,6 +1055,14 @@ impl Engine {
     /// Shared perf database handle.
     pub fn database(&self) -> &Arc<PerfDatabase> {
         &self.db
+    }
+
+    pub(crate) fn afd_plan(&self) -> Option<&AfdExecutionPlan> {
+        self.afd_plan.as_ref()
+    }
+
+    pub(crate) fn parallelism(&self) -> (u32, u32, u32, u32) {
+        self.parallelism
     }
 
     /// Clear the empirical-provenance accumulator (start of a run). The PyO3
@@ -1032,6 +1098,20 @@ impl Engine {
     /// [`Self::context_ops_for_test`].
     #[cfg(test)]
     pub(crate) fn generation_ops_for_test(&self) -> &[Op] {
+        &self.generation_ops
+    }
+
+    /// Production accessor for the context op list. The AFD timing model
+    /// (`perfmodel::afd`) partitions and re-walks the compiled lists with its
+    /// own query shapes (uniform `x`, runtime `prefix`) instead of the
+    /// engine's whole-list phases.
+    pub(crate) fn context_ops(&self) -> &[Op] {
+        &self.context_ops
+    }
+
+    /// Production accessor for the generation op list. See
+    /// [`Self::context_ops`].
+    pub(crate) fn generation_ops(&self) -> &[Op] {
         &self.generation_ops
     }
 

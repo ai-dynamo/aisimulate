@@ -21,12 +21,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::common::error::AicError;
 use crate::operators::{
-    ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp, Dsv4ModuleOp,
-    Dsv41AttentionOp, Dsv41EngramOp, Dsv41LinearOp, Dsv41MhcOp, Dsv41StageOp, ElementwiseOp,
-    EmbeddingOp, EncoderAttentionOp, FpmForwardOp, GdnOp, GemmOp, GenerationAttentionOp,
-    GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp, MoEDispatchOp,
-    MoeAllToAllOp, MoeExpertComputeOp, MoeOp, MsaModuleOp, NcclOp, P2POp, PerformanceResult,
-    Source, VisionEncoderOp, WideEpContextMlaOp, WideEpGenerationMlaOp,
+    AfdCombineOp, AfdFCollectiveOp, AfdTransferOp, ContextAttentionOp, ContextMlaOp,
+    CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp, Dsv4ModuleOp, Dsv41AttentionOp, Dsv41EngramOp,
+    Dsv41LinearOp, Dsv41MhcOp, Dsv41StageOp, ElementwiseOp, EmbeddingOp, EncoderAttentionOp,
+    FpmForwardOp, GdnOp, GemmOp, GenerationAttentionOp, GenerationMlaOp, KdaOp, Mamba2Op,
+    MhcModuleOp, MlaBmmOp, MlaModuleOp, MoEDispatchOp, MoeAllToAllOp, MoeExpertComputeOp, MoeOp,
+    MsaModuleOp, NcclOp, P2POp, PerformanceResult, Source, VisionEncoderOp, WideEpContextMlaOp,
+    WideEpGenerationMlaOp,
 };
 use crate::perf_database::PerfDatabase;
 
@@ -191,6 +192,21 @@ pub enum Op {
     Glm53Ffn(Glm53FfnOp),
     Glm53Primitive(Glm53PrimitiveOp),
     MeasuredComposite(crate::operators::measured_composite::MeasuredCompositeOp),
+    /// AFD cross-pool unidirectional P2P transfer (A->F or F->A) — port of
+    /// Python `operations/afd_transfer.py::AFDTransfer` (A/F volume math +
+    /// P2P twin; `comm_overhead_factor` scales latency only).
+    /// APPENDED after `MeasuredComposite` — same positional-index rule as above;
+    /// the four AFD variants bump `ENGINE_SPEC_SCHEMA_VERSION` 29 -> 30.
+    AfdTransfer(AfdTransferOp),
+    /// AFD F-node intra-node AllGather along the token dimension (Python
+    /// `AFDFAllGather`). Shares `AfdFCollectiveOp` with ReduceScatter; the
+    /// `operation` field carries the NCCL flavor.
+    AfdFAllGather(AfdFCollectiveOp),
+    /// AFD F-node intra-node ReduceScatter after F compute (Python
+    /// `AFDFReduceScatter`).
+    AfdFReduceScatter(AfdFCollectiveOp),
+    /// AFD A-side cross-EP local HBM reduce-add (Python `AFDCombine`).
+    AfdCombine(AfdCombineOp),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -337,6 +353,12 @@ impl Op {
             | Op::Kda(_)
             | Op::WideEpContextMla(_)
             | Op::WideEpGenerationMla(_)
+            // Python AFD comm ops carry `_weights = 0.0` (orchestration ops
+            // with no resident weights).
+            | Op::AfdTransfer(_)
+            | Op::AfdFAllGather(_)
+            | Op::AfdFReduceScatter(_)
+            | Op::AfdCombine(_)
             | Op::MoeAllToAll(_) => 0.0,
         }
     }
@@ -393,6 +415,10 @@ impl Op {
             Op::Kda(o) => &o.name,
             Op::MoeAllToAll(o) => &o.name,
             Op::MoeExpertCompute(o) => &o.name,
+            Op::AfdTransfer(o) => &o.name,
+            Op::AfdFAllGather(o) => &o.name,
+            Op::AfdFReduceScatter(o) => &o.name,
+            Op::AfdCombine(o) => &o.name,
         }
     }
 
@@ -448,6 +474,10 @@ impl Op {
             Op::Kda(o) => o.name = name,
             Op::MoeAllToAll(o) => o.name = name,
             Op::MoeExpertCompute(o) => o.name = name,
+            Op::AfdTransfer(o) => o.name = name,
+            Op::AfdFAllGather(o) => o.name = name,
+            Op::AfdFReduceScatter(o) => o.name = name,
+            Op::AfdCombine(o) => o.name = name,
         }
     }
 
@@ -503,6 +533,10 @@ impl Op {
             Op::Kda(o) => o.scale_factor = scale_factor,
             Op::MoeAllToAll(o) => o.scale_factor = scale_factor,
             Op::MoeExpertCompute(o) => o.scale_factor = scale_factor,
+            Op::AfdTransfer(o) => o.scale_factor = scale_factor,
+            Op::AfdFAllGather(o) => o.scale_factor = scale_factor,
+            Op::AfdFReduceScatter(o) => o.scale_factor = scale_factor,
+            Op::AfdCombine(o) => o.scale_factor = scale_factor,
         }
     }
 
@@ -731,6 +765,13 @@ impl Op {
             // each `query`, exactly where Python does it.
             Op::MoeAllToAll(op) => op.query(db, ctx.num_tokens),
             Op::MoeExpertCompute(op) => op.query(db, ctx.num_tokens),
+            // AFD comm ops: `num_tokens` is Python's kwargs `x` — the token
+            // count held by a single A-rank (the session/model layer passes
+            // `afd_a_batch_tokens`, not a per-rank GEMM token count).
+            Op::AfdTransfer(op) => op.query(db, ctx.num_tokens),
+            Op::AfdFAllGather(op) => op.query(db, ctx.num_tokens),
+            Op::AfdFReduceScatter(op) => op.query(db, ctx.num_tokens),
+            Op::AfdCombine(op) => op.query(db, ctx.num_tokens),
         }
     }
 }

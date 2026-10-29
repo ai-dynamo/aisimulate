@@ -1,0 +1,355 @@
+{
+  "afd_plan": {
+    "context": {
+      "prefix": [
+        0
+      ],
+      "suffix": [
+        7
+      ],
+      "templates": [
+        {
+          "attention_kind": "default_index_q0",
+          "ops": [
+            1,
+            2,
+            3,
+            4,
+            6
+          ],
+          "rank_ops": [
+            5
+          ],
+          "routed": true,
+          "work_scale": 1.0
+        }
+      ]
+    },
+    "generation": {
+      "prefix": [
+        0
+      ],
+      "suffix": [
+        6
+      ],
+      "templates": [
+        {
+          "attention_kind": "default_index_q0",
+          "ops": [
+            1,
+            2,
+            3,
+            4,
+            7
+          ],
+          "rank_ops": [
+            5
+          ],
+          "routed": true,
+          "work_scale": 1.0
+        }
+      ]
+    },
+    "hidden_size": 2048,
+    "layers": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "model": "Qwen/Qwen3-30B-A3B",
+    "num_experts": 128,
+    "role": "a",
+    "shared_inter_size": 0,
+    "topk": 8
+  },
+  "context_ops": [
+    {
+      "Embedding": {
+        "hidden_size": 2048,
+        "name": "context_embedding",
+        "quant_mode": "bfloat16",
+        "scale_factor": 1.0,
+        "seq_split": 1,
+        "vocab_size": 151936
+      }
+    },
+    {
+      "Elementwise": {
+        "bytes_per_token": 16384.0,
+        "name": "context_add_norm_1",
+        "scale_factor": 1.0,
+        "scale_num_tokens": 1,
+        "seq_split": 1
+      }
+    },
+    {
+      "Gemm": {
+        "below_grid_sol": false,
+        "k": 2048,
+        "low_precision_input": false,
+        "n": 5120,
+        "name": "context_qkv_gemm",
+        "quant_mode": "bfloat16",
+        "scale_factor": 1.0,
+        "scale_num_tokens": 1,
+        "seq_split": 1
+      }
+    },
+    {
+      "ContextAttention": {
+        "apply_rope": true,
+        "cp_size": 1,
+        "dcp_size": 1,
+        "fmha_quant_mode": "bfloat16",
+        "head_size": 128,
+        "kv_cache_dtype": "bfloat16",
+        "lane_order": [
+          "fa3",
+          "triton",
+          "fla",
+          "flashinfer",
+          "trtllm_mha",
+          "default"
+        ],
+        "n": 32,
+        "n_kv": 4,
+        "name": "context_attention",
+        "scale_factor": 1.0,
+        "use_qk_norm": true,
+        "window_size": 0
+      }
+    },
+    {
+      "Gemm": {
+        "below_grid_sol": false,
+        "k": 4096,
+        "low_precision_input": true,
+        "n": 2048,
+        "name": "context_proj_gemm",
+        "quant_mode": "bfloat16",
+        "scale_factor": 1.0,
+        "scale_num_tokens": 1,
+        "seq_split": 1
+      }
+    },
+    {
+      "Gemm": {
+        "below_grid_sol": false,
+        "k": 2048,
+        "low_precision_input": false,
+        "n": 128,
+        "name": "context_router_gemm",
+        "quant_mode": "bfloat16",
+        "scale_factor": 1.0,
+        "scale_num_tokens": 1,
+        "seq_split": 1
+      }
+    },
+    {
+      "Elementwise": {
+        "bytes_per_token": 16384.0,
+        "name": "context_add_norm_2",
+        "scale_factor": 1.0,
+        "scale_num_tokens": 1,
+        "seq_split": 1
+      }
+    },
+    {
+      "Gemm": {
+        "below_grid_sol": false,
+        "k": 2048,
+        "low_precision_input": false,
+        "n": 151936,
+        "name": "context_logits_gemm",
+        "quant_mode": "bfloat16",
+        "scale_factor": 1.0,
+        "scale_num_tokens": 1,
+        "seq_split": 1
+      }
+    }
+  ],
+  "engine": {
+    "activation_dtype": "bfloat16",
+    "attention_dp_size": 1,
+    "backend": "sglang",
+    "backend_version": "0.5.14",
+    "cp_size": 1,
+    "database_mode": "SILICON",
+    "dcp_size": null,
+    "decoder_replay": false,
+    "enable_shared_layer": true,
+    "extra": {
+      "afd_pool_role": "a"
+    },
+    "forward_model": "op_level",
+    "fpm_fmha_dtype": null,
+    "fpm_parquet_path": null,
+    "kv_block_size": null,
+    "kv_cache_dtype": "bfloat16",
+    "model_name": "Qwen/Qwen3-30B-A3B",
+    "moe_dtype": "bfloat16",
+    "moe_ep_size": 1,
+    "moe_kernel_source": null,
+    "moe_tp_size": 1,
+    "pp_size": 1,
+    "schema_version": 1,
+    "strict_provenance": false,
+    "system_name": "h200_sxm",
+    "systems_path": null,
+    "tolerate_dirless_version": false,
+    "tp_size": 1,
+    "transfer_policy": null,
+    "weight_dtype": "bfloat16"
+  },
+  "generation_ops": [
+    {
+      "Embedding": {
+        "hidden_size": 2048,
+        "name": "generation_embedding",
+        "quant_mode": "bfloat16",
+        "scale_factor": 1.0,
+        "seq_split": 1,
+        "vocab_size": 151936
+      }
+    },
+    {
+      "Elementwise": {
+        "bytes_per_token": 16384.0,
+        "name": "generation_add_norm_1",
+        "scale_factor": 1.0,
+        "scale_num_tokens": 1,
+        "seq_split": 1
+      }
+    },
+    {
+      "Gemm": {
+        "below_grid_sol": false,
+        "k": 2048,
+        "low_precision_input": false,
+        "n": 5120,
+        "name": "generation_qkv_gemm",
+        "quant_mode": "bfloat16",
+        "scale_factor": 1.0,
+        "scale_num_tokens": 1,
+        "seq_split": 1
+      }
+    },
+    {
+      "GenerationAttention": {
+        "dcp_size": 1,
+        "head_size": 128,
+        "kv_cache_dtype": "bfloat16",
+        "lane_order": [
+          "fa3",
+          "triton",
+          "fla",
+          "flashinfer",
+          "trtllm_mha",
+          "default"
+        ],
+        "n": 32,
+        "n_kv": 4,
+        "name": "generation_attention",
+        "scale_factor": 1.0,
+        "scale_num_tokens": 1,
+        "use_qk_norm": true,
+        "verify_query_tokens": 0,
+        "window_size": 0
+      }
+    },
+    {
+      "Gemm": {
+        "below_grid_sol": false,
+        "k": 4096,
+        "low_precision_input": true,
+        "n": 2048,
+        "name": "generation_proj_gemm",
+        "quant_mode": "bfloat16",
+        "scale_factor": 1.0,
+        "scale_num_tokens": 1,
+        "seq_split": 1
+      }
+    },
+    {
+      "Gemm": {
+        "below_grid_sol": false,
+        "k": 2048,
+        "low_precision_input": false,
+        "n": 128,
+        "name": "generation_router_gemm",
+        "quant_mode": "bfloat16",
+        "scale_factor": 1.0,
+        "scale_num_tokens": 1,
+        "seq_split": 1
+      }
+    },
+    {
+      "Gemm": {
+        "below_grid_sol": false,
+        "k": 2048,
+        "low_precision_input": false,
+        "n": 151936,
+        "name": "generation_logits_gemm",
+        "quant_mode": "bfloat16",
+        "scale_factor": 1.0,
+        "scale_num_tokens": 1,
+        "seq_split": 1
+      }
+    },
+    {
+      "Elementwise": {
+        "bytes_per_token": 16384.0,
+        "name": "generation_add_norm_2",
+        "scale_factor": 1.0,
+        "scale_num_tokens": 1,
+        "seq_split": 1
+      }
+    }
+  ],
+  "schema_version": 30
+}

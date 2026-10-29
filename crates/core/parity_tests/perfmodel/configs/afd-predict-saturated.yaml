@@ -1,0 +1,32 @@
+
+
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 1024
+    output_tokens: 128
+  load:
+    type: concurrency
+    concurrency: 32
+  stop:
+    requests: 64
+engine:
+  mode: aggregated
+  model: Qwen/Qwen3-30B-A3B
+  hardware: h200_sxm
+  backend: sglang
+  backend_version: 0.5.14
+  context_length: max
+  workers:
+    aggregated:
+      type: afd
+      afd:
+        n_a_nodes: 1
+        n_f_nodes: 1
+        tp_a: 1
+        a_batch_size: 3
+        num_microbatches: 3
+evaluation:
+  sla:
+    ttft_ms: 800
+    itl_ms: 30

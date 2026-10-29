@@ -744,30 +744,33 @@ def test_native_epd_search_smoke(mode, total_gpus):
     assert candidate.config["encoder"]["image_count"] == 1
 
 
-@pytest.mark.parametrize("mode", ["afd", "afd+pd"])
+@pytest.mark.parametrize("mode", ["afd"])
 def test_epd_rejects_afd_search_before_materialization(mode):
     payload = _config().model_dump(mode="json")
     payload["search_space"].update(
-        deployment_mode=[mode],
-        afd_batch_size_candidates=[16],
+        deployment_mode=["agg"],
+        afd_roles={"aggregated": {"type": "afd", "afd": {"a_batch_size": 16}}},
     )
-    with pytest.raises(ValueError, match="encoder pools support only agg/disagg.*AFD is unsupported"):
+    with pytest.raises(ValueError, match="AFD roles require.*reject encoder"):
         SmartSearchConfig.model_validate(payload)
 
 
-@pytest.mark.parametrize("mode", ["afd", "afd+pd"])
-def test_epd_rejects_afd_direct_deployment_and_replay(mode):
+@pytest.mark.parametrize(("mode", "role"), [("agg", "aggregated"), ("disagg", "decode")])
+def test_epd_rejects_afd_direct_deployment_and_replay(mode, role):
     from aisimulate.sweeper.deploy import build_backend_deployment
 
     encoder = _encoder()
-    with pytest.raises(ValueError, match="encoder pools support only agg/disagg.*AFD is unsupported"):
-        build_backend_deployment({"deployment_mode": mode}, backend_version="test", encoder=encoder)
+    with pytest.raises(ValueError, match="AFD roles reject encoder pools"):
+        build_backend_deployment(
+            {"deployment_mode": mode, "afd_roles": {role: {}}}, backend_version="test", encoder=encoder
+        )
     spec = ReplaySpec(
         backend_deployment=BackendDeploymentSpec(
             deployment_mode=mode,
             backend="sglang",
             backend_version="test",
             encoder=encoder,
+            **{"agg_engine_args" if role == "aggregated" else f"{role}_engine_args": {"afd": {}}},
         ),
         workload=_config().workload.model_dump(mode="json"),
         goal={},
@@ -775,6 +778,7 @@ def test_epd_rejects_afd_direct_deployment_and_replay(mode):
     capabilities = RunnerCapabilities(
         supported_backend_topologies=(("*", "*"),),
         supports_analytical_epd=True,
+        supported_worker_types=("monolithic", "afd"),
     )
     with pytest.raises(ValueError, match="encoder pools support only agg/disagg.*AFD is unsupported"):
         capabilities.require_compatible(spec)
@@ -783,10 +787,14 @@ def test_epd_rejects_afd_direct_deployment_and_replay(mode):
 @pytest.mark.parametrize("mode", ["afd", "afd+pd"])
 def test_hosted_vision_rejects_afd_search_and_replay(mode):
     role = "agg" if mode == "afd" else "prefill"
+    public_role = "aggregated" if mode == "afd" else "prefill"
     payload = _config().model_dump(mode="json")
+    # Switching away from EPD must not copy its serialized legacy selectors.
+    for role_name in ("agg", "prefill", "decode"):
+        payload["search_space"].pop(f"{role_name}_forward_model", None)
     payload["search_space"].update(
-        deployment_mode=[mode],
-        afd_batch_size_candidates=[16],
+        deployment_mode=["agg" if mode == "afd" else "disagg"],
+        afd_roles={public_role: {"type": "afd", "afd": {"a_batch_size": 16}}},
         encoder=None,
         **{f"{role}_vision": {"cache_mib": 100, "encoder_parallel": "tp"}},
     )
@@ -794,10 +802,10 @@ def test_hosted_vision_rejects_afd_search_and_replay(mode):
         SmartSearchConfig.model_validate(payload)
     spec = ReplaySpec(
         backend_deployment=BackendDeploymentSpec(
-            deployment_mode=mode,
+            deployment_mode="agg" if mode == "afd" else "disagg",
             backend="sglang",
             backend_version="0.5.14",
-            **{f"{role}_engine_args": {"vision": True, "sglang": {"vlm_cache_bytes": 100 << 20}}},
+            **{f"{role}_engine_args": {"afd": {}, "vision": True, "sglang": {"vlm_cache_bytes": 100 << 20}}},
         ),
         workload=_config().workload.model_dump(mode="json") | {"source_type": "synthetic"},
         goal={},
@@ -815,11 +823,12 @@ def test_afd_qualification_rejects_image_or_encoder_composition(encoder_present)
         spec,
         backend_deployment=replace(
             spec.backend_deployment,
-            deployment_mode="afd",
+            deployment_mode="agg",
+            agg_engine_args={"afd": {}},
             encoder=spec.backend_deployment.encoder if encoder_present else None,
         ),
     )
-    with pytest.raises(AFDQualificationError, match="AFD qualification does not support analytical EPD"):
+    with pytest.raises(AFDQualificationError, match="AFD qualification rejects encoder"):
         build_afd_qualification(spec)
 
 

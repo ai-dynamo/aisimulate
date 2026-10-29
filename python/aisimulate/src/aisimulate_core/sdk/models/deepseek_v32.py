@@ -123,7 +123,9 @@ def _dsa_shared_expert_quant_mode(extra_params: object, fallback: common.GEMMQua
     return fallback
 
 
-def _dense_mlp_groups(raw_config: dict, num_layers: int, fallback: common.GEMMQuantMode) -> list:
+def _dense_mlp_groups(
+    raw_config: dict, num_layers: int, fallback: common.GEMMQuantMode, *, ordered: bool = False
+) -> list:
     """Dense-prefix layer counts grouped by gate/up and down projection dtype."""
     count = raw_config.get("first_k_dense_replace")
     if count is None:
@@ -185,6 +187,9 @@ def _dense_mlp_groups(raw_config: dict, num_layers: int, fallback: common.GEMMQu
                 return common.GEMMQuantMode.bfloat16
         return fallback
 
+    if ordered:
+        # AFD must retain physical layer order rather than the agg histogram.
+        return [(1, quant_mode(layer, "gate_up_proj"), quant_mode(layer, "down_proj")) for layer in range(count)]
     groups: Counter = Counter()
     for layer in range(count):
         groups[(quant_mode(layer, "gate_up_proj"), quant_mode(layer, "down_proj"))] += 1

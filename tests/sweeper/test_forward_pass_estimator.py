@@ -604,7 +604,7 @@ def test_raw_config_rejects_trailing_json():
         aisimulate_core.RustForwardPassPerfModel.normalize_config(payload)
 
 
-@pytest.mark.parametrize("deployment_mode", ["afd", "afd+pd"])
+@pytest.mark.parametrize("deployment_mode", ["disagg"])
 @pytest.mark.parametrize(
     "controls",
     [
@@ -625,26 +625,30 @@ def test_afd_rejects_role_estimator_controls(deployment_mode, controls):
             model_name="m",
             hardware_sku="h200_sxm",
             deployment_mode=[deployment_mode],
-            afd_batch_size_candidates=[1],
+            backend=["sglang"],
+            afd_roles={"decode": {"type": "afd", "afd": {"a_batch_size": 1}}},
             role_estimator_controls={"decode": controls},
         )
 
 
-@pytest.mark.parametrize("deployment_mode", ["afd", "afd+pd"])
+@pytest.mark.parametrize("deployment_mode", ["disagg"])
 @pytest.mark.parametrize("forward_model", ["op_level", "fpm"])
-def test_afd_saved_search_preserves_legacy_selection(deployment_mode, forward_model):
+def test_afd_saved_search_preserves_ordinary_role_selection(deployment_mode, forward_model):
     from aisimulate.sweeper.config import SearchSpace
 
     space = SearchSpace(
         model_name="m",
         hardware_sku="h200_sxm",
         deployment_mode=[deployment_mode],
-        afd_batch_size_candidates=[1],
+        backend=["sglang"],
+        afd_roles={"decode": {"type": "afd", "afd": {"a_batch_size": 1}}},
         prefill_forward_model=forward_model,
     )
     for _ in range(2):
         assert space.prefill_forward_model == forward_model
-        assert space.role_estimator_controls == {}
+        assert space.role_estimator_controls["prefill"]["estimation_mode"] == (
+            "op_level" if forward_model == "op_level" else "fpm_interpolation"
+        )
         space = SearchSpace.model_validate_json(space.model_dump_json())
 
 

@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Modified native port; original paths and license: root THIRD_PARTY_NOTICES.md.
+# Source: https://github.com/LPhgh/aisimulate/tree/af56328c4ba7ffa1b8c42c8375244568c2e7bb8c
 
 """Lower the public configuration model to runner and Sweeper contracts."""
 
@@ -7,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 from typing import Any
+
+from aisimulate_core._native import validate_afd_attention_tp, validate_afd_routing_location
 
 from .capacity import (
     estimate_kv_bytes_per_token,
@@ -22,29 +26,24 @@ from .config.engine import (
     HostWorkerPredictionConfig,
     VisionPredictionConfig,
     WorkerPredictionConfig,
+    has_afd,
+    is_afd_worker,
     resolve_block_size,
 )
 from .config.traffic import SyntheticSessionSource, SyntheticSource, TraceSource
 from .estimator_readiness import unready_estimator_message
 from .state_size import resolve_state_size
-from .sweeper.afd_parallel import AFDParallelConfig, AFDTopology
-from .sweeper.afd_perfmodel import (
-    AFDPerformanceModel,
-    AICAFDPerformanceModel,
-    attach_afd_measurements,
-)
+from .sweeper.afd_parallel import AFDTopology, validate_afd_model
 from .sweeper.kv_estimate import resolve_backend_version
 from .sweeper.model_hw import resolve_model_hardware
-from .sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
 from .sweeper.provider import AdapterReplaySpec, JSONValue, validate_router_prefill_hardware
-from .sweeper.replay import BackendDeploymentSpec, ReplaySpec
+from .sweeper.replay import BackendDeploymentSpec, ReplaySpec, resolve_afd_replay_identity
 
 
 def prediction_to_replay_spec(
     config: CorePredictionConfig,
     *,
     adapter_specs: dict[str, AdapterReplaySpec] | None = None,
-    afd_performance_model: AFDPerformanceModel | None = None,
     execution_mode: str = "offline",
 ) -> ReplaySpec:
     """Compile one concrete public prediction config."""
@@ -57,12 +56,15 @@ def prediction_to_replay_spec(
         raise ValueError("ngram speculation requires the offline engine stack without adapters")
     if config.engine.speculation is not None and execution_mode != "offline":
         raise ValueError("speculation requires offline execution")
+    if has_afd(config.engine.workers) and (adapter_specs or execution_mode != "offline"):
+        raise ValueError("AFD roles require the offline engine stack without adapters")
+    for role in ("aggregated", "prefill", "decode"):
+        worker = getattr(config.engine.workers, role)
+        if is_afd_worker(worker):
+            validate_afd_routing_location(worker.afd.routing_location)
+            validate_afd_attention_tp(worker.afd.tp_a)
     workload, concurrency = _traffic(config)
-    deployment = _deployment(
-        config.engine,
-        workload=workload,
-        afd_performance_model=afd_performance_model,
-    )
+    deployment = _deployment(config.engine, workload=workload)
     deployment = _pin_estimator_version_aliases(deployment)
     metadata = dict(deployment.performance_model_metadata)
     for role, field in (
@@ -88,7 +90,15 @@ def prediction_to_replay_spec(
     if config.engine.mode == "disaggregated":
         assert config.engine.workers.prefill is not None
         for adapter in (adapter_specs or {}).values():
-            validate_router_prefill_hardware(adapter, config.engine.workers.prefill.hardware or config.engine.hardware)
+            validate_router_prefill_hardware(
+                adapter,
+                (
+                    config.engine.workers.prefill.afd.a_system
+                    if is_afd_worker(config.engine.workers.prefill)
+                    else config.engine.workers.prefill.hardware
+                )
+                or config.engine.hardware,
+            )
     if config.engine.workers.encoder is not None:
         if adapter_specs or execution_mode != "offline":
             raise ValueError("encoder pools require the offline engine stack without adapters")
@@ -105,13 +115,15 @@ def prediction_to_replay_spec(
     }
     if deployment.encoder is not None and deployment.encoder.mode == "analytical" and goal["sla"] is not None:
         goal["strict_sla"] = True
-    return ReplaySpec(
-        backend_deployment=deployment,
-        workload=workload,
-        goal=goal,
-        execution_mode=execution_mode,
-        concurrency=concurrency,
-        adapters=dict(adapter_specs or {}),
+    return resolve_afd_replay_identity(
+        ReplaySpec(
+            backend_deployment=deployment,
+            workload=workload,
+            goal=goal,
+            execution_mode=execution_mode,
+            concurrency=concurrency,
+            adapters=dict(adapter_specs or {}),
+        )
     )
 
 
@@ -216,14 +228,9 @@ def _deployment(
     engine: EnginePredictionConfig,
     *,
     workload: dict[str, JSONValue],
-    afd_performance_model: AFDPerformanceModel | None,
 ) -> BackendDeploymentSpec:
-    if engine.mode == "afd":
-        return _afd_deployment(
-            engine,
-            workload=workload,
-            performance_model=afd_performance_model or AICAFDPerformanceModel(),
-        )
+    if has_afd(engine.workers):
+        return _roles_with_afd_deployment(engine, workload=workload)
     mode = "agg" if engine.mode == "aggregated" else "disagg"
     if mode == "disagg":
         from aisimulate_core.sdk.perf_database import load_system_spec
@@ -346,110 +353,192 @@ def _state_metadata(
     return metadata
 
 
-def _afd_deployment(
-    engine: EnginePredictionConfig,
-    *,
-    workload: dict[str, JSONValue],
-    performance_model: AFDPerformanceModel,
-) -> BackendDeploymentSpec:
-    afd = engine.afd
-    assert afd is not None
-    facts = resolve_model_hardware(engine.model, engine.hardware, backend=engine.backend)
-    topology = AFDTopology(
-        **afd.model_dump(mode="python"),
-        gpus_per_node=facts.gpus_per_node,
-        is_moe=facts.is_moe,
-        num_experts=facts.num_experts,
+def _afd_role(engine, worker, role):
+    afd = worker.afd
+    facts = resolve_model_hardware(
+        engine.model, engine.hardware, backend=engine.backend, systems_paths=engine.systems_paths
     )
-    backend_version = engine.backend_version or resolve_backend_version(engine.hardware, engine.backend)
-    resolved_engine = engine.model_copy(update={"backend_version": backend_version})
-    companion_role = "decode" if topology.phase.value == "prefill" else "prefill"
-    companion_worker = getattr(engine.workers, companion_role) if topology.combined_with_pd else None
-    companion: ReplicaParallelConfig | None = None
-    if companion_worker is not None:
-        parallel = companion_worker.parallelism
-        # The AFD companion's ParallelShape, GPU accounting and provenance carry
-        # tp/pp/attention_dp/moe only; a CP knob here would price a wider worker
-        # than the topology reports. Fail closed until AFD models CP explicitly.
-        if _prefill_cp(parallel) != 1 or _decode_cp(parallel) != 1:
-            raise ValueError(
-                f"AFD companion ({companion_role}) workers do not support context parallelism: got "
-                f"parallelism.prefill_context={parallel.prefill_context}, "
-                f"parallelism.decode_context={parallel.decode_context}; set both to 1"
-            )
-        companion = ReplicaParallelConfig(
-            shape=ParallelShape(
-                tp=parallel.tensor,
-                pp=parallel.pipeline,
-                dp=parallel.attention_data,
-                moe_tp=parallel.moe_tensor,
-                moe_ep=parallel.moe_expert,
+    a_system, f_system = afd.a_system or engine.hardware, afd.f_system or engine.hardware
+    pool_facts = [
+        facts
+        if system == engine.hardware
+        else resolve_model_hardware(engine.model, system, backend=engine.backend, systems_paths=engine.systems_paths)
+        for system in (a_system, f_system)
+    ]
+    topology = AFDTopology.from_mapping(
+        {
+            **afd.model_dump(
+                mode="python", exclude={"a_system", "f_system", "chunked_prefill_size", "tp_a", "a_batch_size"}
             ),
-            replicas=parallel.replicas,
-        )
-    afd_parallel = AFDParallelConfig(topology=topology, companion=companion)
-    parallel_config: dict[str, JSONValue] = {
-        "afd": topology.provenance()["topology"],
-        "afd_provenance": afd_parallel.provenance(),
-    }
+            "a_tp_size": afd.tp_a,
+            "batch_size_per_a_replica": afd.a_batch_size,
+            "gpus_per_node": pool_facts[0].gpus_per_node,
+            "f_gpus_per_node": pool_facts[1].gpus_per_node,
+            "is_moe": facts.is_moe,
+            "num_experts": facts.num_experts,
+            "a_system": a_system,
+            "f_system": f_system,
+        }
+    )
     performance_metadata: dict[str, dict[str, JSONValue]] = {
-        "afd": {
-            "provider": "unresolved",
-            "measurement_required": True,
+        role: {
+            "provider": "afd",
+            "measurement_required": False,
             "config": topology.provenance()["topology"],
-            "provenance": afd_parallel.provenance(),
+            "provenance": topology.provenance(),
+            # Identity for the native materializer: the runner does not read
+            # the frozen measurement provenance.
+            "model": engine.model,
+            "hardware": engine.hardware,
+            # KV window for the native memory gate: the qualification reserves
+            # KV for the full context window per request — "max" resolves to
+            # the model's max context length.
+            "context_length": (
+                worker.context_length or engine.context_length
+                if isinstance(worker.context_length or engine.context_length, int)
+                else resolve_model_context_length(engine.model)
+            ),
+            # Estimator policy passthrough for the afd provider: the
+            # native path honors these verbatim.
+            "estimator": {
+                key: value
+                for key, value in {
+                    "database_mode": engine.database_mode,
+                    "transfer_policy": engine.transfer_policy,
+                    "systems_paths": engine.systems_paths,
+                    "estimation_mode": engine.estimation_mode,
+                    "fallback_policy": engine.fallback_policy,
+                    "estimator_config": engine.estimator_config,
+                    "enable_shared_layer": engine.enable_shared_layer,
+                    "strict_provenance": engine.strict_provenance,
+                }.items()
+                if value not in (None, "SILICON", "auto", "deny", {})
+            },
+            "quant": {
+                key: value
+                for key, value in {
+                    "gemm_quant_mode": engine.gemm_quant_mode,
+                    "moe_quant_mode": engine.moe_quant_mode,
+                    "fmha_quant_mode": engine.fmha_quant_mode,
+                    "kvcache_quant_mode": engine.kvcache_quant_mode,
+                    "comm_quant_mode": engine.comm_quant_mode,
+                }.items()
+                if value is not None
+            },
+            # MTP draft depth for the native verify-width cost + sampler
+            # acceptance; 0 when MTP is off. nextn_accepted feeds
+            # the rank's burst sampler (the runner lowers it to conditional
+            # accept rates); EnginePredictionConfig validates it is non-None
+            # and within [0, nextn] whenever nextn > 0.
+            "nextn": engine.nextn or 0,
+            **{
+                name: getattr(engine, name)
+                for name in ("attention_backend", "moe_kernel_source")
+                if getattr(engine, name) is not None
+            },
+            **({"nextn_accepted": engine.nextn_accepted} if engine.nextn else {}),
         }
     }
-    deployment_kwargs: dict[str, Any] = {}
-    if companion_worker is not None:
-        assert companion is not None
-        prefix = f"{companion_role}_"
-        shape = companion.shape
-        parallel_config.update(
-            {
-                f"{prefix}tp": shape.tp,
-                f"{prefix}pp": shape.pp,
-                f"{prefix}attention_dp": shape.dp,
-                f"{prefix}moe_tp": shape.moe_tp,
-                f"{prefix}moe_ep": shape.moe_ep,
-                f"{prefix}strategy": shape.strategy,
-                f"{prefix}replicas": companion.replicas,
-            }
-        )
-        companion_metadata = _worker_performance_model_metadata(resolved_engine, companion_worker)
-        performance_metadata[companion_role] = companion_metadata
-        deployment_kwargs[f"{companion_role}_engine_args"] = _worker_engine_args(
-            resolved_engine,
-            companion_worker,
-            companion_role,
-            transfer_bytes_per_token=None,
-        )
-        deployment_kwargs[f"num_{companion_role}_workers"] = companion.replicas
-    deployment = BackendDeploymentSpec(
-        deployment_mode=topology.adapter_topology,
-        backend=engine.backend,
-        backend_version=backend_version,
-        parallel_config=parallel_config,
-        performance_model_metadata=performance_metadata,
-        **deployment_kwargs,
-    )
-    sample = {
-        "model_name": engine.model,
-        "hardware_sku": engine.hardware,
-        "backend": engine.backend,
-        "backend_version": backend_version,
-        "context_length": (
-            engine.context_length
-            if isinstance(engine.context_length, int)
-            else resolve_model_context_length(engine.model)
-        ),
-        "afd": topology.provenance()["topology"],
+    raw = {
+        "afd": {
+            **topology.provenance()["topology"],
+            **({"chunked_prefill_size": afd.chunked_prefill_size} if afd.chunked_prefill_size is not None else {}),
+        },
+        "startup_time": worker.startup_seconds,
+        "aic_model_path": engine.model,
     }
-    return attach_afd_measurements(
-        deployment,
-        sample=sample,
-        workload=workload,
-        performance_model=performance_model,
+    return raw, performance_metadata[role], topology
+
+
+def _roles_with_afd_deployment(engine, *, workload):
+    roles = ("aggregated",) if engine.mode == "aggregated" else ("prefill", "decode")
+    for role in roles:
+        worker = getattr(engine.workers, role)
+        if not is_afd_worker(worker) and (_prefill_cp(worker.parallelism) != 1 or _decode_cp(worker.parallelism) != 1):
+            raise ValueError(f"AFD companion ({role}) workers do not support context parallelism; set both to 1")
+    validate_afd_model(engine.model)
+    # All role hardware uses one literal backend version. Check each unique data root.
+    from .sweeper.forward_pass_estimator import resolve_afd_backend_version, resolve_systems_paths
+
+    paths = list(resolve_systems_paths(engine.systems_paths))
+    systems = set()
+    for role in roles:
+        worker = getattr(engine.workers, role)
+        if is_afd_worker(worker):
+            systems.update(
+                (system, tuple(paths))
+                for system in (worker.afd.a_system or engine.hardware, worker.afd.f_system or engine.hardware)
+            )
+        else:
+            role_paths = list(resolve_systems_paths(worker.timing.systems_paths or engine.systems_paths))
+            systems.add((worker.hardware or engine.hardware, tuple(role_paths)))
+    version = resolve_afd_backend_version(engine.backend, engine.backend_version, tuple(sorted(systems)))
+    # Literal-version availability is validated by each pool's canonical Rust
+    # model constructor. Rechecking it through the global Python catalog scans
+    # unrelated platforms and duplicates the same validation at replay startup.
+    engine = engine.model_copy(update={"backend_version": version})
+    args, metadata, parallel, counts = {}, {}, {}, {}
+    transfer_bytes = None
+    if engine.kv_transfer is not None:
+        worker = engine.workers.prefill
+        if is_afd_worker(worker):
+            configured = engine.kv_transfer.bytes_per_token
+            transfer_bytes = (
+                configured
+                if configured != "auto"
+                else estimate_kv_bytes_per_token(
+                    engine.model,
+                    tp_size=worker.afd.tp_a,
+                    pp_size=1,
+                    moe_tp_size=1,
+                    moe_ep_size=1,  # KV belongs to one A replica, independently of F-pool EP.
+                    kvcache_quant_mode=engine.kvcache_quant_mode,
+                )
+            )
+        else:
+            transfer_bytes = _resolve_kv_bytes_per_token(
+                engine, worker, engine.kv_transfer.bytes_per_token, role="prefill"
+            )
+    for role in roles:
+        worker = getattr(engine.workers, role)
+        if is_afd_worker(worker):
+            raw, meta, topology = _afd_role(engine, worker, role)
+            metadata[role] = meta
+            parallel[role] = {"type": "afd", **topology.provenance()}
+            counts[role] = 1
+            parallel["replicas" if role == "aggregated" else f"{role}_replicas"] = 1
+            if engine.kv_transfer is not None:
+                raw.update(
+                    kv_transfer_bytes_per_token=transfer_bytes, kv_transfer_timing_mode=engine.kv_transfer.timing_mode
+                )
+                if engine.kv_transfer.bandwidth_gb_per_second is not None:
+                    raw["kv_transfer_bandwidth"] = engine.kv_transfer.bandwidth_gb_per_second
+        else:
+            if isinstance(worker, HostWorkerPredictionConfig):
+                unsupported = [name for name in ("vision", "host_profile") if getattr(worker, name) is not None]
+                if unsupported:
+                    raise ValueError(f"AFD companion ({role}) does not support {unsupported}")
+                try:
+                    _check_frontend_measurement(engine, worker, workload)
+                except ValueError as exc:
+                    raise ValueError(f"AFD companion ({role}) frontend: {exc}") from exc
+            _require_exclusive_context_parallelism(worker)
+            prefix = "" if role == "aggregated" else f"{role}_"
+            parallel.update(_parallel_mapping(worker, prefix=prefix))
+            metadata[role] = _worker_performance_model_metadata(engine, worker)
+            raw = _worker_engine_args(engine, worker, role, transfer_bytes_per_token=transfer_bytes)
+            counts[role] = worker.parallelism.replicas
+        args["agg_engine_args" if role == "aggregated" else f"{role}_engine_args"] = raw
+    return BackendDeploymentSpec(
+        deployment_mode="agg" if engine.mode == "aggregated" else "disagg",
+        backend=engine.backend,
+        backend_version=version,
+        parallel_config=parallel,
+        performance_model_metadata=metadata,
+        num_workers=counts.get("aggregated", 0),
+        num_prefill_workers=counts.get("prefill", 0),
+        num_decode_workers=counts.get("decode", 0),
+        **args,
     )
 
 
@@ -699,14 +788,14 @@ def _worker_engine_args(
         "comm_quant_mode",
         "attention_backend",
     )
-    if (engine.mode == "afd" or engine.workers.encoder is not None) and any(
+    if engine.workers.encoder is not None and any(
         getattr(worker.timing, field) is not None for field in identity_fields
     ):
         raise ValueError("explicit timing identity requires the canonical forward-pass provider")
     if parallel.decode_context is not None:
         if parallel.tensor % parallel.decode_context:
             raise ValueError("decode_context must divide tensor parallelism")
-        if worker.timing.type != "default" or engine.mode == "afd" or engine.workers.encoder is not None:
+        if worker.timing.type != "default" or engine.workers.encoder is not None:
             raise ValueError("DCP requires the canonical forward-pass timing provider")
     if capacity.type == "default" and memory_fraction is None:
         memory_fraction = 0.88 if backend == "sglang" else 0.9
@@ -808,7 +897,7 @@ def _worker_engine_args(
             "aic_dcp_size",
         ):
             payload.pop(name, None)
-    if worker.timing.type == "default" and engine.mode != "afd" and engine.workers.encoder is None:
+    if worker.timing.type == "default" and engine.workers.encoder is None:
         from aisimulate_core.sdk import ForwardPassPerfModelConfig
 
         from .sweeper.forward_pass_estimator import resolve_systems_paths

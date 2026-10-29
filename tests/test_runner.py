@@ -33,6 +33,7 @@ from aisimulate.sweeper import (
     RuntimeHookSpec,
 )
 from aisimulate.sweeper.config import Workload
+from aisimulate.sweeper.replay import REPLAY_SPEC_API_VERSION, RunnerCapabilities
 from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 from scripts.e2e_accuracy.source.replay import engine_args
 
@@ -140,6 +141,7 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     factory = pickle.loads(pickle.dumps(EngineReplayRunnerFactory()))
     capabilities = factory.capabilities()
 
+    assert capabilities.replay_spec_api_version == REPLAY_SPEC_API_VERSION
     assert capabilities.supports_backend_topology("vllm", "agg")
     assert capabilities.supports_backend_topology("sglang", "disagg")
     assert capabilities.supports_backend_topology("trtllm", "disagg")
@@ -155,6 +157,25 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     assert capabilities.supports_agentic_speculative_decoding
     assert capabilities.supports_generic_speculation
     assert capabilities.agentic_qualification == "functional_only"
+
+
+def test_v1_runner_accepts_current_ordinary_replay_and_rejects_api_two():
+    spec = ReplaySpec(
+        backend_deployment=BackendDeploymentSpec(
+            deployment_mode="agg",
+            backend="sglang",
+            backend_version="test",
+            num_workers=1,
+            agg_engine_args={"worker_type": "aggregated"},
+        ),
+        workload={},
+        goal={},
+    )
+    assert not spec.backend_deployment.has_afd
+    capabilities = RunnerCapabilities(replay_spec_api_version=1, supported_backend_topologies=(("sglang", "agg"),))
+    capabilities.require_compatible(spec)
+    with pytest.raises(ValueError, match="ReplaySpec API version 2 is incompatible with runner version 1"):
+        capabilities.require_compatible(replace(spec, api_version=2))
 
 
 @pytest.mark.parametrize("location", ["rank", "canonical"])

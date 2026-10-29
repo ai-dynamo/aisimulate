@@ -14,6 +14,9 @@ use thiserror::Error;
 /// All errors surfaced by the Rust core.
 #[derive(Debug, Error)]
 pub enum AicError {
+    /// A recognized feature that cannot execute; never an estimator coverage miss.
+    #[error("{0}")]
+    NotImplemented(String),
     #[error(
         "unsupported schema version for {kind}: got {got}, expected {expected}; recompile with this engine"
     )]

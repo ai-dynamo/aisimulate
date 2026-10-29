@@ -7,6 +7,29 @@ _MoeCommFallbackPayload = tuple[str, str, int, int, int, int]
 _MoeCommFallbackMetadata = tuple[_MoeCommFallbackPayload, list[_MoeCommFallbackPayload]]
 _PerOpValueWithMetadata = tuple[str, float, float, str, _MoeCommFallbackMetadata | None]
 
+AFD_DEFAULT_ROUTING_LOCATION: str
+
+def validate_afd_routing_location(location: str) -> None: ...
+def validate_afd_attention_tp(a_tp_size: int) -> None: ...
+def resolve_afd_decode_identity(estimator_config_json: str, workload_json: str) -> bool: ...
+def resolve_afd_parallelism(
+    a_tp_size: int,
+    n_a_nodes: int,
+    n_f_nodes: int,
+    gpus_per_node: int,
+    f_moe_ep_size: int | None = None,
+    num_experts: int | None = None,
+    *,
+    f_gpus_per_node: int | None = None,
+) -> str: ...
+def validate_afd_model_shape(
+    num_layers: int,
+    num_experts: int,
+    topk: int,
+    num_shared_experts: int,
+    num_moe_layers: int,
+) -> None: ...
+
 class AicEngine:
     @staticmethod
     def from_spec(bytes: bytes, systems_path: str | None = None) -> AicEngine: ...  # noqa: A002
@@ -222,3 +245,6 @@ class RustForwardPassPerfModel:
 def engine_spec_bincode_from_json(spec_json: str) -> list[int]: ...
 def engine_spec_json_from_bincode(bytes: bytes) -> str: ...  # noqa: A002
 def _build_smoke() -> int: ...
+def resolve_execution_quantization(
+    system_spec_json: str, gemm: str | None = None, moe: str | None = None
+) -> tuple[str | None, str | None]: ...

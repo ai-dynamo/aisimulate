@@ -1994,7 +1994,7 @@ def build_experiment_tasks(
             logger.warning(
                 "Skipping experiment '%s': serving_mode 'afd' no longer runs through the "
                 "legacy CLI. AFD runs through the unified CLI: `aisimulate recommend` "
-                "with an `engine.afd` block, then `aisimulate predict`.",
+                "with an `workers.<role>.afd` block, then `aisimulate predict`.",
                 exp_name,
             )
             continue

@@ -227,6 +227,10 @@ pub struct ReplayRoleFactory {
     kv_cache_capacity_bytes: Option<u64>,
     /// Per-rank P/D KV transfer link bandwidth in decimal GB/s, if priced.
     kv_transfer_bandwidth: Option<f64>,
+    /// AFD pool GPU total (`n_a_nodes * gpus_per_node +
+    /// n_f_nodes * effective_f_gpus_per_node()`),
+    /// overriding the monolithic `dp * tp` accounting.
+    afd_total_gpus: Option<usize>,
     pub(crate) g3_config: Option<crate::engine::G3OffloadConfig>,
     pub(crate) g3_block_bytes: usize,
     pub(crate) g3_tier: Option<crate::engine::g3_offload::SharedG3Tier>,
@@ -338,6 +342,9 @@ impl ReplayRoleFactory {
 
     #[doc(hidden)]
     pub fn gpus_per_worker(&self) -> ReplayResult<usize> {
+        if let Some(total) = self.afd_total_gpus {
+            return Ok(total);
+        }
         usize::try_from(self.dp_size.get())
             .ok()
             .and_then(|dp| {
@@ -467,6 +474,14 @@ impl ReplayEngineFactory {
             .native_host_offload
             .as_ref()
             .is_some_and(|host| host.scope == G2Scope::ClusterShared);
+        let afd_total_gpus = role.rank.afd.as_ref().map(|afd| {
+            crate::engine::afd_total_gpus(
+                &afd.a_pool,
+                &afd.f_pool,
+                afd.gpus_per_node,
+                afd.effective_f_gpus_per_node(),
+            )
+        });
         let g3_config = role.rank.g3_offload.take();
         let kvcr_config = role.rank.kvcr.take();
         if kvcr_config.is_some() && pipeline_parallel_size(&role.rank.timing_model)? > 1 {
@@ -506,6 +521,7 @@ impl ReplayEngineFactory {
             total_blocks,
             kv_cache_capacity_bytes,
             kv_transfer_bandwidth,
+            afd_total_gpus,
             g3_config,
             g3_block_bytes,
             g3_tier: None,
@@ -1129,5 +1145,71 @@ mod observation_tests {
                 (3.0, vec![hash], vec![], 1),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod afd_role_tests {
+    use super::*;
+
+    /// The afd+pd decode role carries the AFD pool-pair topology as rank
+    /// metadata; its per-worker GPU accounting must report the A/F pool
+    /// total instead of the monolithic dp*tp product, while the monolithic
+    /// companion keeps the standard accounting.
+    #[test]
+    fn afd_role_factory_reports_pool_pair_gpu_total() {
+        let decode_rank: EngineConfig = serde_json::from_value(serde_json::json!({
+            "backend": "sglang",
+            "block_size": 1,
+            "num_gpu_blocks": 1024,
+            "worker_type": "decode",
+            "kv_transfer_bandwidth": 50.0,
+            "afd": {
+                "a_pool": {"system": "h200_sxm", "a_tp_size": 1, "n_a_nodes": 1, "batch_size_per_a_replica": 18},
+                "f_pool": {"system": "h200_sxm", "f_moe_ep_size": 16, "n_f_nodes": 2},
+                "gpus_per_node": 8,
+                "num_microbatches": 3,
+                "comm_overhead_factor": 1.0,
+            },
+        }))
+        .unwrap();
+        let prefill_rank: EngineConfig = serde_json::from_value(serde_json::json!({
+            "backend": "sglang",
+            "block_size": 1,
+            "num_gpu_blocks": 1024,
+            "worker_type": "prefill",
+            "kv_transfer_bandwidth": 100.0,
+            "kv_transfer_bytes_per_token": 16,
+        }))
+        .unwrap();
+        let config = ReplayEngineConfig {
+            rank: EngineConfig::default(),
+            prefill: Some(ReplayRoleConfig {
+                dp_size: 1,
+                tensor_parallel_size: 1,
+                num_gpu_blocks_is_explicit: None,
+                prefill_context_parallel_size: 1,
+                rank: prefill_rank,
+            }),
+            decode: Some(ReplayRoleConfig {
+                dp_size: 1,
+                tensor_parallel_size: 1,
+                num_gpu_blocks_is_explicit: None,
+                prefill_context_parallel_size: 1,
+                rank: decode_rank,
+            }),
+            ..Default::default()
+        };
+        let factory = ReplayEngineFactory::new();
+        let decode_factory = factory
+            .role_factory(&config, WorkerStage::Decode, false)
+            .unwrap();
+        assert_eq!(decode_factory.gpus_per_worker().unwrap(), 24);
+        assert_eq!(decode_factory.kv_transfer_bandwidth(), Some(50.0));
+        let prefill_factory = factory
+            .role_factory(&config, WorkerStage::Prefill, false)
+            .unwrap();
+        assert_eq!(prefill_factory.gpus_per_worker().unwrap(), 1);
+        assert_eq!(prefill_factory.kv_transfer_bandwidth(), Some(100.0));
     }
 }

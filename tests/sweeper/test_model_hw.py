@@ -341,3 +341,45 @@ def test_explicit_dense_pin_requires_positive_width_with_fixed_kv(monkeypatch, t
             parallel_configs_for("model", "hardware", **kwargs)
     else:
         assert parallel_configs_for("model", "hardware", **kwargs) == [pin]
+
+
+def test_pinned_roles_prepare_memory_only_for_authored_shapes(monkeypatch):
+    from aisimulate.sweeper.parallel_enum import ReplicaParallelConfig
+
+    facts = ModelHardware(
+        model_name="model",
+        hardware_sku="hardware",
+        backend="sglang",
+        is_moe=False,
+        mla=False,
+        enable_wideep=False,
+        weight_bytes=1,
+        vram_per_gpu=80,
+        gpus_per_node=8,
+        max_context=2048,
+    )
+    monkeypatch.setattr(mh_mod, "resolve_model_hardware", lambda *a, **k: facts)
+    seen = []
+
+    def feasible(shapes, **kwargs):
+        seen.extend(shapes)
+        return dict.fromkeys(shapes, 4096)
+
+    monkeypatch.setattr(mh_mod, "feasible_shape_tokens", feasible)
+    pinned = [
+        ReplicaParallelConfig(shape=ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+        ReplicaParallelConfig(shape=ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+    ]
+    assert (
+        parallel_configs_for(
+            "model",
+            "hardware",
+            backend="sglang",
+            gpu_budget=64,
+            deployment_mode="agg",
+            candidate_configs=pinned,
+            max_seq_len=1024,
+        )
+        == pinned
+    )
+    assert seen == [p.shape for p in pinned]

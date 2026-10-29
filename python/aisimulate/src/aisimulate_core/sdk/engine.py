@@ -159,6 +159,7 @@ from aisimulate_core.sdk.rust_engine_step import (
 #   concurrently with AIC-1781; renumbered after GLM-5.3-Flash at the merge.
 # Single owner: the Rust crate constant. Python re-exports it for
 # diagnostics/tests instead of declaring a twin to keep in sync.
+# Schema 30 adds P2P fabric selectors and independent AFD F-node width.
 ENGINE_SPEC_SCHEMA_VERSION = aisimulate_core.engine_spec_schema_version()
 ENGINE_CONFIG_SCHEMA_VERSION = 1
 
@@ -450,6 +451,7 @@ def compile_engine(
     backend_version: str | None = None,
     *,
     tp_size: int = 1,
+    afd_pool_role: str | None = None,
     pp_size: int = 1,
     attention_dp_size: int = 1,
     dcp_size: int | None = None,
@@ -677,6 +679,22 @@ def compile_engine(
         apply_nextn(model_config, nextn)
     except (ValueError, TypeError, KeyError) as exc:
         raise InvalidEngineConfigurationError(str(exc)) from exc
+    if afd_pool_role is not None:
+        from aisimulate_core.sdk.models.helpers import resolve_nvfp4_for_system
+
+        try:
+            resolve_nvfp4_for_system(
+                model_config,
+                system,
+                model_path,
+                backend_name=backend,
+                system_spec=load_system_spec(system, systems_path),
+            )
+        except (ValueError, RuntimeError) as exc:
+            raise InvalidEngineConfigurationError(
+                f"AFD {afd_pool_role.upper()} pool on {system!r}, requested "
+                f"gemm={gemm_quant_mode!r}, moe={moe_quant_mode!r}: {exc}"
+            ) from exc
     model_config.decoder_replay = decoder_replay
     try:
         resolve_dsv4_moe_arch(model_config, model_path, system_name=system, backend_name=backend)
@@ -694,7 +712,12 @@ def compile_engine(
         resolve_sglang_mla_compute(
             model_config, model_path, backend, literal_version, load_system_spec(system, systems_path)
         )
-    model = get_model(model_path, model_config, backend)
+    if afd_pool_role is None:
+        model = get_model(model_path, model_config, backend)
+    else:
+        from aisimulate_core.sdk.models.afd import build_afd_model
+
+        model = build_afd_model(model_path, model_config, backend, afd_pool_role)
     if deployment is not None and forward_model == "fpm":
         from aisimulate_core.sdk.fpm_identity import LEGACY_EXECUTION_IDENTITY
 
@@ -990,6 +1013,9 @@ def build_engine_spec_json(
     }
     if vision is not None:
         spec["vision"] = vision
+    if getattr(model, "afd_plan", None) is not None:
+        spec["afd_plan"] = model.afd_plan
+        identity["extra"]["afd_pool_role"] = model.afd_plan["role"]
     result = json.dumps(spec)
     return result
 
@@ -1049,13 +1075,11 @@ def build_database_probe_spec_json(
 # --------------------------------------------------------------------------- #
 # Model-less probe plumbing.
 #
-# A small LRU of probe engines keyed by database identity, serving the two
-# PERMANENT consumers that need engine values without a compiled model: the
-# table-view bindings (``engine_table_view.fetch_table_view``) and the
-# single-op evaluation helper behind the Python-side orchestration surfaces
-# (the AFD comm ops, the ``_sum_latency`` fallback loop). It is NOT a public
-# per-op query surface — the deprecated ``query_*``/``Operation.query`` shims
-# that once rode this plumbing were removed after their one-release window;
+# A small LRU of probe engines keyed by database identity, serving the
+# consumers that need engine values without a compiled model: the table-view
+# bindings (``engine_table_view.fetch_table_view``) and the single-op
+# evaluation helper behind ``Operation._engine_query`` (pinned by the
+# single-oracle contract tests). It is NOT a public per-op query surface —
 # long-term callers use ``EngineHandle.evaluate_ops_json`` /
 # ``evaluate_ops_sol_json`` (op-list FFI) or the phase/run entry points.
 # --------------------------------------------------------------------------- #
@@ -1148,12 +1172,8 @@ def _evaluate_single_op(
     """Evaluate ONE Python ``Operation`` through the compiled engine, under
     the database's live mode.
 
-    The permanent single-op plumbing behind the Python-side ORCHESTRATION
-    surfaces (the AFD comm ops' twin evaluation, the ``_sum_latency``
-    fallback loop). The retired per-call query shims used to ride this too,
-    with a per-call ``database_mode`` re-moding dimension (including the
-    ``SOL_FULL`` decomposition triple) — that dimension left with the shims;
-    per-call SOL decomposition is served by
+    The single-op plumbing behind ``Operation._engine_query``, pinned by the
+    single-oracle contract tests. Per-call SOL decomposition is served by
     ``EngineHandle.evaluate_ops_sol_json`` directly."""
     from aisimulate_core.sdk.operations.attention import ContextAttention, GenerationAttention
     from aisimulate_core.sdk.performance_result import PerformanceResult

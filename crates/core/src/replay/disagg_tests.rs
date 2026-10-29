@@ -1052,6 +1052,84 @@ fn zero_output_disagg_does_not_count_a_source_token(#[case] engine_type: EngineT
     assert_eq!(report.request_counts.total_output_tokens, 0);
 }
 
+/// Probe: the afd provider reaches an AFD-role rank through
+/// `PerfModel::External`, injected per role via `ReplayEngineFactory`. Confirm
+/// the generic two-pool handoff semantics AFD roles inherit, with no
+/// AFD-specific hook:
+/// (a) token accounting — the source emits exactly one first-token signal
+///     (TTFT/conformance marking, excluded from report totals) while the
+///     destination produces all osl tokens after activation;
+/// (b) role admission gating — submits route only to the prefill pool, which
+///     the DestinationFirst lifecycle pinned by `validate()` proves;
+/// (c) transfer timing — the bandwidth-model handoff delay applies unchanged
+///     when a role carries an external provider.
+struct FixedRoleTiming;
+
+impl crate::engine::TimingModel for FixedRoleTiming {
+    fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+        Ok(5.0)
+    }
+
+    fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+        Ok(1.0)
+    }
+}
+
+fn external_role_conformance(
+    provider_on: crate::replay::WorkerStage,
+    handoff_delay: bool,
+) -> NormalizedHandoffConformance {
+    let mut config = sglang_disagg_config();
+    config.num_prefill_workers = 1;
+    config.num_decode_workers = 1;
+    if handoff_delay {
+        config.prefill_args.kv_transfer_bandwidth = Some(1.0);
+        config.prefill_args.kv_transfer_bytes_per_token = Some(1_000_000);
+    }
+    let (prefill_timing, decode_timing) = match provider_on {
+        crate::replay::WorkerStage::Prefill => (Some(Arc::new(FixedRoleTiming) as _), None),
+        crate::replay::WorkerStage::Decode => (None, Some(Arc::new(FixedRoleTiming) as _)),
+        crate::replay::WorkerStage::Aggregated => unreachable!("disagg roles are never aggregated"),
+    };
+    let factory =
+        ReplayEngineFactory::with_optional_role_timing_models(prefill_timing, decode_timing);
+    let config = config.runtime_config_with_factory(true, factory).unwrap();
+    let runtime = HandoffDisaggRuntime::new_composed(
+        &config,
+        AdmissionQueue::new_requests(
+            VecDeque::from([request(90_030, 64, 2, 0.0)]),
+            ReplayMode::Trace,
+        ),
+        true,
+        |_, prefill_topology, _, decode_topology| {
+            Ok((
+                PoolRoundRobinPlacement::new(prefill_topology),
+                PoolRoundRobinPlacement::new(decode_topology),
+            ))
+        },
+    )
+    .unwrap();
+    runtime.run_handoff_conformance(EngineType::Sglang).unwrap()
+}
+
+#[rstest::rstest]
+#[case::provider_on_decode(crate::replay::WorkerStage::Decode, false)]
+#[case::provider_on_prefill(crate::replay::WorkerStage::Prefill, false)]
+#[case::provider_on_decode_with_transfer_delay(crate::replay::WorkerStage::Decode, true)]
+fn external_timed_afd_role_preserves_handoff_semantics(
+    #[case] provider_on: crate::replay::WorkerStage,
+    #[case] handoff_delay: bool,
+) {
+    // `run_handoff_conformance` already validates the DestinationFirst
+    // lifecycle, drain state, and destination KV visibility; pin the token
+    // accounting explicitly: one source-side first-token signal (excluded
+    // from totals), the full osl from the destination, one completion.
+    let capture = external_role_conformance(provider_on, handoff_delay);
+    assert_eq!(capture.source_output_tokens, 1);
+    assert_eq!(capture.destination_output_tokens, 2);
+    assert_eq!(capture.completed_requests, 1);
+}
+
 fn multiturn_trace() -> Trace {
     Trace {
         block_size: 64,

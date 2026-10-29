@@ -107,9 +107,10 @@ available" fallback needs a load-order record (see `quants_in_load_order` /
 
 ## Known intentional splits (do not "fix" without the tracking issue)
 
-- AFD and the VL encoder phase are Python-side ORCHESTRATION; their per-op
-  values cross the engine FFIs (the AFD comm ops evaluate standard
-  P2P/NCCL/ElementWise twins through the single-op plumbing).
+- The VL encoder phase is Python-side ORCHESTRATION. (AFD left this list
+  when it became Rust first-class: the four comm ops are native `Op`
+  variants since schema 30 on this base, and estimation lives in
+  `crates/core/src/perfmodel/afd/`.)
 - `SOL_FULL` is a per-call diagnostic (never a selectable default mode); it
   is served by `evaluate_ops_sol_json` and raises for op families whose SOL
   path does not export its decomposition.

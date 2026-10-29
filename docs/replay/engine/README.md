@@ -72,9 +72,9 @@ domains instead of the single values above; see
 | `engine.workers.<role>.kv_cache` | [KV cache](kv-cache.md) |
 | `engine.kv_transfer` | [P/D KV transfer](kv-transfer.md) |
 | `engine.speculation`, `engine.nextn`, `engine.nextn_accepted` | [Speculative decoding](speculation.md) |
-| `engine.afd`, `engine.workers.encoder` | [Analytical AFD and EPD](analytical.md) |
+| `engine.workers.<role>.afd`, `engine.workers.encoder` | [Analytical AFD and EPD](analytical.md) |
 | `engine.workers.{aggregated,prefill}.{host_loop, frontend, host_profile, vision}` | [Workers](workers.md#sglang-host-loop-frontend-and-vision); design on [SGLang VL host loop](sglang-vl-host-loop.md) |
-| `engine.workers.<role>.timing`, `estimation_mode`, `database_mode`, quantization and kernel selectors | [Performance-model configuration](../../perf-model/configuration.md) |
+| `engine.workers.<role>.timing`, `estimation_mode`, `estimator_config`, `database_mode`, quantization and kernel selectors | [Performance-model configuration](../../perf-model/configuration.md) |
 
 Engine prediction and recommendation accept `auto`, `op_level`,
 `fpm_interpolation`, and `fpm_regression` in their global and worker timing
@@ -96,7 +96,7 @@ Field tables on these pages use the following columns:
 
 | Knob | Default | Recommend | Rules |
 |---|---|---|---|
-| `engine.mode` | `aggregated` | `{choices: [aggregated, disaggregated]}` | `aggregated`, `disaggregated`, or `afd`. `afd` must be explicit and is described in [Analytical AFD and EPD](analytical.md). |
+| `engine.mode` | `aggregated` | `{choices: [aggregated, disaggregated]}` | `aggregated` or `disaggregated`. AFD is a per-role worker type described in [Analytical AFD and EPD](analytical.md). |
 | `engine.model` | Required | fixed | Hugging Face ID or local model directory. |
 | `engine.hardware` | Required | `auto` allowed | System identifier, such as `h200_sxm`. `auto` is recommendation-only and resolves from `optimization.hardware`. |
 | `engine.backend` | `vllm` | `{choices: [vllm, sglang]}` | `vllm`, `sglang`, or `trtllm`. Selects both the scheduler semantics and the performance data. |
@@ -187,9 +187,9 @@ present follow `engine.mode`:
 | --- | --- | --- |
 | `aggregated` | `aggregated` | `prefill`, `decode`, and `engine.kv_transfer` |
 | `disaggregated` | `prefill` and `decode` | `aggregated` |
-| `afd` | None, or one P/D companion | See [AFD](analytical.md#afd) |
+| AFD worker type | The same aggregated or P/D roles | Each role independently chooses ordinary or AFD execution; see [AFD](analytical.md#afd). |
 
-Each role has the same sub-blocks (`parallelism`, `scheduler`, `kv_cache`,
+Each ordinary (`type: monolithic`) role has the same sub-blocks (`parallelism`, `scheduler`, `kv_cache`,
 `timing`, plus `hardware` and `startup_seconds`), configured independently. In
 `recommend`, a mode domain may declare all three roles; each candidate keeps
 only the roles its mode uses. An optional `encoder` role adds an analytical or

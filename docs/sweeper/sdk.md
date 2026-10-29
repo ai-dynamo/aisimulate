@@ -160,8 +160,9 @@ prediction YAML, and native replay. Quantization overrides also participate in
 KV feasibility and capacity-cache identity. EPLB, slots, and MoE backend
 selection require an MoE model; nondefault MoE backends require SGLang.
 Collected FPM interpolation rejects EPLB, slot, and MoE-backend overrides that
-its cells cannot represent. Custom timing, AFD, and analytical encoder runs
-reject these model controls.
+its cells cannot represent. Custom timing and analytical encoder runs reject
+these model controls. AFD roles accept precision overrides, kernel selectors and
+MTP, while rejecting EPLB, redundant slots and nondefault `moe_backend`.
 
 `aic_nextn` is the compute-side MTP draft depth (0–5); zero disables MTP.
 For a positive depth, set `nextn_accepted`
@@ -175,7 +176,8 @@ omission preserves the backend default.
 It must fit the shortest generated input, including a configured random-length
 range. It creates shared tokens and does not prewarm the KV cache: the first
 request is cold, and subsequent reuse follows backend cache and block rules.
-Positive cached prefixes are unsupported for AFD and AFD+PD.
+Native AFD roles support cached prefixes in aggregated and disaggregated replay;
+prefill timing uses the actual uncached suffix and cached-prefix geometry.
 
 The model controls above and synthetic cached prefixes are supported by
 `--stack engine`. Optional runners, including Dynamo, must explicitly advertise
