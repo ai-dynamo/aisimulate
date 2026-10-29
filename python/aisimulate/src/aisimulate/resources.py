@@ -17,7 +17,6 @@ import json
 import math
 import os
 import threading
-import time
 from collections import OrderedDict
 from collections.abc import Mapping
 from contextlib import contextmanager
@@ -35,8 +34,6 @@ GB = 1_000_000_000
 MIB = 1024**2
 WORKER_BASELINE_BYTES = 512 * MIB
 COORDINATOR_RESERVE_BYTES = 256 * MIB
-# Rescan for new descendants at most this often; each rescan reads every host process.
-_DISCOVERY_SECONDS = 1.0
 _POLICY: ContextVar[ResourceConfig | None] = ContextVar("aisimulate_resource_policy", default=None)
 
 
@@ -1163,65 +1160,47 @@ class GuardedRunner:
         self.runner.close()
 
 
-def _live(process: psutil.Process) -> bool:
-    try:
-        return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
-    except psutil.NoSuchProcess:
-        return False
+# psutil's children() reads /proc/<pid>/stat for every host process. These
+# per-thread files list only the children that thread forked.
+_PROC_CHILDREN = Path(f"/proc/self/task/{os.getpid()}/children").exists()
 
 
-class ObservedTree:
-    """Owned RSS of a process tree, tracked by PID + creation time.
-
-    Finding descendants reads every process on the host, so a 50 ms poll
-    rescans at most once per interval. Known processes are checked and sampled
-    on every call; reparented descendants stay counted until they exit.
-    """
-
-    def __init__(self, root: psutil.Process, *, include_root: bool = True):
-        self.root = root
-        self.include_root = include_root
-        self.interval = _DISCOVERY_SECONDS
-        self.discovered = -math.inf
-        self.known: dict[tuple[int, float], psutil.Process] = {}
-
-    def sample(self, *, discover: bool = False) -> int:
-        now = time.monotonic()
-        if discover or now - self.discovered >= self.interval:
-            self.discovered = now
+def descendants_of(process: psutil.Process) -> list[psutil.Process]:
+    """Descendants of a running process, found without scanning the host where possible."""
+    if not process.is_running():
+        return []
+    if not _PROC_CHILDREN:
+        return process.children(recursive=True)
+    pids = [process.pid]
+    for pid in pids:  # Extended while iterating: a breadth-first walk.
+        try:
+            tasks = list(Path(f"/proc/{pid}/task").iterdir())
+        except OSError:  # The process exited.
+            continue
+        for task in tasks:
             try:
-                processes = [self.root] if self.include_root else []
-                processes += self.root.children(recursive=True)
-            except psutil.NoSuchProcess:
-                processes = []
-            for process in processes:
-                try:
-                    self.known[(process.pid, process.create_time())] = process
-                except psutil.NoSuchProcess:
-                    pass
-        rss = 0
-        for identity, process in list(self.known.items()):
-            try:
-                # memory_info() does not detect a reused PID; is_running() does.
-                if not _live(process):
-                    self.known.pop(identity)
-                    continue
-                rss += process.memory_info().rss
-            except psutil.NoSuchProcess:
-                self.known.pop(identity, None)
-        return rss
+                pids += map(int, (task / "children").read_text().split())
+            except OSError:  # The thread exited.
+                pass
+    descendants = []
+    for pid in pids[1:]:
+        try:
+            descendants.append(psutil.Process(pid))
+        except psutil.NoSuchProcess:
+            pass
+    return descendants
 
 
-# Per process: spawned workers and forked copies observe their own children.
-_OBSERVED_CHILDREN: dict[int, ObservedTree] = {}
-
-
-def _child_memory_bytes(*, discover: bool = True) -> int:
+def _child_memory_bytes() -> int:
     try:
-        tree = _OBSERVED_CHILDREN.get(os.getpid())
-        if tree is None:
-            tree = _OBSERVED_CHILDREN.setdefault(os.getpid(), ObservedTree(psutil.Process(), include_root=False))
-        return tree.sample(discover=discover)
+        children = descendants_of(psutil.Process())
+        total = 0
+        for child in children:
+            try:
+                total += child.memory_info().rss
+            except psutil.NoSuchProcess:
+                continue
+        return total
     except psutil.Error as exc:
         raise ResourceLimitError(f"cannot inspect owned execution processes: {exc}") from exc
 
@@ -1331,7 +1310,7 @@ class GuardedRunnerFactory:
     def live_pressure(self) -> dict[str, Any] | None:
         host = discover_host()
         budget = resolve_budget(self.policy, host)
-        worker_rss = _child_memory_bytes(discover=False)
+        worker_rss = _child_memory_bytes()
         used = budget["coordinator_memory_bytes"] - COORDINATOR_RESERVE_BYTES + worker_rss
         if used >= budget["memory_limit_bytes"] * 0.9 or host.available_memory_bytes < (
             budget["reserved_host_memory_bytes"] + COORDINATOR_RESERVE_BYTES

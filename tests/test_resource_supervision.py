@@ -492,15 +492,19 @@ def test_sdk_recommendation_is_supervised_and_refuses_oversized_input():
     assert result.execution_resources["peak_observed_rss_bytes"] > 0
 
 
-def test_owned_tree_close_stops_a_descendant_spawned_between_rescans():
-    import math
+@pytest.mark.parametrize("proc_children", [True, False])
+def test_owned_tree_close_stops_an_observed_descendant_after_its_parent_exits(monkeypatch, proc_children):
     import subprocess
 
+    from aisimulate import resources
     from aisimulate.supervision import OwnedTree
 
-    # The grandchild leaves the session, so only cleanup's rescan can find it.
+    if proc_children and not resources._PROC_CHILDREN:
+        pytest.skip("this kernel has no /proc/<pid>/task/<tid>/children files")
+    monkeypatch.setattr(resources, "_PROC_CHILDREN", proc_children)
+    # The grandchild leaves the session and outlives its parent, so neither the
+    # process group nor a later discovery reaches it; only its observed identity does.
     source = """import subprocess, sys
-sys.stdin.readline()
 child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
 print(child.pid, flush=True)
 sys.stdin.readline()
@@ -511,13 +515,12 @@ sys.stdin.readline()
     grandchild = None
     try:
         tree = OwnedTree(process)
-        tree.sample()
-        tree.interval = math.inf
-        process.stdin.write("spawn\n")
-        process.stdin.flush()
         grandchild = int(process.stdout.readline())
         tree.sample()
-        assert all(pid != grandchild for pid, _ in tree.known)
+        process.stdin.close()
+        process.wait(timeout=5)
+        tree.sample()
+        assert grandchild in {pid for pid, _ in tree.known}
         tree.close()
         assert not psutil.pid_exists(grandchild) or psutil.Process(grandchild).status() == psutil.STATUS_ZOMBIE
     finally:

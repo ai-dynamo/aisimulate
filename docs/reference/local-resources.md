@@ -78,13 +78,8 @@ lower bound, and the host budget. These are different quantities: a zero lower
 bound does not mean the estimate that triggered rejection was zero.
 
 Execution runs inside an owned subprocess tree. The supervisor fixes the memory
-budget at startup, then samples live host headroom and the RSS of every
-observed owned process every 50 ms, including initialization and output
-serialization. Finding new descendants reads the host's whole process table,
-so the supervisor and the recommendation coordinator rescan for them at most
-once per second; wave admission and cleanup rescan immediately. Observed
-processes are tracked by PID and creation time, so reparented descendants stay
-counted and are stopped. Runtime thread pools
+budget at startup, then samples total owned RSS and live host headroom every
+50 ms, including initialization and output serialization. Runtime thread pools
 are limited to one thread per worker. During recommendation evaluation, memory
 pressure triggers worker cleanup and retries unfinished candidates at lower
 parallelism, at most twice. Completed candidates are retained. Workers must be
@@ -179,8 +174,7 @@ admission or RSS monitoring to those factories or supervise sequential Runner
 execution.
 
 RSS monitoring is best effort, not an operating-system memory sandbox. Allocations
-can outpace polling, a descendant that exits before the next rescan is not
-counted, estimates can be conservative, and other programs can change
+can outpace polling, estimates can be conservative, and other programs can change
 available RAM between samples. macOS offers no portable hard RSS cap; preallocation
 checks remain necessary. A successful plan or watchdog test does not guarantee bounded peak RSS for
 every workload and external adapter.

@@ -29,7 +29,7 @@ from .config.common import (
     RECOMMENDATION_CORE_SECTIONS,
     ResourceConfig,
 )
-from .resources import ObservedTree, ResourceLimitError, _live, discover_host, resolve_budget
+from .resources import ResourceLimitError, descendants_of, discover_host, resolve_budget
 
 _CONTEXT = "_AISIMULATE_SUPERVISED_BUDGET"
 _THREAD_VARIABLES = (
@@ -79,6 +79,13 @@ def mark_shutdown() -> None:
     budget = runtime_budget()
     if budget is not None:
         Path(budget["ready_path"]).write_text("shutdown")
+
+
+def _live(process: psutil.Process) -> bool:
+    try:
+        return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
 
 
 def terminate_processes(processes: list[psutil.Process], *, grace: float = _GRACE_SECONDS) -> None:
@@ -159,15 +166,37 @@ def close_pool(pool) -> None:
         terminate_pool(pool, workers=workers)
 
 
-class OwnedTree(ObservedTree):
+class OwnedTree:
     def __init__(self, process: subprocess.Popen):
-        super().__init__(psutil.Process(process.pid))
         self.process = process
+        self.root = psutil.Process(process.pid)
+        self.known: dict[tuple[int, float], psutil.Process] = {}
+
+    def sample(self) -> int:
+        try:
+            processes = [self.root, *descendants_of(self.root)]
+        except psutil.NoSuchProcess:
+            processes = []
+        for process in processes:
+            try:
+                self.known[(process.pid, process.create_time())] = process
+            except psutil.NoSuchProcess:
+                pass
+        rss = 0
+        for identity, process in list(self.known.items()):
+            try:
+                if not _live(process):
+                    self.known.pop(identity)
+                    continue
+                rss += process.memory_info().rss
+            except psutil.NoSuchProcess:
+                self.known.pop(identity, None)
+        return rss
 
     def close(self) -> None:
         # The new session also catches descendants spawned between samples.
         # Escaped descendants observed earlier are tracked by PID + creation time.
-        self.sample(discover=True)
+        self.sample()
         if os.name == "posix":
             try:
                 os.killpg(self.process.pid, signal.SIGTERM)
