@@ -1126,6 +1126,9 @@ class Task:
         self._gemm_quant_mode_explicit_by_role = {
             role: self._role_attr(role, "gemm_quant_mode") is not None for role in roles
         }
+        self._moe_quant_mode_explicit_by_role = {
+            role: self._role_attr(role, "moe_quant_mode") is not None for role in roles
+        }
         base = _infer_quant_modes_from_raw_config(self._raw_config)
 
         # GPT-OSS on Blackwell (trtllm): default MoE to w4a8_mxfp4_mxfp8 for higher
@@ -2004,6 +2007,7 @@ class Task:
             system=self._role_attr(role, "system_name"),
         )
         model_config._gemm_quant_mode_is_explicit = self._gemm_quant_mode_explicit_by_role.get(role, False)
+        model_config._moe_quant_mode_is_explicit = self._moe_quant_mode_explicit_by_role.get(role, False)
         if parallel is not None:
             required_phases = tuple(dict.fromkeys((*self._role_phases(role), *self._required_large_ep_phases(role))))
             resolve_model_config_moe_comm(

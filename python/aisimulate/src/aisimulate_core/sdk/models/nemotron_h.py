@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 import re
-from collections import Counter
-from fnmatch import fnmatchcase
+from collections import Counter, OrderedDict
+from fnmatch import translate
+from functools import cached_property
 
 import aisimulate_core.sdk.operations as ops
 from aisimulate_core.sdk import common
@@ -28,19 +29,120 @@ _LAYER_PREFIXES = (
 )
 
 
-def _projection_matches(path: str, target: str) -> bool:
-    if target == "Linear":
-        return True
-    return bool(re.match(target[3:], path)) if target.startswith("re:") else fnmatchcase(path, target)
+# Checkpoint module suffixes priced by each decoder GEMM, by hybrid layer kind. A fused
+# GEMM (QKV) lists every module it fuses; they must share one precision.
+_LAYER_PROJECTIONS = {
+    "M": {"in_proj": ("in_proj",), "out_proj": ("out_proj",)},
+    "*": {"qkv": ("q_proj", "k_proj", "v_proj"), "o_proj": ("o_proj",)},
+    "E": {
+        "shared_experts.up_proj": ("shared_experts.up_proj",),
+        "shared_experts.down_proj": ("shared_experts.down_proj",),
+        "fc1_latent_proj": ("fc1_latent_proj",),
+        "fc2_latent_proj": ("fc2_latent_proj",),
+    },
+    "-": {"up_proj": ("up_proj",), "down_proj": ("down_proj",)},
+}
 
 
-def _projection_modes(raw: dict, pattern: str, default: common.GEMMQuantMode, system: str | None = None) -> dict:
-    """Resolve the shared-expert and latent projections from checkpoint metadata.
+def _target_regex(targets) -> re.Pattern | None:
+    """One compiled matcher for ``Linear``, ``re:`` and glob targets."""
+    # ``re:`` targets keep re.match prefix semantics; globs match the whole path.
+    parts = [".*" if t == "Linear" else f"(?:{t[3:]}).*" if t.startswith("re:") else translate(t) for t in targets]
+    return re.compile("|".join(f"(?:{part})" for part in parts)) if parts else None
 
-    Returns ``{projection: {mode: number of MoE layers}}``. Layers with different
-    precisions get one operation each, so per-layer precision is kept exactly.
-    Conflicting or unsupported algorithms for one module path are rejected.
+
+class _CheckpointPrecision:
+    """Checkpoint quantization metadata parsed once for per-layer module lookups.
+
     Group targets apply only without a ``quantized_layers`` listing. Exclusions win.
+    """
+
+    def __init__(self, raw: dict) -> None:
+        self.raw = raw
+        self.listed = False
+        listed_entries, group_targets = [], []
+        for target, algo, listed in _iter_mixed_precision_layer_algos(raw):
+            self.listed |= listed
+            (listed_entries if listed else group_targets).append((target, algo))
+        # A layer listing is authoritative: group targets only apply without one.
+        self.exact, patterns = {}, []
+        for target, algo in listed_entries if self.listed else group_targets:
+            if _is_pattern(target):
+                patterns.append((target, algo))
+            else:
+                self.exact.setdefault(target, set()).add(algo)
+        self.patterns = [(_target_regex([target]), algo) for target, algo in patterns]
+        exclusions = quant_exclude_patterns(raw)
+        self.excluded_exact = {t for t in exclusions if not _is_pattern(t)}
+        self.excluded_regex = _target_regex([t for t in exclusions if _is_pattern(t)])
+
+    def module(self, layer: int, module: str):
+        """``(excluded, algos)`` of one decoder module across the known layer prefixes."""
+        paths = [f"{prefix}.layers.{layer}.mixer.{module}" for prefix in _LAYER_PREFIXES]
+        if any(path in self.excluded_exact for path in paths) or (
+            self.excluded_regex and any(self.excluded_regex.fullmatch(path) for path in paths)
+        ):
+            return True, set()
+        algos = {algo for path in paths for algo in self.exact.get(path, ())}
+        algos.update(algo for regex, algo in self.patterns if any(regex.fullmatch(path) for path in paths))
+        return False, algos
+
+    def rows(self, pattern: str, kinds_to_modules: dict) -> list:
+        """``[(projection, algo or None, excluded)]`` per decoder layer.
+
+        Conflicting algorithms for one module, or fused modules that disagree, are rejected.
+        """
+        rows = []
+        for layer, kind in enumerate(pattern):
+            for projection, modules in kinds_to_modules.get(kind, {}).items():
+                states = set()
+                for module in modules:
+                    excluded, algos = self.module(layer, module)
+                    if len(algos) > 1:
+                        raise ValueError(
+                            f"Unsupported mixed precision for Nemotron-H module {module} in layer {layer}: {algos}"
+                        )
+                    states.add("excluded" if excluded else next(iter(algos), None))
+                if len(states) > 1:
+                    raise ValueError(f"Fused Nemotron-H modules {modules} in layer {layer} disagree on precision")
+                state = states.pop()
+                rows.append((projection, None, True) if state == "excluded" else (projection, state, False))
+        return rows
+
+    @cached_property
+    def targets_only(self) -> bool:
+        return self.listed and modelopt_mixed_precision_targets(self.raw) is not None
+
+
+_CHECKPOINT_CACHE: OrderedDict[int, tuple[dict, _CheckpointPrecision]] = OrderedDict()
+
+
+def _checkpoint_precision(raw: dict) -> _CheckpointPrecision:
+    """Parse a checkpoint once per loaded config object; model construction repeats in sweeps."""
+    entry = _CHECKPOINT_CACHE.get(id(raw))
+    if entry is not None and entry[0] is raw:
+        _CHECKPOINT_CACHE.move_to_end(id(raw))
+        return entry[1]
+    checkpoint = _CheckpointPrecision(raw)
+    _CHECKPOINT_CACHE[id(raw)] = (raw, checkpoint)
+    if len(_CHECKPOINT_CACHE) > 8:
+        _CHECKPOINT_CACHE.popitem(last=False)
+    return checkpoint
+
+
+def _is_pattern(target: str) -> bool:
+    return target == "Linear" or target.startswith("re:") or any(char in target for char in "*?[")
+
+
+def _projection_modes(
+    raw: dict, pattern: str, default: common.GEMMQuantMode, system: str | None = None, checkpoint=None
+) -> dict:
+    """Resolve every decoder GEMM projection from checkpoint metadata.
+
+    Returns ``{projection: {mode: number of layers}}`` for Mamba in/out, attention QKV
+    and output, shared-expert, latent and dense MLP projections. Layers with different
+    precisions get one operation each, so per-layer precision is kept exactly.
+    Unsupported algorithms are rejected.
 
     Metadata without per-layer information leaves every projection on ``default``.
 
@@ -49,27 +151,6 @@ def _projection_modes(raw: dict, pattern: str, default: common.GEMMQuantMode, sy
     (see ``modelopt_mixed_precision_targets``). Any other metadata keeps
     ``default`` for an unlisted projection instead of guessing a mode.
     """
-    declarations = []
-    exact = {}
-    group_targets = []
-    layer_listing = False
-    exclusions = quant_exclude_patterns(raw)
-
-    def add(target, algo):
-        if target == "Linear" or target.startswith("re:") or any(char in target for char in "*?["):
-            declarations.append((target, algo))
-        else:
-            exact.setdefault(target, set()).add(algo)
-
-    for target, algo, listed in _iter_mixed_precision_layer_algos(raw):
-        layer_listing |= listed
-        if listed:
-            add(target, algo)
-        else:
-            group_targets.append((target, algo))
-    # A layer listing is authoritative: group targets only apply without one.
-    for target, algo in [] if layer_listing else group_targets:
-        add(target, algo)
     # Non-Blackwell systems have no native FP4 tensor cores: NVFP4 runs weight-only, as
     # resolve_nvfp4_for_system does for the global mode. Without a system, keep native NVFP4.
     nvfp4 = common.GEMMQuantMode.nvfp4_wo if system and not is_blackwell_system(system) else common.GEMMQuantMode.nvfp4
@@ -79,25 +160,53 @@ def _projection_modes(raw: dict, pattern: str, default: common.GEMMQuantMode, sy
         "nvfp4": nvfp4,
         "w4a16_nvfp4": common.GEMMQuantMode.w4a16_nvfp4,
     }
-    targets_only = layer_listing and modelopt_mixed_precision_targets(raw) is not None
-    unlisted = common.GEMMQuantMode.bfloat16 if targets_only else default
+    checkpoint = checkpoint or _checkpoint_precision(raw)
+    rows = checkpoint.rows(pattern, _LAYER_PROJECTIONS)
+    unlisted = common.GEMMQuantMode.bfloat16 if checkpoint.targets_only else default
     resolved = {}
-    for suffix in ("shared_experts.up_proj", "shared_experts.down_proj", "fc1_latent_proj", "fc2_latent_proj"):
-        values = []
-        for layer, kind in enumerate(pattern):
-            if kind != "E":
-                continue
-            paths = [f"{prefix}.layers.{layer}.mixer.{suffix}" for prefix in _LAYER_PREFIXES]
-            if any(_projection_matches(path, target) for path in paths for target in exclusions):
-                values.append(common.GEMMQuantMode.bfloat16)
-                continue
-            algos = {algo for target, algo in declarations if any(_projection_matches(path, target) for path in paths)}
-            algos.update(algo for path in paths for algo in exact.get(path, ()))
-            if len(algos) > 1 or any(algo not in modes for algo in algos):
-                raise ValueError(f"Unsupported mixed precision for Nemotron-H projection {suffix}: {algos}")
-            values.append(modes[next(iter(algos))] if algos else unlisted)
-        resolved[suffix] = dict(Counter(values))
-    return resolved
+    for projection, algo, excluded in rows:
+        if algo is not None and algo not in modes:
+            raise ValueError(f"Unsupported mixed precision for Nemotron-H projection {projection}: {algo}")
+        mode = common.GEMMQuantMode.bfloat16 if excluded else modes[algo] if algo else unlisted
+        resolved.setdefault(projection, Counter())[mode] += 1
+    return {projection: dict(counts) for projection, counts in resolved.items()}
+
+
+def _moe_modes(
+    raw: dict, pattern: str, default: common.MoEQuantMode, system: str | None = None, checkpoint=None
+) -> dict:
+    """Resolve the routed-expert precision of each MoE layer from checkpoint metadata.
+
+    Returns ``{mode: number of MoE layers}`` only when MoE layers differ; a uniform
+    checkpoint keeps ``default``, the system- and backend-resolved global mode.
+    """
+    nvfp4 = common.MoEQuantMode.nvfp4_wo if system and not is_blackwell_system(system) else common.MoEQuantMode.nvfp4
+    modes = {
+        "fp8": common.MoEQuantMode.fp8,
+        "mxfp8": common.MoEQuantMode.fp8_block,
+        "nvfp4": nvfp4,
+        "w4a16_nvfp4": common.MoEQuantMode.w4a16_nvfp4,
+    }
+    checkpoint = checkpoint or _checkpoint_precision(raw)
+    rows = checkpoint.rows(pattern, {"E": {"experts": ("experts.0.up_proj", "experts.0.down_proj")}})
+    targets_only = checkpoint.targets_only
+    algos = Counter(algo for _, algo, excluded in rows if not excluded and algo)
+    unlisted = sum(1 for _, algo, excluded in rows if excluded or not algo)
+    if len(algos) + bool(unlisted) <= 1:
+        return {}
+    if unlisted and not targets_only:
+        raise ValueError("Nemotron-H routed experts mix listed and unlisted precisions without a targets-only listing")
+    if any(algo not in modes for algo in algos):
+        raise ValueError(f"Unsupported routed-expert precision for Nemotron-H: {sorted(algos)}")
+    resolved = Counter({modes[algo]: count for algo, count in algos.items()})
+    if unlisted:
+        resolved[common.MoEQuantMode.bfloat16] += unlisted
+    # Keep the system/backend-resolved global mode for the precision it already prices.
+    family = {common.MoEQuantMode.nvfp4_wo: common.MoEQuantMode.nvfp4}
+    return {
+        default if family.get(mode, mode) == family.get(default, default) else mode: count
+        for mode, count in resolved.items()
+    }
 
 
 @register_model("NEMOTRONH")
@@ -134,15 +243,17 @@ class NemotronHModel(BaseModel):
             model_config,
             backend_name=backend_name,
         )
-        # extra_params is NemotronHConfig with hybrid layer configuration.
-        # Non-latent MoE keeps the global GEMM mode until its calibration is qualified.
-        if not model_info["gemm_quant_mode_is_explicit"] and model_info["extra_params"].moe_latent_size:
+        # extra_params is NemotronHConfig with hybrid layer configuration. Checkpoint metadata
+        # prices each projection and routed-expert layer at its own precision; without
+        # per-layer metadata every projection keeps the global mode.
+        raw = model_info.get("raw_config", {})
+        pattern = model_info["extra_params"].hybrid_override_pattern
+        if not model_info["gemm_quant_mode_is_explicit"]:
             model._projection_quant_modes = _projection_modes(
-                model_info.get("raw_config", {}),
-                model_info["extra_params"].hybrid_override_pattern,
-                model_config.gemm_quant_mode,
-                model_config.system,
+                raw, pattern, model_config.gemm_quant_mode, model_config.system
             )
+        if not model_info.get("moe_quant_mode_is_explicit", False):
+            model._moe_quant_modes = _moe_modes(raw, pattern, model_config.moe_quant_mode, model_config.system)
         model.set_hybrid_config(model_info["extra_params"])
         return model
 
@@ -156,6 +267,7 @@ class NemotronHModel(BaseModel):
         self._moe_inter_size = moe_inter_size
         self._hybrid_config: common.NemotronHConfig | None = None
         self._projection_quant_modes: dict[str, dict[common.GEMMQuantMode, int]] = {}
+        self._moe_quant_modes: dict[common.MoEQuantMode, int] = {}
         self._power_law_alpha = 1.01  # follow DeepSeek MoE
         # MTP (num_nextn_predict_layers > 0): scale generation iteration cost by
         # the small extra-layer factor (nextn+L)/L. Accepted-token progress is
@@ -185,7 +297,7 @@ class NemotronHModel(BaseModel):
         self._build_generation_ops()
 
     def _projection_gemms(self, name: str, suffix: str, count, n: int, k: int, quant_mode, **kwargs) -> list:
-        """One GEMM per checkpoint precision of a projection, each priced for its own MoE layers.
+        """One GEMM per checkpoint precision of a projection, each priced for its own layers.
 
         Ops that share a name fold additively, so the buckets sum to the per-layer cost.
         """
@@ -197,6 +309,14 @@ class NemotronHModel(BaseModel):
             ops.GEMM(name, count if layers == total else count * layers / total, n, k, mode, **kwargs)
             for mode, layers in buckets.items()
         ]
+
+    def _moe_buckets(self, count, moe_quant_mode) -> list:
+        """``(mode, count)`` per routed-expert precision; one bucket keeps the global mode."""
+        buckets = self._moe_quant_modes
+        if not buckets:
+            return [(moe_quant_mode, count)]
+        total = sum(buckets.values())
+        return [(mode, count * layers / total) for mode, layers in buckets.items()]
 
     def _count_layer_types(self) -> dict[str, int]:
         """Count occurrences of each layer type in the pattern."""
@@ -256,8 +376,9 @@ class NemotronHModel(BaseModel):
             self.context_ops.extend(
                 [
                     ops.ElementWise("context_mamba_norm", count, 2 * h, 2 * h, 0.8),
-                    ops.GEMM(
+                    *self._projection_gemms(
                         "context_mamba_in_proj_gemm",
+                        "in_proj",
                         count,
                         in_proj_out_per_gpu,
                         h,
@@ -289,8 +410,9 @@ class NemotronHModel(BaseModel):
                         n_groups=cfg.n_groups,
                         chunk_size=cfg.chunk_size,
                     ),
-                    ops.GEMM(
+                    *self._projection_gemms(
                         "context_mamba_out_proj_gemm",
+                        "out_proj",
                         count,
                         h,
                         d_inner_per_gpu,
@@ -306,8 +428,9 @@ class NemotronHModel(BaseModel):
             self.context_ops.extend(
                 [
                     ops.ElementWise("context_attn_norm", count, 2 * h, 2 * h, 0.8),
-                    ops.GEMM(
+                    *self._projection_gemms(
                         "context_qkv_gemm",
+                        "qkv",
                         count,
                         self._num_heads * self._head_size // tp_size + self._head_size * num_kv_heads_per_gpu * 2,
                         h,
@@ -322,8 +445,9 @@ class NemotronHModel(BaseModel):
                         fmha_quant_mode,
                         head_size=self._head_size,
                     ),
-                    ops.GEMM(
+                    *self._projection_gemms(
                         "context_proj_gemm",
+                        "o_proj",
                         count,
                         h,
                         self._num_heads * self._head_size // tp_size,
@@ -401,51 +525,52 @@ class NemotronHModel(BaseModel):
                         gemm_quant_mode,
                     )
                 )
-            self.context_ops.extend(
-                [
-                    ops.MoEDispatch(
-                        "context_moe_pre_dispatch",
-                        count,
-                        moe_h,
-                        self._topk,
-                        self._num_experts,
-                        moe_tp_size,
-                        moe_ep_size,
-                        attention_dp_size,
-                        True,
-                        quant_mode=moe_quant_mode,
-                        backend=self._backend_name,
-                    ),
-                    ops.MoE(
-                        "context_moe",
-                        count,
-                        moe_h,
-                        self._moe_inter_size,
-                        self._topk,
-                        self._num_experts,
-                        moe_tp_size,
-                        moe_ep_size,
-                        moe_quant_mode,
-                        workload_distribution,
-                        attention_dp_size,
-                        moe_kernel_source=self.config.moe_kernel_source,
-                        is_gated=False,  # NemotronH uses Relu2 (non-gated)
-                    ),
-                    ops.MoEDispatch(
-                        "context_moe_post_dispatch",
-                        count,
-                        moe_h,
-                        self._topk,
-                        self._num_experts,
-                        moe_tp_size,
-                        moe_ep_size,
-                        attention_dp_size,
-                        False,
-                        quant_mode=moe_quant_mode,
-                        backend=self._backend_name,
-                    ),
-                ]
-            )
+            for moe_mode, moe_count in self._moe_buckets(count, moe_quant_mode):
+                self.context_ops.extend(
+                    [
+                        ops.MoEDispatch(
+                            "context_moe_pre_dispatch",
+                            moe_count,
+                            moe_h,
+                            self._topk,
+                            self._num_experts,
+                            moe_tp_size,
+                            moe_ep_size,
+                            attention_dp_size,
+                            True,
+                            quant_mode=moe_mode,
+                            backend=self._backend_name,
+                        ),
+                        ops.MoE(
+                            "context_moe",
+                            moe_count,
+                            moe_h,
+                            self._moe_inter_size,
+                            self._topk,
+                            self._num_experts,
+                            moe_tp_size,
+                            moe_ep_size,
+                            moe_mode,
+                            workload_distribution,
+                            attention_dp_size,
+                            moe_kernel_source=self.config.moe_kernel_source,
+                            is_gated=False,  # NemotronH uses Relu2 (non-gated)
+                        ),
+                        ops.MoEDispatch(
+                            "context_moe_post_dispatch",
+                            moe_count,
+                            moe_h,
+                            self._topk,
+                            self._num_experts,
+                            moe_tp_size,
+                            moe_ep_size,
+                            attention_dp_size,
+                            False,
+                            quant_mode=moe_mode,
+                            backend=self._backend_name,
+                        ),
+                    ]
+                )
             if cfg.moe_latent_size > 0:
                 # fc2_latent_proj (latent -> h) runs after expert combine,
                 # before the post-MoE allreduce. Modeled as a row-parallel GEMM
@@ -472,8 +597,9 @@ class NemotronHModel(BaseModel):
             self.context_ops.extend(
                 [
                     ops.ElementWise("context_mlp_norm", count, 2 * h, 2 * h, 0.8),
-                    ops.GEMM(
+                    *self._projection_gemms(
                         "context_mlp_up_gemm",
+                        "up_proj",
                         count,
                         self._inter_size // tp_size,
                         h,
@@ -486,8 +612,9 @@ class NemotronHModel(BaseModel):
                         self._inter_size // tp_size,
                         0.8,
                     ),
-                    ops.GEMM(
+                    *self._projection_gemms(
                         "context_mlp_down_gemm",
+                        "down_proj",
                         count,
                         h,
                         self._inter_size // tp_size,
@@ -554,8 +681,9 @@ class NemotronHModel(BaseModel):
             self.generation_ops.extend(
                 [
                     ops.ElementWise("generation_mamba_norm", count, 2 * h, 2 * h, 0.8),
-                    ops.GEMM(
+                    *self._projection_gemms(
                         "generation_mamba_in_proj_gemm",
+                        "in_proj",
                         count,
                         in_proj_out_per_gpu,
                         h,
@@ -587,8 +715,9 @@ class NemotronHModel(BaseModel):
                         n_groups=cfg.n_groups,
                         chunk_size=cfg.chunk_size,
                     ),
-                    ops.GEMM(
+                    *self._projection_gemms(
                         "generation_mamba_out_proj_gemm",
+                        "out_proj",
                         count,
                         h,
                         d_inner_per_gpu,
@@ -604,8 +733,9 @@ class NemotronHModel(BaseModel):
             self.generation_ops.extend(
                 [
                     ops.ElementWise("generation_attn_norm", count, 2 * h, 2 * h, 0.8),
-                    ops.GEMM(
+                    *self._projection_gemms(
                         "generation_qkv_gemm",
+                        "qkv",
                         count,
                         self._num_heads * self._head_size // tp_size + self._head_size * num_kv_heads_per_gpu * 2,
                         h,
@@ -619,8 +749,9 @@ class NemotronHModel(BaseModel):
                         kvcache_quant_mode,
                         head_size=self._head_size,
                     ),
-                    ops.GEMM(
+                    *self._projection_gemms(
                         "generation_proj_gemm",
+                        "o_proj",
                         count,
                         h,
                         self._num_heads * self._head_size // tp_size,
@@ -698,51 +829,52 @@ class NemotronHModel(BaseModel):
                         gemm_quant_mode,
                     )
                 )
-            self.generation_ops.extend(
-                [
-                    ops.MoEDispatch(
-                        "generation_moe_pre_dispatch",
-                        count,
-                        moe_h,
-                        self._topk,
-                        self._num_experts,
-                        moe_tp_size,
-                        moe_ep_size,
-                        attention_dp_size,
-                        True,
-                        quant_mode=moe_quant_mode,
-                        backend=self._backend_name,
-                    ),
-                    ops.MoE(
-                        "generation_moe",
-                        count,
-                        moe_h,
-                        self._moe_inter_size,
-                        self._topk,
-                        self._num_experts,
-                        moe_tp_size,
-                        moe_ep_size,
-                        moe_quant_mode,
-                        workload_distribution,
-                        attention_dp_size,
-                        moe_kernel_source=self.config.moe_kernel_source,
-                        is_gated=False,  # NemotronH uses Relu2 (non-gated)
-                    ),
-                    ops.MoEDispatch(
-                        "generation_moe_post_dispatch",
-                        count,
-                        moe_h,
-                        self._topk,
-                        self._num_experts,
-                        moe_tp_size,
-                        moe_ep_size,
-                        attention_dp_size,
-                        False,
-                        quant_mode=moe_quant_mode,
-                        backend=self._backend_name,
-                    ),
-                ]
-            )
+            for moe_mode, moe_count in self._moe_buckets(count, moe_quant_mode):
+                self.generation_ops.extend(
+                    [
+                        ops.MoEDispatch(
+                            "generation_moe_pre_dispatch",
+                            moe_count,
+                            moe_h,
+                            self._topk,
+                            self._num_experts,
+                            moe_tp_size,
+                            moe_ep_size,
+                            attention_dp_size,
+                            True,
+                            quant_mode=moe_mode,
+                            backend=self._backend_name,
+                        ),
+                        ops.MoE(
+                            "generation_moe",
+                            moe_count,
+                            moe_h,
+                            self._moe_inter_size,
+                            self._topk,
+                            self._num_experts,
+                            moe_tp_size,
+                            moe_ep_size,
+                            moe_mode,
+                            workload_distribution,
+                            attention_dp_size,
+                            moe_kernel_source=self.config.moe_kernel_source,
+                            is_gated=False,  # NemotronH uses Relu2 (non-gated)
+                        ),
+                        ops.MoEDispatch(
+                            "generation_moe_post_dispatch",
+                            moe_count,
+                            moe_h,
+                            self._topk,
+                            self._num_experts,
+                            moe_tp_size,
+                            moe_ep_size,
+                            attention_dp_size,
+                            False,
+                            quant_mode=moe_mode,
+                            backend=self._backend_name,
+                        ),
+                    ]
+                )
             if cfg.moe_latent_size > 0:
                 # fc2_latent_proj (latent -> h) runs after expert combine,
                 # before the post-MoE allreduce. Modeled as a row-parallel GEMM
@@ -769,8 +901,9 @@ class NemotronHModel(BaseModel):
             self.generation_ops.extend(
                 [
                     ops.ElementWise("generation_mlp_norm", count, 2 * h, 2 * h, 0.8),
-                    ops.GEMM(
+                    *self._projection_gemms(
                         "generation_mlp_up_gemm",
+                        "up_proj",
                         count,
                         self._inter_size // tp_size,
                         h,
@@ -783,8 +916,9 @@ class NemotronHModel(BaseModel):
                         self._inter_size // tp_size,
                         0.8,
                     ),
-                    ops.GEMM(
+                    *self._projection_gemms(
                         "generation_mlp_down_gemm",
+                        "down_proj",
                         count,
                         h,
                         self._inter_size // tp_size,
