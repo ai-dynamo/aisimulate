@@ -282,30 +282,6 @@ impl StateSpaceTable {
         chunk_size: u32,
         sol: &dyn Fn(f64, f64) -> f64,
     ) -> Result<LeafValue, AicError> {
-        // Mirror Python v2's `load_mamba2_data` defaultdict bug (still
-        // present today, verified 2026-07-09): the row-population pattern
-        // `try { data[ks][ph][mk][bs] } except KeyError: ... = entry` never
-        // reaches the `except` branch for generation rows because the
-        // fourth level is a `defaultdict(dict)` that lazily materialises an
-        // empty dict on `[bs]` access (no KeyError). Generation leaves end
-        // up as empty `{}`; `_query_mamba2_table`'s generation branch then
-        // normalizes them to an empty curve, the perf_interp engine raises,
-        // and the op falls back to SOL (`db.query_mamba2(generation)`
-        // returns `source="sol"` for every query). The Rust parquet loader
-        // populates the rows correctly, so returning silicon here would
-        // give a numerically different (and arguably "more correct")
-        // answer — but for apple-to-apple parity we mirror Python by
-        // returning a PerfDatabase error so the operator-layer SOL branch
-        // fires. GDN's loader is fine (uses explicit `in` checks), so this
-        // workaround is Mamba2-generation-only.
-        if phase == "generation" {
-            return Err(AicError::PerfDatabase(format!(
-                "Mamba2 generation data intentionally not used (matches Python v2 \
-                 `load_mamba2_data` defaultdict bug in operations/mamba.py — generation \
-                 leaves load empty, so every generation query degrades to SOL); \
-                 operator must fall to SOL. ks={kernel_source}, d_model={d_model}"
-            )));
-        }
         let grids = self.load_mamba2()?;
         let key = Mamba2Key {
             kernel_source: kernel_source.to_string(),
@@ -324,9 +300,6 @@ impl StateSpaceTable {
         // bucket has a single entry, as in all current matrices). If no entry
         // shares d_model, surface as `PerfDatabase` so the operator layer's
         // SOL fallback applies.
-        //
-        // Only the context phase reaches this point — generation queries are
-        // short-circuited above to match Python's degenerate behaviour.
         //
         // The backend's own persisted physical label (TRT-LLM rc29 renamed
         // the context convolution `causal_conv1d_fn_token_major`) takes
@@ -358,8 +331,8 @@ impl StateSpaceTable {
     }
 
     /// GDN latency for a layer instance. Same engine resolution as Mamba2
-    /// (and, unlike Mamba2, generation queries really resolve: 1-axis
-    /// `(batch,)` Grid RAW over the generation curve, per Python v2).
+    /// (generation queries resolve on a 1-axis `(batch,)` Grid RAW over the
+    /// generation curve, per Python v2).
     #[allow(clippy::too_many_arguments)]
     pub fn query_gdn(
         &self,
@@ -733,9 +706,7 @@ fn load_mamba2_parquet(sources: &[PerfSource]) -> Result<Mamba2Grids, AicError> 
             };
             // First-wins parity with Python `load_mamba2_data`, extended across
             // shared-layer sources (earlier source wins). Generation rows are
-            // keyed by batch only (Python drops seq for generation). Note the
-            // stored generation leaves are never read: `query_mamba2` mirrors
-            // Python's empty-generation-leaves bug by erroring first.
+            // keyed by batch only (Python drops seq for generation).
             let node = by_keys.entry(key).or_insert_with(Node::branch);
             let batch = row.u32(batch_size_col)?;
             let latency = row.f64(latency_col)?;
@@ -2112,5 +2083,61 @@ mod tests {
         let table =
             in_memory_mamba2_table("trtllm", "1.3.0rc29", &[("mamba_chunk_scan_combined", 3.0)]);
         assert!(query_mamba2_conv(&table).is_err());
+    }
+
+    /// One Mamba2 shape written through the parquet loader: a context row at
+    /// `[batch=2][seq=512]` and a decode row at `[batch=2]`. Each query hits
+    /// its stored coordinate, so Grid RAW returns the stored fixture value
+    /// itself; `dummy_sol` returns 1.0, which would mark an analytic estimate.
+    #[test]
+    fn mamba2_decode_rows_resolve_like_context_rows() {
+        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        write_parquet(
+            &tmp.path().join("mamba2_perf.parquet"),
+            &[
+                Col::Str(
+                    "kernel_source",
+                    vec!["causal_conv1d_fn", "causal_conv1d_update"],
+                ),
+                Col::Str("phase", vec!["context", "generation"]),
+                Col::I64("batch_size", vec![2, 2]),
+                Col::I64("seq_len", vec![512, 1]),
+                Col::I64("d_model", vec![1024, 1024]),
+                Col::I64("d_state", vec![64, 64]),
+                Col::I64("d_conv", vec![4, 4]),
+                Col::I64("nheads", vec![16, 16]),
+                Col::I64("head_dim", vec![64, 64]),
+                Col::I64("n_groups", vec![4, 4]),
+                Col::I64("chunk_size", vec![128, 128]),
+                Col::F64("latency", vec![0.5, 0.25]),
+            ],
+        );
+        let table = StateSpaceTable::new(tmp.path().to_path_buf(), "test", "1.0");
+        let query = |kernel_source: &str, phase: &str, seq_len: u32| {
+            table
+                .query_mamba2(
+                    kernel_source,
+                    phase,
+                    2,
+                    seq_len,
+                    1024,
+                    64,
+                    4,
+                    16,
+                    64,
+                    4,
+                    128,
+                    &dummy_sol,
+                )
+                .map(|v| v.latency)
+        };
+        // The context path keeps resolving on its 2-axis grid.
+        assert_eq!(query("causal_conv1d_fn", "context", 512).unwrap(), 0.5);
+        // Decode resolves on the 1-axis batch curve; its seq feeds SOL only.
+        assert_eq!(
+            query("causal_conv1d_update", "generation", 1024).unwrap(),
+            0.25
+        );
     }
 }

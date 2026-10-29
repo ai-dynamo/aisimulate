@@ -748,4 +748,56 @@ mod tests {
         let op = kda_op("mystery_kernel", "generation", 0);
         assert_eq!(op.sol_total_bytes(4.0, 0.0), 4.0 * 4096.0 * 2.0 * 2.0);
     }
+
+    /// A decode op reads its measured row instead of the analytic estimate.
+    /// Synthetic fixture: one `causal_conv1d_update` row at `batch=2`; the
+    /// query hits it exactly, so the expected latency is the stored value
+    /// times `scale_factor`. A decode kernel without rows keeps the analytic
+    /// estimate.
+    #[test]
+    fn mamba2_decode_op_reads_its_measured_row() {
+        use crate::perf_database::energy_test_fixtures::{
+            Col, write_energy_systems_root, write_parquet,
+        };
+        let root = tempfile::tempdir().expect("tmpdir");
+        write_energy_systems_root(root.path());
+        let data = root.path().join("data/test/1.0");
+        std::fs::create_dir_all(&data).expect("mkdir data");
+        write_parquet(
+            &data.join("mamba2_perf.parquet"),
+            &[
+                Col::Str("kernel_source", vec!["causal_conv1d_update"]),
+                Col::Str("phase", vec!["generation"]),
+                Col::I64("batch_size", vec![2]),
+                Col::I64("seq_len", vec![1]),
+                Col::I64("d_model", vec![1024]),
+                Col::I64("d_state", vec![64]),
+                Col::I64("d_conv", vec![4]),
+                Col::I64("nheads", vec![16]),
+                Col::I64("head_dim", vec![64]),
+                Col::I64("n_groups", vec![4]),
+                Col::I64("chunk_size", vec![128]),
+                Col::F64("latency", vec![0.25]),
+            ],
+        );
+        let db = PerfDatabase::load(root.path(), "testsys", "test", "1.0").expect("load");
+        let op = |kernel_source: &str| Mamba2Op {
+            name: "generation_mamba".into(),
+            scale_factor: 2.0,
+            kernel_source: kernel_source.into(),
+            phase: "generation".into(),
+            d_model: 1024,
+            d_state: 64,
+            d_conv: 4,
+            nheads: 16,
+            head_dim: 64,
+            n_groups: 4,
+            chunk_size: 128,
+        };
+        let measured = op("causal_conv1d_update").query(&db, 2, 1024).unwrap();
+        assert_eq!(measured.source, Source::Silicon);
+        assert_eq!(measured.latency_ms, 0.5);
+        let analytic = op("selective_state_update").query(&db, 2, 1024).unwrap();
+        assert_eq!(analytic.source, Source::Sol);
+    }
 }

@@ -594,8 +594,13 @@ impl Availability<'_> {
                     )))
                 }
             }
-            // State-space kernels explicitly fall back to their analytic SOL
-            // on missing tables in every database mode.
+            // In SILICON a Mamba2 op without table rows answers every query
+            // with its analytic SOL, so readiness reports the table as a miss.
+            Mamba2(_) if self.db.database_mode == DatabaseMode::Silicon => {
+                self.any(&["mamba2_perf.parquet"])
+            }
+            // Otherwise state-space kernels explicitly fall back to their
+            // analytic SOL on missing tables.
             Mamba2(_) | Gdn(_) | Kda(_) => Ok(()),
             MeasuredComposite(op) => {
                 op.validate()?;
@@ -723,7 +728,9 @@ mod tests {
     use crate::operators::dsv4::{Dsv4MegaMoeOp, Dsv4ModuleOp};
     use crate::operators::op::{FallbackOp, OverlapOp};
     use crate::operators::{EmbeddingOp, GemmOp};
-    use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
+    use crate::perf_database::energy_test_fixtures::{
+        Col, write_energy_systems_root, write_parquet,
+    };
     use crate::perfmodel::engine::{Engine, spec::EngineSpec};
     use std::sync::Arc;
 
@@ -1621,6 +1628,65 @@ mod tests {
                 let expected = source.is_some() || eligibility != Some(false);
                 assert_eq!(engine_readiness(db, Op::Moe(op)).is_ok(), expected);
             }
+        }
+    }
+
+    #[test]
+    fn mamba2_readiness_requires_table_rows_in_silicon() {
+        let root = tempfile::tempdir().unwrap();
+        write_energy_systems_root(root.path());
+        let data = root.path().join("data/test/1.0");
+        std::fs::create_dir_all(&data).unwrap();
+        let op = Op::Mamba2(crate::operators::Mamba2Op {
+            name: "generation_mamba_conv1d".into(),
+            scale_factor: 1.0,
+            kernel_source: "causal_conv1d_update".into(),
+            phase: "generation".into(),
+            d_model: 1024,
+            d_state: 64,
+            d_conv: 4,
+            nheads: 16,
+            head_dim: 64,
+            n_groups: 4,
+            chunk_size: 128,
+        });
+        let check = |mode| {
+            let db = PerfDatabase::load(root.path(), "testsys", "test", "1.0")
+                .unwrap()
+                .with_mode(mode, TransferPolicy::ALL);
+            validate(&db, [&op].into_iter())
+        };
+        let modes = [
+            DatabaseMode::Silicon,
+            DatabaseMode::Hybrid,
+            DatabaseMode::Empirical,
+            DatabaseMode::Sol,
+        ];
+        let table = data.join("mamba2_perf.parquet");
+        // No table, then a table without rows: a miss in SILICON. The other
+        // modes accept the analytic fallback.
+        for rows in [None, Some(vec![])] {
+            if let Some(rows) = rows {
+                write_parquet(&table, &[Col::Str("kernel_source", rows)]);
+            }
+            for mode in modes {
+                match check(mode) {
+                    Ok(()) => assert_ne!(mode, DatabaseMode::Silicon),
+                    Err(error) => {
+                        assert_eq!(mode, DatabaseMode::Silicon, "{error}");
+                        assert!(matches!(error, AicError::PerfDatabase(_)), "{error}");
+                        assert!(error.to_string().contains("mamba2_perf.parquet"), "{error}");
+                    }
+                }
+            }
+        }
+        // A table with rows is ready in every mode.
+        write_parquet(
+            &table,
+            &[Col::Str("kernel_source", vec!["causal_conv1d_update"])],
+        );
+        for mode in modes {
+            check(mode).unwrap();
         }
     }
 }
