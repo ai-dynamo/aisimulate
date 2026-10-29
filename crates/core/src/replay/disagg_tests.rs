@@ -500,7 +500,7 @@ fn request(
 fn simultaneous_handoffs_follow_arrival_order_across_replays() {
     let request_ids = [3, 1, 2].map(Uuid::from_u128);
     let run = || {
-        let mut flow = DisaggFlowState::new(HandoffOrder::SourceFirst, 0.0, false);
+        let mut flow = DisaggFlowState::new(HandoffOrder::SourceFirst, 0.0, None, false);
         let mut collector = TraceCollector::default();
         let handoffs = request_ids.map(|uuid| {
             flow.on_external_arrival(
@@ -1306,6 +1306,8 @@ fn canceled_handoff_completion_does_not_refinalize_a_finished_request() {
     );
     assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
     assert!(runtime.is_done(), "cancellation cleanup must fully drain");
+    let links = runtime.flow.links.as_mut().unwrap();
+    assert!(links.jobs.is_empty() && links.next_event_ms().is_none());
     // Tolerating an already finalized request must not hide double retirement.
     let error = runtime.complete_handoff(uuid).unwrap_err();
     assert_eq!(
@@ -2380,6 +2382,117 @@ fn state_cache_handoff_adds_one_state_copy_to_transfer_time() {
     // One 8 MB state at 1 GB/s on top of 128 tokens x 1 MB.
     let delta = handoff_ms(true) - handoff_ms(false);
     assert!((delta - 8.0).abs() < 1e-6, "delta={delta}");
+}
+
+#[test]
+fn same_instant_transfers_compute_rates_once() {
+    let mut links = TransferLinks::new(Some(1.0), Some(1.0)).unwrap();
+    links.submit(HandoffId::new(Uuid::from_u128(1)), 1.0, 0, 0, 0.0);
+    assert_eq!(links.next_event_ms(), Some(1.0));
+    let before = links.transfers.rate_refreshes.get();
+    // Independent pairs submitted later at one instant.
+    for pair in 1..=64u32 {
+        let handoff_id = HandoffId::new(Uuid::from_u128(u128::from(pair) + 1));
+        links.submit(handoff_id, 2.0, pair as usize, pair as usize, 0.5);
+    }
+    assert_eq!(links.next_event_ms(), Some(1.0));
+    // One step to the shared instant and one snapshot for the next event.
+    assert_eq!(links.transfers.rate_refreshes.get() - before, 2);
+}
+
+#[test]
+fn an_uncontended_transfer_finishes_exactly_at_its_standalone_delay() {
+    // Unlinked replay schedules a handoff at `now + delay`; a transfer alone on
+    // its links must land on the same bits so same-instant ordering is kept.
+    let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+    let mut unit = || {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    for destination_gbps in [None, Some(1.7), Some(32.0)] {
+        for _ in 0..1_000 {
+            let mut links = TransferLinks::new(Some(1.7), destination_gbps).unwrap();
+            let (now_ms, delay_ms) = (1.0e6 * unit(), 1.0e3 * unit());
+            links.submit(HandoffId::new(Uuid::from_u128(1)), delay_ms, 0, 0, now_ms);
+            assert_eq!(links.next_event_ms(), Some(now_ms + delay_ms));
+        }
+    }
+}
+
+#[test]
+fn a_sub_ulp_transfer_residual_completes_at_the_current_time() {
+    // Stopping one ULP short of a completion can leave a residual whose event
+    // is the links' own clock. That event must still complete instead of
+    // pinning the replay to one timestamp. A slower receiving link makes the
+    // rate inexact, which is what leaves such residuals.
+    let mut residuals = 0;
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut unit = || {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    for _ in 0..20_000 {
+        let mut links = TransferLinks::new(Some(1.0), Some(0.7)).unwrap();
+        let handoff_id = HandoffId::new(Uuid::from_u128(1));
+        let start_ms = 1.0e6 * unit();
+        links.submit(handoff_id, 1.0e3 * unit(), 0, 0, start_ms);
+        let event_ms = links.next_event_ms().unwrap();
+        let before_ms = event_ms.next_down();
+        links.advance(before_ms);
+        if links.completed.is_empty() && links.next_event_ms() == Some(before_ms) {
+            residuals += 1;
+            links.complete_due(before_ms);
+            assert_eq!(links.completed, [handoff_id]);
+            assert!(links.next_event_ms().is_none());
+        }
+    }
+    assert!(residuals > 0, "no sub-ULP residual case was exercised");
+}
+
+/// Two 128-token prompts on separate prefill workers hand off together. Alone,
+/// each transfer takes 128 ms at 1 GB/s.
+fn concurrent_handoff_delays(
+    engine_type: EngineType,
+    decode_workers: usize,
+    decode_bandwidth: Option<f64>,
+) -> Vec<f64> {
+    let mut config = transfer_timing_config(engine_type, KvTransferTimingMode::FullPrompt, 1);
+    config.num_prefill_workers = 2;
+    config.num_decode_workers = decode_workers;
+    config.decode_args.kv_transfer_bandwidth = decode_bandwidth;
+    let distinct = |uuid: u128| DirectRequest {
+        tokens: vec![uuid as u32; 128],
+        ..request(uuid, 128, 2, 0.0)
+    };
+    let (_, alone) = run_trace_collect(&config, vec![distinct(1)], None, 1.0);
+    let (_, together) = run_trace_collect(&config, vec![distinct(1), distinct(2)], None, 1.0);
+    let alone_ms = alone.handoff_ms[&Uuid::from_u128(1)];
+    [1, 2]
+        .map(|uuid| together.handoff_ms[&Uuid::from_u128(uuid)] - alone_ms + 128.0)
+        .to_vec()
+}
+
+#[test]
+fn concurrent_handoffs_into_one_decode_rank_share_its_link() {
+    for engine_type in [EngineType::Vllm, EngineType::Sglang] {
+        // Both transfers share the decode rank's 1 GB/s, so both finish
+        // after 256 ms instead of 128 ms.
+        for delay in concurrent_handoff_delays(engine_type, 1, Some(1.0)) {
+            assert!((delay - 256.0).abs() < 1e-6, "{engine_type:?}: {delay}");
+        }
+        // Separate decode ranks give each transfer its own links.
+        for delay in concurrent_handoff_delays(engine_type, 2, Some(1.0)) {
+            assert!((delay - 128.0).abs() < 1e-6, "{engine_type:?}: {delay}");
+        }
+        // Without decode bandwidth only the distinct prefill links bind.
+        for delay in concurrent_handoff_delays(engine_type, 1, None) {
+            assert!((delay - 128.0).abs() < 1e-6, "{engine_type:?}: {delay}");
+        }
+    }
 }
 
 #[test]

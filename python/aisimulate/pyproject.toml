@@ -74,7 +74,8 @@ dev = [
     "uv",
     "ruff==0.14.1",
     "pre-commit==4.3.0",
-    "pytest>=9.0.3",
+    # 9.2 monkeypatch cleanup deletes forwarded compatibility-module attributes.
+    "pytest>=9.0.3,<9.2",
     "pytest-asyncio>=0.26.0",
     "pytest-cov>=6.1.1",
     "pytest-md-report==0.8.0",

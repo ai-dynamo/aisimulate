@@ -15,7 +15,7 @@ mod kv_manager;
 pub(crate) mod kvcr;
 mod launch;
 mod offload_lru;
-mod offload_transfer;
+pub(crate) mod offload_transfer;
 mod protocol;
 mod runtime;
 mod scheduler;

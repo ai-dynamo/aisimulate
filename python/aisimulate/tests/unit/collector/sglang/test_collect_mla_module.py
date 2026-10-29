@@ -480,9 +480,12 @@ class TestBuildModuleTestCases:
         batch_sizes = {c[1] for c in cases}
         assert batch_sizes == set(mod.get_mla_module_sweep_spec("sglang").context_batch_sizes)
 
-    def test_targeted_glm5_nvfp4_context_is_not_emitted_on_hopper(self, monkeypatch):
+    # Reads the bundled export files, whatever shape they hold. The MIXED_PRECISION shape is pinned in
+    # test_collect_mla_module_native_quant.py with export files written to tmp_path.
+    @pytest.mark.parametrize("model_path", ["nvidia/GLM-5-NVFP4", "nvidia/GLM-5.3-NVFP4"])
+    def test_targeted_glm5_nvfp4_context_is_not_emitted_on_hopper(self, monkeypatch, model_path):
         mod = _import_module()
-        monkeypatch.setenv("COLLECTOR_MODEL_PATH", "nvidia/GLM-5-NVFP4")
+        monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
         with patch.object(mod, "get_sm_version", return_value=90):
             cases = mod._build_module_test_cases("dsa", "context")
         assert cases == []
