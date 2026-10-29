@@ -12,6 +12,7 @@ from __future__ import annotations
 import html
 import re
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 
 REPOSITORY_URL = "https://github.com/ai-dynamo/aisimulate"
@@ -109,6 +110,32 @@ def load(text: str, *, source: str) -> dict:
     return data
 
 
+def anchors(markdown: str) -> set[str]:
+    """Return a page's explicit ``<a id>`` targets and GitHub heading slugs."""
+    found = set(re.findall(r'<a id="([^"]+)"', markdown))
+    for heading in re.findall(r"^#+ (.+)$", markdown, re.MULTILINE):
+        found.add(re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-"))
+    return found
+
+
+def check_docs(data: dict, read_doc: Callable[[str], str | None], *, source: str) -> None:
+    """Reject rows whose page or anchor is missing from the tree the snapshot came from.
+
+    ``read_doc`` takes a path under docs/ and returns its text, or None when absent.
+    """
+    targets: dict[str, set[str] | None] = {}
+    for section in data["sections"]:
+        for row in section["rows"]:
+            path, _, anchor = row["doc"].partition("#")
+            if path not in targets:
+                text = read_doc(path)
+                targets[path] = None if text is None else anchors(text)
+            if targets[path] is None:
+                raise FeatureMatrixError(f"{source}: row {row['name']!r}: docs/{path} does not exist")
+            if anchor and anchor not in targets[path]:
+                raise FeatureMatrixError(f"{source}: row {row['name']!r}: docs/{path} has no anchor #{anchor}")
+
+
 def release_sort_key(branch: str) -> list[tuple[int, int, str]]:
     """Order release branches by version, numbers before suffixes."""
     return [(0, int(part), "") if part.isdigit() else (1, 0, part) for part in re.split(r"[./-]", branch)]
@@ -183,7 +210,8 @@ def _view(snapshot: Snapshot) -> str:
         f'whitespace-nowrap">{_e(section["title"])}</a>'
         for section in data["sections"]
     )
-    tree_url = f"{REPOSITORY_URL}/blob/{snapshot.branch}/"
+    # Pin links to the rendered commit; a branch can move after the page is built.
+    tree_url = f"{REPOSITORY_URL}/blob/{snapshot.commit or snapshot.branch}/"
     meta = [f"Branch <code>{_e(snapshot.branch)}</code>"]
     if snapshot.commit:
         meta.append(
@@ -206,8 +234,7 @@ def render(template: str, snapshots: list[Snapshot]) -> str:
     """Fill the page template with one view per snapshot; ``main`` must come first."""
     if not snapshots or snapshots[0].branch != "main":
         raise FeatureMatrixError("the main snapshot must be rendered first")
+    if sorted(re.findall(r"\{\{[^}]*\}\}", template)) != ["{{BRANCH_OPTIONS}}", "{{VIEWS}}"]:
+        raise FeatureMatrixError("the page template needs {{BRANCH_OPTIONS}} and {{VIEWS}} once each")
     options = "".join(f'<option value="{_e(s.branch)}">{_e(s.branch)}</option>' for s in snapshots)
-    page = template.replace("{{BRANCH_OPTIONS}}", options).replace("{{VIEWS}}", "".join(_view(s) for s in snapshots))
-    if "{{" in page:
-        raise FeatureMatrixError("the page template has an unknown placeholder")
-    return page
+    return template.replace("{{BRANCH_OPTIONS}}", options).replace("{{VIEWS}}", "".join(_view(s) for s in snapshots))

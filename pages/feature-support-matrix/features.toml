@@ -58,7 +58,7 @@ name = "Encoder disaggregation (multimodal)"
 doc = "replay/engine/analytical.md#epd"
 # Native encoder pools are SGLang-only; analytical pools accept every engine.
 cells = ["supported:analytical", "supported", "supported:analytical"]
-note = "SGLang encoder-only servers replayed event by event; Qwen3-VL and Kimi K3 towers."
+note = "SGLang encoder-only servers replayed event by event (Qwen3-VL); the analytical estimate covers Qwen3-VL and Kimi K3 towers."
 
 [[sections]]
 id = "scheduling"
@@ -80,7 +80,7 @@ note = "Backend block and admission rules apply."
 name = "Frontend tokenization cost"
 doc = "replay/engine/README.md#request-tokenization"
 cells = ["supported", "supported", "supported"]
-note = "Per-engine tokenizer worker defaults."
+note = "Each worker's tokenizer servers add a fixed plus per-input-token delay."
 
 [[sections]]
 id = "speculation"
@@ -120,7 +120,7 @@ cells = ["supported", "supported", "supported", "na", "na", "na"]
 
 [[sections.rows]]
 name = "G2 local"
-detail = "Host memory per worker"
+detail = "Host memory per DP rank"
 doc = "replay/engine/kv-cache.md#g2-scope"
 cells = ["supported", "not_supported", "not_supported", "na", "na", "na"]
 

@@ -873,9 +873,7 @@ class LegacySnapshotTest(unittest.TestCase):
             dataset.mkdir(parents=True)
             (dataset / "index.json").write_text(json.dumps({"files": ["b200_sxm.csv"]}))
             (dataset / "b200_sxm.csv").write_text("Model,Status\nexample/model,PASS\n")
-        for relative in (PAGES.feature_matrix.DATA_PATH, PAGES.feature_matrix.TEMPLATE_PATH):
-            (self.repository / relative).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ROOT / relative, self.repository / relative)
+        copy_feature_sources(self.repository)
         self.dataset = self.repository / PAGES.SYSTEMS_ROOT / "support_matrix"
         self.data_sha = self.commit("2026-09-04T11:42:50-07:00", "legacy data")
         (docs / "support-matrix/index.html").write_text("new website, same data")
@@ -1271,23 +1269,42 @@ def test_accuracy_gpu_count_is_validated_without_multinode_flag():
 FEATURES = PAGES.feature_matrix
 FEATURE_DATA = ROOT / FEATURES.DATA_PATH
 ALL_SUPPORTED = 'cells = ["supported", "supported", "supported"]'
+TOKENIZATION_DOC = "replay/engine/README.md"
+TOKENIZATION_ROW = (
+    f'name = "Frontend tokenization cost"\ndoc = "{TOKENIZATION_DOC}#request-tokenization"\n{ALL_SUPPORTED}'
+)
 
 
-def _markdown_anchors(markdown: str) -> set[str]:
-    anchors = set(re.findall(r'<a id="([^"]+)"', markdown))
-    for heading in re.findall(r"^#+ (.+)$", markdown, re.MULTILINE):
-        anchors.add(re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-"))
-    return anchors
+def copy_feature_sources(destination: Path) -> None:
+    """Copy the page template, its data and every documentation page the data links."""
+    data = FEATURES.load(FEATURE_DATA.read_text(encoding="utf-8"), source="test")
+    docs = {"docs/" + row["doc"].partition("#")[0] for section in data["sections"] for row in section["rows"]}
+    for relative in (FEATURES.DATA_PATH, FEATURES.TEMPLATE_PATH, *sorted(docs)):
+        (destination / relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, destination / relative)
+
+
+def init_repository(path: Path):
+    path.mkdir()
+
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(path), *args], text=True).strip()
+
+    git("init", "-b", "main")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test")
+    return git
+
+
+def render_main(text: str, template: str | None = None) -> str:
+    data = FEATURES.load(text, source="test")
+    template = template if template is not None else (ROOT / FEATURES.TEMPLATE_PATH).read_text(encoding="utf-8")
+    return FEATURES.render(template, [FEATURES.Snapshot("main", None, data)])
 
 
 def test_feature_matrix_links_resolve_to_documentation() -> None:
-    data = FEATURES.load(FEATURE_DATA.read_text(), source=FEATURES.DATA_PATH)
-    for section in data["sections"]:
-        for row in section["rows"]:
-            path, _, anchor = row["doc"].partition("#")
-            document = ROOT / "docs" / path
-            assert document.is_file(), row["doc"]
-            assert not anchor or anchor in _markdown_anchors(document.read_text()), row["doc"]
+    data = FEATURES.load(FEATURE_DATA.read_text(encoding="utf-8"), source=FEATURES.DATA_PATH)
+    FEATURES.check_docs(data, PAGES._feature_doc_reader(ROOT, None), source=FEATURES.DATA_PATH)
 
 
 @pytest.mark.parametrize(
@@ -1304,53 +1321,67 @@ def test_feature_matrix_links_resolve_to_documentation() -> None:
     ],
 )
 def test_feature_matrix_rejects_invalid_data(old: str, new: str, message: str) -> None:
-    text = FEATURE_DATA.read_text()
+    text = FEATURE_DATA.read_text(encoding="utf-8")
     assert old in text
     with pytest.raises(FEATURES.FeatureMatrixError, match=message):
         FEATURES.load(text.replace(old, new, 1), source="test")
 
 
-def test_feature_matrix_escapes_text() -> None:
-    text = FEATURE_DATA.read_text().replace('name = "Aggregated serving"', 'name = "<script>x</script>"', 1)
-    template = (ROOT / FEATURES.TEMPLATE_PATH).read_text()
-    page = FEATURES.render(template, [FEATURES.Snapshot("main", None, FEATURES.load(text, source="test"))])
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        ("#request-tokenization", "#no-such-anchor", "has no anchor #no-such-anchor"),
+        (f'"{TOKENIZATION_DOC}#', '"replay/engine/missing.md#', "docs/replay/engine/missing.md does not exist"),
+    ],
+)
+def test_feature_matrix_rejects_missing_doc_targets(old: str, new: str, message: str) -> None:
+    text = FEATURE_DATA.read_text(encoding="utf-8")
+    assert old in text
+    data = FEATURES.load(text.replace(old, new, 1), source="test")
+    with pytest.raises(FEATURES.FeatureMatrixError, match=message):
+        FEATURES.check_docs(data, PAGES._feature_doc_reader(ROOT, None), source="test")
+
+
+def test_feature_matrix_escapes_text_and_keeps_literal_braces() -> None:
+    text = FEATURE_DATA.read_text(encoding="utf-8")
+    text = text.replace('name = "Aggregated serving"', 'name = "<script>x</script>"', 1)
+    text = text.replace('note = "Engine-specific', 'note = "{{VIEWS}} Engine-specific', 1)
+    page = render_main(text)
     assert "<script>x</script>" not in page
     assert "&lt;script&gt;x&lt;/script&gt;" in page
-    assert "{{" not in page
+    assert "{{VIEWS}} Engine-specific" in page
+    template = (ROOT / FEATURES.TEMPLATE_PATH).read_text(encoding="utf-8")
+    for broken in (template.replace("{{VIEWS}}", ""), template + "{{EXTRA}}"):
+        with pytest.raises(FEATURES.FeatureMatrixError, match="once each"):
+            render_main(FEATURE_DATA.read_text(encoding="utf-8"), broken)
 
 
 def test_feature_matrix_renders_main_and_release_views(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
-    repo.mkdir()
-
-    def git(*args):
-        return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
-
-    git("init", "-b", "main")
-    git("config", "user.email", "test@example.com")
-    git("config", "user.name", "Test")
+    git = init_repository(repo)
     (repo / "README.md").write_text("before the matrix\n")
     git("add", ".")
     git("commit", "-qm", "release without matrix data")
     git("update-ref", "refs/remotes/origin/release/0.12.0", git("rev-parse", "HEAD"))
+    copy_feature_sources(repo)
     data = repo / FEATURES.DATA_PATH
-    data.parent.mkdir(parents=True)
-    shutil.copy(ROOT / FEATURES.TEMPLATE_PATH, repo / FEATURES.TEMPLATE_PATH)
-    shipped = (
-        'name = "Frontend tokenization cost"\ndoc = "replay/engine/README.md#request-tokenization"\n' + ALL_SUPPORTED
+    data.write_text(
+        FEATURE_DATA.read_text(encoding="utf-8").replace(
+            TOKENIZATION_ROW, TOKENIZATION_ROW.replace('"supported"', '"not_supported"')
+        )
     )
-    assert shipped in FEATURE_DATA.read_text()
-    data.write_text(FEATURE_DATA.read_text().replace(shipped, shipped.replace('"supported"', '"not_supported"')))
     git("add", ".")
     git("commit", "-qm", "release matrix data")
     release_sha = git("rev-parse", "HEAD")
     git("update-ref", "refs/remotes/origin/release/0.13.0", release_sha)
     git("update-ref", "refs/remotes/origin/release/0.9.0", release_sha)
-    shutil.copy(FEATURE_DATA, data)
+    shutil.copyfile(FEATURE_DATA, data)
+    git("commit", "-qam", "main matrix data")
+    main_sha = git("rev-parse", "HEAD")
 
     output = tmp_path / "site"
     PAGES._build_feature_matrix(repo, output, True)
-    page = (output / "feature-support-matrix/index.html").read_text()
+    page = (output / "feature-support-matrix/index.html").read_text(encoding="utf-8")
 
     options = re.findall(r'<option value="([^"]+)">', page)
     assert options == ["main", "release/0.13.0", "release/0.9.0"]
@@ -1358,8 +1389,12 @@ def test_feature_matrix_renders_main_and_release_views(tmp_path: Path) -> None:
     assert views == {"main": "", "release/0.13.0": " hidden", "release/0.9.0": " hidden"}
     main_view, release_view = page.split('data-branch="release/0.13.0"')
     release_view = release_view.split('data-branch="release/0.9.0"')[0]
+    assert f"/commit/{main_sha}" in main_view
+    assert f"/blob/{main_sha}/docs/{TOKENIZATION_DOC}#request-tokenization" in main_view
     assert f"/commit/{release_sha}" in release_view
-    assert "/blob/release/0.13.0/docs/replay/engine/README.md#request-tokenization" in release_view
+    assert f"/blob/{release_sha}/docs/{TOKENIZATION_DOC}#request-tokenization" in release_view
+    assert f"/blob/{release_sha}/{FEATURES.DATA_PATH}" in release_view
+    assert "/blob/release/" not in page
     assert 'id="release-0-13-0-kv-cache"' in release_view
     assert 'id="kv-cache"' in main_view
     tokenization = re.compile(r"Frontend tokenization cost</a></th>(.*?)</tr>", re.DOTALL)
@@ -1368,37 +1403,48 @@ def test_feature_matrix_renders_main_and_release_views(tmp_path: Path) -> None:
 
     output_without_refs = tmp_path / "site-main"
     PAGES._build_feature_matrix(repo, output_without_refs, False)
-    page = (output_without_refs / "feature-support-matrix/index.html").read_text()
+    page = (output_without_refs / "feature-support-matrix/index.html").read_text(encoding="utf-8")
     assert re.findall(r'<option value="([^"]+)">', page) == ["main"]
 
 
 def test_feature_matrix_builds_from_a_source_archive(tmp_path: Path) -> None:
-    for relative in (FEATURES.DATA_PATH, FEATURES.TEMPLATE_PATH):
-        (tmp_path / relative).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(ROOT / relative, tmp_path / relative)
+    copy_feature_sources(tmp_path)
     PAGES._build_feature_matrix(tmp_path, tmp_path / "site", False)
-    page = (tmp_path / "site/feature-support-matrix/index.html").read_text()
+    page = (tmp_path / "site/feature-support-matrix/index.html").read_text(encoding="utf-8")
     assert "/commit/" not in page
+    assert f"/blob/main/docs/{TOKENIZATION_DOC}" in page
     assert 'data-branch="main"' in page
 
 
-def test_feature_matrix_rejects_invalid_release_data(tmp_path: Path) -> None:
+def test_feature_matrix_omits_release_doc_missing_from_that_release(tmp_path: Path, capsys) -> None:
     repo = tmp_path / "repo"
-    repo.mkdir()
+    git = init_repository(repo)
+    copy_feature_sources(repo)
+    (repo / "docs" / TOKENIZATION_DOC).unlink()
+    git("add", ".")
+    git("commit", "-qm", "release without the tokenization page")
+    git("update-ref", "refs/remotes/origin/release/0.13.0", git("rev-parse", "HEAD"))
+    copy_feature_sources(repo)
+    PAGES._build_feature_matrix(repo, tmp_path / "site", True)
+    page = (tmp_path / "site/feature-support-matrix/index.html").read_text(encoding="utf-8")
+    assert re.findall(r'<option value="([^"]+)">', page) == ["main"]
+    warning = capsys.readouterr().out
+    assert re.search(f"::warning::.*release/0.13.0.*docs/{TOKENIZATION_DOC} does not exist", warning)
 
-    def git(*args):
-        return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
 
-    git("init", "-b", "main")
-    git("config", "user.email", "test@example.com")
-    git("config", "user.name", "Test")
-    for relative in (FEATURES.DATA_PATH, FEATURES.TEMPLATE_PATH):
-        (repo / relative).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(ROOT / relative, repo / relative)
+def test_feature_matrix_omits_invalid_release_data_but_rejects_invalid_main(tmp_path: Path, capsys) -> None:
+    repo = tmp_path / "repo"
+    git = init_repository(repo)
+    copy_feature_sources(repo)
     (repo / FEATURES.DATA_PATH).write_text("schema_version = 1\n")
     git("add", ".")
     git("commit", "-qm", "broken release data")
     git("update-ref", "refs/remotes/origin/release/0.13.0", git("rev-parse", "HEAD"))
-    shutil.copy(FEATURE_DATA, repo / FEATURES.DATA_PATH)
-    with pytest.raises(PAGES.PagesBuildError, match="refs/remotes/origin/release/0.13.0"):
-        PAGES._build_feature_matrix(repo, tmp_path / "site", True)
+    shutil.copyfile(FEATURE_DATA, repo / FEATURES.DATA_PATH)
+    PAGES._build_feature_matrix(repo, tmp_path / "site", True)
+    page = (tmp_path / "site/feature-support-matrix/index.html").read_text(encoding="utf-8")
+    assert re.findall(r'<option value="([^"]+)">', page) == ["main"]
+    assert "::warning::feature support matrix omits release/0.13.0" in capsys.readouterr().out
+    (repo / FEATURES.DATA_PATH).write_text("schema_version = 1\n")
+    with pytest.raises(PAGES.PagesBuildError, match="invalid feature support matrix"):
+        PAGES._build_feature_matrix(repo, tmp_path / "site-broken-main", True)

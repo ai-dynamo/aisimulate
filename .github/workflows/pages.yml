@@ -13,6 +13,8 @@ on:
   pull_request:
     paths:
       - ".github/workflows/pages.yml"
+      # The Feature Support Matrix links into docs/; renamed pages or anchors fail its build.
+      - "docs/**"
       - "scripts/pyproject.toml"
       - "scripts/notifications/**"
       - "scripts/pages/**"

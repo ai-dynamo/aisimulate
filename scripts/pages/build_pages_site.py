@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -176,7 +177,7 @@ def _record_legacy_snapshot(repo_root: Path, destination: Path) -> None:
 def _git(repo_root: Path, *args: str) -> str:
     try:
         return subprocess.check_output(
-            ["git", "-C", str(repo_root), *args], text=True, stderr=subprocess.PIPE, timeout=10
+            ["git", "-C", str(repo_root), *args], text=True, encoding="utf-8", stderr=subprocess.PIPE, timeout=10
         ).strip()
     except subprocess.TimeoutExpired as exc:
         raise PagesBuildError("timed out reading accuracy branch evidence") from exc
@@ -643,18 +644,34 @@ def _build_fpm_catalog(repo_root: Path, output_dir: Path, include_refs: bool, ar
     (output_dir / "fpm-accuracy/branches.json").write_text(json.dumps(catalog, indent=2) + "\n")
 
 
+def _feature_doc_reader(repo_root: Path, ref: str | None) -> Callable[[str], str | None]:
+    """Read pages under docs/ from the working tree, or from ``ref`` when given."""
+
+    def read(path: str) -> str | None:
+        if ref is None:
+            document = repo_root / "docs" / path
+            return document.read_text(encoding="utf-8") if document.is_file() else None
+        if not _git(repo_root, "ls-tree", ref, "--", "docs/" + path):
+            return None
+        return _git(repo_root, "show", f"{ref}:docs/{path}")
+
+    return read
+
+
 def _build_feature_matrix(repo_root: Path, output_dir: Path, include_refs: bool) -> None:
     """Render main's data and each fetched release's committed data into one static page.
 
-    Releases cut before the page existed have no data file and stay out of the selector.
+    Releases cut before the page existed have no data file and stay out of the selector, as do
+    releases whose data or doc links are invalid. Invalid main data fails the build.
     """
     sources = [repo_root / feature_matrix.TEMPLATE_PATH, repo_root / feature_matrix.DATA_PATH]
     for source in sources:
         if source.is_symlink():
             raise PagesBuildError(f"public artifact source cannot be a symlink: {source}")
     try:
-        template, main_text = (source.read_text() for source in sources)
+        template, main_text = (source.read_text(encoding="utf-8") for source in sources)
         main = feature_matrix.load(main_text, source=feature_matrix.DATA_PATH)
+        feature_matrix.check_docs(main, _feature_doc_reader(repo_root, None), source=feature_matrix.DATA_PATH)
     except OSError as exc:
         raise PagesBuildError(f"feature support matrix source is unreadable: {exc}") from exc
     except feature_matrix.FeatureMatrixError as exc:
@@ -676,12 +693,20 @@ def _build_feature_matrix(repo_root: Path, output_dir: Path, include_refs: bool)
                 raise PagesBuildError(f"{ref}: feature support matrix data must be a regular file")
             try:
                 data = feature_matrix.load(_git(repo_root, "show", f"{ref}:{feature_matrix.DATA_PATH}"), source=ref)
+                feature_matrix.check_docs(data, _feature_doc_reader(repo_root, ref), source=ref)
             except feature_matrix.FeatureMatrixError as exc:
-                raise PagesBuildError(f"invalid feature support matrix: {exc}") from exc
+                # Release data is hand-edited and its branch CI does not run this builder; drop the
+                # view rather than block every other page. Unreadable refs still fail above.
+                print(f"::warning::feature support matrix omits {branch}: {exc}")
+                continue
             snapshots.append(feature_matrix.Snapshot(branch, _git(repo_root, "rev-parse", ref), data))
     destination = output_dir / "feature-support-matrix" / "index.html"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(feature_matrix.render(template, snapshots))
+    try:
+        page = feature_matrix.render(template, snapshots)
+    except feature_matrix.FeatureMatrixError as exc:
+        raise PagesBuildError(f"invalid feature support matrix: {exc}") from exc
+    destination.write_text(page, encoding="utf-8")
 
 
 def build_site(
