@@ -110,11 +110,18 @@ cells = ["supported", "supported", "supported"]
 note = "Explicit acceptance rate; agentic traffic keeps KV in GPU memory."
 
 [[sections.rows]]
-name = "EAGLE-3, DFlash, draft model"
+name = "EAGLE-3, DSPARK"
 doc = "replay/engine/speculation.md#registered-schemes"
 # config/engine.py _validate_speculation: vLLM and SGLang only.
 cells = ["supported", "supported", "not_supported"]
 note = "Linear 1–5 token drafts; no tree drafting."
+
+[[sections.rows]]
+name = "DFlash, draft model"
+doc = "replay/engine/speculation.md#registered-schemes"
+# aisimulate_core/sdk/speculation/{dflash,draft_model}.py: _SUPPORTED_BACKENDS = ("vllm",).
+cells = ["supported", "not_supported", "not_supported"]
+note = "Linear 1–5 token drafts from a draft checkpoint."
 
 [[sections.rows]]
 name = "N-gram prompt lookup"
