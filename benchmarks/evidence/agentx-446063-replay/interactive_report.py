@@ -168,6 +168,9 @@ def build_dataset(identifier, prediction, measurement, requests, reference, life
     manifest = prediction.get("telemetry") or {}
     if manifest.get("clock") != "absolute_virtual_ms":
         raise ValueError("Interactive report requires the native absolute_virtual_ms clock")
+    point_id = measurement.get("point_id", 446063)
+    if not isinstance(point_id, int) or isinstance(point_id, bool) or point_id <= 0:
+        raise ValueError("measurement.point_id must be a positive integer")
     pools = {item.get("pool") for row in requests for item in row.get("routing_history", [])}
     pairs_path = report_dir / "paired-requests.json"
     pairs = read_json(pairs_path) if pairs_path.exists() else []
@@ -183,6 +186,7 @@ def build_dataset(identifier, prediction, measurement, requests, reference, life
     summary.update({key: prediction[key] for key in ("agentic_model_projection", "agentic_graph") if key in prediction})
     return {
         "id": identifier,
+        "point_id": point_id,
         "label": {"observed": "Recorded output lengths", "raw": "Original trace"}.get(
             identifier, measurement.get("variant", identifier)
         ),
@@ -216,6 +220,8 @@ def build_report_data(output, prediction, measurement, requests, reference, life
         ):
             continue
         sibling_measurement = read_json(measurement_path)
+        if sibling_measurement.get("point_id", 446063) != measurement.get("point_id", 446063):
+            continue
         reference_path = sibling_measurement.get("provenance", {}).get("reference", {}).get("path")
         sibling_reference = (
             read_json(Path(reference_path)) if reference_path and Path(reference_path).exists() else reference
@@ -298,6 +304,14 @@ def self_check():
     injected = {"text": "</script><script>alert(1)</script>\u2028\u2029"}
     encoded = script_json(injected)
     assert "<" not in encoded and "\u2028" not in encoded and json.loads(encoded) == injected
+    prediction = {"telemetry": {"clock": "absolute_virtual_ms"}, "agentic_lanes": 4}
+    measurement = {"point_id": 446068, "variant": "observed_profile_output_lengths"}
+    report = build_report_data(Path(__file__).parent, prediction, measurement, [], [], [], [], {})
+    assert len(report["datasets"]) == 1 and report["activeVariant"] == "observed"
+    assert report["datasets"][0]["prediction"]["agentic_lanes"] == 4
+    assert report["datasets"][0]["measurement"]["point_id"] == 446068
+    legacy = build_dataset("observed", prediction, {}, [], [], [], [], Path(__file__).parent)
+    assert legacy["point_id"] == 446063 and legacy["measurement"] == {}
 
 
 if __name__ == "__main__":

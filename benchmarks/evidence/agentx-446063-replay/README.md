@@ -1,6 +1,6 @@
-# AgentX point 446063 replay
+# AgentX GLM concurrency replay
 
-CPU replay and original telemetry plots for [InferenceX point 446063](https://inferencex.semianalysis.com/inference/agentic/446063), concurrency one. This reproduces the benchmark's preparation and 3,600-second profiling window with the complete source corpus loaded. It does **not** exhaust all 98,827 requests in the corpus.
+CPU replay and original telemetry plots for the GLM-5.3/B300/SGLang concurrency curve, beginning with [InferenceX point 446063](https://inferencex.semianalysis.com/inference/agentic/446063), concurrency one. Each run reproduces the benchmark's preparation and 3,600-second profiling window with the complete source corpus loaded. It does **not** exhaust all 98,827 requests in the corpus.
 
 ## Frozen configuration
 
@@ -71,6 +71,55 @@ Both native runs also retain one completed zero-output source request with null 
 
 Native artifacts contain 253/301 terminal request rows, 3,642/3,623 samples, and 763/907 lifecycle events for original/observed variants. Output counters reconcile exactly: original 449,942 profiling tokens; observed 271,593; 11 preparation tokens each. Native phase boundaries and absolute timestamp semantics are checked. The initial local attempt was rejected before replay by resource supervision; its 0.31-second duration is preserved separately and is not a replay runtime.
 
+## Remaining GLM concurrency points
+
+The same pinned GLM-5.3/B300/SGLang curve also contains the following points. These replays use **recorded output lengths only**, with no additional original-trace control runs. The prior c1 recorded-output result is reused in the curve summary.
+
+| Point | Concurrency | Scheduler max sequences | Reference successes | Changed output limits |
+|---|---:|---:|---:|---:|
+| [446068](https://inferencex.semianalysis.com/inference/agentic/446068) | 4 | 8 | 708 | 218 |
+| [446069](https://inferencex.semianalysis.com/inference/agentic/446069) | 8 | 256 | 1,426 | 400 |
+| [446060](https://inferencex.semianalysis.com/inference/agentic/446060) | 10 | 256 | 1,607 | 441 |
+| [446061](https://inferencex.semianalysis.com/inference/agentic/446061) | 13 | 256 | 2,191 | 468 |
+| [446062](https://inferencex.semianalysis.com/inference/agentic/446062) | 14 | 256 | 2,454 | 571 |
+
+Per-point server exports confirm the same 59,124-block logical KV pool, runtime image, topology, precision, and speculation settings as c1. The first N corpus plays initialize the N lanes, using exact imported cuts; the shared corpus cursor starts at N. Lane 6 has multiple live branches at its cut, so preparation can have multiple primers per lane. Native lineage and phase records preserve these branches. Each point retains its own measured profile lengths, failures, snapshot metadata, raw profile hash, and derived-corpus hash. No source request identities repeat within a reference point.
+
+`prepare_inputs.py --point-id ID` validates the reference counts, successful output-token sum, and raw profile hash against `source/source-manifest.json`. `score_replay.py --point-id ID` labels the point without changing matching or scoring rules. Both options default to 446063 for existing commands. Failed or unavailable reference requests retain their source output limit; requests beyond the measured cohort also retain their source lengths. Strict request MAPE includes only source-matched successes with equal delivered output lengths.
+
+The external curve bundle uses `point-ID/{source,observed-input,observed-replay,observed-report}` plus `point-ID/observed-remote.yaml` and `point-ID/observed-replay-execution.json`. The complete corpus remains 393 plays / 98,827 requests for every point. Keep each corpus basename `traces.jsonl`; inputs can share a hardlink to the unchanged original corpus before derivation. Point configs retain the exact scheduler differences above and set `nested_timestamp_basis: absolute`.
+
+Use the existing preparation, runner, scoring, and rendering commands with the point directory and `--point-id` supplied to preparation/scoring. Run points sequentially on the CPU host; wall times are single observations, not a repeated host-performance study. They include the same complete CLI scope as c1 and exclude source derivation, transfers, and plotting.
+
+After scoring the points, build the linked dashboard index and curve plots:
+
+```bash
+python/aisimulate/.venv/bin/python \
+  benchmarks/evidence/agentx-446063-replay/summarize_curve.py \
+  --root /path/to/agentx-glm-concurrency \
+  --baseline-root /path/to/agentx-glm-concurrency/point-446063
+```
+
+`selected-points.json` freezes the six point IDs. `index.html` links each standalone interactive report; `summary.csv`, `summary.json`, and `concurrency-curve.png/.svg` compare latency, throughput, strict request MAPE, pairing coverage, failures/cancellations, and complete/native wall time. Aggregate output separates the new five points from all six: pooled request MAPE weights each valid request equally; macro point errors weight points equally. Missing or failed runs remain explicit and are never assigned zero error. Bundling the reused c1 artifacts under `point-446063` keeps links portable without rerunning c1.
+
+Interactive point IDs, concurrency labels, preparation counts, reference links, and download filenames come from the selected run. Reports with one recorded-output variant work without a control. Browser checks accept an optional expected-results JSON after the output directory, while retaining fixed c1 regression expectations when applicable.
+
+All five additional native replays completed on 2026-10-29 UTC:
+
+| Concurrency | Strict request E2E MAPE | Matched / reference successes | Mean E2E point APE | Output throughput point APE | Complete CLI wall | Native timer |
+|---|---:|---:|---:|---:|---:|---:|
+| 4 | 37.62% | 601 / 708 | 44.64% | 12.69% | 112.74 s | 1.62 s |
+| 8 | 49.78% | 1,352 / 1,426 | 47.42% | 5.17% | 115.86 s | 2.11 s |
+| 10 | 59.45% | 1,545 / 1,607 | 57.89% | 4.42% | 139.25 s | 2.32 s |
+| 13 | 85.37% | 2,137 / 2,191 | 71.94% | 3.48% | 112.75 s | 2.53 s |
+| 14 | 83.15% | 2,336 / 2,454 | 43.84% | 4.76% | 113.19 s | 2.49 s |
+
+The new five points have pooled request E2E MAPE **70.06%** over 7,971 pairs, covering 95.05% of 8,386 reference successes. Giving each point equal weight yields mean request MAPE 63.08%, mean-E2E aggregate MAPE 53.14%, and output-throughput MAPE **6.10%**. Complete CLI time totals **593.79 seconds**. Including reused c1 gives 68.89% pooled request MAPE over 8,260 pairs and 7.55% output-throughput MAPE across six points.
+
+All scored pairs have equal output lengths. Most input lengths still differ because the imported source uses hash-block prompt lengths while the server measures tokenized HTTP prompts. These results therefore do not isolate timing error. Native profiles retain 604/1,358/1,557/2,181/2,352 completed requests, including zero-output or unmatched requests; none failed or were canceled. Reference errors remain in source records and are excluded from latency scoring. Profile throughput uses the successful cohort's observed start/end span, consistent with the benchmark, rather than assuming every denominator is exactly 3,600 seconds.
+
+All six runs pass artifact-count, phase-boundary, full-window, config-hash, and per-phase delivered-token reconciliation checks. Independent raw-reference/native checks reproduce the c4 and c14 metrics. Preparation includes 4/7/9/12/15 primers plus 40/80/100/130/140 warmups for the five new points. C10, c13, and c14 drain active requests after the profile admission cutoff. Telemetry preserves those final partial intervals. The bundle's `validation.json` records the checks and counts.
+
 ## Running and reporting
 
 Use the telemetry checkout's development environment. Native replay uses CPU; no GPU allocation is needed. The recorded runs used Linux, Python 3.12.3, a Ryzen 9 7950X, and 125 GiB host RAM. The supervisor retained a 96 GB ceiling; this is a safety limit, not observed consumption.
@@ -129,7 +178,7 @@ Keep `observed-replay`, `raw-replay`, `observed-report`, and `raw-report` under 
 
 Open `report.html` directly in a browser. Plotly, chart data, styles, and the license are embedded, so viewing and downloading report data require no network or local server. Reference links open external sites only when followed. The self-authored interface follows AgentX interaction patterns without copying its UI code or assets.
 
-- Select either replay variant, sort by latency or throughput, and use the Profiling/Warmup tabs. Warmup includes the primer and ten live requests.
+- Select an available replay variant, sort by latency or throughput, and use the Profiling/Warmup tabs. Warmup includes primers and ten live requests per lane.
 - Hover for values, drag or scroll to zoom, double-click to reset, expand a chart, or export its PNG. Controls switch Distribution/In-flight average, P75/P90, TTFT/E2E, queue/completed requests, and input/decode throughput.
 - Open Request timeline to group by conversation or worker, filter request IDs, pan or zoom, and click a request for timing, lengths, status, and source lineage.
 - Open Aggregates across replays for MAPE, point APE, pairing coverage, and wall time. Evidence provides local JSON downloads of the report's request records, normalized chart samples, and accuracy/wall-time measurements; original native JSONL artifacts remain in each replay directory.

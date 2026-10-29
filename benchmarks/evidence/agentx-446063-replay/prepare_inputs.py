@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Preserve point 446063 inputs and derive a measured-output-length replay corpus."""
+"""Preserve AgentX GLM inputs and derive a measured-output-length replay corpus."""
 
 from __future__ import annotations
 
@@ -59,11 +59,11 @@ def observed_lengths(
         if length is None:
             length = metrics.get("usage_completion_tokens", {}).get("value")
         key = request_key(metadata)
-        if length is None:
+        if row.get("error") or length is None:
             excluded.append(
                 {
                     **key_record(key),
-                    "reason": "No per-request output or usage completion token count",
+                    "reason": "Failed request or no per-request output/usage completion token count",
                     "error": row.get("error"),
                 }
             )
@@ -73,13 +73,13 @@ def observed_lengths(
         if length < 0 or int(length) != length:
             raise ValueError(f"Invalid observed output length for {key}: {length!r}")
         length = int(length)
-        if key in lengths and lengths[key] != length:
-            raise ValueError(f"Conflicting observed output lengths for {key}")
+        if key in lengths:
+            raise ValueError(f"Repeated source identity requires instance-specific output lengths: {key}")
         lengths[key] = length
         counts["profile_rows_with_observed_lengths"] += 1
         counts["observed_profile_output_tokens"] += length
-    if counts["all_reference_rows"] != 337 or len(lengths) != 324:
-        raise ValueError(f"Unexpected point 446063 reference coverage: {dict(counts)}")
+    if not lengths:
+        raise ValueError("No successful profiling output lengths are available")
     return lengths, excluded, counts
 
 
@@ -117,19 +117,38 @@ def preserve_sources(source: Path, destination: Path) -> None:
         "agentic/aiperf_artifacts/profile_export_aiperf.json",
     ]
     for name in names:
+        if not (source / name).exists():
+            continue
         target = destination / name
         target.parent.mkdir(parents=True, exist_ok=True)
         if not target.exists() or not target.samefile(source / name):
             shutil.copy2(source / name, target)
 
 
-def prepare(source: Path, output: Path) -> dict[str, Any]:
+def prepare(source: Path, output: Path, point_id: int = 446063) -> dict[str, Any]:
     source = source.resolve()
     output = output.resolve()
     if source == output or source in output.parents:
         raise ValueError("Output must be outside the original source directory")
     profile = source / "agentic/aiperf_artifacts/profile_export.jsonl"
     lengths, excluded, counts = observed_lengths(profile)
+    source_manifest = json.loads((source / "source-manifest.json").read_text())
+    expected = source_manifest["reference"]
+    if source_manifest["point_id"] != point_id or point_id <= 0:
+        raise ValueError("Requested point does not match source manifest")
+    if (
+        counts["all_reference_rows"] != expected["all_request_rows"]
+        or len(lengths) != expected["profile_successful_requests"]
+        or len(excluded) != expected["profile_error_requests"]
+        or counts["observed_profile_output_tokens"] != expected["successful_output_tokens"]
+    ):
+        raise ValueError(f"Reference coverage differs from audited manifest: {dict(counts)}")
+    if digest(profile) != next(
+        record["sha256"]
+        for record in source_manifest["raw_artifact_files"]
+        if record["path"] == "agentic/aiperf_artifacts/profile_export.jsonl"
+    ):
+        raise ValueError("Raw reference profile hash differs from audited manifest")
     trace = source / "traces.jsonl"
     if trace.stat().st_size != DATASET_BYTES:
         raise ValueError("The source corpus is incomplete or differs from the pinned dataset")
@@ -191,15 +210,13 @@ def prepare(source: Path, output: Path) -> dict[str, Any]:
             raise ValueError("Source corpus counts do not match the pinned dataset")
         if matched != lengths.keys():
             raise ValueError(f"Reference requests missing from corpus: {lengths.keys() - matched}")
-        if len(changes) != 134 or counts["observed_profile_output_tokens"] != 318_405:
-            raise ValueError("Derived output counts differ from the audited reference")
         preserve_sources(source, output / "source")
         target = derived / "traces.jsonl"
         temporary.replace(target)
     finally:
         temporary.unlink(missing_ok=True)
     manifest = {
-        "point_id": 446063,
+        "point_id": point_id,
         "variant": "observed_profile_output_lengths",
         "source_url": SOURCE_URL,
         "source_sha256": DATASET_SHA256,
@@ -219,7 +236,7 @@ def prepare(source: Path, output: Path) -> dict[str, Any]:
         "excluded_profile_rows": excluded,
         "preserved": ["input lengths", "all prefix hashes", "source order", "timing", "model metadata"],
         "limitations": [
-            "Two no-content errors have no per-request output count; their source output lengths are unchanged",
+            f"{len(excluded)} failed/unavailable profile rows retain their original source output lengths",
             "Actual measured prompt lengths differ slightly from source hash-block input lengths",
             "Unobserved requests retain original output lengths; this is not an exact HTTP payload replay",
             "No cache-hit values or timing estimates were calibrated",
@@ -233,8 +250,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--point-id", type=int, default=446063)
     args = parser.parse_args()
-    manifest = prepare(args.source_dir, args.output_dir)
+    manifest = prepare(args.source_dir, args.output_dir, args.point_id)
     print(json.dumps({key: manifest[key] for key in ("plays", "changed_requests", "derived_sha256")}))
 
 

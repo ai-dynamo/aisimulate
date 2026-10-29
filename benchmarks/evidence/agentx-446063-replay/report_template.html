@@ -6,7 +6,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>AgentX 446063 · AISim replay</title>
+    <title>AgentX · AISim replay</title>
     <style>
       :root {
         color-scheme: dark;
@@ -678,13 +678,10 @@
         ><span class="badge">SIMULATED METRICS</span>
       </div>
       <div class="breadcrumb">
-        <a
-          href="https://inferencex.semianalysis.com/inference/agentic/446063"
-          target="_blank"
-          rel="noopener"
+        <a id="reference-benchmark" target="_blank" rel="noopener"
           >↗ Reference benchmark</a
         >
-        <span> · AgentX 446063</span>
+        <span id="point-identity"></span>
       </div>
       <div class="heading">
         <h1>B300 · GLM 5.3 · NVFP4 · SGLang</h1>
@@ -864,7 +861,7 @@
       <p>
         Choose a replay variant, then switch between
         <strong>Profiling</strong> and <strong>Warmup</strong>. Warmup includes
-        the primer and ten live requests.
+        primers and live requests across all lanes.
       </p>
       <ul>
         <li>
@@ -1675,11 +1672,14 @@
             (k) => filtered.filter((r) => key(r) === k).length,
           ),
           el = $("timeline-plot");
-        el.style.height = Math.max(350, keys.length * 34 + 90) + "px";
+        const height = Math.max(350, keys.length * 34 + 90);
+        el.style.height = height + "px";
+        el.setAttribute("aria-busy", "true");
         Plotly.react(
           el,
           traces,
           layout("", {
+            height,
             dragmode: "pan",
             barmode: "overlay",
             showlegend: false,
@@ -1708,6 +1708,7 @@
             const row = all.find((r) => r.uuid === id);
             if (row) showRequest(row);
           });
+          el.setAttribute("aria-busy", "false");
         });
       }
       function showRequest(r) {
@@ -1750,8 +1751,7 @@
         const d = dataset(),
           c = d.measurement.comparisons || [],
           coverage = d.measurement.coverage || {};
-        let html =
-          '<h2 class="section-title">Latency and throughput comparison</h2><p class="comparison-lede">Reference: AgentX 446063, concurrency 1. Point metrics use each replay’s successful profile cohort and observed span. Request MAPE uses exact source IDs; output-length matching and coverage are reported separately.</p><div class="table-wrap"><table><thead><tr><th>Replay</th><th>Mean E2E</th><th>Output throughput</th><th>Full CLI wall time</th><th>Matched E2E MAPE</th></tr></thead><tbody>';
+        let html = `<h2 class="section-title">Latency and throughput comparison</h2><p class="comparison-lede">Reference: AgentX ${esc(d.point_id)}, concurrency ${fmt(d.prediction.agentic_lanes, 0)}. Point metrics use each replay’s successful profile cohort and observed span. Request MAPE uses exact source IDs; output-length matching and coverage are reported separately.</p><div class="table-wrap"><table><thead><tr><th>Replay</th><th>Mean E2E</th><th>Output throughput</th><th>Full CLI wall time</th><th>Matched E2E MAPE</th></tr></thead><tbody>`;
         for (const v of datasets) {
           const metric = v.measurement.comparisons.find((q) =>
             q.metric.includes("output-length matched"),
@@ -1763,7 +1763,7 @@
         for (const r of c)
           html += `<tr><td>${esc(r.metric)}</td><td>${fmt(r.reference)} ${esc(r.unit)}</td><td>${fmt(r.simulated)} ${esc(r.unit)}</td><td>${fmt(r.mape_percent)}%</td><td>${fmt(r.count, 0)}</td><td class="wrap">${esc(r.scope)}</td></tr>`;
         html +=
-          '</tbody></table></div><p class="hint">An aggregate comparison with N=1 is APE, not request-level MAPE. Different replay variants reach different request cohorts within the same one-hour admission window.</p><div class="chart-card"><div class="chart-head"><h2>Error by metric · selected replay</h2></div><div class="plot" id="accuracy-plot" style="height:360px"></div></div>';
+          '</tbody></table></div><p class="hint">An aggregate comparison with N=1 is APE, not request-level MAPE. Simulated and reference requests can differ within the same one-hour admission window.</p><div class="chart-card"><div class="chart-head"><h2>Error by metric · selected replay</h2></div><div class="plot" id="accuracy-plot" style="height:360px"></div></div>';
         $("view-accuracy").innerHTML = html;
         Plotly.react(
           "accuracy-plot",
@@ -1808,7 +1808,7 @@
       function renderEvidence() {
         const d = dataset();
         $("view-evidence").innerHTML =
-          `<h2 class="section-title">Replay evidence and methodology</h2><p class="comparison-lede">This report contains simulated observations from the complete benchmark replay. The source corpus contains 393 plays and 98,827 requests; only work reached during the 3,600-second profiling window is executed.</p><div class="downloads"><button data-download="requests">Download request records</button><button data-download="samples">Download chart samples</button><button data-download="measurement">Download accuracy & wall time</button></div><div class="evidence-box"><h2>Timing and capture</h2><div class="stats"><div class="stat"><small>Full CLI wall time</small><strong>${fmt(d.measurement.wall_time_seconds)} s</strong></div><div class="stat"><small>Native simulation timer</small><strong>${fmt(d.prediction.wall_time_ms / 1000)} s</strong></div><div class="stat"><small>Sample interval</small><strong>${fmt(d.telemetry.sample_interval_ms, 0)} ms</strong></div><div class="stat"><small>Completion</small><strong>${esc(d.telemetry.completion_status)}</strong></div></div><p class="hint">${esc(d.measurement.wall_time_scope)}</p></div><div class="evidence-box"><h2>Methods</h2><ul>${(d.measurement.methodology || []).map((v) => "<li>" + esc(v) + "</li>").join("")}</ul></div><div class="evidence-box"><h2>Known limitations</h2><ul>${(d.measurement.limitations || []).map((v) => "<li>" + esc(v) + "</li>").join("")}</ul><p class="hint">Unique in-flight input-token counts are unavailable. Cache utilization is resident occupancy, not active-request occupancy. Warmup includes the primer and ten live requests. No server logs or power data are displayed.</p></div><div class="evidence-box"><details><summary>Native telemetry manifest, execution provenance, and comparison scope</summary><pre>${esc(JSON.stringify({ telemetry: d.telemetry, measurement: d.measurement, provenance: report.provenance }, null, 2))}</pre></details></div><div class="evidence-box"><details><summary>Plotting library license and attribution</summary><pre>__PLOTLY_LICENSE__</pre></details></div>`;
+          `<h2 class="section-title">Replay evidence and methodology</h2><p class="comparison-lede">This report contains simulated observations from the complete benchmark replay. The source corpus contains 393 plays and 98,827 requests; only work reached during the 3,600-second profiling window is executed.</p><div class="downloads"><button data-download="requests">Download request records</button><button data-download="samples">Download chart samples</button><button data-download="measurement">Download accuracy & wall time</button></div><div class="evidence-box"><h2>Timing and capture</h2><div class="stats"><div class="stat"><small>Full CLI wall time</small><strong>${fmt(d.measurement.wall_time_seconds)} s</strong></div><div class="stat"><small>Native simulation timer</small><strong>${fmt(d.prediction.wall_time_ms / 1000)} s</strong></div><div class="stat"><small>Sample interval</small><strong>${fmt(d.telemetry.sample_interval_ms, 0)} ms</strong></div><div class="stat"><small>Completion</small><strong>${esc(d.telemetry.completion_status)}</strong></div></div><p class="hint">${esc(d.measurement.wall_time_scope)}</p></div><div class="evidence-box"><h2>Methods</h2><ul>${(d.measurement.methodology || []).map((v) => "<li>" + esc(v) + "</li>").join("")}</ul></div><div class="evidence-box"><h2>Known limitations</h2><ul>${(d.measurement.limitations || []).map((v) => "<li>" + esc(v) + "</li>").join("")}</ul><p class="hint">Unique in-flight input-token counts are unavailable. Cache utilization is resident occupancy, not active-request occupancy. Warmup includes primers and live requests across all lanes. No server logs or power data are displayed.</p></div><div class="evidence-box"><details><summary>Native telemetry manifest, execution provenance, and comparison scope</summary><pre>${esc(JSON.stringify({ telemetry: d.telemetry, measurement: d.measurement, provenance: report.provenance }, null, 2))}</pre></details></div><div class="evidence-box"><details><summary>Plotting library license and attribution</summary><pre>__PLOTLY_LICENSE__</pre></details></div>`;
       }
       function sortedDatasets() {
         const key = $("sort").value;
@@ -1824,19 +1824,23 @@
       }
       function renderHeader() {
         const d = dataset();
+        document.title = `AgentX ${d.point_id} · AISim replay`;
+        $("reference-benchmark").href =
+          `https://inferencex.semianalysis.com/inference/agentic/${d.point_id}`;
+        $("point-identity").textContent = ` · AgentX ${d.point_id}`;
         $("variants").innerHTML = sortedDatasets()
           .map(
             (v) =>
-              `<button class="chip" data-variant="${esc(v.id)}" aria-pressed="${v.id === d.id}">TP8 · c=1 · ${esc(v.label)}</button>`,
+              `<button class="chip" data-variant="${esc(v.id)}" aria-pressed="${v.id === d.id}">TP8 · c=${fmt(v.prediction.agentic_lanes, 0)} · ${esc(v.label)}</button>`,
           )
           .join("");
         $("run-meta").textContent =
-          `${datasets.length} replay variants · 2026-10-29`;
+          `${datasets.length} replay variant${datasets.length === 1 ? "" : "s"}`;
         $("selected-label").textContent =
           `Selected point · spec=mtp · ${d.label}`;
         const fields = [
           ["Offload type", "None"],
-          ["Concurrency", "1"],
+          ["Concurrency", fmt(d.prediction.agentic_lanes, 0)],
           [
             "Chip cache hit",
             fmt(d.prediction.first_admission_prefix_cache_reused_ratio * 100) +
@@ -1861,7 +1865,7 @@
         $("clock-note").textContent =
           state.stage === "profile"
             ? `Profile starts at absolute ${fmt(origin(), 3)}s · charts use phase-relative time`
-            : "Primer + 10 live warmup requests · absolute virtual time";
+            : `Primer ${fmt(d.requests.filter((r) => r.phase === "primer").length, 0)} + ${fmt(d.requests.filter((r) => r.phase === "warmup").length, 0)} live warmup requests · absolute virtual time`;
         $("prev").disabled = datasets.length < 2;
         $("next").disabled = datasets.length < 2;
       }
@@ -1947,7 +1951,7 @@
         } else if (b.hasAttribute("data-close")) b.closest("dialog").close();
         else if (b.dataset.download)
           download(
-            "agentx-446063-" + b.dataset.download + ".json",
+            "agentx-" + dataset().point_id + "-" + b.dataset.download + ".json",
             dataset()[b.dataset.download],
           );
       });

@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Score point 446063 using explicit source IDs and successful profile cohorts.
+"""Score an AgentX point using explicit source IDs and successful profile cohorts.
 
 No timing or cache values are calibrated. Native namespace mapping is supplied
 as evidence; this helper does not infer identity from lengths or timestamps.
@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 REQUEST_ID = re.compile(r"(weka:[0-9a-f]{16}):request:outer:(\d+)(?::inner:(\d+))?$")
-BENCHMARK_URL = "https://inferencex.semianalysis.com/inference/agentic/446063"
+BENCHMARK_URL = "https://inferencex.semianalysis.com/inference/agentic/"
 
 
 def finite(value: Any) -> bool:
@@ -271,8 +271,16 @@ def check_native_summary(prediction: dict, computed: dict) -> list[dict]:
 
 
 def analyze(
-    prediction: dict, reference: list[dict], native: list[dict], namespaces: dict, execution: dict, variant: str
+    prediction: dict,
+    reference: list[dict],
+    native: list[dict],
+    namespaces: dict,
+    execution: dict,
+    variant: str,
+    point_id: int = 446063,
 ) -> tuple[dict, list[dict], dict]:
+    if not isinstance(point_id, int) or isinstance(point_id, bool) or point_id <= 0:
+        raise ValueError("point_id must be a positive integer")
     wall = execution.get("wall_time_seconds")
     if not finite(wall) or wall < 0:
         raise ValueError("execution.json must contain non-negative wall_time_seconds measured around the CLI")
@@ -417,8 +425,9 @@ def analyze(
     ]
     measurement = {
         "schema": "aisimulate.agentx.comparison.v1",
-        "title": f"AgentX 446063 · {variant}",
-        "benchmark_url": BENCHMARK_URL,
+        "title": f"AgentX {point_id} · {variant}",
+        "point_id": point_id,
+        "benchmark_url": f"{BENCHMARK_URL}{point_id}",
         "variant": variant,
         "wall_time_seconds": wall,
         "wall_time_scope": execution.get("wall_time_scope"),
@@ -442,7 +451,7 @@ def analyze(
     }
     summary = {
         "schema": "aisimulate.agentx.accuracy.v1",
-        "point_id": 446063,
+        "point_id": point_id,
         "variant": variant,
         "coverage": coverage,
         "request_e2e_source_matched": all_score,
@@ -523,6 +532,15 @@ def self_test() -> None:
     assert any(row["simulated_terminal_status"] == "canceled" for row in pairs)
     assert any(row["reference_error"] for row in pairs)
     assert all(row["count"] == 1 for row in measurement["comparisons"][2:])
+    alternate_summary, alternate_pairs, alternate_measurement = analyze(
+        {}, refs, native, namespaces, execution, "synthetic self-test", point_id=446068
+    )
+    assert alternate_summary["point_id"] == 446068
+    assert alternate_measurement["point_id"] == 446068
+    assert alternate_measurement["title"] == "AgentX 446068 · synthetic self-test"
+    assert alternate_measurement["benchmark_url"] == f"{BENCHMARK_URL}446068"
+    assert alternate_summary["request_e2e_source_matched"] == summary["request_e2e_source_matched"]
+    assert alternate_pairs == pairs
     assert ape(0, 0) is None and ape(0, 1) is None and ape(1, None) is None and ape(1, 0) == 100
     assert cohort([], False)["output_throughput_tok_s"] is None
     zero = sim(5, 0, 0, 1)
@@ -545,7 +563,7 @@ def self_test() -> None:
         raise AssertionError("Inconsistent published native numerator must be rejected")
     print(
         "Self-test passed: exact namespace/outer/inner joins, ambiguity, errors/cancellation, "
-        "length filters, cohort span, zeros, summary consistency"
+        "length filters, cohort span, zeros, summary consistency, benchmark metadata"
     )
 
 
@@ -565,6 +583,7 @@ def main() -> None:
     for name in ["run-dir", "reference", "namespace-map", "execution", "output-dir"]:
         parser.add_argument(f"--{name}", type=Path)
     parser.add_argument("--variant")
+    parser.add_argument("--point-id", type=int, default=446063, help="InferenceX benchmark ID (default: 446063)")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -583,7 +602,9 @@ def main() -> None:
     if prediction.get("telemetry", {}).get("clock") != "absolute_virtual_ms":
         raise ValueError("Expected native all-phase telemetry on the absolute virtual clock")
     variant = args.variant or execution.get("variant", "unspecified replay variant")
-    summary, pairs, measurement = analyze(prediction, reference, native, namespaces, execution, variant)
+    summary, pairs, measurement = analyze(
+        prediction, reference, native, namespaces, execution, variant, point_id=args.point_id
+    )
     sources = {
         name: provenance(path)
         for name, path in [
