@@ -76,6 +76,40 @@ class PerfLogError(RuntimeError):
 _NVML_INITIALIZED = False
 _NVML_LOCK = threading.Lock()
 
+# Stall-watchdog heartbeat. collect.py's worker registers a sink in each worker
+# process and benchmark_with_power beats once per measurement, so one task that
+# measures hundreds of points (a DSA context series over the whole isl x prefix
+# grid) keeps counting as progress, while a point wedged inside a kernel still
+# goes silent and gets the watchdog's kill after STALL_TIMEOUT_SEC.
+_WORKER_HEARTBEAT: Callable[[], None] | None = None
+
+
+def set_worker_heartbeat(sink: Callable[[], None] | None) -> None:
+    """Register (or clear) the callable that reports liveness to the executor."""
+    global _WORKER_HEARTBEAT
+    _WORKER_HEARTBEAT = sink
+
+
+def worker_heartbeat() -> None:
+    """Report that the running task is still measuring; a no-op outside the executor."""
+    global _WORKER_HEARTBEAT
+    sink = _WORKER_HEARTBEAT
+    if sink is None:
+        # collect.py imports this module as ``helper`` while the op modules import
+        # ``collector.helper``: two module objects, so a sink registered through
+        # one has to be found from the other.
+        for name in ("helper", "collector.helper"):
+            other = sys.modules.get(name)
+            if other is not None and getattr(other, "_WORKER_HEARTBEAT", None) is not None:
+                sink = _WORKER_HEARTBEAT = other._WORKER_HEARTBEAT
+                break
+    if sink is None:
+        return
+    try:
+        sink()
+    except Exception:  # liveness must never fail a measurement
+        pass
+
 
 def _parse_bool_env(env_var: str, default: bool = False) -> bool:
     """
@@ -353,6 +387,9 @@ def benchmark_with_power(
             - 'used_cuda_graph': Boolean indicating if graph was used
     """
     import torch
+
+    # One beat per measurement: the executor's stall watchdog counts it as progress.
+    worker_heartbeat()
 
     # Auto-detect configuration from environment if not explicitly provided
     if measure_power is None:

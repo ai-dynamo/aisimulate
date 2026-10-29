@@ -117,6 +117,7 @@ from helper import (
     perf_transaction_artifact_paths,
     restore_perf_publications,
     save_error_report,
+    set_worker_heartbeat,
     setup_logging,
     setup_signal_handlers,
     validate_restored_perf_publications,
@@ -130,7 +131,10 @@ logger = logging.getLogger("collector")
 _LOGGER_CONFIGURED = False
 RESUME_SCHEMA_VERSION = "collector-resume-v2"
 STALL_THRESHOLD = 30  # iterations (x 0.5 s sleep = 15 s) before logging a stall warning
-# Seconds of ZERO progress with live workers before the stall watchdog acts:
+# Seconds of ZERO progress with live workers before the stall watchdog acts.
+# Progress = a task finished, or a worker heartbeat (helper.worker_heartbeat,
+# one per benchmark_with_power call): one task measuring hundreds of points
+# stays alive, a point wedged inside a kernel does not.
 # dump every worker's thread stacks (SIGUSR1 -> faulthandler), kill the workers,
 # record their in-flight tasks as WorkerStallTimeout and restart the workers so
 # the queue keeps draining. 0 disables. sglang 0.5.21 moe/bf16 on l40s/b300
@@ -1705,6 +1709,7 @@ def worker(
     module_name="unknown",
     current_task_ids=None,
     consumed_sentinel=None,
+    heartbeat=None,
 ):
     """worker with automatic logging setup"""
 
@@ -1725,6 +1730,15 @@ def worker(
     device = torch_mod.device(f"{get_device_str()}:{device_id}")
     get_device_module().set_device(device)
     worker_logger.info(f"Worker {device_id} initialized for {module_name}")
+
+    # Liveness for the executor's stall watchdog: every measurement beats through
+    # helper.worker_heartbeat (benchmark_with_power), so one long task counts as
+    # progress before it finishes.
+    def _beat():
+        if heartbeat is not None:
+            heartbeat.value = time.time()
+
+    set_worker_heartbeat(_beat if heartbeat is not None else None)
 
     # Process tasks
     while True:
@@ -1755,6 +1769,7 @@ def worker(
 
         try:
             worker_logger.debug(f"Starting task {task_id}")
+            _beat()
             result = func(*task, device=device)
             # Only the dedicated sentinel requests a recycle: entrypoints also
             # return plain ints (row counts), which must never be mistaken for
@@ -1927,6 +1942,9 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
     manager = mp.Manager()
     progress_value = manager.Value("i", 0)
     lock = manager.Lock()
+    # Last time any worker reported liveness (helper.worker_heartbeat); the
+    # stall watchdog treats a fresh beat like a finished task.
+    heartbeat = mp.Value("d", 0.0, lock=False)
 
     # Track process health
     process_stats = {i: {"restarts": 0, "errors": []} for i in range(num_processes)}
@@ -1960,6 +1978,7 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
                 module_name,
                 current_task_ids,
                 consumed_sentinel,
+                heartbeat,
             ),
         )
         p.start()
@@ -2112,6 +2131,7 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
 
     with tqdm(total=len(task_infos), desc=f"{module_name}", dynamic_ncols=True, leave=True) as pbar:
         last_progress = 0
+        last_heartbeat = heartbeat.value
         stall_count = 0
         stall_since = None
         stall_diag_sent = False
@@ -2173,7 +2193,14 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
                 pbar.set_postfix({"errors": len(errors)})
                 last_error_count = len(errors)
 
-            if len(accounted) == last_progress:
+            if len(accounted) == last_progress and heartbeat.value > last_heartbeat:
+                # No task finished, but a worker measured another point of a long
+                # task since the last check (helper.worker_heartbeat): progress.
+                last_heartbeat = heartbeat.value
+                stall_count = 0
+                stall_since = None
+                stall_diag_sent = False
+            elif len(accounted) == last_progress:
                 stall_count += 1
                 stall_since = stall_since or time.time()
                 if stall_count > STALL_THRESHOLD:
@@ -2224,6 +2251,7 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
                 stall_since = None
                 stall_diag_sent = False
                 last_progress = len(accounted)
+                last_heartbeat = heartbeat.value
 
             # Check process health — only restart if there is still work
             # remaining.  Workers that consumed a None sentinel or finished

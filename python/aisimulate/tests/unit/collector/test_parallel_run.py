@@ -23,6 +23,7 @@ import os
 import signal
 import sys
 import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -88,6 +89,19 @@ def _task_fn(label, behavior, device):
     elif behavior.startswith("hang_unless:"):
         if not os.path.exists(behavior.split(":", 1)[1]):
             threading.Event().wait()
+    elif behavior.startswith(("beat:", "beat_then_hang:")):
+        # a long series task: one heartbeat per measured point for N seconds
+        # (benchmark_with_power beats the same way); "beat_then_hang" then
+        # wedges like "hang", so the watchdog timer runs from its last beat
+        from helper import worker_heartbeat
+
+        kind, seconds = behavior.split(":", 1)
+        end = time.monotonic() + float(seconds)
+        while time.monotonic() < end:
+            worker_heartbeat()
+            time.sleep(0.1)
+        if kind == "beat_then_hang":
+            threading.Event().wait()
     elif behavior == "oom":
         raise sys.modules["torch"].OutOfMemoryError(f"simulated: {label}")
     # "normal": return silently
@@ -106,6 +120,7 @@ def _worker_dying_after_done(
     module_name="unknown",
     current_task_ids=None,
     consumed_sentinel=None,
+    heartbeat=None,
 ):
     """Scripted stand-in for ``collect.worker`` reproducing the 2026-07-19
     H20 death window: the task SUCCEEDS and lands in ``done_tasks``, but the
@@ -609,6 +624,22 @@ class TestStallWatchdog:
         assert _load_done_ids(tmp_path, module_name) == {f"n{i}" for i in range(6)}
         assert _load_failed_ids(tmp_path, module_name) == {"h0", "h1"}
 
+    def test_heartbeats_hold_the_watchdog_until_the_measuring_task_finishes(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(_collect_mod, "STALL_MAX_ROUNDS", 3)
+        module_name = "stall_heartbeat"
+        # "beat" measures for longer than STALL_TIMEOUT_SEC with one heartbeat per
+        # point and must finish; "quiet" beats briefly, then wedges: it is killed
+        # once nothing else beats, STALL_TIMEOUT_SEC after the last progress
+        tasks = _tasks([("beat", "beat:3.5"), ("quiet", "beat_then_hang:0.5")])
+
+        errors = _run(tasks, 2, tmp_path, module_name=module_name)
+
+        assert self._ids(errors, "WorkerStallTimeout") == {"quiet"}
+        assert self._ids(errors, "WorkerOrphanedTask") == set()
+        assert _crash_errors(errors) == []
+        assert _load_done_ids(tmp_path, module_name) == {"beat"}
+        assert _load_failed_ids(tmp_path, module_name) == {"quiet"}
+
     def test_consecutive_stall_rounds_close_the_op_and_orphans_are_not_failed(self, tmp_path, monkeypatch):
         monkeypatch.setattr(_collect_mod, "STALL_MAX_ROUNDS", 2)
         module_name = "stall_close"
@@ -746,3 +777,26 @@ class TestResumeIntegrity:
         assert _load_done_ids(tmp_path, module_name) == set()
         assert _load_failed_ids(tmp_path, module_name) == set()
         assert _load_attempted_ids(tmp_path, module_name) == set()
+
+
+def test_worker_heartbeat_finds_the_sink_registered_through_the_other_module_name(monkeypatch):
+    """collect.py registers the sink on ``helper``; the op modules beat through
+    ``collector.helper`` (a second module object) and must still reach it."""
+    import types
+
+    import helper
+
+    beats = []
+    twin = types.ModuleType("collector.helper")
+    twin._WORKER_HEARTBEAT = lambda: beats.append(1)
+    monkeypatch.setattr(helper, "_WORKER_HEARTBEAT", None)
+    monkeypatch.setitem(sys.modules, "collector.helper", twin)
+
+    helper.worker_heartbeat()
+    helper.worker_heartbeat()
+
+    assert beats == [1, 1]
+    monkeypatch.setattr(helper, "_WORKER_HEARTBEAT", None)
+    monkeypatch.delitem(sys.modules, "collector.helper")
+    helper.worker_heartbeat()  # no sink anywhere: a silent no-op
+    assert beats == [1, 1]

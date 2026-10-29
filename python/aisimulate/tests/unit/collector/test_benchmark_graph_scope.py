@@ -100,7 +100,13 @@ def trace_benchmark(monkeypatch, *, source=SOURCE, failure=None, explicit=None, 
     monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=cuda))
     tree = ast.parse(source.read_text())
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "benchmark_with_power")
-    namespace = {"contextmanager": contextmanager, "get_device_module": lambda: cuda, "logging": logging, "time": time}
+    namespace = {
+        "contextmanager": contextmanager,
+        "get_device_module": lambda: cuda,
+        "logging": logging,
+        "time": time,
+        "worker_heartbeat": lambda: events.append("heartbeat"),
+    }
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), "exec"), namespace)
     kwargs = {
         "device": SimpleNamespace(index=0),
@@ -191,6 +197,14 @@ def test_eager_warmups_can_be_fewer_than_replay_warmups(monkeypatch):
     assert zero["events"].count("kernel") == 1  # capture only
     default = trace_benchmark(monkeypatch)
     assert default["events"].count("kernel") == 3  # num_warmups eager passes + capture, unchanged
+
+
+def test_every_measurement_beats_the_stall_watchdog_before_touching_the_kernel(monkeypatch):
+    graph = trace_benchmark(monkeypatch)
+    assert graph["events"].count("heartbeat") == 1
+    assert graph["events"].index("heartbeat") < graph["events"].index("kernel")
+    eager = trace_benchmark(monkeypatch, eager=True)
+    assert eager["events"].count("heartbeat") == 1
 
 
 def test_eager_does_not_touch_graph_lifetime_in_either_mode(monkeypatch):
