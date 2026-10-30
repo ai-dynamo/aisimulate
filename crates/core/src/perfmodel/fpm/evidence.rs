@@ -66,7 +66,8 @@ pub struct FpmRankEstimate {
 /// Additive detailed result from the canonical returned model. Native timing
 /// reduces ranks by maximum, then applies `correction_factor`. Native
 /// estimators record every rank: whole-model FPM with its direct lookups,
-/// operation graphs with their operations. Other estimators leave it empty.
+/// operation graphs with their operations. An iteration that schedules no work
+/// on any rank, and every non-native estimator, leaves it empty.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ForwardPassEstimate {
     /// Typed support miss from temporary mixed composition. Invalid data still

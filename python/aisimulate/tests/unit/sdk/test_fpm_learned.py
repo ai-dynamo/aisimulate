@@ -524,7 +524,17 @@ def test_exported_artifact_in_rust_matches_fitted_sklearn_model(target: str) -> 
         fpm["scheduled_requests"]["past_kv_lengths"] = past
         iterations.append([fpm])
     params = {"max_iter": 40, "learning_rate": 0.1, "max_leaf_nodes": 15, "min_samples_leaf": 5}
-    artifact = fpm_learned.train(iterations, "decode", target=target, min_store_rows=10, **params)
+    # Per-request features keep the Rust loader's request-list path under test;
+    # the aggregate default would not read the lists.
+    artifact = fpm_learned.train(
+        iterations,
+        "decode",
+        features=fpm_learned.ATOMIC_DECODE_FEATURE_NAMES,
+        target=target,
+        min_store_rows=10,
+        **params,
+    )
+    assert set(artifact["features"]) == set(fpm_learned.ATOMIC_DECODE_FEATURE_NAMES)
 
     # Same rows, hyperparameters and seed as the trainer, so the fit is identical.
     rows, y_ms = fpm_learned.build_dataset(iterations, "decode", artifact["features"])["pure_decode"]

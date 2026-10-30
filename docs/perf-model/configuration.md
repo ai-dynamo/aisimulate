@@ -57,7 +57,8 @@ features. A rank is prefill work only when it schedules fresh prefill tokens
 
 `estimate_forward_pass_detailed(metrics_by_rank)` returns the same latency with
 its composition. Native estimators record one `ranks` entry per input rank, with
-its uncorrected `latency_ms`; `max_rank`, `native_latency_ms` and
+its uncorrected `latency_ms` (an iteration that schedules no work on any rank
+returns no entries); `max_rank`, `native_latency_ms` and
 `correction_factor` explain the reduction. Whole-model FPM ranks carry their
 direct lookups in `queries` (see [Direct FPM query evidence](api/python.md#direct-fpm-query-evidence)).
 Operation-graph ranks (op-level models and DeepSeek-V4.1 stage graphs) carry

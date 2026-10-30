@@ -905,8 +905,9 @@ pooled ten-run training time are in `design.md` §8. Artifacts are 100–450 KB 
 
 - Stock Dynamo FPM v1 carries aggregates only (counts, sums, variances). The
   per-request `extend_lengths` / `past_kv_lengths` lists are an additive
-  extension of the scheduler's `_extract_scheduled`; without them only the
-  `v1` preset carries signal.
+  extension of the scheduler's `_extract_scheduled`. Without them only the
+  aggregate presets carry signal: the default `fpm5` and `v1`. Per-request
+  presets such as `atomic5`, `atomic10`, `sglang18` and `hisim` need the lists.
 - The model extrapolates poorly outside the collected batch/KV range. Check
   the holdout report and cover the intended operating range when collecting.
 - One artifact is one deployment identity (model, engine version, parallelism,
