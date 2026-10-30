@@ -8,7 +8,7 @@ subtitle: Objective metrics, SLA constraints, and Pareto-front scoring
 > [!WARNING]
 > **Experimental.** Sweeper's API, configuration schema, search results, and deployment output
 > may change without a standard deprecation period. Validate shortlisted configurations on the
-> target hardware before using them for production capacity planning.
+> target hardware before using them for production capacity or SLA decisions.
 
 An `OptimizationGoal` (the `goal:` block of a `SmartSearchConfig`) declares **what
 "better" means** plus the SLA constraint. It is pinned, never searched. It picks one
