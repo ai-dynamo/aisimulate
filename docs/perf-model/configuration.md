@@ -225,8 +225,11 @@ KV length `s`, use `num_decode_requests = B*v` and
 `sum_decode_kv_tokens = B*v*s`. Their ratio remains `s`; the query does not apply
 the width again. `predict_decode_latency_total()` wraps the same counters.
 `static_phase_latency()` instead takes the real request batch and applies the
-configured verification width internally. This OP telemetry convention is
-distinct from the [STP FPM speculative approximation](methods/whole-forward.md#estimate-speculative-decode-from-an-stp-fpm):
+configured verification width internally. Here `s` is the attention length
+including the current token: static decode evaluates one step at
+`input_tokens + 1`, so `static_phase_latency(batch_size=B, input_tokens=s-1,
+output_tokens=2, prefill=False)` prices the same step as the packed counters.
+This OP telemetry convention is distinct from the [STP FPM speculative approximation](methods/whole-forward.md#estimate-speculative-decode-from-an-stp-fpm):
 that per-query `draft_length` option takes logical decode request counts and
 total past KV, widens the former and preserves the latter.
 

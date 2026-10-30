@@ -142,6 +142,27 @@ def _packed_decode(batch, width, s):
     return [{"scheduled_requests": {"num_decode_requests": batch * width, "sum_decode_kv_tokens": batch * width * s}}]
 
 
+@pytest.mark.parametrize("depth", [1, 3])
+def test_mtp_packed_decode_counters_match_static_decode_pricing(depth):
+    # B real requests at verification width v and per-request attention
+    # length s pack as N = B*v, K = B*v*s. The oracle is the existing static
+    # decode API: it widens the batch itself and evaluates one step at
+    # s = isl + 1, so isl = s - 1 prices the same point.
+    model = _mtp_model(depth)
+    width = depth + 1
+    try:
+        for batch, s in [(1, 1024), (4, 2048), (16, 4096)]:
+            static = model.static_phase_latency(batch_size=batch, input_tokens=s - 1, output_tokens=2, prefill=False)
+            assert model.estimate_forward_pass_time_ms(_packed_decode(batch, width, s)) == static
+            assert model.predict_decode_latency_total(batch * width, batch * width * s) == static
+            # K/N is the attention length including the current token: static
+            # decode over s past tokens prices one more KV token per request.
+            past = model.static_phase_latency(batch_size=batch, input_tokens=s, output_tokens=2, prefill=False)
+            assert past > static
+    finally:
+        model.close()
+
+
 @pytest.mark.parametrize("depth", [0, 1])
 def test_op_level_detailed_ranks_report_operation_evidence(depth):
     model = _mtp_model(depth)
