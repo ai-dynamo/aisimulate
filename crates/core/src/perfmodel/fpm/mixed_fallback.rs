@@ -545,6 +545,12 @@ impl MixedComposition {
             .collect()
     }
 
+    pub(super) fn is_fallback_eligible(&self, kind: Kind) -> bool {
+        self.routes
+            .iter()
+            .any(|route| route.workload_kind == kind && route.fallback_eligible)
+    }
+
     pub(super) fn eligible_kind(
         &self,
         group: &[ForwardPassMetrics],
@@ -562,13 +568,8 @@ impl MixedComposition {
             return Ok(None);
         }
         Ok(
-            classify_regression_workload(group, ForwardPassWorkerType::Aggregated)?.filter(
-                |kind| {
-                    self.routes
-                        .iter()
-                        .any(|r| r.workload_kind == *kind && r.fallback_eligible)
-                },
-            ),
+            classify_regression_workload(group, ForwardPassWorkerType::Aggregated)?
+                .filter(|kind| self.is_fallback_eligible(*kind)),
         )
     }
 

@@ -196,6 +196,85 @@ impl Fixture {
 }
 
 #[test]
+fn mixed_readiness_reports_available_routes_without_probing_query_coverage() {
+    use crate::perfmodel::fpm::ForwardPassStoreNotReadyReason;
+
+    for calibrated in [false, true] {
+        for (cross_rows, local_rows) in [(0, 0), (2, 0), (0, 2), (2, 2)] {
+            let fixture = Fixture::new(cross_rows, local_rows, calibrated);
+            let table = tempfile::tempdir().unwrap();
+            let mut model = ForwardPassPerfModel::from_learned(
+                &fixture.learned.to_json().unwrap(),
+                ForwardPassPerfOptions::default(),
+            )
+            .unwrap();
+            let ordinary_report = model.readiness_report();
+            let ordinary_diagnostics = model.regression_store_diagnostics();
+            for (store, diagnostics) in ordinary_report.stores.iter().zip(&ordinary_diagnostics) {
+                let trained = fixture.learned.has_store(store.workload_kind);
+                assert_eq!(store.ready, trained);
+                assert_eq!(diagnostics.ready, trained);
+                assert_eq!(
+                    store.not_ready_reason,
+                    (!trained).then_some(ForwardPassStoreNotReadyReason::UntrainedForestStore)
+                );
+            }
+
+            model.mixed_composition = Some(fixture.runtime(table.path()));
+            let state = model.mixed_composition_state().unwrap();
+            let report = model.readiness_report();
+            let diagnostics = model.regression_store_diagnostics();
+            assert!(report.ready);
+            assert_eq!(report.corrections, ordinary_report.corrections);
+            for (index, store) in report.stores.iter().enumerate() {
+                assert!(
+                    store.ready,
+                    "{calibrated} {cross_rows} {local_rows}: {store:?}"
+                );
+                assert_eq!(store.not_ready_reason, None);
+                assert!(diagnostics[index].ready);
+                assert_eq!(
+                    store.retained_observations,
+                    ordinary_report.stores[index].retained_observations
+                );
+                assert_eq!(
+                    diagnostics[index].retained_observations,
+                    ordinary_diagnostics[index].retained_observations
+                );
+            }
+            assert_eq!(model.mixed_composition_state().unwrap(), state);
+
+            // Store readiness does not promise interpolation coverage for every
+            // query, and reading it must not query even a broken prior table.
+            if cross_rows == 0 {
+                let mut uncovered = group(Kind::CrossRankAggregated);
+                uncovered[1].scheduled_requests.num_decode_requests = 8;
+                uncovered[1].scheduled_requests.sum_decode_kv_tokens = 256;
+                assert_eq!(
+                    model.estimate_forward_pass_time_ms(&uncovered).unwrap(),
+                    None
+                );
+            }
+            let mixed = model.mixed_composition.as_ref().unwrap();
+            std::fs::write(
+                mixed
+                    .engine
+                    .as_ref()
+                    .unwrap()
+                    .database()
+                    .fpm_forward
+                    .parquet_path(),
+                b"invalid",
+            )
+            .unwrap();
+            assert_eq!(model.readiness_report(), report);
+            assert_eq!(model.regression_store_diagnostics(), diagnostics);
+            assert_eq!(model.mixed_composition_state().unwrap(), state);
+        }
+    }
+}
+
+#[test]
 fn mixed_original_a_stream_preserves_decoded_groups_and_checks_every_byte() {
     let mut fixture = Fixture::new(2, 2, false);
     // Cross multiple read-buffer boundaries, including metadata after groups.

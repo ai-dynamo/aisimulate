@@ -405,7 +405,13 @@ error.
 
 `mixed_composition_diagnostics()` reports
 the eligibility reasons, selection policy, accepted A counts, pinned sources, score bounds and retained
-calibration state. `mixed_composition_state()` and
+calibration state. With the policy enabled, `diagnostics()` includes the same
+value in its optional `temporary_mixed_composition` field; that field is omitted
+when the policy is disabled. Both `readiness_report()` and
+`regression_store_diagnostics()` count an eligible mixed interpolation route as
+ready, including before a mixed forest exists or calibration has enough samples.
+This reports estimator availability, not query coverage: an unsupported query
+can still return no estimate. `mixed_composition_state()` and
 `restore_mixed_composition_state(snapshot)` save and restore only the mixed
 calibration and standalone quality state, with identity, source and policy checks. They do not save the
 ordinary experts, selector histories or the caller's admission cursor; preserve

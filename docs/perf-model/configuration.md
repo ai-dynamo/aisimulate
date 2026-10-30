@@ -567,9 +567,15 @@ Gates for replaying a saved model read the snapshot without loading it.
 `RustForwardPassPerfModel.inspect_state_snapshot(path)` returns the snapshot
 kind, versions, pinned identity, deployment topology and the readiness report
 recorded at save time. `model.readiness_report()` lists, for every logical
-workload store of the worker role, whether its iterations receive an estimate
+workload store of the worker role, whether an estimator route is available
 and why not (`insufficient_data`, `no_usable_fit` or `untrained_forest_store`),
 plus every correction store's readiness; native estimators are always ready.
+Eligible mixed interpolation routes count as ready even when their learned
+forest store is absent, consistently with `regression_store_diagnostics()`.
+Readiness does not guarantee coverage for every query: an interpolation route
+can still return no estimate outside its support. Portable snapshots reject
+the temporary mixed policy, so snapshot inspection does not report mixed
+fallback readiness.
 `model.deployment_topology()` reports the identity's worker role, parallelism,
 speculation, KV block size and fixed correction limits.
 `RustForwardPassPerfModel.config_engine_launch_mismatches(engine_args, state_snapshot=path)`

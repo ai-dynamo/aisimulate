@@ -114,6 +114,10 @@ def test_mixed_selector_bootstrap_preserves_pure_state_and_uses_only_future_pair
         assert experts["stable"] == initial_experts["stable"]
         assert MIXED not in experts["stable"]["stores"]
         assert experts["online"]["stores"][MIXED] == online.export_learned_artifact()["stores"][MIXED]
+        # The stable route remains interpolation after the C forest arrives.
+        readiness = next(store for store in model.readiness_report()["stores"] if store["workload_kind"] == MIXED)
+        assert readiness["ready"] and readiness["not_ready_reason"] is None
+        assert next(store for store in model.regression_store_diagnostics() if store["workload_kind"] == MIXED)["ready"]
         for kind in ("pure_decode", "pure_prefill"):
             assert experts["online"]["stores"][kind] == initial_experts["online"]["stores"][kind]
         assert model.learned_online_diagnostics()["stores"][MIXED]["accepted_observations"] == 0

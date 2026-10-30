@@ -122,6 +122,66 @@ def _load(fixture, checkpoint=None, **kwargs):
     return RustForwardPassPerfModel.best_available(_config(fixture, checkpoint, **kwargs))
 
 
+@pytest.mark.parametrize("mode", ["a_only", "online", "frozen_hybrid", "quality_gate", "causal_selector"])
+def test_mixed_readiness_and_diagnostics_public_contract(mixed_seed, mode):
+    adaptation = {
+        "a_only": "frozen",
+        "frozen_hybrid": "frozen",
+        "quality_gate": "online",
+    }.get(mode, mode)
+    config = _config(mixed_seed, adaptation=adaptation)
+    estimator = config["estimator_config"]
+    policy = estimator["temporary_mixed_composition"]
+    if mode == "a_only":
+        policy.update(scenario="a", mode="compose")
+    elif mode == "frozen_hybrid":
+        estimator["correction"] = {"enabled": True, "mode": "hybrid"}
+    elif mode == "quality_gate":
+        policy["quality_gate"] = {"alpha": 1.0, "min_comparisons": 1}
+    ordinary_config = deepcopy(config)
+    del ordinary_config["estimator_config"]["temporary_mixed_composition"]
+    model = RustForwardPassPerfModel.best_available(config)
+    ordinary = RustForwardPassPerfModel.best_available(ordinary_config)
+    try:
+        report = model.readiness_report()
+        stores = {entry["workload_kind"]: entry for entry in report["stores"]}
+        ordinary_stores = {entry["workload_kind"]: entry for entry in ordinary.readiness_report()["stores"]}
+        for current in (model, ordinary):
+            assert [(entry["workload_kind"], entry["ready"]) for entry in current.readiness_report()["stores"]] == [
+                (entry["workload_kind"], entry["ready"]) for entry in current.regression_store_diagnostics()
+            ]
+        for kind in ("contains_locally_mixed", "cross_rank_aggregated"):
+            assert stores[kind]["ready"]
+            assert stores[kind]["not_ready_reason"] is None
+            assert not ordinary_stores[kind]["ready"]
+            assert ordinary_stores[kind]["not_ready_reason"] == "untrained_forest_store"
+        for kind in ("pure_decode", "pure_prefill"):
+            assert stores[kind] == ordinary_stores[kind]
+        assert ordinary.estimate_forward_pass_time_ms(_iteration()) is None
+        assert model.estimate_forward_pass_time_ms(_iteration()) == 4.0
+
+        # Readiness names an available route, even when a particular query
+        # falls outside that route's interpolation support.
+        unsupported = _iteration()
+        unsupported[0]["scheduled_requests"].update(num_decode_requests=8, sum_decode_kv_tokens=256)
+        assert model.estimate_forward_pass_time_ms(unsupported) is None
+        assert model.readiness_report() == report
+
+        mixed = model.mixed_composition_diagnostics()
+        assert mixed is not None
+        assert model.diagnostics()["temporary_mixed_composition"] == mixed
+        assert ordinary.mixed_composition_diagnostics() is None
+        assert "temporary_mixed_composition" not in ordinary.diagnostics()
+        if mode != "a_only":
+            model.tune_with_fpms([_iteration(index=1), _iteration(index=2)])
+            updated = model.mixed_composition_diagnostics()
+            assert updated != mixed
+            assert model.diagnostics()["temporary_mixed_composition"] == updated
+    finally:
+        model.close()
+        ordinary.close()
+
+
 def test_original_a_manifest_matches_default_aggregated_training_eligibility(tmp_path, phase_roots):
     config, make_root = phase_roots
     config["systems_paths"] = [make_root("default-features")]

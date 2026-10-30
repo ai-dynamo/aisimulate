@@ -269,6 +269,17 @@ admissions. Expert availability is null when that expert was not queried.
 `mixed_composition_route()` is read-only but may itself evaluate an expert;
 calling it after a separate estimate can repeat work.
 
+`mixed_composition_diagnostics()` reports original-A eligibility, pinned
+sources, selection policy and retained mixed calibration state. When the policy
+is enabled, `diagnostics()["temporary_mixed_composition"]` contains the same
+value; ordinary models omit this optional field. Both `readiness_report()` and
+`regression_store_diagnostics()` count eligible interpolation routes as ready
+in A-only, online, frozen hybrid, quality-gated and selector modes. This remains
+true before a mixed forest exists or calibration has enough samples: the raw
+prior can already predict supported queries. Readiness describes an available
+estimator route, not coverage for every query; unsupported queries can still
+return no estimate.
+
 `mixed_composition_state()` serializes calibration and optional standalone
 quality evidence. Restoration validates version, original A, deployment,
 interpolation sources, geometry, settings, counters and retained observations
