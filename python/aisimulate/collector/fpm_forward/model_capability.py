@@ -21,7 +21,11 @@ from aisimulate.sdk.utils import (
     _get_model_config_path,
     _parse_hf_config_json,
 )
-from aisimulate_core.sdk.fpm_model_metadata import attach_quantization_sidecar, inherit_decoder_precision
+from aisimulate_core.sdk.fpm_model_metadata import (
+    attach_quantization_sidecar,
+    decoder_config_key,
+    inherit_decoder_precision,
+)
 
 _ATTENTION_SOURCE_OPS = {
     "dsa_module": frozenset({"dsa_context_module", "dsa_generation_module"}),
@@ -69,15 +73,16 @@ class ResolvedModelConfig:
         """Return decoder metadata, inheriting only identity and shared precision."""
 
         payload = self.payload
-        text_config = payload.get("text_config")
-        if isinstance(text_config, dict):
-            effective, _ = inherit_decoder_precision(payload, text_config)
+        key = decoder_config_key(payload)
+        decoder = payload.get(key)
+        if isinstance(decoder, dict):
+            effective, _ = inherit_decoder_precision(payload, decoder)
             if effective.get("architectures") is None and payload.get("architectures") is not None:
                 effective["architectures"] = payload["architectures"]
         else:
             effective = payload
         sidecar = effective.get("hf_quant_config")
-        if sidecar is None and isinstance(text_config, dict) and isinstance(payload.get("hf_quant_config"), dict):
+        if sidecar is None and isinstance(decoder, dict) and isinstance(payload.get("hf_quant_config"), dict):
             try:
                 return attach_quantization_sidecar(effective, payload["hf_quant_config"])
             except ValueError:
@@ -155,11 +160,12 @@ def _load_json_mapping(path: Path, *, description: str) -> tuple[dict[str, Any],
 
 
 def _attach_modelopt_sidecar(payload: dict[str, Any], sidecar: dict[str, Any]) -> dict[str, Any]:
-    text_config = payload.get("text_config")
+    key = decoder_config_key(payload)
+    decoder = payload.get(key)
     if payload.get("hf_quant_config") is not None and payload["hf_quant_config"] != sidecar:
         raise ValueError("conflicting inline hf_quant_config and adjacent hf_quant_config.json")
-    if isinstance(text_config, dict):
-        decoder, _ = inherit_decoder_precision(payload, text_config)
+    if isinstance(decoder, dict):
+        decoder, _ = inherit_decoder_precision(payload, decoder)
         attach_quantization_sidecar(decoder, sidecar)  # Reject contradictory source declarations before planning.
     else:
         attach_quantization_sidecar(payload, sidecar)
