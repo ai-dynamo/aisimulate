@@ -232,19 +232,21 @@ def test_indexer_history_rejects_an_incompatible_packed_cache(monkeypatch, torch
         )
 
 
-@pytest.mark.parametrize("mode,block", [("fp8", None), ("fp8_block", [128, 128])])
-def test_fp8_modes_construct_distinct_native_configs(monkeypatch, mode, block):
+def test_fp8_block_constructs_the_native_block_config_and_per_tensor_fp8_is_gone(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "vllm.model_executor.layers.quantization.fp8",
         SimpleNamespace(Fp8Config=lambda **kwargs: kwargs),
     )
-    config = _load_function("_create_gemm_quant_config")(mode)
-    assert config == {
+    create = _load_function("_create_gemm_quant_config")
+    assert create("fp8_block") == {
         "is_checkpoint_fp8_serialized": True,
         "activation_scheme": "dynamic",
-        "weight_block_size": block,
+        "weight_block_size": [128, 128],
     }
+    # per-tensor fp8 MLA/DSA module combos were removed 2026-10-30
+    with pytest.raises(ValueError, match="Unknown gemm_type"):
+        create("fp8")
 
 
 def test_nvfp4_config_preserves_native_modelopt_without_projection_exclusions(monkeypatch):

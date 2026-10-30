@@ -596,19 +596,9 @@ def _create_gemm_quant_config(gemm_type: str):
     """
     if gemm_type == "bfloat16":
         return None
-    if gemm_type in ("fp8", "fp8_block"):
+    if gemm_type == "fp8_block":
         from vllm.model_executor.layers.quantization.fp8 import Fp8Config
 
-        # Match the existing GEMM collector's fp8 contract: tensor-scaled
-        # weights with dynamic activations, not fp8_static. Native Fp8LinearMethod
-        # selects the activation granularity/kernel (fp8.py:298-322 at
-        # vLLM v0.25.1, commit 752a3a504485790a).
-        if gemm_type == "fp8":
-            return Fp8Config(
-                is_checkpoint_fp8_serialized=True,
-                activation_scheme="dynamic",
-                weight_block_size=None,
-            )
         # vLLM requires is_checkpoint_fp8_serialized=True for block-scaled
         # FP8 (fp8.py raises ValueError otherwise).  This routes through
         # Fp8LinearMethod (block_quant=True) → W8A8BlockFp8LinearOp →
@@ -830,7 +820,7 @@ def _create_attention_module(
             _create_kv_cache_and_metadata fails closed if the decision
             does not match the case label.
         gemm_type: Precision for linear-layer GEMMs — "bfloat16",
-            "fp8", "fp8_block", or "nvfp4".
+            "fp8_block", or "nvfp4".
     """
     from vllm.model_executor.models.deepseek_v2 import DeepseekV2MLAAttention
 
@@ -1983,7 +1973,7 @@ def main():
     parser.add_argument(
         "--gemm-type",
         type=str,
-        choices=["bfloat16", "fp8", "fp8_block", "nvfp4"],
+        choices=["bfloat16", "fp8_block", "nvfp4"],
         default=None,
         help="GEMM quantisation type for linear layers (default: run all supported by GPU)",
     )
