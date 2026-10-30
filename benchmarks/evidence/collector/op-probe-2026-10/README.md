@@ -15,6 +15,11 @@ Citations in the code name either a finding key or a results file below. Grep
 a finding key, such as `sm100_probe_failures_recheck_2026_10_04`, to reach its
 statement.
 
+Every file here is an excerpt: `findings.yaml` keeps the 20 findings the code
+cites, and each results file keeps `_meta` plus the models the citing comments
+name. `_meta.summary` still counts the full matrix. The complete archive lands
+with the op-probe harness.
+
 ## Files
 
 - `findings.yaml`: curated conclusions, one entry per key. Each statement gives
