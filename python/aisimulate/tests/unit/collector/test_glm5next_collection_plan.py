@@ -170,7 +170,8 @@ def test_vllm_nvfp4_uses_modelopt_only_for_the_glm53flash_checkpoint(monkeypatch
     "version,accepted",
     [
         ("0.31.0", True),
-        ("0.30.0", False),
+        # 0.30.0 is the vLLM query slot's current version.
+        ("0.30.0", True),
         ("0.28.0", False),
         ("0.29.0", False),
         ("0.31.1", False),
@@ -179,9 +180,6 @@ def test_vllm_nvfp4_uses_modelopt_only_for_the_glm53flash_checkpoint(monkeypatch
     ],
 )
 def test_vllm_collectors_admit_exactly_the_audited_releases(path, version, accepted):
-    # collect_gemm also admits 0.30.0, the vLLM query slot's current version.
-    if path.endswith("collect_gemm.py") and version == "0.30.0":
-        accepted = True
     assert _check_compat(_compat(path), version) is accepted
 
 
