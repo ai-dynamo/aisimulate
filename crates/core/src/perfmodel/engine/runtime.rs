@@ -3109,6 +3109,7 @@ impl Engine {
                 ctx_tokens,
                 gen_tokens,
                 new_tokens_per_req.max(1),
+                n_prefill,
                 prefix_per_req,
                 sched.sum_prefill_kv_tokens,
                 kv_per_req,
@@ -3520,6 +3521,7 @@ pub(crate) mod tests {
             16,
             8,
             16,
+            1,
             0,
             0,
             16,
@@ -3564,6 +3566,7 @@ pub(crate) mod tests {
                 new_tokens,
                 8,
                 isl - prefix,
+                requests,
                 prefix,
                 ctx - new_tokens,
                 isl,
@@ -3575,6 +3578,21 @@ pub(crate) mod tests {
                 "telemetry chunk={ctx}, prefix={prefix}"
             );
         }
+        // Three prefills of 4, 3 and 3 tokens beside two width-four decodes:
+        // the integer average (3) must not invent a fourth recurrent state.
+        let metrics = ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_prefill_requests: 3,
+                sum_prefill_tokens: 10,
+                num_decode_requests: 8,
+                sum_decode_kv_tokens: 128,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let bytes = 10.0 * 18_560.0 + 3.0 * 2_097_152.0 + 10_634_240.0;
+        let got = engine.forward_pass_time_ms(&[metrics]).unwrap();
+        assert!((got - bytes / engine.db.system_spec.gpu.mem_bw * 1000.0).abs() < 1e-12);
         if let Op::Mamba2(op) = &mut engine.context_ops[0] {
             op.name = "draft_context_ssm".into();
         }
@@ -7251,6 +7269,7 @@ pub(crate) mod tests {
             2 * new_tokens,
             generation,
             new_tokens,
+            2,
             prefix,
             2 * prefix,
             kv,
