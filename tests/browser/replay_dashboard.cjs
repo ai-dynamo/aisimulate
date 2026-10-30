@@ -53,6 +53,42 @@ function close(actual, expected, message) {
     );
 }
 
+function activeReference(requests, observations) {
+  const result = { input_length: [], output_length: [], footprint: [] };
+  for (const sample of observations) {
+    const time = sample.t * 1000;
+    const active = requests.filter(
+      (row) =>
+        finite(row.arrival_time_ms) &&
+        row.arrival_time_ms <= time &&
+        (finite(row.terminal_time_ms)
+          ? row.terminal_time_ms > time
+          : row.terminal_status === "incomplete"),
+    );
+    result.input_length.push(mean(active.map((row) => row.input_length)));
+    result.output_length.push(mean(active.map((row) => row.output_length)));
+    const maxima = new Map();
+    let unknown = false;
+    for (const row of active) {
+      if (
+        !(row.agentic?.conversation_id || row.session_id) ||
+        !finite(row.input_length)
+      ) {
+        unknown = true;
+        break;
+      }
+      const key = conversationKey(row);
+      maxima.set(key, Math.max(maxima.get(key) ?? 0, row.input_length));
+    }
+    result.footprint.push(
+      unknown
+        ? null
+        : [...maxima.values()].reduce((sum, value) => sum + value, 0),
+    );
+  }
+  return result;
+}
+
 async function main() {
   assert.ok(
     process.argv[2],
@@ -221,6 +257,187 @@ async function main() {
           }
           await mode(id, "distribution");
         }
+      },
+    );
+    await check(
+      "active series sweep matches the reference at boundaries and missing observations",
+      async () => {
+        const base = {
+          arrival_time_ms: 120000,
+          terminal_time_ms: 124000,
+          terminal_status: "completed",
+          input_length: 30,
+          output_length: 3,
+          play_id: "first",
+          agentic: { conversation_id: "shared" },
+        };
+        const requests = [
+          base,
+          { ...base, input_length: 70, terminal_time_ms: 122000 },
+          { ...base, input_length: 70, terminal_time_ms: 123000 },
+          { ...base, play_id: "second", input_length: 50 },
+          { ...base, arrival_time_ms: 122000, input_length: 90 },
+          { ...base, arrival_time_ms: 124000, terminal_time_ms: 124000 },
+          { ...base, arrival_time_ms: 125000, terminal_time_ms: 124000 },
+          { ...base, arrival_time_ms: null },
+          { ...base, terminal_time_ms: null },
+          { ...base, terminal_time_ms: null, terminal_status: "incomplete" },
+          {
+            ...base,
+            arrival_time_ms: 124000,
+            terminal_time_ms: 125000,
+            agentic: null,
+          },
+          {
+            ...base,
+            arrival_time_ms: 125000,
+            terminal_time_ms: 126000,
+            input_length: null,
+          },
+          {
+            ...base,
+            arrival_time_ms: 126000,
+            terminal_time_ms: 127000,
+            output_length: null,
+          },
+          {
+            ...base,
+            arrival_time_ms: 127000,
+            terminal_time_ms: 128000,
+            terminal_status: "cancelled",
+          },
+          {
+            ...base,
+            arrival_time_ms: 127000,
+            terminal_time_ms: 128000,
+            terminal_status: "failed",
+          },
+          { ...base, agentic: null, session_id: "session", input_length: -1 },
+        ];
+        for (let index = 0; index < 200; index++)
+          requests.push({
+            ...base,
+            arrival_time_ms: 120000 + (index % 41) * 53,
+            terminal_time_ms: 120000 + (index % 41) * 53 + (index % 19) * 97,
+            input_length: (index * 61) % 107,
+            output_length: index % 7 === 0 ? null : index % 13,
+            play_id: index % 3,
+            agentic: { conversation_id: "conversation-" + (index % 11) },
+          });
+        const observations = [
+          ...Array.from({ length: 230 }, (_, index) => ({
+            t: 119 + index / 23,
+          })),
+          ...[119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 130].map(
+            (t) => ({ t }),
+          ),
+        ].reverse();
+        const actual = await page.evaluate(
+          ({ requests, observations }) =>
+            activeRequestSeries(requests, observations),
+          { requests, observations },
+        );
+        const expected = activeReference(requests, observations);
+        for (const key of Object.keys(expected))
+          expected[key].forEach((value, index) =>
+            close(
+              actual[key][index],
+              value,
+              `${key} at ${observations[index].t}`,
+            ),
+          );
+      },
+    );
+    await check(
+      "100k requests and 3600 samples use one event sweep",
+      async () => {
+        const performanceResult = await page.evaluate(() => {
+          let arrivalReads = 0;
+          const requests = Array.from({ length: 100000 }, (_, index) => ({
+            get arrival_time_ms() {
+              arrivalReads++;
+              return 900000 + index * 36;
+            },
+            terminal_time_ms: 900000 + index * 36 + 1200000,
+            terminal_status: "completed",
+            input_length: (index * 61) % 100003,
+            output_length: index % 1024,
+            play_id: "large",
+            session_id: "shared",
+          }));
+          const observations = Array.from({ length: 3600 }, (_, index) => ({
+            t: 900 + index,
+          }));
+          const started = performance.now();
+          const result = activeRequestSeries(requests, observations);
+          return {
+            elapsed_ms: performance.now() - started,
+            arrival_reads: arrivalReads,
+            samples: result.footprint.length,
+            input_at_start: result.input_length[0],
+            footprint_at_start: result.footprint[0],
+            last_footprint: result.footprint.at(-1),
+          };
+        });
+        assert.equal(performanceResult.samples, 3600);
+        assert.equal(performanceResult.arrival_reads, 100000);
+        assert.equal(performanceResult.input_at_start, 0);
+        assert.equal(performanceResult.footprint_at_start, 0);
+        assert.ok(performanceResult.last_footprint > 0);
+        assert.ok(
+          performanceResult.elapsed_ms < 5000,
+          JSON.stringify(performanceResult),
+        );
+        await fs.writeFile(
+          path.join(output, "active-series-performance.json"),
+          JSON.stringify(performanceResult, null, 2),
+        );
+      },
+    );
+    await check(
+      "active series cache preserves phase clocks across theme and phase redraws",
+      async () => {
+        const original = await page.evaluate(() => {
+          globalThis.cachedSeriesBeforeRedraw = activeSeries();
+          return activeSeries();
+        });
+        assert.deepEqual(original, activeReference(profile, samples));
+        await page.locator("#theme").click();
+        await ready();
+        assert.equal(
+          await page.evaluate(
+            () => activeSeries() === globalThis.cachedSeriesBeforeRedraw,
+          ),
+          true,
+        );
+        assert.deepEqual(await page.evaluate(() => activeSeries()), original);
+        if (report.phases.preparation) {
+          await stage("preparation");
+          const preparation = report.requests.filter((row) =>
+            ["primer", "warmup", "preparation", "aborted"].includes(row.phase),
+          );
+          assert.deepEqual(
+            await page.evaluate(() => activeSeries()),
+            activeReference(
+              preparation,
+              report.samples.filter((sample) => sample.phase === "preparation"),
+            ),
+          );
+          assert.equal(await page.evaluate(() => activeSeriesByPhase.size), 2);
+          await stage("profile");
+          assert.deepEqual(await page.evaluate(() => activeSeries()), original);
+        }
+        await page.locator("#theme").click();
+        await ready();
+        assert.equal(
+          await page.evaluate(
+            () => activeSeries() === globalThis.cachedSeriesBeforeRedraw,
+          ),
+          true,
+        );
+        await page.evaluate(() => {
+          delete globalThis.cachedSeriesBeforeRedraw;
+        });
       },
     );
     await check(

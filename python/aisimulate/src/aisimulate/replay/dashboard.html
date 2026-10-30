@@ -1018,14 +1018,105 @@
           );
         return "";
       }
-      function activeAt(row, timeMs) {
-        return (
-          finite(row.arrival_time_ms) &&
-          row.arrival_time_ms <= timeMs &&
-          (finite(row.terminal_time_ms)
-            ? timeMs < row.terminal_time_ms
-            : row.terminal_status === "incomplete")
-        );
+      function activeRequestSeries(requests, observations) {
+        const result = {
+            input_length: Array(observations.length).fill(null),
+            output_length: Array(observations.length).fill(null),
+            footprint: Array(observations.length).fill(0),
+          },
+          events = [];
+        for (const row of requests) {
+          const start = row.arrival_time_ms,
+            end = finite(row.terminal_time_ms)
+              ? row.terminal_time_ms
+              : row.terminal_status === "incomplete"
+                ? Infinity
+                : null;
+          if (!finite(start) || end === null || end <= start) continue;
+          const request = {
+            end,
+            input_length: row.input_length,
+            output_length: row.output_length,
+            group: conversationKey(row),
+          };
+          events.push({ time: start, delta: 1, request });
+          if (finite(end)) events.push({ time: end, delta: -1, request });
+        }
+        events.sort((a, b) => a.time - b.time || a.delta - b.delta);
+        const queries = observations
+            .map((sample, index) => ({ time: sample.t * 1000, index }))
+            .filter((query) => finite(query.time))
+            .sort((a, b) => a.time - b.time),
+          sums = { input_length: 0, output_length: 0 },
+          counts = { input_length: 0, output_length: 0 },
+          groups = new Map();
+        let cursor = 0,
+          footprint = 0,
+          unknown = 0;
+        for (const query of queries) {
+          while (cursor < events.length && events[cursor].time <= query.time) {
+            const { time, delta, request } = events[cursor++];
+            for (const key of ["input_length", "output_length"])
+              if (finite(request[key])) {
+                sums[key] += delta * request[key];
+                counts[key] += delta;
+              }
+            if (!request.group || !finite(request.input_length)) {
+              unknown += delta;
+              continue;
+            }
+            // A max-heap per conversation expires finished requests lazily.
+            const heap = groups.get(request.group) || [],
+              previous = Math.max(0, heap[0]?.input_length ?? 0);
+            if (delta > 0) {
+              let index = heap.length;
+              heap.push(request);
+              while (index > 0) {
+                const parent = (index - 1) >>> 1;
+                if (heap[parent].input_length >= request.input_length) break;
+                heap[index] = heap[parent];
+                index = parent;
+              }
+              heap[index] = request;
+            }
+            while (heap.length && heap[0].end <= time) {
+              const last = heap.pop();
+              if (!heap.length) break;
+              let index = 0;
+              while (2 * index + 1 < heap.length) {
+                let child = 2 * index + 1;
+                if (
+                  child + 1 < heap.length &&
+                  heap[child + 1].input_length > heap[child].input_length
+                )
+                  child++;
+                if (last.input_length >= heap[child].input_length) break;
+                heap[index] = heap[child];
+                index = child;
+              }
+              heap[index] = last;
+            }
+            footprint += Math.max(0, heap[0]?.input_length ?? 0) - previous;
+            if (heap.length) groups.set(request.group, heap);
+            else groups.delete(request.group);
+          }
+          for (const key of ["input_length", "output_length"])
+            result[key][query.index] = counts[key]
+              ? sums[key] / counts[key]
+              : null;
+          result.footprint[query.index] = unknown ? null : footprint;
+        }
+        return result;
+      }
+      // Embedded telemetry is immutable, so phase changes and redraws reuse the sweep.
+      const activeSeriesByPhase = new Map();
+      function activeSeries() {
+        if (!activeSeriesByPhase.has(state.stage))
+          activeSeriesByPhase.set(
+            state.stage,
+            activeRequestSeries(rows(), samples()),
+          );
+        return activeSeriesByPhase.get(state.stage);
       }
       function throughput(samples, key) {
         return samples.map((sample, index) => {
@@ -1101,20 +1192,7 @@
             if (!completeCohort())
               empty =
                 "N/A · unfinished requests lack terminal records; the in-flight cohort is incomplete.";
-            traces = [
-              line(
-                "In-flight average",
-                x,
-                ss.map((sample) =>
-                  average(
-                    r
-                      .filter((row) => activeAt(row, sample.t * 1000))
-                      .map((row) => row[key]),
-                  ),
-                ),
-                blue,
-              ),
-            ];
+            traces = [line("In-flight average", x, activeSeries()[key], blue)];
             axes = layout("Tokens");
             note =
               "Mean length among recorded terminal requests active at each sample";
@@ -1123,8 +1201,14 @@
                 ? "Shared prefixes are counted per request; this is not unique-token occupancy."
                 : "Delivered final output length of active requests, not tokens generated so far.";
           } else if (values.length) {
-            const lo = values.reduce((minimum, value) => Math.min(minimum, value), Infinity),
-              hi = values.reduce((maximum, value) => Math.max(maximum, value), -Infinity),
+            const lo = values.reduce(
+                (minimum, value) => Math.min(minimum, value),
+                Infinity,
+              ),
+              hi = values.reduce(
+                (maximum, value) => Math.max(maximum, value),
+                -Infinity,
+              ),
               width = (hi - lo || 1) / 32,
               bins = Array(32).fill(0);
             values.forEach(
@@ -1456,34 +1540,11 @@
           foot =
             "Readmissions do not increase the first-admission denominator. Missing attribution remains N/A.";
         } else if (id === "footprint") {
-          const values = ss.map((sample) => {
-            const active = r.filter((row) => activeAt(row, sample.t * 1000));
-            if (
-              active.some(
-                (row) => !conversation(row) || !finite(row.input_length),
-              )
-            )
-              return null;
-            const maxima = new Map();
-            active.forEach((row) =>
-              maxima.set(
-                conversationKey(row),
-                Math.max(
-                  maxima.get(conversationKey(row)) ?? 0,
-                  row.input_length,
-                ),
-              ),
-            );
-            return [...maxima.values()].reduce(
-              (total, value) => total + value,
-              0,
-            );
-          });
           traces = [
             line(
               "Sum of largest active prompt per conversation",
               x,
-              values,
+              activeSeries().footprint,
               blue,
             ),
           ];

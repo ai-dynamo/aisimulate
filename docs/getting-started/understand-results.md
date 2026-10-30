@@ -243,7 +243,10 @@ native sample interval. Other counters retain their interval or cumulative
 labels. Missing observations stay unavailable; grouped
 caches retain byte capacity and shared host pools are shown once per ownership
 domain. Conversation-level input footprint is the sum of the maximum active
-input length per conversation, not a measurement of physical token uniqueness.
+input length per play and conversation, not a measurement of physical token
+uniqueness. Footprint and in-flight request means include arrivals at the sample
+time and exclude requests ending at that time. A single event sweep per phase
+computes these series; redraws reuse them instead of scanning all requests per sample.
 Native lookup reuse and scheduler pass reuse remain separate metrics.
 
 This report presents simulated measurements only. It does not produce silicon
