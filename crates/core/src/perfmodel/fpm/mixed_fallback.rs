@@ -408,9 +408,11 @@ impl MixedComposition {
             let path = table.parquet_path();
             let file_digest = |path: &Path| -> Result<String, AicError> {
                 let mut reader = HashedFile::open(path)?;
-                std::io::copy(&mut reader, &mut std::io::sink()).map_err(|source| AicError::Io {
-                    path: path.into(),
-                    source,
+                std::io::copy(&mut reader, &mut std::io::sink()).map_err(|source| {
+                    AicError::Io {
+                        path: path.into(),
+                        source,
+                    }
                 })?;
                 Ok(format!("{:x}", reader.digest.finalize()))
             };
