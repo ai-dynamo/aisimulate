@@ -72,6 +72,9 @@ MUST read:
 
 Before making any change under `python/aisimulate/collector/**` MUST read:
 
+- `python/aisimulate/.claude/rules/collector/overview.md` (the five things —
+  Pin, Plan, Record, Note, Rule — the failure principle, collection cost, and
+  what to record when)
 - `python/aisimulate/.claude/rules/collector/layer_permissions.md` (layer
   permission table, module boundary, dispatch-vs-skip rule)
 - `python/aisimulate/.claude/rules/collector/failure_handling.md`

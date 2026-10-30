@@ -112,11 +112,11 @@ python3 collector/collect.py \
 ```
 
 It does not mean the raw backend-registry Cartesian run with no model-case
-flags. Preserve the pruning invariants documented in
-[`collector-v2-population-design.md`](data-format.md).
+flags. Preserve the identity and deduplication invariants in
+[the data format](data-format.md).
 
 For each operation, record raw and retained task counts, physical-key counts,
-model/artifact coverage, dtype counts, and SM exception counts. Quant-sensitive
+model/artifact coverage, dtype counts, and capability-floor drop counts. Quant-sensitive
 artifacts remain separate when the checkpoint changes the executed kernel.
 Verify that every required model emits at least one executable case; a
 successful empty plan is a failure.
@@ -143,6 +143,13 @@ framework would repack its weights into Marlin merely because the timed module
 itself has a BF16 key.
 
 ## 5. Progress from smoke to full collection
+
+Collect only the families whose kernels changed under the new pin, and declare
+reuse (`reuse.yaml` with `approved_by`) for the rest. Re-check every note in
+`collector/notes/<backend>.yaml` that covers a bumped family, by a source check
+or a targeted run of its cases: move `verified_on` when it still holds, delete
+the note when it does not. `check_collector_data.py` R8 fails a note left
+behind the pin.
 
 For each operation, use deterministic smoke coverage rather than relying only
 on a few random cases. Cover representative and boundary combinations of:

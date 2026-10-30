@@ -78,8 +78,7 @@ to parquet under
 The model-centric case layer (introduced as "collector v2") is how collection
 coverage is declared, and it is unchanged under Collector V3 — V3 adds
 op-centric *management* on top (per-family runtime pins, provenance sidecars,
-declared reuse; see `docs/perf_database/collector-v3-op-centric-design.md`),
-it does not replace how cases are declared or healed. A healing run collects
+declared reuse), it does not replace how cases are declared or healed. A healing run collects
 cases for a specific model/GPU pair instead of running every op bucket and
 hoping the support matrix improves. Use `--model-cases-full` when you want
 the case YAML to define a full model-centric run. Omitting all model-case
@@ -300,9 +299,7 @@ resolve a single op's runtime, and
 `collector.framework_manifest.validate_resolution()` to check the whole
 manifest against every backend registry at once — it returns a list of error
 strings (empty = valid) and is the fail-closed CI gate asserting every
-registered op resolves to exactly one pinned runtime. See
-`docs/perf_database/collector-v3-op-centric-design.md` §4 for the full
-design.
+registered op resolves to exactly one pinned runtime.
 
 ## File Naming Convention
 

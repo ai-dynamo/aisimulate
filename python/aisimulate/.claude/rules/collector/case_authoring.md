@@ -12,6 +12,12 @@ How to add or change collection coverage. The declaration surface is exactly
 two kinds of YAML plus one capability table — if you feel the need for a new
 kind of rule, re-read `layer_permissions.md` first.
 
+Read `overview.md` first. Two of its principles govern every change below:
+generate the same cases for all three frameworks (a framework that cannot run
+part of a grid fails those cases and the failures are recorded), and remove
+only whole regions that cannot run, such as an SM without a dtype, when the
+plan is expanded.
+
 ## The equation
 
 ```text
@@ -109,3 +115,5 @@ python3 collect.py --backend trtllm --resume                              # fini
    are cheap; missing interpolation support is not. Tune the base grid instead.
 3. No new YAML keys that condition on batch/seq/token/feature values.
 4. Do not edit `capabilities.yaml` for a framework gap — hardware facts only.
+5. No per-framework narrowing of a shared grid. If one framework cannot run
+   part of it, those cases fail and are recorded.

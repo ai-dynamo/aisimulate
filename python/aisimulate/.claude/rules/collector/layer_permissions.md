@@ -11,7 +11,8 @@ paths:
 Which layer of the collector may hold which kind of rule. This is the single
 most important reference when "fixing" a failing case: pick the layer first,
 then act. Violating these boundaries is how the retired sm_exceptions rule
-engine grew to 1400 lines of shape-sniping rules.
+engine grew to 1400 lines of shape-sniping rules. Read `overview.md` first for
+the vocabulary (Pin, Plan, Record, Note, Rule) and the failure principle.
 
 ## The one-line architecture
 
@@ -69,7 +70,7 @@ wrong data, which is worse than a crash.
    never the intended one.
 4. **Re-verify on every version bump.** Dispatch logic is precisely what
    framework upgrades change. The upgrade audit re-checks every pinned
-   backend and every `FIXME(kernel-limit)` against the new source before
+   backend and every note in `collector/notes/` against the new source before
    collected data is trusted.
 5. **No invented fallbacks.** If the framework-selected path cannot be
    constructed or invoked, raise a classified error — never substitute
@@ -101,8 +102,8 @@ path consumes that field for dense-input walking.
    metadata field changed without a citation is a review finding even when
    the change makes cases pass.
 2. **Serving-parity audit before framework blame.** Before concluding a
-   crash is a framework bug — and before writing any FIXME(kernel-limit)
-   for it — diff EVERY collector-constructed field against the serving
+   crash is a framework bug — and before adding any guard for it — diff
+   EVERY collector-constructed field against the serving
    population code (`model_engine._prepare_tp_inputs` and friends) for the
    failing request shape, field by field. Kernel localization (traceback,
    compute-sanitizer) tells you WHERE it faulted, never WHOSE contract was
@@ -133,38 +134,35 @@ feasibility, under exactly these conditions:
 
 Anything beyond this pattern goes back to the normal rule: run it or raise.
 
-## Parking framework kernel limits: `FIXME(kernel-limit)`
+## Framework kernel limits: let them fail, guard only three cases
 
-Framework kernel limits (backend × SM constraints with shape flavor, e.g.
-"Blackwell attention rejects GQA ratio >= 32 unless divisible by 32") are
-neither hardware facts (not capabilities.yaml material) nor version bugs
-(too stable to ignore). Their home is a **`FIXME(kernel-limit)` comment at
-the invocation site in the owning collector**, stating the claimed limit,
-its origin, and that it is unverified. The affected cases simply fail at
-runtime meanwhile.
+A framework kernel limit (a backend × SM constraint with a shape flavor, such
+as "Blackwell attention rejects GQA ratio >= 32 unless divisible by 32") is
+neither a hardware fact nor a version bug. Usually it needs nothing: the case
+runs, fails, lands in the failure log, and the next run is compared with this
+one. Do not write a probe, a guard or a YAML rule for it, and never express
+it in YAML.
 
-Lifecycle: on the next framework version bump, the upgrade audit greps
-`FIXME(kernel-limit)`, verifies each claim against the framework source, and
-either implements it as a probe (ask the framework's own selector — never a
-prediction) or a guard that raises a classified error citing the framework
-source line, or deletes the note. Do not implement guards from unverified
-claims, and never express these limits in YAML.
+A guard is legal only when running the case would:
 
-**Evidence-backed guards** (owner decision 2026-10-30). Some limits cannot be
-shown in source (a precompiled cubin, a JIT kernel generator inside a shared
-library), and some failures are expensive (a worker-killing abort, a full
-module load per case). A guard for such a limit is legal only when it:
+1. **mismeasure**: succeed on a different kernel than the framework selects
+   in serving, producing a wrongly labeled row;
+2. **hang** or kill the worker; or
+3. **waste significant time**, such as a full module load per case before the
+   failure.
 
-1. **Raises at run time, in the worker, before the expensive step.** Never at
-   plan time: the case stays queued and lands in the failure log as
-   `kernel_limit`, so every run still shows it.
-2. **Starts its message with `FIXME(kernel-limit):`.**
-3. **Cites its evidence.** The framework source line when one exists;
-   otherwise a reproducible failing run (job or shard, collector revision,
-   failure counts) whose passing rows bound the guarded envelope exactly. A
-   single failing case or an unbounded envelope is not evidence.
-4. **Is re-verified on every version bump** like any other
-   `FIXME(kernel-limit)`, by a source check or by one run without it.
+Such a guard raises in the worker before the expensive step, never at plan
+time, so the case stays queued and its failure is recorded on every run. Its
+message starts with `FIXME(kernel-limit):` (the failure classifier keys on
+that prefix) and names its guard note, `G-<backend>-<slug>` in
+`collector/notes/<backend>.yaml`. The note carries the evidence (a framework
+source line, or a reproducible failing run whose passing rows bound the
+guarded envelope) and `verified_on`, so R8 forces a re-check at every pin
+bump.
+
+Existing `FIXME(kernel-limit)` raises without a guard note are legacy. When a
+change touches one, delete it if it guards none of the three cases above, or
+give it a guard note.
 
 ## Version contract: one release per collector file
 
@@ -194,9 +192,9 @@ git, not in side-by-side files or version ranges.
 The collector's outward surface is its **data contract**: the perf row schema
 (columns written by `helper.log_perf`), the canonical filenames
 (`registry_types.PerfFile`), and the parquet finalization format. Everything
-downstream — `src/aiconfigurator/sdk/perf_database.py`, the Rust
-`aiconfigurator-core` operators, `tools/support_matrix/`, packaged data under
-`src/aiconfigurator/systems/data/` — consumes that contract.
+downstream — `src/aisimulate_core/sdk/perf_database.py`, the Rust perf
+database in `crates/core`, `tools/support_matrix/`, packaged data under
+`src/aisimulate_core/systems/data/` — consumes that contract.
 
 Rules:
 
@@ -218,34 +216,21 @@ Rules:
    policy. Do not edit them as a side effect of a fix task; propose changes
    instead.
 
-## Governed exceptions
+## Deviations are notes
 
-A rule in this file may be temporarily excepted ONLY through an entry in the
-`standards_exceptions` registry (`collector/evidence_exceptions.yaml`), and
-only when the entry carries ALL of:
+When a table cannot follow the serving-parity rules above (it times an
+unfused path where serving fuses, or a row is derived from another kernel),
+record a deviation note in `collector/notes/<backend>.yaml`: a
+machine-readable scope (tables, systems, versions), the direction of the
+error, its sources, `verified_on`, and optionally the plan that would retire
+it. The owner accepts it in review (`approved_by`). The note is the one home
+for that fact: code, data comments and docs cite its id instead of restating
+it. Every pin bump re-checks it, moving `verified_on` when it still holds and
+deleting it when it does not; R8 fails a note left behind the pin. Field
+reference: `docs/perf-model/collector/data-format.md` ("Collector notes").
 
-1. **A self-contained machine-readable scope** — the rule excepted, plus the
-   exact tables/backend/systems the exception covers. Prose-only scoping is
-   invalid. `versions: all` (the default; owner decision 2026-10-30) covers
-   every version of the backend: an exception follows the deviation, not a
-   release, and re-verification (item 3) is what bounds it. A version list
-   narrows it.
-2. **The standards owner's `approved_by` sign-off.** These rule files are
-   human-owned policy; only their owner can except them.
-3. **A `verified_on` release and a linked retirement work item** (owner
-   decision 2026-10-30; replaces the former `expires` date). An exception
-   is a debt, not a policy change. Every bump of the collector pin for the
-   covered tables re-checks the deviation against the new release, by a
-   source check or a run, as for a `FIXME(kernel-limit)`: if it still
-   holds, `verified_on` moves to that release; if not, the entry is
-   deleted. An entry whose `verified_on` is behind the pin is stale.
-4. **Consumer-visible provenance** — the deviation must be discoverable from
-   the shipped data's own declaration layer (e.g. the `reuse.yaml` reason or
-   sidecar for the affected tables), never only from this registry.
-
-An exception documents and bounds a deviation; it does not weaken the rule.
-Reviews treat an in-scope entry verified on the current pin as compliant;
-a stale entry, and everything outside its scope, is an ordinary violation.
+A deviation note documents and bounds a deviation; it does not weaken the
+rule. Anything outside a note's scope is an ordinary violation.
 
 ## Meta rules
 
