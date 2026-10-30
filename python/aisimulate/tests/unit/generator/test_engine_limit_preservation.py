@@ -135,18 +135,38 @@ def test_trtllm_explicit_transfer_backend_is_rendered(rule):
 
 @pytest.mark.parametrize("rule", [None, "benchmark"])
 @pytest.mark.parametrize(
-    ("block_size", "max_seq_len", "sla", "keep_buffer", "expected"),
+    ("block_size", "max_seq_len", "sla", "keep_buffer", "extra", "expected"),
     [
-        (None, 8192, {}, False, "tokens_per_block is unset"),
-        (64, 10000, {}, False, "max_seq_len 10000 is not a multiple of tokens_per_block 64"),
-        (64, 8192, {}, False, None),
-        (64, 10000, {"isl": 128, "osl": 16}, False, None),
-        (None, 10000, {}, True, None),
+        (None, 8192, {}, False, None, "tokens_per_block is unset"),
+        (64, 10000, {}, False, None, "max_seq_len 10000 is not a multiple of tokens_per_block 64"),
+        (64, 8192, {}, False, None, None),
+        (64, 10000, {"isl": 128, "osl": 16}, False, None, None),
+        (None, 10000, {}, True, None, None),
+        # extra_engine_args is appended to the engine YAML, so its keys win.
+        (64, 8192, {}, False, {"max_seq_len": 10000}, "max_seq_len 10000 is not a multiple of tokens_per_block 64"),
+        (64, 8192, {}, False, {"kv_cache_config": {"free_gpu_memory_fraction": 0.8}}, "tokens_per_block is unset"),
+        (
+            64,
+            10000,
+            {},
+            False,
+            {"cache_transceiver_config": {"backend": "DEFAULT", "max_tokens_in_buffer": 10048}},
+            None,
+        ),
     ],
-    ids=["unset-block", "trace-unaligned", "trace-aligned", "rule-sized", "explicit-buffer"],
+    ids=[
+        "unset-block",
+        "trace-unaligned",
+        "trace-aligned",
+        "rule-sized",
+        "explicit-buffer",
+        "override-unaligned",
+        "override-drops-block",
+        "override-buffer",
+    ],
 )
 def test_public_trtllm_generation_warns_on_runtime_sized_transfer_buffer(
-    caplog, rule, block_size, max_seq_len, sla, keep_buffer, expected
+    caplog, rule, block_size, max_seq_len, sla, keep_buffer, extra, expected
 ):
     # Direct generation bypasses the Sweeper bridge, so the renderer must warn.
     params = _params(preserve=True, rule=rule)
@@ -158,6 +178,8 @@ def test_public_trtllm_generation_warns_on_runtime_sized_transfer_buffer(
             role_params.pop("cache_transceiver_max_tokens_in_buffer")
         if block_size is None:
             role_params.pop("tokens_per_block")
+        if extra is not None:
+            role_params["extra_engine_args"] = extra
 
     with caplog.at_level(logging.WARNING, logger="aisimulate.generator.rendering.engine"):
         generate_backend_artifacts(params, "trtllm")

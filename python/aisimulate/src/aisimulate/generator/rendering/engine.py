@@ -236,19 +236,26 @@ def _assemble_k8s_context(context: dict[str, Any], has_engine_templates: bool) -
     return k8s_context
 
 
-def _warn_unaligned_trtllm_transfer_buffer(params: dict[str, Any], worker_plan: list[str]) -> None:
+def _warn_unaligned_trtllm_transfer_buffer(rendered_templates: dict[str, str]) -> None:
     """Warn when TRT-LLM may size a P/D KV-transfer buffer off the block grid.
 
     The rules leave the buffer size to TRT-LLM without fixed request lengths or
-    an explicit block size. The requested version need not match the deployed
-    runtime, so this warns instead of rejecting.
+    an explicit block size. The check reads the final engine YAML, so appended
+    extra_engine_args overrides count. The requested version need not match the
+    deployed runtime, so this warns instead of rejecting.
     """
     for role in ("prefill", "decode"):
-        role_params = params.get(role) or {}
-        if role not in worker_plan or role_params.get("cache_transceiver_max_tokens_in_buffer") is not None:
+        try:
+            engine = yaml.safe_load(rendered_templates.get(f"extra_engine_args_{role}.yaml") or "")
+        except yaml.YAMLError:
             continue
-        max_seq_len = role_params.get("max_seq_len")
-        tokens_per_block = role_params.get("tokens_per_block")
+        transceiver = engine.get("cache_transceiver_config") if isinstance(engine, dict) else None
+        # Without a transceiver section the runtime does not size this buffer from max_seq_len.
+        if not isinstance(transceiver, dict) or transceiver.get("max_tokens_in_buffer") is not None:
+            continue
+        max_seq_len = engine.get("max_seq_len")
+        kv_cache_config = engine.get("kv_cache_config")
+        tokens_per_block = kv_cache_config.get("tokens_per_block") if isinstance(kv_cache_config, dict) else None
         if tokens_per_block is None:
             logger.warning(
                 "TRT-LLM %s tokens_per_block is unset, so KV-transfer buffer alignment cannot be checked. "
@@ -375,9 +382,6 @@ def render_backend_templates(
     # alongside prefill/decode/agg. Presence-guarded: no encode role -> unchanged.
     if has_encode:
         worker_plan = worker_plan + ["encode"]
-    # Every public path renders here, so this is the single warning boundary.
-    if backend == "trtllm":
-        _warn_unaligned_trtllm_transfer_buffer(params_obj, worker_plan)
 
     rendered_templates = {}
 
@@ -593,6 +597,9 @@ def render_backend_templates(
                 rendered_templates[out_name] = rendered
         except Exception as e:
             logger.warning(f"Failed to render engine template {engine_template_file.name}: {e}")
+    # Every public path renders here, so this is the single warning boundary.
+    if backend == "trtllm":
+        _warn_unaligned_trtllm_transfer_buffer(rendered_templates)
 
     # Inject inline engine args content into context for k8s template
     # These are used when K8sConfig.k8s_engine_mode == 'inline'
