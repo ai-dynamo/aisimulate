@@ -1678,6 +1678,53 @@ def test_llm_config_markers_and_architecture_match_config_intake(tmp_path, decod
     _validate_checkpoint_architecture(profile)
 
 
+@pytest.mark.parametrize(
+    "key,inner,ambiguity",
+    [
+        ("text_config", "text_config", "ambiguous nested text_config"),
+        ("llm_config", "llm_config", "ambiguous nested llm_config"),
+        ("text_config", "llm_config", "ambiguous nested llm_config in text_config"),
+        ("llm_config", "text_config", "ambiguous nested text_config in llm_config"),
+    ],
+    ids=["text-in-text", "llm-in-llm", "llm-in-text", "text-in-llm"],
+)
+def test_decoder_that_nests_a_decoder_key_is_refused_as_config_intake_refuses_it(tmp_path, key, inner, ambiguity):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    decoder = _packaged_config(_NEMOTRON_SUPER)
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"architectures": ["ExampleMultimodalForConditionalGeneration"], key: {**decoder, inner: decoder}})
+    )
+    with pytest.raises(ValueError) as intake:
+        load_intake_config(path)
+    assert str(intake.value) == f"{ambiguity}; supply one text decoder config or a complete --fpm-profile"
+    refusal = f"{ambiguity}; supply one text decoder config"
+    with pytest.raises(ValueError) as collector:
+        _layout_capability(path, native=True)
+    assert str(collector.value) == refusal
+    # Render reads the same view, so the parser fallback cannot read either decoder.
+    with pytest.raises(ValueError) as render:
+        load_model_config(str(path)).parsed_payload()
+    assert str(render.value) == refusal
+
+
+@pytest.mark.parametrize("key", ["text_config", "llm_config"])
+def test_null_inner_llm_config_is_not_a_decoder_for_the_collector_or_intake(tmp_path, key):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    decoder = {**_packaged_config(_NEMOTRON_SUPER), "llm_config": None}
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"architectures": ["ExampleMultimodalForConditionalGeneration"], key: decoder}))
+    intake = load_intake_config(path)
+    capability = _layout_capability(path, native=True)
+    assert intake.notes["decoder_config"] == f"config {key}; outer model and encoder geometry are excluded"
+    assert ", ".join(intake.runtime_layout) == _NEMOTRON_REASONS
+    assert capability.support_reason == (
+        f"config.json cannot describe this cache layout ({_NEMOTRON_REASONS}). The native runtime measures every cell."
+    )
+
+
 def _detected_layout_plan(tmp_path, monkeypatch, generator_overrides):
     config = _unknown_fp8_moe_config()
     config["layer_types"] = ["linear_attention", "full_attention"] * 2

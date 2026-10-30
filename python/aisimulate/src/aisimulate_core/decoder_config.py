@@ -3,7 +3,7 @@
 
 """Choose the key of a checkpoint config that nests the text decoder.
 
-FPM config intake, the FPM collector and the FPM profile check call this function, so all three read one decoder.
+FPM config intake, the FPM collector and the FPM profile check call decoder_config_key, so all three read one decoder.
 The module imports only the standard library. Config intake must stay usable in a process that does not import
 aisimulate_core.sdk. The cold-process tests in tests/unit/test_support_topology.py and
 tests/unit/test_onboard_topology.py check that. The one exception is a document that holds both text_config and a
@@ -42,3 +42,23 @@ def decoder_config_key(document: Mapping[str, Any]) -> str | None:
     if text_held:
         return "text_config"
     return "llm_config" if llm_held else None
+
+
+def nested_decoder_ambiguity(key: str, decoder: Mapping[str, Any]) -> str | None:
+    """Name the decoder key that a decoder config holds, or return None when it holds none.
+
+    key is the result of decoder_config_key and decoder is the object under it. A decoder that holds a decoder key
+    nests a second decoder, so no caller can tell which one to read. The held rule is that of decoder_config_key:
+    text_config is held whenever the key is present, and llm_config only as a nonempty object. The decoder's own key
+    comes first, then the other decoder key.
+
+    The text is the diagnosis only: "ambiguous nested <key>" for the own key and "ambiguous nested <inner> in <key>"
+    for the other key. Each caller adds its remedy after "; ", because intake accepts a complete --fpm-profile and
+    the collector does not. The function never raises and never reads the registry.
+    """
+    llm_config = decoder.get("llm_config")
+    held = {"text_config": "text_config" in decoder, "llm_config": isinstance(llm_config, dict) and bool(llm_config)}
+    if held.get(key):
+        return f"ambiguous nested {key}"
+    inner = "llm_config" if key == "text_config" else "text_config"
+    return f"ambiguous nested {inner} in {key}" if held[inner] else None

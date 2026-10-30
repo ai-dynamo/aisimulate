@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 
+from aisimulate_core.decoder_config import nested_decoder_ambiguity
 from aisimulate_core.sdk.common import MULTIMODAL_TEXT_CONFIG_KEY
 from aisimulate_core.sdk.fpm_model_metadata import decoder_config_key
 
@@ -80,3 +81,44 @@ def test_decoder_config_key(document, key):
 def test_the_registry_maps_wrappers_only_to_keys_that_the_helper_orders():
     # The helper reads the registry only for a document that holds both keys, so a third key would go unseen.
     assert set(MULTIMODAL_TEXT_CONFIG_KEY.values()) <= {"text_config", "llm_config"}
+
+
+@pytest.mark.parametrize(
+    "key,decoder,ambiguity",
+    [
+        ("text_config", {"text_config": _DECODER}, "ambiguous nested text_config"),
+        ("text_config", {"text_config": None}, "ambiguous nested text_config"),
+        ("llm_config", {"llm_config": _DECODER}, "ambiguous nested llm_config"),
+        ("text_config", {"llm_config": _DECODER}, "ambiguous nested llm_config in text_config"),
+        ("llm_config", {"text_config": _DECODER}, "ambiguous nested text_config in llm_config"),
+        ("llm_config", {"text_config": None}, "ambiguous nested text_config in llm_config"),
+        # The decoder's own key comes first, so intake keeps its text of today.
+        ("text_config", _BOTH_KEYS, "ambiguous nested text_config"),
+        ("llm_config", _BOTH_KEYS, "ambiguous nested llm_config"),
+        # llm_config is held only as a nonempty object, as decoder_config_key holds it.
+        ("llm_config", {"llm_config": None}, None),
+        ("llm_config", {"llm_config": {}}, None),
+        ("text_config", {"llm_config": [_DECODER]}, None),
+        ("text_config", {"llm_config": "decoder"}, None),
+        ("text_config", _DECODER, None),
+        ("llm_config", _DECODER, None),
+    ],
+    ids=[
+        "own-text-config",
+        "own-null-text-config",
+        "own-llm-config",
+        "llm-config-in-text-config",
+        "text-config-in-llm-config",
+        "null-text-config-in-llm-config",
+        "both-keys-in-text-config",
+        "both-keys-in-llm-config",
+        "own-null-llm-config",
+        "own-empty-llm-config",
+        "list-llm-config-in-text-config",
+        "string-llm-config-in-text-config",
+        "flat-text-config",
+        "flat-llm-config",
+    ],
+)
+def test_nested_decoder_ambiguity(key, decoder, ambiguity):
+    assert nested_decoder_ambiguity(key, decoder) == ambiguity

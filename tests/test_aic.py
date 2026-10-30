@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from aisimulate import capacity as aic
@@ -300,3 +302,51 @@ def test_capacity_without_a_database_fails_before_estimation(monkeypatch):
             block_size=64,
             max_num_batched_tokens=4096,
         )
+
+
+_WRAPPER = "ExampleForConditionalGeneration"
+
+
+@pytest.mark.parametrize(
+    "document,expected",
+    [
+        ({"architectures": ["NemotronH_Omni_Reasoning_V3"], "llm_config": {"max_position_embeddings": 262144}}, 262144),
+        (
+            {
+                "architectures": [_WRAPPER],
+                "max_position_embeddings": 4096,
+                "llm_config": {"max_position_embeddings": 131072},
+            },
+            131072,
+        ),
+        (
+            {
+                "architectures": [_WRAPPER],
+                "max_position_embeddings": 4096,
+                "text_config": {"max_position_embeddings": 32768},
+            },
+            32768,
+        ),
+        (
+            {
+                "architectures": ["NemotronH_Omni_Reasoning_V3"],
+                "text_config": {"max_position_embeddings": 4096},
+                "llm_config": {"max_position_embeddings": 262144},
+            },
+            262144,
+        ),
+        ({"architectures": [_WRAPPER], "max_position_embeddings": 4096, "llm_config": {"hidden_size": 16}}, 4096),
+        ({"architectures": [_WRAPPER], "max_position_embeddings": 4096, "llm_config": None}, 4096),
+    ],
+    ids=[
+        "llm-config-only",
+        "llm-config-before-wrapper",
+        "text-config-before-wrapper",
+        "registered-wrapper-with-both-keys",
+        "llm-config-without-a-limit",
+        "null-llm-config",
+    ],
+)
+def test_context_length_max_reads_the_decoder_that_fpm_intake_reads(tmp_path, document, expected):
+    (tmp_path / "config.json").write_text(json.dumps(document))
+    assert aic.resolve_model_context_length(str(tmp_path)) == expected

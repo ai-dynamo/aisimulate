@@ -21,6 +21,7 @@ from aisimulate.sdk.utils import (
     _get_model_config_path,
     _parse_hf_config_json,
 )
+from aisimulate_core.decoder_config import nested_decoder_ambiguity
 from aisimulate_core.sdk.fpm_model_metadata import (
     attach_quantization_sidecar,
     decoder_config_key,
@@ -70,12 +71,17 @@ class ResolvedModelConfig:
 
     @property
     def effective_payload(self) -> dict[str, Any]:
-        """Return decoder metadata, inheriting only identity and shared precision."""
+        """Return decoder metadata, inheriting only identity and shared precision.
+
+        A decoder config that holds a decoder key raises ValueError.
+        """
 
         payload = self.payload
         key = decoder_config_key(payload)
         decoder = payload.get(key)
         if isinstance(decoder, dict):
+            if (ambiguity := nested_decoder_ambiguity(key, decoder)) is not None:
+                raise ValueError(f"{ambiguity}; supply one text decoder config")
             effective, _ = inherit_decoder_precision(payload, decoder)
             if effective.get("architectures") is None and payload.get("architectures") is not None:
                 effective["architectures"] = payload["architectures"]
