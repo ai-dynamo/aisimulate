@@ -79,6 +79,13 @@ simulator workload assumption, supplied separately by the unified CLI as
 
 ### Selection and fallback
 
+The Python prediction/recommendation configuration accepts `engine.database_mode`
+and `engine.workers.<role>.timing.database_mode` case-insensitively, normalizing
+them to `SILICON`, `HYBRID`, `EMPIRICAL`, or `SOL`. Their validation JSON Schema
+describes raw string input; Python still checks membership after normalization.
+The serialization schema retains the canonical uppercase enum. Worker timing
+also accepts `null` to inherit the engine policy.
+
 `estimation_mode` defaults to `auto`; `fallback_policy` defaults to `deny`.
 Auto always searches `op_level`, `fpm_interpolation`, then `fpm_regression`,
 including when fallback is denied. For an explicit choice of one of those three
