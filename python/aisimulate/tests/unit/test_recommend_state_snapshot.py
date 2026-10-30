@@ -418,11 +418,12 @@ def test_exported_predictions_keep_the_snapshots_saved_spellings(snapshots):
     assert _replay(candidate.prediction_config).metrics["mean_ttft_ms"] == candidate.metrics["mean_ttft_ms"]
 
 
-def test_exported_disaggregated_predictions_follow_a_moved_packed_snapshot(snapshots, tmp_path):
-    shutil.copytree(snapshots["decode"], tmp_path / "decode")
-    raw = _request(tmp_path / "decode", mode="disaggregated", role="decode")
+def _disaggregated_candidate(snapshot: Path | None):
+    raw = _request(snapshot, mode="disaggregated", role="decode")
+    raw["engine"]["backend"] = "vllm"
     for worker in raw["engine"]["workers"].values():
         worker["parallelism"] = {"preset": False, "replicas": 1}
+        worker["kv_cache"] = {"block_size": _BLOCK}
     result = run_recommendation(
         CoreRecommendationConfig.model_validate(raw),
         stack="engine",
@@ -430,6 +431,15 @@ def test_exported_disaggregated_predictions_follow_a_moved_packed_snapshot(snaps
         show_progress=False,
     )
     [candidate] = result.selected_candidates
+    return candidate
+
+
+def test_exported_disaggregated_predictions_follow_a_moved_packed_snapshot(snapshots, tmp_path):
+    shutil.copytree(snapshots["decode"], tmp_path / "decode")
+    candidate = _disaggregated_candidate(tmp_path / "decode")
+    baseline = _disaggregated_candidate(None)
+    # Every decode observation was slower than the native estimate.
+    assert candidate.metrics["mean_tpot_ms"] > baseline.metrics["mean_tpot_ms"] * 1.2
     timing = candidate.prediction_config["engine"]["workers"]["decode"]["timing"]
     # The packed root belongs to the snapshot, so the prediction names only the snapshot.
     assert "systems_paths" not in timing
@@ -438,7 +448,33 @@ def test_exported_disaggregated_predictions_follow_a_moved_packed_snapshot(snaps
     moved["engine"]["workers"]["decode"]["timing"]["estimator_config"]["state_snapshot"]["path"] = str(
         tmp_path / "moved"
     )
-    assert _replay(moved).metrics["mean_ttft_ms"] == candidate.metrics["mean_ttft_ms"]
+    replayed = _replay(moved).metrics
+    assert (replayed["mean_ttft_ms"], replayed["mean_tpot_ms"]) == (
+        candidate.metrics["mean_ttft_ms"],
+        candidate.metrics["mean_tpot_ms"],
+    )
+
+
+def test_predictions_take_decoder_replay_from_the_snapshot_unless_the_engine_sets_it(snapshots, monkeypatch):
+    from aisimulate.sweeper import state_snapshot
+
+    saved = state_snapshot.saved_snapshot_config
+    # Only a DeepSeek-V4.1 SGLang model can save decoder replay; pretend this one did.
+    monkeypatch.setattr(
+        state_snapshot, "saved_snapshot_config", lambda config: {**saved(config), "decoder_replay": True}
+    )
+
+    def compiled(**engine) -> bool:
+        raw = _request(snapshots["referenced"])
+        del raw["optimization"], raw["optimizer"]
+        raw["engine"].update(backend="vllm", **engine)
+        raw["engine"]["workers"]["aggregated"]["kv_cache"] = {"block_size": _BLOCK}
+        spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+        return spec.backend_deployment.agg_engine_args["timing_model"]["config"]["decoder_replay"]
+
+    assert compiled() is True
+    # An explicit value is kept, so restoration rejects a conflicting one.
+    assert compiled(decoder_replay=False) is False
 
 
 def test_capacity_lowering_checks_a_snapshot_configuration_without_restoring_it(snapshots):

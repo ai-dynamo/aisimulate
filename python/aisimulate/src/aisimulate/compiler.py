@@ -849,7 +849,9 @@ def _worker_engine_args(
             backend=backend,
             backend_version=engine.backend_version,
             worker_type=role,
-            decoder_replay=engine.decoder_replay or bool(snapshot.get("decoder_replay")),
+            decoder_replay=engine.decoder_replay
+            if "decoder_replay" in engine.model_fields_set
+            else bool(snapshot.get("decoder_replay")),
             enable_shared_layer=engine.enable_shared_layer
             if engine.enable_shared_layer is not None
             else snapshot.get("enable_shared_layer"),
