@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+backend: vllm
+sm: 103
+shards:
+  - op: attention_context
+    name: qwen35_tp8_bf16_prefill_smoke
+    case_filter:
+      - "[1, 1, 4, 1, 256, False, True, 0]"
+      - "[1, 16, 4, 1, 256, False, True, 0]"
+      - "[1, 4096, 4, 1, 256, False, True, 0]"
+      - "[4, 32768, 4, 1, 256, False, True, 0]"
+      - "[16, 40960, 4, 1, 256, False, True, 0]"

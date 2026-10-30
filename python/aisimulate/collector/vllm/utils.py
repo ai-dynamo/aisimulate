@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 import torch
+from packaging.version import Version
 from vllm import _custom_ops as ops
 from vllm.config import (
     CacheConfig,
@@ -41,6 +42,9 @@ from vllm.utils.torch_utils import STR_DTYPE_TO_TORCH_DTYPE, kv_cache_dtype_str_
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
 from vllm.v1.attention.backends.utils import CommonAttentionMetadata
 from vllm.v1.kv_cache_interface import FullAttentionSpec, SlidingWindowSpec, get_kv_quant_mode
+from vllm.version import __version__ as vllm_version
+
+VLLM_031_ATTENTION_API = Version(vllm_version) >= Version("0.31.0")
 
 
 class MockAttentionLayer:
@@ -116,13 +120,21 @@ def create_common_attn_metadata(
     # Calculate max query length
     max_query_len = max(batch_spec.query_lens)
 
+    # Native vLLM v0.31.0 db9527a46873454610df6dbedf79a36d6bf1a7f6
+    # v1/worker/gpu/attn_utils.py:499-521 populates these common fields.
+    # v1/attention/backend.py:389-449 removed the legacy private CPU fields;
+    # our synchronous cases have exact seq_lens_cpu_upper_bound values.
+    # https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/worker/gpu/attn_utils.py#L499
+    legacy_cpu_fields = (
+        {}
+        if VLLM_031_ATTENTION_API
+        else {"_seq_lens_cpu": seq_lens_cpu, "_num_computed_tokens_cpu": num_computed_tokens_cpu}
+    )
     return CommonAttentionMetadata(
         query_start_loc=query_start_loc,
         query_start_loc_cpu=query_start_loc_cpu,
         seq_lens=seq_lens,
         seq_lens_cpu_upper_bound=seq_lens_cpu,
-        _seq_lens_cpu=seq_lens_cpu,
-        _num_computed_tokens_cpu=num_computed_tokens_cpu,
         num_reqs=batch_spec.batch_size,
         num_actual_tokens=num_tokens,
         max_query_len=max_query_len,
@@ -130,6 +142,7 @@ def create_common_attn_metadata(
         block_table_tensor=block_table_tensor,
         slot_mapping=slot_mapping,
         causal=True,
+        **legacy_cpu_fields,
     )
 
 
@@ -452,9 +465,17 @@ def create_kv_cache_and_block_mappings(
         Tuple of the empty KV cache and flattened history slot mapping
     """
     batch_size = common_attn_metadata.num_reqs
-    seq_lens = common_attn_metadata.seq_lens_cpu
     query_lens = common_attn_metadata.query_start_loc_cpu[1:] - common_attn_metadata.query_start_loc_cpu[:-1]
-    context_lens = common_attn_metadata.num_computed_tokens_cpu
+    if VLLM_031_ATTENTION_API:
+        # v0.31 CommonAttentionMetadata retains the exact synchronous CPU
+        # lengths only in seq_lens_cpu_upper_bound (backend.py:446-451).
+        seq_lens = common_attn_metadata.seq_lens_cpu_upper_bound
+        if seq_lens is None:
+            raise ValueError("Dense collection requires exact CPU sequence lengths")
+        context_lens = seq_lens - query_lens
+    else:
+        seq_lens = common_attn_metadata.seq_lens_cpu
+        context_lens = common_attn_metadata.num_computed_tokens_cpu
     block_table = common_attn_metadata.block_table_tensor
     slot_mapping = common_attn_metadata.slot_mapping
 

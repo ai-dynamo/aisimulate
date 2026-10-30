@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Explicit campaign override; the default collector runtime is unchanged.
+schema_version: 2
+frameworks:
+  vllm:
+    source_repo: https://github.com/vllm-project/vllm.git
+    default:
+      version: "0.31.0"
+      source_commit: db9527a46873454610df6dbedf79a36d6bf1a7f6
+      images:
+        default: vllm/vllm-openai:v0.31.0@sha256:a4a4c0437bf7240089da5f08aa370c4aee17ae5290f7a3b468825ee26c4c3a6b

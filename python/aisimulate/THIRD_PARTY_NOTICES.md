@@ -359,6 +359,23 @@ The following files are derived from vLLM's attention test utilities at tag
 Upstream source:
 https://github.com/vllm-project/vllm/blob/v0.11.0/tests/v1/attention/utils.py
 
+The vLLM 0.31 attention collector integration in `collector/vllm/collect_attn.py`
+and `collector/vllm/utils.py` adapts (with modifications) the metadata and KV
+view contracts from vLLM commit `db9527a46873454610df6dbedf79a36d6bf1a7f6`:
+
+- `vllm/v1/worker/utils.py`
+- `vllm/v1/worker/gpu/attn_utils.py`
+- `vllm/v1/attention/backend.py`
+- `vllm/v1/attention/backends/flashinfer.py`
+- `vllm/v1/attention/backends/utils.py`
+
+Source: https://github.com/vllm-project/vllm/tree/db9527a46873454610df6dbedf79a36d6bf1a7f6
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/LICENSE
+NVIDIA modified the integration for standalone operator collection, preserving
+framework backend selection and the existing perf-row schema. No upstream
+serving implementation is vendored.
+
 The Gemma 4 visual-mask behavior and replicated multimodal adapter in
 `src/aiconfigurator_core/sdk/models/gemma4.py` and
 `src/aiconfigurator_core/sdk/models/blocks/vit.py` are adapted and modified

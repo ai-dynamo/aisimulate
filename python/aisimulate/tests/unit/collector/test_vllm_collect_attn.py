@@ -46,6 +46,7 @@ def _real_torch_or_skip():
 
 class FakeTensor:
     ndim = 5
+    shape = (8, 2, 64, 2, 128)
     __getitem__ = contiguous = permute = to = transpose = _return_self
 
 
@@ -66,6 +67,13 @@ class SlidingWindowSpec(Spec):
 class BatchSpec:
     seq_lens: list[int]
     query_lens: list[int]
+
+    @property
+    def batch_size(self):
+        return len(self.seq_lens)
+
+    def compute_num_tokens(self):
+        return sum(self.query_lens)
 
 
 @pytest.mark.parametrize("use_fp8_kv_cache", [False, True])
@@ -164,7 +172,10 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
         "benchmark_with_power": benchmark,
         "log_perf": lambda **kwargs: calls.setdefault("log", kwargs),
         "vllm_version": "0.24.0",
+        "VLLM_031_ATTENTION_API": False,
     }
+    _load_function(ATTN_SOURCE, "_attention_block_size", namespace)
+    _load_function(ATTN_SOURCE, "_prepare_dense_kv_cache", namespace)
     _load_function(ATTN_SOURCE, "_dense_kernel_source", namespace)
     run = _load_function(ATTN_SOURCE, "run_attention_torch", namespace)
     with ExitStack() as stack:
@@ -194,13 +205,15 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
 
 
 @pytest.mark.parametrize("randomize_blocks", [False, True])
-def test_dense_kv_cache_history_slots_follow_block_table(randomize_blocks):
+@pytest.mark.parametrize("modern_api", [False, True])
+def test_dense_kv_cache_history_slots_follow_block_table(randomize_blocks, modern_api):
     torch = _real_torch_or_skip()
 
     namespace = {
         "torch": torch,
         "CommonAttentionMetadata": object,
         "cdiv": lambda value, divisor: (value + divisor - 1) // divisor,
+        "VLLM_031_ATTENTION_API": modern_api,
     }
     create_cache = _load_function(UTILS_SOURCE, "create_kv_cache_and_block_mappings", namespace)
     metadata = SimpleNamespace(
@@ -211,6 +224,10 @@ def test_dense_kv_cache_history_slots_follow_block_table(randomize_blocks):
         block_table_tensor=torch.full((2, 2), -1, dtype=torch.int32),
         slot_mapping=torch.full((2,), -1, dtype=torch.long),
     )
+    if modern_api:
+        metadata.seq_lens_cpu_upper_bound = metadata.seq_lens_cpu
+        del metadata.seq_lens_cpu
+        del metadata.num_computed_tokens_cpu
 
     cache, history_slots = create_cache(
         block_size=64,
@@ -334,7 +351,7 @@ class _FIDecode:
     ],
 )
 def test_dense_kernel_source_flashinfer_reads_populated_portion(num_prefills, prefill, decode, expected):
-    source = _load_function(ATTN_SOURCE, "_dense_kernel_source", {})
+    source = _load_function(ATTN_SOURCE, "_dense_kernel_source", {"VLLM_031_ATTENTION_API": False})
     metadata = SimpleNamespace(num_prefills=num_prefills, prefill=prefill, decode=decode)
 
     assert source("FLASHINFER", impl=None, attn_metadata=metadata) == expected
@@ -346,6 +363,119 @@ def test_dense_kernel_source_flashinfer_raises_when_both_portions_missing():
 
     with pytest.raises(RuntimeError, match="neither a prefill nor a decode portion"):
         source("FLASHINFER", impl=None, attn_metadata=metadata)
+
+
+@pytest.mark.parametrize("value", ["0", "-16", "abc"])
+def test_attention_block_size_rejects_invalid_override(monkeypatch, value):
+    monkeypatch.setenv("AISIM_VLLM_ATTENTION_BLOCK_SIZE", value)
+    resolve = _load_function(ATTN_SOURCE, "_attention_block_size", {"os": os})
+    with pytest.raises(ValueError):
+        resolve()
+
+
+def test_attention_block_size_default_and_campaign_override(monkeypatch):
+    resolve = _load_function(ATTN_SOURCE, "_attention_block_size", {"os": os})
+    monkeypatch.delenv("AISIM_VLLM_ATTENTION_BLOCK_SIZE", raising=False)
+    assert resolve() == 64
+    monkeypatch.setenv("AISIM_VLLM_ATTENTION_BLOCK_SIZE", "16")
+    assert resolve() == 16
+
+
+def test_attention_kernel_page_rejects_manager_blocks_that_need_splitting():
+    prepare = _load_function(
+        ATTN_SOURCE,
+        "_prepare_dense_kv_cache",
+        {
+            "VLLM_031_ATTENTION_API": True,
+            "select_common_block_size": lambda _size, _backends: 16,
+        },
+    )
+    backend = SimpleNamespace(get_name=lambda: "FLASHINFER")
+    with pytest.raises(ValueError, match="528.*16-token"):
+        prepare(None, SimpleNamespace(block_size=528), None, backend, 1, None)
+
+
+def test_v031_cache_uses_native_layout_resolution_and_views():
+    torch = _real_torch_or_skip()
+    calls = {}
+    backend = object()
+    config = object()
+    layout = SimpleNamespace(name="LBHNC")
+    # Qwen TP8 kernel page: 1 KV head, 16 tokens, 256 values each for K/V.
+    spec = SimpleNamespace(block_size=16, page_size_bytes=16 * 256 * 2 * 2)
+    cache = torch.empty(2, 3, 16, 1, 256, dtype=torch.bfloat16)
+
+    def resolve(actual_config, supported, specs):
+        assert actual_config is config
+        assert supported == [["LBHNC"]]
+        assert specs == [spec]
+        return layout
+
+    def create_views(raw, actual_spec, blocks, actual_layout, placement):
+        assert raw.dtype == torch.int8
+        assert raw.data_ptr() == cache.data_ptr()
+        assert actual_spec is spec
+        assert blocks == 3
+        assert actual_layout is layout
+        assert placement.size == placement.layer_stride == cache.numel() * cache.element_size()
+        assert placement.block_stride == spec.page_size_bytes
+        assert placement.layers == ["placeholder"]
+        calls["view"] = raw.view(torch.bfloat16).view(3, 1, 16, 512)
+        return [calls["view"]]
+
+    namespace = {
+        "torch": torch,
+        "VLLM_031_ATTENTION_API": True,
+        "select_common_block_size": lambda size, _backends: size,
+        "get_supported_kv_cache_layouts": lambda backends: [layout] if backends == [backend] else [],
+        "resolve_kv_cache_layout": resolve,
+        "KVCacheTensor": SimpleNamespace,
+        "create_kv_cache_views": create_views,
+    }
+    prepare = _load_function(ATTN_SOURCE, "_prepare_dense_kv_cache", namespace)
+    result = prepare(cache, spec, config, backend, 3, None)
+    assert result is calls["view"]
+    assert result.shape == (3, 1, 16, 512)
+
+
+@pytest.mark.parametrize("modern_api", [False, True])
+def test_common_metadata_exact_cpu_lengths_follow_version_api(modern_api):
+    torch = _real_torch_or_skip()
+    namespace = {
+        "torch": torch,
+        "BatchSpec": BatchSpec,
+        "VLLM_031_ATTENTION_API": modern_api,
+        "CommonAttentionMetadata": SimpleNamespace,
+    }
+    build = _load_function(UTILS_SOURCE, "create_common_attn_metadata", namespace)
+    result = build(BatchSpec([529, 64], [1, 64]), 16, torch.device("cpu"))
+    assert result.query_start_loc.tolist() == result.query_start_loc_cpu.tolist() == [0, 1, 65]
+    assert result.seq_lens.tolist() == result.seq_lens_cpu_upper_bound.tolist() == [529, 64]
+    assert result.num_actual_tokens == 65
+    assert result.max_query_len == 64
+    assert result.max_seq_len == 529
+    if modern_api:
+        assert not hasattr(result, "_seq_lens_cpu")
+        assert not hasattr(result, "_num_computed_tokens_cpu")
+    else:
+        assert result._seq_lens_cpu.tolist() == [529, 64]
+        assert result._num_computed_tokens_cpu.tolist() == [528, 0]
+
+
+@pytest.mark.parametrize("kernel", ["trtllm-gen", "xqa"])
+def test_v031_decode_kernel_source_records_selected_leaf(kernel):
+    source = _load_function(ATTN_SOURCE, "_dense_kernel_source", {"VLLM_031_ATTENTION_API": True})
+    decode = type("FlashInferTrtllmAPIDecode", (), {"kernel": SimpleNamespace(value=kernel)})()
+    metadata = SimpleNamespace(num_prefills=0, prefill=None, decode=decode)
+    assert source("FLASHINFER", None, metadata) == (
+        "vllm_flashinfer_flashinfertrtllmapidecode_" + kernel.replace("-", "_")
+    )
+
+
+def test_v031_prefill_source_is_not_a_one_token_decode_lane():
+    source = _load_function(ATTN_SOURCE, "_dense_kernel_source", {"VLLM_031_ATTENTION_API": True})
+    metadata = SimpleNamespace(num_prefills=1, prefill=type("TRTLLMPrefill", (), {})(), decode=None)
+    assert source("FLASHINFER", None, metadata) == "vllm_flashinfer_trtllmprefill"
 
 
 @pytest.mark.parametrize(
