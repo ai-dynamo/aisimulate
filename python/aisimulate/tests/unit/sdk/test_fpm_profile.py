@@ -1137,6 +1137,92 @@ def test_runtime_memory_schema_rejects_invalid_evidence(runtime_profile, change)
         _normalize(_request(runtime_profile))
 
 
+_ALIGN_NEEDS_PREFIX_CACHING = "mamba_cache_mode align requires enable_prefix_caching=true"
+_HASH_BLOCK_POSITIVE = "hash_block_size_tokens must be positive"
+_PREFIX_CACHING_EVIDENCE = {"enable_prefix_caching": True, "mamba_cache_mode": "align", "hash_block_size_tokens": 4}
+
+
+def _with_evidence(profile, **evidence):
+    changed = copy.deepcopy(profile)
+    changed["deployments"][0]["resources"]["runtime_memory"].update(evidence)
+    return changed
+
+
+def _saved_runtime_memory(profile):
+    return load_fpm_profile(profile).model_dump(mode="json")["deployments"][0]["resources"]["runtime_memory"]
+
+
+def test_runtime_memory_prefix_caching_evidence(runtime_profile, profile_memory):
+    plain = runtime_profile["deployments"][0]["resources"]["runtime_memory"]
+    # A record without the evidence dumps without the new keys, in a saved config too.
+    assert _saved_runtime_memory(runtime_profile) == plain
+    saved_config = _normalize(_request(runtime_profile))["fpm_profile"]
+    assert saved_config["deployments"][0]["resources"]["runtime_memory"] == plain
+    budget = profile_memory(context_length=1024)
+
+    # The probe's settings are valid and round trip, after the existing keys as in the Rust record.
+    profile = _with_evidence(runtime_profile, **_PREFIX_CACHING_EVIDENCE)
+    saved = _saved_runtime_memory(profile)
+    assert saved == {**plain, **_PREFIX_CACHING_EVIDENCE}
+    assert list(saved) == [*plain, *_PREFIX_CACHING_EVIDENCE]
+    reloaded = load_fpm_profile(load_fpm_profile(profile))
+    assert reloaded.model_dump(mode="json") == load_fpm_profile(profile).model_dump(mode="json")
+    # Rust accepts the record and nothing reads it: the budget is the one for the record without evidence.
+    assert profile_memory(context_length=1024, fpm_profile=profile) == budget
+    # A saved config keeps the evidence through native normalization, and normalizing it again changes nothing.
+    saved_config = _normalize(_request(profile))["fpm_profile"]
+    assert saved_config == load_fpm_profile(profile).model_dump(mode="json")
+    assert _normalize(_request(saved_config))["fpm_profile"] == saved_config
+    # An explicit null is an absent value and is not written back.
+    nulls = _with_evidence(runtime_profile, **dict.fromkeys(_PREFIX_CACHING_EVIDENCE))
+    assert _saved_runtime_memory(nulls) == plain
+    # The largest u32 is a valid hash block size.
+    largest = _with_evidence(runtime_profile, hash_block_size_tokens=2**32 - 1)
+    assert _saved_runtime_memory(largest)["hash_block_size_tokens"] == 2**32 - 1
+
+    # `none` and an absent mode need no prefix caching; `align` does.
+    for caching in (False, True):
+        load_fpm_profile(_with_evidence(runtime_profile, enable_prefix_caching=caching, mamba_cache_mode="none"))
+    load_fpm_profile(_with_evidence(runtime_profile, mamba_cache_mode="none"))
+    for caching in ({"enable_prefix_caching": False}, {"enable_prefix_caching": None}, {}):
+        with pytest.raises(ValidationError, match=_ALIGN_NEEDS_PREFIX_CACHING):
+            load_fpm_profile(_with_evidence(runtime_profile, mamba_cache_mode="align", **caching))
+    # A hash block size must be positive.
+    for size in (0, -1):
+        with pytest.raises(ValidationError, match=_HASH_BLOCK_POSITIVE):
+            load_fpm_profile(_with_evidence(runtime_profile, hash_block_size_tokens=size))
+    # With both rules broken, the mode rule reports first, as in Rust.
+    both = _with_evidence(runtime_profile, mamba_cache_mode="align", hash_block_size_tokens=0)
+    with pytest.raises(ValidationError, match=_ALIGN_NEEDS_PREFIX_CACHING) as error:
+        load_fpm_profile(both)
+    assert _HASH_BLOCK_POSITIVE not in str(error.value)
+    # vLLM's `all` mode is refused by the literal.
+    with pytest.raises(ValidationError, match="'none' or 'align'"):
+        load_fpm_profile(_with_evidence(runtime_profile, enable_prefix_caching=True, mamba_cache_mode="all"))
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        {"enable_prefix_caching": 1},
+        {"enable_prefix_caching": "true"},
+        {"mamba_cache_mode": "ALIGN"},
+        {"mamba_cache_mode": ""},
+        {"mamba_cache_mode": True},
+        {"hash_block_size_tokens": True},
+        {"hash_block_size_tokens": 4.0},
+        {"hash_block_size_tokens": "4"},
+        {"hash_block_size_tokens": 2**32},
+    ],
+)
+def test_runtime_memory_prefix_caching_evidence_rejects_wrong_types(runtime_profile, evidence):
+    load_fpm_profile(_with_evidence(runtime_profile, **_PREFIX_CACHING_EVIDENCE))  # The valid evidence loads.
+    with pytest.raises(ValidationError) as error:
+        load_fpm_profile(_with_evidence(runtime_profile, **{**_PREFIX_CACHING_EVIDENCE, **evidence}))
+    # Only the changed field fails, so the type and bound checks do not depend on the other fields.
+    assert [item["loc"][-1] for item in error.value.errors()] == list(evidence)
+
+
 def test_runtime_memory_byte_boundary_is_exact(runtime_profile, profile_memory):
     runtime_profile["deployments"][0]["resources"]["runtime_memory"].update(
         kv_cache_bytes=2**53, gpu_memory_utilization=1.0

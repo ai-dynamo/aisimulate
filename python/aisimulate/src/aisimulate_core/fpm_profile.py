@@ -73,12 +73,37 @@ class FpmRuntimeMemoryProfile(_ProfileModel):
 
     This capacity already accounts for runtime graph and workspace reservations.
     It is not a non-KV memory limit and must not be rescaled to another setting.
+    The three optional prefix-caching fields record the settings that the probe
+    ran with. They are evidence only: selection, sizing and replay do not read
+    them, and the simulated deployment decides prefix caching.
     """
 
     kv_cache_bytes: Annotated[int, Field(gt=0, le=2**53)]
     gpu_memory_utilization: Annotated[float, Field(gt=0, le=1, allow_inf_nan=False)]
     max_model_len: Annotated[int, Field(gt=0, le=2**64 - 1)]
     provenance: _Nonempty
+    enable_prefix_caching: bool | None = None
+    mamba_cache_mode: Literal["none", "align"] | None = None
+    # The lower bound is checked in _prefix_caching, so a size of zero or less gets the text that Rust gives for zero.
+    hash_block_size_tokens: Annotated[int, Field(le=2**32 - 1)] | None = None
+
+    @model_validator(mode="after")
+    def _prefix_caching(self) -> FpmRuntimeMemoryProfile:
+        # Same order as Rust, so the same invalid record gives the same first error.
+        if self.mamba_cache_mode == "align" and self.enable_prefix_caching is not True:
+            raise ValueError("mamba_cache_mode align requires enable_prefix_caching=true")
+        if self.hash_block_size_tokens is not None and self.hash_block_size_tokens <= 0:
+            raise ValueError("hash_block_size_tokens must be positive")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _serialize_memory(self, handler):
+        # Do not add absent evidence to saved profiles or change plan IDs.
+        result = handler(self)
+        for name in ("enable_prefix_caching", "mamba_cache_mode", "hash_block_size_tokens"):
+            if getattr(self, name) is None:
+                result.pop(name, None)
+        return result
 
 
 class FpmResourceProfile(_ProfileModel):

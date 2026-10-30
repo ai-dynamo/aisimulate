@@ -157,9 +157,22 @@ pub enum FpmCacheLayout {
     Grouped,
 }
 
+/// How the runtime probe cached the state of its Mamba layers. vLLM's `all`
+/// mode is not modeled, so it cannot be recorded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FpmMambaCacheMode {
+    None,
+    Align,
+}
+
 /// Cache capacity observed for the exact deployment and scheduler settings.
 /// This includes the runtime's graph/workspace reservations; it is not a
 /// non-KV memory limit or a capacity that can be scaled to another setting.
+///
+/// The three optional prefix-caching fields record the settings that the probe
+/// ran with. They are evidence only: selection, sizing and replay do not read
+/// them, and the simulated deployment decides prefix caching.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FpmRuntimeMemoryConfig {
@@ -167,6 +180,15 @@ pub struct FpmRuntimeMemoryConfig {
     pub gpu_memory_utilization: f64,
     pub max_model_len: u64,
     pub provenance: String,
+    /// The probe's `enable_prefix_caching` setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable_prefix_caching: Option<bool>,
+    /// The probe's `mamba_cache_mode`. `align` requires prefix caching.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mamba_cache_mode: Option<FpmMambaCacheMode>,
+    /// The probe's resolved `hash_block_size`, in tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash_block_size_tokens: Option<u32>,
 }
 
 impl FpmRuntimeMemoryConfig {
@@ -182,6 +204,16 @@ impl FpmRuntimeMemoryConfig {
             return Err(invalid(
                 "runtime memory requires positive kv_cache_bytes <= 2**53, finite gpu_memory_utilization in (0, 1], positive max_model_len and provenance",
             ));
+        }
+        if self.mamba_cache_mode == Some(FpmMambaCacheMode::Align)
+            && self.enable_prefix_caching != Some(true)
+        {
+            return Err(invalid(
+                "mamba_cache_mode align requires enable_prefix_caching=true",
+            ));
+        }
+        if self.hash_block_size_tokens == Some(0) {
+            return Err(invalid("hash_block_size_tokens must be positive"));
         }
         Ok(())
     }
@@ -708,6 +740,13 @@ mod tests {
         }
     }
 
+    fn memory_rejection(memory: &FpmRuntimeMemoryConfig) -> String {
+        match memory.validate() {
+            Err(AicError::InvalidEngineConfig(message)) => message,
+            other => panic!("expected an invalid runtime memory record, got {other:?}"),
+        }
+    }
+
     fn resources() -> FpmResourceConfig {
         FpmResourceConfig {
             weights_bytes: Some(100),
@@ -749,6 +788,9 @@ mod tests {
                 gpu_memory_utilization: 0.8,
                 max_model_len: 4096,
                 provenance: "Synthetic initialized-worker cache allocation".into(),
+                enable_prefix_caching: None,
+                mamba_cache_mode: None,
+                hash_block_size_tokens: None,
             }),
             ..resources()
         }
@@ -1064,6 +1106,104 @@ mod tests {
         invalid.max_model_len = 1;
         invalid.provenance = " ".into();
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn runtime_memory_records_prefix_caching_evidence() {
+        let plain = runtime_resources().runtime_memory.unwrap();
+        // A record without the evidence serializes without its keys, as before.
+        let plain_json = r#"{"kv_cache_bytes":600,"gpu_memory_utilization":0.8,"max_model_len":4096,"provenance":"Synthetic initialized-worker cache allocation"}"#;
+        assert_eq!(serde_json::to_string(&plain).unwrap(), plain_json);
+        let with = |caching, mode, hash_block| FpmRuntimeMemoryConfig {
+            enable_prefix_caching: caching,
+            mamba_cache_mode: mode,
+            hash_block_size_tokens: hash_block,
+            ..plain.clone()
+        };
+
+        // The probe's settings are valid and round trip, after the existing keys.
+        let evidence = with(Some(true), Some(FpmMambaCacheMode::Align), Some(4));
+        evidence.validate().unwrap();
+        let saved = serde_json::to_string(&evidence).unwrap();
+        assert_eq!(
+            saved,
+            r#"{"kv_cache_bytes":600,"gpu_memory_utilization":0.8,"max_model_len":4096,"provenance":"Synthetic initialized-worker cache allocation","enable_prefix_caching":true,"mamba_cache_mode":"align","hash_block_size_tokens":4}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<FpmRuntimeMemoryConfig>(&saved).unwrap(),
+            evidence
+        );
+        // An explicit null is an absent value and is not written back.
+        let mut nulls = serde_json::to_value(&plain).unwrap();
+        for key in [
+            "enable_prefix_caching",
+            "mamba_cache_mode",
+            "hash_block_size_tokens",
+        ] {
+            nulls[key] = serde_json::Value::Null;
+        }
+        let parsed = serde_json::from_value::<FpmRuntimeMemoryConfig>(nulls).unwrap();
+        assert_eq!(parsed, plain);
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), plain_json);
+
+        // The resource section validates the record, so it carries the evidence and the rules.
+        let mut resources = runtime_resources();
+        resources.runtime_memory = Some(evidence.clone());
+        resources.validate().unwrap();
+        let saved = serde_json::to_value(&resources).unwrap();
+        assert_eq!(saved["runtime_memory"]["mamba_cache_mode"], "align");
+        assert_eq!(
+            serde_json::from_value::<FpmResourceConfig>(saved).unwrap(),
+            resources
+        );
+        resources.runtime_memory = Some(with(Some(false), Some(FpmMambaCacheMode::Align), None));
+        assert_eq!(
+            resources.validate().unwrap_err().to_string(),
+            "invalid engine config: mamba_cache_mode align requires enable_prefix_caching=true"
+        );
+
+        // `none` and an absent mode need no prefix caching; `align` does.
+        for caching in [None, Some(false), Some(true)] {
+            for mode in [None, Some(FpmMambaCacheMode::None)] {
+                with(caching, mode, None).validate().unwrap();
+            }
+        }
+        for caching in [None, Some(false)] {
+            let align = with(caching, Some(FpmMambaCacheMode::Align), Some(4));
+            assert_eq!(
+                memory_rejection(&align),
+                "mamba_cache_mode align requires enable_prefix_caching=true"
+            );
+        }
+        // A hash block size must be positive; the largest u32 is valid.
+        assert_eq!(
+            memory_rejection(&with(None, None, Some(0))),
+            "hash_block_size_tokens must be positive"
+        );
+        for size in [1, u32::MAX] {
+            with(None, None, Some(size)).validate().unwrap();
+        }
+        // With both rules broken, the mode rule reports first, as in the Python model.
+        let both = with(Some(false), Some(FpmMambaCacheMode::Align), Some(0));
+        assert_eq!(
+            memory_rejection(&both),
+            "mamba_cache_mode align requires enable_prefix_caching=true"
+        );
+
+        // The wire names are `none` and `align`. vLLM's `all` is refused, and so is any other text.
+        let mut wire = serde_json::to_value(&evidence).unwrap();
+        for (text, mode) in [
+            ("none", FpmMambaCacheMode::None),
+            ("align", FpmMambaCacheMode::Align),
+        ] {
+            wire["mamba_cache_mode"] = text.into();
+            let parsed = serde_json::from_value::<FpmRuntimeMemoryConfig>(wire.clone()).unwrap();
+            assert_eq!(parsed.mamba_cache_mode, Some(mode));
+        }
+        for text in ["all", "Align", ""] {
+            wire["mamba_cache_mode"] = text.into();
+            assert!(serde_json::from_value::<FpmRuntimeMemoryConfig>(wire.clone()).is_err());
+        }
     }
 
     #[test]

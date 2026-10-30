@@ -77,7 +77,7 @@ pub use options::{CorrectionMode, ForwardPassPerfOptions};
 pub use regression::ForwardPassSplineDiagnostics;
 pub use resources::{
     FpmCacheBudget, FpmCacheBudgetAdjusted, FpmCacheBudgetRequest, FpmCacheGroup, FpmCacheKind,
-    FpmCacheLayout, FpmResourceConfig, FpmRuntimeMemoryConfig,
+    FpmCacheLayout, FpmMambaCacheMode, FpmResourceConfig, FpmRuntimeMemoryConfig,
 };
 pub use snapshot::{STATE_SNAPSHOT_LAYOUT_VERSION, StateSnapshotKind};
 pub use speculative::SpeculativeForwardPassEstimate;

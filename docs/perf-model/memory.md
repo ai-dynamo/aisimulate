@@ -123,6 +123,17 @@ rejects pending resources. Rust exposes `FpmRuntimeMemoryConfig` and
 `FpmResourceConfig::require_memory()`. See [Rust literal migration](../aic-backward-compatibility/migration.md#rust-resource-and-memory-literals)
 for resource construction changes.
 
+A runtime memory record can also keep the prefix-caching settings of the
+[runtime probe](fpm-self-service/implementation.md#resolve-cache-geometry-with-a-runtime-probe)
+that observed it: `enable_prefix_caching` (a boolean), `mamba_cache_mode`
+(`none` or `align`) and `hash_block_size_tokens` (the positive hash block size,
+in tokens, that the runtime resolved). All three are optional, and an absent
+field is left out of the serialized record. `align` requires
+`enable_prefix_caching` to be `true`. vLLM's `all` mode is not modeled and is
+rejected. Rust exports the mode type as `FpmMambaCacheMode`. These fields are
+evidence of the probe's settings. Selection, sizing and replay do not read them
+yet. The simulated deployment decides prefix caching.
+
 Each group has a unique `name`, `kind` (`attention` or `convolution`), positive
 `num_layers`, `block_size_tokens`, and `page_size_bytes`, and an optional positive
 `sliding_window`. An omitted or null window retains full history; convolution

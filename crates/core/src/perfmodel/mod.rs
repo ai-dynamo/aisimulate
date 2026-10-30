@@ -71,7 +71,7 @@ pub use fpm::{
 };
 pub use fpm::{
     FpmCacheBudget, FpmCacheBudgetAdjusted, FpmCacheBudgetRequest, FpmCacheGroup, FpmCacheKind,
-    FpmCacheLayout, FpmResourceConfig, FpmRuntimeMemoryConfig,
+    FpmCacheLayout, FpmMambaCacheMode, FpmResourceConfig, FpmRuntimeMemoryConfig,
 };
 // Forward-pass metrics telemetry types and schema version, plus the
 // crate-internal validation helper. Re-exported at the crate root so existing
