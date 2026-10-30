@@ -12,12 +12,14 @@ from aisimulate_core.sdk.models.checkpoint_precision import (
     checkpoint_precision,
     decoder_paths,
     moe_buckets,
-    moe_modes,
+    moe_modes_by_kind,
     projection_modes,
 )
 from aisimulate_core.sdk.models.helpers import mtp_scale_factor, resolve_vllm_moe_execution_mode
 
 _LAYER_PATHS = decoder_paths()
+# Op-name prefix (after the phase) of each layer kind.
+_KIND_PREFIX = {"sliding_attention": "swa", "full_attention": "global"}
 # Routed-expert precision of a MoE layer, read from expert 0 (checkpoint layers.N.experts.E.*).
 _EXPERT_MODULES = {
     "sliding_attention": ("experts.0.gate_proj", "experts.0.down_proj"),
@@ -186,7 +188,7 @@ class Gemma4MixModel(BaseModel):
                 self.config.system,
             )
         if self._allow_moe_split and not self._is_dense:
-            self._moe_quant_modes = moe_modes(
+            by_kind = moe_modes_by_kind(
                 checkpoint,
                 cfg.layer_types,
                 _EXPERT_MODULES,
@@ -197,6 +199,8 @@ class Gemma4MixModel(BaseModel):
                     mode, self._backend_name, self.architecture, self._raw_config
                 ),
             )
+            # Routed-expert buckets per layer kind; a kind on the global mode has none.
+            self._moe_quant_modes = {_KIND_PREFIX[kind]: buckets for kind, buckets in by_kind.items()}
         self._build_context_ops()
         self._build_generation_ops()
         self.visual_context_ops = []
@@ -326,7 +330,9 @@ class Gemma4MixModel(BaseModel):
         )
         return router_ops + [
             op
-            for bucket_mode, bucket_count in moe_buckets(count, moe_q, self._moe_quant_modes)
+            for bucket_mode, bucket_count in moe_buckets(
+                count, moe_q, self._moe_quant_modes.get(prefix.split("_", 1)[1])
+            )
             for op in (
                 ops.MoEDispatch(
                     f"{prefix}_moe_pre_dispatch",

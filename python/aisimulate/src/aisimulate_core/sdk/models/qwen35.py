@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from collections import Counter
+
 import aisimulate_core.sdk.operations as ops
 from aisimulate_core.sdk import common
 from aisimulate_core.sdk.models.base import BaseModel, register_model
@@ -10,9 +12,9 @@ from aisimulate_core.sdk.models.checkpoint_precision import (
     bucket_gemms,
     checkpoint_precision,
     decoder_paths,
+    layer_moe_modes,
+    layer_projection_modes,
     moe_buckets,
-    moe_modes,
-    projection_modes,
 )
 from aisimulate_core.sdk.models.helpers import mtp_scale_factor, resolve_vllm_moe_execution_mode
 from aisimulate_core.sdk.models.vit_ops import build_encoder_ops
@@ -55,8 +57,10 @@ def _layer_projections(moe: bool) -> dict:
     }
 
 
-# Routed-expert precision of a MoE layer: the experts block as ModelOpt lists it.
+# Routed-expert precision of a MoE layer: the experts block as ModelOpt lists it (or a listed expert).
 _EXPERT_MODULES = {"linear_attention": ("mlp.experts",), "full_attention": ("mlp.experts",)}
+# Op-name prefix (after the phase) of each layer kind.
+_KIND_PREFIX = {"linear_attention": "gdn", "full_attention": "full"}
 
 
 @register_model("QWEN35")
@@ -114,31 +118,57 @@ class Qwen35Model(BaseModel):
         # Checkpoint metadata prices each projection and routed-expert layer at its own
         # precision; an explicit mode prices them all with one. See checkpoint_precision.
         checkpoint = checkpoint_precision(raw_config or {})
-        self._projection_quant_modes = (
-            projection_modes(
+        gemm_q, moe_q = self.config.gemm_quant_mode, self.config.moe_quant_mode
+        layer_projections = (
+            layer_projection_modes(
                 checkpoint,
                 cfg.layer_types,
                 _layer_projections(cfg.num_experts > 0),
                 _LAYER_PATHS,
-                self.config.gemm_quant_mode,
+                gemm_q,
                 self.config.system,
             )
             if allow_checkpoint_split
-            else {}
+            else []
         )
-        self._moe_quant_modes = (
-            moe_modes(
+        layer_experts = (
+            layer_moe_modes(
                 checkpoint,
                 cfg.layer_types,
                 _EXPERT_MODULES,
                 _LAYER_PATHS,
-                self.config.moe_quant_mode,
+                moe_q,
                 self.config.system,
                 lambda mode: resolve_vllm_moe_execution_mode(mode, backend_name, self.architecture, raw_config),
             )
             if allow_moe_split and cfg.num_experts > 0
-            else {}
+            else []
         )
+        self._projection_quant_modes: dict = {}
+        for _, _, keys in layer_projections:
+            for key, mode in keys.items():
+                self._projection_quant_modes.setdefault(key, Counter())[mode] += 1
+        # Routed-expert buckets per layer kind ("gdn"/"full"); a kind on the global mode has none.
+        experts_by_kind: dict = {}
+        for _, kind, mode in layer_experts:
+            experts_by_kind.setdefault(_KIND_PREFIX[kind], Counter())[mode] += 1
+        self._moe_quant_modes = {
+            kind: ({} if set(counts) <= {moe_q} else dict(counts)) for kind, counts in experts_by_kind.items()
+        }
+        # Joint (routed experts, shared gate_up, shared down) precision of every MoE layer, per kind:
+        # decode overlaps the routed and shared branches per layer, so each signature is its own group.
+        projections = {layer: keys for layer, _, keys in layer_projections}
+        experts = {layer: mode for layer, _, mode in layer_experts}
+        self._overlap_signatures: dict = {}
+        if cfg.num_experts > 0:
+            for layer, kind in enumerate(cfg.layer_types):
+                prefix, keys = _KIND_PREFIX[kind], projections.get(layer, {})
+                signature = (
+                    experts.get(layer, moe_q),
+                    keys.get(f"{prefix}_shared_gate_up_gemm", gemm_q),
+                    keys.get(f"{prefix}_shared_down_gemm", gemm_q),
+                )
+                self._overlap_signatures.setdefault(prefix, Counter())[signature] += 1
 
         tp = self.config.tp_size
         if cfg.linear_num_key_heads % tp != 0 or cfg.linear_num_value_heads % tp != 0:
@@ -442,7 +472,26 @@ class Qwen35Model(BaseModel):
         buckets = self._projection_quant_modes.get(name.split("_", 1)[1])
         return bucket_gemms(name, count, n, k, quant_mode, buckets, **kwargs)
 
-    def _shared_expert_ops(self, prefix, count, h, tp, gemm_q, cfg: common.Qwen35Config, *, scale_num_tokens=1):
+    def _signature_buckets(self, prefix: str, count, moe_q, gemm_q) -> list:
+        """``((routed, shared gate_up, shared down) modes, count)`` per precision signature of a layer kind."""
+        signatures = self._overlap_signatures.get(prefix.split("_", 1)[1])
+        if not signatures:
+            return [((moe_q, gemm_q, gemm_q), count)]
+        total = sum(signatures.values())
+        return [(signature, count if n == total else count * n / total) for signature, n in signatures.items()]
+
+    def _shared_expert_ops(
+        self,
+        prefix,
+        count,
+        h,
+        tp,
+        gemm_q,
+        cfg: common.Qwen35Config,
+        *,
+        scale_num_tokens=1,
+        down_quant_mode=None,
+    ):
         """Shared-expert branch: gated-SiLU MLP with a fused gate_up
         projection; the scalar expert gate is applied inside the branch
         except on the sglang fused-gate path (merged into the post-join
@@ -450,6 +499,9 @@ class Qwen35Model(BaseModel):
         and runs it on the attn-TP scattered token slice in context."""
         if self._sglang_deepep():
             tp = 1
+        # A precision signature (decode overlap) fixes both modes; otherwise each GEMM uses its buckets.
+        down_q = gemm_q if down_quant_mode is None else down_quant_mode
+        gemm = self._gemm if down_quant_mode is None else (lambda *args, **kwargs: [ops.GEMM(*args, **kwargs)])
         fused_gate = self._sglang_fused_shared_gate()
         ops_list = []
         if not fused_gate:
@@ -468,7 +520,7 @@ class Qwen35Model(BaseModel):
             )
         ops_list.extend(
             [
-                *self._gemm(
+                *gemm(
                     f"{prefix}_shared_gate_up_gemm",
                     count,
                     2 * cfg.shared_expert_inter_size // tp,
@@ -484,12 +536,12 @@ class Qwen35Model(BaseModel):
                     0.8,
                     scale_num_tokens=scale_num_tokens,
                 ),
-                *self._gemm(
+                *gemm(
                     f"{prefix}_shared_down_gemm",
                     count,
                     h,
                     cfg.shared_expert_inter_size // tp,
-                    gemm_q,
+                    down_q,
                     low_precision_input=True,
                     scale_num_tokens=scale_num_tokens,
                 ),
@@ -562,7 +614,9 @@ class Qwen35Model(BaseModel):
                         attn_ar_modeled=True,
                         backend=self._backend_name,
                     )
-                    for bucket_mode, bucket_count in moe_buckets(count, moe_q, self._moe_quant_modes)
+                    for bucket_mode, bucket_count in moe_buckets(
+                        count, moe_q, self._moe_quant_modes.get(prefix.split("_", 1)[1])
+                    )
                 )
             ops_list.extend(
                 ops.MoE(
@@ -583,7 +637,9 @@ class Qwen35Model(BaseModel):
                     # EPLB is not modeled for Qwen3.5 (the load curve stays 1.2).
                     enable_eplb=False,
                 )
-                for bucket_mode, bucket_count in moe_buckets(count, moe_q, self._moe_quant_modes)
+                for bucket_mode, bucket_count in moe_buckets(
+                    count, moe_q, self._moe_quant_modes.get(prefix.split("_", 1)[1])
+                )
             )
             # DeepEP rows hold the full dispatch+combine round trip; the pre
             # op prices it once (SGLangEPMOEModel precedent), so no post op.
@@ -606,7 +662,9 @@ class Qwen35Model(BaseModel):
                         attn_ar_modeled=True,
                         backend=self._backend_name,
                     )
-                    for bucket_mode, bucket_count in moe_buckets(count, moe_q, self._moe_quant_modes)
+                    for bucket_mode, bucket_count in moe_buckets(
+                        count, moe_q, self._moe_quant_modes.get(prefix.split("_", 1)[1])
+                    )
                 )
             if cfg.shared_expert_inter_size > 0:
                 # DeepEP context runs the shared expert (and merge) on the
@@ -818,19 +876,24 @@ class Qwen35Model(BaseModel):
         """Return FFN ops for generation phase: dense SwiGLU or MoE."""
         ops_list = [ops.ElementWise(f"{prefix}_ffn_norm", count, 2 * h, 2 * h, 0.8)]
         if cfg.num_experts > 0:
-            routed_ops = []
-            if cfg.num_experts >= 128:
-                routed_ops.append(
-                    ops.GEMM(f"{prefix}_router_gemm", count, cfg.num_experts, h, common.GEMMQuantMode.bfloat16)
-                )
-            # StandardDispatcher (sglang default MoE path) has no pre-dispatch
-            # collective when attention_dp == 1; with DP the LayerCommunicator
-            # pre-MLP gather is priced by the dispatch op.
-            if not (self._backend_name == "sglang" and self.config.moe_backend is None and attn_dp == 1):
-                pre_dispatch = [
-                    ops.MoEDispatch(
+            # One group per joint (routed experts, shared gate_up, shared down) precision of this
+            # layer kind, each priced for its own layers: decode overlaps the two branches per
+            # layer, so pooling precisions under one max would undercount mixed checkpoints.
+            for (moe_mode, gate_up_mode, down_mode), sig_count in self._signature_buckets(
+                prefix, count, moe_q, shared_expert_gemm_q
+            ):
+                routed_ops = []
+                if cfg.num_experts >= 128:
+                    routed_ops.append(
+                        ops.GEMM(f"{prefix}_router_gemm", sig_count, cfg.num_experts, h, common.GEMMQuantMode.bfloat16)
+                    )
+                # StandardDispatcher (sglang default MoE path) has no pre-dispatch
+                # collective when attention_dp == 1; with DP the LayerCommunicator
+                # pre-MLP gather is priced by the dispatch op.
+                if not (self._backend_name == "sglang" and self.config.moe_backend is None and attn_dp == 1):
+                    pre_dispatch = ops.MoEDispatch(
                         f"{prefix}_moe_pre_dispatch",
-                        bucket_count,
+                        sig_count,
                         h,
                         cfg.topk,
                         cfg.num_experts,
@@ -838,83 +901,79 @@ class Qwen35Model(BaseModel):
                         moe_ep,
                         attn_dp,
                         True,
-                        quant_mode=bucket_mode,
+                        quant_mode=moe_mode,
                         sms=self.config.sms,
                         moe_backend=self.config.moe_backend,
                         is_context=False,
                         attn_ar_modeled=True,
                         backend=self._backend_name,
                     )
-                    for bucket_mode, bucket_count in moe_buckets(count, moe_q, self._moe_quant_modes)
-                ]
-                # sglang's pre-MLP gather completes before the dual-stream
-                # fork; vLLM's DP dispatch runs on the main stream inside it.
-                if self._backend_name == "sglang":
-                    ops_list.extend(pre_dispatch)
-                else:
-                    routed_ops.extend(pre_dispatch)
-            routed_ops.extend(
-                ops.MoE(
-                    f"{prefix}_moe",
-                    bucket_count,
-                    h,
-                    cfg.moe_inter_size,
-                    cfg.topk,
-                    cfg.num_experts,
-                    moe_tp,
-                    moe_ep,
-                    bucket_mode,
-                    workload_dist,
-                    attn_dp,
-                    is_context=False,
-                    moe_backend=self.config.moe_backend,
-                    moe_kernel_source=self.config.moe_kernel_source,
-                    enable_eplb=False,
-                )
-                for bucket_mode, bucket_count in moe_buckets(count, moe_q, self._moe_quant_modes)
-            )
-            shared_ops = (
-                self._shared_expert_ops(prefix, count, h, tp, shared_expert_gemm_q, cfg)
-                if cfg.shared_expert_inter_size > 0
-                else []
-            )
-            # vLLM and sglang decode run shared and routed experts on
-            # parallel CUDA streams; sglang DeepEP runs them serially.
-            # TODO: vLLM only overlaps up to 256 tokens per rank — always-
-            # overlapped is optimistic above that. OverlapOp.query sees x,
-            # so the gate could move to query time.
-            if shared_ops and self._backend_name in ("vllm", "sglang") and not self._sglang_deepep():
-                ops_list.append(ops.OverlapOp(f"{prefix}_moe_overlap", group_a=routed_ops, group_b=shared_ops))
-            else:
-                ops_list.extend(routed_ops)
-                ops_list.extend(shared_ops)
-            if cfg.shared_expert_inter_size > 0:
-                ops_list.append(self._shared_merge_op(prefix, count, h))
-            # DeepEP rows hold the full dispatch+combine round trip; the pre
-            # op prices it once (SGLangEPMOEModel precedent), so no post op.
-            # Both frameworks all-reduce the merged shared+routed sum, so the
-            # post collective sits after the join, outside the overlap.
-            if not self._sglang_deepep():
-                ops_list.extend(
-                    ops.MoEDispatch(
-                        f"{prefix}_moe_post_dispatch",
-                        bucket_count,
+                    # sglang's pre-MLP gather completes before the dual-stream
+                    # fork; vLLM's DP dispatch runs on the main stream inside it.
+                    if self._backend_name == "sglang":
+                        ops_list.append(pre_dispatch)
+                    else:
+                        routed_ops.append(pre_dispatch)
+                routed_ops.append(
+                    ops.MoE(
+                        f"{prefix}_moe",
+                        sig_count,
                         h,
+                        cfg.moe_inter_size,
                         cfg.topk,
                         cfg.num_experts,
                         moe_tp,
                         moe_ep,
+                        moe_mode,
+                        workload_dist,
                         attn_dp,
-                        False,
-                        quant_mode=bucket_mode,
-                        sms=self.config.sms,
-                        moe_backend=self.config.moe_backend,
                         is_context=False,
-                        attn_ar_modeled=True,
-                        backend=self._backend_name,
+                        moe_backend=self.config.moe_backend,
+                        moe_kernel_source=self.config.moe_kernel_source,
+                        enable_eplb=False,
                     )
-                    for bucket_mode, bucket_count in moe_buckets(count, moe_q, self._moe_quant_modes)
                 )
+                shared_ops = (
+                    self._shared_expert_ops(prefix, sig_count, h, tp, gate_up_mode, cfg, down_quant_mode=down_mode)
+                    if cfg.shared_expert_inter_size > 0
+                    else []
+                )
+                # vLLM and sglang decode run shared and routed experts on
+                # parallel CUDA streams; sglang DeepEP runs them serially.
+                # TODO: vLLM only overlaps up to 256 tokens per rank — always-
+                # overlapped is optimistic above that. OverlapOp.query sees x,
+                # so the gate could move to query time.
+                if shared_ops and self._backend_name in ("vllm", "sglang") and not self._sglang_deepep():
+                    ops_list.append(ops.OverlapOp(f"{prefix}_moe_overlap", group_a=routed_ops, group_b=shared_ops))
+                else:
+                    ops_list.extend(routed_ops)
+                    ops_list.extend(shared_ops)
+                if cfg.shared_expert_inter_size > 0:
+                    ops_list.append(self._shared_merge_op(prefix, sig_count, h))
+                # DeepEP rows hold the full dispatch+combine round trip; the pre
+                # op prices it once (SGLangEPMOEModel precedent), so no post op.
+                # Both frameworks all-reduce the merged shared+routed sum, so the
+                # post collective sits after the join, outside the overlap.
+                if not self._sglang_deepep():
+                    ops_list.append(
+                        ops.MoEDispatch(
+                            f"{prefix}_moe_post_dispatch",
+                            sig_count,
+                            h,
+                            cfg.topk,
+                            cfg.num_experts,
+                            moe_tp,
+                            moe_ep,
+                            attn_dp,
+                            False,
+                            quant_mode=moe_mode,
+                            sms=self.config.sms,
+                            moe_backend=self.config.moe_backend,
+                            is_context=False,
+                            attn_ar_modeled=True,
+                            backend=self._backend_name,
+                        )
+                    )
         else:
             ops_list.extend(
                 [
