@@ -1,0 +1,608 @@
+{
+  "schema": "qwen35-timing-preflight/v1",
+  "scope": "CPU constructor/compiler and representative forward-query coverage only. Not silicon alignment, cache qualification, or accuracy evidence.",
+  "aisim_source_commit": "8ae6b65801c4993febb3c827a0e68518b20b379e",
+  "construction": "CorePredictionConfig -> prediction_to_replay_spec -> RustForwardPassPerfModel.best_available",
+  "canonical_config": {
+    "model": "Qwen/Qwen3.5-397B-A17B",
+    "system": "b300_sxm",
+    "backend": "vllm",
+    "worker_type": "aggregated",
+    "backend_version": "0.31.0",
+    "fpm_profile": null,
+    "tp": 8,
+    "pp": 1,
+    "attention_dp": 1,
+    "dcp": null,
+    "moe_tp_size": 8,
+    "moe_ep_size": 1,
+    "cp_size": null,
+    "gemm_quant_mode": "bfloat16",
+    "moe_quant_mode": "bfloat16",
+    "fmha_quant_mode": "bfloat16",
+    "fpm_fmha_quant_mode": null,
+    "kvcache_quant_mode": "bfloat16",
+    "comm_quant_mode": "half",
+    "nextn": 0,
+    "speculation": null,
+    "kv_block_size": 64,
+    "decoder_replay": false,
+    "estimation_mode": "op_level",
+    "database_mode": "SILICON",
+    "transfer_policy": null,
+    "systems_paths": [
+      "/Users/simonec/repo/aisimulate-qwen35-agentic-alignment/python/aisimulate/src/aisimulate_core/systems"
+    ],
+    "fallback_policy": "deny",
+    "estimator_config": {
+      "correction": {
+        "enabled": false
+      }
+    },
+    "attention_backend": null,
+    "enable_shared_layer": true,
+    "strict_provenance": false
+  },
+  "diagnostics": {
+    "source": "aic",
+    "readiness": "ready",
+    "retained_observations": 0,
+    "correction_ready_buckets": 0,
+    "last_warning": null,
+    "provenance": {
+      "config": {
+        "model": "Qwen/Qwen3.5-397B-A17B",
+        "system": "b300_sxm",
+        "backend": "vllm",
+        "worker_type": "aggregated",
+        "backend_version": "0.31.0",
+        "fpm_profile": null,
+        "tp": 8,
+        "pp": 1,
+        "attention_dp": 1,
+        "dcp": null,
+        "moe_tp_size": 8,
+        "moe_ep_size": 1,
+        "gemm_quant_mode": "bfloat16",
+        "moe_quant_mode": "bfloat16",
+        "fmha_quant_mode": "bfloat16",
+        "fpm_fmha_quant_mode": null,
+        "kvcache_quant_mode": "bfloat16",
+        "comm_quant_mode": "half",
+        "nextn": 0,
+        "speculation": null,
+        "kv_block_size": 64,
+        "decoder_replay": false,
+        "estimation_mode": "op_level",
+        "database_mode": "SILICON",
+        "transfer_policy": [
+          "xshape",
+          "xquant",
+          "xprofile",
+          "xop"
+        ],
+        "systems_paths": [
+          "/Users/simonec/repo/aisimulate-qwen35-agentic-alignment/python/aisimulate/src/aisimulate_core/systems"
+        ],
+        "fallback_policy": "deny",
+        "estimator_config": {
+          "features": {
+            "attention_kv_weight": 1.0,
+            "prefill_attention_pair_weight": 1.0,
+            "ffn_token_weight": 1.0
+          },
+          "op_level": {},
+          "fpm_interpolation": {
+            "method": "sol"
+          },
+          "fpm_regression": {
+            "sampling": {
+              "bins_per_axis": [
+                4,
+                4
+              ],
+              "max_observations": 64
+            },
+            "min_observations": 5,
+            "fit": {
+              "kind": "standardized_nnls",
+              "singular_ridge_scale": 1e-09,
+              "rebuild_interval": null
+            }
+          },
+          "correction": {
+            "enabled": false,
+            "feature_space": "legacy_workload",
+            "sampling": {
+              "bins_per_axis": [
+                4,
+                4
+              ],
+              "max_observations": 64
+            },
+            "min_observations": 5,
+            "factor_bounds": {
+              "min": 0.5,
+              "max": 2.0
+            },
+            "max_num_tokens": 8192,
+            "max_batch_size": 512,
+            "max_kv_tokens": 2000000
+          }
+        },
+        "attention_backend": null,
+        "moe_kernel_source": null,
+        "moe_backend": null,
+        "enable_eplb": false,
+        "wideep_num_slots": null,
+        "enable_shared_layer": true,
+        "strict_provenance": false
+      },
+      "selected_systems_root": "/Users/simonec/repo/aisimulate-qwen35-agentic-alignment/python/aisimulate/src/aisimulate_core/systems",
+      "requested_estimation_mode": "op_level",
+      "selected_estimation_mode": "op_level",
+      "selection_failures": []
+    }
+  },
+  "queries": [
+    {
+      "phase": "prefill",
+      "batch_size": 1,
+      "total_prefill_tokens": 4096,
+      "total_kv_read_tokens": 0,
+      "latency_ms": 57.150208278271364,
+      "status": "passed"
+    },
+    {
+      "phase": "prefill",
+      "batch_size": 1,
+      "total_prefill_tokens": 8192,
+      "total_kv_read_tokens": 0,
+      "latency_ms": 95.5284392300174,
+      "status": "passed"
+    },
+    {
+      "phase": "prefill",
+      "batch_size": 1,
+      "total_prefill_tokens": 8192,
+      "total_kv_read_tokens": 24576,
+      "latency_ms": 105.52102200713864,
+      "status": "passed"
+    },
+    {
+      "phase": "prefill",
+      "batch_size": 1,
+      "total_prefill_tokens": 512,
+      "total_kv_read_tokens": 3584,
+      "latency_ms": 26.359783621333456,
+      "status": "passed"
+    },
+    {
+      "phase": "prefill",
+      "batch_size": 16,
+      "total_prefill_tokens": 8192,
+      "total_kv_read_tokens": 516096,
+      "latency_ms": 100.55165473004334,
+      "status": "passed"
+    },
+    {
+      "phase": "decode",
+      "batch_size": 1,
+      "context_length_per_request": 4096,
+      "total_past_kv_tokens": 4096,
+      "latency_ms": 4.488949549356984,
+      "status": "passed"
+    },
+    {
+      "phase": "decode",
+      "batch_size": 1,
+      "context_length_per_request": 32768,
+      "total_past_kv_tokens": 32768,
+      "latency_ms": 4.612591730672274,
+      "status": "passed"
+    },
+    {
+      "phase": "decode",
+      "batch_size": 1,
+      "context_length_per_request": 38144,
+      "total_past_kv_tokens": 38144,
+      "latency_ms": 4.63220463832189,
+      "status": "passed"
+    },
+    {
+      "phase": "decode",
+      "batch_size": 4,
+      "context_length_per_request": 4096,
+      "total_past_kv_tokens": 16384,
+      "latency_ms": 5.4199270981121686,
+      "status": "passed"
+    },
+    {
+      "phase": "decode",
+      "batch_size": 4,
+      "context_length_per_request": 32768,
+      "total_past_kv_tokens": 131072,
+      "latency_ms": 5.778450760689168,
+      "status": "passed"
+    },
+    {
+      "phase": "decode",
+      "batch_size": 4,
+      "context_length_per_request": 38144,
+      "total_past_kv_tokens": 152576,
+      "latency_ms": 5.833773799063749,
+      "status": "passed"
+    },
+    {
+      "phase": "decode",
+      "batch_size": 16,
+      "context_length_per_request": 4096,
+      "total_past_kv_tokens": 65536,
+      "latency_ms": 8.568898551851664,
+      "status": "passed"
+    },
+    {
+      "phase": "decode",
+      "batch_size": 16,
+      "context_length_per_request": 32768,
+      "total_past_kv_tokens": 524288,
+      "latency_ms": 9.670640715274052,
+      "status": "passed"
+    },
+    {
+      "phase": "decode",
+      "batch_size": 16,
+      "context_length_per_request": 38144,
+      "total_past_kv_tokens": 610304,
+      "latency_ms": 9.85259163154918,
+      "status": "passed"
+    }
+  ],
+  "decode_operation_diagnostics": [
+    {
+      "name": "generation_embedding",
+      "latency_ms": 0.0030013212903225806,
+      "energy_wms": 0.0,
+      "source": "empirical",
+      "details": {
+        "sol": {
+          "latency_ms": 1.0570322580645163e-06,
+          "math_ms": 0.0,
+          "memory_ms": 1.0570322580645163e-06
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_embedding_ar",
+      "latency_ms": 0.004349440038204193,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 1.592888888888889e-05,
+          "math_ms": 0.0,
+          "memory_ms": 0.0
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_gdn_norm",
+      "latency_ms": 0.13523783225806452,
+      "energy_wms": 0.0,
+      "source": "empirical",
+      "details": {
+        "sol": {
+          "latency_ms": 0.00019026580645161294,
+          "math_ms": 0.0,
+          "memory_ms": 0.00019026580645161294
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_gdn_in_proj_gemm",
+      "latency_ms": 0.3354800119996071,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.12184741161290323,
+          "math_ms": 0.0004194304,
+          "memory_ms": 0.12184741161290323
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_gdn_in_proj_ba_gemm",
+      "latency_ms": 0.19336000084877014,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.0008088154838709678,
+          "math_ms": 2.6214400000000003e-06,
+          "memory_ms": 0.0008088154838709678
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_gdn_conv1d",
+      "latency_ms": 0.0767808012664318,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": null,
+        "sol_unavailable_reason": "SOL estimation not implemented: evaluate_ops_sol_json: op 'generation_gdn_conv1d' has no SOL decomposition (family not exported yet \u2014 see PerformanceResult::sol)",
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_gdn_recurrence",
+      "latency_ms": 0.18688319474458698,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": null,
+        "sol_unavailable_reason": "SOL estimation not implemented: evaluate_ops_sol_json: op 'generation_gdn_recurrence' has no SOL decomposition (family not exported yet \u2014 see PerformanceResult::sol)",
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_gdn_out_proj_gemm",
+      "latency_ms": 0.20700000226497653,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.048767504516129025,
+          "math_ms": 0.00016777216000000002,
+          "memory_ms": 0.048767504516129025
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_gdn_ar",
+      "latency_ms": 0.19572480171918868,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.0007168000000000001,
+          "math_ms": 0.0,
+          "memory_ms": 0.0
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_gdn_ffn_norm",
+      "latency_ms": 0.13523783225806452,
+      "energy_wms": 0.0,
+      "source": "empirical",
+      "details": {
+        "sol": {
+          "latency_ms": 0.00019026580645161294,
+          "math_ms": 0.0,
+          "memory_ms": 0.00019026580645161294
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_gdn_moe_overlap",
+      "latency_ms": 1.2246320247650146,
+      "energy_wms": 0.0,
+      "source": "mixed",
+      "details": {
+        "sol": null,
+        "sol_unavailable_reason": "SOL estimation not implemented: evaluate_ops_sol_json: op 'generation_gdn_moe_overlap' has no SOL decomposition (family not exported yet \u2014 see PerformanceResult::sol)",
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_gdn_shared_merge",
+      "latency_ms": 0.1351783741935484,
+      "energy_wms": 0.0,
+      "source": "empirical",
+      "details": {
+        "sol": {
+          "latency_ms": 0.00014269935483870967,
+          "math_ms": 0.0,
+          "memory_ms": 0.00014269935483870967
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_gdn_moe_post_dispatch",
+      "latency_ms": 0.19572480171918868,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": null,
+        "sol_unavailable_reason": "SOL estimation not implemented: evaluate_ops_sol_json: op 'generation_gdn_moe_post_dispatch' has no SOL decomposition (family not exported yet \u2014 see PerformanceResult::sol)",
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_full_attn_norm",
+      "latency_ms": 0.045079277419354837,
+      "energy_wms": 0.0,
+      "source": "empirical",
+      "details": {
+        "sol": {
+          "latency_ms": 6.342193548387098e-05,
+          "math_ms": 0.0,
+          "memory_ms": 6.342193548387098e-05
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_qkv_gemm",
+      "latency_ms": 0.11182667066653569,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.04061580387096774,
+          "math_ms": 0.00013981013333333334,
+          "memory_ms": 0.04061580387096774
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_attention",
+      "latency_ms": 0.5623992196665847,
+      "energy_wms": 0.0,
+      "source": "mixed",
+      "details": {
+        "sol": {
+          "latency_ms": 0.008147736774193549,
+          "math_ms": 0.00011184810666666667,
+          "memory_ms": 0.008147736774193549
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_proj_gemm",
+      "latency_ms": 0.06900000075499217,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.016255834838709675,
+          "math_ms": 5.592405333333334e-05,
+          "memory_ms": 0.016255834838709675
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_full_ar",
+      "latency_ms": 0.06524160057306289,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.00023893333333333336,
+          "math_ms": 0.0,
+          "memory_ms": 0.0
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_full_ffn_norm",
+      "latency_ms": 0.045079277419354837,
+      "energy_wms": 0.0,
+      "source": "empirical",
+      "details": {
+        "sol": {
+          "latency_ms": 6.342193548387098e-05,
+          "math_ms": 0.0,
+          "memory_ms": 6.342193548387098e-05
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_full_moe_overlap",
+      "latency_ms": 0.40821067492167157,
+      "energy_wms": 0.0,
+      "source": "mixed",
+      "details": {
+        "sol": null,
+        "sol_unavailable_reason": "SOL estimation not implemented: evaluate_ops_sol_json: op 'generation_full_moe_overlap' has no SOL decomposition (family not exported yet \u2014 see PerformanceResult::sol)",
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_full_shared_merge",
+      "latency_ms": 0.04505945806451613,
+      "energy_wms": 0.0,
+      "source": "empirical",
+      "details": {
+        "sol": {
+          "latency_ms": 4.756645161290323e-05,
+          "math_ms": 0.0,
+          "memory_ms": 4.756645161290323e-05
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_full_moe_post_dispatch",
+      "latency_ms": 0.06524160057306289,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": null,
+        "sol_unavailable_reason": "SOL estimation not implemented: evaluate_ops_sol_json: op 'generation_full_moe_post_dispatch' has no SOL decomposition (family not exported yet \u2014 see PerformanceResult::sol)",
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_logits_gemm",
+      "latency_ms": 0.04321126742983701,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.03281934864516129,
+          "math_ms": 0.0001130131911111111,
+          "memory_ms": 0.03281934864516129
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "generation_p2p",
+      "latency_ms": 0.0,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.0,
+          "math_ms": 0.0,
+          "memory_ms": 0.0
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    }
+  ],
+  "architecture": {
+    "num_hidden_layers": 60,
+    "layer_types": {
+      "linear_attention": 45,
+      "full_attention": 15
+    }
+  },
+  "cache_geometry_note": "Compiler default kv_block_size=64 is only a constructor placeholder here. replay.py replaces it using the measured cache receipt before replay.",
+  "data_source_note": "Shared-layer donor data is explicitly enabled. Backend identity remains vllm 0.31.0; attention/GDN sources include older releases. See timing-data-provenance.json."
+}

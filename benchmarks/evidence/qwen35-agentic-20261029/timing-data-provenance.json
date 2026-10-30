@@ -1,0 +1,1376 @@
+{
+  "schema": "qwen35-timing-data-provenance/v1",
+  "aisim_source_commit": "8ae6b65801c4993febb3c827a0e68518b20b379e",
+  "requested_identity": {
+    "system": "b300_sxm",
+    "backend": "vllm",
+    "version": "0.31.0",
+    "database_mode": "SILICON",
+    "enable_shared_layer": true,
+    "estimation_mode": "op_level",
+    "fallback_policy": "deny",
+    "online_correction_enabled": false
+  },
+  "source_semantics": "Priority-ordered admitted table candidates from the same native resolver used by the timing engine. This is not a claim that every row/file supplied a query or identification of each interpolated winning row.",
+  "version_limit": "The 0.31.0 backend identity has no primary attention/GDN tables; shared-layer donors include older backend versions. Do not describe these predictions as using exclusively vLLM 0.31.0 measurements.",
+  "operation_source_limit": "Forward diagnostics also label static formula operations empirical and composite operations mixed; SILICON selects the table policy, not a guarantee that every component is directly measured.",
+  "source_reports": {
+    "gemm": {
+      "records": [
+        {
+          "version": "0.31.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.31.0/gemm_perf.parquet",
+          "channel": "primary",
+          "exists": true,
+          "ks_filter": null
+        },
+        {
+          "version": "0.30.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.30.0/gemm_perf.parquet",
+          "channel": "fallback",
+          "exists": true,
+          "ks_filter": null
+        },
+        {
+          "version": "0.27.1",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.27.1/gemm_perf.parquet",
+          "channel": "fallback",
+          "exists": true,
+          "ks_filter": null
+        },
+        {
+          "version": "0.25.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.25.0/gemm_perf.parquet",
+          "channel": "fallback",
+          "exists": true,
+          "ks_filter": null
+        },
+        {
+          "version": "0.24.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.24.0/gemm_perf.parquet",
+          "channel": "fallback",
+          "exists": true,
+          "ks_filter": null
+        }
+      ],
+      "warnings": []
+    },
+    "moe": {
+      "records": [
+        {
+          "version": "0.31.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.31.0/moe_perf.parquet",
+          "channel": "primary",
+          "exists": true,
+          "ks_filter": null
+        },
+        {
+          "version": "0.30.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.30.0/moe_perf.parquet",
+          "channel": "fallback",
+          "exists": true,
+          "ks_filter": null
+        },
+        {
+          "version": "0.27.1",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.27.1/moe_perf.parquet",
+          "channel": "fallback",
+          "exists": true,
+          "ks_filter": null
+        },
+        {
+          "version": "0.25.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.25.0/moe_perf.parquet",
+          "channel": "fallback",
+          "exists": true,
+          "ks_filter": null
+        },
+        {
+          "version": "0.24.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.24.0/moe_perf.parquet",
+          "channel": "fallback",
+          "exists": true,
+          "ks_filter": null
+        }
+      ],
+      "warnings": []
+    },
+    "nccl": {
+      "records": [
+        {
+          "version": "0.31.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/vllm/0.31.0/nccl_perf.parquet",
+          "channel": "primary",
+          "exists": false,
+          "ks_filter": null
+        }
+      ],
+      "warnings": []
+    },
+    "custom_allreduce": {
+      "records": [
+        {
+          "version": "0.31.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/vllm/0.31.0/custom_allreduce_perf.parquet",
+          "channel": "primary",
+          "exists": true,
+          "ks_filter": null
+        },
+        {
+          "version": "0.24.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/vllm/0.24.0/custom_allreduce_perf.parquet",
+          "channel": "fallback",
+          "exists": true,
+          "ks_filter": null
+        },
+        {
+          "version": "0.19.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/vllm/0.19.0/custom_allreduce_perf.parquet",
+          "channel": "fallback",
+          "exists": true,
+          "ks_filter": null
+        }
+      ],
+      "warnings": []
+    },
+    "context_attention": {
+      "records": [
+        {
+          "version": "0.31.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/vllm/0.31.0/context_attention_perf.parquet",
+          "channel": "primary",
+          "exists": false,
+          "ks_filter": null
+        },
+        {
+          "version": "0.30.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.30.0/context_attention_perf.parquet",
+          "channel": "fallback",
+          "exists": true,
+          "ks_filter": null
+        },
+        {
+          "version": "0.25.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.25.0/context_attention_perf.parquet",
+          "channel": "fallback",
+          "exists": true,
+          "ks_filter": null
+        },
+        {
+          "version": "0.24.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.24.0/context_attention_perf.parquet",
+          "channel": "fallback",
+          "exists": true,
+          "ks_filter": null
+        }
+      ],
+      "warnings": []
+    },
+    "generation_attention": {
+      "records": [
+        {
+          "version": "0.31.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/vllm/0.31.0/generation_attention_perf.parquet",
+          "channel": "primary",
+          "exists": false,
+          "ks_filter": null
+        },
+        {
+          "version": "0.30.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.30.0/generation_attention_perf.parquet",
+          "channel": "fallback",
+          "exists": true,
+          "ks_filter": null
+        },
+        {
+          "version": "0.25.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.25.0/generation_attention_perf.parquet",
+          "channel": "fallback",
+          "exists": true,
+          "ks_filter": null
+        },
+        {
+          "version": "0.24.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.24.0/generation_attention_perf.parquet",
+          "channel": "fallback",
+          "exists": true,
+          "ks_filter": null
+        }
+      ],
+      "warnings": []
+    },
+    "gdn": {
+      "records": [
+        {
+          "version": "0.31.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/vllm/0.31.0/gdn_perf.parquet",
+          "channel": "primary",
+          "exists": false,
+          "ks_filter": null
+        },
+        {
+          "version": "0.30.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/vllm/0.30.0/gdn_perf.parquet",
+          "channel": "fallback",
+          "exists": true,
+          "ks_filter": null
+        },
+        {
+          "version": "0.27.1",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/vllm/0.27.1/gdn_perf.parquet",
+          "channel": "fallback",
+          "exists": true,
+          "ks_filter": null
+        },
+        {
+          "version": "0.25.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/vllm/0.25.0/gdn_perf.parquet",
+          "channel": "fallback",
+          "exists": true,
+          "ks_filter": null
+        },
+        {
+          "version": "0.24.0",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/vllm/0.24.0/gdn_perf.parquet",
+          "channel": "fallback",
+          "exists": true,
+          "ks_filter": null
+        },
+        {
+          "version": "0.5.21",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/sglang/0.5.21/gdn_perf.parquet",
+          "channel": "cross_backend",
+          "exists": true,
+          "ks_filter": [
+            "causal_conv1d_fn",
+            "causal_conv1d_update",
+            "fused_recurrent_gated_delta_rule_packed_decode"
+          ]
+        },
+        {
+          "version": "0.5.17",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/sglang/0.5.17/gdn_perf.parquet",
+          "channel": "cross_backend",
+          "exists": true,
+          "ks_filter": [
+            "causal_conv1d_fn",
+            "causal_conv1d_update",
+            "fused_recurrent_gated_delta_rule_packed_decode"
+          ]
+        },
+        {
+          "version": "0.5.14",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/sglang/0.5.14/gdn_perf.parquet",
+          "channel": "cross_backend",
+          "exists": true,
+          "ks_filter": [
+            "causal_conv1d_fn",
+            "causal_conv1d_update",
+            "fused_recurrent_gated_delta_rule_packed_decode"
+          ]
+        },
+        {
+          "version": "1.3.0rc29",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/trtllm/1.3.0rc29/gdn_perf.parquet",
+          "channel": "cross_backend",
+          "exists": true,
+          "ks_filter": [
+            "causal_conv1d_fn",
+            "causal_conv1d_update",
+            "chunk_gated_delta_rule_flashinfer"
+          ]
+        },
+        {
+          "version": "1.3.0rc20",
+          "path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/trtllm/1.3.0rc20/gdn_perf.parquet",
+          "channel": "cross_backend",
+          "exists": true,
+          "ks_filter": [
+            "causal_conv1d_fn",
+            "causal_conv1d_update",
+            "chunk_gated_delta_rule_flashinfer"
+          ]
+        }
+      ],
+      "warnings": []
+    }
+  },
+  "source_files": {
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.31.0/gemm_perf.parquet": {
+      "sha256": "bc14e8e583de3d117c15e2c49f82249974602065edab0628c2f19091ebdce168",
+      "bytes": 823385,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.31.0/collection_meta.yaml",
+      "collection_meta_sha256": "00d12c1ae09f16abc4ed861d2f0ddc42f9b3f3297989a2b58f7a77c886acd80e",
+      "collection_meta_content": {
+        "schema_version": 2,
+        "provenance": "collected",
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.31.0",
+          "image": "vllm/vllm-openai:v0.31.0",
+          "image_digest": "sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3",
+          "source_commit": "db9527a46873454610df6dbedf79a36d6bf1a7f6"
+        },
+        "tables": {
+          "gemm_perf": {
+            "rows": 146372,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "00d2e3196a20f44d1514f23419acdd59409139e5",
+                "collector_hash": "sha256:ff7b07b2da513350848c280939eac291e861274acb6af941f44551f03c084a77",
+                "case_plan_hash": "sha256:96def4ed2209bd22b4ed68c1ada76ca8e15660703bfd3e8c616c6524c70ed7f2",
+                "collected_at": "2026-10-13",
+                "rows": 109890,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "00d2e3196a20f44d1514f23419acdd59409139e5",
+                "collector_hash": "sha256:ff7b07b2da513350848c280939eac291e861274acb6af941f44551f03c084a77",
+                "case_plan_hash": "sha256:bda92eb431e92fcbbd9dd670a4d1b738d3acaa056bbccea7e9ed2d600da386fe",
+                "collected_at": "2026-10-13",
+                "rows": 36482,
+                "status": "complete"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.30.0/gemm_perf.parquet": {
+      "sha256": "d635795fa7c7dfe2e6a7a0d0fd70d2ef1ead7e3ba11d35c102ed8561b0228b27",
+      "bytes": 818383,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.30.0/collection_meta.yaml",
+      "collection_meta_sha256": "81566e56c714d4d98dd846a92982e256d224e990a288fd9aaf962520fb2e2c87",
+      "collection_meta_content": {
+        "schema_version": 2,
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.30.0",
+          "image": "vllm/vllm-openai:v0.30.0",
+          "image_digest": "sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90"
+        },
+        "tables": {
+          "gemm_perf": {
+            "rows": 148962,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "3c6b058f2f06188d350bbe38c219d322a4817ddc",
+                "collector_hash": "sha256:1ae4d91185e29ef3fd88bf01c7547fb34f0486abf00e3e264f110295d6eda6b5",
+                "case_plan_hash": "sha256:37d5ec63f630c7a1fc241bcb3c59e2de5e52e68b54849496160dfedf0a12fe3a",
+                "collected_at": "2026-10-07",
+                "rows": 37518,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "3c6b058f2f06188d350bbe38c219d322a4817ddc",
+                "collector_hash": "sha256:1ae4d91185e29ef3fd88bf01c7547fb34f0486abf00e3e264f110295d6eda6b5",
+                "case_plan_hash": "sha256:a26b4b0dd1684df8b9645fddcb12b080ee89d9c39f0e08b3cb44f22926a5500e",
+                "collected_at": "2026-10-07",
+                "rows": 37518,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "3c6b058f2f06188d350bbe38c219d322a4817ddc",
+                "collector_hash": "sha256:1ae4d91185e29ef3fd88bf01c7547fb34f0486abf00e3e264f110295d6eda6b5",
+                "case_plan_hash": "sha256:98a642c5cab74bd56f9e12f4c160e574a4cc9d41edf5438387d8f138bea7d0a5",
+                "collected_at": "2026-10-07",
+                "rows": 36408,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "3c6b058f2f06188d350bbe38c219d322a4817ddc",
+                "collector_hash": "sha256:1ae4d91185e29ef3fd88bf01c7547fb34f0486abf00e3e264f110295d6eda6b5",
+                "case_plan_hash": "sha256:ac15c6379b8de03e49c419d74c5b702b2596c387a07d78f833da2ff288133956",
+                "collected_at": "2026-10-07",
+                "rows": 37518,
+                "status": "complete"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.27.1/gemm_perf.parquet": {
+      "sha256": "f7210ff306cf9a308e71292fed983e8c4a897bf34f99de5f18ee92beb6e4a8a3",
+      "bytes": 892459,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.27.1/collection_meta.yaml",
+      "collection_meta_sha256": "52209d99748e7fdbc118ce9fc873ea126db24ac7bf10fd7a79a9dcbfa169429b",
+      "collection_meta_content": {
+        "schema_version": 1,
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.27.1",
+          "image": "vllm/vllm-openai:v0.27.1",
+          "image_digest": "sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967"
+        },
+        "tables": {
+          "gemm_perf": {
+            "collector_ref": "yimingl/aic-1782-qwen38-max-vllm@d85bd1f550ba527761aca33ad4fdb1545652dfc1",
+            "collector_hash": "sha256:986c43b7a34db368ee914c3c8c71a0ef92f34849f2a4e6c4adabef4da6db673f",
+            "case_plan_hash": "sha256:eb1be4e40f12042d3a61504612913dc1424e0f3b11463820634e0cb7c4748b8c",
+            "collected_at": "2026-08-21",
+            "rows": 143486,
+            "status": "complete"
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.25.0/gemm_perf.parquet": {
+      "sha256": "21328b3f7937c336452368337385f91e0e5e9f9ce067cce48a959ab9d43f014a",
+      "bytes": 784814,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.25.0/collection_meta.yaml",
+      "collection_meta_sha256": "119d284bcbcce5ec6194e674ea51e9a0c6b7ce5759099cc4a11faa7ba8a113dd",
+      "collection_meta_content": {
+        "schema_version": 2,
+        "provenance": "local",
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.25.0",
+          "image": "vllm/vllm-openai",
+          "image_digest": "sha256:e1c1ff1af9a15921bfa11d1d95047258c1797392cdbfa296e7639da446b23f97"
+        },
+        "tables": {
+          "gemm_perf": {
+            "rows": 148962,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+                "collector_hash": "sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5",
+                "case_plan_hash": "sha256:37d5ec63f630c7a1fc241bcb3c59e2de5e52e68b54849496160dfedf0a12fe3a",
+                "collected_at": "2026-09-16",
+                "rows": 37518,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+                "collector_hash": "sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5",
+                "case_plan_hash": "sha256:a26b4b0dd1684df8b9645fddcb12b080ee89d9c39f0e08b3cb44f22926a5500e",
+                "collected_at": "2026-09-16",
+                "rows": 37518,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+                "collector_hash": "sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5",
+                "case_plan_hash": "sha256:ac15c6379b8de03e49c419d74c5b702b2596c387a07d78f833da2ff288133956",
+                "collected_at": "2026-09-16",
+                "rows": 37518,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+                "collector_hash": "sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5",
+                "case_plan_hash": "sha256:e0f07c473cae107b8c2a5520c2bb1ae85045e499a268a73f0ba1ce97d035a42a",
+                "collected_at": "2026-09-16",
+                "rows": 9348,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+                "collector_hash": "sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5",
+                "case_plan_hash": "sha256:fee7715156b25ee24e67995e9ae17a3bede2bbeed890c479b99cc84ade4d8fc8",
+                "collected_at": "2026-09-16",
+                "rows": 9348,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+                "collector_hash": "sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5",
+                "case_plan_hash": "sha256:03318633ff86a012c7e9bf8310f97ba545972b973af130273420a0c381c85a66",
+                "collected_at": "2026-09-16",
+                "rows": 8856,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+                "collector_hash": "sha256:5d490b4e88354bf5d27eb98a392bd4b951d9a2331f093d40e51c79d32c0365d5",
+                "case_plan_hash": "sha256:c5da28e5b245195dbf0816485f8230a16d02cf3aa39e8fed9dcffb8da85e87c8",
+                "collected_at": "2026-09-16",
+                "rows": 8856,
+                "status": "complete"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.24.0/gemm_perf.parquet": {
+      "sha256": "18aca3c786a24f3a6b758d43a179bda59080b17e1694b633dfe79c1ccb3b0a43",
+      "bytes": 649411,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/gemm/vllm/0.24.0/collection_meta.yaml",
+      "collection_meta_sha256": "c1bcca18872fddde0d84891cd1a9ce351f9f12aa77b45856e6f464a133ab8a10",
+      "collection_meta_content": {
+        "schema_version": 1,
+        "provenance": "legacy",
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.24.0"
+        },
+        "tables": {
+          "gemm_perf": {
+            "status": "partial",
+            "rows": 107226
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.31.0/moe_perf.parquet": {
+      "sha256": "b378b668bfc8396f4f6b61af500be6b15235d658d6562cbfa3f6ee3723405c6a",
+      "bytes": 22665,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.31.0/collection_meta.yaml",
+      "collection_meta_sha256": "f5d9c0cbe82434ecaf3a569f6b01623ae86e9ba0d0639e728e26cc04ce469618",
+      "collection_meta_content": {
+        "schema_version": 2,
+        "provenance": "collected",
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.31.0",
+          "image": "vllm/vllm-openai:v0.31.0",
+          "image_digest": "sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3",
+          "source_commit": "db9527a46873454610df6dbedf79a36d6bf1a7f6"
+        },
+        "tables": {
+          "moe_perf": {
+            "rows": 1782,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "00d2e3196a20f44d1514f23419acdd59409139e5",
+                "collector_hash": "sha256:44cc46b0bae80e46586643c8a6932f1d7966c0b244141c02c979b358f6bf0d11",
+                "case_plan_hash": "sha256:c9628987efd499ba9ab37467e614010be5c5399046cc57e238b90dfd6bf6238e",
+                "collected_at": "2026-10-13",
+                "rows": 891,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "00d2e3196a20f44d1514f23419acdd59409139e5",
+                "collector_hash": "sha256:44cc46b0bae80e46586643c8a6932f1d7966c0b244141c02c979b358f6bf0d11",
+                "case_plan_hash": "sha256:06b6681818c35677abf615bb81f8e76e4b19dad664bd07adeac3768bb3dbd64c",
+                "collected_at": "2026-10-13",
+                "rows": 891,
+                "status": "complete"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.30.0/moe_perf.parquet": {
+      "sha256": "d05e2fc0835c5606ef999c481f97a5954f3d22c0268992349763ef42d1e42ad1",
+      "bytes": 725841,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.30.0/collection_meta.yaml",
+      "collection_meta_sha256": "66d37f253b98cabebe4ca1a7e3b3c299107ee25c4eab77f21ef08555498a329b",
+      "collection_meta_content": {
+        "schema_version": 2,
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.30.0",
+          "image": "vllm/vllm-openai:v0.30.0",
+          "image_digest": "sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90"
+        },
+        "tables": {
+          "moe_perf": {
+            "rows": 78465,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "3c6b058f2f06188d350bbe38c219d322a4817ddc",
+                "collector_hash": "sha256:b52b9b4189069de96cda0a199485878fcf3d606262f8fbb7816500f93ec264b5",
+                "case_plan_hash": "sha256:725ad7c9bb3d3112640f309d91534b6b7f66378218151c1a7fd7b7105cd3d056",
+                "collected_at": "2026-10-07",
+                "rows": 17884,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "3c6b058f2f06188d350bbe38c219d322a4817ddc",
+                "collector_hash": "sha256:b52b9b4189069de96cda0a199485878fcf3d606262f8fbb7816500f93ec264b5",
+                "case_plan_hash": "sha256:78aca4a63b82e663bb180c19b3408228cf0338b32854280772c8a6f68cc0e37e",
+                "collected_at": "2026-10-07",
+                "rows": 14239,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "3c6b058f2f06188d350bbe38c219d322a4817ddc",
+                "collector_hash": "sha256:b52b9b4189069de96cda0a199485878fcf3d606262f8fbb7816500f93ec264b5",
+                "case_plan_hash": "sha256:988deb5bfe260ca29f6f9e49bd6af2dc39a1197ef233a1ddd85a1f62f42f3a32",
+                "collected_at": "2026-10-07",
+                "rows": 19602,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "3c6b058f2f06188d350bbe38c219d322a4817ddc",
+                "collector_hash": "sha256:b52b9b4189069de96cda0a199485878fcf3d606262f8fbb7816500f93ec264b5",
+                "case_plan_hash": "sha256:50dbe3ef79abe881ab645eb74c83e0e63b27a9616dc206db5ea2b5056c25b6c4",
+                "collected_at": "2026-10-07",
+                "rows": 1053,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "3c6b058f2f06188d350bbe38c219d322a4817ddc",
+                "collector_hash": "sha256:b52b9b4189069de96cda0a199485878fcf3d606262f8fbb7816500f93ec264b5",
+                "case_plan_hash": "sha256:4be073671f86e90e80dc13f1100cd805c8031ca842257592e9889b5de46e02e3",
+                "collected_at": "2026-10-07",
+                "rows": 5103,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "a8d79b2b806615ffddc296b4abd7643a083833df",
+                "collector_hash": "sha256:098dc8512b069b3db158d01adfcbbe1739915ff003a94caa7dc778ea4c632360",
+                "case_plan_hash": "sha256:d1bbc3f9ec5312d238b880bf3882b6e6c98ebc4dfb62f806919965d319ccde28",
+                "collected_at": "2026-10-27",
+                "rows": 654,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "e0163dcfb2a1e16785e56b3a55340d97614b50aa",
+                "collector_hash": "sha256:34c18ac5f1690ba4787ef96b512c17d9eee791432ddb5283280a87c86c5cc2ac",
+                "case_plan_hash": "sha256:51c216ef1c5ad9904fbd5b67fcce4733f1c1c599a3b027c89427eaa1cbb8a136",
+                "collected_at": "2026-10-27",
+                "rows": 6804,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "e0163dcfb2a1e16785e56b3a55340d97614b50aa",
+                "collector_hash": "sha256:34c18ac5f1690ba4787ef96b512c17d9eee791432ddb5283280a87c86c5cc2ac",
+                "case_plan_hash": "sha256:8cdcca477f317e21bec7d240562ec38d25e76058a0301e34f53409d6fa691beb",
+                "collected_at": "2026-10-27",
+                "rows": 6809,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "e0163dcfb2a1e16785e56b3a55340d97614b50aa",
+                "collector_hash": "sha256:34c18ac5f1690ba4787ef96b512c17d9eee791432ddb5283280a87c86c5cc2ac",
+                "case_plan_hash": "sha256:781072e6fcab4cb0e2ff55babb8227ab269d46c891576217e8be0287505612c3",
+                "collected_at": "2026-10-27",
+                "rows": 6725,
+                "status": "complete"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.27.1/moe_perf.parquet": {
+      "sha256": "a8344ae07b596d7bd240add952d8dcb71c1d6b6508f2acb0ab8ffa92fff3d8d6",
+      "bytes": 21779,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.27.1/collection_meta.yaml",
+      "collection_meta_sha256": "aa4b6de85163170bd568e1f240bd21d133006da4153267fa4c95577b29af6300",
+      "collection_meta_content": {
+        "schema_version": 1,
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.27.1",
+          "image": "vllm/vllm-openai:v0.27.1",
+          "image_digest": "sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967"
+        },
+        "tables": {
+          "moe_perf": {
+            "collector_ref": "yimingl/aic-1782-qwen38-max-vllm@d85bd1f550ba527761aca33ad4fdb1545652dfc1",
+            "collector_hash": "sha256:8ac5ccc09086441e5bad021b69913467caec9fb96b9eb1c037ef88e9af544792",
+            "case_plan_hash": "sha256:041763c460ae16c08cc913f7ff14c167b16d054577a8178f2ef05374691c1511",
+            "collected_at": "2026-08-21",
+            "rows": 2106,
+            "status": "complete"
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.25.0/moe_perf.parquet": {
+      "sha256": "49e0d74f2b8cb39f8f93623e2fd6445b1310c2644bb25e1a3d18703dd07e0c71",
+      "bytes": 628468,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.25.0/collection_meta.yaml",
+      "collection_meta_sha256": "76d34fca2d48c7d0e575305d1ae2f688f697d2e6fd75d67d7cab7577cf36a378",
+      "collection_meta_content": {
+        "schema_version": 2,
+        "provenance": "local",
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.25.0",
+          "image": "vllm/vllm-openai",
+          "image_digest": "sha256:e1c1ff1af9a15921bfa11d1d95047258c1797392cdbfa296e7639da446b23f97"
+        },
+        "tables": {
+          "moe_perf": {
+            "rows": 72924,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+                "collector_hash": "sha256:fe2d2d23d340ded7bff27c17b5682e950458c2946d84d1a04bf8608cdb5a689d",
+                "case_plan_hash": "sha256:261fd9888e2e292a179050ceb03bf8f7ab9d4f27ccd033f5075a92c165aec537",
+                "collected_at": "2026-09-16",
+                "rows": 72559,
+                "status": "complete"
+              },
+              {
+                "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+                "collector_hash": "sha256:fe2d2d23d340ded7bff27c17b5682e950458c2946d84d1a04bf8608cdb5a689d",
+                "case_plan_hash": "sha256:999bf157086b0c2d5cad715cea1ca4587a76130bad8adf97ef81b52b94636387",
+                "collected_at": "2026-09-16",
+                "rows": 402,
+                "status": "complete"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.24.0/moe_perf.parquet": {
+      "sha256": "d73cceda298720557743a9a75e37048228ea413eb9308c4a87ee240d66a57cc8",
+      "bytes": 552413,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/moe/vllm/0.24.0/collection_meta.yaml",
+      "collection_meta_sha256": "e7fec80972f717b9e0be5d04279707f719b6f2fc6ffcedd8dc77b1de2b5cbafe",
+      "collection_meta_content": {
+        "schema_version": 1,
+        "provenance": "legacy",
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.24.0"
+        },
+        "tables": {
+          "moe_perf": {
+            "status": "complete"
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/vllm/0.31.0/custom_allreduce_perf.parquet": {
+      "sha256": "e999a3001073d41df5120d7dd00ef186fab28cbbd6c79415c930e81ea167ccd4",
+      "bytes": 7477,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/vllm/0.31.0/collection_meta.yaml",
+      "collection_meta_sha256": "f28b18033326b21e48ad996b035540794254c35e084af57a52d137e9a31cd67f",
+      "collection_meta_content": {
+        "schema_version": 1,
+        "provenance": "collected",
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.31.0",
+          "image": "vllm/vllm-openai:v0.31.0",
+          "image_digest": "sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3",
+          "source_commit": "db9527a46873454610df6dbedf79a36d6bf1a7f6"
+        },
+        "tables": {
+          "custom_allreduce_perf": {
+            "collector_ref": "00d2e3196a20f44d1514f23419acdd59409139e5",
+            "collector_hash": "sha256:3466e42a7d8561328cbe318451261315a3381ef1f5c47d6a076c6b6f77e2f9e8",
+            "case_plan_hash": "sha256:ba337d846ae6fe0b764040842fd4af2c729e70e2f3cd70683a3fa43a50fab1bb",
+            "collected_at": "2026-10-13",
+            "rows": 138,
+            "status": "complete"
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/vllm/0.24.0/custom_allreduce_perf.parquet": {
+      "sha256": "eb93eee30e9185a62b4664b548e20d30e245e54272210b18f97f1db470484b08",
+      "bytes": 4354,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/vllm/0.24.0/collection_meta.yaml",
+      "collection_meta_sha256": "58e8b626b922a11c68e5dc3fac31e46944ccefbf308434933d8e3568eed3e23e",
+      "collection_meta_content": {
+        "schema_version": 1,
+        "runtime": {
+          "framework": "wideep_vllm",
+          "version": "0.24.0",
+          "image": "vllm/vllm-openai:v0.24.0@sha256:251eba5cc7c12fed0b75da22a9240e582b1c9e39f6fbc064f86781b963bd814f",
+          "image_variant": "linux/amd64",
+          "image_digest": "sha256:f9de5cd9fa907fbf6dbba691eb7db095d48ad58ea283e3eba7142f9a91e186e8",
+          "source_commit": "ee0da84ab9e04ac7610e28580af62c365e898389",
+          "abi": {
+            "build_mode": "official-v0.24.0-image",
+            "torch": "2.11.0",
+            "cuda": "13.0.2",
+            "deep_ep": "73b6ea4a439ba03a695563f9fd242c8e4b02b37c",
+            "nvshmem": "3.3.24",
+            "deep_ep_api": "Buffer",
+            "system": "b300_sxm",
+            "fabric_identity": "approval:user-approved-pr1542-20260826",
+            "gpu_name": "NVIDIA B300 SXM6 AC",
+            "driver": "595.58.03",
+            "compute_capability": "10.3",
+            "rdma_device_count_min": "24",
+            "cross_node_nvlink_capable": "runtime_probe_required",
+            "nvlink_topology_sha256": "e98671001365dfbc12b0dbebc3735e9bee4f3d20f1be04af641fb892cef5e29e",
+            "gloo_socket_ifname": "ens6f0np0",
+            "slurm_topology_verified": "true",
+            "deep_ep_overlay_wheel_sha256": "6c94ba277cbdc208ac70175f0c0968dd1321834c6a693602018b779d2d8db03f",
+            "deep_ep_setup_sha256": "6c24ea967faaf5dc1c8024bf5734313a9baf2eb70ce8e154e5909337af19f671",
+            "deep_ep_cuda_arches": "9.0 10.0a 10.3a",
+            "deep_ep_scaleup_ranks": "8",
+            "pyarrow": "24.0.0",
+            "pyarrow_wheel_sha256": "6165461f55ef6314f026de6638d661188e3455d3ec49834556a0ebbdbace18bb",
+            "campaign_system": "b300_sxm",
+            "campaign_node_counts": "1",
+            "campaign_ep_sizes": "8",
+            "campaign_backends": "deepep_ht,deepep_ll",
+            "fabric_identities": "approval:user-approved-pr1542-20260826"
+          },
+          "backend_abis": {
+            "deepep_ht": {
+              "build_mode": "official-v0.24.0-image",
+              "cuda": "13.0.2",
+              "deep_ep": "73b6ea4a439ba03a695563f9fd242c8e4b02b37c",
+              "deep_ep_api": "Buffer",
+              "deep_ep_cuda_arches": "9.0 10.0a 10.3a",
+              "deep_ep_overlay_wheel_sha256": "6c94ba277cbdc208ac70175f0c0968dd1321834c6a693602018b779d2d8db03f",
+              "deep_ep_scaleup_ranks": "8",
+              "nvshmem": "3.3.24",
+              "torch": "2.11.0"
+            },
+            "deepep_ll": {
+              "build_mode": "official-v0.24.0-image",
+              "cuda": "13.0.2",
+              "deep_ep": "73b6ea4a439ba03a695563f9fd242c8e4b02b37c",
+              "deep_ep_api": "Buffer",
+              "deep_ep_cuda_arches": "9.0 10.0a 10.3a",
+              "deep_ep_overlay_wheel_sha256": "6c94ba277cbdc208ac70175f0c0968dd1321834c6a693602018b779d2d8db03f",
+              "deep_ep_scaleup_ranks": "8",
+              "nvshmem": "3.3.24",
+              "torch": "2.11.0"
+            }
+          },
+          "backend_capabilities": {
+            "deepep_ht": {
+              "1n_ep8": {
+                "backend": "deepep_ht",
+                "topology_source": "legacy_compile_time",
+                "num_scaleout_ranks": "1",
+                "num_scaleup_ranks": "8"
+              }
+            },
+            "deepep_ll": {
+              "1n_ep8": {
+                "backend": "deepep_ll",
+                "topology_source": "legacy_compile_time",
+                "num_scaleout_ranks": "1",
+                "num_scaleup_ranks": "8"
+              }
+            }
+          }
+        },
+        "tables": {
+          "custom_allreduce_perf": {
+            "status": "complete"
+          },
+          "moe_a2a_perf": {
+            "collector_ref": "65aab00d1a52a2924755ef2c389442c645571409",
+            "collector_hash": "sha256:a0f6bea7b745dc4baa05d4c9a953c43dba3548f8c244497645ec9f784fda0b81",
+            "case_plan_hash": "sha256:6bf802e0fcb586ca028af01eae5e92fcd9cdb40f72d6dd7f3a375b9500721b0c",
+            "collected_at": "2026-08-30",
+            "rows": 324,
+            "classified_failures": 0,
+            "status": "complete"
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/vllm/0.19.0/custom_allreduce_perf.parquet": {
+      "sha256": "ea9b3f889115c087447f048fd7dc28218c7de68172afb50a8e847455ec96d614",
+      "bytes": 4348,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/comm/vllm/0.19.0/collection_meta.yaml",
+      "collection_meta_sha256": "cd1074be35d141bbbe3b58cbdec42940a7e283c808c700c5604f7db3ec60ecb6",
+      "collection_meta_content": {
+        "schema_version": 1,
+        "provenance": "legacy",
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.19.0"
+        },
+        "tables": {
+          "custom_allreduce_perf": {
+            "status": "complete"
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.30.0/context_attention_perf.parquet": {
+      "sha256": "e073031085dcfc75b42d49d3be3ee6fd744726bb107b73b96fe1531866007b7e",
+      "bytes": 363038,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.30.0/collection_meta.yaml",
+      "collection_meta_sha256": "6dce35b51117a8a9b6fd155d4bbd841e90341d457490d882b41cb2bc26a446d8",
+      "collection_meta_content": {
+        "schema_version": 2,
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.30.0",
+          "image": "vllm/vllm-openai:v0.30.0",
+          "image_digest": "sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90"
+        },
+        "tables": {
+          "context_attention_perf": {
+            "rows": 54457,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "3c6b058f2f06188d350bbe38c219d322a4817ddc",
+                "collector_hash": "sha256:5819af58a941e9237b5cecbebb6510a8791c532c3c70aee210469fc53b4ff2b7",
+                "case_plan_hash": "sha256:04acb1ef5df69580c3028de4dbe34f5e7697450ce783366632247395a3ed3507",
+                "collected_at": "2026-10-07",
+                "rows": 54457,
+                "status": "complete"
+              }
+            ]
+          },
+          "generation_attention_perf": {
+            "rows": 67623,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "3c6b058f2f06188d350bbe38c219d322a4817ddc",
+                "collector_hash": "sha256:5819af58a941e9237b5cecbebb6510a8791c532c3c70aee210469fc53b4ff2b7",
+                "case_plan_hash": "sha256:12df4833c99374841693e9bec6da73b3e7a8300acb5ca88e92c5c43d4bb24cdc",
+                "collected_at": "2026-10-07",
+                "rows": 67623,
+                "status": "complete"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.25.0/context_attention_perf.parquet": {
+      "sha256": "776e970fb25532c0480f1bb3b666c9f34b83408bc0af7ab106bb3a01e53a1239",
+      "bytes": 286985,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.25.0/collection_meta.yaml",
+      "collection_meta_sha256": "2dba7dd74ad73045010b63954f0f7ee668b2f7a3b4d91af527631215af6034ad",
+      "collection_meta_content": {
+        "schema_version": 2,
+        "provenance": "local",
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.25.0",
+          "image": "vllm/vllm-openai",
+          "image_digest": "sha256:e1c1ff1af9a15921bfa11d1d95047258c1797392cdbfa296e7639da446b23f97"
+        },
+        "tables": {
+          "context_attention_perf": {
+            "rows": 52836,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+                "collector_hash": "sha256:262799b47ef42d0dae5ced92845517d20da265daea5c58dee5813f84c7fe5ec0",
+                "case_plan_hash": "sha256:04acb1ef5df69580c3028de4dbe34f5e7697450ce783366632247395a3ed3507",
+                "collected_at": "2026-09-16",
+                "rows": 52836,
+                "status": "complete"
+              }
+            ]
+          },
+          "generation_attention_perf": {
+            "rows": 65408,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+                "collector_hash": "sha256:262799b47ef42d0dae5ced92845517d20da265daea5c58dee5813f84c7fe5ec0",
+                "case_plan_hash": "sha256:12df4833c99374841693e9bec6da73b3e7a8300acb5ca88e92c5c43d4bb24cdc",
+                "collected_at": "2026-09-16",
+                "rows": 65408,
+                "status": "complete"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.24.0/context_attention_perf.parquet": {
+      "sha256": "e83d02034e362b07460403657b30aeb0143344739760aa3fc6b25462e336e1b7",
+      "bytes": 267400,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.24.0/collection_meta.yaml",
+      "collection_meta_sha256": "0cc7dd9ea578fe78d40c33bb8ed644a96c700c24b59e1a62b59360d9335cb73d",
+      "collection_meta_content": {
+        "schema_version": 1,
+        "provenance": "legacy",
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.24.0"
+        },
+        "tables": {
+          "context_attention_perf": {
+            "status": "complete"
+          },
+          "generation_attention_perf": {
+            "status": "complete"
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.30.0/generation_attention_perf.parquet": {
+      "sha256": "0cda698c823fc5fd84c2780054a23405e57dee4a36ea72580d9beed8c8f1474c",
+      "bytes": 264752,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.30.0/collection_meta.yaml",
+      "collection_meta_sha256": "6dce35b51117a8a9b6fd155d4bbd841e90341d457490d882b41cb2bc26a446d8",
+      "collection_meta_content": {
+        "schema_version": 2,
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.30.0",
+          "image": "vllm/vllm-openai:v0.30.0",
+          "image_digest": "sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90"
+        },
+        "tables": {
+          "context_attention_perf": {
+            "rows": 54457,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "3c6b058f2f06188d350bbe38c219d322a4817ddc",
+                "collector_hash": "sha256:5819af58a941e9237b5cecbebb6510a8791c532c3c70aee210469fc53b4ff2b7",
+                "case_plan_hash": "sha256:04acb1ef5df69580c3028de4dbe34f5e7697450ce783366632247395a3ed3507",
+                "collected_at": "2026-10-07",
+                "rows": 54457,
+                "status": "complete"
+              }
+            ]
+          },
+          "generation_attention_perf": {
+            "rows": 67623,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "3c6b058f2f06188d350bbe38c219d322a4817ddc",
+                "collector_hash": "sha256:5819af58a941e9237b5cecbebb6510a8791c532c3c70aee210469fc53b4ff2b7",
+                "case_plan_hash": "sha256:12df4833c99374841693e9bec6da73b3e7a8300acb5ca88e92c5c43d4bb24cdc",
+                "collected_at": "2026-10-07",
+                "rows": 67623,
+                "status": "complete"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.25.0/generation_attention_perf.parquet": {
+      "sha256": "74db4d37d7f75bb709e7ef24e0ea55c90138fa85a85752f7406588ffc708f2e3",
+      "bytes": 213450,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.25.0/collection_meta.yaml",
+      "collection_meta_sha256": "2dba7dd74ad73045010b63954f0f7ee668b2f7a3b4d91af527631215af6034ad",
+      "collection_meta_content": {
+        "schema_version": 2,
+        "provenance": "local",
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.25.0",
+          "image": "vllm/vllm-openai",
+          "image_digest": "sha256:e1c1ff1af9a15921bfa11d1d95047258c1797392cdbfa296e7639da446b23f97"
+        },
+        "tables": {
+          "context_attention_perf": {
+            "rows": 52836,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+                "collector_hash": "sha256:262799b47ef42d0dae5ced92845517d20da265daea5c58dee5813f84c7fe5ec0",
+                "case_plan_hash": "sha256:04acb1ef5df69580c3028de4dbe34f5e7697450ce783366632247395a3ed3507",
+                "collected_at": "2026-09-16",
+                "rows": 52836,
+                "status": "complete"
+              }
+            ]
+          },
+          "generation_attention_perf": {
+            "rows": 65408,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+                "collector_hash": "sha256:262799b47ef42d0dae5ced92845517d20da265daea5c58dee5813f84c7fe5ec0",
+                "case_plan_hash": "sha256:12df4833c99374841693e9bec6da73b3e7a8300acb5ca88e92c5c43d4bb24cdc",
+                "collected_at": "2026-09-16",
+                "rows": 65408,
+                "status": "complete"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.24.0/generation_attention_perf.parquet": {
+      "sha256": "1b038a3ef0f9de49e831148a649de8a75c955f2507815491e6b34dec99fd9daa",
+      "bytes": 194774,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/attention/vllm/0.24.0/collection_meta.yaml",
+      "collection_meta_sha256": "0cc7dd9ea578fe78d40c33bb8ed644a96c700c24b59e1a62b59360d9335cb73d",
+      "collection_meta_content": {
+        "schema_version": 1,
+        "provenance": "legacy",
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.24.0"
+        },
+        "tables": {
+          "context_attention_perf": {
+            "status": "complete"
+          },
+          "generation_attention_perf": {
+            "status": "complete"
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/vllm/0.30.0/gdn_perf.parquet": {
+      "sha256": "c84b474755831b3d84639dac65ff69c9d41e75557aa1ded4bc7a2e36b0727707",
+      "bytes": 117200,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/vllm/0.30.0/collection_meta.yaml",
+      "collection_meta_sha256": "f0250ec3772c682221f2a61cc3660dcbd7f763810275bf594dced207894149dd",
+      "collection_meta_content": {
+        "schema_version": 2,
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.30.0",
+          "image": "vllm/vllm-openai:v0.30.0",
+          "image_digest": "sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90"
+        },
+        "tables": {
+          "gdn_perf": {
+            "rows": 10326,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "3c6b058f2f06188d350bbe38c219d322a4817ddc",
+                "collector_hash": "sha256:71056d37cf0889eddf1940db138f24dbcbfab0a1b224e5a97736b37fe5591e2f",
+                "case_plan_hash": "sha256:ba375a4c3a8dbbe8b77cec5cfd0f9dafd245e18b99ace763cc738c9645962dda",
+                "collected_at": "2026-10-07",
+                "rows": 10326,
+                "status": "complete"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/vllm/0.27.1/gdn_perf.parquet": {
+      "sha256": "3ec837d234dd61c339cafd48040472185d6d1796840d70909d5505700d18f954",
+      "bytes": 15614,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/vllm/0.27.1/collection_meta.yaml",
+      "collection_meta_sha256": "70a61c680e257dab7ffd191c217609310f9fb7aff714860d9cb075b9b77fb094",
+      "collection_meta_content": {
+        "schema_version": 1,
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.27.1",
+          "image": "vllm/vllm-openai:v0.27.1",
+          "image_digest": "sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967"
+        },
+        "tables": {
+          "gdn_perf": {
+            "collector_ref": "yimingl/aic-1782-qwen38-max-vllm@d85bd1f550ba527761aca33ad4fdb1545652dfc1",
+            "collector_hash": "sha256:cc674e0588264d67c78275c6010bcefd6c16dddc5491b503c6a2049886defbb3",
+            "case_plan_hash": "sha256:5c7717788dd8501f475117e1669c275bd801caa84278cd34582e4277886ded9a",
+            "collected_at": "2026-08-21",
+            "rows": 1226,
+            "status": "complete"
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/vllm/0.25.0/gdn_perf.parquet": {
+      "sha256": "3348d7f8adb0515980553aa288473f8db9fb861b37f42e84c7a4c56024c37845",
+      "bytes": 102407,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/vllm/0.25.0/collection_meta.yaml",
+      "collection_meta_sha256": "d27183136fd884307945d6de8c27e9c9fd8c11cee0fb6ca46db9bd13b74f1a0a",
+      "collection_meta_content": {
+        "schema_version": 2,
+        "provenance": "local",
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.25.0",
+          "image": "vllm/vllm-openai",
+          "image_digest": "sha256:e1c1ff1af9a15921bfa11d1d95047258c1797392cdbfa296e7639da446b23f97"
+        },
+        "tables": {
+          "gdn_perf": {
+            "rows": 10326,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "cbaf51b64fa460e5ec6146bde407a4c64958212d",
+                "collector_hash": "sha256:ad983a508da4af6b521f77f75043cd8959537105866666aa1fbdd8da1298212f",
+                "case_plan_hash": "sha256:ba375a4c3a8dbbe8b77cec5cfd0f9dafd245e18b99ace763cc738c9645962dda",
+                "collected_at": "2026-09-16",
+                "rows": 10326,
+                "status": "complete"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/vllm/0.24.0/gdn_perf.parquet": {
+      "sha256": "860383a4df6818ec4dc353d7a9d0698fce6eb3c4bc3c12f83bb8261ae7d240c7",
+      "bytes": 64452,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/vllm/0.24.0/collection_meta.yaml",
+      "collection_meta_sha256": "fda70302af3ed3f9fc9da29199cf89eb0bd4bb4bf5dafc99b20e97a35ea92603",
+      "collection_meta_content": {
+        "schema_version": 1,
+        "runtime": {
+          "framework": "vllm",
+          "version": "0.24.0",
+          "image": "vllm/vllm-openai:v0.24.0",
+          "image_digest": "sha256:251eba5cc7c12fed0b75da22a9240e582b1c9e39f6fbc064f86781b963bd814f"
+        },
+        "tables": {
+          "gdn_perf": {
+            "collector_ref": "unknown",
+            "collector_hash": "sha256:3a94897e5b30ddc37291b5060bf1fc56cdfc890a8dddc276759d56f3ef6efc5d",
+            "case_plan_hash": "sha256:c4a596c322f4052e093e6b5c2efb32561b8938296bf92d038081f828da681ca2",
+            "collected_at": "2026-08-07",
+            "rows": 9100,
+            "status": "complete"
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/sglang/0.5.21/gdn_perf.parquet": {
+      "sha256": "6ad4b8df5c166f639d50d44747469c44a96d26a4aeac0cdb4f736c1d8cc3d359",
+      "bytes": 112925,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/sglang/0.5.21/collection_meta.yaml",
+      "collection_meta_sha256": "457626ed98deb651f9b4118104c1432a9580d7fb1718ec6c8a960a9303930cf5",
+      "collection_meta_content": {
+        "schema_version": 2,
+        "runtime": {
+          "framework": "sglang",
+          "version": "0.5.21",
+          "image": "lmsysorg/sglang:v0.5.21",
+          "image_digest": "sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469"
+        },
+        "tables": {
+          "gdn_perf": {
+            "rows": 9977,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "ee219cc60e13e9f60db50b63f13bab536c598781",
+                "collector_hash": "sha256:7e12d62bb083055223b737555d351bb314ecb83c2226c55cc4f8ccb85ff9cef4",
+                "case_plan_hash": "sha256:d4af8c9dc36a74fe71c09e3c55bc2526cf52de35baa000eb74e7a24723e79a4f",
+                "collected_at": "2026-10-08",
+                "rows": 9977,
+                "status": "complete"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/sglang/0.5.17/gdn_perf.parquet": {
+      "sha256": "35296832c746c3c3e8e5423f8fb007e3d7b82359b6efb50a2238c95d421b90db",
+      "bytes": 16048,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/sglang/0.5.17/collection_meta.yaml",
+      "collection_meta_sha256": "ecdf2813461c12e5799f06f12aeaf851ba1ff718278534666b67e858d5cfcb00",
+      "collection_meta_content": {
+        "schema_version": 1,
+        "runtime": {
+          "framework": "sglang",
+          "version": "0.5.17",
+          "image": "lmsysorg/sglang:v0.5.17-cu130",
+          "image_digest": "sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
+        },
+        "tables": {
+          "gdn_perf": {
+            "collector_ref": "f5b49140a581809b3031775883fc1c2e55132c96",
+            "collector_hash": "sha256:572bd2304dbf6cea5df47150a25ce111d70b6b27407294c9fbe809b121272b41",
+            "case_plan_hash": "sha256:e4b0f34d0e44fc75373def8e06455f44dde784b41624ea3518a9ddb752243ff8",
+            "collected_at": "2026-08-18",
+            "rows": 1209,
+            "status": "partial"
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/sglang/0.5.14/gdn_perf.parquet": {
+      "sha256": "2715b6d08c00deb59872eebfd245a6791ac940104c728cf74f038b8809f134dd",
+      "bytes": 63496,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/sglang/0.5.14/collection_meta.yaml",
+      "collection_meta_sha256": "f3aea56d17116582bd149e08a1b63d467265a91780c19e27aadf57dc1a116d08",
+      "collection_meta_content": {
+        "schema_version": 1,
+        "runtime": {
+          "framework": "sglang",
+          "version": "0.5.14",
+          "image": "lmsysorg/sglang:v0.5.14",
+          "image_digest": "sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3"
+        },
+        "tables": {
+          "gdn_perf": {
+            "collector_ref": "5a1834df2865d291f84f5fc1fbf6f3c99b69afba",
+            "collector_hash": "sha256:e18b5b3a83ff649f4955a271b0d3b3680be2c43a5e07e68882b4e91a6991d075",
+            "case_plan_hash": "sha256:1e658e78c925cba9773688165ecec208c0c2c2f0b931268cc15a245fc878ac48",
+            "collected_at": "2026-08-10",
+            "rows": 8820,
+            "status": "complete"
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/trtllm/1.3.0rc29/gdn_perf.parquet": {
+      "sha256": "0efc7c5420b90aebeb30fffe264c525a7e1731cce2a7bc08a3ca6639b1b6ee73",
+      "bytes": 103416,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/trtllm/1.3.0rc29/collection_meta.yaml",
+      "collection_meta_sha256": "071d4a2da5056a0968a65eeb023da028d2fbfd521252be61c0d191410b4938b9",
+      "collection_meta_content": {
+        "schema_version": 2,
+        "runtime": {
+          "framework": "trtllm",
+          "version": "1.3.0rc29",
+          "image": "nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc29",
+          "image_digest": "sha256:124da3f10b73afbf4242f5c68fb04b48736c61fbe662e715202371fd7f046f43"
+        },
+        "tables": {
+          "gdn_perf": {
+            "rows": 10224,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "4ff777c61ca928312a2b2d45f243312cfafc97d4",
+                "collector_hash": "sha256:41e73e99f148cdd10e65154a93271d7eee903cab5a0b6087e4add1d4ff8a3ec0",
+                "case_plan_hash": "sha256:5ca918c5a6ab2b4ef558577c2dc85f65fd08230649a4146dfd03557648b839a6",
+                "collected_at": "2026-10-07",
+                "rows": 10224,
+                "status": "complete"
+              }
+            ]
+          },
+          "mamba2_perf": {
+            "rows": 1380,
+            "status": "complete",
+            "collections": [
+              {
+                "collector_ref": "6260c770d7595d97b72b9c16f16434b81a9e2291",
+                "collector_hash": "sha256:cdaa5f5bf482f4900b6ff55aad4951ae6b0150d9276b7f27d71c2f46f74a83a2",
+                "case_plan_hash": "sha256:511be5b1bfcaae37634aaddb0135710417db766804a256cf08b95d34a962e12e",
+                "collected_at": "2026-10-12",
+                "rows": 1380,
+                "status": "complete"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/trtllm/1.3.0rc20/gdn_perf.parquet": {
+      "sha256": "77c0a3b1032b04b5b77f25ca2950df546ddc5e2ff99aeffae6d149ca25cd99d2",
+      "bytes": 21228,
+      "collection_meta": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/linear_attention/trtllm/1.3.0rc20/collection_meta.yaml",
+      "collection_meta_sha256": "ee478037a14c79743750e176eb31f018ed1b1d78b17d69d72a873f36c01a66b3",
+      "collection_meta_content": {
+        "schema_version": 1,
+        "provenance": "collected",
+        "runtime": {
+          "framework": "trtllm",
+          "version": "1.3.0rc20"
+        },
+        "tables": {
+          "gdn_perf": {
+            "status": "complete"
+          },
+          "mamba2_perf": {
+            "status": "complete"
+          }
+        }
+      }
+    }
+  }
+}

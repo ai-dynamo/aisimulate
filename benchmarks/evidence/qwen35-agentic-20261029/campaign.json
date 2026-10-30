@@ -1,0 +1,408 @@
+{
+  "schema": "qwen35-agentic-campaign-v1",
+  "baseline_commit": "8ae6b65801c4993febb3c827a0e68518b20b379e",
+  "model": "Qwen/Qwen3.5-397B-A17B",
+  "model_revision": "8472618112abcbd45acbcdc58436aff4233c23f7",
+  "vllm_version": "0.31.0",
+  "vllm_commit": "db9527a46873454610df6dbedf79a36d6bf1a7f6",
+  "hardware": "B300",
+  "tensor_parallel": 8,
+  "output_tokens": 256,
+  "tool_tokens": 512,
+  "tool_delay_ms": 100,
+  "num_cases": 36,
+  "num_operating_points": 12,
+  "planned_requests": 2016,
+  "stages": {
+    "preparation": "complete",
+    "cache_qualification": "queued",
+    "silicon_collection": "pending",
+    "replay": "pending",
+    "comparison": "pending"
+  },
+  "cases": [
+    {
+      "case_id": "p4096-l1-cold-r0",
+      "initial_input_tokens": 4096,
+      "lanes": 1,
+      "initial_cache": "cold",
+      "repeat": 0,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 8,
+      "status": "planned"
+    },
+    {
+      "case_id": "p4096-l1-cold-r1",
+      "initial_input_tokens": 4096,
+      "lanes": 1,
+      "initial_cache": "cold",
+      "repeat": 1,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 8,
+      "status": "planned"
+    },
+    {
+      "case_id": "p4096-l1-cold-r2",
+      "initial_input_tokens": 4096,
+      "lanes": 1,
+      "initial_cache": "cold",
+      "repeat": 2,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 8,
+      "status": "planned"
+    },
+    {
+      "case_id": "p4096-l1-warm-r0",
+      "initial_input_tokens": 4096,
+      "lanes": 1,
+      "initial_cache": "warm",
+      "repeat": 0,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 8,
+      "status": "planned"
+    },
+    {
+      "case_id": "p4096-l1-warm-r1",
+      "initial_input_tokens": 4096,
+      "lanes": 1,
+      "initial_cache": "warm",
+      "repeat": 1,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 8,
+      "status": "planned"
+    },
+    {
+      "case_id": "p4096-l1-warm-r2",
+      "initial_input_tokens": 4096,
+      "lanes": 1,
+      "initial_cache": "warm",
+      "repeat": 2,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 8,
+      "status": "planned"
+    },
+    {
+      "case_id": "p4096-l4-cold-r0",
+      "initial_input_tokens": 4096,
+      "lanes": 4,
+      "initial_cache": "cold",
+      "repeat": 0,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 32,
+      "status": "planned"
+    },
+    {
+      "case_id": "p4096-l4-cold-r1",
+      "initial_input_tokens": 4096,
+      "lanes": 4,
+      "initial_cache": "cold",
+      "repeat": 1,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 32,
+      "status": "planned"
+    },
+    {
+      "case_id": "p4096-l4-cold-r2",
+      "initial_input_tokens": 4096,
+      "lanes": 4,
+      "initial_cache": "cold",
+      "repeat": 2,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 32,
+      "status": "planned"
+    },
+    {
+      "case_id": "p4096-l4-warm-r0",
+      "initial_input_tokens": 4096,
+      "lanes": 4,
+      "initial_cache": "warm",
+      "repeat": 0,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 32,
+      "status": "planned"
+    },
+    {
+      "case_id": "p4096-l4-warm-r1",
+      "initial_input_tokens": 4096,
+      "lanes": 4,
+      "initial_cache": "warm",
+      "repeat": 1,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 32,
+      "status": "planned"
+    },
+    {
+      "case_id": "p4096-l4-warm-r2",
+      "initial_input_tokens": 4096,
+      "lanes": 4,
+      "initial_cache": "warm",
+      "repeat": 2,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 32,
+      "status": "planned"
+    },
+    {
+      "case_id": "p4096-l16-cold-r0",
+      "initial_input_tokens": 4096,
+      "lanes": 16,
+      "initial_cache": "cold",
+      "repeat": 0,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 128,
+      "status": "planned"
+    },
+    {
+      "case_id": "p4096-l16-cold-r1",
+      "initial_input_tokens": 4096,
+      "lanes": 16,
+      "initial_cache": "cold",
+      "repeat": 1,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 128,
+      "status": "planned"
+    },
+    {
+      "case_id": "p4096-l16-cold-r2",
+      "initial_input_tokens": 4096,
+      "lanes": 16,
+      "initial_cache": "cold",
+      "repeat": 2,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 128,
+      "status": "planned"
+    },
+    {
+      "case_id": "p4096-l16-warm-r0",
+      "initial_input_tokens": 4096,
+      "lanes": 16,
+      "initial_cache": "warm",
+      "repeat": 0,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 128,
+      "status": "planned"
+    },
+    {
+      "case_id": "p4096-l16-warm-r1",
+      "initial_input_tokens": 4096,
+      "lanes": 16,
+      "initial_cache": "warm",
+      "repeat": 1,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 128,
+      "status": "planned"
+    },
+    {
+      "case_id": "p4096-l16-warm-r2",
+      "initial_input_tokens": 4096,
+      "lanes": 16,
+      "initial_cache": "warm",
+      "repeat": 2,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 128,
+      "status": "planned"
+    },
+    {
+      "case_id": "p32768-l1-cold-r0",
+      "initial_input_tokens": 32768,
+      "lanes": 1,
+      "initial_cache": "cold",
+      "repeat": 0,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 8,
+      "status": "planned"
+    },
+    {
+      "case_id": "p32768-l1-cold-r1",
+      "initial_input_tokens": 32768,
+      "lanes": 1,
+      "initial_cache": "cold",
+      "repeat": 1,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 8,
+      "status": "planned"
+    },
+    {
+      "case_id": "p32768-l1-cold-r2",
+      "initial_input_tokens": 32768,
+      "lanes": 1,
+      "initial_cache": "cold",
+      "repeat": 2,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 8,
+      "status": "planned"
+    },
+    {
+      "case_id": "p32768-l1-warm-r0",
+      "initial_input_tokens": 32768,
+      "lanes": 1,
+      "initial_cache": "warm",
+      "repeat": 0,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 8,
+      "status": "planned"
+    },
+    {
+      "case_id": "p32768-l1-warm-r1",
+      "initial_input_tokens": 32768,
+      "lanes": 1,
+      "initial_cache": "warm",
+      "repeat": 1,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 8,
+      "status": "planned"
+    },
+    {
+      "case_id": "p32768-l1-warm-r2",
+      "initial_input_tokens": 32768,
+      "lanes": 1,
+      "initial_cache": "warm",
+      "repeat": 2,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 8,
+      "status": "planned"
+    },
+    {
+      "case_id": "p32768-l4-cold-r0",
+      "initial_input_tokens": 32768,
+      "lanes": 4,
+      "initial_cache": "cold",
+      "repeat": 0,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 32,
+      "status": "planned"
+    },
+    {
+      "case_id": "p32768-l4-cold-r1",
+      "initial_input_tokens": 32768,
+      "lanes": 4,
+      "initial_cache": "cold",
+      "repeat": 1,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 32,
+      "status": "planned"
+    },
+    {
+      "case_id": "p32768-l4-cold-r2",
+      "initial_input_tokens": 32768,
+      "lanes": 4,
+      "initial_cache": "cold",
+      "repeat": 2,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 32,
+      "status": "planned"
+    },
+    {
+      "case_id": "p32768-l4-warm-r0",
+      "initial_input_tokens": 32768,
+      "lanes": 4,
+      "initial_cache": "warm",
+      "repeat": 0,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 32,
+      "status": "planned"
+    },
+    {
+      "case_id": "p32768-l4-warm-r1",
+      "initial_input_tokens": 32768,
+      "lanes": 4,
+      "initial_cache": "warm",
+      "repeat": 1,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 32,
+      "status": "planned"
+    },
+    {
+      "case_id": "p32768-l4-warm-r2",
+      "initial_input_tokens": 32768,
+      "lanes": 4,
+      "initial_cache": "warm",
+      "repeat": 2,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 32,
+      "status": "planned"
+    },
+    {
+      "case_id": "p32768-l16-cold-r0",
+      "initial_input_tokens": 32768,
+      "lanes": 16,
+      "initial_cache": "cold",
+      "repeat": 0,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 128,
+      "status": "planned"
+    },
+    {
+      "case_id": "p32768-l16-cold-r1",
+      "initial_input_tokens": 32768,
+      "lanes": 16,
+      "initial_cache": "cold",
+      "repeat": 1,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 128,
+      "status": "planned"
+    },
+    {
+      "case_id": "p32768-l16-cold-r2",
+      "initial_input_tokens": 32768,
+      "lanes": 16,
+      "initial_cache": "cold",
+      "repeat": 2,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 128,
+      "status": "planned"
+    },
+    {
+      "case_id": "p32768-l16-warm-r0",
+      "initial_input_tokens": 32768,
+      "lanes": 16,
+      "initial_cache": "warm",
+      "repeat": 0,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 128,
+      "status": "planned"
+    },
+    {
+      "case_id": "p32768-l16-warm-r1",
+      "initial_input_tokens": 32768,
+      "lanes": 16,
+      "initial_cache": "warm",
+      "repeat": 1,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 128,
+      "status": "planned"
+    },
+    {
+      "case_id": "p32768-l16-warm-r2",
+      "initial_input_tokens": 32768,
+      "lanes": 16,
+      "initial_cache": "warm",
+      "repeat": 2,
+      "measured_turns_per_lane": 8,
+      "planned_requests": 128,
+      "status": "planned"
+    }
+  ],
+  "execution": {
+    "cluster": "aws-pdx-slurm-1-login-01.nvidia.com",
+    "preparation_job": 946518,
+    "gpu_job": 946660,
+    "remote_root": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/results/qwen35-agentic-alignment-20261029",
+    "local_results": "/Users/simonec/.codex/.chatgpt-projects/g-p-6ae11856b9ec8191a0715553f1b57b54/outputs/qwen35-agentic-20261029",
+    "attempts": [
+      {
+        "job_id": 946625,
+        "state": "FAILED",
+        "exit_code": "127:0",
+        "stage": "before_model_load",
+        "reason": "image has python3 but no python alias",
+        "collected_requests": 0
+      },
+      {
+        "job_id": 946660,
+        "state": "PENDING",
+        "reason": "Resources",
+        "stage": "cache_qualification"
+      }
+    ]
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "engine": {
+    "mode": "aggregated",
+    "model": "Qwen/Qwen3.5-397B-A17B",
+    "hardware": "b300_sxm",
+    "backend": "vllm",
+    "backend_version": "0.31.0",
+    "context_length": 65536,
+    "estimation_mode": "op_level",
+    "fallback_policy": "deny",
+    "database_mode": "SILICON",
+    "enable_shared_layer": true,
+    "estimator_config": {"correction": {"enabled": false}},
+    "systems_paths": ["default"],
+    "gemm_quant_mode": "bfloat16",
+    "moe_quant_mode": "bfloat16",
+    "kvcache_quant_mode": "bfloat16",
+    "fmha_quant_mode": "bfloat16",
+    "comm_quant_mode": "half",
+    "enable_chunked_prefill": true,
+    "enable_eplb": false,
+    "nextn": 0,
+    "workers": {
+      "aggregated": {
+        "parallelism": {
+          "replicas": 1,
+          "tensor": 8,
+          "pipeline": 1,
+          "attention_data": 1,
+          "moe_tensor": 8,
+          "moe_expert": 1
+        },
+        "scheduler": {
+          "max_batched_tokens": 8192,
+          "max_sequences": 64,
+          "async_scheduling": false
+        },
+        "timing": {"type": "default"}
+      }
+    }
+  }
+}
