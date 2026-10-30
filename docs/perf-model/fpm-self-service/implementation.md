@@ -457,7 +457,7 @@ Onboarding takes no GPU-pool or node-allocation inputs. The selected topology es
 | DEP8 | `--tensor-parallel 1 --attention-data-parallel 8 --moe-tensor-parallel 1 --moe-expert-parallel 8` | `(1, 1, 8, 1, 8, 1)` |
 | TEP8 | `--tensor-parallel 8 --attention-data-parallel 1 --moe-tensor-parallel 1 --moe-expert-parallel 8` | `(8, 1, 1, 1, 8, 1)` |
 
-The profile route supports vLLM text decoders, including the text portion of multimodal checkpoints, and linear or grouped cache storage. Its current parallelism constraints are listed below. Groups describe full attention, sliding-window attention and supported short-convolution state. Grouped execution currently requires cold aggregated workers, HBM-only cache, no speculative decoding and `prefix_caching: false`. Prefix reuse, host/G3 offload, disaggregation and scalar cache-capacity overrides are rejected for grouped profiles. AFD, encoder pools, wide EP and EPLB remain outside this route. Config intake does not derive cache geometry for linear-attention or recurrent state. It leaves that [cache geometry pending the runtime probe](#cache-geometry-pending-the-runtime-probe). Runtime observation import does not accept their cache groups yet. The measured Kimi K3 profile route in the table below is not affected.
+The profile route supports vLLM text decoders, including the text portion of multimodal checkpoints, and linear or grouped cache storage. Its current parallelism constraints are listed below. Groups describe full attention, sliding-window attention, supported short-convolution state and fixed per-request state. Grouped execution currently requires cold aggregated workers, HBM-only cache, no speculative decoding and `prefix_caching: false`. Prefix reuse, host/G3 offload, disaggregation and scalar cache-capacity overrides are rejected for grouped profiles. AFD, encoder pools, wide EP and EPLB remain outside this route. Config intake does not derive cache geometry for linear-attention or recurrent state. It leaves that [cache geometry pending the runtime probe](#cache-geometry-pending-the-runtime-probe). Runtime observation import does not accept their cache groups yet. The measured Kimi K3 profile route in the table below is not affected.
 
 ### Parallelism support and guided CLI coverage
 
@@ -824,10 +824,11 @@ that names no architecture. Onboarding passes the profile's architecture with
 `--model-architecture`, so the second example differs only on the direct
 collector path.
 
-Planned work covers per-request state in the FPM profile, importing cache groups
-other than full or sliding attention, and guided collection for these layouts.
-Until then, use a qualified model-specific collection path and verified
-cache profile.
+The FPM profile can hold per-request state groups, as described in
+[grouped cache review](#review-grouped-cache-resources). Planned work covers
+importing cache groups other than full or sliding attention, including runtime
+state groups, and guided collection for these layouts. Until then, use a
+qualified model-specific collection path and verified cache profile.
 
 ### Review grouped cache resources
 
@@ -841,7 +842,7 @@ After selecting precision and topology, investigate the pinned cache/backend imp
 
 These sizes are illustrative; use the target runtime's tokens per block after page unification. Supported convolution groups use the pinned kernel width as their default block size, which can also be overridden by group name. Partial answers retain the supplied entries and ask for unresolved attention groups. These declarations describe the cache being modeled; verify that they match the actual serving allocation. Keep config-derived packed minima labeled as estimates until runtime evidence establishes the allocation, including padding; revise the profile and its provenance if bring-up reveals different values.
 
-Review the resulting `cache_groups` and their geometry/provenance. Each `FpmCacheGroup` records `name`, `kind` (`attention` or `convolution`), `num_layers`, `block_size_tokens`, `page_size_bytes`, and optional `sliding_window`. **`page_size_bytes` is the rank-local aggregate cost of one logical block across every layer in that semantic group, including applicable runtime padding.** Do not multiply it by `num_layers` again or divide it by attention DP. An omitted or null window retains full history; a positive window limits retained history, and convolution groups require one.
+Review the resulting `cache_groups` and their geometry/provenance. Each `FpmCacheGroup` records `name`, `kind` (`attention`, `convolution` or `state`), `num_layers`, `block_size_tokens`, `page_size_bytes`, optional `sliding_window` and optional `blocks_per_request`. **`page_size_bytes` is the rank-local aggregate cost of one logical block across every layer in that semantic group, including applicable runtime padding.** Do not multiply it by `num_layers` again or divide it by attention DP. An omitted or null window retains full history; a positive window limits retained history, and convolution groups require one. A `state` group has no window. It requires a positive `blocks_per_request`, the number of pool blocks that each running request holds. That count does not change with the request length, and `page_size_bytes` is one pool block.
 
 This aggregate is distinct from the runtime's padded physical page size for an individual layer or shared allocation slot. Even when the runtime unifies physical page sizes, semantic groups with different layer counts can have different aggregate bytes. Do not require equal `page_size_bytes` across all profile groups. Runtime observation import checks actual tensor/storage strides, sharing, padded pages and pool slots before deriving the profile's group costs and usable capacity.
 

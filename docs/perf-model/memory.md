@@ -134,14 +134,20 @@ rejected. Rust exports the mode type as `FpmMambaCacheMode`. These fields are
 evidence of the probe's settings. Selection, sizing and replay do not read them
 yet. The simulated deployment decides prefix caching.
 
-Each group has a unique `name`, `kind` (`attention` or `convolution`), positive
-`num_layers`, `block_size_tokens`, and `page_size_bytes`, and an optional positive
-`sliding_window`. An omitted or null window retains full history; convolution
-groups require a window. `page_size_bytes` is the **rank-local aggregate for all
-layers in the group**, including runtime padding. Do not multiply it by
-`num_layers` again. Runtime block sizes and padding are deployment inputs; model
-geometry alone does not establish them. See the
+Each group has a unique `name`, `kind` (`attention`, `convolution` or `state`),
+positive `num_layers`, `block_size_tokens`, and `page_size_bytes`, and an optional
+positive `sliding_window`. An omitted or null window retains full history;
+convolution groups require a window. `page_size_bytes` is the **rank-local
+aggregate for all layers in the group**, including runtime padding. Do not
+multiply it by `num_layers` again. Runtime block sizes and padding are deployment
+inputs; model geometry alone does not establish them. See the
 [grouped-profile review workflow](fpm-self-service/implementation.md#review-grouped-cache-resources).
+
+A `state` group holds fixed per-request state, such as the recurrent state of
+linear-attention layers. It requires a positive `blocks_per_request`, the number
+of pool blocks that a running request holds. The count does not change with the
+request length, and `page_size_bytes` is the size of one pool block. A `state`
+group has no `sliding_window`, and no other kind accepts `blocks_per_request`.
 
 Use `RustForwardPassPerfModel.estimate_cache_budget(config, budget)` with the
 same canonical `ForwardPassPerfModelConfig` used for timing. Rust exposes

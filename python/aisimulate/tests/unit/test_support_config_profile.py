@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from aisimulate.fpm_profile import FpmCacheGroup
 from aisimulate.support import config_profile
 from aisimulate.support.config_profile import (
     _ATTENTION_DIMENSIONS,
@@ -24,6 +25,8 @@ from aisimulate.support.config_profile import (
     _geometry,
     _linear_layout_gap,
     _runtime_layout,
+    _windowed_group,
+    _windowed_group_reason,
     derive_profile,
     linear_block_bytes,
     linear_block_size,
@@ -930,6 +933,29 @@ def test_linear_claim_against_a_windowed_group_names_that_group(claim, group, fi
         f"resource_overrides.{key}={value}, but the runtime probe measured no per-token cache size: "
         f"its cache group runtime_group_1 has {field}"
     ) in message
+
+
+def test_state_group_is_not_linear():
+    state = {**_RUNTIME_GROUP, "name": "kda", "kind": "state", "num_layers": 9, "blocks_per_request": 1}
+    attention_group = FpmCacheGroup.model_validate(_RUNTIME_GROUP)
+    state_group = FpmCacheGroup.model_validate(state)
+    # A state group has no per-token size and no window to name.
+    assert _windowed_group([attention_group, state_group]) is state_group
+    assert _windowed_group_reason(state_group) == "cache group kda has kind=state"
+    observed = {**_GROUPED_OBSERVATION, "cache_groups": [_RUNTIME_GROUP, state]}
+    assert linear_runtime_resources(observed) is None
+    assert linear_block_size(observed) is None
+    assert _linear_layout_gap(observed) == "cache group kda has kind=state"
+    # A typed linear claim cannot turn the measurement into a linear profile either. The 64 bytes per token are the
+    # rate of the attention group alone, so the state group is the only reason to refuse that claim.
+    for claim in ({"cache_layout": "linear"}, {"kv_bytes_per_token": 64}):
+        ((key, value),) = claim.items()
+        with pytest.raises(ValueError) as error:
+            _import(observed, claim)
+        assert (
+            f"resource_overrides.{key}={value}, but the runtime probe measured no per-token cache size: "
+            "its cache group kda has kind=state"
+        ) in str(error.value)
 
 
 def test_import_labels_every_compared_override_that_matches():

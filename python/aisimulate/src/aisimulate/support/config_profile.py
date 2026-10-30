@@ -1541,13 +1541,13 @@ def _measured_groups(resources: Mapping[str, Any]) -> list[FpmCacheGroup]:
 
 
 def _windowed_group(groups: list[FpmCacheGroup]) -> FpmCacheGroup | None:
-    """The first group that a linear cache cannot describe: one with a window or convolution state."""
+    """The first group that a linear cache cannot describe: one with a window, or a convolution or state group."""
     return next((group for group in groups if group.kind != "attention" or group.sliding_window is not None), None)
 
 
 def _windowed_group_reason(group: FpmCacheGroup) -> str:
-    """Why a linear cache cannot describe this group: it has a window or convolution state."""
-    field = "kind=convolution" if group.kind == "convolution" else f"sliding_window={group.sliding_window}"
+    """Why a linear cache cannot describe this group: it has a window, or it is a convolution or state group."""
+    field = f"sliding_window={group.sliding_window}" if group.kind == "attention" else f"kind={group.kind}"
     return f"cache group {group.name} has {field}"
 
 

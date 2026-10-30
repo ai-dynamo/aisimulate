@@ -614,6 +614,13 @@ explains the retained workload routing and feature mathematics.
   supply `runtime_memory: None` when using declared memory. Runtime memory and
   the four legacy non-KV fields cannot coexist. See the
   [resource contract](../perf-model/memory.md).
+- `FpmCacheGroup` literals must supply `blocks_per_request: None` for attention
+  and convolution groups. Exhaustive matches on `FpmCacheKind` must handle
+  `State`. Serialized groups that omit the field still deserialize, and `None`
+  is not serialized.
+- `FpmRuntimeMemoryConfig` literals must supply `enable_prefix_caching`,
+  `mamba_cache_mode` and `hash_block_size_tokens` as `None`. Serialized records
+  that omit these fields still deserialize, and `None` is not serialized.
 
 ### Rust AgentX snapshot options
 
