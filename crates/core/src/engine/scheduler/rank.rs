@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use uuid::Uuid;
 
 use crate::engine::common::perf_model::PerfModel;
@@ -14,13 +14,15 @@ use crate::engine::common::protocols::{
     DirectRequest, EngineType, KvTransferTimingMode, MockEngineArgs,
     PreemptionMode as CorePreemptionMode, SglangArgs, WorkerType as CoreWorkerType,
 };
-use crate::engine::generalized::{CommandContext, RankEngine, RankIdentity, RankPass};
+use crate::engine::generalized::{
+    CommandContext, RankEngine, RankIdentity, RankPass, ScheduledPass,
+};
 use crate::engine::host_offload::{G2Binding, HostTierHandle};
 use crate::engine::{
     Admission, Backend, Command, CommandEffects, CommandResult, EngineConfig, ForwardPassMetrics,
-    HandoffId, HostOffloadObserver, KvHintSource, LifecycleEvent, Metrics, Output,
-    PassCompletionEffects, PassStartEffects, PendingPass, PreemptionMode, Request, TimingModel,
-    TransferTimingMode, WorkerType,
+    HandoffId, HostOffloadObserver, IterationMs, KvHintSource, LifecycleEvent, Metrics, Output,
+    PassCompletionEffects, PassStartEffects, PendingPass, PreemptionMode, RankWork, Request,
+    TimingModel, TransferTimingMode, WorkerType,
 };
 
 use super::{
@@ -42,6 +44,14 @@ pub fn engine_seed_offset(identity: RankIdentity) -> Result<u64> {
 pub struct SchedulerRank {
     core: EngineCore,
     handoff_requests: HashMap<HandoffId, Uuid>,
+    /// The timing provider every rank of the logical engine shares.
+    timing: Arc<dyn TimingModel>,
+    dp_rank: u32,
+    /// Whether a mixed group iteration needs its prefill share, because the
+    /// decode speedup differs from the prefill speedup.
+    prefill_share: bool,
+    /// When the scheduled pass started, until it is resolved.
+    scheduled_at_ms: Option<f64>,
 }
 
 impl SchedulerRank {
@@ -100,7 +110,7 @@ impl SchedulerRank {
             config.kvcr.is_none(),
             "kvcr is Replay-owned; construct it through ReplaySpec"
         );
-        let mut args = core_args(config, timing);
+        let mut args = core_args(config, Arc::clone(&timing));
         if config.backend == Backend::Sglang {
             normalize_sglang_attention_dp(&mut args, identity.dp_size.get())?;
         }
@@ -125,6 +135,10 @@ impl SchedulerRank {
         Ok(Self {
             core,
             handoff_requests: HashMap::new(),
+            timing,
+            dp_rank: identity.dp_rank,
+            prefill_share: config.decode_speedup_ratio != 1.0,
+            scheduled_at_ms: None,
         })
     }
 
@@ -269,11 +283,53 @@ impl RankEngine for SchedulerRank {
             .finish_group_pass(any_rank_prefilled, any_rank_ran_model);
     }
 
+    /// A pass of this rank alone: a one-rank group.
     fn execute_pass(
         &mut self,
         now_ms: f64,
     ) -> Result<RankPass<Self::PassStartEffects, Self::PendingPass>> {
-        let pass = self.core.try_execute_hidden_pass(now_ms)?;
+        let ScheduledPass::Unpriced(work) = self.schedule_pass(now_ms)? else {
+            unreachable!("scheduler ranks leave their passes to the group price");
+        };
+        let iteration = self.price_group_pass(std::slice::from_ref(&work))?;
+        self.resolve_pass(iteration.as_ref())
+    }
+
+    fn schedule_pass(
+        &mut self,
+        now_ms: f64,
+    ) -> Result<ScheduledPass<Self::PassStartEffects, Self::PendingPass>> {
+        let work = self.core.schedule_pass(now_ms)?;
+        self.scheduled_at_ms = Some(now_ms);
+        Ok(ScheduledPass::Unpriced(work))
+    }
+
+    fn idle_pass_work(&self) -> Option<RankWork> {
+        Some(RankWork::idle(self.dp_rank))
+    }
+
+    /// One timing query for the whole group. Providers without iteration
+    /// pricing return `None`, so every rank prices its own phases.
+    fn price_group_pass(&self, ranks: &[RankWork]) -> Result<Option<IterationMs>> {
+        let Some(iteration) = self
+            .timing
+            .predict_iteration_ms(ranks, self.prefill_share)
+            .context("external iteration prediction failed")?
+        else {
+            return Ok(None);
+        };
+        iteration.resolve_share(ranks, self.prefill_share)
+    }
+
+    fn resolve_pass(
+        &mut self,
+        iteration: Option<&IterationMs>,
+    ) -> Result<RankPass<Self::PassStartEffects, Self::PendingPass>> {
+        let started_at_ms = self
+            .scheduled_at_ms
+            .take()
+            .ok_or_else(|| anyhow!("scheduler rank has no scheduled pass to resolve"))?;
+        let pass = self.core.resolve_pass(iteration)?;
         let end_ms = pass.end_ms;
         let (same_timestamp_retry, start_effects, completion_effects) = split_pass(pass)?;
         Ok(RankPass {
@@ -281,7 +337,7 @@ impl RankEngine for SchedulerRank {
             same_timestamp_retry,
             start_effects,
             pending: PendingPass {
-                started_at_ms: now_ms,
+                started_at_ms,
                 effects: completion_effects,
             },
         })

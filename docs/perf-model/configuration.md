@@ -637,16 +637,10 @@ placeholder identity `model: from_learned`, `system: from_learned`,
 `deployment_topology()` returns `None`.
 
 Engine replay restores a snapshot named by its AIC timing configuration like
-any other `best_available` call. It prices prefill and decode phases with the
-native engine and applies the saved online correction, the same with and
-without `capture_performance_diagnostics`. A pass that computes only prefill
-or only decode takes that phase's correction. With whole-model FPM
-interpolation, a vLLM or TensorRT-LLM pass that computes both runs as one
-forward and takes the correction of that mixed iteration. Where replay prices
-the phases of a pass separately, as for MTP drafts or operation-level timing,
-each takes its pure correction. Replay times each rank alone, so cross-rank
-corrections never apply. Operation evidence and its energy scale with the
-correction, so reported power is unchanged.
+any other `best_available` call. Its saved online correction applies through
+[engine replay timing](#engine-replay-timing) as in any other estimate, the
+same with and without `capture_performance_diagnostics`. Operation evidence
+and its energy scale with the correction, so reported power is unchanged.
 
 Gates for replaying a saved model read the snapshot without loading it.
 `RustForwardPassPerfModel.inspect_state_snapshot(path)` returns the snapshot
@@ -671,6 +665,49 @@ empty list means the launch accepts the combination. Launch arguments that are
 invalid on their own, such as `dp_size: 0` or `gpu_memory_utilization: 2.0`,
 raise with the launch's own message instead. The Rust equivalent is
 `EngineLaunchConfig::timing_config_mismatches`.
+
+### Engine replay timing
+
+Engine replay prices each forward pass of a worker with one
+`estimate_forward_pass_time_ms()` query, or `estimate_forward_pass_detailed()`
+when it needs rank evidence, holding one `ForwardPassMetrics` per attention-DP
+rank, idle ranks included. Every rank of the worker ends at the shared time
+from its own compute start. An online correction applies as in any other
+estimate: the correction of the heaviest rank's workload multiplies the
+slowest rank's native time. A one-rank pass that computes only prefill or only
+decode takes that phase's correction; a vLLM or TensorRT-LLM rank that computes
+both runs as one forward and takes the correction of that mixed iteration.
+
+Replay fills each rank's metrics in the selected estimator's convention.
+Prefill always passes the scheduled totals. Whole-model FPM reads decode past
+KV, excluding each request's current token and clamped to the scheduler's KV
+bound. Operation-level timing reads packed decode counters: `B*v` requests at
+`s` tokens each, where `s` is the mean context including the current token and
+`v` the configured verification width. When `decode_speedup_ratio` differs
+from 1, a second, prefill-only query of the same ranks gives the prefill share,
+which takes the prefill speedup while the rest takes the decode speedup.
+
+Against the former per-rank phase timing, the canonical query changes these
+results: an operation-level vLLM or TensorRT-LLM pass that computes prefill and
+decode is the model's mix step instead of a prefill pass followed by a separate
+decode pass; operation-level prefill reads the per-request means `new / B` and
+`prefix / B` instead of `(new + prefix) / B - prefix / B`; with attention DP,
+the correction comes from the heaviest rank and applies to the slowest rank's
+time; and a worker's pass ends at the latest rank compute start plus the shared
+time. A one-rank pure prefill or pure decode pass whose prefix tokens divide
+evenly across its requests keeps its previous latency and evidence.
+
+Operation-level power evidence keeps the static phase operations of the rank
+that sets the pass's time, until the canonical estimate exposes per-operation
+energy. Captured whole-model FPM evidence records each pass as one iteration
+over every rank; a pass that computes prefill and decode is reported with
+decode. Replay keeps per-rank phase timing, each rank pricing its own phases
+and the pass ending with the slowest rank, for bounded decoder replay, v1
+execution profiles, hybrid FPM with operation-level draft tails, a scheduler
+whose speculative depth differs from the model's, and, for a measured SD-round
+profile, attention DP above one or a rank that computes prefill and decode
+together. Lookup coverage collection counts every pass, so replay does not
+reuse a priced iteration while it is enabled.
 
 ## Unified CLI timing fields
 

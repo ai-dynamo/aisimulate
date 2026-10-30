@@ -36,12 +36,54 @@ pub(super) struct DecodeResult {
     /// surviving requests at the retraction point (before this pass's forward), when a retraction
     /// happened.
     pub(super) new_token_ratio_estimate: Option<f64>,
+    /// When the step's unpriced work ends: the step's start time. The core
+    /// adds the decode forward's duration from [`Self::decode`].
     pub(super) end_ms: f64,
+    /// The decode batch the step's forward computes, when it has one.
+    pub(super) decode: Option<DecodeShape>,
     pub(super) decode_acceptance: DecodeAcceptance,
     /// Prefix-cache commits the host loop applies when it observes this forward:
     /// `(request, sequence length materialized)`. Empty without a host loop, where
     /// the commits were applied directly.
     pub(super) cache_commits: Vec<(Uuid, usize)>,
+}
+
+/// The decode batch of a step, as the timing provider prices it.
+#[derive(Debug, Default)]
+pub(super) struct DecodeShape {
+    /// Batch rows, including finished rows still in the batch.
+    pub(super) batch_size: usize,
+    /// Sum of the rows' sequence lengths, each including its current token.
+    pub(super) active_kv_tokens: usize,
+    pub(super) mean_context_length: usize,
+    /// Each row's sequence length.
+    pub(super) lengths: Vec<usize>,
+    /// Whether the batch ran. A step whose page reservation failed after the
+    /// capacity preflight asks the provider but charges no time.
+    pub(super) charged: bool,
+}
+
+/// Decode time of `shape` priced by the scheduler's provider, with the decode
+/// speedup applied when `apply_speedup` is set.
+pub(super) fn price_decode_shape(
+    shape: &DecodeShape,
+    config: &SglangConfig,
+    apply_speedup: bool,
+) -> anyhow::Result<Duration> {
+    let decode_time = config.perf_model.predict_decode_time(
+        shape.batch_size,
+        shape.active_kv_tokens,
+        shape.mean_context_length,
+        config.total_kv_tokens,
+    )?;
+    let effective_ratio = config.speedup_ratio * config.decode_speedup_ratio;
+    let speedup_ratio = if apply_speedup { effective_ratio } else { 0.0 };
+    let modeled_ms = modeled_duration_ms(decode_time, speedup_ratio)?;
+    Ok(if shape.charged {
+        Duration::from_secs_f64(modeled_ms / 1_000.0)
+    } else {
+        Duration::ZERO
+    })
 }
 
 /// What a scheduler pass asks the step simulation to do with `running`.
@@ -319,15 +361,14 @@ pub(super) fn simulate_decode_step(
     current_time_ms: f64,
     apply_speedup: bool,
 ) -> DecodeResult {
-    let mut result = simulate_decode_step_with_sampler(
-        running,
-        kv_manager,
-        config,
-        None,
-        current_time_ms,
-        apply_speedup,
-    )
-    .expect("SGLang decode simulation failed");
+    let mut result =
+        simulate_decode_step_with_sampler(running, kv_manager, config, None, current_time_ms)
+            .expect("SGLang decode simulation failed");
+    if let Some(shape) = &result.decode {
+        let total_time =
+            price_decode_shape(shape, config, apply_speedup).expect("SGLang decode pricing failed");
+        result.end_ms += total_time.as_secs_f64() * 1000.0;
+    }
     for mut request in result.completed_requests.drain(..) {
         cleanup_completed_request(&mut request, kv_manager, config.block_size);
     }
@@ -476,7 +517,6 @@ pub(super) fn simulate_decode_step_with_sampler(
     config: &SglangConfig,
     sampler: Option<&mut SpeculativeDecodeSampler>,
     current_time_ms: f64,
-    apply_speedup: bool,
 ) -> anyhow::Result<DecodeResult> {
     simulate_step(
         running,
@@ -484,7 +524,6 @@ pub(super) fn simulate_decode_step_with_sampler(
         config,
         sampler,
         current_time_ms,
-        apply_speedup,
         StepKind::Decode,
     )
 }
@@ -503,7 +542,6 @@ pub(super) fn simulate_prefill_first_tokens(
         config,
         None,
         current_time_ms,
-        false,
         StepKind::PrefillFirstToken,
     )
 }
@@ -514,7 +552,6 @@ fn simulate_step(
     config: &SglangConfig,
     mut sampler: Option<&mut SpeculativeDecodeSampler>,
     current_time_ms: f64,
-    apply_speedup: bool,
     kind: StepKind,
 ) -> anyhow::Result<DecodeResult> {
     if running.is_empty() {
@@ -621,22 +658,18 @@ fn simulate_step(
         });
     }
 
-    let total_context: usize = running
+    let lengths: Vec<usize> = running
         .iter()
         .map(SglangRequest::current_sequence_len)
-        .sum();
-    let avg_context = total_context / running.len();
-    let active_kv_tokens = total_context;
-    let decode_time = config.perf_model.predict_decode_time(
-        running.len(),
-        active_kv_tokens,
-        avg_context,
-        config.total_kv_tokens,
-    )?;
-    let effective_ratio = config.speedup_ratio * config.decode_speedup_ratio;
-    let speedup_ratio = if apply_speedup { effective_ratio } else { 0.0 };
-    let modeled_ms = modeled_duration_ms(decode_time, speedup_ratio)?;
-    let total_time = Duration::from_secs_f64(modeled_ms / 1_000.0);
+        .collect();
+    let total_context: usize = lengths.iter().sum();
+    let mut decode = DecodeShape {
+        batch_size: running.len(),
+        active_kv_tokens: total_context,
+        mean_context_length: total_context / running.len(),
+        lengths,
+        charged: false,
+    };
 
     let reserved_page_tokens =
         decode_page_growth_needed(running.iter(), config.block_size, max_burst);
@@ -653,9 +686,11 @@ fn simulate_step(
             pressure_events,
             new_token_ratio_estimate,
             end_ms: current_time_ms,
+            decode: Some(decode),
             ..DecodeResult::default()
         });
     };
+    decode.charged = true;
 
     output_signals.reserve(running.len());
     let mut completed_indices = Vec::new();
@@ -741,7 +776,8 @@ fn simulate_step(
         output_signals,
         pressure_events,
         new_token_ratio_estimate,
-        end_ms: current_time_ms + total_time.as_secs_f64() * 1000.0,
+        end_ms: current_time_ms,
+        decode: Some(decode),
         decode_acceptance,
         cache_commits,
     })

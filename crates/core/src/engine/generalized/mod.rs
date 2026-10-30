@@ -12,6 +12,12 @@
 //! remain hidden until [`GeneralizedMockerEngine::complete_pass`] is called.
 //! With attention DP, all sibling ranks share the slowest rank's completion
 //! boundary, including ranks that had no work when the pass started.
+//!
+//! Every ready rank schedules before any rank is priced. When each rank
+//! describes its work ([`RankEngine::schedule_pass`] and
+//! [`RankEngine::idle_pass_work`]), one [`RankEngine::price_group_pass`] call
+//! prices the whole group, and each rank ends at its compute start plus that
+//! shared duration. Otherwise each rank prices its own work.
 
 mod contracts;
 mod engine;

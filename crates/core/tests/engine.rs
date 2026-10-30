@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use aisimulate_core::engine::generalized::{EngineIdentity, SameTimestampRetry, SchedulerCommand};
 use aisimulate_core::engine::{
     Backend, Command, EncoderShape, Engine, EngineConfig, EngineFactory, FrontendConfig,
-    FrontendStage, ImageSpec, NativeHostOffloadConfig, PassCompletionEffects, Request,
-    SglangConfig, TimingModel, TimingModelConfig, VisionShape,
+    FrontendStage, ImageSpec, IterationMs, NativeHostOffloadConfig, PassCompletionEffects,
+    RankWork, Request, SglangConfig, TimingModel, TimingModelConfig, VisionShape,
 };
 use aisimulate_core::replay::{
     AggregatedRoundRobinPlacement, EncoderSpec, NoEngineEvents, NoReplayMetadata,
@@ -2459,4 +2459,289 @@ fn chunked_recompute_of_a_preempted_request_completes_its_generated_final_block(
             (Some("r9"), 1, 12, 12.25),
         ]
     );
+}
+
+/// Prices a group pass as one iteration from every rank's work: 1 ms per
+/// prefill token and 3 ms per decode request, on the busiest rank. Phase
+/// pricing, used only without an iteration price, is a fixed 10 ms prefill
+/// and 2 ms decode per rank.
+#[derive(Default)]
+struct IterationTiming {
+    /// Return no iteration price, keeping per-rank phase pricing.
+    decline: bool,
+    iterations: Mutex<Vec<(Vec<RankWork>, bool)>>,
+    phase_calls: Mutex<usize>,
+}
+
+impl IterationTiming {
+    fn rank_ms(rank: &RankWork, prefill_only: bool) -> f64 {
+        let prefill = rank
+            .prefill
+            .as_ref()
+            .map_or(0.0, |prefill| prefill.totals.new_tokens as f64);
+        let decode = rank
+            .decode
+            .as_ref()
+            .filter(|_| !prefill_only)
+            .map_or(0.0, |decode| 3.0 * decode.batch_size as f64);
+        prefill + decode
+    }
+}
+
+impl TimingModel for IterationTiming {
+    fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> Result<f64> {
+        *self.phase_calls.lock().unwrap() += 1;
+        Ok(10.0)
+    }
+
+    fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> Result<f64> {
+        *self.phase_calls.lock().unwrap() += 1;
+        Ok(2.0)
+    }
+
+    fn predict_iteration_ms(
+        &self,
+        ranks: &[RankWork],
+        prefill_share: bool,
+    ) -> Result<Option<IterationMs>> {
+        self.iterations
+            .lock()
+            .unwrap()
+            .push((ranks.to_vec(), prefill_share));
+        if self.decline {
+            return Ok(None);
+        }
+        let busiest = |prefill_only| {
+            ranks
+                .iter()
+                .map(|rank| Self::rank_ms(rank, prefill_only))
+                .fold(0.0, f64::max)
+        };
+        Ok(Some(IterationMs {
+            total_ms: busiest(false),
+            prefill_ms: prefill_share.then(|| busiest(true)),
+        }))
+    }
+}
+
+fn submit_tokens(engine: &mut Engine, dp_rank: u32, id: u128, tokens: usize, outputs: usize) {
+    engine
+        .apply_command_effects(
+            SchedulerCommand::new(
+                dp_rank,
+                Command::Submit(Request {
+                    request_id: Uuid::from_u128(id),
+                    tokens: (0..tokens as u32)
+                        .map(|token| token + 100 * id as u32)
+                        .collect(),
+                    max_output_tokens: outputs,
+                    output_token_ids: None,
+                    session_id: None,
+                    images: Vec::new(),
+                    kv_hint: None,
+                }),
+            ),
+            0.0,
+        )
+        .unwrap();
+}
+
+fn iteration_engine(
+    backend: Backend,
+    dp_size: u32,
+    timing: Arc<IterationTiming>,
+    configure: impl FnOnce(&mut EngineConfig),
+) -> Engine {
+    let mut config = EngineConfig {
+        num_gpu_blocks: 64,
+        block_size: 4,
+        max_num_seqs: 8,
+        max_num_batched_tokens: 64,
+        enable_prefix_caching: false,
+        ..EngineConfig::for_backend(backend)
+    };
+    if backend == Backend::Vllm {
+        // Keep each submitted request in the next pass.
+        config.async_scheduling = Some(false);
+    }
+    configure(&mut config);
+    EngineFactory::with_timing_model(config, timing)
+        .unwrap()
+        .build(EngineIdentity::new(0), NonZeroU32::new(dp_size).unwrap())
+        .unwrap()
+}
+
+#[rstest::rstest]
+fn attention_dp_prices_each_group_pass_with_one_iteration_query(
+    #[values(Backend::Vllm, Backend::Sglang)] backend: Backend,
+) {
+    let timing = Arc::new(IterationTiming::default());
+    let mut engine = iteration_engine(backend, 3, Arc::clone(&timing), |_| {});
+    // Imbalanced ranks: one 4-token prompt and two 8-token prompts; rank 2 idles.
+    submit_tokens(&mut engine, 0, 1, 4, 2);
+    submit_tokens(&mut engine, 1, 2, 8, 2);
+    submit_tokens(&mut engine, 1, 3, 8, 2);
+    let mut now_ms = 0.0;
+    let mut ends = Vec::new();
+    while let Some(started) = engine.execute_pass(now_ms).unwrap() {
+        // Every executed rank ends at the shared group duration.
+        for rank in &started.by_rank {
+            assert_eq!(rank.rank_end_ms, started.end_ms);
+        }
+        let completed = engine
+            .complete_pass(started.pass_id, started.end_ms)
+            .unwrap();
+        for rank in &completed.effects.by_rank {
+            assert_eq!(
+                rank.effects.forward_pass_metrics.duration_ms,
+                started.end_ms - now_ms
+            );
+        }
+        ends.push(started.end_ms - now_ms);
+        now_ms = started.end_ms;
+    }
+    // Hand oracle: the prefill pass costs the busiest rank's 16 prompt tokens,
+    // the decode pass its two requests at 3 ms each.
+    assert_eq!(ends, [16.0, 6.0]);
+    assert_eq!(*timing.phase_calls.lock().unwrap(), 0);
+    let iterations = timing.iterations.lock().unwrap();
+    assert_eq!(iterations.len(), 2, "one query per group pass");
+    for (ranks, prefill_share) in iterations.iter() {
+        assert!(!prefill_share, "equal speedups need no prefill share");
+        assert_eq!(
+            ranks.iter().map(|rank| rank.dp_rank).collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        assert_eq!(ranks[2], RankWork::idle(2));
+    }
+    let prefill = &iterations[0].0;
+    let totals = |rank: &RankWork| {
+        let prefill = rank.prefill.as_ref().unwrap();
+        let mut requests = prefill.requests.clone();
+        requests.sort_unstable();
+        (
+            prefill.totals.batch_size,
+            prefill.totals.new_tokens,
+            requests,
+        )
+    };
+    assert_eq!(totals(&prefill[0]), (1, 4, vec![(4, 0)]));
+    assert_eq!(totals(&prefill[1]), (2, 16, vec![(8, 0), (8, 0)]));
+    let decode = iterations[1].0[1].decode.as_ref().unwrap();
+    // Each 8-token prompt decodes its first output at length 9.
+    assert_eq!(
+        (
+            decode.batch_size,
+            decode.active_kv_tokens,
+            decode.mean_context_length
+        ),
+        (2, 18, 9)
+    );
+    assert_eq!(decode.verify_width, 1);
+}
+
+#[rstest::rstest]
+fn providers_without_iteration_pricing_keep_per_rank_phase_timing(
+    #[values(Backend::Vllm, Backend::Sglang)] backend: Backend,
+) {
+    let timing = Arc::new(IterationTiming {
+        decline: true,
+        ..IterationTiming::default()
+    });
+    let mut engine = iteration_engine(backend, 2, Arc::clone(&timing), |_| {});
+    submit_tokens(&mut engine, 0, 1, 4, 2);
+    submit_tokens(&mut engine, 1, 2, 8, 2);
+    let mut now_ms = 0.0;
+    let mut ends = Vec::new();
+    while let Some(started) = engine.execute_pass(now_ms).unwrap() {
+        engine
+            .complete_pass(started.pass_id, started.end_ms)
+            .unwrap();
+        ends.push(started.end_ms - now_ms);
+        now_ms = started.end_ms;
+    }
+    // Each rank prices its own phases: a 10 ms prefill, then a 2 ms decode.
+    assert_eq!(ends, [10.0, 2.0]);
+    assert_eq!(*timing.phase_calls.lock().unwrap(), 4);
+    assert_eq!(timing.iterations.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn a_different_decode_speedup_scales_the_prefill_share_of_a_group_pass() {
+    let timing = Arc::new(IterationTiming::default());
+    let mut engine = iteration_engine(Backend::Vllm, 2, Arc::clone(&timing), |config| {
+        config.decode_speedup_ratio = 2.0;
+    });
+    // Rank 1 decodes two requests while rank 0 prefills four tokens.
+    submit_tokens(&mut engine, 1, 2, 4, 3);
+    submit_tokens(&mut engine, 1, 3, 4, 3);
+    let started = engine.execute_pass(0.0).unwrap().unwrap();
+    engine
+        .complete_pass(started.pass_id, started.end_ms)
+        .unwrap();
+    submit_tokens(&mut engine, 0, 1, 4, 1);
+    let started = engine.execute_pass(started.end_ms).unwrap().unwrap();
+    let (ranks, prefill_share) = timing.iterations.lock().unwrap()[1].clone();
+    assert!(prefill_share);
+    assert!(ranks[0].prefill.is_some() && ranks[1].decode.is_some());
+    // Hand oracle: a 6 ms iteration with a 4 ms prefill share runs the
+    // remaining 2 ms of decode at twice the speed.
+    assert_eq!(started.end_ms - started.started_at_ms, 4.0 + 2.0 / 2.0);
+}
+
+#[test]
+fn sglang_host_loop_launches_the_group_priced_forward_after_observing_the_last() {
+    let timing = Arc::new(IterationTiming::default());
+    let mut engine = iteration_engine(Backend::Sglang, 1, Arc::clone(&timing), |config| {
+        config.sglang.host_loop = true;
+    });
+    let request_id = Uuid::from_u128(1);
+    submit_tokens(&mut engine, 0, 1, 4, 2);
+    let mut now_ms = 0.0;
+    let mut passes = Vec::new();
+    while let Some(started) = engine.execute_pass(now_ms).unwrap() {
+        let completed = engine
+            .complete_pass(started.pass_id, started.end_ms)
+            .unwrap();
+        let effects = &completed.effects.by_rank[0].effects;
+        let milestones = effects
+            .lifecycle_events
+            .iter()
+            .filter_map(|event| match event {
+                aisimulate_core::engine::LifecycleEvent::TtftMilestone {
+                    request_id: id,
+                    stage,
+                    at_ms,
+                } if *id == request_id => Some((*stage, *at_ms)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        passes.push((
+            started.end_ms,
+            effects.forward_pass_metrics.duration_ms,
+            milestones,
+            effects.outputs.len(),
+        ));
+        now_ms = started.end_ms;
+    }
+    use aisimulate_core::engine::TtftMilestone::{PrefillComplete, Received, Selected};
+    // Hand oracle: the 4 ms prefill launches at 0 and its loop returns at
+    // once; the next iteration observes it at 4 ms and launches a 3 ms
+    // decode, observed at 7 ms. The finished request still fills the batch
+    // launched then, observed at 10 ms by the last iteration.
+    assert_eq!(
+        passes,
+        [
+            (
+                0.0,
+                4.0,
+                vec![(Received, 0.0), (Selected, 0.0), (PrefillComplete, 4.0)],
+                0
+            ),
+            (4.0, 3.0, vec![], 1),
+            (7.0, 3.0, vec![], 1),
+            (10.0, 0.0, vec![], 0),
+        ]
+    );
+    assert_eq!(*timing.phase_calls.lock().unwrap(), 0);
 }

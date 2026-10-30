@@ -20,8 +20,8 @@ use crate::engine::common::protocols::OutputSignal;
 use crate::engine::generalized::SameTimestampRetry;
 use crate::engine::host_offload::HostTierHandle;
 use crate::engine::{
-    CacheTierAttribution, DecodeAcceptance, HostOffloadObserver, KvEvent, KvHintSource,
-    PressureEvent,
+    CacheTierAttribution, DecodeAcceptance, HostOffloadObserver, IterationMs, KvEvent,
+    KvHintSource, PressureEvent, RankWork, modeled_duration_ms,
 };
 pub(crate) use kv_event_sink::{CapturedKvEventBuffer, capture_kv_event_sink};
 pub(crate) use source_holds::{
@@ -32,6 +32,7 @@ pub use source_holds::{
     SchedulerCommand, SchedulerCommandEffects, SchedulerCommandResult, SchedulerLifecycleEvent,
 };
 use std::sync::Arc;
+use std::time::Duration;
 use uuid::Uuid;
 
 /// Welford's online algorithm for count / sum / population-variance.
@@ -125,6 +126,47 @@ pub(crate) fn build_fpm_snapshot(
 
 pub(crate) use sglang::SglangCore;
 pub(crate) use vllm::VllmCore;
+
+/// A pass's forward time: its prefill, then the decode work it adds.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ForwardTime {
+    pub(crate) prefill: Duration,
+    pub(crate) decode: Duration,
+}
+
+impl ForwardTime {
+    /// End of the forward started at `start_ms`, adding prefill, then decode.
+    pub(crate) fn end_ms(self, start_ms: f64) -> f64 {
+        start_ms + self.prefill.as_secs_f64() * 1000.0 + self.decode.as_secs_f64() * 1000.0
+    }
+
+    /// The shared duration of a group iteration whose prefill share has been
+    /// resolved: `speedup_ratio` applies to that share and
+    /// `speedup_ratio * decode_speedup_ratio` to the rest, as for a pass
+    /// priced by its own phases.
+    pub(crate) fn from_iteration(
+        iteration: &IterationMs,
+        speedup_ratio: f64,
+        decode_speedup_ratio: f64,
+    ) -> anyhow::Result<Self> {
+        let prefill_ms = iteration
+            .prefill_ms
+            .ok_or_else(|| anyhow::anyhow!("a group iteration must resolve its prefill share"))?;
+        // Exact zeros when the iteration is all prefill or all decode.
+        let decode_ms = (iteration.total_ms - prefill_ms).max(0.0);
+        Ok(Self {
+            prefill: modeled_duration(prefill_ms, speedup_ratio)?,
+            decode: modeled_duration(decode_ms, speedup_ratio * decode_speedup_ratio)?,
+        })
+    }
+}
+
+/// `raw_ms` of provider time under a modeled speedup, at the nanosecond
+/// resolution every scheduler duration uses.
+pub(crate) fn modeled_duration(raw_ms: f64, speedup_ratio: f64) -> anyhow::Result<Duration> {
+    let modeled_ms = modeled_duration_ms(raw_ms, speedup_ratio)?;
+    Ok(Duration::from_secs_f64(modeled_ms / 1_000.0))
+}
 
 /// Rank-local scheduler and native-G1 occupancy metrics.
 #[derive(Clone, Default, Debug, PartialEq)]
@@ -475,6 +517,7 @@ impl EngineCore {
             .expect("engine hidden scheduler pass failed")
     }
 
+    #[cfg(test)]
     pub(crate) fn try_execute_hidden_pass(
         &mut self,
         now_ms: f64,
@@ -482,6 +525,27 @@ impl EngineCore {
         match self {
             Self::Vllm(core) => core.try_execute_hidden_pass(now_ms),
             Self::Sglang(core) => core.try_execute_hidden_pass(now_ms),
+        }
+    }
+
+    /// Commit one pass's scheduling and return its model work, leaving the
+    /// pass unpriced until [`Self::resolve_pass`].
+    pub(crate) fn schedule_pass(&mut self, now_ms: f64) -> anyhow::Result<RankWork> {
+        match self {
+            Self::Vllm(core) => core.schedule_pass(None, now_ms),
+            Self::Sglang(core) => core.schedule_pass(None, now_ms),
+        }
+    }
+
+    /// Finish the scheduled pass with a group iteration's shared price, or
+    /// with the core's own phase pricing when `iteration` is `None`.
+    pub(crate) fn resolve_pass(
+        &mut self,
+        iteration: Option<&IterationMs>,
+    ) -> anyhow::Result<EnginePassResult> {
+        match self {
+            Self::Vllm(core) => core.resolve_pass(iteration),
+            Self::Sglang(core) => core.resolve_pass(iteration),
         }
     }
 }

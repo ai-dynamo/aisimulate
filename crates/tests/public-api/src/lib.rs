@@ -252,6 +252,17 @@ mod tests {
     }
 
     #[test]
+    fn phase_only_provider_keeps_per_rank_group_pricing() {
+        use aisimulate_core::TimingModel;
+        use aisimulate_core::engine::{IterationMs, RankWork};
+        let ranks = [RankWork::idle(0), RankWork::idle(1)];
+        let iteration: Option<IterationMs> = LatencyOnlyProvider
+            .predict_iteration_ms(&ranks, true)
+            .unwrap();
+        assert_eq!(iteration, None);
+    }
+
+    #[test]
     fn timing_evidence_types_are_public() {
         let operation =
             TimingOperationEvidence::new("gemm", 2.0, Some(900.0), TimingEvidenceSource::Silicon)

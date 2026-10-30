@@ -517,6 +517,22 @@ enum MixedPass {
     DecodeAttention,
 }
 
+/// How [`Engine::iteration_dispatch`] can price one attention-DP iteration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IterationDispatch {
+    /// No common forward-pass query: a v1 execution profile, or hybrid
+    /// whole-model FPM with operation-level draft tails.
+    Unsupported,
+    /// Whole-model FPM at exact per-rank iteration totals, decode KV excluding
+    /// each request's current token. A measured SD-round profile prices only
+    /// one rank's pure prefill or pure decode.
+    WholeModel { sd_round: bool },
+    /// An operation graph over packed decode counters: `verify_width` decode
+    /// tokens per request, each at its full context length. `mixed` when one
+    /// rank may compute prefill and decode in one mix step.
+    Operations { verify_width: u32, mixed: bool },
+}
+
 /// Compiled engine: precompiled op lists + the matching perf database.
 ///
 /// Built from an [`EngineSpec`] (Python's `compile_engine` output) plus a
@@ -1027,6 +1043,35 @@ impl Engine {
     /// Whether this engine prices measured complete speculative rounds.
     pub(crate) fn is_measured_speculative_round(&self) -> bool {
         self.fpm_execution_profile.is_some()
+    }
+
+    /// How the per-rank `ForwardPassMetrics` dispatch of
+    /// [`Self::forward_pass_time_ms`] can price an attention-DP iteration of
+    /// this engine. Decided from the compiled graph alone.
+    pub(crate) fn iteration_dispatch(&self) -> IterationDispatch {
+        if self.legacy_profile {
+            // v1 execution profiles reject every common forward-pass query.
+            return IterationDispatch::Unsupported;
+        }
+        match self.fpm_split() {
+            Some((_, _, ctx_tail, gen_tail)) => {
+                if !ctx_tail.is_empty()
+                    || !gen_tail.is_empty()
+                    || (self.nextn > 0 && self.fpm_execution_profile.is_none())
+                {
+                    // Hybrid draft tails have no packed-telemetry mapping.
+                    IterationDispatch::Unsupported
+                } else {
+                    IterationDispatch::WholeModel {
+                        sd_round: self.fpm_execution_profile.is_some(),
+                    }
+                }
+            }
+            None => IterationDispatch::Operations {
+                verify_width: self.nextn.saturating_add(1),
+                mixed: self.mixed_ops_supported,
+            },
+        }
     }
 
     /// Whether this engine supplies an unscaled STP whole-forward reference.

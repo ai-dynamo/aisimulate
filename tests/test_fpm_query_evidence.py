@@ -432,8 +432,17 @@ def test_public_recommendation_retains_requested_evidence(profile, evidence_syst
     saved = SweepResult.model_validate_json(result.model_dump_json())
     metadata = saved.candidates[0].provenance.runner_metadata
     evidence = metadata["fpm_query_evidence"]
-    assert records(evidence)
-    assert all(record["count"] == 3 for record in records(evidence))
+    estimates = records(evidence)
+    assert estimates
+    # The selected candidate runs attention DP=2, priced as one iteration over
+    # both ranks per pass. The same request shape on either rank is a separate
+    # iteration record; each of the three shapes still totals three passes.
+    invocations = {}
+    for record in estimates:
+        (busy,) = [rank for rank in record["estimate"]["ranks"] if rank["latency_ms"] > 0]
+        shape = (busy["prefill_ms"], busy["decode_ms"])
+        invocations[shape] = invocations.get(shape, 0) + record["count"]
+    assert sorted(invocations.values()) == [3, 3, 3]
     assert saved.candidates[0].metrics["power_w"] is None
 
 

@@ -9,6 +9,7 @@ use std::rc::Rc;
 use anyhow::{Result, bail};
 
 use super::*;
+use crate::engine::{IterationMs, RankWork};
 
 #[derive(Clone)]
 struct FakeConfig {
@@ -966,5 +967,274 @@ fn rejects_unknown_ranks_and_non_finite_times() -> Result<()> {
         .expect("valid work remains executable after validation failures");
     engine.complete_pass(started.pass_id, started.end_ms)?;
     assert!(engine.is_drained());
+    Ok(())
+}
+
+#[derive(Clone)]
+struct GroupConfig {
+    ready: Vec<bool>,
+    /// Delay between a rank's pass start and its compute start.
+    compute_delay_ms: Vec<f64>,
+    /// Each rank's own price, used when the group has none.
+    own_ms: Vec<f64>,
+    /// The group price; `None` models a provider without iteration pricing.
+    group_ms: Option<f64>,
+    fail_pricing: bool,
+    priced: Rc<RefCell<Vec<Vec<RankWork>>>>,
+    log: Rc<RefCell<Vec<String>>>,
+}
+
+/// A rank that leaves its pass for the group to price.
+struct GroupRank {
+    dp_rank: u32,
+    ready: bool,
+    drained: bool,
+    compute_delay_ms: f64,
+    own_ms: f64,
+    group_ms: Option<f64>,
+    fail_pricing: bool,
+    priced: Rc<RefCell<Vec<Vec<RankWork>>>>,
+    log: Rc<RefCell<Vec<String>>>,
+    scheduled_at_ms: Option<f64>,
+}
+
+impl RankEngine for GroupRank {
+    type Config = GroupConfig;
+    type Command = ();
+    type CommandEffects = ();
+    type PassStartEffects = ();
+    type PendingPass = ();
+    type PassCompletionEffects = ();
+    type InternalEffects = ();
+
+    fn new(identity: RankIdentity, config: &Self::Config) -> Result<Self> {
+        let rank = identity.dp_rank as usize;
+        Ok(Self {
+            dp_rank: identity.dp_rank,
+            ready: config.ready[rank],
+            drained: !config.ready[rank],
+            compute_delay_ms: config.compute_delay_ms[rank],
+            own_ms: config.own_ms[rank],
+            group_ms: config.group_ms,
+            fail_pricing: config.fail_pricing,
+            priced: Rc::clone(&config.priced),
+            log: Rc::clone(&config.log),
+            scheduled_at_ms: None,
+        })
+    }
+
+    fn apply_command_effects(
+        &mut self,
+        _command: Self::Command,
+        _context: CommandContext,
+        _pending_pass: Option<&mut Self::PendingPass>,
+    ) -> Result<Self::CommandEffects> {
+        Ok(())
+    }
+
+    fn is_ready(&self) -> bool {
+        self.ready
+    }
+
+    fn execute_pass(
+        &mut self,
+        _now_ms: f64,
+    ) -> Result<RankPass<Self::PassStartEffects, Self::PendingPass>> {
+        bail!("the group must schedule and resolve this rank's pass")
+    }
+
+    fn schedule_pass(
+        &mut self,
+        now_ms: f64,
+    ) -> Result<ScheduledPass<Self::PassStartEffects, Self::PendingPass>> {
+        self.log
+            .borrow_mut()
+            .push(format!("schedule:{}", self.dp_rank));
+        self.ready = false;
+        self.scheduled_at_ms = Some(now_ms);
+        // Distinct decode batches identify each rank's work.
+        Ok(ScheduledPass::Unpriced(RankWork {
+            dp_rank: self.dp_rank,
+            prefill: None,
+            decode: Some(crate::engine::DecodeWork {
+                batch_size: self.dp_rank as usize + 1,
+                active_kv_tokens: 8,
+                mean_context_length: 8 / (self.dp_rank as usize + 1),
+                kv_bound_tokens: 64,
+                lengths: Vec::new(),
+                verify_width: 1,
+            }),
+        }))
+    }
+
+    fn idle_pass_work(&self) -> Option<RankWork> {
+        Some(RankWork::idle(self.dp_rank))
+    }
+
+    fn price_group_pass(&self, ranks: &[RankWork]) -> Result<Option<IterationMs>> {
+        self.log
+            .borrow_mut()
+            .push(format!("price:{}", self.dp_rank));
+        self.priced.borrow_mut().push(ranks.to_vec());
+        if self.fail_pricing {
+            bail!("injected pricing failure");
+        }
+        Ok(self.group_ms.map(|total_ms| IterationMs {
+            total_ms,
+            prefill_ms: Some(0.0),
+        }))
+    }
+
+    fn resolve_pass(
+        &mut self,
+        iteration: Option<&IterationMs>,
+    ) -> Result<RankPass<Self::PassStartEffects, Self::PendingPass>> {
+        self.log
+            .borrow_mut()
+            .push(format!("resolve:{}", self.dp_rank));
+        let start_ms = self.scheduled_at_ms.take().expect("scheduled pass") + self.compute_delay_ms;
+        Ok(RankPass {
+            end_ms: start_ms + iteration.map_or(self.own_ms, |iteration| iteration.total_ms),
+            same_timestamp_retry: SameTimestampRetry::NotApplicable,
+            start_effects: (),
+            pending: (),
+        })
+    }
+
+    fn complete_pass(
+        &mut self,
+        _pending: Self::PendingPass,
+        _end_ms: f64,
+    ) -> Result<Self::PassCompletionEffects> {
+        self.drained = true;
+        Ok(())
+    }
+
+    fn next_internal_deadline_ms(&self) -> Option<f64> {
+        None
+    }
+
+    fn process_internal_work(
+        &mut self,
+        _now_ms: f64,
+        _pass_in_flight: bool,
+    ) -> Result<Self::InternalEffects> {
+        Ok(())
+    }
+
+    fn is_drained(&self) -> bool {
+        self.drained
+    }
+}
+
+fn group_config(ready: Vec<bool>, compute_delay_ms: Vec<f64>, own_ms: Vec<f64>) -> GroupConfig {
+    GroupConfig {
+        ready,
+        compute_delay_ms,
+        own_ms,
+        group_ms: Some(10.0),
+        fail_pricing: false,
+        priced: Rc::default(),
+        log: Rc::default(),
+    }
+}
+
+fn group_engine(config: GroupConfig) -> Result<GeneralizedMockerEngine<GroupRank>> {
+    let dp_size = NonZeroU32::new(config.ready.len() as u32).unwrap();
+    GeneralizedMockerEngine::new(
+        EngineIdentity::new(70),
+        GeneralizedEngineConfig::attention_dp(dp_size, config),
+    )
+}
+
+#[test]
+fn attention_dp_prices_a_group_pass_once_with_every_rank_including_idle() -> Result<()> {
+    // Rank 1 is idle; rank 2 starts computing 2 ms late.
+    let config = group_config(
+        vec![true, false, true],
+        vec![0.0, 0.0, 2.0],
+        vec![1.0, 1.0, 1.0],
+    );
+    let (priced, log) = (Rc::clone(&config.priced), Rc::clone(&config.log));
+    let mut engine = group_engine(config)?;
+    let started = engine.execute_pass(5.0)?.expect("two ranks are ready");
+
+    // Every rank schedules before the one pricing call, then each resolves.
+    assert_eq!(
+        log.borrow().as_slice(),
+        [
+            "schedule:0",
+            "schedule:2",
+            "price:0",
+            "resolve:0",
+            "resolve:2"
+        ]
+    );
+    let priced = priced.borrow();
+    assert_eq!(priced.len(), 1);
+    let ranks = &priced[0];
+    assert_eq!(
+        ranks.iter().map(|rank| rank.dp_rank).collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+    assert_eq!(ranks[1], RankWork::idle(1));
+    assert!(!ranks[0].is_idle() && !ranks[2].is_idle());
+    assert_eq!(ranks[2].decode.as_ref().unwrap().batch_size, 3);
+
+    // Each rank ends at its compute start plus the shared 10 ms; the group
+    // ends with the latest.
+    assert_eq!(
+        started
+            .by_rank
+            .iter()
+            .map(|rank| (rank.dp_rank, rank.rank_end_ms))
+            .collect::<Vec<_>>(),
+        [(0, 15.0), (2, 17.0)]
+    );
+    assert_eq!(started.end_ms, 17.0);
+    engine.complete_pass(started.pass_id, started.end_ms)?;
+    Ok(())
+}
+
+#[test]
+fn attention_dp_without_a_group_price_keeps_each_ranks_own_price() -> Result<()> {
+    let mut config = group_config(vec![true, true], vec![0.0, 0.0], vec![3.0, 8.0]);
+    config.group_ms = None;
+    let priced = Rc::clone(&config.priced);
+    let mut engine = group_engine(config)?;
+    let started = engine.execute_pass(0.0)?.expect("both ranks are ready");
+    assert_eq!(priced.borrow().len(), 1, "the group still asks once");
+    assert_eq!(
+        started
+            .by_rank
+            .iter()
+            .map(|rank| rank.rank_end_ms)
+            .collect::<Vec<_>>(),
+        [3.0, 8.0]
+    );
+    assert_eq!(started.end_ms, 8.0);
+    Ok(())
+}
+
+#[test]
+fn single_rank_engine_prices_its_pass_through_the_group_query() -> Result<()> {
+    let config = group_config(vec![true], vec![0.0], vec![1.0]);
+    let priced = Rc::clone(&config.priced);
+    let mut engine = group_engine(config)?;
+    let started = engine.execute_pass(0.0)?.expect("the rank is ready");
+    assert_eq!(priced.borrow().len(), 1);
+    assert_eq!(priced.borrow()[0].len(), 1);
+    assert_eq!(started.end_ms, 10.0);
+    Ok(())
+}
+
+#[test]
+fn a_group_pricing_failure_poisons_the_engine_after_ranks_scheduled() -> Result<()> {
+    let mut config = group_config(vec![true, true], vec![0.0, 0.0], vec![1.0, 1.0]);
+    config.fail_pricing = true;
+    let mut engine = group_engine(config)?;
+    let error = engine.execute_pass(0.0).unwrap_err();
+    assert!(format!("{error:#}").contains("injected pricing failure"));
+    assert!(engine.execute_pass(1.0).is_err(), "the engine is poisoned");
     Ok(())
 }

@@ -1060,6 +1060,116 @@ pub struct MixedPassMs {
     pub decode_ms: f64,
 }
 
+/// The prefill one attention-DP rank computes in a forward pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrefillWork {
+    /// Exact batch totals, as [`TimingModel::predict_prefill_totals_ms`]
+    /// receives them.
+    pub totals: PrefillTotals,
+    /// Per-request `(new_tokens, prefix_tokens)`, in no particular order.
+    pub requests: Vec<(usize, usize)>,
+}
+
+/// The decode batch one attention-DP rank computes in a forward pass, in the
+/// scheduler's terms. Lengths include each request's current input token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodeWork {
+    /// Real decode requests, before any speculative widening.
+    pub batch_size: usize,
+    /// Sum of the requests' logical context lengths.
+    pub active_kv_tokens: usize,
+    /// Integer mean of the context lengths, `active_kv_tokens / batch_size`.
+    pub mean_context_length: usize,
+    /// The scheduler's KV clamp, as [`TimingModel::predict_decode_ms`]
+    /// receives it as `total_kv_tokens`.
+    pub kv_bound_tokens: usize,
+    /// Per-request context lengths, in no particular order.
+    pub lengths: Vec<usize>,
+    /// Tokens each request verifies in this forward: one plus the configured
+    /// speculative (MTP) depth, or one without speculation.
+    pub verify_width: usize,
+}
+
+/// One attention-DP rank's model work in a group forward pass. An idle rank,
+/// or one that runs no model work, has neither prefill nor decode.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RankWork {
+    pub dp_rank: u32,
+    pub prefill: Option<PrefillWork>,
+    pub decode: Option<DecodeWork>,
+}
+
+impl RankWork {
+    /// A rank that computes nothing in the group pass.
+    pub const fn idle(dp_rank: u32) -> Self {
+        Self {
+            dp_rank,
+            prefill: None,
+            decode: None,
+        }
+    }
+
+    /// Whether the rank computes no model work.
+    pub const fn is_idle(&self) -> bool {
+        self.prefill.is_none() && self.decode.is_none()
+    }
+}
+
+/// One group forward pass priced as a single iteration, in milliseconds,
+/// before any modeled speedup.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IterationMs {
+    /// Duration shared by every rank of the group.
+    pub total_ms: f64,
+    /// The part of `total_ms` that is prefill, which the engine scales by the
+    /// prefill speedup instead of the decode speedup. Providers return it
+    /// when asked for a pass that computes both kinds of work.
+    pub prefill_ms: Option<f64>,
+}
+
+impl IterationMs {
+    /// Validate the provider's iteration and resolve its prefill share for
+    /// `ranks`: the whole iteration without decode work, none of it without
+    /// prefill work, and otherwise the provider's share, at most the total.
+    /// A pass with both kinds of work and no share has no split when
+    /// `prefill_share` was not requested, so it is all decode; when it was
+    /// requested, the share is required and its absence returns `None`.
+    pub(crate) fn resolve_share(
+        self,
+        ranks: &[RankWork],
+        prefill_share: bool,
+    ) -> Result<Option<Self>> {
+        ensure!(
+            self.total_ms.is_finite() && self.total_ms >= 0.0,
+            "iteration timing provider returned invalid duration {}ms",
+            self.total_ms
+        );
+        let prefills = ranks.iter().any(|rank| rank.prefill.is_some());
+        let decodes = ranks.iter().any(|rank| rank.decode.is_some());
+        let prefill_ms = if !decodes {
+            self.total_ms
+        } else if !prefills {
+            0.0
+        } else {
+            match self.prefill_ms {
+                Some(prefill_ms) => {
+                    ensure!(
+                        prefill_ms.is_finite() && prefill_ms >= 0.0,
+                        "iteration timing provider returned invalid prefill share {prefill_ms}ms"
+                    );
+                    prefill_ms.min(self.total_ms)
+                }
+                None if prefill_share => return Ok(None),
+                None => 0.0,
+            }
+        };
+        Ok(Some(Self {
+            total_ms: self.total_ms,
+            prefill_ms: Some(prefill_ms),
+        }))
+    }
+}
+
 /// Runtime latency model injected at the engine boundary.
 ///
 /// Implementations may call AIC, interpolate profiler data, or use another
@@ -1127,6 +1237,22 @@ pub trait TimingModel: Send + Sync {
         _mean_context_length: usize,
         _total_kv_tokens: usize,
     ) -> Result<Option<MixedPassMs>> {
+        Ok(None)
+    }
+
+    /// Price one forward pass of an attention-DP group as a single iteration:
+    /// `ranks` holds every rank's work in DP-rank order, idle ranks included,
+    /// and every rank of the group ends at the returned shared duration.
+    /// `prefill_share` asks for [`IterationMs::prefill_ms`] when the pass
+    /// computes both prefill and decode work.
+    ///
+    /// The default `None` keeps the per-rank phase methods above: each rank
+    /// prices its own work and the group ends with its slowest rank.
+    fn predict_iteration_ms(
+        &self,
+        _ranks: &[RankWork],
+        _prefill_share: bool,
+    ) -> Result<Option<IterationMs>> {
         Ok(None)
     }
 
@@ -1406,6 +1532,125 @@ mod tests {
         assert_eq!(model.predict_decode_ms(0, 128, 64, 1024).unwrap(), 0.0);
         assert_eq!(model.predict_prefill_ms(2, 128, 0).unwrap(), 7.0);
         assert_eq!(model.predict_decode_ms(2, 128, 64, 1024).unwrap(), 3.0);
+    }
+
+    fn prefill_rank(dp_rank: u32) -> RankWork {
+        RankWork {
+            dp_rank,
+            prefill: Some(PrefillWork {
+                totals: PrefillTotals {
+                    batch_size: 1,
+                    new_tokens: 8,
+                    prefix_tokens: 0,
+                },
+                requests: vec![(8, 0)],
+            }),
+            decode: None,
+        }
+    }
+
+    fn decode_rank(dp_rank: u32) -> RankWork {
+        RankWork {
+            dp_rank,
+            prefill: None,
+            decode: Some(DecodeWork {
+                batch_size: 2,
+                active_kv_tokens: 18,
+                mean_context_length: 9,
+                kv_bound_tokens: 1024,
+                lengths: vec![9, 9],
+                verify_width: 1,
+            }),
+        }
+    }
+
+    #[test]
+    fn built_in_models_keep_per_rank_phase_pricing() {
+        for config in [
+            TimingModelConfig::Polynomial,
+            TimingModelConfig::Fixed {
+                prefill_ms: 7.0,
+                decode_ms: 3.0,
+            },
+        ] {
+            let model = built_in_timing_model(&config).unwrap();
+            for prefill_share in [false, true] {
+                assert_eq!(
+                    model
+                        .predict_iteration_ms(&[prefill_rank(0), RankWork::idle(1)], prefill_share)
+                        .unwrap(),
+                    None
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn iteration_prefill_share_resolves_by_the_work_kinds_of_the_group() {
+        let iteration = |total_ms, prefill_ms| IterationMs {
+            total_ms,
+            prefill_ms,
+        };
+        let resolved = |total_ms, prefill_ms| {
+            Some(IterationMs {
+                total_ms,
+                prefill_ms: Some(prefill_ms),
+            })
+        };
+        let prefill_only = [prefill_rank(0), RankWork::idle(1)];
+        let decode_only = [RankWork::idle(0), decode_rank(1)];
+        let mixed = [prefill_rank(0), decode_rank(1)];
+        for share in [false, true] {
+            // One kind of work is wholly that kind, whatever the provider says.
+            assert_eq!(
+                iteration(6.0, None)
+                    .resolve_share(&prefill_only, share)
+                    .unwrap(),
+                resolved(6.0, 6.0)
+            );
+            assert_eq!(
+                iteration(6.0, Some(2.0))
+                    .resolve_share(&decode_only, share)
+                    .unwrap(),
+                resolved(6.0, 0.0)
+            );
+            // Both kinds: the provider's share, at most the iteration.
+            assert_eq!(
+                iteration(6.0, Some(4.0))
+                    .resolve_share(&mixed, share)
+                    .unwrap(),
+                resolved(6.0, 4.0)
+            );
+            assert_eq!(
+                iteration(6.0, Some(7.0))
+                    .resolve_share(&mixed, share)
+                    .unwrap(),
+                resolved(6.0, 6.0)
+            );
+            assert_eq!(
+                iteration(0.0, None).resolve_share(&[], share).unwrap(),
+                resolved(0.0, 0.0)
+            );
+        }
+        // Without a split, equal speedups make the whole iteration decode;
+        // a requested but missing share keeps per-rank pricing.
+        assert_eq!(
+            iteration(6.0, None).resolve_share(&mixed, false).unwrap(),
+            resolved(6.0, 0.0)
+        );
+        assert_eq!(
+            iteration(6.0, None).resolve_share(&mixed, true).unwrap(),
+            None
+        );
+        for invalid in [
+            iteration(f64::NAN, None),
+            iteration(-1.0, None),
+            iteration(f64::INFINITY, None),
+            iteration(6.0, Some(f64::NAN)),
+            iteration(6.0, Some(-1.0)),
+        ] {
+            assert!(invalid.resolve_share(&mixed, true).is_err(), "{invalid:?}");
+        }
     }
 
     #[test]
