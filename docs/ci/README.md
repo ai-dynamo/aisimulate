@@ -241,7 +241,7 @@ marked it N/A.
 | Python compatibility | Cross-package contracts and dependency checks on Python 3.11 and 3.13; application shards use Python 3.12 |
 | Engine Golden Regression | Engine-step and compiled-engine parity suites, plus frozen native numerical checks |
 | Platform Wheels | Build, repair, install, and exercise Linux x86-64/ARM64 and macOS ARM64 wheels |
-| Collector Data | Collector V3 invariants, backend-facts registry, and changed-operation manifest; cross-backend sanity scan is informational |
+| Collector Data | Data-tree invariants and collector notes (`check_collector_data.py` R1-R8) and the backend-facts registry; the changed-operation report and the cross-backend sanity scan are informational |
 | Prediction Regression | Collect old/new static, scheduling, and silicon-reference snapshots; fail when a previously working case stops working |
 | Release Artifact Contract | Build the wheel and crate; verify installed versions, allowed distributions, compatibility imports, dependencies, and CLI entry points on both architectures |
 

@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Known gaps between what the vLLM collector measures and what vLLM serving
+# runs. Code, data and docs cite a note by its id instead of restating it.
+# Schema and lifecycle: .claude/rules/collector/overview.md ("Note");
+# tools/perf_database/check_collector_data.py R8 validates this file.
+
+schema_version: 1
+notes:
+  - id: D-vllm-compute-scale-standalone
+    kind: deviation
+    summary: >-
+      Under torch.compile, serving folds the per-tensor FP8 activation quant
+      into Inductor kernels, but the table times it as a standalone kernel.
+      Predictions therefore bill a launch and an extra pass over the
+      activation that serving does not have.
+    direction: over
+    scope:
+      tables: [scale_matrix_perf]
+      systems: [l40s, h100_sxm, h200_sxm]
+    verified_on: "0.30.0"
+    sources:
+      - benchmarks/evidence/collector/op-probe-2026-10/findings.yaml#full_reprobe_framework_mode_2026_09_24
+      - benchmarks/evidence/collector/op-probe-2026-10/findings.yaml#sm89_vllm_0300_probe_2026_10_04
+    retire_via: >-
+      Model the fused quant (fold compute_scale into the gemm row when the
+      deployment compiles), or drop the standalone row for compiled
+      deployments.
+    approved_by: tianhaox
+
+  - id: D-vllm-fp8-static-derived
+    kind: deviation
+    summary: >-
+      The SDK derives fp8_static GEMM from the dynamic fp8 row plus
+      compute_scale, which assumes both schemes run the same kernel. On
+      CC>=100, serving selects FlashInferFP8ScaledMMLinearKernel for static
+      per-tensor checkpoints while the dynamic row runs Cutlass, so fp8_static
+      predictions on these systems are approximate.
+    direction: unknown
+    scope:
+      tables: [gemm_perf]
+      # Every CC>=100 system; only the SM120 class has been observed on hardware.
+      systems: [rtx_pro_6000_server, b200_sxm, b300_sxm, gb200, gb300]
+    verified_on: "0.31.0"
+    sources:
+      - vllm model_executor/kernels/linear/__init__.py:422-423 @0.31.0 (kernel priority)
+      - vllm model_executor/kernels/linear/scaled_mm/flashinfer.py:50-62 @0.31.0 (CC>=100, per-tensor activation and weight)
+      - benchmarks/evidence/collector/op-probe-2026-10/findings.yaml#sm120_collector_gemm_fp8_static_row
+    retire_via: >-
+      Collect a static per-tensor fp8 gemm row (Fp8Config
+      activation_scheme=static) on CC>=100 systems and let the SDK prefer it,
+      or drop fp8_static support for ModelOpt FP8 checkpoints on those
+      systems.
+    approved_by: tianhaox

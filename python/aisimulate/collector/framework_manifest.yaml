@@ -74,8 +74,7 @@ frameworks:
     #     1.003-1.013; per-bucket tactic/tile-wave quantization, not a campaign
     #     artifact; GitLab aic-auto-collector pipelines 61692150-61692160,
     #     61771569-61838704). Existing moe shapes still reuse rc20 data through
-    #     the declared reuse.yaml channel; the rc23 evidence exception in
-    #     evidence_exceptions.yaml keeps its own scope.
+    #     the declared reuse.yaml channel.
     #   * rc23 sparse_attention: DSV4 attention needed trtllm>=1.3.0rc21 and the
     #     DSA modules travelled with it (SM90 smoke at bring-up).
     #   * rc23 msa: the true-sparse fmha_sm100 backend (SM100/103) landed in rc23;

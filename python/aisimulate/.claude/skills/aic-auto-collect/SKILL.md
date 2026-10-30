@@ -217,6 +217,12 @@ Recommended order:
 4. module-level ops such as DSA, GDN, MHC, WideEP
 5. communication ops separately, because they may require multi-GPU or full-node ownership
 
+Collect only what the question needs (`.claude/rules/collector/overview.md`,
+"Collection cost"). An upgrade or a fix runs the affected ops and cases on one
+system per SM generation. A full plan is for bringing up a new system, or for
+a family whose kernels changed at a pin bump; the other families declare
+reuse.
+
 For new GPUs, prioritize ops used by the target models and backend first, but do not claim full support until all expected ops for that backend/version are collected or explicitly marked unsupported.
 
 For an all-backend bring-up, run this as separate draft PRs:
@@ -338,10 +344,10 @@ Fix policy:
   4. Verify the real API in source. Do not trust Python's "Did you mean" suggestions blindly.
   5. Patch the collector in place for the target release (one release per file: `.claude/rules/collector/layer_permissions.md`, "Version contract").
 - For API changes, upgrade the collector in place and pin `__compat__` to exactly the target release.
-- For GPU capability gaps, filter test cases before execution using `get_sm_version()`.
-- For Blackwell/SM100+ features, gate FP4/NVFP4/FP8 paths carefully.
-- For dimension constraints, filter on per-rank dimensions such as `inter_size // tp`.
-- For CUDA-fatal errors, prefer worker restart and skip only the exact invalid region.
+- For a dtype or op the GPU cannot run at all (FP4/NVFP4 below SM100, FP8 below SM89), add a `capabilities.yaml` floor or a quant-axis `min_sm`; never filter in collector code with `get_sm_version()`.
+- For a shape or dimension boundary that one framework rejects, per-rank sizes such as `inter_size // tp` included, change nothing: the cases fail and are recorded. Count failures per consumer key and name the unavailable keys in the PR.
+- Add a guard only when a case would mismeasure, hang or kill the worker, or waste significant time. It raises in the worker and cites a `G-` note (`.claude/rules/collector/layer_permissions.md`).
+- For CUDA-fatal errors, the worker restarts and the failure is already recorded; do not add skips.
 - Preserve data quality. Do not reduce benchmark repetitions or broad test dimensions just to pass.
 - Keep shared test-case generators deterministic when unit tests depend on them. Put runtime availability probes in backend collector wrappers when the skip is caused by a partially installed framework package.
 - Guard `importlib.util.find_spec("a.b.c")` with `try/except ModuleNotFoundError`; partial packages can make `find_spec` raise instead of return `None`.
@@ -559,8 +565,7 @@ Before marking the draft PR ready:
 ```bash
 git status --short
 git diff --stat main...HEAD
-pytest tests/unit/collector -q
-pytest tests/unit/sdk/test_common.py -q
+python -m pytest -q tests/unit tests/golden   # what CI runs, with no marker filter
 ```
 
 PR body checklist:
@@ -574,7 +579,9 @@ PR body checklist:
 - Ops collected and perf files added.
 - Row counts by backend/version and perf file count.
 - Collector errors fixed.
-- Unsupported/skipped configs with reasons and whether they are runtime-version limits, SM limits, or collector gaps.
+- Failure counts per consumer key, the unavailable keys, and the comparison with the previous run of the same backend/version.
+- Capability floors and notes added, changed or retired (`collector/notes/`), with `verified_on` moved for the new pin.
+- Whether measured values change; when they do, a before/after diff of the affected ops on one system per SM generation.
 - Validation commands and results.
 - Remaining risks.
 
@@ -596,9 +603,9 @@ Ruff CI runs both `ruff check` and `ruff format --check`; local targeted `ruff c
 If the draft PR does not exist yet, open it before more long-running work:
 
 ```bash
-gh repo fork ai-dynamo/aiconfigurator --clone=false
+gh repo fork ai-dynamo/aisimulate --clone=false
 git push -u <your-fork-remote> HEAD
-gh pr create --repo ai-dynamo/aiconfigurator --head <your-user>:<branch> --title "<title>" --body-file <body-file>
+gh pr create --repo ai-dynamo/aisimulate --head <your-user>:<branch> --title "<title>" --body-file <body-file>
 ```
 
 ## Stop And Escalate
