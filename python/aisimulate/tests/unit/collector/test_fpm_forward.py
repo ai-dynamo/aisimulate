@@ -1648,6 +1648,21 @@ def test_llm_config_decoder_under_an_unregistered_wrapper_is_checked_against_its
         load_model_config(str(directory))
 
 
+@pytest.mark.parametrize("decoder_names_itself", [True, False])
+def test_llm_config_markers_and_architecture_match_config_intake(tmp_path, decoder_names_itself):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    directory = _nemotron_super(tmp_path, nested=True, decoder_names_itself=decoder_names_itself)
+    intake = load_intake_config(directory / "config.json")
+    capability = _layout_capability(directory, native=True)
+    assert ", ".join(intake.runtime_layout) == _NEMOTRON_REASONS
+    assert capability.support_reason == (
+        f"config.json cannot describe this cache layout ({_NEMOTRON_REASONS}). The native runtime measures every cell."
+    )
+    # Onboarding writes the intake architecture into the profile, and the planner requires the collector's to match.
+    assert capability.architecture == intake.suggestions["architecture"]
+
+
 def _detected_layout_plan(tmp_path, monkeypatch, generator_overrides):
     config = _unknown_fp8_moe_config()
     config["layer_types"] = ["linear_attention", "full_attention"] * 2

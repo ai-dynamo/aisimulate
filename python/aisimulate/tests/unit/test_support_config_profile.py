@@ -1419,6 +1419,95 @@ def test_nested_architecture_ambiguity_is_not_hidden_by_wrapper_fallback(tmp_pat
         _config(tmp_path, text_config=text)
 
 
+_WRAPPER = {"architectures": ["ExampleMultimodalForConditionalGeneration"], "model_type": "example_multimodal"}
+
+
+@pytest.mark.parametrize("key", ["text_config", "llm_config"])
+def test_decoder_config_notes_name_the_unwrapped_key(tmp_path, key):
+    raw = _config(tmp_path).raw
+    decoder = {name: value for name, value in raw.items() if name not in ("architectures", "torch_dtype")}
+    config = _config(tmp_path, **_WRAPPER, **{key: decoder})
+    assert config.decoder_architecture == "LlamaForCausalLM"
+    assert config.suggestions["architecture"] == "ExampleMultimodalForConditionalGeneration"
+    assert config.notes["decoder_config"] == f"config {key}; outer model and encoder geometry are excluded"
+    assert config.notes["shared_metadata"] == (
+        f"config-level torch_dtype inherited because {key} does not declare that metadata"
+    )
+    assert config.notes["architecture"] == (
+        "config wrapper architecture=ExampleMultimodalForConditionalGeneration "
+        "retained for checkpoint/collector identity"
+    )
+    assert config.notes["decoder_architecture"] == (
+        f"{key} decoder architecture=LlamaForCausalLM; used for decoder validation/resource estimates"
+    )
+    unnamed = _config(tmp_path, **_WRAPPER, **{key: {**decoder, "model_type": "example_text"}})
+    assert unnamed.decoder_architecture is None
+    assert unnamed.notes["decoder_architecture"] == (
+        f"{key} does not identify a decoder architecture; decoder resource bounds require explicit input"
+    )
+
+
+@pytest.mark.parametrize("key", ["text_config", "llm_config"])
+def test_decoder_inside_its_own_key_is_ambiguous(tmp_path, key):
+    decoder = {name: value for name, value in _config(tmp_path).raw.items() if name != "architectures"}
+    with pytest.raises(ValueError) as error:
+        _config(tmp_path, **_WRAPPER, **{key: {**decoder, key: decoder}})
+    assert str(error.value) == f"ambiguous nested {key}; supply one text decoder config or a complete --fpm-profile"
+
+
+@pytest.mark.parametrize("value", [None, {}, [], "decoder"])
+def test_malformed_text_config_is_refused_and_malformed_llm_config_is_ignored(tmp_path, value):
+    with pytest.raises(ValueError) as error:
+        _config(tmp_path, text_config=value)
+    assert str(error.value) == (
+        "text_config must be a nonempty object describing one text decoder; "
+        "supply its decoder config or a complete --fpm-profile"
+    )
+    config = _config(tmp_path, llm_config=value)
+    assert config.decoder_architecture == "LlamaForCausalLM"
+    assert "decoder_config" not in config.notes
+
+
+_NEMOTRON_SUPER = "nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-FP8"
+_NEMOTRON_MARKERS = ("recurrent-state field mamba_num_heads", "recurrent-state field ssm_state_size")
+
+
+def _load_nemotron_super(tmp_path, name, document, *, sidecar):
+    directory = tmp_path / name
+    directory.mkdir()
+    (directory / "config.json").write_text(json.dumps(document))
+    if sidecar:
+        quant = GLM.parent / f"{_NEMOTRON_SUPER}_hf_quant_config.json"
+        (directory / "hf_quant_config.json").write_text(quant.read_text())
+    return load_model_config(directory / "config.json")
+
+
+@pytest.mark.parametrize("sidecar", [False, True])
+def test_nemotron_super_vl_reports_the_mamba_state_under_llm_config(tmp_path, sidecar):
+    flat = json.loads((GLM.parent / f"{_NEMOTRON_SUPER}_config.json").read_text())
+    # The Nemotron 3.5 Super VL shape that #562 registered.
+    wrapped = {"architectures": ["NemotronH_Omni_Reasoning_V3"], "llm_config": flat}
+    baseline = _load_nemotron_super(tmp_path, "flat", flat, sidecar=sidecar)
+    nested = _load_nemotron_super(tmp_path, "nested", wrapped, sidecar=sidecar)
+    assert nested.runtime_layout == baseline.runtime_layout == _NEMOTRON_MARKERS
+    assert nested.raw == baseline.raw
+    assert nested.suggestions == baseline.suggestions
+    assert nested.decoder_architecture == "NemotronHForCausalLM"
+    assert nested.notes["decoder_config"] == "config llm_config; outer model and encoder geometry are excluded"
+
+
+@pytest.mark.parametrize("key", ["text_config", "llm_config"])
+def test_decoder_under_an_unregistered_wrapper_is_checked_against_its_sidecar(tmp_path, key):
+    flat = json.loads((GLM.parent / f"{_NEMOTRON_SUPER}_config.json").read_text())
+    flat["quantization_config"] = {"quant_method": "modelopt", "quant_algo": "NVFP4"}
+    with pytest.raises(ValueError, match="conflicting quant_algo") as baseline:
+        _load_nemotron_super(tmp_path, "flat", flat, sidecar=True)
+    # MULTIMODAL_TEXT_CONFIG_KEY does not register this wrapper, so the key that the document holds finds the decoder.
+    with pytest.raises(ValueError) as nested:
+        _load_nemotron_super(tmp_path, "nested", {**_WRAPPER, key: flat}, sidecar=True)
+    assert str(nested.value) == str(baseline.value)
+
+
 def test_flat_multimodal_metadata_does_not_change_decoder_estimates(tmp_path):
     baseline = derive_profile(_config(tmp_path), _request(), _runtime())
     config = _config(
