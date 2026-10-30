@@ -18,13 +18,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# Ask the installed distributions, not sys.modules: other collector test
-# modules cache a MagicMock under sys.modules["torch"] at collection time.
-try:
-    importlib.metadata.version("torch")
-except importlib.metadata.PackageNotFoundError:
-    pytest.skip("torch is not installed", allow_module_level=True)
-
 pytestmark = pytest.mark.unit
 
 COLLECT_GEMM = Path(__file__).resolve().parents[4] / "collector" / "vllm" / "collect_gemm.py"
@@ -57,6 +50,12 @@ def torch(monkeypatch):
     torch can be initialized only once per process, so an initialized package
     is reused instead of being imported again.
     """
+    # Ask the installed distributions, not sys.modules: other collector test
+    # modules cache a MagicMock under sys.modules["torch"] at collection time.
+    try:
+        importlib.metadata.version("torch")
+    except importlib.metadata.PackageNotFoundError:
+        pytest.skip("real torch required for tensor operations")
     module = sys.modules.get("torch")
     if not isinstance(module, types.ModuleType):
         module = _initialized_torch()
