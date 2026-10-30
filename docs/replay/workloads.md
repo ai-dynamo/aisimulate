@@ -286,9 +286,12 @@ traffic:
 | `agentic_profile` | The run ends when the selected plays finish. | Lanes keep taking new plays until a deadline. |
 
 Supported runtimes: offline `engine` stack, vLLM or SGLang, aggregated or P/D
-workers, HBM-only KV cache, and no speculative decoding. vLLM additionally
+workers and HBM-only KV cache, including
+[speculative decoding](engine/speculation.md) with explicit acceptance
+assumptions; ngram requires vLLM. vLLM additionally
 supports [G2 host offload](engine/kv-cache.md#agentic-g2) with static workers,
-either one aggregated worker or 1P1D, and `attention_data: 1` on every role. TensorRT-LLM, G3 offload and online
+either one aggregated worker or 1P1D, `attention_data: 1` on every role and
+speculative decoding disabled. TensorRT-LLM, G3 offload and online
 P/D are rejected. Results are qualified `functional_only`, not hardware
 accuracy. [Start an AgentX simulation](agentic/quickstart.md) walks through a
 complete run.

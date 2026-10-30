@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright contributors to the vLLM project.
 // Modified Rust simulation of vLLM b3563fc65ae0f5359802593d78e7ea097e1fed31
-// scheduling contracts; immutable sources and license: THIRD_PARTY_NOTICES.md.
+// scheduling contracts and of the v0.28.0 (2cf0a6915ce544dc493a0990f2ea38d81601128a)
+// async-scheduling batch queue; immutable sources and license: THIRD_PARTY_NOTICES.md.
 
 use rstest::rstest;
 use uuid::Uuid;
@@ -532,8 +533,9 @@ mod speculative_scheduling {
     use super::*;
     use std::sync::{Arc, Mutex};
 
+    /// Records each decode batch and its active KV tokens.
     #[derive(Default)]
-    struct TimingProbe(Mutex<Vec<usize>>);
+    struct TimingProbe(Mutex<Vec<(usize, usize)>>);
 
     impl crate::engine::TimingModel for TimingProbe {
         fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
@@ -543,13 +545,22 @@ mod speculative_scheduling {
         fn predict_decode_ms(
             &self,
             batch: usize,
-            _: usize,
+            active_kv_tokens: usize,
             _: usize,
             _: usize,
         ) -> anyhow::Result<f64> {
-            self.0.lock().unwrap().push(batch);
+            self.0.lock().unwrap().push((batch, active_kv_tokens));
             Ok(11.0)
         }
+    }
+
+    fn attach_probe(core: &mut VllmCore) -> Arc<TimingProbe> {
+        let timing = Arc::new(TimingProbe::default());
+        core.args.perf_model = crate::engine::common::perf_model::PerfModel::External {
+            timing: timing.clone(),
+        }
+        .into();
+        timing
     }
 
     fn core(engine_type: EngineType) -> VllmCore {
@@ -588,11 +599,7 @@ mod speculative_scheduling {
         #[case] expected_ms: f64,
     ) {
         let mut core = core(engine);
-        let timing = Arc::new(TimingProbe::default());
-        core.args.perf_model = crate::engine::common::perf_model::PerfModel::External {
-            timing: timing.clone(),
-        }
-        .into();
+        let timing = attach_probe(&mut core);
         submit(&mut core, 1, 4, 12);
         let mut collector = crate::engine::trace::TraceCollector::default();
         let first = core.execute_pass(&mut collector, 0.0);
@@ -713,6 +720,159 @@ mod speculative_scheduling {
         assert_eq!(resumed.output_signals.len(), 1);
         let steady = core.execute_pass(&mut collector, resumed.end_ms);
         assert_eq!(steady.output_signals.len(), 4);
+    }
+
+    /// Pins sampler draw order and count at fractional acceptance, with widths
+    /// narrowed by the token budget and by a context limit, under KV preemption.
+    #[test]
+    fn fractional_acceptance_follows_a_fixed_burst_sequence() {
+        let mut core = VllmCore::new(
+            MockEngineArgs::builder()
+                .block_size(4)
+                .num_gpu_blocks(12)
+                .max_num_batched_tokens(Some(12))
+                .max_num_seqs(Some(6))
+                .enable_chunked_prefill(true)
+                .enable_prefix_caching(false)
+                .speedup_ratio(0.0)
+                .aic_nextn(Some(3))
+                .aic_nextn_accept_rates(Some("0.7,0.5,0.3".into()))
+                .build()
+                .unwrap(),
+        );
+        core.args.max_model_len = Some(24);
+        for (id, prompt, output) in [
+            (1, 4, 9),
+            (2, 6, 14),
+            (3, 3, 20),
+            (4, 8, 7),
+            (5, 5, 12),
+            (6, 20, 12),
+        ] {
+            submit(&mut core, id, prompt, output);
+        }
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let (mut now, mut accepted, mut forwards) = (0.0, 0, 0);
+        let mut passes = Vec::new();
+        for _ in 0..200 {
+            if core.is_empty() {
+                break;
+            }
+            let pass = core.execute_pass(&mut collector, now);
+            accepted += pass.decode_acceptance.accepted_tokens;
+            forwards += pass.decode_acceptance.forwards;
+            // One entry per request burst: id, tokens emitted, then `!` if it completed.
+            let mut bursts: Vec<(u128, usize, bool)> = Vec::new();
+            for signal in &pass.output_signals {
+                assert!(!signal.rejected);
+                let id = signal.uuid.as_u128();
+                match bursts.last_mut() {
+                    Some(last) if last.0 == id => last.1 += usize::from(signal.token_id.is_some()),
+                    _ => bursts.push((id, usize::from(signal.token_id.is_some()), false)),
+                }
+                bursts.last_mut().unwrap().2 |= signal.completed;
+            }
+            let bursts = bursts
+                .iter()
+                .map(|(id, n, done)| format!("{id}:{n}{}", if *done { "!" } else { "" }))
+                .collect::<Vec<_>>();
+            passes.push(bursts.join(","));
+            now = pass.end_ms;
+        }
+        assert!(core.is_empty());
+        assert!(
+            core.state.preemptions_total > 0,
+            "the workload must preempt"
+        );
+        assert!(
+            forwards < accepted && accepted < 4 * forwards,
+            "{accepted}/{forwards}"
+        );
+        assert_eq!(
+            passes.join(" "),
+            "1:1,2:1 1:1,2:2,3:1 1:1,2:1,3:3 1:2,2:2,3:3 1:4!,2:4,3:1 2:2,3:1 2:2!,3:2,4:1 \
+             3:2,4:1 3:2,4:1,5:1 3:1,4:2 3:1,4:1 3:3!,4:1!,5:1 5:2 5:2 5:3,6:1 5:3!,6:2 6:1!"
+        );
+    }
+
+    /// A request preempted while reserving lookahead leaves the pass; the
+    /// emitted forward prices only the survivor.
+    #[test]
+    fn reservation_preemption_prices_only_the_survivor() {
+        let mut core = VllmCore::new(
+            MockEngineArgs::builder()
+                .block_size(4)
+                .num_gpu_blocks(4)
+                .max_num_batched_tokens(Some(8))
+                .max_num_seqs(Some(2))
+                .enable_chunked_prefill(true)
+                .enable_prefix_caching(false)
+                .preemption_mode(PreemptionMode::Lifo)
+                .speedup_ratio(0.0)
+                .aic_nextn(Some(2))
+                .aic_nextn_accept_rates(Some("1,1".into()))
+                .build()
+                .unwrap(),
+        );
+        let timing = attach_probe(&mut core);
+        let survivor = submit(&mut core, 1, 4, 8);
+        let retracted = submit(&mut core, 2, 4, 8);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let first = core.execute_pass(&mut collector, 0.0);
+        let second = core.execute_pass(&mut collector, first.end_ms);
+        timing.0.lock().unwrap().clear();
+        let pass = core.execute_pass(&mut collector, second.end_ms);
+        assert_eq!(core.state.requests[&retracted].num_preemptions, 1);
+        assert!(
+            pass.output_signals
+                .iter()
+                .all(|signal| signal.uuid == survivor)
+        );
+        let survivor_len =
+            core.state.requests[&survivor].sequence.len() - pass.output_signals.len();
+        assert_eq!(*timing.0.lock().unwrap(), vec![(1, survivor_len)]);
+    }
+
+    /// A request whose lookahead can never fit is rejected; the emitted
+    /// forward prices only the requests that remain.
+    #[test]
+    fn impossible_lookahead_prices_only_the_survivor() {
+        let mut core = VllmCore::new(
+            MockEngineArgs::builder()
+                .num_gpu_blocks(7)
+                .block_size(2)
+                .max_num_batched_tokens(Some(1024))
+                .max_num_seqs(Some(16))
+                .enable_prefix_caching(false)
+                .speedup_ratio(0.0)
+                .aic_nextn(Some(5))
+                .aic_nextn_accept_rates(Some("1,1,1,1,1".into()))
+                .kv_cache_bytes_per_token(Some(16))
+                .state_cache(Some(crate::engine::StateCacheConfig {
+                    bytes_per_request: 16,
+                }))
+                .build()
+                .unwrap(),
+        );
+        let timing = attach_probe(&mut core);
+        let oversized = submit(&mut core, 1, 7, 12);
+        let survivor = submit(&mut core, 2, 1, 3);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let first = core.execute_pass(&mut collector, 0.0);
+        assert!(first.output_signals.iter().all(|signal| !signal.rejected));
+        timing.0.lock().unwrap().clear();
+        let pass = core.execute_pass(&mut collector, first.end_ms);
+        let (rejected, emitted) = pass.output_signals.split_last().unwrap();
+        assert!(rejected.uuid == oversized && rejected.rejected && rejected.token_id.is_none());
+        assert!(!emitted.is_empty());
+        assert!(
+            emitted
+                .iter()
+                .all(|signal| signal.uuid == survivor && !signal.rejected)
+        );
+        // The survivor completes; it was priced at its prompt plus first token.
+        assert!(!core.state.requests.contains_key(&survivor));
+        assert_eq!(*timing.0.lock().unwrap(), vec![(1, 2)]);
     }
 }
 
@@ -990,6 +1150,146 @@ mod mixed_pass_timing {
         assert_eq!(mixed.end_ms - first.end_ms, 12.0);
         assert_eq!(timing.queries.lock().unwrap().len(), 1);
         assert_eq!(*timing.prefills.lock().unwrap(), 1);
+    }
+}
+
+mod async_scheduling_admission {
+    use super::*;
+
+    fn core(max_concurrent_batches: usize) -> VllmCore {
+        VllmCore::new(
+            MockEngineArgs::builder()
+                .block_size(4)
+                .num_gpu_blocks(64)
+                .max_num_batched_tokens(Some(64))
+                .max_num_seqs(Some(8))
+                .enable_chunked_prefill(true)
+                .enable_prefix_caching(false)
+                .speedup_ratio(0.0)
+                .max_concurrent_batches(max_concurrent_batches)
+                .build()
+                .unwrap(),
+        )
+    }
+
+    /// Submit as replay does: mid-pass while a pass is in flight, otherwise at
+    /// a pass boundary, before the next pass starts.
+    fn arrive(core: &mut VllmCore, id: u128, output: usize, pass_in_flight: bool) -> Uuid {
+        let request = DirectRequest {
+            tokens: vec![id as u32; 8],
+            max_output_tokens: output,
+            uuid: Some(Uuid::from_u128(id)),
+            ..Default::default()
+        };
+        match core
+            .apply_command_effects(SchedulerCommand::Submit(request), !pass_in_flight)
+            .unwrap()
+            .result
+        {
+            SchedulerCommandResult::Submitted(uuid) => uuid,
+            other => panic!("unexpected submit result {other:?}"),
+        }
+    }
+
+    /// Run one pass and return the requests it admitted.
+    fn pass(core: &mut VllmCore) -> Vec<Uuid> {
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let result = core.execute_pass(&mut collector, 0.0);
+        result
+            .admissions
+            .iter()
+            .map(|admission| admission.uuid)
+            .collect()
+    }
+
+    /// How many passes run before the one that admits each request.
+    fn passes_before_admission(core: &mut VllmCore, uuids: &[Uuid]) -> Vec<usize> {
+        let mut admitted = vec![None; uuids.len()];
+        for index in 0..8 {
+            for uuid in pass(core) {
+                if let Some(position) = uuids.iter().position(|candidate| *candidate == uuid) {
+                    admitted[position].get_or_insert(index);
+                }
+            }
+        }
+        admitted.into_iter().map(Option::unwrap).collect()
+    }
+
+    /// An engine whose first pass admitted a request with `output` tokens.
+    fn engine_after_first_pass(max_concurrent_batches: usize, output: usize) -> VllmCore {
+        let mut core = core(max_concurrent_batches);
+        let running = arrive(&mut core, 1, output, false);
+        assert_eq!(pass(&mut core), [running]);
+        core
+    }
+
+    #[rstest]
+    #[case::mid_pass(true, 1)]
+    #[case::pass_boundary(false, 2)]
+    fn arrival_at_a_busy_engine_skips_the_passes_vllm_committed(
+        #[case] pass_in_flight: bool,
+        #[case] skipped: usize,
+    ) {
+        let mut core = engine_after_first_pass(2, 32);
+        let arrival = arrive(&mut core, 2, 4, pass_in_flight);
+        assert_eq!(passes_before_admission(&mut core, &[arrival]), [skipped]);
+    }
+
+    /// A preempted request was admitted long ago: it resumes at the next pass
+    /// while a newer arrival still skips the batch vLLM had committed.
+    #[test]
+    fn preempted_request_is_not_deferred_as_a_new_arrival() {
+        let mut core = engine_after_first_pass(2, 32);
+        let preempted = Uuid::from_u128(1);
+        let arrival = arrive(&mut core, 2, 4, true);
+        assert!(core.policy_preempt(0.0).is_some());
+        assert_eq!(core.state.requests[&preempted].num_preemptions, 1);
+
+        pass(&mut core);
+        assert_eq!(
+            core.state.requests[&preempted].status,
+            RequestStatus::Running
+        );
+        assert_ne!(core.state.requests[&arrival].status, RequestStatus::Running);
+        assert_eq!(passes_before_admission(&mut core, &[arrival]), [0]);
+    }
+
+    #[rstest]
+    #[case::mid_pass(true)]
+    #[case::pass_boundary(false)]
+    fn synchronous_engine_admits_an_arrival_at_the_next_pass(#[case] pass_in_flight: bool) {
+        let mut core = engine_after_first_pass(1, 32);
+        let arrival = arrive(&mut core, 2, 4, pass_in_flight);
+        assert_eq!(passes_before_admission(&mut core, &[arrival]), [0]);
+    }
+
+    #[test]
+    fn idle_engine_admits_an_arrival_at_the_next_pass() {
+        let mut core = engine_after_first_pass(2, 1);
+        assert!(core.is_empty());
+        let arrival = arrive(&mut core, 2, 4, false);
+        assert_eq!(passes_before_admission(&mut core, &[arrival]), [0]);
+    }
+
+    /// The running request emits its last token in the second pass, so vLLM
+    /// commits an empty batch after it. Queued arrivals then run at once,
+    /// together, instead of waiting for the batch they would otherwise skip.
+    #[test]
+    fn empty_committed_batch_admits_queued_arrivals_together() {
+        // At the boundary before that last pass.
+        let mut core = engine_after_first_pass(2, 2);
+        let arrivals = [
+            arrive(&mut core, 2, 4, false),
+            arrive(&mut core, 3, 4, false),
+        ];
+        assert_eq!(passes_before_admission(&mut core, &arrivals), [1, 1]);
+
+        // While that last pass runs.
+        let mut core = engine_after_first_pass(2, 2);
+        assert!(pass(&mut core).is_empty());
+        assert!(core.state.running.is_empty());
+        let arrivals = [arrive(&mut core, 2, 4, true), arrive(&mut core, 3, 4, true)];
+        assert_eq!(passes_before_admission(&mut core, &arrivals), [0, 0]);
     }
 }
 

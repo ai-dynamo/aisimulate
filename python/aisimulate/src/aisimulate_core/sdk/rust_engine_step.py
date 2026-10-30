@@ -591,6 +591,56 @@ class RustForwardPassPerfModel:
         """Fit partial pending batches and expire globally aged feedback in every store."""
         self._inner.flush_updates()
 
+    def append_mixed_learned_checkpoint(self, path: str | os.PathLike[str]) -> int:
+        """Add one eligible mixed class's C-trained online GBDT or selector store.
+
+        The existing A+C mixed selector keeps calibrated interpolation as its
+        stable expert. The checkpoint must contain exactly one absent eligible
+        mixed store with at least 20 training rows and match the model's identity,
+        features, and target. Rust validates the complete training checkpoint
+        before changing either expert.
+        Bootstrap labels are training data, not retrospective selector evidence.
+        Online GBDT also preserves its calibration and optional quality gate.
+        Returns the number of added stores (one); frozen models reject this call.
+        """
+        return self._inner.append_mixed_learned_checkpoint(os.fspath(path))
+
+    def estimate_forward_pass_with_route(self, metrics_by_rank: Any) -> dict[str, Any]:
+        """Predict once and return latency with the actual mixed expert route.
+
+        The result contains ``latency_ms`` and ``temporary_mixed_composition``.
+        Expert availability is ``None`` when that expert was not queried.
+        The returned route describes this prediction; it admits no feedback.
+        """
+        return json.loads(self._inner.estimate_forward_pass_with_route(_json_dumps(metrics_by_rank)))
+
+    def learned_expert_artifacts(self) -> dict[str, Any]:
+        """Inspect frozen and online selector forests; not a resumable checkpoint."""
+        return json.loads(self._inner.learned_expert_artifacts())
+
+    def mixed_composition_route(self, metrics_by_rank: Any) -> dict[str, Any] | None:
+        """Resolve mixed eligibility and the current route without learning.
+
+        This may query an expert. Use ``estimate_forward_pass_with_route`` when
+        both the prediction and its actual route are needed in one dispatch.
+        """
+        raw = self._inner.mixed_composition_route(_json_dumps(metrics_by_rank))
+        return None if raw is None else json.loads(raw)
+
+    def mixed_composition_diagnostics(self) -> dict[str, Any] | None:
+        """Inspect mixed routes, pinned sources, score bounds, and calibration."""
+        raw = self._inner.mixed_composition_diagnostics()
+        return None if raw is None else json.loads(raw)
+
+    def mixed_composition_state(self) -> dict[str, Any] | None:
+        """Snapshot mixed calibration and quality evidence, without ordinary or selector state."""
+        raw = self._inner.mixed_composition_state()
+        return None if raw is None else json.loads(raw)
+
+    def restore_mixed_composition_state(self, state: dict[str, Any]) -> None:
+        """Restore matching mixed state atomically; caller owns admission replay."""
+        self._inner.restore_mixed_composition_state(_json_dumps(state))
+
     def export_learned_artifact(self) -> dict[str, Any]:
         """Return the current forest as an inference artifact, without fitting state.
 
@@ -636,7 +686,11 @@ class RustForwardPassPerfModel:
         ``pure_prefill`` for aggregated workers) with ``ready``,
         ``not_ready_reason`` (``insufficient_data``, ``no_usable_fit`` or
         ``untrained_forest_store``) and ``retained_observations``. Native
-        estimators are always ready. ``corrections`` lists correction stores
+        estimators are always ready. Eligible mixed interpolation routes also
+        count as ready when their learned forest store is absent. Readiness
+        describes an available estimator route, not coverage for every query;
+        interpolation may still return no estimate outside its support.
+        ``corrections`` lists correction stores
         by ``query_type`` (per forest ``workload_kind`` for the causal selector)
         with ``enabled``, ``ready``, ``retained_observations`` and
         ``ready_buckets``. Gate on the stores a caller actually queries.
@@ -676,8 +730,10 @@ class RustForwardPassPerfModel:
         """
         self._inner.save_online_checkpoint(os.fspath(path))
 
-    def estimate_forward_pass_time_ms(self, metrics: dict[str, Any] | list[dict[str, Any]]) -> float | None:
-        """API: ``model.estimate_forward_pass_time_ms(metrics) -> float | None``.
+    def estimate_forward_pass_time_ms(
+        self, metrics: dict[str, Any] | list[dict[str, Any]], *, draft_length: int | None = None
+    ) -> float | None:
+        """Estimate an iteration, optionally approximating speculative decode.
 
         Description: estimate one forward-pass iteration in milliseconds.
 
@@ -691,16 +747,39 @@ class RustForwardPassPerfModel:
         predictions also require an available linear prediction for the query;
         otherwise they return ``None`` even inside retained raw-feature bounds.
         Empty scheduled work returns ``0.0``.
+
+        On an ordinary STP FPM estimator, supplying a positive ``draft_length=d``
+        estimates a complete SD decode iteration as
+        ``(1.25 + 0.08*d) * F_STP((d+1)*B, K_total)``. B is each rank's logical
+        decode request count; its total past KV is preserved. This works with
+        interpolation, regression and learned FPMs, without a draft checkpoint
+        or algorithm selection. Missing STP support/readiness still fails or
+        returns ``None``. Prefill/mixed work and already-speculative estimators
+        are rejected. Omit the argument for STP. Calibration covered d=1..4;
+        other depths are extrapolation. Tuning continues to consume STP data.
         """
+        if draft_length is not None:
+            return self._inner.estimate_forward_pass_time_ms(_json_dumps(metrics), draft_length=draft_length)
         return self._inner.estimate_forward_pass_time_ms(_json_dumps(metrics))
 
-    def estimate_forward_pass_detailed(self, metrics: dict[str, Any] | list[dict[str, Any]]) -> dict[str, Any]:
+    def estimate_forward_pass_detailed(
+        self, metrics: dict[str, Any] | list[dict[str, Any]], *, draft_length: int | None = None
+    ) -> dict[str, Any]:
         """Return timing with direct-FPM support, rank composition and correction.
 
         Measurement weights explain raw lookups. ``ranks`` records mixed-pass
         subtraction and ``max_rank`` identifies the native rank maximum, before
         ``correction_factor``. Other estimators have no direct lookup evidence.
+
+        With ``draft_length``, return the estimated SD ``latency_ms``, the
+        ``draft_length`` and ``scaling_factor``, and the original detailed
+        ``stp_reference``. Its support remains STP measurements. The same
+        restrictions as ``estimate_forward_pass_time_ms`` apply.
         """
+        if draft_length is not None:
+            return json.loads(
+                self._inner.estimate_forward_pass_detailed(_json_dumps(metrics), draft_length=draft_length)
+            )
         return json.loads(self._inner.estimate_forward_pass_detailed(_json_dumps(metrics)))
 
     def tune_with_fpms(self, iterations: dict[str, Any] | list[Any]) -> None:
@@ -763,6 +842,12 @@ class RustForwardPassPerfModel:
         model, not an individual query's coverage. A combined selector keeps
         ``learned_causal_selector`` across expert switches; inspect
         ``learned_selector_diagnostics()`` for per-key selection.
+
+        When the mixed fallback policy is enabled,
+        ``temporary_mixed_composition`` contains the same value as
+        ``mixed_composition_diagnostics()``: original-A eligibility, pinned
+        sources, selection policy, and mixed calibration state. The field is
+        omitted when the policy is disabled.
         """
         return json.loads(self._inner.diagnostics())
 
@@ -790,13 +875,17 @@ class RustForwardPassPerfModel:
         return self._inner.fpm_decode_kv_ceiling()
 
     def regression_store_diagnostics(self) -> list[dict[str, Any]]:
-        """Return each regression store's label, readiness, and retained count.
+        """Return each regression or learned store's label, readiness, and retained count.
 
         Entries have ``workload_kind``, ``ready``, and ``retained_observations``.
         Aggregated models include all four stores, including empty ones, in
         order: ``pure_decode``, ``contains_locally_mixed``,
         ``cross_rank_aggregated``, ``pure_prefill``. Dedicated models return
         their single store; native AIC models return an empty list.
+
+        Learned stores include eligible mixed interpolation routes in
+        ``ready``, consistently with ``readiness_report()``. An available
+        route does not guarantee coverage for every query.
 
         Only spline stores add ``spline`` with ``initialized``, ``ready``,
         ``accepted_observations``, ``knot_searches``,

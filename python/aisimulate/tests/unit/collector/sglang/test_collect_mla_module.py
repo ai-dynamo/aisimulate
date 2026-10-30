@@ -149,10 +149,10 @@ class TestGetGenerationTestCases:
 
 
 class TestDsaContextPrefixShape:
-    def test_rejects_single_token_prefill(self):
+    def test_accepts_single_token_extend_without_reclassifying_it_as_decode(self):
         mod = _import_module()
-        assert not mod._dsa_context_prefix_shape_is_valid(1, 1, 0)
-        assert not mod._dsa_context_prefix_shape_is_valid(32, 1, 1024)
+        assert mod._dsa_context_prefix_shape_is_valid(1, 1, 0)
+        assert mod._dsa_context_prefix_shape_is_valid(32, 1, 1024)
 
     def test_accepts_multi_token_prefill_with_prefix(self):
         mod = _import_module()
@@ -239,7 +239,16 @@ class TestDsaSkipIndexer:
         assert "attention_module.next_skip_topk = True" in prefill
         assert '_skip_state["prev_topk"] = warmup_output[1].detach()' in prefill
         assert "attention_module.skip_topk = _skip_uses_dense_mha" in prefill
-        assert 'not _skip_uses_dense_mha and _skip_state["prev_topk"] is None' in prefill
+        prefill_tree = ast.parse(prefill)
+        missing_producer = ast.parse(
+            "_skip_indexer and native_graph_context is None "
+            'and not _skip_uses_dense_mha and _skip_state["prev_topk"] is None',
+            mode="eval",
+        ).body
+        assert any(
+            isinstance(node, ast.If) and ast.dump(node.test) == ast.dump(missing_producer)
+            for node in ast.walk(prefill_tree)
+        )
         assert "sglang_dsa_dense_mha_" in prefill
         assert "dsa_backend.dsa_prefill_impl" in prefill
 
@@ -480,9 +489,12 @@ class TestBuildModuleTestCases:
         batch_sizes = {c[1] for c in cases}
         assert batch_sizes == set(mod.get_mla_module_sweep_spec("sglang").context_batch_sizes)
 
-    def test_targeted_glm5_nvfp4_context_is_not_emitted_on_hopper(self, monkeypatch):
+    # Reads the bundled export files, whatever shape they hold. The MIXED_PRECISION shape is pinned in
+    # test_collect_mla_module_native_quant.py with export files written to tmp_path.
+    @pytest.mark.parametrize("model_path", ["nvidia/GLM-5-NVFP4", "nvidia/GLM-5.3-NVFP4"])
+    def test_targeted_glm5_nvfp4_context_is_not_emitted_on_hopper(self, monkeypatch, model_path):
         mod = _import_module()
-        monkeypatch.setenv("COLLECTOR_MODEL_PATH", "nvidia/GLM-5-NVFP4")
+        monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
         with patch.object(mod, "get_sm_version", return_value=90):
             cases = mod._build_module_test_cases("dsa", "context")
         assert cases == []

@@ -234,8 +234,9 @@ one JSON value for shell automation. Durable artifact formats do not change with
 Prediction JSON without `--detail` on standard output is a summary object. SGLang workers with
 `host_loop` add the mean time to first token split by stage: `mean_frontend_ms`,
 `mean_scheduler_inbox_wait_ms`, `mean_receive_to_admit_ms`, `mean_prefill_elapsed_ms`,
-`mean_result_observation_delay_ms` and `mean_handoff_to_first_token_ms`. The six spans sum to
-per-request TTFT for requests that reached every milestone; with a native encoder pool they start
+`mean_result_observation_delay_ms`, `mean_handoff_to_first_token_ms` and `mean_detokenization_ms` (the
+engine emitting the first token to the client receiving it with `engine.detokenization`, otherwise
+zero). The seven spans sum to per-request TTFT for requests that reached every milestone; with a native encoder pool they start
 at the pool's delivery and `encoder_latency_ms` covers the wait. Encoder pools also report
 `encoder_gpus` and `total_gpus`. Recommendation JSON is an array of selected
 rows with `rank`, `score`, `objectives`, `used_gpus`, and `config_path`. Single-objective scores are

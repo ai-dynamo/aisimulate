@@ -6,7 +6,8 @@ SPDX-License-Identifier: Apache-2.0
 # Learned forward-pass model configuration
 
 This page documents `estimator_config.fpm_learned` and
-`estimator_config.selector` for the canonical performance-model API.
+`estimator_config.selector`, and the optional
+`estimator_config.temporary_mixed_composition` policy for the canonical performance-model API.
 Model, hardware, backend, topology, worker identity and shared correction controls are described
 in the [performance-model configuration reference](../configuration.md).
 For equations and hyperparameter semantics, see the
@@ -49,6 +50,10 @@ it must not contain parameters or a draft checkpoint.
 - `selector`: `alpha` (0.4), `warmup` (5), `margin` (0.05), and
   `persistence` (1). These controls select the expert in `causal_selector`
   adaptation; they do not change either expert's fitting objective.
+- `temporary_mixed_composition`: absent by default. Explicitly enables original-A
+  capability checks and compatible FPM interpolation for unsupported mixed classes in
+  A-only or A+C evaluation. Its calibration state is independent of the learned
+  forests and selector. See the policy table below.
 
 ## Learned forest and online fitting controls
 
@@ -151,8 +156,21 @@ that online continuation state in a new checkpoint directory without implicitly
 flushing pending observations. Resume through the same canonical constructor with matching
 identity and fitting controls. The combined selector rejects both export
 methods because neither format preserves all its state.
+
+For `causal_selector`, `learned_expert_artifacts()` inspects both forests without
+fitting pending observations or changing calibration or selection. The Python
+SDK returns a dictionary with exactly two keys, `stable` and `online`; the raw
+native binding returns the same object as a JSON string. Each value is a
+version-1 `aic_fpm_learned_forward_perf` inference artifact: `stable` contains
+the frozen seed forest, and `online` contains the currently published adaptive
+forest, including any appended mixed store. These artifacts exclude calibration,
+pending feedback and selector evidence. They cannot resume the selector or
+reproduce its complete predictions, including an interpolation fallback. Other
+adaptation modes reject this inspection method.
+
 [State snapshots](../configuration.md#state-snapshots) save every adaptation,
-including the combined selector, with calibration and pending rows. See
+including the combined selector, with calibration and pending rows, unless
+`temporary_mixed_composition` is enabled. See
 [the training and resume workflow](learned-forward-pass-model.md#online-tree-adaptation)
 for source export, observation ordering and checkpoint differences.
 
@@ -207,3 +225,205 @@ The interface does not retain a prediction ticket for delayed or reordered
 feedback. `learned_selector_diagnostics()` exposes the key-specific evidence.
 See [the selector workflow](learned-forward-pass-model.md#hybrid-calibration-with-a-causal-selector)
 and [its equations](online-gbdt-and-causal-selection.md#hybrid-calibration-with-a-causal-selector).
+
+## Temporary mixed composition for self-benchmark seeds
+
+This opt-in policy covers the period when the original self-benchmark (A) has
+no usable training store for mixed workloads. It requires explicit learned mode,
+an `aggregated` worker and qualified original-A inputs. It applies only to
+GBDT A-only and A+C, frozen hybrid calibration in A+C, and the causal selector
+in A+C. B, B+C, C-only and regression keep their existing behavior. Omitting the policy preserves ordinary learned
+execution.
+
+See the [mixed-workload fallback design](mixed-workload-fallback.md) for the
+population matrix, eligibility, calibration geometry, causal feedback ordering,
+quality checking and persistence boundaries.
+
+All fields below belong to `estimator_config.temporary_mixed_composition`:
+
+| Field | Default | Meaning and constraints |
+| --- | --- | --- |
+| `scenario` | Required | `a` means original A with no feedback; `a_c` admits chronological feedback after scoring. The caller supplies this collection scope explicitly. |
+| `mode` | Required | `compose` is valid only with `scenario: a` and frozen learned adaptation. `compose_calibrated` is valid only with `scenario: a_c`; it independently calibrates interpolation, with adaptation-specific routing described below. |
+| `original_a.manifest_path` | Required | Path to the immutable original-A manifest described below. Normalization makes it absolute. |
+| `original_a.source_sha256` | `null` | Optional SHA-256 of the manifest bytes. Normalization verifies or fills it; a stale digest is an error. This is the manifest hash, separate from the hashes of its source data and seed artifacts. |
+| `calibration.sampling.bins_per_axis` | `[4, 4]` | Positive two-dimensional grid shape over native attention and MoE scores. Each missing mixed class owns independent fixed and dynamic stores. |
+| `calibration.sampling.max_observations` | `64` | Sample-slot budget per policy and mixed class. Hybrid keeps independent fixed and dynamic budgets, up to twice this number of slots per class. |
+| `calibration.min_observations` | `5` | Positive support threshold used by hybrid correction. A-only composition never admits feedback. |
+| `calibration.factor_bounds.min` | `0.5` | Finite positive lower multiplier bound, no greater than 1; `null` removes the floor. |
+| `calibration.factor_bounds.max` | `2.0` | Finite upper multiplier bound, no less than 1; `null` removes the ceiling. |
+| `quality_gate` | Absent | Optional continuous quality check for standalone online GBDT in A+C. Frozen hybrid and selector reject this field. |
+| `quality_gate.alpha` | `0.05` | EWMA weight in `(0, 1]` for paired pre-update fractional absolute percentage errors. |
+| `quality_gate.min_comparisons` | `5` | Positive number of paired admitted labels after the mixed forest becomes ready. Training labels do not count. |
+
+For example, add this sibling of `fpm_learned` to a complete A+C learned
+configuration with its ordinary artifact or training checkpoint:
+
+```yaml
+estimation_mode: fpm_learned
+fallback_policy: deny
+worker_type: aggregated
+estimator_config:
+  temporary_mixed_composition:
+    scenario: a_c
+    mode: compose_calibrated
+    original_a:
+      manifest_path: models/original-a.json
+    calibration:
+      sampling:
+        bins_per_axis: [4, 4]
+        max_observations: 64
+      min_observations: 5
+      factor_bounds: {min: 0.5, max: 2.0}
+```
+
+The manifest has `schema_version: 1`, `source_kind: self_benchmark`, canonical
+deployment `identity`, a positive `min_store_rows`, `accepted_iterations`,
+`seed_artifacts` containing paths and SHA-256 digests, and source/grouping
+`provenance`. `accepted_iterations` preserves complete attention-DP groups
+from A, including eligible groups in classes below the fitting threshold.
+When only an aggregate latency was measured, preserve that label on its
+recorded carrier rank and use the existing zero sentinel on other ranks;
+do not fabricate individual rank measurements. The SDK's
+`fpm_learned.write_original_a_manifest(...)` uses the trainer's eligibility rules
+and canonical identity resolver and refuses to overwrite an existing manifest.
+The source population must be original A, before any C admission. Inference
+seed artifacts must contain matching `metadata.identity` and per-class
+`metadata.train_rows`; their union must cover every sufficiently populated
+original-A class. For seed `model.json` files in a training checkpoint, the
+exporter also records `checkpoint_manifest_sha256` to bind later online
+continuations to their original A anchor. Malformed, changed or incompatible
+inputs fail construction.
+
+Source hashes verify byte identity; they do not prove that arbitrary authored
+groups were derived from those bytes. The caller must use a trusted exporter
+that preserves accepted original-A grouping and labels. A separately supplied interpolation table is permitted when its deployment
+identity matches; its own hashes and resolved method are pinned separately.
+
+At construction, Rust independently checks `contains_locally_mixed` (at least
+one rank contains prefill and decode) and `cross_rank_aggregated` (prefill and
+decode occur only on separate pure ranks). A class with enough accepted A
+groups and a usable original trained store follows the ordinary GBDT or
+selector path. Missing or insufficient A data makes that class eligible for
+interpolation. Pure prefill and pure decode always retain their existing paths.
+
+The interpolation prior uses the configured FPM interpolation method and existing
+rank composition, with correction disabled on that prior. Canonical `auto`
+selection resolves to SOL for registered models; direct interpolation requires
+a qualified `fpm_profile`. The resolved method and exact timing-source hashes
+are pinned in diagnostics and saved state. The policy does not fabricate a
+profile or change methods after a query fails. It does not infer per-rank timing
+from balanced A labels. A typed lookup outside the selected method's supported
+domain returns an unavailable prediction; other configuration or data errors
+remain errors. A-only returns the uncalibrated composition. A+C applies existing
+hybrid correction using native attention/MoE coordinates, with fixed upper bounds
+computed once from the accepted A population. Dynamic bounds evolve only from
+admitted feedback. The two mixed classes never share interpolation corrections.
+For standalone A+C GBDT, adding `quality_gate: {alpha: 0.05, min_comparisons: 1}`
+keeps calibrated interpolation selected until a ready GBDT has equal or lower
+EWMA error on subsequent paired feedback. Comparisons use both predictions before
+learning the admitted label, independently by forest store and critical-rank
+query type. Both experts keep learning while unselected. The check continues
+and can return to interpolation; it cannot guarantee future prediction accuracy.
+If the quality gate is omitted, an available ordinary prediction takes priority.
+
+For standalone hybrid, use frozen learned adaptation with ordinary
+`correction.enabled: true` and `correction.mode: hybrid`. A-supported stores
+keep their frozen forests and ordinary calibration. Missing mixed stores use
+interpolation multiplied by independent mixed calibration. Before its support
+threshold, the multiplier is one. No mixed forest is trained from C and no
+switch occurs after 20 labels. Configure this correction through the policy's
+`calibration` block, separately from ordinary correction. For example,
+`min_observations: 1`, a `[4, 4]` grid, `max_observations: 128` and factor bounds
+`[0.5, 2.0]` start bounded calibration with the first admitted mixed label.
+
+For A+C selector, calibrated interpolation replaces the frozen
+GBDT with hybrid correction for each eligible mixed class. It supplies predictions
+before the online GBDT is ready. Once ready, the existing causal selector compares
+these two experts using subsequent paired feedback. Its configured warmup, margin,
+and persistence still apply; readiness does not force an immediate switch to GBDT.
+If only one expert can predict a query, that expert is used. Typed prior support
+misses can therefore use a ready online GBDT; hard configuration, data, and
+prediction errors remain errors. Selection never uses the current query's label.
+
+The original-A eligibility map remains fixed for the model's lifetime. C
+observations continue through ordinary learning and independently update the
+fallback correction against the uncorrected interpolation prior, even after an
+ordinary prediction becomes available. For online GBDT and selector, callers
+can train a missing mixed store from at least 20 causally admitted C observations.
+The twentieth query is scored before fitting; no training label is replayed as
+selector comparison evidence. Subsequent labels update the online learner and,
+when both experts predicted successfully before that update, selector losses.
+Interpolation calibration continues independently, including after the online
+expert becomes selected. Pure and original-A-supported classes retain their
+existing selector experts and bootstrap behavior.
+
+Prepare a standard single-class training checkpoint, then invoke the
+canonical model's `append_mixed_learned_checkpoint(path)`. This operation is
+restricted to eligible, absent mixed classes in A+C online GBDT or a causal selector. It
+validates checkpoint hashes, identity, features, target and class ownership before
+atomically adding only the online forest and learner state. It preserves existing
+forests, calibration and selector histories. It neither creates a frozen expert
+from C nor rewrites original-A evidence. Duplicate or incompatible checkpoints
+fail without changing the live model. This scoped operation does not provide a
+general append API for other scenarios.
+If a fallback prior lookup fails during feedback, valid ordinary learning still
+proceeds and the lookup error is returned; that call may therefore have updated
+the ordinary history. A failed ordinary fit likewise follows its existing
+admission/retry contract. Inspect the separate counters before retrying a failed
+feedback call. Unsupported prior observations do not enter its correction state.
+Callers own feedback sampling and cold-start training; submit each admitted
+label once. Appending a trained store never replays its training labels into
+calibration or quality evidence.
+
+When a later self-benchmark
+collects a class, retrain its seed and construct a new model with a new original-A
+manifest: that class automatically returns to its ordinary path if its A store
+is usable. The other mixed class is checked independently. Once both classes
+are supported, the policy creates no interpolation prior or calibration stores;
+it can then be removed from configuration.
+
+`mixed_composition_route(metrics_by_rank)` inspects the selected route without
+admitting a label; resolving selector availability can query interpolation.
+`estimate_forward_pass_with_route(metrics_by_rank)` returns the prediction and
+its actual route together through one native dispatch, avoiding a second prior
+query. Its immutable
+`fallback_eligible` field is separate from `route` and `owned`, which identify
+whether this query selects ordinary execution or interpolation. Its
+`calibration_enabled` field describes the independent fallback correction state,
+including when ordinary execution is selected. Selector route metadata also
+identifies the selected expert, critical-rank query type and online readiness;
+its paired-loss counters belong to that store/query-type key. Availability of an expert
+not queried is unknown rather than an asserted successful prediction.
+
+When a mixed query has neither prior coverage nor an available learned expert,
+`estimate_forward_pass_detailed(metrics_by_rank)` returns `latency_ms: null`
+with an `unavailable_reason` string explaining the prior's support miss. The
+field is omitted when there is no such reason. Prediction-details source/time
+diagnostics preserve it; invalid configuration or corrupt data still raises an
+error.
+
+`mixed_composition_diagnostics()` reports
+the eligibility reasons, selection policy, accepted A counts, pinned sources, score bounds and retained
+calibration state. With the policy enabled, `diagnostics()` includes the same
+value in its optional `temporary_mixed_composition` field; that field is omitted
+when the policy is disabled. Both `readiness_report()` and
+`regression_store_diagnostics()` count an eligible mixed interpolation route as
+ready, including before a mixed forest exists or calibration has enough samples.
+This reports estimator availability, not query coverage: an unsupported query
+can still return no estimate. `mixed_composition_state()` and
+`restore_mixed_composition_state(snapshot)` save and restore only the mixed
+calibration and standalone quality state, with identity, source and policy checks. They do not save the
+ordinary experts, selector histories or the caller's admission cursor; preserve
+those separately for a complete resume. Standalone online learned
+`save_online_checkpoint()` includes mixed state automatically. Portable
+`save_state_snapshot()` and `estimator_config.state_snapshot` reject this policy;
+their format does not package the mixed prior and its source/state dependencies.
+A full mixed-selector checkpoint remains unsupported. A runtime checkpoint containing mixed
+state cannot be loaded with frozen adaptation, even if the new configuration
+omits the policy. Continue it online, or use the original training seed and
+restore the mixed snapshot explicitly; this prevents silently losing calibration.
+The policy uses version `original_a_mixed_experts_attention_moe_v3`. Snapshots from
+the previous forced-interpolation and availability-priority policies are rejected
+because they do not bind the new selector expert roles. Reconstruct the histories from their
+original sources and causally admitted observations when migrating an old run.

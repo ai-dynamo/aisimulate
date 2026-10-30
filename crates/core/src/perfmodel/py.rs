@@ -2044,6 +2044,26 @@ fn parse_forward_pass_config(config_json: &str) -> PyResult<crate::ForwardPassPe
     Ok(config)
 }
 
+/// Do not silently accept booleans or truncate a nonintegral draft length.
+fn parse_speculative_draft_length(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<u32>> {
+    let Some(value) = value else { return Ok(None) };
+    if value.is_instance_of::<pyo3::types::PyBool>()
+        || !value.is_instance_of::<pyo3::types::PyInt>()
+    {
+        return Err(PyValueError::new_err(
+            "draft_length must be a positive integer",
+        ));
+    }
+    let depth = value
+        .extract::<u32>()
+        .ok()
+        .filter(|&depth| depth > 0 && depth < u32::MAX)
+        .ok_or_else(|| {
+            PyValueError::new_err("draft_length must be a positive integer smaller than 2**32 - 1")
+        })?;
+    Ok(Some(depth))
+}
+
 /// Parse an FPM payload JSON into one iteration's per-rank list. Accepts either
 /// a single FPM object or a JSON array of FPM objects (the wrapper's
 /// single-rank convenience form). Matches the old ctypes marshalling.
@@ -2343,8 +2363,64 @@ impl PyForwardPassPerfModel {
             .map_err(aic_to_py)
     }
 
+    fn append_mixed_learned_checkpoint(&mut self, py: Python<'_>, path: &str) -> PyResult<usize> {
+        py.allow_threads(|| self.inner.append_mixed_learned_checkpoint(path))
+            .map_err(aic_to_py)
+    }
+
     fn export_learned_artifact(&self) -> PyResult<String> {
         self.inner.export_learned_artifact().map_err(aic_to_py)
+    }
+
+    fn learned_expert_artifacts(&self) -> PyResult<String> {
+        let value = self.inner.learned_expert_artifacts().map_err(aic_to_py)?;
+        serde_json::to_string(&value).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn mixed_composition_route(&self, fpm_json: &str) -> PyResult<Option<String>> {
+        let metrics = parse_fpm_iteration(fpm_json)?;
+        self.inner
+            .mixed_composition_route(&metrics)
+            .map_err(aic_to_py)?
+            .map(|value| {
+                serde_json::to_string(&value).map_err(|e| PyValueError::new_err(e.to_string()))
+            })
+            .transpose()
+    }
+
+    fn estimate_forward_pass_with_route(&self, py: Python<'_>, fpm_json: &str) -> PyResult<String> {
+        let metrics = parse_fpm_iteration(fpm_json)?;
+        let value = py
+            .allow_threads(|| self.inner.estimate_forward_pass_with_route(&metrics))
+            .map_err(aic_to_py)?;
+        serde_json::to_string(&value).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn mixed_composition_diagnostics(&self) -> PyResult<Option<String>> {
+        self.inner
+            .mixed_composition_diagnostics()
+            .map(|value| {
+                serde_json::to_string(&value).map_err(|e| PyValueError::new_err(e.to_string()))
+            })
+            .transpose()
+    }
+
+    fn mixed_composition_state(&self) -> PyResult<Option<String>> {
+        self.inner
+            .mixed_composition_state()
+            .map_err(aic_to_py)?
+            .map(|value| {
+                serde_json::to_string(&value).map_err(|e| PyValueError::new_err(e.to_string()))
+            })
+            .transpose()
+    }
+
+    fn restore_mixed_composition_state(&mut self, state_json: &str) -> PyResult<()> {
+        let state =
+            serde_json::from_str(state_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        self.inner
+            .restore_mixed_composition_state(state)
+            .map_err(aic_to_py)
     }
 
     fn save_online_checkpoint(&self, py: Python<'_>, path: &str) -> PyResult<()> {
@@ -2412,18 +2488,42 @@ impl PyForwardPassPerfModel {
     /// regression models without enough data yet and for learned models whose
     /// artifact has no store for the iteration's workload kind. Pure-Rust
     /// compute (GIL freed).
+    #[pyo3(signature = (fpm_json, *, draft_length=None))]
     fn estimate_forward_pass_time_ms(
         &self,
         py: Python<'_>,
         fpm_json: &str,
+        draft_length: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Option<f64>> {
         let metrics = parse_fpm_iteration(fpm_json)?;
-        py.allow_threads(|| self.inner.estimate_forward_pass_time_ms(&metrics))
-            .map_err(aic_to_py)
+        let draft_length = parse_speculative_draft_length(draft_length)?;
+        py.allow_threads(|| match draft_length {
+            Some(depth) => self
+                .inner
+                .estimate_speculative_forward_pass_time_ms(&metrics, depth),
+            None => self.inner.estimate_forward_pass_time_ms(&metrics),
+        })
+        .map_err(aic_to_py)
     }
 
-    fn estimate_forward_pass_detailed(&self, py: Python<'_>, fpm_json: &str) -> PyResult<String> {
+    #[pyo3(signature = (fpm_json, *, draft_length=None))]
+    fn estimate_forward_pass_detailed(
+        &self,
+        py: Python<'_>,
+        fpm_json: &str,
+        draft_length: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<String> {
         let metrics = parse_fpm_iteration(fpm_json)?;
+        if let Some(depth) = parse_speculative_draft_length(draft_length)? {
+            let result = py
+                .allow_threads(|| {
+                    self.inner
+                        .estimate_speculative_forward_pass_detailed(&metrics, depth)
+                })
+                .map_err(aic_to_py)?;
+            return serde_json::to_string(&result)
+                .map_err(|error| PyValueError::new_err(error.to_string()));
+        }
         let result = py
             .allow_threads(|| self.inner.estimate_forward_pass_detailed(&metrics))
             .map_err(aic_to_py)?;

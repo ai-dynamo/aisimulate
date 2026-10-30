@@ -21,7 +21,7 @@ from typing import Any
 
 from .config import EncoderSearch, SmartSearchConfig, Workload
 from .kv_estimate import NoPerfDatabase, resolve_backend_version
-from .replay import EncoderPoolSpec, NativeEncoderTiming, ReplayReport, ReplaySpec
+from .replay import EncoderPoolSpec, NativeEncoderTiming, ReplayReport, ReplaySpec, canonical_json
 
 logger = logging.getLogger(__name__)
 
@@ -322,6 +322,20 @@ def add_encoder_choices(branches, catalog):
     if not result:
         raise ValueError("no feasible encoder pool for the supported deployment modes")
     return result
+
+
+# The pool's batch point. Only apply_encoder_overlay reads these fields; the language
+# replay never does, so pools that differ only here share one replay.
+_OVERLAY_ONLY_FIELDS = frozenset(
+    {"tp", "batch_size", "workers", "latency_ms", "throughput_rps", "memory_gib", "power_w", "power_coverage"}
+)
+
+
+def language_replay_key(spec: ReplaySpec) -> str:
+    """Identify an analytical EPD candidate's language replay: its spec without the pool's batch point."""
+    deployment = spec.backend_deployment
+    pool = {name: value for name, value in asdict(deployment.encoder).items() if name not in _OVERLAY_ONLY_FIELDS}
+    return canonical_json({"spec": replace(spec, backend_deployment=replace(deployment, encoder=None)), "pool": pool})
 
 
 def apply_encoder_overlay(report: ReplayReport, spec: ReplaySpec) -> ReplayReport:

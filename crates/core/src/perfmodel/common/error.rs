@@ -36,6 +36,14 @@ pub enum AicError {
     ModelConfig(String),
     #[error("perf database error: {0}")]
     PerfDatabase(String),
+    /// A valid FPM query lacks measured support. This is distinct from
+    /// malformed profiles, identity errors, and invalid numerical results.
+    #[error("perf database error: {0}")]
+    FpmQueryUnsupported(String),
+    /// A validated interpolation query has no eligible site. Structural and
+    /// numerical resolver errors retain their separate error paths.
+    #[error("perf database error: {0}")]
+    InterpolationCoverage(String),
     /// Malformed or incompatible measured data is never a coverage miss.
     /// HYBRID and regression fallbacks must propagate this error.
     #[error("invalid performance data: {0}")]
@@ -96,6 +104,12 @@ impl AicError {
     /// it is the terminal miss raised after the empirical path itself found
     /// no calibration data.
     pub fn is_missing_perf_data(&self) -> bool {
-        matches!(self, Self::PerfDatabase(_) | Self::Io { .. })
+        matches!(
+            self,
+            Self::PerfDatabase(_)
+                | Self::FpmQueryUnsupported(_)
+                | Self::InterpolationCoverage(_)
+                | Self::Io { .. }
+        )
     }
 }

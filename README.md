@@ -314,9 +314,8 @@ identified in the migration guide.
 ## Experimental status and validation boundary
 
 > [!WARNING]
-> Replay and Sweeper are experimental surfaces intended for evaluation and
-> feedback, not production capacity planning. Their APIs, schemas, search
-> behavior, and output may change without a standard deprecation period.
+> Replay and Sweeper are still evolving. Their APIs, schemas, search behavior,
+> and output may change without a standard deprecation period.
 
 AISimulate narrows a deployment search and identifies candidates; it does not
 replace validation on the target hardware. Benchmark shortlisted

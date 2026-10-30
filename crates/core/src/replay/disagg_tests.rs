@@ -1268,14 +1268,17 @@ fn canceled_handoff_completion_does_not_refinalize_a_finished_request() {
 
     let decode_completed_at = runtime.now_ms;
     runtime
-        .process_decode_signal(OutputSignal {
-            uuid,
-            token_id: Some(42),
-            completed: true,
-            rejected: false,
-            handoff_delay_ms: None,
-            cached_tokens: None,
-        })
+        .process_decode_signal(
+            OutputSignal {
+                uuid,
+                token_id: Some(42),
+                completed: true,
+                rejected: false,
+                handoff_delay_ms: None,
+                cached_tokens: None,
+            },
+            decode_completed_at,
+        )
         .unwrap();
     assert!(!runtime.state(uuid).unwrap().counted_in_flight);
     assert!(!runtime.state(uuid).unwrap().coordinator.is_complete());
@@ -2396,7 +2399,12 @@ fn same_instant_transfers_compute_rates_once() {
         links.submit(handoff_id, 2.0, pair as usize, pair as usize, 0.5);
     }
     assert_eq!(links.next_event_ms(), Some(1.0));
-    // One step to the shared instant and one snapshot for the next event.
+    // The step to the shared instant reuses the earlier rates; the new
+    // transfers need one snapshot for the next event.
+    assert_eq!(links.transfers.rate_refreshes.get() - before, 1);
+    // Landing the first transfer changes the job set and needs one more.
+    links.advance(1.0);
+    assert_eq!(links.completed, [HandoffId::new(Uuid::from_u128(1))]);
     assert_eq!(links.transfers.rate_refreshes.get() - before, 2);
 }
 
@@ -4056,7 +4064,8 @@ mod agentic_pd_qualification {
                     if prefill {
                         replay.process_prefill_signal(signal).unwrap();
                     } else {
-                        replay.process_decode_signal(signal).unwrap();
+                        let now_ms = replay.now_ms;
+                        replay.process_decode_signal(signal, now_ms).unwrap();
                     }
                 }
                 assert_eq!(replay.admission.agentic_phase_evidence().unwrap(), before);

@@ -158,6 +158,7 @@ def test_prediction_scheduler_defaults_are_role_aware() -> None:
     assert aggregated.engine.workers.aggregated.scheduler.max_sequences == 256
     assert aggregated.engine.workers.aggregated.scheduler.prefill_schedule_interval == 1
     assert aggregated.engine.workers.aggregated.scheduler.prefill_decode_interval == 0
+    assert aggregated.engine.workers.aggregated.scheduler.async_scheduling is None
 
     disaggregated = CorePredictionConfig.model_validate(
         {
@@ -234,6 +235,8 @@ def test_prediction_accepts_neutral_backend_scheduler_defaults(backend: str) -> 
         ("trtllm", "prefill_decode_interval", 1, "sglang"),
         ("sglang", "prefill_schedule_interval", 2, "vllm"),
         ("trtllm", "prefill_schedule_interval", 2, "vllm"),
+        ("sglang", "async_scheduling", True, "vllm"),
+        ("trtllm", "async_scheduling", False, "vllm"),
     ],
 )
 @pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
@@ -249,6 +252,16 @@ def test_prediction_rejects_wrong_backend_scheduler_interval(backend, field, val
         ValidationError,
         match=rf"workers.{role}.scheduler.{field}.*backend={required_backend}",
     ):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
+@pytest.mark.parametrize("value", [1, 0, "true", "false"])
+def test_prediction_rejects_non_boolean_async_scheduling(value) -> None:
+    engine = _engine()
+    engine["backend"] = "vllm"
+    engine["workers"]["aggregated"] = {"scheduler": {"async_scheduling": value}}
+
+    with pytest.raises(ValidationError, match="async_scheduling"):
         CorePredictionConfig.model_validate({"engine": engine})
 
 

@@ -440,6 +440,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         max_num_batched_tokens: Some(config.max_num_batched_tokens),
         prefill_schedule_interval: config.prefill_schedule_interval,
         prefill_decode_interval: config.prefill_decode_interval,
+        max_concurrent_batches: config.max_concurrent_batches(),
         enable_prefix_caching: config.enable_prefix_caching,
         enable_chunked_prefill: config.enable_chunked_prefill,
         speedup_ratio: config.speedup_ratio,

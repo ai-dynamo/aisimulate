@@ -300,8 +300,23 @@ impl OnlineLearner {
         checkpoint::load_with(path, learned, config, identity, true)
     }
 
+    /// Validate the complete incoming training checkpoint before adding one
+    /// absent online store. Existing forest and history allocations stay put.
+    pub(crate) fn append_mixed_training_checkpoint(
+        &mut self,
+        path: &Path,
+        learned: &mut LearnedForwardPassModel,
+        eligible: &[Kind],
+    ) -> Result<(Kind, serde_json::Value), AicError> {
+        checkpoint::append_mixed_training_checkpoint(path, self, learned, eligible)
+    }
+
     pub(crate) fn restored_correction_json(&self) -> Option<&str> {
         self.restored_corrections.as_deref()
+    }
+
+    pub(crate) fn anchor_manifest_sha256(&self) -> &str {
+        &self.anchor_manifest_sha256
     }
 
     /// Count public tuning inputs rejected before an updater row is constructed.

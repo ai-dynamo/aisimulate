@@ -382,6 +382,91 @@ def _median_pair_request(tmp_path, backend, *, model_path="zai-org/GLM-5.3-Flash
     return config, rows, metadata
 
 
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("model_path", ["Qwen/Qwen3-0.6B", "zai-org/GLM-5.3-Flash"])
+def test_speculative_fpm_query_scales_widened_stp_once(tmp_path, backend, model_path):
+    import copy
+
+    # TEST_ONLY anchors: latency = B + K_total/1024 ms. Different batch and
+    # KV coordinates distinguish the intended mapping from B-only scaling,
+    # double widening and accidental multiplication of total KV.
+    points = [("prefill", 1, 512, 0, 13.0)] + [
+        ("decode", batch, 0, kv, batch + kv / 1024) for batch in range(1, 11) for kv in (1024, 2048)
+    ]
+    config, _, _ = _median_pair_request(tmp_path, backend, model_path=model_path, points=points)
+    model = RustForwardPassPerfModel.best_available(config)
+    ranks = [
+        {"scheduled_requests": {"num_decode_requests": 1, "sum_decode_kv_tokens": 1024}},
+        {"scheduled_requests": {"num_decode_requests": 2, "sum_decode_kv_tokens": 2048}},
+    ]
+    original = copy.deepcopy(ranks)
+    try:
+        assert model.estimate_forward_pass_time_ms(ranks) == 4.0
+        for depth, factor in [(1, 1.33), (2, 1.41), (3, 1.49), (4, 1.57)]:
+            # The second rank has the largest STP latency: 2*(d+1) + 2 ms.
+            baseline = 2 * (depth + 1) + 2
+            expected = baseline * factor
+            assert model.estimate_forward_pass_time_ms(ranks, draft_length=depth) == pytest.approx(expected)
+            detail = model.estimate_forward_pass_detailed(ranks, draft_length=depth)
+            assert detail["latency_ms"] == pytest.approx(expected)
+            assert detail["scaling_factor"] == pytest.approx(factor)
+            assert detail["draft_length"] == depth
+            assert detail["stp_reference"]["latency_ms"] == baseline
+            assert detail["stp_reference"]["max_rank"] == 1
+        assert ranks == original
+        assert model.estimate_forward_pass_time_ms(ranks) == 4.0
+        assert "stp_reference" not in model.estimate_forward_pass_detailed(ranks)
+        assert model.estimate_forward_pass_time_ms({}, draft_length=2) == 0.0
+    finally:
+        model.close()
+
+
+@pytest.mark.parametrize("invalid", [0, -1, True, False, 1.5, 2.0, "3", 2**32 - 1, 2**32])
+def test_speculative_fpm_rejects_invalid_draft_length(invalid):
+    model = RustForwardPassPerfModel.best_available(
+        {
+            "model": "test/model",
+            "system": "test",
+            "backend": "vllm",
+            "worker_type": "decode",
+            "estimation_mode": "fpm_regression",
+        }
+    )
+    try:
+        for query in [model.estimate_forward_pass_time_ms, model.estimate_forward_pass_detailed]:
+            with pytest.raises(ValueError, match="draft_length must be a positive integer"):
+                query({}, draft_length=invalid)
+    finally:
+        model.close()
+
+
+@pytest.mark.parametrize("decode_requests", [0, 2])
+def test_speculative_fpm_rejects_prefill_and_mixed_work(decode_requests):
+    model = RustForwardPassPerfModel.best_available(
+        {
+            "model": "test/model",
+            "system": "test",
+            "backend": "vllm",
+            "worker_type": "aggregated",
+            "estimation_mode": "fpm_regression",
+        }
+    )
+    try:
+        with pytest.raises(ValueError, match="pure decode"):
+            model.estimate_forward_pass_time_ms(
+                {
+                    "scheduled_requests": {
+                        "num_prefill_requests": 1,
+                        "sum_prefill_tokens": 8,
+                        "num_decode_requests": decode_requests,
+                    }
+                },
+                draft_length=2,
+            )
+    finally:
+        model.close()
+
+
 # TEST_ONLY invented values on and off the 4-token grid; never measured data.
 _UNALIGNED_PREFIXES = (122, 125, 131, 134, 4346, 4349, 4355, 4358)
 
@@ -594,6 +679,7 @@ def test_legacy_single_sample_optional_row_policy_retains_prior_behavior(tmp_pat
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.filterwarnings("error:Hybrid FPM/OP:FutureWarning")
 class TestForwardModelRewrite:
     def test_default_keeps_op_level_lists(self):
         model = models.get_model("Qwen/Qwen3-0.6B", _model_config(), "vllm")
@@ -759,7 +845,9 @@ class TestForwardModelRewrite:
                 kind="draft_model", params={"num_speculative_tokens": 3}, draft_model_path="Qwen/Qwen3-0.6B"
             ),
         )
-        model = models.get_model("Qwen/Qwen3-8B", cfg, "vllm")
+        with pytest.warns(FutureWarning, match="Hybrid FPM/OP.*OP-based draft estimation") as caught:
+            model = models.get_model("Qwen/Qwen3-8B", cfg, "vllm")
+        assert len(caught) == 1
         assert model.generation_ops[0]._verify_width == 4
         assert model.generation_ops[1:]
         assert all(not isinstance(op, FPMForwardOp) for op in model.generation_ops[1:])
@@ -782,7 +870,15 @@ class TestForwardModelRewrite:
         )
         baseline = models.get_model("Qwen/Qwen3-0.6B", _model_config(), "vllm")
         target_weights = float(sum(op.get_weights() for op in baseline.context_ops))
-        model = models.get_model("Qwen/Qwen3-0.6B", cfg, "vllm")
+        with pytest.warns(FutureWarning, match="Hybrid FPM/OP.*OP-based draft estimation") as caught:
+            model = models.get_model("Qwen/Qwen3-0.6B", cfg, "vllm")
+        assert len(caught) == 1
+        assert caught[0].filename == __file__
+        guidance = str(caught[0].message)
+        assert "Option 1" in guidance and "draft_length" in guidance
+        assert "Option 2" in guidance and "measured SD-round" in guidance
+        assert "Pure OP-based SD remains supported" in guidance
+        assert "no removal release is set" in guidance
 
         # Phase lists LEAD with the whole-model op; draft ops follow op-level.
         assert isinstance(model.generation_ops[0], FPMForwardOp)

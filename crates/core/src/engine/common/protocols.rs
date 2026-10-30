@@ -196,6 +196,10 @@ pub(crate) struct MockEngineArgs {
     pub prefill_schedule_interval: usize,
     #[builder(default = "0")]
     pub prefill_decode_interval: usize,
+    /// Batches the engine keeps committed while busy; see
+    /// `EngineConfig::max_concurrent_batches`.
+    #[builder(default = "1")]
+    pub max_concurrent_batches: usize,
     #[builder(default = "true")]
     pub enable_prefix_caching: bool,
     #[builder(default = "true")]
