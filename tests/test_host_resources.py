@@ -862,17 +862,18 @@ def test_unqualified_estimate_requires_supervision_and_serial_admission(monkeypa
     assert plan["estimate"]["estimated_peak_bytes"] is None
 
 
-@pytest.mark.parametrize("trace_format", ["mooncake", "agentic_mooncake"])
-def test_profile_trace_is_refused_by_its_corpus_lower_bound(tmp_path, host, trace_format):
-    trace = tmp_path / "oversized.jsonl"
+def test_snapshot_lower_bound_omits_prompts_it_may_not_dispatch(tmp_path, monkeypatch, host):
+    trace = tmp_path / "large-prompt.jsonl"
     trace.write_text(json.dumps({"input_length": 10**12, "output_length": 1, "hash_ids": [1]}) + "\n")
-    # A profile starts from its corpus, so the corpus arrays bound it from below.
-    workload = {"trace_path": str(trace), "trace_format": trace_format, "agentic_profile": {}}
-    plan = build_plan(workload, stack="engine", host=host)
+    finite = {"trace_path": str(trace), "trace_format": "agentic_mooncake"}
+    _supervised(monkeypatch)
+    plan = build_plan(finite, stack="engine", host=host)
     assert plan["status"] == "resource_limited"
-    assert plan["estimate"]["allocation_model"] == "agentic-profile-unqualified-v1"
-    assert plan["estimate"]["lower_bound_bytes"] > plan["budget"]["memory_limit_bytes"]
     assert "lower bound" in plan["reason"]
+    # A snapshot expands prompts only for selected plays after their cuts, so
+    # this prompt may never be allocated; its retained arrays fit.
+    for load in ({"agentic_snapshot": {"seed": 1}}, {"agentic_snapshot": {"seed": 1}, "agentic_profile": {}}):
+        assert build_plan({**finite, **load}, stack="engine", host=host)["status"] == "admitted"
 
 
 @pytest.mark.parametrize(
@@ -1077,7 +1078,7 @@ def test_unknown_peak_wave_reserves_arrays_after_child_rss(monkeypatch, host, ex
 
 @pytest.mark.parametrize("warmup", [False, True])
 @pytest.mark.parametrize("trace_format", ["agentic_mooncake", "weka", "dynamo"])
-def test_snapshot_warmup_and_profile_use_the_finite_trace_bound(tmp_path, warmup, trace_format):
+def test_snapshot_warmup_and_profile_use_the_finite_trace_bound(tmp_path, monkeypatch, host, warmup, trace_format):
     from aisimulate.recommend import recommendation_to_sweeper
 
     trace = tmp_path / "agentic.jsonl"
@@ -1102,7 +1103,6 @@ def test_snapshot_warmup_and_profile_use_the_finite_trace_bound(tmp_path, warmup
     assert bounds["agentic_snapshot"] == {"seed": 42}
     assert bounds["agentic_warmup"] is warmup
     concrete = recommendation_to_sweeper(config).workload.model_dump(mode="python", exclude_none=True)
-    ordinary = {key: value for key, value in bounds.items() if key not in {"agentic_snapshot", "agentic_warmup"}}
     # Native Weka snapshot/warmup accounting has its own peak-model tests.
     stacks = ("dynamo",) if trace_format == "weka" else ("engine", "dynamo")
     for stack in stacks:
@@ -1110,7 +1110,6 @@ def test_snapshot_warmup_and_profile_use_the_finite_trace_bound(tmp_path, warmup
         estimate = estimate_workload(bounds, stack=stack)
         assert estimate.allocation_model == "trace-observed-peak-v1"
         assert estimate.estimated_peak_bytes is None
-        assert estimate == estimate_workload(ordinary, stack=stack)
         assert estimate_workload(concrete, stack=stack) == estimate
         # A profile starts from the same snapshot, but its peak grows with its duration.
         profile = estimate_workload({**bounds, "agentic_profile": {}}, stack=stack)
@@ -1118,10 +1117,12 @@ def test_snapshot_warmup_and_profile_use_the_finite_trace_bound(tmp_path, warmup
         assert profile.estimated_peak_bytes is None
         assert profile.lower_bound_bytes == estimate.lower_bound_bytes > 0
     # A completed snapshot replay's peak sizes later waves of the same trace.
-    factory = GuardedRunnerFactory(object(), "engine", ResourceConfig())
+    _supervised(monkeypatch)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    factory = GuardedRunnerFactory(object(), "dynamo", ResourceConfig())
     spec = SimpleNamespace(workload=concrete, concurrency=None)
     factory.record_peak(spec, GB)
-    assert factory.observed_peak(spec) == GB
+    assert factory.admit_wave([spec, spec])["reserved_bytes"] == [3 * GB // 2] * 2
 
 
 @pytest.mark.parametrize("layout", ["json", "jsonl", "directory"])

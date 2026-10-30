@@ -477,6 +477,18 @@ def _weka_scan_key(workload: Mapping[str, Any]) -> tuple[Any, ...] | None:
     )
 
 
+def _profile_estimate(lower_bound_bytes: int) -> ResourceEstimate:
+    return ResourceEstimate(
+        "agentic-profile-unqualified-v1",
+        None,
+        0,
+        lower_bound_bytes,
+        None,
+        "agentic profile retains evidence beyond the initial corpus; total memory has no qualified static bound "
+        "and requires supervised serial execution",
+    )
+
+
 def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes: int | None) -> ResourceEstimate:
     """Reuse completed inspection while applying profile admission to current headroom."""
     unqualified = lambda reason: ResourceEstimate("weka-unqualified-v1", None, 0, 0, None, reason)
@@ -513,15 +525,7 @@ def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes
                 peak,
                 "initial profile trace materialization estimate exceeds live headroom",
             )
-        return ResourceEstimate(
-            "agentic-profile-unqualified-v1",
-            None,
-            0,
-            lower,
-            None,
-            "agentic profile retains evidence beyond the initial corpus; total memory has no qualified static bound "
-            "and requires supervised serial execution",
-        )
+        return _profile_estimate(lower)
     return estimate
 
 
@@ -549,6 +553,8 @@ class _TraceCounters:
     retains_source_hashes: bool
     # Mooncake-delta setup replaces each turn's hashes with its synthesized prompt.
     materializes_inputs: bool = False
+    # A snapshot expands prompts only for selected plays after their cuts.
+    expands_every_input: bool = True
     hashes: int = 0
     authored_outputs: int = 0
     outputs: int = 0
@@ -563,7 +569,7 @@ class _TraceCounters:
             prepared = max(4 * self.hashes, 4 * (self.total_input + self.outputs))
         else:
             prepared = 4 * (self.hashes + self.outputs)
-        return max(loaded, prepared, 4 * self.largest_input)
+        return max(loaded, prepared, 4 * self.largest_input if self.expands_every_input else 0)
 
 
 class _InspectionStopped(Exception):
@@ -581,7 +587,7 @@ def _observed_peak_estimate(counters: _TraceCounters) -> ResourceEstimate:
         0,
         counters.lower_bound,
         None,
-        "trace arrays and the largest prompt provide only a lower bound; the peak is measured from completed "
+        "trace arrays provide only a lower bound; the peak is measured from completed "
         "replays of the same trace and requires supervised serial execution until observed",
     )
 
@@ -785,11 +791,16 @@ def _trace_files(workload: Mapping[str, Any], format_name: str) -> list[Path] | 
 
 
 def _scan_finite_trace(
-    files: list[Path], format_name: str, configured_block_size: int, inspection_budget_bytes: int | None
+    files: list[Path],
+    format_name: str,
+    configured_block_size: int,
+    inspection_budget_bytes: int | None,
+    snapshot: bool,
 ) -> _TraceCounters:
     counters = _TraceCounters(
         retains_source_hashes=format_name in {"agentic_mooncake", "dynamo", "weka"},
         materializes_inputs=format_name == "mooncake-delta",
+        expands_every_input=not snapshot,
     )
     limit = None if inspection_budget_bytes is None else inspection_budget_bytes - WORKER_BASELINE_BYTES
     scan = _TRACE_SCANNERS[format_name]
@@ -835,10 +846,13 @@ def _estimate_finite_trace(
             return unqualified("trace symlinks have no stable resource identity")
         # Completed counters depend only on file contents, so admission and the
         # per-run guard share one pass. Headroom is compared live on every call.
+        # Warmup and profiles require a snapshot.
+        snapshot = workload.get("agentic_snapshot") is not None
         key = (
             "trace-scan-v1",
             format_name,
             workload.get("trace_block_size"),
+            snapshot,
             _trace_scan_identity(files),
         )
         with _TRACE_SCAN_CACHE_LOCK:
@@ -847,7 +861,7 @@ def _estimate_finite_trace(
                 _TRACE_SCAN_CACHE.move_to_end(key)
         if counters is None:
             block_size = int(workload.get("trace_block_size") or 512)
-            counters = _scan_finite_trace(files, format_name, block_size, inspection_budget_bytes)
+            counters = _scan_finite_trace(files, format_name, block_size, inspection_budget_bytes, snapshot)
             if counters.requests:
                 with _TRACE_SCAN_CACHE_LOCK:
                     _TRACE_SCAN_CACHE[key] = counters
@@ -885,15 +899,7 @@ def _estimate_trace(
     # growth depends on simulated completion times, so no replay's peak sizes another.
     if workload.get("agentic_profile") is None or estimate.allocation_model != OBSERVED_TRACE_MODEL:
         return estimate
-    return ResourceEstimate(
-        "agentic-profile-unqualified-v1",
-        None,
-        0,
-        estimate.lower_bound_bytes,
-        None,
-        "agentic profile retains evidence beyond the initial corpus; total memory has no qualified static bound "
-        "and requires supervised serial execution",
-    )
+    return _profile_estimate(estimate.lower_bound_bytes)
 
 
 def estimate_workload(

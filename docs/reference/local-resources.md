@@ -200,7 +200,9 @@ every source hash array at once (Dynamo, Agentic Mooncake and Dynamo-stack
 Weka); 4 bytes per compact hash ID plus 4 bytes per planned output token in the
 prepared replay; and 4 bytes per token in the largest expanded input prompt.
 These stages are not added together. File bytes, lane count, configured block
-size and total logical input tokens do not multiply this bound.
+size and total logical input tokens do not multiply this bound. Snapshots,
+including warmup and profiles, omit the prompt term: they expand prompts only
+for selected plays after their cuts.
 
 The counters follow each format's loader:
 
