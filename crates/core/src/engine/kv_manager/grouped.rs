@@ -56,13 +56,22 @@ impl GroupedKvPool {
         Some(projected)
     }
 
+    /// Bytes that allocate() reserves for this forward, computed without building the lease.
     pub(crate) fn required_bytes(
         &self,
         computed_before: usize,
         computed_after: usize,
     ) -> Option<u64> {
-        self.project(computed_before, computed_after)
-            .map(|lease| lease.bytes)
+        if computed_after < computed_before {
+            return None;
+        }
+        self.groups.iter().try_fold(0u64, |total, group| {
+            let range = group
+                .block_range(computed_before as u64, computed_after as u64)
+                .ok()?;
+            let bytes = (range.end - range.start).checked_mul(group.page_size_bytes)?;
+            total.checked_add(bytes)
+        })
     }
 
     /// Reserve every group atomically. Expired blocks become reusable in this
@@ -112,6 +121,75 @@ impl GroupedKvPool {
 mod tests {
     use super::*;
     use crate::perfmodel::FpmCacheKind;
+
+    fn group(kind: FpmCacheKind, block: u32, page: u64, window: Option<u32>) -> FpmCacheGroup {
+        FpmCacheGroup {
+            name: "group".into(),
+            kind,
+            num_layers: 1,
+            block_size_tokens: block,
+            page_size_bytes: page,
+            sliding_window: window,
+        }
+    }
+
+    #[test]
+    fn required_bytes_equals_the_projected_lease_bytes() {
+        let full = group(FpmCacheKind::Attention, 4, 8, None);
+        let window = group(FpmCacheKind::Attention, 2, 6, Some(3));
+        let convolution = group(FpmCacheKind::Convolution, 2, 2, Some(2));
+        let largest_page = 1 << 53; // The largest page_size_bytes that FpmCacheGroup::validate accepts.
+        let pools = [
+            GroupedKvPool::new(vec![full.clone(), window.clone(), convolution.clone()], 0),
+            GroupedKvPool::new(vec![full], 0),
+            GroupedKvPool::new(vec![window], 0),
+            GroupedKvPool::new(vec![convolution], 0),
+            GroupedKvPool::new(
+                vec![group(FpmCacheKind::Attention, 1, largest_page, None)],
+                0,
+            ),
+            GroupedKvPool::new(
+                vec![group(FpmCacheKind::Attention, 1, largest_page, None); 2],
+                0,
+            ),
+            // FpmCacheGroup::validate rejects a convolution group without a window.
+            GroupedKvPool::new(vec![group(FpmCacheKind::Convolution, 2, 2, None)], 0),
+        ];
+        let mut spans: Vec<(usize, usize)> = (0..=12)
+            .flat_map(|before| (0..=12).map(move |after| (before, after)))
+            .collect();
+        spans.extend([(0, 1024), (0, 2048), (0, usize::MAX)]);
+        for (index, pool) in pools.iter().enumerate() {
+            for &(before, after) in &spans {
+                assert_eq!(
+                    pool.required_bytes(before, after),
+                    pool.project(before, after).map(|lease| lease.bytes),
+                    "pool {index}, {before}..{after}"
+                );
+            }
+        }
+        // Target 0, inside a block, at a block boundary, then window eviction. A shrinking target projects nothing.
+        for (before, after, bytes) in [
+            (0, 0, Some(0)),
+            (0, 3, Some(24)),
+            (0, 4, Some(24)),
+            (4, 8, Some(40)),
+            (8, 9, Some(40)),
+            (9, 9, Some(38)),
+            (5, 4, None),
+        ] {
+            assert_eq!(
+                pools[0].required_bytes(before, after),
+                bytes,
+                "{before}..{after}"
+            );
+        }
+        // The pool has no 2**53 limit, unlike FpmCacheGroup::bytes_for_forward.
+        assert_eq!(pools[4].required_bytes(0, 2), Some(1 << 54));
+        assert_eq!(pools[4].required_bytes(0, 2048), None); // checked_mul overflows u64.
+        assert_eq!(pools[5].required_bytes(0, 1024), None); // checked_add overflows u64.
+        assert_eq!(pools[6].required_bytes(0, 4), None);
+    }
 
     #[test]
     fn mixed_groups_reserve_atomically_and_reuse_expired_pages() {
