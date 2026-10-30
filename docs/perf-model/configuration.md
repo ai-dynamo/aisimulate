@@ -211,8 +211,19 @@ drop speculation to obtain an autoregressive estimate. Separately, an ordinary
 STP FPM can estimate pure speculative decode via the query-only `draft_length`
 option without setting `speculation` or `nextn`. Explicit measured
 [speculative-round profiles](methods/whole-forward.md#recorded-speculative-round-identity)
-have their own identity contract. Lower-level FPM hybrid code does not imply
-support through the canonical ForwardPassMetrics query API.
+have their own identity contract.
+
+The legacy hybrid route, `forward_model="fpm"` with materialized OP draft
+operations, is deprecated and emits a construction warning. Existing hybrid
+calculations remain available during migration, and pure OP speculative decoding
+remains supported. The [migration guidance](methods/whole-forward.md#hybrid-fpmop-deprecation-and-migration)
+describes Option 1 (an ordinary non-SD FPM queried with `draft_length`) and
+Option 2 (a measured complete SD-round profile). Transitional behavior preserves
+applicable OP draft estimates; Option 1 is currently an explicit query fallback,
+not an automatic conversion by `best_available` or Replay. Lower-level hybrid
+support does not imply support through the canonical ForwardPassMetrics API.
+Removal depends on replacement readiness for affected callers and workloads;
+there is no fixed removal date.
 
 Acceptance assumptions and scheduler seeds belong to the prediction/Replay
 layer, not this cost configuration. The returned model continues to estimate
