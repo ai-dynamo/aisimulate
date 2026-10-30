@@ -8,7 +8,8 @@ use crate::perfmodel::FpmCacheGroup;
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct GroupedLease {
     /// Absolute logical block ranges, one per configured group. Full-history
-    /// groups start at zero; expired window blocks are absent.
+    /// groups start at zero; expired window blocks are absent. A state
+    /// group's range `0..n` counts the blocks that the request holds.
     ranges: Vec<std::ops::Range<usize>>,
     bytes: u64,
 }
@@ -40,7 +41,10 @@ impl GroupedKvPool {
         if computed_after < computed_before {
             return None;
         }
-        let mut projected = GroupedLease::default();
+        let mut projected = GroupedLease {
+            ranges: Vec::with_capacity(self.groups.len()),
+            bytes: 0,
+        };
         for group in &self.groups {
             // A forward must retain the history needed by its first query,
             // together with every token in the scheduled chunk. Freeing to
