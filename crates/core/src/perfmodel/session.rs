@@ -492,6 +492,7 @@ pub(crate) fn get_mix_step_ops(
     ctx_tokens: u32,
     gen_tokens: u32,
     new_tokens_per_prefill_req: u32,
+    prefill_requests: u32,
     prefix_per_req: u32,
     combined_prefix: u32,
     kv_per_decode_req: u32,
@@ -518,11 +519,11 @@ pub(crate) fn get_mix_step_ops(
     let mut total = 0.0_f64;
     for op in context_ops {
         if op.is_qualified_mamba() {
-            let per_request = new_tokens_per_prefill_req.max(1);
-            for (batch, tokens) in [
-                (ctx_tokens / per_request, per_request),
-                (1, ctx_tokens % per_request),
-            ] {
+            // Each prefill request owns one recurrent state: keep the request
+            // count and spread the token remainder one token per request.
+            let requests = prefill_requests.clamp(1, ctx_tokens.max(1));
+            let (base, extra) = (ctx_tokens / requests, ctx_tokens % requests);
+            for (batch, tokens) in [(requests - extra, base), (extra, base + 1)] {
                 if batch == 0 || tokens == 0 {
                     continue;
                 }
