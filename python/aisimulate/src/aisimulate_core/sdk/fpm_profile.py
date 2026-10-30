@@ -115,10 +115,14 @@ def _validate_checkpoint_architecture(profile: FpmModelProfile) -> None:
         ) from error
     if not isinstance(metadata, dict):
         raise ValueError(f"FPM profile checkpoint config.json must be a mapping for {identity}")
-    # Match the collector's text-model view of checkpoint metadata.
+    # Match the collector's text-model view of checkpoint metadata. A decoder that declares no architectures,
+    # absent or null, keeps the wrapper's, as the collector and config intake read it.
     decoder = metadata.get(decoder_config_key(metadata))
     if isinstance(decoder, dict):
-        metadata = {**metadata, **decoder}
+        merged = {**metadata, **decoder}
+        if decoder.get("architectures") is None:
+            merged["architectures"] = metadata.get("architectures")
+        metadata = merged
     architectures = metadata.get("architectures")
     if (
         not isinstance(architectures, list)
