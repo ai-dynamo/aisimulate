@@ -1051,14 +1051,16 @@ def _parse_hf_config_json(config: dict) -> dict:
         )
     elif architecture == "Llama4ForConditionalGeneration":
         # Llama 4: step-based patterns — generate normalized per-layer tuples.
-        # Attention: layer i is global (1) if layer_types[i] is "full_attention" or, without
-        # layer_types, if no_rope_layers[i] == 0. The no_rope_layers name is inverted: 1 marks a RoPE
-        # layer with chunked local attention (0), modeled as a window of attention_chunk_size tokens,
-        # and 0 marks a NoPE layer with full attention. As in transformers v4.57.1
-        # configuration_llama4.py:372-393, layer_types wins, then a nonempty no_rope_layers ([] means
-        # unset), then a NoPE layer every no_rope_layer_interval layers (default 4). vLLM v0.31.0
-        # (db9527a4) derives the same layers from no_rope_layers alone and ignores layer_types
-        # (vllm/model_executor/models/llama4.py:184-185 and :251-252).
+        # Attention: layer i is global (1) if no_rope_layers[i] == 0. The no_rope_layers name is
+        # inverted: 1 marks a RoPE layer with chunked local attention (0), modeled as a window of
+        # attention_chunk_size tokens, and 0 marks a NoPE layer with full attention. As in transformers
+        # v4.57.1 configuration_llama4.py:372-393, a nonempty no_rope_layers is used ([] means unset),
+        # else a NoPE layer every no_rope_layer_interval layers (default 4). Serving engines such as
+        # vLLM v0.31.0 (db9527a4) read only no_rope_layers and ignore layer_types
+        # (vllm/model_executor/models/llama4.py:184-185 and :251-252), while transformers keeps an
+        # explicit layer_types as given. So an explicit layer_types must agree with no_rope_layers:
+        # "full_attention" exactly at the global layers and "chunked_attention" elsewhere. A config
+        # whose layer_types disagrees is refused.
         # These fields are read after the text_config flatten, so nested and flat configs agree.
         # FFN: layer i is MoE (1) if (i+1) % interleave_moe_layer_step == 0, else dense (0).
         step = config.get("interleave_moe_layer_step", 1)
@@ -1079,6 +1081,11 @@ def _parse_hf_config_json(config: dict) -> dict:
                 raise ValueError(
                     f"Llama 4 no_rope_layers must contain only 0/1 values, got {bad[1]!r} at layer {bad[0]}"
                 )
+            no_rope_source = "no_rope_layers"
+        else:
+            no_rope_layers = [int((i + 1) % no_rope_interval != 0) for i in range(layers)]
+            no_rope_source = f"the no_rope_layers default from no_rope_layer_interval {no_rope_interval}"
+        attn_pattern = tuple(1 if v == 0 else 0 for v in no_rope_layers)
         layer_types = config.get("layer_types")
         if layer_types is not None:
             if not isinstance(layer_types, (list, tuple)):
@@ -1093,11 +1100,12 @@ def _parse_hf_config_json(config: dict) -> dict:
                     "Llama 4 layer_types must contain only 'full_attention' or 'chunked_attention', "
                     f"got {bad[1]!r} at layer {bad[0]}"
                 )
-            attn_pattern = tuple(1 if t == "full_attention" else 0 for t in layer_types)
-        elif no_rope_layers is not None:
-            attn_pattern = tuple(1 if v == 0 else 0 for v in no_rope_layers)
-        else:
-            attn_pattern = tuple(1 if (i + 1) % no_rope_interval == 0 else 0 for i in range(layers))
+            bad = next(((i, t) for i, t in enumerate(layer_types) if (t == "full_attention") != attn_pattern[i]), None)
+            if bad is not None:
+                raise ValueError(
+                    f"Llama 4 layer_types must agree with no_rope_layers, got {bad[1]!r} at layer {bad[0]} "
+                    f"where {no_rope_source} is {no_rope_layers[bad[0]]}"
+                )
         moe_freq = tuple(1 if (i + 1) % step == 0 else 0 for i in range(layers))
         if not isinstance(vision_cfg, dict):
             raise TypeError("Llama 4 config must preserve vision_config metadata")

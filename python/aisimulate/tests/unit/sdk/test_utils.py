@@ -84,6 +84,11 @@ LLAMA4_NO_ROPE_LAYERS = [0 if i in (0, 10, 47) else 1 for i in range(48)]
 LLAMA4_LAYER_TYPES = ["full_attention" if i in (1, 2, 40) else "chunked_attention" for i in range(48)]
 
 
+def _llama4_layer_types(global_layers):
+    """Llama 4 layer_types over the 48 packaged layers: full attention at global_layers, chunked elsewhere."""
+    return ["full_attention" if i in global_layers else "chunked_attention" for i in range(48)]
+
+
 class TestParseHFConfig:
     """Test HuggingFace config parsing."""
 
@@ -825,16 +830,28 @@ class TestParseHFConfig:
                 [5, 11, 17, 23, 29, 35, 41, 47],
                 id="empty_no_rope_layers_uses_interval",
             ),
-            pytest.param({"layer_types": LLAMA4_LAYER_TYPES}, [1, 2, 40], id="layer_types"),
             pytest.param(
-                {"layer_types": LLAMA4_LAYER_TYPES, "no_rope_layers": LLAMA4_NO_ROPE_LAYERS},
-                [1, 2, 40],
-                id="layer_types_wins",
+                {"layer_types": _llama4_layer_types(LLAMA4_DEFAULT_GLOBAL_LAYERS)},
+                LLAMA4_DEFAULT_GLOBAL_LAYERS,
+                id="layer_types_agrees_with_default_interval",
+            ),
+            pytest.param(
+                {"layer_types": _llama4_layer_types([5, 11, 17, 23, 29, 35, 41, 47]), "no_rope_layer_interval": 6},
+                [5, 11, 17, 23, 29, 35, 41, 47],
+                id="layer_types_agrees_with_interval",
+            ),
+            pytest.param(
+                {"layer_types": _llama4_layer_types([0, 10, 47]), "no_rope_layers": LLAMA4_NO_ROPE_LAYERS},
+                [0, 10, 47],
+                id="layer_types_agrees_with_no_rope_layers",
             ),
         ],
     )
     def test_llama4_attention_pattern_fields(self, text_fields, expected_global, flat):
-        """Global layers follow layer_types, else no_rope_layers == 0, else every no_rope_layer_interval-th layer."""
+        """Global layers are where no_rope_layers is 0, else every no_rope_layer_interval-th layer.
+
+        A layer_types that agrees with that pattern is accepted and changes nothing.
+        """
         cfg = _parse_hf_config_json(self._llama4_config(flat, **text_fields))["extra_params"]
         assert [i for i, v in enumerate(cfg.attn_layer_pattern) if v == 1] == expected_global
 
@@ -853,6 +870,26 @@ class TestParseHFConfig:
             ),
             pytest.param(
                 {"layer_types": "full_attention"}, "layer_types must be a list, got str", id="layer_types_type"
+            ),
+            # vLLM reads only no_rope_layers, so a layer_types that disagrees with it is refused.
+            # These cases match the whole message.
+            pytest.param(
+                {"layer_types": LLAMA4_LAYER_TYPES},
+                "^Llama 4 layer_types must agree with no_rope_layers, got 'full_attention' at layer 1 "
+                "where the no_rope_layers default from no_rope_layer_interval 4 is 1$",
+                id="layer_types_disagrees_with_default_interval",
+            ),
+            pytest.param(
+                {"layer_types": _llama4_layer_types(LLAMA4_DEFAULT_GLOBAL_LAYERS), "no_rope_layer_interval": 6},
+                "^Llama 4 layer_types must agree with no_rope_layers, got 'full_attention' at layer 3 "
+                "where the no_rope_layers default from no_rope_layer_interval 6 is 1$",
+                id="layer_types_disagrees_with_interval",
+            ),
+            pytest.param(
+                {"layer_types": LLAMA4_LAYER_TYPES, "no_rope_layers": LLAMA4_NO_ROPE_LAYERS},
+                "^Llama 4 layer_types must agree with no_rope_layers, got 'chunked_attention' at layer 0 "
+                "where no_rope_layers is 0$",
+                id="layer_types_disagrees_with_no_rope_layers",
             ),
             pytest.param(
                 {"no_rope_layers": [1] * 47},
@@ -892,6 +929,18 @@ class TestParseHFConfig:
     def test_llama4_invalid_attention_pattern_fields_raise(self, text_fields, match, flat):
         with pytest.raises(ValueError, match=match):
             _parse_hf_config_json(self._llama4_config(flat, **text_fields))
+
+    @pytest.mark.parametrize("flat", [False, True], ids=["nested", "flat"])
+    def test_llama4_conflicting_layer_types_fails_model_construction(self, tmp_path, flat):
+        """A local checkpoint whose layer_types disagrees with no_rope_layers builds no vLLM model."""
+        hf_config = self._llama4_config(flat, layer_types=LLAMA4_LAYER_TYPES, no_rope_layers=LLAMA4_NO_ROPE_LAYERS)
+        (tmp_path / "config.json").write_text(json.dumps(hf_config))
+        with pytest.raises(
+            ValueError,
+            match="^Llama 4 layer_types must agree with no_rope_layers, got 'chunked_attention' at layer 0 "
+            "where no_rope_layers is 0$",
+        ):
+            get_model(str(tmp_path), config.ModelConfig(tp_size=1, moe_tp_size=1), "vllm")
 
     @staticmethod
     def _gemma4_text_config(layer_types):
