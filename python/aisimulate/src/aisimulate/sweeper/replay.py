@@ -263,6 +263,11 @@ class ReplayOutputRequirements:
     Capture fields never change replay semantics. ``defer_encoder_overlay`` does: an
     analytical EPD replay returns its language report, and the caller applies each
     encoder pool's overlay.
+
+    ``capture_telemetry`` retains native all-phase request, sample, and lifecycle
+    records under ``metadata["native_report"]["telemetry"]``. It collects request
+    detail internally without enabling the separate profiling-only
+    ``capture_per_request`` output. Sampling uses the absolute virtual clock.
     """
 
     include_raw_report: bool = False

@@ -119,6 +119,83 @@ Agentic virtual-time limits are soft scheduling cutoffs; see the
 [trace contract](../replay/workloads.md#applied-compute-agentic-jsonl). A cutoff is not a
 measurement warmup period or proof that the requested load was sustainable.
 
+## Replay telemetry
+
+Offline vLLM/SGLang engine replay supports optional native telemetry for both
+aggregated and separate prefill/decode workers, including attention DP ranks.
+Encoder pools are not supported by this capture path. It uses ordinary replay,
+not the DP1-only detailed-artifact path.
+
+```bash
+aisimulate predict --stack engine --config examples/cli/agentic-profile.yaml \
+  --capture-telemetry --telemetry-sample-interval-ms 1000 \
+  --output-dir ./agentic-telemetry
+```
+
+The sampling interval is positive, finite, and measured in simulated
+milliseconds. The default is 1,000 ms. Capture is disabled by default and does
+not change scheduling, cache state, scaling clocks, or summary measurement.
+It enables internal request capture without requiring `--capture-per-request`.
+
+| Artifact | Contents |
+| --- | --- |
+| `telemetry-requests.jsonl` | Terminal requests from all phases: identity, lineage, lane, routing/admission history, lengths, timing, cache attribution, and status |
+| `telemetry-samples.jsonl` | Settled scheduler/cache gauges and interval traffic counters, with worker/rank identity |
+| `telemetry-lifecycle.jsonl` | Agentic request/play dispatch, terminal, quiescence, and skipped events |
+| `prediction.json` → `telemetry` | Version, units, sample interval, clock and phase boundaries, artifact names, and record counts |
+
+New telemetry uses one absolute virtual millisecond clock. Request/lifecycle
+records distinguish `primer`, `warmup`, and `profile`. Scheduler samples use
+`preparation` or `profile`: different lanes can prime and warm up concurrently.
+Preparation intervals are closed at the profiling barrier. Existing
+`requests.jsonl` remains profiling-only and barrier-relative, and existing
+summary metrics still exclude preparation. Use the recorded profiling origin
+to align the two clocks.
+
+The manifest records whether replay completed, preparation aborted, the server
+remained unsettled, or a simulation-time limit stopped it. As with existing
+request output, requests still in flight at that limit have no terminal record;
+their delivered tokens and executed prefill work remain in interval counters,
+and pending work remains visible in scheduler gauges and lifecycle events.
+Continuous-profile grace cancellation does produce terminal request records.
+
+The exports provide the following inputs for warmup and profiling views:
+
+| View | Native evidence and interpretation |
+| --- | --- |
+| Request/conversation/lane timeline | Absolute request timestamps, lineage, lane, and lifecycle events; retain canceled/failed requests |
+| ISL/OSL, TTFT, E2E, interactivity | Request lengths and timing; `itl_ms` is per-request average token gap and is null with fewer than two delivered tokens |
+| Queue depth | `prefill_scheduler_metrics` / `decode_scheduler_metrics`: `running_requests`, `waiting_requests`, worker/rank; plus `router_pending_*_requests` |
+| KV use | Scheduler `active_blocks`, `inactive_blocks`, `total_blocks`, `active_cache_usage`, `physical_cache_usage`; grouped caches use `kv_cache_used_bytes` / `kv_cache_capacity_bytes` |
+| Prefill/decode throughput | `traffic.committed_prefill_tokens` / `traffic.delivered_output_tokens`, divided by `traffic.duration_s` |
+| Prefix lookup reuse | Role interval `native_prefix_cache_lookup`: `matched_tokens`, `queried_tokens`, `query_count`; actual retries count, even if admission later blocks |
+| Prompt token sources | `traffic.first_admission`: `hbm_reused_tokens`, `host_reused_tokens`, `uncached_tokens`; distinct from executed work and readmission recomputation |
+| Host KV use | `host_caches`: block/byte occupancy and capacity; shared pools appear once per ownership domain |
+| Speculative acceptance | `traffic.avg_accept_length`, weighted by `accept_length_forward_count`; measured before output-limit truncation |
+
+SGLang's pass-local cache-hit/total counters and native lookup counters describe
+different populations. Router overlap and averages of per-request hit ratios
+are not substitutes for either. Missing metrics remain unavailable, and a zero
+query denominator is not a measured zero-percent hit rate. An absent host tier
+is not evidence that an unmodeled host metric was measured as zero.
+The exported pass-local cache counters are null when no such observation was
+made in that interval. A measured cold miss has zero hits and a positive token
+denominator. Grouped-cache `total_blocks` is null; use its byte capacity.
+
+Delivered-token counters include tokens delivered before cancellation; headline
+output throughput still uses the existing completed-request cohort. When
+detokenization is configured, tokens enter the interval in which the client
+receives them. Executed prefill counters include recomputation but exclude
+unfinished passes at cutoff.
+Both counters work with fixed timing and without FPM artifact capture.
+
+Capture adds memory proportional to requests, lifecycle events, and samples
+times live ranks, plus output tokens awaiting detokenization receipt. The CLI
+retains host-memory supervision; low-level API callers
+own their resource budgets. Capture adds no separate per-token trace files,
+server logs, or power series. These are native AISim files, not AIPerf/infX export files, and
+they do not establish timing accuracy or exact benchmark-input parity.
+
 ## Goodput and strict SLA answer different questions
 
 With `evaluation.sla: {ttft_ms: 500, itl_ms: 50}`:

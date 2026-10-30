@@ -41,6 +41,7 @@ from .output import (
     write_recommendation_result,
     write_recommendations,
     write_requests,
+    write_telemetry,
 )
 from .output_adapter import (
     OutputAdapterExecutionError,
@@ -157,6 +158,8 @@ def _compile_prediction_adapters(
 def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     core_raw, adapter_raw = split_config_sections(raw, command="predict")
     config = CorePredictionConfig.model_validate(core_raw)
+    if args.capture_telemetry and (args.stack != "engine" or args.online):
+        raise ValueError("telemetry capture requires offline --stack engine")
     if config.traffic.load.agentic_warmup_policy == "live_trajectory_v1" and (args.stack != "engine" or args.online):
         raise ValueError("live_trajectory_v1 CLI requires offline --stack engine")
     if (
@@ -197,6 +200,8 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         output_requirements=ReplayOutputRequirements(
             include_raw_report=not analytical_epd,
             capture_per_request=args.capture_per_request,
+            capture_telemetry=args.capture_telemetry,
+            telemetry_sample_interval_ms=args.telemetry_sample_interval_ms,
             capture_memory_diagnostics="memory" in args.detail,
             capture_performance_diagnostics=bool({"time", "source"}.intersection(args.detail)),
         ),
@@ -230,6 +235,11 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     details = build_prediction_details(native, args.detail) if args.detail else None
     if details is not None:
         native = {**native, "details": details}
+    if args.capture_telemetry:
+        telemetry = native.get("telemetry")
+        if not isinstance(telemetry, dict):
+            raise RuntimeError("selected stack did not provide replay telemetry")
+        native = {**native, "telemetry": write_telemetry(root, telemetry)}
     report_path = write_prediction_report(root, native)
     write_afd_qualification_artifacts(root, spec)
     if args.capture_per_request:

@@ -77,9 +77,15 @@ comparing latency or throughput across runs.
 `ReplayOutputRequirements` defaults to summary output. It can request a raw
 report, per-request capture, memory diagnostics or performance diagnostics.
 These controls retain additional evidence without changing the workload.
-Telemetry fields are part of the shared contract, but the built-in Engine
-JSON runner currently rejects `capture_telemetry=True`; the native Rust
-observer is a separate interface. Analytical EPD does not provide raw native
+The built-in Engine runner supports `capture_telemetry=True` for offline
+vLLM/SGLang aggregated and separate prefill/decode replay without encoder pools.
+`telemetry_sample_interval_ms` defaults to `1000.0` and must be finite and
+positive when enabled. Capture retains all-phase request, sample, and lifecycle
+arrays under the native report's `telemetry` object even without separate
+per-request capture. Its timestamps use absolute virtual milliseconds; existing
+profiling summaries and per-request clock semantics are unchanged. See the
+[telemetry contract](../../getting-started/understand-results.md#replay-telemetry).
+Analytical EPD does not provide raw native
 or per-request EPD reports. Large capture can require substantial memory.
 
 ## Lifecycle and errors
