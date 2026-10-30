@@ -296,7 +296,7 @@ def _inspect_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes:
     """Account for the native Weka import and replay phases, without token arrays.
 
     These are planning allowances, not a hard RSS guarantee. Import materializes
-    one play at a time before building the cached corpus graph. Replay retains
+    one play at a time while building the private corpus graph. Replay retains
     compact hashes and planned outputs; full prompts exist for active requests.
     See docs/reference/local-resources.md for the consumer contracts and calibration.
     """
@@ -322,7 +322,7 @@ def _inspect_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes:
                 inspection_peak = baseline + 4 * path.stat().st_size
                 if inspection_budget_bytes is not None and inspection_peak > inspection_budget_bytes:
                     return ResourceEstimate(
-                        "weka-materialized-v1",
+                        "weka-materialized-v2",
                         None,
                         0,
                         0,
@@ -452,14 +452,18 @@ def _inspect_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes:
     # skips history. Recorded overlap is only an upper allowance for active
     # inputs, not an unavoidable allocation or an admission lower bound.
     lower = max(8 * hashes, 4 * outputs)
-    peak = max(lower, baseline + max(import_peak, replay))
+    # The growing graph overlaps the largest play during direct lowering.
+    # Reserve hash interning and node storage for the complete corpus.
+    graph_build = 32 * hashes + 2048 * records
+    peak = max(lower, baseline + max(import_peak + graph_build, replay))
     return ResourceEstimate(
-        "weka-materialized-v1",
+        "weka-materialized-v2",
         None,
         4 * active_inputs,
         lower,
         peak,
-        "Weka per-play import and native replay estimate; normalized hashes, planned outputs and active prompts; "
+        "Weka overlapping graph build and per-play import, then native replay estimate; "
+        "normalized hashes, planned outputs and active prompts; "
         "runtime trace validation still required",
     )
 
@@ -493,7 +497,7 @@ def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes
         if _weka_scan_key(workload) != key:
             return unqualified("Weka source changed during metadata inspection")
         # Empty, invalid and inspection-limited scans have no complete allocation bound.
-        if estimate.allocation_model != "weka-materialized-v1" or not estimate.lower_bound_bytes:
+        if estimate.allocation_model != "weka-materialized-v2" or not estimate.lower_bound_bytes:
             return estimate
         peak, lower = estimate.estimated_peak_bytes, estimate.lower_bound_bytes
         if inspection_budget_bytes is None or peak <= inspection_budget_bytes:

@@ -262,7 +262,7 @@ energy, or GPU capacity. Their provenance and qualification are:
 | Engine session/token retention | The engine model reserves prompt, output, and session/hash bookkeeping from the declared request and turn counts. | The 32-byte token multiplier and 4,096-byte per-request term are conservative policy allowances, not measured object sizes. |
 | Dynamo peak expansion | Twice the eager prompt bytes, plus 4,096 bytes per request and 16 bytes per output token. | These extra terms are policy headroom; they do not certify an adapter's peak RSS. |
 | Trace expansion | Snapshot, warmup and continuous-profile traces only: streamed field counts, hash block expansion, and cumulative delta/tool turns; 128 times file bytes, 32 bytes per counted token, and 65,536 bytes per counted request/turn. | Conservative policy allowances. The file-size guard runs before parsing. |
-| Native Weka traces | Separate per-play import and replay phases; see below. | Uses the native importer/driver contracts, including real output arrays and synthesized hashes. Covers snapshot and warmup storage; ordinary finite Weka on the Dynamo stack uses the finite trace lower bound and observed peak instead. |
+| Native Weka traces | Per-play import overlaps graph construction; replay follows. See below. | Uses the native importer/driver contracts, including real output arrays and synthesized hashes. Covers snapshot and warmup storage; ordinary finite Weka on the Dynamo stack uses the finite trace lower bound and observed peak instead. |
 | Process allowances | 256 MiB within the native Weka peak model; 512 MiB for other built-in worker reservations; coordinator RSS plus 256 MiB. | Engineering reserves, not calibrated platform-specific measurements. |
 | Finite trace arrays | Maximum of retained source `Vec<u64>` hashes plus authored `Vec<u32>` outputs, prepared `Vec<u32>` hash/output storage, and the largest `Vec<u32>` input prompt. Covers every finite trace format on both stacks except native-engine Weka, without file-size, block-size or lane multipliers. | Array widths are concrete. Other allocations, including importer temporary storage, are excluded: this is a lower bound, not a peak RSS estimate. Snapshot, warmup and profile modes are excluded. |
 | Observed trace peaks | The largest `getrusage` high-water RSS of completed replays of the same trace, times 1.5. | Measured on the executing host and code, so it needs no recalibration when native allocations change. The first replay of a trace runs alone under supervision; the margin is policy headroom that sizes parallel waves only. |
@@ -276,7 +276,7 @@ prediction accuracy and workload-specific RSS qualification remain separate.
 
 ### Native Weka allocation model
 
-For the native engine, `weka-materialized-v1` streams the source metadata without loading hash or token
+For the native engine, `weka-materialized-v2` streams the source metadata without loading hash or token
 arrays. The source's `block_size` is authoritative; a configured block size is
 an equality assertion, as in the native importer. Missing source hashes are
 counted using `ceil(in / block_size)`, because the importer synthesizes them.
@@ -297,9 +297,12 @@ The planning peak is the 256 MiB process allowance plus the larger of these phas
 
 - **Import:** the largest single play's JSON bytes times 32, source or normalized
   hash count (whichever is larger) times 128, and request count times 32 KiB.
-  The importer lowers and validates one play at a time, spools its rows to disk,
-  and only then builds the complete corpus graph. The parser's byte count may
-  include buffer lookahead. Before parsing, four times source-file bytes plus
+  Add 32 bytes per normalized hash and 2 KiB per request for the complete
+  corpus graph, which grows during import. The native loader sends validated
+  rows directly to a private graph builder. It retains immutable source
+  snapshots on disk but does not write an intermediate row file. The public
+  row importer still uses that file. The parser byte count can include
+  buffer lookahead. Before parsing, four times source-file bytes plus
   the process allowance checks the memory available for a single decoded scalar.
 - **Replay:** 32 bytes per normalized hash, 32 bytes per planned output token,
   32 KiB per request, and 16 bytes per concurrently active input token. Weka's
