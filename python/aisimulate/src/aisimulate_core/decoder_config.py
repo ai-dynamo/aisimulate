@@ -6,7 +6,8 @@
 FPM config intake, the FPM collector and the FPM profile check call this function, so all three read one decoder.
 The module imports only the standard library. Config intake must stay usable in a process that does not import
 aisimulate_core.sdk. The cold-process tests in tests/unit/test_support_topology.py and
-tests/unit/test_onboard_topology.py check that.
+tests/unit/test_onboard_topology.py check that. The one exception is a document that holds both text_config and a
+nonempty llm_config: for that shape the function reads the registry from aisimulate_core.sdk.common.
 """
 
 from __future__ import annotations
