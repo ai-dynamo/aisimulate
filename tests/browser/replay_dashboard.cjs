@@ -71,7 +71,6 @@ async function main() {
   });
   const context = await browser.newContext({
     viewport: { width: 1440, height: 1100 },
-    acceptDownloads: true,
   });
   const page = await context.newPage();
   const errors = [],
@@ -496,6 +495,9 @@ async function main() {
             fullPage: true,
           });
           await stage("profile");
+        } else {
+          assert.ok(await page.locator("#stage-preparation").isHidden());
+          assert.ok(await page.locator("#stage-profile").isVisible());
         }
       },
     );
@@ -577,7 +579,7 @@ async function main() {
       },
     );
     await check(
-      "theme, expanded chart, guide and JSON download work offline",
+      "theme and expanded chart work without help or run details",
       async () => {
         await view("dashboard");
         await page.locator("#theme").click();
@@ -586,16 +588,12 @@ async function main() {
         await page.locator('[data-expand="latency"]').click();
         assert.ok(await page.locator("#chart-dialog").isVisible());
         await page.locator("#chart-dialog [data-close]").click();
-        await page.locator("#help").click();
-        assert.ok(await page.locator("#help-dialog").isVisible());
-        await page.locator("#help-dialog [data-close]").click();
-        await view("evidence");
-        const download = page.waitForEvent("download");
-        await page.locator('[data-download="requests"]').click();
+        assert.equal(await page.locator("#help, #help-dialog").count(), 0);
         assert.equal(
-          (await download).suggestedFilename(),
-          "aisimulate-requests.json",
+          await page.locator("#tab-evidence, #view-evidence").count(),
+          0,
         );
+        assert.equal(await page.locator("[data-view]").count(), 2);
       },
     );
     await check(
@@ -647,7 +645,8 @@ async function main() {
           "acceptance",
         ])
           assert.ok(await page.locator(`#plot-${id}.empty`).count(), id);
-        assert.ok(await page.locator("#stage-preparation").isDisabled());
+        assert.ok(await page.locator("#stage-preparation").isHidden());
+        assert.ok(await page.locator("#stage-profile").isVisible());
         assert.equal((await traces("completion"))[0].y[0], 1);
       },
     );

@@ -78,10 +78,6 @@
         outline: 2px solid var(--accent);
         outline-offset: 3px;
       }
-      button:disabled {
-        opacity: 0.4;
-        cursor: default;
-      }
       [hidden] {
         display: none !important;
       }
@@ -449,21 +445,6 @@
       tbody tr:last-child td {
         border-bottom: 0;
       }
-      .evidence-box {
-        border: 1px solid var(--border);
-        border-radius: 9px;
-        padding: 18px;
-        margin: 16px 0;
-      }
-      .evidence-box h2 {
-        font-size: 14px;
-        margin: 0 0 10px;
-      }
-      .evidence-box p,
-      .evidence-box li {
-        font-size: 12px;
-        color: var(--muted);
-      }
       pre {
         white-space: pre-wrap;
         overflow-wrap: anywhere;
@@ -475,14 +456,6 @@
       }
       summary {
         color: var(--muted);
-        font-size: 12px;
-      }
-      .downloads {
-        display: flex;
-        gap: 8px;
-        flex-wrap: wrap;
-      }
-      .downloads button {
         font-size: 12px;
       }
       footer {
@@ -594,8 +567,7 @@
       <div class="topinner">
         <div class="brand">AISim<span>ulate</span><small>Replay</small></div>
         <div class="topright">
-          <button id="help">How to read</button
-          ><button id="theme" aria-label="Toggle light theme">☾</button>
+          <button id="theme" aria-label="Toggle light theme">☾</button>
         </div>
       </div>
     </header>
@@ -630,15 +602,6 @@
           aria-selected="false"
         >
           Request timeline
-        </button>
-        <button
-          role="tab"
-          id="tab-evidence"
-          aria-controls="view-evidence"
-          data-view="evidence"
-          aria-selected="false"
-        >
-          Run details
         </button>
       </nav>
       <div class="stagebar" id="stagebar">
@@ -715,66 +678,6 @@
           ></div>
         </div>
       </section>
-      <section
-        id="view-evidence"
-        role="tabpanel"
-        aria-labelledby="tab-evidence"
-        hidden
-      >
-        <div class="downloads">
-          <button data-download="requests">Download requests</button
-          ><button data-download="samples">Download chart samples</button
-          ><button data-download="lifecycle">Download lifecycle</button>
-        </div>
-        <div class="evidence-box">
-          <h2>Run metadata</h2>
-          <div id="run-details" class="stats"></div>
-        </div>
-        <div class="evidence-box">
-          <h2>Metric definitions</h2>
-          <ul>
-            <li>
-              Warmup includes primer and warmup requests. Profiling starts at
-              the native phase boundary.
-            </li>
-            <li>
-              Cache utilization measures capacity-weighted resident cache,
-              including retained prefixes. Grouped caches use physical bytes.
-            </li>
-            <li>
-              Native prefix lookups, scheduler pass reuse, and first-admission
-              token sources use separate denominators.
-            </li>
-            <li>
-              Executed prefill and delivered output count work in each sampled
-              interval. Completion accounting assigns delivered output lengths
-              to terminal time; prefill remains executed work.
-            </li>
-            <li>
-              The conversation footprint sums the largest active prompt per
-              conversation. It is a proxy, not unique-token or cache occupancy.
-            </li>
-            <li>
-              Missing observations remain N/A; a zero denominator does not
-              create a zero rate. Timeline intervals are clipped to the
-              configured admission window; request details retain absolute
-              times.
-            </li>
-          </ul>
-        </div>
-        <div class="evidence-box">
-          <details>
-            <summary>Native telemetry manifest and phase boundaries</summary>
-            <pre id="manifest"></pre>
-          </details>
-        </div>
-        <div class="evidence-box">
-          <details>
-            <summary>Plotting library license and attribution</summary>
-            <pre>__PLOTLY_LICENSE__</pre>
-          </details>
-        </div>
-      </section>
       <footer>
         Native AISimulate replay telemetry · Virtual simulation time ·
         Self-contained offline report
@@ -796,37 +699,7 @@
       </div>
       <div id="request-details"></div>
     </dialog>
-    <dialog id="help-dialog" aria-labelledby="help-title">
-      <div class="dialog-head">
-        <h2 id="help-title">How to read the replay</h2>
-        <button aria-label="Close chart guide" data-close>×</button>
-      </div>
-      <ul>
-        <li>
-          Switch between Profiling and Warmup. Warmup includes all primer and
-          warmup lanes.
-        </li>
-        <li>
-          Hover over charts for values. Drag a chart to zoom, double-click to
-          reset, or expand it for more space. Export PNG using the chart
-          toolbar.
-        </li>
-        <li>
-          Interactivity applies P75 or P90 to TPOT before inversion. Latency
-          uses rolling 50-request and cumulative percentiles, plotted at request
-          arrival time.
-        </li>
-        <li>
-          Timeline rows group every visible request by conversation or worker.
-          The time axis has native horizontal scrolling; there is no zoom or
-          pagination.
-        </li>
-        <li>
-          N/A means the run did not record that metric. Unknown values are never
-          replaced with zero.
-        </li>
-      </ul>
-    </dialog>
+    <template id="plotly-license">__PLOTLY_LICENSE__</template>
     <script id="report-data" type="application/json">
       __REPORT_DATA_JSON__
     </script>
@@ -1954,7 +1827,7 @@
             "aria-selected",
             String(button.dataset.stage === state.stage),
           );
-          button.disabled = !report.phases?.[button.dataset.stage];
+          button.hidden = !report.phases?.[button.dataset.stage];
         });
         document
           .querySelectorAll("[data-group]")
@@ -1964,10 +1837,9 @@
               String(button.dataset.group === state.group),
             ),
           );
-        ["dashboard", "timeline", "evidence"].forEach(
+        ["dashboard", "timeline"].forEach(
           (view) => ($("view-" + view).hidden = view !== state.view),
         );
-        $("stagebar").hidden = state.view === "evidence";
         renderSummary();
         if (state.view === "dashboard") await renderGrid();
         if (state.view === "timeline") renderTimeline();
@@ -2006,19 +1878,6 @@
           $("expanded-foot").textContent = result.foot;
         } else if (button.dataset.request) showRequest(button.dataset.request);
         else if (button.dataset.row) showRow(button.dataset.row);
-        else if (button.dataset.download) {
-          const key = button.dataset.download;
-          const url = URL.createObjectURL(
-            new Blob([JSON.stringify(report[key] || [], null, 2)], {
-              type: "application/json",
-            }),
-          );
-          const link = document.createElement("a");
-          link.href = url;
-          link.download = "aisimulate-" + key + ".json";
-          link.click();
-          setTimeout(() => URL.revokeObjectURL(url), 1000);
-        }
       });
       $("request-search").addEventListener("input", (event) => {
         state.search = event.target.value.trim().toLowerCase();
@@ -2030,7 +1889,6 @@
           await renderCard(event.target.dataset.selectMode);
         }
       });
-      $("help").addEventListener("click", () => $("help-dialog").showModal());
       $("theme").addEventListener("click", async () => {
         const light = document.body.classList.toggle("light");
         $("theme").textContent = light ? "☀" : "☾";
@@ -2051,32 +1909,6 @@
         : metadata.title || "AISimulate replay";
       $("run-meta").textContent =
         report.telemetry.completion_status || "Completion N/A";
-      $("run-details").innerHTML =
-        metric("Model", metadata.model) +
-        metric("Hardware", metadata.hardware) +
-        metric("Framework", metadata.framework) +
-        metric(
-          "Sample interval",
-          fmt(report.telemetry.sample_interval_ms) + " ms",
-        ) +
-        metric(
-          "Simulation wall time",
-          fmt(
-            finite(report.prediction.wall_time_ms)
-              ? report.prediction.wall_time_ms / 1000
-              : null,
-          ) + " s",
-        );
-      $("manifest").textContent = JSON.stringify(
-        {
-          schema: report.schema,
-          metadata,
-          phases: report.phases,
-          telemetry: report.telemetry,
-        },
-        null,
-        2,
-      );
       render();
     </script>
   </body>

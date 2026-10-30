@@ -312,7 +312,8 @@ def test_regeneration_uses_only_manifest_streams_and_checks_counts(tmp_path, cap
 
 
 @pytest.mark.parametrize("backend,mode", [("vllm", "agg"), ("sglang", "disagg")])
-def test_native_source_fixture_all_phase_dashboard(backend, mode):
+@pytest.mark.parametrize("warmup", [None, False, True], ids=["omitted", "disabled", "enabled"])
+def test_native_source_fixture_all_phase_dashboard(backend, mode, warmup):
     args = {
         "engine_type": backend,
         "aic_backend": backend,
@@ -347,7 +348,7 @@ def test_native_source_fixture_all_phase_dashboard(backend, mode):
             "trace_path": str(Path(__file__).parent / "e2e/configs/unified_cli/fixtures/traces/weka-two-plays.jsonl"),
             "agentic_lanes": 2,
             "agentic_snapshot": {"seed": 42},
-            "agentic_warmup": True,
+            **({"agentic_warmup": warmup} if warmup is not None else {}),
             "agentic_profile": {"duration_seconds": 0.02, "response_grace_seconds": 0.01},
         },
         goal={"target": "throughput"},
@@ -365,10 +366,11 @@ def test_native_source_fixture_all_phase_dashboard(backend, mode):
     finally:
         runner.close()
     data = build_replay_dashboard_data(report, report["telemetry"])
-    assert data["phases"]["profile"]["start_ms"] > 0
+    assert ("preparation" in data["phases"]) is bool(warmup)
+    assert (data["phases"]["profile"]["start_ms"] > 0) is bool(warmup)
     assert data["phases"]["profile"]["admission_cutoff_ms"] == report["agentic_profile"]["admission_cutoff_ms"]
-    assert {sample["phase"] for sample in data["samples"]} == {"preparation", "profile"}
-    assert "warmup" in {request["phase"] for request in data["requests"]}
+    assert {sample["phase"] for sample in data["samples"]} == ({"preparation", "profile"} if warmup else {"profile"})
+    assert ("warmup" in {request["phase"] for request in data["requests"]}) is bool(warmup)
     assert {worker["dp_rank"] for sample in data["samples"] for worker in sample["workers"]} == {0, 1}
     assert sum(sample["output_tokens"] for sample in data["samples"]) == sum(
         sample["traffic"]["delivered_output_tokens"] for sample in report["telemetry"]["samples"]

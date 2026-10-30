@@ -216,9 +216,9 @@ Aborted preparation also produces a dashboard when native telemetry is available
 
 Open `report.html` directly in a browser. Data, JavaScript, and the Plotly
 license are embedded; no server or network access is needed. The dashboard
-contains:
+has Dashboard and Request timeline tabs. It contains:
 
-- Profiling and warmup views with request lengths, TTFT, E2E, and interactivity.
+- Profiling and optional warmup views with request lengths, TTFT, E2E, and interactivity.
 - Resident KV occupancy, host-cache pools, running/waiting queues, completed
   requests, preemptions, prefix reuse, native cache lookups, and prompt sources.
 - Executed-prefill and delivered-output throughput, with a separate
@@ -229,8 +229,10 @@ contains:
 The timeline uses thin interval lines and horizontal scrolling without zoom.
 Profiling spans the native admission window; intervals crossing its end are
 clipped in the view. Complete terminal records, including grace tails, remain
-available in request details and JSON downloads. Warmup includes primer and
-warmup requests and retains their phase labels.
+available in request details and the telemetry JSONL files. The Warmup stage
+appears only when warmup was enabled and native preparation telemetry exists,
+including empty or aborted preparation. It includes primer and warmup requests
+and retains their phase labels.
 
 Request percentile curves use the selected percentile on a trailing 50-request
 window and on the cumulative cohort. Interactivity inverts the selected TPOT
