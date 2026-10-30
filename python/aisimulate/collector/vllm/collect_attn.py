@@ -1,4 +1,5 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Modifications Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """Dense-attention microbenchmarks using vLLM's selected CUDA backend.
@@ -12,6 +13,9 @@ page-size campaigns separate and retain this setting in their provenance.
 # attention_context and attention_generation: 8/8 representative cases each. The native framework
 # builders/selectors remain authoritative; no kernel fallback is introduced.
 # The campaign manifest still selects one exact release per run.
+# This declaration preserves the older release lane and admits 0.31.0;
+# exact campaign manifests remain the runtime gate. The compatibility parser
+# cannot express a union and does not interpret wildcard exclusions.
 __compat__ = "vllm>=0.24.0,<=0.31.0,!=0.26.0,!=0.27.0,!=0.28.0,!=0.29.0,!=0.30.0"
 
 import os

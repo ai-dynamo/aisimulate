@@ -4,7 +4,7 @@
 
 # Modified from https://github.com/vllm-project/vllm/blob/v0.11.0/tests/v1/attention/utils.py
 
-"""Shared vLLM 0.24.0 collector test-harness utilities."""
+"""Shared vLLM collector harness, retaining legacy and 0.31 metadata APIs."""
 
 import atexit
 import functools
