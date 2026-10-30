@@ -901,6 +901,11 @@ impl Engine {
         self.fpm_split().map(|(p, d, _, _)| (p, d))
     }
 
+    /// Whether this engine prices measured complete speculative rounds.
+    pub(crate) fn is_measured_speculative_round(&self) -> bool {
+        self.fpm_execution_profile.is_some()
+    }
+
     /// Whether this engine supplies an unscaled STP whole-forward reference.
     pub(crate) fn is_autoregressive_fpm(&self) -> bool {
         self.nextn == 0
@@ -2967,13 +2972,12 @@ impl Engine {
         // op consumes batch/s/prefix from the RuntimeContext naturally); a
         // mixed rank composes prefill + marginal decode, mirroring
         // `_get_fpm_mix_step_latency` at the telemetry counts (already packed,
-        // so no `(nextn + 1)` anywhere; speculative FPM is rejected below).
+        // so no `(nextn + 1)` anywhere; hybrid speculative FPM is rejected
+        // below). A measured SD-round profile has no pass baseline for a
+        // marginal decode: its decode rows are complete target+draft rounds.
+        // Its mixed rank is the prefill plus a full decode round, the same
+        // total as pricing a separate prefill pass and decode pass.
         if let Some((prefill_op, decode_op, ctx_tail, gen_tail)) = self.fpm_split() {
-            if self.fpm_execution_profile.is_some() && has_prefill && has_decode {
-                return Err(AicError::InvalidForwardPassMetrics(
-                    "full SD-round FPM has no qualified mixed-iteration composition".into(),
-                ));
-            }
             if !ctx_tail.is_empty()
                 || !gen_tail.is_empty()
                 || (self.nextn > 0 && self.fpm_execution_profile.is_none())
@@ -3012,13 +3016,13 @@ impl Engine {
                 }
             }
             if has_decode {
-                // Speculative FPM was rejected above, so the packed counts
-                // need no `(nextn + 1)` here.
+                // Hybrid speculative FPM was rejected above, so the packed
+                // counts need no `(nextn + 1)` here.
                 total += self.fpm_decode_term_ms(
                     decode_op,
                     sched.num_decode_requests,
                     sched.sum_decode_kv_tokens,
-                    has_prefill,
+                    has_prefill && self.fpm_execution_profile.is_none(),
                     evidence.as_deref_mut(),
                     coverage.as_deref_mut(),
                 )?;
@@ -3173,7 +3177,9 @@ impl Engine {
     /// The mixed decode term of [`Self::rank_latency_ms`] for a pass whose
     /// prefill is priced separately. `None` when this engine has no such
     /// composition: operation-level and stage graphs, speculative or SD-round
-    /// FPM, and measured execution profiles.
+    /// FPM, and measured execution profiles. Callers then price a separate
+    /// full decode pass; for a measured SD-round profile that is the full
+    /// decode round [`Self::rank_latency_ms`] adds to a mixed rank's prefill.
     fn fpm_mixed_decode_term_ms(
         &self,
         batch_size: u32,
@@ -5162,17 +5168,77 @@ pub(crate) mod tests {
             model.estimate_forward_pass_time_ms(&metrics).unwrap(),
             Some(7.0)
         );
-        assert!(
+        // Path 2 rejects path 1's query option with its own reason.
+        for error in [
             model
                 .estimate_speculative_forward_pass_time_ms(&metrics, 3)
-                .unwrap_err()
-                .to_string()
-                .contains("ordinary STP FPM")
-        );
-        assert!(
+                .unwrap_err(),
             model
                 .estimate_speculative_forward_pass_detailed(&metrics, 3)
-                .is_err()
+                .unwrap_err(),
+        ] {
+            assert!(
+                error.to_string().contains(
+                    "measured speculative-round profile already includes speculative decoding; omit draft_length"
+                ),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn full_round_mixed_rank_is_prefill_plus_a_full_decode_round() {
+        let tmp = tempfile::tempdir().unwrap();
+        let model = crate::ForwardPassPerfModel::from_engine(
+            Arc::new(full_round_engine(tmp.path())),
+            Default::default(),
+        );
+        let mixed = |num_prefill_requests, sum_prefill_tokens| ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_prefill_requests,
+                sum_prefill_tokens,
+                sum_prefill_kv_tokens: 128,
+                num_decode_requests: 1,
+                sum_decode_kv_tokens: 4096,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // Hand-authored rows: prefill B1/256 tokens/128 KV is 13ms and the
+        // complete K3 decode round B1/KV4096 is 7ms. No pass baseline exists,
+        // so the round is not reduced to a marginal decode share.
+        let estimate = model
+            .estimate_forward_pass_detailed(&[mixed(1, 256)])
+            .unwrap();
+        assert_eq!(estimate.latency_ms, Some(20.0));
+        let rank = &estimate.ranks[0];
+        assert_eq!(
+            (rank.latency_ms, rank.prefill_ms, rank.decode_ms),
+            (20.0, Some(13.0), Some(7.0))
+        );
+        assert_eq!(
+            (rank.decode_baseline_ms, rank.marginal_decode_ms),
+            (None, None)
+        );
+        assert!(rank.queries.iter().all(|query| !query.decode_baseline));
+        assert_eq!(
+            model
+                .estimate_forward_pass_time_ms(&[mixed(1, 256)])
+                .unwrap(),
+            Some(20.0)
+        );
+        // A fully prefix-cached prefill computes no token: one decode round.
+        assert_eq!(
+            model.estimate_forward_pass_time_ms(&[mixed(1, 0)]).unwrap(),
+            Some(7.0)
+        );
+        // Attention DP remains outside the measured identity.
+        assert!(
+            model
+                .estimate_forward_pass_time_ms(&[mixed(1, 256), mixed(1, 256)])
+                .unwrap_err()
+                .to_string()
+                .contains("exactly one attention-DP rank")
         );
     }
 
@@ -5267,18 +5333,6 @@ pub(crate) mod tests {
                 .evaluate_ops_json("[]", true, 1, 256, 0, 1.0, None)
                 .is_err()
         );
-        let mixed = ForwardPassMetrics {
-            scheduled_requests: crate::ScheduledRequestMetrics {
-                num_prefill_requests: 1,
-                sum_prefill_tokens: 256,
-                num_decode_requests: 1,
-                sum_decode_kv_tokens: 4096,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let error = engine.forward_pass_time_ms(&[mixed]).unwrap_err();
-        assert!(error.to_string().contains("mixed-iteration"), "{error}");
         assert!(
             engine
                 .forward_pass_time_ms(&[

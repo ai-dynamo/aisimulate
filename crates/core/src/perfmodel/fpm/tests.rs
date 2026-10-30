@@ -2639,6 +2639,44 @@ fn speculative_direct_fpm_preserves_raw_support_and_missing_coverage() {
 }
 
 #[test]
+fn speculative_scaling_treats_a_fully_cached_prefill_as_decode() {
+    let tmp = tempfile::tempdir().unwrap();
+    let model = direct_coverage_model(tmp.path());
+    let learned =
+        ForwardPassPerfModel::from_learned(&learned_decode_artifact_json(), Default::default())
+            .unwrap();
+    // A fully prefix-cached prefill keeps request/KV metadata but schedules
+    // no fresh prefill token, so the rank is decode-only like every rank
+    // dispatch. Fixture oracles: direct B=8/K=64 is 8ms * 1.49 (d=3); the
+    // learned stump prices B=6 at 20ms * 1.41 (d=2).
+    let mut cached = decode_fpm(2, 64, 0.0);
+    cached.scheduled_requests.num_prefill_requests = 1;
+    cached.scheduled_requests.sum_prefill_kv_tokens = 4096;
+    for (model, depth, expected) in [(&model, 3, 11.92), (&learned, 2, 28.2)] {
+        assert_close(
+            model
+                .estimate_speculative_forward_pass_time_ms(std::slice::from_ref(&cached), depth)
+                .unwrap()
+                .unwrap(),
+            expected,
+        );
+    }
+    let detail = model
+        .estimate_speculative_forward_pass_detailed(std::slice::from_ref(&cached), 3)
+        .unwrap();
+    assert_eq!(detail.stp_reference.ranks[0].prefill_ms, None);
+    // Fresh prefill tokens are still prefill work.
+    cached.scheduled_requests.sum_prefill_tokens = 100;
+    assert!(
+        model
+            .estimate_speculative_forward_pass_time_ms(&[cached], 3)
+            .unwrap_err()
+            .to_string()
+            .contains("pure decode")
+    );
+}
+
+#[test]
 fn speculative_scaling_rejects_operation_level_estimator() {
     let model = ForwardPassPerfModel::from_engine(fixture_engine(), Default::default());
     assert!(

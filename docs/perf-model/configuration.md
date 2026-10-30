@@ -213,6 +213,20 @@ option without setting `speculation` or `nextn`. Explicit measured
 [speculative-round profiles](methods/whole-forward.md#recorded-speculative-round-identity)
 have their own identity contract.
 
+The two FPM speculative paths keep separate query rules:
+
+- **Path 1** scales an ordinary STP FPM estimate by the empirical
+  `draft_length` formula and accepts decode-only ranks. As in every rank
+  dispatch, a rank is prefill work only when it schedules fresh prefill tokens
+  (`sum_prefill_tokens > 0`). A fully prefix-cached prefill record is therefore
+  decode-only.
+- **Path 2**, a measured end-to-end SD-round profile, rejects `draft_length`
+  because its measurements already include speculative decoding: "a measured
+  speculative-round profile already includes speculative decoding; omit
+  draft_length". Without the option it prices one attention-DP rank. A mixed
+  rank costs its measured prefill plus a full measured decode round, not a
+  marginal decode share, because the measured rounds have no pass baseline.
+
 The legacy hybrid route, `forward_model="fpm"` with materialized OP draft
 operations, is deprecated and emits a construction warning. Existing hybrid
 calculations remain available during migration, and pure OP speculative decoding

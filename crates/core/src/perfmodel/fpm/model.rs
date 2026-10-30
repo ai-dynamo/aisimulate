@@ -494,6 +494,15 @@ enum ForwardPassPerfMode {
 
 impl ForwardPassPerfModel {
     fn validate_speculative_reference(&self) -> Result<(), AicError> {
+        // Path 2: measured complete SD rounds price speculation themselves.
+        if matches!(&self.mode,
+            ForwardPassPerfMode::Native { engine, .. } if engine.is_measured_speculative_round())
+        {
+            return Err(AicError::InvalidEngineConfig(
+                "a measured speculative-round profile already includes speculative decoding; omit draft_length".into(),
+            ));
+        }
+        // Path 1: only an ordinary STP FPM supplies the reference to scale.
         let already_speculative = self.provenance.as_ref().is_some_and(|provenance| {
             provenance.config.nextn != 0 || provenance.config.speculation.is_some()
         });
@@ -516,9 +525,13 @@ impl ForwardPassPerfModel {
     /// logical request count is widened, its total past KV is preserved, and
     /// the multiplier is applied once after STP estimation/correction and rank
     /// reduction. All FPM estimator kinds use the same rule; it does not build
-    /// a draft graph or assume accepted-token progress. Pure decode only.
+    /// a draft graph or assume accepted-token progress. Pure decode only: a rank
+    /// is prefill when it schedules fresh prefill tokens, so a fully
+    /// prefix-cached prefill record is decode-only and keeps its metadata.
     /// Missing baseline data/readiness remain errors/None. The empirical fit
-    /// was measured at d=1..4; larger depths are extrapolation.
+    /// was measured at d=1..4; larger depths are extrapolation. A measured
+    /// speculative-round profile already includes speculative decoding and
+    /// rejects `draft_length`; query it without one.
     pub fn estimate_speculative_forward_pass_time_ms(
         &self,
         metrics_by_rank: &[ForwardPassMetrics],

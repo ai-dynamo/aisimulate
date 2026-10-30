@@ -27,7 +27,7 @@ Choose the replacement according to the evidence and caller you have:
 
 | Route | Migration use | Current readiness |
 | --- | --- | --- |
-| **Option 1: non-SD FPM approximation** | Estimate a complete SD decode iteration from an ordinary STP FPM with query-only `draft_length`. | Available for pure-decode queries through the canonical Rust/Python API. It does not yet replace prefill/mixed, static or Replay calls. |
+| **Option 1: non-SD FPM approximation** | Estimate a complete SD decode iteration from an ordinary STP FPM with query-only `draft_length`. | Available for pure-decode queries (including fully prefix-cached prefill records) through the canonical Rust/Python API. It does not yet replace prefill/mixed, static or Replay calls. |
 | **Option 2: measured SD FPM** | Query measurements of the complete target-plus-draft round at their recorded identity. | Available for the restricted measured-round profile contract below, with matching timing and observed memory evidence. |
 | Transitional hybrid FPM + OP | Preserve existing applicable OP draft estimates while callers and replacement coverage migrate. | The legacy route remains available with a warning; do not remove its draft cost or add an Option 1 estimate to it. |
 
@@ -120,11 +120,18 @@ tuning state; `tune_with_fpms` continues to take STP observations. The Rust
 counterparts are `estimate_speculative_forward_pass_time_ms(metrics, d)` and
 `estimate_speculative_forward_pass_detailed(metrics, d)`.
 
-V1 accepts pure decode iterations (including idle ranks). Prefill/mixed work,
-operation-level estimators, hybrid draft graphs and already-measured SD-round
-estimators are rejected. This option is a prediction API, not a new replay
-executor or CLI deployment switch. Ordinary replay SD controls and measured
-SD-round profiles retain their existing contracts.
+V1 accepts pure decode iterations (including idle ranks). Like every rank
+dispatch, a rank is prefill work only when it schedules fresh prefill tokens
+(`sum_prefill_tokens > 0`). A fully prefix-cached prefill record, with prefill
+request and KV metadata but no computed token, is therefore decode-only; its
+prefill metadata passes to the STP reference unchanged. With per-request lists,
+its requests must carry extend length 0 and are not widened. Ranks with fresh
+prefill tokens, operation-level estimators and hybrid draft graphs are rejected.
+A measured SD-round profile (Option 2) rejects `draft_length` with "a measured
+speculative-round profile already includes speculative decoding; omit
+draft_length": query it without the option. This option is a prediction API,
+not a new replay executor or CLI deployment switch. Ordinary replay SD controls
+and measured SD-round profiles retain their existing contracts.
 
 ### Calibration and limitations
 
@@ -255,14 +262,20 @@ DCP and non-pure-TP topologies remain unsupported on this route. Use `nextn`
 with the exact recorded `execution_profile`; generic speculation cost graphs
 must not be composed with measurements that already include the draft work.
 
-Supported queries are pure-prefill and pure-decode `ForwardPassMetrics`, prefill
-static/detailed queries, and replay's prefill and decode queries with actual
-iteration totals. Raw mixed FPM, static multi-round generation, per-operation
-and ad-hoc operation queries fail explicitly. Ordinary replay with a measured
-round retains its existing separate P/D phase composition; this is an
-approximation for mixed iterations, not a measured mixed-round model. Partial-width decode rounds still
-use the configured depth's timing. Enable query coverage to identify holes
-rather than extrapolating.
+Supported queries are single-rank `ForwardPassMetrics` (pure prefill, pure
+decode and mixed), prefill static/detailed queries, and replay's prefill and
+decode queries with actual iteration totals. A measured round has no pass
+baseline for a marginal decode share, because its decode rows are complete
+target-plus-draft rounds. A mixed rank is therefore priced as the measured
+prefill cell **plus a full decode round** at its exact totals, and the detailed
+rank reports `prefill_ms` and `decode_ms` without a decode baseline. This is the
+same total as ordinary replay's separate P/D phase composition for a measured
+round. It is an approximation for mixed iterations, not a measured mixed-round
+model. The profile's DP1 identity still requires exactly one rank. A fully
+prefix-cached prefill with no fresh token is decode-only. Static multi-round
+generation, per-operation and ad-hoc operation queries fail explicitly.
+Partial-width decode rounds still use the configured depth's timing. Enable
+query coverage to identify holes rather than extrapolating.
 
 The SD identity does not expand the guided `onboard` collector or its replay
 validation scope. Prepare and validate the measured table separately, then use
