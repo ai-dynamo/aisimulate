@@ -242,6 +242,7 @@ ops:
       - {framework: "vllm", version: "0.30.0", system: "l40s", op_name: "context_attention", attn_dtype: "bfloat16", kv_cache_dtype: "fp8", backends: ["flashinfer", "triton"], kernel_sources: ["vllm_flashinfer_fidecode", "vllm_flashinfer_fiprefill", "vllm_triton_attn"]}
       - {framework: "vllm", version: "0.30.0", system: "rtx_pro_6000_server", op_name: "context_attention", attn_dtype: "bfloat16", kv_cache_dtype: "bfloat16", backends: ["fa2", "flashinfer"], kernel_sources: ["vllm_flash_attn_fa2", "vllm_flashinfer_fidecode", "vllm_flashinfer_fiprefill"]}
       - {framework: "vllm", version: "0.30.0", system: "rtx_pro_6000_server", op_name: "context_attention", attn_dtype: "bfloat16", kv_cache_dtype: "fp8", backends: ["flashinfer", "triton", "unverified"], kernel_sources: ["vllm_flashinfer_fiprefill", "vllm_flashinfer_flashinfertrtllmapidecode_xqa", "vllm_triton_attn"]}
+      - {framework: "vllm", version: "0.31.0", system: "b300_sxm", op_name: "context_attention", attn_dtype: "bfloat16", kv_cache_dtype: "bfloat16", backends: ["trtllm_mha"], kernel_sources: ["vllm_flashinfer_trtllmprefill"]}
   - op_file: context_mla_perf
     family: mla
     axes: [op_name, kv_cache_dtype, mla_dtype]
