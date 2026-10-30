@@ -1640,8 +1640,8 @@ def test_nemotron_super_vl_llm_config_keeps_the_checkpoint_precision(tmp_path):
 def test_llm_config_decoder_under_an_unregistered_wrapper_is_checked_against_its_sidecar(tmp_path):
     directory = _nemotron_super(tmp_path, nested=True, sidecar=True)
     document = json.loads((directory / "config.json").read_text())
-    # MULTIMODAL_TEXT_CONFIG_KEY does not register this wrapper, so only decoder_config_key finds its decoder.
-    document["architectures"] = ["InternVLChatModel"]
+    # This synthetic wrapper is not in MULTIMODAL_TEXT_CONFIG_KEY, so only decoder_config_key finds its decoder.
+    document["architectures"] = ["ExampleMultimodalForConditionalGeneration"]
     document["llm_config"]["quantization_config"] = {"quant_method": "modelopt", "quant_algo": "NVFP4"}
     (directory / "config.json").write_text(json.dumps(document))
     with pytest.raises(ValueError, match="conflicting.*hf_quant_config"):

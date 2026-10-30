@@ -13,6 +13,7 @@ from aisimulate_core.sdk.fpm_model_metadata import decoder_config_key
 pytestmark = pytest.mark.unit
 
 _DECODER = {"hidden_size": 16}
+_BOTH_KEYS = {"text_config": _DECODER, "llm_config": _DECODER}
 # MULTIMODAL_TEXT_CONFIG_KEY registers llm_config for this wrapper (#562).
 _VL = "NemotronH_Omni_Reasoning_V3"
 _WRAPPER = "ExampleForConditionalGeneration"
@@ -38,6 +39,13 @@ _WRAPPER = "ExampleForConditionalGeneration"
         ({"architectures": _VL, "llm_config": _DECODER}, "llm_config"),
         ({"architectures": [{"name": _VL}], "llm_config": _DECODER}, "llm_config"),
         ({"architectures": [], "text_config": _DECODER}, "text_config"),
+        # With both keys the helper reads the registry. A malformed architectures value must neither raise nor
+        # select llm_config, and a wrapper registered to text_config keeps text_config.
+        ({"architectures": _VL, **_BOTH_KEYS}, "text_config"),
+        ({"architectures": [{"name": _VL}], **_BOTH_KEYS}, "text_config"),
+        ({"architectures": [], **_BOTH_KEYS}, "text_config"),
+        ({"architectures": {"0": _VL}, **_BOTH_KEYS}, "text_config"),
+        ({"architectures": ["Qwen3_5ForConditionalGeneration"], **_BOTH_KEYS}, "text_config"),
         ({"architectures": ["NemotronHForCausalLM"], "mamba_num_heads": 128}, None),
         ({}, None),
     ],
@@ -56,6 +64,11 @@ _WRAPPER = "ExampleForConditionalGeneration"
         "string-architectures",
         "object-architecture-entry",
         "empty-architectures",
+        "both-keys-string-architectures",
+        "both-keys-object-architecture-entry",
+        "both-keys-empty-architectures",
+        "both-keys-dict-architectures",
+        "both-keys-wrapper-registered-to-text-config",
         "flat",
         "empty",
     ],

@@ -604,7 +604,8 @@ def _validate_architecture(raw: Mapping[str, Any], architecture: str | None, exp
 
 def load_model_config(path: str | Path) -> ModelConfig:
     """Load local config/ModelOpt metadata with separate byte-level provenance."""
-    # Imported here, not at module level: the cold-process tests allow this module only on the paths that load a config.
+    # Imported here, not at module level: tests/unit/test_fpm_config_imports.py and the repository-root
+    # tests/test_resource_supervision.py fail when aisimulate_core.decoder_config loads before a config is read.
     from aisimulate_core.decoder_config import decoder_config_key
 
     path = Path(path).expanduser().absolute()
