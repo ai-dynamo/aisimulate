@@ -26,7 +26,7 @@ def _predicate():
 @pytest.mark.parametrize("idx_heads,num_heads", [(3, 48), (6, 96)])
 def test_non_power_of_two_index_heads_fail_only_where_the_decode_scorer_runs(idx_heads, num_heads):
     limit = _predicate()
-    assert limit(idx_heads, num_heads, is_context=False, query_len=1)  # generation
+    assert limit(idx_heads, num_heads, is_context=False, query_len=1).startswith("FIXME(kernel-limit):")  # generation
     assert limit(idx_heads, num_heads, is_context=True, query_len=1)  # one-token context query
     assert limit(idx_heads, num_heads, is_context=True, query_len=16) is None  # prefill path
     assert limit(idx_heads, num_heads, is_context=True, query_len=32768) is None

@@ -317,7 +317,7 @@ def msa_decode_scorer_kernel_limit(
     decode_scorer_runs = (not is_context) or (query_len is not None and query_len <= 1)
     if decode_scorer_runs and num_idx_heads & (num_idx_heads - 1):
         return (
-            f"kernel-limit: num_idx_heads={num_idx_heads} (from num_heads={num_heads}) "
+            f"FIXME(kernel-limit): num_idx_heads={num_idx_heads} (from num_heads={num_heads}) "
             "is not a power of 2; MiniMax-M3 sparse decode indexer Triton kernel requires "
             "power-of-2 tl.arange tiles (models/minimax_m3/common/ops/"
             "sparse_attn.py@0.29.0) and serving tp shards can never produce "
