@@ -1078,11 +1078,16 @@ def test_unknown_peak_wave_reserves_arrays_after_child_rss(monkeypatch, host, ex
 
 @pytest.mark.parametrize("warmup", [False, True])
 @pytest.mark.parametrize("trace_format", ["agentic_mooncake", "weka", "dynamo"])
-def test_snapshot_and_warmup_keep_previous_accounting(tmp_path, warmup, trace_format):
+def test_snapshot_and_warmup_use_the_finite_trace_bound(tmp_path, warmup, trace_format):
     from aisimulate.recommend import recommendation_to_sweeper
 
     trace = tmp_path / "agentic.jsonl"
-    trace.write_text(json.dumps({"input_length": 4, "output_length": 1, "hash_ids": [1]}) + "\n")
+    if trace_format == "weka":
+        trace.write_text(json.dumps({"block_size": 4, "requests": [{"type": "s", "in": 4, "out": 1}]}))
+    elif trace_format == "dynamo":
+        trace.write_text(json.dumps(_dynamo_row()))
+    else:
+        trace.write_text(json.dumps({"input_length": 4, "output_length": 1, "hash_ids": [1]}) + "\n")
     raw = _config()
     raw["traffic"] = {
         "source": {"type": "trace", "format": trace_format, "paths": [str(trace)], "block_size": 4},
@@ -1098,20 +1103,21 @@ def test_snapshot_and_warmup_keep_previous_accounting(tmp_path, warmup, trace_fo
     assert bounds["agentic_snapshot"] == {"seed": 42}
     assert bounds["agentic_warmup"] is warmup
     concrete = recommendation_to_sweeper(config).workload.model_dump(mode="python", exclude_none=True)
+    ordinary = {key: value for key, value in bounds.items() if key not in {"agentic_snapshot", "agentic_warmup"}}
     # Native Weka snapshot/warmup accounting has its own peak-model tests.
     stacks = ("dynamo",) if trace_format == "weka" else ("engine", "dynamo")
     for stack in stacks:
+        # Lanes replay plays of one loaded corpus, so they add no corpus copies.
         estimate = estimate_workload(bounds, stack=stack)
-        assert estimate.allocation_model == "trace-json-metadata-v1"
-        assert estimate.estimated_peak_bytes is not None
+        assert estimate.allocation_model == "trace-observed-peak-v1"
+        assert estimate.estimated_peak_bytes is None
+        assert estimate == estimate_workload(ordinary, stack=stack)
         assert estimate_workload(concrete, stack=stack) == estimate
-    ordinary = {key: value for key, value in bounds.items() if key not in {"agentic_snapshot", "agentic_warmup"}}
-    if trace_format == "weka":
-        trace.write_text(json.dumps({"block_size": 4, "requests": [{"type": "s", "in": 4, "out": 1}]}))
-    elif trace_format == "dynamo":
-        trace.write_text(json.dumps(_dynamo_row()))
-    for stack in stacks:
-        assert estimate_workload(ordinary, stack=stack).estimated_peak_bytes is None
+    # A completed snapshot replay's peak sizes later waves of the same trace.
+    factory = GuardedRunnerFactory(object(), "engine", ResourceConfig())
+    spec = SimpleNamespace(workload=concrete, concurrency=None)
+    factory.record_peak(spec, GB)
+    assert factory.observed_peak(spec) == GB
 
 
 @pytest.mark.parametrize("layout", ["json", "jsonl", "directory"])

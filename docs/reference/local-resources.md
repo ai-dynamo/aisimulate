@@ -140,12 +140,13 @@ bound can prove a candidate does not fit; it cannot prove that execution fits.
 Supported JSON and JSONL traces are inspected as a stream. Inspection does not
 load complete documents or token arrays, and there is no fixed file or record
 size cutoff. Native-engine Weka uses the peak model described below, including
-snapshot and warmup storage. Every other finite trace replay uses the
+snapshot and warmup storage. Every other finite trace replay, including
+snapshots and warmup, uses the
 [array lower bound with an observed peak](#finite-trace-replays-lower-bound-and-observed-peak).
-Snapshots, warmup and continuous profiles retain the conservative storage
-estimate and its file-size check. A streaming parser still holds individual
-scalar strings; large values can exceed headroom before an array bound is
-available. The array bound does not cover that risk.
+Continuous profiles retain the conservative storage estimate and its file-size
+check. A streaming parser still holds individual scalar strings; large values
+can exceed headroom before an array bound is available. The array bound does
+not cover that risk.
 Unknown allocation models can run one candidate at a time under runtime
 supervision when their reservation fits available headroom. Known lower bounds
 still reject impossible workloads before allocation. The low-level Runner
@@ -183,12 +184,13 @@ every workload and external adapter.
 
 This model, `trace-observed-peak-v1`, covers Mooncake, Mooncake-delta,
 applied-compute agentic, standard and agentic Dynamo, and Agentic Mooncake
-traces on both stacks, plus Weka on the Dynamo stack, without snapshots, warmup,
-or continuous profiles. These replay paths load one compact trace: hashes are
-retained as IDs and prompts are expanded only for active requests.
-`agentic_lanes` controls active plays within that trace; it does not create a
-copy of the trace per lane. AISimulate does not model the remaining native
-allocations statically, because they change with the replay implementation.
+traces on both stacks, plus Weka on the Dynamo stack, with or without snapshots
+and warmup, but not continuous profiles. These replay paths load one compact
+trace: hashes are retained as IDs and prompts are expanded only for active
+requests. `agentic_lanes` controls active plays within that trace; it does not
+create a copy of the trace per lane. A snapshot reuses the loaded graph and adds
+one play's request records per lane. AISimulate does not model the remaining
+native allocations statically, because they change with the replay implementation.
 Instead it records an unavoidable lower bound before execution and measures the
 peak from completed replays.
 
@@ -261,10 +263,10 @@ energy, or GPU capacity. Their provenance and qualification are:
 | Four bytes per token ID | The native [request protocol](../../crates/core/src/engine/protocol.rs) and [sequence storage](../../crates/core/src/engine/common/sequence.rs) use `Vec<u32>`. The Dynamo compatibility model explicitly assumes eager u32 prompts. | The width is concrete; applying it to an external adapter requires the stated eager-allocation assumption. |
 | Engine session/token retention | The engine model reserves prompt, output, and session/hash bookkeeping from the declared request and turn counts. | The 32-byte token multiplier and 4,096-byte per-request term are conservative policy allowances, not measured object sizes. |
 | Dynamo peak expansion | Twice the eager prompt bytes, plus 4,096 bytes per request and 16 bytes per output token. | These extra terms are policy headroom; they do not certify an adapter's peak RSS. |
-| Trace expansion | Snapshot, warmup and continuous-profile traces only: streamed field counts, hash block expansion, and cumulative delta/tool turns; 128 times file bytes, 32 bytes per counted token, and 65,536 bytes per counted request/turn. | Conservative policy allowances. The file-size guard runs before parsing. |
-| Native Weka traces | Separate per-play import and replay phases; see below. | Uses the native importer/driver contracts, including real output arrays and synthesized hashes. Covers snapshot and warmup storage; ordinary finite Weka on the Dynamo stack uses the finite trace lower bound and observed peak instead. |
+| Trace expansion | Continuous-profile traces only: streamed field counts, hash block expansion, and cumulative delta/tool turns; 128 times file bytes, 32 bytes per counted token, and 65,536 bytes per counted request/turn. | Conservative policy allowances. The file-size guard runs before parsing. |
+| Native Weka traces | Separate per-play import and replay phases; see below. | Uses the native importer/driver contracts, including real output arrays and synthesized hashes. Covers snapshot and warmup storage; Weka on the Dynamo stack uses the finite trace lower bound and observed peak instead. |
 | Process allowances | 256 MiB within the native Weka peak model; 512 MiB for other built-in worker reservations; coordinator RSS plus 256 MiB. | Engineering reserves, not calibrated platform-specific measurements. |
-| Finite trace arrays | Maximum of retained source `Vec<u64>` hashes plus authored `Vec<u32>` outputs, prepared `Vec<u32>` hash/output storage, and the largest `Vec<u32>` input prompt. Covers every finite trace format on both stacks except native-engine Weka, without file-size, block-size or lane multipliers. | Array widths are concrete. Other allocations, including importer temporary storage, are excluded: this is a lower bound, not a peak RSS estimate. Snapshot, warmup and profile modes are excluded. |
+| Finite trace arrays | Maximum of retained source `Vec<u64>` hashes plus authored `Vec<u32>` outputs, prepared `Vec<u32>` hash/output storage, and the largest `Vec<u32>` input prompt. Covers every finite trace format on both stacks except native-engine Weka, without file-size, block-size or lane multipliers. | Array widths are concrete. Other allocations, including importer temporary storage, are excluded: this is a lower bound, not a peak RSS estimate. Continuous profiles are excluded. |
 | Observed trace peaks | The largest `getrusage` high-water RSS of completed replays of the same trace, times 1.5. | Measured on the executing host and code, so it needs no recalibration when native allocations change. The first replay of a trace runs alone under supervision; the margin is policy headroom that sizes parallel waves only. |
 | Admission and recovery | The sum of candidate estimates must fit one live budget; observed pressure stops workers before bounded retry. | Budget/accounting invariants tested with bounded fixtures and real owned subprocesses. |
 

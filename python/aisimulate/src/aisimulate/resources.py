@@ -875,11 +875,10 @@ def _estimate_trace(
         return ResourceEstimate(
             "trace-unqualified-v1", None, 0, 0, None, "trace format or runner has no qualified allocation model"
         )
-    if (
-        workload.get("agentic_profile") is not None
-        or workload.get("agentic_snapshot") is not None
-        or workload.get("agentic_warmup")
-    ):
+    # Snapshot and warmup replays share the finite replay's single corpus graph;
+    # each lane adds one play's requests, not a corpus copy. Only a continuing
+    # profile retains evidence beyond the corpus.
+    if workload.get("agentic_profile") is not None:
         return _estimate_trace_legacy(
             workload, format_name=format_name, inspection_budget_bytes=inspection_budget_bytes
         )
@@ -889,7 +888,7 @@ def _estimate_trace(
 def _estimate_trace_legacy(
     workload: Mapping[str, Any], *, format_name: str, inspection_budget_bytes: int | None
 ) -> ResourceEstimate:
-    """Keep the conservative storage estimate for snapshot, warmup and profile replays."""
+    """Keep the conservative storage estimate for continuing profile replays."""
     unqualified = lambda reason: ResourceEstimate("trace-unqualified-v1", None, 0, 0, None, reason)
     length_keys = {
         "in",
@@ -971,36 +970,27 @@ def _estimate_trace_legacy(
     cumulative = count if format_name in {"mooncake-delta", "applied_compute_agentic"} else 1
     lanes = int(workload.get("agentic_lanes") or 1)
     peak = WORKER_BASELINE_BYTES + 128 * total_bytes + lanes * (32 * tokens * cumulative + 65536 * count)
-    if workload.get("agentic_profile") is not None:
-        # Retired plays release their large payloads, but retain identities and
-        # lifecycle rows. Their count depends on simulated completion times, so
-        # neither the finite corpus nor duration alone bounds the full profile.
-        # Keep the initial-materialization refusal before admitting unknown peaks.
-        if inspection_budget_bytes is not None and peak > inspection_budget_bytes:
-            return ResourceEstimate(
-                "agentic-profile-materialization-v1",
-                None,
-                0,
-                0,
-                peak,
-                "initial profile trace materialization estimate exceeds live headroom",
-            )
+    # Retired plays release their large payloads, but retain identities and
+    # lifecycle rows. Their count depends on simulated completion times, so
+    # neither the finite corpus nor duration alone bounds the full profile.
+    # Keep the initial-materialization refusal before admitting unknown peaks.
+    if inspection_budget_bytes is not None and peak > inspection_budget_bytes:
         return ResourceEstimate(
-            "agentic-profile-unqualified-v1",
+            "agentic-profile-materialization-v1",
             None,
             0,
             0,
-            None,
-            "agentic profile retains evidence beyond the initial corpus; total memory has no qualified static bound "
-            "and requires supervised serial execution",
+            peak,
+            "initial profile trace materialization estimate exceeds live headroom",
         )
     return ResourceEstimate(
-        "trace-json-metadata-v1",
+        "agentic-profile-unqualified-v1",
         None,
         0,
         0,
-        peak,
-        "streamed metadata estimate; runtime trace validation still required",
+        None,
+        "agentic profile retains evidence beyond the initial corpus; total memory has no qualified static bound "
+        "and requires supervised serial execution",
     )
 
 
@@ -1212,13 +1202,8 @@ def _child_memory_bytes() -> int:
 def _trace_identity(workload: Mapping[str, Any]) -> tuple[Any, ...] | None:
     """Identify a finite trace replay whose peak a completed replay can measure."""
     paths = workload.get("trace_paths") or ([workload["trace_path"]] if workload.get("trace_path") else None)
-    # Snapshots, warmup and profiles retain state beyond the finite corpus.
-    if (
-        not paths
-        or workload.get("agentic_profile") is not None
-        or workload.get("agentic_snapshot") is not None
-        or workload.get("agentic_warmup")
-    ):
+    # Profiles retain state beyond the finite corpus.
+    if not paths or workload.get("agentic_profile") is not None:
         return None
     return workload.get("trace_format", "mooncake"), workload.get("trace_block_size"), tuple(map(str, paths))
 
