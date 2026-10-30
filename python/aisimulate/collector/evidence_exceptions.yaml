@@ -99,7 +99,7 @@ standards_exceptions:
     tables: [scale_matrix_perf]
     backend: vllm
     versions: all
-    systems: [h100_sxm, h200_sxm]
+    systems: [l40s, h100_sxm, h200_sxm]  # SM89 too: op-probe-2026-10 findings.yaml, sm89 vllm-0.30.0 entry
   retirement: "model the fused quant (fold compute_scale into the gemm row when the deployment compiles) or drop the standalone row for compiled deployments"
   approved_by: tianhaox
   verified_on: "0.30.0"  # opharness compute_scale gate, 2026-09-27; compute_scale is pinned to 0.30.0
