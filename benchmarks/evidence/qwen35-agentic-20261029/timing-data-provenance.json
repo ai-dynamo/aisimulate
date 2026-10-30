@@ -9,7 +9,9 @@
     "enable_shared_layer": true,
     "estimation_mode": "op_level",
     "fallback_policy": "deny",
-    "online_correction_enabled": false
+    "online_correction_enabled": false,
+    "attention_backend": "flashinfer",
+    "moe_kernel_source": "vllm_unquantizedfusedmoe_flashinfer_trtllm_trtllmbf16expertsmonolithic"
   },
   "source_semantics": "Priority-ordered admitted table candidates from the same native resolver used by the timing engine. This is not a claim that every row/file supplied a query or identification of each interpolated winning row.",
   "version_limit": "The 0.31.0 backend identity has no primary attention/GDN tables; shared-layer donors include older backend versions. Do not describe these predictions as using exclusively vLLM 0.31.0 measurements.",
@@ -1371,6 +1373,59 @@
           }
         }
       }
+    }
+  },
+  "runtime_kernel_alignment": {
+    "observed_startup_job": 946660,
+    "attention": {
+      "runtime": "FLASHINFER",
+      "config_selector": "flashinfer",
+      "donor_version": "0.30.0",
+      "note": "Matching kernel family, but context lane-selection limitation recorded in timing-preflight-model.json."
+    },
+    "gdn_prefill": {
+      "runtime": "FlashInfer",
+      "native_alias": "chunk_gated_delta_rule_flashinfer",
+      "donor_version": "0.30.0",
+      "exact_tp_local_geometry_rows": 112,
+      "geometry": {
+        "d_model": 4096,
+        "d_conv": 4,
+        "num_k_heads": 2,
+        "head_k_dim": 128,
+        "num_v_heads": 8,
+        "head_v_dim": 128
+      },
+      "note": "No separate public GDN kernel selector. Native vLLM physical-alias resolver selects the earliest-source matching alias; published rows assume FP32 recurrent state."
+    },
+    "moe": {
+      "runtime": "FlashInfer TRTLLM Unquantized",
+      "config_selector": "vllm_unquantizedfusedmoe_flashinfer_trtllm_trtllmbf16expertsmonolithic",
+      "donor_version": "0.30.0",
+      "exact_geometry_rows": 81,
+      "geometry": {
+        "hidden_size": 4096,
+        "inter_size": 1024,
+        "topk": 10,
+        "num_experts": 512,
+        "moe_tp_size": 8,
+        "moe_ep_size": 1,
+        "moe_dtype": "bfloat16"
+      },
+      "note": "Primary vLLM0.31 table has FP8/NVFP4 only. The BF16 exact source/shape is supplied by0.30."
+    },
+    "allreduce": {
+      "startup_dispatch_priority": [
+        "FLASHINFER",
+        "CUSTOM",
+        "SYMM_MEM",
+        "PYNCCL"
+      ],
+      "primary_table_labels": [
+        "vLLM_custom_graph",
+        "vLLM_custom_eager"
+      ],
+      "note": "Startup priority does not prove each operation selected FlashInfer. No public per-message allreduce-dispatch selector; exact graph/eager/FlashInfer path parity remains unverified."
     }
   }
 }

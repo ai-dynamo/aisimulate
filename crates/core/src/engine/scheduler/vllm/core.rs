@@ -2119,6 +2119,7 @@ impl VllmCore {
                                 new_tokens: 0,
                                 cached_tokens: request.sequence.num_input_tokens(),
                                 active_cached_tokens: request.sequence.num_input_tokens(),
+                                shared_prefix_boundary: 0,
                             },
                         },
                         AdmissionStage::PendingDestinationHead => {
@@ -2659,6 +2660,8 @@ impl VllmCore {
     /// Modified simulation of vLLM v0.29.0's align split without internal
     /// prefill checkpoints. Copyright contributors to the vLLM project.
     /// Source: https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/sched/scheduler.py
+    /// Full-block/junction behavior also verified against vLLM v0.31.0:
+    /// https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/sched/scheduler.py
     /// See THIRD_PARTY_NOTICES.md; Apache-2.0.
     fn align_state_prefill(
         &self,
@@ -2666,6 +2669,7 @@ impl VllmCore {
         prompt: usize,
         known: usize,
         desired: usize,
+        shared_prefix_boundary: usize,
     ) -> usize {
         let Some(unit) = self.args.prefix_match_unit else {
             return desired;
@@ -2686,14 +2690,23 @@ impl VllmCore {
                 end = aligned;
             }
         }
-        // Match the state cache's replay boundary, including prompts that end on a full block.
-        let last_full = prompt.saturating_sub(1) / alignment * alignment;
+        // A full-block prompt has no internal checkpoint: cold prefill may
+        // finish in one pass. A later token-only hit supplies the junction at
+        // which to materialize missing state. Preserve the existing sub-block
+        // and speculative paths until their checkpoint capabilities are modeled.
+        let full_block_align = unit == alignment && self.args.aic_nextn.is_none();
+        let last_full = if full_block_align {
+            known / alignment * alignment
+        } else {
+            prompt.saturating_sub(1) / alignment * alignment
+        };
         let tail = prompt / unit * unit;
         let next = start.checked_add(alignment - start % alignment);
         for stop in [
             next.filter(|_| !start.is_multiple_of(alignment)),
             Some(last_full),
             (last_full < tail && tail < prompt).then_some(tail),
+            full_block_align.then_some(shared_prefix_boundary),
         ]
         .into_iter()
         .flatten()
@@ -2725,26 +2738,20 @@ impl VllmCore {
             .get(&uuid)
             .unwrap_or_else(|| panic!("schedule_request: {uuid} missing from state.requests"));
         request.debug_assert_invariants(uuid);
-        let cached_prefix_tokens = if request.num_computed_tokens == 0 {
-            prefill_cost
-                .map(|cost| cost.cached_tokens)
-                .unwrap_or_else(|| {
-                    let cost = request.sequence.prefill_cost(&self.kv_manager);
-                    self.kv_manager
-                        .resolve_prefill_cost(
-                            self.args.scheduling_policy(),
-                            request.sequence.len(),
-                            self.args.aic_nextn.is_some(),
-                            !policy::generation_complete(
-                                &request.sequence,
-                                self.args.max_model_len,
-                            ),
-                            cost,
-                        )
-                        .cached_tokens
-                })
+        let (cached_prefix_tokens, shared_prefix_boundary) = if request.num_computed_tokens == 0 {
+            let cost = prefill_cost.cloned().unwrap_or_else(|| {
+                let cost = request.sequence.prefill_cost(&self.kv_manager);
+                self.kv_manager.resolve_prefill_cost(
+                    self.args.scheduling_policy(),
+                    request.sequence.len(),
+                    self.args.aic_nextn.is_some(),
+                    !policy::generation_complete(&request.sequence, self.args.max_model_len),
+                    cost,
+                )
+            });
+            (cost.cached_tokens, cost.shared_prefix_boundary)
         } else {
-            0
+            (0, request.sequence.lease.shared_prefix_boundary)
         };
         let effective_computed_before = request.num_computed_tokens + cached_prefix_tokens;
         let prompt_len = request.sequence.num_input_tokens();
@@ -2774,6 +2781,7 @@ impl VllmCore {
             prompt_len,
             request.sequence.len(),
             remaining_known_tokens.min(*token_budget),
+            shared_prefix_boundary,
         );
         // Speculative positions consume scheduler budget but are not committed
         // sequence/KV state until verification accepts them.
@@ -2806,6 +2814,9 @@ impl VllmCore {
                 let request = self.state.requests.get_mut(&uuid).unwrap_or_else(|| {
                     panic!("schedule_request: {uuid} removed mid-pass (allocation)")
                 });
+                if request.num_computed_tokens == 0 {
+                    request.sequence.lease.shared_prefix_boundary = shared_prefix_boundary;
+                }
                 let allocation_target = desired_computed_after;
                 let allocated_tokens = request.sequence.num_allocated_tokens();
                 if requires_native_allocation(
@@ -3874,12 +3885,12 @@ mod state_cache_tests {
     }
 
     #[test]
-    fn aligned_prompt_retains_a_reusable_state_after_long_decode() {
-        let mut config = args(64, true, None);
+    fn full_block_align_repairs_a_missing_checkpoint_after_long_decode() {
+        let mut config = args(512, true, None);
         config.prefix_match_unit = Some(4);
         let mut core = VllmCore::new(config);
-        submit(&mut core, 93_030, 16, 16);
-        for _ in 0..32 {
+        submit(&mut core, 93_030, 16, 256);
+        for _ in 0..300 {
             if core.state.requests.is_empty() {
                 break;
             }
@@ -3894,8 +3905,148 @@ mod state_cache_tests {
                 .find(|admission| admission.uuid == second)
                 .unwrap()
                 .reused_input_tokens,
+            0
+        );
+        for _ in 0..4 {
+            if core.state.requests.is_empty() {
+                break;
+            }
+            step(&mut core);
+        }
+        assert!(core.state.requests.is_empty());
+        let third = submit(&mut core, 93_032, 16, 1);
+        let pass = step(&mut core);
+        assert_eq!(
+            pass.admissions
+                .iter()
+                .find(|a| a.uuid == third)
+                .unwrap()
+                .reused_input_tokens,
             12
         );
+    }
+
+    #[test]
+    fn full_block_align_matches_qwen_silicon_boundary_replays() {
+        // Qwen3.5/vLLM0.31.0, GPU run946660: B=528, one output token.
+        // Cold2B executes once with no internal GDN checkpoint. The first
+        // repeat repairs the token-only junction; only the next repeat hits it.
+        // See benchmarks/evidence/qwen35-agentic-20261029.
+        for (prompt, budget, expected) in [
+            (527, 8192, [0, 0, 0]),
+            (528, 8192, [0, 0, 0]),
+            (529, 8192, [0, 528, 528]),
+            (1056, 8192, [0, 0, 528]),
+            // A real chunk boundary at B creates a reusable checkpoint.
+            (1056, 528, [0, 528, 528]),
+        ] {
+            let mut config = args(128, true, None);
+            config.block_size = 528;
+            config.prefix_match_unit = Some(528);
+            config.max_num_batched_tokens = Some(budget);
+            config.state_cache.as_mut().unwrap().bytes_per_request = 3 * 528 * 16;
+            let mut core = VllmCore::new(config);
+            for (index, expected_hit) in expected.into_iter().enumerate() {
+                let id = submit(&mut core, 94_000 + index as u128, prompt, 1);
+                let first = step(&mut core);
+                assert_eq!(
+                    first
+                        .admissions
+                        .iter()
+                        .find(|a| a.uuid == id)
+                        .unwrap()
+                        .reused_input_tokens,
+                    expected_hit,
+                    "prompt={prompt}, repetition={index}"
+                );
+                if prompt == 1056 && budget >= prompt && index == 0 {
+                    assert!(core.state.requests.is_empty(), "cold2B must be one pass");
+                }
+                for _ in 0..4 {
+                    if core.state.requests.is_empty() {
+                        break;
+                    }
+                    step(&mut core);
+                }
+                assert!(core.state.requests.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn full_block_align_retains_a_shared_junction_across_long_decode() {
+        let mut config = args(512, true, None);
+        config.prefix_match_unit = Some(4);
+        let mut core = VllmCore::new(config);
+        // The shared eight-token junction differs from the twelve-token replay
+        // boundary, so retaining only the latter cannot pass this sibling case.
+        for (index, expected_hit) in [0, 0, 8].into_iter().enumerate() {
+            let suffix = 100 * (index as u32 + 1);
+            let id = core.receive(DirectRequest {
+                uuid: Some(Uuid::from_u128(94_100 + index as u128)),
+                tokens: (0..8).chain(suffix..suffix + 8).collect(),
+                max_output_tokens: if index == 1 { 256 } else { 1 },
+                ..Default::default()
+            });
+            let first = step(&mut core);
+            assert_eq!(
+                first
+                    .admissions
+                    .iter()
+                    .find(|a| a.uuid == id)
+                    .unwrap()
+                    .reused_input_tokens,
+                expected_hit
+            );
+            for _ in 0..300 {
+                if core.state.requests.is_empty() {
+                    break;
+                }
+                step(&mut core);
+            }
+            assert!(core.state.requests.is_empty());
+            assert_eq!(core.kv_manager.num_active_blocks(), 0);
+        }
+    }
+
+    #[test]
+    fn full_block_align_reprobes_the_junction_when_resuming_generated_tokens() {
+        let mut config = args(128, true, None);
+        config.prefix_match_unit = Some(4);
+        let mut core = VllmCore::new(config);
+        let id = submit(&mut core, 94_200, 8, 8);
+        for _ in 0..5 {
+            step(&mut core);
+        }
+        assert_eq!(core.state.requests[&id].sequence.len(), 13);
+        assert_eq!(core.policy_preempt(0.0).unwrap().uuid, id);
+        assert_eq!(
+            core.state.requests[&id]
+                .sequence
+                .lease
+                .shared_prefix_boundary,
+            0
+        );
+        step(&mut core);
+        // Resume replays generated tokens as well as the original prompt.
+        // Token KV proves boundary12 beyond the original eight-token prompt,
+        // but decode did not publish that state for cross-request reuse.
+        assert_eq!(core.state.requests[&id].num_computed_tokens, 12);
+        assert_eq!(
+            core.state.requests[&id]
+                .sequence
+                .lease
+                .shared_prefix_boundary,
+            12
+        );
+        for _ in 0..16 {
+            if core.state.requests.is_empty() {
+                break;
+            }
+            step(&mut core);
+        }
+        assert!(core.state.requests.is_empty());
+        assert_eq!(core.kv_manager.num_active_blocks(), 0);
     }
 
     #[test]
@@ -4016,18 +4167,18 @@ mod state_cache_tests {
         config.prefix_match_unit = Some(2);
         config.state_cache.as_mut().unwrap().bytes_per_request = 6 * 16;
         let mut core = VllmCore::new(config);
-        assert_eq!(core.align_state_prefill(0, 25, 25, 8), 6);
-        assert_eq!(core.align_state_prefill(6, 25, 25, 3), 0); // leftover budget
-        assert_eq!(core.align_state_prefill(16, 25, 25, 8), 2); // partial hit -> next full boundary
-        assert_eq!(core.align_state_prefill(18, 24, 24, 6), 6); // exact prompt boundary
-        assert_eq!(core.align_state_prefill(24, 25, 25, 1), 1); // residual tail
-        assert_eq!(core.align_state_prefill(25, 25, 26, 1), 1); // decode
+        assert_eq!(core.align_state_prefill(0, 25, 25, 8, 0), 6);
+        assert_eq!(core.align_state_prefill(6, 25, 25, 3, 0), 0); // leftover budget
+        assert_eq!(core.align_state_prefill(16, 25, 25, 8, 0), 2); // partial hit -> next full boundary
+        assert_eq!(core.align_state_prefill(18, 24, 24, 6, 0), 6); // exact prompt boundary
+        assert_eq!(core.align_state_prefill(24, 25, 25, 1, 0), 1); // residual tail
+        assert_eq!(core.align_state_prefill(25, 25, 26, 1, 0), 1); // decode
         core.args.max_num_batched_tokens = Some(4);
-        assert_eq!(core.align_state_prefill(0, 25, 25, 4), 4); // block > total budget
-        assert_eq!(core.align_state_prefill(4, 25, 25, 4), 2);
+        assert_eq!(core.align_state_prefill(0, 25, 25, 4, 0), 4); // block > total budget
+        assert_eq!(core.align_state_prefill(4, 25, 25, 4, 0), 2);
         core.args.state_cache = None;
         core.args.prefix_match_unit = None;
-        assert_eq!(core.align_state_prefill(0, 25, 25, 8), 8); // token-only unchanged
+        assert_eq!(core.align_state_prefill(0, 25, 25, 8, 0), 8); // token-only unchanged
     }
 
     #[test]

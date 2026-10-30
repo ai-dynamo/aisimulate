@@ -423,6 +423,15 @@ matching token. With `block_size: 1536` and `prefix_match_unit: 128`, a cold
 24,300-token prompt keeps snapshots at 23,040 and 24,192 tokens. A later request
 sharing 23,700 tokens resumes at 23,040. This follows vLLM v0.29.0 align mode.
 
+With explicit `prefix_match_unit` equal to `block_size`, no speculation and no
+internal prefill checkpoints, a cold prompt ending exactly on a block boundary
+can complete without storing the earlier state needed for an identical replay.
+Matching attention KV alone is insufficient. The next request computes and
+retains the missing state at the shared-prefix boundary, making it reusable by
+a later request. For example, with a two-block prompt processed in one chunk
+and one output token, three identical requests reuse `0`, `0`, then one block
+of input. Chunked prefill can produce that checkpoint earlier.
+
 In `mode: disaggregated`, set `state_cache` on both `prefill` and `decode`;
 each role sizes its own state. The decode worker reserves the prompt blocks
 plus one state when it accepts a request, then continues from the transferred

@@ -1,0 +1,82 @@
+{
+  "schema": "qwen35-silicon-smoke/v1",
+  "job_id": 946660,
+  "baseline_core_commit": "8ae6b65801c4993febb3c827a0e68518b20b379e",
+  "geometry_id": "2e3784ef3039718ddcbed85f7491901938df4c4f9a8769b610773b5bf8e20aca",
+  "manual_kv_cache": {
+    "block_size": 528,
+    "prefix_match_unit": 528,
+    "bytes_per_token": 15360,
+    "prefix_caching": true,
+    "capacity": {
+      "type": "fixed",
+      "blocks": 18955
+    },
+    "state_cache": {
+      "bytes_per_request": 24330240
+    }
+  },
+  "scope": "functional cache reuse; primer then two identical repeats; fixed timing excluded from latency scoring",
+  "passed": false,
+  "cases": {
+    "smoke-p1056": {
+      "passed": false,
+      "observed_cached_tokens": [
+        0,
+        0,
+        528
+      ],
+      "predicted_cached_tokens": [
+        0,
+        528,
+        528
+      ],
+      "requests_sha256": "f0b1345e4d28625844c8060ebd4f6f3cade77a79fe77acb6d58290bf9fd49f35"
+    },
+    "smoke-p527": {
+      "passed": true,
+      "observed_cached_tokens": [
+        0,
+        0,
+        0
+      ],
+      "predicted_cached_tokens": [
+        0,
+        0,
+        0
+      ],
+      "requests_sha256": "0ad3ede16f1355c7a1faf494035d22cebab162dbc94b9fe2ba03c310bb6939ef"
+    },
+    "smoke-p528": {
+      "passed": true,
+      "observed_cached_tokens": [
+        0,
+        0,
+        0
+      ],
+      "predicted_cached_tokens": [
+        0,
+        0,
+        0
+      ],
+      "requests_sha256": "48aefe68cf4353a7dbeb2aaa181e2b73efcbe0c01c00d23bd33bc0f1200c7b32"
+    },
+    "smoke-p529": {
+      "passed": true,
+      "observed_cached_tokens": [
+        0,
+        528,
+        528
+      ],
+      "predicted_cached_tokens": [
+        0,
+        528,
+        528
+      ],
+      "requests_sha256": "fd0751323c954ff4632872779a95dc1a3c1b1e701fa075e7d8a0e8383c040d1e"
+    }
+  },
+  "raw_local": "/Users/simonec/.codex/.chatgpt-projects/g-p-6ae11856b9ec8191a0715553f1b57b54/outputs/qwen35-agentic-20261029/gpu-946660",
+  "raw_remote": "/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/results/qwen35-agentic-alignment-20261029/gpu-946660",
+  "finding": "At exactly two physical blocks, AISim invents an intermediate recurrent checkpoint during cold prefill; silicon creates it on the first repeat through shared-prefix repair."
+}

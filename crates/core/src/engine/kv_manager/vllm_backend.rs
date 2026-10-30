@@ -136,6 +136,7 @@ pub(crate) struct BlockRequestLease {
     grouped: Option<GroupedLease>,
     state: Option<Box<StateRequest>>,
     pub(crate) session_id: Option<String>,
+    pub(crate) shared_prefix_boundary: usize,
 }
 
 impl BlockRequestLease {
@@ -156,6 +157,7 @@ impl BlockRequestLease {
             grouped: None,
             state: None,
             session_id: None,
+            shared_prefix_boundary: 0,
         }
     }
 
@@ -1051,6 +1053,7 @@ impl VllmKvManager {
             let replay_full = prompt.saturating_sub(1) / self.block_size * self.block_size;
             let cacheable_boundary = self.prefix_match_unit.is_none()
                 || computed_after == replay_full
+                || computed_after == lease.shared_prefix_boundary
                 || is_partial_tail;
             let hash = (publish_state
                 && cacheable_boundary
@@ -1332,6 +1335,7 @@ impl VllmKvManager {
         }
         self.release_lease_entries(lease);
         lease.allocated_tokens = 0;
+        lease.shared_prefix_boundary = 0;
     }
 
     pub(crate) fn finish_lease(&mut self, owner: Uuid, mut lease: BlockRequestLease) {
@@ -1540,6 +1544,20 @@ impl VllmKvManager {
                     })
                     .unwrap_or(0);
                 let full = cached_tokens / self.block_size;
+                // Modified vLLM hybrid-coordinator shared-prefix detection
+                // (Copyright vLLM contributors, Apache-2.0; see THIRD_PARTY_NOTICES.md):
+                // https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/kv_cache_coordinator.py
+                // retain an observed token-only junction, not an invented state
+                // at the prompt's replay boundary. Only the no-checkpoint,
+                // full-block align path is qualified here.
+                let token_hit = overlap_blocks.min(limit / self.block_size) * self.block_size;
+                let shared_prefix_boundary =
+                    if unit == self.block_size && !manager.mtp_enabled && token_hit > cached_tokens
+                    {
+                        token_hit
+                    } else {
+                        0
+                    };
                 let active = lease.entries[..full]
                     .iter()
                     .filter(|e| {
@@ -1554,6 +1572,7 @@ impl VllmKvManager {
                     new_tokens: sequence.len() - cached_tokens,
                     cached_tokens,
                     active_cached_tokens: active * self.block_size,
+                    shared_prefix_boundary,
                 };
             }
         }
@@ -1599,6 +1618,7 @@ impl VllmKvManager {
             new_tokens: sequence.len() - cached_tokens,
             cached_tokens,
             active_cached_tokens,
+            shared_prefix_boundary: 0,
         }
     }
 

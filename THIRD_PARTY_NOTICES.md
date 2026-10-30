@@ -269,6 +269,25 @@ prefill checkpoints, no speculative decoding and no periodic retention.
 The identified upstream revision has no root NOTICE file. The repository's
 Apache-2.0 LICENSE supplies the license text; no upstream source file is vendored.
 
+The full-block shared-prefix checkpoint repair in
+`crates/core/src/engine/common/protocols.rs`,
+`crates/core/src/engine/kv_manager/vllm_backend.rs`,
+`crates/core/src/engine/scheduler/vllm/core.rs`, and its fixtures in
+`crates/core/src/engine/scheduler/vllm/policy/tests.rs` is a modified Rust
+simulation adaptation of vLLM v0.31.0, immutable commit
+`db9527a46873454610df6dbedf79a36d6bf1a7f6`:
+
+- https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/sched/scheduler.py
+- https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/kv_cache_coordinator.py
+- https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/kv_cache_manager.py
+- https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/single_type_kv_cache_manager.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/LICENSE
+This revision has no root NOTICE file. No upstream implementation is vendored.
+The changes model actual prefill boundaries and retain a missing-state junction
+only after it is computed; silicon boundary fixtures are independently collected.
+
 
 The inference-mode scope and MSA query-position metadata integration in
 `collector/vllm/collect_mla_module.py` and

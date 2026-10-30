@@ -15,8 +15,8 @@
   "planned_requests": 2016,
   "stages": {
     "preparation": "complete",
-    "cache_qualification": "queued",
-    "silicon_collection": "pending",
+    "cache_qualification": "passed_after_native_fix",
+    "silicon_collection": "released",
     "replay": "pending",
     "comparison": "pending"
   },
@@ -399,9 +399,9 @@
       },
       {
         "job_id": 946660,
-        "state": "PENDING",
-        "reason": "Resources",
-        "stage": "cache_qualification"
+        "state": "RUNNING",
+        "reason": null,
+        "stage": "silicon_collection"
       }
     ]
   }

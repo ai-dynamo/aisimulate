@@ -39,7 +39,8 @@
         "enabled": false
       }
     },
-    "attention_backend": null,
+    "attention_backend": "flashinfer",
+    "moe_kernel_source": "vllm_unquantizedfusedmoe_flashinfer_trtllm_trtllmbf16expertsmonolithic",
     "enable_shared_layer": true,
     "strict_provenance": false
   },
@@ -130,8 +131,8 @@
             "max_kv_tokens": 2000000
           }
         },
-        "attention_backend": null,
-        "moe_kernel_source": null,
+        "attention_backend": "flashinfer",
+        "moe_kernel_source": "vllm_unquantizedfusedmoe_flashinfer_trtllm_trtllmbf16expertsmonolithic",
         "moe_backend": null,
         "enable_eplb": false,
         "wideep_num_slots": null,
@@ -150,112 +151,112 @@
       "batch_size": 1,
       "total_prefill_tokens": 4096,
       "total_kv_read_tokens": 0,
-      "latency_ms": 57.150208278271364,
-      "status": "passed"
+      "status": "passed",
+      "latency_ms": 3778.368492352904
     },
     {
       "phase": "prefill",
       "batch_size": 1,
       "total_prefill_tokens": 8192,
       "total_kv_read_tokens": 0,
-      "latency_ms": 95.5284392300174,
-      "status": "passed"
+      "status": "passed",
+      "latency_ms": 14980.92111378163
     },
     {
       "phase": "prefill",
       "batch_size": 1,
       "total_prefill_tokens": 8192,
       "total_kv_read_tokens": 24576,
-      "latency_ms": 105.52102200713864,
-      "status": "passed"
+      "status": "passed",
+      "latency_ms": 104305.22370629296
     },
     {
       "phase": "prefill",
       "batch_size": 1,
       "total_prefill_tokens": 512,
       "total_kv_read_tokens": 3584,
-      "latency_ms": 26.359783621333456,
-      "status": "passed"
+      "status": "passed",
+      "latency_ms": 898.5203189513254
     },
     {
       "phase": "prefill",
       "batch_size": 16,
       "total_prefill_tokens": 8192,
       "total_kv_read_tokens": 516096,
-      "latency_ms": 100.55165473004334,
-      "status": "passed"
+      "status": "passed",
+      "latency_ms": 7473.959798180615
     },
     {
       "phase": "decode",
       "batch_size": 1,
       "context_length_per_request": 4096,
       "total_past_kv_tokens": 4096,
-      "latency_ms": 4.488949549356984,
-      "status": "passed"
+      "status": "passed",
+      "latency_ms": 4.521587480864436
     },
     {
       "phase": "decode",
       "batch_size": 1,
       "context_length_per_request": 32768,
       "total_past_kv_tokens": 32768,
-      "latency_ms": 4.612591730672274,
-      "status": "passed"
+      "status": "passed",
+      "latency_ms": 4.642815648841032
     },
     {
       "phase": "decode",
       "batch_size": 1,
       "context_length_per_request": 38144,
       "total_past_kv_tokens": 38144,
-      "latency_ms": 4.63220463832189,
-      "status": "passed"
+      "status": "passed",
+      "latency_ms": 4.663904325348848
     },
     {
       "phase": "decode",
       "batch_size": 4,
       "context_length_per_request": 4096,
       "total_past_kv_tokens": 16384,
-      "latency_ms": 5.4199270981121686,
-      "status": "passed"
+      "status": "passed",
+      "latency_ms": 5.452546671878338
     },
     {
       "phase": "decode",
       "batch_size": 4,
       "context_length_per_request": 32768,
       "total_past_kv_tokens": 131072,
-      "latency_ms": 5.778450760689168,
-      "status": "passed"
+      "status": "passed",
+      "latency_ms": 5.800587500929453
     },
     {
       "phase": "decode",
       "batch_size": 4,
       "context_length_per_request": 38144,
       "total_past_kv_tokens": 152576,
-      "latency_ms": 5.833773799063749,
-      "status": "passed"
+      "status": "passed",
+      "latency_ms": 5.8578714634509765
     },
     {
       "phase": "decode",
       "batch_size": 16,
       "context_length_per_request": 4096,
       "total_past_kv_tokens": 65536,
-      "latency_ms": 8.568898551851664,
-      "status": "passed"
+      "status": "passed",
+      "latency_ms": 8.604800975532118
     },
     {
       "phase": "decode",
       "batch_size": 16,
       "context_length_per_request": 32768,
       "total_past_kv_tokens": 524288,
-      "latency_ms": 9.670640715274052,
-      "status": "passed"
+      "status": "passed",
+      "latency_ms": 9.73072667819618
     },
     {
       "phase": "decode",
       "batch_size": 16,
       "context_length_per_request": 38144,
       "total_past_kv_tokens": 610304,
-      "latency_ms": 9.85259163154918,
-      "status": "passed"
+      "status": "passed",
+      "latency_ms": 9.922800667111762
     }
   ],
   "decode_operation_diagnostics": [
@@ -470,7 +471,7 @@
     },
     {
       "name": "generation_attention",
-      "latency_ms": 0.5623992196665847,
+      "latency_ms": 0.5950505808619335,
       "energy_wms": 0.0,
       "source": "mixed",
       "details": {
@@ -604,5 +605,598 @@
     }
   },
   "cache_geometry_note": "Compiler default kv_block_size=64 is only a constructor placeholder here. replay.py replaces it using the measured cache receipt before replay.",
-  "data_source_note": "Shared-layer donor data is explicitly enabled. Backend identity remains vllm 0.31.0; attention/GDN sources include older releases. See timing-data-provenance.json."
+  "data_source_note": "Shared-layer donor data is explicitly enabled. Backend identity remains vllm 0.31.0; attention/GDN sources include older releases. See timing-data-provenance.json.",
+  "prefill_operation_diagnostics": [
+    {
+      "name": "context_embedding",
+      "latency_ms": 0.008412005161290323,
+      "energy_wms": 0.0,
+      "source": "empirical",
+      "details": {
+        "sol": {
+          "latency_ms": 0.004329604129032259,
+          "math_ms": 0.0,
+          "memory_ms": 0.004329604129032259
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_embedding_ar",
+      "latency_ms": 0.0936137580871582,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.0652447288888889,
+          "math_ms": 0.0,
+          "memory_ms": 0.0
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_gdn_norm",
+      "latency_ms": 1.1091609290322582,
+      "energy_wms": 0.0,
+      "source": "empirical",
+      "details": {
+        "sol": {
+          "latency_ms": 0.7793287432258066,
+          "math_ms": 0.0,
+          "memory_ms": 0.7793287432258066
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_gdn_in_proj_gemm",
+      "latency_ms": 2.1198000013828273,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 1.7179869184,
+          "math_ms": 1.7179869184,
+          "memory_ms": 0.4383724180645161
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_gdn_in_proj_ba_gemm",
+      "latency_ms": 0.6151200085878372,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.19635431225806452,
+          "math_ms": 0.010737418240000001,
+          "memory_ms": 0.19635431225806452
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_gdn_conv1d",
+      "latency_ms": 0.46257119178771966,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": null,
+        "sol_unavailable_reason": "SOL estimation not implemented: evaluate_ops_sol_json: op 'context_gdn_conv1d' has no SOL decomposition (family not exported yet \u2014 see PerformanceResult::sol)",
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_gdn_scan",
+      "latency_ms": 3.8836657047271728,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": null,
+        "sol_unavailable_reason": "SOL estimation not implemented: evaluate_ops_sol_json: op 'context_gdn_scan' has no SOL decomposition (family not exported yet \u2014 see PerformanceResult::sol)",
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_gdn_out_proj_gemm",
+      "latency_ms": 1.0212799906730652,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.6871947673600001,
+          "math_ms": 0.6871947673600001,
+          "memory_ms": 0.2922482787096774
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_gdn_ar",
+      "latency_ms": 4.212619113922119,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 2.9360128000000003,
+          "math_ms": 0.0,
+          "memory_ms": 0.0
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_gdn_ffn_norm",
+      "latency_ms": 1.1091609290322582,
+      "energy_wms": 0.0,
+      "source": "empirical",
+      "details": {
+        "sol": {
+          "latency_ms": 0.7793287432258066,
+          "math_ms": 0.0,
+          "memory_ms": 0.7793287432258066
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_gdn_router_gemm",
+      "latency_ms": 0.5606399849057198,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.34359738368000003,
+          "math_ms": 0.34359738368000003,
+          "memory_ms": 0.2435402322580645
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_gdn_moe_pre_dispatch",
+      "latency_ms": 0.0,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.0,
+          "math_ms": 0.0,
+          "memory_ms": 0.0
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_gdn_moe",
+      "latency_ms": 20.77718496322632,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 13.431243809032258,
+          "math_ms": 2.5769803776,
+          "memory_ms": 13.431243809032258
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_gdn_moe_post_dispatch",
+      "latency_ms": 4.212619113922119,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": null,
+        "sol_unavailable_reason": "SOL estimation not implemented: evaluate_ops_sol_json: op 'context_gdn_moe_post_dispatch' has no SOL decomposition (family not exported yet \u2014 see PerformanceResult::sol)",
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_gdn_shared_expert_gate_gemm",
+      "latency_ms": 0.33195998519659037,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.1949273187096774,
+          "math_ms": 0.0006710886400000001,
+          "memory_ms": 0.1949273187096774
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_gdn_shared_gate_up_gemm",
+      "latency_ms": 0.41067998856306076,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.21918620903225805,
+          "math_ms": 0.17179869184000002,
+          "memory_ms": 0.21918620903225805
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_gdn_shared_act_gate",
+      "latency_ms": 0.15783189677419354,
+      "energy_wms": 0.0,
+      "source": "empirical",
+      "details": {
+        "sol": {
+          "latency_ms": 0.018265517419354838,
+          "math_ms": 0.0,
+          "memory_ms": 0.018265517419354838
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_gdn_shared_down_gemm",
+      "latency_ms": 0.43807998299598694,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.20700919741935483,
+          "math_ms": 0.08589934592000001,
+          "memory_ms": 0.20700919741935483
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_gdn_shared_expert_gate_mul",
+      "latency_ms": 0.6220804645161291,
+      "energy_wms": 0.0,
+      "source": "empirical",
+      "details": {
+        "sol": {
+          "latency_ms": 0.3896643716129033,
+          "math_ms": 0.0,
+          "memory_ms": 0.3896643716129033
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_gdn_shared_merge",
+      "latency_ms": 0.8656206967741936,
+      "energy_wms": 0.0,
+      "source": "empirical",
+      "details": {
+        "sol": {
+          "latency_ms": 0.5844965574193548,
+          "math_ms": 0.0,
+          "memory_ms": 0.5844965574193548
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_full_attn_norm",
+      "latency_ms": 0.36972030967741937,
+      "energy_wms": 0.0,
+      "source": "empirical",
+      "details": {
+        "sol": {
+          "latency_ms": 0.25977624774193553,
+          "math_ms": 0.0,
+          "memory_ms": 0.25977624774193553
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_qkv_gemm",
+      "latency_ms": 0.7066000004609425,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.5726623061333334,
+          "math_ms": 0.5726623061333334,
+          "memory_ms": 0.1461241393548387
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_attention",
+      "latency_ms": 3722.6636076959007,
+      "energy_wms": 0.0,
+      "source": "mixed",
+      "details": {
+        "sol": {
+          "latency_ms": 0.22909980451784948,
+          "math_ms": 0.22906492245333335,
+          "memory_ms": 0.040624920774193544
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_proj_gemm",
+      "latency_ms": 0.34042666355768836,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.22906492245333335,
+          "math_ms": 0.22906492245333335,
+          "memory_ms": 0.09741609290322581
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_full_ar",
+      "latency_ms": 1.4042063713073731,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.9786709333333334,
+          "math_ms": 0.0,
+          "memory_ms": 0.0
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_full_ffn_norm",
+      "latency_ms": 0.36972030967741937,
+      "energy_wms": 0.0,
+      "source": "empirical",
+      "details": {
+        "sol": {
+          "latency_ms": 0.25977624774193553,
+          "math_ms": 0.0,
+          "memory_ms": 0.25977624774193553
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_full_router_gemm",
+      "latency_ms": 0.18687999496857327,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.11453246122666667,
+          "math_ms": 0.11453246122666667,
+          "memory_ms": 0.08118007741935483
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_full_moe_pre_dispatch",
+      "latency_ms": 0.0,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.0,
+          "math_ms": 0.0,
+          "memory_ms": 0.0
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_full_moe",
+      "latency_ms": 6.9257283210754395,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 4.477081269677419,
+          "math_ms": 0.8589934591999999,
+          "memory_ms": 4.477081269677419
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_full_moe_post_dispatch",
+      "latency_ms": 1.4042063713073731,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": null,
+        "sol_unavailable_reason": "SOL estimation not implemented: evaluate_ops_sol_json: op 'context_full_moe_post_dispatch' has no SOL decomposition (family not exported yet \u2014 see PerformanceResult::sol)",
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_full_shared_expert_gate_gemm",
+      "latency_ms": 0.11065332839886347,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.0649757729032258,
+          "math_ms": 0.00022369621333333335,
+          "memory_ms": 0.0649757729032258
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_full_shared_gate_up_gemm",
+      "latency_ms": 0.13689332952102026,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.07306206967741935,
+          "math_ms": 0.05726623061333334,
+          "memory_ms": 0.07306206967741935
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_full_shared_act_gate",
+      "latency_ms": 0.05261063225806452,
+      "energy_wms": 0.0,
+      "source": "empirical",
+      "details": {
+        "sol": {
+          "latency_ms": 0.006088505806451613,
+          "math_ms": 0.0,
+          "memory_ms": 0.006088505806451613
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_full_shared_down_gemm",
+      "latency_ms": 0.14602666099866232,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.06900306580645162,
+          "math_ms": 0.02863311530666667,
+          "memory_ms": 0.06900306580645162
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_full_shared_expert_gate_mul",
+      "latency_ms": 0.20736015483870968,
+      "energy_wms": 0.0,
+      "source": "empirical",
+      "details": {
+        "sol": {
+          "latency_ms": 0.12988812387096776,
+          "math_ms": 0.0,
+          "memory_ms": 0.12988812387096776
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_full_shared_merge",
+      "latency_ms": 0.2885402322580645,
+      "energy_wms": 0.0,
+      "source": "empirical",
+      "details": {
+        "sol": {
+          "latency_ms": 0.19483218580645162,
+          "math_ms": 0.0,
+          "memory_ms": 0.19483218580645162
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_logits_gemm",
+      "latency_ms": 0.04321126742983701,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.03281934864516129,
+          "math_ms": 0.0001130131911111111,
+          "memory_ms": 0.03281934864516129
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    },
+    {
+      "name": "context_p2p",
+      "latency_ms": 0.0,
+      "energy_wms": 0.0,
+      "source": "silicon",
+      "details": {
+        "sol": {
+          "latency_ms": 0.0,
+          "math_ms": 0.0,
+          "memory_ms": 0.0
+        },
+        "sol_unavailable_reason": null,
+        "fallbacks": []
+      }
+    }
+  ],
+  "known_timing_limitation": {
+    "type": "FlashInfer context-lane selection/extrapolation",
+    "description": "The supported attention_backend=flashinfer selector prefers the decode-labelled FlashInfer API lane in the context table before the TRTLLM prefill lane. For the Qwen TP8 BF16 shape, that first lane has only9 rows at ISL1; the prefill lane has110 rows including batch1 ISL4096. Current pinned prediction reports3722.6636ms aggregate context_attention across15 full layers, versus a direct prefill donor measurement0.056752ms/layer at batch1 ISL4096. Keep the observed backend pin and report this limitation; do not fit or substitute runtime identity.",
+    "unsupported_workaround": "No public phase-specific attention-source selector is exposed. No core or data changes were made.",
+    "resolved_lane_orders": {
+      "_context_attention_data": [
+        "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+        "vllm_flashinfer_flashinfertrtllmapidecode",
+        "vllm_flashinfer_trtllmprefill",
+        "vllm_flashinfer_trtllmdecode",
+        "vllm_flashinfer",
+        "fa3",
+        "fla",
+        "flashinfer",
+        "triton",
+        "trtllm_mha",
+        "default",
+        "vllm_triton_attn",
+        "vllm_flash_attn_fa2"
+      ],
+      "_generation_attention_data": [
+        "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
+        "vllm_flashinfer_flashinfertrtllmapidecode",
+        "vllm_flashinfer_trtllmprefill",
+        "vllm_flashinfer_trtllmdecode",
+        "vllm_flashinfer",
+        "fa3",
+        "fla",
+        "flashinfer",
+        "triton",
+        "trtllm_mha",
+        "default",
+        "vllm_triton_attn",
+        "vllm_flash_attn_fa2"
+      ]
+    }
+  }
 }

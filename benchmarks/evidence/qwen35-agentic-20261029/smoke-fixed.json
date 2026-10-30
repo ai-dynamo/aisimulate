@@ -1,0 +1,25 @@
+{
+  "schema": "qwen35-cache-gate-release/v1",
+  "job_id": 946660,
+  "passed": true,
+  "checks": {
+    "replay-smoke-fixed": {
+      "passed": true,
+      "cells": 4,
+      "compared_requests": 12,
+      "geometry_id": "2e3784ef3039718ddcbed85f7491901938df4c4f9a8769b610773b5bf8e20aca"
+    },
+    "replay-chains-fixed": {
+      "passed": true,
+      "cells": 4,
+      "compared_requests": 34,
+      "geometry_id": "2e3784ef3039718ddcbed85f7491901938df4c4f9a8769b610773b5bf8e20aca"
+    }
+  },
+  "tests": {
+    "state_cache": 61,
+    "vllm_scheduler": 220,
+    "campaign": 24
+  },
+  "scope": "exact per-request cache reuse, request completion and token counts; no timing-accuracy or pressure qualification"
+}

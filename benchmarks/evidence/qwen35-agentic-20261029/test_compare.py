@@ -124,9 +124,22 @@ def test_request_weighted_errors_and_finite_cohort_throughput(tmp_path):
     assert metrics["ttft_ms"]["mean_signed_error"] == 6
     assert metrics["tpot_ms"]["mape_percent"] == 17.5
     assert metrics["tpot_ms"]["mean_signed_error"] == -4
+    assert metrics["e2e_latency_ms"]["observed_mean"] == 55
+    assert metrics["e2e_latency_ms"]["predicted_mean"] == 54
+    assert metrics["e2e_latency_ms"]["mean_signed_error"] == -1
+    assert metrics["e2e_latency_ms"]["mape_percent"] == pytest.approx((10 + 600 / 70) / 2)
     assert metrics["output_tokens_per_s"]["observed_mean"] == pytest.approx(4 / 0.210)
     assert metrics["output_tokens_per_s"]["predicted_mean"] == pytest.approx(4 / 0.208)
+    assert metrics["cohort_makespan_ms"]["observed_mean"] == 210
+    assert metrics["cohort_makespan_ms"]["predicted_mean"] == 208
+    assert metrics["cohort_makespan_ms"]["mean_signed_error"] == -2
+    assert metrics["cohort_makespan_ms"]["paired_count"] == 1
+    assert metrics["cohort_makespan_ms"]["mape_percent"] == pytest.approx(200 / 210)
     assert report["cases"][0]["requests"][1]["metrics"]["tpot_ms"]["signed_percentage_error"] == -25
+    assert report["cases"][0]["requests"][1]["metrics"]["e2e_latency_ms"]["observed"] == 70
+    assert report["cases"][0]["requests"][1]["metrics"]["e2e_latency_ms"]["predicted"] == 64
+    assert report["cases"][0]["metrics"]["cohort_makespan_ms"]["signed_error"] == -2
+    assert report["operating_points"][0]["metrics"]["e2e_latency_ms"]["paired_count"] == 2
 
 
 def test_missing_case_and_functional_replay_remain_in_denominators(tmp_path):
@@ -141,8 +154,14 @@ def test_missing_case_and_functional_replay_remain_in_denominators(tmp_path):
     assert report["summary"]["observed_completed_requests"] == 4
     assert report["summary"]["metrics"]["ttft_ms"]["observed_count"] == 4
     assert report["summary"]["metrics"]["ttft_ms"]["paired_count"] == 2
+    assert report["summary"]["metrics"]["e2e_latency_ms"]["observed_count"] == 4
+    assert report["summary"]["metrics"]["e2e_latency_ms"]["paired_count"] == 2
+    assert report["summary"]["metrics"]["cohort_makespan_ms"]["observed_count"] == 2
+    assert report["summary"]["metrics"]["cohort_makespan_ms"]["paired_count"] == 1
     assert "functional_only_prediction" in report["cases"][1]["issues"]
     assert report["cases"][1]["metrics"]["ttft_ms"]["predicted_mean"] is None
+    assert report["cases"][1]["metrics"]["e2e_latency_ms"]["predicted_mean"] is None
+    assert report["cases"][1]["metrics"]["cohort_makespan_ms"]["predicted"] is None
     assert "missing_silicon_case" in report["cases"][2]["issues"]
     assert report["summary"]["cache_gate_counts"] == {"passed": 2, "failed": 0, "missing": 1}
 
@@ -158,6 +177,9 @@ def test_cache_mismatch_keeps_diagnostic_pairs_but_excludes_accuracy(tmp_path):
     assert "cached_token_mismatch" in report["cases"][0]["issues"]
     assert report["cases"][0]["metrics"]["ttft_ms"]["paired_count"] == 2
     assert report["summary"]["metrics"]["ttft_ms"]["paired_count"] == 0
+    assert report["cases"][0]["metrics"]["e2e_latency_ms"]["paired_count"] == 2
+    assert report["summary"]["metrics"]["e2e_latency_ms"]["paired_count"] == 0
+    assert report["summary"]["metrics"]["cohort_makespan_ms"]["paired_count"] == 0
     assert report["summary"]["metrics"]["ttft_ms"]["mape_percent"] is None
     assert report["summary"]["observed_completed_requests"] == 2
     assert report["summary"]["cache_gate_counts"]["failed"] == 1
@@ -192,6 +214,9 @@ def test_zero_observations_keep_signed_error_without_infinite_ape():
     assert summary["ape_defined_count"] == summary["zero_observed_pairs"] == 1
     assert compare.error_pair(0, 5)["ape_percent"] is None
     assert compare.summarize([])["mape_percent"] is None
+    assert compare.request_latency({"timing": {"dispatch_ms": 5, "completed_ms": 5}}) == 0
+    assert compare.request_latency({"timing": {"dispatch_ms": 5}}) is None
+    assert compare.request_latency({"arrival_time_ms": 5, "terminal_time_ms": 4}, predicted=True) is None
 
 
 def test_fixed_estimator_cannot_score_timing_even_if_mapping_claims_otherwise(tmp_path):
@@ -204,6 +229,9 @@ def test_fixed_estimator_cannot_score_timing_even_if_mapping_claims_otherwise(tm
     report = compare.compare(plan([case]), observed, replay)
     assert "configured_fixed_timing" in report["cases"][0]["issues"]
     assert report["summary"]["metrics"]["ttft_ms"]["paired_count"] == 0
+    assert report["summary"]["metrics"]["e2e_latency_ms"]["paired_count"] == 0
+    assert report["cases"][0]["metrics"]["e2e_latency_ms"]["predicted_mean"] is None
+    assert report["cases"][0]["metrics"]["cohort_makespan_ms"]["predicted"] is None
     assert report["cases"][0]["cache_gate"] is True
 
 

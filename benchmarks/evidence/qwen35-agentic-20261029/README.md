@@ -72,8 +72,9 @@ errors, server receipts and per-case summaries. TTFT starts at client dispatch;
 TPOT uses the interval from first to last output token divided by output tokens
 minus one. Record streaming bursts rather than assuming one token per chunk.
 
-Client transport/tokenization overhead remains within the measured client
-boundary and must not be silently subtracted to improve agreement. Paired
+Prompt construction and tokenization happen before the measured request window.
+Client request encoding, transport and server detokenization remain within the
+measured client boundary and must not be silently subtracted to improve agreement. Paired
 finite cohorts support request-level inspection. Performance-data absence is a
 separate result from replay rejection or a cache mismatch.
 
@@ -127,7 +128,8 @@ python/aisimulate/.venv/bin/python benchmarks/evidence/qwen35-agentic-20261029/c
 
 `compare.py` retains all 36 planned cases and distinguishes missing, failed,
 cache-mismatched and timing-qualified results. It reports paired request-level
-TTFT/TPOT and finite-cohort throughput; percentages include explicit denominator
+TTFT/TPOT, total request latency, cohort completion time and finite-cohort
+throughput; percentages include explicit denominator
 counts. Fixed-timing cache replays never contribute accuracy scores.
 
 `timing-data-provenance.json` records the packaged measurement tables and their
@@ -135,3 +137,35 @@ hashes. vLLM 0.31.0 is the serving identity; some attention and recurrent timing
 tables come from older releases. These donors remain visible as an accuracy
 limitation. The preflight's default cache block is only a setup check: replay
 replaces it with the measured cache geometry. Online timing correction is off.
+
+## Qualification evidence
+
+CPU preparation job `946518` verified the image and all 94 model shards.
+GPU attempt `946625` failed before model loading because the image has `python3`
+without a `python` alias; the launcher was corrected. Job `946660` runs on
+`pool0-0213` and resolved block size 528, 18,955 usable blocks, 15,360 bytes per
+token and 24,330,240 state bytes per request per rank. All eight ranks agree.
+
+`smoke-baseline.json` preserves the pre-fix functional failure: repeated
+1,056-token requests reuse `0, 528` measured tokens in vLLM but `528, 528` in the
+baseline AISim engine. The 527-, 528- and 529-token controls pass. The native
+repair must stop inventing an intermediate state during cold aligned prefill
+and create it only when a later shared-prefix request actually computes it.
+After the native repair, `smoke-fixed.json` records all four boundary cases and
+four diagnostic chains passing: 46 cache comparisons, including 40 measured
+requests and six primers. The full campaign is released only after this gate.
+
+`qualify_chains.py` collects four additional single-lane diagnostic cases
+(4K/32K, cold/warm, eight turns each) using the same collector. These 32 measured
+requests are separate from the 2,016-request campaign. Their exact token chains
+also serve as regression evidence for the native repair. Their cache counts
+match the baseline replay. Cold/warm generated tokens diverge despite temperature
+zero, so each run is replayed independently from its actual tokens. Differences
+between cold and warm timings do not isolate cache effects alone.
+
+The server selected the vLLM V2 model runner, `FULL_AND_PIECEWISE` CUDA graphs,
+FlashInfer
+TRT-LLM attention, FlashInfer GDN prefill and BF16 TRT-LLM MoE. A long temporary
+socket path caused FlashInfer allreduce workspace initialization to fall back
+to its TRT-LLM backend; server logs retain the effective path. The timing-data
+provenance records a separate FlashInfer prefill-table selection limitation.

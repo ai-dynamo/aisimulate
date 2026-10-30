@@ -16,6 +16,9 @@ from collections import Counter
 from pathlib import Path
 from statistics import mean
 
+REQUEST_METRICS = ("ttft_ms", "tpot_ms", "e2e_latency_ms")
+COHORT_METRICS = ("requests_per_s", "output_tokens_per_s", "cohort_makespan_ms")
+
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -60,6 +63,14 @@ def error_pair(actual, estimate):
 
 def read_json(path):
     return json.loads(path.read_text()) if path.exists() else None
+
+
+def request_latency(row, predicted=False):
+    if not row:
+        return None
+    start = row.get("arrival_time_ms") if predicted else row.get("timing", {}).get("dispatch_ms")
+    end = row.get("terminal_time_ms") if predicted else row.get("timing", {}).get("completed_ms")
+    return end - start if number(start) and number(end) and end >= start else None
 
 
 def throughput(rows, expected, predicted=False):
@@ -231,9 +242,17 @@ def compare_case(plan, observed_root, replay_root, output_tokens, tool_tokens):
             if estimate.get("admission_count", 1) != 1:
                 request_issues.append("preempted_request_requires_admission_comparison")
         metrics = {}
-        for name, native_name in (("ttft_ms", "ttft_ms"), ("tpot_ms", "itl_ms")):
-            actual_value = observed.get("timing", {}).get(name) if observed_ok else None
-            estimate_value = estimate.get(native_name) if estimate_ok and source_matches and timing_usable else None
+        for name, native_name in (("ttft_ms", "ttft_ms"), ("tpot_ms", "itl_ms"), ("e2e_latency_ms", None)):
+            actual_value = (
+                (request_latency(observed) if native_name is None else observed.get("timing", {}).get(name))
+                if observed_ok
+                else None
+            )
+            estimate_value = (
+                (request_latency(estimate, predicted=True) if native_name is None else estimate.get(native_name))
+                if estimate_ok and source_matches and timing_usable
+                else None
+            )
             if not number(actual_value):
                 actual_value = None
                 request_issues.append(f"missing_silicon_{name}")
@@ -272,10 +291,11 @@ def compare_case(plan, observed_root, replay_root, output_tokens, tool_tokens):
         name: summarize(
             [(row["metrics"][name]["observed"], row["metrics"][name]["predicted"]) for row in request_pairs]
         )
-        for name in ("ttft_ms", "tpot_ms")
+        for name in REQUEST_METRICS
     }
     for name in ("requests_per_s", "output_tokens_per_s"):
         metrics[name] = error_pair(observed_throughput[name], predicted_throughput[name])
+    metrics["cohort_makespan_ms"] = error_pair(observed_throughput["duration_ms"], predicted_throughput["duration_ms"])
     return {
         "case_id": case_id,
         "initial_input_tokens": plan["initial_input_tokens"],
@@ -307,7 +327,7 @@ def compare_case(plan, observed_root, replay_root, output_tokens, tool_tokens):
 
 def aggregate(cases):
     metrics = {}
-    for name in ("ttft_ms", "tpot_ms"):
+    for name in REQUEST_METRICS:
         metrics[name] = summarize(
             [
                 (
@@ -318,7 +338,7 @@ def aggregate(cases):
                 for row in case["requests"]
             ]
         )
-    for name in ("requests_per_s", "output_tokens_per_s"):
+    for name in COHORT_METRICS:
         metrics[name] = summarize(
             [
                 (
@@ -384,11 +404,13 @@ def compare(plan, observed_root, replay_root):
         "unexpected_replay_cases": extra_replay,
         "definitions": {
             "signed_error": "predicted minus observed; positive means overprediction",
-            "mape": "mean request-level absolute percentage error; zero observed denominators excluded and counted",
+            "mape": "mean absolute percentage error for request/cohort pairs; zero denominators excluded and counted",
             "group_latency": "request-weighted across repeats; aggregate predictions require qualified cases",
+            "e2e_latency_ms": "observed completion minus dispatch; replay terminal time minus arrival",
             "observed_population": "all available measured requests; paired means use the qualified matched cohort",
             "group_throughput": "mean across repeated finite cohorts; excludes warmup; output tokens / cohort duration",
             "cohort_duration": "first measured dispatch to last completion; replay arrival to terminal time",
+            "cohort_makespan_ms": "same measured-cohort duration, paired and averaged across repeats",
             "case_metrics": "raw diagnostic pairs retained when cache or coverage issues disqualify a case",
         },
         "summary": aggregate(cases),

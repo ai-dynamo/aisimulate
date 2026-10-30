@@ -5,6 +5,8 @@
     "hardware": "b300_sxm",
     "backend": "vllm",
     "backend_version": "0.31.0",
+    "attention_backend": "flashinfer",
+    "moe_kernel_source": "vllm_unquantizedfusedmoe_flashinfer_trtllm_trtllmbf16expertsmonolithic",
     "context_length": 65536,
     "estimation_mode": "op_level",
     "fallback_policy": "deny",

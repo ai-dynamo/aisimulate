@@ -190,8 +190,12 @@ def test_gate_does_not_pass_missing_silicon_evidence():
 
 
 def test_native_engine_preserves_warm_cache_across_dependency(tmp_path):
+    rows = requests()
+    # B+1 forces an actual prefill checkpoint at B; exact2B does not.
+    for row in rows:
+        row["input_token_ids"] = row["input_token_ids"][:5]
     source = tmp_path / "requests.jsonl"
-    source.write_text("".join(json.dumps(row) + "\n" for row in requests()))
+    source.write_text("".join(json.dumps(row) + "\n" for row in rows))
     result = replay_case(
         source, make_receipt([observed_worker()]), None, tmp_path / "replay", True
     )
@@ -202,6 +206,31 @@ def test_native_engine_preserves_warm_cache_across_dependency(tmp_path):
     assert (
         by_id["b-measured"]["dispatched_at_ms"] >= by_id["a-primer"]["dispatched_at_ms"]
     )
+
+
+def test_native_engine_repairs_exact_two_block_state_on_first_repeat(tmp_path):
+    rows = requests()
+    rows[1]["cached_tokens"] = 0
+    rows.append(
+        dict(
+            rows[1],
+            request_id="c-measured",
+            turn_index=1,
+            parent_request_id="b-measured",
+            cached_tokens=4,
+        )
+    )
+    source = tmp_path / "requests.jsonl"
+    source.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    result = replay_case(
+        source, make_receipt([observed_worker()]), None, tmp_path / "replay", True
+    )
+    assert result["passed"], result
+    assert [row["predicted_cached_tokens"] for row in result["comparisons"]] == [
+        0,
+        0,
+        4,
+    ]
 
 
 def test_native_generated_tokens_match_later_prompt_under_bijection(tmp_path):

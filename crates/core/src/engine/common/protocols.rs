@@ -102,6 +102,10 @@ pub(crate) struct PrefillCost {
     pub new_tokens: usize,
     pub cached_tokens: usize,
     pub active_cached_tokens: usize,
+    /// Token-only prefix beyond the joint token/state hit. Align prefill must
+    /// execute and retain this junction before a later request can reuse it.
+    #[serde(default)]
+    pub shared_prefix_boundary: usize,
 }
 
 /// One output signal produced by a scheduler pass.

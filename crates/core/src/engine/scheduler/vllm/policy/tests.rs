@@ -80,6 +80,7 @@ mod vllm {
                 new_tokens: 4,
                 cached_tokens: 8,
                 active_cached_tokens: 8,
+                shared_prefix_boundary: 0,
             },
         );
 
@@ -96,6 +97,7 @@ mod vllm {
             new_tokens: 4,
             cached_tokens: 8,
             active_cached_tokens: 8,
+            shared_prefix_boundary: 0,
         };
         let adjusted = apply_mtp_prefix_recompute(
             SchedulingPolicy::TrtllmGuaranteedNoEvict,
@@ -123,6 +125,7 @@ mod vllm {
                 new_tokens: 0,
                 cached_tokens: 8,
                 active_cached_tokens: 8,
+                shared_prefix_boundary: 0,
             },
         );
 
@@ -139,6 +142,7 @@ mod vllm {
             new_tokens: 0,
             cached_tokens: 8,
             active_cached_tokens: 8,
+            shared_prefix_boundary: 0,
         };
         let adjusted = apply_prefix_recompute(
             SchedulingPolicy::TrtllmGuaranteedNoEvict,
