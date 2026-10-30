@@ -2548,7 +2548,8 @@ fn prepare_learned_iteration(
         return Err(AicError::InvalidForwardPassMetrics(
             "learned artifact uses per-request features but the iteration carries no aligned, \
              consistent extend_lengths/past_kv_lengths on every active rank; collect with the \
-             per-request FPM hooks (aisimulate_core.fpm_hooks) or train with --features v1"
+             per-request FPM hooks (aisimulate_core.fpm_hooks) or retrain with the default \
+             aggregate --features fpm5 (or v1)"
                 .to_string(),
         ));
     }

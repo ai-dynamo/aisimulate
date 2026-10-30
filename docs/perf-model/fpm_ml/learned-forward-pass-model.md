@@ -83,7 +83,8 @@ The same requirement holds for the SGLang simulator's own collection hook.
 
 ### Per-request fields
 
-Stock Dynamo FPM v1 (both backends) carries aggregates only. The per-request
+Stock Dynamo FPM v1 (both backends) carries aggregates only, which is all the
+default `fpm5` features need. The opt-in per-request
 presets (`atomic5`, `atomic10`, `sglang18`, `hisim`) need two additive, aligned lists in
 `scheduled_requests`, one entry per scheduled request in any order (the
 consumer sorts; only the alignment of the two lists matters):
@@ -118,7 +119,8 @@ ignored by aggregate-only consumers):
 
 The hook is a no-op when a producer already carries the fields, and logs and
 skips (aggregate-only FPM) when the engine internals it wraps are missing.
-Streams recorded without the hooks train with `--features v1` only.
+Streams recorded without the hooks train with the aggregate presets only: the
+default `fpm5`, or `--features v1`.
 
 Record the stream with Dynamo's own relay sink (`DYN_FPM_TRACE=1
 DYN_FPM_OUTPUT_PATH=...`, files `fpm-relay*.jsonl.gz`), which writes the raw
@@ -196,7 +198,7 @@ python -m aisimulate_core.sdk.fpm_learned train \
     `(present, past, extend)` (preset `hisim`);
   `design.md` §3.1 derives the atomic sets, the smallest subsets from which all 18
   can be computed back: decode 5 (`atomic5`), prefill 10 (`atomic10`). They are
-  the trainer defaults. Decode 5 matches the 18 on every train/test pair
+  explicit opt-ins for streams with request lists. Decode 5 matches the 18 on every train/test pair
   measured (not valid with speculative decoding); prefill 10 matches the 18
   in-distribution and trails it only when extrapolating across workloads.
   Fewer features do not make inference faster; the tree walk dominates.
@@ -206,20 +208,23 @@ python -m aisimulate_core.sdk.fpm_learned train \
   artifact that uses `req_*` / `slot*` features **refuses** (error, not a
   constant prediction) iterations that carry no consistent lists, because
   the trees never saw those features missing during training.
-  `--features` takes a preset name or a comma-separated list. Defaults are the
-  atomic sets: `atomic5` for `--worker-type decode` (n, Σ past, max/min past,
-  Σ past²) and `atomic10` for prefill / aggregated (those plus Σ/max/min extend,
-  Σ extend·past, Σ extend²). `sglang18` is the full 18-feature set they were
-  derived from; use it for a prefill model that must extrapolate to traffic
-  unlike its training data. Aggregate-only streams must opt in with
-  `--features v1`. Data that carries only the five FPM v1 counts and sums
-  (`num_prefill_requests`, `sum_prefill_tokens`, `sum_prefill_kv_tokens`,
-  `num_decode_requests`, `sum_decode_kv_tokens`; e.g. FPM Gym) uses
-  `--features fpm5`: the 17 `v1` features that need no variance. It drops
-  `var_prefill_length`, `var_decode_kv_tokens` and the decode sum of squares
-  recovered from the variance, which a missing variance would fill as if
-  every request had the same length. Like `v1`, it cannot tell a batch of
-  equal requests from one long request plus short ones of the same total.
+  `--features` takes a preset name or a comma-separated list. The default for
+  every `--worker-type` is `fpm5`: the 17 `v1` features that need only the five
+  FPM v1 counts and sums (`num_prefill_requests`, `sum_prefill_tokens`,
+  `sum_prefill_kv_tokens`, `num_decode_requests`, `sum_decode_kv_tokens`), so
+  any FPM stream trains without request lists or variances (e.g. stock Dynamo
+  FPM or FPM Gym). It drops `var_prefill_length`, `var_decode_kv_tokens` and
+  the decode sum of squares recovered from the variance, which a missing
+  variance would fill as if every request had the same length. Like `v1`, it
+  cannot tell a batch of equal requests from one long request plus short ones
+  of the same total. `--features v1` adds the variance terms when the producer
+  reports them. Streams with request lists can opt in to the atomic sets:
+  `atomic5` for decode (n, Σ past, max/min past, Σ past²) and `atomic10` for
+  prefill / aggregated (those plus Σ/max/min extend, Σ extend·past,
+  Σ extend²). `sglang18` is the full 18-feature set they were derived from;
+  use it for a prefill model that must extrapolate to traffic unlike its
+  training data. An explicit per-request preset still fails when no record
+  carries the lists.
 - The model is a scikit-learn `HistGradientBoostingRegressor` on
   `log(wall_ms)` per store, exported to plain JSON
   (`schema = aic_fpm_learned_forward_perf`, version 1). No pickle is involved
@@ -276,8 +281,8 @@ python -m aisimulate_core.sdk.fpm_learned train \
   --identity deployment_identity.json
 ```
 
-`fpm5` is suitable for aggregate-only telemetry; retain the appropriate feature
-preset when per-request data is available. The Python API accepts the equivalent
+`fpm5` is the default and suits aggregate-only telemetry; pass an explicit
+per-request preset when per-request data is available. The Python API accepts the equivalent
 `train(..., online_checkpoint_dir="models/decode_online_seed", identity=identity)`
 arguments and still returns the ordinary inference artifact.
 
@@ -296,7 +301,7 @@ are not independent online overrides:
 | Seed property | Training default | Role in online fitting |
 | --- | --- | --- |
 | `target` | `log_ms` | Squared loss on `log(latency_ms)`; `ms` uses the untransformed latency. The output transform must match. |
-| Ordered `features` | `atomic5` for decode, `atomic10` otherwise | Defines the feature ABI, fitted bins and grouping key. `fpm5` is an explicit aggregate-only option. |
+| Ordered `features` | `fpm5` for every worker type | Defines the feature ABI, fitted bins and grouping key. The per-request presets, such as `atomic5` and `atomic10`, are explicit options that need request lists. |
 | `max_iter` | `600` | Maximum offline tree count; the actual fitted tree count is preserved online. |
 | `learning_rate` | `0.05` | Shrinkage applied once to each fitted leaf contribution. Distinct from online `update_step`. |
 | `max_leaf_nodes` | `31` | Offline tree budget. Online structural updates reuse each fitted tree's reserved capacity. |
@@ -872,12 +877,13 @@ The Rust cost is a 400-tree walk of about 3.3 µs plus one pass over the per-req
 Smaller models are 4–5× faster at the same accuracy (`design.md` §8.7–8.8, measured on the
 GB300 SGLang and vLLM captures): time per estimate scales with trees × leaves, and the
 same-workload accuracy is flat down to 50 trees of 7 leaves. Trained with the existing
-options:
+options and the explicit atomic presets (measured before `fpm5` became the default;
+not repeated with `fpm5`):
 
 | role | features | `--max-iter` | `--learning-rate` | `--max-leaf-nodes` | Rust µs (was) | test MAPE (was) |
 | --- | --- | --- | --- | --- | --- | --- |
-| decode | `atomic5` (default) | 100 | 0.2 | 7 | 0.8–1.6 (3.4–5.5) | 3.3 % (4.0 %) |
-| prefill | `atomic10` (default) | 100 | 0.2 | 15 | 0.8–1.1 (4.5–6.3) | 5.0 % (5.1 %) |
+| decode | `atomic5` (atomic preset) | 100 | 0.2 | 7 | 0.8–1.6 (3.4–5.5) | 3.3 % (4.0 %) |
+| prefill | `atomic10` (atomic preset) | 100 | 0.2 | 15 | 0.8–1.1 (4.5–6.3) | 5.0 % (5.1 %) |
 
 The five decode features are the ones with information on a decode step (every request
 extends by one token); not for speculative decoding. The ten prefill features are the
