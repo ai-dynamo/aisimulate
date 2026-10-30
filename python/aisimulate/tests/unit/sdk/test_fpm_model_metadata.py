@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 
+from aisimulate_core.sdk.common import MULTIMODAL_TEXT_CONFIG_KEY
 from aisimulate_core.sdk.fpm_model_metadata import decoder_config_key
 
 pytestmark = pytest.mark.unit
@@ -61,3 +62,8 @@ _WRAPPER = "ExampleForConditionalGeneration"
 )
 def test_decoder_config_key(document, key):
     assert decoder_config_key(document) == key
+
+
+def test_the_registry_maps_wrappers_only_to_keys_that_the_helper_orders():
+    # The helper reads the registry only for a document that holds both keys, so a third key would go unseen.
+    assert set(MULTIMODAL_TEXT_CONFIG_KEY.values()) <= {"text_config", "llm_config"}

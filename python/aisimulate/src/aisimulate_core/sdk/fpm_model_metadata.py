@@ -8,10 +8,11 @@ These functions do not change the general SDK's model-loading precedence.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any
 
-from .common import MULTIMODAL_TEXT_CONFIG_KEY
+# The helper lives in a standard-library module so that FPM config intake can use it without importing the SDK.
+from aisimulate_core.decoder_config import decoder_config_key as decoder_config_key
+
 from .utils import (
     _attach_hf_quant_config,
     _infer_quantization_fields,
@@ -39,27 +40,6 @@ def inherit_decoder_precision(document: dict[str, Any], decoder: dict[str, Any])
                 raw[key] = document[key]
                 inherited.append(key)
     return raw, inherited
-
-
-def decoder_config_key(document: Mapping[str, Any]) -> str | None:
-    """Return the key that nests the text decoder in a checkpoint config, or None for a flat config.
-
-    The candidates, in order, are the key that MULTIMODAL_TEXT_CONFIG_KEY registers for the wrapper's first
-    architecture, then text_config, then llm_config. The first candidate that the document holds wins.
-    text_config is held whenever the key is present, so a malformed one is still chosen and intake reports it.
-    Any other key is held only as a nonempty object, so a null, empty or non-object value leaves the config flat.
-    The function never raises.
-    """
-    architectures = document.get("architectures")
-    wrapper = architectures[0] if isinstance(architectures, list) and architectures else None
-    keys = ("text_config", "llm_config")
-    if isinstance(wrapper, str) and wrapper in MULTIMODAL_TEXT_CONFIG_KEY:
-        keys = (MULTIMODAL_TEXT_CONFIG_KEY[wrapper], *keys)
-    for key in keys:
-        value = document.get(key)
-        if (key == "text_config" and key in document) or (isinstance(value, dict) and value):
-            return key
-    return None
 
 
 def attach_quantization_sidecar(raw: dict[str, Any], sidecar: dict[str, Any]) -> dict[str, Any]:
