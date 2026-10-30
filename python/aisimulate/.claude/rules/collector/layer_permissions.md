@@ -150,6 +150,29 @@ prediction) or a guard that raises a classified error citing the framework
 source line, or deletes the note. Do not implement guards from unverified
 claims, and never express these limits in YAML.
 
+## Version contract: one release per collector file
+
+Owner policy (2026-09-20, made binding 2026-10-30): version history lives in
+git, not in side-by-side files or version ranges.
+
+1. **Each collector module targets exactly one framework release.** Its
+   `__compat__` is a single exact pin, `"<framework>==<version>"`, equal to
+   the runtime `framework_manifest.yaml` resolves for its op (the framework
+   default or a family pin). No ranges, no `!=` exclusions, no per-version
+   branches for releases the manifest does not collect. Per-architecture
+   gates inside a module may only narrow that one release.
+2. **Upgrade in place.** A version bump rewrites the module for the new
+   release and moves its pin. Prior-version code is `git log -- <file>`
+   away; prior-version data stays permanent under its version key. Do not
+   add `_<version>` fork modules or keep old releases admitted "so they
+   still work".
+3. **Pin consolidation.** A model or family pin below the target version
+   upgrades with it; a pin above the default is the next version for that
+   family and needs its own GPU validation.
+4. **Enforced by tests.** `tests/unit/collector/test_framework_manifest.py`
+   fails when a stock vLLM, SGLang or TRT-LLM registry module declares
+   anything but `==` its resolved runtime.
+
 ## Module boundary: a collector task may only touch collector/
 
 The collector's outward surface is its **data contract**: the perf row schema

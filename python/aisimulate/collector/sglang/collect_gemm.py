@@ -37,33 +37,23 @@ helpers, SM filters, and perf logging.
 # per layer_permissions.md); the caveat is for data consumers: fp8_block
 # gemm rows collected at 0.5.14 and at 0.5.17 are NOT cross-version
 # comparable, because they time different kernels for the identical
-# (m, n, k) inputs. 0.5.15/0.5.16 stay excluded: never verified, and
-# version_resolver's __compat__ grammar (AND-of-comparators only, no OR) has
-# no way to express a true two-point set either -- this bounded range with
-# the two untested base releases carved out via != is the closest
-# expressible approximation, NOT an exact {0.5.14, 0.5.17} gate (CORRECTED
-# 2026-08-18, code review): `_check_compat`'s `!=` only excludes the literal
-# point version, so 0.5.15.post1/0.5.15rc1/0.5.16.post2-style variants of
-# the excluded releases still satisfy this specifier (see
-# tests/unit/collector/test_version_resolver.py's TestExactVersionSet for
-# the honest, probed semantics). This is an accepted, narrow gap: the
-# framework_manifest digest-pinned gate is the true version enforcement
-# upstream and only ever supplies exactly 0.5.14 or 0.5.17 in a sanctioned
-# run, so the leak is unreachable there.
-# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
-# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
-# SGLang 0.5.20 (GLM-5.3-Flash model pin; audited 2026-09-30 against tag
-# commit 94602c9c2b7c): serving changed WHICH kernels this module's raw
-# calls map to (bf16 CuTe DSL/split-K dispatch, JIT per-token fp8 quant,
-# Fp8ScaledMMOp, fp8_block Triton fallback for N%64/K%128, NVFP4 padding and
-# cute-dsl activation quant), so 0.5.20 runs delegate get_gemm_test_cases/
-# run_gemm to collect_gemm_0520.py (serving-built linear layers; full audit
-# there). That is a whole-implementation fork selected by the installed
-# version at the bottom of this module, not a per-call shim; it lives here
-# instead of a registry VersionRoute because tools/perf_database/
-# changed_ops.py fails closed on versioned registry entries. 0.5.18/0.5.19
-# are not audited and stay excluded (same != caveat as above).
-__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.18,!=0.5.19"
+# (m, n, k) inputs.
+# 0.5.21 since 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
+# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+# The SGLang 0.5.20 fork (collect_gemm_0520.py, serving-built linear layers)
+# retired with the 0.5.20 lane 2026-10-30; it is git history (main at c540ff90a (before #649)).
+# FIXME(re-verify, 2026-10-30): two independent SM100/103 serving gaps, accepted
+# by the owner for the 0.5.21 tables (no re-collection). Re-check at the next bump.
+# 1. bf16 GEMM kernel: serving resolves the auto bf16 backend to CuTe DSL
+#    (quantization/unquant.py:216@v0.5.21) and runs the TGV kernel only where
+#    use_cutedsl_bf16_gemm(m, n, k) picks it (kernels/ops/gemm/
+#    cutedsl_bf16_gemm.py:1357-1387: small m, 2048 <= k <= 6144, n >= 1024);
+#    everywhere else serving runs F.linear like this module.
+# 2. nvfp4 activation quant: serving quantizes with FlashInfer's cute-dsl backend
+#    (quantization/fp4_utils.py:24@v0.5.21); this module's flashinfer_fp4_quantize
+#    uses the default cuda backend. The mm_fp4 GEMM itself matches.
+__compat__ = "sglang==0.5.21"
 
 import os
 import random
@@ -140,23 +130,6 @@ except ImportError:
     from sglang.srt.layers.quantization.fp8_kernel import sglang_per_token_group_quant_fp8
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from sglang.srt.layers.quantization.fp8_utils import requant_weight_ue8m0
-
-
-def _sglang_release() -> tuple[int, ...]:
-    """Installed SGLang release as an int tuple (local/pre-release tags dropped).
-
-    Collection always runs with SGLang installed (collect.py resolves the
-    pinned runtime from the installed version first); without the
-    distribution metadata (offline import tests) the legacy path is kept.
-    """
-    from importlib.metadata import PackageNotFoundError
-
-    from packaging.version import Version
-
-    try:
-        return Version(_dist_version("sglang")).release
-    except PackageNotFoundError:
-        return (0,)
 
 
 def get_gemm_test_cases():
@@ -494,13 +467,3 @@ def run_gemm(gemm_type, batch_size, N, K, *, perf_filename, device="cuda:0"):  #
     finally:
         op_list.clear()
         torch.cuda.empty_cache()
-
-
-# Whole-implementation version fork (see the __compat__ comment): SGLang
-# 0.5.20 collects through serving-built linear layers. Exactly 0.5.20: the
-# 0.5.21 default keeps this module's own (0.5.21-validated) implementation.
-if _sglang_release()[:3] == (0, 5, 20):
-    from collector.sglang import collect_gemm_0520 as _fork_0520
-
-    get_gemm_test_cases = _fork_0520.get_gemm_test_cases
-    run_gemm = _fork_0520.run_gemm

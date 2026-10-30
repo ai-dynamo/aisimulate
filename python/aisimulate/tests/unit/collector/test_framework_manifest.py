@@ -59,11 +59,9 @@ def test_manifest_exposes_pinned_vllm_xpu_runtime_identity():
 def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
     assert all(not entry.versions for entry in VLLM_REGISTRY)
 
-    # Each module pins the runtime that actually collects it: the manifest
-    # default, or its family override (e.g. kda runs only on the vllm kimi-k3
-    # preview image, frameworks.vllm.families.kda). The Qwen3.8 target-lane
-    # collectors accept both the default 0.24.0 runtime and model-pinned
-    # 0.27.1, so compare the declaration semantically just as collect.py does.
+    # Each module pins exactly the runtime that collects it: the manifest
+    # default, or its family override (frameworks.vllm.families, e.g. gemm on
+    # 0.31.0). One release per file (owner policy 2026-09-20): no ranges.
     module_versions: dict[str, set[str]] = {}
     for entry in VLLM_REGISTRY:
         module_versions.setdefault(entry.module, set()).add(resolve_op_runtime("vllm", entry.op).version)
@@ -74,22 +72,28 @@ def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
         source = (REPO_ROOT / f"{module.replace('.', '/')}.py").read_text(encoding="utf-8")
         declarations = [line.strip() for line in source.splitlines() if line.startswith("__compat__")]
         assert len(declarations) == 1, module
-        declared = declarations[0].split("=", 1)[1].strip().strip('"')
-        assert _check_compat(declared, resolved_version), (module, declared, resolved_version)
+        assert declarations[0] == f'__compat__ = "vllm=={resolved_version}"', (module, declarations[0])
 
 
-@pytest.mark.parametrize(
-    "module",
-    ["collector.vllm.collect_moe", "collector.vllm.collect_gdn", "collector.vllm.collect_gemm"],
-)
-def test_vllm_target_lane_collectors_declare_the_exact_bumped_compat_range(module):
-    expected = '__compat__ = "vllm>=0.24.0,<=0.30.0,!=0.25.1,!=0.26.0,!=0.27.0"'
-    if module in {"collector.vllm.collect_gemm", "collector.vllm.collect_moe"}:
-        # GLM-5.3-Flash model pin: 0.31.0 is admitted on top of the 0.30.0 default lanes.
-        expected = '__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0"'
-    source = (REPO_ROOT / f"{module.replace('.', '/')}.py").read_text(encoding="utf-8")
-    declarations = [line.strip() for line in source.splitlines() if line.startswith("__compat__")]
-    assert declarations == [expected], module
+@pytest.mark.parametrize("backend", ["sglang", "trtllm"])
+def test_stock_collectors_are_exactly_pinned_to_their_resolved_runtime(backend):
+    # One release per file (owner policy 2026-09-20): every registry module
+    # declares exactly the runtime the manifest resolves for its op (default or
+    # family pin). Earlier releases' code is `git log` away, never a range.
+    registry = {"sglang": SGLANG_REGISTRY, "trtllm": TRTLLM_REGISTRY}[backend]
+    module_versions: dict[str, set[str]] = {}
+    for entry in registry:
+        module_versions.setdefault(entry.module, set()).add(resolve_op_runtime(backend, entry.op).version)
+    for module, versions in sorted(module_versions.items()):
+        assert len(versions) == 1, (module, versions)
+        source = (REPO_ROOT / f"{module.replace('.', '/')}.py").read_text(encoding="utf-8")
+        declarations = [line.strip() for line in source.splitlines() if line.startswith("__compat__")]
+        version = next(iter(versions))
+        allowed = {f'__compat__ = "{backend}=={version}"'}
+        # a module pinned to an exact source commit is an exact pin too
+        if declarations and "@" in declarations[0]:
+            allowed = {declarations[0]}
+        assert len(declarations) == 1 and declarations[0] in allowed, (module, declarations)
 
 
 def test_active_vllm_xpu_collectors_are_exactly_pinned_to_manifest_version():
@@ -384,81 +388,26 @@ def test_unknown_model_id_falls_back_to_default_resolution():
     assert unmatched == baseline
 
 
-@pytest.mark.parametrize(
-    "model_path",
-    [
-        "Qwen/Qwen3.8-2.4T-A95B",
-        "Qwen/Qwen3.8-2.4T-A95B-FP8",
-        "RadixArk/Qwen3.8-2.4T-A95B-NVFP4",
-    ],
-)
-def test_model_pin_match_resolves_qwen38_max_to_sglang_0_5_17(model_path):
-    # Real manifest (no path= override): the checked-in frameworks.sglang.models
-    # entries added for Qwen3.8-Max day-0 support.
-    runtime = require_collector_runtime(
-        "sglang", "0.5.17", requested_ops={"gemm"}, wideep_ops=WIDEEP_OPS, model_path=model_path
-    )
-    assert runtime.version == "0.5.17"
-    assert runtime.image().startswith("lmsysorg/sglang:v0.5.17@sha256:")
-    assert runtime.image("cu130").startswith("lmsysorg/sglang:v0.5.17-cu130@sha256:")
-    # Not a family classification — see _model_pinned_runtime docstring.
-    assert runtime.family is None
-
-
-def test_model_pin_mismatch_error_names_the_model_scoped_image():
-    with pytest.raises(RuntimeError) as excinfo:
-        require_collector_runtime(
-            "sglang",
-            "0.5.21",
-            requested_ops={"gemm"},
-            wideep_ops=WIDEEP_OPS,
-            model_path="Qwen/Qwen3.8-2.4T-A95B",
-        )
-    message = str(excinfo.value)
-    # Same template as the pre-4b guard ("~:249"), but naming the
-    # model-scoped runtime/image instead of the framework default.
-    assert "sglang stock collector requires exactly 0.5.17, found 0.5.21" in message
-    assert "use lmsysorg/sglang:v0.5.17@sha256:" in message
-
-
-@pytest.mark.parametrize(
-    "model_path",
-    [
-        "Qwen/Qwen3.8-2.4T-A95B",
-        "Qwen/Qwen3.8-2.4T-A95B-FP8",
-        "RadixArk/Qwen3.8-2.4T-A95B-NVFP4",
-    ],
-)
-def test_model_pin_match_resolves_qwen38_max_to_vllm_0_27_1(model_path):
-    runtime = require_collector_runtime(
-        "vllm", "0.27.1", requested_ops={"gemm"}, wideep_ops=set(), model_path=model_path
-    )
-    assert runtime.version == "0.27.1"
-    assert runtime.image().startswith("vllm/vllm-openai:v0.27.1@sha256:")
-    assert runtime.image("cu129").startswith("vllm/vllm-openai:v0.27.1-cu129@sha256:")
-    assert runtime.family is None
-
-
 def test_vllm_model_pin_mismatch_error_names_the_model_scoped_image():
     with pytest.raises(RuntimeError) as excinfo:
         require_collector_runtime(
             "vllm",
-            "0.24.0",
-            requested_ops={"gemm"},
+            "0.30.0",
+            requested_ops={"attention_context"},
             wideep_ops=set(),
-            model_path="Qwen/Qwen3.8-2.4T-A95B",
+            model_path="zai-org/GLM-5.3-Flash",
         )
     message = str(excinfo.value)
-    assert "vllm stock collector requires exactly 0.27.1, found 0.24.0" in message
-    assert "use vllm/vllm-openai:v0.27.1@sha256:" in message
+    assert "vllm stock collector requires exactly 0.31.0, found 0.30.0" in message
+    assert "use vllm/vllm-openai:v0.31.0@sha256:" in message
 
 
 def test_vllm_unknown_model_id_falls_back_to_default_resolution():
-    baseline = require_collector_runtime("vllm", "0.30.0", requested_ops={"gemm"}, wideep_ops=set())
+    baseline = require_collector_runtime("vllm", "0.30.0", requested_ops={"attention_context"}, wideep_ops=set())
     unmatched = require_collector_runtime(
         "vllm",
         "0.30.0",
-        requested_ops={"gemm"},
+        requested_ops={"attention_context"},
         wideep_ops=set(),
         model_path="some-org/not-a-pinned-model",
     )
@@ -789,20 +738,16 @@ frameworks:
 @pytest.mark.parametrize(
     "version,accepted",
     [
-        ("0.24.0", True),
-        ("0.25.0", True),
-        ("0.25.1", False),
-        ("0.26.0", False),
-        ("0.27.0", False),
-        ("0.27.1", True),
-        ("0.28.0", True),
-        ("0.29.0", True),
-        ("0.30.0", True),
-        ("0.31.0", True),
+        ("0.24.0", False),
+        ("0.25.0", False),
+        ("0.27.1", False),
+        ("0.28.0", False),
+        ("0.30.0", False),  # 0.30.0 gemm collector -> git history
+        ("0.31.0", True),  # gemm family pin (2026-10-30)
         ("0.31.1", False),
     ],
 )
-def test_gemm_025_qualification_preserves_other_release_gaps(version, accepted):
+def test_gemm_admits_only_its_family_release(version, accepted):
     import ast
 
     source = ast.parse((COLLECTOR_ROOT / "vllm" / "collect_gemm.py").read_text())

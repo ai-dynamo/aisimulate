@@ -28,12 +28,12 @@ from collector.version_resolver import _check_compat
 # builders/selectors remain authoritative; no kernel fallback is introduced.
 # The campaign manifest still selects one exact release per run.
 #
-# The file-level range spans the audited routes; each architecture is
-# additionally gated to its own audited release(s) by ``_ARCHITECTURE_COMPAT``
-# below: DeepSeek-V4 on 0.24.0-0.30.0 (0.30.0 is the collector default),
-# GLM-5.3-Flash on stock vLLM 0.31.0 only (no overlay); an architecture on
-# any other release raises instead of running.
-__compat__ = "vllm>=0.24.0,<=0.31.0"
+# The mhc family runs on 0.31.0 (framework_manifest.yaml family pin,
+# 2026-10-30). Each architecture is additionally gated by
+# ``_ARCHITECTURE_COMPAT`` below; an architecture that is not audited on the
+# installed release raises instead of running.
+# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+__compat__ = "vllm==0.31.0"
 
 # vLLM imports stay lazy in this module so that a mismatched install fails
 # inside collect.py's per-op error handling (after the __compat__ gate can
@@ -62,8 +62,13 @@ GLM5NEXT_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 # Per-architecture audited vLLM releases. A case whose architecture is not
 # audited on the installed release raises MhcRuntimeNotAuditedError (a
 # classified failure) instead of running an unverified dispatch.
+# DeepSeek-V4 is NOT audited on 0.31.0. mhc_module_perf's architecture-free
+# view (MhcKey = op_name, hc_mult, hidden_size; the DeepSeek-V4 consumer)
+# would merge GLM-5.3-Flash's fused-site rows at (4, 4096) into one
+# 0.31.0 table, so DeepSeek-V4 rows stay on the 0.24.0-0.30.0 tables and
+# their collector route is `git log -- <this file>` away. Re-admitting it
+# needs an architecture-keyed DeepSeek-V4 lookup first (consumer change).
 _ARCHITECTURE_COMPAT = {
-    ARCHITECTURE: "vllm>=0.24.0,<=0.30.0",
     # Stock vllm 0.31.0 only (no overlay) — see the GLM audit below.
     GLM5NEXT_ARCHITECTURE: "vllm==0.31.0",
 }

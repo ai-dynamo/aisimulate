@@ -3,7 +3,7 @@
 
 # MiniMax-M3 support landed in TRT-LLM 1.3.0rc19 (modeling_minimaxm3.py +
 # attention_backend/sparse/minimax_m3/); this collector follows the rc20 APIs.
-__compat__ = "trtllm>=1.3.0rc19"
+__compat__ = "trtllm==1.3.0rc29"
 
 """
 MSA Module Collector for TRT-LLM — MiniMax-M3 sparse-attention benchmarking.

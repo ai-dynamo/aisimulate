@@ -59,10 +59,10 @@ quantized-weight preparation, and selected-kernel reporting.
 # (schemes/compressed_tensors_w4a4_nvfp4.py:29-31,95-141). This adds the
 # exact 0.25.0 release to the existing lane, not 0.25.1/0.26.0/0.27.0.
 # 0.30.0 source audit (2026-09-30: tag v0.30.0 == ced6857afa0e vs v0.27.1):
-# the collector default (framework_manifest.yaml; the 2026-10 campaign
-# tables) and the baseline of the 0.31.0 audit below, which admits the
-# GLM-5.3-Flash model-pinned run. 0.28.0/0.29.0 stay admitted from the
-# 0.27.1 -> 0.30.0 upgrade path.
+# the 2026-10 campaign tables and the baseline of the 0.31.0 audit below.
+# The gemm family runs on 0.31.0 (framework_manifest.yaml family pin,
+# 2026-10-30), so this file targets exactly 0.31.0.
+# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
 # bf16: UnquantizedLinearMethod now binds its GEMM at __init__ from
 #   kernel_config.linear_backend (layers/linear.py:169-174, apply :234-238);
 #   dispatch_unquantized_gemm (layers/utils.py:584-616) returns
@@ -131,7 +131,7 @@ quantized-weight preparation, and selected-kernel reporting.
 # Helpers with identical bodies: scaled_fp4_quant (_custom_ops.py:1513-1588),
 #   per_block_cast_to_fp8 (utils/deep_gemm.py:983-1002). All imports below
 #   resolve at 0.31.0.
-__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0"
+__compat__ = "vllm==0.31.0"
 
 from types import SimpleNamespace
 

@@ -103,16 +103,18 @@ def test_glm_row_conventions_match_the_shared_table(monkeypatch):
 @pytest.mark.parametrize(
     ("backend", "architecture", "version", "audited"),
     [
-        ("vllm", DSV4, "0.24.0", True),
-        ("vllm", DSV4, "0.25.0", True),
+        # DeepSeek-V4 is not audited on 0.31.0 (shared architecture-free key, see the module)
+        ("vllm", DSV4, "0.30.0", False),
         ("vllm", DSV4, "0.31.0", False),
         ("vllm", GLM, "0.31.0", True),
         ("vllm", GLM, "0.30.0", False),
         ("vllm", GLM, "0.25.0", False),
         ("vllm", GLM, "0.27.1", False),
-        ("sglang", DSV4, "0.5.14", True),
+        ("sglang", DSV4, "0.5.21", True),
+        ("sglang", DSV4, "0.5.14", False),
         ("sglang", DSV4, "0.5.20", False),
-        ("sglang", GLM, "0.5.20", True),
+        ("sglang", GLM, "0.5.20", False),  # 0.5.20 lane retired 2026-10-30
+        ("sglang", GLM, "0.5.21", False),  # not ported to 0.5.21 yet
         ("sglang", GLM, "0.5.14", False),
         ("sglang", "UnknownForCausalLM", "0.5.20", False),
     ],
@@ -145,13 +147,10 @@ def test_audited_releases_never_overlap_across_architectures(monkeypatch, backen
         assert len(admitted) <= 1, (version, admitted)
 
 
-def test_vllm_file_compat_admits_glm_runtime_and_keeps_dsv4_releases(monkeypatch):
+def test_vllm_file_is_pinned_to_the_mhc_family_release(monkeypatch):
     module = _load(monkeypatch, "vllm")
-    from collector.version_resolver import _check_compat
-
-    for version in ("0.24.0", "0.25.0", "0.31.0"):
-        assert _check_compat(module.__compat__, version), version
-    assert not _check_compat(module.__compat__, "0.32.0")
+    assert module.__compat__ == "vllm==0.31.0"
+    assert set(module._ARCHITECTURE_COMPAT) == {GLM}
 
 
 def test_vllm_glm_sites_import_the_0_31_0_module_location():

@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # MiniMax-M3 support landed in SGLang v0.5.16 (models/minimax_m3.py +
-# layers/attention/minimax_sparse_backend.py + minimax_sparse_ops/); the
-# collector-default 0.5.14 pin has no M3. The framework manifest pins the
-# msa family to the official v0.5.16 image.
-__compat__ = "sglang>=0.5.16"
+# layers/attention/minimax_sparse_backend.py + minimax_sparse_ops/); the msa
+# family now runs on the 0.5.21 default (the v0.5.16 family pin is retired).
+# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+__compat__ = "sglang==0.5.21"
 
 """
 MSA Module Collector for SGLang — MiniMax-M3 sparse-attention benchmarking.

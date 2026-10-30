@@ -143,7 +143,11 @@ class TestCheckCompat:
 # ---------------------------------------------------------------------------
 @pytest.mark.unit
 class TestExactVersionSet:
-    """``_check_compat``'s grammar is AND-of-comparators only (see
+    """Grammar semantics only: collector modules no longer use this form (one
+    exact ``==`` pin per file, layer_permissions.md "Version contract"); the
+    tests below keep ``_check_compat``'s range/``!=`` behaviour documented.
+
+    ``_check_compat``'s grammar is AND-of-comparators only (see
     ``_parse_compat_specifier``): no OR, so a __compat__ string can never
     directly express a discrete set like "0.5.14 or 0.5.17". When a module's
     verified-compatible versions are non-contiguous -- e.g.

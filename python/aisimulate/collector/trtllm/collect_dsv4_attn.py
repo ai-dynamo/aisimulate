@@ -41,7 +41,7 @@ No trtllm calib table is produced yet — same accepted state as vllm 0.24.0.
 
 from __future__ import annotations
 
-__compat__ = "trtllm>=1.3.0rc21"
+__compat__ = "trtllm==1.3.0rc29"
 
 import gc
 import json

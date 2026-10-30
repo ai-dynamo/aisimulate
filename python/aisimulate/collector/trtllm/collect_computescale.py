@@ -15,7 +15,7 @@ binds both to this producer's checkpoint:
   extra_perf_filenames[0]  -> scale_matrix_perf.txt  (the static per-tensor quant alone)
 """
 
-__compat__ = "trtllm>=1.3.0rc20"
+__compat__ = "trtllm==1.3.0rc29"
 
 import tensorrt_llm
 import torch

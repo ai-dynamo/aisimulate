@@ -39,16 +39,13 @@ frameworks:
     # one model's entire run and leaves every other model's resolution (and
     # every other op's family/default resolution) unchanged.
     #
-    # SGLang v0.5.17 registers Qwen3_5MoeForCausalLM /
-    # Qwen3_5ForCausalLM; v0.5.14 predated that model integration and could
-    # not collect these cases. The 0.5.21 default now covers the registration,
-    # but these model runs stay pinned to the runtime they were validated on
-    # until a Qwen3.8 collection is re-validated on 0.5.21 (the 0.5.21 serving
-    # matrix fails Qwen3.8-2.4T-A95B / -FP8 at boot, results/sm90/
-    # sglang-0.5.21.yaml). Both tags below resolve to the same multi-arch
-    # index digest. These are collector-runtime declarations, not claims of
-    # whole-checkpoint serving validation (in particular for the RadixArk
-    # NVFP4 collection fixture).
+    # Qwen3.8-2.4T model pins (0.5.17) folded into the 0.5.21 default
+    # 2026-10-30 per the pin-consolidation rule (pins below the target version
+    # upgrade with it): the 0.5.21 tables already carry the Qwen3.8 MoE and GDN
+    # shapes from the unfiltered campaign, and the op-probe serving matrix boots
+    # Qwen3.8-2.4T-A95B on SM90/SM100 and -FP8 on SM90 under 0.5.21
+    # (benchmarks/evidence/collector/op-probe-2026-10). The 0.5.17 tables stay
+    # under their version key.
     #
     # Scope: the override is selected only when collect.py resolves a single
     # exact model_path (normally through --model-path, or through an
@@ -56,41 +53,13 @@ frameworks:
     # has no single model identity and therefore uses the framework/family
     # runtime; run these model-pinned campaigns separately at their declared
     # runtime rather than mixing them into an unfiltered invocation.
-    models:
-      "Qwen/Qwen3.8-2.4T-A95B":
-        version: "0.5.17"
-        images:
-          default: "lmsysorg/sglang:v0.5.17@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
-          cu130: "lmsysorg/sglang:v0.5.17-cu130@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
-      "Qwen/Qwen3.8-2.4T-A95B-FP8":
-        version: "0.5.17"
-        images:
-          default: "lmsysorg/sglang:v0.5.17@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
-          cu130: "lmsysorg/sglang:v0.5.17-cu130@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
-      "RadixArk/Qwen3.8-2.4T-A95B-NVFP4":
-        version: "0.5.17"
-        images:
-          default: "lmsysorg/sglang:v0.5.17@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
-          cu130: "lmsysorg/sglang:v0.5.17-cu130@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
-      # GLM-5.3-Flash (Glm5NextForConditionalGeneration) standalone per-op
-      # collection. SGLang first ships python/sglang/srt/models/glm5_next.py
-      # (with dsa_indexer_kpool.py and communicator_mhc.py) in the official
-      # v0.5.20 release, tag commit 94602c9c2b7cbdb8efd5c52802dac6a1c180089e;
-      # the 0.5.14 default has no glm5_next model. Docker Hub reported the
-      # multi-arch index digest below for both v0.5.20 and v0.5.20-cu130 on
-      # 2026-09-30; its linux/arm64 child (the GB300 platform image, imported
-      # for collection as b0d8718a...-auth3.sqsh) is
-      # sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862.
-      # Scope/precedence as documented for the Qwen3.8 pins above: the pin
-      # applies only when collect.py resolves exactly one of these model
-      # paths; every other model resolves exactly as before.
-      "zai-org/GLM-5.3-Flash": &glm53flash_sglang_runtime
-        version: "0.5.20"
-        source_commit: "94602c9c2b7cbdb8efd5c52802dac6a1c180089e"
-        images:
-          default: "lmsysorg/sglang:v0.5.20@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f"
-          cu130: "lmsysorg/sglang:v0.5.20-cu130@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f"
-      "nvidia/GLM-5.3-Flash-NVFP4": *glm53flash_sglang_runtime
+    # GLM-5.3-Flash SGLang 0.5.20 model pin retired 2026-10-30 (owner decision:
+    # one release per collector file; 0.5.20 is below the 0.5.21 target). The
+    # 0.5.20 tables stay under their version key; re-collect them from
+    # main at c540ff90a (before #649). Moving the lane to 0.5.21 needs the GLM
+    # attention runner, KDA, mHC and GEMM ports listed in the 2026-10-30
+    # source audit, then a re-collection.
+    models: {}
   trtllm:
     source_repo: "https://github.com/NVIDIA/TensorRT-LLM.git"
     # 2026-10-02 (H20/sm90 upgrade audit, benchmarks/evidence/collector/op-probe-2026-10/findings.yaml
@@ -122,6 +91,22 @@ frameworks:
       version: "0.30.0"
       images:
         default: "vllm/vllm-openai:v0.30.0@sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90"
+    # gemm / moe / kda / mhc move to vLLM 0.31.0 (owner decision 2026-10-30):
+    # GLM-5.3-Flash collects these families on 0.31.0, and each collector file
+    # targets exactly one release, so the families upgrade instead of carrying
+    # 0.30.0 and 0.31.0 side by side. A family pin moves the family for every
+    # model. The 0.30.0 tables stay under their version key; the 0.30.0
+    # collectors are `git log` away. Same stock image as the GLM-5.3-Flash
+    # model pin below (multi-arch index; amd64 a4a4c043..., arm64 3f7dd5b7...).
+    families:
+      gemm: &vllm_0310_runtime
+        version: "0.31.0"
+        source_commit: "db9527a46873454610df6dbedf79a36d6bf1a7f6"
+        images:
+          default: "vllm/vllm-openai:v0.31.0@sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3"
+      moe: *vllm_0310_runtime
+      kda: *vllm_0310_runtime
+      mhc: *vllm_0310_runtime
     # kda family pin RETIRED (owner decision 2026-09-28): the family ran on the
     # kimi-k3 preview image (0.1.dev19262) while the consumer's fused-decode
     # pricing did not match 0.27's packed-decode serving path (review #1559).
@@ -134,7 +119,8 @@ frameworks:
       # default 2026-09-20 per the pin-consolidation rule: pins BELOW the
       # target version upgrade with it; the kda preview pin (an odd dev-build
       # pin) was revisited at the 0.30.0 move and retired, see above.
-      # moe: NO family pin (owner decision 2026-08-02, reverting the
+      # moe: the 0.31.0 family pin above is a stock release (2026-10-30).
+      # History: NO family pin (owner decision 2026-08-02, reverting the
       # 2026-08-01 family-wide preview pin — a temporary preview build must
       # not own a family default; a family pin here hijacks image selection
       # for every model). ALL vllm moe collection — including K3 — runs on
@@ -159,34 +145,19 @@ frameworks:
     # frameworks.sglang.models above: an exact run model_path overrides both
     # family pins and the framework default for every op in that run.
     #
-    # Qwen3.8-Max needs vLLM v0.27.1. The vLLM model registry first maps the
-    # bare Qwen3_5MoeForCausalLM architecture string at v0.27.1
-    # (model_executor/models/registry.py:202 at tag v0.27.1, commit
-    # 6e448d0ea9bf3d88d898b65449ca6dc2aec170ac); v0.24.0 has the model class
-    # but no standard registry route for that architecture. Docker Hub's
-    # registry API reported the immutable index digests below on 2026-08-21.
-    # v0.27.1 has default and cu129 variants, but no cu128/cu130 tags.
+    # Qwen3.8-2.4T model pins (0.27.1) folded into the 0.30.0 default
+    # 2026-10-30 per the pin-consolidation rule: v0.30.0 registers
+    # Qwen3_5MoeForCausalLM, the 0.30.0 tables already carry the Qwen3.8 MoE
+    # and GDN shapes, and the op-probe serving matrix boots -FP8 (SM90) and
+    # nvidia's NVFP4 checkpoint (SM90/SM100) under 0.30.0
+    # (benchmarks/evidence/collector/op-probe-2026-10).
+    # The 0.27.1 tables stay under their version key.
     #
     # Scope: the override is selected only when collect.py resolves one exact
     # model_path. A full/unfiltered plan has no single model identity and uses
     # the normal framework/family runtime; run these campaigns separately at
     # their declared runtime.
     models:
-      "Qwen/Qwen3.8-2.4T-A95B":
-        version: "0.27.1"
-        images:
-          default: "vllm/vllm-openai:v0.27.1@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967"
-          cu129: "vllm/vllm-openai:v0.27.1-cu129@sha256:07913e94a58a4e61322c88f8d4647411b4dd394838b53abacaa32448d9d8de0a"
-      "Qwen/Qwen3.8-2.4T-A95B-FP8":
-        version: "0.27.1"
-        images:
-          default: "vllm/vllm-openai:v0.27.1@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967"
-          cu129: "vllm/vllm-openai:v0.27.1-cu129@sha256:07913e94a58a4e61322c88f8d4647411b4dd394838b53abacaa32448d9d8de0a"
-      "RadixArk/Qwen3.8-2.4T-A95B-NVFP4":
-        version: "0.27.1"
-        images:
-          default: "vllm/vllm-openai:v0.27.1@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967"
-          cu129: "vllm/vllm-openai:v0.27.1-cu129@sha256:07913e94a58a4e61322c88f8d4647411b4dd394838b53abacaa32448d9d8de0a"
       # GLM-5.3-Flash (Glm5NextForConditionalGeneration) standalone per-op
       # collection runs on the stock official v0.31.0 release (no overlay),
       # tag commit db9527a46873454610df6dbedf79a36d6bf1a7f6. v0.31.0 moves

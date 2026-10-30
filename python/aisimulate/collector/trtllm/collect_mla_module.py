@@ -45,7 +45,7 @@
 
 # 1.3.0rc20 renamed the cache-manager sparse kwargs and moved attention
 # metadata to lowered SparseMetadataParams; this module follows those APIs.
-__compat__ = "trtllm>=1.3.0rc20"
+__compat__ = "trtllm==1.3.0rc29"
 
 """
 MLA Module Collector for TRT-LLM — unified MLA and DSA benchmarking.

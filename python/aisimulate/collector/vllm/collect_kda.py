@@ -48,16 +48,17 @@ Output:
     kda_perf.txt — same column layout as the sglang kda collector.
 """
 
-# Kimi-K3 runs on the manifest default 0.30.0 since the kda family pin on
-# the kimi-k3 preview image was retired 2026-09-28: 0.30's DS-layout probe
+# The kda family runs on 0.31.0 (framework_manifest.yaml family pin,
+# 2026-10-30) for both architectures. History: Kimi-K3 ran on 0.30.0 after
+# the kimi-k3 preview pin was retired 2026-09-28: 0.30's DS-layout probe
 # (is_fused_kda_decode_supported, now with recurrent_state_dtype) selects
 # fused_kda_decode for the non-spec decode, and the packed conv-update +
 # recurrence pair is measured alongside as the spec-decode serving path.
-# GLM-5.3-Flash runs on stock 0.31.0 (no overlay; model-pinned run). The
-# file-level range spans the two audited routes; each KDA architecture is
-# additionally gated at runtime to its own audited release by
-# _KDA_ARCHITECTURE_COMPAT, raising KdaRuntimeNotAuditedError otherwise.
-__compat__ = "vllm>=0.30.0,<=0.31.0"
+# GLM-5.3-Flash runs on stock 0.31.0 (no overlay). Each KDA architecture is
+# additionally gated at runtime by _KDA_ARCHITECTURE_COMPAT, raising
+# KdaRuntimeNotAuditedError otherwise.
+# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+__compat__ = "vllm==0.31.0"
 
 import gc
 import os
@@ -882,7 +883,7 @@ GLM5_NEXT_KDA_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 # replicates; any other installed release raises KdaRuntimeNotAuditedError (a
 # classified failure) instead of timing a possibly different kernel path.
 _KDA_ARCHITECTURE_COMPAT = {
-    KIMI_K3_KDA_ARCHITECTURE: "vllm==0.30.0",
+    KIMI_K3_KDA_ARCHITECTURE: "vllm==0.31.0",  # 0.30.0 route -> git history; GPU smoke 2026-10-30
     GLM5_NEXT_KDA_ARCHITECTURE: "vllm==0.31.0",
 }
 

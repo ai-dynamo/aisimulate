@@ -5,8 +5,6 @@
 
 import ast
 import json
-import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -18,10 +16,9 @@ from collector.case_generator import (
     moe_model_allows_quantization,
 )
 from collector.model_cases import build_collection_case_plan
-from collector.sglang.registry import REGISTRY as SGLANG_REGISTRY
 from collector.version_resolver import _check_compat
 
-from .test_getter_deduplication import _install_vllm_stubs, _load_collector, _stub_module
+from .test_getter_deduplication import _install_vllm_stubs, _load_collector
 
 pytestmark = pytest.mark.unit
 
@@ -169,83 +166,28 @@ def test_vllm_nvfp4_uses_modelopt_only_for_the_glm53flash_checkpoint(monkeypatch
 @pytest.mark.parametrize(
     "version,accepted",
     [
-        ("0.31.0", True),
-        ("0.30.0", True),  # the collector default lanes
-        ("0.28.0", True),
-        ("0.29.0", True),
+        ("0.31.0", True),  # gemm / moe family pins (2026-10-30)
+        ("0.30.0", False),  # 0.30.0 collectors -> git history
+        ("0.28.0", False),
+        ("0.29.0", False),
         ("0.31.1", False),
         ("0.32.0", False),
-        ("0.24.0", True),
+        ("0.24.0", False),
     ],
 )
 def test_vllm_collectors_admit_exactly_the_audited_releases(path, version, accepted):
     assert _check_compat(_compat(path), version) is accepted
 
 
-@pytest.mark.parametrize(
-    "path,fork,names",
-    [("collector/sglang/collect_gemm.py", "collect_gemm_0520", ("get_gemm_test_cases", "run_gemm"))],
-)
-def test_sglang_0_5_20_runs_delegate_to_the_serving_built_fork(path, fork, names):
-    """The registry module stays unversioned (changed_ops rejects VersionRoute
-    entries) and swaps in the 0.5.20 implementation by installed release."""
-    tree = ast.parse((REPO_ROOT / path).read_text())
-    gate = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.If)
-        and "_sglang_release()" in ast.unparse(node.test)
-        and "(0, 5, 20)" in ast.unparse(node.test)
-    )
-    body = ast.unparse(gate)
-    # exactly 0.5.20: the 0.5.21 default keeps the module's own implementation
-    assert "==" in ast.unparse(gate.test)
-    assert f"from collector.sglang import {fork} as _fork_0520" in body
-    for name in names:
-        assert f"{name} = _fork_0520.{name}" in body
-    entry = next(e for e in SGLANG_REGISTRY if e.module == f"collector.sglang.{Path(path).stem}")
-    assert not entry.versions
-    compat = _compat(path)
-    assert _check_compat(compat, "0.5.20") and _check_compat(compat, "0.5.14")
-    for version in ("0.5.18", "0.5.19"):
-        assert not _check_compat(compat, version)
-    assert _check_compat(_compat(f"collector/sglang/{fork}.py"), "0.5.20")
-    assert not _check_compat(_compat(f"collector/sglang/{fork}.py"), "0.5.17")
-
-
-def test_sglang_moe_admits_0_5_20_but_not_unaudited_releases():
-    compat = _compat("collector/sglang/collect_moe.py")
-    for version, accepted in [
-        ("0.5.14", True),
-        ("0.5.17", True),
-        ("0.5.18", False),
-        ("0.5.19", False),
-        ("0.5.20", True),
-        ("0.5.21", True),
-    ]:
-        assert _check_compat(compat, version) is accepted, version
-
-
-def _load_sglang_gemm_0520(monkeypatch):
-    _stub_module(monkeypatch, "torch", bfloat16="bfloat16", float32="float32")
-    helper = types.ModuleType("collector.helper")
-    helper.benchmark_with_power = None
-    helper.log_perf = None
-    helper.get_sm_version = lambda: 103
-    monkeypatch.setitem(sys.modules, "collector.helper", helper)
-    return _load_collector(monkeypatch, "collector.sglang.collect_gemm_0520", "collector/sglang/collect_gemm_0520.py")
-
-
-def test_sglang_0520_queues_small_shapes_the_v1_fixme_skipped(monkeypatch):
-    monkeypatch.setenv("COLLECTOR_MODEL_PATH", FP8)
-    module = _load_sglang_gemm_0520(monkeypatch)
-    cases = module.get_gemm_test_cases()
-    types_by_shape = {}
-    for gemm_type, x, n, k in cases:
-        types_by_shape.setdefault((n, k), set()).add(gemm_type)
-    # Per-tensor fp8 has no 0.5.20 consumer and is not planned.
-    assert types_by_shape[(288, 4096)] == {"bfloat16", "fp8_block", "nvfp4"}
-    assert types_by_shape[(32, 4096)] == {"bfloat16", "fp8_block", "nvfp4"}
+def test_sglang_collectors_admit_only_0_5_21():
+    # The 0.5.20 GLM-5.3-Flash lane (incl. the collect_gemm_0520 fork) retired
+    # 2026-10-30; one release per file.
+    for path in ("collector/sglang/collect_gemm.py", "collector/sglang/collect_moe.py"):
+        compat = _compat(path)
+        assert compat == "sglang==0.5.21", path
+        for version in ("0.5.14", "0.5.17", "0.5.20"):
+            assert not _check_compat(compat, version), (path, version)
+    assert not (REPO_ROOT / "collector/sglang/collect_gemm_0520.py").exists()
 
 
 def test_sglang_nvfp4_allowlist_admits_glm53flash_nvfp4_only():

@@ -52,7 +52,7 @@ switch for SM100/103.
 
 from __future__ import annotations
 
-__compat__ = "trtllm>=1.3.0rc20"
+__compat__ = "trtllm==1.3.0rc29"
 
 import argparse
 import os

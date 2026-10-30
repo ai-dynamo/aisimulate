@@ -32,17 +32,18 @@ Record these decisions before changing code:
 - what may be committed, pushed, or opened as a PR.
 
 `collector/framework_manifest.yaml` is the source of truth for the stock
-framework pin and image. Module-level `__compat__` metadata may narrow that
-contract but must not silently widen it. Treat stock and WideEP/special images
+framework pin and image. Each collector module pins exactly the release the
+manifest resolves for its op (the "Version contract" in
+`python/aisimulate/.claude/rules/collector/layer_permissions.md`). Treat stock and WideEP/special images
 as separate runtimes with separate evidence.
 
 Do not silently broaden the work to another framework, XPU, WideEP, host
 upgrades, or performance-data publication. If the work is stacked on another
 PR, keep that dependency explicit when creating the branch and eventual PR.
 
-For a fixed-release collector, prefer an exact version contract when the
-framework API and kernel selection changed materially. Do not add compatibility
-branches for versions that the project no longer intends to collect.
+Upgrade collectors in place: move the exact `__compat__` pin to the new
+release and do not keep compatibility branches for earlier releases; their
+code stays in git history and their data stays under its version key.
 
 ## 2. Pin and prove the runtime
 

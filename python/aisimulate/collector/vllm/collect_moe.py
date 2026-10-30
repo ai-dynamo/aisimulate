@@ -108,7 +108,10 @@ approximation must be retired.
 # (FlashInfer lanes are timed on the autotuned tactic like serving; see
 # helper.flashinfer_autotuned.)
 # 0.31.0 audit (2026-10-07, source-only: tag v0.31.0 == db9527a4 vs v0.30.0
-# ced6857a; no releases in between). GLM-5.3-Flash now runs STOCK 0.31.0
+# ced6857a; no releases in between). The moe family runs on 0.31.0
+# (framework_manifest.yaml family pin, 2026-10-30), so this file targets
+# exactly 0.31.0. One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+# GLM-5.3-Flash now runs STOCK 0.31.0
 # (no overlay). Construction surface unchanged: FusedMoEFactory
 # (layer.py:88-141) keeps every kwarg passed here (swiglu_limit :108,
 # activation_situ_beta :111, router_logits_dtype :125,
@@ -163,7 +166,7 @@ approximation must be retired.
 # K3 SiTU: FusedMoEFactory exposes activation_situ_beta on stock 0.30.0 and
 # 0.31.0, so the probe below passes the betas natively there; the
 # situ-as-silu approximation applies only to older stock builds.
-__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0"
+__compat__ = "vllm==0.31.0"
 
 import contextlib
 import json

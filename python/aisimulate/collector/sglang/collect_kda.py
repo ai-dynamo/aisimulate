@@ -59,12 +59,12 @@ Output:
 # packed_decode / fused_sigmoid_gating_delta_rule_update, kda_fused_decode,
 # causal_conv1d_fn/update — kda_backend.py:6-34, kernels/kda_triton.py:109-237;
 # H20 smoke 2026-10-01, 91 cells ok, the remaining 21 are the >=2**31 conv
-# guard cells). 0.5.20 adds GLM-5.3-Flash (glm5_next) KDA, audited against
-# the GB300 0.5.20 image (see the GLM section below). The file-level range
-# spans all three; each KDA architecture is additionally gated at runtime to
-# its own audited releases by _KDA_ARCHITECTURE_COMPAT (Kimi-K3 0.5.16 and
-# 0.5.21, GLM-5.3-Flash 0.5.20), raising KdaRuntimeNotAuditedError otherwise.
-__compat__ = "sglang>=0.5.16,<=0.5.21,!=0.5.17,!=0.5.18,!=0.5.19"
+# guard cells). 0.5.20 added GLM-5.3-Flash (glm5_next) KDA, audited against
+# the GB300 0.5.20 image (see the GLM section below). Each KDA architecture
+# is additionally gated at runtime by _KDA_ARCHITECTURE_COMPAT, raising
+# KdaRuntimeNotAuditedError otherwise.
+# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+__compat__ = "sglang==0.5.21"
 
 import gc
 import os
@@ -1023,8 +1023,11 @@ GLM5_NEXT_KDA_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 # replicates; any other installed release raises KdaRuntimeNotAuditedError (a
 # classified failure) instead of timing a possibly different kernel path.
 _KDA_ARCHITECTURE_COMPAT = {
-    KIMI_K3_KDA_ARCHITECTURE: "sglang>=0.5.16,<=0.5.21,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20",
-    GLM5_NEXT_KDA_ARCHITECTURE: "sglang==0.5.20",
+    KIMI_K3_KDA_ARCHITECTURE: "sglang==0.5.21",
+    # GLM-5.3-Flash (0.5.20 only) retired 2026-10-30: its route is git history
+    # (main at c540ff90a (before #649)). On 0.5.21 serving fuses the unquantized
+    # qkvbfg/bfg projections (strided views), so the GLM path needs a port
+    # before it is re-admitted; GLM rows raise KdaRuntimeNotAuditedError.
 }
 
 
@@ -1040,7 +1043,9 @@ def _kda_architecture(model_name: str) -> str:
 
 def _require_audited_runtime(model_name: str, runtime_version: str) -> None:
     architecture = _kda_architecture(model_name)
-    compat = _KDA_ARCHITECTURE_COMPAT[architecture]
+    compat = _KDA_ARCHITECTURE_COMPAT.get(architecture)
+    if compat is None:
+        raise KdaRuntimeNotAuditedError(f"sglang {runtime_version} is not an audited KDA runtime for {architecture}")
     if not _check_compat(compat, runtime_version):
         raise KdaRuntimeNotAuditedError(
             f"sglang {runtime_version} is not an audited KDA runtime for {architecture} (audited: {compat})"

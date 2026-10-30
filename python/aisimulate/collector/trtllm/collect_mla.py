@@ -8,7 +8,7 @@ context/generation MLA kernels. The module adapts shared MLA cases to current
 metadata objects, request/cache helpers, and backend-specific timing paths.
 """
 
-__compat__ = "trtllm>=1.3.0rc20"
+__compat__ = "trtllm==1.3.0rc29"
 
 import math
 from dataclasses import dataclass

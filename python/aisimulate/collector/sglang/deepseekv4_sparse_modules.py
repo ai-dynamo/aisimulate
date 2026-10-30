@@ -31,12 +31,13 @@ CSV schema matches existing aic dsv4 module CSVs (so loaders can be shared):
 c4 path (=4).
 """
 
-# Requires stock SGLang 0.5.14 with its matching ``sgl-kernel`` package.
+# Requires stock SGLang 0.5.21 with its matching ``sgl-kernel`` package.
 from __future__ import annotations
 
-# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
-# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
-__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20"
+# 0.5.21 since 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
+# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+__compat__ = "sglang==0.5.21"
 
 import functools
 import json
