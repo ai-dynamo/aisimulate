@@ -18,6 +18,18 @@ from types import SimpleNamespace
 from collector.case_generator import _required_base_common_case_values, get_common_mamba2_test_cases
 
 
+def _decode_query_start_loc(token_width: int, starts):
+    """Decode cumulative lengths exactly as serving passes them.
+
+    vLLM db9527a4 leaves ``query_start_loc_d`` None for non-speculative decode
+    (v1/attention/backends/mamba_attn.py:533,599-601) and forwards it to
+    ``causal_conv1d_update`` and ``selective_state_update``
+    (model_executor/layers/mamba/mamba_mixer2.py:1043,1150). FlashInfer then
+    runs the single-token kernel for width one and the MTP kernel otherwise.
+    """
+    return starts if token_width > 1 else None
+
+
 def get_mamba2_test_cases():
     sweep = _required_base_common_case_values("mamba2")
     cases = []
@@ -189,6 +201,7 @@ def run_mamba2(
         sources = ("vllm_causal_conv1d_fn", "vllm_mamba_chunk_scan_combined_varlen")
     else:
         accepted = torch.ones(batch_size, dtype=torch.int32, device=device) if token_width > 1 else None
+        decode_starts = _decode_query_start_loc(token_width, starts)
         backend = FlashInferSSUBackend(
             MambaConfig(
                 backend="flashinfer",
@@ -211,7 +224,7 @@ def run_mamba2(
                 "silu",
                 conv_state_indices=indices,
                 num_accepted_tokens=accepted,
-                query_start_loc=starts,
+                query_start_loc=decode_starts,
                 max_query_len=token_width,
             )
 
@@ -231,7 +244,7 @@ def run_mamba2(
                 dst_state_batch_indices=current_indices,
                 out=out,
                 num_accepted_tokens=accepted,
-                cu_seqlens=starts,
+                cu_seqlens=decode_starts,
                 is_blackwell=torch.cuda.get_device_capability(device)[0] == 10,
             )
 
