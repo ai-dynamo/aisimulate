@@ -21,12 +21,17 @@ fn invalid(message: impl Into<String>) -> AicError {
 pub enum FpmCacheKind {
     Attention,
     Convolution,
+    /// Cache whose size does not depend on the request length, such as the
+    /// recurrent state of linear-attention or Mamba layers. vLLM holds a fixed
+    /// number of pool blocks for each running request.
+    State,
 }
 
 /// One cache group on one TP rank. `page_size_bytes` includes every layer in
 /// this group and any runtime padding; it is not a per-layer or logical-token
 /// rate. Window lengths describe retained history, independently of FPM timing
-/// query context lengths.
+/// query context lengths. A `state` group instead holds `blocks_per_request`
+/// blocks of `page_size_bytes` for every running request and has no window.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FpmCacheGroup {
@@ -36,6 +41,10 @@ pub struct FpmCacheGroup {
     pub block_size_tokens: u32,
     pub page_size_bytes: u64,
     pub sliding_window: Option<u32>,
+    /// Pool blocks held per running request. Required for `state` groups and
+    /// invalid for every other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocks_per_request: Option<u32>,
 }
 
 impl FpmCacheGroup {
@@ -54,11 +63,26 @@ impl FpmCacheGroup {
         if self.kind == FpmCacheKind::Convolution && self.sliding_window.is_none() {
             return Err(invalid("convolution cache groups require a sliding_window"));
         }
+        if self.kind == FpmCacheKind::State {
+            if self.blocks_per_request.is_none_or(|blocks| blocks == 0) {
+                return Err(invalid(
+                    "state cache groups require a positive blocks_per_request",
+                ));
+            }
+            if self.sliding_window.is_some() {
+                return Err(invalid("state cache groups cannot have a sliding_window"));
+            }
+        } else if self.blocks_per_request.is_some() {
+            return Err(invalid(
+                "blocks_per_request applies only to state cache groups",
+            ));
+        }
         Ok(())
     }
 
     /// Blocks live during one forward pass. All newly scheduled tokens remain
-    /// allocated until the next pass, including temporary prefill storage.
+    /// allocated until the next pass, including temporary prefill storage. A
+    /// state group holds its fixed blocks for any positive target.
     pub fn block_range(
         &self,
         computed_tokens: u64,
@@ -67,6 +91,11 @@ impl FpmCacheGroup {
         self.validate()?;
         if target_tokens < computed_tokens {
             return Err(invalid("cache target_tokens must be >= computed_tokens"));
+        }
+        if self.kind == FpmCacheKind::State {
+            // `validate` guarantees a positive count for state groups.
+            let blocks = self.blocks_per_request.map_or(0, u64::from);
+            return Ok(0..if target_tokens == 0 { 0 } else { blocks });
         }
         let block = u64::from(self.block_size_tokens);
         let first = self.sliding_window.map_or(0, |window| {
@@ -90,7 +119,8 @@ impl FpmCacheGroup {
     /// Conservative maximum for a request up to `context_length`, with forward
     /// chunks no larger than `max_num_tokens`. The extra block alignment can
     /// coexist with the entire new chunk; clipping only to the retention window
-    /// would underestimate prefill memory.
+    /// would underestimate prefill memory. A state group needs only its fixed
+    /// blocks, whatever the context.
     pub fn peak_request_bytes(
         &self,
         context_length: u64,
@@ -100,13 +130,18 @@ impl FpmCacheGroup {
         if context_length == 0 || max_num_tokens == 0 {
             return Err(invalid("cache context and max_num_tokens must be positive"));
         }
-        let block = u64::from(self.block_size_tokens);
-        let full = context_length.div_ceil(block);
-        let pages = if let Some(window) = self.sliding_window {
-            let span = u64::from(window) - 1 + u64::from(max_num_tokens) + block - 1;
-            full.min(span.div_ceil(block))
+        let pages = if self.kind == FpmCacheKind::State {
+            // `validate` guarantees a positive count for state groups.
+            self.blocks_per_request.map_or(0, u64::from)
         } else {
-            full
+            let block = u64::from(self.block_size_tokens);
+            let full = context_length.div_ceil(block);
+            if let Some(window) = self.sliding_window {
+                let span = u64::from(window) - 1 + u64::from(max_num_tokens) + block - 1;
+                full.min(span.div_ceil(block))
+            } else {
+                full
+            }
         };
         pages
             .checked_mul(self.page_size_bytes)
@@ -653,6 +688,23 @@ mod tests {
             block_size_tokens: 16,
             page_size_bytes: 160,
             sliding_window: window,
+            blocks_per_request: None,
+        }
+    }
+
+    fn state_group(blocks_per_request: Option<u32>) -> FpmCacheGroup {
+        FpmCacheGroup {
+            name: "state".into(),
+            kind: FpmCacheKind::State,
+            blocks_per_request,
+            ..group(None)
+        }
+    }
+
+    fn rejection(group: &FpmCacheGroup) -> String {
+        match group.validate() {
+            Err(AicError::InvalidEngineConfig(message)) => message,
+            other => panic!("expected an invalid cache group, got {other:?}"),
         }
     }
 
@@ -1119,5 +1171,126 @@ mod tests {
         // Token 9 uses pages containing 5..8 and 9..12, even for a four-token window.
         assert_eq!(conv.block_range(8, 9).unwrap(), 1..3);
         assert_eq!(conv.bytes_for_forward(8, 9).unwrap(), 16);
+    }
+
+    #[test]
+    fn state_group_requires_blocks_and_rejects_windows() {
+        state_group(Some(1)).validate().unwrap();
+        for blocks in [None, Some(0)] {
+            let state = state_group(blocks);
+            assert_eq!(
+                rejection(&state),
+                "state cache groups require a positive blocks_per_request"
+            );
+            // An unusable group fails sizing instead of guessing a block count.
+            assert!(state.block_range(0, 1).is_err());
+            assert!(state.peak_request_bytes(1, 1).is_err());
+        }
+        let mut windowed = state_group(Some(1));
+        windowed.sliding_window = Some(32);
+        assert_eq!(
+            rejection(&windowed),
+            "state cache groups cannot have a sliding_window"
+        );
+        for (kind, window) in [
+            (FpmCacheKind::Attention, None),
+            (FpmCacheKind::Convolution, Some(32)),
+        ] {
+            let mut counted = group(window);
+            counted.kind = kind;
+            counted.blocks_per_request = Some(1);
+            assert_eq!(
+                rejection(&counted),
+                "blocks_per_request applies only to state cache groups"
+            );
+        }
+    }
+
+    #[test]
+    fn state_group_holds_a_fixed_range_for_any_length() {
+        let state = state_group(Some(2));
+        // No tokens, no state; any positive target holds the same two blocks.
+        assert_eq!(state.block_range(0, 0).unwrap(), 0..0);
+        assert_eq!(state.block_range(0, 1).unwrap(), 0..2);
+        assert_eq!(state.block_range(4, 8).unwrap(), 0..2);
+        assert_eq!(state.block_range(100_000, 100_001).unwrap(), 0..2);
+        assert!(state.block_range(5, 4).is_err());
+        assert_eq!(state.bytes_for_forward(0, 0).unwrap(), 0);
+        assert_eq!(state.bytes_for_forward(100_000, 100_001).unwrap(), 320);
+        let two_blocks = 2 * state.page_size_bytes;
+        assert_eq!(state.peak_request_bytes(1, 1).unwrap(), two_blocks);
+        assert_eq!(
+            state.peak_request_bytes(1_000_000, 8_192).unwrap(),
+            two_blocks
+        );
+        // The exact-byte limit still applies: 2**53 passes, twice that fails.
+        let mut huge = state_group(Some(1));
+        huge.page_size_bytes = MAX_EXACT_BYTES;
+        assert_eq!(huge.peak_request_bytes(1, 1).unwrap(), MAX_EXACT_BYTES);
+        huge.blocks_per_request = Some(2);
+        assert!(huge.bytes_for_forward(0, 1).is_err());
+        assert!(huge.peak_request_bytes(1, 1).is_err());
+    }
+
+    #[test]
+    fn glm_shaped_groups_charge_five_pool_blocks_of_state() {
+        // GLM-5.3-Flash at TP 4, fp8, k = 0: one MLA indexer group and five
+        // recurrent-state groups. Every group uses 2,176-token pool blocks of
+        // 13,045,120 bytes, and each state group holds one block per request.
+        let pool_group = |name: &str, kind, num_layers, blocks_per_request| FpmCacheGroup {
+            name: name.into(),
+            kind,
+            num_layers,
+            block_size_tokens: 2_176,
+            page_size_bytes: 13_045_120,
+            sliding_window: None,
+            blocks_per_request,
+        };
+        let attention = pool_group("mla_indexer", FpmCacheKind::Attention, 22, None);
+        let states = [
+            pool_group("kpool_tail", FpmCacheKind::State, 11, Some(1)),
+            pool_group("kda_0", FpmCacheKind::State, 9, Some(1)),
+            pool_group("kda_1", FpmCacheKind::State, 9, Some(1)),
+            pool_group("kda_2", FpmCacheKind::State, 8, Some(1)),
+            pool_group("kda_3", FpmCacheKind::State, 8, Some(1)),
+        ];
+        let peak = |group: &FpmCacheGroup| group.peak_request_bytes(8_192, 8_192).unwrap();
+        // 8,192 tokens fill four attention blocks; the state adds five more.
+        assert_eq!(peak(&attention), 52_180_480);
+        let state_bytes: u64 = states.iter().map(peak).sum();
+        assert_eq!(state_bytes, 65_225_600);
+        assert_eq!(peak(&attention) + state_bytes, 117_406_080);
+
+        // The budget sums the same groups for its per-request bounds.
+        let mut grouped = resources();
+        grouped.cache_groups = std::iter::once(attention).chain(states).collect();
+        grouped.max_num_tokens = 8_192;
+        let mut query = request();
+        query.max_num_tokens = 8_192;
+        query.request_occupancy_tokens = Some(8_192);
+        let budget = grouped.estimate_budget(&query, 8_192).unwrap();
+        assert_eq!(budget.request_peak_cache_bytes, 117_406_080);
+        assert_eq!(budget.request_occupancy_cache_bytes, Some(117_406_080));
+    }
+
+    #[test]
+    fn state_group_serde_round_trip_omits_absent_blocks() {
+        let attention = group(Some(32));
+        // A group without a block count serializes exactly as before.
+        assert_eq!(
+            serde_json::to_string(&attention).unwrap(),
+            r#"{"name":"attention","kind":"attention","num_layers":2,"block_size_tokens":16,"page_size_bytes":160,"sliding_window":32}"#
+        );
+        let state = state_group(Some(1));
+        let saved = serde_json::to_value(&state).unwrap();
+        assert_eq!(saved["kind"], "state");
+        assert_eq!(saved["blocks_per_request"], 1);
+        for original in [attention, state] {
+            let saved = serde_json::to_string(&original).unwrap();
+            assert_eq!(
+                serde_json::from_str::<FpmCacheGroup>(&saved).unwrap(),
+                original
+            );
+        }
     }
 }

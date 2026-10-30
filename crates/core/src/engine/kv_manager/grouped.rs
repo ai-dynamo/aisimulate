@@ -124,6 +124,7 @@ mod tests {
                     block_size_tokens: 4,
                     page_size_bytes: 8,
                     sliding_window: None,
+                    blocks_per_request: None,
                 },
                 FpmCacheGroup {
                     name: "window".into(),
@@ -132,6 +133,7 @@ mod tests {
                     block_size_tokens: 2,
                     page_size_bytes: 6,
                     sliding_window: Some(3),
+                    blocks_per_request: None,
                 },
             ],
             42,

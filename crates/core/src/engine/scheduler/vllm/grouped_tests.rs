@@ -43,6 +43,7 @@ fn group(name: &str, block: u32, bytes: u64, window: Option<u32>) -> FpmCacheGro
         block_size_tokens: block,
         page_size_bytes: bytes,
         sliding_window: window,
+        blocks_per_request: None,
     }
 }
 
