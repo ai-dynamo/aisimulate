@@ -2092,16 +2092,18 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
         for i, p in live:
             active_task_id = current_task_ids.get(i)
             if active_task_id is not None and active_task_id not in accounted:
+                # same task_params string a worker-side failure stores, so --cases-from can replay it
+                params = next((t["params"] for t in task_infos if t["id"] == active_task_id), None)
                 errors.append(
                     {
                         "module": module_name,
                         "device_id": i,
                         "task_id": active_task_id,
-                        "task_params": None,
+                        "task_params": None if params is None else str(params),
                         "error_type": "WorkerStallTimeout",
                         "error_message": f"worker made no progress for {int(stalled_for)} s; stacks dumped via SIGUSR1",
                         "classification": "unexpected",
-                        "group": None,
+                        "group": None if params is None else _failure_group(params),
                         "traceback": "",
                         "timestamp": datetime.now().isoformat(),
                     }
@@ -3279,7 +3281,11 @@ def _pending_resume_perf_outputs(
                 context="resume finalization",
             )
             has_pending_attempts = has_pending_attempts or bool(resume_tracker and resume_tracker._attempted)
-            has_completed_cases = has_completed_cases or bool(resume_tracker and resume_tracker._done)
+            # _done is cumulative across invocations; only a case that passed inside the open
+            # event (attempted there) can have staged rows
+            has_completed_cases = has_completed_cases or bool(
+                resume_tracker and resume_tracker._done & resume_tracker._attempted
+            )
         if has_pending_attempts:
             if perf_path.is_symlink() or not perf_path.is_file():
                 if not has_completed_cases:
@@ -6424,6 +6430,12 @@ def main():
             return
     else:
         os.environ.pop("COLLECTOR_MODEL_PATH", None)
+
+    # helper.get_sm_version lets AIS_SM stand in for a missing GPU when enumerating cases;
+    # under a collection it would dispatch and label every case for that SM instead.
+    forced_sm = os.environ.get("AIS_SM") or os.environ.get("AIC_SM")
+    if forced_sm:
+        parser.error(f"AIS_SM/AIC_SM={forced_sm} is a case-inventory override; unset it to collect")
 
     # Setup logging - debug flag is handled inside setup_logging
     global _LOGGER_CONFIGURED

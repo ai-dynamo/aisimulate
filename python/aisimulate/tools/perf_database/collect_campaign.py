@@ -281,11 +281,10 @@ def run_campaign(
         g = _free_gpu(busy, gpus)
         if g is None:
             time.sleep(15)
-            for p in busy.values():
-                if p is not None and p.poll() not in (None, 0):
-                    failures += 1
-                    busy[[k for k, v in busy.items() if v is p][0]] = None
             continue
+        finished = busy.get(g)
+        if finished is not None and finished.returncode != 0:  # _free_gpu polled it
+            failures += 1
         s = todo.pop(0)
         print(f"{time.strftime('%T')} gpu{g} <- {s.key}")
         busy[g] = subprocess.Popen(

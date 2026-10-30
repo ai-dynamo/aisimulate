@@ -86,6 +86,16 @@ def init_runtime_config(
     return {}
 
 
+def free_local_port() -> int:
+    """A port the OS reports free right now: an arithmetic guess can collide between
+    concurrent per-GPU workers, and the collision surfaces as a framework failure."""
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
 _OFFLINE_PUBLISHED = False
 
 

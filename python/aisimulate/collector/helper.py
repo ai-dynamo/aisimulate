@@ -697,6 +697,8 @@ def cuda_context_error(device=None) -> str | None:
     synchronises the device and launches one trivial kernel; it returns the error
     text when either raises, ``None`` when the context is healthy or torch is absent.
     """
+    if str(device).startswith("xpu"):
+        return None  # XPU workers run the same failure path; their context is not CUDA's
     try:
         import torch
     except ImportError:

@@ -949,9 +949,8 @@ def _create_attention_module(
     # (MLA backends only support bfloat16, not float32).
     from vllm.utils.torch_utils import set_default_torch_dtype
 
-    use_legacy = bool(os.environ.get("AIS_DSA_LEGACY_MODULE") or os.environ.get("AIC_DSA_LEGACY_MODULE"))
     with set_current_vllm_config(vllm_config), set_default_torch_dtype(vllm_config.model_config.dtype):
-        if attn_type == "dsa" and not use_legacy:
+        if attn_type == "dsa":
             # GENERIC serving-parity construction (owner rule 2026-09-19:
             # config in -> the module SERVING would build comes out; never a
             # per-model class import — that is how the prelude-fusion drift
@@ -984,12 +983,6 @@ def _create_attention_module(
             if getattr(attn_module, "topk_indices_buffer", None) is not None:
                 attn_module.topk_indices_buffer = topk_indices_buffer
         else:
-            if attn_type == "dsa" and use_legacy:
-                print(
-                    "  [AB-ONLY] AIS_DSA_LEGACY_MODULE=1: building the LEGACY generic "
-                    "DeepseekV2MLAAttention — NOT serving-parity on 0.29; rows are for "
-                    "comparison only, never for the database"
-                )
             attn_module = DeepseekV2MLAAttention(
                 vllm_config=vllm_config,
                 config=hf_config,

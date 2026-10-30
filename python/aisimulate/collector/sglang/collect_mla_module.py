@@ -1158,8 +1158,6 @@ def load_model_runner(
             "Marlin is valid only for INT4-WO"
         )
 
-    import random
-
     from sglang.srt.configs.model_config import ModelConfig
     from sglang.srt.entrypoints.engine import _set_envs_and_config
     from sglang.srt.model_executor.model_runner import ModelRunner
@@ -1237,7 +1235,9 @@ def load_model_runner(
 
     _set_envs_and_config(server_args)
 
-    nccl_port = 29500 + random.randint(0, 10000) + gpu_id * 100
+    from collector.sglang.runtime_compat import free_local_port
+
+    nccl_port = free_local_port()
 
     model_config = ModelConfig.from_server_args(server_args)
     expected_architecture = _module_model_architecture(model_path)

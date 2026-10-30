@@ -669,13 +669,8 @@ def framework_kv_block_size(backend_cls, *, user_block_size: int | None = None) 
     equivalent: with mla=32 the bf16 DSA cell selected the TRT-LLM FMHA sparse
     cubin while serving ran FA-cute (page 64) — the page is a per-(backend, kv
     dtype, head shape) decision, so it must come from the backend the case
-    actually selected. AIS_KV_BLOCK_SIZE stays the single-variable A/B hook.
+    actually selected.
     """
-    import os
-
-    override = os.environ.get("AIS_KV_BLOCK_SIZE")
-    if override:
-        return int(override)
     from vllm.config.cache import CacheConfig
     from vllm.v1.worker.utils import select_common_block_size
 
