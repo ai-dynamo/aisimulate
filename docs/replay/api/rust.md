@@ -154,6 +154,8 @@ preserving the caller's original `record_per_request` choice for
 `ReplayReport.per_request`. Capture uses absolute virtual milliseconds and does
 not move profiling/scaling boundaries. The capture and observer APIs are mutually
 exclusive. See the [telemetry contract](../../getting-started/understand-results.md#replay-telemetry).
+Downstream `ReplayReport` struct literals must include `telemetry: None` when
+capture is absent, or preserve the field when rebuilding a captured report.
 
 ## Errors and stability
 
