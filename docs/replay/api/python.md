@@ -88,6 +88,34 @@ profiling summaries and per-request clock semantics are unchanged. See the
 Analytical EPD does not provide raw native
 or per-request EPD reports. Large capture can require substantial memory.
 
+## HTML dashboard
+
+The CLI `--export-html` flag enables telemetry and writes a standalone
+simulation dashboard. Python callers can render an already captured report:
+
+```python
+from pathlib import Path
+from aisimulate.replay.dashboard import render_replay_dashboard, write_replay_dashboard
+
+# Existing CLI output with prediction.json and the three telemetry JSONL files.
+path = render_replay_dashboard(Path("./agentic-telemetry"))
+
+# Or use native telemetry captured with ReplayOutputRequirements(capture_telemetry=True).
+path = write_replay_dashboard(
+    Path("./agentic-dashboard"),
+    result.native,
+    result.native["telemetry"],
+    config=config.model_dump(mode="json", exclude_none=True),
+)
+```
+
+Both helpers write `report.html` and return its path. Optional `config` supplies
+display metadata; it does not change captured measurements. The helpers do not
+rerun simulation or modify prediction summaries. They require native
+`aisimulate.replay.telemetry.v1` data on its absolute virtual clock. Direct Python
+callers own their resource budgets. See the
+[dashboard views and semantics](../../getting-started/understand-results.md#replay-dashboard).
+
 ## Lifecycle and errors
 
 One runner is reusable within one worker. The production Engine factory loads

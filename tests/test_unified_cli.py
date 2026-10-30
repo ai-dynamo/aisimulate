@@ -8,6 +8,7 @@ import io
 import json
 import math
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +25,7 @@ from aisimulate.output import (
 )
 from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, resolve_output_adapters
 from aisimulate.predict import PredictionExecutionError, PredictionResult, run_prediction
+from aisimulate.supervision import main as supervised_main
 from aisimulate.sweeper.config import Candidate
 from aisimulate.sweeper.provider import AdapterReplaySpec, AdapterSearchPlan
 from aisimulate.sweeper.replay import ReplayOutputRequirements, ReplayReport, RunnerCapabilities
@@ -334,22 +336,56 @@ def _telemetry_payload():
     return {
         "schema": "aisimulate.replay.telemetry.v1",
         "clock": "absolute_virtual_ms",
+        "clock_origin_ms": 0.0,
         "sample_interval_ms": 1000.0,
         "profile_start_ms": 20.0,
-        "units": {"time": "ms", "cache_bytes": "bytes"},
-        "requests": [
-            {"request_id": "primer-0", "phase": "primer", "arrival_time_ms": 0.0, "tpot_ms": None},
-            {"request_id": "warmup-0", "phase": "warmup", "arrival_time_ms": 10.0, "tpot_ms": None},
-            {"request_id": "profile-0", "phase": "profile", "arrival_time_ms": 20.0, "tpot_ms": 1.0},
+        "units": {
+            "timestamps": "ms",
+            "durations": "ms",
+            "traffic_duration": "s",
+            "tokens": "tokens",
+            "cache_blocks": "blocks",
+            "cache_bytes": "bytes",
+            "cache_usage": "ratio",
+        },
+        "phase_boundaries": [
+            {"phase": "preparation", "start_ms": 0.0, "end_ms": 20.0},
+            {"phase": "profile", "start_ms": 20.0, "end_ms": 25.0},
         ],
-        "samples": [{"phase": "preparation", "timestamp_ms": 20.0}],
-        "lifecycle": [{"phase": "warmup", "timestamp_ms": 10.0, "event": "dispatch"}],
+        "requests": [
+            {
+                "request_id": "primer-0",
+                "phase": "primer",
+                "arrival_time_ms": 0.0,
+                "terminal_time_ms": 5.0,
+                "itl_ms": None,
+            },
+            {
+                "request_id": "warmup-0",
+                "phase": "warmup",
+                "arrival_time_ms": 10.0,
+                "terminal_time_ms": 15.0,
+                "itl_ms": None,
+            },
+            {
+                "request_id": "profile-0",
+                "phase": "profile",
+                "arrival_time_ms": 20.0,
+                "terminal_time_ms": 25.0,
+                "itl_ms": 1.0,
+            },
+        ],
+        "samples": [{"phase": "preparation", "kind": "final", "interval_start_ms": 0.0, "sampled_at_ms": 20.0}],
+        "lifecycle": [{"phase": "warmup", "at_ms": 10.0, "event": "dispatch"}],
     }
 
 
 @pytest.mark.parametrize("capture_per_request", [False, True])
 @pytest.mark.parametrize("aborted", [False, True])
-def test_predict_writes_separate_all_phase_telemetry(tmp_path, monkeypatch, capsys, capture_per_request, aborted):
+@pytest.mark.parametrize("capture_flag", ["--capture-telemetry", "--export-html"])
+def test_predict_writes_separate_all_phase_telemetry(
+    tmp_path, monkeypatch, capsys, capture_per_request, aborted, capture_flag
+):
     payload = _telemetry_payload()
 
     class TelemetryRunner(_Runner):
@@ -365,7 +401,7 @@ def test_predict_writes_separate_all_phase_telemetry(tmp_path, monkeypatch, caps
     path = tmp_path / "prediction.yaml"
     path.write_text(yaml.safe_dump(_prediction_config().model_dump(mode="json", exclude_none=True)))
     output = tmp_path / "out"
-    argv = ["predict", "-c", str(path), "--output-dir", str(output), "--capture-telemetry", "--format", "json"]
+    argv = ["predict", "-c", str(path), "--output-dir", str(output), capture_flag, "--format", "json"]
     if capture_per_request:
         argv.append("--capture-per-request")
     assert cli.main(argv) == int(aborted)
@@ -383,12 +419,98 @@ def test_predict_writes_separate_all_phase_telemetry(tmp_path, monkeypatch, caps
     assert saved["telemetry"]["units"] == payload["units"]
     assert "telemetry" not in saved["summary"]
     assert (output / "requests.jsonl").exists() is capture_per_request
+    assert (output / "report.html").exists() is (capture_flag == "--export-html")
+    if capture_flag == "--export-html":
+        document = (output / "report.html").read_text()
+        assert "aisimulate.replay.dashboard.v1" in document
+        assert "__REPORT_DATA_JSON__" not in document
     if capture_per_request:
         assert json.loads((output / "requests.jsonl").read_text()) == {"request_id": "synthetic-0"}
     # Writing the CLI manifest must not consume the SDK's native arrays.
     assert len(payload["requests"]) == 3
     if aborted:
         assert "warmup deadline" in capsys.readouterr().err
+    else:
+        assert "telemetry" not in json.loads(capsys.readouterr().out)
+
+
+def test_export_html_native_cli_preserves_metrics_and_overwrite(tmp_path, capfd):
+    repository = Path(__file__).resolve().parents[1]
+    raw = yaml.safe_load((repository / "examples/cli/agentic-profile.yaml").read_text())
+    raw["engine"]["model"] = str(repository / raw["engine"]["model"])
+    raw["traffic"]["source"]["paths"] = [str(repository / name) for name in raw["traffic"]["source"]["paths"]]
+    raw["traffic"]["load"]["agentic_profile"]["duration_seconds"] = 1
+    path = tmp_path / "prediction.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    output = tmp_path / "out"
+    argv = [
+        "predict",
+        "-c",
+        str(path),
+        "--output-dir",
+        str(output),
+        "--format",
+        "table",
+        "--telemetry-sample-interval-ms",
+        "250",
+    ]
+    assert supervised_main([*argv, "--capture-telemetry"]) == 0
+    baseline = json.loads((output / "prediction.json").read_text())
+    records = [json.loads(line) for line in (output / "telemetry-requests.jsonl").read_text().splitlines()]
+    assert not (output / "report.html").exists()
+    (output / "keep.txt").write_text("keep")
+    assert supervised_main([*argv, "--export-html", "--overwrite"]) == 0
+    rendered = json.loads((output / "prediction.json").read_text())
+    for key in (
+        "completed_requests",
+        "mean_e2e_latency_ms",
+        "mean_ttft_ms",
+        "output_throughput_tok_s",
+        "committed_prefill_tokens",
+    ):
+        assert rendered[key] == baseline[key]
+    fields = ("phase", "arrival_time_ms", "terminal_time_ms", "input_length", "output_length", "terminal_status")
+    new_records = [json.loads(line) for line in (output / "telemetry-requests.jsonl").read_text().splitlines()]
+    assert [[row[key] for key in fields] for row in new_records] == [[row[key] for key in fields] for row in records]
+    assert {row["phase"] for row in new_records} >= {"warmup", "profile"}
+    assert "aisimulate.replay.dashboard.v1" in (output / "report.html").read_text()
+    assert (output / "keep.txt").read_text() == "keep"
+    assert not (output / "requests.jsonl").exists()
+    assert supervised_main([*argv, "--overwrite"]) == 0
+    assert not (output / "report.html").exists()
+    assert not (output / "telemetry-requests.jsonl").exists()
+    assert (output / "keep.txt").read_text() == "keep"
+    capfd.readouterr()
+
+
+def test_html_failure_preserves_native_outputs(tmp_path, monkeypatch, capsys):
+    class TelemetryRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            report.metadata["native_report"]["telemetry"] = _telemetry_payload()
+            return report
+
+    def fail_render(root, prediction, telemetry, *, config):
+        assert (root / "prediction.json").is_file()
+        assert (root / "requests.jsonl").is_file()
+        assert "artifacts" in prediction["telemetry"]
+        assert len(telemetry["requests"]) == 3
+        assert config["engine"]["model"]
+        raise OSError("dashboard disk failure")
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(TelemetryRunner()))
+    monkeypatch.setattr(cli, "write_replay_dashboard", fail_render)
+    path = tmp_path / "prediction.yaml"
+    path.write_text(yaml.safe_dump(_prediction_config().model_dump(mode="json", exclude_none=True)))
+    output = tmp_path / "out"
+    assert (
+        cli.main(["predict", "-c", str(path), "--output-dir", str(output), "--export-html", "--capture-per-request"])
+        == 1
+    )
+    assert "dashboard disk failure" in capsys.readouterr().err
+    assert json.loads((output / "prediction.json").read_text())["summary"]["completed_requests"] == 1
+    assert all((output / f"telemetry-{stream}.jsonl").is_file() for stream in ("requests", "samples", "lifecycle"))
+    assert not (output / "report.html").exists()
 
 
 def test_predict_telemetry_custom_interval_and_sdk_retention():
@@ -461,13 +583,14 @@ def test_predict_rejects_invalid_telemetry_interval_before_running(tmp_path, mon
 
 
 @pytest.mark.parametrize("extra", [["--stack", "dynamo"], ["--online"]])
-def test_predict_rejects_telemetry_outside_offline_engine(tmp_path, monkeypatch, capsys, extra):
+@pytest.mark.parametrize("capture_flag", ["--capture-telemetry", "--export-html"])
+def test_predict_rejects_telemetry_outside_offline_engine(tmp_path, monkeypatch, capsys, extra, capture_flag):
     runner = _Runner()
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(runner))
     path = tmp_path / "prediction.yaml"
     path.write_text(yaml.safe_dump(_prediction_config().model_dump(mode="json", exclude_none=True)))
     with pytest.raises(SystemExit) as exc:
-        cli.main(["predict", "-c", str(path), "--capture-telemetry", *extra])
+        cli.main(["predict", "-c", str(path), capture_flag, *extra])
     assert exc.value.code == 2
     assert "telemetry capture requires offline --stack engine" in capsys.readouterr().err
     assert runner.spec is None
@@ -1815,6 +1938,7 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     unrelated = root / "keep.txt"
     unrelated.write_text("keep")
     (root / "prediction.json").write_text("old")
+    (root / "report.html").write_text("old")
     (root / "recommendation.json").write_text("old")
     (root / "recommendation.csv").write_text("old")
     (root / "afd-replay-spec.json").write_text("old")
@@ -1833,6 +1957,7 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     assert unrelated.read_text() == "keep"
     assert (recommendations / "notes.txt").read_text() == "keep"
     assert not (root / "prediction.json").exists()
+    assert not (root / "report.html").exists()
     assert not (root / "recommendation.json").exists()
     assert not (root / "recommendation.csv").exists()
     assert not (root / "afd-replay-spec.json").exists()

@@ -140,6 +140,11 @@ and agentic lifecycle events. Sampling defaults to 1,000 simulated milliseconds;
 adjust it with `--telemetry-sample-interval-ms`. See the
 [telemetry output contract](docs/getting-started/understand-results.md#replay-telemetry).
 
+Add `--export-html` to `aisimulate predict` to capture telemetry and write a
+standalone `report.html` dashboard with profiling, warmup, and request timelines.
+Open it directly in a browser; charts and data are embedded for offline use.
+See the [dashboard guide](docs/getting-started/understand-results.md#replay-dashboard).
+
 ### Python prediction API
 
 Use the same `prediction.yaml` with the
