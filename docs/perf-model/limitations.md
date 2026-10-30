@@ -80,16 +80,20 @@ All three families also price their routed experts per layer.
 - Routed experts of a ModelOpt export that are listed `W4A16_NVFP4` are
   priced as `w4a16_nvfp4`, in uniform and mixed listings. The vLLM source
   runs them weight-only on Marlin. The vLLM MoE collector has a
-  `w4a16_nvfp4` mode for Nemotron 3.5 Lightning, but no MoE table has
-  `w4a16_nvfp4` rows yet. Strict SILICON prediction fails for them, and
-  HYBRID estimates them from another quantization profile.
+  `w4a16_nvfp4` mode for Nemotron 3.5 Lightning and Qwen3.6-35B-A3B-NVFP4,
+  but no MoE table has `w4a16_nvfp4` rows yet. Strict SILICON prediction
+  fails for them, and HYBRID estimates them from another quantization
+  profile.
 
 If layers give a projection or the routed experts different precisions, the
 SDK prices each precision for its own count of layers. The MoE dispatch ops
 follow the routed-expert split. Loading fails when one module path has
 conflicting or unsupported algorithms, or when the checkpoint modules that one
-op fuses disagree (for example Q, K and V, or Qwen's `in_proj_qkv` and
-`in_proj_z`). The MTP layers use the decoder layers' precision.
+op fuses resolve to different modes (for example Q, K and V, or Qwen's
+`in_proj_qkv` and `in_proj_z`). The comparison uses each module's mode after
+the exclusion and unlisted rules. For example, an excluded Q and unlisted K and
+V in a targets-only export are all BF16. The MTP layers use the decoder layers'
+precision.
 
 Known limits:
 
@@ -97,7 +101,9 @@ Known limits:
   Gemma 4) or from the listed experts block (Qwen). Different precisions for
   experts of one layer are not modeled.
 - An FP8 projection is dynamic FP8 only when the global mode is dynamic FP8.
-  Otherwise it is static FP8.
+  Otherwise it is static FP8. A block-scaled FP8 config group (`strategy:
+  block` or `block_structure`) prices its projections and experts as
+  `fp8_block`.
 
 An explicit `gemm_quant_mode` prices all projections with one mode. An
 explicit `moe_quant_mode` prices all routed experts with one mode. Metadata

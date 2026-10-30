@@ -126,29 +126,35 @@ class CheckpointPrecision:
             return True
         return bool(self.excluded_regex and self.excluded_regex.fullmatch(path))
 
-    def rows(self, layer_kinds: Sequence, kinds_to_modules: Mapping, layer_paths: LayerPaths) -> list:
-        """``[(layer, kind, key, algo or None, excluded)]`` for every modeled op of every decoder layer.
+    def rows(
+        self,
+        layer_kinds: Sequence,
+        kinds_to_modules: Mapping,
+        layer_paths: LayerPaths,
+        resolve: Callable[[str | None, bool], object],
+    ) -> list:
+        """``[(layer, kind, key, mode)]`` for every modeled op of every decoder layer.
 
         ``layer_kinds[i]`` is layer ``i``'s kind; ``kinds_to_modules[kind]`` maps an op key to
-        the checkpoint modules it prices. Conflicting algorithms for one module, or fused
-        modules that disagree, are rejected.
+        the checkpoint modules it prices. ``resolve(algo or None, excluded)`` is a module's
+        effective mode, so fused modules are compared after exclusion and unlisted rules
+        apply. Conflicting algorithms for one module, or fused modules whose modes differ,
+        are rejected.
         """
         rows = []
         for layer, kind in enumerate(layer_kinds):
             for key, modules in kinds_to_modules.get(kind, {}).items():
-                states = set()
+                modes = set()
                 for module in modules:
                     excluded, algos = self.module(layer_paths(layer, module))
                     if len(algos) > 1:
                         raise ValueError(
                             f"Conflicting checkpoint precisions for module {module} in layer {layer}: {algos}"
                         )
-                    states.add("excluded" if excluded else next(iter(algos), None))
-                if len(states) > 1:
-                    raise ValueError(f"Fused modules {modules} in layer {layer} disagree on precision")
-                state = states.pop()
-                excluded = state == "excluded"
-                rows.append((layer, kind, key, None if excluded else state, excluded))
+                    modes.add(resolve(next(iter(algos), None), excluded))
+                if len(modes) > 1:
+                    raise ValueError(f"Fused modules {modules} in layer {layer} disagree on precision: {modes}")
+                rows.append((layer, kind, key, modes.pop()))
         return rows
 
     @cached_property
@@ -182,6 +188,7 @@ def _gemm_modes(default: common.GEMMQuantMode, system: str | None) -> dict:
         "fp8": common.GEMMQuantMode.fp8 if default == common.GEMMQuantMode.fp8 else common.GEMMQuantMode.fp8_static,
         # MXFP8 takes the fp8_block lane, as the global mode does (helpers._mixed_precision_algo_gemm_mode).
         "mxfp8": common.GEMMQuantMode.fp8_block,
+        "fp8_block": common.GEMMQuantMode.fp8_block,
         "nvfp4": nvfp4,
         # vLLM runs W4A16_NVFP4 linears weight-only (FP4 Marlin or CuTe-DSL W4A16, BF16 activations).
         "w4a16_nvfp4": common.GEMMQuantMode.w4a16_nvfp4,
@@ -206,11 +213,18 @@ def layer_projection_modes(
     """
     modes = _gemm_modes(default, system)
     unlisted = common.GEMMQuantMode.bfloat16 if checkpoint.targets_only else default
+
+    def resolve(algo, excluded):
+        if excluded:
+            return common.GEMMQuantMode.bfloat16
+        if algo is None:
+            return unlisted
+        if algo not in modes:
+            raise ValueError(f"Unsupported mixed precision for a projection: {algo}")
+        return modes[algo]
+
     layers: dict[int, tuple] = {}
-    for layer, kind, key, algo, excluded in checkpoint.rows(layer_kinds, kinds_to_modules, layer_paths):
-        if algo is not None and algo not in modes:
-            raise ValueError(f"Unsupported mixed precision for projection {key}: {algo}")
-        mode = common.GEMMQuantMode.bfloat16 if excluded else modes[algo] if algo else unlisted
+    for layer, kind, key, mode in checkpoint.rows(layer_kinds, kinds_to_modules, layer_paths, resolve):
         layers.setdefault(layer, (kind, {}))[1][key] = mode
     return [(layer, kind, keys) for layer, (kind, keys) in sorted(layers.items())]
 
@@ -259,23 +273,25 @@ def layer_moe_modes(
     modes = {
         "fp8": common.MoEQuantMode.fp8,
         "mxfp8": common.MoEQuantMode.fp8_block,
+        "fp8_block": common.MoEQuantMode.fp8_block,
         "nvfp4": nvfp4,
         "w4a16_nvfp4": common.MoEQuantMode.w4a16_nvfp4,
     }
-    rows = checkpoint.rows(
-        layer_kinds, {kind: {"experts": modules} for kind, modules in expert_modules.items()}, layer_paths
-    )
     # Unlisted experts are BF16 only in a targets-only export; otherwise they keep the global mode.
     unlisted = common.MoEQuantMode.bfloat16 if checkpoint.targets_only else default
     nvfp4_family = (common.MoEQuantMode.nvfp4, common.MoEQuantMode.nvfp4_wo)
-    layers = []
-    for layer, kind, _, algo, excluded in rows:
+
+    def resolve(algo, excluded):
+        # An explicit exclusion is BF16 in every metadata format.
+        if excluded:
+            return common.MoEQuantMode.bfloat16
         if algo is not None and algo not in modes:
             raise ValueError(f"Unsupported routed-expert precision: {algo}")
-        # An explicit exclusion is BF16 in every metadata format.
-        mode = common.MoEQuantMode.bfloat16 if excluded else execution_mode(modes[algo]) if algo else unlisted
-        layers.append((layer, kind, nvfp4 if mode in nvfp4_family else mode))
-    return layers
+        mode = execution_mode(modes[algo]) if algo else unlisted
+        return nvfp4 if mode in nvfp4_family else mode
+
+    experts = {kind: {"experts": modules} for kind, modules in expert_modules.items()}
+    return [(layer, kind, mode) for layer, kind, _, mode in checkpoint.rows(layer_kinds, experts, layer_paths, resolve)]
 
 
 def moe_modes(

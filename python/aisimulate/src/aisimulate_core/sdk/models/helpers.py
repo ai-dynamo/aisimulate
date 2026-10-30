@@ -786,6 +786,9 @@ def _infer_mixed_precision_group_algo(group: dict) -> str | None:
         # guard for config_groups-style exports.
         if weights.get("group_size") == 32:
             return "mxfp8"
+        # Block-scaled FP8 (compressed-tensors strategy=block), as sdk/utils.py reads the global mode.
+        if str(weights.get("strategy", "")).lower() == "block" or weights.get("block_structure"):
+            return "fp8_block"
         return "fp8"
     if num_bits == 4 and "float" in weight_type:
         return "nvfp4"
@@ -835,12 +838,12 @@ def _collect_mixed_precision_layer_algos(raw_config: dict) -> tuple[set[str], se
 # Coarse GEMM-lane priority over the non-expert algorithms a mixed-precision
 # checkpoint lists (rationale at the use site in
 # _infer_mixed_precision_quant_modes).
-_MIXED_PRECISION_GEMM_ALGO_PRIORITY = ("mxfp8", "fp8", "w4a16_nvfp4", "nvfp4")
+_MIXED_PRECISION_GEMM_ALGO_PRIORITY = ("mxfp8", "fp8_block", "fp8", "w4a16_nvfp4", "nvfp4")
 
 
 def _mixed_precision_algo_gemm_mode(algo: str | None, quant_dynamic: bool | None) -> common.GEMMQuantMode | None:
     """SDK GEMM mode of one normalized non-expert mixed-precision algorithm."""
-    if algo == "mxfp8":
+    if algo in ("mxfp8", "fp8_block"):
         return common.GEMMQuantMode.fp8_block
     if algo == "fp8":
         return common.GEMMQuantMode.fp8 if quant_dynamic is True else common.GEMMQuantMode.fp8_static
@@ -870,7 +873,7 @@ def _infer_mixed_precision_quant_modes(raw_config: dict, quant_dynamic: bool | N
             common.GEMMQuantMode.fp8 if quant_dynamic is True else common.GEMMQuantMode.fp8_static
         )
     # Otherwise the listed non-expert algorithms pick the lane in
-    # _MIXED_PRECISION_GEMM_ALGO_PRIORITY order (mxfp8, fp8, w4a16_nvfp4, nvfp4).
+    # _MIXED_PRECISION_GEMM_ALGO_PRIORITY order (mxfp8, fp8_block, fp8, w4a16_nvfp4, nvfp4).
     # MXFP8 -> fp8_block approximation (owner decision 2026-08-09): MXFP8 is
     # 32-element block-scaled FP8, i.e. the same 1 B/elem weights and the same
     # FP8 tensor-core throughput class as fp8_block; only the scale
@@ -896,7 +899,7 @@ def _infer_mixed_precision_quant_modes(raw_config: dict, quant_dynamic: bool | N
         overrides["moe_quant_mode"] = common.MoEQuantMode.w4a16_nvfp4
     elif "nvfp4" in moe_algos:
         overrides["moe_quant_mode"] = common.MoEQuantMode.nvfp4
-    elif "mxfp8" in moe_algos:
+    elif "mxfp8" in moe_algos or "fp8_block" in moe_algos:
         overrides["moe_quant_mode"] = common.MoEQuantMode.fp8_block
     elif "fp8" in moe_algos:
         overrides["moe_quant_mode"] = common.MoEQuantMode.fp8

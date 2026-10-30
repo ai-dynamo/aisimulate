@@ -328,3 +328,81 @@ def test_qwen_decode_builds_one_overlap_per_precision_signature(tmp_path):
         assert groups == pytest.approx(
             {(MOE.nvfp4, GEMM.bfloat16): in_a * scale, (MOE.bfloat16, GEMM.nvfp4): (len(layers) - in_a) * scale}
         ), prefix
+
+
+def _qkv_modes(quantization_config, default):
+    from aisimulate_core.sdk.models.checkpoint_precision import CheckpointPrecision, decoder_paths, projection_modes
+
+    checkpoint = CheckpointPrecision({"quantization_config": quantization_config})
+    qkv = {"full": {"qkv": ("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj")}}
+    return projection_modes(checkpoint, ["full"], qkv, decoder_paths(), default)
+
+
+def test_fused_modules_compare_their_effective_precision():
+    # Targets-only: Q excluded, K/V unlisted. All three load BF16, so the fused QKV is BF16.
+    targets_only = {
+        "quant_method": "modelopt",
+        "quant_algo": "MIXED_PRECISION",
+        "quantized_layers": {"model.layers.0.mlp.down_proj": {"quant_algo": "NVFP4"}},
+        "ignore": ["model.layers.0.self_attn.q_proj"],
+    }
+    assert _qkv_modes(targets_only, GEMM.nvfp4) == {"qkv": {GEMM.bfloat16: 1}}
+    # With a base lane the export is not targets-only, so an unlisted module keeps the default.
+    # Q listed FP8 resolves to the same fp8_static lane as the K/V default: the fused QKV is valid.
+    listed = {
+        "quant_method": "fp8",
+        "quant_algo": "MIXED_PRECISION",
+        "quantized_layers": {"model.layers.0.self_attn.q_proj": "FP8"},
+    }
+    assert _qkv_modes(listed, GEMM.fp8_static) == {"qkv": {GEMM.fp8_static: 1}}
+    # A real disagreement is still rejected.
+    with pytest.raises(ValueError, match="disagree on precision"):
+        _qkv_modes(listed, GEMM.nvfp4)
+
+
+def _block_fp8_qwen(tmp_path):
+    """Qwen3.6-35B-A3B geometry with a uniform compressed-tensors block-FP8 config group."""
+    config, _ = _load(QWEN36_MOE)
+    weights = {"num_bits": 8, "type": "float", "strategy": "block", "block_structure": [128, 128]}
+    group = {"targets": ["Linear"], "weights": weights, "input_activations": {"num_bits": 8, "type": "float"}}
+    config["quantization_config"] = {
+        "quant_method": "compressed-tensors",
+        "config_groups": {"group_0": group},
+        "ignore": ["lm_head", "re:.*mlp.gate$", "re:.*shared_expert_gate$"],
+    }
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    return str(tmp_path), _layer_types(config)
+
+
+@pytest.mark.parametrize("canonical", [False, True])
+def test_block_fp8_config_group_keeps_block_lanes(monkeypatch, tmp_path, canonical):
+    path, kinds = _block_fp8_qwen(tmp_path)
+    if canonical:
+        from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, engine
+
+        built = []
+        monkeypatch.setattr(engine, "get_model", lambda *args: built.append(get_model(*args)) or built[-1])
+        monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+        RustForwardPassPerfModel.best_available(
+            ForwardPassPerfModelConfig(
+                model=path,
+                system="h200_sxm",
+                backend="vllm",
+                backend_version="0.30.0",
+                worker_type="decode",
+                tp=1,
+                moe_tp_size=1,
+                moe_ep_size=1,
+                database_mode="SOL",
+                estimation_mode="op_level",
+            )
+        ).close()
+        (model,) = built
+    else:
+        model = get_model(path, ModelConfig(tp_size=1, moe_tp_size=1, moe_ep_size=1, system="h200_sxm"), "vllm")
+    linear = kinds.count("linear_attention")
+    for name in ("context_gdn_in_proj_gemm", "context_gdn_out_proj_gemm", "context_gdn_shared_gate_up_gemm"):
+        assert _buckets(model, name) == {GEMM.fp8_block: linear}, name
+    assert set(_buckets(model, "context_gdn_moe")) == {MOE.fp8_block}
+    assert set(_buckets(model, "context_full_moe")) == {MOE.fp8_block}
