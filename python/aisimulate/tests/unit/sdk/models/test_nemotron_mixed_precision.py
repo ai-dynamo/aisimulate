@@ -165,6 +165,41 @@ def test_model_uses_checkpoint_projection_precision_and_preserves_override(check
         assert by_name["mamba_in_proj_gemm"]._quant_mode == (explicit or common.GEMMQuantMode.fp8_static)
 
 
+@pytest.mark.parametrize("inferred_first", [True, False])
+def test_engine_handle_cache_separates_inferred_and_explicit_projection_precision(
+    checkpoint, monkeypatch, inferred_first
+):
+    from collections import OrderedDict
+    from types import SimpleNamespace
+
+    import aisimulate_core
+    from aisimulate_core.sdk import engine as core_engine
+    from aisimulate_core.sdk import rust_engine_step
+
+    config = dict(tp_size=2, moe_tp_size=2)
+    inferred = get_model(checkpoint, ModelConfig(**config), backend_name="vllm")
+    explicit = get_model(
+        checkpoint, ModelConfig(**config, gemm_quant_mode=common.GEMMQuantMode.fp8_static), backend_name="vllm"
+    )
+    # Same coarse mode, different shared-projection graph.
+    assert inferred.config.gemm_quant_mode == explicit.config.gemm_quant_mode
+
+    def shared_up(model):
+        return next(op for op in model.context_ops if op._name.endswith("shared_up_gemm"))._quant_mode.name
+
+    assert shared_up(inferred) != shared_up(explicit)
+    # Real cache identity; only the compile tail is stubbed to record the graph.
+    monkeypatch.setattr(rust_engine_step, "_ENGINE_HANDLE_CACHE", OrderedDict())
+    monkeypatch.setattr(rust_engine_step, "_configure_default_data_roots", lambda: None)
+    monkeypatch.setattr(core_engine, "build_engine_spec_json", lambda model, **kwargs: shared_up(model))
+    monkeypatch.setattr(core_engine, "EngineHandle", lambda spec, systems_path=None: SimpleNamespace(spec=spec))
+    monkeypatch.setattr(aisimulate_core, "engine_spec_bincode_from_json", lambda spec: spec.encode())
+    database = SimpleNamespace(system="b200_sxm", backend="vllm", version="0.31.0")
+    for model in (inferred, explicit) if inferred_first else (explicit, inferred):
+        handle = rust_engine_step._cached_engine_handle(model, database)
+        assert handle.spec == shared_up(model).encode()
+
+
 def test_non_latent_nemotron_keeps_existing_calibration_policy():
     model = get_model(
         "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", ModelConfig(moe_tp_size=1), backend_name="vllm"

@@ -1776,6 +1776,12 @@ def _engine_config_json(model: Any, database: Any) -> str:
                         "kvcache": _raw_quant_name(getattr(model_config, "kvcache_quant_mode", None)),
                         "comm": _raw_quant_name(getattr(model_config, "comm_quant_mode", None)),
                     },
+                    # Checkpoint-resolved projection precision (Nemotron-H) shapes the
+                    # op graph independently of the coarse gemm mode above.
+                    "projection_quant_modes": {
+                        name: _raw_quant_name(mode)
+                        for name, mode in sorted((getattr(model, "_projection_quant_modes", None) or {}).items())
+                    },
                     "model_config": {
                         "fpm_config": fpm_config.cache_identity() if fpm_config is not None else None,
                         "decoder_replay": bool(getattr(model_config, "decoder_replay", False)),

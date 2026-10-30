@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 from collector.case_generator import get_common_moe_test_cases, moe_model_allows_quantization
-from collector.vllm.collect_mamba2 import get_mamba2_test_cases
+from collector.vllm import collect_mamba2
+from collector.vllm.collect_mamba2 import _decode_query_start_loc, get_mamba2_test_cases
 
 pytestmark = pytest.mark.unit
 MODEL = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
@@ -113,3 +114,20 @@ def test_uniform_nemotron_nvfp4_uses_modelopt_and_missing_metadata_fails(tmp_pat
         )
     )
     assert helpers["_uses_modelopt_nvfp4_checkpoint"](str(tmp_path))
+
+
+def test_decode_passes_cumulative_lengths_only_for_speculative_widths():
+    starts = object()
+    assert _decode_query_start_loc(1, starts) is None
+    assert _decode_query_start_loc(2, starts) is starts
+    assert _decode_query_start_loc(4, starts) is starts
+    # Both decode kernels take the serving value, never the raw varlen offsets.
+    tree = ast.parse(Path(collect_mamba2.__file__).read_text())
+    passed = {
+        (keyword.arg, ast.unparse(keyword.value))
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg in ("query_start_loc", "cu_seqlens")
+    }
+    assert passed == {("query_start_loc", "decode_starts"), ("cu_seqlens", "decode_starts")}
