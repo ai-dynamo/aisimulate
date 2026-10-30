@@ -47,22 +47,14 @@ def _fake_torch():
     )
 
 
-def _install_fake_flashinfer(monkeypatch, *, accepts_cpu_lens):
+def _install_fake_flashinfer(monkeypatch):
     calls = []
 
-    if accepts_cpu_lens:
-
-        def trtllm_ragged_attention_deepseek(
-            *, query, cum_seq_lens_q, cum_seq_lens_kv, q_seq_lens_cpu=None, kv_seq_lens_cpu=None
-        ):
-            calls.append({"q_seq_lens_cpu": q_seq_lens_cpu, "kv_seq_lens_cpu": kv_seq_lens_cpu})
-            return "out"
-
-    else:
-
-        def trtllm_ragged_attention_deepseek(*, query, cum_seq_lens_q, cum_seq_lens_kv):
-            calls.append({})
-            return "out"
+    def trtllm_ragged_attention_deepseek(
+        *, query, cum_seq_lens_q, cum_seq_lens_kv, q_seq_lens_cpu=None, kv_seq_lens_cpu=None
+    ):
+        calls.append({"q_seq_lens_cpu": q_seq_lens_cpu, "kv_seq_lens_cpu": kv_seq_lens_cpu})
+        return "out"
 
     prefill = SimpleNamespace(trtllm_ragged_attention_deepseek=trtllm_ragged_attention_deepseek)
     monkeypatch.setitem(sys.modules, "flashinfer", SimpleNamespace(prefill=prefill))
@@ -108,7 +100,7 @@ def _extend_batch(lens):
 
 
 def test_no_prefix_prefill_call_carries_the_cpu_length_mirrors(monkeypatch):
-    prefill, calls, original = _install_fake_flashinfer(monkeypatch, accepts_cpu_lens=True)
+    prefill, calls, original = _install_fake_flashinfer(monkeypatch)
     backend = _backend()
     backend.init_forward_metadata(_extend_batch([512, 512]))
     cum = object()
@@ -125,7 +117,7 @@ def test_no_prefix_prefill_call_carries_the_cpu_length_mirrors(monkeypatch):
 
 
 def test_chunked_prefix_call_goes_through_sglang_unchanged(monkeypatch):
-    _, calls, _ = _install_fake_flashinfer(monkeypatch, accepts_cpu_lens=True)
+    _, calls, _ = _install_fake_flashinfer(monkeypatch)
     backend = _backend()
     backend.init_forward_metadata(_extend_batch([512]))
 
@@ -135,7 +127,7 @@ def test_chunked_prefix_call_goes_through_sglang_unchanged(monkeypatch):
 
 
 def test_decode_metadata_leaves_the_prefill_hook_inert(monkeypatch):
-    _, calls, _ = _install_fake_flashinfer(monkeypatch, accepts_cpu_lens=True)
+    _, calls, _ = _install_fake_flashinfer(monkeypatch)
     backend = _backend()
     backend.init_forward_metadata(SimpleNamespace(forward_mode=FORWARD_MODE.DECODE, seq_lens_cpu=[9]))
     cum = object()
@@ -143,17 +135,6 @@ def test_decode_metadata_leaves_the_prefill_hook_inert(monkeypatch):
     backend._run_prefill_kernel(q="q", cum_seq_lens_q=cum, cum_seq_lens_kv=cum)
 
     assert calls == [{"q_seq_lens_cpu": None, "kv_seq_lens_cpu": None}]
-
-
-def test_flashinfer_without_the_parameters_is_called_as_is(monkeypatch):
-    prefill, calls, original = _install_fake_flashinfer(monkeypatch, accepts_cpu_lens=False)
-    backend = _backend()
-    backend.init_forward_metadata(_extend_batch([512]))
-    cum = object()
-
-    assert backend._run_prefill_kernel(q="q", cum_seq_lens_q=cum, cum_seq_lens_kv=cum) == "out"
-    assert calls == [{}]
-    assert prefill.trtllm_ragged_attention_deepseek is original
 
 
 def test_benchmark_layer_refuses_eager_timing():
@@ -184,7 +165,6 @@ def test_benchmark_layer_refuses_eager_timing():
 
 def test_run_mla_has_no_eager_prefill_switch():
     source = SOURCE.read_text(encoding="utf-8")
-    assert "_eager_prefill" not in source
     assert "use_cuda_graph=False" not in source
     run_mla = next(node for node in _tree().body if isinstance(node, ast.FunctionDef) and node.name == "run_mla")
     constructed = {

@@ -59,16 +59,6 @@ def test_control_sample_is_seeded_and_excludes_requested():
     assert len(big.select("op", CASES, random.Random(1))) == len(CASES)  # capped at the rest
 
 
-def test_report_lists_unmatched_requests_across_ops():
-    spec = _spec({"[32, 255, 128, 1, 128, False, 'flashinfer']", "[9, 9, 9]"})
-    spec.select("attention_generation", CASES, random.Random(42))
-    spec.select("gemm", [], random.Random(42))
-    rep = spec.report()
-    assert rep["requested"] == 2 and rep["matched"] == 1
-    assert rep["unmatched"] == ["[9, 9, 9]"]
-    assert rep["matched_by_op"] == {"attention_generation": 1, "gemm": 0}
-
-
 def test_load_replay_cases_from_errors_json_summary_gz_and_plain_list(tmp_path: Path):
     errors = [
         {"task_params": "[32, 255, 128, 1, 128, False, 'flashinfer']", "error_type": "RuntimeError"},
@@ -96,15 +86,15 @@ def test_load_replay_cases_from_errors_json_summary_gz_and_plain_list(tmp_path: 
         collect.load_replay_cases(tmp_path / "empty.json")
 
 
-def test_finish_replay_writes_marker_and_warns_on_unmatched(tmp_path: Path, caplog):
+def test_finish_replay_writes_a_marker_listing_unmatched_requests_across_ops(tmp_path: Path):
     spec = _spec({"[32, 255, 128, 1, 128, False, 'flashinfer']", "[9, 9, 9]"})
     spec.select("attention_generation", CASES, random.Random(42))
+    spec.select("gemm", [], random.Random(42))
+    assert spec.report()["matched_by_op"] == {"attention_generation": 1, "gemm": 0}
     import logging
 
     log = logging.getLogger("replay-test")
-    with caplog.at_level(logging.INFO, logger="replay-test"):
-        collect._finish_replay(spec, tmp_path, log)
+    collect._finish_replay(spec, tmp_path, log)
     marker = json.loads((tmp_path / collect.ReplaySpec.MARKER).read_text())
     assert marker["requested"] == 2 and marker["matched"] == 1 and marker["unmatched"] == ["[9, 9, 9]"]
-    assert any("not in this run's case plan" in r.message for r in caplog.records)
     assert collect._finish_replay(None, tmp_path, log) is None

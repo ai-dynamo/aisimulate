@@ -664,7 +664,7 @@ def framework_kv_block_size(backend_cls, *, user_block_size: int | None = None) 
     update_block_size_for_backend, phase 1), and the kernel page is
     ``select_common_block_size(cache_block_size, [backend])`` (v1/worker/utils.py:
     the manager size when every backend accepts it, else the largest explicit
-    size that divides it). The per-SM table (kv_block_size) was the owner's
+    size that divides it). The former per-SM table (removed) was the owner's
     2026-09-30 interim; the B200 re-run on 2026-10-03 showed it is not
     equivalent: with mla=32 the bf16 DSA cell selected the TRT-LLM FMHA sparse
     cubin while serving ran FA-cute (page 64) — the page is a per-(backend, kv
@@ -683,27 +683,3 @@ def framework_kv_block_size(backend_cls, *, user_block_size: int | None = None) 
         user_block_size if user_block_size else backend_cls.get_preferred_block_size(CacheConfig.DEFAULT_BLOCK_SIZE)
     )
     return int(select_common_block_size(int(cache_block), [backend_cls]))
-
-
-def kv_block_size(sm_version: int, op: str = "attention") -> int:
-    """KV-cache page size the collector builds its fake engine with, per SM.
-
-    Serving picks the page size per attention backend; SM90 backends (FA3,
-    FlashMLA, Triton) take 64 and the collectors used a 64 literal — which the
-    B200 campaign (2026-09-29) caught as a cross-arch defect: on SM100 vLLM
-    0.30 serves dense attention through the flashinfer TRT-LLM FMHA at page
-    16 (Llama/Qwen; Gemma-4 head-512 takes 64) and MLA decode at page 32, and
-    a 64-page collector cell ran a different cubin (attn_ctx P64 vs serving
-    P16; mla_gen_fp8 P64 vs P32). The A/B with page 16 aligned attn_ctx.
-    Owner decision 2026-09-30: branch by SM rather than query the framework
-    per case. SM120 keeps 64 (its 31 gates aligned with it). AIS_KV_BLOCK_SIZE
-    is the single-variable A/B hook and is never set in collection runs.
-    """
-    import os
-
-    override = os.environ.get("AIS_KV_BLOCK_SIZE")
-    if override:
-        return int(override)
-    if 100 <= sm_version < 120:
-        return 32 if op == "mla" else 16
-    return 64

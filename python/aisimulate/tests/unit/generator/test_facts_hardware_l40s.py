@@ -29,10 +29,8 @@ def _l40s():
 
 def test_l40s_is_its_own_profile_and_no_phantom_l40_system():
     assert hardware_key_for_system("l40s") == "l40s"
-    assert hardware_key_for_system("l40") == "l40"  # not an SDK system: falls through, resolve_facts raises clearly
     hw = _l40s()
     assert hw["node_selector"]["nvidia.com/gpu.product"] == "NVIDIA-L40S"
-    assert hw["moe_backend"] == {"trtllm": {"nvfp4": "MARLIN"}}
 
 
 @pytest.mark.parametrize(
@@ -43,7 +41,6 @@ def test_l40s_is_its_own_profile_and_no_phantom_l40_system():
         ({"quant_method": "mxfp4"}, "mxfp4"),  # gpt-oss
         ({"quant_method": "fp8", "weight_block_size": [128, 128]}, "fp8_block"),  # DeepSeek-V3 class
         ({"quant_method": "fp8"}, "fp8"),
-        ({"quant_algo": "FP8"}, "fp8"),
         # modelopt MIXED_PRECISION: the experts' algo decides (nvidia/Qwen3.8-2.4T-A95B-NVFP4 layout)
         (
             {

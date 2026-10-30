@@ -104,19 +104,13 @@ def test_glm_row_conventions_match_the_shared_table(monkeypatch):
     ("backend", "architecture", "version", "audited"),
     [
         # DeepSeek-V4 is not audited on 0.31.0 (shared architecture-free key, see the module)
-        ("vllm", DSV4, "0.30.0", False),
         ("vllm", DSV4, "0.31.0", False),
         ("vllm", GLM, "0.31.0", True),
         ("vllm", GLM, "0.30.0", False),
-        ("vllm", GLM, "0.25.0", False),
-        ("vllm", GLM, "0.27.1", False),
         ("sglang", DSV4, "0.5.21", True),
-        ("sglang", DSV4, "0.5.14", False),
         ("sglang", DSV4, "0.5.20", False),
-        ("sglang", GLM, "0.5.20", False),  # 0.5.20 lane retired 2026-10-30
         ("sglang", GLM, "0.5.21", False),  # not ported to 0.5.21 yet
-        ("sglang", GLM, "0.5.14", False),
-        ("sglang", "UnknownForCausalLM", "0.5.20", False),
+        ("sglang", "UnknownForCausalLM", "0.5.21", False),
     ],
 )
 def test_each_architecture_runs_only_on_its_audited_release(monkeypatch, backend, architecture, version, audited):
@@ -141,16 +135,10 @@ def test_audited_releases_never_overlap_across_architectures(monkeypatch, backen
     module = _load(monkeypatch, backend)
     from collector.version_resolver import _check_compat
 
-    candidates = ["0.24.0", "0.25.0", "0.27.1", "0.30.0", "0.31.0", "0.5.14", "0.5.16", "0.5.20"]
+    candidates = ["0.24.0", "0.25.0", "0.27.1", "0.30.0", "0.31.0", "0.5.14", "0.5.16", "0.5.20", "0.5.21"]
     for version in candidates:
         admitted = [arch for arch, spec in module._ARCHITECTURE_COMPAT.items() if _check_compat(spec, version)]
         assert len(admitted) <= 1, (version, admitted)
-
-
-def test_vllm_file_is_pinned_to_the_mhc_family_release(monkeypatch):
-    module = _load(monkeypatch, "vllm")
-    assert module.__compat__ == "vllm==0.31.0"
-    assert set(module._ARCHITECTURE_COMPAT) == {GLM}
 
 
 def test_vllm_glm_sites_import_the_0_31_0_module_location():

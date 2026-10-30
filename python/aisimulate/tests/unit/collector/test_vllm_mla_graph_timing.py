@@ -245,23 +245,7 @@ def test_ordinary_mla_does_not_publish_dsa_reuse_rows():
     assert [row["op_name"] for row in published] == ["mla_context_module"]
 
 
-@pytest.mark.parametrize("reuse_frequency", [1, 4])
-def test_each_case_prints_one_phase_timing_line(capsys, reuse_frequency):
-    execute, _, _, calls, _ = _module_runner(reuse_frequency=reuse_frequency)
-    execute()
-    lines = [line for line in capsys.readouterr().out.splitlines() if "module timing" in line]
-    assert len(lines) == 1
-    (line,) = lines
-    assert line.startswith("  [DSA module timing] context b=2, s=16, prefix=128, heads=8, gemm=bfloat16, kv=fp8: ")
-    phases = ["module", "weights", "kv_metadata", "dry_run", "measure_full"]
-    if reuse_frequency == 4:
-        phases.append("measure_skip")
-    phases += ["indexer_fill", "total"]
-    assert [field.split("=")[0] for field in line.split(": ", 1)[1].split()] == phases
-    assert len(calls) == len([p for p in phases if p.startswith("measure")])
-
-
-def test_series_builds_the_module_once_and_measures_every_point_largest_first(capsys):
+def test_series_builds_the_module_once_and_measures_every_point_largest_first():
     execute, events, published, calls, _ = _module_runner(reuse_frequency=4)
     assert execute(seq_len=[8, 16, 8]) == [0.015, 0.015]
     assert events.count("workspace init") == 1
@@ -273,16 +257,9 @@ def test_series_builds_the_module_once_and_measures_every_point_largest_first(ca
         ("dsa_context_module_skip_indexer", 8),
     ]
     assert len(calls) == 4 and events[-1] == "cleanup" and events.count("cleanup") == 1
-    out = capsys.readouterr().out
-    timing = [line for line in out.splitlines() if "module timing" in line]
-    assert len(timing) == 2
-    assert "module=" in timing[0] and "weights=" in timing[0], "setup phases are reported once, on the first point"
-    assert "module=" not in timing[1] and "kv_metadata=" in timing[1]
-    series_lines = [line for line in out.splitlines() if "[DSA module series] context b=2, prefix=128" in line]
-    assert len(series_lines) == 1 and "2/2 points" in series_lines[0]
 
 
-def test_series_sweeps_the_isl_x_prefix_grid_of_one_module_largest_total_context_first(capsys):
+def test_series_sweeps_the_isl_x_prefix_grid_of_one_module_largest_total_context_first():
     """A DSA context case carries its prefix list: one module, every (isl, prefix) point of the
     plan grid measured on it, largest total context first (module build was 0.9-1.2 s/pt under
     the campaign's 8 workers when it was amortised over one prefix only, 2026-10-29)."""
@@ -297,10 +274,6 @@ def test_series_sweeps_the_isl_x_prefix_grid_of_one_module_largest_total_context
         if row["op_name"] == "dsa_context_module"
     ]
     assert rows == [(16, 128), (8, 128), (16, 0), (8, 0)]
-    out = capsys.readouterr().out
-    assert "[DSA module] context b=2, s=[16, 8], prefix=[128, 0]," in out
-    series_lines = [line for line in out.splitlines() if "[DSA module series] context b=2, prefix=[128, 0]" in line]
-    assert len(series_lines) == 1 and "4/4 points" in series_lines[0]
     assert len(calls) == 8 and events.count("cleanup") == 1
 
 

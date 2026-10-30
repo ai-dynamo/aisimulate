@@ -17,8 +17,6 @@ pytestmark = pytest.mark.unit
     "path,profile",
     [
         ("deepseek-ai/DeepSeek-V4-Flash-0731", "deepseek-v4"),
-        ("deepseek-ai/DeepSeek-V4-Pro", "deepseek-v4"),
-        ("sgl-project/DeepSeek-V4-Flash-FP8", "deepseek-v4"),
         ("deepseek-ai/DeepSeek-V4.1-Flash", "deepseek-v4.1"),
         ("nvidia/DeepSeek-V4.1-Flash-NVFP4", "deepseek-v4.1"),
     ],

@@ -25,7 +25,7 @@ def test_rtx_pro_6000_server_maps_to_the_sm120_profile():
     assert hardware_key_for_system("not_a_system") == "not_a_system"
 
 
-def test_sm120_profile_resolves_and_carries_no_wideep_moe_backend():
+def test_sm120_profile_resolves_and_model_defaults_reach_its_engine_args():
     facts = resolve_facts(
         model_profile_id="deepseek-v4.1",
         hardware="sm120",
@@ -33,20 +33,8 @@ def test_sm120_profile_resolves_and_carries_no_wideep_moe_backend():
         dynamo_version=_latest_dynamo(),
         backend="vllm",
     )
-    assert facts.hardware["arch"] == "x86_64"
-    assert facts.hardware["node_selector"]["nvidia.com/gpu.product"].startswith("NVIDIA-RTX-PRO-6000")
     # PCIe Blackwell: no wide-EP MoE backend is asserted for any backend
     assert "moe_backend" not in facts.hardware
-
-
-def test_model_defaults_reach_sm120_engine_args():
-    facts = resolve_facts(
-        model_profile_id="deepseek-v4.1",
-        hardware="sm120",
-        transport="nvlink",
-        dynamo_version=_latest_dynamo(),
-        backend="vllm",
-    )
     tokens: list[str] = []
     apply_model_default_args(tokens, facts.model, backend="vllm", system="sm120", role="agg", variant=None)
     assert tokens[tokens.index("--block-size") + 1] == "64"

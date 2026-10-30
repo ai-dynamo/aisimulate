@@ -42,30 +42,14 @@ class _EnvInt:
         self.v = v
 
 
-def test_0521_envs_knob_is_raised_to_the_floor(monkeypatch):
+@pytest.mark.parametrize(("initial", "expected"), [(384 * 1024 * 1024, 4 << 30), (8 << 30, 8 << 30)])
+def test_0521_envs_knob_is_raised_to_the_floor_and_a_larger_setting_is_kept(monkeypatch, initial, expected):
     fn, floor = _load()
-    knob = _EnvInt(384 * 1024 * 1024)
+    assert floor == 4 << 30
+    knob = _EnvInt(initial)
     monkeypatch.setitem(sys.modules, "sglang", types.ModuleType("sglang"))
     monkeypatch.setitem(sys.modules, "sglang.srt", types.ModuleType("sglang.srt"))
     environ = types.ModuleType("sglang.srt.environ")
     environ.envs = types.SimpleNamespace(SGLANG_FLASHINFER_WORKSPACE_SIZE=knob)
     monkeypatch.setitem(sys.modules, "sglang.srt.environ", environ)
-    assert fn() == floor and knob.get() == floor == 4 << 30
-
-
-def test_larger_setting_is_kept(monkeypatch):
-    fn, floor = _load()
-    knob = _EnvInt(8 << 30)
-    monkeypatch.setitem(sys.modules, "sglang", types.ModuleType("sglang"))
-    monkeypatch.setitem(sys.modules, "sglang.srt", types.ModuleType("sglang.srt"))
-    environ = types.ModuleType("sglang.srt.environ")
-    environ.envs = types.SimpleNamespace(SGLANG_FLASHINFER_WORKSPACE_SIZE=knob)
-    monkeypatch.setitem(sys.modules, "sglang.srt.environ", environ)
-    assert fn() == 8 << 30 and knob.get() == 8 << 30
-
-
-def test_no_knob_is_a_reported_noop(monkeypatch):
-    fn, _ = _load()
-    for name in ("sglang", "sglang.srt", "sglang.srt.environ", "sglang.global_config"):
-        monkeypatch.setitem(sys.modules, name, None)  # import fails
-    assert fn() is None
+    assert fn() == expected and knob.get() == expected

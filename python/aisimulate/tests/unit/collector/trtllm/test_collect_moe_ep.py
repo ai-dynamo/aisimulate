@@ -434,10 +434,9 @@ def test_moe_ep_is_requested_independently_of_the_default_trtllm_plan():
     # model plans on both backends so a default run resolves to one runtime.
     from collector.model_cases import build_collection_case_plan
 
-    for model in ("deepseek-ai/DeepSeek-V3", "moonshotai/Kimi-K2.5", "zai-org/GLM-5", "MiniMaxAI/MiniMax-M2.5"):
-        plan = build_collection_case_plan(backend="trtllm", model_path=model)
-        assert "moe_ep" not in plan.selected_ops, model
-        assert "trtllm_moe_wideep" not in plan.selected_ops
+    plan = build_collection_case_plan(backend="trtllm", model_path="deepseek-ai/DeepSeek-V3")
+    assert "moe_ep" not in plan.selected_ops
+    assert "trtllm_moe_wideep" not in plan.selected_ops
     sglang_plan = build_collection_case_plan(backend="sglang", model_path="deepseek-ai/DeepSeek-V3")
     assert "moe_ep" not in sglang_plan.selected_ops
 

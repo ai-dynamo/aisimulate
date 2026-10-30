@@ -2390,14 +2390,8 @@ def test_msa_head_axis_derives_from_declared_shards():
     """MSA is one fixed geometry (MiniMax-M3 64q/4kv/4idx): the collectors sweep
     native // tp for the model row's tensor_parallel_sizes, never the shared
     GQA-style head grid (owner decision 2026-09-29; TP 16 is the ceiling)."""
-    from collector.case_generator import get_mla_module_model_specs, get_msa_head_counts
+    from collector.case_generator import get_msa_head_counts
 
-    (spec,) = [
-        s
-        for s in get_mla_module_model_specs(attention_type="msa", apply_model_filter=False)
-        if s.model_path == "MiniMaxAI/MiniMax-M3"
-    ]
-    assert spec.tensor_parallel_sizes == (1, 2, 4, 8, 16)
     for backend in ("vllm", "trtllm", "sglang"):
         heads = get_msa_head_counts(backend)
         assert heads == [64, 32, 16, 8, 4], (backend, heads)

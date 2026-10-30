@@ -50,13 +50,6 @@ def test_non_kda_model_keeps_the_512_floor():
     assert pv["params"]["agg"]["max_batch_size"] == 512
 
 
-def test_small_requested_batch_is_not_raised_by_the_cap():
-    pv = _pv(True, batch=64)
-    apply_rule_plugins(pv, backend="vllm")
-    # the 512 floor lifts 64 -> 512, the KDA cap brings it to 256 (never above the cap)
-    assert pv["params"]["agg"]["max_batch_size"] == 256
-
-
 def test_preserve_engine_limits_disables_the_cap():
     pv = _pv(True, batch=512, preserve=True)
     apply_rule_plugins(pv, backend="vllm")

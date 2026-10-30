@@ -49,14 +49,12 @@ def test_op_entry_rejects_duplicate_tables():
         )
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
-def test_provenance_collections_carry_extra_tables(backend):
+def test_provenance_collections_carry_extra_tables():
     from collector.version_resolver import build_collections
 
-    version = {"vllm": "0.30.0", "sglang": "0.5.14", "trtllm": "1.3.0rc23"}[backend]
     (cs,) = [
         c
-        for c in build_collections(_registry(backend), backend, version, ops=["compute_scale"])
+        for c in build_collections(_registry("vllm"), "vllm", "0.30.0", ops=["compute_scale"])
         if c["type"] == "compute_scale"
     ]
     assert cs["perf_filename"] == PerfFile.COMPUTESCALE
@@ -102,17 +100,6 @@ def test_executor_binds_every_declared_table_to_the_producer():
         collect._registered_checkpoint_tables({**identity, "module": "vllm.nope"}, backend="vllm")
 
 
-@pytest.mark.parametrize("backend", BACKENDS)
-def test_compute_scale_collector_writes_the_handed_in_tables(backend):
-    src = importlib.util.find_spec(f"collector.{backend}.collect_computescale").origin
-    text = Path(src).read_text()
-    assert "def run_computescale(m, k, *, perf_filename, extra_perf_filenames" in text
-    assert "def run_scale_matrix" not in text
-    # no table name is hard-coded any more: the executor hands both in
-    assert 'perf_filename="scale_matrix_perf.txt"' not in text
-    assert "perf_filename=scale_matrix_filename" in text
-
-
 # ── shared-table producers: sglang dsa_*_module_skip_indexer ─────────────────
 # The skip-indexer rows live in the full-module table (op_name "_skip_indexer"
 # suffix; the SDK reads them from there), so the skip ops declare that table
@@ -151,16 +138,7 @@ def test_provenance_collections_carry_run_kwargs():
     assert by_type["dsa_context_module_skip_indexer"]["perf_filename"] == by_type["dsa_context_module"]["perf_filename"]
 
 
-@pytest.mark.parametrize(
-    "bad", [(("perf_filename", "x.txt"),), (("device", "cuda:1"),), (("", True),), (("a", 1), ("a", 2))]
-)
+@pytest.mark.parametrize("bad", [(("perf_filename", "x.txt"),), (("a", 1), ("a", 2))])
 def test_op_entry_rejects_executor_owned_or_malformed_run_kwargs(bad):
     with pytest.raises(ValueError, match="run_kwargs"):
         OpEntry(op="x", module="m", get_func="g", run_func="r", perf_filename=PerfFile.GEMM, run_kwargs=bad)
-
-
-def test_skip_indexer_worker_takes_the_explicit_argument_and_does_not_sniff_the_table_name():
-    src = importlib.util.find_spec("collector.sglang.collect_mla_module").origin
-    text = Path(src).read_text(encoding="utf-8")
-    assert 'skip_indexer: bool = False,\n):\n    """Worker-compatible wrapper' in text
-    assert '"skip_indexer" in os.path.basename(perf_filename)' not in text

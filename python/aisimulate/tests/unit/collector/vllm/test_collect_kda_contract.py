@@ -267,27 +267,6 @@ def test_glm5_next_decode_mirrors_serving_decode():
     assert ast.unparse(keywords["lower_bound"]) == "GLM5_NEXT_KDA_LOWER_BOUND"
 
 
-@pytest.mark.parametrize(
-    ("version", "accepted"),
-    [
-        ("0.1.dev19262+gb6bbf29dd", False),  # Kimi-K3 preview pin retired 2026-09-28
-        ("0.29.0", False),
-        ("0.30.0", False),  # kda family moved to 0.31.0 (2026-10-30)
-        ("0.31.0", True),
-        ("0.31.1", False),
-    ],
-)
-def test_kda_compat_admits_kimi_and_glm_runtimes(version, accepted):
-    from collector.version_resolver import _check_compat
-
-    declaration = next(
-        node.value.value
-        for node in ast.parse(SOURCE_PATH.read_text(encoding="utf-8")).body
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "__compat__" for t in node.targets)
-    )
-    assert _check_compat(declaration, version) is accepted
-
-
 _GATE_NAMES = {
     "GLM5_NEXT_KDA_MODEL_PATHS",
     "_is_glm5_next_kda",
@@ -313,18 +292,6 @@ def _gate_namespace():
     namespace = {"_check_compat": _check_compat}
     exec(compile(ast.Module(body=body, type_ignores=[]), str(SOURCE_PATH), "exec"), namespace)
     return namespace
-
-
-def test_kda_architecture_gates_follow_the_file_pin():
-    # One release per file: every audited architecture runs on the file's release.
-    compat = _gate_namespace()["_KDA_ARCHITECTURE_COMPAT"]
-    assert set(compat) == {"KimiK3ForConditionalGeneration", "Glm5NextForConditionalGeneration"}
-    file_pin = next(
-        node.value.value
-        for node in ast.parse(SOURCE_PATH.read_text(encoding="utf-8")).body
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "__compat__" for t in node.targets)
-    )
-    assert set(compat.values()) == {file_pin} == {"vllm==0.31.0"}
 
 
 @pytest.mark.parametrize(

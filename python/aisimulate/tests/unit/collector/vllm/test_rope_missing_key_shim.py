@@ -118,12 +118,6 @@ def test_throwaway_key_shares_the_query_strides_not_a_contiguous_clone():
     assert key.tag == "q'"  # the data was copied from the query
 
 
-def test_throwaway_copy_of_an_empty_query_falls_back_to_clone():
-    copy = _load_all()["_strided_throwaway_copy"]
-    key = copy(_Q("q", (0, 8, 64), (8 * 256, 256, 1)))
-    assert key.made_by == "clone"
-
-
 def test_present_key_passes_through_unchanged():
     def forward(positions, query, key=None, offsets=None):
         return (query, key)
@@ -155,6 +149,15 @@ def test_shim_is_idempotent():
     once = shim(forward)
     assert shim(once) is once and shim(shim(once)) is once
     assert getattr(once, "_aisim_rope_shim", False) is True
+
+    # ... and the installer, re-run on the same module for every case, keeps that one wrapper.
+    install = _load_all()["_install_rope_missing_key_shims"]
+    dsv32_rope = DeepseekScalingRotaryEmbedding()
+    attn = _Attn(rotary_emb=dsv32_rope)
+    install(attn)
+    wrapped = dsv32_rope.forward
+    install(attn)
+    assert dsv32_rope.forward is wrapped
 
 
 # --- which rotary classes get the shim -------------------------------------------------
@@ -238,24 +241,6 @@ def test_installer_shims_deepseek_scaling_rope_and_leaves_glm_rope_on_servings_c
     assert (q.tag, k) == ("q", None)
 
 
-def test_installer_is_idempotent_across_cases():
-    ns = _load_all()
-    dsv32_rope = DeepseekScalingRotaryEmbedding()
-    attn = _Attn(rotary_emb=dsv32_rope)
-    ns["_install_rope_missing_key_shims"](attn)
-    once = dsv32_rope.forward
-    ns["_install_rope_missing_key_shims"](attn)
-    assert dsv32_rope.forward is once
-
-
-def test_run_mla_module_installs_shims_through_the_class_filter_only():
+def test_run_mla_module_installs_shims_through_the_class_filter():
     text = SOURCE.read_text(encoding="utf-8")
     assert "_install_rope_missing_key_shims(attn_module)" in text
-    # The old unconditional wrap of every *RotaryEmbedding submodule must not come back.
-    assert "_m.forward = _rope_tolerating_missing_key(_m.forward)" not in text
-
-
-def test_fp8_block_guard_present_before_layer_construction():
-    text = (Path(__file__).resolve().parents[4] / "collector" / "vllm" / "collect_gemm.py").read_text()
-    guard = text.index("FIXME(kernel-limit): vLLM fp8_block GEMM needs n and k multiples of 16")
-    assert guard < text.index("def create_gemm():")

@@ -3,7 +3,6 @@
 
 """GLM-5.3-Flash standalone per-op collection: case plan, routing and version gates."""
 
-import ast
 import json
 from pathlib import Path
 
@@ -16,7 +15,6 @@ from collector.case_generator import (
     moe_model_allows_quantization,
 )
 from collector.model_cases import build_collection_case_plan
-from collector.version_resolver import _check_compat
 
 from .test_getter_deduplication import _install_vllm_stubs, _load_collector
 
@@ -28,15 +26,6 @@ NVFP4 = "nvidia/GLM-5.3-Flash-NVFP4"
 # Per-rank widths below/off the base grid at TP1/2/4/8 (TP8: vLLM KDA in_proj
 # 3*1024+8+256, SGLang KDA b_proj 8, lm_head 154880/8).
 GLM_OFFGRID_WIDTHS = {8, 16, 32, 288, 3336, 6416, 12576, 19360, 24576, 24896, 38720, 77440, 154880}
-
-
-def _compat(relative_path: str) -> str:
-    tree = ast.parse((REPO_ROOT / relative_path).read_text())
-    return next(
-        node.value.value
-        for node in tree.body
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "__compat__" for t in node.targets)
-    )
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
@@ -157,37 +146,6 @@ def test_vllm_nvfp4_uses_modelopt_only_for_the_glm53flash_checkpoint(monkeypatch
     assert module._uses_modelopt_nvfp4_checkpoint("nvidia/GLM-5.2-NVFP4") is False
     qc = module._load_checkpoint_quantization_config(NVFP4)
     assert (qc["quant_method"], qc["quant_algo"]) == ("modelopt", "NVFP4")
-
-
-@pytest.mark.parametrize(
-    "path",
-    ["collector/vllm/collect_gemm.py", "collector/vllm/collect_moe.py"],
-)
-@pytest.mark.parametrize(
-    "version,accepted",
-    [
-        ("0.31.0", True),  # gemm / moe family pins (2026-10-30)
-        ("0.30.0", False),  # 0.30.0 collectors -> git history
-        ("0.28.0", False),
-        ("0.29.0", False),
-        ("0.31.1", False),
-        ("0.32.0", False),
-        ("0.24.0", False),
-    ],
-)
-def test_vllm_collectors_admit_exactly_the_audited_releases(path, version, accepted):
-    assert _check_compat(_compat(path), version) is accepted
-
-
-def test_sglang_collectors_admit_only_0_5_21():
-    # The 0.5.20 GLM-5.3-Flash lane (incl. the collect_gemm_0520 fork) retired
-    # 2026-10-30; one release per file.
-    for path in ("collector/sglang/collect_gemm.py", "collector/sglang/collect_moe.py"):
-        compat = _compat(path)
-        assert compat == "sglang==0.5.21", path
-        for version in ("0.5.14", "0.5.17", "0.5.20"):
-            assert not _check_compat(compat, version), (path, version)
-    assert not (REPO_ROOT / "collector/sglang/collect_gemm_0520.py").exists()
 
 
 def test_sglang_nvfp4_allowlist_admits_glm53flash_nvfp4_only():

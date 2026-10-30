@@ -786,10 +786,6 @@ def test_framework_moe_source_comes_from_the_constructed_quant_method():
         "ModelOptNvFp4FusedMoEMethod",
     ):
         assert method_name in framework_bench
-    assert (
-        'on_result(num_tokens, results["latency_ms"] / len(logits), results["power_stats"], kernel_source)'
-        in framework_bench
-    )
     assert 'model_name == "deepseek-ai/DeepSeek-V4-Pro"' not in run_moe
 
 

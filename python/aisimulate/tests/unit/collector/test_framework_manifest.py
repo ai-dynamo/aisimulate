@@ -15,7 +15,6 @@ from collector.framework_manifest import (
 )
 from collector.sglang.registry import REGISTRY as SGLANG_REGISTRY
 from collector.trtllm.registry import REGISTRY as TRTLLM_REGISTRY
-from collector.version_resolver import _check_compat
 from collector.vllm.registry import REGISTRY as VLLM_REGISTRY
 from collector.vllm.registry import REGISTRY_XPU as VLLM_XPU_REGISTRY
 from collector.wideep.sglang import dataset_version_label
@@ -40,9 +39,6 @@ def test_manifest_exposes_current_framework_versions_and_images():
     assert trtllm.image().startswith("nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc29@sha256:")
     assert vllm.version == "0.30.0"
     assert vllm.image().startswith("vllm/vllm-openai:v0.30.0@sha256:")
-    # cu129 variant intentionally dropped at the 0.29.0 bump (no cu129 build);
-    # unknown variants fall back to the pinned default image below.
-    assert vllm.image("cu129").startswith("vllm/vllm-openai:v0.30.0@sha256:")
     # Unknown variants intentionally fall back to the pinned default image.
     assert vllm.image("cu130") == vllm.image()
 
@@ -75,6 +71,15 @@ def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
         assert declarations[0] == f'__compat__ = "vllm=={resolved_version}"', (module, declarations[0])
 
 
+# Known exception, not a pattern: collect_dsv41_module carries the pre-existing
+# source-build pin from #160 (sglang@1aa0e962...). framework_manifest.yaml never
+# declares that build, so the module cannot run on any manifest-resolved runtime;
+# fixing the pin is out of scope here. Any other `@` pin fails the test below.
+_SOURCE_BUILD_PIN_EXCEPTIONS = {
+    "collector.sglang.collect_dsv41_module": '__compat__ = "sglang@1aa0e962b206102b7c439a4a0c4981cfec6e87bc"',
+}
+
+
 @pytest.mark.parametrize("backend", ["sglang", "trtllm"])
 def test_stock_collectors_are_exactly_pinned_to_their_resolved_runtime(backend):
     # One release per file (owner policy 2026-09-20): every registry module
@@ -90,9 +95,8 @@ def test_stock_collectors_are_exactly_pinned_to_their_resolved_runtime(backend):
         declarations = [line.strip() for line in source.splitlines() if line.startswith("__compat__")]
         version = next(iter(versions))
         allowed = {f'__compat__ = "{backend}=={version}"'}
-        # a module pinned to an exact source commit is an exact pin too
-        if declarations and "@" in declarations[0]:
-            allowed = {declarations[0]}
+        if module in _SOURCE_BUILD_PIN_EXCEPTIONS:
+            allowed = {_SOURCE_BUILD_PIN_EXCEPTIONS[module]}
         assert len(declarations) == 1 and declarations[0] in allowed, (module, declarations)
 
 
@@ -733,30 +737,6 @@ frameworks:
     )
     with pytest.raises(ValueError, match="digest-pinned"):
         get_collector_runtime("sglang", path=manifest)
-
-
-@pytest.mark.parametrize(
-    "version,accepted",
-    [
-        ("0.24.0", False),
-        ("0.25.0", False),
-        ("0.27.1", False),
-        ("0.28.0", False),
-        ("0.30.0", False),  # 0.30.0 gemm collector -> git history
-        ("0.31.0", True),  # gemm family pin (2026-10-30)
-        ("0.31.1", False),
-    ],
-)
-def test_gemm_admits_only_its_family_release(version, accepted):
-    import ast
-
-    source = ast.parse((COLLECTOR_ROOT / "vllm" / "collect_gemm.py").read_text())
-    declaration = next(
-        node.value.value
-        for node in source.body
-        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "__compat__" for t in node.targets)
-    )
-    assert _check_compat(declaration, version) is accepted
 
 
 @pytest.fixture

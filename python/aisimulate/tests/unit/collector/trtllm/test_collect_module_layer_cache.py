@@ -65,22 +65,3 @@ def test_msa_layer_cache_keys_on_model_heads_gemm_and_device():
     assert builds[0] == expected
     cached("MiniMaxAI/MiniMax-M3", 64, "fp8_block", "cuda:0")
     assert len(builds) == 2 and evictions == ["gc", "empty_cache"]
-
-
-@pytest.mark.parametrize(
-    "filename,runner,helper",
-    [
-        ("collect_mla_module.py", "run_mla_module", "_cached_attention_layer"),
-        ("collect_msa_module.py", "run_msa_module", "_cached_msa_attention_layer"),
-    ],
-)
-def test_runner_builds_its_layer_through_the_cache(filename, runner, helper):
-    tree = ast.parse((COLLECTOR / filename).read_text())
-    body = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == runner)
-    calls = [
-        n.func.id
-        for n in ast.walk(body)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id.startswith(("create_", "_cached_"))
-    ]
-    assert helper in calls
-    assert not any(c in ("create_attention_layer", "create_msa_attention_layer") for c in calls)

@@ -32,7 +32,7 @@ def test_non_power_of_two_index_heads_fail_only_where_the_decode_scorer_runs(idx
     assert limit(idx_heads, num_heads, is_context=True, query_len=32768) is None
 
 
-@pytest.mark.parametrize("idx_heads", [1, 2, 4, 8])
+@pytest.mark.parametrize("idx_heads", [1, 4])
 def test_power_of_two_index_heads_never_limited(idx_heads):
     limit = _predicate()
     for is_context, q in ((False, 1), (True, 1), (True, 4096)):

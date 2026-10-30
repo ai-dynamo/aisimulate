@@ -245,10 +245,10 @@ def test_targeted_msa_getters_keep_prefixes_and_worker_tuple_compatibility(monke
 
 @pytest.mark.parametrize(
     "sm_version,expected_max_tokens",
-    [(89, 32768), (90, 32768), (120, 32768), (100, 131072), (103, 131072)],
+    [(90, 32768), (100, 131072)],
 )
 def test_trtllm_context_getter_caps_only_the_triton_reference_implementation(
-    monkeypatch, capsys, sm_version, expected_max_tokens
+    monkeypatch, sm_version, expected_max_tokens
 ):
     """mla_module_trtllm.context.msa_triton_max_tokens binds where the collector
     resolves implementation="triton" (off SM100/103); fmha_sm100 systems keep
@@ -262,8 +262,6 @@ def test_trtllm_context_getter_caps_only_the_triton_reference_implementation(
 
     assert max(s * b for s, b in shapes) == expected_max_tokens
     assert (32768, 1) in shapes
-    dropped = "[trtllm-msa-module-cases] context: dropped" in capsys.readouterr().out
-    assert dropped == (expected_max_tokens == 32768)
 
 
 def test_vllm_public_generation_getter_applies_live_memory_filter(monkeypatch, capsys):

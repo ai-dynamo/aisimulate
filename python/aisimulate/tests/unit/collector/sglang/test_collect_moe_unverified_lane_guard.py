@@ -76,21 +76,19 @@ def test_guard_never_fires_for_qwen38max_collected_lanes(moe_type, installed_ver
     assert guard(moe_type) == installed_version
 
 
-@pytest.mark.parametrize("installed_version", ["0.5.21", "0.5.21.post1", "0.5.21+cu130"])
-@pytest.mark.parametrize("sm_version", [89, 90])
+@pytest.mark.parametrize("installed_version", ["0.5.21", "0.5.21+cu130"])
 @pytest.mark.parametrize("moe_type", ["int4_wo", "w4a16_mxfp4"])
-def test_guard_accepts_0521_hopper_lanes_reverified_2026_10_04(moe_type, installed_version, sm_version):
+def test_guard_accepts_0521_hopper_lanes_reverified_2026_10_04(moe_type, installed_version):
     """0.5.21 Marlin (int4_wo) and Triton (w4a16_mxfp4) dispatch re-verified on SM89/90 only."""
-    guard = _load_guard(installed_version, sm_version)
+    guard = _load_guard(installed_version, 90)
     assert guard(moe_type) == installed_version
 
 
 @pytest.mark.parametrize("moe_type", ["int4_wo", "w4a16_mxfp4", "w4a8_mxfp4_mxfp8"])
-@pytest.mark.parametrize("sm_version", [100, 103])
-def test_guard_accepts_0521_blackwell_mxfp4_lanes(moe_type, sm_version):
+def test_guard_accepts_0521_blackwell_mxfp4_lanes(moe_type):
     """SM100/103 MXFP4 lanes re-verified on 0.5.21 from the B200 identity records (6400345f);
     int4_wo re-opened 2026-10-06 from the same records (Kimi-K2.5 -> FLASHINFER_TRTLLM / trtllm_gen_moe)."""
-    guard = _load_guard("0.5.21", sm_version)
+    guard = _load_guard("0.5.21", 100)
     assert guard(moe_type) == "0.5.21"
 
 

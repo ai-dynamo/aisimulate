@@ -58,12 +58,10 @@ def test_glm5_flash_mla_keeps_the_production_topk_width():
     assert "if k % 64" not in source
 
 
-def test_glm5_sparse_collector_is_pinned_to_sglang_0514_dsa_api():
+def test_glm5_sparse_collector_uses_the_dsa_fuse_topk_switch_not_the_nsa_spelling():
+    # the file pin itself is enforced by test_stock_collectors_are_exactly_pinned_to_their_resolved_runtime
     source = SOURCE_PATH.read_text(encoding="utf-8")
 
-    # ported to the 0.5.21 pin on 2026-10-01 (same DSA module API, verified in collector/sglang/runtime_compat.py);
-    # one release per file since 2026-10-30
-    assert '__compat__ = "sglang==0.5.21"' in source
     assert "SGLANG_DSA_FUSE_TOPK" in source
     assert "SGLANG_NSA_FUSE_TOPK" not in source
 

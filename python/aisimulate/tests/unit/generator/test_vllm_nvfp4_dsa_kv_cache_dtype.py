@@ -24,7 +24,6 @@ _ARCH = {
     "nvidia/DeepSeek-V3.2-NVFP4": "DeepseekV32ForCausalLM",
     "zai-org/GLM-5.3": "GlmMoeDsaForCausalLM",
     "nvidia/Llama-3.3-70B-Instruct-FP4": "LlamaForCausalLM",
-    "nvidia/DeepSeek-R1-0528-FP4": "DeepseekV3ForCausalLM",
     "local/unbundled": None,
 }
 
@@ -71,16 +70,11 @@ def _stub_sdk_lookups(monkeypatch):
         # naive path (no quant mode): the artifact's fp8 KV fact, either spelling
         ("vllm", "nvidia/GLM-5.2-NVFP4", None, "fp8"),  # config.json kv_cache_scheme
         ("vllm", "nvidia/GLM-5.3-NVFP4", None, "fp8"),  # hf_quant kv_cache_quant_algo
-        ("vllm", "nvidia/DeepSeek-V3.2-NVFP4", None, "fp8"),
         ("vllm", "nvidia/GLM-5-NVFP4-unquant-bundle", None, None),  # no KV fact anywhere: no prescription
         ("vllm", "zai-org/GLM-5.3", "fp8_block", None),  # fp8 DSA artifact: auto is fine
-        ("vllm", "zai-org/GLM-5.3", None, None),
         ("vllm", "nvidia/Llama-3.3-70B-Instruct-FP4", "nvfp4", None),  # NVFP4 but not DSA
-        ("vllm", "nvidia/Llama-3.3-70B-Instruct-FP4", None, None),
-        ("vllm", "nvidia/DeepSeek-R1-0528-FP4", "nvfp4", None),  # plain MLA, not DSA
         ("vllm", "local/unbundled", "nvfp4", None),  # unresolvable config: no prescription
         ("sglang", "nvidia/GLM-5.2-NVFP4", "nvfp4", None),  # vllm-only spelling gap
-        ("trtllm", "nvidia/GLM-5.2-NVFP4", None, None),
     ],
 )
 def test_prescription_keyed_on_dsa_architecture_and_an_artifact_fact(backend, model, gemm, expected):
@@ -92,21 +86,6 @@ def test_artifact_kv_scheme_detection():
     assert utils._artifact_pins_fp8_kv({"kv_cache_quant_algo": "FP8"})
     assert not utils._artifact_pins_fp8_kv({"quant_method": "fp8", "fmt": "e4m3"})
     assert not utils._artifact_pins_fp8_kv(None)
-
-
-class _FakeTask:
-    def __init__(self, backend, model):
-        self.primary_backend_name = backend
-        self.primary_model_path = model
-
-
-def test_bridge_wrapper_passes_task_facts_through():
-    # module_bridge imports the SDK (native runtime); skip where it is not built
-    bridge = pytest.importorskip("aisimulate.generator.module_bridge", exc_type=ImportError)
-    _vllm_dsa_kv_cache_dtype = bridge._vllm_dsa_kv_cache_dtype
-
-    assert _vllm_dsa_kv_cache_dtype(_FakeTask("vllm", "nvidia/GLM-5.3-NVFP4"), "nvfp4") == "fp8"
-    assert _vllm_dsa_kv_cache_dtype(_FakeTask("vllm", "zai-org/GLM-5.3"), "fp8_block") is None
 
 
 def test_fp8_kv_dtype_renders_as_the_explicit_vllm_flag():

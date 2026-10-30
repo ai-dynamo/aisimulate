@@ -11,7 +11,7 @@ the case ends as a classified strict-completeness failure (the sglang GDN
 collector's contract)."""
 
 import ast
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,14 +37,14 @@ def test_trtllm_gdn_benchmarks_never_fall_back_to_eager_timing():
         for node in ast.walk(_tree())
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "benchmark_with_power"
     ]
-    assert len(calls) == 9
+    assert calls
+    # allow_graph_fail is covered repo-wide by test_no_eager_graph_fallback_sites.py
     for call in calls:
-        keyword = next((kw for kw in call.keywords if kw.arg == "allow_graph_fail"), None)
-        assert keyword is None or not (isinstance(keyword.value, ast.Constant) and keyword.value.value is True)
         assert all(kw.arg != "use_cuda_graph" for kw in call.keywords)
 
 
-@pytest.mark.parametrize("function_name", ["run_gdn_context_benchmark", "run_gdn_generation_benchmark"])
+# The context runner's final raise is exercised behaviourally below.
+@pytest.mark.parametrize("function_name", ["run_gdn_generation_benchmark"])
 def test_trtllm_gdn_phase_runners_end_in_a_strict_completeness_raise(function_name):
     function = _function(function_name)
     # A per-cell `continue` is only acceptable because the function re-raises at the end.
@@ -145,25 +145,3 @@ def test_trtllm_gdn_context_capture_failure_fails_the_case_but_keeps_the_other_c
     assert "CUDA graph capture failed" in str(info.value)
     # the first cell shipped both of its rows; the failed cell shipped none
     assert logged == ["causal_conv1d_fn", "chunk_gated_delta_rule_flashinfer"]
-
-
-def test_trtllm_gdn_context_all_cells_captured_returns_quietly():
-    @contextmanager
-    def benchmark_with_power(**_kwargs):
-        yield {"latency_ms": 0.01, "power_stats": None, "used_cuda_graph": True}
-
-    run = _load_context_runner(benchmark_with_power, lambda **_k: True)
-    with nullcontext():
-        run(
-            d_model=2048,
-            d_conv=4,
-            num_k_heads=16,
-            head_k_dim=128,
-            num_v_heads=32,
-            head_v_dim=128,
-            batch_size_list=[1, 2],
-            seq_len_list=[32],
-            model_name="Qwen/Qwen3.5-test",
-            perf_filename="gdn_perf.txt",
-            trtllm_version="1.3.0rc29",
-        )

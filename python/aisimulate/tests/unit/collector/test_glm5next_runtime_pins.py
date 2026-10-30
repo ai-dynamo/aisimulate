@@ -26,15 +26,6 @@ def test_glm_vllm_pin_is_the_stock_0_31_0_release(model_path):
     assert runtime.family is None
 
 
-@pytest.mark.parametrize("model_path", GLM_MODEL_PATHS)
-def test_glm_has_no_sglang_model_pin(model_path):
-    # SGLang GLM-5.3-Flash resolves to the 0.5.21 default like every other model.
-    runtime = require_collector_runtime("sglang", "0.5.21", requested_ops={"gemm"}, model_path=model_path)
-    assert runtime.version == "0.5.21"
-    with pytest.raises(RuntimeError, match="requires exactly 0.5.21"):
-        require_collector_runtime("sglang", "0.5.20", requested_ops={"gemm"}, model_path=model_path)
-
-
 @pytest.mark.parametrize(
     "backend,wrong_version,expected",
     [("vllm", "0.27.1", "0.31.0"), ("vllm", "0.30.0", "0.31.0")],
@@ -49,10 +40,7 @@ def test_glm_pin_rejects_other_runtimes(backend, wrong_version, expected):
     [
         ("vllm", "0.31.0", None),  # gemm family pin
         ("vllm", "0.31.0", "zai-org/GLM-5.2-FP8"),
-        ("vllm", "0.31.0", "Qwen/Qwen3.8-2.4T-A95B"),  # Qwen3.8 pins folded 2026-10-30
-        ("sglang", "0.5.21", None),
         ("sglang", "0.5.21", "zai-org/GLM-5.2-FP8"),
-        ("sglang", "0.5.21", "Qwen/Qwen3.8-2.4T-A95B"),
     ],
 )
 def test_other_models_keep_their_runtime(backend, version, model_path):

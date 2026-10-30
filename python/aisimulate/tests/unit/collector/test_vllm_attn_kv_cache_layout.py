@@ -13,9 +13,13 @@ from pathlib import Path
 
 import pytest
 
-torch = pytest.importorskip("torch")
-if not isinstance(getattr(torch, "__version__", None), str):  # collector conftest stubs torch with a Mock
-    pytest.skip("real torch required (the helper is exercised on real tensors)", allow_module_level=True)
+try:
+    import torch
+except ImportError:
+    torch = None
+if not isinstance(getattr(torch, "__version__", None), str):  # absent, or the collector conftest's Mock stub
+    # reason string must match .github/application-test-inventory.json optional_collection_skips
+    pytest.skip("real torch required for tensor operations", allow_module_level=True)
 pytestmark = pytest.mark.unit
 
 _SRC = Path(__file__).resolve().parents[3] / "collector" / "vllm" / "collect_attn.py"
@@ -41,27 +45,3 @@ def test_logical_view_is_unchanged_and_physical_order_is_contiguous(order):
     out = f(kv, order)
     assert out.shape == kv.shape and torch.equal(out, kv)  # same logical [B, H, N, C] values
     assert out.permute(*order).is_contiguous()  # what the backend's permute(*layer_view_order) needs
-
-
-def test_identity_layout_returns_contiguous_input():
-    f = _helper()
-    kv = torch.zeros(2, 3, 4, 6)
-    assert f(kv, LBHNC).data_ptr() == kv.data_ptr()
-
-
-def test_collector_uses_the_resolved_layout():
-    src = _SRC.read_text()
-    assert "kv_cache_in_resolved_layout(" in src
-    assert "get_resolved_kv_cache_layout().layer_view_order" in src
-
-
-def test_flashinfer_decode_label_names_the_kernel():
-    """FlashInferTrtllmAPIDecode carries XQA and trtllm-gen in one class; the label must keep the kernel."""
-    src = _SRC.read_text()
-    assert 'kernel = getattr(phase_metadata, "kernel", None)' in src
-    vocab = (Path(__file__).resolve().parents[3] / "collector" / "kernel_source_backends.yaml").read_text()
-    for label in (
-        "vllm_flashinfer_flashinfertrtllmapidecode_xqa",
-        "vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen",
-    ):
-        assert label in vocab

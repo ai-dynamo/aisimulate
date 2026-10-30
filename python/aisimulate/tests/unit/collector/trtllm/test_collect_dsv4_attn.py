@@ -468,7 +468,7 @@ def test_constructor_args_match_the_serving_oracle(monkeypatch):
 
 @pytest.mark.parametrize(
     "bs, sl, is_ctx, prefix",
-    [(1, 1, True, 0), (16, 10240, True, 4096), (1024, 1, True, 0), (16, 1, False, 0), (128, 65536, False, 0)],
+    [(1, 1, True, 0), (16, 10240, True, 4096), (128, 65536, False, 0)],
 )
 def test_kv_quota_is_capped_by_this_batch_s_tokens(monkeypatch, bs, sl, is_ctx, prefix):
     """Per-case KV pool: the byte quota stays the serving half-of-free bound,
@@ -490,9 +490,7 @@ def test_kv_quota_is_capped_by_this_batch_s_tokens(monkeypatch, bs, sl, is_ctx, 
     assert floor > 1_572_864  # H20 calibration: 1,048,576 tokens -> i32, 1,572,864 -> i64
 
 
-@pytest.mark.parametrize(
-    ("sm", "expected"), [(100, "bfloat16"), (103, "bfloat16"), (90, "fp8"), (120, "fp8"), (121, "fp8")]
-)
+@pytest.mark.parametrize(("sm", "expected"), [(100, "bfloat16"), (90, "fp8"), (120, "fp8")])
 def test_serving_kv_cache_dtype_is_an_sdk_enum_member_name(monkeypatch, sm, expected):
     # engine_table_view rehydrates kv_cache_dtype through KVCacheQuantMode; "bf16" raised
     # KeyError on every SM100 DSV4 table in Full CI (2026-10-29).

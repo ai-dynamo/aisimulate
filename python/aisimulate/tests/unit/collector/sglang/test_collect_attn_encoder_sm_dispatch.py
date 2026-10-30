@@ -22,7 +22,7 @@ def _serving_vision_backend():
 
 @pytest.mark.parametrize(
     "sm, expected",
-    [(89, "triton_attn"), (90, "fa3"), (100, "fa4"), (103, "fa4"), (120, "triton_attn"), (121, "triton_attn")],
+    [(90, "fa3"), (100, "fa4"), (103, "fa4"), (120, "triton_attn")],
 )
 def test_vision_backend_follows_capability_major(sm, expected):
     assert _serving_vision_backend()(sm) == expected

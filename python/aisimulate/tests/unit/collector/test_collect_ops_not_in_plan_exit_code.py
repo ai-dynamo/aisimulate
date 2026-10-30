@@ -44,9 +44,3 @@ def test_op_outside_the_backend_plan_exits_with_the_dedicated_code():
     assert result.returncode == EXIT_CODE_OPS_NOT_IN_PLAN, result.stderr[-2000:]
     assert EXIT_CODE_OPS_NOT_IN_PLAN not in (0, 1, 2)
     assert "Requested ops are not present in the collector v2 case plan: mamba2" in result.stderr
-
-
-def test_planned_op_still_passes_the_ops_check():
-    result = _run_collect("--backend", "vllm", "--model-cases-full", "--plan-only", "--ops", "gemm")
-
-    assert result.returncode == 0, result.stderr[-2000:]

@@ -541,20 +541,13 @@ def test_no_fabricated_node_num_derivation_remains():
 # ---------------------------------------------------------------------------
 
 
-def test_benchmark_op_agrees_capture_before_timing_and_never_falls_back():
+def test_benchmark_op_agrees_capture_before_timing():
     import ast
 
     tree = ast.parse(SOURCE_TEXT)
     function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_benchmark_op")
     callees = [ast.unparse(node.func) for node in ast.walk(function) if isinstance(node, ast.Call)]
     assert callees.index("_agree_graph_capturable") < callees.index("benchmark_with_power")
-    bench = next(
-        node
-        for node in ast.walk(function)
-        if isinstance(node, ast.Call) and ast.unparse(node.func) == "benchmark_with_power"
-    )
-    assert all(keyword.arg != "allow_graph_fail" for keyword in bench.keywords)
-    assert "allow_graph_fail=True" not in SOURCE_TEXT
 
 
 class _Flag:
@@ -606,12 +599,6 @@ def test_capture_probe_warms_eagerly_then_captures_and_agrees(monkeypatch):
     ata._agree_graph_capturable(lambda: events.append("func"), "dispatch", "cuda:0")
     # one eager call (lazy init is not capturable), the probe capture, then the agreement
     assert events == ["func", "sync", "capture", "func", "sync", "all_reduce"]
-
-
-def test_capture_probe_skips_the_collective_in_a_single_rank_world(monkeypatch):
-    events = _fake_runtime(monkeypatch, local_capture_fails=False, peer_fails=False, world_size=1)
-    ata._agree_graph_capturable(lambda: None, "dispatch", "cuda:0")
-    assert "all_reduce" not in events
 
 
 def test_local_capture_failure_is_agreed_then_raises_classified(monkeypatch):

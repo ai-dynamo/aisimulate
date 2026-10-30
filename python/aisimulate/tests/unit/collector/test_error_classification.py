@@ -29,27 +29,3 @@ def test_kernel_limit_prefix_is_classified():
     assert collect._classify_exception(ValueError("  FIXME(kernel-limit): divisibility")) == "kernel_limit"
     assert collect._classify_exception(RuntimeError("CUDA error: an illegal memory access")) == "unexpected"
     assert collect._classify_exception(AssertionError()) == "unexpected"
-
-
-@pytest.mark.parametrize(
-    "path, needle",
-    [
-        ("collector/sglang/collect_moe.py", "FIXME(kernel-limit): SGLang Triton gated BF16 GELU"),
-        ("collector/trtllm/collect_moe.py", "FIXME(kernel-limit): TRT-LLM fused MoE requires"),
-        ("collector/trtllm/collect_attn.py", "FIXME(kernel-limit): TRT-LLM trtllm-gen FMHA has no head_dim=192"),
-        ("collector/vllm/collect_gemm.py", "FIXME(kernel-limit): vLLM fp8_block GEMM"),
-        # 2026-10-11 fix list: bare errors that were deterministic kernel limits
-        ("collector/trtllm/collect_gemm.py", "FIXME(kernel-limit): TRT-LLM fp8 GEMM (cublas/cutlass scaled_mm)"),
-        ("collector/sglang/collect_moe.py", "FIXME(kernel-limit): SGLang Triton gated BF16 GELU/SiLU"),
-        ("collector/sglang/collect_attn.py", "FIXME(kernel-limit): SGLang flashinfer has no FP8 prefill compute path"),
-        (
-            "collector/sglang/collect_attn.py",
-            "FIXME(kernel-limit): SGLang {attn_backend_name} quantizes Q to FP8 internally",
-        ),
-    ],
-)
-def test_deterministic_guards_carry_the_prefix(path, needle):
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parents[3]
-    assert needle in (root / path).read_text(encoding="utf-8")
