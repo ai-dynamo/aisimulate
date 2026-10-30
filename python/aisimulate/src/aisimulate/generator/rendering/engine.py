@@ -236,6 +236,43 @@ def _assemble_k8s_context(context: dict[str, Any], has_engine_templates: bool) -
     return k8s_context
 
 
+def _warn_unaligned_trtllm_transfer_buffer(params: dict[str, Any], worker_plan: list[str]) -> None:
+    """Warn when TRT-LLM may size a P/D KV-transfer buffer off the block grid.
+
+    The rules leave the buffer size to TRT-LLM without fixed request lengths or
+    an explicit block size. The requested version need not match the deployed
+    runtime, so this warns instead of rejecting.
+    """
+    for role in ("prefill", "decode"):
+        role_params = params.get(role) or {}
+        if role not in worker_plan or role_params.get("cache_transceiver_max_tokens_in_buffer") is not None:
+            continue
+        max_seq_len = role_params.get("max_seq_len")
+        tokens_per_block = role_params.get("tokens_per_block")
+        if tokens_per_block is None:
+            logger.warning(
+                "TRT-LLM %s tokens_per_block is unset, so KV-transfer buffer alignment cannot be checked. "
+                "The runtime sizes the buffer; 1.3.0rc3 through 1.3.0rc22 use max_seq_len unrounded. "
+                "Use a runtime that rounds to its effective block size (1.3.0rc22.post1 or newer), "
+                "or verify the deployed context length is block-aligned.",
+                role,
+            )
+        elif (
+            isinstance(max_seq_len, int)
+            and isinstance(tokens_per_block, int)
+            and tokens_per_block > 0
+            and max_seq_len % tokens_per_block
+        ):
+            logger.warning(
+                "TRT-LLM %s max_seq_len %d is not a multiple of tokens_per_block %d. The runtime sizes the "
+                "KV-transfer buffer, and 1.3.0rc3 through 1.3.0rc22 use max_seq_len unrounded, so the worker "
+                "can fail at startup on those runtimes.",
+                role,
+                max_seq_len,
+                tokens_per_block,
+            )
+
+
 def render_backend_templates(
     param_values: dict[str, Any],
     backend: str,
@@ -338,6 +375,9 @@ def render_backend_templates(
     # alongside prefill/decode/agg. Presence-guarded: no encode role -> unchanged.
     if has_encode:
         worker_plan = worker_plan + ["encode"]
+    # Every public path renders here, so this is the single warning boundary.
+    if backend == "trtllm":
+        _warn_unaligned_trtllm_transfer_buffer(params_obj, worker_plan)
 
     rendered_templates = {}
 

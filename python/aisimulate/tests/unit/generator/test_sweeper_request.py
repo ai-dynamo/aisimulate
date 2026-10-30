@@ -418,12 +418,13 @@ def test_trace_workload_rejects_supplied_request_lengths(workload, overrides, su
     ids=["trace-unaligned", "trace-aligned", "synthetic-unaligned"],
 )
 def test_trtllm_trace_warns_when_max_seq_len_is_off_the_block_grid(caplog, workload, context_length, warned):
-    with caplog.at_level(logging.WARNING, logger="aisimulate.generator.request.sweeper"):
-        from_sweeper_candidate(
-            _disagg_candidate(context_length=context_length),
-            workload=workload,
-            model_facts=ModelFacts(is_moe=True, architecture="DeepseekV3ForCausalLM"),
-        )
+    request = from_sweeper_candidate(
+        _disagg_candidate(context_length=context_length),
+        workload=workload,
+        model_facts=ModelFacts(is_moe=True, architecture="DeepseekV3ForCausalLM"),
+    )
+    with caplog.at_level(logging.WARNING, logger="aisimulate.generator.rendering.engine"):
+        generate_from_request(request)
 
     messages = [record.getMessage() for record in caplog.records if "tokens_per_block" in record.getMessage()]
     if warned:

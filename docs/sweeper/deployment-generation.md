@@ -170,8 +170,10 @@ Since 1.3.0rc3 that default is `max_seq_len`, rounded up to a whole KV block
 since 1.3.0rc22.post1. In 1.3.0rc3 through 1.3.0rc22 it is unrounded, so a
 worker can fail at startup when `max_seq_len` is not a multiple of the KV block
 size; for those runtimes, choose a `context_length` aligned to the runtime's
-effective block size. The bridge warns when alignment cannot be checked because
-the block size is unset. Earlier versions
+effective block size. Artifact generation warns for each role whose buffer the
+runtime sizes when `max_seq_len` is not a multiple of the block size, or when
+alignment cannot be checked because the block size is unset. This applies to
+Sweeper candidates and direct generator calls alike. Earlier versions
 use a buffer sized by `TRTLLM_KVCACHE_TRANSFER_BUFFER_SIZE` (512 MB by
 default).
 

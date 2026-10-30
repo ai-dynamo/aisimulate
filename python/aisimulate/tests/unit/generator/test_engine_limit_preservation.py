@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import shlex
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ import pandas as pd
 import pytest
 import yaml
 
+from aisimulate.generator.api import generate_backend_artifacts
 from aisimulate.generator.module_bridge import task_config_to_generator_config
 from aisimulate.generator.rendering.engine import render_backend_templates
 from aisimulate.generator.rendering.rule_engine import apply_rule_plugins
@@ -129,6 +131,44 @@ def test_trtllm_explicit_transfer_backend_is_rendered(rule):
     for role in ("prefill", "decode"):
         engine = yaml.safe_load(artifacts[f"extra_engine_args_{role}.yaml"])
         assert engine["cache_transceiver_config"]["backend"] == "NIXL"
+
+
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+@pytest.mark.parametrize(
+    ("block_size", "max_seq_len", "sla", "keep_buffer", "expected"),
+    [
+        (None, 8192, {}, False, "tokens_per_block is unset"),
+        (64, 10000, {}, False, "max_seq_len 10000 is not a multiple of tokens_per_block 64"),
+        (64, 8192, {}, False, None),
+        (64, 10000, {"isl": 128, "osl": 16}, False, None),
+        (None, 10000, {}, True, None),
+    ],
+    ids=["unset-block", "trace-unaligned", "trace-aligned", "rule-sized", "explicit-buffer"],
+)
+def test_public_trtllm_generation_warns_on_runtime_sized_transfer_buffer(
+    caplog, rule, block_size, max_seq_len, sla, keep_buffer, expected
+):
+    # Direct generation bypasses the Sweeper bridge, so the renderer must warn.
+    params = _params(preserve=True, rule=rule)
+    params["SlaConfig"] = sla
+    for role in ("prefill", "decode"):
+        role_params = params["params"][role]
+        role_params["max_seq_len"] = max_seq_len
+        if not keep_buffer:
+            role_params.pop("cache_transceiver_max_tokens_in_buffer")
+        if block_size is None:
+            role_params.pop("tokens_per_block")
+
+    with caplog.at_level(logging.WARNING, logger="aisimulate.generator.rendering.engine"):
+        generate_backend_artifacts(params, "trtllm")
+
+    messages = [record.getMessage() for record in caplog.records if "tokens_per_block" in record.getMessage()]
+    if expected is None:
+        assert messages == []
+    else:
+        assert len(messages) == 2
+        for message, role in zip(messages, ("prefill", "decode"), strict=True):
+            assert message.startswith(f"TRT-LLM {role} {expected}")
 
 
 @pytest.mark.parametrize("rule", [None, "benchmark"])
