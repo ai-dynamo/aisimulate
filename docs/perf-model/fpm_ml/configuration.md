@@ -22,8 +22,9 @@ it is outside the automatic search order. Its supported execution surface is the
 standalone canonical model with complete per-iteration `ForwardPassMetrics`
 for estimation and feedback. Engine replay, engine CLI prediction and
 recommendation, and Sweeper timing price each pass of a learned role with one
-such query over the worker's attention-DP ranks, filled in replay's telemetry
-convention and carrying `extend_lengths` / `past_kv_lengths` and the length
+such query over the worker's attention-DP ranks, filled in the telemetry
+convention of Dynamo's vLLM worker (decode KV excludes each request's current
+token) and carrying `extend_lengths` / `past_kv_lengths` and the length
 variances when the artifact reads request, slot or variance features (see
 [engine replay timing](../configuration.md#engine-replay-timing)). Replay does
 not tune the model.

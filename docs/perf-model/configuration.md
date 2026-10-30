@@ -806,16 +806,18 @@ it is enabled.
 Regression and learned estimators (`fpm_regression`, and `fpm_learned` with
 any adaptation) have no native engine. Replay prices every pass of their role
 with the iteration query and never asks them for a separate phase, so totals
-beyond the 32-bit counters are an error. Each rank's metrics follow replay's
-own `ForwardPassMetrics` telemetry, the data such models are fitted to:
-prefill passes its scheduled totals and decode KV is the sum of the requests'
-context lengths, each including its current token, without the scheduler's KV
-clamp. When the model reads per-request detail (a regression request feature
-axis, or a learned `req_*`, `slot*` or length-variance feature), each rank also
-carries `extend_lengths` and `past_kv_lengths` (each prefill request's new tokens
-and prefix, each decode request's one token and context excluding it) and the
-population variances of the prefill lengths through the pass and of the decode
-context lengths; those passes are not reused from the iteration cache.
+beyond the 32-bit counters are an error. Each rank's metrics follow the
+`ForwardPassMetrics` telemetry such models are fitted to, which Dynamo's vLLM
+worker reports: prefill passes its scheduled totals, and decode KV is the
+requests' past KV, the sum of their computed tokens excluding each request's
+current token. That is the whole-model FPM convention, the context lengths
+minus one token per decode request, but without the scheduler's KV clamp. When
+the model reads per-request detail (a regression request feature axis, or a
+learned `req_*`, `slot*` or length-variance feature), each rank also carries
+`extend_lengths` and `past_kv_lengths` (each prefill request's new tokens and
+prefix, each decode request's one token and past KV) and the population
+variances of the prefill lengths through the pass and of the decode requests'
+past KV; those passes are not reused from the iteration cache.
 
 Construction checks that the role's workload stores are ready: pure prefill
 for a prefill worker, pure decode for a decode worker, and pure prefill, pure
@@ -824,9 +826,12 @@ when its attention DP is above one. A regression store is ready with a usable
 fit and a learned store when the forest has it. It rejects a rank hosting the
 vision encoder, speculative decoding (`nextn > 0` or a speculation scheme) and
 bounded decoder replay, and an automatic selection that would fall back to an
-untrained regression. These estimators are latency-only: they record no
-operation evidence, so replay reports `power_w: null` as for other
-latency-only timing.
+untrained regression. Replay also rejects such a role whose engine sets a
+`decode_speedup_ratio` other than 1: replay then prices each rank's phases,
+which these estimators never do. A pass on which no rank computes model work
+takes no time without a query, as for every estimator. These estimators are
+latency-only: they record no operation evidence, so replay reports
+`power_w: null` as for other latency-only timing.
 
 Without explicit KV capacity, a regression or learned role takes
 `deployment_limits.max_kv_tokens` in whole scheduler blocks. Without a
