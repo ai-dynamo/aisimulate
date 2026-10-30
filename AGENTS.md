@@ -58,6 +58,20 @@ Python, CLI, Sweeper, Replay, or Planner, MUST read and follow
 [`perfmodel-api.md`](python/aisimulate/.claude/rules/perfmodel-api.md).
 This includes new features and configuration migrations.
 
+### Multi-rank iteration queries
+
+- Every performance model's per-iteration query MUST accept the list of
+  per-attention-DP-rank `ForwardPassMetrics`
+  (`estimate_forward_pass_time_ms(metrics_by_rank)`, with `draft_length` for
+  speculative decoding where supported) and handle the ranks internally. An
+  estimator that has no cross-rank model reduces the list itself, for example
+  by pricing each rank and taking the maximum.
+- Callers (Replay, Sweeper, Planner, CLI) SHOULD price an iteration through this
+  query with one entry per DP rank, and MUST NOT reduce, normalize or average
+  ranks before calling it. For capacity planning without per-rank data, split
+  totals evenly across ranks (load-balanced DP) and pass every rank.
+- See [Per-iteration queries](docs/perf-model/configuration.md#per-iteration-queries).
+
 ## Required First Step
 
 Before making any change under:
