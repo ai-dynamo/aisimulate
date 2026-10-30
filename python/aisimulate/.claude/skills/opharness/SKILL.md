@@ -20,8 +20,7 @@ the workflow you are on (`collector/opharness/workflows/<workflow>.md` + `.yaml`
 | `AIS_PROBE_ISL` | probes/probe_vllm.py `--isl` default | prompt length of a probe (default 4096; shape-conditional paths such as DSA sparse thresholds are invisible below theirs). |
 | `AIS_PROBE_OUT` | probes | raw JSON output path inside the container (set by the emitted queues). |
 | `AIS_KDA_DECODE_PATHS` | collector/vllm/collect_kda.py (capture-only) | `fused,packed` default; the kda decode gate capture sets `fused` (captures/kda_gen.py does it) because the serving probe is non-spec. |
-| `AIS_KV_BLOCK_SIZE` | collector/vllm/collect_attn.py, collect_mla_module.py (A/B only) | override of the KV page size the framework's attention backend selects (`collector/vllm/utils.framework_kv_block_size`); never set in collection runs. |
-| `AIS_DSA_LEGACY_MODULE`, `AIS_DEBUG_IDXMETA` | probes / dsa collector debugging | developer switches, off by default. |
+| `AIS_DEBUG_IDXMETA` | collector/vllm/collect_mla_module.py (DSA debugging) | developer switch, off by default. |
 | `CUDA_MPS_PIPE_DIRECTORY=/nonexistent-no-mps` | every probe/capture container | mandatory on boxes with a host MPS daemon (queues set it). |
 | `HF_HUB_OFFLINE=1`, `TRITON_CACHE_DIR`, `DG_JIT_CACHE_DIR` | containers | offline + shared JIT cache (`<ws>/jitcache`), set by the emitted queues. |
 
