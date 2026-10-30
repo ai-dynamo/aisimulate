@@ -428,7 +428,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             core_raw, adapter_raw = split_config_sections(validation_raw, command=args.command)
             config_type = CorePredictionConfig if args.command == "predict" else CoreRecommendationConfig
             config = config_type.model_validate(core_raw)
-            if args.command == "predict" and args.capture_telemetry:
+            if args.command == "predict" and (args.capture_telemetry or args.export_html):
                 if args.stack != "engine" or args.online:
                     raise ValueError("telemetry capture requires offline --stack engine")
                 if (

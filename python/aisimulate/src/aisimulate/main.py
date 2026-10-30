@@ -51,6 +51,7 @@ from .output_adapter import (
 )
 from .power import normalize_power_summary
 from .predict import PredictionExecutionError, run_prediction
+from .replay.dashboard import write_replay_dashboard
 from .resources import (
     GuardedRunnerFactory,
     ResourceLimitError,
@@ -158,7 +159,8 @@ def _compile_prediction_adapters(
 def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     core_raw, adapter_raw = split_config_sections(raw, command="predict")
     config = CorePredictionConfig.model_validate(core_raw)
-    if args.capture_telemetry and (args.stack != "engine" or args.online):
+    capture_telemetry = args.capture_telemetry or args.export_html
+    if capture_telemetry and (args.stack != "engine" or args.online):
         raise ValueError("telemetry capture requires offline --stack engine")
     if config.traffic.load.agentic_warmup_policy == "live_trajectory_v1" and (args.stack != "engine" or args.online):
         raise ValueError("live_trajectory_v1 CLI requires offline --stack engine")
@@ -200,7 +202,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         output_requirements=ReplayOutputRequirements(
             include_raw_report=not analytical_epd,
             capture_per_request=args.capture_per_request,
-            capture_telemetry=args.capture_telemetry,
+            capture_telemetry=capture_telemetry,
             telemetry_sample_interval_ms=args.telemetry_sample_interval_ms,
             capture_memory_diagnostics="memory" in args.detail,
             capture_performance_diagnostics=bool({"time", "source"}.intersection(args.detail)),
@@ -235,7 +237,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     details = build_prediction_details(native, args.detail) if args.detail else None
     if details is not None:
         native = {**native, "details": details}
-    if args.capture_telemetry:
+    if capture_telemetry:
         telemetry = native.get("telemetry")
         if not isinstance(telemetry, dict):
             raise RuntimeError("selected stack did not provide replay telemetry")
@@ -249,6 +251,11 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         if any(not isinstance(record, dict) for record in records):
             raise RuntimeError("per-request records must be JSON mappings")
         write_requests(root, records)
+    dashboard_path = None
+    if args.export_html:
+        dashboard_path = write_replay_dashboard(
+            root, native, telemetry, config=config.model_dump(mode="json", exclude_none=True)
+        )
     phases = result.report.metadata.get("agentic_phases")
     if isinstance(phases, dict) and phases.get("phase") == "aborted":
         sys.stderr.write(
@@ -267,6 +274,8 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     sys.stdout.write("\n")
     if args.format == "table":
         sys.stdout.write(f"Saved full report to: {report_path}\n")
+        if dashboard_path is not None:
+            sys.stdout.write(f"Saved dashboard to: {dashboard_path}\n")
     if summary.get("prediction_status") == "invalid":
         sys.stderr.write(f"ERROR: {summary['diagnostic']} Saved full report to: {report_path}\n")
         return 1
