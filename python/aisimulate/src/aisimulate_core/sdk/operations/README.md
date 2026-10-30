@@ -68,8 +68,12 @@ loop — not a public per-call query API.)
    Python `_to_opspec` dispatcher has been removed. The existing whole-forward
    FPM wrapper is adapted by `sdk/engine.py::_as_engine_op`. Add the corresponding
    `Op` variant in `crates/core/src/perfmodel/operators/op.rs` — **append at the enum tail**
-   (bincode variant indices are positional; a mid-enum insertion requires
-   an `ENGINE_SPEC_SCHEMA_VERSION` bump on BOTH sides) — plus the
+   to preserve existing bincode variant indices. Assess compatibility even
+   for tail appends; a compatible append need not bump the version.
+   Incompatible serialized changes, including positional payload or field
+   changes, require an `ENGINE_SPEC_SCHEMA_VERSION` bump coordinated with
+   serialized-spec consumers. Rust owns that version; Python reads it
+   through the native binding. Keep the
    `crates/core/src/perfmodel/engine/spec.rs` round-trip fixture.
    `tests/unit/sdk/test_opspec_coverage.py` fails until the op converts or
    carries a justified `EXEMPT` entry.

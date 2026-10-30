@@ -83,10 +83,12 @@ shell inherits a Rust `Operation` subclass. It serializes through
 `FPMForwardOp` is converted by `sdk/engine.py::_as_engine_op`.
 
 Add the corresponding `Op` variant in
-`crates/core/src/perfmodel/operators/op.rs` (**append at the tail**
-— bincode variant indices are positional; mid-enum insertion requires an
-`ENGINE_SPEC_SCHEMA_VERSION` bump coordinated with serialized-spec
-consumers). Rust owns that version; Python reads it through the native
+`crates/core/src/perfmodel/operators/op.rs` — **append at the tail** to
+preserve existing bincode variant indices. Assess compatibility even for
+tail appends; a compatible append need not bump the version. Incompatible
+serialized changes, including positional payload or field changes, require
+an `ENGINE_SPEC_SCHEMA_VERSION` bump coordinated with serialized-spec
+consumers. Rust owns that version; Python reads it through the native
 binding. Keep the `engine/spec.rs` round-trip fixture and a pinned parity
 case (`crates/core/parity_tests/perfmodel/pin_goldens.py`).
 `python/aisimulate/tests/unit/sdk/test_opspec_coverage.py` fails until the op
