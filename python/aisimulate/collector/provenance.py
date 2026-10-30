@@ -102,18 +102,21 @@ _COLLECTION_OPTIONAL_FIELD_ORDER = ("source_campaign_rows", "source_campaign_sta
 
 
 def _registry_lists(registry_module) -> tuple[list, ...]:
+    from collector.framework_manifest import _REGISTRY_SYMBOLS
+
     registries = [registry_module.REGISTRY]
-    registry_xpu = getattr(registry_module, "REGISTRY_XPU", None)
-    if registry_xpu is not None:
-        registries.append(registry_xpu)
+    for symbol in _REGISTRY_SYMBOLS.values():
+        registry = getattr(registry_module, symbol, None)
+        if registry is not None:
+            registries.append(registry)
     return tuple(registries)
 
 
 def enumerate_registry_modules() -> set[str]:
-    """Return every collector module referenced by an OpEntry in any of the five
-    registries enumerated by ``framework_manifest._REGISTRY_MODULES`` (sglang,
-    trtllm, vllm, wideep_sglang, wideep_trtllm), plus active sibling registries
-    such as vLLM's ``REGISTRY_XPU``.
+    """Return every collector module referenced by an OpEntry in any of the
+    registries enumerated by ``framework_manifest._REGISTRY_MODULES``, plus
+    active sibling registries declared in ``framework_manifest._REGISTRY_SYMBOLS``
+    (such as vLLM's ``REGISTRY_XPU`` and ``REGISTRY_NPU``).
     """
     import importlib
 

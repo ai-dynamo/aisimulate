@@ -43,6 +43,7 @@ SupportMatrixSystemOrder = (
     "l40s",
     "a100",
     "b60",
+    "ascend_950dt",
 )
 
 
@@ -836,6 +837,7 @@ SupportedSystems = {
     "l40s",
     "b60",
     "rtx_pro_6000_server",
+    "ascend_950dt",
 }
 
 """

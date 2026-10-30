@@ -222,3 +222,17 @@ REGISTRY_XPU: list[OpEntry] = [
         perf_filename=PerfFile.MOE,
     ),
 ]
+
+# Ascend NPU (vllm-ascend) lane. MVP scope is gemm in bf16 eager mode; the
+# `vllm_npu` manifest pin resolves these entries, and both must stay in sync
+# (an op entry without its pin is unresolvable, a pin without ops fails
+# `validate_resolution`).
+REGISTRY_NPU: list[OpEntry] = [
+    OpEntry(
+        op="gemm",
+        module="collector.vllm.collect_gemm_npu",
+        get_func="get_gemm_test_cases",
+        run_func="run_gemm",
+        perf_filename=PerfFile.GEMM,
+    ),
+]

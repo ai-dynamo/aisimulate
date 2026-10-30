@@ -253,6 +253,46 @@ frameworks:
         images:
           default: "vllm/vllm-openai:v0.31.0@sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3"
       "nvidia/GLM-5.3-Flash-NVFP4": *glm53flash_vllm_runtime
+  vllm_npu:
+    base_framework: vllm
+    data_backend: vllm
+    notes: >
+      Huawei Ascend NPU (vllm-ascend) collector runtime, separate from stock
+      CUDA vLLM. The version axis is the vllm-ascend release, not base vLLM:
+      vllm-ascend carries the Ascend kernels, so it is the kernel-source
+      identity for the data this lane produces (collect.py reads it from
+      vllm_ascend.__version__). Base vLLM, CANN and the torch_npu/triton-ascend
+      stack are recorded in abi: below.
+    default:
+      # The image tag's vllm-ascend release (the Dockerfile installs this tag's
+      # source); not yet a measured in-container vllm_ascend.__version__ -- an
+      # in-container `pip show vllm-ascend` confirms it on the device node.
+      version: "0.30.0rc2"
+      images:
+        # Digest-pinned manifest list (stable across architectures); the
+        # Ascend 950DT device node runs its linux/arm64 child
+        # sha256:555ffa772734e39e4277d0c243d7dc3600e9f6ed3ac2c03eae4b3ad331661875.
+        # Resolved from quay.io and cross-checked against the m.daocloud.io
+        # mirror on 2026-10-29.
+        default: "quay.io/ascend/vllm-ascend:v0.30.0rc2-a5-openeuler@sha256:2fb630483fee3ee74c882ad490e2f2586e683a507b8365306f8d25e4df3e33ea"
+      # Split provenance: torch/torch_npu/triton_ascend/triton are read from the
+      # image layers' dist-info (authoritative -- the A5 image's last build
+      # step runs install_daily_deps.sh, which overrides requirements.txt, so
+      # neither the vllm-ascend versioning-policy matrix nor the Dockerfile
+      # ARGs describe what is installed).
+      # cann/vllm/soc_version come from the Dockerfile ARG/ENV and still need an
+      # in-container `pip show` / version.cfg confirmation on the device node.
+      abi:
+        build_mode: "official-v0.30.0rc2-a5-openeuler-image"
+        # authoritative: image-layer dist-info
+        torch: "2.10.0"
+        torch_npu: "2.10.0.post7"
+        triton: "3.6.0" # upstream triton is uninstalled by the Dockerfile, then pulled back by triton-ascend's dependency
+        triton_ascend: "3.6.0+dev20260923230212"
+        # Dockerfile ARG/ENV, pending in-container confirmation on the device node
+        cann: "9.2.0_20260930220649"
+        vllm: "0.30.0"
+        soc_version: "ascend950dt_9582"
   vllm_xpu:
     base_framework: vllm
     data_backend: vllm

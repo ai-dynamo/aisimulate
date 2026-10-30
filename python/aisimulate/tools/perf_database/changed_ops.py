@@ -315,7 +315,7 @@ def _assigns_name(node: ast.stmt, name: str) -> bool:
 
 def _registry_names_for_framework(framework: str) -> tuple[str, ...]:
     if framework == "vllm":
-        return ("REGISTRY", "REGISTRY_XPU")
+        return ("REGISTRY", "REGISTRY_XPU", "REGISTRY_NPU")
     return ("REGISTRY",)
 
 
@@ -325,8 +325,9 @@ def _find_registry_lists(tree: ast.Module, registry_names: tuple[str, ...]) -> l
 
     Deliberately does NOT walk the whole file: some registries also define an
     inactive sibling list (e.g. fixture-only `REGISTRY_INACTIVE`) that the real
-    loader never reads either. vLLM's `REGISTRY_XPU` is an explicit active
-    sibling selected by collect.py on Intel XPU, so it is included by name.
+    loader never reads either. vLLM's `REGISTRY_XPU` and `REGISTRY_NPU` are
+    explicit active siblings selected by collect.py on Intel XPU and Ascend NPU,
+    so they are included by name.
     """
     registry_lists: list[ast.List | ast.Tuple] = []
     for node in tree.body:

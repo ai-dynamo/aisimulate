@@ -14,8 +14,8 @@ def get_backend(backend_name: str, system_name: str | None = None, system_spec=N
     """
     Get the backend class by the backend name.
 
-    On an XPU ``system_name``, vLLM is served by the XPU-calibrated subclass;
-    otherwise the default backends are returned.
+    On an Intel XPU ``system_name`` (declared `gpu.vendor`), vLLM is served by
+    the XPU-calibrated subclass; otherwise the default backends are returned.
 
     Raises:
         ValueError: If the backend name is not found.

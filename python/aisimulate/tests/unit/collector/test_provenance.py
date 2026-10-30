@@ -90,6 +90,30 @@ def test_provenance_modules_include_active_vllm_xpu_registry():
     } <= modules
 
 
+def test_provenance_modules_include_active_vllm_npu_registry():
+    modules = provenance.enumerate_provenance_modules()
+    assert {"collector.vllm.collect_gemm_npu"} <= modules
+
+
+def test_every_manifest_framework_key_is_covered_by_provenance_registry():
+    from collector import framework_manifest
+
+    manifest = framework_manifest.load_manifest()
+    provenance_modules = provenance.enumerate_provenance_modules()
+    standalone_manifest_keys = {"trtllm_a2a": "collector.wideep.trtllm.collect_moe_a2a"}
+    assert set(manifest["frameworks"]) == set(framework_manifest._REGISTRY_MODULES) | set(standalone_manifest_keys)
+
+    for framework_key in manifest["frameworks"]:
+        if framework_key in standalone_manifest_keys:
+            assert standalone_manifest_keys[framework_key] in provenance_modules
+            continue
+        for entry in framework_manifest._registry_entries(framework_key):
+            if entry.module:
+                assert entry.module in provenance_modules, f"{framework_key}:{entry.op} missing from provenance"
+            for route in entry.versions:
+                assert route.module in provenance_modules, f"{framework_key}:{entry.op} route missing from provenance"
+
+
 def test_hash_closures_yaml_has_no_stale_entries():
     closures = provenance.load_closures(HASH_CLOSURES_PATH)
     stale = closures.keys() - provenance.enumerate_provenance_modules()
@@ -160,6 +184,7 @@ def test_dsa_collector_hash_covers_worker_binding(tmp_path, backend, binding_fil
         "collect_computescale",
         "collect_dsv4_attn",
         "collect_gemm",
+        "collect_gemm_npu",
         "collect_mhc_module",
         "collect_mla_module",
         "collect_mla_module_027",
@@ -212,6 +237,7 @@ def test_collector_hash_missing_closure_file_raises(tmp_path):
         "collector.vllm.collect_attn_xpu",
         "collector.vllm.collect_gemm_xpu",
         "collector.vllm.collect_moe_xpu",
+        "collector.vllm.collect_gemm_npu",
     ],
 )
 def test_real_xpu_registry_modules_are_hashable(module):

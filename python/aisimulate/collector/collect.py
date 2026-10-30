@@ -14,7 +14,7 @@ import functools
 import os
 import warnings
 
-from helper import get_device_module, get_device_str
+from helper import get_device_module, get_device_str, torch_npu_module
 
 
 def setup_warning_filters():
@@ -132,7 +132,23 @@ _SIDECAR_TRANSACTION_FILENAME = SIDECAR_TRANSACTION_FILENAME
 _SIDECAR_STAGING_FILENAME = SIDECAR_STAGING_FILENAME
 _PERF_TRANSACTION_SCHEMA = "collector-perf-publication-v2"
 _PERF_TRANSACTION_FILENAME = PERF_TRANSACTION_FILENAME
-_CHECKPOINT_IDENTITY_FIELDS = ("schema", "backend", "module", "run_func", "framework_version", "sm_version")
+# `collector_framework` is the manifest framework key of the producing lane
+# ("vllm", "vllm_xpu", "vllm_npu", "trtllm", "sglang"). It disambiguates which
+# registry owns a checkpoint: the `backend` string alone is shared by every
+# device lane of one framework, and the old "vllm + sm_version is None ⇒ XPU"
+# inference becomes wrong as soon as a second non-CUDA lane exists.
+_CHECKPOINT_IDENTITY_FIELDS = (
+    "schema",
+    "backend",
+    "collector_framework",
+    "module",
+    "run_func",
+    "framework_version",
+    "sm_version",
+)
+_LEGACY_CHECKPOINT_IDENTITY_FIELDS = tuple(
+    field for field in _CHECKPOINT_IDENTITY_FIELDS if field != "collector_framework"
+)
 _SIDECAR_TRANSACTION_FIELDS = {
     "schema",
     "transaction_id",
@@ -1133,6 +1149,13 @@ def _xpu_available() -> bool:
     return torch is not None and hasattr(torch, "xpu") and torch.xpu.is_available()
 
 
+def _npu_available() -> bool:
+    # torch.npu exists only after the out-of-tree torch_npu plugin is imported,
+    # so the plugin import lives in helper.torch_npu_module().
+    npu = torch_npu_module() if torch is not None else None
+    return npu is not None and npu.is_available()
+
+
 def _wideep_registry_for_backend(backend: str) -> list:
     module_name = f"collector.wideep.{backend}.registry"
     try:
@@ -1181,6 +1204,46 @@ def _checkpoint_path(checkpoint_root: Path, module_name: str) -> Path:
     return checkpoint_root / f"{safe_name}.json"
 
 
+def _legacy_collector_framework(backend: object, sm_version: object) -> object:
+    """Infer the framework key a pre-`collector_framework` checkpoint was written by.
+
+    Checkpoints written before the field existed can only have come from the
+    lanes that existed then: stock CUDA vLLM/TRT-LLM/SGLang, or the Intel XPU
+    vLLM lane, which was identified exactly by "backend == vllm and no
+    sm_version". Reproducing that rule here keeps those checkpoints resumable
+    while every new checkpoint states its lane explicitly.
+    """
+    if backend == "vllm" and sm_version is None:
+        return "vllm_xpu"
+    return backend
+
+
+def _checkpoint_identity_from_document(document: dict) -> dict:
+    """Read a checkpoint document's producer identity, migrating legacy files."""
+    identity = {field: document.get(field) for field in _CHECKPOINT_IDENTITY_FIELDS}
+    if "collector_framework" not in document:
+        identity["collector_framework"] = _legacy_collector_framework(identity["backend"], identity["sm_version"])
+    return identity
+
+
+def _normalized_identity_record(identity: object) -> dict | None:
+    """Normalize a recorded identity mapping, or None when it is malformed.
+
+    Accepts both the current field set and the legacy one (journals written
+    before `collector_framework` existed), so an interrupted transaction stays
+    replayable across the upgrade.
+    """
+    if not isinstance(identity, dict):
+        return None
+    if set(identity) == set(_CHECKPOINT_IDENTITY_FIELDS):
+        return dict(identity)
+    if set(identity) == set(_LEGACY_CHECKPOINT_IDENTITY_FIELDS):
+        migrated = dict(identity)
+        migrated["collector_framework"] = _legacy_collector_framework(identity["backend"], identity["sm_version"])
+        return migrated
+    return None
+
+
 class ResumeCheckpoint:
     """Tracks which tasks are done so a collection run can be resumed.
 
@@ -1199,6 +1262,7 @@ class ResumeCheckpoint:
         checkpoint_dir: str,
         framework_version: str | None = None,
         sm_version: int | None = None,
+        collector_framework: str | None = None,
     ):
         self.module_name = module_name
         self._dirty = False
@@ -1206,9 +1270,12 @@ class ResumeCheckpoint:
         # framework_version/sm_version bind the checkpoint to the runtime it
         # was collected under: resuming a plan across a version bump or on a
         # different GPU generation silently mislabels data, so it must fail.
+        # collector_framework binds it to the device lane (e.g. vllm_xpu vs
+        # vllm_npu), which share `backend` and carry no sm_version.
         self._metadata = {
             "schema": RESUME_SCHEMA_VERSION,
             "backend": backend,
+            "collector_framework": collector_framework or backend,
             "module": module_name,
             "run_func": run_func_name,
             "framework_version": framework_version,
@@ -1255,11 +1322,12 @@ class ResumeCheckpoint:
                 ) from e
             _require_locked_directory(locked.file_descriptor, locked.path, locked.identity)
 
-        for key in ("schema", "backend", "module", "run_func", "framework_version", "sm_version"):
-            if data.get(key) != self._metadata[key]:
+        identity = _checkpoint_identity_from_document(data)
+        for key in _CHECKPOINT_IDENTITY_FIELDS:
+            if identity.get(key) != self._metadata[key]:
                 raise RuntimeError(
                     f"{self.module_name}: checkpoint mismatch "
-                    f"({key}: {data.get(key)} != {self._metadata[key]}). "
+                    f"({key}: {identity.get(key)} != {self._metadata[key]}). "
                     "Run without --resume to start fresh."
                 )
 
@@ -1711,6 +1779,7 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
         checkpoint_dir=checkpoint_dir,
         framework_version=resume_options.get("framework_version") if resume_options else None,
         sm_version=resume_options.get("sm_version") if resume_options else None,
+        collector_framework=resume_options.get("collector_framework") if resume_options else None,
     )
 
     if resume_options and resume_options.get("resume"):
@@ -2107,6 +2176,7 @@ def collect_ops(
     case_plan=None,
     sm_version: int | None = None,
     case_filters: list[str] | None = None,
+    collector_framework: str | None = None,
 ) -> list[dict]:
     """Run collection for a list of resolved collection entries.
 
@@ -2116,6 +2186,9 @@ def collect_ops(
     per-module __compat__ is validated and incompatible ops fail explicitly.
     If limit is provided, the number of test cases is limited to the limit.
     If shuffle is True, the test cases are shuffled with the given seed.
+    ``collector_framework`` is the device lane that produced the data (e.g.
+    ``vllm_npu``); it is recorded in the checkpoint identity so a resumed run
+    re-binds to the same registry instead of guessing from ``backend``.
     """
 
     class CompatibilityError(RuntimeError):
@@ -2161,7 +2234,9 @@ def collect_ops(
                     try:
                         if not check_compat(declared, runtime_version):
                             if _xpu_available():
-                                # Disable vllm xpu runtime version check for now
+                                # Disable vllm xpu runtime version check for now.
+                                # The NPU lane is deliberately not exempted: it
+                                # fails closed on a version mismatch.
                                 logger.warning(
                                     f"module {module_name} declares __compat__={declared!r}, \
                                     runtime is v{runtime_version}"
@@ -2201,6 +2276,7 @@ def collect_ops(
             merged_resume = {
                 **(resume_options or {}),
                 "backend": backend,
+                "collector_framework": collector_framework or backend,
                 "framework_version": runtime_version,
                 "sm_version": sm_version,
             }
@@ -2345,28 +2421,62 @@ def collect_vllm(
     from collector.version_resolver import build_collections
 
     is_xpu_backend = False
+    is_npu_backend = False
     if _cuda_available():
         from collector.vllm.registry import REGISTRY
+    elif _npu_available():
+        # Ascend NPU (vllm-ascend). REGISTRY_NPU is wired here so the lane is
+        # selected explicitly instead of falling through to the XPU arm.
+        # Probe order here is CUDA -> NPU -> XPU, while helper.get_device_str()
+        # probes CUDA -> XPU -> NPU so that the torch_npu import side effect
+        # happens last. The orders differ only on a host carrying both an Intel
+        # XPU and the Ascend plugin, which no supported node does.
+        from collector.vllm.registry import REGISTRY_NPU as REGISTRY
+
+        is_npu_backend = True
     elif _xpu_available():
         from collector.vllm.registry import REGISTRY_XPU as REGISTRY
 
         is_xpu_backend = True
     else:
-        raise RuntimeError("No supported hardware detected. Neither CUDA nor XPU is available.")
+        raise RuntimeError("No supported hardware detected. Neither CUDA, NPU nor XPU is available.")
 
-    try:
-        from vllm.version import __version__ as vllm_version
+    if is_npu_backend:
+        # The NPU lane's version axis is the vllm-ascend release (it carries the
+        # Ascend kernels, so it is the kernel-source identity), not base vLLM.
+        # Fail closed: no fallback to vllm.version, which would silently pin the
+        # data to the wrong axis.
+        try:
+            from vllm_ascend import __version__ as vllm_ascend_version
 
-        version = vllm_version
-    except Exception:
-        logger.exception("vLLM is not installed. Please install it from https://github.com/vllm-project/vllm")
-        return None, None
+            version = vllm_ascend_version
+        except Exception:
+            logger.exception(
+                "vllm-ascend is not installed. Please install it from https://github.com/vllm-project/vllm-ascend"
+            )
+            return None, None
+    else:
+        try:
+            from vllm.version import __version__ as vllm_version
+
+            version = vllm_version
+        except Exception:
+            logger.exception("vLLM is not installed. Please install it from https://github.com/vllm-project/vllm")
+            return None, None
 
     from collector.framework_manifest import require_collector_runtime
 
     requested_ops = set(ops if ops is not None else (case_plan.ops if case_plan is not None else []))
     wideep_ops = {entry.op for entry in _wideep_registry_for_backend("vllm")}
-    if is_xpu_backend:
+    if is_npu_backend:
+        runtime = require_collector_runtime(
+            "vllm_npu",
+            version,
+            requested_ops=requested_ops,
+            wideep_ops=set(),
+            model_path=model_path,
+        )
+    elif is_xpu_backend:
         runtime = require_collector_runtime(
             "vllm_xpu",
             version,
@@ -2383,6 +2493,13 @@ def collect_vllm(
             model_path=model_path,
         )
 
+    if is_npu_backend:
+        collector_framework = "vllm_npu"
+    elif is_xpu_backend:
+        collector_framework = "vllm_xpu"
+    else:
+        collector_framework = "vllm"
+
     registry = _registry_with_requested_wideep(REGISTRY, "vllm", ops, case_plan)
     collections = build_collections(registry, "vllm", version, ops, logger=logger)
     all_errors = collect_ops(
@@ -2397,11 +2514,13 @@ def collect_vllm(
         case_plan=case_plan,
         sm_version=sm_version,
         case_filters=case_filters,
+        collector_framework=collector_framework,
     )
 
     generate_collection_summary(all_errors, "vllm", version)
     provenance_ctx = {
         "framework": runtime.framework,
+        "collector_framework": collector_framework,
         "installed_version": version,
         "runtime": runtime,
         "sm_version": sm_version,
@@ -2728,17 +2847,26 @@ def _resume_tracker_for_collection(
         checkpoint_dir=checkpoint_dir,
         framework_version=runtime_version,
         sm_version=sm_version,
+        collector_framework=provenance_ctx.get("collector_framework") or backend,
     )
 
 
 def _registered_checkpoint_table(identity: dict, *, backend: str) -> str:
     """Resolve a checkpoint producer to its registry-owned table."""
+    from collector.framework_manifest import _REGISTRY_SYMBOLS
     from collector.version_resolver import resolve_module
 
     if set(identity) != set(_CHECKPOINT_IDENTITY_FIELDS) or identity.get("backend") != backend:
         raise RuntimeError(f"checkpoint producer identity is not bound to {backend}: {identity!r}")
     framework_version = identity.get("framework_version")
     sm_version = identity.get("sm_version")
+    collector_framework = identity.get("collector_framework")
+    # A lane key is either the stock framework (shared by its WideEP workload,
+    # which collects from the same REGISTRY) or one of its device lanes.
+    known_lane = isinstance(collector_framework, str) and (
+        collector_framework == backend
+        or (collector_framework in _REGISTRY_SYMBOLS and collector_framework.startswith(f"{backend}_"))
+    )
     if (
         identity.get("schema") != RESUME_SCHEMA_VERSION
         or not isinstance(identity.get("module"), str)
@@ -2747,13 +2875,16 @@ def _registered_checkpoint_table(identity: dict, *, backend: str) -> str:
         or not identity["run_func"]
         or not isinstance(framework_version, str)
         or not framework_version
+        or not known_lane
         or (sm_version is not None and (not isinstance(sm_version, int) or isinstance(sm_version, bool)))
     ):
         raise RuntimeError(f"invalid checkpoint producer identity: {identity!r}")
 
     registry_module = importlib.import_module(f"collector.{backend}.registry")
-    if backend == "vllm" and sm_version is None:
-        registry = list(registry_module.REGISTRY_XPU)
+    registry_symbol = _REGISTRY_SYMBOLS.get(collector_framework)
+    if registry_symbol is not None:
+        # A device lane (e.g. vllm_xpu / vllm_npu) owns its own registry symbol.
+        registry = list(getattr(registry_module, registry_symbol))
     else:
         registry = [*registry_module.REGISTRY, *_wideep_registry_for_backend(backend)]
     owned_tables = {
@@ -2844,7 +2975,7 @@ def _revalidate_producer_plan(producer_plan: dict[Path, _ProducerCheckpointPlan]
                     kind="selected producer checkpoint",
                 )
                 checkpoint = json.loads(snapshot.contents)
-                identity = {field: checkpoint.get(field) for field in _CHECKPOINT_IDENTITY_FIELDS}
+                identity = _checkpoint_identity_from_document(checkpoint)
                 if (
                     identity != plan.identity_dict()
                     or _registered_checkpoint_table(identity, backend=identity["backend"]) != plan.table
@@ -3306,8 +3437,8 @@ def _validate_perf_transaction_document(
             context_path=journal_path,
             kind="perf checkpoint participant",
         )
-        identity = checkpoint["identity"]
-        if not isinstance(identity, dict) or set(identity) != set(_CHECKPOINT_IDENTITY_FIELDS):
+        identity = _normalized_identity_record(checkpoint["identity"])
+        if identity is None:
             raise RuntimeError(f"Invalid collector perf checkpoint identity in {journal_path}")
         expected_path = _checkpoint_path(checkpoint_root, identity["module"])
         table = _registered_checkpoint_table(identity, backend=backend)
@@ -3389,7 +3520,8 @@ def _revalidate_perf_transaction_rollback_inputs(
                 ):
                     raise RuntimeError(f"Collector perf transaction checkpoint changed in {journal_path}")
                 document = json.loads(snapshot.contents)
-                if {field: document.get(field) for field in _CHECKPOINT_IDENTITY_FIELDS} != checkpoint["identity"]:
+                recorded_identity = _normalized_identity_record(checkpoint["identity"])
+                if recorded_identity is None or _checkpoint_identity_from_document(document) != recorded_identity:
                     raise RuntimeError(f"Collector perf transaction checkpoint identity changed in {journal_path}")
                 if any(
                     set(document.get(field, [])) != set(checkpoint[field]) for field in ("done", "failed", "attempted")
@@ -3965,7 +4097,8 @@ def _validated_transaction_checkpoints(
             attempted_case_ids = recorded_ledgers["attempted"]
             if attempted_case_ids & seen_attempted_case_ids:
                 raise ValueError("attempted case IDs must be unique across checkpoint participants")
-            if not isinstance(identity, dict) or set(identity) != set(_CHECKPOINT_IDENTITY_FIELDS):
+            identity = _normalized_identity_record(identity)
+            if identity is None:
                 raise TypeError(f"checkpoint identity must contain exactly {_CHECKPOINT_IDENTITY_FIELDS!r}")
             table = _registered_checkpoint_table(identity, backend=backend)
             checkpoint_path = Path(path_text)
@@ -3994,7 +4127,7 @@ def _validated_transaction_checkpoints(
                 checkpoint = json.loads(snapshot.contents)
                 if not isinstance(checkpoint, dict):
                     raise TypeError("checkpoint document must be an object")
-                actual_identity = {field: checkpoint.get(field) for field in _CHECKPOINT_IDENTITY_FIELDS}
+                actual_identity = _checkpoint_identity_from_document(checkpoint)
                 if actual_identity != identity:
                     raise ValueError(f"checkpoint identity {actual_identity!r} != recorded {identity!r}")
                 live_ledgers = {field: _checkpoint_case_ids(checkpoint, field) for field in recorded_ledgers}

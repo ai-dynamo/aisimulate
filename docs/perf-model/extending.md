@@ -111,6 +111,23 @@ version/support metadata only when the new cell meets its collection and
 consumer contracts. For whole-forward profiles, use the separate
 [FPM self-service overview](fpm-self-service/README.md).
 
+### Register the hardware system (`systems/<system>.yaml`)
+
+A system's hardware spec lives in
+`python/aisimulate/src/aisimulate_core/systems/<system>.yaml`. Two keys of its
+`gpu:` block decide how consumers classify the device:
+
+| `gpu` field | Type | Default | Meaning |
+|---|---|---|---|
+| `sm_version` | int | unset | CUDA SM architecture. NVIDIA systems only; absent on every non-NVIDIA device. |
+| `vendor` | `nvidia` \| `intel` \| `ascend` | inferred | Device vendor. Selects vendor-calibrated backends: `intel` routes vLLM to the B60-fitted `VLLMXPUBackend`, every other vendor uses the generic backend. |
+
+Declare `vendor` on any non-NVIDIA system. When the key is absent, legacy
+specs keep their previous classification (`sm_version` present ⇒ `nvidia`,
+otherwise `intel`), so systems that shipped before the key are unchanged —
+but a new non-NVIDIA device without it would inherit Intel-fitted
+coefficients. An unrecognized value fails loudly rather than falling back.
+
 ## 4. Validate the intended public path
 
 Rebuild the editable package after native or packaging changes:
