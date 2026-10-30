@@ -255,8 +255,11 @@ def _uses_modelopt_nvfp4_checkpoint(model_name: str) -> bool:
     )
 
 
-def _modelopt_mixed_expert_prefix(model_name: str) -> str | None:
+def _modelopt_mixed_expert_prefix(model_name: str, expert_algo: str = "NVFP4") -> str | None:
     """Return a routed-expert prefix when vLLM loads this checkpoint as modelopt_mixed.
+
+    ``expert_algo`` is the routed-expert algorithm the collected mode measures;
+    every listed routed expert must declare it.
 
     ModelOptMixedPrecisionConfig resolves each layer's algorithm from
     ``quantized_layers`` by prefix (modelopt.py:1569-1597,1751-1795 @v0.31.0), so
@@ -279,8 +282,8 @@ def _modelopt_mixed_expert_prefix(model_name: str) -> str | None:
         for name, data in layers.items()
         if ".experts." in name
     ]
-    if not experts or any(str(algo).upper() != "NVFP4" for _, algo in experts):
-        raise ValueError(f"The nvfp4 MoE collector requires uniformly NVFP4 routed experts for {model_name!r}")
+    if not experts or any(str(algo).upper() != expert_algo for _, algo in experts):
+        raise ValueError(f"The MoE collector requires uniformly {expert_algo} routed experts for {model_name!r}")
     # Serving builds the routed-expert prefix as "<layer>.mixer.experts"
     # (models/nemotron_h.py:242 under the ".mixer" prefix at :357 @v0.31.0) and
     # renames "backbone" to "model" in both the weights and quantized_layers
@@ -735,6 +738,17 @@ def run_moe_torch(
             activation_scheme="dynamic",
             weight_block_size=[128, 128],
         )
+    elif moe_type == "w4a16_nvfp4":
+        # ModelOpt W4A16_NVFP4 experts: serving resolves the layer's algorithm from
+        # quantized_layers by prefix and builds ModelOptNvFp4FusedMoE with use_a16,
+        # which only the Marlin experts accept (modelopt.py:836-846,1797-1799 @v0.30.0).
+        # Only a ModelOpt mixed checkpoint declares this lane; anything else raises.
+        from vllm.model_executor.layers.quantization.modelopt import ModelOptMixedPrecisionConfig
+
+        moe_prefix = _modelopt_mixed_expert_prefix(model_name, "W4A16_NVFP4")
+        if moe_prefix is None:
+            raise ValueError(f"vLLM w4a16_nvfp4 MoE collection requires a ModelOpt mixed checkpoint: {model_name!r}")
+        quant_config = ModelOptMixedPrecisionConfig.from_config(_load_checkpoint_quantization_config(model_name))
     elif moe_type == "nvfp4" and (mixed_prefix := _modelopt_mixed_expert_prefix(model_name)):
         # Serving loads MIXED_PRECISION checkpoints with ModelOptMixedPrecisionConfig and
         # picks each layer's method by prefix, so the layer needs a real expert prefix

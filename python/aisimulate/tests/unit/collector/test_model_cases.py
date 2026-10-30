@@ -276,6 +276,23 @@ def test_lightning_w4a16_nvfp4_experts_are_not_collected_as_vllm_w4a4_nvfp4():
     assert moe_model_allows_quantization("sglang", model_path, "nvfp4")
     assert moe_model_allows_quantization("trtllm", model_path, "nvfp4")
     assert not moe_model_allows_quantization("vllm", model_path, "nvfp4")
+    # vLLM collects its weight-only experts as the distinct w4a16_nvfp4 mode, Lightning only.
+    assert moe_model_allows_quantization("vllm", model_path, "w4a16_nvfp4")
+    assert not moe_model_allows_quantization("sglang", model_path, "w4a16_nvfp4")
+    assert not moe_model_allows_quantization("vllm", "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4", "w4a16_nvfp4")
+
+
+@pytest.mark.parametrize("sm_version", [80, 89, 90, 100, 103, 120])
+def test_vllm_w4a16_nvfp4_moe_mode_reaches_every_marlin_sm(sm_version):
+    from collector.case_generator import get_moe_quantization_modes
+
+    modes = get_moe_quantization_modes(
+        "vllm",
+        sm_version=sm_version,
+        runtime_version="0.30.0",
+        runtime_features={"per_block_fp8": True, "nvfp4": True, "mxfp4": True},
+    )
+    assert "w4a16_nvfp4" in modes
 
 
 @pytest.mark.parametrize(
@@ -296,7 +313,8 @@ def test_qwen36_w4a16_nvfp4_moe_is_transferred_but_explicitly_deferred(monkeypat
     transferred_shapes = get_common_moe_test_cases(backend=backend)
     assert transferred_shapes
     assert {case.model_name for case in transferred_shapes} == {model_path}
-    assert "w4a16_nvfp4" not in {spec.name for spec in get_moe_quantization_specs(backend)}
+    # Qwen3.6's W4A16_NVFP4 experts stay deferred; the vLLM w4a16_nvfp4 mode is Lightning-only.
+    assert not moe_model_allows_quantization(backend, model_path, "w4a16_nvfp4")
 
     assert _load_moe_getter(module_path)() == []
     assert f"by declared {backend} quantization policy (allowed_modes): {model_path}" in capsys.readouterr().out
@@ -1184,18 +1202,19 @@ def test_vllm_moe_quantization_metadata_is_yaml_backed():
         "int4_wo",
         "fp8",
         "fp8_block",
+        "w4a16_nvfp4",
     ]
     assert get_moe_quantization_modes(
         "vllm",
         sm_version=100,
         runtime_features={"per_block_fp8": True, "nvfp4": True, "mxfp4": True},
-    ) == ["bfloat16", "int4_wo", "fp8", "fp8_block", "nvfp4", "w4a16_mxfp4", "w4a8_mxfp4_mxfp8"]
+    ) == ["bfloat16", "int4_wo", "fp8", "fp8_block", "nvfp4", "w4a16_nvfp4", "w4a16_mxfp4", "w4a8_mxfp4_mxfp8"]
     assert get_moe_quantization_modes(
         "vllm",
         sm_version=120,
         runtime_version="0.24.0",
         runtime_features={"per_block_fp8": True, "nvfp4": True, "mxfp4": True},
-    ) == ["bfloat16", "int4_wo", "fp8", "fp8_block", "nvfp4", "w4a16_mxfp4"]
+    ) == ["bfloat16", "int4_wo", "fp8", "fp8_block", "nvfp4", "w4a16_nvfp4", "w4a16_mxfp4"]
 
     assert moe_model_allows_quantization("vllm", "openai/gpt-oss-20b", "w4a16_mxfp4")
     assert not moe_model_allows_quantization("vllm", "openai/gpt-oss-20b", "bfloat16")

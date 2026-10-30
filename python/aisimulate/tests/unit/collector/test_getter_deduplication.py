@@ -4,6 +4,7 @@
 import ast
 import importlib.util
 import json
+import re
 import sys
 import types
 from dataclasses import replace
@@ -406,8 +407,9 @@ def test_vllm_sm90_repository_moe_getter_excludes_unconsumable_dsv4_cases(monkey
     # assumed.
     # +33 GLM-5.3-Flash fp8_block cases (288 experts/top-8/4096/2048, TP 1-32
     # or EP 2-256; its nvfp4 row needs SM100 and is absent here).
-    assert len(cases) == 2223
-    assert sum(len(case[1]) for case in cases) == 60021
+    # +39 Nemotron 3.5 Lightning vLLM w4a16_nvfp4 groups (Marlin W4A16 experts, SM80+).
+    assert len(cases) == 2262
+    assert sum(len(case[1]) for case in cases) == 61074  # +1053 = 39 Lightning w4a16_nvfp4 groups x 27 token counts
     # MiniMax-M3's declared MoE geometry must be present as its own rows —
     # a generator defect could drop it while unrelated cases preserve the
     # aggregate counts above. (case[:8] = moe_type, num_tokens, hidden,
@@ -520,9 +522,15 @@ def test_vllm_nemotron_nvfp4_selects_native_modelopt_from_packaged_metadata(monk
     for mixed in ("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4", "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4"):
         assert module._modelopt_mixed_expert_prefix(mixed) == "backbone.layers.1.mixer.experts"
         assert not module._uses_modelopt_nvfp4_checkpoint(mixed)
-    # W4A16_NVFP4 experts do not match the W4A4 nvfp4 collector mode.
+    # W4A16_NVFP4 experts do not match the W4A4 nvfp4 collector mode, only the w4a16_nvfp4 one.
+    lightning = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4"
     with pytest.raises(ValueError, match="uniformly NVFP4 routed experts"):
-        module._modelopt_mixed_expert_prefix("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4")
+        module._modelopt_mixed_expert_prefix(lightning)
+    assert re.fullmatch(
+        r"backbone\.layers\.\d+\.mixer\.experts", module._modelopt_mixed_expert_prefix(lightning, "W4A16_NVFP4")
+    )
+    with pytest.raises(ValueError, match="uniformly W4A16_NVFP4 routed experts"):
+        module._modelopt_mixed_expert_prefix("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4", "W4A16_NVFP4")
 
 
 @pytest.mark.parametrize(

@@ -95,8 +95,8 @@ model_case_values:
         vllm:
           # The checkpoint's routed experts are W4A16_NVFP4 (weight-only), so
           # vLLM serves them through ModelOptNvFp4FusedMoE with BF16
-          # activations, not the W4A4 nvfp4 mode collected here.
-          allowed_modes: []
+          # activations on Marlin, the distinct w4a16_nvfp4 mode, not W4A4 nvfp4.
+          allowed_modes: [w4a16_nvfp4]
     - model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
       # vLLM routes experts through moe_latent_size=1024 (next row), so this
       # outer-width row is SGLang/TRT-LLM only.
