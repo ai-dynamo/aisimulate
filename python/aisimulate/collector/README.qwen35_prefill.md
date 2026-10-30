@@ -5,6 +5,45 @@ Qwen3.5-397B-A17B TP8 agentic alignment campaign. The original context lookup
 selected vLLM 0.30 decode-labelled rows with only one-token coverage. This
 campaign measures actual vLLM 0.31 prefill and checks requested-version routing.
 
+## Completed validation (2026-10-30)
+
+- Smoke: 5/5 cases, zero failures, including the correctly labelled one-token
+  decode control. Full collection: 95/95 unique prefill rows, zero failures or
+  unattempted cases. All 95 dispatch records confirm FlashInfer TRTLLM prefill,
+  kernel page 16, LBHNC layout and graph timing on B300.
+- Collector source: `13e15164522c495af025cfb4d683c7dd06666328`.
+  [Smoke pipeline 77827149](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/pipelines/77827149)
+  used CI job 518563156 / Slurm 138015;
+  [full pipeline 77828291](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/pipelines/77828291)
+  used CI job 518571254 / Slurm 138021.
+- Full parquet SHA-256:
+  `d1188fe9cdb287bb5c87a9094026a17fe50d2401266a71a657facadbfec45700`.
+  Four repeated smoke shapes differ by -3.21% to +4.43%; two observations do
+  not establish a variance distribution.
+- The unchanged SDK and native binary select the new requested-version
+  `vllm_flashinfer_trtllmprefill` lane. Native attention-only probes match the
+  measured rows and existing prefix scaling. Static B1/4K full-forward
+  prediction changes from 3,778.37ms to 57.14ms; these are not TTFT values.
+- All 36 exact-token replays completed, with 2,016 measured pairs and all
+  2,142 cache checks passing. No scheduler, precision or calibration changes.
+
+| Request-level MAPE | Before | Recollected |
+| --- | ---: | ---: |
+| TTFT | 4,041.09% | 62.89% |
+| TPOT | 1,019.88% | 18.71% |
+| Request E2E | 1,490.37% | 24.78% |
+
+TTFT remains mostly underpredicted. One TPOT slice worsens: 4K / four lanes /
+cold, 26.14% to 29.55% MAPE. The corresponding warm throughput MAPE worsens
+from 44.78% to 51.70%. Concurrency-one TPOT is unchanged. No numerical
+acceptance threshold was supplied, so this is a measured mitigation.
+
+Data is retained as local alignment evidence; it has not been published to the
+default corpus. Preserve the raw `collector_ref: unknown` sidecar: the image
+has no git. The CI clone SHA and collector hash independently identify source.
+One-token context source priority remains a separate general SDK issue; this
+replayed workload uses multi-token prefill.
+
 ## Frozen scope
 
 - vLLM 0.31.0, source `db9527a46873454610df6dbedf79a36d6bf1a7f6`.

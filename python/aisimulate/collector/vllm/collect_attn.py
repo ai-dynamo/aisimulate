@@ -12,6 +12,8 @@ page-size campaigns separate and retain this setting in their provenance.
 # B200 0.25.0 qualification (installed vLLM dd10e03f9), job 1967975:
 # attention_context and attention_generation: 8/8 representative cases each. The native framework
 # builders/selectors remain authoritative; no kernel fallback is introduced.
+# B300 0.31.0, Slurm 138015/138021: five smoke controls and 95 Qwen TP8
+# BF16 prefill cases passed with kernel page 16 (README.qwen35_prefill.md).
 # The campaign manifest still selects one exact release per run.
 # This declaration preserves the older release lane and admits 0.31.0;
 # exact campaign manifests remain the runtime gate. The compatibility parser
