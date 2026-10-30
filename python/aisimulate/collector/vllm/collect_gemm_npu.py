@@ -28,7 +28,7 @@ from collector.helper import benchmark_with_power, get_device_module, log_perf
 # The XPU fork (utils_xpu) stays off-limits to non-XPU collectors
 # (tests/unit/collector/test_vllm_xpu_utils.py), and its env://+port rendezvous
 # is the shape the precedent survey recommends avoiding for this lane.
-# TODO M5: confirm on device that the single-rank init selects the HCCL PG.
+# TODO: on-device campaign — confirm that the single-rank init selects the HCCL PG.
 from collector.vllm.utils import create_vllm_config, setup_distributed, with_exit_stack
 from vllm.config import set_current_vllm_config
 from vllm.model_executor.layers.linear import RowParallelLinear
@@ -96,9 +96,9 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="npu:0"):
     dtype = torch.bfloat16
     torch.set_default_dtype(dtype)
     get_device_module(device).set_device(device)
-    # TODO M5: NPU visibility is governed by ASCEND_RT_VISIBLE_DEVICES
-    # (CUDA_VISIBLE_DEVICES has no effect); multi-card parallel collection
-    # must pin its workers with the former (offline-research B6).
+    # TODO: on-device campaign — NPU visibility is governed by
+    # ASCEND_RT_VISIBLE_DEVICES (CUDA_VISIBLE_DEVICES has no effect);
+    # multi-card parallel collection must pin its workers with the former.
 
     x = torch.randn((m, k), dtype=dtype, device=torch.device(device))
 
@@ -178,10 +178,10 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="npu:0"):
         gc.collect()
         get_device_module(device).empty_cache()
 
-    # torch_npu 2.10.0.post7 API notes (offline-research B6, read from the
-    # pinned image's own wheel): get_device_name validates the ordinal but
-    # returns the global SoC name (no per-card distinction) — fine for this
-    # informational column, same behavior as the XPU lane.
+    # torch_npu 2.10.0.post7 API notes (read from the pinned image's own
+    # wheel): get_device_name validates the ordinal but returns the global SoC
+    # name (no per-card distinction) — fine for this informational column,
+    # same behavior as the XPU lane.
     # get_device_capability is never called: it returns None unless
     # TORCH_NPU_DEVICE_CAPABILITY is set, and then a configured fake value.
     log_perf(

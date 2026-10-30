@@ -1,39 +1,39 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Huawei Ascend 950DT (Atlas A5 generation), 8-card server. npu-smi on g-master1 reports
+# Huawei Ascend 950DT (Atlas A5 generation), 8-card server. npu-smi on the device node reports
 # 8 healthy chips, 98304 MB HBM each and 592 W draw under load. Official per-chip specs:
 # Huawei "Ascend 950 NPU Architecture White Paper" (2026) table 3-1 — 4 TB/s HBM on both
 # capacity tiers, 547 TFLOPS BF16/FP16 and 1 PFLOPS FP8 on the top 36-Cube-Core tier,
 # 2016 GB/s bidirectional UB IO. INT8/FP32 peaks stay unpublished; the TODO entries below
-# are placeholders to replace with M5 on-device measurements, not measurements.
+# are placeholders to replace with on-device campaign measurements, not measurements.
 # Like b60, this is a non-CUDA device and carries no sm_version.
 
 data_dir: data/ascend_950dt # relative to systems_dir
 gpu:
   vendor: ascend # nvidia | intel | ascend, explicit device-kind identification for non-CUDA systems
-  mem_bw: 4000000000000 # 4TB/s official (white paper table 3-1; the same value on both capacity tiers), cross-checked by the visit-2 HBM 4000MHz estimate
-  mem_bw_empirical_scaling_factor: 1.0 # TODO M5 no effective-BW measurement on CANN yet, modify based on your own observations
-  mem_empirical_constant_latency: 0.0 # TODO M5 no kernel-launch/latency measurement on CANN yet
-  mem_capacity: 103079215104 # 96GiB, the official low tier (white paper table 3-1 / table 4-2 "Up to 96/144GB"), observed on g-master1; the 144GB tier needs its own entry
-  fp32_flops: 34000000000000 # TODO M5 no official or third-party FP32 number, conservative bf16/16 placeholder
-  bfloat16_tc_flops: 547000000000000 # official BF16/FP16 peak (white paper table 3-1); compute is tiered 547/486/425 TFLOPS for the 36/32/28-Cube-Core parts, which tier this node is gets decided by the M5 matmul check
-  int8_tc_flops: 1034000000000000 # TODO M5 1034TOPS is a third-party figure, shares the FP8 tensor path
+  mem_bw: 4000000000000 # 4TB/s official (white paper table 3-1; the same value on both capacity tiers), cross-checked by the on-device HBM 4000MHz estimate
+  mem_bw_empirical_scaling_factor: 1.0 # TODO: on-device campaign — no effective-BW measurement on CANN yet, modify based on your own observations
+  mem_empirical_constant_latency: 0.0 # TODO: on-device campaign — no kernel-launch/latency measurement on CANN yet
+  mem_capacity: 103079215104 # 96GiB, the official low tier (white paper table 3-1 / table 4-2 "Up to 96/144GB"), observed on the device node; the 144GB tier needs its own entry
+  fp32_flops: 34000000000000 # TODO: on-device campaign — no official or third-party FP32 number, conservative bf16/16 placeholder
+  bfloat16_tc_flops: 547000000000000 # official BF16/FP16 peak (white paper table 3-1); compute is tiered 547/486/425 TFLOPS for the 36/32/28-Cube-Core parts, which tier this node is gets decided by the on-device matmul check
+  int8_tc_flops: 1034000000000000 # TODO: on-device campaign — 1034TOPS is a third-party figure, shares the FP8 tensor path
   fp8_tc_flops: 1000000000000000 # 1PFLOPS FP8/MXFP8/HiF8 official. MXFP4 is 2PFLOPS but fp4_tc_flops models nvfp4, left unset
-  power: 650 # TODO M5 Watt placeholder. npu-smi info -t power on g-master1 read 592W under the running vLLM service and exposes no Power Limit line on driver 25.6.rc2, so this is a headroom estimate above the measured load, not a TDP.
+  power: 650 # TODO: on-device campaign — Watt placeholder. npu-smi info -t power on the device node read 592W under the running vLLM service and exposes no Power Limit line on driver 25.6.rc2, so this is a headroom estimate above the measured load, not a TDP.
 
 node:
-  num_gpus_per_node: 8 # 8x Ascend950DT per node (observed on g-master1, npu-smi info -t topo 2026-10-29)
-  inter_node_bw: 50000000000  # TODO M5 Byte/s per NPU, single direction, conservative 400Gb/s placeholder, scale-out NICs unverified
+  num_gpus_per_node: 8 # 8x Ascend950DT per node (observed on the device node, npu-smi info -t topo 2026-10-29)
+  inter_node_bw: 50000000000  # TODO: on-device campaign — Byte/s per NPU, single direction, conservative 400Gb/s placeholder, scale-out NICs unverified
   # Byte/s per NPU, single direction -- the unit every other spec here uses (b60.yaml:18-19).
   # Official "Ascend 950 NPU Architecture White Paper" §4.6: UB IO bandwidth 2016 GB/s
   # (bidirectional, per chip) = 72 lane x 112 Gbps x 2 / 8, so the per-chip unidirectional
   # bound is ~1008 GB/s -- and that bound assumes all 18 x4 ports serve scale-up, while the
   # white paper says they are multiplexed with scale-out. 1e12 therefore sits AT the cited
-  # upper bound, not below it; TODO M5 must calibrate it downward with an in-node hccl_test.
+  # upper bound, not below it; TODO: on-device campaign — calibrate it downward with an in-node hccl_test.
   intra_node_bw: 1000000000000
-  pcie_bw: 64000000000  # TODO M5 Byte/s, single direction; the white paper §4.6 table lists PCIe IO 128 GB/s bidirectional (PCIe 5.0 x16), i.e. 64 GB/s one way -- host-side semantics under the UB fabric stay unverified
-  p2p_latency: 0.00001  # TODO M5 10us placeholder, no UB p2p latency measurement yet
+  pcie_bw: 64000000000  # TODO: on-device campaign — Byte/s, single direction; the white paper §4.6 table lists PCIe IO 128 GB/s bidirectional (PCIe 5.0 x16), i.e. 64 GB/s one way -- host-side semantics under the UB fabric stay unverified
+  p2p_latency: 0.00001  # TODO: on-device campaign — 10us placeholder, no UB p2p latency measurement yet
 
 # TODO fix this with hccl, use for memory usage computation
 misc:
@@ -42,4 +42,4 @@ misc:
     2: 0
     4: 0
     8: 0
-  other_mem: 3758096384 # TODO M5 3.5GB runtime reserve carried over from the large-memory systems, not measured on CANN/torch_npu
+  other_mem: 3758096384 # TODO: on-device campaign — 3.5GB runtime reserve carried over from the large-memory systems, not measured on CANN/torch_npu

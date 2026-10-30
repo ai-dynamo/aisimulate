@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Registration guards for the Ascend 950DT system (M2).
+"""Registration guards for the Ascend 950DT system.
 
 Covers the three hand-authored registration surfaces introduced with
 ``systems/ascend_950dt.yaml`` — the system YAML itself, ``sdk/common.py``
@@ -14,8 +14,8 @@ architecture white paper and on-device observation: official per-chip
 figures (4TB/s HBM bandwidth, 1 PFLOPS FP8, 2TB/s
 interconnect) and the observed 96GiB capacity tier with
 8 chips per node. The unofficial/placeholder entries are deliberately NOT
-pinned here — M5 replaces them with measurements — but they must stay
-positive so the strict ``*_tc_flops`` resolver can run.
+pinned here — the on-device campaign replaces them with measurements — but they
+must stay positive so the strict ``*_tc_flops`` resolver can run.
 """
 
 from __future__ import annotations
@@ -49,22 +49,22 @@ class TestAscend950dtSystemSpec:
         node = spec["node"]
 
         assert spec["data_dir"] == "data/ascend_950dt"
-        # Observed on g-master1: 98304 MB HBM per chip (the 96GB tier).
+        # Observed on the device node: 98304 MB HBM per chip (the 96GB tier).
         assert gpu["mem_capacity"] == 96 * 1024**3
         assert gpu["mem_bw"] == 4e12  # official 4TB/s
         assert gpu["fp8_tc_flops"] == 1e15  # official 1 PFLOPS FP8/MXFP8/HiF8
         # Official BF16/FP16 peak of the top 36-Cube-Core tier (white paper
-        # table 3-1); which of the 547/486/425 tiers this node is is an M5 check.
+        # table 3-1); which of the 547/486/425 tiers this node is is an on-device check.
         assert gpu["bfloat16_tc_flops"] == 547e12
         assert node["num_gpus_per_node"] == 8
         # Per-NPU single direction, derived from the same white paper §4.6 figure
         # as the yaml comment: 2016 GB/s bidirectional = 72 lane x 112 Gbps x 2 / 8,
         # i.e. a ~1008 GB/s unidirectional bound that already assumes every one of
-        # the 18 x4 ports is scale-up. M5 must calibrate the value downward.
+        # the 18 x4 ports is scale-up. On-device hccl_test calibration refines it downward.
         assert node["intra_node_bw"] == 1e12
 
     def test_vendor_is_ascend_and_no_sm_version(self, spec: SystemSpec) -> None:
-        """Explicit vendor discrimination; non-CUDA devices carry no sm_version."""
+        """Explicit vendor identification; non-CUDA devices carry no sm_version."""
         assert spec["gpu"]["vendor"] == "ascend"
         assert "sm_version" not in spec["gpu"]
 
@@ -72,7 +72,7 @@ class TestAscend950dtSystemSpec:
         """Strict per-dtype resolution rejects missing or non-positive entries."""
         gpu = spec["gpu"]
         for key in ("int8_tc_flops", "fp32_flops"):
-            assert gpu[key] > 0, f"{key} must stay positive until M5 measurement replaces it"
+            assert gpu[key] > 0, f"{key} must stay positive until on-device measurement replaces it"
 
     def test_spec_satisfies_the_rust_system_spec_contract(self, spec: SystemSpec) -> None:
         """Fields the compiled FPE (crates/core .. common/system_spec.rs) requires.
@@ -114,7 +114,7 @@ class TestAscend950dtRegistration:
         assert policy.evidence_systems["ascend"] == SYSTEM
 
     def test_registration_ships_no_perf_data_yet(self) -> None:
-        """M2 is registration only: collection (M3/M5) adds the databases."""
+        """System registration only: on-device collection adds the databases."""
         assert SYSTEM not in get_supported_databases()
 
 

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""M3: the Ascend NPU gemm lane — manifest pin, registry entry, cases, module.
+"""Ascend NPU gemm lane — manifest pin, registry entry, cases, module.
 
 The three wiring surfaces only work together (an op entry without its manifest
 pin is unresolvable, a manifest entry without ops fails ``validate_resolution``),
@@ -71,7 +71,7 @@ def test_manifest_records_the_image_abi_read_from_the_image_layers():
     assert abi["torch"] == "2.10.0"
     assert abi["torch_npu"] == "2.10.0.post7"  # not the matrix's 2.10.0.post4
     assert abi["triton_ascend"] == "3.6.0+dev20260923230212"  # not 3.2.2
-    assert abi["triton"] == "3.6.0"  # uninstalled by the Dockerfile, pulled back by triton-ascend (B7)
+    assert abi["triton"] == "3.6.0"  # uninstalled by the Dockerfile, pulled back by triton-ascend
     assert abi["vllm"] == "0.30.0"
     assert abi["soc_version"] == "ascend950dt_9582"
 
@@ -218,5 +218,5 @@ def test_module_declares_the_mvp_measurement_contract():
     assert '"used_cuda_graph": results["used_cuda_graph"]' in source
     assert "xpu_graph_measure_enabled" not in source
     # torch_npu's get_device_capability returns None (or a configured fake) —
-    # the lane must never call it (offline-research B6).
+    # the lane must never call it.
     assert "get_device_capability(" not in source

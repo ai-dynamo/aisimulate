@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Vendor discrimination for backend selection (`gpu.vendor`).
+"""Vendor identification for backend selection (`gpu.vendor`).
 
 `VLLMXPUBackend` carries coefficients fitted on Intel B60 hardware. They used
 to be selected by "the system spec has no sm_version", which is true of *every*
