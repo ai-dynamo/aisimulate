@@ -193,7 +193,7 @@ impl DsaModuleOp {
     /// Amortization weight after the missing-skip-table degradation. A
     /// (system, backend, version) without suitable reuse measurements degrades
     /// to all-full (`w = 1.0`) instead of omitting the unmeasured layers.
-    /// vLLM callers check the exact precision/architecture/backend/head slice;
+    /// vLLM/SGLang callers check the exact precision/architecture/backend/head slice;
     /// other backends retain the historical table-wide skip-row check.
     /// PESSIMISTIC: the indexer is charged on every layer.
     ///
@@ -261,7 +261,7 @@ impl DsaModuleOp {
             || matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull)
         {
             self.full_frac
-        } else if db.backend == "vllm" {
+        } else if matches!(db.backend.as_str(), "vllm" | "sglang") {
             self.effective_full_frac(db.dsa.has_context_skip_slice(
                 &self.table_key(),
                 self.context_table_backend(),
@@ -542,7 +542,7 @@ impl DsaModuleOp {
             || matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull)
         {
             self.full_frac
-        } else if db.backend == "vllm" {
+        } else if matches!(db.backend.as_str(), "vllm" | "sglang") {
             let (heads, _) =
                 crate::operators::attention::dcp_geometry(self.num_heads, s, self.dcp_size);
             self.effective_full_frac(db.dsa.has_generation_skip_slice(
@@ -745,7 +745,7 @@ fn query_generation_table_raw(
     match db.database_mode {
         // Python `_query_generation_dsa_module_table`: `get_sol(b, s,
         // num_heads, kv_cache_dtype)[0]` — the attention group is hardcoded
-        // bfloat16 inside. The vLLM reuse policy omits indexer work in the
+        // bfloat16 inside. The vLLM/SGLang reuse policies omit indexer work in the
         // analytic result and extrapolation; other backends retain the legacy
         // full-indexer approximation for generation.
         DatabaseMode::Sol | DatabaseMode::SolFull => {
@@ -1516,32 +1516,55 @@ mod tests {
         db
     }
 
-    fn full_only_dsa_db(mode: DatabaseMode) -> (tempfile::TempDir, PerfDatabase) {
+    fn dsa_fixture_db(
+        mode: DatabaseMode,
+        backend: &str,
+        skip_gemm: Option<&'static str>,
+    ) -> (tempfile::TempDir, PerfDatabase) {
         use crate::config::{PerfDbSources, PerfSource};
         use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
 
-        let tmp = tempfile::tempdir().expect("full-only fixture");
+        let tmp = tempfile::tempdir().expect("DSA fixture");
         let mut sources = PerfDbSources::new();
-        for (op_name, prefix, latency) in [
-            ("dsa_context_module", 512, 1.0),
-            ("dsa_generation_module", 0, 0.5),
+        for (op_name, skip_op_name, prefix, latency) in [
+            (
+                "dsa_context_module",
+                "dsa_context_module_skip_indexer",
+                512,
+                1.0,
+            ),
+            (
+                "dsa_generation_module",
+                "dsa_generation_module_skip_indexer",
+                0,
+                0.5,
+            ),
         ] {
             let basename = format!("{op_name}_perf.parquet");
             let path = tmp.path().join(&basename);
+            let (op_names, gemms, latencies) = match skip_gemm {
+                Some(gemm) => (
+                    vec![op_name, skip_op_name],
+                    vec!["bfloat16", gemm],
+                    vec![latency, latency / 2.0],
+                ),
+                None => (vec![op_name], vec!["bfloat16"], vec![latency]),
+            };
+            let count = op_names.len();
             write_parquet(
                 &path,
                 &[
-                    Col::Str("architecture", vec![GLM]),
-                    Col::Str("mla_dtype", vec!["bfloat16"]),
-                    Col::Str("kv_cache_dtype", vec!["bfloat16"]),
-                    Col::Str("gemm_type", vec!["bfloat16"]),
-                    Col::I64("num_heads", vec![64]),
-                    Col::I64("batch_size", vec![2]),
-                    Col::I64("isl", vec![4096]),
-                    Col::I64("step", vec![prefix]),
-                    Col::Str("op_name", vec![op_name]),
-                    Col::Str("kernel_source", vec!["default"]),
-                    Col::F64("latency", vec![latency]),
+                    Col::Str("architecture", vec![GLM; count]),
+                    Col::Str("mla_dtype", vec!["bfloat16"; count]),
+                    Col::Str("kv_cache_dtype", vec!["bfloat16"; count]),
+                    Col::Str("gemm_type", gemms),
+                    Col::I64("num_heads", vec![64; count]),
+                    Col::I64("batch_size", vec![2; count]),
+                    Col::I64("isl", vec![4096; count]),
+                    Col::I64("step", vec![prefix; count]),
+                    Col::Str("op_name", op_names),
+                    Col::Str("kernel_source", vec!["default"; count]),
+                    Col::F64("latency", latencies),
                 ],
             );
             sources.insert(basename, vec![PerfSource(path, None)]);
@@ -1549,8 +1572,13 @@ mod tests {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join("python/aisimulate/src/aisimulate_core/systems");
-        let mut db = PerfDatabase::load_with_sources(&root, "h200_sxm", "vllm", "0.24.0", &sources)
-            .expect("full-only db loads");
+        let version = if backend == "sglang" {
+            "0.5.14"
+        } else {
+            "0.24.0"
+        };
+        let mut db = PerfDatabase::load_with_sources(&root, "h200_sxm", backend, version, &sources)
+            .expect("DSA fixture db loads");
         db.database_mode = mode;
         (tmp, db)
     }
@@ -1599,7 +1627,7 @@ mod tests {
     /// all-full costs. The fixture keeps this independent of shipped coverage.
     #[test]
     fn missing_skip_indexer_variant_degrades_amortization_to_all_full() {
-        let (_fixture, db) = full_only_dsa_db(DatabaseMode::Silicon);
+        let (_fixture, db) = dsa_fixture_db(DatabaseMode::Silicon, "vllm", None);
         assert!(
             !db.dsa.has_context_skip_rows().expect("probe"),
             "fixture must contain full rows only"
@@ -1632,6 +1660,36 @@ mod tests {
                 .latency_ms,
         );
         // relative equality above IS the contract; no recorded-value pin.
+    }
+
+    /// A file-wide skip row is insufficient: a BF16 query may blend only its
+    /// BF16 skip row. The synthetic full/skip anchors are 1/0.5 ms for context
+    /// and 0.5/0.25 ms for generation, so both expected blends are independent
+    /// of roofline extrapolation or packaged measurements.
+    #[test]
+    fn reuse_operator_requires_matching_precision_slice() {
+        for backend in ["vllm", "sglang"] {
+            for skip_gemm in ["bfloat16", "fp8_block"] {
+                let (_fixture, db) =
+                    dsa_fixture_db(DatabaseMode::Silicon, backend, Some(skip_gemm));
+                assert!(db.dsa.has_context_skip_rows().unwrap());
+                assert!(db.dsa.has_generation_skip_rows().unwrap());
+                let op = glm52_op(KvCacheQuantMode::Bfloat16, GLM52_FULL_FRAC);
+                let expected = if skip_gemm == "bfloat16" {
+                    GLM52_FULL_FRAC + (1.0 - GLM52_FULL_FRAC) * 0.5
+                } else {
+                    1.0
+                };
+                approx_rel_1e9(
+                    op.query_context(&db, 2, 4096, 512).unwrap().latency_ms,
+                    expected,
+                );
+                approx_rel_1e9(
+                    op.query_generation(&db, 2, 4096).unwrap().latency_ms,
+                    expected * 0.5,
+                );
+            }
+        }
     }
 
     /// The other half of AIC-1747: where the skip rows DO exist
@@ -1693,7 +1751,7 @@ mod tests {
     /// tables contain only full rows, for both context and generation.
     #[test]
     fn sol_mode_keeps_configured_amortization_on_full_only_table() {
-        let (_fixture, db) = full_only_dsa_db(DatabaseMode::Sol);
+        let (_fixture, db) = dsa_fixture_db(DatabaseMode::Sol, "vllm", None);
         assert!(
             !db.dsa.has_context_skip_rows().expect("probe"),
             "anchor must be full-only"
