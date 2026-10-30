@@ -206,8 +206,9 @@ def _moe_modes(
     """Resolve the routed-expert precision of each MoE layer from checkpoint metadata.
 
     Returns ``{mode: number of MoE layers}`` unless every MoE layer resolves to ``default``,
-    the system- and backend-resolved global mode.
-    ``execution_mode`` applies the same backend lane mapping as the global mode.
+    the global mode. ``execution_mode`` applies the same backend lane mapping as the global
+    mode. NVFP4 layers then take the system's lane (weight-only below Blackwell) even when
+    ``default`` is still the unresolved native mode, as on the canonical API path.
 
     shortcut: a layer's precision is read from expert 0; per-expert precision within
     one layer is not modeled. Upgrade if an export quantizes experts of a layer differently.
@@ -223,15 +224,14 @@ def _moe_modes(
     rows = checkpoint.rows(pattern, {"E": {"experts": ("experts.0.up_proj", "experts.0.down_proj")}})
     # Unlisted experts are BF16 only in a targets-only export; otherwise they keep the global mode.
     unlisted = common.MoEQuantMode.bfloat16 if checkpoint.targets_only else default
-    # Keep the system-resolved global mode for the precision it already prices.
-    family = {common.MoEQuantMode.nvfp4_wo: common.MoEQuantMode.nvfp4}
+    nvfp4_family = (common.MoEQuantMode.nvfp4, common.MoEQuantMode.nvfp4_wo)
     resolved = Counter()
     for _, algo, excluded in rows:
         if algo is not None and algo not in modes:
             raise ValueError(f"Unsupported routed-expert precision for Nemotron-H: {algo}")
         # An explicit exclusion is BF16 in every metadata format.
         mode = common.MoEQuantMode.bfloat16 if excluded else execution_mode(modes[algo]) if algo else unlisted
-        resolved[default if family.get(mode, mode) == family.get(default, default) else mode] += 1
+        resolved[nvfp4 if mode in nvfp4_family else mode] += 1
     return {} if set(resolved) <= {default} else dict(resolved)
 
 

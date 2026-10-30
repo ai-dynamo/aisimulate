@@ -469,8 +469,11 @@ def test_published_nvfp4_exports_price_each_projection_at_its_listed_precision(m
         assert _projection_buckets(pipeline, _ALL_PROJECTIONS) == {
             name: {mode: count * scale for mode, count in layers.items()} for name, layers in expected.items()
         }
-    # Every routed-expert layer is NVFP4, so the MoE stays on the single global mode.
-    assert not model._moe_quant_modes
+    # Every routed-expert layer is NVFP4, so the MoE uses the system's single NVFP4 lane
+    # (weight-only on Hopper, even though this construction leaves the global default native).
+    lane = common.MoEQuantMode.nvfp4 if system == "gb200" else common.MoEQuantMode.nvfp4_wo
+    for pipeline in (model.context_ops, model.generation_ops):
+        assert {op._quant_mode for op in pipeline if op._name.split("_", 1)[1] == "moe"} == {lane}
 
 
 @pytest.mark.parametrize("model_path", sorted(_PUBLISHED_PROJECTIONS))
@@ -884,3 +887,52 @@ def test_task_yaml_round_trip_keeps_inferred_precision_inferred(monkeypatch, tmp
             # The checkpoint's per-layer split survives the round trip: mixed projections and experts.
             assert any(len(modes) > 1 for modes in projections.values())
             assert set(moe) == {common.MoEQuantMode.fp8, common.MoEQuantMode.nvfp4}
+
+
+@pytest.mark.parametrize("system", ["h200_sxm", "gb200"])
+@pytest.mark.parametrize("mixed", [False, True])
+def test_canonical_and_task_paths_agree_on_inferred_expert_lanes(monkeypatch, tmp_path, system, mixed):
+    from aisimulate.sdk.task_v2 import Task
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    path = (
+        _expert_split_checkpoint(tmp_path, fp8_layers=10) if mixed else "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
+    )
+    # The canonical API sets the system but leaves the inferred global MoE mode unresolved (native nvfp4).
+    canonical = get_model(path, ModelConfig(tp_size=1, moe_tp_size=1, moe_ep_size=1, system=system), "vllm")
+    task = Task(
+        serving_mode="agg",
+        model_path=path,
+        system_name=system,
+        backend_name="vllm",
+        backend_version="0.30.0",
+        database_mode="SOL",
+    )
+    task_model = get_model(path, task.build_model_config(role="agg", parallel=(1, 1, 1, 1, 1, 1)), "vllm")
+
+    def experts(model):
+        return {op._quant_mode: op._scale_factor for op in model.context_ops if op._name == "context_moe"}
+
+    assert experts(canonical) == experts(task_model)
+    nvfp4 = common.MoEQuantMode.nvfp4_wo if system == "h200_sxm" else common.MoEQuantMode.nvfp4
+    assert nvfp4 in experts(canonical) and (common.MoEQuantMode.fp8 in experts(canonical)) is mixed
+    # Hopper has no FP4 tensor cores: the native lane would raise MissingSystemFlopsError here.
+    model = RustForwardPassPerfModel.best_available(
+        ForwardPassPerfModelConfig(
+            model=path,
+            system=system,
+            backend="vllm",
+            backend_version="0.30.0",
+            worker_type="decode",
+            tp=1,
+            moe_tp_size=1,
+            moe_ep_size=1,
+            database_mode="SOL",
+            estimation_mode="op_level",
+        )
+    )
+    try:
+        assert model.static_phase_diagnostics(batch_size=8, context_length=1024, prefill=False)
+    finally:
+        model.close()
