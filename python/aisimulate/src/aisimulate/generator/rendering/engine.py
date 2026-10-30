@@ -236,13 +236,32 @@ def _assemble_k8s_context(context: dict[str, Any], has_engine_templates: bool) -
     return k8s_context
 
 
-def _warn_unaligned_trtllm_transfer_buffer(rendered_templates: dict[str, str]) -> None:
+def _last_int_flag(tokens: list[str], flag: str) -> Optional[int]:
+    """The last value of ``flag`` in a CLI token list, as the argument parser keeps it."""
+    value = None
+    for index, token in enumerate(tokens):
+        if token == flag and index + 1 < len(tokens):
+            value = tokens[index + 1]
+        elif token.startswith(f"{flag}="):
+            value = token.split("=", 1)[1]
+    try:
+        return int(value) if value is not None else None
+    except ValueError:
+        return None
+
+
+def _warn_unaligned_trtllm_transfer_buffer(
+    rendered_templates: dict[str, str], cli_args: Optional[dict[str, list[str]]] = None
+) -> None:
     """Warn when TRT-LLM may size a P/D KV-transfer buffer off the block grid.
 
     The rules leave the buffer size to TRT-LLM without fixed request lengths or
     an explicit block size. The check reads the final engine YAML, so appended
-    extra_engine_args overrides count. The requested version need not match the
-    deployed runtime, so this warns instead of rejecting.
+    extra_engine_args overrides count. ``cli_args`` holds each role's deployed
+    flags for a target that passes ``max_seq_len`` only as ``--max-seq-len``
+    (dynamo-python translates the YAML into flags without it); that value is
+    checked instead. The requested version need not match the deployed
+    runtime, so this warns instead of rejecting.
     """
     for role in ("prefill", "decode"):
         try:
@@ -253,7 +272,10 @@ def _warn_unaligned_trtllm_transfer_buffer(rendered_templates: dict[str, str]) -
         # Without a transceiver section the runtime does not size this buffer from max_seq_len.
         if not isinstance(transceiver, dict) or transceiver.get("max_tokens_in_buffer") is not None:
             continue
-        max_seq_len = engine.get("max_seq_len")
+        if cli_args is None:
+            max_seq_len = engine.get("max_seq_len")
+        else:
+            max_seq_len = _last_int_flag(cli_args.get(role) or [], "--max-seq-len")
         kv_cache_config = engine.get("kv_cache_config")
         tokens_per_block = kv_cache_config.get("tokens_per_block") if isinstance(kv_cache_config, dict) else None
         if tokens_per_block is None:
@@ -263,6 +285,15 @@ def _warn_unaligned_trtllm_transfer_buffer(rendered_templates: dict[str, str]) -
                 "Use a runtime that rounds to its effective block size (1.3.0rc22.post1 or newer), "
                 "or verify the deployed context length is block-aligned.",
                 role,
+            )
+        elif max_seq_len is None:
+            logger.warning(
+                "TRT-LLM %s max_seq_len is unset, so KV-transfer buffer alignment to tokens_per_block %s "
+                "cannot be checked. The runtime takes the length from the model and sizes the buffer; "
+                "1.3.0rc3 through 1.3.0rc22 use it unrounded. Use a runtime that rounds to its effective "
+                "block size (1.3.0rc22.post1 or newer), or set a block-aligned max_seq_len.",
+                role,
+                tokens_per_block,
             )
         elif (
             isinstance(max_seq_len, int)
@@ -597,10 +628,6 @@ def render_backend_templates(
                 rendered_templates[out_name] = rendered
         except Exception as e:
             logger.warning(f"Failed to render engine template {engine_template_file.name}: {e}")
-    # Every public path renders here, so this is the single warning boundary.
-    if backend == "trtllm":
-        _warn_unaligned_trtllm_transfer_buffer(rendered_templates)
-
     # Inject inline engine args content into context for k8s template
     # These are used when K8sConfig.k8s_engine_mode == 'inline'
     context["prefill_engine_args_inline"] = rendered_templates.get("extra_engine_args_prefill.yaml", "")
@@ -719,6 +746,16 @@ def render_backend_templates(
             cli_str = " ".join(shlex.quote(a) for a in existing_list)
             context[cli_key] = cli_str
             rendered_templates[tmpl_key] = cli_str
+
+    # Every public path renders here, after its final engine YAML and CLI
+    # flags, so this is the single warning boundary.
+    if backend == "trtllm":
+        _warn_unaligned_trtllm_transfer_buffer(
+            rendered_templates,
+            {role: list(context.get(f"{role}_cli_args_list") or []) for role in ("prefill", "decode")}
+            if deployment_target == "dynamo-python"
+            else None,
+        )
 
     # Compute GPU counts per worker using rule outputs, falling back to WorkerConfig.
     pv_params = param_values.get("params", {}) or {}

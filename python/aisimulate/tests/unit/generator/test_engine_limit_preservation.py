@@ -140,6 +140,7 @@ def test_trtllm_explicit_transfer_backend_is_rendered(rule):
         (None, 8192, {}, False, None, "tokens_per_block is unset"),
         (64, 10000, {}, False, None, "max_seq_len 10000 is not a multiple of tokens_per_block 64"),
         (64, 8192, {}, False, None, None),
+        (64, None, {}, False, None, "max_seq_len is unset"),
         (64, 10000, {"isl": 128, "osl": 16}, False, None, None),
         (None, 10000, {}, True, None, None),
         # extra_engine_args is appended to the engine YAML, so its keys win.
@@ -158,6 +159,7 @@ def test_trtllm_explicit_transfer_backend_is_rendered(rule):
         "unset-block",
         "trace-unaligned",
         "trace-aligned",
+        "unset-length",
         "rule-sized",
         "explicit-buffer",
         "override-unaligned",
@@ -173,7 +175,10 @@ def test_public_trtllm_generation_warns_on_runtime_sized_transfer_buffer(
     params["SlaConfig"] = sla
     for role in ("prefill", "decode"):
         role_params = params["params"][role]
-        role_params["max_seq_len"] = max_seq_len
+        if max_seq_len is None:
+            role_params.pop("max_seq_len")
+        else:
+            role_params["max_seq_len"] = max_seq_len
         if not keep_buffer:
             role_params.pop("cache_transceiver_max_tokens_in_buffer")
         if block_size is None:
@@ -191,6 +196,42 @@ def test_public_trtllm_generation_warns_on_runtime_sized_transfer_buffer(
         assert len(messages) == 2
         for message, role in zip(messages, ("prefill", "decode"), strict=True):
             assert message.startswith(f"TRT-LLM {role} {expected}")
+
+
+@pytest.mark.parametrize(
+    ("max_seq_len", "override", "target", "expected"),
+    [
+        (10000, 8192, "dynamo-j2", None),
+        (10000, 8192, "dynamo-python", "max_seq_len 10000 is not a multiple of tokens_per_block 64"),
+        (8192, 10000, "dynamo-j2", "max_seq_len 10000 is not a multiple of tokens_per_block 64"),
+        (8192, 10000, "dynamo-python", None),
+    ],
+    ids=["yaml-aligned", "cli-unaligned", "yaml-unaligned", "cli-aligned"],
+)
+def test_trtllm_alignment_warning_checks_the_deployed_max_seq_len(caplog, max_seq_len, override, target, expected):
+    # dynamo-j2 deploys the engine YAML, where the appended override wins.
+    # dynamo-python translates that YAML into flags without max_seq_len and
+    # deploys the role's --max-seq-len.
+    params = _params(preserve=True)
+    params["SlaConfig"] = {}
+    for role in ("prefill", "decode"):
+        role_params = params["params"][role]
+        role_params["max_seq_len"] = max_seq_len
+        role_params.pop("cache_transceiver_max_tokens_in_buffer")
+        role_params["extra_engine_args"] = {"max_seq_len": override}
+
+    with caplog.at_level(logging.WARNING, logger="aisimulate.generator.rendering.engine"):
+        artifacts = generate_backend_artifacts(params, "trtllm", deployment_target=target)
+
+    if target == "dynamo-python":
+        assert shlex.split(artifacts["cli_args_decode"]).count("--max-seq-len") == 1
+        assert f"--max-seq-len {max_seq_len}" in artifacts["cli_args_decode"]
+    messages = [record.getMessage() for record in caplog.records if "tokens_per_block" in record.getMessage()]
+    if expected is None:
+        assert messages == []
+    else:
+        assert [message.split(" ", 2)[1] for message in messages] == ["prefill", "decode"]
+        assert all(expected in message for message in messages)
 
 
 @pytest.mark.parametrize("rule", [None, "benchmark"])

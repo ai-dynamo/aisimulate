@@ -172,9 +172,12 @@ worker can fail at startup when `max_seq_len` is not a multiple of the KV block
 size; for those runtimes, choose a `context_length` aligned to the runtime's
 effective block size. Artifact generation warns for each role whose buffer the
 runtime sizes when `max_seq_len` is not a multiple of the block size, or when
-alignment cannot be checked because the block size is unset. It checks the
-final engine configuration, including `extra_engine_args` overrides, for
-Sweeper candidates and direct generator calls alike. Earlier versions
+alignment cannot be checked because the block size or `max_seq_len` is unset
+(the runtime then takes the length from the model). It checks the deployed
+value for Sweeper candidates and direct generator calls alike: the final
+engine configuration, including `extra_engine_args` overrides, or for the
+`dynamo-python` target the `--max-seq-len` flag, because that target's
+translation of the engine configuration into flags omits `max_seq_len`. Earlier versions
 use a buffer sized by `TRTLLM_KVCACHE_TRANSFER_BUFFER_SIZE` (512 MB by
 default).
 
