@@ -154,6 +154,8 @@ mod tests {
             ),
             // FpmCacheGroup::validate rejects a convolution group without a window.
             GroupedKvPool::new(vec![group(FpmCacheKind::Convolution, 2, 2, None)], 0),
+            // No group exists to reject a shrinking target; only the guard in required_bytes does.
+            GroupedKvPool::new(vec![], 0),
         ];
         let mut spans: Vec<(usize, usize)> = (0..=12)
             .flat_map(|before| (0..=12).map(move |after| (before, after)))

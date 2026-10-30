@@ -1,7 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The decoder key that FPM config intake, the FPM collector and the FPM profile check share."""
+"""The decoder key that FPM config intake, the FPM collector and the FPM profile check share.
+
+The file also pins the nested-decoder rule: a decoder that holds a decoder key is ambiguous.
+"""
 
 from __future__ import annotations
 
@@ -122,3 +125,27 @@ def test_the_registry_maps_wrappers_only_to_keys_that_the_helper_orders():
 )
 def test_nested_decoder_ambiguity(key, decoder, ambiguity):
     assert nested_decoder_ambiguity(key, decoder) == ambiguity
+
+
+# decoder_config_key and nested_decoder_ambiguity each decide whether a value under llm_config or text_config holds a
+# decoder. The two tests below fail when those two rules drift apart.
+_KEY_VALUES = [
+    pytest.param(None, id="null"),
+    pytest.param({}, id="empty-object"),
+    pytest.param([], id="empty-list"),
+    pytest.param("decoder", id="string"),
+    pytest.param(0, id="number"),
+    pytest.param(_DECODER, id="decoder"),
+]
+
+
+@pytest.mark.parametrize("value", _KEY_VALUES)
+def test_both_helpers_hold_an_llm_config_by_one_rule(value):
+    picked = decoder_config_key({"llm_config": value}) == "llm_config"
+    assert (nested_decoder_ambiguity("text_config", {"llm_config": value}) is not None) == picked
+
+
+@pytest.mark.parametrize("value", _KEY_VALUES)
+def test_both_helpers_hold_a_text_config_by_one_rule(value):
+    picked = decoder_config_key({"text_config": value}) == "text_config"
+    assert (nested_decoder_ambiguity("llm_config", {"text_config": value}) is not None) == picked
