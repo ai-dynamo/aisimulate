@@ -53,7 +53,15 @@ scales full causal attention by `(full_length² - prefix_length²) / full_length
 Consequently, full-sequence anchors above the serving scheduler's new-token
 budget are needed to reduce extrapolation. This coverage is enabled by default
 for vLLM; it does not add an agentic mode, a prefix-length axis or cached-tail
-measurements. Other frameworks retain their existing sweep limits.
+measurements. Other frameworks retain their existing dense-context sweep limits.
+
+The SGLang attention-module collector also expands decode coverage by default:
+batch 52 and five longer history anchors through 720,896 tokens supplement the
+existing grid. Cases remain bounded by the model's position limit. The 0.5.20
+compatibility path uses native runtime and input-relay APIs and mirrors serving
+decode-graph eligibility, including batches between capture buckets. See the
+[SGLang collector guide](sglang/README.md) for runtime pins and the separate
+qualification limits for decode and prefill.
 
 Before collecting the data, make sure you own the whole node and no interfierence happens.
 Next, please enable persistent-mode and lock frequency of the node. Make sure the cooling system of the node is working well.

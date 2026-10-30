@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Select two module groups; the current grid expands to 250 pairs per shard.
+# Historical source 3d41164034624251209588ee0284694e86a13bd8 used 110.
+# Auto-collector campaign plan. Each job must also receive
+# AISIM_MODEL_FILTER=nvidia/GLM-5.2-NVFP4 and AISIM_SHARDS_PER_JOB=1.
+backend: sglang
+sm: 103
+shards:
+  - op: dsa_generation_module
+    name: glm52_agentx_tp8_fp8
+    case_filter: "[0, 0, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 'dsa', None, 8, 'trtllm']"
+  - op: dsa_generation_module_skip_indexer
+    name: glm52_agentx_tp8_fp8
+    case_filter: "[0, 0, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 'dsa', None, 8, 'trtllm']"
