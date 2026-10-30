@@ -31,6 +31,30 @@ and `triton` backends; an unknown backend raises instead of receiving a BF16 lab
 Legacy Blackwell rows labeled `bfloat16/fp8` need fresh measurements with the
 correct label; do not copy their timings into a second precision key.
 
+For vLLM dense attention, `AISIM_VLLM_ATTENTION_BLOCK_SIZE` selects the kernel
+page size (default `64`). For the Qwen3.5 BF16 TP8 hybrid-cache campaign, use
+`AISIM_VLLM_ATTENTION_BLOCK_SIZE=16`: vLLM splits its 528-token allocator
+blocks into supported 16-token kernel pages. The collector validates the page
+with the framework, uses its native cache-layout resolver and view builder on
+vLLM 0.31.0, and retains the legacy path on 0.24/0.25. Its dispatch log records
+the resolved backend, kernel source, page size, layout and cache shape.
+Page size is campaign provenance, not a table key; do not merge measurements
+from different page-size campaigns. Dense attention remains a CUDA-graph
+microbenchmark including KV writes, even though serving prefill attention may
+execute eagerly at a piecewise-graph boundary. One-token context cases follow
+the framework's decode path and retain their actual decode kernel label.
+
+The default vLLM context-attention sweep includes 24,576, 32,768 and 40,960
+token anchors and permits up to 655,360 batch-times-sequence tokens for
+grouped-query attention (previously 131,072). Agentic conversations accumulate
+history across turns: a small new chunk can attend to a much longer cached
+prefix. The existing timing table looks up the full sequence length, then
+scales full causal attention by `(full_length² - prefix_length²) / full_length²`.
+Consequently, full-sequence anchors above the serving scheduler's new-token
+budget are needed to reduce extrapolation. This coverage is enabled by default
+for vLLM; it does not add an agentic mode, a prefix-length axis or cached-tail
+measurements. Other frameworks retain their existing sweep limits.
+
 Before collecting the data, make sure you own the whole node and no interfierence happens.
 Next, please enable persistent-mode and lock frequency of the node. Make sure the cooling system of the node is working well.
 ```bash
