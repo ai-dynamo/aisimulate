@@ -77,13 +77,18 @@ estimation math. Concretely:
 
 ## Adding a new Operation
 
-A new `Operation` subclass must get a `_to_opspec` branch in
-`sdk/engine.py`, an `Op` variant in
+Extend the Rust operation family and its Python bindings so the Python
+shell inherits a Rust `Operation` subclass. It serializes through
+`_spec_json` / `ops_json_from_ops`. The existing whole-forward
+`FPMForwardOp` is converted by `sdk/engine.py::_as_engine_op`.
+
+Add the corresponding `Op` variant in
 `crates/core/src/perfmodel/operators/op.rs` (**append at the tail**
 — bincode variant indices are positional; mid-enum insertion requires an
-`ENGINE_SPEC_SCHEMA_VERSION` bump on BOTH sides), the `engine/spec.rs`
-round-trip fixture, and a pinned parity case
-(`crates/core/parity_tests/perfmodel/pin_goldens.py`).
+`ENGINE_SPEC_SCHEMA_VERSION` bump coordinated with serialized-spec
+consumers). Rust owns that version; Python reads it through the native
+binding. Keep the `engine/spec.rs` round-trip fixture and a pinned parity
+case (`crates/core/parity_tests/perfmodel/pin_goldens.py`).
 `python/aisimulate/tests/unit/sdk/test_opspec_coverage.py` fails until the op
 converts or carries a justified `EXEMPT` entry — an unconvertible op in a
 shipped model is a HARD ERROR at estimation time, not a silent fallback. If
