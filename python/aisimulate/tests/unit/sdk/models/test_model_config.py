@@ -2015,7 +2015,9 @@ class TestAttentionProjectionExclusions:
 
     @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
     @pytest.mark.parametrize("phase", ["context", "generation"])
-    @pytest.mark.parametrize("model_path", ["zai-org/GLM-5-FP8", "zai-org/GLM-5.2-FP8", "zai-org/GLM-5.3"])
+    @pytest.mark.parametrize(
+        "model_path", ["zai-org/GLM-5-FP8", "zai-org/GLM-5.1-FP8", "zai-org/GLM-5.2-FP8", "zai-org/GLM-5.3"]
+    )
     def test_native_glm_fp8_checkpoint_prices_block_fp8_projections(self, model_path, backend, phase):
         # quant_method fp8 with weight_block_size [128, 128]: without an
         # explicit override, every backend's DSA module key is fp8_block.
