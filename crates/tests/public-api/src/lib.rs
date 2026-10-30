@@ -257,7 +257,7 @@ mod tests {
         use aisimulate_core::engine::{IterationMs, RankWork};
         let ranks = [RankWork::idle(0), RankWork::idle(1)];
         let iteration: Option<IterationMs> = LatencyOnlyProvider
-            .predict_iteration_ms(&ranks, true)
+            .predict_iteration_ms(&ranks)
             .unwrap();
         assert_eq!(iteration, None);
     }

@@ -1121,53 +1121,32 @@ impl RankWork {
 pub struct IterationMs {
     /// Duration shared by every rank of the group.
     pub total_ms: f64,
-    /// The part of `total_ms` that is prefill, which the engine scales by the
-    /// prefill speedup instead of the decode speedup. Providers return it
-    /// when asked for a pass that computes both kinds of work.
-    pub prefill_ms: Option<f64>,
 }
 
-impl IterationMs {
-    /// Validate the provider's iteration and resolve its prefill share for
-    /// `ranks`: the whole iteration without decode work, none of it without
-    /// prefill work, and otherwise the provider's share, at most the total.
-    /// A pass with both kinds of work and no share has no split when
-    /// `prefill_share` was not requested, so it is all decode; when it was
-    /// requested, the share is required and its absence returns `None`.
-    pub(crate) fn resolve_share(
-        self,
-        ranks: &[RankWork],
-        prefill_share: bool,
-    ) -> Result<Option<Self>> {
-        ensure!(
-            self.total_ms.is_finite() && self.total_ms >= 0.0,
-            "iteration timing provider returned invalid duration {}ms",
-            self.total_ms
-        );
-        let prefills = ranks.iter().any(|rank| rank.prefill.is_some());
-        let decodes = ranks.iter().any(|rank| rank.decode.is_some());
-        let prefill_ms = if !decodes {
-            self.total_ms
-        } else if !prefills {
-            0.0
-        } else {
-            match self.prefill_ms {
-                Some(prefill_ms) => {
-                    ensure!(
-                        prefill_ms.is_finite() && prefill_ms >= 0.0,
-                        "iteration timing provider returned invalid prefill share {prefill_ms}ms"
-                    );
-                    prefill_ms.min(self.total_ms)
-                }
-                None if prefill_share => return Ok(None),
-                None => 0.0,
-            }
-        };
-        Ok(Some(Self {
-            total_ms: self.total_ms,
-            prefill_ms: Some(prefill_ms),
-        }))
+/// Price one attention-DP group pass with `timing`'s
+/// [`TimingModel::predict_iteration_ms`], validating its duration.
+///
+/// A group on which no rank computes model work is not sent to the provider
+/// and returns `None`: every rank then resolves with its own phase pricing,
+/// which charges an idle pass nothing. Effect-free passes, such as a vLLM
+/// same-timestamp retry or an SGLang prefill-decode interval round, keep
+/// taking no time whatever overhead the provider adds to an iteration.
+pub(crate) fn predict_group_iteration_ms(
+    timing: &dyn TimingModel,
+    ranks: &[RankWork],
+) -> Result<Option<IterationMs>> {
+    if ranks.iter().all(RankWork::is_idle) {
+        return Ok(None);
     }
+    let Some(iteration) = timing.predict_iteration_ms(ranks)? else {
+        return Ok(None);
+    };
+    ensure!(
+        iteration.total_ms.is_finite() && iteration.total_ms >= 0.0,
+        "iteration timing provider returned invalid duration {}ms",
+        iteration.total_ms
+    );
+    Ok(Some(iteration))
 }
 
 /// Runtime latency model injected at the engine boundary.
@@ -1243,16 +1222,13 @@ pub trait TimingModel: Send + Sync {
     /// Price one forward pass of an attention-DP group as a single iteration:
     /// `ranks` holds every rank's work in DP-rank order, idle ranks included,
     /// and every rank of the group ends at the returned shared duration.
-    /// `prefill_share` asks for [`IterationMs::prefill_ms`] when the pass
-    /// computes both prefill and decode work.
+    /// Replay asks only while `decode_speedup_ratio` is 1, so the whole
+    /// duration takes one speedup, and only when some rank computes model
+    /// work.
     ///
     /// The default `None` keeps the per-rank phase methods above: each rank
     /// prices its own work and the group ends with its slowest rank.
-    fn predict_iteration_ms(
-        &self,
-        _ranks: &[RankWork],
-        _prefill_share: bool,
-    ) -> Result<Option<IterationMs>> {
+    fn predict_iteration_ms(&self, _ranks: &[RankWork]) -> Result<Option<IterationMs>> {
         Ok(None)
     }
 
@@ -1574,82 +1550,97 @@ mod tests {
             },
         ] {
             let model = built_in_timing_model(&config).unwrap();
-            for prefill_share in [false, true] {
-                assert_eq!(
-                    model
-                        .predict_iteration_ms(&[prefill_rank(0), RankWork::idle(1)], prefill_share)
-                        .unwrap(),
-                    None
-                );
-            }
+            let ranks = [prefill_rank(0), RankWork::idle(1)];
+            assert_eq!(model.predict_iteration_ms(&ranks).unwrap(), None);
+            assert_eq!(
+                predict_group_iteration_ms(model.as_ref(), &ranks).unwrap(),
+                None
+            );
+        }
+    }
+
+    /// Prices an iteration at a fixed per-iteration overhead plus 1 ms per
+    /// prefill token and 3 ms per decode request on the busiest rank, or at
+    /// `total_ms` when set, and counts its invocations.
+    #[derive(Default)]
+    struct OverheadTiming {
+        total_ms: Option<f64>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl OverheadTiming {
+        const OVERHEAD_MS: f64 = 5.0;
+
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl TimingModel for OverheadTiming {
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> Result<f64> {
+            unreachable!("iteration pricing only")
+        }
+
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> Result<f64> {
+            unreachable!("iteration pricing only")
+        }
+
+        fn predict_iteration_ms(&self, ranks: &[RankWork]) -> Result<Option<IterationMs>> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let busiest = ranks
+                .iter()
+                .map(|rank| {
+                    rank.prefill
+                        .as_ref()
+                        .map_or(0.0, |prefill| prefill.totals.new_tokens as f64)
+                        + rank
+                            .decode
+                            .as_ref()
+                            .map_or(0.0, |decode| 3.0 * decode.batch_size as f64)
+                })
+                .fold(0.0, f64::max);
+            Ok(Some(IterationMs {
+                total_ms: self.total_ms.unwrap_or(Self::OVERHEAD_MS + busiest),
+            }))
         }
     }
 
     #[test]
-    fn iteration_prefill_share_resolves_by_the_work_kinds_of_the_group() {
-        let iteration = |total_ms, prefill_ms| IterationMs {
-            total_ms,
-            prefill_ms,
-        };
-        let resolved = |total_ms, prefill_ms| {
-            Some(IterationMs {
-                total_ms,
-                prefill_ms: Some(prefill_ms),
-            })
-        };
-        let prefill_only = [prefill_rank(0), RankWork::idle(1)];
-        let decode_only = [RankWork::idle(0), decode_rank(1)];
-        let mixed = [prefill_rank(0), decode_rank(1)];
-        for share in [false, true] {
-            // One kind of work is wholly that kind, whatever the provider says.
-            assert_eq!(
-                iteration(6.0, None)
-                    .resolve_share(&prefill_only, share)
-                    .unwrap(),
-                resolved(6.0, 6.0)
-            );
-            assert_eq!(
-                iteration(6.0, Some(2.0))
-                    .resolve_share(&decode_only, share)
-                    .unwrap(),
-                resolved(6.0, 0.0)
-            );
-            // Both kinds: the provider's share, at most the iteration.
-            assert_eq!(
-                iteration(6.0, Some(4.0))
-                    .resolve_share(&mixed, share)
-                    .unwrap(),
-                resolved(6.0, 4.0)
-            );
-            assert_eq!(
-                iteration(6.0, Some(7.0))
-                    .resolve_share(&mixed, share)
-                    .unwrap(),
-                resolved(6.0, 6.0)
-            );
-            assert_eq!(
-                iteration(0.0, None).resolve_share(&[], share).unwrap(),
-                resolved(0.0, 0.0)
-            );
-        }
-        // Without a split, equal speedups make the whole iteration decode;
-        // a requested but missing share keeps per-rank pricing.
+    fn an_all_idle_group_is_not_sent_to_the_iteration_provider() {
+        let timing = OverheadTiming::default();
+        // Hand oracle: 5 ms of overhead plus the 8-token prefill of rank 0,
+        // which outweighs rank 1's two 3 ms decode requests.
         assert_eq!(
-            iteration(6.0, None).resolve_share(&mixed, false).unwrap(),
-            resolved(6.0, 0.0)
+            predict_group_iteration_ms(&timing, &[prefill_rank(0), decode_rank(1)]).unwrap(),
+            Some(IterationMs { total_ms: 13.0 })
         );
-        assert_eq!(
-            iteration(6.0, None).resolve_share(&mixed, true).unwrap(),
-            None
-        );
-        for invalid in [
-            iteration(f64::NAN, None),
-            iteration(-1.0, None),
-            iteration(f64::INFINITY, None),
-            iteration(6.0, Some(f64::NAN)),
-            iteration(6.0, Some(-1.0)),
+        assert_eq!(timing.calls(), 1);
+        // A group without model work would cost the bare overhead; it keeps
+        // per-rank pricing, which charges idle ranks nothing.
+        for idle in [
+            vec![RankWork::idle(0)],
+            vec![RankWork::idle(0), RankWork::idle(1)],
         ] {
-            assert!(invalid.resolve_share(&mixed, true).is_err(), "{invalid:?}");
+            assert_eq!(predict_group_iteration_ms(&timing, &idle).unwrap(), None);
+        }
+        assert_eq!(timing.calls(), 1);
+    }
+
+    #[test]
+    fn group_iteration_rejects_an_invalid_provider_duration() {
+        let ranks = [prefill_rank(0), RankWork::idle(1)];
+        let priced = |total_ms| {
+            let timing = OverheadTiming {
+                total_ms: Some(total_ms),
+                ..OverheadTiming::default()
+            };
+            predict_group_iteration_ms(&timing, &ranks)
+        };
+        assert_eq!(priced(0.0).unwrap(), Some(IterationMs { total_ms: 0.0 }));
+        assert_eq!(priced(6.0).unwrap(), Some(IterationMs { total_ms: 6.0 }));
+        for invalid in [f64::NAN, -1.0, f64::INFINITY] {
+            assert!(priced(invalid).is_err(), "{invalid}");
         }
     }
 

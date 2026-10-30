@@ -2461,20 +2461,22 @@ fn chunked_recompute_of_a_preempted_request_completes_its_generated_final_block(
     );
 }
 
-/// Prices a group pass as one iteration from every rank's work: 1 ms per
-/// prefill token and 3 ms per decode request, on the busiest rank. Phase
-/// pricing, used only without an iteration price, is a fixed 10 ms prefill
-/// and 2 ms decode per rank.
+/// Prices a group pass as one iteration from every rank's work:
+/// `overhead_ms` plus 1 ms per prefill token and 3 ms per decode request, on
+/// the busiest rank. Phase pricing, used only without an iteration price, is a
+/// fixed 10 ms prefill and 2 ms decode per rank.
 #[derive(Default)]
 struct IterationTiming {
     /// Return no iteration price, keeping per-rank phase pricing.
     decline: bool,
-    iterations: Mutex<Vec<(Vec<RankWork>, bool)>>,
+    /// Fixed cost added to every priced iteration.
+    overhead_ms: f64,
+    iterations: Mutex<Vec<Vec<RankWork>>>,
     phase_calls: Mutex<usize>,
 }
 
 impl IterationTiming {
-    fn rank_ms(rank: &RankWork, prefill_only: bool) -> f64 {
+    fn rank_ms(rank: &RankWork) -> f64 {
         let prefill = rank
             .prefill
             .as_ref()
@@ -2482,7 +2484,6 @@ impl IterationTiming {
         let decode = rank
             .decode
             .as_ref()
-            .filter(|_| !prefill_only)
             .map_or(0.0, |decode| 3.0 * decode.batch_size as f64);
         prefill + decode
     }
@@ -2499,27 +2500,14 @@ impl TimingModel for IterationTiming {
         Ok(2.0)
     }
 
-    fn predict_iteration_ms(
-        &self,
-        ranks: &[RankWork],
-        prefill_share: bool,
-    ) -> Result<Option<IterationMs>> {
-        self.iterations
-            .lock()
-            .unwrap()
-            .push((ranks.to_vec(), prefill_share));
+    fn predict_iteration_ms(&self, ranks: &[RankWork]) -> Result<Option<IterationMs>> {
+        self.iterations.lock().unwrap().push(ranks.to_vec());
         if self.decline {
             return Ok(None);
         }
-        let busiest = |prefill_only| {
-            ranks
-                .iter()
-                .map(|rank| Self::rank_ms(rank, prefill_only))
-                .fold(0.0, f64::max)
-        };
+        let busiest = ranks.iter().map(Self::rank_ms).fold(0.0, f64::max);
         Ok(Some(IterationMs {
-            total_ms: busiest(false),
-            prefill_ms: prefill_share.then(|| busiest(true)),
+            total_ms: self.overhead_ms + busiest,
         }))
     }
 }
@@ -2606,15 +2594,14 @@ fn attention_dp_prices_each_group_pass_with_one_iteration_query(
     assert_eq!(*timing.phase_calls.lock().unwrap(), 0);
     let iterations = timing.iterations.lock().unwrap();
     assert_eq!(iterations.len(), 2, "one query per group pass");
-    for (ranks, prefill_share) in iterations.iter() {
-        assert!(!prefill_share, "equal speedups need no prefill share");
+    for ranks in iterations.iter() {
         assert_eq!(
             ranks.iter().map(|rank| rank.dp_rank).collect::<Vec<_>>(),
             [0, 1, 2]
         );
         assert_eq!(ranks[2], RankWork::idle(2));
     }
-    let prefill = &iterations[0].0;
+    let prefill = &iterations[0];
     let totals = |rank: &RankWork| {
         let prefill = rank.prefill.as_ref().unwrap();
         let mut requests = prefill.requests.clone();
@@ -2627,7 +2614,7 @@ fn attention_dp_prices_each_group_pass_with_one_iteration_query(
     };
     assert_eq!(totals(&prefill[0]), (1, 4, vec![(4, 0)]));
     assert_eq!(totals(&prefill[1]), (2, 16, vec![(8, 0), (8, 0)]));
-    let decode = iterations[1].0[1].decode.as_ref().unwrap();
+    let decode = iterations[1][1].decode.as_ref().unwrap();
     // Each 8-token prompt decodes its first output at length 9.
     assert_eq!(
         (
@@ -2666,27 +2653,109 @@ fn providers_without_iteration_pricing_keep_per_rank_phase_timing(
     assert_eq!(timing.iterations.lock().unwrap().len(), 2);
 }
 
-#[test]
-fn a_different_decode_speedup_scales_the_prefill_share_of_a_group_pass() {
-    let timing = Arc::new(IterationTiming::default());
-    let mut engine = iteration_engine(Backend::Vllm, 2, Arc::clone(&timing), |config| {
-        config.decode_speedup_ratio = 2.0;
-    });
-    // Rank 1 decodes two requests while rank 0 prefills four tokens.
-    submit_tokens(&mut engine, 1, 2, 4, 3);
-    submit_tokens(&mut engine, 1, 3, 4, 3);
-    let started = engine.execute_pass(0.0).unwrap().unwrap();
+/// Execute and complete one pass at `now_ms`, advancing it to the pass end:
+/// the pass's duration and each executed rank's own duration.
+fn step_pass(engine: &mut Engine, now_ms: &mut f64) -> Option<(f64, Vec<f64>)> {
+    let started = engine.execute_pass(*now_ms).unwrap()?;
+    let ranks = started
+        .by_rank
+        .iter()
+        .map(|rank| rank.rank_end_ms - *now_ms)
+        .collect();
     engine
         .complete_pass(started.pass_id, started.end_ms)
         .unwrap();
-    submit_tokens(&mut engine, 0, 1, 4, 1);
-    let started = engine.execute_pass(started.end_ms).unwrap().unwrap();
-    let (ranks, prefill_share) = timing.iterations.lock().unwrap()[1].clone();
-    assert!(prefill_share);
-    assert!(ranks[0].prefill.is_some() && ranks[1].decode.is_some());
-    // Hand oracle: a 6 ms iteration with a 4 ms prefill share runs the
-    // remaining 2 ms of decode at twice the speed.
-    assert_eq!(started.end_ms - started.started_at_ms, 4.0 + 2.0 / 2.0);
+    let duration = started.end_ms - *now_ms;
+    *now_ms = started.end_ms;
+    Some((duration, ranks))
+}
+
+#[rstest::rstest]
+fn a_decode_speedup_other_than_one_keeps_per_rank_phase_timing(
+    #[values(Backend::Vllm, Backend::Sglang)] backend: Backend,
+) {
+    let run = |decline| {
+        let timing = Arc::new(IterationTiming {
+            decline,
+            ..IterationTiming::default()
+        });
+        let mut engine = iteration_engine(backend, 2, Arc::clone(&timing), |config| {
+            config.decode_speedup_ratio = 2.0;
+        });
+        // Rank 1 prefills two requests, then decodes them while rank 0
+        // prefills a third: an imbalanced pass with both kinds of work.
+        submit_tokens(&mut engine, 1, 2, 4, 3);
+        submit_tokens(&mut engine, 1, 3, 4, 3);
+        let mut now_ms = 0.0;
+        let mut passes = vec![step_pass(&mut engine, &mut now_ms).unwrap()];
+        submit_tokens(&mut engine, 0, 1, 4, 1);
+        while let Some(pass) = step_pass(&mut engine, &mut now_ms) {
+            passes.push(pass);
+        }
+        (passes, timing)
+    };
+    let (passes, timing) = run(false);
+    // The provider is never asked for an iteration: each rank prices its own
+    // phases, and the pass ends with the slowest rank.
+    assert!(timing.iterations.lock().unwrap().is_empty());
+    // Hand oracle: rank 1's 10 ms prefill; then rank 0's 10 ms prefill beside
+    // rank 1's 2 ms decode at twice the decode speed; then rank 1's last
+    // decode, 1 ms.
+    assert_eq!(
+        passes,
+        [
+            (10.0, vec![10.0]),
+            (10.0, vec![10.0, 1.0]),
+            (1.0, vec![1.0])
+        ]
+    );
+    // Bit for bit the timing of a provider without iteration pricing.
+    let (declined, declining) = run(true);
+    assert_eq!(passes, declined);
+    assert!(declining.iterations.lock().unwrap().is_empty());
+    assert_eq!(
+        *timing.phase_calls.lock().unwrap(),
+        *declining.phase_calls.lock().unwrap()
+    );
+}
+
+#[test]
+fn sglang_interval_rounds_take_no_time_under_an_iteration_overhead() {
+    let timing = Arc::new(IterationTiming {
+        overhead_ms: 5.0,
+        ..IterationTiming::default()
+    });
+    let mut config = sglang_interval_config(2);
+    config.sglang.chunked_prefill_size *= 2;
+    let mut engine = EngineFactory::with_timing_model(config, timing.clone())
+        .unwrap()
+        .build(EngineIdentity::new(0), NonZeroU32::new(2).unwrap())
+        .unwrap();
+    let mut now_ms = 0.0;
+    submit_interval_request(&mut engine, 0, 1, 12, 1, now_ms);
+
+    let mut priced = 0;
+    for chunk in 0..3 {
+        let round = step_interval_engine(&mut engine, &mut now_ms);
+        assert_interval_work(&round, 0, 1, 0);
+        // Hand oracle: the 5 ms overhead plus the 4-token chunk.
+        assert_eq!(round.duration_ms, 9.0);
+        priced += 1;
+        if chunk == 2 {
+            break;
+        }
+        for remaining in [1, 0] {
+            // The deferred rounds compute nothing on either rank; they reach
+            // no provider and take no time, so the countdown converges.
+            let blocked = step_interval_engine(&mut engine, &mut now_ms);
+            assert_interval_work(&blocked, 0, 0, 0);
+            assert_eq!(blocked.duration_ms, 0.0);
+            assert_eq!(blocked.retry, SameTimestampRetry::Countdown { remaining });
+        }
+    }
+    assert_eq!(now_ms, 27.0);
+    assert_eq!(timing.iterations.lock().unwrap().len(), priced);
+    assert_eq!(*timing.phase_calls.lock().unwrap(), 0);
 }
 
 #[test]

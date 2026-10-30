@@ -130,6 +130,7 @@ pub(crate) use vllm::VllmCore;
 /// A pass's forward time: its prefill, then the decode work it adds.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ForwardTime {
+    /// The prefill, or the whole forward of a group iteration.
     pub(crate) prefill: Duration,
     pub(crate) decode: Duration,
 }
@@ -140,23 +141,23 @@ impl ForwardTime {
         start_ms + self.prefill.as_secs_f64() * 1000.0 + self.decode.as_secs_f64() * 1000.0
     }
 
-    /// The shared duration of a group iteration whose prefill share has been
-    /// resolved: `speedup_ratio` applies to that share and
-    /// `speedup_ratio * decode_speedup_ratio` to the rest, as for a pass
-    /// priced by its own phases.
+    /// The shared forward time of a group iteration under `speedup_ratio`.
+    /// A group is priced as one iteration only while `decode_speedup_ratio`
+    /// is 1, so prefill and decode work take the same speedup and the
+    /// iteration needs no split.
     pub(crate) fn from_iteration(
         iteration: &IterationMs,
         speedup_ratio: f64,
         decode_speedup_ratio: f64,
     ) -> anyhow::Result<Self> {
-        let prefill_ms = iteration
-            .prefill_ms
-            .ok_or_else(|| anyhow::anyhow!("a group iteration must resolve its prefill share"))?;
-        // Exact zeros when the iteration is all prefill or all decode.
-        let decode_ms = (iteration.total_ms - prefill_ms).max(0.0);
+        anyhow::ensure!(
+            decode_speedup_ratio == 1.0,
+            "a group iteration takes one speedup; decode_speedup_ratio {decode_speedup_ratio} \
+             requires per-rank phase pricing"
+        );
         Ok(Self {
-            prefill: modeled_duration(prefill_ms, speedup_ratio)?,
-            decode: modeled_duration(decode_ms, speedup_ratio * decode_speedup_ratio)?,
+            prefill: modeled_duration(iteration.total_ms, speedup_ratio)?,
+            decode: Duration::ZERO,
         })
     }
 }

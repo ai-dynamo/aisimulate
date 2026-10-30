@@ -1079,10 +1079,7 @@ impl RankEngine for GroupRank {
         if self.fail_pricing {
             bail!("injected pricing failure");
         }
-        Ok(self.group_ms.map(|total_ms| IterationMs {
-            total_ms,
-            prefill_ms: Some(0.0),
-        }))
+        Ok(self.group_ms.map(|total_ms| IterationMs { total_ms }))
     }
 
     fn resolve_pass(

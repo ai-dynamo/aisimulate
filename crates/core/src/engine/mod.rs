@@ -64,6 +64,6 @@ pub(crate) use timing::{TimingEvidenceAccumulator, ValidatedTimingPhase, mean_pr
 
 #[doc(hidden)]
 pub use protocol::PendingPass;
-pub(in crate::engine) use timing::modeled_duration_ms;
+pub(in crate::engine) use timing::{modeled_duration_ms, predict_group_iteration_ms};
 #[doc(hidden)]
 pub use trace::g1_parent_chain_events;

@@ -22,7 +22,7 @@ use crate::engine::{
     Admission, Backend, Command, CommandEffects, CommandResult, EngineConfig, ForwardPassMetrics,
     HandoffId, HostOffloadObserver, IterationMs, KvHintSource, LifecycleEvent, Metrics, Output,
     PassCompletionEffects, PassStartEffects, PendingPass, PreemptionMode, RankWork, Request,
-    TimingModel, TransferTimingMode, WorkerType,
+    TimingModel, TransferTimingMode, WorkerType, predict_group_iteration_ms,
 };
 
 use super::{
@@ -47,9 +47,10 @@ pub struct SchedulerRank {
     /// The timing provider every rank of the logical engine shares.
     timing: Arc<dyn TimingModel>,
     dp_rank: u32,
-    /// Whether a mixed group iteration needs its prefill share, because the
-    /// decode speedup differs from the prefill speedup.
-    prefill_share: bool,
+    /// Whether a group pass may be priced as one iteration: only while the
+    /// decode speedup is 1, so the shared duration takes one speedup. With
+    /// another decode speedup, every rank keeps its own phase pricing.
+    group_pricing: bool,
     /// When the scheduled pass started, until it is resolved.
     scheduled_at_ms: Option<f64>,
 }
@@ -137,7 +138,7 @@ impl SchedulerRank {
             handoff_requests: HashMap::new(),
             timing,
             dp_rank: identity.dp_rank,
-            prefill_share: config.decode_speedup_ratio != 1.0,
+            group_pricing: config.decode_speedup_ratio == 1.0,
             scheduled_at_ms: None,
         })
     }
@@ -309,16 +310,14 @@ impl RankEngine for SchedulerRank {
     }
 
     /// One timing query for the whole group. Providers without iteration
-    /// pricing return `None`, so every rank prices its own phases.
+    /// pricing return `None`, so every rank prices its own phases, as it also
+    /// does under a decode speedup other than 1 and in an all-idle group.
     fn price_group_pass(&self, ranks: &[RankWork]) -> Result<Option<IterationMs>> {
-        let Some(iteration) = self
-            .timing
-            .predict_iteration_ms(ranks, self.prefill_share)
-            .context("external iteration prediction failed")?
-        else {
+        if !self.group_pricing {
             return Ok(None);
-        };
-        iteration.resolve_share(ranks, self.prefill_share)
+        }
+        predict_group_iteration_ms(self.timing.as_ref(), ranks)
+            .context("external iteration prediction failed")
     }
 
     fn resolve_pass(

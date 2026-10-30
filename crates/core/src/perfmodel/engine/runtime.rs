@@ -511,7 +511,7 @@ impl PerOpSolFold {
 
 /// Which of the three mixed-step passes produced a sinked per-op value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MixedPass {
+pub(crate) enum MixedPass {
     SharedNonAttention,
     ContextAttention,
     DecodeAttention,
@@ -1072,6 +1072,41 @@ impl Engine {
                 mixed: self.mixed_ops_supported,
             },
         }
+    }
+
+    /// The mix-step pass of every operation name a mixed operation-graph
+    /// rank of [`Self::forward_pass_estimate`] reports, as
+    /// [`get_mix_step_ops`] composes it: context attention runs in the
+    /// context-attention pass, generation attention in the decode-attention
+    /// pass and every other context operation in the shared non-attention
+    /// pass. `None` when name folding merges operations of different passes,
+    /// as for GLM-5.3 attention named alike in both phases, or when a mixed
+    /// rank is not a mix step: whole-model FPM, DSv4.1 stages, or measured
+    /// scopes without a mix-step composition.
+    pub(crate) fn mix_step_passes(&self) -> Option<HashMap<String, MixedPass>> {
+        if self.fpm_split().is_some() || self.has_dsv41_stages() || !self.mixed_ops_supported {
+            return None;
+        }
+        let context = self.context_ops.iter().map(|op| {
+            let pass = if op.is_context_attention() {
+                MixedPass::ContextAttention
+            } else {
+                MixedPass::SharedNonAttention
+            };
+            (op, pass)
+        });
+        let decode = self
+            .generation_ops
+            .iter()
+            .filter(|op| op.is_generation_attention())
+            .map(|op| (op, MixedPass::DecodeAttention));
+        let mut passes = HashMap::new();
+        for (op, pass) in context.chain(decode) {
+            if *passes.entry(op.name().to_owned()).or_insert(pass) != pass {
+                return None;
+            }
+        }
+        Some(passes)
     }
 
     /// Whether this engine supplies an unscaled STP whole-forward reference.
@@ -3987,6 +4022,31 @@ pub(crate) mod tests {
         config.database_mode = DatabaseMode::Hybrid;
         let spec = EngineSpec::new(config, glm_layer_ops(true), glm_layer_ops(false));
         Engine::build(spec, Arc::new(db)).unwrap()
+    }
+
+    #[test]
+    fn mix_step_passes_name_each_folded_operation_or_decline_merged_names() {
+        // The fixture's mix step: every context operation but context
+        // attention is shared, and generation attention is decode.
+        let passes = build_engine(None).mix_step_passes().unwrap();
+        let mut expected = context_ops()
+            .iter()
+            .map(|op| {
+                let pass = if op.name() == "context_attention" {
+                    MixedPass::ContextAttention
+                } else {
+                    MixedPass::SharedNonAttention
+                };
+                (op.name().to_owned(), pass)
+            })
+            .collect::<HashMap<_, _>>();
+        expected.insert("generation_attention".into(), MixedPass::DecodeAttention);
+        assert!(expected.len() > 2);
+        assert_eq!(passes, expected);
+        // GLM-5.3 runs `attention_{layer}` in both attention passes, which
+        // name folding merges; DSv4.1 stages compose their own mixed work.
+        assert!(glm_layer_engine().mix_step_passes().is_none());
+        assert!(dsv41_probe_engine(false).mix_step_passes().is_none());
     }
 
     fn per_op_bits(entries: &[PerOpValueWithMetadata]) -> Vec<(String, u64, u64, &'static str)> {
