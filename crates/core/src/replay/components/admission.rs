@@ -609,10 +609,10 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             }
         }
         driver.finish_agentic_preparation_with_observer(now_ms, reset_measurements, |driver| {
-            if let Some(sink) = telemetry {
-                if let Some(transcript) = driver.agentic_lifecycle_transcript() {
-                    sink.record_preparation_lifecycle(transcript);
-                }
+            if let Some(sink) = telemetry
+                && let Some(transcript) = driver.agentic_lifecycle_transcript()
+            {
+                sink.record_preparation_lifecycle(transcript);
             }
         })
     }

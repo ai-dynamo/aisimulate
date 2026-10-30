@@ -2418,43 +2418,7 @@ impl TraceCollector {
             .and_then(|phases| phases.profile_start_ms)
         {
             for record in &mut records {
-                record.arrival_time_ms -= origin;
-                record.terminal_time_ms -= origin;
-                for timestamp in [
-                    &mut record.dispatched_at_ms,
-                    &mut record.tokenized_ms,
-                    &mut record.first_admit_ms,
-                    &mut record.first_token_ms,
-                    &mut record.last_token_ms,
-                    &mut record.prefill_admit_ms,
-                    &mut record.source_held_ms,
-                    &mut record.destination_reserved_ms,
-                    &mut record.destination_activated_ms,
-                    &mut record.decode_admit_ms,
-                    &mut record.source_released_ms,
-                    &mut record.encoder_ready_ms,
-                    &mut record.frontend_ready_ms,
-                    &mut record.scheduler_received_ms,
-                    &mut record.selected_ms,
-                    &mut record.prefill_complete_ms,
-                ] {
-                    if let Some(time) = timestamp {
-                        *time -= origin;
-                    }
-                }
-                for routing in &mut record.routing_history {
-                    for timestamp in [
-                        &mut routing.queue_entered_at_ms,
-                        &mut routing.released_at_ms,
-                    ] {
-                        if let Some(time) = timestamp {
-                            *time -= origin;
-                        }
-                    }
-                }
-                for admission in &mut record.admission_history {
-                    admission.at_ms -= origin;
-                }
+                record.shift_timestamps(-origin);
             }
         }
         // Authored IDs make agentic output stable across equivalent import
