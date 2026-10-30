@@ -363,8 +363,9 @@ fn check_identity(
             if !packed {
                 identity.systems_paths = base.systems_paths.clone();
             }
-            if manifest.native.is_some() && !packed {
-                if let (Some(saved), Some(supplied)) = (
+            if manifest.native.is_some()
+                && !packed
+                && let (Some(saved), Some(supplied)) = (
                     identity
                         .estimator_config
                         .fpm_interpolation
@@ -374,9 +375,9 @@ fn check_identity(
                         .fpm_interpolation
                         .fpm_parquet_path
                         .as_ref(),
-                ) {
-                    *saved = supplied.clone();
-                }
+                )
+            {
+                *saved = supplied.clone();
             }
             identity
         }
@@ -397,13 +398,14 @@ fn check_identity(
     if expected != base {
         return Err(identity_mismatch(&expected, &base));
     }
-    if manifest.native.is_some() && !packed {
-        if let Some(missing) = base.systems_paths.iter().find(|root| !root.is_dir()) {
-            return Err(invalid(format!(
-                "systems_paths entry {} is not a directory; a snapshot saved without include_perf_db reads its performance data from systems_paths",
-                missing.display()
-            )));
-        }
+    if manifest.native.is_some()
+        && !packed
+        && let Some(missing) = base.systems_paths.iter().find(|root| !root.is_dir())
+    {
+        return Err(invalid(format!(
+            "systems_paths entry {} is not a directory; a snapshot saved without include_perf_db reads its performance data from systems_paths",
+            missing.display()
+        )));
     }
     Ok(())
 }

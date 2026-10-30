@@ -412,6 +412,35 @@ def test_exported_predictions_restore_pinned_controls_and_a_moved_packed_snapsho
     assert _replay(moved).metrics["mean_ttft_ms"] == candidate.metrics["mean_ttft_ms"]
 
 
+def test_exported_predictions_keep_the_snapshots_saved_spellings(snapshots):
+    result = _throughput_run(_request(snapshots["spelled"]))
+    [candidate] = result.selected_candidates
+    assert _replay(candidate.prediction_config).metrics["mean_ttft_ms"] == candidate.metrics["mean_ttft_ms"]
+
+
+def test_exported_disaggregated_predictions_follow_a_moved_packed_snapshot(snapshots, tmp_path):
+    shutil.copytree(snapshots["decode"], tmp_path / "decode")
+    raw = _request(tmp_path / "decode", mode="disaggregated", role="decode")
+    for worker in raw["engine"]["workers"].values():
+        worker["parallelism"] = {"preset": False, "replicas": 1}
+    result = run_recommendation(
+        CoreRecommendationConfig.model_validate(raw),
+        stack="engine",
+        runner_factory=EngineReplayRunnerFactory(),
+        show_progress=False,
+    )
+    [candidate] = result.selected_candidates
+    timing = candidate.prediction_config["engine"]["workers"]["decode"]["timing"]
+    # The packed root belongs to the snapshot, so the prediction names only the snapshot.
+    assert "systems_paths" not in timing
+    shutil.move(tmp_path / "decode", tmp_path / "moved")
+    moved = deepcopy(candidate.prediction_config)
+    moved["engine"]["workers"]["decode"]["timing"]["estimator_config"]["state_snapshot"]["path"] = str(
+        tmp_path / "moved"
+    )
+    assert _replay(moved).metrics["mean_ttft_ms"] == candidate.metrics["mean_ttft_ms"]
+
+
 def test_capacity_lowering_checks_a_snapshot_configuration_without_restoring_it(snapshots):
     from aisimulate.capacity import materialize_aic_num_gpu_blocks
     from aisimulate_core.sdk.rust_engine_step import _snapshot_config

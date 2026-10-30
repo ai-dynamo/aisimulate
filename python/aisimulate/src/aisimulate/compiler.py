@@ -832,7 +832,7 @@ def _worker_engine_args(
         from aisimulate_core.sdk import ForwardPassPerfModelConfig
 
         from .sweeper.forward_pass_estimator import resolve_systems_paths
-        from .sweeper.state_snapshot import snapshot_pinned_controls
+        from .sweeper.state_snapshot import saved_snapshot_config, snapshot_pinned_controls, spell_as_saved
 
         timing = worker.timing
         sharded_moe = parallel.moe_tensor * parallel.moe_expert > 1
@@ -840,7 +840,8 @@ def _worker_engine_args(
         # A role timed by a state snapshot reads controls the sweeper never
         # searches from the snapshot unless the engine states them, and its
         # packed data from the snapshot wherever the configuration places it.
-        snapshot = snapshot_pinned_controls(estimator_config)
+        saved = saved_snapshot_config(estimator_config)
+        snapshot = snapshot_pinned_controls(saved)
         canonical = ForwardPassPerfModelConfig(
             model=engine.model,
             fpm_profile=engine.fpm_profile.model_dump(mode="json") if engine.fpm_profile is not None else None,
@@ -882,6 +883,10 @@ def _worker_engine_args(
             encoder_parallel=vision.encoder_parallel if vision is not None else None,
         )
         timing_config = omit_inactive_moe_controls(canonical.to_dict())
+        if saved:
+            # Restoration compares the saved identity exactly, including how
+            # it spells unset context parallelism, MoE and model controls.
+            timing_config.update(spell_as_saved(saved, timing_config))
         if timing.fpm_parquet_path is not None:
             interpolation = timing_config["estimator_config"].setdefault("fpm_interpolation", {})
             if interpolation.get("fpm_parquet_path", timing.fpm_parquet_path) != timing.fpm_parquet_path:

@@ -87,49 +87,78 @@ class SnapshotRole:
         return f"the {self.role} role's state snapshot {self.path}"
 
     def saved_spellings(self, request: dict[str, Any]) -> dict[str, Any]:
-        """Spell request fields the sweeper leaves at their defaults as the snapshot saved them.
-
-        A role pinned to its snapshot asks for the saved engine, but the
-        sweeper writes an unset context-parallel degree, an unsharded MoE and
-        inactive model controls one way and a saved configuration may write
-        them another (``1``, ``1``/``1`` or ``"default"``). Equivalent values
-        take the saved spelling; any other difference stays for restoration
-        to reject.
-        """
-
-        identity, result = self.identity, {}
-        for name in ("dcp", "cp_size"):
-            if (request.get(name) or 1) == (identity.get(name) or 1):
-                result[name] = identity.get(name)
-        saved_moe = (identity.get("moe_tp_size") or 1, identity.get("moe_ep_size") or 1)
-        if (request.get("moe_tp_size") or 1, request.get("moe_ep_size") or 1) == saved_moe:
-            result["moe_tp_size"], result["moe_ep_size"] = identity.get("moe_tp_size"), identity.get("moe_ep_size")
-        for name in ENGINE_MODEL_CONTROL_FIELDS:
-            saved = identity.get(name)
-            if not is_active_engine_model_control(name, request.get(name)) and not is_active_engine_model_control(
-                name, saved
-            ):
-                result[name] = saved
-        return result
+        return spell_as_saved(self.identity, request)
 
 
-def snapshot_pinned_controls(estimator_config: Any) -> dict[str, Any]:
-    """Controls a saved snapshot pins that no search or prediction field sets; empty without a snapshot.
+def spell_as_saved(saved: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+    """Spell request fields left at their defaults as the snapshot's saved configuration does.
 
-    The configuration that restores a snapshot must repeat these, so callers
-    that construct it from public fields take them from the snapshot.
+    A role pinned to its snapshot asks for the saved engine, but the sweeper
+    and the prediction compiler write an unset context-parallel degree, an
+    unsharded MoE and inactive model controls one way and a saved
+    configuration may write them another (``1``, ``1``/``1`` or
+    ``"default"``). Equivalent values take the saved spelling; any other
+    difference stays for restoration to reject.
     """
+
+    result = {}
+    for name in ("dcp", "cp_size"):
+        if (request.get(name) or 1) == (saved.get(name) or 1):
+            result[name] = saved.get(name)
+    saved_moe = (saved.get("moe_tp_size") or 1, saved.get("moe_ep_size") or 1)
+    if (request.get("moe_tp_size") or 1, request.get("moe_ep_size") or 1) == saved_moe:
+        result["moe_tp_size"], result["moe_ep_size"] = saved.get("moe_tp_size"), saved.get("moe_ep_size")
+    for name in ENGINE_MODEL_CONTROL_FIELDS:
+        value = saved.get(name)
+        if not is_active_engine_model_control(name, request.get(name)) and not is_active_engine_model_control(
+            name, value
+        ):
+            result[name] = value
+    return result
+
+
+def saved_snapshot_config(estimator_config: Any) -> dict[str, Any]:
+    """The configuration a referenced state snapshot was saved with; empty without a snapshot."""
 
     from aisimulate_core.sdk.rust_engine_step import _snapshot_config
 
     reference = state_snapshot_reference({"estimator_config": estimator_config})
     if not isinstance(reference, dict) or not isinstance(reference.get("path"), str):
         return {}
-    config = _snapshot_config(reference["path"])
+    return _snapshot_config(reference["path"])
+
+
+def snapshot_pinned_controls(saved: dict[str, Any]) -> dict[str, Any]:
+    """Controls a saved snapshot pins that no search or prediction field sets; empty without a snapshot.
+
+    The configuration that restores a snapshot must repeat these, so callers
+    that construct it from public fields take them from the snapshot.
+    """
+
+    if not saved:
+        return {}
     return {
-        name: config.get(name)
+        name: saved.get(name)
         for name in ("decoder_replay", "enable_shared_layer", "strict_provenance", "fpm_fmha_quant_mode")
     }
+
+
+def packed_systems_root(estimator_config: Any) -> str | None:
+    """The systems root a referenced snapshot carries itself; ``None`` without one.
+
+    It moves with the snapshot and restoration reads it from there, so a
+    saved configuration names the snapshot instead of this root.
+    """
+
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    reference = state_snapshot_reference({"estimator_config": estimator_config})
+    if not isinstance(reference, dict) or not isinstance(reference.get("path"), str):
+        return None
+    path = os.path.abspath(os.path.expanduser(reference["path"]))
+    root = os.path.join(path, "perf_db", "systems")
+    identity = RustForwardPassPerfModel.inspect_state_snapshot(path)["identity"]
+    return root if identity.get("systems_paths") == [root] else None
 
 
 def load_snapshot_role(role: str, reference: Any) -> SnapshotRole:

@@ -30,7 +30,7 @@ from .sweeper.config import SmartSearchConfig
 from .sweeper.provider import InfeasibleCandidate, SweepContext
 from .sweeper.replay import ReplayOutputRequirements, ReplaySpec, RunnerFactory
 from .sweeper.result import SweepResult
-from .sweeper.state_snapshot import state_snapshot_reference
+from .sweeper.state_snapshot import packed_systems_root, state_snapshot_reference
 
 
 def run_recommendation(
@@ -1057,7 +1057,10 @@ def _candidate_prediction(
                 "estimator_config": deepcopy(resolved["estimator_config"]),
             }
             # Per-role roots can differ; preserve them next to the role's timing.
-            timing["systems_paths"] = list(resolved["systems_paths"])
+            # A packed snapshot's own root moves with the snapshot, which the
+            # timing already names.
+            if packed_systems_root(resolved["estimator_config"]) is None:
+                timing["systems_paths"] = list(resolved["systems_paths"])
             timing["database_mode"] = resolved["database_mode"]
             policy = resolved["transfer_policy"]
             timing["transfer_policy"] = list(policy) if policy is not None else None

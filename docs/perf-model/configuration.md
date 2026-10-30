@@ -654,8 +654,9 @@ from an unstamped local `0.13.0` build, and relocates it by recovering the save
 location from the owned inputs' fixed relative paths. Newer schema versions
 are rejected with the versions this build reads.
 
-Snapshot
-I/O failures raise an `OSError` subclass (for example `FileNotFoundError` for
+#### Errors, replay and inspection
+
+Snapshot I/O failures raise an `OSError` subclass (for example `FileNotFoundError` for
 a missing snapshot or a missing learned artifact or checkpoint inside it)
 through both `state_snapshot=` and a configuration, never the skippable
 `PerfDataNotAvailableError`. A manifest from another release
