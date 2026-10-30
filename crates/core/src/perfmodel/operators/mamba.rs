@@ -29,12 +29,13 @@ pub struct Mamba2Op {
     pub chunk_size: u32,
     #[serde(default = "default_mamba_state_dtype")]
     pub state_dtype: String,
+    #[serde(default = "default_token_width")]
+    pub token_width: u32,
+    // Appended after the schema-30 (#619) tail so that layout stays a prefix.
     #[serde(default)]
     pub stochastic_rounding: bool,
     #[serde(default = "default_philox_rounds")]
     pub philox_rounds: u32,
-    #[serde(default = "default_token_width")]
-    pub token_width: u32,
 }
 
 fn default_mamba_state_dtype() -> String {

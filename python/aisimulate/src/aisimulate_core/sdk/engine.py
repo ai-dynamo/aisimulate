@@ -511,7 +511,7 @@ def compile_engine(
     identity; profiles support CP1/PP1, with explicitly identified speculative
     rounds confined to direct interpolation.
 
-    Engine schema 30 adds Mamba execution identity to operations and configuration.
+    Engine schema 31 adds Mamba execution identity to operations and configuration.
     Older binary specs require recompilation. Defaults cover JSON only.
     """
     if not isinstance(decoder_replay, bool):

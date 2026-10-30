@@ -34,6 +34,7 @@ use crate::session::{
     ContextOpFilter, OpListPlan, QueryMemo, get_mix_step_ops, query_context_op,
     query_generation_op, run_context_ops, run_context_ops_planned, run_context_ops_with,
     run_generation_ops_step, run_generation_ops_step_beamed_with, run_generation_ops_step_planned,
+    run_telemetry_decode_ops,
 };
 use crate::{ForwardPassMetrics, ForwardPassWorkerType, validate_forward_pass_metrics};
 
@@ -1712,12 +1713,14 @@ impl Engine {
         for op in &self.context_ops {
             if op.is_qualified_mamba() {
                 // Each prefill chunk reads and writes its recurrent state once.
-                let per_request = isl.saturating_sub(prefix).max(1);
-                let new_tokens = ctx_tokens - prefix1;
-                // shortcut: sum uniform timing rows until variable-length batches are calibrated.
+                // Decode Mamba is priced in pass 3 at its own request shape.
+                // `ctx_tokens` packs `floor(ctx/isl)` complete requests (each
+                // `isl - prefix` new tokens) plus one trailing partial extend.
+                // shortcut: sum uniform timing rows until variable-length batches are
+                // calibrated; this can overcount launch overhead for ragged batches.
                 for (batch, tokens) in [
-                    (new_tokens / per_request, per_request),
-                    (1, new_tokens % per_request),
+                    (ctx_tokens / isl, isl.saturating_sub(prefix)),
+                    (1, ctx_tokens % isl),
                 ] {
                     if batch == 0 || tokens == 0 {
                         continue;
@@ -3109,11 +3112,11 @@ impl Engine {
                 ctx_tokens,
                 gen_tokens,
                 new_tokens_per_req.max(1),
-                n_prefill,
                 prefix_per_req,
                 sched.sum_prefill_kv_tokens,
                 kv_per_req,
                 n_decode,
+                n_prefill,
             );
         }
 
@@ -3137,14 +3140,8 @@ impl Engine {
         if has_decode {
             let n_decode = sched.num_decode_requests.max(1);
             let kv_per_req = sched.sum_decode_kv_tokens / n_decode;
-            total += run_generation_ops_step(
-                &self.generation_ops,
-                &self.db,
-                n_decode,
-                kv_per_req,
-                1.0,
-                false,
-            )?;
+            total +=
+                run_telemetry_decode_ops(&self.generation_ops, &self.db, n_decode, kv_per_req)?;
         }
 
         Ok(total)
@@ -3471,84 +3468,76 @@ pub(crate) mod tests {
         Engine::build(spec, Arc::new(db)).unwrap()
     }
 
+    /// FP16 Mamba2 op with a 1 MiB state; decode verifies four tokens (MTP3).
+    fn qualified_mamba(prefill: bool, token_width: u32) -> Op {
+        Op::Mamba2(crate::operators::Mamba2Op {
+            name: if prefill {
+                "context_ssm"
+            } else {
+                "generation_ssm"
+            }
+            .into(),
+            scale_factor: 1.0,
+            kernel_source: if prefill {
+                "vllm_mamba_chunk_scan_combined_varlen"
+            } else {
+                "vllm_flashinfer_selective_state_update"
+            }
+            .into(),
+            phase: if prefill { "context" } else { "generation" }.into(),
+            d_model: 4096,
+            d_state: 128,
+            d_conv: 4,
+            nheads: 64,
+            head_dim: 64,
+            n_groups: 4,
+            chunk_size: 128,
+            state_dtype: "float16".into(),
+            token_width,
+            stochastic_rounding: true,
+            philox_rounds: 5,
+        })
+    }
+
     #[test]
     fn qualified_mamba_mixed_steps_preserve_prefill_and_decode_shapes() {
         let mut engine = build_engine(Some(3));
-        let make_op = |prefill: bool| {
-            Op::Mamba2(crate::operators::Mamba2Op {
-                name: if prefill {
-                    "context_ssm"
-                } else {
-                    "generation_ssm"
-                }
-                .into(),
-                scale_factor: 1.0,
-                kernel_source: if prefill {
-                    "vllm_mamba_chunk_scan_combined_varlen"
-                } else {
-                    "vllm_flashinfer_selective_state_update"
-                }
-                .into(),
-                phase: if prefill { "context" } else { "generation" }.into(),
-                d_model: 4096,
-                d_state: 128,
-                d_conv: 4,
-                nheads: 64,
-                head_dim: 64,
-                n_groups: 4,
-                chunk_size: 128,
-                state_dtype: "float16".into(),
-                stochastic_rounding: true,
-                philox_rounds: 5,
-                token_width: if prefill { 1 } else { 4 },
-            })
+        engine.context_ops = vec![qualified_mamba(true, 1)];
+        engine.generation_ops = vec![qualified_mamba(false, 4)];
+        // Per token 18,560 activation bytes. Each prefill chunk reads and writes
+        // its 1 MiB state; two width-four decodes add 10,634,240 bytes.
+        let ms = |bytes: f64| bytes / engine.db.system_spec.gpu.mem_bw * 1000.0;
+        let close = |got: f64, bytes: f64| (got - ms(bytes)).abs() < 1e-12;
+        let decode_bytes = 10_634_240.0;
+        let packed = |prefill_tokens: u32, prefills: u32, decodes: u32| {
+            engine
+                .forward_pass_time_ms(&[ForwardPassMetrics {
+                    scheduled_requests: crate::ScheduledRequestMetrics {
+                        num_prefill_requests: prefills,
+                        sum_prefill_tokens: prefill_tokens,
+                        num_decode_requests: decodes,
+                        sum_decode_kv_tokens: decodes * 8,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }])
+                .unwrap()
         };
-        engine.context_ops = vec![make_op(true)];
-        engine.generation_ops = vec![make_op(false)];
-        // One 16-token prefill: 296,960 activation bytes + two 1 MiB states.
-        // Two width-four decodes: 148,480 activation bytes + ten 1 MiB states.
-        let expected = 13_028_352.0 / engine.db.system_spec.gpu.mem_bw * 1000.0;
-        let mixed = engine
-            .mixed_step_latency(16, 2, 16, 1, 0, 1.0, 1.0)
-            .unwrap();
-        assert!((mixed - expected).abs() < 1e-12);
-        let decode = engine.decode_step_latency(2, 16, 1, 1.0).unwrap();
-        assert!((decode - 10_634_240.0 / engine.db.system_spec.gpu.mem_bw * 1000.0).abs() < 1e-12);
-        let telemetry = get_mix_step_ops(
-            &engine.context_ops,
-            &engine.generation_ops,
-            &engine.db,
-            16,
-            8,
-            16,
-            1,
-            0,
-            0,
-            16,
-            8,
-        )
-        .unwrap();
-        assert!((telemetry - expected).abs() < 1e-12);
+        // (ctx, isl, prefix, prefill requests, new tokens): a partially cached
+        // chunk, a complete cached request plus a partial extend, a budget that
+        // splits two requests, and no prefill.
         for (ctx, isl, prefix, requests, new_tokens) in [
-            (512, 4096, 0, 1, 512),
             (512, 4096, 1024, 1, 512),
-            (3500, 4096, 1024, 2, 3500),
-            (4608, 4096, 1024, 2, 3584),
-            (6000, 4096, 3000, 3, 3000),
-            (8128, 4096, 1024, 3, 7104),
+            (6000, 4096, 3000, 2, 3000),
+            (8128, 4096, 1024, 2, 7104),
             (0, 4096, 1024, 0, 0),
         ] {
-            // Each chunk adds two 1 MiB states, regardless of the full prompt length.
             let bytes =
-                f64::from(new_tokens) * 18_560.0 + f64::from(requests) * 2_097_152.0 + 10_634_240.0;
-            let expected = bytes / engine.db.system_spec.gpu.mem_bw * 1000.0;
+                f64::from(new_tokens) * 18_560.0 + f64::from(requests) * 2_097_152.0 + decode_bytes;
             let mixed = engine
                 .mixed_step_latency(ctx, 2, isl, 1, prefix, 1.0, 1.0)
                 .unwrap();
-            assert!(
-                (mixed - expected).abs() < 1e-12,
-                "chunk={ctx}, prefix={prefix}"
-            );
+            assert!(close(mixed, bytes), "chunk={ctx}, prefix={prefix}");
             let (shared, context, decode) = engine
                 .mixed_step_breakdown_per_op(ctx, 2, isl, 1, prefix, 1.0, 1.0)
                 .unwrap();
@@ -3559,55 +3548,115 @@ pub(crate) mod tests {
                 .map(|row| row.1)
                 .sum();
             assert!((sum - mixed).abs() < 1e-12);
-            let telemetry = get_mix_step_ops(
-                &engine.context_ops,
-                &engine.generation_ops,
-                &engine.db,
-                new_tokens,
-                8,
-                isl - prefix,
-                requests,
-                prefix,
-                ctx - new_tokens,
-                isl,
-                8,
-            )
-            .unwrap();
             assert!(
-                (telemetry - expected).abs() < 1e-12,
-                "telemetry chunk={ctx}, prefix={prefix}"
+                close(packed(new_tokens, requests, 2), bytes),
+                "telemetry chunk={ctx}"
             );
         }
-        // Three prefills of 4, 3 and 3 tokens beside two width-four decodes:
-        // the integer average (3) must not invent a fourth recurrent state.
-        let metrics = ForwardPassMetrics {
-            scheduled_requests: crate::ScheduledRequestMetrics {
-                num_prefill_requests: 3,
-                sum_prefill_tokens: 10,
-                num_decode_requests: 8,
-                sum_decode_kv_tokens: 128,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let bytes = 10.0 * 18_560.0 + 3.0 * 2_097_152.0 + 10_634_240.0;
-        let got = engine.forward_pass_time_ms(&[metrics]).unwrap();
-        assert!((got - bytes / engine.db.system_spec.gpu.mem_bw * 1000.0).abs() < 1e-12);
+        // Telemetry carries request counts: two prefills of 17 tokens are two
+        // state pairs (9 + 8 tokens), never a third request from the average.
+        assert!(close(
+            packed(17, 2, 1),
+            17.0 * 18_560.0 + 2.0 * 2_097_152.0 + 5_317_120.0
+        ));
+        assert!(close(packed(16, 1, 0), 16.0 * 18_560.0 + 2_097_152.0));
+        assert!(close(
+            engine.decode_step_latency(2, 16, 1, 1.0).unwrap(),
+            decode_bytes
+        ));
+        // A draft-named Mamba op is priced once.
         if let Op::Mamba2(op) = &mut engine.context_ops[0] {
             op.name = "draft_context_ssm".into();
         }
         let draft_named = engine
             .mixed_step_latency(16, 2, 16, 1, 0, 1.0, 1.0)
             .unwrap();
-        assert!((draft_named - expected).abs() < 1e-12);
+        assert!(close(
+            draft_named,
+            16.0 * 18_560.0 + 2_097_152.0 + decode_bytes
+        ));
         assert!(
             engine
                 .mixed_step_latency(4096, 2, 4096, 4097, 4097, 1.0, 1.0)
                 .is_err()
         );
-        assert!(
-            (engine.mixed_step_latency(0, 2, 0, 1, 0, 1.0, 1.0).unwrap() - decode).abs() < 1e-12
+    }
+
+    #[test]
+    fn qualified_mamba_prefill_queries_use_request_shapes() {
+        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
+        // Measured rows on a (batch, tokens) grid with distinct values, so the
+        // total pins each lookup bucket, not only the request and token sums.
+        let tmp = tempfile::tempdir().unwrap();
+        let shapes = [(1, 3, 1.0), (1, 4, 10.0), (2, 3, 100.0), (2, 4, 1000.0)];
+        let n = shapes.len();
+        write_parquet(
+            &tmp.path().join("mamba2_perf.parquet"),
+            &[
+                Col::Str(
+                    "kernel_source",
+                    vec!["vllm_mamba_chunk_scan_combined_varlen"; n],
+                ),
+                Col::Str("phase", vec!["context"; n]),
+                Col::I64("batch_size", shapes.iter().map(|s| s.0).collect()),
+                Col::I64("seq_len", shapes.iter().map(|s| s.1).collect()),
+                Col::I64("d_model", vec![4096; n]),
+                Col::I64("d_state", vec![128; n]),
+                Col::I64("d_conv", vec![4; n]),
+                Col::I64("nheads", vec![64; n]),
+                Col::I64("head_dim", vec![64; n]),
+                Col::I64("n_groups", vec![4; n]),
+                Col::I64("chunk_size", vec![128; n]),
+                Col::Str("state_dtype", vec!["float16"; n]),
+                Col::Bool("stochastic_rounding", vec![false; n]),
+                Col::I64("philox_rounds", vec![10; n]),
+                Col::I64("token_width", vec![1; n]),
+                Col::F64("latency", shapes.iter().map(|s| s.2).collect()),
+                Col::F64("power", vec![100.0; n]),
+            ],
         );
+        let mut db = PerfDatabase::load_resolved(
+            &systems_root(),
+            "b200_sxm",
+            "vllm",
+            "0.24.0",
+            true,
+            false,
+            false,
+        )
+        .unwrap();
+        db.tables_mut().state_space =
+            crate::perf_database::StateSpaceTable::new(tmp.path().to_path_buf(), "vllm", "0.31.0");
+        let spec = EngineSpec::new(
+            fixture_engine_config(Some(3)),
+            context_ops(),
+            generation_ops(),
+        );
+        let mut engine = Engine::build(spec, Arc::new(db)).unwrap();
+        engine.context_ops = vec![qualified_mamba(true, 1)];
+        engine.generation_ops = vec![qualified_mamba(false, 4)];
+        let close = |got: f64, want: f64| (got - want).abs() < 1e-9;
+        let packed = |prefill_tokens: u32, prefills: u32, decodes: u32| {
+            engine
+                .forward_pass_time_ms(&[ForwardPassMetrics {
+                    scheduled_requests: crate::ScheduledRequestMetrics {
+                        num_prefill_requests: prefills,
+                        sum_prefill_tokens: prefill_tokens,
+                        num_decode_requests: decodes,
+                        sum_decode_kv_tokens: decodes * 8,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }])
+                .unwrap()
+        };
+        // Telemetry: three prefills of 4, 3 and 3 tokens query (2, 3) and (1, 4).
+        assert!(close(packed(10, 3, 2), 100.0 + 10.0 + packed(0, 0, 2)));
+        // Live: ctx 7 at isl 4 and prefix 1 packs one complete request (3 new
+        // tokens) and a 3-token partial extend, so (1, 3) twice, not (2, 3).
+        let decode_only = engine.mixed_step_latency(0, 2, 4, 1, 1, 1.0, 1.0).unwrap();
+        let mixed = engine.mixed_step_latency(7, 2, 4, 1, 1, 1.0, 1.0).unwrap();
+        assert!(close(mixed, 2.0 * 1.0 + decode_only), "{mixed}");
     }
 
     fn runtime(batch_size: u32, isl: u32, osl: u32) -> RuntimeConfig {
@@ -7269,11 +7318,11 @@ pub(crate) mod tests {
             2 * new_tokens,
             generation,
             new_tokens,
-            2,
             prefix,
             2 * prefix,
             kv,
             generation,
+            2,
         )
         .unwrap();
         let want = sol(&ctx_attn, 2, new_tokens, prefix) + sol(&gen_attn, generation, kv, 0);

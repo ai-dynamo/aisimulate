@@ -130,10 +130,13 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 //   price encoder calls through the canonical model. Claimed 21, 27 and 28 on
 //   its own branch while 21 through 28 landed; renumbered at merge (precedent:
 //   15, 18, 26).
-// - 30 (Mamba timing identity): Mamba2Op gains state precision, rounding, and
-//   token width. EngineConfig gains four optional Mamba controls. Defaults
-//   cover JSON only; older bincode payloads require recompilation.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 30;
+// - 30 (Mamba mixed-step accounting, PR #619): Mamba2Op gained tail-appended
+//   `state_dtype` and `token_width`. The serde defaults cover JSON only.
+// - 31 (Mamba timing identity): Mamba2Op appends `stochastic_rounding` and
+//   `philox_rounds` after the schema-30 tail, and EngineConfig gains four
+//   optional Mamba controls. Claimed 30 on its own branch while #619 held 30
+//   with a different layout. Schema-30 bincode payloads are rejected.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 31;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
