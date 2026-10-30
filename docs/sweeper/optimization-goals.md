@@ -6,10 +6,9 @@ subtitle: Objective metrics, SLA constraints, and Pareto-front scoring
 ---
 
 > [!WARNING]
-> **Experimental.** Sweeper is intended for evaluation and feedback, not production capacity
-> planning. Its API, configuration schema, search results, and deployment output may change
-> without a standard deprecation period. Sweeper provides no SLA, accuracy, or configuration
-> optimality guarantees.
+> **Experimental.** Sweeper's API, configuration schema, search results, and deployment output
+> may change without a standard deprecation period. Validate shortlisted configurations on the
+> target hardware before using them for production capacity planning.
 
 An `OptimizationGoal` (the `goal:` block of a `SmartSearchConfig`) declares **what
 "better" means** plus the SLA constraint. It is pinned, never searched. It picks one
