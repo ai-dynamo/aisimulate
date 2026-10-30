@@ -20,7 +20,6 @@ import copy
 import gc
 import json
 import os
-import random
 import sys
 import tempfile
 from collections.abc import Sequence
@@ -293,8 +292,9 @@ def _load_one_layer_runner(
 
     _set_envs_and_config(server_args)
     model_config = ModelConfig.from_server_args(server_args)
-    nccl_port = 29500 + random.randint(0, 10000)
-    from collector.sglang.runtime_compat import init_runtime_config
+    from collector.sglang.runtime_compat import free_local_port, init_runtime_config
+
+    nccl_port = free_local_port()
 
     _runner_parallel_kwargs = init_runtime_config(server_args, gpu_id, nccl_port=nccl_port, model_config=model_config)
     return ModelRunner(
@@ -596,6 +596,7 @@ def _init_glm5next_runtime(model_path: str, *, device: str, mem_fraction_static:
     (model_runner.py L456-458). No model weights are loaded: the mHC kernels
     only need this process state plus the layer's own parameters.
     """
+    from collector.sglang.runtime_compat import free_local_port
     from sglang.srt.configs.model_config import ModelConfig
     from sglang.srt.distributed import bootstrap
     from sglang.srt.distributed.parallel_state_wrapper import ParallelState
@@ -638,7 +639,7 @@ def _init_glm5next_runtime(model_path: str, *, device: str, mem_fraction_static:
         model_config=model_config,
         device="cuda",
         ps=ParallelState.trivial(gpu_id=gpu_id),
-        dist_port=29500 + random.randint(0, 10000),
+        dist_port=free_local_port(),
         is_draft_worker=False,
         local_omp_cpuid=None,
     )

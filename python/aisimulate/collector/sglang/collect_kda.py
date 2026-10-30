@@ -17,7 +17,8 @@ Context (prefill/extend) phase (kda_backend.forward_extend):
 
 Generation (decode) phase (kda_backend.forward_decode):
     - causal_conv1d_update: packed single-step conv over 3P channels
-    - fused_recurrent_kda_packed_decode: packed KDA recurrence (T=1)
+    - fused_sigmoid_gating_delta_rule_update: KDA recurrence with lower_bound (T=1;
+      the packed kernel is skipped for lower-bound layers, kda_backend.py:737-742)
     - "kda_fused_decode" where serving's attempt-and-verify covered() probe
       accepts the shard (see _fused_decode_module below)
 
@@ -71,9 +72,6 @@ import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from sglang.kernels.ops.attention.fla.fused_recurrent import (
-        fused_recurrent_kda_packed_decode,
-    )
     from sglang.kernels.ops.attention.fla.fused_sigmoid_gating_recurrent import (
         fused_sigmoid_gating_delta_rule_update,
     )
@@ -381,30 +379,6 @@ def _fused_decode_module():
     return kda_fused_decode
 
 
-def _serving_decode_lane_for_lower_bound() -> str:
-    """Which recurrence kernel serving runs for a KDA layer that carries a
-    ``lower_bound`` (Kimi-K3: KDA_LOWER_BOUND).
-
-    sglang>=0.5.21 kda_backend.KDAAttnBackend.forward_decode:737-741 takes the
-    packed Triton kernel only when ``supports_packed_decode`` AND the layer has
-    no lower_bound; a lower-bound layer goes through kernel_dispatcher.decode
-    (:771-786) = TritonKDAKernel.decode -> fused_sigmoid_gating_delta_rule_update
-    with lower_bound (kernels/kda_triton.py:125-157). The kimi-k3 branch build
-    (0.5.16) packed every T=1 decode. Probed from the backend source rather than
-    the version string so a backport is followed too. H20 serving golden
-    2026-10-01 (archive raw 7ef3a64cae10 decode_kernels) carries
-    fused_sigmoid_gating_delta_rule_update_kernel, not the packed kernel.
-    """
-    try:
-        import inspect
-
-        from sglang.srt.layers.attention.linear.kda_backend import KDAAttnBackend
-    except ImportError:
-        return "packed"
-    src = inspect.getsource(KDAAttnBackend.forward_decode)
-    return "plain" if 'getattr(layer, "lower_bound", None) is None' in src else "packed"
-
-
 def run_kda_generation_benchmark(
     d_model: int,
     d_conv: int,
@@ -441,7 +415,7 @@ def run_kda_generation_benchmark(
             print(f"  Benchmarking batch_size={batch_size}")
 
         a = a_log = b = conv_pool = dt_bias = mixed_qkv = None
-        output = recurrent_state = state_indices = None
+        recurrent_state = state_indices = None
         try:
             num_warmups = 3
             num_runs = 10
@@ -456,7 +430,6 @@ def run_kda_generation_benchmark(
             b = torch.randn(batch_size, num_v_heads, dtype=dtype, device=device)
             a_log = torch.zeros(num_v_heads, dtype=torch.float32, device=device)
             dt_bias = torch.ones(num_v_heads * head_k_dim, dtype=torch.float32, device=device)
-            output = torch.empty(batch_size, 1, num_v_heads, head_v_dim, dtype=dtype, device=device)
 
             common_log_data = {
                 "phase": "generation",
@@ -578,61 +551,43 @@ def run_kda_generation_benchmark(
                 ):
                     raise RuntimeError(f"failed to persist SGLang KDA generation row to {perf_filename}")
 
-            if _serving_decode_lane_for_lower_bound() == "plain" and KDA_LOWER_BOUND is not None:
-                # kda_backend.py:771-786 @0.5.21: after the conv update, q/k/v are the
-                # [Q|K|V] split viewed as 1 x n x h x d, and the plain Triton decode runs
-                # fused_sigmoid_gating_delta_rule_update over cu_seqlens with lower_bound.
-                recurrence_kernel_source = "fused_sigmoid_gating_delta_rule_update"
-                plain_q, plain_k, plain_v = (
-                    t.unflatten(-1, (-1, dim)).unsqueeze(0)
-                    for t, dim in zip(
-                        mixed_qkv.split([proj_size] * 3, dim=-1), (head_k_dim, head_k_dim, head_v_dim), strict=True
-                    )
+            # kda_backend.py:737-742 @0.5.21 skips the packed T=1 kernel for a layer with a
+            # lower_bound (Kimi-K3: KDA_LOWER_BOUND); :771-786: after the conv update, q/k/v are the
+            # [Q|K|V] split viewed as 1 x n x h x d, and the plain Triton decode runs
+            # fused_sigmoid_gating_delta_rule_update over cu_seqlens with lower_bound.
+            recurrence_kernel_source = "fused_sigmoid_gating_delta_rule_update"
+            plain_q, plain_k, plain_v = (
+                t.unflatten(-1, (-1, dim)).unsqueeze(0)
+                for t, dim in zip(
+                    mixed_qkv.split([proj_size] * 3, dim=-1), (head_k_dim, head_k_dim, head_v_dim), strict=True
                 )
-                plain_a = a.view(1, batch_size, num_v_heads, head_k_dim)
-                plain_b = b.view(1, batch_size, num_v_heads)
-                plain_cu_seqlens = torch.arange(0, batch_size + 1, dtype=torch.int32, device=device)
+            )
+            plain_a = a.view(1, batch_size, num_v_heads, head_k_dim)
+            plain_b = b.view(1, batch_size, num_v_heads)
+            plain_cu_seqlens = torch.arange(0, batch_size + 1, dtype=torch.int32, device=device)
 
-                def run_kda_packed_decode():
-                    fused_sigmoid_gating_delta_rule_update(
-                        A_log=a_log,
-                        dt_bias=dt_bias,
-                        q=plain_q,
-                        k=plain_k,
-                        v=plain_v,
-                        a=plain_a,
-                        b=plain_b,
-                        initial_state_source=recurrent_state,
-                        initial_state_indices=state_indices,
-                        cu_seqlens=plain_cu_seqlens,
-                        use_qk_l2norm_in_kernel=True,
-                        softplus_beta=1.0,
-                        softplus_threshold=20.0,
-                        is_kda=True,
-                        lower_bound=KDA_LOWER_BOUND,
-                    )
-
-            else:
-                recurrence_kernel_source = "fused_recurrent_kda_packed_decode"
-
-                def run_kda_packed_decode():
-                    fused_recurrent_kda_packed_decode(
-                        mixed_qkv=mixed_qkv,
-                        a=a,
-                        b=b,
-                        A_log=a_log,
-                        dt_bias=dt_bias,
-                        scale=head_k_dim**-0.5,
-                        initial_state=recurrent_state,
-                        out=output,
-                        ssm_state_indices=state_indices,
-                        use_qk_l2norm_in_kernel=True,
-                        lower_bound=KDA_LOWER_BOUND,
-                    )
+            def run_kda_decode():
+                fused_sigmoid_gating_delta_rule_update(
+                    A_log=a_log,
+                    dt_bias=dt_bias,
+                    q=plain_q,
+                    k=plain_k,
+                    v=plain_v,
+                    a=plain_a,
+                    b=plain_b,
+                    initial_state_source=recurrent_state,
+                    initial_state_indices=state_indices,
+                    cu_seqlens=plain_cu_seqlens,
+                    use_qk_l2norm_in_kernel=True,
+                    softplus_beta=1.0,
+                    softplus_threshold=20.0,
+                    is_kda=True,
+                    lower_bound=KDA_LOWER_BOUND,
+                )
 
             with benchmark_with_power(
                 device=device,
-                kernel_func=run_kda_packed_decode,
+                kernel_func=run_kda_decode,
                 num_warmups=num_warmups,
                 num_runs=num_runs,
                 repeat_n=1,
@@ -657,7 +612,7 @@ def run_kda_generation_benchmark(
             continue
         finally:
             a = a_log = b = conv_pool = dt_bias = mixed_qkv = None
-            output = recurrent_state = state_indices = None
+            recurrent_state = state_indices = None
             _cleanup("generation")
 
     summary = f"ok={successful_points} error={failed_points} skip=0"
@@ -1402,9 +1357,6 @@ def run_kda_torch(
         contextlib.redirect_stdout(_devnull_file),
         contextlib.redirect_stderr(_devnull_file),
     ):
-        from sglang.kernels.ops.attention.fla.fused_recurrent import (
-            fused_recurrent_kda_packed_decode,
-        )
         from sglang.kernels.ops.attention.fla.fused_sigmoid_gating_recurrent import (
             fused_sigmoid_gating_delta_rule_update,
         )
@@ -1418,7 +1370,6 @@ def run_kda_torch(
             "causal_conv1d_fn": causal_conv1d_fn,
             "causal_conv1d_update": causal_conv1d_update,
             "chunk_kda": chunk_kda,
-            "fused_recurrent_kda_packed_decode": fused_recurrent_kda_packed_decode,
             "fused_sigmoid_gating_delta_rule_update": fused_sigmoid_gating_delta_rule_update,
         }
     )

@@ -362,10 +362,11 @@ def run_gdn_context_benchmark(
                     prefill_fn, qkv_prepare = flashinfer_prefill
                     cu_seqlens_i64 = cu_seqlens.to(torch.int64)
                     state_rows = state_indices.to(torch.int64)
-                    initial_state_fi = recurrent_state[state_rows].to(torch.float32)
-                    output_state_fi = torch.empty_like(initial_state_fi)
 
                     def run_gdn_scan():
+                        # gather + output buffer per call, as extend does (:523-541)
+                        initial_state_fi = recurrent_state[state_rows].to(torch.float32)
+                        output_state_fi = torch.empty_like(initial_state_fi)
                         q_fi, k_fi, v_fi = qkv_prepare(q[0], k[0], v[0])
                         prefill_fn(
                             q=q_fi,

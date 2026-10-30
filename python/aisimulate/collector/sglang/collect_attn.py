@@ -444,14 +444,6 @@ def get_generation_attention_test_cases():
     return test_cases
 
 
-@get_parallel().override(
-    attn_tp_size=1,
-    attn_tp_rank=0,
-    attn_cp_size=1,
-    attn_cp_rank=0,
-    attn_dp_size=1,
-    attn_dp_rank=0,
-)
 def default_attention_backend(sm_version: int, has_attention_sink: bool) -> str | None:
     """SGLang's default dense-attention backend per SM (the table run_attention_torch documents
     above its call site); None for SMs outside the supported set."""
@@ -518,6 +510,14 @@ def _ensure_flashinfer_workspace() -> int | None:
     return None
 
 
+@get_parallel().override(
+    attn_tp_size=1,
+    attn_tp_rank=0,
+    attn_cp_size=1,
+    attn_cp_rank=0,
+    attn_dp_size=1,
+    attn_dp_rank=0,
+)
 def run_attention_torch(
     batch_size,
     input_len,

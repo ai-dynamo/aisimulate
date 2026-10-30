@@ -647,21 +647,17 @@ def run_moe_torch(
             # matmul_ogs on SM90, as the gpt-oss-120b serving probe shows —
             # while the generic Mxfp4Config resolves to Mxfp4MoEMethod -> MARLIN
             # (path_diff moe_mxfp4 vs gpt-oss-120b was diverged on exactly this,
-            # 2026-09-23). Mirror the framework's own override here. A version
-            # without the class performs no override, so Mxfp4Config is that
-            # version's serving truth — this is dispatch, not a fallback.
+            # 2026-09-23). Mirror the framework's own override here
+            # (GptOssMxfp4Config, quantization/mxfp4.py:110 @0.31.0).
             model_cfg = _load_model_moe_config(model_name)
             quant_config = Mxfp4Config()
             if (
                 checkpoint_qc.get("quant_method") in ("mxfp4", "gpt_oss_mxfp4")
                 and model_cfg.get("model_type") == "gpt_oss"
             ):
-                try:
-                    from vllm.model_executor.layers.quantization.mxfp4 import GptOssMxfp4Config
-                except ImportError:  # pre-override vLLM: no gpt_oss_mxfp4 method exists
-                    GptOssMxfp4Config = None  # noqa: N806
-                if GptOssMxfp4Config is not None:
-                    quant_config = GptOssMxfp4Config()
+                from vllm.model_executor.layers.quantization.mxfp4 import GptOssMxfp4Config
+
+                quant_config = GptOssMxfp4Config()
     elif moe_type == "w4a8_mxfp4_mxfp8":
         # Native DeepSeek-V4 (expert_dtype=fp4) serving path: vLLM overrides
         # the checkpoint's fp8 quant_method to DeepseekV4FP8Config

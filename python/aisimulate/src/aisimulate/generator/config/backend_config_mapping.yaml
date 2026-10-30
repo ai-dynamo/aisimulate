@@ -284,9 +284,10 @@ parameters:
   sglang: null
   trtllm: sparse_attention_config.algorithm
 
-# sglang >= 0.5.20 prefill CUDA-graph backend ({full,breakable,tc_piecewise,disabled});
-# mixed-chunk prefill requires `breakable` on models whose backend enables the prefill
-# graph (MiniMax-M3 at 0.5.21: prefill_cuda_graph_runner.py:293). CLI only on sglang.
+# sglang >= 0.5.20 prefill CUDA-graph backend ({full,breakable,tc_piecewise,disabled}).
+# Rendered only when a deployment sets it: `breakable` is already the CUDA default
+# (runner/prefill_cuda_graph_runner.py:17 @0.5.21), which mixed-chunk prefill requires
+# (:291-296). CLI only on sglang.
 - param_key: cuda_graph_backend_prefill
   vllm: null
   sglang: cuda-graph-backend-prefill

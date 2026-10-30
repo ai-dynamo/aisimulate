@@ -360,9 +360,11 @@ def test_indexer_output_budget_excludes_cached_prefix(monkeypatch, batch, query,
     """Run actual construction and inspect both tensor shape and context capacity."""
     allocations, configs = [], []
 
-    class Module:
-        def __init__(self, **kwargs):
-            assert kwargs["topk_indices_buffer"] == (expected_tokens, 2048)
+    class Attention:
+        topk_indices_buffer = "meta"  # what the meta-device model allocated
+
+        def named_modules(self):
+            return [("", self)]
 
         def parameters(self):
             return []
@@ -378,9 +380,19 @@ def test_indexer_output_budget_excludes_cached_prefix(monkeypatch, batch, query,
         def requires_grad_(self, enabled):
             assert enabled is False
 
+    attention = Attention()
+
+    class Model:
+        def __init__(self, *, vllm_config, prefix):
+            assert prefix == ""
+
+        def named_modules(self):
+            return [("model.layers.0.self_attn", attention)]
+
     def create_config(**kwargs):
         configs.append(kwargs)
         hf = SimpleNamespace(
+            architectures=["DeepseekV32ForCausalLM"],
             index_topk=2048,
             hidden_size=7168,
             qk_nope_head_dim=192,
@@ -400,7 +412,12 @@ def test_indexer_output_budget_excludes_cached_prefix(monkeypatch, batch, query,
         return shape
 
     monkeypatch.setitem(
-        sys.modules, "vllm.model_executor.models.deepseek_v2", SimpleNamespace(DeepseekV2MLAAttention=Module)
+        sys.modules, "vllm.model_executor.models.deepseek_v2", SimpleNamespace(DeepseekV2MLAAttention=object)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm.model_executor.models.registry",
+        SimpleNamespace(ModelRegistry=SimpleNamespace(resolve_model_cls=lambda archs, cfg: (Model, archs[0]))),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -410,14 +427,10 @@ def test_indexer_output_budget_excludes_cached_prefix(monkeypatch, batch, query,
     monkeypatch.setitem(
         sys.modules, "vllm.utils.torch_utils", SimpleNamespace(set_default_torch_dtype=lambda dtype: nullcontext())
     )
-    # The generic serving-parity construction resolves the model class through
-    # vLLM's ModelRegistry; the stubs below cover the explicit-class path, so
-    # select it (AB-only switch) for this allocation check.
-    monkeypatch.setenv("AIS_DSA_LEGACY_MODULE", "1")
     namespace = {
         "math": math,
         "os": os,
-        "torch": SimpleNamespace(empty=empty, int32="int32", no_grad=nullcontext),
+        "torch": SimpleNamespace(empty=empty, int32="int32", no_grad=nullcontext, device=lambda name: nullcontext()),
         "_resolve_model_path": lambda model: model,
         "create_vllm_config": create_config,
         "_create_gemm_quant_config": lambda gemm: None,
@@ -437,6 +450,7 @@ def test_indexer_output_budget_excludes_cached_prefix(monkeypatch, batch, query,
         is_context=is_context,
     )
     assert allocations == [(expected_tokens, 2048)]
+    assert attention.topk_indices_buffer == (expected_tokens, 2048)  # swapped in for the meta buffer
     assert configs[0]["max_model_len"] == max(prefix + query, 4096)
     # The module is built before the backend (and its page) is known: the KV
     # capacity is an upper bound at the smallest page (16) and is recomputed

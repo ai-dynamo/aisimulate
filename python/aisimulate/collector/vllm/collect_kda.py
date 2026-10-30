@@ -102,7 +102,10 @@ def _decode_paths() -> set[str]:
     decoding). The opharness kda decode gate captures serving WITHOUT spec
     decoding, so it sets AIS_KDA_DECODE_PATHS=fused to compare like with like
     (recorded in the capture's env). Collection runs never set it."""
-    return {p.strip() for p in os.environ.get("AIS_KDA_DECODE_PATHS", "fused,packed").split(",") if p.strip()}
+    paths = {p.strip() for p in os.environ.get("AIS_KDA_DECODE_PATHS", "fused,packed").split(",") if p.strip()}
+    if not paths or not paths <= {"fused", "packed"}:
+        raise ValueError(f"AIS_KDA_DECODE_PATHS must name fused and/or packed, got {sorted(paths)}")
+    return paths
 
 
 NUM_WARMUPS = 3
@@ -506,6 +509,8 @@ def run_kda_generation_benchmark(
     fused_ok = is_fused_kda_decode_supported(
         nh, hd, cw, num_spec=0, input_dtype=dtype, conv_state_dtype=dtype, recurrent_state_dtype=torch.float32
     )
+    if decode_paths == {"fused"} and not fused_ok:
+        raise RuntimeError("AIS_KDA_DECODE_PATHS=fused, but the fused KDA decode kernel does not support this shard")
     conv_weight = torch.randn(3 * dim, cw, dtype=torch.float32, device=device)
     fused_weight = conv_weight.reshape(3, dim, cw).transpose(1, 2).contiguous()
     norm_weight = torch.randn(hd, dtype=torch.float32, device=device)

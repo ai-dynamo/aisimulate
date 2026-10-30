@@ -150,6 +150,22 @@ prediction) or a guard that raises a classified error citing the framework
 source line, or deletes the note. Do not implement guards from unverified
 claims, and never express these limits in YAML.
 
+**Evidence-backed guards** (owner decision 2026-10-30). Some limits cannot be
+shown in source (a precompiled cubin, a JIT kernel generator inside a shared
+library), and some failures are expensive (a worker-killing abort, a full
+module load per case). A guard for such a limit is legal only when it:
+
+1. **Raises at run time, in the worker, before the expensive step.** Never at
+   plan time: the case stays queued and lands in the failure log as
+   `kernel_limit`, so every run still shows it.
+2. **Starts its message with `FIXME(kernel-limit):`.**
+3. **Cites its evidence.** The framework source line when one exists;
+   otherwise a reproducible failing run (job or shard, collector revision,
+   failure counts) whose passing rows bound the guarded envelope exactly. A
+   single failing case or an unbounded envelope is not evidence.
+4. **Is re-verified on every version bump** like any other
+   `FIXME(kernel-limit)`, by a source check or by one run without it.
+
 ## Version contract: one release per collector file
 
 Owner policy (2026-09-20, made binding 2026-10-30): version history lives in
@@ -209,8 +225,10 @@ A rule in this file may be temporarily excepted ONLY through an entry in the
 only when the entry carries ALL of:
 
 1. **A self-contained machine-readable scope** — the rule excepted, plus the
-   exact tables/backend/versions/systems the exception covers. Prose-only
-   scoping is invalid.
+   exact tables/backend/systems the exception covers. Prose-only scoping is
+   invalid. `versions: all` (the default; owner decision 2026-10-30) covers
+   every version of the backend: an exception follows the deviation, not a
+   release, and `expires` is what bounds it. A version list narrows it.
 2. **The standards owner's `approved_by` sign-off.** These rule files are
    human-owned policy; only their owner can except them.
 3. **An `expires` date and a linked retirement work item.** An exception is

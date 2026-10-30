@@ -42,6 +42,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 from collections.abc import Iterable
 from fractions import Fraction
@@ -64,6 +65,7 @@ try:
         benchmark_with_power,
         log_perf,
         render_phase_totals,
+        worker_heartbeat,
     )
 except ModuleNotFoundError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -74,6 +76,7 @@ except ModuleNotFoundError:
         benchmark_with_power,
         log_perf,
         render_phase_totals,
+        worker_heartbeat,
     )
 
 try:
@@ -1820,11 +1823,20 @@ def _run_subprocess(
                 stderr=subprocess.STDOUT,
                 cwd=os.path.dirname(os.path.abspath(__file__)),
             )
-            try:
-                proc.wait(timeout=3600)  # up to 1 hour per (kind, tp, gemm, bs)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
+            # Up to 1 hour per (kind, tp, gemm, bs). The child reports no liveness of its
+            # own, so beat while waiting: the executor's stall watchdog
+            # (STALL_TIMEOUT_SEC, 1800 s default) would otherwise fail a healthy sweep.
+            deadline = time.monotonic() + 3600
+            while True:
+                try:
+                    proc.wait(timeout=60)
+                    break
+                except subprocess.TimeoutExpired:
+                    if time.monotonic() >= deadline:
+                        proc.kill()
+                        proc.wait()
+                        break
+                    worker_heartbeat()
 
         try:
             with open(log_path, encoding="utf-8", errors="replace") as logf:
