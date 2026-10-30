@@ -1875,28 +1875,52 @@ def _load_module_case_builder(backend: str, namespace: dict):
 
 
 @pytest.mark.parametrize("backend", ["vllm", "trtllm"])
-def test_dsa_module_plan_drops_sub_8_head_cells_on_sm100_only(backend):
+def test_dsa_sub_8_head_cells_stay_queued_and_raise_before_the_module_build(backend):
     """b200 2026-10-06 (jobs 471043976 / 469988228): per-rank heads 1/2/4 have no sparse-MLA
-    decode kernel on SM100/103 (trtllm-gen tileSizeQ < 8; TRT-LLM FMHA rows % 8) and failed
-    68,435 + 15,408 cases after a full module load each. The planners drop them for DSA on
-    SM100/103 and keep them for MLA and on other SMs."""
+    kernel on SM100/103 and failed 68,435 + 15,408 cases after a full module load each. The
+    plan keeps them (a kernel limit is never a plan-time drop); the worker raises a
+    kernel_limit failure before building anything, on SM100/103 and for DSA only."""
+    from contextlib import nullcontext
     from types import SimpleNamespace
 
     heads = [128, 64, 8, 4, 2, 1]
     base = [[1, 1, h, "bfloat16", "bfloat16", "bfloat16", 0] for h in heads]
-    for sm, expected in ((100, [128, 64, 8]), (103, [128, 64, 8]), (90, heads)):
-        ns = {
-            "get_context_test_cases": lambda _t, base=base: base,
-            "get_generation_test_cases": lambda _t: [],
-            "get_mla_module_model_specs": lambda **_k: [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3.2")],
+    ns = {
+        "get_context_test_cases": lambda _t: base,
+        "get_generation_test_cases": lambda _t: [],
+        "get_mla_module_model_specs": lambda **_k: [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3.2")],
+        "get_sm_version": lambda: 100,
+        "_model_max_position_embeddings": lambda _m: None,
+    }
+    build = _load_module_case_builder(backend, ns)
+    assert sorted({c[2] for c in build("dsa", "context")}) == sorted(heads)
+
+    source_path = REPO_ROOT / "collector" / backend / "collect_mla_module.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+    worker = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "run_mla_module_worker"]
+    built = []
+    for sm, attn_type, num_heads, raises in (
+        (100, "dsa", 4, True),
+        (103, "dsa", 1, True),
+        (100, "dsa", 8, False),
+        (100, "mla", 4, False),
+        (90, "dsa", 4, False),
+    ):
+        namespace = {
             "get_sm_version": lambda sm=sm: sm,
-            "_DSA_SPARSE_DECODE_MIN_HEADS": 8,
-            "_DSA_SPARSE_DECODE_MIN_HEADS_SMS": (100, 103),
-            "_model_max_position_embeddings": lambda _m: None,
+            "run_mla_module": lambda **kwargs: built.append(kwargs),
+            "torch": SimpleNamespace(inference_mode=nullcontext),
         }
-        build = _load_module_case_builder(backend, ns)
-        assert [c[2] for c in build("dsa", "context")] == expected, (backend, sm)
-        assert [c[2] for c in build("mla", "context")] == heads, (backend, sm)  # dense MLA untouched
+        exec(compile(ast.Module(body=worker, type_ignores=[]), str(source_path), "exec"), namespace)
+        args = (16, 1, num_heads, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", attn_type)
+        before = len(built)
+        if raises:
+            with pytest.raises(RuntimeError, match=r"^FIXME\(kernel-limit\): "):
+                namespace["run_mla_module_worker"](*args, perf_filename="x")
+            assert len(built) == before, (backend, sm, attn_type, num_heads)
+        else:
+            namespace["run_mla_module_worker"](*args, perf_filename="x")
+            assert len(built) == before + 1, (backend, sm, attn_type, num_heads)
 
 
 @pytest.mark.parametrize("backend", ["vllm", "trtllm"])
@@ -1917,8 +1941,6 @@ def test_module_plan_keeps_only_the_heads_of_declared_tensor_parallel_shards(bac
         "get_generation_test_cases": lambda _t: [],
         "get_mla_module_model_specs": lambda **_k: [glm, kimi],
         "get_sm_version": lambda: 100,
-        "_DSA_SPARSE_DECODE_MIN_HEADS": 8,
-        "_DSA_SPARSE_DECODE_MIN_HEADS_SMS": (100, 103),
         "_model_max_position_embeddings": lambda _m: None,
     }
     build = _load_module_case_builder(backend, ns)
@@ -1950,8 +1972,6 @@ def test_vllm_module_plan_groups_the_seq_len_points_of_one_module_into_one_case(
         "get_generation_test_cases": lambda _t: [],
         "get_mla_module_model_specs": lambda **_k: [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3.2")],
         "get_sm_version": lambda: 100,
-        "_DSA_SPARSE_DECODE_MIN_HEADS": 8,
-        "_DSA_SPARSE_DECODE_MIN_HEADS_SMS": (100, 103),
         "_model_max_position_embeddings": lambda _m: None,
     }
     build = _load_module_case_builder("vllm", ns)
@@ -1982,8 +2002,6 @@ def test_vllm_dsa_module_plan_refuses_a_grid_the_runner_would_not_reproduce():
         "get_generation_test_cases": lambda _t: [],
         "get_mla_module_model_specs": lambda **_k: [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3.2")],
         "get_sm_version": lambda: 100,
-        "_DSA_SPARSE_DECODE_MIN_HEADS": 8,
-        "_DSA_SPARSE_DECODE_MIN_HEADS_SMS": (100, 103),
         "_model_max_position_embeddings": lambda _m: None,
     }
     build = _load_module_case_builder("vllm", ns)
@@ -2003,8 +2021,6 @@ def test_vllm_dsa_module_plan_caps_prefix_at_the_model_max_position():
         "get_generation_test_cases": lambda _t: [],
         "get_mla_module_model_specs": lambda **_k: [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3.2")],
         "get_sm_version": lambda: 100,
-        "_DSA_SPARSE_DECODE_MIN_HEADS": 8,
-        "_DSA_SPARSE_DECODE_MIN_HEADS_SMS": (100, 103),
         "_model_max_position_embeddings": lambda _m: 163840,
     }
     build = _load_module_case_builder("vllm", ns)

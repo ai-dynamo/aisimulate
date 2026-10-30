@@ -40,7 +40,8 @@
 # hardware-observed on SM103 (2026-07-19, B300): identical signature
 # (SmemTile.cpp:53 "Num. rows must be a multiple of 8 <h>") for h in
 # {1,2,4} while h=8 ctx+gen pass — the limit covers the trtllm-gen path on
-# both SM100 and SM103. Cases stay as classified runtime failures.
+# both SM100 and SM103 (StoreSmemP.h:125 @1.3.0rc29: NumRows >= 8).
+# run_mla_module_worker raises for them before the module is built.
 # Re-verify on the next version bump.
 
 # 1.3.0rc20 renamed the cache-manager sparse kwargs and moved attention
@@ -277,9 +278,7 @@ def _build_module_test_cases(attn_type: str, mode: str):
     base_cases = get_context_test_cases(attn_type) if mode == "context" else get_generation_test_cases(attn_type)
     model_specs = get_mla_module_model_specs(attention_type=attn_type, backend="trtllm")
     cases = []
-    dropped_small_heads = 0
     dropped_non_shard_heads = 0
-    sm_version = get_sm_version()
     for model_spec in model_specs:
         # Model-correlated narrowing (case_authoring.md; get_msa_head_counts
         # precedent): a row declaring its real tensor_parallel_sizes measures
@@ -295,23 +294,14 @@ def _build_module_test_cases(attn_type: str, mode: str):
             if shard_heads is not None and h not in shard_heads:
                 dropped_non_shard_heads += 1
                 continue
-            if attn_type == "dsa" and sm_version in (100, 103) and h < 8:
-                # FIXME(kernel-limit): TRT-LLM's sparse-MLA path on SM100/103 falls back to the FMHA
-                # that requires "Num. rows must be a multiple of 8" — per-rank heads 1/2/4 (TP 32/64/128
-                # of a 128-head model) failed 15,408 of the b200 rc29 DSA cases after a full module load
-                # each (job 469988228); vLLM's trtllm-gen sparse decode has no kernel for the same cells
-                # (tileSizeQ < 8). No serving deployment reaches them. Dropped at plan time, counted.
-                dropped_small_heads += 1
-                continue
             case = [s, b, h, kv_dtype, compute_dtype, gemm_type, model_spec.model_path, attn_type]
             if rest:
                 case.append(rest[0])
             cases.append(case)
-    if dropped_small_heads or dropped_non_shard_heads:
+    if dropped_non_shard_heads:
         print(
-            f"[trtllm-mla-module-cases] {attn_type}/{mode}: dropped {dropped_small_heads} cases with per-rank "
-            f"heads < 8 (SM{sm_version} sparse-MLA FMHA row-multiple-of-8 domain) and {dropped_non_shard_heads} "
-            "cases whose per-rank heads no declared tensor_parallel_sizes shard produces"
+            f"[trtllm-mla-module-cases] {attn_type}/{mode}: dropped {dropped_non_shard_heads} cases whose "
+            "per-rank heads no declared tensor_parallel_sizes shard produces"
         )
     return cases
 
@@ -1122,6 +1112,13 @@ def run_mla_module_worker(
     device: str = "cuda:0",
 ):
     """Worker-compatible positional wrapper used by collector/collect.py."""
+    # FIXME(kernel-limit): the SM100 DSA note at the top of this file — per-rank heads 1/2/4 failed
+    # 15,408 b200 rc29 cases after a full module load each (job 469988228). Raise before the build.
+    if attn_type == "dsa" and get_sm_version() in (100, 103) and num_heads < 8:
+        raise RuntimeError(
+            "FIXME(kernel-limit): TRT-LLM trtllm-gen sparse-MLA FMHA on SM100/103 needs per-rank heads >= 8 "
+            f"(num_heads={num_heads}; StoreSmemP.h:125 @1.3.0rc29)"
+        )
     return run_mla_module(
         seq_len=seq_len,
         batch_size=batch_size,

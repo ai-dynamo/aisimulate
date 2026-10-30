@@ -65,7 +65,6 @@ from collector.helper import (
     log_perf,
     power_law_logits_v3,
 )
-from collector.version_resolver import _check_compat
 
 aic_debug = int(os.getenv("aic_moe_debug", "0"))  # noqa: SIM112
 
@@ -375,13 +374,9 @@ def _run_moe_case(
     # SM100/103 ("no MoE implementation can serve this layer ... CutlassFusedMoE: quant_unsupported
     # (quant_algo=W4A16)", 114/114 int4_wo cases, b200 job 469988228). Serving cannot load the
     # W4A16 checkpoint either (benchmarks/evidence/collector/op-probe-2026-10/results/sm100/trtllm-1.3.0rc29.yaml:
-    # Kimi-K2.5 fail, finding sm100_probe_failures_recheck_2026_10_04 (g)). The lane is unreachable on this pin, not a
-    # per-shape failure; refuse before building weights.
-    if (
-        moe_type == "int4_wo"
-        and get_sm_version() in (100, 103)
-        and _check_compat("tensorrt_llm>=1.3.0rc29", _TRTLLM_VERSION)
-    ):
+    # Kimi-K2.5 fail, finding sm100_probe_failures_recheck_2026_10_04 (g)). The lane is unreachable on this pin
+    # (moe_resolution.py:665 @1.3.0rc29 raises it), not a per-shape failure; refuse before building weights.
+    if moe_type == "int4_wo" and get_sm_version() in (100, 103):
         raise RuntimeError(
             "FIXME(kernel-limit): TRT-LLM int4_wo (W4A16) MoE has no implementation on SM100/103 at "
             f"{_TRTLLM_VERSION}; serving fails identically (Kimi-K2.5 identity probe)"

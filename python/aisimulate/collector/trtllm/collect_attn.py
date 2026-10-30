@@ -188,8 +188,9 @@ def run_attention_torch(
             f"({'context' if is_context_phase else 'decode'}; trtllm_fmha_kernel_launcher.cu:320)"
         )
     # FIXME(kernel-limit): SM90 FP8-KV decode crashes ("CUDA error: unspecified launch failure"
-    # + SIGABRT) in two measured envelopes (h200 rc29, job 2026-10-08, 681 + 681 cases; the
-    # passing rows of the same shard bound them exactly):
+    # + SIGABRT) in two measured envelopes (h200 rc29 attention_generation shard, collector 3c6b058f,
+    # 2026-10-07: 512 launch failures + 169 illegal accesses, each followed by a worker SIGABRT; the
+    # shard's 55,047 passing rows bound them exactly):
     #   (a) num_heads 96 / kv_heads 4 (GQA 24): EVERY head_dim (64/128/256), every batch, isl
     #       and window — 512 cases, 0 passing rows;
     #   (b) head_dim 256 at GQA 32 (32/1, 64/2, 128/4), full attention (window 0): isl >= 255
