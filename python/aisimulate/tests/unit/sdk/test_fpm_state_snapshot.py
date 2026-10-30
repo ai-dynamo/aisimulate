@@ -792,6 +792,9 @@ def _kind_case(tmp_path: Path, kind: str):
             },
         )
         return (lambda: RustForwardPassPerfModel.best_available(config)), "aggregated", _stream(33, 90), _stream(34, 30)
+    if kind == "fpm5":
+        config = _regression("aggregated", {"fit": {"linear": {"feature_set": "fpm5"}}})
+        return (lambda: RustForwardPassPerfModel.best_available(config)), "aggregated", _stream(39, 90), _stream(40, 30)
     if kind in ("learned_frozen", "from_learned"):
         artifact = tmp_path / "forest.json"
         artifact.write_text(json.dumps(_forest("aggregated")))
@@ -828,7 +831,7 @@ _STATE_FILES = ("state.bin", "learned/online/state.bin", "learned/online/model.j
 
 
 @pytest.mark.parametrize(
-    "kind", ["error_threshold", "selected", "learned_frozen", "from_learned", "online", "causal_selector"]
+    "kind", ["error_threshold", "selected", "fpm5", "learned_frozen", "from_learned", "online", "causal_selector"]
 )
 def test_every_kind_continues_in_another_process_like_the_uninterrupted_model(tmp_path, kind):
     build, worker, warm, next_stream = _kind_case(tmp_path, kind)

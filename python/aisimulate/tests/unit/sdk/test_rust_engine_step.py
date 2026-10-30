@@ -1204,6 +1204,127 @@ def test_canonical_linear_axes_and_lazy_policy_survive_saved_config(as_mapping):
     assert restored.regression_store_diagnostics()[0]["retained_observations"] == 0
 
 
+_FPM5_WEIGHTS = {
+    "num_active_ranks": 0.5,
+    "num_prefill_requests": 0.3,
+    "sum_prefill_tokens": 2e-3,
+    "sum_prefill_kv_tokens": 1e-4,
+    "num_decode_requests": 0.02,
+    "sum_decode_kv_tokens": 5e-5,
+    "max_rank_prefill_tokens": 1e-3,
+    "max_rank_decode_kv_tokens": 1e-4,
+    "max_rank_num_decode_requests": 0.01,
+    "mean_prefill_chunk": 1e-3,
+    "mean_prefill_kv": 1e-4,
+    "prefill_attention_pairs": 1e-8,
+    "mean_decode_kv": 1e-4,
+    "log1p_sum_prefill_tokens": 0.1,
+    "log1p_sum_prefill_kv_tokens": 0.05,
+    "log1p_sum_decode_kv_tokens": 0.2,
+    "log1p_prefill_attention_pairs": 0.03,
+}
+
+
+def _fpm5_iteration(rng, worker_type: str) -> list[dict]:
+    """Four attention-DP ranks; idle ranks vary the active-rank count."""
+
+    def scheduled(prefill: bool) -> dict:
+        if prefill:
+            requests = rng.randint(1, 3)
+            return {
+                "num_prefill_requests": requests,
+                "sum_prefill_tokens": requests * rng.randint(16, 2047),
+                "sum_prefill_kv_tokens": rng.randint(0, 8191),
+            }
+        requests = rng.randint(1, 63)
+        return {"num_decode_requests": requests, "sum_decode_kv_tokens": requests * rng.randint(32, 4095)}
+
+    # Aggregated iterations keep prefill and decode on different ranks, so all
+    # train and query the cross-rank store.
+    kinds = ["decode"] * 4 if worker_type == "decode" else ["prefill", "decode", "prefill", "decode"]
+    ranks = [
+        {} if index > 1 and rng.random() < 0.4 else scheduled(kind == "prefill") for index, kind in enumerate(kinds)
+    ]
+    return [{"worker_id": "worker", "dp_rank": rank, "scheduled_requests": fields} for rank, fields in enumerate(ranks)]
+
+
+@pytest.mark.parametrize(("worker_type", "store"), [("decode", "pure_decode"), ("aggregated", "cross_rank_aggregated")])
+def test_fpm5_aggregate_regression_learns_multi_rank_iterations(worker_type, store):
+    import random
+
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+    from aisimulate_core.sdk.fpm_learned import FEATURE_PRESETS, compute_features
+
+    assert tuple(_FPM5_WEIGHTS) == FEATURE_PRESETS["fpm5"]
+
+    def latency_ms(iteration: list[dict]) -> float:
+        # Known linear function of the Python trainer's fpm5 features; Rust
+        # computes the same aggregates independently.
+        features = compute_features(iteration)
+        return 3.0 + sum(weight * features[name] for name, weight in _FPM5_WEIGHTS.items())
+
+    def observed(iteration: list[dict]) -> list[dict]:
+        wall_time = latency_ms(iteration) / 1000
+        return [rank | {"wall_time": wall_time} for rank in iteration]
+
+    config = ForwardPassPerfModelConfig(
+        model="test/model",
+        system="test",
+        backend="vllm",
+        worker_type=worker_type,
+        estimation_mode="fpm_regression",
+        estimator_config={"fpm_regression": {"fit": {"linear": {"feature_set": "fpm5"}}}},
+    )
+    model = RustForwardPassPerfModel.best_available(config)
+    resolved = model.diagnostics()["provenance"]["config"]
+    assert resolved["estimator_config"]["fpm_regression"]["fit"]["linear"] == {
+        "feature_axes": ["attention", "moe"],
+        "non_negative": True,
+        "update_policy": {"kind": "always"},
+        "feature_set": "fpm5",
+    }
+    rng = random.Random(5)
+    query = _fpm5_iteration(rng, worker_type)
+    assert model.estimate_forward_pass_time_ms(query) is None
+    for _ in range(80):
+        model.tune_with_fpms(observed(_fpm5_iteration(rng, worker_type)))
+    stores = {entry["workload_kind"]: entry for entry in model.regression_store_diagnostics()}
+    assert stores[store]["ready"]
+    assert stores[store]["retained_observations"] == 64
+    for _ in range(10):
+        query = _fpm5_iteration(rng, worker_type)
+        assert model.estimate_forward_pass_time_ms(query) == pytest.approx(latency_ms(query), rel=1e-6)
+
+    # The saved configuration reloads the option into a cold model.
+    restored = RustForwardPassPerfModel.best_available(json.loads(json.dumps(resolved)))
+    assert restored.diagnostics()["provenance"]["config"] == resolved
+    assert restored.estimate_forward_pass_time_ms(query) is None
+
+
+def test_fpm5_aggregate_regression_rejects_conflicting_controls_before_fallback():
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    for regression, field in [
+        ({"fit": {"linear": {"feature_set": "fpm5", "feature_axes": ["n"]}}}, r"fit\.linear\.feature_set"),
+        ({"fit": {"kind": "spline", "linear": {"feature_set": "fpm5"}}}, r"fit\.linear requires"),
+        (
+            {"fit": {"linear": {"feature_set": "fpm5"}}, "sampling": {"max_observations": 17}},
+            r"sampling\.max_observations",
+        ),
+    ]:
+        config = ForwardPassPerfModelConfig(
+            model="test/model",
+            system="test",
+            backend="vllm",
+            worker_type="decode",
+            estimation_mode="auto",
+            fallback_policy="allow",
+            estimator_config={"fpm_regression": regression},
+        )
+        with pytest.raises(ValueError, match=field):
+            RustForwardPassPerfModel.best_available(config)
+
+
 @pytest.mark.parametrize("invalid", [0, -1, True, False, 1.5, 4096.0, "4096", [], {}, float("nan"), float("inf")])
 def test_canonical_regression_rebuild_interval_rejects_invalid_facade_values_with_path(invalid):
     from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel

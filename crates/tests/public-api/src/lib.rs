@@ -695,6 +695,7 @@ mod tests {
                     cooldown: 4,
                     startup_observations: 10,
                 },
+                feature_set: None,
             });
             let model = ForwardPassPerfModel::best_available(config).unwrap();
             let resolved = &model.provenance().unwrap().config;
@@ -711,6 +712,57 @@ mod tests {
             assert_eq!(reloaded.regression_store_diagnostics().len(), 1);
             assert!(!reloaded.regression_store_diagnostics()[0].ready);
         }
+    }
+
+    #[test]
+    fn regression_fpm5_feature_set_is_public_and_fits_multi_rank_iterations() {
+        use aisimulate_core::{LinearFitConfig, RegressionFeatureSet, ScheduledRequestMetrics};
+
+        let mut config = ForwardPassPerfModelConfig::new(
+            "test/model",
+            "test-system",
+            BackendKind::Vllm,
+            ForwardPassWorkerType::Decode,
+        );
+        config.estimation_mode = EstimationMode::FpmRegression;
+        config.estimator_config.fpm_regression.fit.linear = Some(LinearFitConfig {
+            feature_set: Some(RegressionFeatureSet::Fpm5),
+            ..LinearFitConfig::default()
+        });
+        let mut model = ForwardPassPerfModel::best_available(config).unwrap();
+        let resolved = model.provenance().unwrap().config.clone();
+        let reloaded = ForwardPassPerfModel::best_available(resolved.clone()).unwrap();
+        assert_eq!(&reloaded.provenance().unwrap().config, &resolved);
+
+        let rank = |decode: u32, kv: u32, wall_ms: f64| ForwardPassMetrics {
+            wall_time: wall_ms / 1000.0,
+            scheduled_requests: ScheduledRequestMetrics {
+                num_decode_requests: decode,
+                sum_decode_kv_tokens: kv,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // Two attention-DP ranks; latency follows the heavier rank's KV reads
+        // plus the total batch size.
+        let latency = |a: (u32, u32), b: (u32, u32)| {
+            2.0 + 1e-3 * f64::from(a.1.max(b.1)) + 0.05 * f64::from(a.0 + b.0)
+        };
+        let iteration = |i: u32| {
+            let a = (i % 7 + 1, (i % 11 + 1) * 400);
+            let b = (i % 5 + 1, (i % 13 + 2) * 350);
+            let wall = latency(a, b);
+            vec![rank(a.0, a.1, wall), rank(b.0, b.1, wall)]
+        };
+        let observations: Vec<_> = (0..60).map(iteration).collect();
+        model.tune_with_fpms(&observations).unwrap();
+        assert!(model.regression_store_diagnostics()[0].ready);
+        let (a, b) = ((4, 3_000), (2, 5_200));
+        let estimate = model
+            .estimate_forward_pass_time_ms(&[rank(a.0, a.1, 0.0), rank(b.0, b.1, 0.0)])
+            .unwrap()
+            .unwrap();
+        assert!((estimate - latency(a, b)).abs() < 1e-6 * latency(a, b));
     }
 
     #[test]

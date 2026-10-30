@@ -43,7 +43,7 @@ pub(crate) const SCHEMA_VERSION: u32 = 1;
 /// Positional layout of `state.bin`. Bump it with any change to an encoded
 /// state type (fields, order, types or enum variants); the layout golden test
 /// fails until it is updated.
-pub const STATE_SNAPSHOT_LAYOUT_VERSION: u32 = 1;
+pub const STATE_SNAPSHOT_LAYOUT_VERSION: u32 = 2;
 pub(crate) const STATE_ENCODING: &str = "bincode1_fixint";
 pub(crate) const MANIFEST_FILE: &str = "manifest.json";
 pub(crate) const CONFIG_FILE: &str = "config.json";
