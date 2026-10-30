@@ -597,7 +597,9 @@ def _validate_method_results(methods, row, source, scenario, version, train_perc
     keys(methods, methods_for_version(version))
     population = None
     training_population = None
-    original = source["results"]["regression"]["metrics"]
+    regression = source["results"].get("regression")
+    require(regression is not None or source["status"] != "ready", "scenario source lacks regression population")
+    original = regression["metrics"] if regression is not None else None
     for method, result in methods.items():
         if not applicable(method, scenario, version):
             require(result is None, "unsupported scenario must be blank")
@@ -619,7 +621,7 @@ def _validate_method_results(methods, row, source, scenario, version, train_perc
             )
             training_population = current_training
         for kind in WORKLOADS[1:]:
-            count = original[kind]["measured_count"]
+            count = original[kind]["measured_count"] if original is not None else 0
             measured = result["metrics"][kind]["measured_count"]
             if scenario == "b":
                 expected = count - (count * train_percent + 99) // 100

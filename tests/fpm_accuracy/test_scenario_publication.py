@@ -7,6 +7,7 @@ import json
 import sys
 import zipfile
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,9 +17,11 @@ from test_evaluation import Predictor
 from test_evaluation import case as source_case_fixture
 
 import scripts.pages.prepare_fpm_accuracy_pages as publish
-from scripts.fpm_accuracy.contract import artifact_key
+from scripts.fpm_accuracy.contract import METHODS, artifact_key
 from scripts.fpm_accuracy.evaluate import evaluate_case
-from scripts.fpm_accuracy.scenarios import evaluate_scenario_case
+from scripts.fpm_accuracy.hf.models import CaseStatus
+from scripts.fpm_accuracy.scenario_contract import validate_scenarios
+from scripts.fpm_accuracy.scenarios import evaluate_scenario_case, scenario_document
 from scripts.pages.build_pages_site import PagesBuildError, _build_fpm_catalog
 from scripts.pages.prepare_fpm_accuracy_pages import unpack
 
@@ -30,6 +33,43 @@ scenario_case = scenario_fixtures.scenario_case
 @pytest.fixture
 def source_case(tmp_path):
     return source_case_fixture.__wrapped__(tmp_path)
+
+
+def _non_ready_cases(source_case):
+    return [
+        replace(
+            source_case,
+            configuration=replace(
+                source_case.configuration,
+                configuration_id=f"{source_case.configuration_id}-{status}",
+                configuration_path=f"{source_case.configuration.configuration_path}-{status}",
+            ),
+            status=status,
+            observations=(),
+            measurement_membership_sha256=hashlib.sha256(status.encode()).hexdigest(),
+        )
+        for status in CaseStatus
+        if status != CaseStatus.READY
+    ]
+
+
+@pytest.fixture(params=[status for status in CaseStatus if status != CaseStatus.READY])
+def mixed_status_campaign(request, source_case, recording):
+    _, options = recording
+    unavailable = next(case for case in _non_ready_cases(source_case) if case.status == request.param)
+    cases = [source_case, unavailable]
+    details = []
+    rows = [
+        evaluate_case(case, factory=lambda method, context: Predictor(method, context, []), details=details)
+        for case in cases
+    ]
+    snapshot = {
+        **json.loads((Path(__file__).parent / "fixtures" / "summary.json").read_text())["snapshot"],
+        "configuration_count": len(cases),
+    }
+    summary = {"schema_version": 2, "snapshot": snapshot, "methods": list(METHODS), "rows": rows}
+    document = scenario_document([evaluate_scenario_case(case, **options) for case in cases], snapshot=snapshot)
+    return document, summary, {"schema_version": 2, "snapshot": snapshot, "rows": details}
 
 
 def _details(summary):
@@ -75,7 +115,7 @@ def _details(summary):
     return {"schema_version": 1, "snapshot": summary["snapshot"], "rows": rows}
 
 
-def _files(document, summary, version=3):
+def _files(document, summary, version=3, *, details=None):
     files = {"summary.json": json.dumps(summary).encode()}
     qualification = {
         "schema_version": version,
@@ -83,7 +123,7 @@ def _files(document, summary, version=3):
         "summary_sha256": hashlib.sha256(files["summary.json"]).hexdigest(),
     }
     if version >= 2:
-        files["details.json"] = json.dumps(_details(summary)).encode()
+        files["details.json"] = json.dumps(_details(summary) if details is None else details).encode()
         qualification["details_sha256"] = hashlib.sha256(files["details.json"]).hexdigest()
     if version >= 3:
         files["scenarios.json"] = json.dumps(document).encode()
@@ -104,6 +144,35 @@ def _archive(files):
 def test_qualified_scenarios_and_legacy_campaigns_are_accepted(public_scenarios, version):
     document, summary = public_scenarios
     assert unpack(_archive(_files(document, summary, version))) == summary
+
+
+def test_scenario_validation_preserves_non_ready_source_rows(mixed_status_campaign):
+    document, summary, _ = mixed_status_campaign
+    assert summary["rows"][1]["results"] == {}
+    assert validate_scenarios(document, summary) is document
+    row = document["rows"][1]
+    for methods in [
+        *row["results"].values(),
+        *(methods for split in row["split_results"].values() for methods in split.values()),
+    ]:
+        for result in methods.values():
+            if result is not None:
+                assert result["status"] == row["status"]
+                assert result["metrics"]["all"]["measured_count"] == 0
+                assert result["cost"]["predict_count"] == result["cost"]["update_count"] == 0
+
+
+def test_v3_publication_preserves_ready_and_non_ready_rows(mixed_status_campaign):
+    document, summary, details = mixed_status_campaign
+    assert unpack(_archive(_files(document, summary, details=details))) == summary
+    assert details["rows"][1]["methods"] == {}
+
+
+def test_ready_source_row_still_requires_regression_results(public_scenarios):
+    document, summary = deepcopy(public_scenarios)
+    del summary["rows"][0]["results"]["regression"]
+    with pytest.raises(ValueError):
+        validate_scenarios(document, summary)
 
 
 def test_scenario_checksum_is_verified_before_publication(public_scenarios):
@@ -298,7 +367,9 @@ def test_prepare_keeps_scenarios_with_the_selected_summary_snapshot(
 
 
 @pytest.mark.parametrize("with_scenarios", [False, True])
-@pytest.mark.parametrize("mode", ["hub", "local", "smoke", "hf_revision_mismatch", "evaluation_failure", "oversized"])
+@pytest.mark.parametrize(
+    "mode", ["hub", "local", "smoke", "hf_revision_mismatch", "evaluation_failure", "oversized", "mixed_statuses"]
+)
 def test_cli_qualifies_only_complete_pinned_snapshots(
     tmp_path, source_case, recording, monkeypatch, with_scenarios, mode
 ):
@@ -312,10 +383,12 @@ def test_cli_qualifies_only_complete_pinned_snapshots(
     wheel_hash = hashlib.sha256(wheel.read_bytes()).hexdigest()
     output = tmp_path / "export"
     revision = "a" * 40
+    cases = [source_case, *_non_ready_cases(source_case)] if mode == "mixed_statuses" else [source_case]
+    cases_by_path = {case.configuration.configuration_path: case for case in cases}
     dataset = SimpleNamespace(
         revision="b" * 40 if mode == "hf_revision_mismatch" else revision,
-        configurations=lambda: [source_case.configuration],
-        measurement_case=lambda *args, **kwargs: source_case,
+        configurations=lambda: [case.configuration for case in cases],
+        measurement_case=lambda configuration_path, **kwargs: cases_by_path[configuration_path],
     )
     source_calls = []
 
@@ -398,7 +471,12 @@ def test_cli_qualifies_only_complete_pinned_snapshots(
     assert json.loads(files["qualification.json"])["schema_version"] == (3 if with_scenarios else 2)
     assert ("scenarios.json" in files) is with_scenarios
     summary = unpack(_archive(files))
+    assert [row["status"] for row in summary["rows"]] == [str(case.status) for case in cases]
+    if mode == "mixed_statuses":
+        assert all(row["results"] == {} for row in summary["rows"][1:])
     if with_scenarios:
         document = json.loads(files["scenarios.json"])
         assert document["snapshot"] == summary["snapshot"]
-        assert document["rows"][0]["membership_sha256"] == summary["rows"][0]["membership_sha256"]
+        assert [row["membership_sha256"] for row in document["rows"]] == [
+            row["membership_sha256"] for row in summary["rows"]
+        ]
