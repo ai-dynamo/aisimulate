@@ -209,8 +209,11 @@ is atomic across all groups against one shared rank-local byte budget. A window
 of `W` keeps the blocks covering the last `W - 1` computed tokens and all tokens
 scheduled for the next forward. Expired completed pages are evicted before
 subsequent forwards; temporary prefill pages remain charged through completion.
-Full-attention groups retain full history. This physical retention never truncates
-logical request progress or the context coordinates sent to FPM timing queries.
+Full-attention groups retain full history. A `state` group holds its
+`blocks_per_request` blocks from the request's first scheduled forward until the
+request finishes, is cancelled or is preempted, and reserves them again once
+when it resumes. This physical retention never truncates logical request
+progress or the context coordinates sent to FPM timing queries.
 
 The Rust Replay observer's `ReplaySchedulerMetricsSnapshot` reports optional
 `kv_cache_used_bytes` and `kv_cache_capacity_bytes` for grouped caches; its

@@ -42,7 +42,7 @@ class FpmCacheGroup(_ProfileModel):
     block_size_tokens: Annotated[int, Field(gt=0, le=2**32 - 1)]
     page_size_bytes: Annotated[int, Field(gt=0, le=2**53)]
     sliding_window: Annotated[int, Field(gt=0, le=2**32 - 1)] | None = None
-    # The lower bound is checked in _window, so a zero or negative count gets Rust's message.
+    # The lower bound is checked in _window, so a zero or negative count gets the text that Rust gives for zero.
     blocks_per_request: Annotated[int, Field(le=2**32 - 1)] | None = None
 
     @model_validator(mode="after")

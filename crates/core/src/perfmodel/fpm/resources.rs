@@ -1375,8 +1375,9 @@ mod tests {
     #[test]
     fn glm_shaped_groups_charge_five_pool_blocks_of_state() {
         // GLM-5.3-Flash at TP 4, fp8, k = 0: one MLA indexer group and five
-        // recurrent-state groups. Every group uses 2,176-token pool blocks of
-        // 13,045,120 bytes, and each state group holds one block per request.
+        // fixed per-request state groups (four KDA groups and the kpool tail).
+        // Every group uses 2,176-token pool blocks of 13,045,120 bytes, and
+        // each state group holds one block per request.
         let pool_group = |name: &str, kind, num_layers, blocks_per_request| FpmCacheGroup {
             name: name.into(),
             kind,

@@ -1304,7 +1304,7 @@ _BLOCKS_ONLY_STATE = "blocks_per_request applies only to state cache groups"
         ({"blocks_per_request": 0, "sliding_window": 32}, _BLOCKS_REQUIRED),
     ],
 )
-def test_state_cache_group_contract(grouped_profile, changes, message):
+def test_state_group_contract(grouped_profile, changes, message):
     groups = grouped_profile["deployments"][0]["resources"]["cache_groups"]
     groups.append(_state_group(blocks_per_request=1))
     load_fpm_profile(grouped_profile)  # One block per request is a valid state group.
@@ -1314,7 +1314,7 @@ def test_state_cache_group_contract(grouped_profile, changes, message):
 
 
 @pytest.mark.parametrize("blocks", [True, 1.0, "1", 2**32])
-def test_state_cache_group_block_count_type_and_upper_bound(grouped_profile, blocks):
+def test_state_group_block_count_type_and_upper_bound(grouped_profile, blocks):
     groups = grouped_profile["deployments"][0]["resources"]["cache_groups"]
     groups.append(_state_group(blocks_per_request=2**32 - 1))
     load_fpm_profile(grouped_profile)  # The largest u32 is valid.
