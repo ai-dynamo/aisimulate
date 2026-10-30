@@ -157,4 +157,42 @@ mod tests {
         assert_eq!(pool.used_bytes(), 0);
         assert_eq!(pool.active_blocks(), 0);
     }
+
+    #[test]
+    fn state_group_reserves_constant_bytes_and_releases_them() {
+        let mut pool = GroupedKvPool::new(
+            vec![
+                FpmCacheGroup {
+                    name: "full".into(),
+                    kind: FpmCacheKind::Attention,
+                    num_layers: 1,
+                    block_size_tokens: 4,
+                    page_size_bytes: 8,
+                    sliding_window: None,
+                    blocks_per_request: None,
+                },
+                FpmCacheGroup {
+                    name: "kda".into(),
+                    kind: FpmCacheKind::State,
+                    num_layers: 1,
+                    block_size_tokens: 4,
+                    page_size_bytes: 10,
+                    sliding_window: None,
+                    blocks_per_request: Some(2),
+                },
+            ],
+            100,
+        );
+        let mut lease = None;
+        assert!(pool.allocate(&mut lease, 0, 4)); // 8 + 2 * 10 = 28
+        assert_eq!(lease.as_ref().unwrap().ranges, vec![0..1, 0..2]);
+        assert_eq!(pool.used_bytes(), 28);
+        assert!(pool.allocate(&mut lease, 4, 8)); // 2 * 8 + 2 * 10 = 36
+        assert_eq!(lease.as_ref().unwrap().ranges, vec![0..2, 0..2]);
+        assert_eq!(pool.used_bytes(), 36);
+        assert_eq!(pool.active_blocks(), 4);
+        pool.release(&mut lease);
+        assert_eq!(pool.used_bytes(), 0);
+        assert_eq!(pool.active_blocks(), 0);
+    }
 }
