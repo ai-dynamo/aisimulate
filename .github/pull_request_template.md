@@ -18,7 +18,7 @@ Point reviewers to the riskiest files, decisions, and cross-layer contracts.
 - Risk level: <!-- low / medium / high -->
 - Start with:
 - Public or serialized contract changed: <!-- no / yes: describe -->
-- Feature Support Matrix: <!-- unaffected / updated pages/feature-support-matrix/features.toml -->
+- Feature Support Matrix: <!-- unaffected / updated pages/feature-support-matrix/features.toml and docs/replay/features.md -->
 - Compatibility or rollback concern:
 
 ## Evidence

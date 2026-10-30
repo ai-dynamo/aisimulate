@@ -21,6 +21,7 @@ TEMPLATE_PATH = "pages/feature-support-matrix/template.html"
 
 STATUS = {
     "supported": ("Supported", "bg-lime-100 text-lime-900 dark:bg-lime-900/40 dark:text-lime-200"),
+    "limited": ("Limited", "bg-amber-50 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200"),
     "not_supported": ("Not supported", "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"),
     "na": ("N/A upstream", "bg-white text-slate-400 dark:bg-slate-900 dark:text-slate-500"),
 }
@@ -175,8 +176,9 @@ def _cell(spec: str) -> str:
 def _section(section: dict, engines: list[str], prefix: str, docs_url: str) -> str:
     columns = section.get("columns", engines)
     has_notes = any("note" in row for row in section["rows"])
-    first = 26 if has_notes else 22
-    value_width = (45 if has_notes else 100 - first) / len(columns)
+    wide = len(columns) > 3
+    first = 18 if wide else 26 if has_notes else 22
+    value_width = ((56 if wide else 45) if has_notes else 100 - first) / len(columns)
     colgroup = f'<col style="width:{first}%">' + "".join(f'<col style="width:{value_width:.2f}%">' for _ in columns)
     colgroup += "<col>" if has_notes else ""
     min_width = 200 + 110 * len(columns) + (230 if has_notes else 0)

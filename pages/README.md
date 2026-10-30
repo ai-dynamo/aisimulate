@@ -32,9 +32,10 @@ The Feature Support Matrix is static HTML that
 `scripts/pages/feature_support_matrix.py` renders from
 `feature-support-matrix/template.html` and `features.toml`. A pull request that
 adds, removes or restricts a feature updates the affected cells in
-`features.toml`; each cell states what that branch's configuration validators
-accept. The publisher renders main's file and each release branch's committed
-file as one view per branch. A release cut before the file existed has no view.
+`features.toml` and the composition boundaries in `docs/replay/features.md`;
+each cell states what that branch's configuration validators accept. The
+publisher renders main's file and each release branch's committed file as one
+view per branch. A release cut before the file existed has no view.
 Every row's `doc` page and anchor must exist in the same tree. Invalid main data
 fails the build; an invalid release file only drops that release's view with a
 build warning, so check a release-branch edit with main's builder before merging.
