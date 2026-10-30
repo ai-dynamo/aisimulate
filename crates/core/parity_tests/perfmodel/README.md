@@ -151,10 +151,11 @@ type:
   0.8 ms dispatch) × 1.125, the vLLM queueing factor at batch 2. Request
   latency is TTFT + TPOT.
 - Disaggregated: TTFT is static context × 1.1 (prefill correction) × 1.8
-  (TTFT correction). TPOT is the batch-4 decode step × 1.08 (decode
-  correction). In that step, a window layer costs 0.41 µs more
-  (13.504 against 13.096 µs), which is +0.0123 ms for 30 layers. Request
-  latency is TTFT + TPOT.
+  (TTFT correction). The code rounds this prefill TTFT (the unrounded static
+  context × 1.1) to three decimals before it applies the 1.8 factor. TPOT is
+  the batch-4 decode step × 1.08 (decode correction). In that step, a window
+  layer costs 0.41 µs more (13.504 against 13.096 µs), which is +0.0123 ms
+  for 30 layers. Request latency is TTFT + TPOT.
 
 The `llama4-scout-b200-vllm-isl1024-osl2` records were refreshed the same way.
 At main, the live engine gives exactly the "Before" values:
@@ -189,8 +190,9 @@ of each type:
   per chunked layer and 10.964 µs per global layer, so the phase rises by
   15.860 µs.
 - Mixed step: the 1,024-token prefill plus one decode token, +15.177 µs.
-- Disaggregated: the context change is too small to move TTFT. In the batch-4
-  decode step, the two layer types cost the same to within 0.005 µs
+- Disaggregated: the prefill TTFT is 19.956388 ms before and 19.955614 ms
+  after. Both round to 19.956 ms, so disaggregated TTFT keeps its value. In
+  the batch-4 decode step, the two layer types cost the same to within 0.005 µs
   (10.925 against 10.930 µs). The disaggregated records therefore keep their
   values at the three decimals that they store.
 
