@@ -28,24 +28,44 @@ class _ProfileModel(BaseModel):
 
 
 class FpmCacheGroup(_ProfileModel):
-    """Rank-local physical cache pages for one attention or convolution group.
+    """Rank-local physical cache pages for one attention, convolution or state group.
 
     Page bytes include all group layers and runtime padding. The retention
     window does not replace the logical context used for FPM timing queries.
+    A state group instead holds ``blocks_per_request`` blocks of
+    ``page_size_bytes`` for every running request and has no window.
     """
 
     name: _Nonempty
-    kind: Literal["attention", "convolution"]
+    kind: Literal["attention", "convolution", "state"]
     num_layers: Annotated[int, Field(gt=0, le=2**32 - 1)]
     block_size_tokens: Annotated[int, Field(gt=0, le=2**32 - 1)]
     page_size_bytes: Annotated[int, Field(gt=0, le=2**53)]
     sliding_window: Annotated[int, Field(gt=0, le=2**32 - 1)] | None = None
+    # The lower bound is checked in _window, so a zero or negative count gets Rust's message.
+    blocks_per_request: Annotated[int, Field(le=2**32 - 1)] | None = None
 
     @model_validator(mode="after")
     def _window(self) -> FpmCacheGroup:
+        # Same order as Rust, so the same invalid group gives the same first error.
         if self.kind == "convolution" and self.sliding_window is None:
             raise ValueError("convolution cache groups require a sliding_window")
+        if self.kind == "state":
+            if self.blocks_per_request is None or self.blocks_per_request <= 0:
+                raise ValueError("state cache groups require a positive blocks_per_request")
+            if self.sliding_window is not None:
+                raise ValueError("state cache groups cannot have a sliding_window")
+        elif self.blocks_per_request is not None:
+            raise ValueError("blocks_per_request applies only to state cache groups")
         return self
+
+    @model_serializer(mode="wrap")
+    def _serialize_group(self, handler):
+        # Do not add an absent block count to saved profiles or change plan IDs.
+        result = handler(self)
+        if self.blocks_per_request is None:
+            result.pop("blocks_per_request", None)
+        return result
 
 
 class FpmRuntimeMemoryProfile(_ProfileModel):

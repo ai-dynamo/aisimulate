@@ -759,6 +759,19 @@ def grouped_profile(profile_dict):
     return profile_dict
 
 
+def _state_group(**changes):
+    return {
+        "name": "state",
+        "kind": "state",
+        "num_layers": 3,
+        "block_size_tokens": 16,
+        "page_size_bytes": 64,
+        "sliding_window": None,
+        "blocks_per_request": 2,
+        **changes,
+    }
+
+
 def test_grouped_profile_memory_keeps_byte_budget_and_context_bound(grouped_profile, profile_memory):
     result = profile_memory(max_num_tokens=16, context_length=64, cuda_graph_reserved_bytes=20, tolerance_fraction=0.1)
     assert result["kvcache_quant_mode"] == "fp8"
@@ -775,6 +788,18 @@ def test_grouped_profile_memory_keeps_byte_budget_and_context_bound(grouped_prof
     with pytest.raises(ValueError, match="context_length"):
         profile_memory(context_length=4097)
     json.dumps(result)
+
+
+def test_state_groups_reach_the_rust_budget(grouped_profile, profile_memory):
+    sizing = {"max_num_tokens": 16, "context_length": 64}
+    without_state = profile_memory(**sizing)
+    groups = grouped_profile["deployments"][0]["resources"]["cache_groups"]
+    groups.append(_state_group(page_size_bytes=64, blocks_per_request=2))
+    result = profile_memory(**sizing)
+    # Rust returns the group with its block count and holds two 64B blocks per request: 2 * 64 = 128B.
+    assert result["cache_groups"] == groups
+    assert result["cache_groups"][-1]["blocks_per_request"] == 2
+    assert result["request_peak_cache_bytes"] == without_state["request_peak_cache_bytes"] + 128
 
 
 def test_grouped_profile_cannot_be_reduced_to_scalar_blocks(grouped_profile, profile_memory):
@@ -815,6 +840,30 @@ def test_grouped_profile_roundtrip_compiles_without_graph(grouped_profile, direc
 def test_linear_profile_serialization_omits_new_group_fields(profile_dict):
     resource = load_fpm_profile(profile_dict).model_dump(mode="json")["deployments"][0]["resources"]
     assert resource == profile_dict["deployments"][0]["resources"]
+
+
+def test_grouped_profile_serialization_omits_new_group_fields(grouped_profile):
+    resource = load_fpm_profile(grouped_profile).model_dump(mode="json")["deployments"][0]["resources"]
+    assert resource == grouped_profile["deployments"][0]["resources"]
+
+
+def test_state_group_serialization_follows_the_rust_shape(grouped_profile):
+    groups = grouped_profile["deployments"][0]["resources"]["cache_groups"]
+    groups.append(_state_group())
+    profile = load_fpm_profile(grouped_profile)
+    saved = profile.model_dump(mode="json")["deployments"][0]["resources"]["cache_groups"]
+    assert saved == groups
+    # Plan IDs and spec digests hash the dump, and Rust serializes the count after the window.
+    assert list(saved[-1]) == [
+        "name",
+        "kind",
+        "num_layers",
+        "block_size_tokens",
+        "page_size_bytes",
+        "sliding_window",
+        "blocks_per_request",
+    ]
+    assert load_fpm_profile(profile).model_dump(mode="json") == profile.model_dump(mode="json")
 
 
 @pytest.fixture
@@ -1145,6 +1194,45 @@ def test_runtime_scalar_blocks_propagate_context_bound(runtime_profile):
 )
 def test_grouped_profile_rejects_ambiguous_or_invalid_page_contract(grouped_profile, change):
     change(grouped_profile["deployments"][0]["resources"])
+    with pytest.raises(ValidationError):
+        load_fpm_profile(grouped_profile)
+
+
+_BLOCKS_REQUIRED = "state cache groups require a positive blocks_per_request"
+_STATE_WINDOW = "state cache groups cannot have a sliding_window"
+_BLOCKS_ONLY_STATE = "blocks_per_request applies only to state cache groups"
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"blocks_per_request": None}, _BLOCKS_REQUIRED),
+        ({"blocks_per_request": 0}, _BLOCKS_REQUIRED),
+        ({"blocks_per_request": -1}, _BLOCKS_REQUIRED),
+        ({"sliding_window": 32}, _STATE_WINDOW),
+        ({"kind": "attention"}, _BLOCKS_ONLY_STATE),
+        ({"kind": "convolution", "sliding_window": 32}, _BLOCKS_ONLY_STATE),
+        # The first error matches Rust: the older convolution rule, then blocks, then the window.
+        ({"kind": "convolution"}, "convolution cache groups require a sliding_window"),
+        ({"blocks_per_request": None, "sliding_window": 32}, _BLOCKS_REQUIRED),
+        ({"blocks_per_request": 0, "sliding_window": 32}, _BLOCKS_REQUIRED),
+    ],
+)
+def test_state_cache_group_contract(grouped_profile, changes, message):
+    groups = grouped_profile["deployments"][0]["resources"]["cache_groups"]
+    groups.append(_state_group(blocks_per_request=1))
+    load_fpm_profile(grouped_profile)  # One block per request is a valid state group.
+    groups[-1].update(changes)
+    with pytest.raises(ValueError, match=message):
+        load_fpm_profile(grouped_profile)
+
+
+@pytest.mark.parametrize("blocks", [True, 1.0, "1", 2**32])
+def test_state_cache_group_block_count_type_and_upper_bound(grouped_profile, blocks):
+    groups = grouped_profile["deployments"][0]["resources"]["cache_groups"]
+    groups.append(_state_group(blocks_per_request=2**32 - 1))
+    load_fpm_profile(grouped_profile)  # The largest u32 is valid.
+    groups[-1]["blocks_per_request"] = blocks
     with pytest.raises(ValidationError):
         load_fpm_profile(grouped_profile)
 
