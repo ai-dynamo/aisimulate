@@ -224,8 +224,9 @@ and cannot be combined with a measured full-round profile.
 Acceptance determines sampled output progress, not a latency multiplier. Each
 decode query consumes one measured complete round at the request count and
 actual past-KV total, without another draft charge. Prefill uses its own matching
-SD cell. Mixed scheduled iterations retain replay's separate P/D phase-cost
-composition; the data does not establish mixed-round fidelity. Small token
+SD cell. A mixed scheduled iteration costs its prefill plus a full decode
+round, the same total as replay's separate P/D phase costs; the data does not
+establish mixed-round fidelity. Small token
 budgets can produce partial-width rounds that are still priced at the configured
 depth. Query coverage and a measured serving comparison remain separate checks.
 

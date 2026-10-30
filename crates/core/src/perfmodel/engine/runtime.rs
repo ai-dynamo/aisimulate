@@ -524,8 +524,8 @@ pub(crate) enum IterationDispatch {
     /// whole-model FPM with operation-level draft tails.
     Unsupported,
     /// Whole-model FPM at exact per-rank iteration totals, decode KV excluding
-    /// each request's current token. A measured SD-round profile prices only
-    /// one rank's pure prefill or pure decode.
+    /// each request's current token. A measured SD-round profile prices
+    /// exactly one rank; a mixed rank is its prefill plus a full decode round.
     WholeModel { sd_round: bool },
     /// An operation graph over packed decode counters: `verify_width` decode
     /// tokens per request, each at its full context length. `mixed` when one
@@ -5467,7 +5467,7 @@ pub(crate) mod tests {
         spec
     }
 
-    fn full_round_engine(tmp: &std::path::Path) -> Engine {
+    pub(crate) fn full_round_engine(tmp: &std::path::Path) -> Engine {
         let spec = full_round_spec(tmp);
         Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp).unwrap()
     }

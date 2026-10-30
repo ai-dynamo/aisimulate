@@ -391,9 +391,10 @@ as one forward: the prefill at the rank's exact totals plus only the latency
 the decode requests add, `max(0, decode - decode_pass_baseline)` at their
 totals. A tuned model applies the online correction of that mixed iteration,
 so the pass costs what `estimate_forward_pass_time_ms()` returns for it.
-Measured SD-round profiles, MTP drafts (`nextn > 0`) and operation-level draft
-tails define no such decode share; replay prices their decode work as a
-separate decode pass. The CLI also
+Measured SD-round profiles define no such decode share: their mixed rank costs
+the prefill plus a full decode round, the total of a separate prefill pass and
+decode pass. MTP drafts (`nextn > 0`) and operation-level draft tails keep
+pricing their decode work as a separate decode pass. The CLI also
 saves `fpm-coverage.json`, including partial evidence when a native timing
 error stops replay; the Python exception retains a `fpm_query_coverage`
 attribute for that failure path. A passing replay coverage status requires completed requests,

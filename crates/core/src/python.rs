@@ -618,8 +618,8 @@ struct PricedIteration {
     prefill_ms: Option<f64>,
     /// The detailed whole-model FPM estimate, when diagnostics are captured.
     estimate: Option<crate::ForwardPassEstimate>,
-    /// Operation evidence of the slowest rank's phases, corrected, each with
-    /// whether it is prefill.
+    /// Operation evidence of every working rank, corrected, each with whether
+    /// it is prefill. A mixed rank may contribute one record of each.
     evidence: Vec<(Arc<ValidatedTimingPhase>, bool)>,
 }
 
@@ -1217,61 +1217,66 @@ impl AicTimingModel {
     }
 
     /// Price one iteration with the canonical model: the detailed estimate
-    /// when diagnostics are captured or operation evidence needs the slowest
-    /// rank, else the plain estimate. Corrections are the model's own: the
-    /// heaviest rank's workload correction applied to the rank maximum.
+    /// when diagnostics are captured or the ranks are operation graphs, whose
+    /// operations are the power evidence, else the plain estimate.
+    /// Corrections are the model's own: the heaviest rank's workload
+    /// correction applied to the rank maximum.
     fn price_iteration(
         &self,
         pricing: &IterationPricing,
         queries: &[RankQuery],
-        ranks: &[RankWork],
         prefill_share: bool,
         capture: bool,
     ) -> Result<PricedIteration> {
         let model = &pricing.model;
         let metrics: Vec<_> = queries.iter().map(Self::rank_metrics).collect();
         let whole_model = matches!(pricing.dispatch, IterationDispatch::WholeModel { .. });
-        let (total_ms, estimate) = if whole_model && !capture {
-            let total_ms = model
-                .estimate_forward_pass_time_ms(&metrics)
-                .context("AIC iteration prediction failed")?
-                .context("canonical model returned no iteration estimate")?;
-            (total_ms, None)
-        } else {
+        let detailed = |metrics: &[crate::ForwardPassMetrics], what: &str| {
             let estimate = model
-                .estimate_forward_pass_detailed(&metrics)
-                .context("AIC iteration prediction failed")?;
-            let total_ms = estimate
+                .estimate_forward_pass_detailed(metrics)
+                .with_context(|| format!("AIC iteration {what} prediction failed"))?;
+            let latency_ms = estimate
                 .latency_ms
-                .context("canonical model returned no iteration estimate")?;
+                .with_context(|| format!("canonical model returned no {what} estimate"))?;
+            anyhow::Ok((latency_ms, estimate))
+        };
+        let plain = |metrics: &[crate::ForwardPassMetrics], what: &str| {
+            model
+                .estimate_forward_pass_time_ms(metrics)
+                .with_context(|| format!("AIC iteration {what} prediction failed"))?
+                .with_context(|| format!("canonical model returned no {what} estimate"))
+        };
+        let (total_ms, estimate) = if whole_model && !capture {
+            (plain(&metrics, "iteration")?, None)
+        } else {
+            let (total_ms, estimate) = detailed(&metrics, "iteration")?;
             (total_ms, Some(estimate))
         };
-        // Until the canonical estimate exposes per-operation energy, power
-        // evidence keeps the static phase operations of the rank that sets
-        // the iteration's time, under the same correction.
-        let evidence = match (&estimate, whole_model) {
-            (Some(estimate), false) => match estimate.max_rank {
-                Some(rank) => self.slowest_rank_evidence(
-                    &ranks[rank],
-                    estimate.correction_factor.unwrap_or(1.0),
-                )?,
-                None => Vec::new(),
-            },
+        // A second, prefill-only query of the same ranks. An operation graph
+        // reads its ranks to divide the evidence of ranks with both kinds.
+        let prefill_only: Option<Vec<_>> = prefill_share.then(|| {
+            queries
+                .iter()
+                .map(|query| Self::rank_metrics(&[query[0], query[1], query[2], 0, 0]))
+                .collect()
+        });
+        let mixed_rank = queries.iter().any(|query| query[1] > 0 && query[3] > 0);
+        let (prefill_ms, prefill_ranks) = match prefill_only {
+            None => (None, None),
+            Some(prefill_only) if whole_model || !mixed_rank => {
+                (Some(plain(&prefill_only, "prefill share")?), None)
+            }
+            Some(prefill_only) => {
+                let (prefill_ms, estimate) = detailed(&prefill_only, "prefill share")?;
+                (Some(prefill_ms), Some(estimate.ranks))
+            }
+        };
+        let evidence = match &estimate {
+            Some(estimate) if !whole_model => {
+                self.rank_operation_evidence(estimate, queries, prefill_ranks.as_deref())?
+            }
             _ => Vec::new(),
         };
-        let prefill_ms = prefill_share
-            .then(|| -> Result<f64> {
-                // A second, prefill-only estimate of the same ranks.
-                let prefill_only: Vec<_> = queries
-                    .iter()
-                    .map(|query| Self::rank_metrics(&[query[0], query[1], query[2], 0, 0]))
-                    .collect();
-                model
-                    .estimate_forward_pass_time_ms(&prefill_only)
-                    .context("AIC iteration prefill share prediction failed")?
-                    .context("canonical model returned no prefill share estimate")
-            })
-            .transpose()?;
         Ok(PricedIteration {
             total_ms,
             prefill_ms,
@@ -1280,51 +1285,90 @@ impl AicTimingModel {
         })
     }
 
-    /// Static operation evidence of `rank`'s phases at today's phase-path
-    /// shapes, stretched by the iteration's `correction`.
-    fn slowest_rank_evidence(
+    /// Power evidence of an operation-graph iteration: every working rank's
+    /// operations from the detailed `estimate`, stretched by the iteration's
+    /// online correction as a phase's evidence is, so each rank's energy
+    /// counts as it did when each rank priced its own phases.
+    ///
+    /// A rank is recorded with the phase of its work, so that phase's speedup
+    /// scales it. A rank computing prefill and decode in one mix step is
+    /// divided as the engine divides a pass: its prefill share is its own
+    /// prefill-only latency from the prefill share query (`prefill_ranks`),
+    /// at most its whole latency. That fraction of each operation's latency,
+    /// energy and SOL is prefill and the rest decode, so each part keeps the
+    /// operation's power. Without a prefill share query, requested only when
+    /// the two speedups differ, the engine times such a pass as decode and
+    /// the rank is recorded with decode.
+    fn rank_operation_evidence(
         &self,
-        rank: &RankWork,
-        correction: f64,
+        estimate: &crate::ForwardPassEstimate,
+        queries: &[RankQuery],
+        prefill_ranks: Option<&[crate::FpmRankEstimate]>,
     ) -> Result<Vec<(Arc<ValidatedTimingPhase>, bool)>> {
-        let mut evidence = Vec::with_capacity(2);
-        if let Some(prefill) = &rank.prefill
-            && prefill.totals.batch_size > 0
-            && prefill.totals.new_tokens > 0
-        {
-            let PrefillTotals {
-                batch_size,
-                new_tokens,
-                prefix_tokens,
-            } = prefill.totals;
-            let (mean_isl, mean_prefix) =
-                crate::engine::mean_prefill_shape(batch_size, new_tokens, prefix_tokens);
-            let phase = self.predict_phase_evidence(
-                checked_u32(batch_size, "prefill batch size")?,
-                checked_u32(mean_isl, "mean input length")?,
-                1,
-                checked_u32(mean_prefix, "mean prefix length")?,
-                "static_ctx",
-            )?;
-            evidence.push((Self::corrected_phase(phase, correction)?, true));
-        }
-        if let Some(decode) = &rank.decode
-            && decode.batch_size > 0
-        {
-            let mean_past_kv = decode
-                .mean_context_length
-                .checked_sub(1)
-                .context("mean decode context must include the current input token")?;
-            let phase = self.predict_phase_evidence(
-                checked_u32(decode.batch_size, "decode batch size")?,
-                checked_u32(mean_past_kv, "mean past KV length")?,
-                2,
-                0,
-                "static_gen",
-            )?;
-            evidence.push((Self::corrected_phase(phase, correction)?, false));
+        ensure!(
+            estimate.ranks.len() == queries.len()
+                && prefill_ranks.is_none_or(|ranks| ranks.len() == queries.len()),
+            "canonical model did not report every rank of an operation-graph iteration"
+        );
+        let correction = estimate.correction_factor.unwrap_or(1.0);
+        let mut evidence = Vec::with_capacity(queries.len());
+        for (index, (rank, query)) in estimate.ranks.iter().zip(queries).enumerate() {
+            let prefill_fraction = match (query[1] > 0, query[3] > 0) {
+                (false, false) => continue,
+                (true, false) => 1.0,
+                (false, true) => 0.0,
+                (true, true) => match prefill_ranks {
+                    Some(prefill) if rank.latency_ms > 0.0 => {
+                        (prefill[index].latency_ms / rank.latency_ms).min(1.0)
+                    }
+                    _ => 0.0,
+                },
+            };
+            ensure!(
+                !rank.operations.is_empty(),
+                "canonical model reported no operations for rank {index}'s work"
+            );
+            for (prefill, share) in [(true, prefill_fraction), (false, 1.0 - prefill_fraction)] {
+                if share > 0.0 {
+                    let phase = self.operation_share_evidence(&rank.operations, share)?;
+                    evidence.push((Self::corrected_phase(Arc::new(phase), correction)?, prefill));
+                }
+            }
         }
         Ok(evidence)
+    }
+
+    /// Phase evidence of `share` of name-folded `operations`: each latency,
+    /// energy and SOL times `share`. Details are kept only while diagnostics
+    /// are captured, as for phase evidence.
+    fn operation_share_evidence(
+        &self,
+        operations: &[crate::perfmodel::engine::diagnostics::StaticOperationDiagnostics],
+        share: f64,
+    ) -> Result<ValidatedTimingPhase> {
+        let operations = operations
+            .iter()
+            .map(|entry| {
+                let mut operation = TimingOperationEvidence::new(
+                    entry.name.clone(),
+                    entry.latency_ms * share,
+                    Some(entry.energy_wms * share),
+                    TimingEvidenceSource::from_provider(entry.source.clone()),
+                )?;
+                if self.diagnostic_model.is_some() {
+                    let mut details = entry.details.clone();
+                    if let Some(sol) = &mut details.sol {
+                        sol.latency_ms *= share;
+                        sol.math_ms *= share;
+                        sol.memory_ms *= share;
+                    }
+                    operation.details = Some(details);
+                }
+                Ok(operation)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // Rank operations are name-folded in first-encounter order.
+        ValidatedTimingPhase::from_name_folded_operations(operations)
     }
 
     /// Record one invocation of a priced iteration.
@@ -1457,9 +1501,9 @@ impl TimingModel for AicTimingModel {
     /// Price an attention-DP group pass with one canonical
     /// `ForwardPassMetrics` query, one entry per rank. `None` where the query
     /// cannot represent the pass: a measured SD-round profile with more than
-    /// one rank or a rank computing prefill and decode together, an operation
-    /// graph whose measured scopes cannot compose a mix step, a scheduler at
-    /// another speculative depth, or totals beyond the query's range.
+    /// one rank, an operation graph whose measured scopes cannot compose a
+    /// mix step, a scheduler at another speculative depth, or totals beyond
+    /// the query's range.
     fn predict_iteration_ms(
         &self,
         ranks: &[RankWork],
@@ -1488,14 +1532,17 @@ impl TimingModel for AicTimingModel {
             (false, true) => IterationKind::Decode,
             (true, true) => IterationKind::Mixed,
         };
-        let mixed_rank = queries.iter().any(|query| query[1] > 0 && query[3] > 0);
         match pricing.dispatch {
-            IterationDispatch::WholeModel { sd_round: true }
-                if queries.len() != 1 || mixed_rank =>
+            // Measured rounds stay outside attention DP; their mixed rank is
+            // the prefill plus a full decode round.
+            IterationDispatch::WholeModel { sd_round: true } if queries.len() != 1 => {
+                return Ok(None);
+            }
+            IterationDispatch::Operations { mixed: false, .. }
+                if queries.iter().any(|query| query[1] > 0 && query[3] > 0) =>
             {
                 return Ok(None);
             }
-            IterationDispatch::Operations { mixed: false, .. } if mixed_rank => return Ok(None),
             _ => {}
         }
         let key = (queries, prefill_share && kind == IterationKind::Mixed);
@@ -1508,7 +1555,7 @@ impl TimingModel for AicTimingModel {
             .filter(|priced| !(capture && whole_model && priced.estimate.is_none()));
         let priced = match cached {
             Some(priced) => priced,
-            None => Arc::new(self.price_iteration(pricing, &key.0, ranks, key.1, capture)?),
+            None => Arc::new(self.price_iteration(pricing, &key.0, key.1, capture)?),
         };
         self.record_iteration(&priced, &key.0, kind)?;
         let iteration = IterationMs {
@@ -6911,15 +6958,21 @@ mod tests {
             None
         );
         let pricing = timing.iteration.as_mut().unwrap();
-        // A measured SD-round profile prices one rank's pure phase only.
+        // A measured SD-round profile prices exactly one rank, mixed or pure
+        // (see `sd_round_iteration_prices_a_mixed_rank_as_todays_separate_passes`).
         pricing.dispatch = IterationDispatch::WholeModel { sd_round: true };
         assert!(timing.predict_iteration_ms(&pure, false).unwrap().is_some());
+        assert!(
+            timing
+                .predict_iteration_ms(&mixed, false)
+                .unwrap()
+                .is_some()
+        );
         let two_ranks = [prefill_work(0, 1, 8, 0), RankWork::idle(1)];
         assert_eq!(
             timing.predict_iteration_ms(&two_ranks, false).unwrap(),
             None
         );
-        assert_eq!(timing.predict_iteration_ms(&mixed, false).unwrap(), None);
         // Measured scopes without a mix-step composition decline mixed ranks,
         // and a scheduler at another speculative depth keeps phase pricing.
         let pricing = timing.iteration.as_mut().unwrap();
@@ -6978,9 +7031,11 @@ mod tests {
         }
     }
 
-    /// The packaged Qwen3-0.6B H200 vLLM operation-level model, or `None`
-    /// when the embedded interpreter cannot import the Python SDK.
-    fn packaged_op_level_timing(test: &str) -> Option<AicTimingModel> {
+    /// A packaged Qwen3-0.6B operation-level model, or `None` when the
+    /// embedded interpreter cannot import the Python SDK. Without `power`, the
+    /// H200 vLLM model, whose tables carry no power; with it, the B200
+    /// TensorRT-LLM 1.3.0rc20 model, whose GEMM and attention tables do.
+    fn packaged_op_level_timing(test: &str, power: bool) -> Option<AicTimingModel> {
         let required = std::env::var_os("AIC_REQUIRE_EMBEDDED_ROUND_TRIP").is_some();
         if let Err(error) =
             Python::with_gil(|py| py.import("aisimulate_core.sdk.engine").map(|_| ()))
@@ -6995,7 +7050,13 @@ mod tests {
         }
         let mut config = aic_config();
         config.model = "Qwen/Qwen3-0.6B".into();
-        config.system = "h200_sxm".into();
+        if power {
+            config.system = "b200_sxm".into();
+            config.backend = "trtllm".into();
+            config.backend_version = Some("1.3.0rc20".into());
+        } else {
+            config.system = "h200_sxm".into();
+        }
         config.estimation_mode = Some(EstimationMode::OpLevel);
         config.kv_block_size = Some(16);
         config.systems_paths = vec![
@@ -7028,45 +7089,96 @@ mod tests {
     #[test]
     fn op_level_iteration_on_a_packaged_model_keeps_pure_one_rank_phase_timing() {
         pyo3::prepare_freethreaded_python();
-        let Some(timing) = packaged_op_level_timing(
-            "op_level_iteration_on_a_packaged_model_keeps_pure_one_rank_phase_timing",
-        ) else {
-            return;
-        };
-        // Pure passes whose per-request means divide exactly: the canonical
-        // query prices the same static phase with the same evidence.
-        for (batch, new, prefix) in [(1, 1000, 0), (4, 4096, 1024), (16, 2048, 0)] {
-            let iteration = priced_with_evidence(&timing, |timing| {
-                iteration_ms(timing, &[prefill_work(0, batch, new, prefix)])
-            });
-            let phase = priced_with_evidence(&timing, |timing| {
-                timing
-                    .predict_prefill_totals_ms(batch, new, prefix)
-                    .unwrap()
-            });
-            assert_eq!(
-                iteration.0.to_bits(),
-                phase.0.to_bits(),
-                "{iteration:?} {phase:?}"
-            );
-            assert_eq!(iteration.1, phase.1);
+        for power in [false, true] {
+            let Some(timing) = packaged_op_level_timing(
+                "op_level_iteration_on_a_packaged_model_keeps_pure_one_rank_phase_timing",
+                power,
+            ) else {
+                return;
+            };
+            assert_pure_one_rank_iterations_keep_phase_timing(timing, power);
         }
-        for (batch, context) in [(1, 129), (32, 1025), (7, 4097)] {
-            let iteration = priced_with_evidence(&timing, |timing| {
-                iteration_ms(timing, &[decode_work(0, batch, batch * context, 1 << 20)])
-            });
-            let phase = priced_with_evidence(&timing, |timing| {
-                timing
-                    .predict_decode_ms(batch, batch * context, context, 1 << 20)
-                    .unwrap()
-            });
-            assert_eq!(
-                iteration.0.to_bits(),
-                phase.0.to_bits(),
-                "{iteration:?} {phase:?}"
-            );
-            assert_eq!(iteration.1, phase.1);
+    }
+
+    fn assert_pure_one_rank_iterations_keep_phase_timing(mut timing: AicTimingModel, power: bool) {
+        let model = Arc::clone(&timing.iteration.as_ref().unwrap().model);
+        for capture in [false, true] {
+            // Replay fixes capture at construction; each mode prices and
+            // caches its own evidence.
+            timing.diagnostic_model = capture.then(|| Arc::clone(&model));
+            timing.phase_cache.clear();
+            let pricing = timing.iteration.as_ref().unwrap();
+            pricing.cache.as_ref().unwrap().clear();
+            let timing = &timing;
+            // Pure passes whose per-request means divide exactly: the
+            // canonical query prices the same static phase, and the rank's
+            // operations are the same evidence, with the same details while
+            // diagnostics are captured.
+            for (batch, new, prefix) in [(1, 1000, 0), (4, 4096, 1024), (16, 2048, 0)] {
+                let iteration = priced_with_evidence(timing, |timing| {
+                    iteration_ms(timing, &[prefill_work(0, batch, new, prefix)])
+                });
+                let phase = priced_with_evidence(timing, |timing| {
+                    timing
+                        .predict_prefill_totals_ms(batch, new, prefix)
+                        .unwrap()
+                });
+                assert_eq!(
+                    iteration.0.to_bits(),
+                    phase.0.to_bits(),
+                    "{iteration:?} {phase:?}"
+                );
+                assert_eq!(iteration.1, phase.1);
+                assert_eq!(iteration.1.prefill.energy_wms.is_some(), power);
+                let details = |operation: &TimingOperationEvidence| operation.details.is_some();
+                assert!(
+                    iteration
+                        .1
+                        .prefill
+                        .operations
+                        .iter()
+                        .all(|op| details(op) == capture)
+                );
+            }
+            for (batch, context) in [(1, 129), (32, 1025), (7, 4097)] {
+                let iteration = priced_with_evidence(timing, |timing| {
+                    iteration_ms(timing, &[decode_work(0, batch, batch * context, 1 << 20)])
+                });
+                let phase = priced_with_evidence(timing, |timing| {
+                    timing
+                        .predict_decode_ms(batch, batch * context, context, 1 << 20)
+                        .unwrap()
+                });
+                assert_eq!(
+                    iteration.0.to_bits(),
+                    phase.0.to_bits(),
+                    "{iteration:?} {phase:?}"
+                );
+                assert_eq!(iteration.1, phase.1);
+                assert_eq!(iteration.1.decode.energy_wms.is_some(), power);
+            }
         }
+    }
+
+    /// Operation evidence of `operations` as one phase record would carry it,
+    /// without details.
+    fn operations_evidence(
+        operations: &[crate::perfmodel::engine::diagnostics::StaticOperationDiagnostics],
+    ) -> TimingPhaseEvidence {
+        TimingPhaseEvidence::from_operations(
+            operations
+                .iter()
+                .map(|operation| {
+                    TimingOperationEvidence::new(
+                        operation.name.clone(),
+                        operation.latency_ms,
+                        Some(operation.energy_wms),
+                        TimingEvidenceSource::from_provider(operation.source.clone()),
+                    )
+                    .unwrap()
+                })
+                .collect(),
+        )
     }
 
     #[test]
@@ -7074,6 +7186,7 @@ mod tests {
         pyo3::prepare_freethreaded_python();
         let Some(timing) = packaged_op_level_timing(
             "op_level_iteration_on_a_packaged_model_uses_the_canonical_composition",
+            true,
         ) else {
             return;
         };
@@ -7091,23 +7204,91 @@ mod tests {
         );
 
         // A mixed vLLM pass is the model's one mix step, not a prefill pass
-        // followed by a separate decode pass. Evidence keeps both phases.
+        // followed by a separate decode pass. Its evidence is the mix step's
+        // operations, all decode while the engine asks for no prefill share.
+        let query = [1, 512, 0, 8, 8 * 1025];
         let decode = decode_work(0, 8, 8 * 1025, 1 << 20);
         let mixed = [mixed_work(prefill_work(0, 1, 512, 0), decode.clone())];
         let (iteration, evidence) =
             priced_with_evidence(&timing, |timing| iteration_ms(timing, &mixed));
-        assert_eq!(iteration, canonical_ms(&model, &[[1, 512, 0, 8, 8 * 1025]]));
-        let (separate, phase_evidence) = priced_with_evidence(&timing, |timing| {
-            timing.predict_prefill_totals_ms(1, 512, 0).unwrap()
-                + timing
-                    .predict_decode_ms(8, 8 * 1025, 1025, 1 << 20)
-                    .unwrap()
-        });
+        assert_eq!(iteration, canonical_ms(&model, &[query]));
+        let separate = timing.predict_prefill_totals_ms(1, 512, 0).unwrap()
+            + timing
+                .predict_decode_ms(8, 8 * 1025, 1025, 1 << 20)
+                .unwrap();
         assert_ne!(iteration, separate);
-        assert_eq!(evidence, phase_evidence);
+        let rank = model
+            .estimate_forward_pass_detailed(&[AicTimingModel::rank_metrics(&query)])
+            .unwrap()
+            .ranks
+            .remove(0);
+        let mix_step = operations_evidence(&rank.operations);
+        assert_eq!(evidence.prefill, TimingPhaseEvidence::default());
+        assert_eq!(evidence.decode, mix_step);
+        assert!((evidence.decode.latency_ms - iteration).abs() <= 1e-12 * iteration);
 
-        // Imbalanced ranks: one iteration at the slower rank, with evidence
-        // of that rank's phase only.
+        // With a prefill share, the rank's prefill-only latency is prefill
+        // evidence and the rest decode: each operation splits by that
+        // fraction, keeping its power, and each phase's evidence equals the
+        // part of the pass the engine scales by that phase's speedup.
+        timing.reset_evidence().unwrap();
+        let split = timing.predict_iteration_ms(&mixed, true).unwrap().unwrap();
+        let evidence = timing.evidence_summary().unwrap();
+        let prefill_ms = split.prefill_ms.unwrap();
+        assert_eq!(prefill_ms, canonical_ms(&model, &[[1, 512, 0, 0, 0]]));
+        assert!(0.0 < prefill_ms && prefill_ms < split.total_ms, "{split:?}");
+        let near = |a: f64, b: f64| (a - b).abs() <= 1e-9 * a.abs().max(b.abs());
+        assert!(near(evidence.prefill.latency_ms, prefill_ms));
+        assert!(near(
+            evidence.decode.latency_ms,
+            split.total_ms - prefill_ms
+        ));
+        let energy = |phase: &TimingPhaseEvidence| phase.energy_wms.unwrap();
+        assert!(near(
+            energy(&evidence.prefill) + energy(&evidence.decode),
+            energy(&mix_step)
+        ));
+        let power = |phase: &TimingPhaseEvidence| energy(phase) / phase.latency_ms;
+        assert!(near(power(&evidence.prefill), power(&mix_step)));
+        assert!(near(power(&evidence.decode), power(&mix_step)));
+        let names = |phase: &TimingPhaseEvidence| {
+            phase
+                .operations
+                .iter()
+                .map(|operation| operation.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&evidence.prefill), names(&mix_step));
+        assert_eq!(names(&evidence.decode), names(&mix_step));
+        // Replay power scales prefill by the speedup and decode by the speedup
+        // times the decode speedup, as the engine times the pass's two parts.
+        let timing = Arc::new(timing);
+        let source = TimingPowerSource {
+            timing: Arc::clone(&timing) as Arc<dyn TimingModel>,
+            prefill_speedup_ratio: 2.0,
+            decode_speedup_ratio: 8.0,
+        };
+        let scaled = replay_timing_evidence(&[source]).unwrap().unwrap();
+        assert!(near(
+            scaled.prefill.latency_ms + scaled.decode.latency_ms,
+            prefill_ms / 2.0 + (split.total_ms - prefill_ms) / 8.0
+        ));
+    }
+
+    #[test]
+    fn op_level_iteration_records_every_ranks_operation_evidence() {
+        pyo3::prepare_freethreaded_python();
+        let Some(timing) = packaged_op_level_timing(
+            "op_level_iteration_records_every_ranks_operation_evidence",
+            true,
+        ) else {
+            return;
+        };
+        let model = Arc::clone(&timing.iteration.as_ref().unwrap().model);
+
+        // Imbalanced decode ranks: one iteration at the slower rank's time,
+        // and the energy of both ranks' work, as when each rank recorded its
+        // own decode pass.
         let light = decode_work(0, 4, 4 * 1025, 1 << 20);
         let heavy = decode_work(1, 32, 32 * 4097, 1 << 20);
         let (grouped, evidence) = priced_with_evidence(&timing, |timing| {
@@ -7116,19 +7297,195 @@ mod tests {
         let single = |work: &RankWork| {
             let mut work = work.clone();
             work.dp_rank = 0;
-            iteration_ms(&timing, &[work])
+            priced_with_evidence(&timing, |timing| iteration_ms(timing, &[work]))
         };
-        assert_eq!(grouped, single(&light).max(single(&heavy)));
+        let ((light_ms, light_evidence), (heavy_ms, heavy_evidence)) =
+            (single(&light), single(&heavy));
+        assert_eq!(grouped, light_ms.max(heavy_ms));
         assert_eq!(
             grouped,
             canonical_ms(&model, &[[0, 0, 0, 4, 4 * 1025], [0, 0, 0, 32, 32 * 4097]])
         );
-        let (_, heavy_evidence) = priced_with_evidence(&timing, |timing| {
+        let (_, per_rank) = priced_with_evidence(&timing, |timing| {
             timing
-                .predict_decode_ms(32, 32 * 4097, 4097, 1 << 20)
+                .predict_decode_ms(4, 4 * 1025, 1025, 1 << 20)
                 .unwrap()
+                + timing
+                    .predict_decode_ms(32, 32 * 4097, 4097, 1 << 20)
+                    .unwrap()
         });
-        assert_eq!(evidence, heavy_evidence);
+        assert_eq!(evidence, per_rank);
+        let energy = |phase: &TimingPhaseEvidence| phase.energy_wms.unwrap();
+        let sum = energy(&light_evidence.decode) + energy(&heavy_evidence.decode);
+        assert!((energy(&evidence.decode) - sum).abs() <= 1e-12 * sum);
+        assert!(energy(&evidence.decode) > energy(&heavy_evidence.decode));
+        assert!(
+            (evidence.decode.latency_ms
+                - (light_evidence.decode.latency_ms + heavy_evidence.decode.latency_ms))
+                .abs()
+                <= 1e-12 * evidence.decode.latency_ms
+        );
+
+        // A prefill rank and a decode rank: each rank's work is recorded with
+        // its own phase, so each takes that phase's speedup.
+        let prefill = prefill_work(0, 4, 4096, 1024);
+        let decode = decode_work(1, 32, 32 * 1025, 1 << 20);
+        let (_, evidence) = priced_with_evidence(&timing, |timing| {
+            iteration_ms(timing, &[prefill.clone(), decode.clone()])
+        });
+        let (_, per_rank) = priced_with_evidence(&timing, |timing| {
+            timing.predict_prefill_totals_ms(4, 4096, 1024).unwrap()
+                + timing
+                    .predict_decode_ms(32, 32 * 1025, 1025, 1 << 20)
+                    .unwrap()
+        });
+        assert_eq!(evidence, per_rank);
+        assert!(evidence.prefill.energy_wms.is_some() && evidence.decode.energy_wms.is_some());
+
+        // An idle rank records nothing.
+        let (_, evidence) = priced_with_evidence(&timing, |timing| {
+            iteration_ms(timing, &[RankWork::idle(0), decode.clone()])
+        });
+        let (_, alone) = priced_with_evidence(&timing, |timing| {
+            iteration_ms(
+                timing,
+                &[RankWork {
+                    dp_rank: 0,
+                    ..decode.clone()
+                }],
+            )
+        });
+        assert_eq!(evidence, alone);
+
+        // Tune the model so the prefill rank alone runs at 1.5x and the decode
+        // rank alone at 1.25x its native time.
+        let untuned = per_rank;
+        let queries = [[4, 4096, 1024, 0, 0], [0, 0, 0, 32, 32 * 1025]];
+        let natives = queries.map(|query| canonical_ms(&model, &[query]));
+        drop(model);
+        let mut timing = timing;
+        let pricing = timing.iteration.as_mut().unwrap();
+        let tuned = Arc::get_mut(&mut pricing.model).expect("the fixture's only model handle");
+        let iterations: Vec<_> = (0..8)
+            .flat_map(|_| {
+                [(0, 1.5), (1, 1.25)].map(|(index, factor)| {
+                    vec![crate::ForwardPassMetrics {
+                        wall_time: natives[index] * factor / 1000.0,
+                        ..AicTimingModel::rank_metrics(&queries[index])
+                    }]
+                })
+            })
+            .collect();
+        tuned.tune_with_fpms(&iterations).unwrap();
+        let model = Arc::clone(&pricing.model);
+        pricing.cache.as_ref().unwrap().clear();
+        assert!(model.corrects_native_estimates());
+        timing.corrections = Some(Arc::clone(&model));
+
+        // One rank: the phase path's corrected evidence.
+        let (corrected_prefill, evidence) = priced_with_evidence(&timing, |timing| {
+            iteration_ms(
+                timing,
+                &[RankWork {
+                    dp_rank: 0,
+                    ..prefill.clone()
+                }],
+            )
+        });
+        let (phase_prefill, phase) = priced_with_evidence(&timing, |timing| {
+            timing.predict_prefill_totals_ms(4, 4096, 1024).unwrap()
+        });
+        assert_eq!(corrected_prefill, phase_prefill);
+        assert!(
+            close(corrected_prefill, 1.5 * natives[0]),
+            "{corrected_prefill}"
+        );
+        assert_eq!(evidence, phase);
+
+        // Two ranks: both ranks' evidence stretches by the iteration's one
+        // correction, the heaviest rank's, so power is unchanged.
+        let (grouped, evidence) = priced_with_evidence(&timing, |timing| {
+            iteration_ms(timing, &[prefill.clone(), decode.clone()])
+        });
+        let correction = model
+            .estimate_forward_pass_detailed(
+                &queries.map(|query| AicTimingModel::rank_metrics(&query)),
+            )
+            .unwrap()
+            .correction_factor
+            .unwrap();
+        assert!(close(grouped, correction * natives[0].max(natives[1])));
+        assert!(!close(correction, 1.0), "{correction}");
+        let near = |a: f64, b: f64| (a - b).abs() <= 1e-12 * a.abs().max(b.abs());
+        for (tuned, untuned) in [
+            (&evidence.prefill, &untuned.prefill),
+            (&evidence.decode, &untuned.decode),
+        ] {
+            assert!(near(tuned.latency_ms, correction * untuned.latency_ms));
+            assert!(near(energy(tuned), correction * energy(untuned)));
+        }
+    }
+
+    #[test]
+    fn sd_round_iteration_prices_a_mixed_rank_as_todays_separate_passes() {
+        pyo3::prepare_freethreaded_python();
+        let tmp = tempfile::tempdir().unwrap();
+        let model = Arc::new(ForwardPassPerfModel::from_engine(
+            Arc::new(crate::perfmodel::engine::runtime::tests::full_round_engine(
+                tmp.path(),
+            )),
+            Default::default(),
+        ));
+        let (mut phase, mut iteration) = fpm_timing_pair(&model);
+        assert_eq!(
+            iteration.iteration.as_ref().unwrap().dispatch,
+            IterationDispatch::WholeModel { sd_round: true }
+        );
+        // `full_round_spec`'s hand rows: the B1 prefill of 256 tokens after
+        // 128 KV is 13 ms and the complete K3 decode round of one request at
+        // 4096 past KV is 7 ms. The request's 4097-token context includes its
+        // current token.
+        let prefill = PrefillTotals {
+            batch_size: 1,
+            new_tokens: 256,
+            prefix_tokens: 128,
+        };
+        let mixed = [mixed_work(
+            prefill_work(0, 1, 256, 128),
+            decode_work(0, 1, 4097, 1 << 20),
+        )];
+        for capture in [false, true] {
+            if capture {
+                phase.diagnostic_model = Some(Arc::clone(&model));
+                iteration.diagnostic_model = Some(Arc::clone(&model));
+            }
+            // Today's replay: the profile has no mix-step decode share, so
+            // the scheduler prices a prefill pass and a separate decode round.
+            assert_eq!(
+                phase
+                    .predict_mixed_pass_ms(prefill, 1, 4097, 4097, 1 << 20)
+                    .unwrap(),
+                None
+            );
+            let separate = phase.predict_prefill_totals_ms(1, 256, 128).unwrap()
+                + phase.predict_decode_ms(1, 4097, 4097, 1 << 20).unwrap();
+            assert_eq!(separate, 20.0);
+            for prefill_share in [false, true] {
+                let priced = iteration
+                    .predict_iteration_ms(&mixed, prefill_share)
+                    .unwrap()
+                    .expect("one SD-round rank prices a mixed pass");
+                assert_eq!(priced.total_ms, separate);
+                assert_eq!(priced.prefill_ms, prefill_share.then_some(13.0));
+            }
+        }
+        // Attention DP stays outside the measured identity.
+        assert_eq!(
+            iteration
+                .predict_iteration_ms(&[mixed[0].clone(), RankWork::idle(1)], false)
+                .unwrap(),
+            None
+        );
     }
 
     #[test]

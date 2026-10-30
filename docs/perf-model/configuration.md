@@ -697,16 +697,37 @@ time; and a worker's pass ends at the latest rank compute start plus the shared
 time. A one-rank pure prefill or pure decode pass whose prefix tokens divide
 evenly across its requests keeps its previous latency and evidence.
 
-Operation-level power evidence keeps the static phase operations of the rank
-that sets the pass's time, until the canonical estimate exposes per-operation
-energy. Captured whole-model FPM evidence records each pass as one iteration
+A measured SD-round profile prices exactly one rank. A rank that computes
+prefill and decode costs the measured prefill plus a full decode round, the
+total of the former separate prefill and decode passes, under the correction
+of that mixed iteration.
+
+Operation-level power evidence comes from the same detailed estimate: the
+`operations` of every rank with work, stretched by the pass's correction like
+its latency, so a pass's energy sums over its ranks as it did when each rank
+priced its own phases. A rank's evidence is the work that the query priced, so
+a mixed rank reports its mix step's operations rather than separate static
+prefill and decode phases. Each rank is recorded with the phase of its work,
+whose speedup then scales it. A rank that computes prefill and decode is
+divided as the engine divides the pass: its own latency in the prefill-only
+query, at most its whole latency, is prefill and the rest decode. Each
+operation's latency, energy and SOL split in that proportion, so its power is
+unchanged. Without that query, which replay makes only when
+`decode_speedup_ratio` differs from 1, the engine times the whole pass at one
+speedup and the rank is recorded with decode. Operation details such as SOL are
+kept only while `capture_performance_diagnostics` is set, as for phase
+evidence. Captured whole-model FPM evidence records each pass as one iteration
 over every rank; a pass that computes prefill and decode is reported with
-decode. Replay keeps per-rank phase timing, each rank pricing its own phases
-and the pass ending with the slowest rank, for bounded decoder replay, v1
-execution profiles, hybrid FPM with operation-level draft tails, a scheduler
-whose speculative depth differs from the model's, and, for a measured SD-round
-profile, attention DP above one or a rank that computes prefill and decode
-together. Lookup coverage collection counts every pass, so replay does not
+decode.
+
+Replay keeps per-rank phase timing, each rank pricing its own phases and the
+pass ending with the slowest rank, for bounded decoder replay, v1 execution
+profiles, hybrid speculative FPM (operation-level draft tails, or `nextn > 0`
+without a measured SD-round profile), a measured SD-round profile with
+attention DP above one, a scheduler whose speculative depth differs from the
+model's, an operation graph whose measured scopes cannot compose a mix step
+when a rank computes prefill and decode, and totals beyond the query's 32-bit
+counters. Lookup coverage collection counts every pass, so replay does not
 reuse a priced iteration while it is enabled.
 
 ## Unified CLI timing fields
