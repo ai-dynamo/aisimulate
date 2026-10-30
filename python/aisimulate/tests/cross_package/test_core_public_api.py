@@ -488,6 +488,7 @@ def test_distribution_carries_typing_contract() -> None:
         ("learned_identity", {"config_json": "str"}, "str"),
         ("learned_online_diagnostics", {}, "str | None"),
         ("learned_selector_diagnostics", {}, "str | None"),
+        ("learned_expert_artifacts", {}, "str"),
         ("flush_updates", {}, "None"),
         ("export_learned_artifact", {}, "str"),
         ("save_online_checkpoint", {"path": "str"}, "None"),

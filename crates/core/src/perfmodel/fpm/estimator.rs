@@ -22,6 +22,9 @@ pub struct EstimatorConfig {
     #[serde(skip_serializing_if = "SelectorConfig::is_default")]
     pub selector: SelectorConfig,
     pub correction: CorrectionConfig,
+    /// Kept outside learned fitting controls to preserve their binary checkpoints.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temporary_mixed_composition: Option<TemporaryMixedCompositionConfig>,
     /// Restore tuned state written by `ForwardPassPerfModel::save_state_snapshot`.
     /// Absent for ordinary construction and omitted from serialization.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -351,6 +354,206 @@ impl FpmLearnedConfig {
         }
         Ok(())
     }
+}
+
+/// The source scenario is explicit: a frozen model alone does not identify A.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TemporaryMixedCompositionScenario {
+    #[serde(rename = "a")]
+    A,
+    #[serde(rename = "a_c")]
+    AC,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TemporaryMixedCompositionMode {
+    Compose,
+    ComposeCalibrated,
+}
+
+/// A manifest binds the original accepted A groups and seed artifacts.
+/// Counts and attention/MoE geometry are computed natively from its groups.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OriginalASource {
+    pub manifest_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_sha256: Option<String>,
+}
+
+impl OriginalASource {
+    pub(crate) fn resolve_source(&mut self) -> Result<(), AicError> {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+
+        self.validate()?;
+        self.manifest_path =
+            std::path::absolute(&self.manifest_path).map_err(|source| AicError::Io {
+                path: self.manifest_path.clone(),
+                source,
+            })?;
+        let mut file = std::fs::File::open(&self.manifest_path).map_err(|source| AicError::Io {
+            path: self.manifest_path.clone(),
+            source,
+        })?;
+        let mut digest = Sha256::new();
+        let mut bytes = [0u8; 65536];
+        loop {
+            let count = file.read(&mut bytes).map_err(|source| AicError::Io {
+                path: self.manifest_path.clone(),
+                source,
+            })?;
+            if count == 0 {
+                break;
+            }
+            digest.update(&bytes[..count]);
+        }
+        let actual = format!("{:x}", digest.finalize());
+        if self
+            .source_sha256
+            .as_ref()
+            .is_some_and(|expected| !expected.eq_ignore_ascii_case(&actual))
+        {
+            return Err(invalid_mixed_composition(
+                "original_a.source_sha256 does not match manifest contents",
+            ));
+        }
+        self.source_sha256 = Some(actual);
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<(), AicError> {
+        if self.manifest_path.as_os_str().is_empty() {
+            return Err(invalid_mixed_composition(
+                "original_a.manifest_path cannot be empty",
+            ));
+        }
+        if self.source_sha256.as_ref().is_some_and(|digest| {
+            digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }) {
+            return Err(invalid_mixed_composition(
+                "original_a.source_sha256 must contain 64 hexadecimal characters",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Reuses hybrid correction with attention/MoE coordinates. Its two policies
+/// each receive the sampling budget; their state is independent of pure models.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MixedCompositionCalibrationConfig {
+    pub sampling: SamplingConfig,
+    pub min_observations: usize,
+    pub factor_bounds: CorrectionFactorBounds,
+}
+
+impl Default for MixedCompositionCalibrationConfig {
+    fn default() -> Self {
+        Self {
+            sampling: SamplingConfig::default(),
+            min_observations: 5,
+            factor_bounds: CorrectionFactorBounds::default(),
+        }
+    }
+}
+
+impl MixedCompositionCalibrationConfig {
+    pub(crate) fn options(&self) -> ForwardPassPerfOptions {
+        ForwardPassPerfOptions {
+            correction_mode: CorrectionMode::Hybrid,
+            bucket_shape: Some(self.sampling.bins_per_axis),
+            max_observations: self.sampling.max_observations,
+            min_observations: self.min_observations,
+            min_faster_correction_factor: self.factor_bounds.min,
+            max_slower_correction_factor: self.factor_bounds.max,
+            ..ForwardPassPerfOptions::default()
+        }
+    }
+}
+
+/// Optional causal quality check for original-A missing mixed classes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MixedQualityGateConfig {
+    pub alpha: f64,
+    pub min_comparisons: usize,
+}
+
+impl Default for MixedQualityGateConfig {
+    fn default() -> Self {
+        Self {
+            alpha: 0.05,
+            min_comparisons: 5,
+        }
+    }
+}
+
+impl MixedQualityGateConfig {
+    pub(crate) fn validate(&self) -> Result<(), AicError> {
+        if !self.alpha.is_finite()
+            || self.alpha <= 0.0
+            || self.alpha > 1.0
+            || self.min_comparisons == 0
+        {
+            return Err(invalid_mixed_composition(
+                "quality_gate requires 0 < alpha <= 1 and min_comparisons >= 1",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Version-one policy: interpolation, ownership fixed from the original A seed,
+/// and existing hybrid calibration over native attention/MoE scores.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemporaryMixedCompositionConfig {
+    pub scenario: TemporaryMixedCompositionScenario,
+    pub mode: TemporaryMixedCompositionMode,
+    pub original_a: OriginalASource,
+    #[serde(default)]
+    pub calibration: MixedCompositionCalibrationConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_gate: Option<MixedQualityGateConfig>,
+}
+
+impl TemporaryMixedCompositionConfig {
+    fn validate(&self) -> Result<(), AicError> {
+        if !matches!(
+            (self.scenario, self.mode),
+            (
+                TemporaryMixedCompositionScenario::A,
+                TemporaryMixedCompositionMode::Compose
+            ) | (
+                TemporaryMixedCompositionScenario::AC,
+                TemporaryMixedCompositionMode::ComposeCalibrated
+            )
+        ) {
+            return Err(invalid_mixed_composition(
+                "scenario='a' requires mode='compose'; scenario='a_c' requires mode='compose_calibrated'",
+            ));
+        }
+        if let Some(gate) = &self.quality_gate {
+            if self.scenario != TemporaryMixedCompositionScenario::AC {
+                return Err(invalid_mixed_composition(
+                    "quality_gate requires scenario='a_c'",
+                ));
+            }
+            gate.validate()?;
+        }
+        self.original_a.validate()?;
+        validate_options(&self.calibration.options())
+            .map_err(|error| invalid_mixed_composition(&format!("calibration: {error}")))
+    }
+}
+
+fn invalid_mixed_composition(reason: &str) -> AicError {
+    AicError::InvalidEngineConfig(format!(
+        "estimator_config.temporary_mixed_composition: {reason}"
+    ))
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1144,6 +1347,23 @@ impl EstimatorConfig {
 
     pub(crate) fn validate(&self) -> Result<(), AicError> {
         self.fpm_learned.validate()?;
+        if let Some(mixed) = &self.temporary_mixed_composition {
+            mixed.validate()?;
+            for (name, weight) in [
+                ("attention_kv_weight", self.features.attention_kv_weight),
+                (
+                    "prefill_attention_pair_weight",
+                    self.features.prefill_attention_pair_weight,
+                ),
+                ("ffn_token_weight", self.features.ffn_token_weight),
+            ] {
+                if !weight.is_finite() || weight <= 0.0 {
+                    return Err(invalid_mixed_composition(&format!(
+                        "features.{name} must be finite and strictly positive"
+                    )));
+                }
+            }
+        }
         self.selector.validate()?;
         if let Some(snapshot) = &self.state_snapshot {
             snapshot.validate()?;

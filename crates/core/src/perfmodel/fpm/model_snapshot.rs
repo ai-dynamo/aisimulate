@@ -223,6 +223,11 @@ impl ForwardPassPerfModel {
         path: &Path,
         options: &StateSnapshotOptions,
     ) -> Result<ForwardPassPerfModelConfig, AicError> {
+        if self.mixed_composition.is_some() {
+            return Err(invalid(
+                "temporary_mixed_composition is not supported by portable state snapshots; use save_online_checkpoint or mixed_composition_state",
+            ));
+        }
         let mut stage = Stage::new(path)?;
         let destination = stage.destination().to_path_buf();
         let kind = self.snapshot_kind();
@@ -676,6 +681,7 @@ fn causal_selector_base(
         is_correction_enabled: config.estimator_config.correction.enabled,
         query_coverage: None,
         snapshot_tuning: None,
+        mixed_composition: None,
     })
 }
 

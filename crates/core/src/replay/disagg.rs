@@ -329,9 +329,6 @@ struct TransferLinks {
     jobs: FxHashMap<HandoffId, u64>,
     next_job: u64,
     completed: Vec<HandoffId>,
-    /// Next event, cached because the event loop asks on every iteration;
-    /// `None` after a change, so same-instant changes recompute once.
-    next_event_ms: Option<Option<f64>>,
 }
 
 impl TransferLinks {
@@ -348,14 +345,11 @@ impl TransferLinks {
             jobs: FxHashMap::default(),
             next_job: 0,
             completed: Vec::new(),
-            next_event_ms: None,
         })
     }
 
-    fn next_event_ms(&mut self) -> Option<f64> {
-        *self
-            .next_event_ms
-            .get_or_insert_with(|| self.transfers.next_event())
+    fn next_event_ms(&self) -> Option<f64> {
+        self.transfers.next_event()
     }
 
     fn submit(
@@ -387,7 +381,6 @@ impl TransferLinks {
         });
         self.handoffs.insert(id, handoff_id);
         self.jobs.insert(handoff_id, id);
-        self.next_event_ms = None;
     }
 
     /// Release the share of a retiring handoff's transfer, if still in flight.
@@ -402,7 +395,6 @@ impl TransferLinks {
         };
         self.handoffs.remove(&id);
         self.transfers.cancel(id);
-        self.next_event_ms = None;
     }
 
     /// Report transfers finished by `now_ms`. Service between events is
@@ -421,7 +413,7 @@ impl TransferLinks {
         // Changes at the links' own instant need no service. A step that
         // stopped short of an event can leave a residual below one clock ULP,
         // so a known event due at this instant still needs a step.
-        let due = matches!(self.next_event_ms, Some(Some(event_ms)) if event_ms <= now_ms);
+        let due = self.transfers.known_event_due(now_ms);
         if now_ms < self.transfers.now() || (now_ms == self.transfers.now() && !due) {
             return;
         }
@@ -436,7 +428,6 @@ impl TransferLinks {
         }
         // Same-time completions follow handoff order, as heap events do.
         self.completed[first..].sort_unstable();
-        self.next_event_ms = None;
     }
 }
 
@@ -2318,7 +2309,7 @@ where
         let next_transfer_ms = self
             .flow
             .links
-            .as_mut()
+            .as_ref()
             .and_then(TransferLinks::next_event_ms);
         let next_event_ms = self.events.peek().map(|event| event.at_ms);
         let next_canonical_event_ms = if self.telemetry.is_some() {

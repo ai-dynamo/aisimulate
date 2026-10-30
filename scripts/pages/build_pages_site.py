@@ -22,6 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.e2e_accuracy.build_e2e_accuracy_overview import measurement_source_url
 from scripts.fpm_accuracy.contract import artifact_key, eligible_branch, strict_json, validate_summary
+from scripts.fpm_accuracy.scenario_contract import validate_scenarios
 from scripts.pages import feature_support_matrix as feature_matrix
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -634,6 +635,14 @@ def _build_fpm_catalog(repo_root: Path, output_dir: Path, include_refs: bool, ar
             target.write_text(json.dumps(summary, allow_nan=False, sort_keys=True) + "\n")
             head = _git(repo_root, "rev-parse", "origin/" + branch) if include_refs else None
             entry.update(status="available", summary_path=relative, head_sha=head)
+            scenario_source = artifacts / (artifact_key(branch) + "-scenarios.json")
+            if scenario_source.exists() or scenario_source.is_symlink():
+                if scenario_source.is_symlink():
+                    raise PagesBuildError("FPM scenarios cannot be a symlink")
+                scenarios = validate_scenarios(strict_json(scenario_source.read_text()), summary)
+                (target.parent / "scenarios.json").write_text(
+                    json.dumps(scenarios, allow_nan=False, sort_keys=True, separators=(",", ":")) + "\n"
+                )
         entries.append(entry)
     if artifacts is not None and (artifacts / "dashboard").exists():
         dashboard = artifacts / "dashboard"

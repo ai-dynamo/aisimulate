@@ -1504,6 +1504,11 @@
     "fpmEstimate": {
       "type": "object",
       "properties": {
+        "unavailable_reason": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
         "latency_ms": {
           "type": [
             "number",
