@@ -296,7 +296,9 @@ def materialize_aic_num_gpu_blocks(
             if lowered.get("aic_fpm_profile") is not None
             else {}
         ),
-        **({"context_length": lowered.get("max_model_len")} if lowered.get("aic_fpm_profile") is not None else {}),
+        # Most models do not use context_length in their KV Cache calculation,
+        # so it's safe to pass it in as a catch-all for models that do use it
+        context_length=lowered.get("max_model_len"),
         colocated_encoder=bool(lowered.get("vision", False)),
         reserved_bytes=_vision_cache_bytes(lowered) if lowered.get("vision") else 0,
         encoder_parallel=_vision_encoder_parallel(lowered) if lowered.get("vision") else None,
