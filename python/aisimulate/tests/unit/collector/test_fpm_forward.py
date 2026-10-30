@@ -1590,9 +1590,15 @@ _NEMOTRON_REASONS = "recurrent-state field mamba_num_heads, recurrent-state fiel
 
 
 def _nemotron_super(tmp_path, *, nested, decoder_names_itself=True, sidecar=False):
-    """The packaged Nemotron 3 Super config, flat or under llm_config in the #562 Nemotron 3.5 Super VL shape."""
+    """The packaged Nemotron 3 Super config, flat or under llm_config in the #562 Nemotron 3.5 Super VL shape.
+
+    decoder_names_itself=False deletes the decoder's architectures entry. None writes it as null, as a wrapper's
+    PretrainedConfig.to_dict() writes a field that is not set.
+    """
     config = _packaged_config(_NEMOTRON_SUPER)
-    if not decoder_names_itself:
+    if decoder_names_itself is None:
+        config["architectures"] = None
+    elif not decoder_names_itself:
         del config["architectures"]
     if nested:
         config = {"architectures": ["NemotronH_Omni_Reasoning_V3"], "llm_config": config}
@@ -1648,9 +1654,10 @@ def test_llm_config_decoder_under_an_unregistered_wrapper_is_checked_against_its
         load_model_config(str(directory))
 
 
-@pytest.mark.parametrize("decoder_names_itself", [True, False])
+@pytest.mark.parametrize("decoder_names_itself", [True, False, pytest.param(None, id="null")])
 def test_llm_config_markers_and_architecture_match_config_intake(tmp_path, decoder_names_itself):
     from aisimulate.support.config_profile import load_model_config as load_intake_config
+    from aisimulate_core.sdk.fpm_profile import _validate_checkpoint_architecture
 
     directory = _nemotron_super(tmp_path, nested=True, decoder_names_itself=decoder_names_itself)
     intake = load_intake_config(directory / "config.json")
@@ -1661,6 +1668,11 @@ def test_llm_config_markers_and_architecture_match_config_intake(tmp_path, decod
     )
     # Onboarding writes the intake architecture into the profile, and the planner requires the collector's to match.
     assert capability.architecture == intake.suggestions["architecture"]
+    # The prediction-time profile check reads the same checkpoint and must accept that profile architecture.
+    profile = SimpleNamespace(
+        model=str(directory), model_revision=None, architecture=intake.suggestions["architecture"]
+    )
+    _validate_checkpoint_architecture(profile)
 
 
 def _detected_layout_plan(tmp_path, monkeypatch, generator_overrides):
