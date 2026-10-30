@@ -15,6 +15,7 @@ from pydantic import (
     Field,
     PrivateAttr,
     StrictBool,
+    WithJsonSchema,
     field_validator,
     model_serializer,
     model_validator,
@@ -44,6 +45,12 @@ NonNegativeFloat = Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False
 Fraction = Annotated[float, Field(strict=True, gt=0, le=1, allow_inf_nan=False)]
 EngineMode = Literal["aggregated", "disaggregated", "afd"]
 Backend = Literal["vllm", "sglang", "trtllm"]
+
+# Input strings are normalized before Literal validation; serialized values stay canonical.
+DatabaseMode = Annotated[
+    Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"],
+    WithJsonSchema({"type": "string"}, mode="validation"),
+]
 KvBytesPerToken = PositiveInt | Literal["auto"]
 AFDPhase = Literal["prefill", "decode", "both"]
 AFDPipelineModel = Literal["optimistic", "conservative", "serial"]
@@ -404,7 +411,7 @@ class TimingConfig(StrictModel):
     fallback_policy: Literal["deny", "allow"] | None = None
     estimator_config: dict[str, Any] | None = None
     systems_paths: list[SystemsRoot] | None = Field(default=None, min_length=1)
-    database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] | None = None
+    database_mode: DatabaseMode | None = None
     transfer_policy: str | list[str] | None = None
 
     @field_validator("database_mode", mode="before")
@@ -795,7 +802,7 @@ class EstimatorPolicyConfig(StrictModel):
             raise ValueError("engine model controls require default timing in every regular language role")
         return self
 
-    database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] = "SILICON"
+    database_mode: DatabaseMode = "SILICON"
     transfer_policy: str | list[str] | None = None
     systems_paths: list[SystemsRoot] | None = Field(default=None, min_length=1)
     systems_path: SystemsPath | None = Field(default=None, exclude=True)

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import jsonschema
 import pytest
 from pydantic import ValidationError
 
@@ -84,6 +85,69 @@ def test_replay_estimation_schema_advertises_supported_modes(config_type, schema
 def test_timing_config_rejects_learned_with_actionable_error_before_loading_source(estimator_config):
     with pytest.raises(ValidationError, match="engine replay's phase-only timing"):
         TimingConfig(estimation_mode="fpm_learned", estimator_config=estimator_config)
+
+
+@pytest.mark.parametrize("config_type", [CorePredictionConfig, CoreRecommendationConfig])
+@pytest.mark.parametrize("role", [None, "aggregated", "prefill", "decode"])
+@pytest.mark.parametrize(
+    ("raw_mode", "canonical_mode"),
+    [
+        ("SILICON", "SILICON"),
+        ("silicon", "SILICON"),
+        ("sIlIcOn", "SILICON"),
+        ("\u017f\u0131l\u0131con", "SILICON"),
+        ("HYBRID", "HYBRID"),
+        ("hybrid", "HYBRID"),
+        ("empirical", "EMPIRICAL"),
+        ("sol", "SOL"),
+    ],
+)
+def test_database_mode_input_schema_preserves_runtime_normalization(config_type, role, raw_mode, canonical_mode):
+    engine = {**_engine(), "mode": "aggregated"}
+    if role is None:
+        engine["database_mode"] = raw_mode
+    else:
+        if role in {"prefill", "decode"}:
+            engine.update(mode="disaggregated", workers={"prefill": {}, "decode": {}})
+        engine["workers"][role]["timing"] = {"database_mode": raw_mode}
+    raw = {"engine": engine}
+    if config_type is CoreRecommendationConfig:
+        raw["optimization"] = {}
+
+    config = config_type.model_validate(raw)
+    owner = config.engine if role is None else getattr(config.engine.workers, role).timing
+    assert owner.database_mode == canonical_mode
+    jsonschema.Draft202012Validator(config_type.model_json_schema(mode="validation")).validate(raw)
+    jsonschema.Draft202012Validator(config_type.model_json_schema(mode="serialization")).validate(
+        config.model_dump(mode="json", exclude_none=True)
+    )
+
+
+@pytest.mark.parametrize("config_type", [TimingConfig, EstimatorPolicyConfig])
+@pytest.mark.parametrize("raw_mode", ["unknown", "silicone", " silicon ", 1, True, {}])
+def test_database_mode_runtime_still_rejects_invalid_values(config_type, raw_mode):
+    with pytest.raises(ValidationError, match="database_mode"):
+        config_type(database_mode=raw_mode)
+
+
+@pytest.mark.parametrize("config_type", [TimingConfig, EstimatorPolicyConfig])
+def test_database_mode_schema_preserves_nullability_and_serialized_enum(config_type):
+    validation_schema = config_type.model_json_schema(mode="validation")["properties"]["database_mode"]
+    serialized_schema = config_type.model_json_schema(mode="serialization")["properties"]["database_mode"]
+    jsonschema.Draft202012Validator(validation_schema).validate("silicon")
+    jsonschema.Draft202012Validator(serialized_schema).validate("SILICON")
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(serialized_schema).validate("silicon")
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(validation_schema).validate(1)
+    if config_type is TimingConfig:
+        assert config_type(database_mode=None).database_mode is None
+        jsonschema.Draft202012Validator(validation_schema).validate(None)
+    else:
+        with pytest.raises(ValidationError, match="database_mode"):
+            config_type(database_mode=None)
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.Draft202012Validator(validation_schema).validate(None)
 
 
 @pytest.mark.parametrize(
