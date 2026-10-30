@@ -2540,18 +2540,24 @@ class Task:
         return out
 
     def to_yaml(self) -> str:
-        """Serialize public configuration, keeping inferred FMHA modes unset.
+        """Serialize public configuration, keeping inferred GEMM, MoE and FMHA modes unset.
 
         The result is round-trippable through :func:`from_yaml` (modulo
         None fields which are accepted by the constructor as defaults).
+        Writing an inferred mode would turn it into an explicit override on
+        reload and bypass checkpoint-specific per-layer precision.
         """
         import yaml
 
         values = self.to_dict()
-        for role, explicit in self._fmha_explicit.items():
-            if not explicit:
-                key = "fmha_quant_mode" if role == "agg" else f"{role}_fmha_quant_mode"
-                values[key] = None
+        for name, explicit_by_role in (
+            ("gemm_quant_mode", self._gemm_quant_mode_explicit_by_role),
+            ("moe_quant_mode", self._moe_quant_mode_explicit_by_role),
+            ("fmha_quant_mode", self._fmha_explicit),
+        ):
+            for role, explicit in explicit_by_role.items():
+                if not explicit:
+                    values[name if role == "agg" else f"{role}_{name}"] = None
         return yaml.safe_dump(values, sort_keys=False)
 
     # =====================================================================

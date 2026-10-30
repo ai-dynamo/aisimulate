@@ -1251,6 +1251,8 @@ def resolve_nvfp4_for_system(
     """
     from aisimulate_core.sdk.perf_database import is_blackwell_system
 
+    # Per-layer checkpoint precision (Nemotron-H) resolves its own NVFP4 lanes from this.
+    model_config.system = system_name
     if is_blackwell_system(system_name):
         return  # native FP4 TC — nvfp4 stays as-is
 

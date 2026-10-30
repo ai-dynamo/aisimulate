@@ -672,6 +672,8 @@ def compile_engine(
             **({"enable_encoder_dp": encoder_parallel == "dp"} if encoder_parallel is not None else {}),
         )
         model_config.fpm_config = fpm_config
+        # Hardware identity for system-dependent model construction (per-layer NVFP4 lanes).
+        model_config.system = system
         # Apply MTP BEFORE get_model so the walked op lists carry the
         # (L+nextn)/L compute scale; accepted-token progress is applied above core.
         apply_nextn(model_config, nextn)

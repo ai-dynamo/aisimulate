@@ -62,14 +62,19 @@ on the checkpoint and not on the model name.
 - On non-Blackwell systems, an NVFP4 projection or expert runs weight-only
   (`nvfp4_wo`), as the global NVFP4 mode does.
 - A `W4A16_NVFP4` projection is priced as `w4a16_nvfp4`: NVFP4 weights with
-  BF16 compute, the FP4 Marlin path that vLLM runs. vLLM has no collected
-  `w4a16_nvfp4` GEMM data. Strict SILICON prediction fails for such a
-  projection, and HYBRID estimates it from another quantization profile.
+  BF16 activations. Measured vLLM `w4a16_nvfp4` GEMM rows exist only for the
+  Nemotron 3.5 Lightning shared-expert shapes, on b200_sxm and gb200 at vLLM
+  0.30.0 and on b200_sxm at 0.31.0. Those rows measure the FlashInfer CuTe-DSL
+  W4A16 kernel. vLLM 0.24.0 runs Marlin, and the vLLM source selects Marlin
+  below SM100 (not measured). On any other system, version or shape, strict
+  SILICON prediction fails for such a projection, and HYBRID estimates it
+  from another quantization profile.
 - Routed experts of a ModelOpt export that are listed `W4A16_NVFP4` are
-  priced as `w4a16_nvfp4`, in uniform and mixed listings. vLLM runs them
-  weight-only on Marlin. No vLLM MoE table has `w4a16_nvfp4` rows. Strict
-  SILICON prediction fails for them, and HYBRID estimates them from another
-  quantization profile.
+  priced as `w4a16_nvfp4`, in uniform and mixed listings. The vLLM source
+  runs them weight-only on Marlin. The vLLM MoE collector has a
+  `w4a16_nvfp4` mode for Nemotron 3.5 Lightning, but no MoE table has
+  `w4a16_nvfp4` rows yet. Strict SILICON prediction fails for them, and
+  HYBRID estimates them from another quantization profile.
 
 If layers give a projection or the routed experts different precisions, the
 SDK prices each precision for its own count of layers. The MoE dispatch ops

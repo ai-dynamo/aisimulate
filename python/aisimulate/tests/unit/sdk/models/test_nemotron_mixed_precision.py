@@ -795,3 +795,92 @@ def test_config_only_modelopt_mixed_partial_listing_prices_unlisted_layers_bf16(
         assert moe == pytest.approx(
             {common.MoEQuantMode.nvfp4: 1, common.MoEQuantMode.bfloat16: pattern.count("E") - 1}
         )
+
+
+@pytest.mark.parametrize("system", ["h200_sxm", "gb200"])
+def test_canonical_api_resolves_per_layer_nvfp4_for_the_target_system(monkeypatch, system):
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    # BF16 MoE isolates the GEMMs. Super lists one NVFP4 shared-down projection; on Hopper it must
+    # use the weight-only lane (native FP4 has no tensor-core FLOPs there and would raise).
+    config = ForwardPassPerfModelConfig(
+        model="nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
+        system=system,
+        backend="vllm",
+        backend_version="0.30.0",
+        worker_type="decode",
+        tp=1,
+        moe_tp_size=1,
+        moe_ep_size=1,
+        database_mode="SOL",
+        estimation_mode="op_level",
+        moe_quant_mode="bfloat16",
+    )
+    model = RustForwardPassPerfModel.best_available(config)
+    try:
+        rows = model.static_phase_diagnostics(batch_size=8, context_length=1024, prefill=False)
+    finally:
+        model.close()
+    shared_down = [row for row in rows if row["name"].endswith("shared_down_gemm")]
+    assert shared_down and all(row["latency_ms"] > 0 for row in shared_down)
+
+
+def _published_super_with_fp8_experts(tmp_path, fp8_layers):
+    """Published Super NVFP4 metadata (mixed per-layer projections) with the first MoE layers' experts FP8."""
+    root = files("aisimulate_core") / "model_configs"
+    data = json.loads((root / "nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4_config.json").read_text())
+    hf_quant = json.loads((root / "nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4_hf_quant_config.json").read_text())
+    e_layers = [i for i, kind in enumerate(data["hybrid_override_pattern"]) if kind == "E"][:fp8_layers]
+    for layers in (data["quantization_config"]["quantized_layers"], hf_quant["quantization"]["quantized_layers"]):
+        for name, entry in layers.items():
+            if any(f".layers.{layer}.mixer.experts." in name for layer in e_layers):
+                entry["quant_algo"] = "FP8"
+    (tmp_path / "config.json").write_text(json.dumps(data))
+    (tmp_path / "hf_quant_config.json").write_text(json.dumps(hf_quant))
+    return str(tmp_path)
+
+
+def _task_modes(task, role, model_path):
+    """Per-layer projection buckets and routed-expert modes of the model a Task builds for a role."""
+    model = get_model(model_path, task.build_model_config(role=role, parallel=(1, 1, 1, 1, 1, 1)), "vllm")
+    moe = {op._quant_mode: op._scale_factor for op in model.context_ops if op._name == "context_moe"}
+    return _projection_buckets(model.context_ops, _ALL_PROJECTIONS), moe
+
+
+@pytest.mark.parametrize("serving_mode", ["agg", "disagg"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_task_yaml_round_trip_keeps_inferred_precision_inferred(monkeypatch, tmp_path, serving_mode, explicit):
+    import yaml
+
+    from aisimulate.sdk.task_v2 import Task
+
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    model_path = _published_super_with_fp8_experts(tmp_path, fp8_layers=10)
+    overrides = {"gemm_quant_mode": BF16, "moe_quant_mode": common.MoEQuantMode.fp8} if explicit else {}
+    if serving_mode == "agg":
+        roles = ["agg"]
+        kwargs = {"model_path": model_path, "system_name": "gb200", "backend_name": "vllm", **overrides}
+    else:
+        roles = ["prefill", "decode"]
+        kwargs = {"total_gpus": 2}
+        for role in roles:
+            kwargs |= {
+                f"{role}_model_path": model_path,
+                f"{role}_system_name": "gb200",
+                f"{role}_backend_name": "vllm",
+                **{f"{role}_{key}": value for key, value in overrides.items()},
+            }
+    task = Task(serving_mode=serving_mode, backend_version="0.31.0", database_mode="SOL", **kwargs)
+    reloaded = Task.from_yaml(yaml.safe_load(task.to_yaml()))
+    for role in roles:
+        before = _task_modes(task, role, model_path)
+        assert _task_modes(reloaded, role, model_path) == before
+        projections, moe = before
+        if explicit:
+            assert all(set(modes) == {BF16} for modes in projections.values())
+            assert set(moe) == {common.MoEQuantMode.fp8}
+        else:
+            # The checkpoint's per-layer split survives the round trip: mixed projections and experts.
+            assert any(len(modes) > 1 for modes in projections.values())
+            assert set(moe) == {common.MoEQuantMode.fp8, common.MoEQuantMode.nvfp4}
