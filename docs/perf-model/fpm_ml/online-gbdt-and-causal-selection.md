@@ -32,8 +32,9 @@ optionally, the splits within those trees. The ordinary inference artifact
 contains enough information to predict, but not enough to continue fitting:
 training rows, fitted bins and fitting settings belong to the checkpoint.
 
-The canonical control is `estimator_config.fpm_learned.adaptation: online`.
-This standalone online estimator requires `correction.enabled: false`; its
+The canonical control is `estimator_config.fpm_learned.adaptation: online`,
+which is the default learned adaptation. This standalone online estimator
+requires `correction.enabled: false`, supplied automatically when omitted; its
 reported latency is the adaptive forest's prediction. Frozen adaptation remains
 the separate option for applying hybrid calibration to an unchanged forest.
 Combined `causal_selector` adaptation uses these same online fitting rules for
@@ -101,9 +102,11 @@ expire, they are discarded without publishing a new forest. Prediction queries
 and checkpoint saves do not expire rows or publish another forest.
 
 With $H_0$ original historical observations and $R$ retained recent observations,
-unit row weights are the default. An explicit `history_weight` $\beta$ instead
-sets the historical fraction of total loss mass after a support ramp. For ramp
-length $K$, define
+`history_weight` $\beta$ sets the historical fraction of total loss mass after a
+support ramp. Standalone online defaults use $\beta=0.1$ and $K=32$; the combined
+selector's online expert defaults to $\beta=0.25$ and $K=8$. Explicit
+`history_weight: null` with `history_weight_ramp_observations: 0` instead uses
+unit row weights. For a configured fraction and ramp length $K$, define
 
 $$
 s=\begin{cases}
@@ -322,6 +325,19 @@ changes its trees. Calibration receives ratios against $F_{0,s}$ for its
 entire lifetime, so publishing an adaptive forest cannot invalidate or reset
 those ratios. The adaptive prediction has no correction multiplier.
 
+The temporary mixed-workload policy has one scoped exception: in A+C, a mixed
+class missing sufficient original-A training data uses calibrated interpolation
+as its stable expert, $C_s(x)=c_s(\phi(x))T_{\mathrm{interp}}(x)$, with isolated
+attention/MoE calibration coordinates. Callers can train and append that class's
+online checkpoint after at least 20 admitted C observations. Until it is ready, only the
+interpolation expert can predict. Subsequent observations with both expert
+predictions supply paired losses to the same selector recurrence below; the
+first 20 labels supply no retrospective losses. Warmup remains per store/query
+key. Interpolation calibration continues after online selection, and C never
+creates a frozen seed forest or changes the original-A support decision. See
+[temporary mixed composition](configuration.md#temporary-mixed-composition-for-self-benchmark-seeds)
+for configuration and availability behavior.
+
 ### The stable expert's hybrid factor
 
 For admitted latency $y>0$, calibration stores the absolute ratio
@@ -384,20 +400,20 @@ and selector comparison count are three different quantities.
 Canonical `correction.sampling.bins_per_axis: [2, 2]` means four total buckets:
 four prefill intervals or a 2-by-2 decode/mixed grid. This is the legacy
 `bucket_count: 4` setting, sometimes abbreviated `b4`; `[4, 4]` means 16 total
-buckets and is the API default. An explicit `M=32`, `b4`, `[0.5, 2.0]` profile
-changes calibration retention and geometry without changing the online loss
-or selector equations. See the [configuration example](learned-forward-pass-model.md#hybrid-calibration-with-a-causal-selector)
-for its exact canonical fields.
+buckets and is the API default. The combined defaults use $M=64$, sixteen
+buckets, and bounds `[0.5, 2.0]`. See the
+[configuration example](learned-forward-pass-model.md#hybrid-calibration-with-a-causal-selector)
+for the exact canonical fields.
 
-For this profile, $M=32$ and `min_observations=5` allocate eight recent FIFO
-slots and 24 primary slots within dynamic calibration, plus a separate
-32-slot fixed budget for each store/query key. `b4` uses the 2-by-2 grid above.
-`W64` retains up to 64 online rows per forest store; the selector's
-$N_0=10$ warmup instead counts comparisons per store/query key. With
-$\alpha=0.025$, an old error contribution halves in about 27.38 comparisons
-of that key. Online `history_weight=0.1` assigns 90% of loss mass to recent
-rows after the 32-row retained-support ramp completes; all historical rows
-remain represented, rather than retaining only 10% of them.
+With $M=64$ and `min_observations=5`, dynamic calibration allocates sixteen
+recent FIFO slots and 48 primary slots, plus a separate 64-slot fixed budget
+for each store/query key. The combined online expert's `W8` retains up to eight
+rows per forest store; the selector's $N_0=5$ warmup instead counts comparisons
+per store/query key. With $\alpha=0.4$, an old error contribution halves in about
+1.36 comparisons of that key. Online `history_weight=0.25` assigns 75% of loss
+mass to recent rows after the eight-row retained-support ramp completes; all
+historical rows remain represented. Standalone online fitting uses a separate
+W64 default with `history_weight=0.1` and a 32-row support ramp.
 
 ### Error evidence and switching
 
@@ -452,12 +468,12 @@ that key's comparisons, so unrelated labels neither extend nor interrupt it.
 The resulting choice serves subsequent queries of the key. The current
 observation's prediction used $a_{k,n-1}$ and cannot benefit from its own label.
 
-Defaults are $\alpha=0.025$, $N_0=10$, $\delta=0.025$ and $P=1$. The online
-profile name `W64` means `recent_window: 64`; its FIFO capacity is independent
-of the selector's `warmup: 10` comparisons per key. For example,
-with active EWMA 0.20, a margin of 0.025 requires challenger error strictly
-below 0.195. This is a 2.5% relative improvement over active error, not a
-2.5-percentage-point reduction in MAPE. Warmup limits sparse early decisions;
+Defaults are $\alpha=0.4$, $N_0=5$, $\delta=0.05$ and $P=1$. The combined online
+profile name `W8` means `recent_window: 8`; its FIFO capacity is independent
+of the selector's `warmup: 5` comparisons per key. For example,
+with active EWMA 0.20, a margin of 0.05 requires challenger error strictly
+below 0.19. This is a 5% relative improvement over active error, not a
+5-percentage-point reduction in MAPE. Warmup limits sparse early decisions;
 margin requires an advantage; persistence requires repeated evidence. These
 controls do not establish a statistical confidence guarantee.
 
@@ -490,10 +506,22 @@ Combined construction accepts a training seed and starts fresh stable
 calibration, online recent state and selector evidence. A standalone online
 runtime checkpoint does not contain the combined histories and is rejected.
 `save_online_checkpoint()` and `export_learned_artifact()` reject combined
-models until a format can preserve both experts, every correction store and
-every selector key together. `learned_selector_diagnostics()` exposes selection
-state; `learned_online_diagnostics()` exposes the adaptive fitting state. Neither
+models because neither format preserves both experts, every correction store
+and every selector key together. A
+[state snapshot](../configuration.md#state-snapshots) does:
+`save_state_snapshot()` saves the frozen expert, the adaptive expert with its runtime checkpoint (including
+pending rows), every calibration store and all twelve selector keys, and
+`best_available` restores them together. Restoration validates the evidence
+against the selector configuration and the forest stores. Restored models
+predict bit-identically and continue with byte-identical state.
+`learned_selector_diagnostics()` exposes selection state;
+`learned_online_diagnostics()` exposes the adaptive fitting state. Neither
 diagnostic snapshot is a resumable model.
+
+The [temporary mixed-workload policy](mixed-workload-fallback.md) does not yet
+support portable state snapshots or full mixed-selector continuation. Its
+partial mixed-state API saves calibration and standalone quality evidence only;
+the constructor and snapshot writer reject combinations that would lose state.
 
 The selector adds constant-size error state per key, while the stable forest
 and its correction stores add their own memory and update costs. Feedback

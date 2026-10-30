@@ -22,7 +22,12 @@ when not (preserve_engine_limits or false):
     agg max_num_tokens = ((max_batch_size + SlaConfig.isl + 500 + tokens_per_block - 1) // tokens_per_block) * tokens_per_block
 
 # P/D needs KV transfer even when evaluated scheduler limits are preserved.
-prefill_decode cache_transceiver_max_tokens_in_buffer = (cache_transceiver_max_tokens_in_buffer if ((preserve_engine_limits or false) and cache_transceiver_max_tokens_in_buffer) else ((((SlaConfig.isl or 0) + (SlaConfig.osl or 0) + 500) + tokens_per_block - 1) // tokens_per_block) * tokens_per_block)
+# Guard: TRT-LLM disables KV transfer when cache_transceiver_config has no backend.
+prefill_decode cache_transceiver_backend = (cache_transceiver_backend if cache_transceiver_backend else "DEFAULT")
+# Why: a trace has no fixed ISL/OSL. Without both lengths the size stays unset
+# rather than guessed, and TRT-LLM applies its own default (max_seq_len since
+# 1.3.0rc3, rounded up to a KV block since 1.3.0rc22.post1).
+prefill_decode cache_transceiver_max_tokens_in_buffer = (cache_transceiver_max_tokens_in_buffer if ((preserve_engine_limits or false) and cache_transceiver_max_tokens_in_buffer) else (((((SlaConfig.isl + SlaConfig.osl + 500) + tokens_per_block - 1) // tokens_per_block) * tokens_per_block) if (SlaConfig.isl and SlaConfig.osl) else none))
 
 # Multimodal EPD encode worker (vision encoder). The SDK sweep does not size it,
 # so give it small concrete batch/token budgets. Matches dynamo's qwen3-vl

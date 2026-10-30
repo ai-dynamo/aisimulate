@@ -264,6 +264,27 @@ impl LearnedForwardPassModel {
         self.stores.insert(kind, store);
     }
 
+    /// Install a validated, previously absent online store without copying the
+    /// existing forests. The caller owns compatibility and duplicate checks.
+    pub(crate) fn append_store_from(
+        &mut self,
+        mut seed: Self,
+        kind: ForwardPassRegressionWorkloadKind,
+        rows: usize,
+    ) {
+        self.stores.insert(
+            kind,
+            seed.stores.remove(&kind).expect("validated appended store"),
+        );
+        let name = serde_json::to_value(kind).expect("store kind serializes");
+        if self.metadata.is_object() {
+            if !self.metadata["train_rows"].is_object() {
+                self.metadata["train_rows"] = serde_json::json!({});
+            }
+            self.metadata["train_rows"][name.as_str().expect("store kind string")] = rows.into();
+        }
+    }
+
     pub(crate) fn selected_features(&self, features: &IterationFeatureVector) -> Vec<f64> {
         self.feature_indices
             .iter()

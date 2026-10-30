@@ -4,7 +4,7 @@
 // Modified Rust simulation of vLLM b3563fc65ae0f5359802593d78e7ea097e1fed31
 // scheduling contracts; immutable sources and license: THIRD_PARTY_NOTICES.md.
 
-use rand::rngs::StdRng;
+use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
 const DEFAULT_CONDITIONAL_ACCEPT_RATES: [f64; 5] = [0.85, 0.3, 0.0, 0.0, 0.0];
@@ -44,16 +44,18 @@ pub fn normalize_conditional_accept_rates(
     Ok(parsed)
 }
 
+/// Seeded draft-acceptance sampler. `SmallRng` keeps per-round sampling cheap,
+/// but its algorithm, and so the stream for a seed, may change with `rand`.
 pub(crate) struct SpeculativeDecodeSampler {
     conditional_accept_rates: Vec<f64>,
-    rng: StdRng,
+    rng: SmallRng,
 }
 
 impl SpeculativeDecodeSampler {
     pub(crate) fn new(conditional_accept_rates: Vec<f64>, seed: u64) -> Self {
         Self {
             conditional_accept_rates,
-            rng: StdRng::seed_from_u64(seed),
+            rng: SmallRng::seed_from_u64(seed),
         }
     }
 

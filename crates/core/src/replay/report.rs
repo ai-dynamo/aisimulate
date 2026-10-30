@@ -321,11 +321,17 @@ pub struct TraceTtftStageStats {
     /// KV handoff and the decode rank's first step on a disaggregated path;
     /// zero when the observing scheduler emits the first token itself.
     pub mean_handoff_to_first_token_ms: f64,
+    /// The engine emitting the first token to the client receiving it after
+    /// detokenization; zero without `engine.detokenization`.
+    pub mean_detokenization_ms: f64,
 }
+
+/// Number of [`TraceTtftStageStats`] stages.
+pub(crate) const TTFT_STAGE_COUNT: usize = 7;
 
 impl TraceTtftStageStats {
     /// Means over `samples` requests of the per-stage sums, `None` without samples.
-    fn from_sums(sums: &[f64; 6], samples: usize) -> Option<Self> {
+    fn from_sums(sums: &[f64; TTFT_STAGE_COUNT], samples: usize) -> Option<Self> {
         (samples > 0).then(|| {
             let mean = |index: usize| sums[index] / samples as f64;
             Self {
@@ -335,6 +341,7 @@ impl TraceTtftStageStats {
                 mean_prefill_elapsed_ms: mean(3),
                 mean_result_observation_delay_ms: mean(4),
                 mean_handoff_to_first_token_ms: mean(5),
+                mean_detokenization_ms: mean(6),
             }
         })
     }
@@ -619,6 +626,7 @@ impl Serialize for ReplayReport {
                 "mean_handoff_to_first_token_ms",
                 &stages.mean_handoff_to_first_token_ms,
             )?;
+            map.serialize_entry("mean_detokenization_ms", &stages.mean_detokenization_ms)?;
         }
         if let Some(encoder_latency_ms) = self.latency.encoder_latency_ms {
             map.serialize_entry("encoder_latency_ms", &encoder_latency_ms)?;
@@ -721,19 +729,25 @@ struct TtftMilestoneTimes {
     prefill_complete_ms: Option<f64>,
     /// A prefill rank observed the finished extend and holds the KV source.
     source_held_ms: Option<f64>,
+    /// The engine emitted the first token; recorded only with
+    /// detokenization, where the client receives it later.
+    first_token_emitted_ms: Option<f64>,
 }
 
 impl TtftMilestoneTimes {
     /// Time spent in each stage on the way to the first token, in the order of
     /// [`TraceTtftStageStats`]; `None` until every scheduler stage was reached.
-    fn stage_spans(&self, arrival_ms: f64, first_token_ms: f64) -> Option<[f64; 6]> {
+    fn stage_spans(&self, arrival_ms: f64, first_token_ms: f64) -> Option<[f64; TTFT_STAGE_COUNT]> {
         let received = self.scheduler_received_ms?;
         let selected = self.selected_ms?;
         let prefill_complete = self.prefill_complete_ms?;
         let frontend_exit = self.frontend_ready_ms.unwrap_or(arrival_ms);
+        // With detokenization the client receives the first token after the
+        // engine emits it; otherwise both happen at the pass end.
+        let emitted = self.first_token_emitted_ms.unwrap_or(first_token_ms);
         // On a prefill rank the scheduler observes the result when it holds the
         // KV source; the handoff and the decode rank's first step follow.
-        let observed = self.source_held_ms.unwrap_or(first_token_ms);
+        let observed = self.source_held_ms.unwrap_or(emitted);
         Some(
             [
                 frontend_exit - arrival_ms,
@@ -741,7 +755,8 @@ impl TtftMilestoneTimes {
                 selected - received,
                 prefill_complete - selected,
                 observed - prefill_complete,
-                first_token_ms - observed,
+                emitted - observed,
+                first_token_ms - emitted,
             ]
             .map(|span| span.max(0.0)),
         )
@@ -982,6 +997,8 @@ pub struct PerRequestRecord {
     /// Number of output tokens actually emitted by the mock engine.
     pub output_length: usize,
     pub reused_input_tokens: usize,
+    /// Total reuse at the first admission, excluding increases from readmission.
+    pub first_admission_reused_input_tokens: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_admission_g1_reused_input_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1881,6 +1898,22 @@ impl TraceCollector {
         }
     }
 
+    /// Record a token the engine emitted at `emitted_ms` and the client
+    /// received at `received_ms` after detokenization.
+    pub(crate) fn on_detokenized_token(&mut self, uuid: Uuid, emitted_ms: f64, received_ms: f64) {
+        if let Some(stats) = self.requests.get_mut(&uuid)
+            && let TokenTimeline::Recording(times) = &mut stats.token_timeline
+        {
+            if times.is_empty() {
+                stats
+                    .ttft_milestones
+                    .first_token_emitted_ms
+                    .get_or_insert(emitted_ms);
+            }
+            times.push(received_ms);
+        }
+    }
+
     /// Return (ttft_ms, mean_itl_ms) for a completed request, if available.
     pub(crate) fn request_latencies(&self, uuid: Uuid) -> Option<(f64, f64)> {
         let stats = self.requests.get(&uuid)?;
@@ -2018,7 +2051,7 @@ impl TraceCollector {
         let requests = self.requests;
         let request_count = requests.len();
         let mut ttfts = Vec::with_capacity(request_count);
-        let mut ttft_stage_sums = [0.0f64; 6];
+        let mut ttft_stage_sums = [0.0f64; TTFT_STAGE_COUNT];
         let mut ttft_stage_samples = 0usize;
         let mut encoder_sum_ms = 0.0f64;
         let mut encoder_samples = 0usize;
@@ -2287,6 +2320,7 @@ impl TraceCollector {
                 reused_input_tokens: detail
                     .prefill_reused_input_tokens
                     .unwrap_or(stats.reused_input_tokens),
+                first_admission_reused_input_tokens: stats.first_admission_reused_input_tokens,
                 first_admission_g1_reused_input_tokens: detail
                     .first_admission_cache_tier_attribution
                     .map(|value| value.g1_reused_input_tokens),
@@ -3207,6 +3241,7 @@ mod tests {
         assert_eq!(rec.input_length, 100);
         assert_eq!(rec.output_length, 4);
         assert_eq!(rec.reused_input_tokens, 30);
+        assert_eq!(rec.first_admission_reused_input_tokens, 30);
         assert_eq!(rec.prefill_worker_idx, Some(2));
         assert_eq!(rec.decode_worker_idx, Some(7));
         assert_eq!(rec.prefill_admit_ms, Some(5.0));

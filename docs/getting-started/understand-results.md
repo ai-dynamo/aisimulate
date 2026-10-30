@@ -59,11 +59,13 @@ tokens/s/GPU. For a scaling runner, average provisioned GPUs can differ from
 the peak allocation. See [optimization goals](../sweeper/optimization-goals.md).
 
 An SGLang worker with `host_loop` ([SGLang VL host loop](../replay/engine/sglang-vl-host-loop.md))
-splits TTFT into six stage means: `mean_frontend_ms`, `mean_scheduler_inbox_wait_ms`,
-`mean_receive_to_admit_ms`, `mean_prefill_elapsed_ms`, `mean_result_observation_delay_ms`
-and `mean_handoff_to_first_token_ms`. They sum to per-request TTFT for requests
-that reached every milestone and end at scheduler observation, not at the
-client. An encoder pool adds `encoder_latency_ms` (mean arrival to embedding
+splits TTFT into seven stage means: `mean_frontend_ms`, `mean_scheduler_inbox_wait_ms`,
+`mean_receive_to_admit_ms`, `mean_prefill_elapsed_ms`, `mean_result_observation_delay_ms`,
+`mean_handoff_to_first_token_ms` and `mean_detokenization_ms`. They sum to per-request
+TTFT for requests that reached every milestone. `mean_detokenization_ms` is the time
+from the engine emitting the first token to the client receiving it after
+[`engine.detokenization`](../replay/engine/README.md#detokenization), and zero without
+it. An encoder pool adds `encoder_latency_ms` (mean arrival to embedding
 delivery, where the stage spans then start), `encoder_gpus` and `total_gpus`;
 `gpu_hours` includes the pool and integrates every provisioned GPU over the
 simulated clock, which under the host loop runs one overlap iteration past the
@@ -81,6 +83,10 @@ native pool, `encoder_ready_ms`.
 | TPOT | One average per completed request with at least two output tokens: `(last_token - first_token) / (output_tokens - 1)`. |
 | ITL | Individual gaps between adjacent output tokens from completed, admitted requests. Longer outputs contribute more gaps. |
 | Output token throughput per user | Individual `1000 / gap_ms` values for positive token gaps; its mean is not generally `1000 / mean_tpot_ms`. |
+
+A token's time is the end of the engine pass that produced it, or, with
+[`engine.detokenization`](../replay/engine/README.md#detokenization), the time the client
+receives it.
 
 For example, one request with a single 10 ms gap and another with three 30 ms
 gaps give a mean TPOT of `(10 + 30) / 2 = 20` ms, but a mean ITL of

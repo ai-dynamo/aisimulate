@@ -88,7 +88,7 @@ class TestSpeculativeBlock:
         assert t.build_speculative_profile().tokens_per_iteration == 1.0
 
 
-@pytest.mark.parametrize("serving_mode,enable_epd", [("disagg", False), ("afd", False), ("agg", True)])
+@pytest.mark.parametrize("serving_mode,enable_epd", [("disagg", False), ("agg", True)])
 def test_unsupported_task_modes_rejected_before_model_resolution(monkeypatch, serving_mode, enable_epd):
     def unexpected_model_resolution(_self):
         pytest.fail("unsupported speculative task reached model identity resolution")

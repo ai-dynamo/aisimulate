@@ -14,10 +14,10 @@ use super::evidence::{
 };
 use super::progress::ReplayProgress;
 use super::runtime_utils::{
-    ReplayStepOutcome, next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp,
-    pop_ready_scaling_tick, pop_ready_telemetry_tick, pop_ready_worker_completions,
-    pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick, push_worker_completions,
-    push_worker_ready, settle_internal_work,
+    ReplayStepOutcome, dispatch_failure, next_non_telemetry_event_ms,
+    next_timestamp as choose_next_timestamp, pop_ready_scaling_tick, pop_ready_telemetry_tick,
+    pop_ready_worker_completions, pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick,
+    push_worker_completions, push_worker_ready, settle_internal_work,
 };
 use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot};
 use super::telemetry::{
@@ -26,9 +26,9 @@ use super::telemetry::{
 };
 use super::{
     components::{
-        AdmissionQueue, EngineComponent, EngineEffects, EnginePassMode, ReplayAdmissionMetadata,
-        ReplayEngineObservation, ReplayReadyArrival, TokenizationLatency, TokenizationStage,
-        TrafficAccumulators,
+        AdmissionQueue, DetokenizationStage, EngineComponent, EngineEffects, EnginePassMode,
+        PassReceipt, ReplayAdmissionMetadata, ReplayEngineObservation, ReplayReadyArrival,
+        TokenizationLatency, TokenizationStage, TrafficAccumulators,
     },
     state::AggRequestState,
 };
@@ -80,6 +80,8 @@ where
     placement: PlacementPolicyImpl,
     /// Optional per-worker tokenization between placement and the engine.
     tokenization: Option<TokenizationStage<TokenizingDispatch>>,
+    /// Optional detokenization after the engine.
+    detokenization: Option<DetokenizationStage>,
     progress: ReplayProgress,
     stats: AggRuntimeStats,
     /// Latest forward pass metric per worker/rank since the previous scaling tick.
@@ -168,6 +170,7 @@ where
             events: BinaryHeap::new(),
             placement,
             tokenization: None,
+            detokenization: None,
             progress,
             stats: AggRuntimeStats::default(),
             fpm_buffer: LatestFpmBuffer::default(),
@@ -255,6 +258,15 @@ where
         self
     }
 
+    /// Detokenize outputs for the client and hold finished requests until the client receives them.
+    pub(crate) fn with_detokenization(
+        mut self,
+        detokenization: Option<DetokenizationStage>,
+    ) -> Self {
+        self.detokenization = detokenization;
+        self
+    }
+
     /// Attach a scaling policy and enable tick-scoped FPM collection.
     pub(crate) fn with_scaling_policy(mut self, policy: Box<dyn ReplayScalingPolicy>) -> Self {
         self.collect_fpm = true;
@@ -284,6 +296,10 @@ where
             + self.placement.pending_count()
             + self.encoder.as_ref().map_or(0, EncoderPool::parked_count)
             + self.tokenization.as_ref().map_or(0, TokenizationStage::len)
+            + self
+                .detokenization
+                .as_ref()
+                .map_or(0, DetokenizationStage::len)
     }
 
     /// Preserve the live `(worker_id, dp_rank)` identity when forwarding a
@@ -326,8 +342,7 @@ where
                 (request, uuid, worker_idx, kv_hint),
             )?;
         } else {
-            self.engine
-                .dispatch(worker_idx, request, kv_hint, self.now_ms)?;
+            self.submit_to_engine(request, uuid, worker_idx, kv_hint)?;
         }
         // Aggregated replay uses a single pool. Treat the assignment as the
         // decode_worker_idx so per-request records consistently carry the
@@ -335,6 +350,21 @@ where
         // signaling "no separate prefill pool".
         self.collector.on_decode_assigned(uuid, worker_idx);
         Ok(())
+    }
+
+    fn submit_to_engine(
+        &mut self,
+        request: DirectRequest,
+        uuid: Uuid,
+        worker_idx: usize,
+        kv_hint: Option<KvHintSource>,
+    ) -> anyhow::Result<()> {
+        self.engine
+            .dispatch(worker_idx, request, kv_hint, self.now_ms)
+            .and_then(|()| self.placement.dispatch_committed(uuid, self.now_ms))
+            .map_err(|error| {
+                dispatch_failure(error, self.placement.dispatch_aborted(uuid, self.now_ms))
+            })
     }
 
     fn record_placement(&mut self, placement: Placement) {
@@ -533,12 +563,17 @@ where
                 });
         let next_arrival_ms = choose_next_timestamp(
             choose_next_timestamp(
-                CoreAdmissionSource::next_ready_time_ms(&mut self.admission),
-                profile_deadline,
+                choose_next_timestamp(
+                    CoreAdmissionSource::next_ready_time_ms(&mut self.admission),
+                    profile_deadline,
+                ),
+                self.tokenization
+                    .as_ref()
+                    .and_then(TokenizationStage::next_release_ms),
             ),
-            self.tokenization
+            self.detokenization
                 .as_ref()
-                .and_then(TokenizationStage::next_release_ms),
+                .and_then(DetokenizationStage::next_release_ms),
         );
         let next_event_ms = self.events.peek().map(|event| event.at_ms);
         let next_canonical_event_ms = if self.telemetry.is_some() {
@@ -584,7 +619,12 @@ where
     }
 
     /// Consume one output signal, updating router state, collector state, and completion counts.
-    fn process_output_signal(&mut self, signal: OutputSignal) -> anyhow::Result<()> {
+    /// The client receives the signal's output at `received_ms`.
+    fn process_output_signal(
+        &mut self,
+        signal: OutputSignal,
+        received_ms: f64,
+    ) -> anyhow::Result<()> {
         if !self.admission.is_agentic_preparing()
             && self.admission.knows_preparation_request(signal.uuid)
         {
@@ -594,7 +634,12 @@ where
         }
         if let Some(token_id) = signal.token_id {
             self.admission.defer_output_token(signal.uuid, token_id)?;
-            self.collector.on_token(signal.uuid, self.now_ms);
+            if self.detokenization.is_some() {
+                self.collector
+                    .on_detokenized_token(signal.uuid, self.now_ms, received_ms);
+            } else {
+                self.collector.on_token(signal.uuid, received_ms);
+            }
             if self.defer_drive {
                 self.step_tokens.push((signal.uuid, token_id));
             }
@@ -605,7 +650,16 @@ where
             } else {
                 ReplayTerminalStatus::Completed
             };
-            self.collector.on_terminal(signal.uuid, self.now_ms, status);
+            // The client records and acts on a response when it receives its
+            // end. A rejection carries no output: the client learns of it when
+            // the engine rejects the request.
+            let via_detokenization = self.detokenization.is_some() && !signal.rejected;
+            match &mut self.detokenization {
+                Some(detokenization) if via_detokenization => {
+                    detokenization.defer_terminal(received_ms, signal.uuid, status)
+                }
+                _ => self.collector.on_terminal(signal.uuid, self.now_ms, status),
+            }
             if self.defer_drive {
                 self.step_freed_slot = true;
                 self.step_terminals.push((signal.uuid, status));
@@ -635,8 +689,10 @@ where
                     latencies,
                 );
             }
-            self.admission
-                .defer_terminal(signal.uuid, self.now_ms, status)?;
+            if !via_detokenization {
+                self.admission
+                    .defer_terminal(signal.uuid, self.now_ms, status)?;
+            }
             if !self.admission.knows_preparation_request(signal.uuid) {
                 self.progress.inc_completed();
             }
@@ -670,7 +726,7 @@ where
     /// Apply one completed pass: free request slots, publish KV events, and handle outputs.
     fn process_completed_pass(
         &mut self,
-        _worker_idx: usize,
+        rank_id: usize,
         _completed_requests: usize,
         output_signals: Vec<OutputSignal>,
         engine_events: Observation::Batch,
@@ -680,10 +736,54 @@ where
         self.apply_engine_observations(engine_events, KvIngestBoundary::PassEnd)?;
         self.traffic
             .on_accept_length_sample(accept_length_output_tokens, accept_length_decode_forwards);
+        let receipt = self.receive_pass(rank_id, &output_signals)?;
         for signal in output_signals {
-            self.process_output_signal(signal)?;
+            let received_ms = receipt.received_ms(signal.uuid);
+            self.process_output_signal(signal, received_ms)?;
         }
         Ok(())
+    }
+
+    /// When the client receives the outputs of the pass that rank `rank_id`
+    /// finished now: at the pass end without detokenization. Rejections carry
+    /// no output and take no server time.
+    fn receive_pass(
+        &mut self,
+        rank_id: usize,
+        signals: &[OutputSignal],
+    ) -> anyhow::Result<PassReceipt> {
+        let Some(detokenization) = &mut self.detokenization else {
+            return Ok(PassReceipt::Together(self.now_ms));
+        };
+        // The detokenizer servers belong to the worker, shared by its attention-DP ranks.
+        let worker_id = self
+            .engine
+            .rank_identity(rank_id)
+            .map(|(worker_id, _)| worker_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!("offline replay output references unknown rank scheduler {rank_id}")
+            })?;
+        // A request's consecutive signals in one pass are one output.
+        let outputs = signals
+            .chunk_by(|left, right| left.uuid == right.uuid)
+            .filter(|output| !output.iter().any(|signal| signal.rejected))
+            .map(|output| output[0].uuid);
+        detokenization.receive_pass(worker_id, self.now_ms, outputs)
+    }
+
+    /// Record every response the client has received by now and hand its
+    /// request back to the workload.
+    fn release_received_terminals(&mut self) -> anyhow::Result<bool> {
+        let Some(detokenization) = &mut self.detokenization else {
+            return Ok(false);
+        };
+        let released = detokenization.release_due(self.now_ms);
+        let changed = !released.is_empty();
+        for (at_ms, uuid, status) in released {
+            self.collector.on_terminal(uuid, at_ms, status);
+            self.admission.defer_terminal(uuid, self.now_ms, status)?;
+        }
+        Ok(changed)
     }
 
     /// Drain all worker-completion events scheduled for the current logical timestamp.
@@ -886,8 +986,7 @@ where
         let changed = !released.is_empty();
         for (tokenized_ms, (request, uuid, worker_idx, kv_hint)) in released {
             let kv_hint = self.engine.live_kv_hint(kv_hint);
-            self.engine
-                .dispatch(worker_idx, request, kv_hint, self.now_ms)?;
+            self.submit_to_engine(request, uuid, worker_idx, kv_hint)?;
             self.collector.on_tokenized(uuid, tokenized_ms);
         }
         Ok(changed)
@@ -1042,12 +1141,16 @@ where
             // Settle idle deadlines first: a completion below may release a
             // queued placement and submit it to that same idle worker.
             changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;
+            let released = self.placement.advance_clock(self.now_ms)?;
+            changed |= !released.is_empty();
+            self.dispatch_placements(released)?;
             let completed = self.apply_worker_completions()?;
             changed |= completed;
             if completed {
                 // Pass completion can expose another deadline at this timestamp.
                 changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;
             }
+            changed |= self.release_received_terminals()?;
             changed |= self.apply_worker_ready_events()?;
             changed |= self.admission.flush_agentic_runtime_feedback(self.now_ms)?;
             changed |= self.finish_agentic_preparation()?;
@@ -1662,6 +1765,10 @@ where
         // grace cancellation reads.
         if self.encoder.is_some() && self.admission.agentic_profile_report().is_some() {
             bail!("agentic_profile cannot be combined with an encoder pool");
+        }
+        // Profile cancellation does not know about responses still on their way to the client.
+        if self.detokenization.is_some() && self.admission.agentic_profile_report().is_some() {
+            bail!("agentic_profile cannot be combined with detokenization");
         }
         if let Some(cap_ms) = self.max_sim_time_ms
             && (!cap_ms.is_finite() || cap_ms < 0.0)
@@ -2580,29 +2687,37 @@ mod agentic_warmup_tests {
             let phases = replay.admission.agentic_phase_evidence().unwrap();
             let uuid = phases.requests[0].uuid;
             for completed in [false, true] {
+                let now_ms = replay.now_ms;
                 replay
-                    .process_output_signal(OutputSignal {
-                        uuid,
-                        token_id: Some(999),
-                        completed,
-                        rejected: false,
-                        handoff_delay_ms: None,
-                        cached_tokens: None,
-                    })
+                    .process_output_signal(
+                        OutputSignal {
+                            uuid,
+                            token_id: Some(999),
+                            completed,
+                            rejected: false,
+                            handoff_delay_ms: None,
+                            cached_tokens: None,
+                        },
+                        now_ms,
+                    )
                     .unwrap();
             }
             // Only known preparation identities are ignored; arbitrary native
             // callbacks still expose a runtime bookkeeping error.
+            let now_ms = replay.now_ms;
             assert!(
                 replay
-                    .process_output_signal(OutputSignal {
-                        uuid: Uuid::from_u128(99_999),
-                        token_id: None,
-                        completed: true,
-                        rejected: false,
-                        handoff_delay_ms: None,
-                        cached_tokens: None,
-                    })
+                    .process_output_signal(
+                        OutputSignal {
+                            uuid: Uuid::from_u128(99_999),
+                            token_id: None,
+                            completed: true,
+                            rejected: false,
+                            handoff_delay_ms: None,
+                            cached_tokens: None,
+                        },
+                        now_ms,
+                    )
                     .is_err()
             );
             assert_eq!(replay.admission.agentic_phase_evidence().unwrap(), phases);

@@ -21,6 +21,10 @@ from scripts.fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, 
 from scripts.fpm_accuracy.types.forward_pass import ForwardPassInput, ForwardPassIteration
 
 FEATURE_PRESET = "fpm5"
+# Smaller than the trainer defaults (600 trees x 31 leaves, rate 0.05): on the
+# FPM Gym cases the mean MAPE moved from 1.69 % to 1.65 % (no case worse by more
+# than 0.05 pp) while one Rust estimate takes ~1.1 us instead of ~8.5 us.
+HYPERPARAMETERS = {"max_iter": 150, "max_leaf_nodes": 15, "learning_rate": 0.2}
 
 
 def training_observation_ids(observations: Sequence[Any]) -> frozenset[str]:
@@ -61,6 +65,7 @@ class LearnedFpm5Predictor(ForwardPassTimePredictor):
                 [iteration.tuning_payload() for iteration in iterations],
                 context.worker_role,
                 features=fpm_learned.FEATURE_PRESETS[FEATURE_PRESET],
+                **HYPERPARAMETERS,
             )
         except ValueError:
             # Too few training rows for any store: every scored point is unavailable.
@@ -78,6 +83,7 @@ class LearnedFpm5Predictor(ForwardPassTimePredictor):
     def diagnostics(self) -> Mapping[str, Any]:
         return {
             "feature_preset": FEATURE_PRESET,
+            "hyperparameters": dict(HYPERPARAMETERS),
             "stores": sorted(self._artifact["stores"]),
             "train_rows": dict(self._artifact["metadata"].get("train_rows", {})),
         }

@@ -272,6 +272,7 @@ workflow:
           regex_pattern: Traceback (most recent call last)
         interval: 10
 {% endif %}
+{% if sflow_bench_script %}
   - name: benchmark
     operator:
       name: aiperf
@@ -294,3 +295,4 @@ workflow:
     - agg_server
 {% endif %}
     - frontend_server
+{%- endif %}

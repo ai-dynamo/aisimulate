@@ -36,6 +36,14 @@ pub enum AicError {
     ModelConfig(String),
     #[error("perf database error: {0}")]
     PerfDatabase(String),
+    /// A valid FPM query lacks measured support. This is distinct from
+    /// malformed profiles, identity errors, and invalid numerical results.
+    #[error("perf database error: {0}")]
+    FpmQueryUnsupported(String),
+    /// A validated interpolation query has no eligible site. Structural and
+    /// numerical resolver errors retain their separate error paths.
+    #[error("perf database error: {0}")]
+    InterpolationCoverage(String),
     /// Malformed or incompatible measured data is never a coverage miss.
     /// HYBRID and regression fallbacks must propagate this error.
     #[error("invalid performance data: {0}")]
@@ -76,6 +84,15 @@ pub enum AicError {
         #[source]
         source: parquet::errors::ParquetError,
     },
+    /// Reading or writing a forward-pass state snapshot failed. Unlike
+    /// [`Self::Io`], this is never missing performance data: Python raises
+    /// an `OSError` subclass, and no fallback or skip path treats it as a gap.
+    #[error("state snapshot I/O error at {path}: {source}")]
+    StateSnapshotIo {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 impl AicError {
@@ -87,6 +104,12 @@ impl AicError {
     /// it is the terminal miss raised after the empirical path itself found
     /// no calibration data.
     pub fn is_missing_perf_data(&self) -> bool {
-        matches!(self, Self::PerfDatabase(_) | Self::Io { .. })
+        matches!(
+            self,
+            Self::PerfDatabase(_)
+                | Self::FpmQueryUnsupported(_)
+                | Self::InterpolationCoverage(_)
+                | Self::Io { .. }
+        )
     }
 }

@@ -134,6 +134,88 @@ def test_native_continuous_agentic_profile_recycles_and_closes_admission(tmp_pat
         assert profile["profile_start_ms"] == 0
 
 
+def test_agentic_profile_releases_weka_requests_from_dependency_events(tmp_path):
+    """AIPerf releases follow-ups, subagents and joins from actual events.
+
+    The source API answered in 10-20 s, so every authored offset lies far
+    behind what a 2 ms server allows. Times are relative to request events.
+    """
+
+    def request(t, hashes, api_time):
+        return {
+            "t": t,
+            "type": "s",
+            "model": "example/model",
+            "in": 64 * len(hashes),
+            "out": 2,
+            "api_time": api_time,
+            "hash_ids": hashes,
+        }
+
+    play = {
+        "id": "release-rules",
+        "block_size": 64,
+        "hash_id_scope": "local",
+        "requests": [
+            request(0.0, [10, 20], 10.0),
+            # 30 s think time after the 10 s source API call.
+            request(40.0, [10, 20, 30], 10.0),
+            # Spawned 5 s after its parent's recorded end; joins the next turn.
+            {
+                "t": 55.0,
+                "type": "subagent",
+                "agent_id": "worker",
+                "subagent_type": "Explore",
+                "duration_ms": 22_000,
+                "status": "completed",
+                "requests": [request(55.0, [100, 101], 20.0), request(76.0, [100, 101, 102], 1.0)],
+            },
+            # 50 s after its predecessor's recorded end.
+            request(100.0, [10, 20, 30, 40], 1.0),
+        ],
+    }
+    filler = {"id": "filler", "block_size": 64, "hash_id_scope": "local", "requests": [request(0.0, [7], 1.0)]}
+    path = tmp_path / "release-rules.jsonl"
+    # The lane starts in the filler, then recycles into the play from turn zero.
+    path.write_text(json.dumps(filler) + "\n" + json.dumps(play) + "\n")
+    report = _run(
+        {
+            "engine": _engine(),
+            "traffic": {
+                "source": {"type": "trace", "format": "weka", "paths": [str(path)]},
+                "load": {
+                    "type": "trace_timestamps",
+                    "agentic_lanes": 1,
+                    "agentic_snapshot": {"seed": 42},
+                    "agentic_profile": {
+                        "duration_seconds": 200.0,
+                        "tree_idle_cap_seconds": 1000.0,
+                        "global_idle_cap_seconds": 1000.0,
+                    },
+                },
+            },
+        }
+    ).metadata["native_report"]
+    by_play: dict[str, dict[str, dict]] = {}
+    for record in report["per_request"]:
+        source = record["agentic"]["request_id"].split(":request:")[-1]
+        by_play.setdefault(record["agentic"]["play_id"], {})[source] = record
+    first = next(records for records in by_play.values() if "outer:3" in records)
+
+    def end(source):
+        return first[source]["arrival_time_ms"] + first[source]["e2e_latency_ms"]
+
+    def gap_after(source, predecessor):
+        return first[source]["arrival_time_ms"] - end(predecessor)
+
+    assert gap_after("outer:1", "outer:0") == pytest.approx(30_000.0)
+    assert gap_after("outer:2:inner:0", "outer:1") == pytest.approx(5_000.0)
+    assert gap_after("outer:2:inner:1", "outer:2:inner:0") == pytest.approx(1_000.0)
+    # The joining turn waits for its own recorded delay; its child ended long before.
+    assert end("outer:2:inner:1") < first["outer:3"]["arrival_time_ms"]
+    assert gap_after("outer:3", "outer:1") == pytest.approx(50_000.0)
+
+
 @pytest.mark.parametrize(
     "timestamps,expected",
     [

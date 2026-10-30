@@ -11,6 +11,7 @@
 //! op lists from an [`crate::perfmodel::engine::spec::EngineSpec`].
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::common::error::AicError;
 use crate::operators::base::PerformanceResult;
@@ -27,17 +28,21 @@ pub(crate) struct OpListPlan {
     query_slots: usize,
     /// First-encounter slot of each op's name, for folding without name scans.
     name_slot: Vec<usize>,
-    names: usize,
+    /// Distinct op names indexed by name slot.
+    names: Arc<[String]>,
 }
 
 impl OpListPlan {
     pub(crate) fn new(ops: &[Op]) -> Self {
-        let mut names = HashMap::<&str, usize>::new();
+        let mut slots = HashMap::<&str, usize>::new();
+        let mut names = Vec::new();
         let name_slot = ops
             .iter()
             .map(|op| {
-                let next = names.len();
-                *names.entry(op.name()).or_insert(next)
+                *slots.entry(op.name()).or_insert_with(|| {
+                    names.push(op.name().to_owned());
+                    names.len() - 1
+                })
             })
             .collect();
         let mut identities = HashMap::<String, usize>::new();
@@ -54,7 +59,7 @@ impl OpListPlan {
             query_slot,
             query_slots: identities.len(),
             name_slot,
-            names: names.len(),
+            names: names.into(),
         }
     }
 
@@ -65,7 +70,12 @@ impl OpListPlan {
 
     /// Number of distinct op names.
     pub(crate) fn names(&self) -> usize {
-        self.names
+        self.names.len()
+    }
+
+    /// Distinct op names indexed by name slot, shared by every pass.
+    pub(crate) fn slot_names(&self) -> &Arc<[String]> {
+        &self.names
     }
 
     pub(crate) fn query_slot(&self, index: usize) -> Option<usize> {

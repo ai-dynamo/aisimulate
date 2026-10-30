@@ -151,10 +151,9 @@ class Glm53FlashModel(BaseModel):
         expected = self.checkpoint_format if self.checkpoint_format == "nvfp4" else "fp8_block"
         if model_config.gemm_quant_mode.name != expected or model_config.moe_quant_mode.name != expected:
             raise NotImplementedError("GLM-5.3-Flash requires its checkpoint's native FP8/NVFP4 precision partition")
-        # Sparse-MLA latent KV: FP8 or BF16 on both backends. On SM90 both
-        # stock runtimes serve BF16 only: SGLang's IndexPool DSA backends cannot
-        # read FP8 KV, and vLLM 0.31.0 FLASHINFER_MLA_SPARSE_SM90 hands FP8 to
-        # FlashInfer plan() as uint8 storage, which it rejects. KDA state is FP32.
+        # Sparse-MLA latent KV: FP8 or BF16 on both backends. Native readiness
+        # gates SM90 FP8 KV by runtime version: vLLM >= 0.32.0 or SGLang >=
+        # 0.5.22 (TileLang DSA prefill and decode). KDA state remains FP32.
         kv_cache_dtype = model_config.kvcache_quant_mode.name
         if kv_cache_dtype not in {"fp8", "bfloat16"}:
             raise NotImplementedError(

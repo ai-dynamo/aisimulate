@@ -61,6 +61,10 @@ pub struct FpmRankEstimate {
 /// evidence is supplied for whole-model FPM; other estimators leave it empty.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ForwardPassEstimate {
+    /// Typed support miss from temporary mixed composition. Invalid data still
+    /// returns an error. Omitted for ordinary and supported predictions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
     pub latency_ms: Option<f64>,
     pub native_latency_ms: Option<f64>,
     pub correction_factor: Option<f64>,

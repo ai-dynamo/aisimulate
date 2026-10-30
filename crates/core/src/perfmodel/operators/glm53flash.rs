@@ -7,6 +7,9 @@
 //! db9527a46873454610df6dbedf79a36d6bf1a7f6 (v0.31.0), vllm/models/glm5next/common/{model,attention,kda}.py,
 //! and sgl-project/sglang 94602c9c2b7cbdb8efd5c52802dac6a1c180089e,
 //! python/sglang/srt/models/glm5_next.py (Apache-2.0). See THIRD_PARTY_NOTICES.md.
+//! Hopper FP8-KV precision: sgl-project/sglang 9336681310c7a7153c4fbd7c2b9ae62011899014,
+//! python/sglang/kernels/ops/attention/dsa/tilelang_kernel.py (Apache-2.0,
+//! Copyright SGLang contributors); modified analytical adaptation, no kernel copy.
 //! These are payload/roofline bounds, not allocator or kernel-launch predictions.
 
 use crate::common::enums::{DatabaseMode, GemmQuantMode, KvCacheQuantMode, MoeQuantMode};
@@ -488,11 +491,27 @@ impl Glm53AttentionOp {
                 fp32,
             ));
             let latent = self.latent_bytes();
+            // SGLang's raw-FP8 TileLang path casts Q to FP8 and uses FP8
+            // tensor cores for QK/PV. The runtime gate admits this Hopper
+            // combination from 0.5.22; other backend/hardware paths keep
+            // their existing arithmetic contract.
+            // https://github.com/sgl-project/sglang/blob/9336681310c7a7153c4fbd7c2b9ae62011899014/python/sglang/kernels/ops/attention/dsa/tilelang_kernel.py
+            let latent_attention_rate = if self.backend == "sglang"
+                && self.kv_cache_dtype == KvCacheQuantMode::Fp8
+                && spec
+                    .gpu
+                    .sm_version
+                    .is_some_and(|sm| (90..100).contains(&sm))
+            {
+                fp8
+            } else {
+                bf16
+            };
             result = result.plus(leaf(
                 spec,
                 4.0 * selected_pairs * n * k,
                 selected_pairs * k * latent + 4.0 * x * n * k,
-                bf16,
+                latent_attention_rate,
             ));
             result = result.plus(leaf(
                 spec,
@@ -2246,6 +2265,48 @@ pub(crate) mod tests {
                     b.mem_ms - a.mem_ms
                 );
                 assert_eq!(b.math_ms, a.math_ms, "{backend} context={is_context}");
+            }
+        }
+    }
+
+    #[test]
+    fn hopper_sglang_fp8_latent_attention_uses_fp8_math() {
+        // With BF16=1 TFLOP/s and FP8=2 TFLOP/s, the two 32-head,
+        // width-512 attention matmuls cost 65,536 FLOPs per selected pair.
+        // Decode at position 4098 selects 2048 pooled tokens + 2 live-tail
+        // tokens: 134,348,800 FLOPs, saving 0.0671744 ms at FP8 precision.
+        // A four-token causal prefill has 1+2+3+4=10 pairs, saving
+        // 0.00032768 ms. All other arithmetic has identical precision.
+        let mut spec = db(DatabaseMode::Sol).system_spec.clone();
+        spec.gpu.bfloat16_tc_flops = Some(1e12);
+        spec.gpu.fp8_tc_flops = Some(2e12);
+        for (backend, sm, uses_fp8_math) in [
+            ("sglang", 90, true),
+            ("sglang", 100, false),
+            ("vllm", 90, false),
+        ] {
+            spec.gpu.sm_version = Some(sm);
+            let mut fp8 = attention("sparse_mla");
+            fp8.backend = backend.into();
+            let mut bf16 = fp8.clone();
+            bf16.kv_cache_dtype = KvCacheQuantMode::Bfloat16;
+            for (is_context, s, expected_delta_ms) in
+                [(false, 4098.0, 0.0671744), (true, 4.0, 0.00032768)]
+            {
+                fp8.is_context = is_context;
+                bf16.is_context = is_context;
+                let a = fp8.sol(&spec, 1.0, s, 0.0).unwrap().sol.unwrap();
+                let b = bf16.sol(&spec, 1.0, s, 0.0).unwrap().sol.unwrap();
+                let expected = if uses_fp8_math {
+                    expected_delta_ms
+                } else {
+                    0.0
+                };
+                assert!(
+                    (b.math_ms - a.math_ms - expected).abs() < 1e-10,
+                    "{backend} SM{sm} context={is_context}: math delta {} vs {expected}",
+                    b.math_ms - a.math_ms
+                );
             }
         }
     }

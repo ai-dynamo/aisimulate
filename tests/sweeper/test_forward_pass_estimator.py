@@ -93,8 +93,9 @@ def test_prediction_pins_populated_version_slots(custom_systems):
     from aisimulate.runner import EngineReplayRunnerFactory
     from aisimulate_core.sdk.perf_database import resolve_query_version
 
+    current_version = resolve_query_version("review_h200", "vllm", "current", systems_paths=[str(custom_systems)])
     next_version = resolve_query_version("review_h200", "vllm", "next", systems_paths=[str(custom_systems)])
-    for requested, literal in [("current", "0.24.0"), ("next", next_version), ("0.24.0", "0.24.0")]:
+    for requested, literal in [("current", current_version), ("next", next_version), ("0.24.0", "0.24.0")]:
         cfg = CorePredictionConfig.model_validate(
             {
                 "engine": {

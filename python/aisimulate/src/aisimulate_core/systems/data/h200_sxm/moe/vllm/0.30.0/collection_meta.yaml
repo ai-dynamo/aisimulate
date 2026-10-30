@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+runtime:
+  framework: vllm
+  version: 0.30.0
+  image: vllm/vllm-openai:v0.30.0
+  image_digest: sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90
+tables:
+  moe_perf:
+    rows: 58077
+    status: complete
+    collections:
+    - collector_ref: ee219cc60e13e9f60db50b63f13bab536c598781
+      collector_hash: sha256:389809dd595bfadfdc65d8c9619ad8645980325c093804ad672d7384ba64a5b5
+      case_plan_hash: sha256:725ad7c9bb3d3112640f309d91534b6b7f66378218151c1a7fd7b7105cd3d056
+      collected_at: '2026-10-08'
+      rows: 18306
+      status: complete
+    - collector_ref: ee219cc60e13e9f60db50b63f13bab536c598781
+      collector_hash: sha256:389809dd595bfadfdc65d8c9619ad8645980325c093804ad672d7384ba64a5b5
+      case_plan_hash: sha256:78aca4a63b82e663bb180c19b3408228cf0338b32854280772c8a6f68cc0e37e
+      collected_at: '2026-10-08'
+      rows: 16200
+      status: complete
+    - collector_ref: ee219cc60e13e9f60db50b63f13bab536c598781
+      collector_hash: sha256:389809dd595bfadfdc65d8c9619ad8645980325c093804ad672d7384ba64a5b5
+      case_plan_hash: sha256:988deb5bfe260ca29f6f9e49bd6af2dc39a1197ef233a1ddd85a1f62f42f3a32
+      collected_at: '2026-10-08'
+      rows: 19694
+      status: complete
+    - collector_ref: ee219cc60e13e9f60db50b63f13bab536c598781
+      collector_hash: sha256:389809dd595bfadfdc65d8c9619ad8645980325c093804ad672d7384ba64a5b5
+      case_plan_hash: sha256:50dbe3ef79abe881ab645eb74c83e0e63b27a9616dc206db5ea2b5056c25b6c4
+      collected_at: '2026-10-08'
+      rows: 1053
+      status: complete
+    - collector_ref: ee219cc60e13e9f60db50b63f13bab536c598781
+      collector_hash: sha256:389809dd595bfadfdc65d8c9619ad8645980325c093804ad672d7384ba64a5b5
+      case_plan_hash: sha256:f1a9866b780c1d4bfb6ff80e49cd08555d51ac23befa080f0b9986f91118c7e5
+      collected_at: '2026-10-08'
+      rows: 2916
+      status: complete

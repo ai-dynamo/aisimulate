@@ -30,9 +30,10 @@ Workflow (Python trains, Rust predicts):
    tree ensemble per regression workload store on ``log(wall_ms)``, and
    writes the ``aic_fpm_learned_forward_perf`` artifact.
 3. ``RustForwardPassPerfModel.best_available(config)`` with explicit
-   ``estimation_mode="fpm_learned"`` loads the artifact. Optional training
-   checkpoints retain exact rows and bins for native online updates through
-   ``tune_with_fpms``.
+   ``estimation_mode="fpm_learned"`` and
+   ``estimator_config.fpm_learned.adaptation="frozen"`` loads the artifact.
+   Training checkpoints retain exact rows and bins for native online updates
+   through ``tune_with_fpms``; online adaptation is the default when omitted.
 
 The feature ABI is the ordered ``features`` list in the artifact; every name
 must be one of :data:`FEATURE_NAMES` and is computed identically here and in
@@ -665,6 +666,106 @@ def _checkpoint_identity(identity: dict[str, Any] | None, worker_type: str) -> d
     if resolved.get("worker_type") != worker_type:
         raise ValueError("checkpoint identity worker_type must match the training worker_type")
     return resolved
+
+
+def write_original_a_manifest(
+    path: str | os.PathLike[str],
+    iterations: Sequence[Sequence[dict[str, Any]]],
+    worker_type: str,
+    *,
+    identity: dict[str, Any],
+    min_store_rows: int,
+    seed_artifact_paths: Sequence[str | os.PathLike[str]],
+    provenance: dict[str, Any],
+) -> dict[str, str]:
+    """Pin the original self-benchmark groups and fitted seeds for mixed routing.
+
+    Use only the immutable A population, before admitting online feedback.
+    Eligibility follows the fitted seeds' shared ordered feature list, including
+    groups in stores below ``min_store_rows``. Rust validates source identity,
+    seed usability, complete rank groups, class counts and calibration geometry
+    at load time.
+    An existing manifest is never overwritten. The result is the native
+    ``temporary_mixed_composition.original_a`` configuration value.
+    """
+    if isinstance(min_store_rows, bool) or not isinstance(min_store_rows, int) or min_store_rows < 1:
+        raise ValueError("original A min_store_rows must be a positive integer")
+    if not seed_artifact_paths:
+        raise ValueError("original A requires at least one fitted seed artifact")
+    canonical = _checkpoint_identity(identity, worker_type)
+    seeds = []
+    features: tuple[str, ...] | None = None
+    for source in seed_artifact_paths:
+        source = Path(source).resolve(strict=True)
+        content = source.read_bytes()
+        artifact = json.loads(content)
+        seed_features = artifact.get("features") if isinstance(artifact, dict) else None
+        if not isinstance(seed_features, list) or not seed_features:
+            raise ValueError("original A seed features must be a non-empty list")
+        unknown = [name for name in seed_features if name not in FEATURE_NAMES]
+        if unknown:
+            raise ValueError(f"unknown original A seed features {unknown}")
+        _reject_duplicate_features(seed_features)
+        if features is None:
+            features = tuple(seed_features)
+        elif tuple(seed_features) != features:
+            raise ValueError("original A seeds must use the same ordered features")
+        reference = {"path": str(source), "sha256": hashlib.sha256(content).hexdigest()}
+        del artifact, content  # Retain only the feature ABI and authenticated references.
+        checkpoint_manifest = source.parent / "manifest.json"
+        if source.name == "model.json" and checkpoint_manifest.is_file():
+            reference["checkpoint_manifest_sha256"] = hashlib.sha256(checkpoint_manifest.read_bytes()).hexdigest()
+        seeds.append(reference)
+    assert features is not None
+    accepted: dict[str, list[tuple[int, str]]] = {}
+    _build_dataset(iterations, worker_type, features, provenance=accepted)
+    indices = sorted({index for rows in accepted.values() for index, _ in rows})
+    del accepted  # Eligibility is resolved; release serialized per-group provenance.
+    if not indices:
+        raise ValueError("original A has no eligible measured groups")
+    manifest = {
+        "schema_version": 1,
+        "source_kind": "self_benchmark",
+        "identity": canonical,
+        "min_store_rows": min_store_rows,
+        "accepted_iterations": [iterations[index] for index in indices],
+        "seed_artifacts": seeds,
+        "provenance": provenance,
+    }
+    destination = Path(path).absolute()
+    digest = hashlib.sha256()
+    with destination.open("xb") as output:
+
+        def emit(text: str) -> None:
+            content = text.encode("utf-8")
+            output.write(content)
+            digest.update(content)
+
+        def encode(value: Any) -> str:
+            return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+        try:
+            emit("{")
+            for field_index, key in enumerate(sorted(manifest)):
+                if field_index:
+                    emit(",")
+                emit(encode(key) + ":")
+                if key == "accepted_iterations":
+                    emit("[")
+                    for group_index, group in enumerate(manifest[key]):
+                        if group_index:
+                            emit(",")
+                        emit(encode(group))
+                    emit("]")
+                else:
+                    emit(encode(manifest[key]))
+            emit("}")
+        except BaseException:
+            # Only remove the file this exclusive open created. A failed export
+            # must not leave a partial manifest that prevents a corrected retry.
+            destination.unlink()
+            raise
+    return {"manifest_path": str(destination), "source_sha256": digest.hexdigest()}
 
 
 def _online_store_metadata(model: Any, feature_count: int) -> dict[str, Any]:

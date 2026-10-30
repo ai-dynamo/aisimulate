@@ -9,7 +9,7 @@ use std::sync::Arc;
 use super::{HostOffloadObservation, HostOffloadObservationData, HostOffloadObserver};
 use crate::engine::common::hashing::SequenceHash;
 use crate::engine::offload_lru::Lru;
-use crate::engine::offload_transfer::{self, Direction, FairTransfers};
+use crate::engine::offload_transfer::{self, Direction, FairTransfers, Link};
 use crate::engine::{KvBlock, KvEventData, StoredBlocks};
 use anyhow::{Result, bail, ensure};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -236,7 +236,7 @@ enum Transport {
         h2d: FifoLane,
         deadlines: BTreeSet<Deadline>,
     },
-    /// Shared pool: equal-share service under access and pool caps.
+    /// Shared pool: max-min fair service under access and pool caps.
     Fair {
         transfers: FairTransfers,
         /// Bytes per millisecond, indexed by [`Direction`].
@@ -915,12 +915,19 @@ impl HostTier {
                 };
                 transfers.submit(offload_transfer::Job {
                     id: id.get(),
-                    client: self.transfers[&id].client,
                     direction,
                     ready: ready.max(now_ms),
                     bytes: bytes as f64,
-                    client_rate: offload_transfer::bytes_per_ms(client_gbps),
-                    shared_rate: shared[direction as usize],
+                    links: [
+                        Link {
+                            id: self.transfers[&id].client,
+                            rate: offload_transfer::bytes_per_ms(client_gbps),
+                        },
+                        Link {
+                            id: 0,
+                            rate: shared[direction as usize],
+                        },
+                    ],
                 });
                 None
             }

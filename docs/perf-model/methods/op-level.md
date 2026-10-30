@@ -42,26 +42,27 @@ constructor and Rust operation executor as ordinary op-level prediction.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `estimator_config.op_level.execution_profile` | Unset | Opt in to a qualified external graph for one phase. |
+| `estimator_config.op_level.execution_profile` | Unset | Load external prefill, decode, or aggregated operation graphs. |
 | `execution_profile.path` | Required when selected | Absolute path to the external JSON profile. |
 | `execution_profile.sha256` | Required when selected | Lowercase SHA-256 of the exact profile bytes; preserved in saved configuration and provenance. |
 
 Set `estimation_mode: op_level`, `fallback_policy: deny`, `database_mode: SILICON`,
 `enable_shared_layer: false`, and `estimator_config.correction.enabled: false`.
-Choose `worker_type: prefill` or `decode`, an explicit backend version and a
+Choose `worker_type: prefill`, `decode`, or `aggregated`, an explicit backend version and a
 single PP/attention-DP/CP/DCP rank. Keep `encoder_parallel` unset: these profiles
 qualify the language-model phase only. Speculation, decoder replay, automatic
 estimator selection and shared-source inheritance are not supported.
 Supply the external hardware and performance-data root through `systems_paths`.
 
-The version-1 profile JSON has these required fields:
+New profiles use version 2. The profile JSON has these fields:
 
 | Field | Contract |
 | --- | --- |
-| `schema_version` | `1`. |
+| `schema_version` | `2` for the common forward-pass API; `1` retains the legacy direct-phase contract. |
 | `basis` | The complete ordinary compiled `EngineSpec` used to qualify the profile. Both operation lists and every engine identity field must match the current compiler output; only `engine.systems_path` is excluded from comparison. |
-| `worker_type` | `prefill` or `decode`, matching the caller. |
-| `ops` | Replacement operations for that phase, in execution order, using the existing externally tagged operation format. Resident weight bytes must match the original phase. |
+| `worker_type` | `prefill`, `decode`, or `aggregated`, matching the caller. `aggregated` requires version 2. |
+| `ops` | Replacement operations for the selected phase, or the prefill graph for `aggregated`, in execution order, using the existing externally tagged operation format. Resident weight bytes must match the original phase. |
+| `generation_ops` | Required for `aggregated`; absent for other roles. Replacement decode graph, with resident weight bytes matching the original decode graph. |
 | `retained_files` | Bundle-relative `path`, lowercase `sha256`, and `size_bytes` for every required hardware YAML, source/version metadata file and retained operation table. |
 
 Profile authors can inspect an ordinary `compile_engine` result using the
@@ -75,14 +76,18 @@ the consumer's compile from the prepared root, and admission fails naming the
 first differing field. Compiler/schema changes that alter the basis require
 requalification and a new profile pin.
 
-`MeasuredComposite` is an exact, latency-only operation with `name`, `system`,
+`MeasuredComposite` represents a measured scope, which may contain multiple
+kernels or operations, as one operation. Its internal operations are not modeled
+individually; the name identifies the scope and does not imply confidentiality.
+It is an exact, latency-only operation with `name`, `system`,
 `backend`, `version`, `is_context`, `weight_bytes`, `scale_factor`, and `cells`.
 Each cell contains `shape` and `latency_ms`. Sort cells by their unique shape:
 
 - Prefill: `[batch, total_input_length - prefix, prefix]`, where input length
   and cached prefix are per request; the second entry is the new token count.
-- Decode: `[batch, total_past_kv_tokens / batch + 1, 0]`, where the second entry
-  is the per-request attention length (past KV plus the current token).
+- Decode: `[batch, sequence_length, 0]`, using the runtime coordinate of the
+  calling API. The common forward-pass API uses the mean reported KV length;
+  direct trajectory queries use their existing per-step sequence lengths.
 
 Latencies and repetition factors must be finite and positive. The operator
 multiplies the measured scope latency by its repetition factor. It performs
@@ -103,14 +108,53 @@ escape the root or traverse symlinks; hardware `data_dir`, backend versions and
 `misc.nccl_version`/`misc.oneccl_version` must remain bundle-relative. Missing retained inputs fail normally
 during database loading or readiness checks.
 
-Use `predict_prefill_latency(batch, total_input_length, prefix)` or
-`predict_decode_latency_total(batch, total_past_kv_tokens)` for the selected
-phase. Decode requires equal past-KV lengths across the batch and supports one
-decode forward step per query. Multi-step decode trajectories are rejected even
-when every intermediate measured cell is present. The other phase,
-mixed steps and aggregate telemetry fail explicitly. These profiles do not
-qualify scheduler-inclusive Replay, Planner sizing, or end-to-end serving
-accuracy. Broader support requires separately qualified execution and data.
+The model returned by `RustForwardPassPerfModel.best_available(config)` accepts
+`estimate_forward_pass_time_ms(metrics_by_rank)` and
+`estimate_forward_pass_detailed(metrics_by_rank)` with version-2 profiles. External
+graphs use the same prefill, decode, and mixed-step calculations as built-in graphs. Mean lengths,
+variance handling, rank aggregation, and queued-metric handling are unchanged.
+Equivalent graphs, measurements, configuration, and metrics produce the same
+estimate regardless of the input source.
+
+An aggregated profile supplies both `ops` (prefill) and `generation_ops` (decode).
+Mixed steps use the existing operation filtering and composition: shared
+non-attention work at the combined token count, then each phase's attention at
+its own shape. There is no additional composition setting. `MeasuredComposite`
+uses the same filtering as other operations. Graphs containing measured scopes
+must expose separate top-level attention operations for both phases, using the
+existing `context_attention` and `generation_attention` filters. Attention inside
+an `Overlap` group cannot supply that split. Opaque whole-phase graphs remain
+usable for pure-phase queries; mixed queries fail explicitly instead of silently
+omitting decode work. This structural check applies equally to raw engine graphs
+and external profiles; it does not validate the measurements against silicon.
+Every measured scope queried by the existing calculation still needs an exact cell. Missing
+cells fail through the common interface without changing the selected fallback
+policy. A single-phase profile rejects queries requiring the other phase.
+
+With version 2, direct phase, trajectory, and static mixed-step APIs retain their
+existing calculations and require the relevant phase graphs and measurement coverage.
+Dataset preparation accepts all three worker roles through the same
+`prepare_execution_profile` function and manifest schema.
+
+### Migrating version-1 profiles
+
+Version 1 retains its direct homogeneous prefill/decode queries and single-step
+decode behavior. It does not accept common forward-pass or mixed queries. For
+`predict_decode_latency_total(batch, total_past_kv_tokens)`, version 1 queries
+`[batch, total_past_kv_tokens / batch + 1, 0]`. Existing profile bytes and pins keep
+that meaning. Saved model snapshots preserve the selected profile version and
+its query behavior when restored.
+
+Version 2 uses the ordinary common-API coordinate, without the extra token.
+For example, `predict_decode_latency_total(2, 8)` queries `[2, 5, 0]` in version 1
+and `[2, 4, 0]` in version 2. The direct static one-step call with input length 4
+continues to query `[2, 5, 0]` in both versions, matching the existing static API.
+
+To migrate, requalify the graph and measured cells for the intended query API,
+set `schema_version: 2`, and regenerate the profile SHA-256 and the dataset's
+artifact hashes. Preparation never rewrites cells or upgrades a pinned profile
+automatically. Do not shift every cell blindly: the existing static and common
+APIs use different coordinates.
 
 Profile files, saved configurations and diagnostics can reveal runtime
 identities or private paths. Keep them with their source dataset; the package

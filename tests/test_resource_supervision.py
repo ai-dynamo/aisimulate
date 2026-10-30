@@ -660,6 +660,112 @@ if __name__ == "__main__":
     assert json.loads(result.stdout) == {"feasible": 1, "status": "completed"}
 
 
+def test_supervised_recommendation_joins_publisher_before_final_writer(tmp_path):
+    import subprocess
+
+    events = tmp_path / "lifecycle-events.txt"
+    output = tmp_path / "output"
+    script = tmp_path / "lifecycle.py"
+    script.write_text("""
+import sys
+import threading
+from pathlib import Path
+
+import yaml
+
+from aisimulate.config import CoreRecommendationConfig
+from aisimulate.output_adapter import (
+    OUTPUT_ADAPTER_API_VERSION,
+    RecommendationOutputCallbacks,
+    write_output_adapters,
+)
+from aisimulate.runner import EngineReplayRunnerFactory
+from aisimulate.supervision import supervised_recommendation
+
+
+class LifecycleProbeAdapter:
+    name = "lifecycle-probe"
+    api_version = OUTPUT_ADAPTER_API_VERSION
+
+    @staticmethod
+    def append(path, event):
+        with Path(path).open("a", encoding="utf-8") as target:
+            target.write(event + "\\n")
+
+    def subscribe(self, config):
+        events = config["events"]
+        stop = threading.Event()
+        publisher = threading.Thread(target=stop.wait, args=(10,), daemon=False)
+        publisher.start()
+        self.append(events, "publisher_started")
+
+        def finish(event):
+            self.append(events, event)
+            stop.set()
+            publisher.join(timeout=2)
+            if publisher.is_alive():
+                raise RuntimeError("publisher did not stop")
+            self.append(events, "publisher_joined")
+
+        return RecommendationOutputCallbacks(
+            on_complete=lambda: finish("complete"),
+            on_failure=lambda error: finish("failure"),
+        )
+
+    def write(self, config, *, result, output_dir):
+        del result
+        events = Path(config["events"])
+        if events.read_text(encoding="utf-8").splitlines()[-1] != "publisher_joined":
+            raise RuntimeError("final writer ran before publisher shutdown")
+        self.append(events, "final_write")
+        artifact = Path("lifecycle-probe.txt")
+        (output_dir / artifact).write_text("complete\\n", encoding="utf-8")
+        return [artifact]
+
+
+if __name__ == "__main__":
+    events = Path(sys.argv[1])
+    output = Path(sys.argv[2])
+    output.mkdir()
+    path = Path("tests/e2e/configs/unified_cli/recommend/engine/01-default-preset-throughput.yaml")
+    raw = yaml.safe_load(path.read_text())
+    raw["optimizer"].update(max_trials=1, parallelism=1)
+    config = CoreRecommendationConfig.model_validate(raw)
+    output_configs = {"lifecycle-probe": {"events": str(events)}}
+    result = supervised_recommendation(
+        config,
+        {
+            "stack": "engine",
+            "runner_factory": EngineReplayRunnerFactory(),
+            "output_configs": output_configs,
+            "output_adapters": {"lifecycle-probe": LifecycleProbeAdapter()},
+            "show_progress": False,
+        },
+    )
+    write_output_adapters(
+        {"lifecycle-probe": LifecycleProbeAdapter()},
+        output_configs,
+        result=result,
+        output_dir=output,
+    )
+""")
+
+    result = subprocess.run(
+        [sys.executable, str(script), str(events), str(output)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert events.read_text(encoding="utf-8").splitlines() == [
+        "publisher_started",
+        "complete",
+        "publisher_joined",
+        "final_write",
+    ]
+
+
 def test_supervisor_argument_and_output_setup_do_not_import_runtime():
     import subprocess
 

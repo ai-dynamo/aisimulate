@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
 
 //! Radix-tree KV cache for SGLang engine simulation.
 //!
@@ -518,6 +521,9 @@ impl RadixCache {
 
             if common_len < child_len {
                 if common_len > 0 {
+                    // Refresh the matched child before splitting it, so both the retained
+                    // suffix and the new prefix node it seeds count as just accessed.
+                    self.touch_node(child_id, now);
                     let intermediate = self.split_node(child_id, common_len);
                     current = intermediate;
                 }
@@ -537,7 +543,7 @@ impl RadixCache {
                 self.touch_node(id, now);
             }
         } else if lock_match {
-            // A partial edge match keeps the split node's inherited timestamp.
+            // A split node inherits the timestamp just given to its suffix.
             self.inc_lock_ref(current);
         }
 
@@ -735,9 +741,6 @@ impl RadixCache {
             prefix_len <= aligned_len,
             "prefix length {prefix_len} exceeds aligned key length {aligned_len}"
         );
-        if aligned_len == prefix_len {
-            return start_node;
-        }
         let page_keys = self.page_hashes(&key[prefix_len..aligned_len]);
         self.insert_page_hash_suffix(
             start_node,
@@ -760,11 +763,12 @@ impl RadixCache {
             page_keys.len(),
             page_ids.len()
         );
+        // Re-inserting an already cached sequence still refreshes its path.
+        let now = self.now();
+        self.touch_path(start_node, now);
         if page_keys.is_empty() {
             return start_node;
         }
-        let now = self.now();
-        self.touch_path(start_node, now);
 
         let mut current = start_node;
         let mut key_offset = 0;
@@ -807,11 +811,12 @@ impl RadixCache {
                     child_key.len(),
                 )
             };
+            // Refresh a partially matched child too, before it is split.
+            self.touch_node(child_id, now);
 
             if common_len == child_len {
                 key_offset += common_len;
                 current = child_id;
-                self.touch_node(current, now);
             } else {
                 if common_len > 0 {
                     let intermediate = self.split_node(child_id, common_len);
@@ -1587,6 +1592,123 @@ mod tests {
         assert_eq!(cache.evict(3).0, 3);
         assert_eq!(cache.match_prefix(&[1, 2, 3]).0, 0);
         assert_eq!(cache.match_prefix(&[4, 5, 6]).0, 3);
+    }
+
+    /// An older prompt cached one second before a two-page newer prompt, with the test clock
+    /// one more second later: unless something refreshes it, the older prompt is evicted first.
+    struct OlderAndNewer {
+        cache: RadixCache,
+        older: Vec<u32>,
+        older_indices: Vec<usize>,
+        older_node: NodeId,
+        newer: Vec<u32>,
+        newer_indices: Vec<usize>,
+    }
+
+    impl OlderAndNewer {
+        fn new(page_size: usize, older_pages: usize) -> Self {
+            let page_tokens = page_size as u32;
+            let mut cache = RadixCache::new((older_pages + 2) * page_size, page_size);
+            let older = (0..older_pages as u32 * page_tokens).collect::<Vec<_>>();
+            let newer = (1_000..1_000 + 2 * page_tokens).collect::<Vec<_>>();
+            let base = Instant::now();
+            cache.set_test_now(base);
+            let older_indices = cache.page_pool.allocate(older.len()).unwrap();
+            let older_node = cache.insert(&older, &older_indices);
+            cache.set_test_now(base + std::time::Duration::from_secs(1));
+            let newer_indices = cache.page_pool.allocate(newer.len()).unwrap();
+            cache.insert(&newer, &newer_indices);
+            cache.set_test_now(base + std::time::Duration::from_secs(2));
+            Self {
+                cache,
+                older,
+                older_indices,
+                older_node,
+                newer,
+                newer_indices,
+            }
+        }
+
+        fn assert_newer_is_evicted_first(mut self) {
+            let page_size = self.cache.page_size();
+            let newer_pages = self.cache.page_ids(&self.newer_indices, 2);
+            assert_eq!(
+                self.cache.evict(2 * page_size),
+                (2 * page_size, newer_pages)
+            );
+            assert_eq!(self.cache.prefix_match_len(&self.newer), 0);
+            assert_eq!(self.cache.prefix_match_len(&self.older), self.older.len());
+        }
+    }
+
+    #[rstest::rstest]
+    fn partial_match_refreshes_the_suffix_it_splits(
+        #[values(1, 4, 64)] page_size: usize,
+        #[values(false, true)] lock: bool,
+    ) {
+        let mut fixture = OlderAndNewer::new(page_size, 4);
+        let prefix = &fixture.older[..2 * page_size];
+        let (matched, node) = if lock {
+            let hashes = fixture.cache.page_hashes(prefix);
+            fixture.cache.match_prefix_hashes_and_lock(&hashes)
+        } else {
+            fixture.cache.match_prefix(prefix)
+        };
+        assert_eq!(matched, prefix.len());
+        if lock {
+            fixture.cache.dec_lock_ref(node);
+        }
+        fixture.assert_newer_is_evicted_first();
+    }
+
+    #[rstest::rstest]
+    fn partial_insert_refreshes_the_suffix_it_splits(
+        #[values(1, 4, 64)] page_size: usize,
+        #[values(false, true)] hashed: bool,
+    ) {
+        let mut fixture = OlderAndNewer::new(page_size, 4);
+        let prefix = &fixture.older[..2 * page_size];
+        let prefix_indices = &fixture.older_indices[..2 * page_size];
+        if hashed {
+            let hashes = fixture.cache.page_hashes(prefix);
+            let pages = fixture.cache.page_ids(prefix_indices, hashes.len());
+            let root = fixture.cache.root();
+            fixture
+                .cache
+                .insert_page_hashes_from_node(root, 0, &hashes, &pages);
+        } else {
+            fixture.cache.insert(prefix, prefix_indices);
+        }
+        fixture.assert_newer_is_evicted_first();
+    }
+
+    #[rstest::rstest]
+    fn reinserting_a_cached_sequence_without_new_pages_refreshes_its_path(
+        #[values(1, 4, 64)] page_size: usize,
+        #[values(false, true)] hashed: bool,
+    ) {
+        // A request holding the older prompt finishes without completing another page, so
+        // the insert that caches its sequence has no suffix to add.
+        let mut fixture = OlderAndNewer::new(page_size, 2);
+        let node = fixture.older_node;
+        fixture.cache.inc_lock_ref(node);
+        let inserted = if hashed {
+            let hashes = fixture.cache.page_hashes(&fixture.older);
+            let pages = fixture.cache.page_ids(&fixture.older_indices, hashes.len());
+            fixture
+                .cache
+                .insert_page_hashes_from_node(node, fixture.older.len(), &hashes, &pages)
+        } else {
+            fixture.cache.insert_from_node(
+                node,
+                fixture.older.len(),
+                &fixture.older,
+                &fixture.older_indices,
+            )
+        };
+        assert_eq!(inserted, node);
+        fixture.cache.dec_lock_ref(node);
+        fixture.assert_newer_is_evicted_first();
     }
 
     #[test]

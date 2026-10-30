@@ -45,6 +45,12 @@ class CorePredictionConfig(StrictModel):
             raise ValueError("AFD prediction requires fixed-length synthetic request traffic")
         if isinstance(source, TraceSource) and source.format == "mooncake-delta" and self.engine.mode != "aggregated":
             raise ValueError(f"{source.format} requires aggregated engine mode")
+        if (
+            self.engine.detokenization is not None
+            and self.engine.detokenization.active
+            and self.traffic.load.agentic_profile is not None
+        ):
+            raise ValueError("engine.detokenization cannot be combined with traffic.load.agentic_profile")
         return self
 
     @classmethod

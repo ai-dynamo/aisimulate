@@ -143,13 +143,18 @@ pub fn calibrated_online_forest_model(
 ) -> Result<ForwardPassPerfModel, AicError> {
     use aisimulate_core::{LearnedAdaptation, SelectorConfig};
     config.estimation_mode = EstimationMode::FpmLearned;
-    config.estimator_config.fpm_learned.adaptation = LearnedAdaptation::CausalSelector;
-    config.estimator_config.fpm_learned.checkpoint_path = Some(checkpoint.to_owned());
+    let learned = &mut config.estimator_config.fpm_learned;
+    learned.adaptation = LearnedAdaptation::CausalSelector;
+    learned.recent_window = 8;
+    learned.history_weight = Some(0.25);
+    learned.history_weight_ramp_observations = 8;
+    learned.update_every = 4;
+    learned.checkpoint_path = Some(checkpoint.to_owned());
     config.estimator_config.correction.enabled = true;
     config.estimator_config.selector = SelectorConfig {
-        alpha: 0.025,
-        warmup: 10,
-        margin: 0.025,
+        alpha: 0.4,
+        warmup: 5,
+        margin: 0.05,
         persistence: 1,
     };
     let model = ForwardPassPerfModel::best_available(config)?;
@@ -351,6 +356,249 @@ mod tests {
         let restored: ForwardPassPerfModelConfig =
             serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
         assert_eq!(restored, config);
+    }
+
+    fn parse_public_config_paths(
+        json: &str,
+        yaml: &str,
+    ) -> [(&'static str, Result<ForwardPassPerfModelConfig, String>); 6] {
+        use serde::Deserialize;
+        type Config = ForwardPassPerfModelConfig;
+        [
+            (
+                "JSON generic",
+                serde_json::from_str(json).map_err(|e| e.to_string()),
+            ),
+            (
+                "JSON associated",
+                Config::deserialize(&mut serde_json::Deserializer::from_str(json))
+                    .map_err(|e| e.to_string()),
+            ),
+            (
+                "JSON trait",
+                <Config as Deserialize>::deserialize(&mut serde_json::Deserializer::from_str(json))
+                    .map_err(|e| e.to_string()),
+            ),
+            (
+                "YAML generic",
+                serde_yaml::from_str(yaml).map_err(|e| e.to_string()),
+            ),
+            (
+                "YAML associated",
+                Config::deserialize(serde_yaml::Deserializer::from_str(yaml))
+                    .map_err(|e| e.to_string()),
+            ),
+            (
+                "YAML trait",
+                <Config as Deserialize>::deserialize(serde_yaml::Deserializer::from_str(yaml))
+                    .map_err(|e| e.to_string()),
+            ),
+        ]
+    }
+
+    #[test]
+    fn learned_defaults_and_overrides_agree_across_public_deserializers() {
+        use aisimulate_core::LearnedAdaptation;
+
+        for adaptation in [None, Some("online"), Some("causal_selector")] {
+            for overrides in [false, true] {
+                let selector = adaptation == Some("causal_selector");
+                let mut input = serde_json::json!({
+                    "model": "offline/model", "system": "offline_system", "backend": "vllm",
+                    "worker_type": "decode", "estimation_mode": "fpm_learned",
+                    "estimator_config": {"fpm_learned": {"checkpoint_path": "/seed"}},
+                });
+                let estimator = &mut input["estimator_config"];
+                if let Some(adaptation) = adaptation {
+                    estimator["fpm_learned"]["adaptation"] = adaptation.into();
+                }
+                if overrides {
+                    for (key, value) in [
+                        ("recent_window", serde_json::json!(17)),
+                        ("history_weight", serde_json::json!(0.3)),
+                        ("history_weight_ramp_observations", serde_json::json!(7)),
+                        ("update_every", serde_json::json!(2)),
+                    ] {
+                        estimator["fpm_learned"][key] = value;
+                    }
+                    // Parsing preserves explicit controls; model validation separately
+                    // rejects correction settings incompatible with the selected mode.
+                    estimator["correction"] = serde_json::json!({"enabled": !selector});
+                }
+                let parsed = parse_public_config_paths(
+                    &input.to_string(),
+                    &serde_yaml::to_string(&input).unwrap(),
+                );
+                let expected = parsed[0].1.as_ref().unwrap();
+                for (path, result) in &parsed {
+                    assert_eq!(result.as_ref().unwrap(), expected, "{path}: {input}");
+                }
+                let learned = &expected.estimator_config.fpm_learned;
+                assert_eq!(
+                    learned.adaptation,
+                    if selector {
+                        LearnedAdaptation::CausalSelector
+                    } else {
+                        LearnedAdaptation::Online
+                    }
+                );
+                assert_eq!(
+                    (
+                        learned.recent_window,
+                        learned.history_weight,
+                        learned.history_weight_ramp_observations,
+                        learned.update_every
+                    ),
+                    if overrides {
+                        (17, Some(0.3), 7, 2)
+                    } else if selector {
+                        (8, Some(0.25), 8, 4)
+                    } else {
+                        (64, Some(0.1), 32, 1)
+                    },
+                );
+                assert_eq!(
+                    expected.estimator_config.correction.enabled,
+                    selector != overrides
+                );
+                for (path, restored) in parse_public_config_paths(
+                    &serde_json::to_string(expected).unwrap(),
+                    &serde_yaml::to_string(expected).unwrap(),
+                ) {
+                    assert_eq!(&restored.unwrap(), expected, "round trip: {path}");
+                }
+                if !overrides {
+                    input["estimator_config"]["fpm_learned"]["history_weight"] =
+                        serde_json::Value::Null;
+                    for (path, result) in parse_public_config_paths(
+                        &input.to_string(),
+                        &serde_yaml::to_string(&input).unwrap(),
+                    ) {
+                        let learned = result.expect(path).estimator_config.fpm_learned;
+                        assert_eq!(
+                            (
+                                learned.history_weight,
+                                learned.history_weight_ramp_observations
+                            ),
+                            (None, 0)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn public_config_deserializers_reject_duplicate_and_unknown_fields() {
+        // Use raw text: converting through Value first would erase duplicates.
+        for (json_fields, yaml_fields, error_kind) in [
+            (r#""tp": 1, "tp": 8"#, "tp: 1\ntp: 8", "duplicate"),
+            (
+                r#""estimation_mode": "op_level", "estimation_mode": "fpm_regression""#,
+                "estimation_mode: op_level\nestimation_mode: fpm_regression",
+                "duplicate",
+            ),
+            (
+                r#""estimator_config": {}, "estimator_config": {}"#,
+                "estimator_config: {}\nestimator_config: {}",
+                "duplicate",
+            ),
+            (
+                r#""estimator_config": {"correction": {"enabled": true, "enabled": false}}"#,
+                "estimator_config:\n  correction:\n    enabled: true\n    enabled: false",
+                "duplicate",
+            ),
+            (
+                r#""estimator_config": {"fpm_learned": {"recent_window": 8, "recent_window": 64}}"#,
+                "estimator_config:\n  fpm_learned:\n    recent_window: 8\n    recent_window: 64",
+                "duplicate",
+            ),
+            (r#""tp": 1, "tp_size": 8"#, "tp: 1\ntp_size: 8", "duplicate"),
+            (
+                r#""estimation_mode": "op_level", "forward_model": "fpm_regression""#,
+                "estimation_mode: op_level\nforward_model: fpm_regression",
+                "duplicate",
+            ),
+            (r#""typo": 1"#, "typo: 1", "unknown field"),
+            (
+                r#""estimator_config": {"correction": {"enable": false}}"#,
+                "estimator_config:\n  correction:\n    enable: false",
+                "unknown field",
+            ),
+            (
+                r#""estimator_config": {"fpm_learned": {"recent_widow": 8}}"#,
+                "estimator_config:\n  fpm_learned:\n    recent_widow: 8",
+                "unknown field",
+            ),
+        ] {
+            let json = format!(
+                r#"{{"model":"offline/model","system":"offline_system",
+                "backend":"vllm","worker_type":"decode",{json_fields}}}"#
+            );
+            let yaml = format!("model: offline/model\nsystem: offline_system\nbackend: vllm\nworker_type: decode\n{yaml_fields}\n");
+            for (path, result) in parse_public_config_paths(&json, &yaml) {
+                let error = result.expect_err(path);
+                assert!(error.contains(error_kind), "{path}: {error}");
+            }
+        }
+        use serde::Deserialize;
+        type Config = ForwardPassPerfModelConfig;
+        for fields in [
+            "fpm_profile: !Unsupported {}",
+            "fpm_profile: {1: invalid}",
+            "estimator_config: {fpm_learned: {history_weight: .nan}}",
+            "estimator_config: {fpm_learned: {history_weight: .inf}}",
+        ] {
+            let yaml = format!("model: offline/model\nsystem: offline_system\nbackend: vllm\nworker_type: decode\n{fields}\n");
+            for result in [
+                serde_yaml::from_str::<Config>(&yaml),
+                Config::deserialize(serde_yaml::Deserializer::from_str(&yaml)),
+                <Config as Deserialize>::deserialize(serde_yaml::Deserializer::from_str(&yaml)),
+            ] {
+                assert!(result.is_err(), "accepted malformed YAML: {yaml}");
+            }
+        }
+    }
+
+    #[test]
+    fn public_config_requires_strings_for_numeric_looking_identity() {
+        let json = r#"{"model":"123","backend_version":"0.10","system":"offline_system","backend":"vllm","worker_type":"decode"}"#;
+        let yaml = "model: \"123\"\nbackend_version: \"0.10\"\nsystem: offline_system\nbackend: vllm\nworker_type: decode\n";
+        for (path, result) in parse_public_config_paths(json, yaml) {
+            let config = result.expect(path);
+            assert_eq!(config.model, "123", "{path}");
+            assert_eq!(config.backend_version.as_deref(), Some("0.10"), "{path}");
+        }
+        for (field, literal) in [("model", "123"), ("backend_version", "0.10")] {
+            let json = json.replace(&format!("\"{literal}\""), literal);
+            let yaml = yaml.replace(&format!("\"{literal}\""), literal);
+            for (path, result) in parse_public_config_paths(&json, &yaml) {
+                let error = result.expect_err(path);
+                assert!(
+                    error.contains(field) && error.contains("string"),
+                    "{path}: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn public_config_aliases_keep_contextual_defaults() {
+        let input = serde_json::json!({
+            "model": "offline/model", "system": "offline_system", "backend": "vllm",
+            "worker_type": "decode", "forward_model": "fpm_learned",
+            "tp_size": 2, "pp_size": 3, "attention_dp_size": 4,
+            "estimator_config": {"fpm_learned": {"adaptation": "causal_selector"}},
+        });
+        for (path, result) in
+            parse_public_config_paths(&input.to_string(), &serde_yaml::to_string(&input).unwrap())
+        {
+            let config = result.expect(path);
+            assert_eq!((config.tp, config.pp, config.attention_dp), (2, 3, 4));
+            assert_eq!(config.estimation_mode, EstimationMode::FpmLearned);
+            assert_eq!(config.estimator_config.fpm_learned.recent_window, 8);
+            assert!(config.estimator_config.correction.enabled);
+        }
     }
 
     #[test]
@@ -785,6 +1033,66 @@ mod tests {
             .unwrap();
         assert!(driver.agentic_profile_report().is_some());
     }
+
+    #[test]
+    fn state_snapshots_save_and_restore_through_the_canonical_constructor() {
+        use aisimulate_core::engine::EngineLaunchConfig;
+        use aisimulate_core::{
+            ForwardPassReadinessReport, ScheduledRequestMetrics, StateSnapshotConfig,
+            StateSnapshotKind, StateSnapshotOptions, StateSnapshotTuning,
+            STATE_SNAPSHOT_LAYOUT_VERSION,
+        };
+        let fpm = |decode: u32, kv: u32, wall_ms: f64| ForwardPassMetrics {
+            wall_time: wall_ms / 1000.0,
+            scheduled_requests: ScheduledRequestMetrics {
+                num_decode_requests: decode,
+                sum_decode_kv_tokens: kv,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut model = regression_model().unwrap();
+        let observations: Vec<Vec<ForwardPassMetrics>> = (1..40u32)
+            .map(|i| vec![fpm(i % 13 + 1, i * 977, 2.0 + 0.003 * f64::from(i * 977))])
+            .collect();
+        model.tune_with_fpms(&observations).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("snapshot");
+        let pinned = model
+            .save_state_snapshot(&directory, &StateSnapshotOptions::default())
+            .unwrap();
+        let snapshot: &StateSnapshotConfig =
+            pinned.estimator_config.state_snapshot.as_ref().unwrap();
+        assert_eq!(snapshot.on_tune, StateSnapshotTuning::Reject);
+        let mut restored = ForwardPassPerfModel::best_available(pinned.clone()).unwrap();
+        let query = [fpm(9, 40_000, 0.0)];
+        assert_eq!(
+            restored
+                .estimate_forward_pass_time_ms(&query)
+                .unwrap()
+                .map(f64::to_bits),
+            model
+                .estimate_forward_pass_time_ms(&query)
+                .unwrap()
+                .map(f64::to_bits)
+        );
+        assert!(restored.tune_with_fpms(&observations).is_err());
+        let report: ForwardPassReadinessReport = restored.readiness_report();
+        assert_eq!(report, model.readiness_report());
+        let summary = ForwardPassPerfModel::inspect_state_snapshot(&directory).unwrap();
+        assert_eq!(summary.kind, StateSnapshotKind::Regression);
+        assert_eq!(summary.state_layout_version, STATE_SNAPSHOT_LAYOUT_VERSION);
+        assert_eq!(summary.topology, model.deployment_topology());
+        let mismatches = EngineLaunchConfig::timing_config_mismatches(
+            serde_json::json!({"dp_size": 2}),
+            &pinned,
+        )
+        .unwrap();
+        assert_eq!(
+            mismatches,
+            ["dp_size conflicts with canonical attention_dp"]
+        );
+    }
 }
 
 /// Exhaustive downstream literals for the coordinated 0.13 report migration.
@@ -849,6 +1157,7 @@ pub fn rebuild_replay_report_literals(
             requested_output_length: record.requested_output_length,
             output_length: record.output_length,
             reused_input_tokens: record.reused_input_tokens,
+            first_admission_reused_input_tokens: record.first_admission_reused_input_tokens,
             first_admission_g1_reused_input_tokens: record.first_admission_g1_reused_input_tokens,
             first_admission_host_reused_input_tokens: record
                 .first_admission_host_reused_input_tokens,
