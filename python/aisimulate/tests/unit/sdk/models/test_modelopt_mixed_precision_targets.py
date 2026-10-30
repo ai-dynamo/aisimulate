@@ -261,12 +261,11 @@ _ATTENTION_CASES = {
 }
 
 
-@pytest.mark.parametrize("precise", [False, True])
 @pytest.mark.parametrize("case", list(_ATTENTION_CASES))
-def test_attention_groups_absent_from_quantized_layers_are_excluded(case, precise):
+def test_attention_groups_absent_from_quantized_layers_are_excluded(case):
     extra, exclude, expected = _ATTENTION_CASES[case]
     raw = _raw(_glm53_layers(extra=extra), exclude=("model.layers.78*", *exclude))
-    assert H.attention_projection_exclusions(raw, precise_module_paths=precise) == expected
+    assert H.attention_projection_exclusions(raw) == expected
 
 
 def test_keys_beyond_the_decoder_layers_list_nothing():

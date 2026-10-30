@@ -114,7 +114,7 @@ def collect_combo(combo: grid.Combo) -> tuple[grid.Combo, list[dict], float]:
         parallel = grid.MOE_PARALLEL if is_moe else grid.DENSE_PARALLEL
 
         for tp, pp, adp, moe_tp, moe_ep in parallel:
-            for quant_label, gemm_quant, moe_quant in grid.quant_variants_for(combo.system):
+            for quant_label, gemm_quant, moe_quant in grid.QUANT_VARIANTS:
                 base = {
                     "model": model_name,
                     "tp": tp,

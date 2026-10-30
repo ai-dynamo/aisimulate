@@ -86,34 +86,32 @@ _PROJECTION_GROUP_MARKERS = {
     "q": ("q_a_proj", "q_b_proj", "q_proj"),
     "kv": ("kv_a_proj", "kv_b_proj", "kv_proj", "k_proj", "v_proj"),
     "o": ("o_proj",),
-    "indexer": ("indexer",),
-}
-_PRECISE_PROJECTION_GROUP_MARKERS = {
-    **_PROJECTION_GROUP_MARKERS,
     "indexer": ("indexer.wq_b", "indexer.wk", "indexer.weights_proj"),
 }
 _PROJECTION_MODULE_PATHS = {
-    **_PRECISE_PROJECTION_GROUP_MARKERS,
+    **_PROJECTION_GROUP_MARKERS,
     "kv": (*_PROJECTION_GROUP_MARKERS["kv"], "kv_a_proj_with_mqa"),
-    "indexer": (*_PRECISE_PROJECTION_GROUP_MARKERS["indexer"], "indexer.wk_weights_proj"),
+    "indexer": (*_PROJECTION_GROUP_MARKERS["indexer"], "indexer.wk_weights_proj"),
 }
 
 
-def attention_projection_exclusions(raw_config: dict, *, precise_module_paths: bool = False) -> frozenset:
+def attention_projection_exclusions(raw_config: dict) -> frozenset:
     """Which attention projection groups the checkpoint keeps unquantized.
 
     Returns a subset of :data:`ATTENTION_PROJECTION_GROUPS`. A pattern naming
     the whole block (``self_attn*`` / ``re:.*self_attn.*``) covers every
-    group; otherwise groups are matched per projection name.
+    group; otherwise groups are matched per projection module path.
 
-    vLLM DSA opts into precise module paths: norm and auxiliary exclusions
-    do not exclude projection GEMMs. Other consumers retain their existing
-    interpretation until their precision/data correction is qualified.
+    Norm and auxiliary exclusions do not exclude projection GEMMs. Native GLM
+    FP8 checkpoints list ``q_a_layernorm``, ``kv_a_layernorm``,
+    ``indexer.k_norm`` and ``indexers_proj`` while shipping their attention
+    projections in block FP8; vLLM, SGLang and TRT-LLM skip only the listed
+    module (or its descendants), so every backend runs those GEMMs quantized.
 
     A targets-only ModelOpt MIXED_PRECISION export (see
     :func:`modelopt_mixed_precision_targets`) additionally keeps every group
-    that no ``quantized_layers`` entry names unquantized, on both paths. As
-    on vLLM and SGLang, only a key naming a projection (or a fused module
+    that no ``quantized_layers`` entry names unquantized. As on vLLM and
+    SGLang, only a key naming a projection (or a fused module
     packing it) exactly, or a descendant of one, lists it; an ancestor key
     (``...self_attn``, ``...self_attn.indexer``) quantizes nothing. Keys the
     exclusion list covers and keys at layer index >= ``num_hidden_layers``
@@ -121,20 +119,19 @@ def attention_projection_exclusions(raw_config: dict, *, precise_module_paths: b
     listed in any decoder layer counts as quantized (the DSA indexer exists
     only in full layers). Exclusion globs still apply and still win.
     """
-    excluded = _glob_attention_projection_exclusions(raw_config, precise_module_paths=precise_module_paths)
+    excluded = _glob_attention_projection_exclusions(raw_config)
     targets = modelopt_mixed_precision_targets(raw_config)
     if targets is not None:
         excluded |= frozenset(ATTENTION_PROJECTION_GROUPS) - _modelopt_listed_attention_groups(raw_config, targets)
     return excluded
 
 
-def _glob_attention_projection_exclusions(raw_config: dict, *, precise_module_paths: bool) -> frozenset:
+def _glob_attention_projection_exclusions(raw_config: dict) -> frozenset:
     """Attention projection groups named by the checkpoint's exclusion patterns."""
-    markers_by_group = _PRECISE_PROJECTION_GROUP_MARKERS if precise_module_paths else _PROJECTION_GROUP_MARKERS
     excluded: set = set()
     for pattern in quant_exclude_patterns(raw_config):
         p = str(pattern)
-        if precise_module_paths and p.startswith("re:"):
+        if p.startswith("re:"):
             # Compressed-tensors regexes match native module paths, including
             # anchors and escaped dots; projection-name substrings are not
             # sufficient (e.g. a norm-only regex must not exclude a GEMM).
@@ -150,13 +147,6 @@ def _glob_attention_projection_exclusions(raw_config: dict, *, precise_module_pa
                 ):
                     excluded.add(group)
             continue
-        if not precise_module_paths:
-            if "self_attn" in p and not any(m in p for markers in markers_by_group.values() for m in markers):
-                return frozenset(ATTENTION_PROJECTION_GROUPS)
-            for group, markers in markers_by_group.items():
-                if any(m in p for m in markers):
-                    excluded.add(group)
-            continue
         # A named child such as q_a_layernorm is not an exclusion of the
         # entire attention block. Native GLM FP8 configs exclude many such
         # norms while retaining FP8 attention projections.
@@ -167,7 +157,7 @@ def _glob_attention_projection_exclusions(raw_config: dict, *, precise_module_pa
         # the separate indexers_proj module. Neither excludes wq_b/wk GEMMs.
         if "indexer" in p and p.rsplit("indexer", 1)[1] in block_suffixes:
             excluded.add("indexer")
-        for group, markers in markers_by_group.items():
+        for group, markers in _PROJECTION_GROUP_MARKERS.items():
             if any(m in p for m in markers):
                 excluded.add(group)
     return frozenset(excluded)
