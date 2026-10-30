@@ -67,7 +67,7 @@ domains instead of the single values above; see
 
 | Block | Page |
 | --- | --- |
-| `engine.mode`, `model`, `hardware`, `backend`, `backend_version`, `context_length`, `workers` roles, `tokenization` | [This page](#deployment-fields) |
+| `engine.mode`, `model`, `hardware`, `backend`, `backend_version`, `context_length`, `workers` roles, `tokenization`, `detokenization` | [This page](#deployment-fields) |
 | `engine.workers.<role>.{hardware, startup_seconds, parallelism, scheduler}`, `engine.enable_chunked_prefill` | [Workers](workers.md) |
 | `engine.workers.<role>.kv_cache` | [KV cache](kv-cache.md) |
 | `engine.kv_transfer` | [P/D KV transfer](kv-transfer.md) |
@@ -104,6 +104,7 @@ Field tables on these pages use the following columns:
 | `engine.context_length` | `max` | fixed | Positive prompt-plus-output token limit, or `max`. With a number, prompts at or above the limit are rejected and generation stops at the limit. `max` applies the model config's maximum on vLLM; SGLang and TensorRT-LLM then run without a limit. |
 | `engine.workers` | Required | Per mode | Role mappings; see [Worker roles](#worker-roles). A role may be `{}` to use all defaults. |
 | `engine.tokenization` | Unset (off) | predict only | Optional `workers` (positive integer, default `1`), `base_ms` and `per_input_token_us` (finite and non-negative, default `0`). Tokenizes each request on its worker before the engine; see [Request tokenization](#tokenization). Aggregated and disaggregated token replay on `--stack engine` only; online replay, worker scaling, AFD, encoder pools and SGLang frontend stages (which already price the tokenizer) are rejected. |
+| `engine.detokenization` | Unset (off) | predict only | Optional `workers` (positive integer, default `1`), `base_ms` and `per_output_us` (finite and non-negative, default `0`). Detokenizes each pass's outputs on the worker that emits tokens before the client receives them; see [Response detokenization](#detokenization). Aggregated and disaggregated token replay on `--stack engine` only; online replay, worker scaling, AFD, encoder pools and `traffic.load.agentic_profile` are rejected. |
 
 <a id="tokenization"></a>
 
@@ -164,6 +165,79 @@ are only an illustration.
 - When an agentic profile cancels a request that is still being tokenized,
   the request never reaches the engine. Its tokenizer time stays reserved,
   so requests behind it on that worker are not released earlier.
+- Setting both costs to `0` is the same as omitting the block.
+
+<a id="detokenization"></a>
+
+## Response detokenization
+
+A serving engine returns generated tokens through its server processes, which
+detokenize each request's new tokens, format streamed chunks and write them to
+the clients. The client therefore receives every token, the first one
+included, some time after the engine produced it, and more so when many
+requests are running. `engine.detokenization` models this on every worker
+that emits tokens: the aggregated workers, or the decode workers in a
+disaggregated deployment.
+
+```yaml
+engine:
+  detokenization:
+    workers: 1
+    base_ms: 0.5
+    per_output_us: 40
+```
+
+Each worker has `workers` detokenizer servers, shared by its attention-DP
+ranks, and each request belongs to one of them. When a pass ends, each server
+takes the outputs of that pass that belong to it as one job, after the jobs it
+has taken before. A job takes `base_ms + per_output_us × outputs`, where an
+output is one request's new tokens in the pass, and the client receives every
+output of the job when it ends.
+
+- A pass with many running requests therefore delays all of its tokens, and
+  when passes end faster than a server finishes its jobs, later passes wait
+  for it.
+- With more workers, the outputs of a pass are split over the servers and
+  each server handles fewer of them.
+- A request is assigned to a server by a stable hash of its request ID. This
+  stands in for how the serving engine spreads connections over its server
+  processes.
+- A job's outputs reach the client together. vLLM hands a pass's outputs to
+  the connections in chunks of `VLLM_V1_OUTPUT_PROC_CHUNK_SIZE` (128 by
+  default), so with more than 128 outputs per server in one pass, replay
+  delivers the earlier chunks somewhat late.
+
+Set `workers` to the number of server processes that detokenize outputs. The
+corresponding engine option is:
+
+| Engine | Option | Default |
+|---|---|---|
+| vLLM | `--api-server-count` | 1 without data parallelism; with internal data-parallel load balancing, the data-parallel size |
+
+Measure `base_ms` and `per_output_us` on your own deployment: record when the
+engine produces each pass's outputs and when the client receives each token,
+at a few concurrencies, and fit the delays. They depend mostly on the serving
+frontend and the host CPU. The values above are only an illustration.
+
+- Token times, TTFT, TPOT, end-to-end latency and throughput use the time the
+  client receives each token. With `--capture-per-request`, `first_token_ms`,
+  `last_token_ms` and `terminal_time_ms` are client receive times.
+- A request finishes when the client receives the end of its response. A
+  request that waits on it, such as the next request of a concurrency slot or
+  a session's next turn, is released at that time.
+- A rejected request carries no output, so it skips detokenization: the client
+  learns of the rejection when the engine rejects the request, in both
+  aggregated and disaggregated deployments, and the rejection does not delay
+  the other outputs of its pass.
+- The TTFT stage breakdown of an SGLang `host_loop` worker adds
+  `mean_detokenization_ms`, the time from the engine emitting the first token
+  to the client receiving it, so the stages still sum to TTFT. Without
+  detokenization this stage is zero and TTFT ends when the engine emits the
+  first token.
+- With `traffic.stop.max_virtual_time_seconds`, a request whose response the
+  client has not received by the cutoff is reported as incomplete.
+- Replay telemetry samples count a completion when the engine finishes the
+  request, before the client receives it.
 - Setting both costs to `0` is the same as omitting the block.
 
 ## Backend versions

@@ -41,6 +41,7 @@ mod resources;
 mod samples;
 mod selector;
 mod snapshot;
+mod speculative;
 
 #[cfg(test)]
 mod tests;
@@ -78,3 +79,4 @@ pub use resources::{
     FpmCacheLayout, FpmResourceConfig, FpmRuntimeMemoryConfig,
 };
 pub use snapshot::{STATE_SNAPSHOT_LAYOUT_VERSION, StateSnapshotKind};
+pub use speculative::SpeculativeForwardPassEstimate;

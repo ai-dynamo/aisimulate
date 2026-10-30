@@ -54,6 +54,7 @@ pub(super) fn validate_fpm(db: &PerfDatabase, fpm: &FpmForwardOp) -> Result<(), 
     let cell = db
         .fpm_forward
         .select_cell(&fpm.match_identity, &fpm.model_path, fpm.dcp_size)?;
+    fpm.reject_speculative_on_ar_cell(cell)?;
     if fpm.interpolation == FpmInterpolation::Direct
         && match fpm.phase {
             FpmPhase::Prefill => cell.direct_prefill.is_empty(),

@@ -48,6 +48,8 @@ enum ExecutionPayload {
         determinism: ReplayDeterminism,
         #[serde(default)]
         tokenization: Option<TokenizationPayload>,
+        #[serde(default)]
+        detokenization: Option<DetokenizationPayload>,
     },
     Legacy(ReplaySpec),
 }
@@ -66,6 +68,26 @@ struct TokenizationPayload {
 
 fn default_tokenization_workers() -> usize {
     1
+}
+
+/// Detokenization on every token-emitting worker before the client.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DetokenizationPayload {
+    #[serde(default = "default_tokenization_workers")]
+    workers: usize,
+    #[serde(default)]
+    base_ms: f64,
+    #[serde(default)]
+    per_output_ms: f64,
+}
+
+/// The request and response path around the engine: tokenization before it
+/// and detokenization after it.
+#[derive(Debug, Clone, Copy, Default)]
+struct ServingPath {
+    tokenization: Option<TokenizationPayload>,
+    detokenization: Option<DetokenizationPayload>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1822,6 +1844,19 @@ fn timing_provenance(timing: &TimingModelConfig) -> serde_json::Value {
     }
 }
 
+/// vLLM turns async scheduling off by default for prompt-lookup (ngram)
+/// drafts and rejects an explicit request for it.
+fn resolve_ngram_async_scheduling(rank: &mut EngineConfig, speculation_kind: &str) -> Result<()> {
+    if speculation_kind == "ngram" && rank.backend == Backend::Vllm {
+        ensure!(
+            rank.async_scheduling != Some(true),
+            "vLLM does not support async scheduling with ngram speculative decoding"
+        );
+        rank.async_scheduling = Some(false);
+    }
+    Ok(())
+}
+
 fn resolve_role_timing(
     role: &mut ReplayRoleConfig,
     capacity_is_explicit: bool,
@@ -1865,6 +1900,7 @@ fn resolve_role_timing(
             "aic_nextn conflicts with resolved speculative depth {depth}"
         );
         role.rank.aic_nextn = (depth > 0).then_some(depth);
+        resolve_ngram_async_scheduling(&mut role.rank, &speculation.kind)?;
     }
     if let Some(model) = &timing.fpm_model
         && model.fpm_query_coverage()?.is_some()
@@ -2408,7 +2444,7 @@ fn run_with_input(
     input: Option<ReplayRuntimeInput>,
     capture_artifacts: bool,
     determinism: ReplayDeterminism,
-    tokenization: Option<TokenizationPayload>,
+    serving_path: ServingPath,
 ) -> crate::replay::ReplayResult<(crate::replay::ReplayReport, Option<ReplayArtifacts>)> {
     let mut replayer = match input {
         Some(input) => Replayer::new(spec, factory)?.with_runtime_input(input),
@@ -2418,11 +2454,18 @@ fn run_with_input(
         determinism,
         ..ReplayCaptureOptions::default()
     });
-    if let Some(tokenization) = tokenization {
+    if let Some(tokenization) = serving_path.tokenization {
         replayer = replayer.with_tokenization(
             tokenization.workers,
             tokenization.base_ms,
             tokenization.per_input_token_ms,
+        )?;
+    }
+    if let Some(detokenization) = serving_path.detokenization {
+        replayer = replayer.with_detokenization(
+            detokenization.workers,
+            detokenization.base_ms,
+            detokenization.per_output_ms,
         )?;
     }
     if capture_artifacts {
@@ -2904,7 +2947,7 @@ fn replay_fpm_coverage(
 }
 
 fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
-    let (mut spec, mut traffic, capture_performance_diagnostics, determinism, tokenization) =
+    let (mut spec, mut traffic, capture_performance_diagnostics, determinism, serving_path) =
         match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
             ExecutionPayload::Configured {
                 spec,
@@ -2912,17 +2955,32 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 capture_performance_diagnostics,
                 determinism,
                 tokenization,
+                detokenization,
             } => (
                 spec,
                 traffic.map(|t| *t),
                 capture_performance_diagnostics,
                 determinism,
-                tokenization,
+                ServingPath {
+                    tokenization,
+                    detokenization,
+                },
             ),
-            ExecutionPayload::Legacy(spec) => {
-                (spec, None, false, ReplayDeterminism::default(), None)
-            }
+            ExecutionPayload::Legacy(spec) => (
+                spec,
+                None,
+                false,
+                ReplayDeterminism::default(),
+                ServingPath::default(),
+            ),
         };
+    ensure!(
+        serving_path.detokenization.is_none()
+            || traffic
+                .as_ref()
+                .is_none_or(|traffic| traffic.agentic_profile.is_none()),
+        "detokenization cannot be combined with agentic_profile"
+    );
     ensure!(
         spec.max_sim_time_ms.is_none()
             || traffic
@@ -3052,7 +3110,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             if let Some(timing) = &encoder_timing {
                 factory = factory.with_encoder_timing(Arc::clone(timing));
             }
-            run_with_input(spec, factory, input, capture_artifacts, determinism, tokenization)
+            run_with_input(spec, factory, input, capture_artifacts, determinism, serving_path)
                 .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
         ReplayTopology::Disaggregated { .. } => {
@@ -3172,7 +3230,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             if let Some(timing) = &encoder_timing {
                 factory = factory.with_encoder_timing(Arc::clone(timing));
             }
-            run_with_input(spec, factory, input, capture_artifacts, determinism, tokenization)
+            run_with_input(spec, factory, input, capture_artifacts, determinism, serving_path)
             .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
         }
@@ -4942,6 +5000,21 @@ mod tests {
             .unwrap(),
         );
         assert!(config.validate_parallel_shape().is_err());
+    }
+
+    #[test]
+    fn ngram_drafts_turn_vllm_async_scheduling_off() {
+        let mut rank = EngineConfig::default();
+        resolve_ngram_async_scheduling(&mut rank, "mtp").unwrap();
+        assert_eq!(rank.async_scheduling, None);
+        resolve_ngram_async_scheduling(&mut rank, "ngram").unwrap();
+        assert_eq!(rank.async_scheduling, Some(false));
+        rank.async_scheduling = Some(true);
+        let error = resolve_ngram_async_scheduling(&mut rank, "ngram").unwrap_err();
+        assert!(error.to_string().contains("async scheduling"), "{error}");
+        let mut sglang = EngineConfig::for_backend(Backend::Sglang);
+        resolve_ngram_async_scheduling(&mut sglang, "ngram").unwrap();
+        assert_eq!(sglang.async_scheduling, None);
     }
 
     #[test]

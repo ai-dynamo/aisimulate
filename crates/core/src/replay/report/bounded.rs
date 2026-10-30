@@ -146,7 +146,7 @@ pub(super) struct BoundedSummary {
     tpot: Samples,
     e2e: Samples,
     /// Per-stage TTFT sums of host-aware engines, as in the per-request path.
-    ttft_stage_sums: [f64; 6],
+    ttft_stage_sums: [f64; TTFT_STAGE_COUNT],
     ttft_stage_samples: usize,
     /// Arrival-to-embeddings-delivered sums of requests that crossed an encoder pool.
     encoder_sum_ms: f64,

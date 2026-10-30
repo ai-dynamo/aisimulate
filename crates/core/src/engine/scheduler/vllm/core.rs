@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright contributors to the vLLM project.
 // Modified Rust simulation of vLLM b3563fc65ae0f5359802593d78e7ea097e1fed31
-// scheduling contracts; immutable sources and license: THIRD_PARTY_NOTICES.md.
+// scheduling contracts and of the v0.28.0 (2cf0a6915ce544dc493a0990f2ea38d81601128a)
+// async-scheduling batch queue; immutable sources and license: THIRD_PARTY_NOTICES.md.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -64,6 +65,9 @@ pub(crate) struct VllmRequestState {
     /// `pending_destinations`, outside the physical waiting queues, so
     /// activation restores this ordinal. It is not activation priority.
     waiting_order: u64,
+    /// First pass, counted by `VllmCore::passes_executed`, that may admit the
+    /// request: vLLM had already committed the passes before it on arrival.
+    admissible_from_pass: u64,
     is_decode_handoff: bool,
     pub(crate) num_computed_tokens: usize,
     /// Cleared on preemption: recomputation has no draft IDs to verify.
@@ -673,6 +677,7 @@ pub(crate) struct VllmCore {
     wave_step: u64,
     attention_dp_size: u32,
     prefill_capacity_bound: bool,
+    passes_executed: u64,
     belady_oracle: Option<BeladyOracle>,
 }
 
@@ -913,6 +918,7 @@ impl VllmCore {
             wave_step: 0,
             attention_dp_size: 1,
             prefill_capacity_bound: false,
+            passes_executed: 0,
         })
     }
 
@@ -1017,8 +1023,10 @@ impl VllmCore {
                 let uuid = request.uuid.unwrap_or_else(Uuid::new_v4);
                 request.uuid = Some(uuid);
                 self.validate_request_id(uuid)?;
+                let admissible_from_pass =
+                    self.first_pass_admitting_arrival(!allow_destination_admission);
                 Ok(SchedulerCommandEffects::new(
-                    SchedulerCommandResult::Submitted(self.submit(request)?),
+                    SchedulerCommandResult::Submitted(self.submit(request, admissible_from_pass)?),
                 ))
             }
             SchedulerCommand::CancelRequest { request_id } => {
@@ -1048,8 +1056,10 @@ impl VllmCore {
                 request.uuid = Some(uuid);
                 self.validate_request_id(uuid)?;
                 self.source_holds.register(uuid, handoff_id)?;
+                let admissible_from_pass =
+                    self.first_pass_admitting_arrival(!allow_destination_admission);
                 let submitted = self
-                    .submit(request)
+                    .submit(request, admissible_from_pass)
                     .expect("prevalidated handoff request must submit");
                 Ok(SchedulerCommandEffects::new(
                     SchedulerCommandResult::Submitted(submitted),
@@ -1362,14 +1372,35 @@ impl VllmCore {
         order
     }
 
-    fn submit(&mut self, mut request: DirectRequest) -> anyhow::Result<Uuid> {
+    /// First pass that may admit a request arriving now, either while a pass
+    /// is in flight or at a pass boundary. With async scheduling, a busy vLLM
+    /// engine keeps the next batch committed behind the running one, and it
+    /// commits the batch after that as soon as it has processed a batch's
+    /// outputs, before any client can react to them. An arrival can join only
+    /// a batch committed after it, so it skips the queued batches and, at a
+    /// pass boundary, also the one committed there. A synchronous engine and
+    /// an idle engine admit it at the next pass.
+    fn first_pass_admitting_arrival(&self, pass_in_flight: bool) -> u64 {
+        let queued = self.args.max_concurrent_batches.saturating_sub(1) as u64;
+        if queued == 0 || (!pass_in_flight && self.state.running.is_empty()) {
+            return self.passes_executed;
+        }
+        self.passes_executed + queued + u64::from(!pass_in_flight)
+    }
+
+    fn submit(
+        &mut self,
+        mut request: DirectRequest,
+        admissible_from_pass: u64,
+    ) -> anyhow::Result<Uuid> {
         let uuid = request.uuid.unwrap_or_else(Uuid::new_v4);
         request.uuid = Some(uuid);
         if self.state.requests.contains_key(&uuid) {
             anyhow::bail!("request {uuid} is already active");
         }
         let waiting_order = self.allocate_waiting_order();
-        let request = self.make_request_state(request, RequestStatus::Waiting, waiting_order);
+        let mut request = self.make_request_state(request, RequestStatus::Waiting, waiting_order);
+        request.admissible_from_pass = admissible_from_pass;
         self.state.insert_waiting(uuid, request);
         if let Some(request) = self.state.requests.get(&uuid) {
             request.debug_assert_progress(uuid);
@@ -1448,6 +1479,7 @@ impl VllmCore {
             sequence,
             status,
             waiting_order,
+            admissible_from_pass: 0,
             is_decode_handoff: false,
             num_computed_tokens: 0,
             drafts_ready: false,
@@ -1943,6 +1975,8 @@ impl VllmCore {
         } else {
             0
         };
+        let mut admit_queued_arrivals = false;
+        let mut stopped_at_queued_arrival = false;
         while !preempted_any
             && self.state.running.len() < max_num_running
             // vLLM does not call connector lookup after the current batch has
@@ -1992,7 +2026,7 @@ impl VllmCore {
                 .as_ref()
                 .map(|_| self.request_prefill_reservation_blocks(uuid))
                 .unwrap_or_default();
-            let (reject_before_admission, admission_stage) = {
+            let (reject_before_admission, admission_stage, admissible_from_pass) = {
                 let request = self
                     .state
                     .requests
@@ -2004,8 +2038,19 @@ impl VllmCore {
                             .kv_manager
                             .accepts_sequence_length(request.sequence.len()),
                     admission.stage_for(request.prompt_is_prebuilt()),
+                    request.admissible_from_pass,
                 )
             };
+            // vLLM committed this pass before the request arrived; FCFS keeps
+            // later arrivals behind it. A committed batch without other work
+            // runs no forward, so the arrivals then run in this pass.
+            if !admit_queued_arrivals && admissible_from_pass > self.passes_executed {
+                if !scheduled.is_empty() {
+                    stopped_at_queued_arrival = true;
+                    break;
+                }
+                admit_queued_arrivals = true;
+            }
             if !reject_before_admission
                 && matches!(admission_stage, AdmissionStage::PendingDestinationHead)
             {
@@ -2257,7 +2302,9 @@ impl VllmCore {
         }
 
         if !defer_prefills && !preempted_any {
-            self.prefill_capacity_bound = !self.state.waiting_members.is_empty();
+            // Queued arrivals are not waiting for scheduler capacity.
+            self.prefill_capacity_bound =
+                !stopped_at_queued_arrival && !self.state.waiting_members.is_empty();
         }
 
         if let Some(adapter) = self.native_host_offload.as_mut() {
@@ -2367,6 +2414,7 @@ impl VllmCore {
         }
         committed_requests.sort_unstable();
         committed_requests.dedup();
+        self.passes_executed += 1;
         self.state.debug_assert_invariants();
         Ok(EnginePassResult {
             committed_requests,

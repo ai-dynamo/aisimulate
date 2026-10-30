@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright contributors to the vLLM project.
 // Modified Rust simulation of vLLM b3563fc65ae0f5359802593d78e7ea097e1fed31
-// scheduling contracts; immutable sources and license: THIRD_PARTY_NOTICES.md.
+// scheduling contracts and of the v0.28.0 (2cf0a6915ce544dc493a0990f2ea38d81601128a)
+// async-scheduling batch queue; immutable sources and license: THIRD_PARTY_NOTICES.md.
 
 use rstest::rstest;
 use uuid::Uuid;
@@ -1149,6 +1150,146 @@ mod mixed_pass_timing {
         assert_eq!(mixed.end_ms - first.end_ms, 12.0);
         assert_eq!(timing.queries.lock().unwrap().len(), 1);
         assert_eq!(*timing.prefills.lock().unwrap(), 1);
+    }
+}
+
+mod async_scheduling_admission {
+    use super::*;
+
+    fn core(max_concurrent_batches: usize) -> VllmCore {
+        VllmCore::new(
+            MockEngineArgs::builder()
+                .block_size(4)
+                .num_gpu_blocks(64)
+                .max_num_batched_tokens(Some(64))
+                .max_num_seqs(Some(8))
+                .enable_chunked_prefill(true)
+                .enable_prefix_caching(false)
+                .speedup_ratio(0.0)
+                .max_concurrent_batches(max_concurrent_batches)
+                .build()
+                .unwrap(),
+        )
+    }
+
+    /// Submit as replay does: mid-pass while a pass is in flight, otherwise at
+    /// a pass boundary, before the next pass starts.
+    fn arrive(core: &mut VllmCore, id: u128, output: usize, pass_in_flight: bool) -> Uuid {
+        let request = DirectRequest {
+            tokens: vec![id as u32; 8],
+            max_output_tokens: output,
+            uuid: Some(Uuid::from_u128(id)),
+            ..Default::default()
+        };
+        match core
+            .apply_command_effects(SchedulerCommand::Submit(request), !pass_in_flight)
+            .unwrap()
+            .result
+        {
+            SchedulerCommandResult::Submitted(uuid) => uuid,
+            other => panic!("unexpected submit result {other:?}"),
+        }
+    }
+
+    /// Run one pass and return the requests it admitted.
+    fn pass(core: &mut VllmCore) -> Vec<Uuid> {
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let result = core.execute_pass(&mut collector, 0.0);
+        result
+            .admissions
+            .iter()
+            .map(|admission| admission.uuid)
+            .collect()
+    }
+
+    /// How many passes run before the one that admits each request.
+    fn passes_before_admission(core: &mut VllmCore, uuids: &[Uuid]) -> Vec<usize> {
+        let mut admitted = vec![None; uuids.len()];
+        for index in 0..8 {
+            for uuid in pass(core) {
+                if let Some(position) = uuids.iter().position(|candidate| *candidate == uuid) {
+                    admitted[position].get_or_insert(index);
+                }
+            }
+        }
+        admitted.into_iter().map(Option::unwrap).collect()
+    }
+
+    /// An engine whose first pass admitted a request with `output` tokens.
+    fn engine_after_first_pass(max_concurrent_batches: usize, output: usize) -> VllmCore {
+        let mut core = core(max_concurrent_batches);
+        let running = arrive(&mut core, 1, output, false);
+        assert_eq!(pass(&mut core), [running]);
+        core
+    }
+
+    #[rstest]
+    #[case::mid_pass(true, 1)]
+    #[case::pass_boundary(false, 2)]
+    fn arrival_at_a_busy_engine_skips_the_passes_vllm_committed(
+        #[case] pass_in_flight: bool,
+        #[case] skipped: usize,
+    ) {
+        let mut core = engine_after_first_pass(2, 32);
+        let arrival = arrive(&mut core, 2, 4, pass_in_flight);
+        assert_eq!(passes_before_admission(&mut core, &[arrival]), [skipped]);
+    }
+
+    /// A preempted request was admitted long ago: it resumes at the next pass
+    /// while a newer arrival still skips the batch vLLM had committed.
+    #[test]
+    fn preempted_request_is_not_deferred_as_a_new_arrival() {
+        let mut core = engine_after_first_pass(2, 32);
+        let preempted = Uuid::from_u128(1);
+        let arrival = arrive(&mut core, 2, 4, true);
+        assert!(core.policy_preempt(0.0).is_some());
+        assert_eq!(core.state.requests[&preempted].num_preemptions, 1);
+
+        pass(&mut core);
+        assert_eq!(
+            core.state.requests[&preempted].status,
+            RequestStatus::Running
+        );
+        assert_ne!(core.state.requests[&arrival].status, RequestStatus::Running);
+        assert_eq!(passes_before_admission(&mut core, &[arrival]), [0]);
+    }
+
+    #[rstest]
+    #[case::mid_pass(true)]
+    #[case::pass_boundary(false)]
+    fn synchronous_engine_admits_an_arrival_at_the_next_pass(#[case] pass_in_flight: bool) {
+        let mut core = engine_after_first_pass(1, 32);
+        let arrival = arrive(&mut core, 2, 4, pass_in_flight);
+        assert_eq!(passes_before_admission(&mut core, &[arrival]), [0]);
+    }
+
+    #[test]
+    fn idle_engine_admits_an_arrival_at_the_next_pass() {
+        let mut core = engine_after_first_pass(2, 1);
+        assert!(core.is_empty());
+        let arrival = arrive(&mut core, 2, 4, false);
+        assert_eq!(passes_before_admission(&mut core, &[arrival]), [0]);
+    }
+
+    /// The running request emits its last token in the second pass, so vLLM
+    /// commits an empty batch after it. Queued arrivals then run at once,
+    /// together, instead of waiting for the batch they would otherwise skip.
+    #[test]
+    fn empty_committed_batch_admits_queued_arrivals_together() {
+        // At the boundary before that last pass.
+        let mut core = engine_after_first_pass(2, 2);
+        let arrivals = [
+            arrive(&mut core, 2, 4, false),
+            arrive(&mut core, 3, 4, false),
+        ];
+        assert_eq!(passes_before_admission(&mut core, &arrivals), [1, 1]);
+
+        // While that last pass runs.
+        let mut core = engine_after_first_pass(2, 2);
+        assert!(pass(&mut core).is_empty());
+        assert!(core.state.running.is_empty());
+        let arrivals = [arrive(&mut core, 2, 4, true), arrive(&mut core, 3, 4, true)];
+        assert_eq!(passes_before_admission(&mut core, &arrivals), [0, 0]);
     }
 }
 

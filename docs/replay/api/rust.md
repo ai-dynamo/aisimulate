@@ -123,6 +123,16 @@ them. Latency metrics keep the arrival time, and each per-request record gains
 rejected. See
 [request tokenization](../engine/README.md#tokenization).
 
+`with_detokenization(workers, base_ms, per_output_ms)` detokenizes each pass's
+outputs before the client receives them. Each worker that emits tokens has
+`workers` servers, shared by its attention-DP ranks, and each request belongs
+to one of them. A server takes the outputs of a pass that belong to it as one
+job of `base_ms + per_output_ms × outputs`, after its earlier jobs. Token
+times, latency metrics and request completion use the client's receive time.
+Both costs zero, the default, keep every output at its pass end. Scaling and
+agentic profiles are rejected. See
+[response detokenization](../engine/README.md#detokenization).
+
 `with_capture_options(ReplayCaptureOptions)` controls capture and canonical
 determinism. Canonical comparison uses the exported schema version, seed and
 exclusion definitions rather than arbitrary JSON key order. The default
