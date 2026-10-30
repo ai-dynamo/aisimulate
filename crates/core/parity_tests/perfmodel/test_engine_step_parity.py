@@ -1560,11 +1560,13 @@ HYBRID_CASES = [
     # Meant as the attention cross-head_size xshape case: MiMo-V2-Flash queries
     # head_dim=192, which 0.24 collects for fp8 KV only, so with bf16 KV,
     # SILICON raises and HYBRID borrows the nearest collected head_size
-    # (`attention.py` ctx + gen reference grids). The case sets no KV mode, so
-    # this fp8 checkpoint runs with fp8 KV, which silicon covers, and the
-    # static run records no xshape tag. Re-anchoring the case on bf16 KV is a
+    # (`operators/attention.rs` ctx + gen reference grids). The case reads the
+    # current slot, vLLM 0.30.0 since PR #517, which collects head_dim=192 for
+    # bf16 and fp8 KV. The case sets no KV mode, so this fp8 checkpoint runs
+    # with fp8 KV, which silicon covers, and the static run records no xshape
+    # tag. Re-anchoring the case on bf16 KV over the 0.24.0 data is a
     # follow-up: the static, agg and disagg surfaces do not pass
-    # kvcache_quant_mode. Golden static ctx/gen: 20.785/4.421 ms.
+    # kvcache_quant_mode. Golden static ctx/gen: 21.437/4.437 ms.
     pytest.param(
         EngineStepParityCase(
             model_path="XiaomiMiMo/MiMo-V2-Flash",
