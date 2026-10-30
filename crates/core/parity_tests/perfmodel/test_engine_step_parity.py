@@ -1617,6 +1617,12 @@ HYBRID_CASES = [
         EngineStepParityCase(
             model_path="Qwen/Qwen3-32B",
             database_mode="EMPIRICAL",
+            # EMPIRICAL needs the version's OWN comm tables (custom_allreduce
+            # util grid); the 2026-10 campaign did not collect comm, so the
+            # estimator is pinned to the 0.24.0 data (follow-up: comm tables for
+            # the current versions).
+            backend_version="0.24.0",
+            allow_unlisted_version=True,
         ),
         id="qwen3-32b-b200-vllm-empirical",
     ),
@@ -1624,6 +1630,12 @@ HYBRID_CASES = [
         EngineStepParityCase(
             model_path="Qwen/Qwen3-235B-A22B",
             database_mode="EMPIRICAL",
+            # EMPIRICAL needs the version's OWN comm tables (custom_allreduce
+            # util grid); the 2026-10 campaign did not collect comm, so the
+            # estimator is pinned to the 0.24.0 data (follow-up: comm tables for
+            # the current versions).
+            backend_version="0.24.0",
+            allow_unlisted_version=True,
         ),
         id="qwen3-235b-a22b-b200-vllm-empirical",
     ),
@@ -1631,6 +1643,12 @@ HYBRID_CASES = [
         EngineStepParityCase(
             model_path="moonshotai/Kimi-K2.5",
             database_mode="EMPIRICAL",
+            # EMPIRICAL needs the version's OWN comm tables (custom_allreduce
+            # util grid); the 2026-10 campaign did not collect comm, so the
+            # estimator is pinned to the 0.24.0 data (follow-up: comm tables for
+            # the current versions).
+            backend_version="0.24.0",
+            allow_unlisted_version=True,
         ),
         id="kimi-k25-b200-vllm-empirical",
     ),
@@ -1638,6 +1656,12 @@ HYBRID_CASES = [
         EngineStepParityCase(
             model_path="deepseek-ai/DeepSeek-V3.2",
             database_mode="EMPIRICAL",
+            # EMPIRICAL needs the version's OWN comm tables (custom_allreduce
+            # util grid); the 2026-10 campaign did not collect comm, so the
+            # estimator is pinned to the 0.24.0 data (follow-up: comm tables for
+            # the current versions).
+            backend_version="0.24.0",
+            allow_unlisted_version=True,
         ),
         id="deepseek-v32-b200-vllm-empirical",
     ),
@@ -1652,6 +1676,12 @@ HYBRID_CASES = [
             backend_name="sglang",
             isl=1536,
             database_mode="EMPIRICAL",
+            # EMPIRICAL needs the version's OWN comm tables (custom_allreduce
+            # util grid); the 2026-10 campaign did not collect comm, so the
+            # estimator is pinned to the 0.5.14 data (follow-up: comm tables for
+            # the current versions).
+            backend_version="0.5.14",
+            allow_unlisted_version=True,
         ),
         id="glm5-b200-sglang-empirical",
     ),
@@ -1659,6 +1689,12 @@ HYBRID_CASES = [
         EngineStepParityCase(
             model_path="MiniMaxAI/MiniMax-M2.5",
             database_mode="EMPIRICAL",
+            # EMPIRICAL needs the version's OWN comm tables (custom_allreduce
+            # util grid); the 2026-10 campaign did not collect comm, so the
+            # estimator is pinned to the 0.24.0 data (follow-up: comm tables for
+            # the current versions).
+            backend_version="0.24.0",
+            allow_unlisted_version=True,
         ),
         id="minimax-m25-b200-vllm-empirical",
     ),
@@ -1666,6 +1702,12 @@ HYBRID_CASES = [
         EngineStepParityCase(
             model_path="nvidia/Nemotron-H-56B-Base-8K",
             database_mode="EMPIRICAL",
+            # EMPIRICAL needs the version's OWN comm tables (custom_allreduce
+            # util grid); the 2026-10 campaign did not collect comm, so the
+            # estimator is pinned to the 0.24.0 data (follow-up: comm tables for
+            # the current versions).
+            backend_version="0.24.0",
+            allow_unlisted_version=True,
         ),
         id="nemotron-h-56b-b200-vllm-empirical",
     ),
@@ -1945,12 +1987,16 @@ class TestRustTypedErrorsAcrossFfi:
         # fp4_tc_flops — see the missing-dtype test below.)
         _prepare_rust_core(monkeypatch)
         case = EngineStepParityCase(
-            # current-slot data-gap coordinate: head_dim=192 is collected for
-            # fp8 KV only. The model is an fp8 checkpoint (kv would infer fp8
-            # and HIT), so bf16 KV is pinned explicitly to hold the gap. If a
-            # future collection adds bf16@192, re-anchor to a new gap.
+            # data-gap coordinate pinned to the vllm 0.24.0 data: head_dim=192
+            # is collected for fp8 KV only there. The model is an fp8
+            # checkpoint (kv would infer fp8 and HIT), so bf16 KV is pinned
+            # explicitly to hold the gap. The 2026-10 campaign (0.30.0, the
+            # current slot) fills bf16@192, so the gap is a raw data pin, not
+            # a slot.
             model_path="XiaomiMiMo/MiMo-V2-Flash",
             kvcache_quant_mode="bfloat16",
+            backend_version="0.24.0",
+            allow_unlisted_version=True,
         )
         with pytest.raises(errors.PerfDataNotAvailableError) as excinfo:
             _rust_static_breakdown(case)
@@ -2066,10 +2112,14 @@ class TestRustProvenanceCapture:
         case = EngineStepParityCase(
             model_path="MiniMaxAI/MiniMax-M3",
             database_mode="HYBRID",
-            # xop-borrow coordinate on the current slot: sglang 0.5.14 ships
-            # no MSA module tables (they land at 0.5.16), so MSA borrows
-            # DSA's util — the xop tier this test pins.
+            # xop-borrow coordinate pinned to the sglang 0.5.14 data: that
+            # drop ships no MSA module tables (they land at 0.5.16), so MSA
+            # borrows DSA's util — the xop tier this test pins. 0.5.21 (the
+            # current slot since the 2026-10 campaign) carries the MSA
+            # tables, so the coordinate is a raw data pin, not a slot.
             backend_name="sglang",
+            backend_version="0.5.14",
+            allow_unlisted_version=True,
         )
         with util_empirical.capture_provenance() as tags:
             metrics = _static_metrics(case)

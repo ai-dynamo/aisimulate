@@ -293,6 +293,8 @@ mappings:
   - {framework: vllm, kernel_source: FlashInferFp8BlockScaledMMKernel, backend: flashinfer, source: "PR#1344 collect_gemm.py"}
   - {framework: vllm, kernel_source: FlashInferCutlassNvFp4LinearKernel, backend: flashinfer_cutlass, source: "PR#1344 collect_gemm.py"}
   - {framework: vllm, kernel_source: FlashInferCuteDslNvFp4LinearKernel, backend: flashinfer_cutedsl, source: "PR#1344 collect_gemm.py"}
+  - {framework: vllm, kernel_source: MarlinNvFp4LinearKernel, backend: marlin, source: "collect_gemm.py w4a16_nvfp4 (ModelOpt W4A16_NVFP4; kernels/linear/nvfp4/marlin.py apply_fp4_marlin_linear @v0.24.0)"}
+  - {framework: vllm, kernel_source: FlashInferCuteDslNvFp4W4A16LinearKernel, backend: flashinfer_cutedsl, source: "collect_gemm.py w4a16_nvfp4 (kernels/linear/nvfp4/flashinfer.py:34-55 @v0.31.0, BF16 x FP4 mm_bf16_fp4)"}
   - {framework: vllm, kernel_source: "torch.nn.functional.linear", backend: cublas, source: "PR#1344 collect_gemm.py (bf16)"}
   - {framework: vllm, kernel_source: static_scaled_fp8_quant, backend: vllm_kernel, source: "PR#1344 collect_computescale.py:73 (vllm _custom_ops)"}
   - {framework: vllm, kernel_source: dynamic_per_token_scaled_fp8_quant_minus_static_scaled_fp8_quant, backend: vllm_kernel, source: "PR#1344 collect_computescale.py:63 (derived overhead measure)"}

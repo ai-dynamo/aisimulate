@@ -359,9 +359,14 @@ def _hopper_sol(system, backend, tp, kv=None, backend_version=None):
 @pytest.mark.parametrize(("backend", "version"), [("vllm", "0.31.0"), ("sglang", "0.5.20")])
 @pytest.mark.parametrize("tp", [4, 8])
 @pytest.mark.parametrize("system", ["h100_sxm", "h200_sxm"])
-def test_fp8_sparse_kv_is_rejected_on_hopper_with_older_runtimes(system, tp, backend, version):
+def test_fp8_sparse_kv_is_rejected_on_hopper_with_older_runtimes(system, tp, backend, version, monkeypatch):
     # The pinned older runtimes lack the Hopper FP8 KV fixes; selecting a
     # newer runtime must not silently change the behavior of these versions.
+    # These are raw data coordinates: sglang 0.5.20 sits between the
+    # previous (0.5.14) and current (0.5.21) slots since the 2026-10
+    # campaign, so the fixture escape is needed exactly as in the fixed-
+    # runtime test below.
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     for kv in ("fp8", None):
         with pytest.raises(Exception, match=r"SM90.*bfloat16"):
             _hopper_sol(system, backend, tp, kv, version)
@@ -389,8 +394,10 @@ def test_hopper_kv_capability_is_versioned_in_compiled_engine_handles(backend, v
     # without forward-pass readiness; the runtime-version rule holds there too.
     from aisimulate_core.sdk.engine import EngineHandle
 
-    if supports_fp8:
-        monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    # Every version here is a raw data coordinate (the fixed runtimes, and
+    # sglang 0.5.20 which sits between the previous and current slots since
+    # the 2026-10 campaign); vllm 0.31.0 happens to be the derived `next`.
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
 
     def compile_handle(kv):
         return EngineHandle.compile(

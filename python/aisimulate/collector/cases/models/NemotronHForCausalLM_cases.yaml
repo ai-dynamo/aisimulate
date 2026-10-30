@@ -301,6 +301,16 @@ model_case_values:
       head_dim: 64
       n_groups: 8
       chunk_size: 128
+  gemm:
+    # Lightning shared-expert projections (hidden 2688, shared intermediate
+    # 3712) at TP1/4/8. hf_quant_config.json lists them W4A16_NVFP4, and the
+    # Nemotron-H model queries them at exactly these off-grid widths.
+    - model_path: nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4
+      output_feature_sizes: [3712, 928, 464]
+      input_feature_sizes: [2688]
+    - model_path: nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4
+      output_feature_sizes: [2688]
+      input_feature_sizes: [3712, 928, 464]
 
 all_frameworks_op_cases:
   moe:

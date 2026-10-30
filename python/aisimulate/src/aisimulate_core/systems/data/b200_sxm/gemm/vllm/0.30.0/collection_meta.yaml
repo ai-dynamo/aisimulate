@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+runtime:
+  framework: vllm
+  version: 0.30.0
+  image: vllm/vllm-openai:v0.30.0
+  image_digest: sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90
+tables:
+  gemm_perf:
+    rows: 149406
+    status: complete
+    collections:
+    - collector_ref: 26d0951953854b35eeb1705d442fba9f42c40092
+      collector_hash: sha256:8162a32e7b4f0cd626f890cfc19640c2a63aa7bb355f1220f6841e2417c351f0
+      case_plan_hash: sha256:37d5ec63f630c7a1fc241bcb3c59e2de5e52e68b54849496160dfedf0a12fe3a
+      collected_at: '2026-10-06'
+      rows: 37518
+      status: complete
+    - collector_ref: 26d0951953854b35eeb1705d442fba9f42c40092
+      collector_hash: sha256:8162a32e7b4f0cd626f890cfc19640c2a63aa7bb355f1220f6841e2417c351f0
+      case_plan_hash: sha256:a26b4b0dd1684df8b9645fddcb12b080ee89d9c39f0e08b3cb44f22926a5500e
+      collected_at: '2026-10-06'
+      rows: 37518
+      status: complete
+    - collector_ref: 26d0951953854b35eeb1705d442fba9f42c40092
+      collector_hash: sha256:8162a32e7b4f0cd626f890cfc19640c2a63aa7bb355f1220f6841e2417c351f0
+      case_plan_hash: sha256:98a642c5cab74bd56f9e12f4c160e574a4cc9d41edf5438387d8f138bea7d0a5
+      collected_at: '2026-10-06'
+      rows: 36408
+      status: complete
+    - collector_ref: 26d0951953854b35eeb1705d442fba9f42c40092
+      collector_hash: sha256:8162a32e7b4f0cd626f890cfc19640c2a63aa7bb355f1220f6841e2417c351f0
+      case_plan_hash: sha256:ac15c6379b8de03e49c419d74c5b702b2596c387a07d78f833da2ff288133956
+      collected_at: '2026-10-06'
+      rows: 37518
+      status: complete
+    - collector_ref: 9d81c45755fd1b34654c6c0d940c3807108d1d31
+      collector_hash: sha256:3e50fb873bd01b8979fee9a5246fc4b0e88d7486d0e1c23d9c3cd6d85dbaf03f
+      case_plan_hash: sha256:0da6da79d2f75696d7c67fd28213c5b0a5f2de08e0dd7012323aa069c91f32fa
+      collected_at: '2026-10-29'
+      rows: 444
+      status: complete

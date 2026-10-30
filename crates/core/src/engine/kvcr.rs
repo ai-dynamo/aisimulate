@@ -17,7 +17,7 @@ use crate::engine::g3_offload::is_zero;
 use crate::engine::host_offload::HostTierHandle;
 use rustc_hash::FxHashMap;
 
-use crate::engine::offload_transfer::{self, ClientEvent, Direction, FairTransfers};
+use crate::engine::offload_transfer::{self, ClientEvent, Direction, FairTransfers, Link};
 use crate::engine::{KvHintSource, KvcrConfig};
 
 pub(crate) type SharedKvcrRegistry = Arc<Mutex<KvcrRegistry>>;
@@ -272,12 +272,16 @@ impl KvcrRegistry {
             .or_default() += 1;
         self.transfers.submit(offload_transfer::Job {
             id,
-            client: pull.client,
             direction: Direction::Read,
             ready: start_ms + self.config.latency_to_first_byte_ms,
             bytes: pull.bytes as f64,
-            client_rate: offload_transfer::bytes_per_ms(self.config.bandwidth_gbps),
-            shared_rate: f64::INFINITY,
+            links: [
+                Link {
+                    id: pull.client,
+                    rate: offload_transfer::bytes_per_ms(self.config.bandwidth_gbps),
+                },
+                Link::UNLIMITED,
+            ],
         });
         self.client_events_stale = true;
     }

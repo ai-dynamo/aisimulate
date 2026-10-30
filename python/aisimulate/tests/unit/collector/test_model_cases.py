@@ -882,13 +882,14 @@ def test_gemm_common_cases_expand_from_base_op_yaml_shape_specs():
     # its other shared-expert projections overlap the existing base shapes.
     # GLM-5.3-Flash adds ten new off-grid output widths at k=4096 (its
     # declared widths minus those another model already declares) across the
-    # 74 standard / 21 XPU token counts.
-    assert len(cases) == 38258
+    # 74 standard / 21 XPU token counts. Nemotron 3.5 Lightning adds its six
+    # TP1/4/8 shared-expert (n, k) sites across the same token counts.
+    assert len(cases) == 38702
     assert cases[0] == GemmCommonTestCase(x=32768, n=65536, k=51200)
     assert cases[-1] == GemmCommonTestCase(x=1, n=1, k=4096)
     assert not any(case.n == 65536 and case.k == 65536 for case in cases)
 
-    assert len(xpu_cases) == 10857
+    assert len(xpu_cases) == 10983
     assert xpu_cases[0] == GemmCommonTestCase(x=8192, n=65536, k=32768)
     assert xpu_cases[-1] == GemmCommonTestCase(x=1, n=1, k=4096)
     assert get_gemm_type_specs("vllm_xpu") == ["bfloat16", "fp8"]
@@ -897,6 +898,9 @@ def test_gemm_common_cases_expand_from_base_op_yaml_shape_specs():
         keys = {(case.x, case.n, case.k) for case in backend_cases}
         assert len(keys) == len(backend_cases)
         assert {x for x, n, k in keys if (n, k) == (7168, 384)} == {x for x, _, _ in keys}
+        lightning_sites = {(3712, 2688), (928, 2688), (464, 2688), (2688, 3712), (2688, 928), (2688, 464)}
+        for site in lightning_sites:
+            assert {x for x, n, k in keys if (n, k) == site} == {x for x, _, _ in keys}
 
     compute_scale_cases = get_compute_scale_case_specs()
     assert len(compute_scale_cases) == 1628

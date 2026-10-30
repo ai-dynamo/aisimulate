@@ -40,9 +40,11 @@ def test_b200_sglang_gdn_conv_donor_fill_is_pinned():
     # Donor-served coordinate: the sglang grid stops at the collection token
     # budget, so batch=32 x seq=16384 exists ONLY via the cross-backend fill.
     # PR #219 added the vLLM 0.25.0 donor at this exact coordinate, replacing
-    # 0.24.0's 6.3917822265624995 ms with its measured 6.34266845703125 ms.
+    # 0.24.0's 6.3917822265624995 ms with its measured 6.34266845703125 ms;
+    # the 2026-10 campaign's vLLM 0.30.0 b200 table (causal_conv1d_fn,
+    # Qwen3.5-35B-A3B grid) now serves it with its measured 6.083416748046875 ms.
     # The pin makes that donor revision and graft visible and frozen.
-    assert lane[32][16384]["latency"] == pytest.approx(6.34266845703125, rel=1e-9)
+    assert lane[32][16384]["latency"] == pytest.approx(6.083416748046875, rel=1e-9)
     # Own-row coordinate (sglang's own measurement): first-wins must keep
     # shielding it from every donor.
     assert lane[32][4096]["latency"] == pytest.approx(1.46670654296875, rel=1e-9)
