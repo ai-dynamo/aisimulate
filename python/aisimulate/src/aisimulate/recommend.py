@@ -1059,7 +1059,7 @@ def _candidate_prediction(
             # Per-role roots can differ; preserve them next to the role's timing.
             # A packed snapshot's own root moves with the snapshot, which the
             # timing already names.
-            if packed_systems_root(resolved["estimator_config"]) is None:
+            if resolved["systems_paths"] and packed_systems_root(resolved["estimator_config"]) is None:
                 timing["systems_paths"] = list(resolved["systems_paths"])
             timing["database_mode"] = resolved["database_mode"]
             policy = resolved["transfer_policy"]

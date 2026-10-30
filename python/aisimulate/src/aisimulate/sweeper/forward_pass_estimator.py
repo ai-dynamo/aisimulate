@@ -15,6 +15,7 @@ from aisimulate_core.sdk import (
     ForwardPassPerfModelConfig,
     RustForwardPassPerfModel,
 )
+from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
 
 from ..estimator_readiness import unready_estimator_message
 from .config import ENGINE_MODEL_CONTROL_FIELDS, SearchSpace
@@ -220,7 +221,8 @@ class ForwardPassEstimatorResolver:
             for role in roles
             if sample.get(f"{role}_timing_model") is None
         }
-        versions = {spec.backend_version for spec in resolved.values()}
+        # A regression or learned role may not know its version; the others agree.
+        versions = {spec.backend_version for spec in resolved.values()} - {UNKNOWN_IDENTITY}
         if len(versions) > 1:
             raise ForwardPassEstimatorResolutionError(
                 f"Core resolved inconsistent backend versions across candidate roles: {sorted(versions)}"

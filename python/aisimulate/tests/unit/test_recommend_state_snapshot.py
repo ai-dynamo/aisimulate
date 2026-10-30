@@ -267,7 +267,7 @@ def test_settings_that_agree_with_the_snapshot_are_accepted(snapshots):
 @pytest.mark.parametrize(
     ("name", "role", "message"),
     [
-        ("regression", "aggregated", r"fpm_regression .*no ais_perf_model role configuration"),
+        ("regression", "aggregated", r"records no kv_block_size"),
         ("uncalibrated", "aggregated", r"no enabled, ready correction store"),
         ("no-block-size", "aggregated", r"records no kv_block_size"),
         ("pipeline", "aggregated", r"records pp=2; engine replay has no pipeline-stage model"),
@@ -507,3 +507,257 @@ def test_capacity_lowering_checks_a_snapshot_configuration_without_restoring_it(
     del malformed["estimator_config"]["state_snapshot"]["path"]
     with pytest.raises(ValueError, match="state_snapshot"):
         lower(malformed)
+
+
+# ---------------------------------------------------------------------------
+# Regression and learned snapshots, as a Dynamo planner saves them
+# ---------------------------------------------------------------------------
+
+_LIMITS = {
+    "num_gpus": 1,
+    "max_num_batched_tokens": 8192,
+    "max_num_seqs": 256,
+    "max_kv_tokens": 16384,
+    "context_length": "unknown",
+}
+_PLANNER_SLOWER = 2.0
+
+
+def _scheduled(prefills: int, prefill_tokens: int, decodes: int, kv: int) -> dict:
+    return {
+        "version": 1,
+        "wall_time": 0.0,
+        "scheduled_requests": {
+            "num_prefill_requests": prefills,
+            "sum_prefill_tokens": prefill_tokens,
+            "num_decode_requests": decodes,
+            "sum_decode_kv_tokens": kv,
+        },
+    }
+
+
+def _planner(worker: str, kinds=("prefill", "decode", "mixed"), **overrides) -> RustForwardPassPerfModel:
+    """A planner's regression for an unknown deployment: hardware, version and
+    shape unknown, its limits recorded. It observes every forward pass
+    `_PLANNER_SLOWER` times slower than the op-level estimate."""
+    fields = {
+        "model": _MODEL,
+        "system": "unknown",
+        "backend": "vllm",
+        "backend_version": "unknown",
+        "worker_type": worker,
+        "tp": "unknown",
+        "pp": "unknown",
+        "attention_dp": "unknown",
+        "kv_block_size": _BLOCK,
+        "estimation_mode": "fpm_regression",
+        "deployment_limits": _LIMITS,
+        **overrides,
+    }
+    model = RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**fields))
+    reference = _native(worker, estimator_config={})
+    iterations = []
+    for index in range(48):
+        prefills, decodes = 1 + index % 4, 1 + index % 8
+        shapes = {
+            "prefill": (prefills, 128 * prefills * (1 + index % 3), 0, 0),
+            "decode": (0, 0, decodes, decodes * (128 + 37 * (index % 11))),
+            "mixed": (1, 32 * (1 + index % 6), decodes, decodes * (128 + 41 * (index % 7))),
+        }
+        for kind in kinds:
+            rank = _scheduled(*shapes[kind])
+            rank["wall_time"] = reference.estimate_forward_pass_time_ms([rank]) * _PLANNER_SLOWER / 1000.0
+            iterations.append([rank])
+    model.tune_with_fpms(iterations)
+    return model
+
+
+@pytest.fixture(scope="module")
+def planner_snapshots(tmp_path_factory) -> dict[str, Path]:
+    root = tmp_path_factory.mktemp("planner")
+
+    def save(name: str, model: RustForwardPassPerfModel) -> Path:
+        return _moved(model, root, name, include_perf_db=False)
+
+    return {
+        "decode": save("decode", _planner("decode", kinds=("decode",))),
+        "aggregated": save("aggregated", _planner("aggregated")),
+        "unready": save("unready", _planner("aggregated", kinds=("decode",))),
+        "nextn": save("nextn", _planner("decode", kinds=("decode",), nextn=1)),
+        "no-kv": save(
+            "no-kv", _planner("decode", kinds=("decode",), deployment_limits={**_LIMITS, "max_kv_tokens": "unknown"})
+        ),
+        "no-limits": save("no-limits", _planner("decode", kinds=("decode",), deployment_limits=None)),
+        "no-sequences": save(
+            "no-sequences",
+            _planner("decode", kinds=("decode",), deployment_limits={**_LIMITS, "max_num_seqs": "unknown"}),
+        ),
+        # A regression whose identity is known pins it like a native snapshot.
+        "known": save(
+            "known",
+            _planner(
+                "decode",
+                kinds=("decode",),
+                system=_SYSTEM,
+                backend_version="0.19.0",
+                tp=1,
+                pp=1,
+                attention_dp=1,
+            ),
+        ),
+    }
+
+
+_DECODE_SHAPE = {"preset": False, "replicas": 1, "tensor": 1, "pipeline": 1, "attention_data": 1}
+
+
+def _planner_request(snapshot: Path | None, *, decode_parallelism=None, mode: str = "disaggregated") -> dict:
+    role = "decode" if mode == "disaggregated" else "aggregated"
+    raw = _request(snapshot, mode=mode, role=role)
+    raw["engine"]["backend"] = "vllm"
+    for worker in raw["engine"]["workers"].values():
+        worker["parallelism"] = {"preset": False, "replicas": 1}
+        worker["kv_cache"] = {"block_size": _BLOCK}
+    raw["engine"]["workers"][role]["parallelism"] = deepcopy(decode_parallelism or _DECODE_SHAPE)
+    return raw
+
+
+def _planner_run(raw: dict):
+    return run_recommendation(
+        CoreRecommendationConfig.model_validate(raw),
+        stack="engine",
+        runner_factory=EngineReplayRunnerFactory(),
+        show_progress=False,
+    )
+
+
+def test_a_planner_regression_snapshot_times_its_role_in_its_explicit_shape(planner_snapshots):
+    space = _space(_planner_request(planner_snapshots["decode"]))
+    # Unknown hardware and version take the engine's; the shape is the role's.
+    assert space.hardware_sku == _SYSTEM
+    assert space.backend_version is None
+    assert space.parallel_independent_by_mode["disagg"]["decode_tp"] == [1]
+    # KV capacity is the recorded one; scheduler limits are capped.
+    assert space.decode_num_gpu_blocks == _LIMITS["max_kv_tokens"] // _BLOCK
+    assert space.decode_max_num_seqs == [256]
+    assert space.decode_max_num_batched_tokens == [8192]
+    # Derived values are ordinary settings: saving and reloading is a fixed point.
+    saved = space.model_dump(mode="json")
+    assert SearchSpace.model_validate(deepcopy(saved)).model_dump(mode="json") == saved
+
+    result = _planner_run(_planner_request(planner_snapshots["decode"]))
+    baseline = _planner_run(_planner_request(None))
+    assert result.counts.feasible == 1, [record.reason for record in result.candidates]
+    [candidate] = result.selected_candidates
+    [reference] = baseline.selected_candidates
+    estimator = candidate.config["forward_pass_estimators"]["decode"]["config"]
+    assert (estimator["estimation_mode"], estimator["system"], estimator["tp"]) == (
+        "fpm_regression",
+        "unknown",
+        "unknown",
+    )
+    assert estimator["deployment_limits"] == _LIMITS
+    # Every observed pass was twice the op-level estimate, so the regression
+    # role decodes the same traffic more slowly than the op-level baseline.
+    assert candidate.metrics["mean_tpot_ms"] > reference.metrics["mean_tpot_ms"] * 1.5
+    decode = candidate.prediction_config["engine"]["workers"]["decode"]
+    capacity = decode["kv_cache"]["capacity"]
+    assert (capacity["type"], capacity["blocks"]) == ("fixed", _LIMITS["max_kv_tokens"] // _BLOCK)
+    replayed = _replay(candidate.prediction_config).metrics
+    assert (replayed["mean_ttft_ms"], replayed["mean_tpot_ms"]) == (
+        candidate.metrics["mean_ttft_ms"],
+        candidate.metrics["mean_tpot_ms"],
+    )
+    # Latency-only: the regression role leaves the deployment without
+    # operation power, as other latency-only timing does.
+    assert candidate.metrics["power_w"] is None
+
+
+def test_an_aggregated_planner_regression_prices_prefill_decode_and_mixed_passes(planner_snapshots):
+    raw = _planner_request(planner_snapshots["aggregated"], mode="aggregated")
+    result = _planner_run(raw)
+    baseline = _planner_run(_planner_request(None, mode="aggregated"))
+    assert result.counts.feasible == 1, [record.reason for record in result.candidates]
+    [candidate] = result.selected_candidates
+    [reference] = baseline.selected_candidates
+    assert candidate.config["forward_pass_estimators"]["agg"]["config"]["estimation_mode"] == "fpm_regression"
+    for metric in ("mean_ttft_ms", "mean_tpot_ms"):
+        assert candidate.metrics[metric] > reference.metrics[metric] * 1.5, metric
+    assert _replay(candidate.prediction_config).metrics["mean_tpot_ms"] == candidate.metrics["mean_tpot_ms"]
+
+
+@pytest.mark.parametrize(
+    ("name", "edit", "message"),
+    [
+        (
+            "decode",
+            lambda raw, w: w.update(parallelism={"preset": False, "replicas": 1}),
+            r"does not know the deployment's tp, pp, attention_dp.*parallelism.tensor.*single values",
+        ),
+        (
+            "decode",
+            lambda raw, w: w["parallelism"].update(tensor={"choices": [1, 2]}),
+            r"needs one explicit shape.*tp domain is \[1, 2\]",
+        ),
+        ("decode", lambda raw, w: w["parallelism"].update(tensor=2), r"uses 2 GPUs per replica.*num_gpus=1"),
+        (
+            "decode",
+            lambda raw, w: w["kv_cache"].update(capacity={"type": "fixed", "blocks": 100}),
+            r"decode KV capacity blocks=100 conflicts .*saved with 1024",
+        ),
+        (
+            "decode",
+            lambda raw, w: w["kv_cache"].update(capacity={"memory_fraction": {"choices": [0.8, 0.9]}}),
+            r"KV memory is not searched",
+        ),
+        (
+            "decode",
+            lambda raw, w: w.update(scheduler={"max_sequences": {"choices": [512, 1024]}}),
+            r"scheduler max_sequences=\[512, 1024\] exceeds .*deployment_limits.max_num_seqs=256",
+        ),
+        (
+            "decode",
+            lambda raw, w: w.update(scheduler={"max_batched_tokens": 16384}),
+            r"max_batched_tokens=\[16384\] exceeds .*max_num_batched_tokens=8192",
+        ),
+        ("nextn", lambda raw, w: None, r"records nextn=1; an fpm_regression model prices no speculative decoding"),
+        ("no-kv", lambda raw, w: None, r"does not record deployment_limits.max_kv_tokens"),
+        ("no-limits", lambda raw, w: None, r"does not record deployment_limits.max_kv_tokens"),
+        ("no-sequences", lambda raw, w: None, r"does not record deployment_limits.max_num_seqs"),
+        ("known", lambda raw, w: raw["engine"].update(hardware="b200_sxm"), r"hardware='b200_sxm' conflicts"),
+        (
+            "known",
+            lambda raw, w: raw["engine"].update(backend_version="0.10.0"),
+            r"engine.backend_version='0.10.0' conflicts .*saved with '0.19.0'",
+        ),
+        ("known", lambda raw, w: w["parallelism"].update(tensor=2), r"decode tp choices=\[2\] conflicts .*with 1"),
+    ],
+)
+def test_planner_snapshot_rules_fail_validation(planner_snapshots, name, edit, message):
+    raw = _planner_request(planner_snapshots[name])
+    edit(raw, raw["engine"]["workers"]["decode"])
+
+    with pytest.raises((ValidationError, ValueError), match=message):
+        _space(raw)
+
+
+def test_planner_snapshots_without_the_role_stores_are_rejected(planner_snapshots):
+    raw = _planner_request(planner_snapshots["unready"], mode="aggregated")
+    with pytest.raises((ValidationError, ValueError), match=r"without a ready contains_locally_mixed, pure_prefill"):
+        _space(raw)
+    raw = _planner_request(planner_snapshots["aggregated"], mode="aggregated")
+    raw["engine"]["workers"]["aggregated"]["parallelism"]["attention_data"] = 2
+    raw["engine"]["workers"]["aggregated"]["parallelism"]["tensor"] = 1
+    with pytest.raises((ValidationError, ValueError), match=r"uses 2 GPUs per replica"):
+        _space(raw)
+
+
+def test_unknown_hardware_takes_the_engine_and_known_regression_identity_is_pinned(planner_snapshots):
+    raw = _planner_request(planner_snapshots["decode"])
+    raw["engine"]["hardware"] = "b200_sxm"
+    raw["engine"]["backend_version"] = "0.10.0"
+    space = _space(raw)
+    assert (space.hardware_sku, space.backend_version) == ("b200_sxm", "0.10.0")
+    known = _space(_planner_request(planner_snapshots["known"], decode_parallelism={"preset": False, "replicas": 1}))
+    assert known.backend_version == "0.19.0"
+    assert known.parallel_independent_by_mode["disagg"]["decode_tp"] == [1]

@@ -1024,6 +1024,9 @@ class SearchSpace(BaseModel):
             if role in roles and (reference := state_snapshot_reference(controls)) is not None
         }
         for role, snapshot in self._state_snapshots.items():
+            # Regression and learned models read no performance data.
+            if snapshot.fitted:
+                continue
             if snapshot.packed_root is None and len(resolve_systems_paths(self.systems_paths_for(role))) != 1:
                 raise ValueError(
                     f"{snapshot.describe()} references performance data outside the snapshot; give the "
