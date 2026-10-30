@@ -44,14 +44,22 @@ which contributes to the decoder context but not the encoder embeddings.
 For example, a 70×70 image with patch size 14 and merge size 2 gives 36 encoder
 patches, 9 embeddings, and 12 context tokens.
 
-## Nemotron-H per-layer precision
+## Per-layer checkpoint precision
 
-The SDK reads the precision of each Nemotron-H GEMM projection and of the
-routed experts from the checkpoint's per-layer metadata (`quantized_layers`,
-`config_groups`, exclusions). This covers the Mamba `in_proj` and `out_proj`,
-the attention QKV and output projections, the dense MLP, the shared experts,
-the `fc1`/`fc2` latent projections and the routed experts. The result depends
-on the checkpoint and not on the model name.
+For Nemotron-H, Qwen3.5 (including Qwen3.6 and Qwen3.8) and Gemma 4, the SDK
+reads the precision of each GEMM projection and of the routed experts from the
+checkpoint's per-layer metadata (`quantized_layers`, `config_groups`,
+exclusions). The result depends on the checkpoint and not on the model name.
+Other model families keep one precision per op kind, with family-specific BF16
+exclusions.
+
+| Family | Projections priced per layer |
+| --- | --- |
+| Nemotron-H | Mamba `in_proj` and `out_proj`, attention QKV and output, dense MLP, shared experts, `fc1`/`fc2` latent projections |
+| Qwen3.5, 3.6, 3.8 | GDN `in_proj_qkvz`, `in_proj_ba` and `out_proj`, attention QKV and output, dense MLP, shared experts |
+| Gemma 4 | sliding and global attention QKV and output, shared dense MLP |
+
+All three families also price their routed experts per layer.
 
 - A projection that a MIXED_PRECISION listing leaves out is BF16, the rule
   vLLM and SGLang apply. Metadata that is not a MIXED_PRECISION listing leaves
@@ -79,13 +87,15 @@ on the checkpoint and not on the model name.
 If layers give a projection or the routed experts different precisions, the
 SDK prices each precision for its own count of layers. The MoE dispatch ops
 follow the routed-expert split. Loading fails when one module path has
-conflicting or unsupported algorithms, or when the fused Q, K and V modules of
-one layer disagree. The MTP layers use the decoder layers' precision.
+conflicting or unsupported algorithms, or when the checkpoint modules that one
+op fuses disagree (for example Q, K and V, or Qwen's `in_proj_qkv` and
+`in_proj_z`). The MTP layers use the decoder layers' precision.
 
 Known limits:
 
-- The routed-expert precision of a layer comes from expert 0. Different
-  precisions for experts of one layer are not modeled.
+- The routed-expert precision of a layer comes from expert 0 (Nemotron-H,
+  Gemma 4) or from the listed experts block (Qwen). Different precisions for
+  experts of one layer are not modeled.
 - An FP8 projection is dynamic FP8 only when the global mode is dynamic FP8.
   Otherwise it is static FP8.
 

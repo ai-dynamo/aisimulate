@@ -10,8 +10,9 @@ import aisimulate_core.sdk.operations as ops
 from aisimulate_core.sdk import common
 from aisimulate_core.sdk.config import ModelConfig
 from aisimulate_core.sdk.models import get_model
+from aisimulate_core.sdk.models.checkpoint_precision import checkpoint_precision as _checkpoint_precision
 from aisimulate_core.sdk.models.helpers import resolve_vllm_moe_execution_mode
-from aisimulate_core.sdk.models.nemotron_h import _checkpoint_precision, _moe_modes, _projection_modes
+from aisimulate_core.sdk.models.nemotron_h import _moe_modes, _projection_modes
 
 pytestmark = pytest.mark.unit
 
@@ -144,12 +145,12 @@ def test_exclusion_overrides_listed_layer():
 
 
 def test_literal_layer_names_use_indexed_lookup(monkeypatch):
-    import aisimulate_core.sdk.models.nemotron_h as nemotron
+    import aisimulate_core.sdk.models.checkpoint_precision as precision
 
     layers = {f"model.layers.0.mixer.experts.{i}.up_proj": {"quant_algo": "NVFP4"} for i in range(4096)}
     layers["model.layers.0.mixer.shared_experts.up_proj"] = {"quant_algo": "NVFP4"}
     monkeypatch.setattr(
-        nemotron, "_target_regex", lambda targets: pytest.fail("pattern match on literal names") if targets else None
+        precision, "_target_regex", lambda targets: pytest.fail("pattern match on literal names") if targets else None
     )
     modes = _modes({"quantization_config": {"quantized_layers": layers}}, "E", FP8)
     assert modes["shared_experts.up_proj"] == NVFP4

@@ -3,32 +3,18 @@
 
 from __future__ import annotations
 
-import re
-from collections import Counter, OrderedDict
-from fnmatch import translate
-from functools import cached_property
-
 import aisimulate_core.sdk.operations as ops
 from aisimulate_core.sdk import common
 from aisimulate_core.sdk.models.base import BaseModel, register_model
-from aisimulate_core.sdk.models.helpers import (
-    _iter_mixed_precision_layer_algos,
-    modelopt_mixed_precision_targets,
-    mtp_scale_factor,
-    quant_exclude_patterns,
-    resolve_vllm_moe_execution_mode,
+from aisimulate_core.sdk.models.checkpoint_precision import (
+    bucket_gemms,
+    checkpoint_precision,
+    decoder_paths,
+    moe_buckets,
+    moe_modes,
+    projection_modes,
 )
-from aisimulate_core.sdk.perf_database import is_blackwell_system
-
-# Decoder-layer prefixes: HF ``model``, native ``backbone``, and their language_model wrappers.
-_LAYER_PREFIXES = (
-    "model",
-    "backbone",
-    "language_model.model",
-    "language_model.backbone",
-    "model.language_model",
-)
-
+from aisimulate_core.sdk.models.helpers import mtp_scale_factor, resolve_vllm_moe_execution_mode
 
 # Checkpoint module suffixes priced by each decoder GEMM, by hybrid layer kind. A fused
 # GEMM (QKV) lists every module it fuses; they must share one precision.
@@ -43,156 +29,17 @@ _LAYER_PROJECTIONS = {
     },
     "-": {"up_proj": ("up_proj",), "down_proj": ("down_proj",)},
 }
-
-
-def _target_regex(targets) -> re.Pattern | None:
-    """One compiled matcher for ``Linear``, ``re:`` and glob targets."""
-    # ``re:`` targets keep re.match prefix semantics; globs match the whole path.
-    parts = [".*" if t == "Linear" else f"(?:{t[3:]}).*" if t.startswith("re:") else translate(t) for t in targets]
-    try:
-        return re.compile("|".join(f"(?:{part})" for part in parts)) if parts else None
-    except re.error as error:
-        raise ValueError(f"Invalid quantization target in {targets!r}: {error}") from error
-
-
-class _CheckpointPrecision:
-    """Checkpoint quantization metadata parsed once for per-layer module lookups.
-
-    Group targets apply only without a ``quantized_layers`` listing. Exclusions win.
-    """
-
-    def __init__(self, raw: dict) -> None:
-        self.raw = raw
-        self.listed = False
-        listed_entries, group_targets = [], []
-        for target, algo, listed in _iter_mixed_precision_layer_algos(raw):
-            self.listed |= listed
-            (listed_entries if listed else group_targets).append((target, algo))
-        # A layer listing is authoritative: group targets only apply without one.
-        # One algorithm string per listed path keeps the cached form small; a path
-        # listed with two algorithms is rejected only if a modeled module uses it.
-        self.exact, self.conflicts, patterns = {}, {}, []
-        for target, algo in listed_entries if self.listed else group_targets:
-            if algo is None:
-                continue
-            if _is_pattern(target):
-                patterns.append((target, algo))
-            elif self.exact.setdefault(target, algo) != algo:
-                self.conflicts.setdefault(target, {self.exact[target]}).add(algo)
-        self.patterns = [(_target_regex([target]), algo) for target, algo in patterns]
-        # Same coverage as helpers._modelopt_key_excluded, precompiled for per-layer lookups:
-        # a bare module path also excludes its submodules.
-        exclusions = quant_exclude_patterns(raw)
-        self.excluded_exact = {t for t in exclusions if not _is_pattern(t)}
-        self.excluded_regex = _target_regex([t for t in exclusions if _is_pattern(t)])
-
-    def module(self, layer: int, module: str):
-        """``(excluded, algos)`` of one decoder module across the known layer prefixes."""
-        paths = [f"{prefix}.layers.{layer}.mixer.{module}" for prefix in _LAYER_PREFIXES]
-        if any(self._excluded(path) for path in paths):
-            return True, set()
-        algos = {self.exact[path] for path in paths if path in self.exact}
-        algos.update(algo for path in paths for algo in self.conflicts.get(path, ()))
-        algos.update(algo for regex, algo in self.patterns if any(regex.fullmatch(path) for path in paths))
-        return False, algos
-
-    def _excluded(self, path: str) -> bool:
-        parts = path.split(".")
-        if any(".".join(parts[:end]) in self.excluded_exact for end in range(1, len(parts) + 1)):
-            return True
-        return bool(self.excluded_regex and self.excluded_regex.fullmatch(path))
-
-    def rows(self, pattern: str, kinds_to_modules: dict) -> list:
-        """``[(projection, algo or None, excluded)]`` per decoder layer.
-
-        Conflicting algorithms for one module, or fused modules that disagree, are rejected.
-        """
-        rows = []
-        for layer, kind in enumerate(pattern):
-            for projection, modules in kinds_to_modules.get(kind, {}).items():
-                states = set()
-                for module in modules:
-                    excluded, algos = self.module(layer, module)
-                    if len(algos) > 1:
-                        raise ValueError(
-                            f"Conflicting checkpoint precisions for Nemotron-H module {module} "
-                            f"in layer {layer}: {algos}"
-                        )
-                    states.add("excluded" if excluded else next(iter(algos), None))
-                if len(states) > 1:
-                    raise ValueError(f"Fused Nemotron-H modules {modules} in layer {layer} disagree on precision")
-                state = states.pop()
-                rows.append((projection, None, True) if state == "excluded" else (projection, state, False))
-        return rows
-
-    @cached_property
-    def targets_only(self) -> bool:
-        return self.listed and modelopt_mixed_precision_targets(self.raw) is not None
-
-
-_CHECKPOINT_CACHE: OrderedDict[int, tuple[dict, _CheckpointPrecision]] = OrderedDict()
-
-
-def _checkpoint_precision(raw: dict) -> _CheckpointPrecision:
-    """Parse a checkpoint once per loaded config object; model construction repeats in sweeps."""
-    entry = _CHECKPOINT_CACHE.get(id(raw))
-    if entry is not None and entry[0] is raw:
-        _CHECKPOINT_CACHE.move_to_end(id(raw))
-        return entry[1]
-    checkpoint = _CheckpointPrecision(raw)
-    _CHECKPOINT_CACHE[id(raw)] = (raw, checkpoint)
-    if len(_CHECKPOINT_CACHE) > 8:
-        _CHECKPOINT_CACHE.popitem(last=False)
-    return checkpoint
-
-
-def _is_pattern(target: str) -> bool:
-    return target == "Linear" or target.startswith("re:") or any(char in target for char in "*?[")
+# Routed-expert precision of a MoE layer, read from expert 0.
+_EXPERT_MODULES = {"E": ("experts.0.up_proj", "experts.0.down_proj")}
+_LAYER_PATHS = decoder_paths("mixer")
 
 
 def _projection_modes(
-    raw: dict,
-    pattern: str,
-    default: common.GEMMQuantMode,
-    system: str | None = None,
-    checkpoint=None,
+    raw: dict, pattern: str, default: common.GEMMQuantMode, system: str | None = None, checkpoint=None
 ) -> dict:
-    """Resolve every decoder GEMM projection from checkpoint metadata.
-
-    Returns ``{projection: {mode: number of layers}}`` for Mamba in/out, attention QKV
-    and output, shared-expert, latent and dense MLP projections. Layers with different
-    precisions get one operation each, so per-layer precision is kept exactly.
-    Unsupported algorithms are rejected.
-
-    Metadata without per-layer information leaves every projection on ``default``.
-
-    A projection that a listing leaves out is BF16 only for a targets-only
-    ModelOpt MIXED_PRECISION export, the contract vLLM and SGLang implement
-    (see ``modelopt_mixed_precision_targets``). Any other metadata keeps
-    ``default`` for an unlisted projection instead of guessing a mode.
-    """
-    # Non-Blackwell systems have no native FP4 tensor cores: NVFP4 runs weight-only, as
-    # resolve_nvfp4_for_system does for the global mode. Without a system, keep native NVFP4.
-    nvfp4 = common.GEMMQuantMode.nvfp4_wo if system and not is_blackwell_system(system) else common.GEMMQuantMode.nvfp4
-    # shortcut: FP8 is dynamic only when the global mode already is; per-layer activation
-    # scaling is not read from the checkpoint. Upgrade if an export mixes static and dynamic FP8.
-    modes = {
-        "fp8": common.GEMMQuantMode.fp8 if default == common.GEMMQuantMode.fp8 else common.GEMMQuantMode.fp8_static,
-        "mxfp8": common.GEMMQuantMode.fp8_block,
-        "nvfp4": nvfp4,
-        # vLLM runs W4A16_NVFP4 linears weight-only (FP4 Marlin, BF16 activations).
-        "w4a16_nvfp4": common.GEMMQuantMode.w4a16_nvfp4,
-    }
-    checkpoint = checkpoint or _checkpoint_precision(raw)
-    rows = checkpoint.rows(pattern, _LAYER_PROJECTIONS)
-    unlisted = common.GEMMQuantMode.bfloat16 if checkpoint.targets_only else default
-    resolved = {}
-    for projection, algo, excluded in rows:
-        if algo is not None and algo not in modes:
-            raise ValueError(f"Unsupported mixed precision for Nemotron-H projection {projection}: {algo}")
-        mode = common.GEMMQuantMode.bfloat16 if excluded else modes[algo] if algo else unlisted
-        resolved.setdefault(projection, Counter())[mode] += 1
-    return {projection: dict(counts) for projection, counts in resolved.items()}
+    """``{projection: {mode: number of layers}}`` for every Nemotron-H decoder GEMM (see ``projection_modes``)."""
+    checkpoint = checkpoint or checkpoint_precision(raw)
+    return projection_modes(checkpoint, pattern, _LAYER_PROJECTIONS, _LAYER_PATHS, default, system)
 
 
 def _moe_modes(
@@ -203,36 +50,9 @@ def _moe_modes(
     checkpoint=None,
     execution_mode=lambda mode: mode,
 ) -> dict:
-    """Resolve the routed-expert precision of each MoE layer from checkpoint metadata.
-
-    Returns ``{mode: number of MoE layers}`` unless every MoE layer resolves to ``default``,
-    the global mode. ``execution_mode`` applies the same backend lane mapping as the global
-    mode. NVFP4 layers then take the system's lane (weight-only below Blackwell) even when
-    ``default`` is still the unresolved native mode, as on the canonical API path.
-
-    shortcut: a layer's precision is read from expert 0; per-expert precision within
-    one layer is not modeled. Upgrade if an export quantizes experts of a layer differently.
-    """
-    nvfp4 = common.MoEQuantMode.nvfp4_wo if system and not is_blackwell_system(system) else common.MoEQuantMode.nvfp4
-    modes = {
-        "fp8": common.MoEQuantMode.fp8,
-        "mxfp8": common.MoEQuantMode.fp8_block,
-        "nvfp4": nvfp4,
-        "w4a16_nvfp4": common.MoEQuantMode.w4a16_nvfp4,
-    }
-    checkpoint = checkpoint or _checkpoint_precision(raw)
-    rows = checkpoint.rows(pattern, {"E": {"experts": ("experts.0.up_proj", "experts.0.down_proj")}})
-    # Unlisted experts are BF16 only in a targets-only export; otherwise they keep the global mode.
-    unlisted = common.MoEQuantMode.bfloat16 if checkpoint.targets_only else default
-    nvfp4_family = (common.MoEQuantMode.nvfp4, common.MoEQuantMode.nvfp4_wo)
-    resolved = Counter()
-    for _, algo, excluded in rows:
-        if algo is not None and algo not in modes:
-            raise ValueError(f"Unsupported routed-expert precision for Nemotron-H: {algo}")
-        # An explicit exclusion is BF16 in every metadata format.
-        mode = common.MoEQuantMode.bfloat16 if excluded else execution_mode(modes[algo]) if algo else unlisted
-        resolved[nvfp4 if mode in nvfp4_family else mode] += 1
-    return {} if set(resolved) <= {default} else dict(resolved)
+    """``{mode: number of MoE layers}`` of Nemotron-H routed experts (see ``moe_modes``)."""
+    checkpoint = checkpoint or checkpoint_precision(raw)
+    return moe_modes(checkpoint, pattern, _EXPERT_MODULES, _LAYER_PATHS, default, system, execution_mode)
 
 
 @register_model("NEMOTRONH")
@@ -274,7 +94,7 @@ class NemotronHModel(BaseModel):
         # per-layer metadata every projection keeps the global mode.
         raw = model_info.get("raw_config", {})
         pattern = model_info["extra_params"].hybrid_override_pattern
-        checkpoint = _checkpoint_precision(raw)
+        checkpoint = checkpoint_precision(raw)
         if not model_info["gemm_quant_mode_is_explicit"]:
             model._projection_quant_modes = _projection_modes(
                 raw, pattern, model_config.gemm_quant_mode, model_config.system, checkpoint
@@ -335,22 +155,11 @@ class NemotronHModel(BaseModel):
 
         Ops that share a name fold additively, so the buckets sum to the per-layer cost.
         """
-        buckets = self._projection_quant_modes.get(suffix)
-        if not buckets:
-            return [ops.GEMM(name, count, n, k, quant_mode, **kwargs)]
-        total = sum(buckets.values())
-        return [
-            ops.GEMM(name, count if layers == total else count * layers / total, n, k, mode, **kwargs)
-            for mode, layers in buckets.items()
-        ]
+        return bucket_gemms(name, count, n, k, quant_mode, self._projection_quant_modes.get(suffix), **kwargs)
 
     def _moe_buckets(self, count, moe_quant_mode) -> list:
         """``(mode, count)`` per routed-expert precision; one bucket keeps the global mode."""
-        buckets = self._moe_quant_modes
-        if not buckets:
-            return [(moe_quant_mode, count)]
-        total = sum(buckets.values())
-        return [(mode, count * layers / total) for mode, layers in buckets.items()]
+        return moe_buckets(count, moe_quant_mode, self._moe_quant_modes)
 
     def _count_layer_types(self) -> dict[str, int]:
         """Count occurrences of each layer type in the pattern."""

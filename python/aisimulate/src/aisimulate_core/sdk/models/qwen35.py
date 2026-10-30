@@ -6,85 +6,57 @@ from __future__ import annotations
 import aisimulate_core.sdk.operations as ops
 from aisimulate_core.sdk import common
 from aisimulate_core.sdk.models.base import BaseModel, register_model
-from aisimulate_core.sdk.models.helpers import (
-    _is_routing_expert_target,
-    _normalize_mixed_precision_layer_algo,
-    mtp_scale_factor,
-    quant_exclude_patterns,
+from aisimulate_core.sdk.models.checkpoint_precision import (
+    bucket_gemms,
+    checkpoint_precision,
+    decoder_paths,
+    moe_buckets,
+    moe_modes,
+    projection_modes,
 )
+from aisimulate_core.sdk.models.helpers import mtp_scale_factor, resolve_vllm_moe_execution_mode
 from aisimulate_core.sdk.models.vit_ops import build_encoder_ops
-from aisimulate_core.sdk.utils import _get_language_quantization_config
 
 _MAMBA_SSM_DTYPE_BYTES = {"float32": 4, "bfloat16": 2, "float16": 2}
+_LAYER_PATHS = decoder_paths()
 
 
-def _qwen35_mixed_precision_gemm_modes(
-    raw_config: dict,
-    default: common.GEMMQuantMode,
-    *,
-    allow_checkpoint_split: bool,
-) -> tuple[common.GEMMQuantMode, common.GEMMQuantMode, common.GEMMQuantMode]:
-    """Resolve projection, dense-FFN, and shared-expert GEMM modes.
-
-    Explicit per-layer metadata is authoritative. When a category has no
-    explicit entry, checkpoint exclusions keep it in BF16 instead of applying
-    a broad ``Linear`` config group to every operation.
-    """
-    if not allow_checkpoint_split:
-        return default, default, default
-
-    modes = {"projection": default, "dense_ffn": default, "shared_expert": default}
-    explicit: set[str] = set()
-    algo_modes = {
-        "fp8": common.GEMMQuantMode.fp8_static,
-        "mxfp8": common.GEMMQuantMode.fp8,
-        "nvfp4": common.GEMMQuantMode.nvfp4,
-        "w4a16_nvfp4": common.GEMMQuantMode.w4a16_nvfp4,
+def _ffn_projections(prefix: str, moe: bool) -> dict:
+    """Checkpoint modules of the FFN GEMMs that follow a ``prefix`` layer (shared expert or dense)."""
+    if moe:
+        return {
+            f"{prefix}_shared_gate_up_gemm": ("mlp.shared_expert.gate_proj", "mlp.shared_expert.up_proj"),
+            f"{prefix}_shared_down_gemm": ("mlp.shared_expert.down_proj",),
+        }
+    return {
+        f"{prefix}_gate_ffn1_gemm": ("mlp.gate_proj", "mlp.up_proj"),
+        f"{prefix}_ffn2_gemm": ("mlp.down_proj",),
     }
 
-    layer_maps: list[object] = []
-    hf_quant = raw_config.get("hf_quant_config")
-    if isinstance(hf_quant, dict):
-        quantization = hf_quant.get("quantization")
-        if isinstance(quantization, dict):
-            layer_maps.append(quantization.get("quantized_layers"))
-    quantization = _get_language_quantization_config(raw_config)
-    if isinstance(quantization, dict):
-        layer_maps.append(quantization.get("quantized_layers"))
 
-    for layer_map in layer_maps:
-        if not isinstance(layer_map, dict):
-            continue
-        for target, metadata in layer_map.items():
-            algo_value = (
-                metadata.get("quant_algo") or metadata.get("quantization_algo") or metadata.get("quant_method")
-                if isinstance(metadata, dict)
-                else metadata
-            )
-            mode = algo_modes.get(_normalize_mixed_precision_layer_algo(algo_value))
-            if mode is None:
-                continue
-            target_name = str(target).lower()
-            category = None
-            if ".linear_attn." in target_name or ".self_attn." in target_name:
-                category = "projection"
-            elif "shared_expert" in target_name:
-                category = "shared_expert"
-            elif ".mlp." in target_name and not _is_routing_expert_target(target_name):
-                category = "dense_ffn"
-            if category is not None:
-                modes[category] = mode
-                explicit.add(category)
+def _layer_projections(moe: bool) -> dict:
+    """Checkpoint modules priced by each GEMM op (keyed by op name without its phase), by layer type.
 
-    exclusions = tuple(str(pattern).lower() for pattern in quant_exclude_patterns(raw_config))
-    if "projection" not in explicit and any("linear_attn" in p or "self_attn" in p for p in exclusions):
-        modes["projection"] = common.GEMMQuantMode.bfloat16
-    if "shared_expert" not in explicit and any("shared_expert" in p for p in exclusions):
-        modes["shared_expert"] = common.GEMMQuantMode.bfloat16
-    if "dense_ffn" not in explicit and any(".mlp" in p and "shared_expert" not in p for p in exclusions):
-        modes["dense_ffn"] = common.GEMMQuantMode.bfloat16
+    vLLM fuses in_proj_qkv + in_proj_z into in_proj_qkvz and in_proj_b + in_proj_a into in_proj_ba
+    (models/qwen3_5.py:309-310 @v0.30.0); fused modules must share one precision.
+    """
+    return {
+        "linear_attention": {
+            "gdn_in_proj_gemm": ("linear_attn.in_proj_qkv", "linear_attn.in_proj_z"),
+            "gdn_in_proj_ba_gemm": ("linear_attn.in_proj_b", "linear_attn.in_proj_a"),
+            "gdn_out_proj_gemm": ("linear_attn.out_proj",),
+            **_ffn_projections("gdn", moe),
+        },
+        "full_attention": {
+            "qkv_gemm": ("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"),
+            "proj_gemm": ("self_attn.o_proj",),
+            **_ffn_projections("full", moe),
+        },
+    }
 
-    return modes["projection"], modes["dense_ffn"], modes["shared_expert"]
+
+# Routed-expert precision of a MoE layer: the experts block as ModelOpt lists it.
+_EXPERT_MODULES = {"linear_attention": ("mlp.experts",), "full_attention": ("mlp.experts",)}
 
 
 @register_model("QWEN35")
@@ -122,6 +94,7 @@ class Qwen35Model(BaseModel):
             model_info["extra_params"],
             raw_config=model_info["raw_config"],
             allow_checkpoint_split=not model_info["gemm_quant_mode_is_explicit"],
+            allow_moe_split=not model_info["moe_quant_mode_is_explicit"],
             backend_name=backend_name,
         )
 
@@ -130,6 +103,7 @@ class Qwen35Model(BaseModel):
         *args,
         raw_config: dict | None = None,
         allow_checkpoint_split: bool = True,
+        allow_moe_split: bool = True,
         backend_name: str,
     ) -> None:
         super().__init__(*args)
@@ -137,14 +111,33 @@ class Qwen35Model(BaseModel):
         cfg: common.Qwen35Config = self.extra_params
         assert isinstance(cfg, common.Qwen35Config), "Qwen35Model requires Qwen35Config extra_params"
 
-        (
-            self._projection_gemm_quant_mode,
-            self._dense_ffn_gemm_quant_mode,
-            self._shared_expert_gemm_quant_mode,
-        ) = _qwen35_mixed_precision_gemm_modes(
-            raw_config or {},
-            self.config.gemm_quant_mode,
-            allow_checkpoint_split=allow_checkpoint_split,
+        # Checkpoint metadata prices each projection and routed-expert layer at its own
+        # precision; an explicit mode prices them all with one. See checkpoint_precision.
+        checkpoint = checkpoint_precision(raw_config or {})
+        self._projection_quant_modes = (
+            projection_modes(
+                checkpoint,
+                cfg.layer_types,
+                _layer_projections(cfg.num_experts > 0),
+                _LAYER_PATHS,
+                self.config.gemm_quant_mode,
+                self.config.system,
+            )
+            if allow_checkpoint_split
+            else {}
+        )
+        self._moe_quant_modes = (
+            moe_modes(
+                checkpoint,
+                cfg.layer_types,
+                _EXPERT_MODULES,
+                _LAYER_PATHS,
+                self.config.moe_quant_mode,
+                self.config.system,
+                lambda mode: resolve_vllm_moe_execution_mode(mode, backend_name, self.architecture, raw_config),
+            )
+            if allow_moe_split and cfg.num_experts > 0
+            else {}
         )
 
         tp = self.config.tp_size
@@ -262,9 +255,7 @@ class Qwen35Model(BaseModel):
         moe_ep = self.config.moe_ep_size
         attn_dp = self.config.attention_dp_size
         attn_ar_folded = self._sglang_folds_attn_ar()
-        projection_gemm_q = self._projection_gemm_quant_mode
-        dense_ffn_gemm_q = self._dense_ffn_gemm_quant_mode
-        shared_expert_gemm_q = self._shared_expert_gemm_quant_mode
+        projection_gemm_q = dense_ffn_gemm_q = shared_expert_gemm_q = self.config.gemm_quant_mode
         kvcache_q = self.config.kvcache_quant_mode
         fmha_q = self.config.fmha_quant_mode
         moe_q = self.config.moe_quant_mode
@@ -305,9 +296,11 @@ class Qwen35Model(BaseModel):
             self.context_ops.extend(
                 [
                     ops.ElementWise("context_gdn_norm", c, 2 * h, 2 * h, 0.8),
-                    ops.GEMM("context_gdn_in_proj_gemm", c, gdn_in_proj_out, h, projection_gemm_q),
+                    *self._gemm("context_gdn_in_proj_gemm", c, gdn_in_proj_out, h, projection_gemm_q),
                     # 2*nv/tp drops below the collected GEMM n-grid at high TP.
-                    ops.GEMM("context_gdn_in_proj_ba_gemm", c, gdn_ba_out, h, projection_gemm_q, below_grid_sol=True),
+                    *self._gemm(
+                        "context_gdn_in_proj_ba_gemm", c, gdn_ba_out, h, projection_gemm_q, below_grid_sol=True
+                    ),
                     ops.GDNKernel(
                         "context_gdn_conv1d",
                         c,
@@ -334,7 +327,7 @@ class Qwen35Model(BaseModel):
                         d_conv,
                         mamba_ssm_dtype=self._mamba_ssm_dtype,
                     ),
-                    ops.GEMM(
+                    *self._gemm(
                         "context_gdn_out_proj_gemm",
                         c,
                         h,
@@ -371,7 +364,7 @@ class Qwen35Model(BaseModel):
             self.context_ops.extend(
                 [
                     ops.ElementWise("context_full_attn_norm", c, 2 * h, 2 * h, 0.8),
-                    ops.GEMM("context_qkv_gemm", c, qkv_out, h, projection_gemm_q),
+                    *self._gemm("context_qkv_gemm", c, qkv_out, h, projection_gemm_q),
                     ops.ContextAttention(
                         "context_attention",
                         c,
@@ -388,7 +381,7 @@ class Qwen35Model(BaseModel):
                         # reads this model's `config.attention_backend` as
                         # the override.
                     ),
-                    ops.GEMM(
+                    *self._gemm(
                         "context_proj_gemm",
                         c,
                         h,
@@ -444,6 +437,11 @@ class Qwen35Model(BaseModel):
         # inside the branch.
         return self._backend_name == "sglang" and not self._sglang_deepep()
 
+    def _gemm(self, name: str, count, n: int, k: int, quant_mode, **kwargs) -> list:
+        """A projection GEMM as one op per checkpoint precision (bucket key: ``name`` without its phase)."""
+        buckets = self._projection_quant_modes.get(name.split("_", 1)[1])
+        return bucket_gemms(name, count, n, k, quant_mode, buckets, **kwargs)
+
     def _shared_expert_ops(self, prefix, count, h, tp, gemm_q, cfg: common.Qwen35Config, *, scale_num_tokens=1):
         """Shared-expert branch: gated-SiLU MLP with a fused gate_up
         projection; the scalar expert gate is applied inside the branch
@@ -470,7 +468,7 @@ class Qwen35Model(BaseModel):
             )
         ops_list.extend(
             [
-                ops.GEMM(
+                *self._gemm(
                     f"{prefix}_shared_gate_up_gemm",
                     count,
                     2 * cfg.shared_expert_inter_size // tp,
@@ -486,7 +484,7 @@ class Qwen35Model(BaseModel):
                     0.8,
                     scale_num_tokens=scale_num_tokens,
                 ),
-                ops.GEMM(
+                *self._gemm(
                     f"{prefix}_shared_down_gemm",
                     count,
                     h,
@@ -545,10 +543,10 @@ class Qwen35Model(BaseModel):
             # collective when attention_dp == 1; with DP the LayerCommunicator
             # pre-MLP gather is priced by the dispatch op.
             if not (self._backend_name == "sglang" and self.config.moe_backend is None and attn_dp == 1):
-                ops_list.append(
+                ops_list.extend(
                     ops.MoEDispatch(
                         f"{prefix}_moe_pre_dispatch",
-                        count,
+                        bucket_count,
                         h,
                         cfg.topk,
                         cfg.num_experts,
@@ -556,7 +554,7 @@ class Qwen35Model(BaseModel):
                         moe_ep,
                         attn_dp,
                         True,
-                        quant_mode=moe_q,
+                        quant_mode=bucket_mode,
                         sms=self.config.sms,
                         moe_backend=self.config.moe_backend,
                         is_context=True,
@@ -564,18 +562,19 @@ class Qwen35Model(BaseModel):
                         attn_ar_modeled=True,
                         backend=self._backend_name,
                     )
+                    for bucket_mode, bucket_count in moe_buckets(count, moe_q, self._moe_quant_modes)
                 )
-            ops_list.append(
+            ops_list.extend(
                 ops.MoE(
                     f"{prefix}_moe",
-                    count,
+                    bucket_count,
                     h,
                     cfg.moe_inter_size,
                     cfg.topk,
                     cfg.num_experts,
                     moe_tp,
                     moe_ep,
-                    moe_q,
+                    bucket_mode,
                     workload_dist,
                     attn_dp,
                     is_context=True,
@@ -584,14 +583,15 @@ class Qwen35Model(BaseModel):
                     # EPLB is not modeled for Qwen3.5 (the load curve stays 1.2).
                     enable_eplb=False,
                 )
+                for bucket_mode, bucket_count in moe_buckets(count, moe_q, self._moe_quant_modes)
             )
             # DeepEP rows hold the full dispatch+combine round trip; the pre
             # op prices it once (SGLangEPMOEModel precedent), so no post op.
             if not self._sglang_deepep():
-                ops_list.append(
+                ops_list.extend(
                     ops.MoEDispatch(
                         f"{prefix}_moe_post_dispatch",
-                        count,
+                        bucket_count,
                         h,
                         cfg.topk,
                         cfg.num_experts,
@@ -599,13 +599,14 @@ class Qwen35Model(BaseModel):
                         moe_ep,
                         attn_dp,
                         False,
-                        quant_mode=moe_q,
+                        quant_mode=bucket_mode,
                         sms=self.config.sms,
                         moe_backend=self.config.moe_backend,
                         is_context=True,
                         attn_ar_modeled=True,
                         backend=self._backend_name,
                     )
+                    for bucket_mode, bucket_count in moe_buckets(count, moe_q, self._moe_quant_modes)
                 )
             if cfg.shared_expert_inter_size > 0:
                 # DeepEP context runs the shared expert (and merge) on the
@@ -620,11 +621,11 @@ class Qwen35Model(BaseModel):
         else:
             ops_list.extend(
                 [
-                    ops.GEMM(f"{prefix}_gate_ffn1_gemm", count, 2 * self._inter_size // tp, h, dense_ffn_gemm_q),
+                    *self._gemm(f"{prefix}_gate_ffn1_gemm", count, 2 * self._inter_size // tp, h, dense_ffn_gemm_q),
                     ops.ElementWise(
                         f"{prefix}_act_gate", count, 2 * self._inter_size // tp, self._inter_size // tp, 0.8
                     ),
-                    ops.GEMM(
+                    *self._gemm(
                         f"{prefix}_ffn2_gemm",
                         count,
                         h,
@@ -646,9 +647,7 @@ class Qwen35Model(BaseModel):
         moe_ep = self.config.moe_ep_size
         attn_dp = self.config.attention_dp_size
         attn_ar_folded = self._sglang_folds_attn_ar()
-        projection_gemm_q = self._projection_gemm_quant_mode
-        dense_ffn_gemm_q = self._dense_ffn_gemm_quant_mode
-        shared_expert_gemm_q = self._shared_expert_gemm_quant_mode
+        projection_gemm_q = dense_ffn_gemm_q = shared_expert_gemm_q = self.config.gemm_quant_mode
         kvcache_q = self.config.kvcache_quant_mode
         moe_q = self.config.moe_quant_mode
         workload_dist = (
@@ -685,8 +684,8 @@ class Qwen35Model(BaseModel):
             self.generation_ops.extend(
                 [
                     ops.ElementWise("generation_gdn_norm", c, 2 * h, 2 * h, 0.8),
-                    ops.GEMM("generation_gdn_in_proj_gemm", c, gdn_in_proj_out, h, projection_gemm_q),
-                    ops.GEMM(
+                    *self._gemm("generation_gdn_in_proj_gemm", c, gdn_in_proj_out, h, projection_gemm_q),
+                    *self._gemm(
                         "generation_gdn_in_proj_ba_gemm", c, gdn_ba_out, h, projection_gemm_q, below_grid_sol=True
                     ),
                     ops.GDNKernel(
@@ -717,7 +716,7 @@ class Qwen35Model(BaseModel):
                         # preference in the Rust GDN query (bfloat16 only).
                         mamba_ssm_dtype=self._mamba_ssm_dtype,
                     ),
-                    ops.GEMM(
+                    *self._gemm(
                         "generation_gdn_out_proj_gemm",
                         c,
                         h,
@@ -754,7 +753,7 @@ class Qwen35Model(BaseModel):
             self.generation_ops.extend(
                 [
                     ops.ElementWise("generation_full_attn_norm", c, 2 * h, 2 * h, 0.8),
-                    ops.GEMM("generation_qkv_gemm", c, qkv_out, h, projection_gemm_q),
+                    *self._gemm("generation_qkv_gemm", c, qkv_out, h, projection_gemm_q),
                     ops.GenerationAttention(
                         "generation_attention",
                         c,
@@ -766,7 +765,7 @@ class Qwen35Model(BaseModel):
                         # lane_order resolves at spec-build time; see the
                         # context_attention twin above.
                     ),
-                    ops.GEMM(
+                    *self._gemm(
                         "generation_proj_gemm",
                         c,
                         h,
@@ -828,40 +827,43 @@ class Qwen35Model(BaseModel):
             # collective when attention_dp == 1; with DP the LayerCommunicator
             # pre-MLP gather is priced by the dispatch op.
             if not (self._backend_name == "sglang" and self.config.moe_backend is None and attn_dp == 1):
-                pre_dispatch = ops.MoEDispatch(
-                    f"{prefix}_moe_pre_dispatch",
-                    count,
-                    h,
-                    cfg.topk,
-                    cfg.num_experts,
-                    moe_tp,
-                    moe_ep,
-                    attn_dp,
-                    True,
-                    quant_mode=moe_q,
-                    sms=self.config.sms,
-                    moe_backend=self.config.moe_backend,
-                    is_context=False,
-                    attn_ar_modeled=True,
-                    backend=self._backend_name,
-                )
+                pre_dispatch = [
+                    ops.MoEDispatch(
+                        f"{prefix}_moe_pre_dispatch",
+                        bucket_count,
+                        h,
+                        cfg.topk,
+                        cfg.num_experts,
+                        moe_tp,
+                        moe_ep,
+                        attn_dp,
+                        True,
+                        quant_mode=bucket_mode,
+                        sms=self.config.sms,
+                        moe_backend=self.config.moe_backend,
+                        is_context=False,
+                        attn_ar_modeled=True,
+                        backend=self._backend_name,
+                    )
+                    for bucket_mode, bucket_count in moe_buckets(count, moe_q, self._moe_quant_modes)
+                ]
                 # sglang's pre-MLP gather completes before the dual-stream
                 # fork; vLLM's DP dispatch runs on the main stream inside it.
                 if self._backend_name == "sglang":
-                    ops_list.append(pre_dispatch)
+                    ops_list.extend(pre_dispatch)
                 else:
-                    routed_ops.append(pre_dispatch)
-            routed_ops.append(
+                    routed_ops.extend(pre_dispatch)
+            routed_ops.extend(
                 ops.MoE(
                     f"{prefix}_moe",
-                    count,
+                    bucket_count,
                     h,
                     cfg.moe_inter_size,
                     cfg.topk,
                     cfg.num_experts,
                     moe_tp,
                     moe_ep,
-                    moe_q,
+                    bucket_mode,
                     workload_dist,
                     attn_dp,
                     is_context=False,
@@ -869,6 +871,7 @@ class Qwen35Model(BaseModel):
                     moe_kernel_source=self.config.moe_kernel_source,
                     enable_eplb=False,
                 )
+                for bucket_mode, bucket_count in moe_buckets(count, moe_q, self._moe_quant_modes)
             )
             shared_ops = (
                 self._shared_expert_ops(prefix, count, h, tp, shared_expert_gemm_q, cfg)
@@ -892,10 +895,10 @@ class Qwen35Model(BaseModel):
             # Both frameworks all-reduce the merged shared+routed sum, so the
             # post collective sits after the join, outside the overlap.
             if not self._sglang_deepep():
-                ops_list.append(
+                ops_list.extend(
                     ops.MoEDispatch(
                         f"{prefix}_moe_post_dispatch",
-                        count,
+                        bucket_count,
                         h,
                         cfg.topk,
                         cfg.num_experts,
@@ -903,22 +906,23 @@ class Qwen35Model(BaseModel):
                         moe_ep,
                         attn_dp,
                         False,
-                        quant_mode=moe_q,
+                        quant_mode=bucket_mode,
                         sms=self.config.sms,
                         moe_backend=self.config.moe_backend,
                         is_context=False,
                         attn_ar_modeled=True,
                         backend=self._backend_name,
                     )
+                    for bucket_mode, bucket_count in moe_buckets(count, moe_q, self._moe_quant_modes)
                 )
         else:
             ops_list.extend(
                 [
-                    ops.GEMM(f"{prefix}_gate_ffn1_gemm", count, 2 * self._inter_size // tp, h, dense_ffn_gemm_q),
+                    *self._gemm(f"{prefix}_gate_ffn1_gemm", count, 2 * self._inter_size // tp, h, dense_ffn_gemm_q),
                     ops.ElementWise(
                         f"{prefix}_act_gate", count, 2 * self._inter_size // tp, self._inter_size // tp, 0.8
                     ),
-                    ops.GEMM(
+                    *self._gemm(
                         f"{prefix}_ffn2_gemm",
                         count,
                         h,

@@ -328,13 +328,15 @@ def test_qwen35_nvfp4_exclusions_keep_attention_and_shared_experts_bf16():
     assert by_name["context_gdn_moe"]._quant_mode == common.MoEQuantMode.nvfp4
 
 
-def test_gemma4_exclusions_keep_attention_and_mlp_bf16():
+def test_gemma4_exclusions_keep_attention_and_mlp_bf16_but_not_routed_experts():
     model = get_model("nvidia/Gemma-4-26B-A4B-NVFP4", _model_config(), backend_name="trtllm")
     by_name = {op._name: op for op in model.context_ops + model.generation_ops}
 
     assert by_name["context_swa_qkv_gemm"]._quant_mode == common.GEMMQuantMode.bfloat16
     assert by_name["context_swa_shared_mlp_gate_up_gemm"]._quant_mode == common.GEMMQuantMode.bfloat16
-    assert by_name["context_swa_moe"]._quant_mode == common.MoEQuantMode.bfloat16
+    # The checkpoint excludes layers.N.mlp* (the shared dense MLP) but quantizes the routed experts
+    # (layers.N.experts.E.* carry NVFP4 weight_scale/weight_scale_2/input_scale tensors).
+    assert by_name["context_swa_moe"]._quant_mode == common.MoEQuantMode.nvfp4
 
 
 def test_kimi_k26_exclusions_keep_attention_and_shared_experts_bf16():
