@@ -1422,6 +1422,14 @@ impl EstimatorConfig {
                     "cannot be combined with non-default fit.linear.feature_axes",
                 ));
             }
+            // Ratios such as mean_decode_kv duplicate their sums under a fixed
+            // batch; only the ridge keeps those normal equations solvable.
+            if self.fpm_regression.fit.singular_ridge_scale <= 0.0 {
+                return Err(invalid_regression_config(
+                    "fit.singular_ridge_scale",
+                    "must be positive for fit.linear.feature_set='fpm5'",
+                ));
+            }
             // Each store needs one more retained row than fitted features.
             if self.fpm_regression.sampling.max_observations <= super::learned::FPM5_FEATURE_COUNT {
                 return Err(invalid_regression_config(
@@ -2236,6 +2244,9 @@ mod tests {
         })
         .unwrap();
         assert!(message.contains("sampling.max_observations"), "{message}");
+        let message =
+            error(&|config| config.fpm_regression.fit.singular_ridge_scale = 0.0).unwrap();
+        assert!(message.contains("fit.singular_ridge_scale"), "{message}");
         assert_eq!(
             error(&|config| config.fpm_regression.sampling.max_observations = 18),
             None

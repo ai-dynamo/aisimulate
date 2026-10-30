@@ -105,9 +105,11 @@ impl AggregateRegression {
         let usable = candidate
             .as_ref()
             .is_some_and(|fit| fit.is_usable(retained.len()));
-        // As for the small fits, an all-zero slope candidate keeps the previous
-        // serving snapshot; other failures clear readiness.
-        if usable || candidate.is_none() {
+        // Only a usable candidate replaces the serving fit. An all-zero slope
+        // candidate, or a refit that has fewer retained rows than newly active
+        // aggregates (for example when multi-rank traffic first appears), keeps
+        // serving the previous fit instead of dropping readiness.
+        if usable {
             self.fit = candidate;
         }
         self.update.fitted(usable);

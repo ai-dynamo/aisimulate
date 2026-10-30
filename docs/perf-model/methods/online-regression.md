@@ -678,14 +678,17 @@ publishes coefficients, the store refits all of its retained rows, at most
 3. Solve for the slopes with Lawson–Hanson active-set nonnegative least
    squares, or with a direct solve when `non_negative: false`. The
    `singular_ridge_scale` ridge, scaled as for the singular retry above, is
-   always added to the slopes so collinear aggregates have one solution.
+   always added to the slopes so collinear aggregates have one solution; the
+   `fpm5` set therefore requires a positive `singular_ridge_scale`.
 
 A candidate needs at least `max(min_observations, active features + 1)`
 retained rows; until then the store is unready. With aggregated multi-rank
 traffic, all 17 features can vary, so a store needs 18 rows, and
 configuration requires `sampling.max_observations >= 18`. As for the other
 linear fits, a candidate with all slopes zero keeps the previous serving
-snapshot, and predictions are floored at $`10^{-6}`$ ms.
+snapshot. A refit that cannot fit, because newly varying aggregates outnumber
+the retained rows, also keeps the previous serving fit, so a ready store stays
+ready. Predictions are floored at $`10^{-6}`$ ms.
 
 Retention still buckets rows by `sampling.axes`, and `update_policy` gates
 publication exactly as described above. `rebuild_interval` has no effect,

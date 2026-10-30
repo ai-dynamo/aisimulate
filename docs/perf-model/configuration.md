@@ -399,7 +399,7 @@ sample from the most populated cell when the store exceeds its budget.
 | `estimator_config.fpm_regression.fit.linear.feature_axes` | `[attention, moe]` | One to six distinct fitted coordinates, independent of `sampling.axes`. |
 | `estimator_config.fpm_regression.fit.linear.non_negative` | `true` | `false` permits signed slopes; the intercept is always free. |
 | `estimator_config.fpm_regression.fit.linear.update_policy` | `{kind: always}` | `error_threshold` defers coefficient publication until recent prediction errors exceed its tolerances. |
-| `estimator_config.fpm_regression.fit.linear.feature_set` | Absent | `fpm5` fits the 17 cross-rank aggregates of the learned `fpm5` preset instead of `feature_axes`, which must keep its default. Requires `sampling.max_observations >= 18`. Omitted from serialization when absent. |
+| `estimator_config.fpm_regression.fit.linear.feature_set` | Absent | `fpm5` fits the 17 cross-rank aggregates of the learned `fpm5` preset instead of `feature_axes`, which must keep its default. Requires `sampling.max_observations >= 18` and a positive `fit.singular_ridge_scale`. Omitted from serialization when absent. |
 
 `feature_set: fpm5` fits the same named aggregates as the learned
 `--features fpm5` preset: active-rank, request and token counts and sums,
@@ -411,7 +411,10 @@ squares (or signed least squares) on standardized features, always adding
 such as `max_rank_*` with one attention-DP rank, are inactive. A store becomes
 ready only with at least `max(min_observations, active features + 1)` retained
 observations; until then the readiness report gives `insufficient_data` below
-`min_observations` and `no_usable_fit` above it. `sampling.axes` still selects
+`min_observations` and `no_usable_fit` above it. Once ready, a store keeps
+serving its last fit when a refit cannot produce a usable one, for example when
+multi-rank traffic first activates more aggregates than it has retained rows.
+`sampling.axes` still selects
 retention coordinates, and `update_policy` and `non_negative` keep their
 meaning. `rebuild_interval` has no effect because every fit already uses the
 exact retained rows. See [online regression](methods/online-regression.md#fpm5-aggregate-features).

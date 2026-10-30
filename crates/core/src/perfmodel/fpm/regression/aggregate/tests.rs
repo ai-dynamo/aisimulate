@@ -331,6 +331,24 @@ fn readiness_needs_min_observations_and_one_row_per_active_feature() {
 }
 
 #[test]
+fn a_ready_store_keeps_serving_when_new_traffic_activates_more_aggregates() {
+    let target = |nd: u32, dkv: u32| 1.0 + 0.1 * f64::from(nd) + 1e-3 * f64::from(dkv);
+    let mut store = store(5, 64, LinearFitConfig::default());
+    for (nd, dkv) in [(1, 100), (2, 500), (3, 600), (4, 2_000), (5, 3_500)] {
+        add(&mut store, &[rank(0, 0, 0, nd, dkv)], target(nd, dkv));
+    }
+    assert!(store.is_ready());
+    let query = [rank(0, 0, 0, 4, 1_000)];
+    let served = store.predict(&query).unwrap();
+    // A two-rank iteration activates the rank count and the max-rank
+    // aggregates: seven active features with six retained rows.
+    let ranks = [rank(0, 0, 0, 3, 900), rank(0, 0, 0, 2, 700)];
+    add(&mut store, &ranks, target(5, 1_600));
+    assert!(store.is_ready());
+    assert_eq!(store.predict(&query), Some(served));
+}
+
+#[test]
 fn predictions_are_finite_and_floored_for_signed_and_nonnegative_fits() {
     // Latency falls with batch size, so a signed fit extrapolates below zero.
     let target = |nd: u32, dkv: u32| 50.0 - 0.5 * f64::from(nd) + 1e-4 * f64::from(dkv);
