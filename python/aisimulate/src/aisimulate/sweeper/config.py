@@ -36,7 +36,7 @@ from ..config.common import (
     is_active_engine_model_control,
     requested_backend_version,
 )
-from ..config.engine import NgramSpeculationConfig, ReplayEstimationMode, _validate_replay_estimation_mode
+from ..config.engine import NgramSpeculationConfig, ReplayEstimationMode
 
 
 class OptimizationTarget(str, Enum):
@@ -731,8 +731,6 @@ class SearchSpace(BaseModel):
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
         """Every backend dimension is a non-empty subset of its allowed choices."""
-        for controls in self.role_estimator_controls.values():
-            _validate_replay_estimation_mode(controls.get("estimation_mode"))
         if self.fpm_profile is not None:
             from aisimulate_core.sdk.fpm_profile import load_fpm_profile
 

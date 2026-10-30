@@ -90,6 +90,11 @@ def _python_step_fallback_reset() -> None:
         _PYTHON_BACKEND_DEPRECATION_WARNED = False
 
 
+# The literal a saved identity records for a fact its producer did not know;
+# only fpm_regression and fpm_learned configurations accept it.
+UNKNOWN_IDENTITY = "unknown"
+
+
 class RustEngineUnsupportedError(RuntimeError):
     """The model's op graph cannot be expressed as a compiled ``EngineSpec``
     (``engine.OpConversionError``). For op-level models this is a hard error —
@@ -173,6 +178,16 @@ class ForwardPassPerfModelConfig:
     configuration to equal the saved identity, an explicit
     ``estimation_mode`` and ``fallback_policy="deny"``. ``on_tune="reject"``
     (the default) makes tuning an error; ``"continue"`` resumes it.
+
+    With ``estimation_mode`` ``"fpm_regression"`` or ``"fpm_learned"``, identity
+    facts the producer did not know (``system``, ``backend_version``, ``tp``,
+    ``pp``, ``attention_dp``, ``moe_tp_size``, ``moe_ep_size``, the quantization
+    modes and ``attention_backend``) may be the literal ``"unknown"``; every
+    other mode rejects it. ``deployment_limits`` optionally records the
+    calibrated deployment's ``num_gpus``, ``max_num_batched_tokens``,
+    ``max_num_seqs``, ``max_kv_tokens`` (per attention-DP rank) and
+    ``context_length``, each a positive integer or ``"unknown"``. Rust owns
+    their validation and round trip; ``None`` omits the block.
     """
 
     model: str
@@ -181,12 +196,12 @@ class ForwardPassPerfModelConfig:
     worker_type: str
     backend_version: str | None = None
     fpm_profile: dict[str, Any] | None = dataclass_field(default=None, kw_only=True)
-    tp: int = 1
-    pp: int = 1
-    attention_dp: int = 1
+    tp: int | str = 1
+    pp: int | str = 1
+    attention_dp: int | str = 1
     dcp: int | None = dataclass_field(default=None, kw_only=True)
-    moe_tp_size: int | None = None
-    moe_ep_size: int | None = None
+    moe_tp_size: int | str | None = None
+    moe_ep_size: int | str | None = None
     # Prefill context parallelism (widens the attention side) and decode
     # context parallelism (stripes the decode KV across the TP ranks); None
     # keeps both at one and out of the serialized identity.
@@ -217,6 +232,8 @@ class ForwardPassPerfModelConfig:
     # Compile the vision tower with this layout ("tp" or "dp") so the estimator
     # prices encoder calls; None prices the language model only.
     encoder_parallel: str | None = None
+    # Recorded limits of the calibrated deployment; identity only.
+    deployment_limits: dict[str, Any] | None = dataclass_field(default=None, kw_only=True)
 
     @classmethod
     def from_legacy_engine_config(
@@ -240,8 +257,10 @@ class ForwardPassPerfModelConfig:
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
-        if self.encoder_parallel is None:
-            payload.pop("encoder_parallel")
+        # Additive identity stays out of payloads that do not set it.
+        for name in ("encoder_parallel", "deployment_limits"):
+            if payload[name] is None:
+                payload.pop(name)
         payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(self.transfer_policy)
         if self.estimation_mode not in {"fpm_regression", "fpm_learned"} or self.systems_paths:
             payload["systems_paths"] = _resolve_forward_pass_systems_paths(

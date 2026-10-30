@@ -33,20 +33,21 @@ def _workload(**overrides):
 
 
 @pytest.mark.parametrize("role", [None, "agg", "prefill", "decode"])
-def test_search_space_rejects_learned_timing_before_loading_source(role):
+def test_search_space_accepts_learned_timing_without_loading_source(role):
     policy = {
         "estimation_mode": "fpm_learned",
         "estimator_config": {"fpm_learned": {"checkpoint_path": "/missing/learned-checkpoint"}},
     }
     overrides = policy if role is None else {"role_estimator_controls": {role: policy}}
-    with pytest.raises(ValidationError, match="engine replay's phase-only timing"):
-        SearchSpace(**_search_space(**overrides))
+    space = SearchSpace(**_search_space(**overrides))
+    controls = space.role_estimator_controls.get(role, {}) if role is not None else {}
+    assert controls.get("estimation_mode", space.estimation_mode) == "fpm_learned"
 
 
 @pytest.mark.parametrize("schema_mode", ["validation", "serialization"])
 def test_search_space_schema_advertises_supported_replay_modes(schema_mode):
     field = SearchSpace.model_json_schema(mode=schema_mode)["properties"]["estimation_mode"]
-    supported = {"auto", "op_level", "fpm_interpolation", "fpm_regression"}
+    supported = {"auto", "op_level", "fpm_interpolation", "fpm_regression", "fpm_learned"}
     assert set(field["enum"]) == supported
     assert field["type"] == "string"
     assert field["default"] == "auto"

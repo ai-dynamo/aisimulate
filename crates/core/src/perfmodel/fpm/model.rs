@@ -280,16 +280,21 @@ pub struct ForwardPassCorrectionLimits {
 #[serde(deny_unknown_fields)]
 pub struct ForwardPassDeploymentTopology {
     pub worker_type: ForwardPassWorkerType,
+    /// Sizes the identity records as `"unknown"` hold
+    /// [`super::config::UNKNOWN_SIZE`] and serialize as that literal.
+    #[serde(with = "super::config::identity_size")]
     pub tp: u32,
+    #[serde(with = "super::config::identity_size")]
     pub pp: u32,
+    #[serde(with = "super::config::identity_size")]
     pub attention_dp: u32,
     #[serde(default)]
     pub dcp: Option<u32>,
     #[serde(default)]
     pub cp_size: Option<u32>,
-    #[serde(default)]
+    #[serde(default, with = "super::config::identity_optional_size")]
     pub moe_tp_size: Option<u32>,
-    #[serde(default)]
+    #[serde(default, with = "super::config::identity_optional_size")]
     pub moe_ep_size: Option<u32>,
     pub nextn: u32,
     /// Speculation kind, when generic speculation is configured.
@@ -2459,6 +2464,53 @@ impl ForwardPassPerfModel {
             ForwardPassPerfMode::Regression { .. }
             | ForwardPassPerfMode::Learned { .. }
             | ForwardPassPerfMode::CausalSelector(_) => None,
+        }
+    }
+
+    /// Whether estimates read per-request detail of an iteration beyond each
+    /// rank's five scheduled counts and sums: `extend_lengths` and
+    /// `past_kv_lengths`, or the length variances. Native estimators never
+    /// do; a regression does through request feature axes, a learned model
+    /// through request, slot or variance features.
+    pub(crate) fn reads_request_detail(&self) -> bool {
+        const VARIANCE_FEATURES: [&str; 4] = [
+            "var_prefill_length",
+            "var_decode_kv_tokens",
+            "sum_decode_kv_squared",
+            "log1p_sum_decode_kv_squared",
+        ];
+        let reads_detail = |names: &[String]| {
+            names.iter().any(|name| {
+                name.starts_with("req_")
+                    || name.starts_with("slot")
+                    || VARIANCE_FEATURES.contains(&name.as_str())
+            })
+        };
+        match &self.mode {
+            ForwardPassPerfMode::Native { .. } => false,
+            ForwardPassPerfMode::Regression { .. } => {
+                use super::RegressionFeatureAxis::*;
+                let Some(provenance) = &self.provenance else {
+                    return false;
+                };
+                let regression = &provenance.config.estimator_config.fpm_regression;
+                regression
+                    .sampling
+                    .axes
+                    .iter()
+                    .chain(
+                        regression
+                            .fit
+                            .linear
+                            .iter()
+                            .flat_map(|linear| &linear.feature_axes),
+                    )
+                    .any(|axis| !matches!(axis, Attention | Moe | Count | LogCount | CountSquared))
+            }
+            ForwardPassPerfMode::Learned { learned, .. } => reads_detail(learned.feature_names()),
+            ForwardPassPerfMode::CausalSelector(model) => {
+                reads_detail(model.stable.feature_names())
+            }
         }
     }
 

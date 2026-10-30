@@ -31,10 +31,10 @@ def _engine() -> dict:
     }
 
 
-@pytest.mark.parametrize("config_type", [CorePredictionConfig, CoreRecommendationConfig])
+@pytest.mark.parametrize("config_type", [CorePredictionConfig, EngineRecommendationConfig])
 @pytest.mark.parametrize("role", [None, "aggregated", "prefill", "decode"])
-def test_engine_configuration_rejects_learned_timing_before_loading_source(config_type, role):
-    engine = _engine()
+def test_engine_configuration_accepts_learned_timing_without_loading_source(config_type, role):
+    engine = {**_engine(), "mode": "aggregated"}
     policy = {
         "estimation_mode": "fpm_learned",
         "estimator_config": {"fpm_learned": {"artifact_path": "/missing/learned-seed.json"}},
@@ -47,8 +47,15 @@ def test_engine_configuration_rejects_learned_timing_before_loading_source(confi
         engine["mode"] = "disaggregated"
         engine["workers"] = {"prefill": {}, "decode": {}}
         engine["workers"][role]["timing"] = policy
-    with pytest.raises(ValidationError, match="engine replay's phase-only timing"):
-        config_type.model_validate({"engine": engine})
+    # Replay prices learned models per iteration; their source is read at construction.
+    if config_type is CorePredictionConfig:
+        validated = config_type.model_validate({"engine": engine}).engine
+    else:
+        validated = config_type.model_validate(engine)
+    if role is None:
+        assert validated.estimation_mode == "fpm_learned"
+    else:
+        assert validated.workers.model_dump()[role]["timing"]["estimation_mode"] == "fpm_learned"
 
 
 @pytest.mark.parametrize("schema_mode", ["validation", "serialization"])
@@ -56,7 +63,7 @@ def test_engine_configuration_rejects_learned_timing_before_loading_source(confi
 def test_replay_estimation_schema_advertises_supported_modes(config_type, schema_mode):
     field = config_type.model_json_schema(mode=schema_mode)["properties"]["estimation_mode"]
     alternatives = field.get("anyOf", [field])
-    supported = {"auto", "op_level", "fpm_interpolation", "fpm_regression"}
+    supported = {"auto", "op_level", "fpm_interpolation", "fpm_regression", "fpm_learned"}
     assert [set(option["enum"]) for option in alternatives if "enum" in option] == [supported]
     assert {option["type"] for option in alternatives} == (
         {"string", "null"} if config_type is TimingConfig else {"string"}
@@ -81,9 +88,9 @@ def test_replay_estimation_schema_advertises_supported_modes(config_type, schema
         {"fpm_learned": {"checkpoint_path": "/missing/learned-checkpoint"}},
     ],
 )
-def test_timing_config_rejects_learned_with_actionable_error_before_loading_source(estimator_config):
-    with pytest.raises(ValidationError, match="engine replay's phase-only timing"):
-        TimingConfig(estimation_mode="fpm_learned", estimator_config=estimator_config)
+def test_timing_config_accepts_learned_without_loading_source(estimator_config):
+    timing = TimingConfig(estimation_mode="fpm_learned", estimator_config=estimator_config)
+    assert TimingConfig.model_validate_json(timing.model_dump_json()) == timing
 
 
 @pytest.mark.parametrize(

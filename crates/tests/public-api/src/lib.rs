@@ -1197,6 +1197,30 @@ mod tests {
             ["dp_size conflicts with canonical attention_dp"]
         );
     }
+
+    #[test]
+    fn unknown_identity_and_deployment_limits_are_public() {
+        use aisimulate_core::{
+            DeploymentLimit, DeploymentLimits, EstimationMode, ForwardPassPerfModelConfig,
+            UNKNOWN_IDENTITY, UNKNOWN_SIZE,
+        };
+        let mut config: ForwardPassPerfModelConfig = serde_json::from_value(serde_json::json!({
+            "model": "dynamo-planner/model", "system": UNKNOWN_IDENTITY, "backend": "vllm",
+            "worker_type": "decode", "tp": "unknown", "estimation_mode": "fpm_regression",
+            "deployment_limits": {"num_gpus": 4, "max_kv_tokens": 65536}
+        }))
+        .unwrap();
+        assert_eq!(config.tp, UNKNOWN_SIZE);
+        assert_eq!(config.unknown_identity_facts(), ["system", "tp"]);
+        let limits: DeploymentLimits = config.deployment_limits.unwrap();
+        assert_eq!(limits.num_gpus, DeploymentLimit::Known(4));
+        assert_eq!(limits.max_num_seqs.known(), None);
+        let model = ForwardPassPerfModel::best_available(config.clone()).unwrap();
+        let topology = serde_json::to_value(model.deployment_topology().unwrap()).unwrap();
+        assert_eq!(topology["tp"], UNKNOWN_IDENTITY);
+        config.estimation_mode = EstimationMode::OpLevel;
+        assert!(ForwardPassPerfModel::best_available(config).is_err());
+    }
 }
 
 /// Exhaustive downstream literals for the coordinated 0.13 report migration.

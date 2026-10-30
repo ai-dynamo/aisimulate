@@ -63,6 +63,7 @@ pub use fpm::{
     RegressionSamplingConfig, RegressionUpdatePolicy, SelectorConfig, SplineFitConfig,
     SplineSearchConfig, UnrecordedFpmQuantMode,
 };
+pub use fpm::{DeploymentLimit, DeploymentLimits, UNKNOWN_IDENTITY, UNKNOWN_SIZE};
 pub use fpm::{
     ForwardPassCorrectionLimits, ForwardPassCorrectionQueryType, ForwardPassCorrectionReadiness,
     ForwardPassDeploymentTopology, ForwardPassReadinessReport, ForwardPassStateSnapshotSummary,

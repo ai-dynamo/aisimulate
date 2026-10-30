@@ -324,6 +324,53 @@ def test_readiness_topology_and_launch_compatibility_without_loading(tmp_path):
         model.engine_launch_mismatches({"dp_size": "eight"})
 
 
+def test_unknown_identity_and_deployment_limits_pass_through_to_rust_unchanged(tmp_path):
+    limits = {
+        "num_gpus": 4,
+        "max_num_batched_tokens": 8192,
+        "max_num_seqs": "unknown",
+        "max_kv_tokens": 65536,
+        "context_length": "unknown",
+    }
+    config = ForwardPassPerfModelConfig(
+        model="test/model",
+        system="unknown",
+        backend="vllm",
+        backend_version="unknown",
+        worker_type="aggregated",
+        tp="unknown",
+        pp="unknown",
+        attention_dp="unknown",
+        kvcache_quant_mode="unknown",
+        estimation_mode="fpm_regression",
+        deployment_limits=limits,
+    )
+    # Python adds no defaults: an unset block stays out of the payload.
+    assert (
+        "deployment_limits"
+        not in ForwardPassPerfModelConfig(model="m", system="s", backend="vllm", worker_type="decode").to_dict()
+    )
+    normalized = RustForwardPassPerfModel.normalize_config(config)
+    for name in ("system", "backend_version", "tp", "pp", "attention_dp", "kvcache_quant_mode"):
+        assert normalized[name] == "unknown", name
+    assert normalized["deployment_limits"] == limits
+    model = RustForwardPassPerfModel.best_available(config)
+    model.tune_with_fpms(_stream(3, 80))
+    saved = model.save_state_snapshot(tmp_path / "snap")
+    assert (saved["tp"], saved["deployment_limits"]) == ("unknown", limits)
+    summary = RustForwardPassPerfModel.inspect_state_snapshot(tmp_path / "snap")
+    assert (summary["identity"]["system"], summary["topology"]["attention_dp"]) == ("unknown", "unknown")
+    restored = RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "snap")
+    assert _bits(restored, _queries()) == _bits(model, _queries())
+    # Restoration compares the recorded limits exactly.
+    with pytest.raises(ValueError, match="pinned identity at deployment_limits.max_num_seqs"):
+        RustForwardPassPerfModel.best_available({**saved, "deployment_limits": {**limits, "max_num_seqs": 256}})
+    # Estimators that read performance data reject unknown facts.
+    native = ForwardPassPerfModelConfig(**{**config.to_dict(), "estimation_mode": "op_level"})
+    with pytest.raises(ValueError, match='may be "unknown" only with estimation_mode'):
+        RustForwardPassPerfModel.best_available(native)
+
+
 def _systems_copy(destination: Path, system: str) -> Path:
     """Copy one system's fingerprinted inputs: top-level files and its data dir."""
     packaged = Path(str(resources.files("aisimulate_core") / "systems"))

@@ -19,10 +19,11 @@ from typing import Any, Literal, Protocol, runtime_checkable
 import numpy as np
 
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
 
 from .capacity import materialize_aic_num_gpu_blocks, reject_pipeline_parallelism
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
-from .config.engine import StateCacheConfig, _validate_replay_estimation_mode
+from .config.engine import StateCacheConfig
 from .power import normalize_power_summary, power_metadata
 from .sweeper.afd_engine import AFDForegroundEngine
 from .sweeper.afd_parallel import AFDPhase, AFDTopology
@@ -1520,13 +1521,17 @@ def _reject_role_pipeline_parallelism(
     timing_config = timing.get("config") if isinstance(timing, Mapping) else None
     if not isinstance(timing_config, Mapping):
         timing_config = {}
+    # A pipeline width the timing identity records as unknown is the role's.
     reject_pipeline_parallelism(
         role,
         parallel_config.get("pp" if role == "aggregated" else f"{role}_pp", 1),
         role_config.get("aic_pp_size", 1),
         rank.get("aic_pp_size", 1),
-        timing_config.get("pp", 1),
-        timing_config.get("pp_size", 1),
+        *(
+            value
+            for value in (timing_config.get("pp", 1), timing_config.get("pp_size", 1))
+            if value != UNKNOWN_IDENTITY
+        ),
     )
 
 
@@ -1549,16 +1554,6 @@ def _materialize_engine_role(
     if isinstance(requested_rank, Mapping):
         timing = requested_rank.get("timing_model")
         timing_config = timing.get("config", {}) if isinstance(timing, Mapping) else {}
-        if (
-            isinstance(timing, Mapping)
-            and timing.get("type") == "external"
-            and timing.get("provider") == "aic"
-            and isinstance(timing_config, Mapping)
-        ):
-            # Capacity materialization also constructs the canonical estimator,
-            # including with explicit KV blocks. Reject unsupported replay modes
-            # before it opens a learned source.
-            _validate_replay_estimation_mode(timing_config.get("estimation_mode"))
         canonical = timing_config.get("speculation") if isinstance(timing_config, Mapping) else None
         selections = (requested_rank.get("speculation"), canonical)
         for spec in selections:
@@ -1672,7 +1667,8 @@ def _materialize_engine_role(
             (("dp_size", "aic_attention_dp_size"), ("attention_dp", "attention_dp_size")),
         ):
             expected = canonical.get(fields[0], canonical.get(fields[1]))
-            if expected is not None:
+            # An unknown width leaves the role's own topology.
+            if expected is not None and expected != UNKNOWN_IDENTITY:
                 for alias in aliases:
                     if alias in role_config and role_config[alias] != expected:
                         raise ValueError(f"{alias} conflicts with canonical AIC timing topology")
@@ -1845,14 +1841,19 @@ def _materialize_engine_role(
             if timing_backend_version is not None:
                 timing_model = {**timing_model, "config": {**timing_config, "backend_version": timing_backend_version}}
                 rank["timing_model"] = timing_model
-            if timing_backend_version is not None and timing_backend_version != deployment_backend_version:
+            # A regression or learned identity may not know the version, which
+            # then cannot conflict with the deployment's.
+            if timing_backend_version not in (None, UNKNOWN_IDENTITY) and (
+                timing_backend_version != deployment_backend_version
+            ):
                 raise ValueError(
                     f"engine provider {role} timing_model.config.backend_version="
                     f"{timing_backend_version!r} conflicts with "
                     "BackendDeploymentSpec backend_version="
                     f"{deployment_backend_version!r}"
                 )
-            aic_timing_overrides["backend_version"] = deployment_backend_version
+            if timing_backend_version != UNKNOWN_IDENTITY:
+                aic_timing_overrides["backend_version"] = deployment_backend_version
 
     # Identity and capacity inputs may coexist with a fixed/polynomial timing
     # model. They have already served their non-timing purposes and must not be

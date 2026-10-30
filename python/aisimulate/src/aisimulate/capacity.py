@@ -15,6 +15,7 @@ from functools import cache
 from typing import Any
 
 from aisimulate_core.sdk.memory import estimate_state_cache as estimate_state_cache
+from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
 
 DEFAULT_BACKEND_VERSIONS = {
     "vllm": "0.19.0",
@@ -158,6 +159,9 @@ def materialize_aic_num_gpu_blocks(
                 (("tensor_parallel_size", "aic_tp_size"), resolved["tp"]),
                 (("dp_size", "aic_attention_dp_size"), resolved["attention_dp"]),
             ):
+                if expected == UNKNOWN_IDENTITY:
+                    # A width the identity does not know is the role's own.
+                    expected = lowered.get(names[0], lowered.get(names[1], 1))
                 for name in names:
                     if name in lowered and lowered[name] != expected:
                         raise ValueError(f"{name} conflicts with canonical timing topology")
@@ -202,6 +206,10 @@ def materialize_aic_num_gpu_blocks(
                 if name in lowered and lowered[name] != value:
                     raise ValueError(f"{name} conflicts with canonical timing configuration")
                 lowered.setdefault(name, value)
+            if lowered.get("num_gpu_blocks") is None:
+                recorded = _recorded_kv_blocks(resolved, lowered)
+                if recorded is not None:
+                    lowered["num_gpu_blocks"] = recorded
 
     attention_dp = lowered.get("aic_attention_dp_size")
     dp = attention_dp or 1
@@ -609,6 +617,35 @@ def resolve_model_context_length(model_name: str) -> int:
             if isinstance(value, int) and not isinstance(value, bool) and value > 0:
                 return value
     raise ValueError(f"Hugging Face config for {model_name!r} does not declare a maximum context length")
+
+
+def _recorded_kv_blocks(resolved: dict[str, Any], lowered: dict[str, Any]) -> int | None:
+    """KV capacity a regression or learned identity records, in whole scheduler blocks.
+
+    ``deployment_limits.max_kv_tokens`` is the calibrated deployment's per-rank
+    capacity. Without it, ``None`` leaves capacity to the AIC memory estimate,
+    which needs the complete identity; an identity with unknown facts is an
+    error. Native replay derives the same capacity from these fields.
+    """
+
+    if resolved.get("estimation_mode") not in {"fpm_regression", "fpm_learned"}:
+        return None
+    max_kv_tokens = (resolved.get("deployment_limits") or {}).get("max_kv_tokens", UNKNOWN_IDENTITY)
+    if max_kv_tokens == UNKNOWN_IDENTITY:
+        unknown = [name for name, value in resolved.items() if value == UNKNOWN_IDENTITY]
+        if unknown:
+            raise ValueError(
+                f"AIC cannot estimate KV-cache capacity for an identity with unknown {', '.join(unknown)}; set "
+                "a fixed KV capacity or record deployment_limits.max_kv_tokens"
+            )
+        return None
+    block_size = _resolve_block_size(lowered, str(resolved["backend"]))
+    blocks = int(max_kv_tokens) // block_size
+    if blocks <= 0:
+        raise ValueError(
+            f"deployment_limits.max_kv_tokens={max_kv_tokens} does not cover one scheduler block of {block_size} tokens"
+        )
+    return blocks
 
 
 def _resolve_block_size(raw: dict[str, Any], backend: str) -> int:

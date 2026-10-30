@@ -2285,6 +2285,7 @@ impl PyForwardPassPerfModel {
             enable_shared_layer: request.shared_layer,
             strict_provenance: legacy.strict_provenance,
             encoder_parallel: None,
+            deployment_limits: None,
         };
         config.validate().map_err(aic_to_py)?;
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))

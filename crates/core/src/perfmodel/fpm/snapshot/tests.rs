@@ -454,6 +454,98 @@ fn regression_linear_round_trips_for_dedicated_and_aggregated_roles() {
     check_regression(AGG, false, |_| {});
 }
 
+/// A Dynamo planner's identity: facts it did not know are `"unknown"`, the
+/// limits it recorded are known.
+fn unknown_identity(config: &mut ForwardPassPerfModelConfig) {
+    config.system = crate::UNKNOWN_IDENTITY.into();
+    config.backend_version = Some(crate::UNKNOWN_IDENTITY.into());
+    (config.tp, config.pp, config.attention_dp) = (
+        crate::UNKNOWN_SIZE,
+        crate::UNKNOWN_SIZE,
+        crate::UNKNOWN_SIZE,
+    );
+    (config.moe_tp_size, config.moe_ep_size) = (Some(crate::UNKNOWN_SIZE), Some(4));
+    config.gemm_quant_mode = Some(crate::UNKNOWN_IDENTITY.into());
+    config.attention_backend = Some(crate::UNKNOWN_IDENTITY.into());
+    config.deployment_limits = Some(crate::DeploymentLimits {
+        num_gpus: crate::DeploymentLimit::Known(8),
+        max_num_batched_tokens: crate::DeploymentLimit::Known(8192),
+        max_kv_tokens: crate::DeploymentLimit::Known(1 << 20),
+        ..Default::default()
+    });
+}
+
+#[test]
+fn regression_with_unknown_identity_round_trips_and_pins_it_exactly() {
+    check_regression(AGG, false, unknown_identity);
+    let dir = tempfile::tempdir().unwrap();
+    let mut model = best(regression_config(AGG, unknown_identity)).unwrap();
+    model
+        .tune_with_fpms(&stream(AGG, 101, 80, true, false))
+        .unwrap();
+    let pinned = model
+        .save_state_snapshot(dir.path().join("snap"), &StateSnapshotOptions::default())
+        .unwrap();
+    // The literal is what the manifest, config.json and inspection record.
+    let identity = &read_json(&dir.path().join("snap").join(MANIFEST_FILE))["identity"];
+    for field in [
+        "system",
+        "backend_version",
+        "tp",
+        "pp",
+        "attention_dp",
+        "moe_tp_size",
+    ] {
+        assert_eq!(identity[field], "unknown", "{field}");
+    }
+    assert_eq!(identity["moe_ep_size"], 4);
+    assert_eq!(
+        identity["deployment_limits"],
+        serde_json::json!({
+            "num_gpus": 8, "max_num_batched_tokens": 8192, "max_num_seqs": "unknown",
+            "max_kv_tokens": 1 << 20, "context_length": "unknown"
+        })
+    );
+    assert_eq!(
+        read_json(&dir.path().join("snap").join(CONFIG_FILE))["tp"],
+        "unknown"
+    );
+    let summary = ForwardPassPerfModel::inspect_state_snapshot(dir.path().join("snap")).unwrap();
+    let topology = serde_json::to_value(summary.topology.unwrap()).unwrap();
+    assert_eq!(
+        (&topology["tp"], &topology["moe_ep_size"]),
+        (&"unknown".into(), &4.into())
+    );
+    // Restoration compares every recorded fact and limit exactly.
+    for (edit, field) in [
+        (
+            Box::new(|config: &mut ForwardPassPerfModelConfig| config.tp = 2)
+                as Box<dyn Fn(&mut ForwardPassPerfModelConfig)>,
+            "tp",
+        ),
+        (
+            Box::new(|config| config.system = "h200_sxm".into()),
+            "system",
+        ),
+        (
+            Box::new(|config| config.deployment_limits = None),
+            "deployment_limits",
+        ),
+        (
+            Box::new(|config| {
+                config.deployment_limits.as_mut().unwrap().max_num_seqs =
+                    crate::DeploymentLimit::Known(256)
+            }),
+            "deployment_limits.max_num_seqs",
+        ),
+    ] {
+        let mut changed = pinned.clone();
+        edit(&mut changed);
+        expect_error(changed, &format!("pinned identity at {field}"));
+    }
+    best(pinned).unwrap();
+}
+
 #[test]
 fn regression_error_threshold_round_trips_lazy_update_clocks() {
     check_regression(AGG, false, |config| {
