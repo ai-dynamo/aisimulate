@@ -1294,16 +1294,25 @@ def test_trace_scan_cache_keeps_recent_traces_and_serves_threads(tmp_path, monke
     assert len(set(estimates)) == 1
 
 
-def test_snapshot_trace_scan_is_shared_by_admission_and_guard(tmp_path, monkeypatch, host):
-    trace = tmp_path / "agentic.jsonl"
-    trace.write_text(json.dumps({"input_length": 4, "output_length": 1, "hash_ids": [1]}) + "\n")
-    parses = _count_parses(monkeypatch)
-    workload = {
-        "trace_path": str(trace),
+def _snapshot_row(input_length=4):
+    return json.dumps({"input_length": input_length, "output_length": 1, "hash_ids": [1]}) + "\n"
+
+
+def _snapshot_workload(path):
+    return {
+        "trace_path": str(path),
         "trace_format": "agentic_mooncake",
         "agentic_lanes": 16,
         "agentic_snapshot": {"seed": 1},
     }
+
+
+def test_snapshot_trace_scan_is_shared_by_admission_and_guard(tmp_path, monkeypatch, host):
+    traces = tmp_path / "traces"
+    traces.mkdir()
+    (traces / "a.jsonl").write_text(_snapshot_row())
+    parses = _count_parses(monkeypatch)
+    workload = _snapshot_workload(traces)
     _supervised(monkeypatch)
     monkeypatch.setattr(resources, "discover_host", lambda: host)
     plan = build_plan(workload, stack="engine", host=host)
@@ -1315,10 +1324,50 @@ def test_snapshot_trace_scan_is_shared_by_admission_and_guard(tmp_path, monkeypa
     assert estimate_workload({**workload, "agentic_lanes": 32}, stack="engine").estimated_peak_bytes > peak
     assert len(parses) == 1
 
-    with trace.open("a") as stream:
-        stream.write(json.dumps({"input_length": 8, "output_length": 1, "hash_ids": [1, 2]}) + "\n")
-    assert estimate_workload(workload, stack="engine").estimated_peak_bytes > peak
-    assert len(parses) == 2
+    with (traces / "a.jsonl").open("a") as stream:
+        stream.write(_snapshot_row(8))
+    grown = estimate_workload(workload, stack="engine").estimated_peak_bytes
+    assert grown > peak
+    (traces / "c.jsonl").write_text(_snapshot_row(8))
+    assert estimate_workload(workload, stack="engine").estimated_peak_bytes > grown
+    assert len(parses) == 1 + 1 + 2
+
+    # Traces without recognized records are rescanned, as finite traces are.
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("{}\n")
+    for _ in range(2):
+        assert estimate_workload(_snapshot_workload(empty), stack="engine").allocation_model == "trace-unqualified-v1"
+    assert len(parses) == 4 + 2
+
+
+def test_cached_snapshot_scan_still_applies_live_headroom(tmp_path, monkeypatch, host):
+    trace = tmp_path / "agentic.jsonl"
+    trace.write_text(_snapshot_row())
+    parses = _count_parses(monkeypatch)
+    snapshot = SimpleNamespace(workload=_snapshot_workload(trace), concurrency=None)
+    # The profile flag applies after the scan, so the profile reuses the snapshot's pass.
+    profile = SimpleNamespace(workload={**snapshot.workload, "agentic_profile": {}}, concurrency=None)
+    _supervised(monkeypatch)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    plan = build_plan(snapshot.workload, stack="engine", host=host)
+    peak = plan["estimate"]["estimated_peak_bytes"]
+    coordinator = plan["budget"]["coordinator_memory_bytes"]
+
+    # One byte short of the peak still clears the storage check, so the cached scan answers.
+    _supervised(monkeypatch, memory_limit_bytes=coordinator + peak - 1)
+    for spec, model in ((snapshot, "trace-json-metadata-v1"), (profile, "agentic-profile-materialization-v1")):
+        with pytest.raises(ResourceLimitError) as caught:
+            guard_replay(spec, stack="engine")
+        assert caught.value.plan["estimate"]["allocation_model"] == model
+        assert caught.value.plan["estimate"]["estimated_peak_bytes"] == peak
+
+    # Below the storage estimate, the refusal precedes the cache, so warm and cold calls agree.
+    _supervised(monkeypatch, memory_limit_bytes=coordinator + resources.WORKER_BASELINE_BYTES)
+    for spec in (snapshot, profile):
+        with pytest.raises(ResourceLimitError) as caught:
+            guard_replay(spec, stack="engine")
+        assert "before metadata parsing" in caught.value.plan["estimate"]["reason"]
+    assert len(parses) == 1
 
 
 def test_observed_peaks_admit_parallel_waves_for_the_same_trace(tmp_path, monkeypatch, host):

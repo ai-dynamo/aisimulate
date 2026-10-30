@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import ijson
 import psutil
@@ -484,10 +484,7 @@ def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes
         key = _weka_scan_key(workload)
         if key is None:
             return unqualified("trace symlinks have no stable resource identity")
-        with _TRACE_SCAN_CACHE_LOCK:
-            estimate = _WEKA_SCAN_CACHE.get(key)
-            if estimate is not None:
-                _WEKA_SCAN_CACHE.move_to_end(key)
+        estimate = _scan_cache_get(_WEKA_SCAN_CACHE, key)
         if estimate is None:
             estimate = _inspect_weka_trace(workload, inspection_budget_bytes=inspection_budget_bytes)
         if _weka_scan_key(workload) != key:
@@ -497,10 +494,7 @@ def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes
             return estimate
         peak, lower = estimate.estimated_peak_bytes, estimate.lower_bound_bytes
         if inspection_budget_bytes is None or peak <= inspection_budget_bytes:
-            with _TRACE_SCAN_CACHE_LOCK:
-                _WEKA_SCAN_CACHE[key] = estimate
-                while len(_WEKA_SCAN_CACHE) > _TRACE_SCAN_CACHE_SIZE:
-                    _WEKA_SCAN_CACHE.popitem(last=False)
+            _scan_cache_put(_WEKA_SCAN_CACHE, key, estimate)
     except (OSError, ValueError, TypeError, KeyError, OverflowError) as exc:
         return unqualified(f"cannot inspect Weka metadata: {exc}")
     if workload.get("agentic_profile") is not None:
@@ -813,7 +807,8 @@ def _trace_scan_identity(files: list[Path]) -> tuple[Any, ...]:
 
 
 _TRACE_SCAN_CACHE_SIZE = 16
-_TRACE_SCAN_CACHE: OrderedDict[tuple[Any, ...], _TraceCounters | tuple[int, ...]] = OrderedDict()
+_TRACE_SCAN_CACHE: OrderedDict[tuple[Any, ...], _TraceCounters] = OrderedDict()
+_LEGACY_SCAN_CACHE: OrderedDict[tuple[Any, ...], _LegacyTraceScan] = OrderedDict()
 _WEKA_SCAN_CACHE: OrderedDict[tuple[Any, ...], ResourceEstimate] = OrderedDict()
 _TRACE_SCAN_CACHE_LOCK = threading.Lock()
 
@@ -821,7 +816,23 @@ _TRACE_SCAN_CACHE_LOCK = threading.Lock()
 def _clear_trace_scan_cache() -> None:
     with _TRACE_SCAN_CACHE_LOCK:
         _TRACE_SCAN_CACHE.clear()
+        _LEGACY_SCAN_CACHE.clear()
         _WEKA_SCAN_CACHE.clear()
+
+
+def _scan_cache_get(cache: OrderedDict, key: tuple[Any, ...]) -> Any:
+    with _TRACE_SCAN_CACHE_LOCK:
+        value = cache.get(key)
+        if value is not None:
+            cache.move_to_end(key)
+    return value
+
+
+def _scan_cache_put(cache: OrderedDict, key: tuple[Any, ...], value: Any) -> None:
+    with _TRACE_SCAN_CACHE_LOCK:
+        cache[key] = value
+        while len(cache) > _TRACE_SCAN_CACHE_SIZE:
+            cache.popitem(last=False)
 
 
 def _estimate_finite_trace(
@@ -841,18 +852,12 @@ def _estimate_finite_trace(
             workload.get("trace_block_size"),
             _trace_scan_identity(files),
         )
-        with _TRACE_SCAN_CACHE_LOCK:
-            counters = _TRACE_SCAN_CACHE.get(key)
-            if counters is not None:
-                _TRACE_SCAN_CACHE.move_to_end(key)
+        counters = _scan_cache_get(_TRACE_SCAN_CACHE, key)
         if counters is None:
             block_size = int(workload.get("trace_block_size") or 512)
             counters = _scan_finite_trace(files, format_name, block_size, inspection_budget_bytes)
             if counters.requests:
-                with _TRACE_SCAN_CACHE_LOCK:
-                    _TRACE_SCAN_CACHE[key] = counters
-                    while len(_TRACE_SCAN_CACHE) > _TRACE_SCAN_CACHE_SIZE:
-                        _TRACE_SCAN_CACHE.popitem(last=False)
+                _scan_cache_put(_TRACE_SCAN_CACHE, key, counters)
     except _InspectionStopped as stopped:
         # Remaining rows were not inspected; never cache this partial bound.
         return _observed_peak_estimate(stopped.counters)
@@ -886,11 +891,15 @@ def _estimate_trace(
     return _estimate_finite_trace(workload, format_name=format_name, inspection_budget_bytes=inspection_budget_bytes)
 
 
-def _estimate_trace_legacy(
-    workload: Mapping[str, Any], *, format_name: str, inspection_budget_bytes: int | None
-) -> ResourceEstimate:
-    """Keep the conservative storage estimate for snapshot, warmup and profile replays."""
-    unqualified = lambda reason: ResourceEstimate("trace-unqualified-v1", None, 0, 0, None, reason)
+class _LegacyTraceScan(NamedTuple):
+    total_bytes: int
+    # Includes hash_ids * block_size, so neither needs to be kept.
+    tokens: int
+    records: int
+    turns: int
+
+
+def _scan_legacy_trace(files: list[Path], format_name: str, block_size: int) -> _LegacyTraceScan:
     length_keys = {
         "in",
         "out",
@@ -910,84 +919,69 @@ def _estimate_trace_legacy(
     record_keys = length_keys | token_keys
     hash_keys = {"hash_ids", "input_sequence_hashes"}
     total_bytes = tokens = hashes = records = turns = 0
-    block_size = int(workload.get("trace_block_size") or 512)
+    for path in files:
+        # Stream documents and arrays. The parser still holds individual
+        # scalar values in memory.
+        maps: list[bool] = []
+        with gzip.open(path, "rb") if format_name == "dynamo" and path.suffix == ".gz" else path.open("rb") as stream:
+            for prefix, event, value in ijson.parse(stream, multiple_values=True, buf_size=64 * 1024):
+                if event == "start_map":
+                    maps.append(False)
+                elif event == "end_map":
+                    records += int(maps.pop())
+                elif event == "map_key" and value in record_keys:
+                    maps[-1] = True
+                else:
+                    parts = prefix.rsplit(".", 2)
+                    key = parts[-2] if parts[-1] == "item" and len(parts) > 1 else parts[-1]
+                    if key in length_keys and event not in {"start_array", "end_array"}:
+                        if event != "number" or type(value) is not int or value < 0:
+                            raise ValueError("trace token lengths must be nonnegative integers")
+                        tokens += value
+                    elif key in token_keys and parts[-1] == "item" and event == "number":
+                        tokens += 1
+                    elif key in hash_keys and parts[-1] == "item" and event in {"number", "string"}:
+                        hashes += 1
+                    elif key in {"block_size", "trace_block_size"} and event == "number":
+                        block_size = max(block_size, int(value))
+                    elif key == "num_turns" and event == "number":
+                        turns += int(value) + 1
+            total_bytes += stream.tell()
+    return _LegacyTraceScan(total_bytes, tokens + hashes * block_size, records, turns)
 
-    paths = workload.get("trace_paths") or [workload["trace_path"]]
+
+def _estimate_trace_legacy(
+    workload: Mapping[str, Any], *, format_name: str, inspection_budget_bytes: int | None
+) -> ResourceEstimate:
+    """Keep the conservative storage estimate for snapshot, warmup and profile replays."""
+    unqualified = lambda reason: ResourceEstimate("trace-unqualified-v1", None, 0, 0, None, reason)
     try:
+        files = _trace_files(workload, format_name)
+        if files is None:
+            return unqualified("trace symlinks have no stable resource identity")
+        storage_estimate = WORKER_BASELINE_BYTES + 128 * sum(path.stat().st_size for path in files)
+        if inspection_budget_bytes is not None and storage_estimate > inspection_budget_bytes:
+            return ResourceEstimate(
+                "trace-json-metadata-v1",
+                None,
+                0,
+                0,
+                storage_estimate,
+                "trace storage estimate exceeds live headroom before metadata parsing",
+            )
         # Counters depend only on file contents, so admission and the per-run
         # guard share one pass. Lanes and headroom are applied on every call.
-        trace_files = _trace_files(workload, format_name)
-        scan_key = (
-            ("trace-legacy-v1", format_name, workload.get("trace_block_size"), _trace_scan_identity(trace_files))
-            if trace_files
-            else None
-        )
-        cached = None
-        if scan_key:
-            with _TRACE_SCAN_CACHE_LOCK:
-                cached = _TRACE_SCAN_CACHE.get(scan_key)
-                if cached is not None:
-                    _TRACE_SCAN_CACHE.move_to_end(scan_key)
-        if cached is not None:
-            total_bytes, tokens, hashes, records, turns, block_size = cached
-            paths = ()
-        for raw_path in paths:
-            source = Path(raw_path)
-            files = source.rglob("*") if source.is_dir() else (source,)
-            for path in files:
-                if path.is_symlink():
-                    return unqualified("trace symlinks have no stable resource identity")
-                if not path.is_file() or (format_name == "weka" and path.suffix.lower() not in {".json", ".jsonl"}):
-                    continue
-                storage_estimate = WORKER_BASELINE_BYTES + 128 * (total_bytes + path.stat().st_size)
-                if inspection_budget_bytes is not None and storage_estimate > inspection_budget_bytes:
-                    return ResourceEstimate(
-                        "trace-json-metadata-v1",
-                        None,
-                        0,
-                        0,
-                        storage_estimate,
-                        "trace storage estimate exceeds live headroom before metadata parsing",
-                    )
-                # Stream documents and arrays. The parser still holds individual
-                # scalar values in memory.
-                maps: list[bool] = []
-                with (
-                    gzip.open(path, "rb") if format_name == "dynamo" and path.suffix == ".gz" else path.open("rb")
-                ) as stream:
-                    for prefix, event, value in ijson.parse(stream, multiple_values=True, buf_size=64 * 1024):
-                        if event == "start_map":
-                            maps.append(False)
-                        elif event == "end_map":
-                            records += int(maps.pop())
-                        elif event == "map_key" and value in record_keys:
-                            maps[-1] = True
-                        else:
-                            parts = prefix.rsplit(".", 2)
-                            key = parts[-2] if parts[-1] == "item" and len(parts) > 1 else parts[-1]
-                            if key in length_keys and event not in {"start_array", "end_array"}:
-                                if event != "number" or type(value) is not int or value < 0:
-                                    raise ValueError("trace token lengths must be nonnegative integers")
-                                tokens += value
-                            elif key in token_keys and parts[-1] == "item" and event == "number":
-                                tokens += 1
-                            elif key in hash_keys and parts[-1] == "item" and event in {"number", "string"}:
-                                hashes += 1
-                            elif key in {"block_size", "trace_block_size"} and event == "number":
-                                block_size = max(block_size, int(value))
-                            elif key == "num_turns" and event == "number":
-                                turns += int(value) + 1
-                    total_bytes += stream.tell()
-        if scan_key and cached is None:
-            with _TRACE_SCAN_CACHE_LOCK:
-                _TRACE_SCAN_CACHE[scan_key] = (total_bytes, tokens, hashes, records, turns, block_size)
-                while len(_TRACE_SCAN_CACHE) > _TRACE_SCAN_CACHE_SIZE:
-                    _TRACE_SCAN_CACHE.popitem(last=False)
+        key = (format_name, workload.get("trace_block_size"), _trace_scan_identity(files))
+        scan = _scan_cache_get(_LEGACY_SCAN_CACHE, key)
+        if scan is None:
+            scan = _scan_legacy_trace(files, format_name, int(workload.get("trace_block_size") or 512))
+            if scan.records:
+                _scan_cache_put(_LEGACY_SCAN_CACHE, key, scan)
     except (OSError, EOFError, ValueError, ijson.JSONError) as exc:
         return unqualified(f"cannot inspect trace metadata: {exc}")
+    total_bytes, tokens, records, turns = scan
     if records == 0:
         return unqualified("trace metadata contains no recognized request token lengths")
-    tokens += hashes * block_size
     count = max(records, turns)
     # Delta and tool-turn sources can accumulate every preceding turn's tokens.
     cumulative = count if format_name in {"mooncake-delta", "applied_compute_agentic"} else 1
