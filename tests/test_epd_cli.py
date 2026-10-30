@@ -19,6 +19,7 @@ from aisimulate.recommend import _candidate_prediction, recommendation_to_sweepe
 from aisimulate.runner import EngineReplayRunnerFactory
 from aisimulate.sweeper import SmartSearchConfig, Sweeper, SweepResult
 from aisimulate.sweeper.result import CandidateStatus
+from aisimulate_core.sdk.perf_database import get_version_slots
 
 
 def _prediction(mode="aggregated"):
@@ -43,7 +44,7 @@ def _prediction(mode="aggregated"):
             "model": "Qwen/Qwen3-VL-8B-Instruct",
             "hardware": "h200_sxm",
             "backend": "sglang",
-            "backend_version": "0.5.14",
+            "backend_version": get_version_slots("h200_sxm", "sglang")["current"],
             "context_length": 4096,
             "mode": mode,
             "workers": {

@@ -148,6 +148,7 @@ impl FpmForwardOp {
         let cell =
             db.fpm_forward
                 .select_cell(&self.match_identity, &self.model_path, self.dcp_size)?;
+        self.reject_speculative_on_ar_cell(cell)?;
         if let Some(original) = &self.original_fmha_quant_mode {
             if let Some(warning) = cell.fmha_selector_warning(original) {
                 // The perfmodel has no installed logging facade. Emit a visible,
@@ -166,6 +167,24 @@ impl FpmForwardOp {
         ctx: &RuntimeContext,
     ) -> Result<PerformanceResult, AicError> {
         self.query_with_coverage(db, ctx, None)
+    }
+
+    /// Autoregressive native CUDA cells share the legacy identity but cannot
+    /// price a speculative verify step.
+    pub(crate) fn reject_speculative_on_ar_cell(
+        &self,
+        cell: &FpmForwardCell,
+    ) -> Result<(), AicError> {
+        if cell.native_ar_only && self.verify_width > 1 {
+            return Err(data_err(format!(
+                "FPM verify_width={} cannot use {} timings for {:?}; collect speculative-round rows with {}",
+                self.verify_width,
+                crate::perf_database::fpm_forward::FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY,
+                self.model_path,
+                crate::perf_database::fpm_forward::FPM_NATIVE_CUDA_MEASUREMENT_POLICY,
+            )));
+        }
+        Ok(())
     }
 
     pub(crate) fn query_with_coverage(
@@ -2653,6 +2672,43 @@ mod tests {
                     .to_string()
                     .contains("verify_width")
             );
+        }
+    }
+    #[test]
+    fn verify_query_rejects_autoregressive_native_cuda_cells() {
+        use crate::perf_database::fpm_forward::tests::NativeCudaSampleSpec;
+        let ctx = RuntimeContext {
+            batch_size: 8,
+            s: 4096,
+            ..Default::default()
+        };
+        for ar in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut rows = default_rows();
+            if ar {
+                for row in &mut rows {
+                    row.execution = Some(["", "full", "none", "text"]);
+                    row.kv_seed_regime = Some("real_kv");
+                    row.native_cuda = Some(NativeCudaSampleSpec {
+                        policy:
+                            crate::perf_database::fpm_forward::FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY,
+                        scope: "model_step_cuda",
+                        reduction: "single_sample",
+                        source_sample_count: 1,
+                    });
+                }
+            }
+            write_pair(tmp.path(), &rows);
+            let db = db_with_pair(tmp.path());
+            let mut query = op(FpmPhase::Decode);
+            assert!(query.query(&db, &ctx).is_ok());
+            query.verify_width = 2;
+            let result = query.query(&db, &ctx);
+            // Only the AR native CUDA table refuses a speculative verify step.
+            assert_eq!(result.is_err(), ar, "ar={ar}: {result:?}");
+            if ar {
+                assert!(result.unwrap_err().to_string().contains("verify_width=2"));
+            }
         }
     }
     #[test]

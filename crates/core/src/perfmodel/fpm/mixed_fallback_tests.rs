@@ -196,6 +196,85 @@ impl Fixture {
 }
 
 #[test]
+fn mixed_readiness_reports_available_routes_without_probing_query_coverage() {
+    use crate::perfmodel::fpm::ForwardPassStoreNotReadyReason;
+
+    for calibrated in [false, true] {
+        for (cross_rows, local_rows) in [(0, 0), (2, 0), (0, 2), (2, 2)] {
+            let fixture = Fixture::new(cross_rows, local_rows, calibrated);
+            let table = tempfile::tempdir().unwrap();
+            let mut model = ForwardPassPerfModel::from_learned(
+                &fixture.learned.to_json().unwrap(),
+                ForwardPassPerfOptions::default(),
+            )
+            .unwrap();
+            let ordinary_report = model.readiness_report();
+            let ordinary_diagnostics = model.regression_store_diagnostics();
+            for (store, diagnostics) in ordinary_report.stores.iter().zip(&ordinary_diagnostics) {
+                let trained = fixture.learned.has_store(store.workload_kind);
+                assert_eq!(store.ready, trained);
+                assert_eq!(diagnostics.ready, trained);
+                assert_eq!(
+                    store.not_ready_reason,
+                    (!trained).then_some(ForwardPassStoreNotReadyReason::UntrainedForestStore)
+                );
+            }
+
+            model.mixed_composition = Some(fixture.runtime(table.path()));
+            let state = model.mixed_composition_state().unwrap();
+            let report = model.readiness_report();
+            let diagnostics = model.regression_store_diagnostics();
+            assert!(report.ready);
+            assert_eq!(report.corrections, ordinary_report.corrections);
+            for (index, store) in report.stores.iter().enumerate() {
+                assert!(
+                    store.ready,
+                    "{calibrated} {cross_rows} {local_rows}: {store:?}"
+                );
+                assert_eq!(store.not_ready_reason, None);
+                assert!(diagnostics[index].ready);
+                assert_eq!(
+                    store.retained_observations,
+                    ordinary_report.stores[index].retained_observations
+                );
+                assert_eq!(
+                    diagnostics[index].retained_observations,
+                    ordinary_diagnostics[index].retained_observations
+                );
+            }
+            assert_eq!(model.mixed_composition_state().unwrap(), state);
+
+            // Store readiness does not promise interpolation coverage for every
+            // query, and reading it must not query even a broken prior table.
+            if cross_rows == 0 {
+                let mut uncovered = group(Kind::CrossRankAggregated);
+                uncovered[1].scheduled_requests.num_decode_requests = 8;
+                uncovered[1].scheduled_requests.sum_decode_kv_tokens = 256;
+                assert_eq!(
+                    model.estimate_forward_pass_time_ms(&uncovered).unwrap(),
+                    None
+                );
+            }
+            let mixed = model.mixed_composition.as_ref().unwrap();
+            std::fs::write(
+                mixed
+                    .engine
+                    .as_ref()
+                    .unwrap()
+                    .database()
+                    .fpm_forward
+                    .parquet_path(),
+                b"invalid",
+            )
+            .unwrap();
+            assert_eq!(model.readiness_report(), report);
+            assert_eq!(model.regression_store_diagnostics(), diagnostics);
+            assert_eq!(model.mixed_composition_state().unwrap(), state);
+        }
+    }
+}
+
+#[test]
 fn mixed_original_a_stream_preserves_decoded_groups_and_checks_every_byte() {
     let mut fixture = Fixture::new(2, 2, false);
     // Cross multiple read-buffer boundaries, including metadata after groups.
@@ -569,12 +648,17 @@ fn mixed_invalid_feedback_cannot_advance_or_change_calibration() {
     let table = tempfile::tempdir().unwrap();
     let mut mixed = fixture.runtime(table.path());
     let before = mixed.snapshot().unwrap();
-    for invalid_time in [f64::NAN, f64::INFINITY, -1.0] {
-        let mut query = group(Kind::CrossRankAggregated);
-        query[1].wall_time = invalid_time;
-        let feature = mixed.owned_feature(&query).unwrap().unwrap();
-        assert!(mixed.observe(&query, &feature).is_err());
-        assert_eq!(mixed.snapshot().unwrap(), before);
+    for kind in MIXED_KINDS {
+        for invalid_time in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            for other_time in [0.0, 0.016] {
+                let mut query = group(kind);
+                query[0].wall_time = other_time;
+                query[1].wall_time = invalid_time;
+                let feature = mixed.owned_feature(&query).unwrap().unwrap();
+                assert!(mixed.observe(&query, &feature).is_err());
+                assert_eq!(mixed.snapshot().unwrap(), before);
+            }
+        }
     }
     let local = group(Kind::ContainsLocallyMixed);
     assert!(mixed.owned_feature(&local[..1]).is_err());
@@ -582,6 +666,105 @@ fn mixed_invalid_feedback_cannot_advance_or_change_calibration() {
     duplicated[1].dp_rank = duplicated[0].dp_rank;
     assert!(mixed.owned_feature(&duplicated).is_err());
     assert_eq!(mixed.snapshot().unwrap(), before);
+}
+
+#[test]
+fn mixed_zero_feedback_is_ignored_without_interrupting_the_batch() {
+    use crate::perfmodel::fpm::model::combined::tests::checkpoint_with_stores;
+    use crate::perfmodel::fpm::{LearnedAdaptation, MixedQualityGateConfig};
+
+    for (adaptation, quality_gate) in [
+        (LearnedAdaptation::Frozen, false),
+        (LearnedAdaptation::Online, false),
+        (LearnedAdaptation::Online, true),
+        (LearnedAdaptation::CausalSelector, false),
+    ] {
+        for ready in [false, true] {
+            let mut kinds = vec![Kind::PureDecode, Kind::PurePrefill];
+            if ready {
+                kinds.extend(MIXED_KINDS);
+            }
+            let (_seed, mut config) =
+                checkpoint_with_stores(ForwardPassWorkerType::Aggregated, &kinds, 2, 10.0);
+            config.estimator_config.fpm_learned.adaptation = adaptation;
+            config.estimator_config.fpm_learned.update_every = 1000;
+            if adaptation != LearnedAdaptation::CausalSelector {
+                config.estimator_config.selector = Default::default();
+                config.estimator_config.correction.enabled =
+                    adaptation == LearnedAdaptation::Frozen;
+            }
+            let mut fixture = Fixture::new(0, 0, true);
+            if quality_gate {
+                fixture
+                    .config
+                    .estimator_config
+                    .temporary_mixed_composition
+                    .as_mut()
+                    .unwrap()
+                    .quality_gate = Some(MixedQualityGateConfig::default());
+            }
+            let table = tempfile::tempdir().unwrap();
+            let mut model = ForwardPassPerfModel::best_available(config).unwrap();
+            model.mixed_composition = Some(fixture.runtime(table.path()));
+            for kind in MIXED_KINDS {
+                let mut actual = model.clone();
+                let mut expected = model.clone();
+                let rows = group(kind);
+                let mut zero = rows.clone();
+                zero[0].wall_time = 0.0;
+                zero[1].wall_time = -0.0;
+                actual
+                    .tune_with_fpms(&[rows.clone(), zero, rows.clone()])
+                    .unwrap();
+                expected
+                    .tune_with_fpms(&[rows.clone(), rows.clone()])
+                    .unwrap();
+                assert_eq!(
+                    actual.mixed_composition_state().unwrap(),
+                    expected.mixed_composition_state().unwrap()
+                );
+                assert_eq!(
+                    actual.mixed_composition.as_ref().unwrap().admissions[&kind],
+                    2
+                );
+                assert_eq!(
+                    actual.learned_selector_diagnostics(),
+                    expected.learned_selector_diagnostics()
+                );
+                if adaptation == LearnedAdaptation::CausalSelector {
+                    assert_eq!(
+                        actual.learned_expert_artifacts().unwrap(),
+                        expected.learned_expert_artifacts().unwrap()
+                    );
+                } else {
+                    assert_eq!(
+                        actual.export_learned_artifact().unwrap(),
+                        expected.export_learned_artifact().unwrap()
+                    );
+                }
+                assert_eq!(
+                    actual.estimate_forward_pass_with_route(&rows).unwrap(),
+                    expected.estimate_forward_pass_with_route(&rows).unwrap()
+                );
+                let online_ready = ready && adaptation != LearnedAdaptation::Frozen;
+                assert_eq!(
+                    actual.ordinary_accepted_observations(kind),
+                    if online_ready { 2 } else { 0 }
+                );
+                let mut expected_online = expected.learned_online_diagnostics().unwrap();
+                if online_ready {
+                    // Preserve the ordinary learner's existing rejection
+                    // diagnostic; zero targets never enter either history.
+                    assert_eq!(expected_online["rejected_observations"], 0);
+                    expected_online["rejected_observations"] = 1.into();
+                }
+                assert_eq!(
+                    actual.learned_online_diagnostics().unwrap(),
+                    expected_online
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -644,6 +827,14 @@ fn mixed_exhausted_admission_counter_fails_before_any_mutation() {
     let before = mixed.snapshot().unwrap();
     let error = mixed.observe(&query, &feature).unwrap_err();
     assert!(error.to_string().contains("counter exhausted"));
+    assert_eq!(mixed.snapshot().unwrap(), before);
+
+    // Zero feedback needs no admission space.
+    let mut zero = query;
+    for rank in &mut zero {
+        rank.wall_time = 0.0;
+    }
+    mixed.observe(&zero, &feature).unwrap();
     assert_eq!(mixed.snapshot().unwrap(), before);
 }
 

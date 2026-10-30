@@ -67,7 +67,8 @@ Python objects inside adapter payloads.
 formats and hook identities. Pair/trace declarations may use `"*"` where the
 contract allows it. More specific flags cover disaggregated attention-DP,
 AgentX backends/topologies/lanes/snapshots/warmup/profiles, offload/speculation,
-analytical EPD, cached-prefix tokens, state/grouped cache and model controls.
+analytical EPD and its deferred overlay, cached-prefix tokens, state/grouped
+cache and model controls.
 Generic flag defaults are not qualification evidence for an optional stack.
 
 `supports_generic_speculation` defaults to `False`; the built-in engine factory
@@ -102,6 +103,15 @@ and limitations rather than substituting zero for unavailable measurements.
 per-request, telemetry, memory or timing diagnostics. A runner must reject
 unsupported capture combinations. The Engine JSON runner rejects telemetry
 capture even though native Rust observers support it.
+
+A factory that sets `supports_deferred_encoder_overlay` accepts
+`defer_encoder_overlay=True`. For an analytical EPD spec, the runner then
+returns the normalized language report, which carries the metrics
+`apply_encoder_overlay` reads, without applying the overlay, and rejects the
+flag together with memory diagnostics. Sweeper fails a report that already
+carries the overlay as a runner contract violation. It reuses a returned
+language report for every encoder pool that shares it and applies the overlay
+per pool; a failed, timed-out or refused replay is not reused.
 
 An optional `estimate_host_resources(workload, *, concurrency=None)` factory
 method participates in [resource admission](../reference/local-resources.md).

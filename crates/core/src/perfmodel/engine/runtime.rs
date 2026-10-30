@@ -901,6 +901,20 @@ impl Engine {
         self.fpm_split().map(|(p, d, _, _)| (p, d))
     }
 
+    /// Whether this engine supplies an unscaled STP whole-forward reference.
+    pub(crate) fn is_autoregressive_fpm(&self) -> bool {
+        self.nextn == 0
+            && self.fpm_execution_profile.is_none()
+            && self
+                .fpm_split()
+                .is_some_and(|(prefill, decode, ctx_tail, gen_tail)| {
+                    prefill.verify_width == 1
+                        && decode.verify_width == 1
+                        && ctx_tail.is_empty()
+                        && gen_tail.is_empty()
+                })
+    }
+
     /// Convenience constructor: deserialize a bincode `EngineSpec` and load the
     /// matching `PerfDatabase` from its identity, then [`Engine::build`].
     ///
@@ -5021,6 +5035,7 @@ pub(crate) mod tests {
                 row.execution = Some(["", selector, "none", "text"]);
                 row.kv_seed_regime = Some("real_kv");
                 row.native_cuda = Some(NativeCudaSampleSpec {
+                    policy: crate::perf_database::fpm_forward::FPM_NATIVE_CUDA_MEASUREMENT_POLICY,
                     scope: "model_step_cuda",
                     reduction: "single_sample",
                     source_sample_count: 1,
@@ -5095,6 +5110,7 @@ pub(crate) mod tests {
             execution: Some(["", selector, "none", "text"]),
             kv_seed_regime: (kv > 0).then_some("real_kv"),
             native_cuda: Some(NativeCudaSampleSpec {
+                policy: crate::perf_database::fpm_forward::FPM_NATIVE_CUDA_MEASUREMENT_POLICY,
                 scope: "model_step_cuda",
                 reduction: "single_sample",
                 source_sample_count: 1,
@@ -5125,6 +5141,39 @@ pub(crate) mod tests {
     fn full_round_engine(tmp: &std::path::Path) -> Engine {
         let spec = full_round_spec(tmp);
         Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp).unwrap()
+    }
+
+    #[test]
+    fn speculative_scaling_rejects_a_measured_round_without_construction_provenance() {
+        let tmp = tempfile::tempdir().unwrap();
+        let model = crate::ForwardPassPerfModel::from_engine(
+            Arc::new(full_round_engine(tmp.path())),
+            Default::default(),
+        );
+        let metrics = [ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_decode_requests: 1,
+                sum_decode_kv_tokens: 4096,
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        assert_eq!(
+            model.estimate_forward_pass_time_ms(&metrics).unwrap(),
+            Some(7.0)
+        );
+        assert!(
+            model
+                .estimate_speculative_forward_pass_time_ms(&metrics, 3)
+                .unwrap_err()
+                .to_string()
+                .contains("ordinary STP FPM")
+        );
+        assert!(
+            model
+                .estimate_speculative_forward_pass_detailed(&metrics, 3)
+                .is_err()
+        );
     }
 
     #[test]
@@ -6611,6 +6660,51 @@ pub(crate) mod tests {
                         .unwrap_err()
                         .to_string()
                         .contains("gemm_perf.parquet")
+                );
+            } else {
+                result.unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn fpm_readiness_rejects_speculative_verify_on_ar_native_cuda_table() {
+        use crate::perf_database::fpm_forward::tests::{
+            NativeCudaSampleSpec, default_rows, write_pair,
+        };
+        for ar in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let (spec, db) = fpm_hybrid_spec(
+                tmp.path(),
+                Some(1),
+                2,
+                vec![generation_ops().remove(0)],
+                vec![],
+            );
+            if ar {
+                let rows: Vec<_> = default_rows()
+                    .into_iter()
+                    .map(|mut row| {
+                        row.execution = Some(["", "full", "none", "text"]);
+                        row.kv_seed_regime = Some("real_kv");
+                        row.native_cuda = Some(NativeCudaSampleSpec {
+                            policy: crate::perf_database::fpm_forward::FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY,
+                            scope: "model_step_cuda",
+                            reduction: "single_sample",
+                            source_sample_count: 1,
+                        });
+                        row
+                    })
+                    .collect();
+                write_pair(tmp.path(), &rows);
+            }
+            let engine = Engine::build(spec, Arc::new(db)).unwrap();
+            let result =
+                engine.validate_forward_pass_readiness(crate::ForwardPassWorkerType::Decode);
+            if ar {
+                assert!(
+                    result.unwrap_err().to_string().contains("verify_width=2"),
+                    "AR table must reject a speculative verify step"
                 );
             } else {
                 result.unwrap();

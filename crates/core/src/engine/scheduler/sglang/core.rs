@@ -1211,13 +1211,12 @@ impl SglangCore {
         }?;
         if !prefill_pass {
             // The decode step can retract requests before executing the batch.
-            committed_requests.extend(
-                decode
-                    .output_signals
-                    .iter()
-                    .filter(|signal| signal.token_id.is_some())
-                    .map(|signal| signal.uuid),
-            );
+            for signal in &decode.output_signals {
+                // Speculative bursts emit consecutive tokens for the same request.
+                if signal.token_id.is_some() && committed_requests.last() != Some(&signal.uuid) {
+                    committed_requests.push(signal.uuid);
+                }
+            }
             committed_requests.sort_unstable();
             committed_requests.dedup();
         }

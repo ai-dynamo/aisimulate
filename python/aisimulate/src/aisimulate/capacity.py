@@ -47,6 +47,13 @@ def _vision_encoder_parallel(lowered: Mapping[str, Any]) -> str:
     return layout
 
 
+def reject_pipeline_parallelism(role: str, *sizes: object) -> None:
+    """Engine replay has no pipeline-stage scheduler; fail before any capacity work."""
+
+    if any(size is not None and size != 1 for size in sizes):
+        raise ValueError(f"engine replay does not support pipeline parallelism for {role}; use pipeline=1")
+
+
 def materialize_aic_num_gpu_blocks(
     raw: dict[str, Any], *, memory_diagnostics: dict[str, Any] | None = None
 ) -> dict[str, Any]:

@@ -36,7 +36,7 @@ engine:
 | `workers.<role>.parallelism.preset` | Not applicable | `default` | Recommend only. `default` searches the generated parallelism space; a list pins candidate shapes; `false` or `{}` disables presets so the individual fields below define the space. See [search space](../../sweeper/search-space.md). |
 | `workers.<role>.parallelism.replicas` | `1` | Searched | Number of workers in this role. |
 | `workers.<role>.parallelism.tensor` | `1` | Searched | Attention tensor parallelism. |
-| `workers.<role>.parallelism.pipeline` | `1` | Searched | Pipeline stages. |
+| `workers.<role>.parallelism.pipeline` | `1` | Searched | Pipeline stages. Engine replay requires `1`, except for the [AFD+PD companion](analytical.md#afd). |
 | `workers.<role>.parallelism.attention_data` | `1` | Searched | Attention data-parallel ranks per worker. |
 | `workers.<role>.parallelism.moe_tensor` | `1` | Searched | MoE tensor parallelism. Repartitions the worker's GPUs and does not add GPUs. |
 | `workers.<role>.parallelism.moe_expert` | `1` | Searched | MoE expert parallelism. Repartitions the worker's GPUs and does not add GPUs. |
@@ -46,6 +46,7 @@ engine:
 | `workers.<role>.scheduler.max_sequences` | `256`; `1` for `prefill` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; others: `{choices: [256, 512, 1024]}` | Positive. Maximum running requests on one attention-DP rank. |
 | `workers.<role>.scheduler.prefill_schedule_interval` | `1` | predict only | vLLM only. See [vLLM prefill schedule interval](#vllm-prefill-schedule-interval). |
 | `workers.<role>.scheduler.prefill_decode_interval` | `0` | predict only | SGLang only. See [SGLang prefill/decode interval](#sglang-prefilldecode-interval). |
+| `workers.<role>.scheduler.async_scheduling` | vLLM's default: on, off with ngram drafts | predict only | vLLM only. Boolean. `true` is rejected with ngram drafts. See [vLLM async scheduling](#vllm-async-scheduling). |
 | `workers.{aggregated,prefill}.host_loop` | `false` | fixed | SGLang only; `aggregated` in aggregated mode, `prefill` in disaggregated mode. Each pass is one overlap-scheduler iteration. Implied by `frontend` and `host_profile`. See [SGLang host loop, frontend and vision](#sglang-host-loop-frontend-and-vision). |
 | `workers.{aggregated,prefill}.frontend` | Unset | fixed | Ordered `stages`, each `{workers, service_ms, concurrency_scale}`, plus optional `measured_for` (model, frontend, feature transport and image shape the stages were measured on). Exclusive with `host_profile`. Unset together with `host_profile`, a worker with images encodes them on the GPU and prices no frontend stage, so its TTFT starts at the scheduler. |
 | `workers.{aggregated,prefill}.host_profile` | Unset | fixed | `{path, frontend}` with `frontend` `python` (SGLang's default HTTP server with its `TokenizerManager`) or `rust` (the embedded Rust server, `SGLANG_RUST_SERVER=1`, whose Rust extensions are built from an SGLang source tree). Frontend stages from a host cost table written by `python -m aisimulate.vl.collect`; a relative `path` resolves against the working directory of `collect` and `predict` alike. The table describes SGLang's CPU image-processor path (`--image-processor-backend pil`); SGLang 0.5.19's default `auto` on a GPU host runs the fast torchvision processor on the serving GPU, which is not priced, so a deployment matches its table only when launched with that flag. No table is read or measured unless this field is set. |
@@ -91,11 +92,15 @@ differently and do not add more. A deployment's GPU count is the sum over its
 roles. In `recommend`, `optimization.constraints` bounds this sum.
 
 Engine replay reports each role's GPUs per worker as
-`tensor × attention_data × prefill_context` (pipeline parallelism is not supported
-by engine replay). GPU-hours sum each role's worker-seconds times this count,
-divided by 3600. Aggregated workers use the `decode_gpus_per_worker` and
-`decode_worker_seconds` report fields. Neither DCP nor MoE EP adds another
-multiplier.
+`tensor × attention_data × prefill_context`. Engine replay rejects pipeline
+parallelism greater than one before capacity estimation. GPU-hours sum each
+role's worker-seconds times this count, divided by 3600. Aggregated workers use
+the `decode_gpus_per_worker` and `decode_worker_seconds` report fields. Neither
+DCP nor MoE EP adds another multiplier.
+
+[AFD+PD](analytical.md#afd) is the exception. Its companion worker is priced
+analytically, not replayed, so it accepts `pipeline` above one. Its GPU count is
+`replicas × tensor × pipeline × attention_data`.
 
 `prefill_context` and `decode_context` are modeled only for some model and
 backend combinations, and an aggregated worker may set at most one of them above
@@ -178,6 +183,55 @@ vLLM checks for a drained group every 32 steps and may run extra dummy steps;
 Replay resets immediately, so the phase can differ for requests that arrive in
 that window. Behavior follows vLLM at commit
 [`e2fa285`](https://github.com/vllm-project/vllm/tree/e2fa28594f7baad142a426b0b6a2cfe2c79201c7).
+
+<a id="vllm-async-scheduling"></a>
+
+### vLLM async scheduling
+
+`async_scheduling` mirrors vLLM's `--async-scheduling` and
+`--no-async-scheduling`. Unset, replay turns it on, except with ngram drafts,
+which turn it off. vLLM v0.28.0 resolves the same default for the
+configurations replay models; it also turns async scheduling off for pooling
+models, some speculative and executor settings and ROCm DeepEP DBO, so set it
+explicitly to match such a deployment.
+
+With async scheduling, a busy vLLM engine keeps two batches committed: one
+running and the next queued behind it. When the running batch finishes, vLLM
+processes its outputs, reads the requests that have arrived, and commits
+another batch. Replay assumes that this happens before a client can react to
+those outputs; it does not model when outputs reach the client. The earliest
+batch a request may join is therefore the first one committed after it
+arrives, and sequence limits, the token budget or KV capacity can delay it
+further:
+
+- A request that arrives while a pass runs skips the pass already queued and
+  joins the one after it.
+- A request that arrives as a pass ends counts as a reaction to that pass's
+  outputs, such as a closed-loop client's next request, and also skips the
+  pass committed at that boundary. An open-loop arrival that lands exactly on
+  a pass end is therefore admitted one pass late.
+- An idle engine admits an arrival at the next pass. So does an engine whose
+  queued pass has no other work, because vLLM runs that empty batch at once.
+
+Requests submitted to a disaggregated prefill role follow the same rule. A
+decode role admits received KV handoffs as before.
+
+```yaml
+engine:
+  backend: vllm
+  workers:
+    aggregated:
+      scheduler: {async_scheduling: false}
+```
+
+With `async_scheduling: false`, an arrival joins the next pass. Behavior
+follows `EngineCore.step_with_batch_queue` and `VllmConfig.max_concurrent_batches`
+in vLLM
+[v0.28.0](https://github.com/vllm-project/vllm/tree/2cf0a6915ce544dc493a0990f2ea38d81601128a).
+Pipeline parallelism deepens vLLM's batch queue, but engine replay does not
+model it. Replay also reserves no capacity for the queued batch, so under KV
+pressure its admission and preemption can differ from vLLM's. AFD companion
+workers do not model async scheduling and reject `true`.
 
 <a id="sglang-prefilldecode-interval"></a>
 

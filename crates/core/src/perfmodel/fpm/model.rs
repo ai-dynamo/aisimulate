@@ -156,13 +156,14 @@ pub enum ForwardPassRegressionWorkloadKind {
     PurePrefill,
 }
 
-/// Retained sample count and fit readiness for one logical regression store.
+/// Retained sample count and estimator readiness for one logical workload store.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ForwardPassRegressionStoreDiagnostics {
     pub workload_kind: ForwardPassRegressionWorkloadKind,
-    /// Whether this store has a usable linear fit, not merely enough samples.
-    /// Spline predictions also require an available linear prediction for the
-    /// query; a usable spline component alone does not make the store ready.
+    /// Whether this workload has an available estimator. Regression requires
+    /// a usable linear fit; a usable spline alone does not make it ready.
+    /// Learned models include eligible mixed-composition routes. Readiness
+    /// does not guarantee coverage for an individual query.
     pub ready: bool,
     pub retained_observations: usize,
     /// Spline component state, independent of the shared linear readiness guard.
@@ -180,8 +181,8 @@ pub enum ForwardPassStoreNotReadyReason {
     /// A regression store has enough samples but no usable linear fit, for
     /// example because its features do not vary.
     NoUsableFit,
-    /// The learned forest has no store for this workload kind; its iterations
-    /// return `None`.
+    /// The required learned forest store is missing and no mixed-composition
+    /// route is eligible for this workload kind.
     UntrainedForestStore,
 }
 
@@ -190,7 +191,8 @@ pub enum ForwardPassStoreNotReadyReason {
 #[serde(deny_unknown_fields)]
 pub struct ForwardPassStoreReadiness {
     pub workload_kind: ForwardPassRegressionWorkloadKind,
-    /// Iterations classified to this workload kind receive an estimate.
+    /// This workload kind has an available estimator, including an eligible
+    /// mixed-composition route. Individual queries may still miss coverage.
     /// Native estimators are always ready.
     pub ready: bool,
     #[serde(default)]
@@ -491,6 +493,64 @@ enum ForwardPassPerfMode {
 }
 
 impl ForwardPassPerfModel {
+    fn validate_speculative_reference(&self) -> Result<(), AicError> {
+        let already_speculative = self.provenance.as_ref().is_some_and(|provenance| {
+            provenance.config.nextn != 0 || provenance.config.speculation.is_some()
+        });
+        let native_is_stp_fpm = match &self.mode {
+            ForwardPassPerfMode::Native { engine, .. } => engine.is_autoregressive_fpm(),
+            _ => true,
+        };
+        if already_speculative || !native_is_stp_fpm {
+            return Err(AicError::InvalidEngineConfig(
+                "draft_length scaling requires an ordinary STP FPM estimator; op-level, hybrid and measured SD-round models cannot be scaled".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Estimate a complete speculative decode iteration as
+    /// `(1.25 + 0.08*d) * F_STP((d+1)*B, K_total)`.
+    ///
+    /// The configured estimator remains an ordinary STP model. Each rank's
+    /// logical request count is widened, its total past KV is preserved, and
+    /// the multiplier is applied once after STP estimation/correction and rank
+    /// reduction. All FPM estimator kinds use the same rule; it does not build
+    /// a draft graph or assume accepted-token progress. Pure decode only.
+    /// Missing baseline data/readiness remain errors/None. The empirical fit
+    /// was measured at d=1..4; larger depths are extrapolation.
+    pub fn estimate_speculative_forward_pass_time_ms(
+        &self,
+        metrics_by_rank: &[ForwardPassMetrics],
+        draft_length: u32,
+    ) -> Result<Option<f64>, AicError> {
+        self.validate_speculative_reference()?;
+        let (reference, factor) =
+            super::speculative::reference_metrics(metrics_by_rank, draft_length)?;
+        Ok(self
+            .estimate_forward_pass_time_ms(&reference)?
+            .map(|ms| ms * factor))
+    }
+
+    /// The speculative estimate with the original STP support, without
+    /// relabelling recorded STP observations as measured speculative timings.
+    pub fn estimate_speculative_forward_pass_detailed(
+        &self,
+        metrics_by_rank: &[ForwardPassMetrics],
+        draft_length: u32,
+    ) -> Result<super::SpeculativeForwardPassEstimate, AicError> {
+        self.validate_speculative_reference()?;
+        let (reference, scaling_factor) =
+            super::speculative::reference_metrics(metrics_by_rank, draft_length)?;
+        let stp_reference = self.estimate_forward_pass_detailed(&reference)?;
+        Ok(super::SpeculativeForwardPassEstimate {
+            latency_ms: stp_reference.latency_ms.map(|ms| ms * scaling_factor),
+            draft_length,
+            scaling_factor,
+            stp_reference,
+        })
+    }
+
     /// Internal: build a native model directly from an already-compiled
     /// [`Engine`]. Holds the actual native-mode logic; the public
     /// [`Self::best_available`] constructor compiles the `Engine` (crossing
@@ -1520,8 +1580,9 @@ impl ForwardPassPerfModel {
     /// Description: estimation readiness of every logical workload store of
     /// the worker role and readiness of every correction store, for all
     /// estimator kinds. Unlike [`Self::regression_store_diagnostics`], native
-    /// and learned stores are reported too, and correction samples are listed
-    /// separately from the estimator's own retained observations.
+    /// stores are reported too, and correction samples are listed separately
+    /// from the estimator's own retained observations. Readiness includes
+    /// eligible mixed-composition routes but does not guarantee query coverage.
     pub fn readiness_report(&self) -> ForwardPassReadinessReport {
         let ready = self.diagnostics().readiness == ForwardPassPerfReadiness::Ready;
         let correction_entries = |kind: Option<ForwardPassRegressionWorkloadKind>,
@@ -1614,7 +1675,7 @@ impl ForwardPassPerfModel {
                 Some(learned.worker_type()),
                 forest_stores(
                     learned.worker_type(),
-                    &|kind| learned.has_store(kind),
+                    &|kind| self.learned_store_ready(kind),
                     &|kind| {
                         online
                             .as_ref()
@@ -1627,7 +1688,7 @@ impl ForwardPassPerfModel {
                 Some(model.stable.worker_type()),
                 forest_stores(
                     model.stable.worker_type(),
-                    &|kind| model.stable.has_store(kind) && model.learned.has_store(kind),
+                    &|kind| self.learned_store_ready(kind),
                     &|kind| model.online.retained_observations_for(kind),
                 ),
                 model
@@ -1657,13 +1718,29 @@ impl ForwardPassPerfModel {
             .map(|provenance| ForwardPassDeploymentTopology::from_config(&provenance.config))
     }
 
-    /// Return readiness and retained counts for every allocated regression store.
+    fn learned_store_ready(&self, kind: ForwardPassRegressionWorkloadKind) -> bool {
+        let forest_ready = match &self.mode {
+            ForwardPassPerfMode::Learned { learned, .. } => learned.has_store(kind),
+            ForwardPassPerfMode::CausalSelector(model) => {
+                model.stable.has_store(kind) && model.learned.has_store(kind)
+            }
+            _ => return false,
+        };
+        forest_ready
+            || self
+                .mixed_composition
+                .as_ref()
+                .is_some_and(|mixed| mixed.is_fallback_eligible(kind))
+    }
+
+    /// Return readiness and retained counts for every regression or learned store.
     ///
     /// Dedicated roles return one entry. Aggregated returns four entries in
     /// pure-decode, locally-mixed, cross-rank, pure-prefill order, including
-    /// empty stores. Native models return an empty list. Readiness means a
-    /// usable linear fit exists, including when spline fitting is selected.
-    /// Spline component readiness alone does not make the store ready.
+    /// empty stores. Native models return an empty list. Regression readiness
+    /// requires a usable linear fit, including when spline fitting is selected.
+    /// Learned readiness includes eligible mixed-composition routes. Readiness
+    /// does not guarantee coverage for an individual query.
     pub fn regression_store_diagnostics(&self) -> Vec<ForwardPassRegressionStoreDiagnostics> {
         match &self.mode {
             ForwardPassPerfMode::Native { .. } => Vec::new(),
@@ -1674,11 +1751,7 @@ impl ForwardPassPerfModel {
                     .copied()
                     .map(|workload_kind| ForwardPassRegressionStoreDiagnostics {
                         workload_kind,
-                        ready: (model.stable.has_store(workload_kind)
-                            && model.learned.has_store(workload_kind))
-                            || self.mixed_composition.as_ref().is_some_and(|mixed| {
-                                mixed.eligible_kinds().contains(&workload_kind)
-                            }),
+                        ready: self.learned_store_ready(workload_kind),
                         retained_observations: model
                             .online
                             .retained_observations_for(workload_kind)
@@ -1694,7 +1767,7 @@ impl ForwardPassPerfModel {
                 .copied()
                 .map(|workload_kind| ForwardPassRegressionStoreDiagnostics {
                     workload_kind,
-                    ready: learned.has_store(workload_kind),
+                    ready: self.learned_store_ready(workload_kind),
                     retained_observations: online
                         .as_ref()
                         .map_or(0, |online| online.retained_observations_for(workload_kind)),

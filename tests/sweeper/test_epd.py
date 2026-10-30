@@ -5,6 +5,7 @@
 
 import json
 from dataclasses import asdict, replace
+from itertools import islice
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,9 +26,10 @@ from aisimulate.sweeper import (
     Sweeper,
     SweepResult,
 )
-from aisimulate.sweeper.epd import apply_encoder_overlay, resolve_encoder_catalog
+from aisimulate.sweeper.epd import apply_encoder_overlay, language_replay_key, resolve_encoder_catalog
 from aisimulate.sweeper.kv_estimate import NoPerfDatabase
 from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from aisimulate.sweeper.result import CandidateStatus, ReasonCategory
 from aisimulate.sweeper.sampler import Suggestion
 from aisimulate.sweeper.search_space import BranchSpace
 from aisimulate_core.sdk.errors import NoFeasibleConfigError
@@ -387,6 +389,234 @@ def test_complete_sweeper_selection_and_serialization(monkeypatch, gpu_budget, f
         ).run(config)
         assert not invalid.selected_candidates
         assert all("prediction-ready" in candidate.reason for candidate in invalid.candidates)
+
+
+_POOL_PARALLEL = ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+
+
+def _pool_selection(key, **updates):
+    selection = dict(
+        deployment_mode="agg",
+        backend="sglang",
+        agg_max_num_batched_tokens=8192,
+        agg_max_num_seqs=256,
+        encoder_candidate=key,
+    )
+    return selection | updates
+
+
+def _stub_pool_search(monkeypatch):
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(_POOL_PARALLEL,),
+        supported_backends={_POOL_PARALLEL: frozenset({"sglang"})},
+        knob_choices={"backend": ["sglang"]},
+    )
+    monkeypatch.setattr(search_mod, "enumerate_branches", lambda *a, **kw: [branch])
+    monkeypatch.setattr(
+        search_mod, "resolve_encoder_catalog", lambda c: {"one": _encoder(), "two": _encoder(workers=2)}
+    )
+    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda *a, systems_paths=None: "0.5.14")
+
+
+class _PoolSampler:
+    """Suggest every encoder pool once, all on one language deployment."""
+
+    def __init__(self, branch, **kwargs):
+        self.keys = iter(branch.knob_choices["encoder_candidate"])
+
+    def suggest(self, count):
+        return [
+            Suggestion(selection=_pool_selection(key), parallel_config=_POOL_PARALLEL, handle=key)
+            for key in islice(self.keys, count)
+        ]
+
+    def observe(self, *args):
+        pass
+
+    def observe_infeasible(self, *args):
+        pass
+
+
+class _LanguageRunnerFactory:
+    """Replay one language report: ``failed`` raises, ``incomplete`` completes no request,
+    and ``overlaid`` applies the overlay even when asked to defer it."""
+
+    def __init__(self, *, deferred=True, outcome="replayed"):
+        self.deferred = deferred
+        self.outcome = outcome
+        self.replays = 0
+
+    def capabilities(self):
+        return RunnerCapabilities(
+            supported_backend_topologies=(("sglang", "agg"),),
+            supports_analytical_epd=True,
+            supports_deferred_encoder_overlay=self.deferred,
+        )
+
+    def create(self, worker_id):
+        return self
+
+    def run(self, spec, output_requirements=None):
+        self.replays += 1
+        if self.outcome == "failed":
+            raise RuntimeError("language replay failed")
+        report = _report()
+        if self.outcome == "incomplete":
+            report = ReplayReport(report.metrics | {"completed_requests": 0.0}, report.metadata)
+        deferred = output_requirements is not None and output_requirements.defer_encoder_overlay
+        return report if deferred and self.outcome != "overlaid" else apply_encoder_overlay(report, spec)
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize("outcome", ["replayed", "failed", "incomplete"])
+@pytest.mark.parametrize("per_round", [1, 2])
+def test_encoder_pools_share_one_language_replay(monkeypatch, per_round, outcome):
+    _stub_pool_search(monkeypatch)
+    config = _config(sweep=_config().sweep.model_dump() | {"candidates_per_round": per_round, "max_rounds": 2})
+    candidates = {}
+    for deferred in (False, True):
+        factory = _LanguageRunnerFactory(deferred=deferred, outcome=outcome)
+        result = Sweeper(runner_factory=factory, sampler_factory=_PoolSampler, show_progress=False).run(config)
+        # A replay that completes serves later rounds; a failed one only its own batch.
+        shared = outcome != "failed" or per_round == 2
+        assert factory.replays == (1 if deferred and shared else 2)
+        candidates[deferred] = [candidate.model_dump() for candidate in result.candidates]
+    assert [candidate["config"]["encoder_candidate"] for candidate in candidates[True]] == ["one", "two"]
+    assert candidates[True] == candidates[False]
+
+
+@pytest.mark.parametrize("outcome", ["replayed", "timed_out"])
+@pytest.mark.parametrize("path", ["pool", "resource_aware"])
+def test_worker_paths_share_one_language_replay(monkeypatch, path, outcome):
+    from aisimulate.resource_scheduler import InterruptedEvaluation
+
+    _stub_pool_search(monkeypatch)
+    monkeypatch.setattr(search_mod, "_WORKER_CTX", {})
+    timed_out = outcome == "timed_out"
+    submitted = []
+
+    def run_in_worker(evaluate, spec):
+        submitted.append(spec)
+        return None if timed_out else evaluate(spec)
+
+    if path == "pool":
+        factory = _LanguageRunnerFactory()
+
+        class Future:
+            def __init__(self, result):
+                self._result = result
+
+            def result(self):
+                return self._result
+
+        class FakeProcessPool:
+            def __init__(self, *, initializer, initargs, **kwargs):
+                self._processes = {}
+                initializer(*initargs)
+
+            def submit(self, function, spec):
+                return Future(run_in_worker(function, spec))
+
+            def shutdown(self, *, wait, cancel_futures):
+                pass
+
+        monkeypatch.setattr(search_mod, "ProcessPoolExecutor", FakeProcessPool)
+        monkeypatch.setattr(
+            search_mod, "wait", lambda pending, **kwargs: (set(), set(pending)) if timed_out else (set(pending), set())
+        )
+    else:
+
+        class AdmittingFactory(_LanguageRunnerFactory):
+            def admit_wave(self, specs):
+                raise AssertionError("scheduler boundary is replaced below")
+
+        factory = AdmittingFactory()
+
+        def waves(specs, *, factory, initializer, evaluate, **kwargs):
+            initializer(factory)
+            for index, spec in enumerate(specs):
+                result = run_in_worker(evaluate, spec)
+                yield index, InterruptedEvaluation("exceed runtime: replay > 10s", False, {}) if timed_out else result
+
+        monkeypatch.setattr("aisimulate.resource_scheduler.evaluate_waves", waves)
+
+    config = _config(
+        sweep=_config().sweep.model_dump() | {"parallel_evals": 2, "max_eval_seconds": 10.0, "candidates_per_round": 2}
+    )
+    result = Sweeper(runner_factory=factory, sampler_factory=_PoolSampler, show_progress=False).run(config)
+    assert len(submitted) == 1
+    if timed_out:
+        assert [candidate.status for candidate in result.candidates] == [CandidateStatus.TIMED_OUT] * 2
+        return
+    # Each pool takes its own overlay of the one language replay.
+    assert [candidate.status for candidate in result.candidates] == [CandidateStatus.FEASIBLE] * 2
+    assert [candidate.metrics["encoder_gpus"] for candidate in result.candidates] == [1.0, 2.0]
+
+
+def test_runner_defers_only_the_encoder_overlay(monkeypatch):
+    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda *a, systems_paths=None: "0.5.14")
+    config = _config()
+    catalog = {
+        "one": _encoder(),
+        # Differs from "one" in every field only the overlay reads.
+        "two": _encoder(
+            tp=2,
+            batch_size=4,
+            workers=2,
+            latency_ms=9.0,
+            throughput_rps=7.0,
+            memory_gib=3.0,
+            power_w=300.0,
+            power_coverage=1.0,
+        ),
+    }
+
+    def spec(key, **updates):
+        prepared, failure = search_mod._materialize_one(
+            _pool_selection(key, **updates),
+            _POOL_PARALLEL,
+            config=config,
+            goal=config.goal,
+            providers={},
+            provider_plans={},
+            runner_factory=EngineReplayRunnerFactory(),
+            encoder_catalog=catalog,
+        )
+        assert failure is None
+        return prepared.replay_spec
+
+    one, two = spec("one"), spec("two")
+    assert language_replay_key(one) == language_replay_key(two)
+    assert language_replay_key(spec("one", agg_max_num_seqs=128)) != language_replay_key(one)
+
+    payloads = []
+    runtime = SimpleNamespace(run_replay_json=lambda payload: payloads.append(payload) or json.dumps(_report().metrics))
+    factory = EngineReplayRunnerFactory(runtime=runtime)
+    assert factory.capabilities().supports_deferred_encoder_overlay
+    runner = factory.create(0)
+    deferred = ReplayOutputRequirements(defer_encoder_overlay=True)
+    reports = [runner.run(pool, output_requirements=deferred) for pool in (one, two)]
+    assert payloads[0] == payloads[1]
+    assert reports[0] == reports[1]
+    assert "metric_semantics" not in reports[0].metadata
+    for pool, report in zip((one, two), reports, strict=True):
+        assert runner.run(pool) == apply_encoder_overlay(report, pool)
+    with pytest.raises(InvalidRunnerError, match="memory diagnostics"):
+        runner.run(one, output_requirements=replace(deferred, capture_memory_diagnostics=True))
+
+
+def test_overlaid_deferred_report_is_a_contract_failure(monkeypatch):
+    _stub_pool_search(monkeypatch)
+    factory = _LanguageRunnerFactory(outcome="overlaid")
+    result = Sweeper(runner_factory=factory, sampler_factory=_PoolSampler, show_progress=False).run(_config())
+    assert factory.replays == 1
+    assert [candidate.status for candidate in result.candidates] == [CandidateStatus.FAILED] * 2
+    for candidate in result.candidates:
+        assert candidate.reason_category is ReasonCategory.RUNNER_CONTRACT
+        assert "already carries the encoder overlay" in candidate.reason
 
 
 def test_unresolved_parallel_snapshot_keeps_encoder_without_inventing_gpu_total():

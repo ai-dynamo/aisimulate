@@ -28,7 +28,7 @@ _SYSTEM = "b200_sxm"
 _BACKEND = "vllm"
 
 
-def _spec_backend_version(backend_version, database):
+def _spec_backend_version(backend_version, database, system=_SYSTEM):
     cfg = ModelConfig(
         tp_size=1,
         pp_size=1,
@@ -41,7 +41,7 @@ def _spec_backend_version(backend_version, database):
         build_engine_spec_json(
             model,
             model_path=_MODEL,
-            system=_SYSTEM,
+            system=system,
             backend=_BACKEND,
             backend_version=backend_version,
             kv_block_size=None,
@@ -90,9 +90,11 @@ def test_spec_build_rejects_unlisted_versions_without_the_escape(monkeypatch):
 
 
 def test_spec_build_rejects_unpopulated_alias(monkeypatch):
+    # Every fleet default now authors a `previous`; the a100 override baseline
+    # (vllm current 0.14.0, previous null) is the slot table's unpopulated alias.
     monkeypatch.delenv("AIC_ALLOW_UNLISTED_VERSIONS", raising=False)
     with pytest.raises(ValueError, match="has no 'previous'"):
-        _spec_backend_version("previous", None)
+        _spec_backend_version("previous", None, system="a100_sxm")
 
 
 def test_engine_handle_reload_path_resolves_the_alias():

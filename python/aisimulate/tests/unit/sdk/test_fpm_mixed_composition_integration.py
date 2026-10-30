@@ -122,6 +122,66 @@ def _load(fixture, checkpoint=None, **kwargs):
     return RustForwardPassPerfModel.best_available(_config(fixture, checkpoint, **kwargs))
 
 
+@pytest.mark.parametrize("mode", ["a_only", "online", "frozen_hybrid", "quality_gate", "causal_selector"])
+def test_mixed_readiness_and_diagnostics_public_contract(mixed_seed, mode):
+    adaptation = {
+        "a_only": "frozen",
+        "frozen_hybrid": "frozen",
+        "quality_gate": "online",
+    }.get(mode, mode)
+    config = _config(mixed_seed, adaptation=adaptation)
+    estimator = config["estimator_config"]
+    policy = estimator["temporary_mixed_composition"]
+    if mode == "a_only":
+        policy.update(scenario="a", mode="compose")
+    elif mode == "frozen_hybrid":
+        estimator["correction"] = {"enabled": True, "mode": "hybrid"}
+    elif mode == "quality_gate":
+        policy["quality_gate"] = {"alpha": 1.0, "min_comparisons": 1}
+    ordinary_config = deepcopy(config)
+    del ordinary_config["estimator_config"]["temporary_mixed_composition"]
+    model = RustForwardPassPerfModel.best_available(config)
+    ordinary = RustForwardPassPerfModel.best_available(ordinary_config)
+    try:
+        report = model.readiness_report()
+        stores = {entry["workload_kind"]: entry for entry in report["stores"]}
+        ordinary_stores = {entry["workload_kind"]: entry for entry in ordinary.readiness_report()["stores"]}
+        for current in (model, ordinary):
+            assert [(entry["workload_kind"], entry["ready"]) for entry in current.readiness_report()["stores"]] == [
+                (entry["workload_kind"], entry["ready"]) for entry in current.regression_store_diagnostics()
+            ]
+        for kind in ("contains_locally_mixed", "cross_rank_aggregated"):
+            assert stores[kind]["ready"]
+            assert stores[kind]["not_ready_reason"] is None
+            assert not ordinary_stores[kind]["ready"]
+            assert ordinary_stores[kind]["not_ready_reason"] == "untrained_forest_store"
+        for kind in ("pure_decode", "pure_prefill"):
+            assert stores[kind] == ordinary_stores[kind]
+        assert ordinary.estimate_forward_pass_time_ms(_iteration()) is None
+        assert model.estimate_forward_pass_time_ms(_iteration()) == 4.0
+
+        # Readiness names an available route, even when a particular query
+        # falls outside that route's interpolation support.
+        unsupported = _iteration()
+        unsupported[0]["scheduled_requests"].update(num_decode_requests=8, sum_decode_kv_tokens=256)
+        assert model.estimate_forward_pass_time_ms(unsupported) is None
+        assert model.readiness_report() == report
+
+        mixed = model.mixed_composition_diagnostics()
+        assert mixed is not None
+        assert model.diagnostics()["temporary_mixed_composition"] == mixed
+        assert ordinary.mixed_composition_diagnostics() is None
+        assert "temporary_mixed_composition" not in ordinary.diagnostics()
+        if mode != "a_only":
+            model.tune_with_fpms([_iteration(index=1), _iteration(index=2)])
+            updated = model.mixed_composition_diagnostics()
+            assert updated != mixed
+            assert model.diagnostics()["temporary_mixed_composition"] == updated
+    finally:
+        model.close()
+        ordinary.close()
+
+
 def test_original_a_manifest_matches_default_aggregated_training_eligibility(tmp_path, phase_roots):
     config, make_root = phase_roots
     config["systems_paths"] = [make_root("default-features")]
@@ -205,6 +265,70 @@ def test_frozen_hybrid_calibrates_missing_mixed_store_without_training_it(mixed_
     finally:
         model.close()
         control.close()
+
+
+def test_mixed_support_miss_survives_prediction_details_contract(mixed_seed):
+    import jsonschema
+
+    from aisimulate.detail import build_prediction_details
+
+    model = _load(mixed_seed, adaptation="frozen")
+    try:
+        unsupported = _iteration()
+        unsupported[0]["scheduled_requests"].update(num_decode_requests=8, sum_decode_kv_tokens=256)
+        estimates = [
+            model.estimate_forward_pass_detailed(query) for query in (_iteration("prefill"), _iteration(), unsupported)
+        ]
+    finally:
+        model.close()
+    assert all("unavailable_reason" not in estimate for estimate in estimates[:2])
+    assert estimates[-1]["latency_ms"] is None
+    assert estimates[-1]["unavailable_reason"]
+    assert not estimates[-1]["ranks"]
+
+    # Publish genuine SDK estimates through both consumers of the shared
+    # diagnostics contract; the enclosing diagnostic record is synthetic.
+    evidence = [{"estimate": estimate, "count": 1, "latency_scale": 1.0} for estimate in estimates]
+    timing = {"latency_ms": 0.0, "sol": None, "sol_unavailable_reason": "learned FPM has no SOL evidence"}
+    report = {
+        "performance_diagnostics": {
+            "status": "available",
+            "scope": "accumulated_active_forward_pass_per_gpu",
+            "latency_unit": "ms",
+            "phases": [
+                {
+                    **timing,
+                    "name": "generation",
+                    "operations": [
+                        {
+                            **timing,
+                            "name": "fpm_forward",
+                            "source": "silicon",
+                            "fallbacks": [],
+                            "latency_to_sol_ratio": None,
+                            "fpm_estimates": evidence,
+                        }
+                    ],
+                }
+            ],
+        }
+    }
+    original = deepcopy(report)
+    details = build_prediction_details(report, ("source", "time"))
+    schema = json.loads(
+        (Path(__file__).resolve().parents[5] / "docs/reference/schemas/prediction-details.schema.json").read_text()
+    )
+    jsonschema.validate(details, schema)
+    for section in (details["sections"]["source"], details["sections"]["time"]["diagnostics"]):
+        assert section["phases"][0]["operations"][0]["fpm_estimates"] == evidence
+    assert report == original
+
+    estimate_schema = {"$ref": "#/$defs/fpmEstimate", "$defs": schema["$defs"]}
+    for value in (None, False, 1, {}, [], "", " \t"):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({**estimates[-1], "unavailable_reason": value}, estimate_schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({**estimates[-1], "unknown": None}, estimate_schema)
 
 
 @pytest.fixture

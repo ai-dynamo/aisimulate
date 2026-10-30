@@ -625,6 +625,11 @@ pub struct EngineConfig {
     /// Includes chunk continuation and idle rounds; zero disables the interval.
     #[serde(default)]
     pub prefill_decode_interval: usize,
+    /// vLLM `--async-scheduling`. The engine then keeps a second batch queued
+    /// behind the running one, which a request arriving at a busy engine
+    /// misses. `None` selects vLLM's default: on, except with ngram drafts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub async_scheduling: Option<bool>,
     /// Whether complete blocks remain reusable after request release.
     #[serde(default = "default_true")]
     pub enable_prefix_caching: bool,
@@ -731,6 +736,8 @@ struct EngineConfigWire {
     prefill_schedule_interval: usize,
     #[serde(default)]
     prefill_decode_interval: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    async_scheduling: Option<bool>,
     #[serde(default = "default_true")]
     enable_prefix_caching: bool,
     #[serde(default = "default_true")]
@@ -815,6 +822,7 @@ impl<'de> Deserialize<'de> for EngineConfig {
             max_num_batched_tokens: wire.max_num_batched_tokens,
             prefill_schedule_interval: wire.prefill_schedule_interval,
             prefill_decode_interval: wire.prefill_decode_interval,
+            async_scheduling: wire.async_scheduling,
             enable_prefix_caching: wire.enable_prefix_caching,
             enable_chunked_prefill: wire.enable_chunked_prefill,
             speedup_ratio: wire.speedup_ratio,
@@ -861,6 +869,7 @@ impl Default for EngineConfig {
             max_num_batched_tokens: default_max_num_batched_tokens(),
             prefill_schedule_interval: default_prefill_schedule_interval(),
             prefill_decode_interval: 0,
+            async_scheduling: None,
             enable_prefix_caching: true,
             enable_chunked_prefill: true,
             speedup_ratio: 1.0,
@@ -902,6 +911,17 @@ impl EngineConfig {
             backend,
             block_size: backend.default_block_size(),
             ..Self::default()
+        }
+    }
+
+    /// Batches a busy vLLM engine keeps committed, its `max_concurrent_batches`:
+    /// two with async scheduling and one without. Engine replay does not model
+    /// pipeline parallelism, which would raise this depth.
+    pub(crate) fn max_concurrent_batches(&self) -> usize {
+        if self.backend == Backend::Vllm && self.async_scheduling != Some(false) {
+            2
+        } else {
+            1
         }
     }
 
@@ -981,6 +1001,10 @@ impl EngineConfig {
         ensure!(
             self.backend == Backend::Sglang || self.prefill_decode_interval == 0,
             "prefill_decode_interval is supported only for backend=sglang"
+        );
+        ensure!(
+            self.backend == Backend::Vllm || self.async_scheduling.is_none(),
+            "async_scheduling is supported only for backend=vllm"
         );
         ensure!(
             self.backend == Backend::Sglang || !self.sglang.host_loop,
@@ -2005,6 +2029,43 @@ mod tests {
                         .to_string()
                         .contains("prefill_schedule_interval is supported only for backend=vllm")
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn async_scheduling_defaults_to_vllm_and_sets_the_batch_queue_depth() {
+        for (backend, depth) in [("vllm", 2), ("sglang", 1), ("trtllm", 1)] {
+            let mut config: EngineConfig =
+                serde_json::from_value(serde_json::json!({ "backend": backend })).unwrap();
+            assert_eq!(config.async_scheduling, None);
+            assert_eq!(config.max_concurrent_batches(), depth);
+            assert!(
+                !serde_json::to_value(&config)
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .contains_key("async_scheduling")
+            );
+            config.validate().unwrap();
+
+            for enabled in [false, true] {
+                config.async_scheduling = Some(enabled);
+                if backend == "vllm" {
+                    config.validate().unwrap();
+                    assert_eq!(config.max_concurrent_batches(), if enabled { 2 } else { 1 });
+                    let decoded: EngineConfig =
+                        serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+                    assert_eq!(decoded.async_scheduling, Some(enabled));
+                } else {
+                    assert!(
+                        config
+                            .validate()
+                            .unwrap_err()
+                            .to_string()
+                            .contains("async_scheduling is supported only for backend=vllm")
+                    );
+                }
             }
         }
     }

@@ -545,6 +545,12 @@ impl MixedComposition {
             .collect()
     }
 
+    pub(super) fn is_fallback_eligible(&self, kind: Kind) -> bool {
+        self.routes
+            .iter()
+            .any(|route| route.workload_kind == kind && route.fallback_eligible)
+    }
+
     pub(super) fn eligible_kind(
         &self,
         group: &[ForwardPassMetrics],
@@ -562,13 +568,8 @@ impl MixedComposition {
             return Ok(None);
         }
         Ok(
-            classify_regression_workload(group, ForwardPassWorkerType::Aggregated)?.filter(
-                |kind| {
-                    self.routes
-                        .iter()
-                        .any(|r| r.workload_kind == *kind && r.fallback_eligible)
-                },
-            ),
+            classify_regression_workload(group, ForwardPassWorkerType::Aggregated)?
+                .filter(|kind| self.is_fallback_eligible(*kind)),
         )
     }
 
@@ -660,10 +661,6 @@ impl MixedComposition {
         if !self.corrections.contains_key(&feature.workload_kind) {
             return Ok(None);
         }
-        let admitted = self.admissions[&feature.workload_kind];
-        if admitted >= usize::MAX as u64 {
-            return Err(invalid("mixed admission counter exhausted"));
-        }
         if group
             .iter()
             .any(|rank| !rank.wall_time.is_finite() || rank.wall_time < 0.0)
@@ -673,10 +670,14 @@ impl MixedComposition {
             ));
         }
         let Some(observed) = max_positive_wall_time_ms(group) else {
-            return Err(AicError::InvalidForwardPassMetrics(
-                "mixed feedback requires a positive finite observed latency".into(),
-            ));
+            // Valid all-zero timings carry no label. Match ordinary tuning:
+            // skip them before querying the prior or checking admission space.
+            return Ok(None);
         };
+        let admitted = self.admissions[&feature.workload_kind];
+        if admitted >= usize::MAX as u64 {
+            return Err(invalid("mixed admission counter exhausted"));
+        }
         let raw = match self
             .engine
             .as_ref()
