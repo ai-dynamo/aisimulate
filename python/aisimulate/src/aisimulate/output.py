@@ -35,6 +35,7 @@ def prepare_output_directory(path: str | Path, *, overwrite: bool) -> Path:
     if overwrite:
         for name in (
             "prediction.json",
+            "report.html",
             "fpm-coverage.json",
             "recommendation.json",
             "recommendation.csv",

@@ -241,12 +241,21 @@ def _cli_arguments(tmp_path):
         ([], "trtllm", "telemetry capture requires offline native vLLM/SGLang"),
     ],
 )
-def test_supervisor_rejects_invalid_telemetry_before_overwrite(tmp_path, monkeypatch, capsys, extra, backend, message):
+@pytest.mark.parametrize("capture_flag", ["--capture-telemetry", "--export-html"])
+def test_supervisor_rejects_invalid_telemetry_before_overwrite(
+    tmp_path, monkeypatch, capsys, extra, backend, message, capture_flag
+):
     from aisimulate import cli_args, supervision
 
     prior = {
         name: f"prior {name}\n"
-        for name in ("prediction.json", "telemetry-requests.jsonl", "telemetry-samples.jsonl", "keep.txt")
+        for name in (
+            "prediction.json",
+            "report.html",
+            "telemetry-requests.jsonl",
+            "telemetry-samples.jsonl",
+            "keep.txt",
+        )
     }
     for name, contents in prior.items():
         (tmp_path / name).write_text(contents)
@@ -271,7 +280,7 @@ def test_supervisor_rejects_invalid_telemetry_before_overwrite(tmp_path, monkeyp
                 "predict",
                 "-c",
                 "unused.yaml",
-                "--capture-telemetry",
+                capture_flag,
                 "--output-dir",
                 str(tmp_path),
                 "--overwrite",

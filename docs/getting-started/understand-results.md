@@ -196,6 +196,74 @@ own their resource budgets. Capture adds no separate per-token trace files,
 server logs, or power series. These are native AISim files, not AIPerf/infX export files, and
 they do not establish timing accuracy or exact benchmark-input parity.
 
+## Replay dashboard
+
+Use `--export-html` to write an interactive, simulation-only `report.html` next
+to the normal prediction output:
+
+```bash
+aisimulate predict --config examples/cli/agentic-profile.yaml \
+  --export-html --output-dir ./agentic-dashboard
+```
+
+This flag enables telemetry capture internally, including request details;
+neither `--capture-telemetry` nor `--capture-per-request` is required.
+`--telemetry-sample-interval-ms` still controls sampling. The same offline
+vLLM/SGLang engine paths listed above are supported. Rendering runs after replay
+under the existing CLI resource supervisor and does not change native summary
+metrics. Completed telemetry remains available even if HTML rendering fails.
+Aborted preparation also produces a dashboard when native telemetry is available.
+
+Open `report.html` directly in a browser. Data, JavaScript, and the Plotly
+license are embedded; no server or network access is needed. The dashboard
+has Dashboard and Request timeline tabs. It contains:
+
+- Profiling and optional warmup views with request lengths, TTFT, E2E, and interactivity.
+- Resident KV occupancy, host-cache pools, running/waiting queues, completed
+  requests, preemptions, prefix reuse, native cache lookups, and prompt sources.
+- Executed-prefill and delivered-output throughput, with a separate
+  successful-completion-accounted output view, plus speculative acceptance.
+- Conversation-level input footprint, completion status, lifecycle records,
+  and a searchable conversation/worker timeline with request details.
+
+The timeline uses thin interval lines and horizontal scrolling without zoom.
+Profiling spans the native admission window; intervals crossing its end are
+clipped in the view. Complete terminal records, including grace tails, remain
+available in request details and the telemetry JSONL files. The Warmup stage
+appears only when warmup was enabled and native preparation telemetry exists,
+including empty or aborted preparation. It includes primer and warmup requests
+and retains their phase labels.
+
+Request percentile curves use the selected percentile on a trailing 50-request
+window and on the cumulative cohort. Interactivity inverts the selected TPOT
+percentile; fewer than two output tokens leaves it unavailable. Device-cache
+and queue gauges and throughput rates use trailing 50-second smoothing. Rate
+windows apportion counters by overlap, assuming uniform activity within each
+native sample interval. Other counters retain their interval or cumulative
+labels. Missing observations stay unavailable; grouped
+caches retain byte capacity and shared host pools are shown once per ownership
+domain. Conversation-level input footprint is the sum of the maximum active
+input length per play and conversation, not a measurement of physical token
+uniqueness. Footprint and in-flight request means include arrivals at the sample
+time and exclude requests ending at that time. A single event sweep per phase
+computes these series; redraws reuse them instead of scanning all requests per sample.
+Native lookup reuse and scheduler pass reuse remain separate metrics.
+
+This report presents simulated measurements only. It does not produce silicon
+accuracy scores, server logs, or power curves. `--overwrite` replaces the HTML
+along with known AISim outputs; omitting `--export-html` on the next run removes
+any stale report. Unrelated files in the output directory remain untouched.
+
+To render previously captured telemetry without another replay, use the Python
+helper described in the [replay API](../replay/api/python.md#html-dashboard).
+Large captures add rendering memory proportional to requests and samples;
+keep the native JSONL files as the lossless record.
+
+Request-derived charts use the recorded terminal cohort. When a simulation-time
+limit leaves requests unfinished, native telemetry does not yet contain their
+terminal details. The report shows the capture status and scheduler gauges;
+missing terminal records do not imply that no work was admitted.
+
 ## Goodput and strict SLA answer different questions
 
 With `evaluation.sla: {ttft_ms: 500, itl_ms: 50}`:
