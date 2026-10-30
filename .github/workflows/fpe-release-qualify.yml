@@ -68,6 +68,7 @@ jobs:
           path: |
             fpe-release-wheel
             fpe-release-shards.json
+            fpe-release-probes.json
           if-no-files-found: error
           retention-days: 7
 

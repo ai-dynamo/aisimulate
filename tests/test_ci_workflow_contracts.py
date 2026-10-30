@@ -2171,7 +2171,13 @@ def test_release_artifact_handoffs_cannot_mix_versions():
     import fnmatch
 
     jobs = _workflow("fpe-release-qualify.yml")["jobs"]
-    wheel = jobs["prepare"]["steps"][-1]["with"]["name"]
+    prepared_artifact = jobs["prepare"]["steps"][-1]["with"]
+    wheel = prepared_artifact["name"]
+    assert set(prepared_artifact["path"].splitlines()) == {
+        "fpe-release-wheel",
+        "fpe-release-shards.json",
+        "fpe-release-probes.json",
+    }
     for name in ("generate", "qualify"):
         download = next(s for s in jobs[name]["steps"] if s.get("uses", "").startswith("actions/download-artifact@"))
         assert download["with"]["name"] == wheel
@@ -2188,6 +2194,43 @@ def test_release_artifact_handoffs_cannot_mix_versions():
                 .replace("${{ matrix.shard.backend }}", "vllm")
             )
             assert fnmatch.fnmatchcase(name, selected_pattern) == (version == selected)
+
+
+def test_main_fpe_preserves_discovered_probe_plan_when_packaging(tmp_path):
+    jobs = _workflow("fpe-support-matrix.yml")["jobs"]
+    assert jobs["discover-shards"]["outputs"]["required-probes"] == "${{ steps.shards.outputs.required_probes }}"
+    package = next(
+        step for step in jobs["build-web-matrix"]["steps"] if "run_release_fpe.py package" in step.get("run", "")
+    )
+    assert package["env"]["EXPECTED_PROBES"] == "${{ needs.discover-shards.outputs.required-probes }}"
+    shards = json.dumps([{"system": "b200_sxm", "backend": "trtllm"}])
+    plan = json.dumps(
+        {
+            "source_sha": "a" * 40,
+            "tooling_sha": "b" * 40,
+            "wheel_sha256": "c" * 64,
+            "probes": [{"model": "literal/$(touch substituted)`touch substituted`", "backend_version": "1.3.0rc29"}],
+        }
+    )
+    package_stub = tmp_path / "scripts/fpe/run_release_fpe.py"
+    package_stub.parent.mkdir(parents=True)
+    package_stub.write_text(
+        "import os, pathlib, sys\n"
+        "assert sys.argv[1] == 'package'\n"
+        "for name, suffix in [('EXPECTED_SHARDS', 'shards'), ('EXPECTED_PROBES', 'probes')]:\n"
+        "    assert pathlib.Path(f'fpe-release-{suffix}.json').read_text() == os.environ[name] + '\\n'\n"
+        "pathlib.Path('packaged').touch()\n"
+    )
+    result = subprocess.run(
+        ["bash", "-euc", package["run"]],
+        cwd=tmp_path,
+        env={**os.environ, "EXPECTED_SHARDS": shards, "EXPECTED_PROBES": plan},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "packaged").is_file()
+    assert not (tmp_path / "substituted").exists()
 
 
 @pytest.mark.parametrize("manifest_version", ["0.13.0", "0.13.0.dev20260918"])
