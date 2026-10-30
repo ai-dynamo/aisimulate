@@ -15,6 +15,7 @@ def test_landing_page_is_aisimulate_branded_and_hides_outdated_universe():
     assert ">AISimulate</h1>" in page
     assert 'href="./e2e-accuracy/"' in page
     assert 'href="./fpe-support-matrix/"' in page
+    assert 'href="./feature-support-matrix/"' in page
     assert "Legacy AIC Support Matrix" in page
     assert "Prefer the FPE Support Matrix" in page
     assert "https://github.com/ai-dynamo/aisimulate" in page
@@ -67,6 +68,7 @@ def test_package_readme_only_exposes_current_static_page_entrypoints():
     assert "ai-dynamo.github.io/aiconfigurator" not in readme
     assert "[Website](https://ai-dynamo.org/aisimulate/)" in readme
     assert "[FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/)" in readme
+    assert "[Feature Support Matrix](https://ai-dynamo.org/aisimulate/feature-support-matrix/)" in readme
     assert "[E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/)" in readme
     assert "release branches" not in readme
     assert "[FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/)" in readme

@@ -33,6 +33,7 @@ configurations offline, without bringing up a GPU serving cluster.
 [FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/) ·
 [FPM Dataset](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset) ·
 [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/) ·
+[Feature Support Matrix](https://ai-dynamo.org/aisimulate/feature-support-matrix/) ·
 [Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
 
 AISimulate is the successor to the
