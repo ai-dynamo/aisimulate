@@ -3,14 +3,15 @@
 
 """The decoder key that FPM config intake, the FPM collector and the FPM profile check share.
 
-The file also pins the nested-decoder rule: a decoder that holds a decoder key is ambiguous.
+The file also pins the nested-decoder rule: a decoder that holds a decoder key is ambiguous. A decoder under the key
+must also be a nonempty object.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from aisimulate_core.decoder_config import nested_decoder_ambiguity
+from aisimulate_core.decoder_config import decoder_config_problem, nested_decoder_ambiguity
 from aisimulate_core.sdk.common import MULTIMODAL_TEXT_CONFIG_KEY
 from aisimulate_core.sdk.fpm_model_metadata import decoder_config_key
 
@@ -125,6 +126,38 @@ def test_the_registry_maps_wrappers_only_to_keys_that_the_helper_orders():
 )
 def test_nested_decoder_ambiguity(key, decoder, ambiguity):
     assert nested_decoder_ambiguity(key, decoder) == ambiguity
+
+
+_NOT_A_DECODER = "text_config must be a nonempty object describing one text decoder"
+
+
+@pytest.mark.parametrize(
+    "key,decoder,problem",
+    [
+        # text_config is held whenever the key is present, so a value that is no nonempty object reaches the helper.
+        ("text_config", None, _NOT_A_DECODER),
+        ("text_config", [], _NOT_A_DECODER),
+        ("text_config", "decoder", _NOT_A_DECODER),
+        ("text_config", {}, _NOT_A_DECODER),
+        ("text_config", 0, _NOT_A_DECODER),
+        # A nonempty object is checked for a nested decoder, and the diagnosis stays that of nested_decoder_ambiguity.
+        ("llm_config", {"text_config": _DECODER}, "ambiguous nested text_config in llm_config"),
+        ("text_config", _DECODER, None),
+        ("llm_config", _DECODER, None),
+    ],
+    ids=[
+        "null",
+        "list",
+        "string",
+        "empty-object",
+        "number",
+        "text-config-in-llm-config",
+        "flat-text-config",
+        "flat-llm-config",
+    ],
+)
+def test_decoder_config_problem(key, decoder, problem):
+    assert decoder_config_problem(key, decoder) == problem
 
 
 # decoder_config_key and nested_decoder_ambiguity each decide whether a value under llm_config or text_config holds a

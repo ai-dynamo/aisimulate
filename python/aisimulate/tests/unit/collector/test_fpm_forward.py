@@ -31,7 +31,7 @@ from collector.fpm_forward.database import (
     write_formal_database,
 )
 from collector.fpm_forward.memory_admission import filter_memory_infeasible_topologies
-from collector.fpm_forward.model_capability import load_model_config
+from collector.fpm_forward.model_capability import ResolvedModelConfig, load_model_config
 from collector.fpm_forward.planner import (
     BackendPolicy,
     FPMCell,
@@ -1723,6 +1723,57 @@ def test_null_inner_llm_config_is_not_a_decoder_for_the_collector_or_intake(tmp_
     assert capability.support_reason == (
         f"config.json cannot describe this cache layout ({_NEMOTRON_REASONS}). The native runtime measures every cell."
     )
+
+
+@pytest.mark.parametrize("text_config", [None, [], "decoder", {}], ids=["null", "list", "string", "empty-object"])
+def test_malformed_text_config_is_refused_as_config_intake_refuses_it(tmp_path, text_config):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    # The wrapper's flat fields describe a valid decoder, so only the refusal keeps the collector off them.
+    document = {
+        **_packaged_config(_NEMOTRON_SUPER),
+        "architectures": ["ExampleMultimodalForConditionalGeneration"],
+        "text_config": text_config,
+    }
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(document))
+    problem = "text_config must be a nonempty object describing one text decoder"
+    with pytest.raises(ValueError) as intake:
+        load_intake_config(path)
+    assert str(intake.value) == f"{problem}; supply its decoder config or a complete --fpm-profile"
+    refusal = f"{problem}; supply one text decoder config"
+    with pytest.raises(ValueError) as effective:
+        _ = ResolvedModelConfig(document, source_kind="explicit", source_reference="test").effective_payload
+    assert str(effective.value) == refusal
+    with pytest.raises(ValueError) as collector:
+        _layout_capability(path, native=True)
+    assert str(collector.value) == refusal
+    # Render reads the same view, so the parser fallback cannot read the wrapper's flat fields.
+    with pytest.raises(ValueError) as render:
+        load_model_config(str(path)).parsed_payload()
+    assert str(render.value) == refusal
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{}, {"llm_config": None}, {"llm_config": {}}, {"llm_config": []}, {"llm_config": "decoder"}],
+    ids=["flat", "null-llm-config", "empty-llm-config", "list-llm-config", "string-llm-config"],
+)
+def test_flat_config_and_an_llm_config_that_is_no_decoder_load_in_the_collector_and_intake(tmp_path, extra):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    document = {**_packaged_config(_NEMOTRON_SUPER), **extra}
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(document))
+    intake = load_intake_config(path)
+    assert "decoder_config" not in intake.notes
+    assert ", ".join(intake.runtime_layout) == _NEMOTRON_REASONS
+    # No decoder key is held, so the collector reads the config itself.
+    assert ResolvedModelConfig(document, source_kind="explicit", source_reference="test").effective_payload == document
+    assert _layout_capability(path, native=True).support_reason == (
+        f"config.json cannot describe this cache layout ({_NEMOTRON_REASONS}). The native runtime measures every cell."
+    )
+    assert load_model_config(str(path)).parsed_payload()["raw_config"]["architectures"] == document["architectures"]
 
 
 def _detected_layout_plan(tmp_path, monkeypatch, generator_overrides):

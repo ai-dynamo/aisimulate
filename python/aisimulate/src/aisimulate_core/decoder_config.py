@@ -62,3 +62,19 @@ def nested_decoder_ambiguity(key: str, decoder: Mapping[str, Any]) -> str | None
         return f"ambiguous nested {key}"
     inner = "llm_config" if key == "text_config" else "text_config"
     return f"ambiguous nested {inner} in {key}" if held[inner] else None
+
+
+def decoder_config_problem(key: str, decoder: object) -> str | None:
+    """Name what keeps the value under a decoder key from describing one text decoder, or return None.
+
+    key is the result of decoder_config_key and decoder is the value under it. The value must be a nonempty object
+    that holds no decoder key. text_config is held whenever the key is present, so a null, empty or non-object value
+    reaches this function. llm_config is held only as a nonempty object, so it never fails the first check.
+
+    The text is the diagnosis only: "<key> must be a nonempty object describing one text decoder", or the text of
+    nested_decoder_ambiguity. The collector and the FPM profile check add their remedy after "; ". Config intake keeps
+    its own two checks, because it words the remedy of each differently. The function never raises.
+    """
+    if not isinstance(decoder, dict) or not decoder:
+        return f"{key} must be a nonempty object describing one text decoder"
+    return nested_decoder_ambiguity(key, decoder)

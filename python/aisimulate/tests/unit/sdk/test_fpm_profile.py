@@ -238,6 +238,86 @@ def test_profile_architecture_keeps_the_wrapper_for_a_decoder_without_architectu
     assert _normalize(_request(profile_dict))["estimator_config"]["fpm_interpolation"]["method"] == "direct"
 
 
+_NOT_A_DECODER = "text_config must be a nonempty object describing one text decoder"
+_DECODER_FIELDS = {"hidden_size": 16}
+
+
+@pytest.mark.parametrize(
+    "entry_point", [RustForwardPassPerfModel.normalize_config, RustForwardPassPerfModel.best_available]
+)
+@pytest.mark.parametrize(
+    "key,decoder,diagnosis",
+    [
+        ("text_config", None, _NOT_A_DECODER),
+        ("text_config", [], _NOT_A_DECODER),
+        ("text_config", "decoder", _NOT_A_DECODER),
+        ("text_config", {}, _NOT_A_DECODER),
+        ("text_config", {"llm_config": _DECODER_FIELDS}, "ambiguous nested llm_config in text_config"),
+        ("llm_config", {"text_config": _DECODER_FIELDS}, "ambiguous nested text_config in llm_config"),
+        ("text_config", {"text_config": _DECODER_FIELDS}, "ambiguous nested text_config"),
+        ("llm_config", {"llm_config": _DECODER_FIELDS}, "ambiguous nested llm_config"),
+    ],
+    ids=[
+        "null-text-config",
+        "list-text-config",
+        "string-text-config",
+        "empty-text-config",
+        "llm-config-in-text-config",
+        "text-config-in-llm-config",
+        "text-config-in-text-config",
+        "llm-config-in-llm-config",
+    ],
+)
+def test_profile_check_refuses_a_checkpoint_decoder_that_config_intake_refuses(
+    profile_dict, checkpoint_configs, monkeypatch, entry_point, key, decoder, diagnosis
+):
+    # The wrapper names the profile architecture and the decoder names none, so only the refusal can fail the check.
+    wrapper = "UnknownForConditionalGeneration"
+    profile_dict["architecture"] = wrapper
+    checkpoint_configs[profile_dict["model"]] = {"architectures": [wrapper], key: decoder}
+    monkeypatch.setattr(engine, "compile_engine", _fail_graph)
+    identity = f"{profile_dict['model']!r} at model_revision={profile_dict['model_revision']!r}"
+    refusal = f"FPM profile checkpoint config.json for {identity} has no single text decoder: {diagnosis}"
+    with pytest.raises(ValueError) as check:
+        fpm_profile._validate_checkpoint_architecture(load_fpm_profile(profile_dict))
+    assert str(check.value) == refusal
+    # The Rust bridge prefixes the error of the check with "invalid engine config: fpm_profile: ValueError: ".
+    with pytest.raises(ValueError) as error:
+        entry_point(_request(profile_dict, estimation_mode="auto", fallback_policy="allow"))
+    assert str(error.value).endswith(refusal)
+
+
+@pytest.mark.parametrize(
+    "checkpoint",
+    [
+        {},
+        {"text_config": _DECODER_FIELDS},
+        {"llm_config": _DECODER_FIELDS},
+        # llm_config counts as a decoder key only as a nonempty object, so these decoders nest no second decoder.
+        {"text_config": {**_DECODER_FIELDS, "llm_config": None}},
+        {"text_config": {**_DECODER_FIELDS, "llm_config": {}}},
+        {"text_config": {**_DECODER_FIELDS, "llm_config": []}},
+        {"text_config": {**_DECODER_FIELDS, "llm_config": "decoder"}},
+        {"llm_config": {**_DECODER_FIELDS, "llm_config": None}},
+    ],
+    ids=[
+        "flat",
+        "text-config",
+        "llm-config",
+        "null-llm-config-in-text-config",
+        "empty-llm-config-in-text-config",
+        "list-llm-config-in-text-config",
+        "string-llm-config-in-text-config",
+        "null-llm-config-in-llm-config",
+    ],
+)
+def test_profile_check_accepts_a_checkpoint_with_one_text_decoder_or_none(profile_dict, checkpoint_configs, checkpoint):
+    wrapper = "UnknownForConditionalGeneration"
+    profile_dict["architecture"] = wrapper
+    checkpoint_configs[profile_dict["model"]] = {"architectures": [wrapper], **checkpoint}
+    assert _normalize(_request(profile_dict))["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+
+
 @pytest.mark.parametrize("metadata", [None, "not JSON"])
 def test_local_checkpoint_missing_or_invalid_config_fails_without_download(
     profile_dict, monkeypatch, tmp_path, metadata
