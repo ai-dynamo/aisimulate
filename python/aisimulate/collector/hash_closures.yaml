@@ -265,6 +265,10 @@ collector.vllm.collect_gemm:
   - collector/vllm/utils.py
   - collector/cases/base_ops/gemm.yaml
   - __model_cases__
+collector.vllm.collect_gemm_npu:
+  - collector/cases/base_ops/gemm.yaml
+  - collector/vllm/utils.py
+  - __model_cases__
 collector.vllm.collect_gemm_xpu:
   - collector/cases/base_ops/gemm.yaml
   - collector/vllm/utils_xpu.py

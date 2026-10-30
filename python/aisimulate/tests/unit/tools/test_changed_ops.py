@@ -164,6 +164,16 @@ REGISTRY_XPU: list[OpEntry] = [
                 perf_filename=PerfFile.GEMM,
         ),
 ]
+
+REGISTRY_NPU: list[OpEntry] = [
+        OpEntry(
+                op="gemm",
+                module="collector.vllm.collect_gemm_npu",
+                get_func="get_gemm_test_cases",
+                run_func="run_gemm",
+                perf_filename=PerfFile.GEMM,
+        ),
+]
 """
 
 VLLM_MANIFEST_YAML = """schema_version: 2
@@ -181,6 +191,9 @@ VLLM_CLOSURES_YAML = """collector.vllm.collect_gemm:
 collector.vllm.collect_gemm_xpu:
     - collector/cases/base_ops/gemm.yaml
     - collector/vllm/utils_xpu.py
+collector.vllm.collect_gemm_npu:
+    - collector/cases/base_ops/gemm.yaml
+    - collector/vllm/utils.py
 """
 
 # A registry whose REGISTRY list contains a VersionRoute-versioned OpEntry
@@ -342,11 +355,34 @@ class TestCollectorCode:
             "collector/vllm/registry.py": VLLM_REGISTRY_WITH_XPU_PY,
             "collector/vllm/collect_gemm.py": "# collect_gemm v1\n",
             "collector/vllm/collect_gemm_xpu.py": "# collect_gemm_xpu v1\n",
+            "collector/vllm/collect_gemm_npu.py": "# collect_gemm_npu v1\n",
+            "collector/vllm/utils.py": "# utils v1\n",
             "collector/vllm/utils_xpu.py": "# utils_xpu v1\n",
         }
         _write_tree(repo, files)
         base_sha = _commit_all(repo, "base")
         files["collector/vllm/collect_gemm_xpu.py"] = "# collect_gemm_xpu v2\n"
+        _write_tree(repo, files)
+        head_sha = _commit_all(repo, "head")
+
+        changed, unchanged = mod.compute_changed_ops(repo, base_sha, head_sha)
+        assert _diff_for(changed, "vllm", "gemm").reasons == ("collector_code",)
+        assert [d for d in unchanged if d.framework == "vllm"] == []
+
+    def test_vllm_npu_registry_module_edit_is_changed_op_input(self, mod, repo):
+        files = _default_files() | {
+            "collector/framework_manifest.yaml": VLLM_MANIFEST_YAML,
+            "collector/hash_closures.yaml": VLLM_CLOSURES_YAML,
+            "collector/vllm/registry.py": VLLM_REGISTRY_WITH_XPU_PY,
+            "collector/vllm/collect_gemm.py": "# collect_gemm v1\n",
+            "collector/vllm/collect_gemm_xpu.py": "# collect_gemm_xpu v1\n",
+            "collector/vllm/collect_gemm_npu.py": "# collect_gemm_npu v1\n",
+            "collector/vllm/utils.py": "# utils v1\n",
+            "collector/vllm/utils_xpu.py": "# utils_xpu v1\n",
+        }
+        _write_tree(repo, files)
+        base_sha = _commit_all(repo, "base")
+        files["collector/vllm/collect_gemm_npu.py"] = "# collect_gemm_npu v2\n"
         _write_tree(repo, files)
         head_sha = _commit_all(repo, "head")
 
@@ -800,4 +836,4 @@ def test_real_repo_base_equals_head_is_all_unchanged(mod):
     assert changed == []
     assert len(unchanged) > 0
     frameworks = {d.framework for d in unchanged}
-    assert frameworks <= {"sglang", "trtllm", "vllm", "wideep_sglang", "wideep_trtllm"}
+    assert frameworks <= {"sglang", "trtllm", "vllm", "vllm_npu", "wideep_sglang", "wideep_trtllm"}
