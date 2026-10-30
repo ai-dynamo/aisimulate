@@ -16,9 +16,9 @@
   "stages": {
     "preparation": "complete",
     "cache_qualification": "passed_after_native_fix",
-    "silicon_collection": "released",
-    "replay": "pending",
-    "comparison": "pending"
+    "silicon_collection": "complete",
+    "replay": "complete_cache_parity_passed",
+    "comparison": "complete_measured_no_accuracy_threshold"
   },
   "cases": [
     {
@@ -29,7 +29,9 @@
       "repeat": 0,
       "measured_turns_per_lane": 8,
       "planned_requests": 8,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 8,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p4096-l1-cold-r1",
@@ -39,7 +41,9 @@
       "repeat": 1,
       "measured_turns_per_lane": 8,
       "planned_requests": 8,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 8,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p4096-l1-cold-r2",
@@ -49,7 +53,9 @@
       "repeat": 2,
       "measured_turns_per_lane": 8,
       "planned_requests": 8,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 8,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p4096-l1-warm-r0",
@@ -59,7 +65,9 @@
       "repeat": 0,
       "measured_turns_per_lane": 8,
       "planned_requests": 8,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 8,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p4096-l1-warm-r1",
@@ -69,7 +77,9 @@
       "repeat": 1,
       "measured_turns_per_lane": 8,
       "planned_requests": 8,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 8,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p4096-l1-warm-r2",
@@ -79,7 +89,9 @@
       "repeat": 2,
       "measured_turns_per_lane": 8,
       "planned_requests": 8,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 8,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p4096-l4-cold-r0",
@@ -89,7 +101,9 @@
       "repeat": 0,
       "measured_turns_per_lane": 8,
       "planned_requests": 32,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 32,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p4096-l4-cold-r1",
@@ -99,7 +113,9 @@
       "repeat": 1,
       "measured_turns_per_lane": 8,
       "planned_requests": 32,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 32,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p4096-l4-cold-r2",
@@ -109,7 +125,9 @@
       "repeat": 2,
       "measured_turns_per_lane": 8,
       "planned_requests": 32,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 32,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p4096-l4-warm-r0",
@@ -119,7 +137,9 @@
       "repeat": 0,
       "measured_turns_per_lane": 8,
       "planned_requests": 32,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 32,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p4096-l4-warm-r1",
@@ -129,7 +149,9 @@
       "repeat": 1,
       "measured_turns_per_lane": 8,
       "planned_requests": 32,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 32,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p4096-l4-warm-r2",
@@ -139,7 +161,9 @@
       "repeat": 2,
       "measured_turns_per_lane": 8,
       "planned_requests": 32,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 32,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p4096-l16-cold-r0",
@@ -149,7 +173,9 @@
       "repeat": 0,
       "measured_turns_per_lane": 8,
       "planned_requests": 128,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 128,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p4096-l16-cold-r1",
@@ -159,7 +185,9 @@
       "repeat": 1,
       "measured_turns_per_lane": 8,
       "planned_requests": 128,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 128,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p4096-l16-cold-r2",
@@ -169,7 +197,9 @@
       "repeat": 2,
       "measured_turns_per_lane": 8,
       "planned_requests": 128,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 128,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p4096-l16-warm-r0",
@@ -179,7 +209,9 @@
       "repeat": 0,
       "measured_turns_per_lane": 8,
       "planned_requests": 128,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 128,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p4096-l16-warm-r1",
@@ -189,7 +221,9 @@
       "repeat": 1,
       "measured_turns_per_lane": 8,
       "planned_requests": 128,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 128,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p4096-l16-warm-r2",
@@ -199,7 +233,9 @@
       "repeat": 2,
       "measured_turns_per_lane": 8,
       "planned_requests": 128,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 128,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p32768-l1-cold-r0",
@@ -209,7 +245,9 @@
       "repeat": 0,
       "measured_turns_per_lane": 8,
       "planned_requests": 8,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 8,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p32768-l1-cold-r1",
@@ -219,7 +257,9 @@
       "repeat": 1,
       "measured_turns_per_lane": 8,
       "planned_requests": 8,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 8,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p32768-l1-cold-r2",
@@ -229,7 +269,9 @@
       "repeat": 2,
       "measured_turns_per_lane": 8,
       "planned_requests": 8,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 8,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p32768-l1-warm-r0",
@@ -239,7 +281,9 @@
       "repeat": 0,
       "measured_turns_per_lane": 8,
       "planned_requests": 8,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 8,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p32768-l1-warm-r1",
@@ -249,7 +293,9 @@
       "repeat": 1,
       "measured_turns_per_lane": 8,
       "planned_requests": 8,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 8,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p32768-l1-warm-r2",
@@ -259,7 +305,9 @@
       "repeat": 2,
       "measured_turns_per_lane": 8,
       "planned_requests": 8,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 8,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p32768-l4-cold-r0",
@@ -269,7 +317,9 @@
       "repeat": 0,
       "measured_turns_per_lane": 8,
       "planned_requests": 32,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 32,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p32768-l4-cold-r1",
@@ -279,7 +329,9 @@
       "repeat": 1,
       "measured_turns_per_lane": 8,
       "planned_requests": 32,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 32,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p32768-l4-cold-r2",
@@ -289,7 +341,9 @@
       "repeat": 2,
       "measured_turns_per_lane": 8,
       "planned_requests": 32,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 32,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p32768-l4-warm-r0",
@@ -299,7 +353,9 @@
       "repeat": 0,
       "measured_turns_per_lane": 8,
       "planned_requests": 32,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 32,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p32768-l4-warm-r1",
@@ -309,7 +365,9 @@
       "repeat": 1,
       "measured_turns_per_lane": 8,
       "planned_requests": 32,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 32,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p32768-l4-warm-r2",
@@ -319,7 +377,9 @@
       "repeat": 2,
       "measured_turns_per_lane": 8,
       "planned_requests": 32,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 32,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p32768-l16-cold-r0",
@@ -329,7 +389,9 @@
       "repeat": 0,
       "measured_turns_per_lane": 8,
       "planned_requests": 128,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 128,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p32768-l16-cold-r1",
@@ -339,7 +401,9 @@
       "repeat": 1,
       "measured_turns_per_lane": 8,
       "planned_requests": 128,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 128,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p32768-l16-cold-r2",
@@ -349,7 +413,9 @@
       "repeat": 2,
       "measured_turns_per_lane": 8,
       "planned_requests": 128,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 128,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p32768-l16-warm-r0",
@@ -359,7 +425,9 @@
       "repeat": 0,
       "measured_turns_per_lane": 8,
       "planned_requests": 128,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 128,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p32768-l16-warm-r1",
@@ -369,7 +437,9 @@
       "repeat": 1,
       "measured_turns_per_lane": 8,
       "planned_requests": 128,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 128,
+      "cache_parity": "passed"
     },
     {
       "case_id": "p32768-l16-warm-r2",
@@ -379,7 +449,9 @@
       "repeat": 2,
       "measured_turns_per_lane": 8,
       "planned_requests": 128,
-      "status": "planned"
+      "status": "complete",
+      "observed_requests": 128,
+      "cache_parity": "passed"
     }
   ],
   "execution": {
@@ -399,10 +471,14 @@
       },
       {
         "job_id": 946660,
-        "state": "RUNNING",
+        "state": "COMPLETED",
         "reason": null,
-        "stage": "silicon_collection"
+        "stage": "collection_replay_comparison_complete",
+        "exit_code": "0:0",
+        "collected_measured_requests": 2016,
+        "elapsed": "00:43:23"
       }
     ]
-  }
+  },
+  "predictor_commit": "6618b91f7f46969b51cbb65ecb3ada07f264fbd8"
 }

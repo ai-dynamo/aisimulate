@@ -1,7 +1,86 @@
 # Qwen3.5 agentic E2E alignment
 
 Controlled, self-collected silicon evidence. These are not official InferenceX
-points. Performance scores are pending until collection and replay finish.
+points. Collection, exact-token replay and comparison are complete.
+
+## Completed results
+
+- **12/12 operating points; 36/36 repeated runs; 2,016/2,016 measured requests.**
+  No failed, missing or unattempted cases. All predictions completed.
+- **2,142/2,142 cache checks match:** 2,016 measured requests plus 126 primers.
+  Another 252 kernel-warmup requests are excluded from the measured cohort.
+- A real full-block hybrid-state checkpoint bug was found and fixed in
+  `6618b91f7f46969b51cbb65ecb3ada07f264fbd8`. That commit is the predictor used
+  for every result below. The original baseline remains recorded separately.
+- Slurm `946660`: **COMPLETED, exit 0:0**, node `pool0-0213`, eight B300s.
+  The allocation lasted 43m23s; the measured campaign including preparation
+  between cases lasted 14m49s (2026-10-30 03:37:03–03:51:52 UTC).
+
+Functional parity is established for this matrix. Timing is still inaccurate:
+request-level MAPE over all 2,016 pairs is **4,041.1% TTFT, 1,019.9% TPOT,
+1,490.4% request E2E**. No numerical acceptance threshold or timing correction
+was applied. Native capability metadata still marks agentic qualification as
+`functional_only`; these op-level timing predictions are diagnostic, not a
+claim of qualified agentic timing accuracy.
+
+Each table entry is **silicon / AISim**. Latencies are request-weighted means
+across three repeats. Throughput is the mean of the three finite cohorts,
+including their 100ms between-turn delays and excluding preparation.
+
+| Initial tokens | Lanes | Cache | Requests | TTFT (ms) | TPOT (ms/token) | Request E2E (s) | Output tokens/s |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 4,096 | 1 | cold | 24 | 229.8 / 3040.9 | 6.46 / 4.54 | 1.878 / 4.199 | 130.2 / 59.7 |
+| 4,096 | 1 | warm | 24 | 229.8 / 2759.2 | 6.45 / 4.54 | 1.874 / 3.917 | 130.5 / 63.9 |
+| 4,096 | 4 | cold | 96 | 338.8 / 3839.4 | 7.84 / 6.97 | 2.337 / 5.617 | 422.1 / 179.5 |
+| 4,096 | 4 | warm | 96 | 332.5 / 2829.4 | 7.69 / 5.47 | 2.292 / 4.225 | 430.1 / 237.5 |
+| 4,096 | 16 | cold | 384 | 463.3 / 5404.5 | 10.26 / 14.07 | 3.081 / 8.992 | 1291.9 / 451.1 |
+| 4,096 | 16 | warm | 384 | 414.3 / 2900.1 | 9.96 / 13.58 | 2.955 / 6.363 | 1345.3 / 635.0 |
+| 32,768 | 1 | cold | 24 | 319.1 / 44543.6 | 6.64 / 4.65 | 2.013 / 45.730 | 121.9 / 5.6 |
+| 32,768 | 1 | warm | 24 | 257.5 / 15731.6 | 6.62 / 4.65 | 1.945 / 16.918 | 125.9 / 15.1 |
+| 32,768 | 4 | cold | 96 | 531.5 / 97770.3 | 8.21 / 165.47 | 2.625 / 139.966 | 377.3 / 7.3 |
+| 32,768 | 4 | warm | 96 | 389.3 / 16001.9 | 7.89 / 5.83 | 2.402 / 17.489 | 411.1 / 58.3 |
+| 32,768 | 16 | cold | 384 | 940.2 / 258142.4 | 17.50 / 1071.48 | 5.403 / 531.370 | 741.2 / 7.7 |
+| 32,768 | 16 | warm | 384 | 637.6 / 15951.1 | 10.93 / 41.29 | 3.425 / 26.480 | 1163.9 / 154.2 |
+
+The known FlashInfer source-selection problem is the first timing issue to fix:
+its context table favors decode-labelled measurements with only ISL=1 coverage
+for this shape. Multi-token prefill must use the runtime-appropriate prefill
+source; one-token queries, including APC tails, still use decode. Preserve the
+backend/version identity and rerun these unchanged traces after correcting the
+selection. A global prefill-first reorder would miss that distinction.
+
+At 32K/16-lane cold, the native median token interval is 9.83ms but the maximum
+is 101.22s. This is consistent with large scheduling stalls; attributing the
+complete E2E amplification to particular mixed steps requires step/op evidence.
+Some timing donors are vLLM 0.30.0, and exact allreduce dispatch parity remains
+unverified. See the provenance and limitations in the summary.
+
+Independent raw-data checks verified all literal token chains, token counts,
+streaming reconstruction, cache resets, preparation barriers and zero measured
+preemptions. Realized tool delays had median 100.61ms and p99 101.88ms. Initial
+HTTP dispatch spread reached 28.17ms; native lanes release simultaneously.
+Cold/warm starting prompts match, but 930/1,008 paired turns differ in realized
+tokens. This is not an identical-trajectory cache ablation or a real-AgentX
+semantic workload.
+
+Artifacts:
+
+- [Machine-readable summary](results-summary.json),
+  [12-point metric table](operating-points.csv),
+  [artifact paths and SHA-256 manifest](artifact-manifest.json).
+- [Observed versus predicted chart](alignment-results.png).
+- Raw `campaign/`, `replay-timing/`, `comparison.json`, `paired-requests.csv`,
+  `raw-integrity-audit.json`, runtime/cache receipts and logs are outside Git.
+  The exact local and cluster locations are in `results-summary.json`.
+- Cluster results:
+  `/lustre/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/simonec/results/qwen35-agentic-alignment-20261029/gpu-946660`.
+  Paired analysis is saved beneath `analysis-6618b91/` there.
+
+Validation of the native repair: 61 state-cache tests and 220 vLLM scheduler
+tests passed. The rebuilt Python runner passed all 24 campaign tests and the
+separate boundary/chain diagnostics. Cache pressure, eviction/preemption,
+MTP, branch/join, offload, P/D, multi-node and FPM-step accuracy remain outside
+this campaign.
 
 ## Plan and gates
 
@@ -142,15 +221,15 @@ replaces it with the measured cache geometry. Online timing correction is off.
 
 CPU preparation job `946518` verified the image and all 94 model shards.
 GPU attempt `946625` failed before model loading because the image has `python3`
-without a `python` alias; the launcher was corrected. Job `946660` runs on
+without a `python` alias; the launcher was corrected. Job `946660` completed on
 `pool0-0213` and resolved block size 528, 18,955 usable blocks, 15,360 bytes per
 token and 24,330,240 state bytes per request per rank. All eight ranks agree.
 
 `smoke-baseline.json` preserves the pre-fix functional failure: repeated
 1,056-token requests reuse `0, 528` measured tokens in vLLM but `528, 528` in the
 baseline AISim engine. The 527-, 528- and 529-token controls pass. The native
-repair must stop inventing an intermediate state during cold aligned prefill
-and create it only when a later shared-prefix request actually computes it.
+repair stops inventing an intermediate state during cold aligned prefill
+and creates it only when a later shared-prefix request actually computes it.
 After the native repair, `smoke-fixed.json` records all four boundary cases and
 four diagnostic chains passing: 46 cache comparisons, including 40 measured
 requests and six primers. The full campaign is released only after this gate.
@@ -164,8 +243,7 @@ zero, so each run is replayed independently from its actual tokens. Differences
 between cold and warm timings do not isolate cache effects alone.
 
 The server selected the vLLM V2 model runner, `FULL_AND_PIECEWISE` CUDA graphs,
-FlashInfer
-TRT-LLM attention, FlashInfer GDN prefill and BF16 TRT-LLM MoE. A long temporary
+FlashInfer TRT-LLM attention, FlashInfer GDN prefill and BF16 TRT-LLM MoE. A long temporary
 socket path caused FlashInfer allreduce workspace initialization to fall back
 to its TRT-LLM backend; server logs retain the effective path. The timing-data
 provenance records a separate FlashInfer prefill-table selection limitation.
