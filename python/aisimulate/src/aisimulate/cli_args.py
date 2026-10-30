@@ -62,6 +62,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="capture all-phase request, scheduler/cache/traffic sample, and lifecycle JSONL artifacts",
     )
     subparsers.choices["predict"].add_argument(
+        "--export-html",
+        action="store_true",
+        help="write a standalone simulation dashboard to report.html (enables telemetry capture)",
+    )
+    subparsers.choices["predict"].add_argument(
         "--telemetry-sample-interval-ms",
         type=_positive_finite_float,
         default=1000.0,

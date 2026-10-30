@@ -227,6 +227,10 @@ defaults to 1,000 simulated milliseconds and can be set with
 `--telemetry-sample-interval-ms`. See the
 [native telemetry contract](../../getting-started/understand-results.md#replay-telemetry).
 
+For an offline HTML dashboard, add `--export-html` instead. It enables telemetry
+automatically and writes `report.html` alongside these files. Open it in a browser
+to inspect profiling, warmup, caches, throughput, and the scrolling request timeline.
+
 Check `agentic_phases` for preparation success and barrier state, and
 `agentic_play_outcomes` for completed or incomplete plays. Check `agentic_profile`
 for the resolved duration and grace settings, admission cutoff, recycled play
