@@ -214,6 +214,15 @@ def test_profile_architecture_matches_collector_text_config_view(profile_dict, c
     assert _normalize(_request(profile_dict))["estimator_config"]["fpm_interpolation"]["method"] == "direct"
 
 
+@pytest.mark.parametrize("wrapper", ["NemotronH_Omni_Reasoning_V3", "InternVLChatModel"])
+def test_profile_architecture_matches_collector_llm_config_view(profile_dict, checkpoint_configs, wrapper):
+    checkpoint_configs[profile_dict["model"]] = {
+        "architectures": [wrapper],
+        "llm_config": {"architectures": [profile_dict["architecture"]]},
+    }
+    assert _normalize(_request(profile_dict))["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+
+
 @pytest.mark.parametrize("metadata", [None, "not JSON"])
 def test_local_checkpoint_missing_or_invalid_config_fails_without_download(
     profile_dict, monkeypatch, tmp_path, metadata
