@@ -407,9 +407,11 @@ def test_vllm_sm90_repository_moe_getter_excludes_unconsumable_dsv4_cases(monkey
     # assumed.
     # +33 GLM-5.3-Flash fp8_block cases (288 experts/top-8/4096/2048, TP 1-32
     # or EP 2-256; its nvfp4 row needs SM100 and is absent here).
-    # +39 Nemotron 3.5 Lightning vLLM w4a16_nvfp4 groups (Marlin W4A16 experts, SM80+).
-    assert len(cases) == 2262
-    assert sum(len(case[1]) for case in cases) == 61074  # +1053 = 39 Lightning w4a16_nvfp4 groups x 27 token counts
+    # +39 Nemotron 3.5 Lightning and +42 Qwen3.6-35B-A3B vLLM w4a16_nvfp4 groups (Marlin W4A16 experts, SM80+).
+    assert len(cases) == 2304
+    assert (
+        sum(len(case[1]) for case in cases) == 62208
+    )  # +1053 Lightning and +1134 Qwen3.6 w4a16_nvfp4 rows (39 and 42 groups x 27 token counts)
     # MiniMax-M3's declared MoE geometry must be present as its own rows —
     # a generator defect could drop it while unrelated cases preserve the
     # aggregate counts above. (case[:8] = moe_type, num_tokens, hidden,

@@ -313,7 +313,16 @@ def test_qwen36_w4a16_nvfp4_moe_is_transferred_but_explicitly_deferred(monkeypat
     transferred_shapes = get_common_moe_test_cases(backend=backend)
     assert transferred_shapes
     assert {case.model_name for case in transferred_shapes} == {model_path}
-    # Qwen3.6's W4A16_NVFP4 experts stay deferred; the vLLM w4a16_nvfp4 mode is Lightning-only.
+    if backend == "vllm":
+        # vLLM collects Qwen3.6's W4A16_NVFP4 experts as its w4a16_nvfp4 mode, and nothing else.
+        from collector.case_generator import get_moe_quantization_modes
+
+        modes = get_moe_quantization_modes(
+            backend, sm_version=100, runtime_features={"per_block_fp8": True, "nvfp4": True, "mxfp4": True}
+        )
+        assert [mode for mode in modes if moe_model_allows_quantization(backend, model_path, mode)] == ["w4a16_nvfp4"]
+        return
+    # SGLang and TRT-LLM declare no w4a16_nvfp4 MoE mode, so their collection stays deferred.
     assert not moe_model_allows_quantization(backend, model_path, "w4a16_nvfp4")
 
     assert _load_moe_getter(module_path)() == []

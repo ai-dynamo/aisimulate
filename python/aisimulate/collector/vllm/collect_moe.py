@@ -260,17 +260,20 @@ def _uses_modelopt_nvfp4_checkpoint(model_name: str) -> bool:
     )
 
 
-def _modelopt_mixed_expert_prefix(model_name: str, expert_algo: str = "NVFP4") -> str | None:
+def _modelopt_mixed_expert_prefix(
+    model_name: str, expert_algo: str = "NVFP4", model_types: tuple[str, ...] | None = ("nemotron_h",)
+) -> str | None:
     """Return a routed-expert prefix when vLLM loads this checkpoint as modelopt_mixed.
 
     ``expert_algo`` is the routed-expert algorithm the collected mode measures;
-    every listed routed expert must declare it.
+    every listed routed expert must declare it. ``model_types`` limits the lookup to
+    those model types (``None``: any model with a mixed-precision checkpoint).
 
     ModelOptMixedPrecisionConfig resolves each layer's algorithm from
     ``quantized_layers`` by prefix (modelopt.py:1569-1597,1751-1795 @v0.31.0), so
     the collector layer needs a real expert prefix rather than a placeholder.
     """
-    if _load_model_moe_config(model_name).get("model_type") != "nemotron_h":
+    if model_types is not None and _load_model_moe_config(model_name).get("model_type") not in model_types:
         return None
     quant = _load_checkpoint_quantization_config(model_name)
     section = quant.get("quantization", quant)
@@ -281,17 +284,21 @@ def _modelopt_mixed_expert_prefix(model_name: str, expert_algo: str = "NVFP4") -
         return None
     layers = section.get("quantized_layers")
     if not isinstance(layers, dict) or not layers:
-        raise ValueError(f"Nemotron-H ModelOpt mixed collection for {model_name!r} requires quantized_layers metadata")
+        raise ValueError(f"ModelOpt mixed collection for {model_name!r} requires quantized_layers metadata")
+    # Nemotron-H lists every expert (<layer>.mixer.experts.E.up_proj); Qwen3.6 lists the fused
+    # experts block itself (<layer>.mlp.experts). Either names the FusedMoE prefix serving builds.
     experts = [
-        (name.split(".experts.")[0] + ".experts", data.get("quant_algo"))
+        (name if name.endswith(".experts") else name.split(".experts.")[0] + ".experts", data.get("quant_algo"))
         for name, data in layers.items()
-        if ".experts." in name
+        if ".experts." in name or name.endswith(".experts")
     ]
     if not experts or any(str(algo).upper() != expert_algo for _, algo in experts):
         raise ValueError(f"The MoE collector requires uniformly {expert_algo} routed experts for {model_name!r}")
     # Serving builds the routed-expert prefix as "<layer>.mixer.experts"
     # (models/nemotron_h.py:242 under the ".mixer" prefix at :357 @v0.31.0) and
     # renames "backbone" to "model" in both the weights and quantized_layers
+    # (Qwen3.5/3.6: "model.language_model." to "model.", models/qwen3_5.py:321-322 @v0.30.0,
+    # experts prefix f"{prefix}.experts" at models/qwen3_next.py:217-228)
     # (nemotron_h.py:734-735; ModelOptMixedPrecisionConfig.apply_vllm_mapper,
     # modelopt.py:1807-1810), then matches "<prefix>." keys (modelopt.py:1692-1697).
     # The collector never applies that mapper, so the checkpoint "backbone" names
@@ -750,7 +757,7 @@ def run_moe_torch(
         # Only a ModelOpt mixed checkpoint declares this lane; anything else raises.
         from vllm.model_executor.layers.quantization.modelopt import ModelOptMixedPrecisionConfig
 
-        moe_prefix = _modelopt_mixed_expert_prefix(model_name, "W4A16_NVFP4")
+        moe_prefix = _modelopt_mixed_expert_prefix(model_name, "W4A16_NVFP4", model_types=None)
         if moe_prefix is None:
             raise ValueError(f"vLLM w4a16_nvfp4 MoE collection requires a ModelOpt mixed checkpoint: {model_name!r}")
         quant_config = ModelOptMixedPrecisionConfig.from_config(_load_checkpoint_quantization_config(model_name))

@@ -266,6 +266,7 @@ common_case_values:
       min_sm: 80
       allowed_model_paths:
       - nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4
+      - nvidia/Qwen3.6-35B-A3B-NVFP4
     - name: w4a16_mxfp4
       requires_runtime_feature: mxfp4
       requires_model_quantization_config: true
