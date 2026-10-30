@@ -1163,6 +1163,11 @@ def _candidate_prediction(
     except ValueError as exc:
         raise InfeasibleCandidate(f"generated prediction config is infeasible: {exc}") from exc
     public = prediction.model_dump(mode="python", exclude_none=True)
+    # Recommendation has no decoder_replay setting. Leaving it unset lets
+    # predict take each snapshot role's saved value; a written default would
+    # read back as an explicit false.
+    if "decoder_replay" not in prediction.engine.model_fields_set:
+        public["engine"].pop("decoder_replay", None)
     public.update(concrete_adapters)
     return public
 

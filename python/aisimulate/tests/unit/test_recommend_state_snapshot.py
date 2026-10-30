@@ -458,6 +458,9 @@ def test_exported_disaggregated_predictions_follow_a_moved_packed_snapshot(snaps
 def test_predictions_take_decoder_replay_from_the_snapshot_unless_the_engine_sets_it(snapshots, monkeypatch):
     from aisimulate.sweeper import state_snapshot
 
+    [candidate] = _throughput_run(_request(snapshots["referenced"])).selected_candidates
+    exported = candidate.prediction_config
+    assert "decoder_replay" not in exported["engine"]
     saved = state_snapshot.saved_snapshot_config
     # Only a DeepSeek-V4.1 SGLang model can save decoder replay; pretend this one did.
     monkeypatch.setattr(
@@ -475,6 +478,9 @@ def test_predictions_take_decoder_replay_from_the_snapshot_unless_the_engine_set
     assert compiled() is True
     # An explicit value is kept, so restoration rejects a conflicting one.
     assert compiled(decoder_replay=False) is False
+    # A recommendation's exported prediction leaves the value to the snapshot.
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(exported))
+    assert spec.backend_deployment.agg_engine_args["timing_model"]["config"]["decoder_replay"] is True
 
 
 def test_capacity_lowering_checks_a_snapshot_configuration_without_restoring_it(snapshots):
