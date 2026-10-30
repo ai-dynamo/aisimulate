@@ -776,7 +776,10 @@ class RustForwardPassPerfModel:
 
         Measurement weights explain raw lookups. ``ranks`` records mixed-pass
         subtraction and ``max_rank`` identifies the native rank maximum, before
-        ``correction_factor``. Other estimators have no direct lookup evidence.
+        ``correction_factor``. Operation graphs record each rank's name-folded
+        ``operations`` (the ``static_phase_diagnostics`` fields), which sum to
+        the rank's uncorrected latency. Learned and regression estimators have
+        no rank evidence.
 
         With ``draft_length``, return the estimated SD ``latency_ms``, the
         ``draft_length`` and ``scaling_factor``, and the original detailed

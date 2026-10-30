@@ -120,6 +120,59 @@ def test_eagle_public_cost_matches_existing_sdk_engine(database_mode):
         model.close()
 
 
+def _mtp_model(depth):
+    # DeepSeek-V3 carries a native MTP layer; pin the audited SGLang version.
+    return RustForwardPassPerfModel.best_available(
+        ForwardPassPerfModelConfig(
+            model="deepseek-ai/DeepSeek-V3",
+            system="h200_sxm",
+            backend="sglang",
+            backend_version="0.5.14",
+            worker_type="aggregated",
+            tp=8,
+            moe_tp_size=1,
+            moe_ep_size=8,
+            estimation_mode="op_level",
+            nextn=depth,
+        )
+    )
+
+
+def _packed_decode(batch, width, s):
+    return [{"scheduled_requests": {"num_decode_requests": batch * width, "sum_decode_kv_tokens": batch * width * s}}]
+
+
+@pytest.mark.parametrize("depth", [0, 1])
+def test_op_level_detailed_ranks_report_operation_evidence(depth):
+    model = _mtp_model(depth)
+    width = depth + 1
+    [decode] = _packed_decode(4, width, 2048)
+    prefill = {
+        "scheduled_requests": {"num_prefill_requests": 2, "sum_prefill_tokens": 2048, "sum_prefill_kv_tokens": 512}
+    }
+    mixed = {"scheduled_requests": prefill["scheduled_requests"] | decode["scheduled_requests"]}
+    ranks = [prefill, decode, mixed]
+    try:
+        detailed = model.estimate_forward_pass_detailed(ranks)
+        assert detailed["latency_ms"] == model.estimate_forward_pass_time_ms(ranks)
+        assert [rank["rank"] for rank in detailed["ranks"]] == [0, 1, 2]
+        for rank, metrics in zip(detailed["ranks"], ranks, strict=True):
+            assert rank["latency_ms"] == model.estimate_forward_pass_time_ms([metrics])
+            assert sum(op["latency_ms"] for op in rank["operations"]) == pytest.approx(rank["latency_ms"], rel=1e-12)
+            assert all(
+                {"name", "latency_ms", "energy_wms", "source", "details"} <= set(op) for op in rank["operations"]
+            )
+        # Oracle: the static phase diagnostics at each pure rank's shape.
+        assert detailed["ranks"][0]["operations"] == model.static_phase_diagnostics(
+            batch_size=2, context_length=1280, prefix=256, prefill=True
+        )
+        assert detailed["ranks"][1]["operations"] == model.static_phase_diagnostics(
+            batch_size=4, context_length=2047, prefill=False
+        )
+    finally:
+        model.close()
+
+
 def test_mtp_static_cost_is_not_limited_by_replay_depth():
     config = _config(database_mode="SOL", speculation={"kind": "mtp", "params": {"depth": 7}})
     model = RustForwardPassPerfModel.best_available(config)

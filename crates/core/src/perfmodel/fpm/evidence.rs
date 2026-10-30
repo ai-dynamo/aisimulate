@@ -54,11 +54,19 @@ pub struct FpmRankEstimate {
     /// For a mixed pass, max(decode_ms - decode_baseline_ms, 0).
     pub marginal_decode_ms: Option<f64>,
     pub queries: Vec<DirectFpmQueryEvidence>,
+    /// Name-folded operations of an operation-graph rank (op-level and stage
+    /// graphs), in first-encounter order with the static phase diagnostics'
+    /// details. Their latencies sum to `latency_ms`, before correction. A
+    /// mixed rank folds every pass of its composition. Empty for whole-model
+    /// FPM, whose evidence is `queries`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operations: Vec<crate::perfmodel::engine::diagnostics::StaticOperationDiagnostics>,
 }
 
 /// Additive detailed result from the canonical returned model. Native timing
-/// reduces ranks by maximum, then applies `correction_factor`. Rank lookup
-/// evidence is supplied for whole-model FPM; other estimators leave it empty.
+/// reduces ranks by maximum, then applies `correction_factor`. Native
+/// estimators record every rank: whole-model FPM with its direct lookups,
+/// operation graphs with their operations. Other estimators leave it empty.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ForwardPassEstimate {
     /// Typed support miss from temporary mixed composition. Invalid data still

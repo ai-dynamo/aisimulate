@@ -2415,6 +2415,35 @@ fn native_model_starts_ready_with_aic_source() {
 }
 
 #[test]
+fn canonical_detailed_estimate_reports_operation_graph_ranks() {
+    let model = native_model(ForwardPassPerfOptions::default());
+    let metrics = [decode_fpm(4, 4 * 513, 0.0), mixed_fpm(256, 513, 0.0)];
+    let detailed = model.estimate_forward_pass_detailed(&metrics).unwrap();
+    assert_eq!(
+        detailed.latency_ms,
+        model.estimate_forward_pass_time_ms(&metrics).unwrap()
+    );
+    assert_eq!(detailed.ranks.len(), 2);
+    for rank in &detailed.ranks {
+        let sum: f64 = rank.operations.iter().map(|op| op.latency_ms).sum();
+        assert!(!rank.operations.is_empty());
+        assert!((sum - rank.latency_ms).abs() <= 1e-12 * rank.latency_ms);
+    }
+    // Oracle: the canonical static diagnostics at the decode rank's shape.
+    assert_eq!(
+        detailed.ranks[0].operations,
+        model.static_phase_diagnostics(4, 512, 0, false).unwrap()
+    );
+    // The field is additive: evidence serialized before it existed still
+    // deserializes, and an empty list is omitted.
+    let mut legacy = serde_json::to_value(&detailed.ranks[0]).unwrap();
+    legacy.as_object_mut().unwrap().remove("operations");
+    let restored: crate::FpmRankEstimate = serde_json::from_value(legacy.clone()).unwrap();
+    assert!(restored.operations.is_empty());
+    assert_eq!(serde_json::to_value(&restored).unwrap(), legacy);
+}
+
+#[test]
 fn canonical_static_phase_diagnostics_are_available_only_for_native_models() {
     let model = native_model(ForwardPassPerfOptions::default());
     let engine = model.native_engine().unwrap();

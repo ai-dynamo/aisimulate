@@ -281,7 +281,10 @@ levels, their exported Python reachability view, and tests described in [Extendi
 ## Diagnostics and limits
 
 `static_phase_diagnostics` exposes operation timing, sources, measurement
-substitutions, and available SOL detail before online correction. Missing SOL
+substitutions, and available SOL detail before online correction. The canonical
+`estimate_forward_pass_detailed(metrics_by_rank)` reports the same evidence for
+each rank of a per-iteration query, including mixed ranks; see
+[per-iteration queries](../configuration.md#per-iteration-queries). Missing SOL
 breakdowns carry explicit reasons. The [FPE matrix](../support-matrix.md)
 tests strict native coverage; it does not certify the HYBRID ladder or silicon
 accuracy. See [DSA CP](context-parallel-dsa.md), [DeepEP-LL](deepep-ll.md),
