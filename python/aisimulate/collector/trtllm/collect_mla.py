@@ -229,9 +229,9 @@ def run_mla(
     if get_sm_version() < 90:
         phase = "context" if is_context_phase else "generation"
         raise ValueError(
-            f"TRT-LLM MLA has no pre-Hopper FMHA kernel; DeepSeek MLA {phase} "
+            f"FIXME(kernel-limit): TRT-LLM MLA has no pre-Hopper FMHA kernel; DeepSeek MLA {phase} "
             f"is unsupported on SM{get_sm_version()} (attentionOp.cpp:"
-            f"{'3097' if is_context_phase else '3091'} assert @1.3.0rc20)"
+            f"{'3240' if is_context_phase else '3234'} assert @1.3.0rc29)"
         )
     scenario = Scenario()
     q_lora_rank = scenario.q_lora_rank

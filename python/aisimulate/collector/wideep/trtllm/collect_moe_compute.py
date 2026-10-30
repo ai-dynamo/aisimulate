@@ -897,8 +897,8 @@ def run_moe_ep(
     # Re-verify on the next framework version bump.
     if moe_type == "fp8_block" and get_sm_version() != 90:
         raise ValueError(
-            f"WideEP fp8_block grouped GEMM is DeepGEMM-backed and SM90-only in "
-            f"trtllm 1.3.0rc20 (deep_gemm/compiler.cuh:330); got SM{get_sm_version()}"
+            f"FIXME(kernel-limit): WideEP fp8_block grouped GEMM is DeepGEMM-backed and SM90-only "
+            f"(deep_gemm/compiler.cuh:330 @1.3.0rc20, unchanged @1.3.0rc29); got SM{get_sm_version()}"
         )
 
     _install_slot_lora_pad_patch()

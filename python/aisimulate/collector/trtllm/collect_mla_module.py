@@ -888,6 +888,13 @@ def run_mla_module(
     # (Gemma4 dense-attention precedent in collect_attn.py) instead of
     # paying construction + a CUDA-level abort per case. Re-verify against
     # deepgemm's supported-arch set on the next framework version bump.
+    # FIXME(re-verify): NOT re-verified at 1.3.0rc29, and the source no longer
+    # supports it. rc29 pins DeepGEMM 8b1392b (3rdparty/fetch_content.json),
+    # whose attention.hpp dispatches SM120 for both indexer phases
+    # (sm120_mqa_logits :205-212, sm120_paged_mqa_logits :414-418; heads
+    # 16/32/64). Until an SM120 rc29 run decides it, the raise stays and
+    # keeps its unprefixed message, so the failure log reports it as
+    # unexpected instead of an accepted kernel limit.
     if attn_type == "dsa" and get_sm_version() >= 120:
         raise ValueError(
             f"DeepGEMM sparse-attention indexer has no RTX Blackwell kernel; DSA "
@@ -905,7 +912,7 @@ def run_mla_module(
     # in the worker (facts/mla_bypass_*.log). The wall is unchanged across rc20 -> rc29: keep failing closed.
     if attn_type == "mla" and get_sm_version() < 90:
         raise ValueError(
-            f"TRT-LLM MLA has no pre-Hopper FMHA kernel; MLA modules are "
+            f"FIXME(kernel-limit): TRT-LLM MLA has no pre-Hopper FMHA kernel; MLA modules are "
             f"unsupported on SM{get_sm_version()} "
             f"(attentionOp.cpp:3234 assert @1.3.0rc29, :3091/:3097 @1.3.0rc20)"
         )

@@ -169,15 +169,18 @@ def run_attention_torch(
         )
     if is_flashinfer and use_fp8_context_fmha:
         # Mirror of the sglang collector's compute-dtype labeling rule:
-        # TRT-LLM 1.3.0rc20 FlashInferAttention has no FP8 FMHA compute path,
+        # TRT-LLM FlashInferAttention has no FP8 FMHA compute path,
         # including under the serving-pinned trtllm-gen sub-backend set below.
         # trtllm-gen's only fp8 handling is the fp8 KV cache: it casts Q to the
         # KV dtype to reuse the QkvE4m3OBfloat16 cubins but the FMHA output is
-        # still BF16 (attention_backend/flashinfer.py:1789-1791@1.3.0rc20). The
+        # still BF16 (attention/backends/flashinfer.py:2740-2746@1.3.0rc29; :1789-1791@1.3.0rc20). The
         # collector's fp8-context-FMHA case (quant_algo=FP8 + out_scale) is a
         # TRTLLM-backend contract flashinfer does not consume, so an fp8-labeled
         # flashinfer row would record BF16 compute under an fp8 label. Fail closed.
-        raise ValueError("TRT-LLM 1.3.0rc20 FlashInferAttention has no FP8 FMHA compute path")
+        raise ValueError(
+            "FIXME(kernel-limit): TRT-LLM FlashInferAttention has no FP8 FMHA compute path "
+            "(attention/backends/flashinfer.py:2740-2746 @1.3.0rc29)"
+        )
     # FIXME(kernel-limit): trtllm-gen has no FMHA for head_dim 192 on SM100/103 — context
     # ("Missing TRTLLM-GEN kernel (context): headDimQk=192", 2,904 b200 rc29 cases) and decode
     # ("Missing TRTLLM-GEN kernel (decode)", 1,624 b200 / 1,641 b300). Serving routes the same
