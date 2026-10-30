@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -35,6 +36,23 @@ SHA = "a" * 40
 TOOLING = "b" * 40
 WHEEL = "c" * 64
 IDENTITY = {"schema_version": 1, "source_branch": "release/0.12.0", "source_sha": SHA, "tooling_sha": TOOLING}
+
+
+def test_required_probes_pin_maintained_collection_versions():
+    required = json.loads((ROOT / ".github/fpe-required-probes.json").read_text())["probes"]
+    slots = yaml.safe_load((ROOT / "python/aisimulate/src/aisimulate_core/systems/query_versions.yaml").read_text())
+    for probe in required:
+        system, backend = probe["system"], probe["backend"]
+        entry = slots.get("overrides", {}).get(system, {}).get(backend)
+        if entry is None:
+            entry = slots["defaults"][backend]
+        # Sentinels pin completed collections, not the derived in-development
+        # next slot, so a collection upgrade must retain or replace each pin.
+        maintained = {entry[slot] for slot in ("current", "previous") if entry.get(slot)}
+        assert probe["backend_version"] in maintained, (
+            f"Required FPE probe {probe} is outside the maintained collection versions {sorted(maintained)}. "
+            "Update the pin using a native report with one topology passing all four phases."
+        )
 
 
 def test_discovery_automatically_includes_future_releases_and_pins_tips(tmp_path):
