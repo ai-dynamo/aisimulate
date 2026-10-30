@@ -27,12 +27,14 @@ self-benchmark. Its only input is the telemetry the engine already produces.
 Frozen calibration, online tree adaptation and their causal selector are
 standalone telemetry APIs:
 pass complete `ForwardPassMetrics` for one iteration to the model returned by
-`best_available`. Engine replay, engine CLI prediction and Sweeper's current
-timing interfaces supply phase aggregates and cannot reconstruct the full
-learned feature vector. Python prediction and Sweeper reject learned mode during
-configuration validation; native replay rejects it before loading a source.
-This release does not populate missing
-rank or request features from mean phase values.
+`best_available`. Engine replay, engine CLI prediction and recommendation, and
+Sweeper timing price every pass of a learned role with one such query over the
+worker's attention-DP ranks; when the artifact reads `req_*`, `slot*` or
+length-variance features, replay supplies each rank's per-request
+`extend_lengths` / `past_kv_lengths` and variances from its scheduled requests
+(see [engine replay timing](../configuration.md#engine-replay-timing)). Replay
+rejects a learned role without a forest store for the work it schedules, a rank
+hosting the vision encoder, and speculative decoding.
 
 The original PR 280 design rationale, model details, evaluation method and result
 tables are in [`design.md`](design.md). Online update equations, causal selection
@@ -459,7 +461,8 @@ fallback. These summarize retained state rather than query-weighted behavior.
 
 The returned canonical model accepts complete per-iteration FPM queries and
 feedback. Callers that only hold phase aggregates cannot use this interface
-without supplying the required iteration and request features.
+without supplying the required iteration and request features; engine replay
+supplies them from each pass's scheduled requests.
 
 ### Online tree adaptation
 
@@ -898,10 +901,10 @@ pooled ten-run training time are in `design.md` §8. Artifacts are 100–450 KB 
 ## Limitations
 
 - Learned mode uses explicit `estimation_mode: fpm_learned` through
-  `best_available(config)`. Its supported callers provide complete iteration
-  telemetry. Engine replay, engine CLI and Sweeper phase timing interfaces
-  reject learned execution because their aggregate inputs omit required
-  features. Speculative decoding is also unsupported by learned mode.
+  `best_available(config)`. Its callers provide complete iteration telemetry;
+  engine replay, engine CLI and Sweeper build it per pass from the scheduled
+  requests and never tune the model. Speculative decoding is unsupported by
+  learned mode.
 
 - Stock Dynamo FPM v1 carries aggregates only (counts, sums, variances). The
   per-request `extend_lengths` / `past_kv_lengths` lists are an additive
