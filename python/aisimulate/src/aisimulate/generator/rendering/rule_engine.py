@@ -173,6 +173,35 @@ def _load_rule_path(base_dir: str, backend: str) -> Optional[str]:
     return p if os.path.exists(p) else None
 
 
+_TOKEN_BUDGET_KEYS = ("max_num_tokens", "max_prefill_tokens")
+_TOKEN_BUDGET_ALIGN = 64
+
+
+def _align_token_budgets(param_values: dict[str, Any]) -> None:
+    """Round every token budget UP to a multiple of 64, on every backend, in
+    every role — the ONE alignment rule (owner decision 2026-09-24). Engines
+    size per-cache-group slot-mapping rows and scheduler chunks by these
+    budgets and a non-idiomatic width misaligns every row after the first
+    (vLLM 0.29 DeepSeek-V4: 6012 crashes the cutedsl compress kernel, 6016
+    passes). Applied here, after the rule formulas and before any rendering,
+    so the trtllm engine-yaml template — which the mapping transforms cannot
+    reach — gets it too; the mapping keeps the same rounding as a guard for
+    values injected past the rule engine. Never rounds down."""
+    params = param_values.get("params")
+    if not isinstance(params, dict):
+        return
+    for role in params.values():
+        if not isinstance(role, dict):
+            continue
+        for key in _TOKEN_BUDGET_KEYS:
+            v = role.get(key)
+            if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+                continue
+            aligned = ((v + _TOKEN_BUDGET_ALIGN - 1) // _TOKEN_BUDGET_ALIGN) * _TOKEN_BUDGET_ALIGN
+            if aligned != v:
+                role[key] = aligned
+
+
 def apply_rule_plugins(
     param_values: dict[str, Any],
     backend: str,
@@ -182,6 +211,7 @@ def apply_rule_plugins(
     base = _resolve_rule_plugin_dir(rule_name, base_dir=dsl_dir)
     rule_path = _load_rule_path(base, backend)
     if not rule_path:
+        _align_token_budgets(param_values)
         return param_values
     with open(rule_path, encoding="utf-8") as f:
         content = f.read().splitlines()
@@ -227,4 +257,5 @@ def apply_rule_plugins(
                 _apply_line(assign, backend, param_values, default_scope)
             except Exception:
                 logger.exception("rule apply failed at line %d", idx)
+    _align_token_budgets(param_values)
     return param_values

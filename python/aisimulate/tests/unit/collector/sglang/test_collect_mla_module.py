@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from collector.helper import PhaseClock, render_phase_totals
 
 
 @pytest.fixture(autouse=True)
@@ -19,6 +20,8 @@ def _mock_helper_imports(monkeypatch):
     fake_helper.get_sm_version = lambda: 90  # default Hopper
     fake_helper.log_perf = lambda **kw: None
     fake_helper.benchmark_with_power = lambda **kw: None
+    fake_helper.PhaseClock = PhaseClock
+    fake_helper.render_phase_totals = render_phase_totals
     monkeypatch.setitem(__import__("sys").modules, "helper", fake_helper)
 
     fake_torch = types.ModuleType("torch")

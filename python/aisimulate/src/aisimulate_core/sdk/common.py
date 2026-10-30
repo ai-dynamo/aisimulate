@@ -678,6 +678,7 @@ and this set via get_default_models()
 """
 DefaultHFModels = {
     "deepseek-ai/DeepSeek-V4.1-Flash",
+    "nvidia/DeepSeek-V4.1-Flash-NVFP4",
     # Llama 3.1 Models
     "meta-llama/Meta-Llama-3.1-8B",
     "meta-llama/Meta-Llama-3.1-70B",
@@ -692,6 +693,7 @@ DefaultHFModels = {
     "moonshotai/Kimi-K2.5",
     # Kimi K3
     "moonshotai/Kimi-K3",
+    "nvidia/Kimi-K3-NVFP4",
     "nvidia/Kimi-K2.5-NVFP4",
     "nvidia/Kimi-K2.6-NVFP4",
     "nvidia/Kimi-K2.7-Code-NVFP4",
@@ -771,12 +773,14 @@ DefaultHFModels = {
     # Qwen3.8-Max Models
     "Qwen/Qwen3.8-2.4T-A95B",
     "Qwen/Qwen3.8-2.4T-A95B-FP8",
+    "nvidia/Qwen3.8-2.4T-A95B-NVFP4",
     # MiMo Models
     "XiaomiMiMo/MiMo-V2-Flash",
     "XiaomiMiMo/MiMo-7B-Base",
     # NVIDIA Nemotron
     "nvidia/Llama-3_3-Nemotron-Super-49B-v1",
     "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
     "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
@@ -789,6 +793,15 @@ DefaultHFModels = {
     "google/gemma-4-26B-A4B",
     # Meta Muse Glimmer
     "meta-models/Muse-Glimmer-30B",
+    # Qwen3.8-27B (QWEN35 hybrid GDN dense; onboarding 2026-09-25)
+    "Qwen/Qwen3.8-27B",
+    "Qwen/Qwen3.8-27B-FP8",
+    # Ornith 1.5 (Qwen3.5-MoE architecture)
+    "ornith-ai/Ornith-1.5-35B-A3B",
+    # MiniCPM5 (Llama architecture)
+    "openbmb/MiniCPM5-2B",
+    # NeoHorse 1 (text-only dense Qwen3.5, Qwen3_5ForCausalLM)
+    "TokenRhythm/NeoHorse-1-9B",
     # StepFun Step-3.7 Models
     "stepfun-ai/Step-3.7-Flash",
     "stepfun-ai/Step-3.7-Flash-FP8",
@@ -906,6 +919,7 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
     # Qwen3.8-Max: FLAT config (no text_config nesting) -- do NOT add to
     # MULTIMODAL_TEXT_CONFIG_KEY below, unlike the two VLM classes above.
     "Qwen3_5MoeForCausalLM": "QWEN35",
+    "Qwen3_5ForCausalLM": "QWEN35",  # text-only dense Qwen3.5 checkpoint (config at root, no text_config)
     "Gemma4ForConditionalGeneration": "GEMMA4MIX",
     "MuseGlimmerForConditionalGeneration": "MUSEGLIMMER",
     "Mistral3ForConditionalGeneration": "MISTRAL3",
@@ -1408,14 +1422,13 @@ class PerfDataFilename(Enum):
     # DeepSeek-V4 sparse-op family — all share one column schema, served by
     # the engine table view (``_dsv4_sparse_kernel_data.*`` /
     # ``_dsv4_csa_topk_calib_data``):
-    #   csa_attn / hca_attn / paged_mqa_logits : FMLA & indexer kernel latency,
-    #     keyed ``num_heads -> tp -> past_kv -> isl -> bs`` (kernel-level Δ data,
-    #     queried by ``_lookup_sparse_kernel``).
+    #   paged_mqa_logits : indexer kernel latency, keyed
+    #     ``num_heads -> tp -> past_kv -> isl -> bs`` (kernel-level Δ data,
+    #     queried by ``_lookup_sparse_kernel``). The csa_attn / hca_attn FMLA
+    #     sidecars were removed 2026-10-15 (retired placeholders, no query path).
     #   csa_topk_calib : two rows/shape (score_mode=flat|top_last); the topK
     #     DELTA (flat-top_last) correction applied to CSA module latency.
     dsv4_paged_mqa_logits_module = "dsv4_paged_mqa_logits_module_perf.parquet"
-    dsv4_hca_attn_module = "dsv4_hca_attn_module_perf.parquet"
-    dsv4_csa_attn_module = "dsv4_csa_attn_module_perf.parquet"
     dsv4_csa_topk_calib = "dsv4_csa_topk_calib_perf.parquet"
     dsv4_megamoe_module = "dsv4_megamoe_module_perf.parquet"
     # Whole-model forward-pass data (forward_model="fpm"). Paired with a

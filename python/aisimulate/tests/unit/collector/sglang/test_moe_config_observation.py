@@ -3,6 +3,7 @@
 """The SGLang MoE collector records, never chooses, the Triton config source."""
 
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -85,4 +86,7 @@ def test_sglang_collector_wraps_the_timed_call_and_writes_triton_rows_only():
     source = (Path(__file__).resolve().parents[4] / "collector/sglang/collect_moe.py").read_text()
     assert "with observe_triton_config_selection(_triton_config_namespaces())" in source
     assert "return [sys.modules[get_config_dtype_str.__module__], globals()]" in source
-    assert 'if moe_backend == "triton":\n        append_triton_config_record(' in source
+    # one task times a num_tokens series: each point's row gets its own counters
+    assert re.search(r'if moe_backend == "triton":\n\s+append_triton_config_record\(', source)
+    assert "point_observed = dict(triton_config_observed)" in source
+    assert "triton_config_observed[key] = 0" in source

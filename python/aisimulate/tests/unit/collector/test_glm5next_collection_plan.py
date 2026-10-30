@@ -170,9 +170,9 @@ def test_vllm_nvfp4_uses_modelopt_only_for_the_glm53flash_checkpoint(monkeypatch
     "version,accepted",
     [
         ("0.31.0", True),
-        ("0.30.0", False),
-        ("0.28.0", False),
-        ("0.29.0", False),
+        ("0.30.0", True),  # the collector default lanes
+        ("0.28.0", True),
+        ("0.29.0", True),
         ("0.31.1", False),
         ("0.32.0", False),
         ("0.24.0", True),
@@ -198,6 +198,8 @@ def test_sglang_0_5_20_runs_delegate_to_the_serving_built_fork(path, fork, names
         and "(0, 5, 20)" in ast.unparse(node.test)
     )
     body = ast.unparse(gate)
+    # exactly 0.5.20: the 0.5.21 default keeps the module's own implementation
+    assert "==" in ast.unparse(gate.test)
     assert f"from collector.sglang import {fork} as _fork_0520" in body
     for name in names:
         assert f"{name} = _fork_0520.{name}" in body
@@ -219,6 +221,7 @@ def test_sglang_moe_admits_0_5_20_but_not_unaudited_releases():
         ("0.5.18", False),
         ("0.5.19", False),
         ("0.5.20", True),
+        ("0.5.21", True),
     ]:
         assert _check_compat(compat, version) is accepted, version
 

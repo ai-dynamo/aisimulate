@@ -8,11 +8,13 @@
 # capable image or put a matching SGLang source tree on PYTHONPATH.
 from __future__ import annotations
 
-# The file-level range spans the two audited routes; each architecture is
-# additionally gated to its own audited release by _ARCHITECTURE_COMPAT, so
-# the DeepSeek-V4 path still runs only on 0.5.14 (its ModelRunner/ServerArgs
-# API use is 0.5.14-specific) and GLM only on 0.5.20.
-__compat__ = "sglang>=0.5.14,<=0.5.20"
+# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
+# The file-level range spans the audited routes; each architecture is
+# additionally gated to its own audited releases by _ARCHITECTURE_COMPAT:
+# DeepSeek-V4 on 0.5.14 and 0.5.21 (the 0.5.21 port uses the native
+# DeepseekV4Config), GLM only on 0.5.20.
+__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19"
 
 import argparse
 import copy
@@ -57,7 +59,7 @@ GLM5NEXT_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 # Per-architecture audited SGLang releases; anything else raises
 # MhcRuntimeNotAuditedError (a classified failure) instead of running.
 _ARCHITECTURE_COMPAT = {
-    DSV4_ARCHITECTURE: "sglang==0.5.14",
+    DSV4_ARCHITECTURE: "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20",
     GLM5NEXT_ARCHITECTURE: "sglang==0.5.20",
 }
 
@@ -224,7 +226,13 @@ def _patched_model_dir(model_id: str) -> str:
     # Match collect_dsv4_attn.py: current Transformers does not know a
     # native deepseek_v4 config, while SGLang selects the V4 model class from
     # the architectures field.
-    config["model_type"] = "deepseek_v3"
+    try:
+        # sglang>=0.5.21: native DeepseekV4Config (V4-only fields such as hc_pre_from_prev_sublayer)
+        import sglang.srt.configs.deepseek_v4  # noqa: F401
+
+        config["model_type"] = "deepseek_v4"
+    except ImportError:
+        config["model_type"] = "deepseek_v3"
 
     tmp_dir = os.path.join(
         tempfile.gettempdir(),
@@ -283,18 +291,17 @@ def _load_one_layer_runner(
 
     _set_envs_and_config(server_args)
     model_config = ModelConfig.from_server_args(server_args)
+    nccl_port = 29500 + random.randint(0, 10000)
+    from collector.sglang.runtime_compat import init_runtime_config
+
+    _runner_parallel_kwargs = init_runtime_config(server_args, gpu_id, nccl_port=nccl_port, model_config=model_config)
     return ModelRunner(
         model_config=model_config,
         mem_fraction_static=mem_fraction_static,
         gpu_id=gpu_id,
-        tp_rank=0,
-        tp_size=1,
-        pp_rank=0,
-        pp_size=1,
-        moe_ep_rank=0,
-        moe_ep_size=1,
-        nccl_port=29500 + random.randint(0, 10000),
+        nccl_port=nccl_port,
         server_args=server_args,
+        **_runner_parallel_kwargs,
     )
 
 

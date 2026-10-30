@@ -6,6 +6,7 @@
 import ast
 import logging
 import sys
+import time
 from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
@@ -18,7 +19,7 @@ COLLECTOR = Path(__file__).resolve().parents[3] / "collector"
 SOURCE = COLLECTOR / "helper.py"
 
 
-def trace_benchmark(monkeypatch, *, source=SOURCE, failure=None, explicit=None, eager=False, fallback=False):
+def trace_benchmark(monkeypatch, *, source=SOURCE, failure=None, explicit=None, eager=False, fallback=False, **extra):
     """Execute a helper source snapshot; retain graph references like a traceback."""
     events, graphs = [], []
     state = {"stream": "caller", "replays": 0, "fault_fired": False}
@@ -99,7 +100,13 @@ def trace_benchmark(monkeypatch, *, source=SOURCE, failure=None, explicit=None, 
     monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=cuda))
     tree = ast.parse(source.read_text())
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "benchmark_with_power")
-    namespace = {"contextmanager": contextmanager, "get_device_module": lambda device=None: cuda, "logging": logging}
+    namespace = {
+        "contextmanager": contextmanager,
+        "get_device_module": lambda device=None: cuda,
+        "logging": logging,
+        "time": time,
+        "worker_heartbeat": lambda: events.append("heartbeat"),
+    }
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), "exec"), namespace)
     kwargs = {
         "device": SimpleNamespace(index=0),
@@ -113,6 +120,7 @@ def trace_benchmark(monkeypatch, *, source=SOURCE, failure=None, explicit=None, 
     }
     if explicit is not None:
         kwargs["explicit_graph_cleanup"] = explicit
+    kwargs.update(extra)
     result, caught = None, None
     try:
         with namespace["benchmark_with_power"](**kwargs) as result:
@@ -122,7 +130,8 @@ def trace_benchmark(monkeypatch, *, source=SOURCE, failure=None, explicit=None, 
         caught = {"type": type(exc).__name__, "message": str(exc), "original_error": exc is error}
     return {
         "events": events,
-        "result": result,
+        # phase_seconds are wall-clock readings that differ between otherwise identical runs.
+        "result": {k: v for k, v in result.items() if k != "phase_seconds"} if result is not None else None,
         "error": caught,
         "stream": state["stream"],
         "resets": [graph.resets for graph in graphs],
@@ -179,12 +188,32 @@ def test_default_is_identical_to_explicit_false(monkeypatch):
     assert trace_benchmark(monkeypatch) == trace_benchmark(monkeypatch, explicit=False)
 
 
+def test_eager_warmups_can_be_fewer_than_replay_warmups(monkeypatch):
+    observed = trace_benchmark(monkeypatch, num_eager_warmups=1)
+    assert observed["events"].count("kernel") == 2  # one eager warmup + capture
+    assert observed["events"].count("graph:replay") == 5  # replay warmups stay at num_warmups (2) + three runs
+    assert observed["result"]["used_cuda_graph"] is True
+    zero = trace_benchmark(monkeypatch, num_eager_warmups=0)
+    assert zero["events"].count("kernel") == 1  # capture only
+    default = trace_benchmark(monkeypatch)
+    assert default["events"].count("kernel") == 3  # num_warmups eager passes + capture, unchanged
+
+
+def test_every_measurement_beats_the_stall_watchdog_before_touching_the_kernel(monkeypatch):
+    graph = trace_benchmark(monkeypatch)
+    assert graph["events"].count("heartbeat") == 1
+    assert graph["events"].index("heartbeat") < graph["events"].index("kernel")
+    eager = trace_benchmark(monkeypatch, eager=True)
+    assert eager["events"].count("heartbeat") == 1
+
+
 def test_eager_does_not_touch_graph_lifetime_in_either_mode(monkeypatch):
     default = trace_benchmark(monkeypatch, eager=True)
     opted = trace_benchmark(monkeypatch, eager=True, explicit=True)
     assert default == opted
     assert default["resets"] == []
-    assert default["events"].count("kernel") == 7
+    # eager: num_warmups (2) + num_runs (3); the helper no longer repeats the eager warmup after the capture step
+    assert default["events"].count("kernel") == 5
 
 
 def test_only_vllm_mla_module_binds_explicit_graph_cleanup():

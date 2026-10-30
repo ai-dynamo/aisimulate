@@ -50,6 +50,8 @@ helpers, SM filters, and perf logging.
 # framework_manifest digest-pinned gate is the true version enforcement
 # upstream and only ever supplies exactly 0.5.14 or 0.5.17 in a sanctioned
 # run, so the leak is unreachable there.
+# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
 # SGLang 0.5.20 (GLM-5.3-Flash model pin; audited 2026-09-30 against tag
 # commit 94602c9c2b7c): serving changed WHICH kernels this module's raw
 # calls map to (bf16 CuTe DSL/split-K dispatch, JIT per-token fp8 quant,
@@ -61,7 +63,7 @@ helpers, SM filters, and perf logging.
 # instead of a registry VersionRoute because tools/perf_database/
 # changed_ops.py fails closed on versioned registry entries. 0.5.18/0.5.19
 # are not audited and stay excluded (same != caveat as above).
-__compat__ = "sglang>=0.5.14,<=0.5.20,!=0.5.15,!=0.5.16,!=0.5.18,!=0.5.19"
+__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.18,!=0.5.19"
 
 import os
 import random
@@ -70,6 +72,7 @@ import random
 # Set it before any SGLang imports so a task compiles only its requested M.
 os.environ.setdefault("SGLANG_JIT_DEEPGEMM_PRECOMPILE", "0")
 
+# setuptools/pkg_resources is absent from recent framework images.
 from importlib.metadata import version as _dist_version
 
 import torch
@@ -494,8 +497,9 @@ def run_gemm(gemm_type, batch_size, N, K, *, perf_filename, device="cuda:0"):  #
 
 
 # Whole-implementation version fork (see the __compat__ comment): SGLang
-# 0.5.20 collects through serving-built linear layers.
-if _sglang_release() >= (0, 5, 20):
+# 0.5.20 collects through serving-built linear layers. Exactly 0.5.20: the
+# 0.5.21 default keeps this module's own (0.5.21-validated) implementation.
+if _sglang_release()[:3] == (0, 5, 20):
     from collector.sglang import collect_gemm_0520 as _fork_0520
 
     get_gemm_test_cases = _fork_0520.get_gemm_test_cases

@@ -72,9 +72,11 @@ approximation must be retired.
 # 1968047). Existing framework construction/dispatch is unchanged. Invalid
 # model/quant shapes continue to raise and remain recorded failures; this is
 # API compatibility, not a claim that every Cartesian shape is supported.
-# 0.30.0 source audit (2026-09-30; tag v0.30.0 == ced6857afa0e vs v0.27.1),
-# the baseline of the 0.31.0 audit below. 0.28.0, 0.29.0 and 0.30.0 itself
-# are not admitted: no consumer reads their tables.
+# 0.30.0 source audit (2026-09-30; tag v0.30.0 == ced6857afa0e vs v0.27.1):
+# the collector default (framework_manifest.yaml; the 2026-10 campaign
+# tables) and the baseline of the 0.31.0 audit below, which admits the
+# GLM-5.3-Flash model-pinned run. 0.28.0/0.29.0 stay admitted from the
+# 0.27.1 -> 0.30.0 upgrade path.
 # FusedMoEFactory (layer.py:88-131 @0.30.0, :99-140 @0.27.1): every kwarg
 # passed here is unchanged; 0.30.0 only adds defaulted params. swiglu_limit
 # exists at both (:108 / :119), so other models keep passing None.
@@ -102,8 +104,9 @@ approximation must be retired.
 # TrtLlmNvFp4ExpertsMonolithic (trtllm_nvfp4_moe.py:486-508, clamp
 # :90-105,:175-181). Serving logs of both GLM checkpoints on this runtime
 # report "Using FLASHINFER_TRTLLM" for Fp8 and NvFp4 MoE.
-# Known non-parity (unchanged from 0.27.1): no FlashInfer autotune pass
-# before timing; the gate GEMM and shared expert are separate ops.
+# Known non-parity: the gate GEMM and shared expert are separate ops.
+# (FlashInfer lanes are timed on the autotuned tactic like serving; see
+# helper.flashinfer_autotuned.)
 # 0.31.0 audit (2026-10-07, source-only: tag v0.31.0 == db9527a4 vs v0.30.0
 # ced6857a; no releases in between). GLM-5.3-Flash now runs STOCK 0.31.0
 # (no overlay). Construction surface unchanged: FusedMoEFactory
@@ -160,7 +163,7 @@ approximation must be retired.
 # K3 SiTU: FusedMoEFactory exposes activation_situ_beta on stock 0.30.0 and
 # 0.31.0, so the probe below passes the betas natively there; the
 # situ-as-silu approximation applies only to older stock builds.
-__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0,!=0.28.0,!=0.29.0,!=0.30.0"
+__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0"
 
 import contextlib
 import json
@@ -178,6 +181,7 @@ from collector.case_generator import (
 from collector.helper import (
     balanced_logits,
     benchmark_with_power,
+    flashinfer_autotuned,
     get_sm_version,
     log_perf,
     power_law_logits_v3,
@@ -632,7 +636,29 @@ def run_moe_torch(
             # the Mxfp4Config path below.
             quant_config = CompressedTensorsConfig.from_config(checkpoint_qc)
         else:
+            # OCP "mxfp4" checkpoints of model_type gpt_oss are OVERRIDDEN by
+            # vLLM to the gpt_oss_mxfp4 method (GptOssMxfp4Config.
+            # override_quantization_method, quantization/mxfp4.py:119-136
+            # @0.29.0). Its GptOssMxfp4MoEMethod selects through the gpt-oss
+            # priority list (fused_moe/oracle/mxfp4.py:584-602 @0.29.0) — TRITON
+            # matmul_ogs on SM90, as the gpt-oss-120b serving probe shows —
+            # while the generic Mxfp4Config resolves to Mxfp4MoEMethod -> MARLIN
+            # (path_diff moe_mxfp4 vs gpt-oss-120b was diverged on exactly this,
+            # 2026-09-23). Mirror the framework's own override here. A version
+            # without the class performs no override, so Mxfp4Config is that
+            # version's serving truth — this is dispatch, not a fallback.
+            model_cfg = _load_model_moe_config(model_name)
             quant_config = Mxfp4Config()
+            if (
+                checkpoint_qc.get("quant_method") in ("mxfp4", "gpt_oss_mxfp4")
+                and model_cfg.get("model_type") == "gpt_oss"
+            ):
+                try:
+                    from vllm.model_executor.layers.quantization.mxfp4 import GptOssMxfp4Config
+                except ImportError:  # pre-override vLLM: no gpt_oss_mxfp4 method exists
+                    GptOssMxfp4Config = None  # noqa: N806
+                if GptOssMxfp4Config is not None:
+                    quant_config = GptOssMxfp4Config()
     elif moe_type == "w4a8_mxfp4_mxfp8":
         # Native DeepSeek-V4 (expert_dtype=fp4) serving path: vLLM overrides
         # the checkpoint's fp8 quant_method to DeepseekV4FP8Config
@@ -955,8 +981,11 @@ def run_moe_torch(
                     forward_context.moe_layer_index = 0
                     moe_module(hidden_states, router_logits)
 
+            # FlashInfer-backed experts (trtllm-gen nvfp4/mxfp4, cutlass, cutedsl) are
+            # timed on the autotuned tactic like serving; see helper.flashinfer_autotuned.
             with (
                 set_forward_context({}, vllm_config),
+                flashinfer_autotuned(num_tokens, run_single_iteration, label=source),
                 benchmark_with_power(
                     device=device,
                     kernel_func=run_single_iteration,

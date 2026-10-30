@@ -415,30 +415,29 @@ def test_moe_ep_alone_resolves_to_the_wideep_trtllm_pin():
     assert runtime.version == "1.3.0rc20"
 
 
-def test_same_pin_mixing_with_stock_trtllm_ops_is_accepted():
-    # Unlike wideep_sglang (0.5.10 vs stock 0.5.14 — mixing fail-closes),
-    # wideep_trtllm pins the SAME version AND image digest as stock trtllm
-    # (framework_manifest.yaml), so require_collector_runtime accepts a mixed
-    # stock+wideep request — the reason moe_ep can stay in the default trtllm
-    # model plans. The stock op here must live on the DEFAULT trtllm runtime:
-    # moe/sparse_attention carry per-family rc23 overrides, and mixing those
-    # with default-runtime ops correctly fail-closes as a multi-runtime
-    # request (a separate behavior from wideep/stock mixing).
+def test_mixing_stock_and_wideep_trtllm_ops_fail_closes_on_different_pins():
+    # Stock trtllm (1.3.0rc29 default) and wideep_trtllm (1.3.0rc20) no longer
+    # share a pin (framework_manifest.yaml, 2026-10-04): a mixed stock+wideep
+    # request is a multi-runtime request and must be split, exactly like
+    # wideep_sglang (0.5.10) vs stock sglang. moe_ep alone still resolves to
+    # the WideEP pin (test above); the stock op alone resolves to rc29.
     from collector.framework_manifest import require_collector_runtime
 
-    mixed = require_collector_runtime("trtllm", "1.3.0rc20", requested_ops={"gemm", "moe_ep"}, wideep_ops={"moe_ep"})
-    stock = require_collector_runtime("trtllm", "1.3.0rc20", requested_ops={"gemm"}, wideep_ops={"moe_ep"})
-    assert mixed.version == stock.version == "1.3.0rc20"
-    assert mixed.images == stock.images
+    with pytest.raises(RuntimeError, match=r"different runtime versions \(1\.3\.0rc29 != 1\.3\.0rc20\)"):
+        require_collector_runtime("trtllm", "1.3.0rc29", requested_ops={"gemm", "moe_ep"}, wideep_ops={"moe_ep"})
+    stock = require_collector_runtime("trtllm", "1.3.0rc29", requested_ops={"gemm"}, wideep_ops={"moe_ep"})
+    assert stock.framework == "trtllm" and stock.version == "1.3.0rc29"
 
 
-def test_moe_ep_is_in_the_default_trtllm_plan_for_wideep_models():
+def test_moe_ep_is_requested_independently_of_the_default_trtllm_plan():
+    # Mirrors sglang: with separate WideEP pins, moe_ep stays out of the default
+    # model plans on both backends so a default run resolves to one runtime.
     from collector.model_cases import build_collection_case_plan
 
-    trtllm_plan = build_collection_case_plan(backend="trtllm", model_path="deepseek-ai/DeepSeek-V3")
-    assert "moe_ep" in trtllm_plan.selected_ops
-    assert "trtllm_moe_wideep" not in trtllm_plan.selected_ops
-    # sglang keeps it out of the default plan (separate 0.5.10 runtime).
+    for model in ("deepseek-ai/DeepSeek-V3", "moonshotai/Kimi-K2.5", "zai-org/GLM-5", "MiniMaxAI/MiniMax-M2.5"):
+        plan = build_collection_case_plan(backend="trtllm", model_path=model)
+        assert "moe_ep" not in plan.selected_ops, model
+        assert "trtllm_moe_wideep" not in plan.selected_ops
     sglang_plan = build_collection_case_plan(backend="sglang", model_path="deepseek-ai/DeepSeek-V3")
     assert "moe_ep" not in sglang_plan.selected_ops
 

@@ -880,6 +880,84 @@ def test_convert_without_merge_overwrites(tmp_path):
     assert _rows_by_key(parquet) == {"s2": 2.0}  # legacy overwrite preserved when opted out
 
 
+def test_finalize_third_merge_survives_large_string_round_trip(tmp_path):
+    """run -> resume -> retry-failed: the second merge writes string columns back as
+    `large_string` (pandas round trip); the third finalize must still merge, not
+    overwrite (sm120 attention_generation fp8kv lost 27,303 rows this way, 2026-10-01)."""
+    import pyarrow as pa
+
+    perf = tmp_path / "gemm_perf.txt"
+    parquet = perf.with_suffix(".parquet")
+    _write_keyed_perf_csv(perf, [("s1", 1.0)])
+    finalize_perf_files([perf])
+    _write_keyed_perf_csv(perf, [("s2", 2.0)])
+    finalize_perf_files([perf])
+    # force the state the pandas round trip produces: identity column stored as large_string
+    t = pq.read_table(parquet)
+    idx = t.schema.get_field_index("shape")
+    pq.write_table(t.set_column(idx, "shape", t.column("shape").cast(pa.large_string())), parquet)
+    assert str(pq.read_table(parquet).schema.field("shape").type) == "large_string"
+    _write_keyed_perf_csv(perf, [("s3", 3.0)])
+    finalize_perf_files([perf])
+    assert _rows_by_key(parquet) == {"s1": 1.0, "s2": 2.0, "s3": 3.0}
+
+
+@contextmanager
+def _pandas_unavailable(monkeypatch):
+    """The collector images ship pyarrow (harness ``pyarrow-site``) but no pandas."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _import(name, *args, **kwargs):
+        if name == "pandas" or name.startswith("pandas."):
+            raise ModuleNotFoundError("No module named 'pandas'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _import)
+    try:
+        yield
+    finally:
+        monkeypatch.setattr(builtins, "__import__", real_import)
+
+
+def test_finalize_merge_does_not_need_pandas(tmp_path, monkeypatch):
+    """The second finalize of a shard (resume / retry-failed) merges into the
+    existing parquet; it died with ``No module named 'pandas'`` on the vllm
+    image (b200 dsa_context_module job 481670367 window 2, 2026-10-12)."""
+    perf = tmp_path / "gemm_perf.txt"
+    parquet = perf.with_suffix(".parquet")
+    _write_keyed_perf_csv(perf, [("s1", 1.0), ("s2", 2.0)])
+    finalize_perf_files([perf])
+
+    with _pandas_unavailable(monkeypatch):
+        _write_keyed_perf_csv(perf, [("s1", 9.0), ("s3", 3.0)])
+        finalize_perf_files([perf])
+
+    assert _rows_by_key(parquet) == {"s1": 9.0, "s2": 2.0, "s3": 3.0}
+    table = pq.read_table(parquet)
+    assert [r["shape"] for r in table.to_pylist()] == ["s2", "s1", "s3"]  # kept rows keep their order
+    assert not table.schema.metadata  # no pandas index metadata in the published parquet
+
+
+def test_finalize_moe_legacy_merge_does_not_need_pandas(tmp_path, monkeypatch):
+    perf = tmp_path / "moe_perf.txt"
+    parquet = perf.with_suffix(".parquet")
+    perf.write_text("kernel_source,shape,latency,default_eligible\nexact,s1,1.0,false\nexact,s2,2.0,false\n")
+    finalize_perf_files([perf])
+
+    with _pandas_unavailable(monkeypatch):
+        perf.write_text("kernel_source,shape,latency\nexact,s1,3.0\nexact,s3,4.0\n")  # legacy recollection
+        finalize_perf_files([perf])
+
+    rows = {r["shape"]: r for r in pq.read_table(parquet).to_pylist()}
+    assert {k: (v["latency"], v["default_eligible"]) for k, v in rows.items()} == {
+        "s1": (3.0, False),  # re-measured, keeps its annotation
+        "s2": (2.0, False),
+        "s3": (4.0, True),  # new key: eligible by default
+    }
+
+
 def test_finalize_merge_falls_back_to_overwrite_on_schema_mismatch(tmp_path):
     perf = tmp_path / "gemm_perf.txt"
     parquet = perf.with_suffix(".parquet")
@@ -1044,3 +1122,58 @@ def test_finalize_keeps_power_disabled_schema_column_free(tmp_path):
     [parquet] = finalize_perf_files([perf])
 
     assert pq.read_table(parquet).column_names == ["shape", "latency"]
+
+
+def test_finalize_drops_rows_re_appended_by_a_retried_task_keeping_the_newest(tmp_path, caplog):
+    """The staging CSV is append-only across resumed windows and a task retried with
+    --resume-retry-failed logs its successful rows again (rtxpro msa_context: 10,342 of
+    13,972 rows were such re-appends). Finalization keeps the newest row per identity
+    key, in the original order, like the merge-with-existing path already did."""
+    perf = tmp_path / "gemm_perf.txt"
+    _write_keyed_perf_csv(perf, [("s1", 1.0), ("s2", 2.0), ("s1", 1.5), ("s3", 3.0), ("s2", 2.5)])
+
+    with caplog.at_level("INFO", logger="collector.helper"):
+        [parquet] = finalize_perf_files([perf], delete_source=False)
+
+    table = pq.read_table(parquet)
+    assert table.column("shape").to_pylist() == ["s1", "s3", "s2"]
+    assert table.column("latency").to_pylist() == [1.5, 3.0, 2.5]
+    assert "dropped 2 re-appended duplicate rows" in caplog.text
+
+
+def test_finalize_keeps_rows_that_differ_in_a_non_metric_column(tmp_path):
+    perf = tmp_path / "gemm_perf.txt"
+    perf.write_text("op,shape,power,latency\nmatmul,s1,100.0,1.0\nmatmul,s1,120.0,1.1\nmatmul,s2,100.0,2.0\n")
+
+    [parquet] = finalize_perf_files([perf], delete_source=False)
+
+    # power is a metric, so the two s1 rows share one identity: the newer one wins
+    assert pq.read_table(parquet).column("latency").to_pylist() == [1.1, 2.0]
+
+
+def test_finalize_dedupe_ignores_moe_eligibility_metadata_and_tolerates_empty_columns(tmp_path):
+    perf = tmp_path / "moe_perf.txt"
+    perf.write_text(
+        "op,shape,kernel_source,note,default_eligible,latency\n"
+        "moe,s1,cutlass,,true,1.0\n"
+        "moe,s1,cutlass,,false,1.2\n"
+        "moe,s2,cutlass,,true,2.0\n"
+    )
+
+    [parquet] = finalize_perf_files([perf], delete_source=False)
+
+    table = pq.read_table(parquet)
+    assert table.column("shape").to_pylist() == ["s1", "s2"]
+    assert table.column("default_eligible").to_pylist() == [False, True]
+    assert table.column("latency").to_pylist() == [1.2, 2.0]
+
+
+def test_finalize_reports_deduplicated_row_count(tmp_path):
+    perf = tmp_path / "gemm_perf.txt"
+    _write_keyed_perf_csv(perf, [("s1", 1.0), ("s1", 1.5)])
+    finalization_info = {}
+
+    finalize_perf_files([perf], delete_source=False, finalization_info=finalization_info)
+
+    [info] = finalization_info.values()
+    assert info.new_rows == 1

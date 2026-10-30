@@ -53,12 +53,18 @@ Output:
 """
 
 # The kimi-k3 branch build (https://github.com/sgl-project/sglang/tree/kimi-k3)
-# reports 0.5.16. 0.5.20 adds GLM-5.3-Flash (glm5_next) KDA, audited against
+# reports 0.5.16 and was the only KDA runtime until the kernels landed in the
+# official releases (0.5.21: models/kimi_linear.py, layers/attention/linear/
+# kda_backend.py with the same Triton lanes — chunk_kda, fused_recurrent_kda_
+# packed_decode / fused_sigmoid_gating_delta_rule_update, kda_fused_decode,
+# causal_conv1d_fn/update — kda_backend.py:6-34, kernels/kda_triton.py:109-237;
+# H20 smoke 2026-10-01, 91 cells ok, the remaining 21 are the >=2**31 conv
+# guard cells). 0.5.20 adds GLM-5.3-Flash (glm5_next) KDA, audited against
 # the GB300 0.5.20 image (see the GLM section below). The file-level range
-# spans both; each KDA architecture is additionally gated at runtime to its
-# own audited release by _KDA_ARCHITECTURE_COMPAT (Kimi-K3 0.5.16, GLM-5.3-
-# Flash 0.5.20), raising KdaRuntimeNotAuditedError otherwise.
-__compat__ = "sglang>=0.5.16,<=0.5.20,!=0.5.17,!=0.5.18,!=0.5.19"
+# spans all three; each KDA architecture is additionally gated at runtime to
+# its own audited releases by _KDA_ARCHITECTURE_COMPAT (Kimi-K3 0.5.16 and
+# 0.5.21, GLM-5.3-Flash 0.5.20), raising KdaRuntimeNotAuditedError otherwise.
+__compat__ = "sglang>=0.5.16,<=0.5.21,!=0.5.17,!=0.5.18,!=0.5.19"
 
 import gc
 import os
@@ -213,6 +219,11 @@ def run_kda_context_benchmark(
                 # [2**31, 3*2**31) crash with cudaErrorIllegalAddress on both
                 # Hopper SM90 (2026-07 campaign coverage boundary) and SM100
                 # (B200, 2026-07-28), while every cell under this bound passes.
+                # NOT relaxed for sglang 0.5.21: its causal_conv1d_triton casts the sequence
+                # offsets to tl.int64 (:95,:185), yet the >=2**31 cells still fault with
+                # cudaErrorIllegalAddress on H20 (0.5.21 smoke 2026-10-01, facts/upgrade_rc29/
+                # sgl_smoke_r6) — silicon evidence keeps the guard; the int32 arithmetic is
+                # elsewhere in the kernel's per-block view strides.
                 if total_tokens * conv_channels >= 2**31:
                     raise ValueError(
                         "SGLang causal_conv1d Triton kernel int32 token-offset overflow: "
@@ -368,6 +379,30 @@ def _fused_decode_module():
     from sglang.kernels.ops.attention import kda_fused_decode
 
     return kda_fused_decode
+
+
+def _serving_decode_lane_for_lower_bound() -> str:
+    """Which recurrence kernel serving runs for a KDA layer that carries a
+    ``lower_bound`` (Kimi-K3: KDA_LOWER_BOUND).
+
+    sglang>=0.5.21 kda_backend.KDAAttnBackend.forward_decode:737-741 takes the
+    packed Triton kernel only when ``supports_packed_decode`` AND the layer has
+    no lower_bound; a lower-bound layer goes through kernel_dispatcher.decode
+    (:771-786) = TritonKDAKernel.decode -> fused_sigmoid_gating_delta_rule_update
+    with lower_bound (kernels/kda_triton.py:125-157). The kimi-k3 branch build
+    (0.5.16) packed every T=1 decode. Probed from the backend source rather than
+    the version string so a backport is followed too. H20 serving golden
+    2026-10-01 (archive raw 7ef3a64cae10 decode_kernels) carries
+    fused_sigmoid_gating_delta_rule_update_kernel, not the packed kernel.
+    """
+    try:
+        import inspect
+
+        from sglang.srt.layers.attention.linear.kda_backend import KDAAttnBackend
+    except ImportError:
+        return "packed"
+    src = inspect.getsource(KDAAttnBackend.forward_decode)
+    return "plain" if 'getattr(layer, "lower_bound", None) is None' in src else "packed"
 
 
 def run_kda_generation_benchmark(
@@ -543,20 +578,57 @@ def run_kda_generation_benchmark(
                 ):
                     raise RuntimeError(f"failed to persist SGLang KDA generation row to {perf_filename}")
 
-            def run_kda_packed_decode():
-                fused_recurrent_kda_packed_decode(
-                    mixed_qkv=mixed_qkv,
-                    a=a,
-                    b=b,
-                    A_log=a_log,
-                    dt_bias=dt_bias,
-                    scale=head_k_dim**-0.5,
-                    initial_state=recurrent_state,
-                    out=output,
-                    ssm_state_indices=state_indices,
-                    use_qk_l2norm_in_kernel=True,
-                    lower_bound=KDA_LOWER_BOUND,
+            if _serving_decode_lane_for_lower_bound() == "plain" and KDA_LOWER_BOUND is not None:
+                # kda_backend.py:771-786 @0.5.21: after the conv update, q/k/v are the
+                # [Q|K|V] split viewed as 1 x n x h x d, and the plain Triton decode runs
+                # fused_sigmoid_gating_delta_rule_update over cu_seqlens with lower_bound.
+                recurrence_kernel_source = "fused_sigmoid_gating_delta_rule_update"
+                plain_q, plain_k, plain_v = (
+                    t.unflatten(-1, (-1, dim)).unsqueeze(0)
+                    for t, dim in zip(
+                        mixed_qkv.split([proj_size] * 3, dim=-1), (head_k_dim, head_k_dim, head_v_dim), strict=True
+                    )
                 )
+                plain_a = a.view(1, batch_size, num_v_heads, head_k_dim)
+                plain_b = b.view(1, batch_size, num_v_heads)
+                plain_cu_seqlens = torch.arange(0, batch_size + 1, dtype=torch.int32, device=device)
+
+                def run_kda_packed_decode():
+                    fused_sigmoid_gating_delta_rule_update(
+                        A_log=a_log,
+                        dt_bias=dt_bias,
+                        q=plain_q,
+                        k=plain_k,
+                        v=plain_v,
+                        a=plain_a,
+                        b=plain_b,
+                        initial_state_source=recurrent_state,
+                        initial_state_indices=state_indices,
+                        cu_seqlens=plain_cu_seqlens,
+                        use_qk_l2norm_in_kernel=True,
+                        softplus_beta=1.0,
+                        softplus_threshold=20.0,
+                        is_kda=True,
+                        lower_bound=KDA_LOWER_BOUND,
+                    )
+
+            else:
+                recurrence_kernel_source = "fused_recurrent_kda_packed_decode"
+
+                def run_kda_packed_decode():
+                    fused_recurrent_kda_packed_decode(
+                        mixed_qkv=mixed_qkv,
+                        a=a,
+                        b=b,
+                        A_log=a_log,
+                        dt_bias=dt_bias,
+                        scale=head_k_dim**-0.5,
+                        initial_state=recurrent_state,
+                        out=output,
+                        ssm_state_indices=state_indices,
+                        use_qk_l2norm_in_kernel=True,
+                        lower_bound=KDA_LOWER_BOUND,
+                    )
 
             with benchmark_with_power(
                 device=device,
@@ -571,7 +643,7 @@ def run_kda_generation_benchmark(
                     version=sglang_version,
                     device_name=torch.cuda.get_device_name(device),
                     op_name="kda",
-                    kernel_source="fused_recurrent_kda_packed_decode",
+                    kernel_source=recurrence_kernel_source,
                     perf_filename=perf_filename,
                     power_stats=results["power_stats"],
                 ):
@@ -951,7 +1023,7 @@ GLM5_NEXT_KDA_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 # replicates; any other installed release raises KdaRuntimeNotAuditedError (a
 # classified failure) instead of timing a possibly different kernel path.
 _KDA_ARCHITECTURE_COMPAT = {
-    KIMI_K3_KDA_ARCHITECTURE: "sglang==0.5.16",
+    KIMI_K3_KDA_ARCHITECTURE: "sglang>=0.5.16,<=0.5.21,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20",
     GLM5_NEXT_KDA_ARCHITECTURE: "sglang==0.5.20",
 }
 

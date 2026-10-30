@@ -28,12 +28,11 @@ from collector.version_resolver import _check_compat
 # builders/selectors remain authoritative; no kernel fallback is introduced.
 # The campaign manifest still selects one exact release per run.
 #
-# The file-level range spans the two audited routes; each architecture is
+# The file-level range spans the audited routes; each architecture is
 # additionally gated to its own audited release(s) by ``_ARCHITECTURE_COMPAT``
-# below, so DeepSeek-V4 behaviour on 0.24.0-0.25.0 is unchanged and neither
-# architecture runs on an unaudited release in between (it raises instead).
-# GLM-5.3-Flash moved to stock vLLM 0.31.0 (no overlay); the upper bound
-# admits it while DeepSeek-V4 stays gated to its own releases.
+# below: DeepSeek-V4 on 0.24.0-0.30.0 (0.30.0 is the collector default),
+# GLM-5.3-Flash on stock vLLM 0.31.0 only (no overlay); an architecture on
+# any other release raises instead of running.
 __compat__ = "vllm>=0.24.0,<=0.31.0"
 
 # vLLM imports stay lazy in this module so that a mismatched install fails
@@ -64,7 +63,7 @@ GLM5NEXT_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 # audited on the installed release raises MhcRuntimeNotAuditedError (a
 # classified failure) instead of running an unverified dispatch.
 _ARCHITECTURE_COMPAT = {
-    ARCHITECTURE: "vllm>=0.24.0,<=0.25.0",
+    ARCHITECTURE: "vllm>=0.24.0,<=0.30.0",
     # Stock vllm 0.31.0 only (no overlay) — see the GLM audit below.
     GLM5NEXT_ARCHITECTURE: "vllm==0.31.0",
 }

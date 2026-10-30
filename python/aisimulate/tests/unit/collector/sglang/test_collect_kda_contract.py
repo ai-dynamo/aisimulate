@@ -84,7 +84,7 @@ def test_glm5_next_decode_uses_bounded_gate_recurrence_not_packed_decode():
 
 @pytest.mark.parametrize(
     ("version", "accepted"),
-    [("0.5.16", True), ("0.5.17", False), ("0.5.19", False), ("0.5.20", True), ("0.5.21", False)],
+    [("0.5.16", True), ("0.5.17", False), ("0.5.19", False), ("0.5.20", True), ("0.5.21", True), ("0.5.22", False)],
 )
 def test_kda_compat_admits_kimi_branch_and_glm_runtime(version, accepted):
     from collector.version_resolver import _check_compat
@@ -134,22 +134,30 @@ def _gate_namespace():
     return namespace
 
 
+AUDITED_KDA_RELEASES = {
+    "KimiK3ForConditionalGeneration": ("0.5.16", "0.5.21"),
+    "Glm5NextForConditionalGeneration": ("0.5.20",),
+}
+
+
 def test_kda_audited_release_sets_do_not_overlap():
     from collector.version_resolver import _check_compat
 
     compat = _gate_namespace()["_KDA_ARCHITECTURE_COMPAT"]
-    audited = {arch: spec.split("==", 1)[1] for arch, spec in compat.items()}
-    assert set(audited) == {"KimiK3ForConditionalGeneration", "Glm5NextForConditionalGeneration"}
-    for arch, version in audited.items():
-        for other, spec in compat.items():
-            assert _check_compat(spec, version) is (other == arch), (arch, other)
+    assert set(compat) == set(AUDITED_KDA_RELEASES)
+    for arch, versions in AUDITED_KDA_RELEASES.items():
+        for version in versions:
+            for other, spec in compat.items():
+                assert _check_compat(spec, version) is (other == arch), (arch, other, version)
 
 
 @pytest.mark.parametrize(
     ("model_name", "version", "audited"),
     [
         ("moonshotai/Kimi-K3", "0.5.16", True),
+        ("moonshotai/Kimi-K3", "0.5.21", True),
         ("moonshotai/Kimi-K3", "0.5.20", False),
+        ("zai-org/GLM-5.3-Flash", "0.5.21", False),
         ("zai-org/GLM-5.3-Flash", "0.5.20", True),
         ("zai-org/GLM-5.3-Flash", "0.5.16", False),
     ],

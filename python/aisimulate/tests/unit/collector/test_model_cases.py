@@ -522,6 +522,7 @@ def test_moe_model_quantization_policy_is_yaml_backed():
     # -BF16 suffix (there is no zai-org/GLM-5.3-FP8 repository).
     assert moe_model_allows_quantization("sglang", "zai-org/GLM-5.3", "fp8_block")
     assert not moe_model_allows_quantization("sglang", "zai-org/GLM-5.3", "bfloat16")
+    assert not moe_model_allows_quantization("sglang", "zai-org/GLM-5.3", "nvfp4")
     assert moe_model_allows_quantization("sglang", "zai-org/GLM-5.3-BF16", "bfloat16")
     assert not moe_model_allows_quantization("sglang", "zai-org/GLM-5.3-BF16", "fp8_block")
 
@@ -1422,8 +1423,8 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
         "zai-org/GLM-5.2",
         "zai-org/GLM-5.2-FP8",
         "nvidia/GLM-5.2-NVFP4",
-        "zai-org/GLM-5.3",
         "zai-org/GLM-5.3-BF16",
+        "zai-org/GLM-5.3",
         "nvidia/GLM-5.3-NVFP4",
     }
     assert {spec.native_num_heads for spec in dsa_specs if spec.architecture == "GlmMoeDsaForCausalLM"} == {64}
@@ -1585,11 +1586,10 @@ def test_model_cases_path_can_infer_model_path():
     assert "dsv4_csa_context_module" in plan.selected_ops
     assert "dsv4_csa_topk_calib" in plan.selected_ops
     assert "mhc_module" in plan.selected_ops
-    assert {
-        "dsv4_paged_mqa_logits_module",
-        "dsv4_hca_attn_module",
-        "dsv4_csa_attn_module",
-    }.isdisjoint(plan.selected_ops)
+    # the SDK's only live sparse sidecar (CP chunk walk) is planned; the FMLA sidecars
+    # (hca_attn / csa_attn) were removed from the registry on 2026-10-15
+    assert "dsv4_paged_mqa_logits_module" in plan.selected_ops
+    assert {"dsv4_hca_attn_module", "dsv4_csa_attn_module"}.isdisjoint(plan.selected_ops)
 
 
 def test_plan_rejects_model_declared_ops_unknown_to_backend_registry(tmp_path):
@@ -1643,7 +1643,7 @@ def test_vllm_024_schedules_consumed_dsv4_modules_only():
         "dsv4_csa_generation_module",
         "dsv4_hca_generation_module",
     }
-    registry_only_ops = {"dsv4_paged_mqa_logits_module", "dsv4_hca_attn_module", "mhc_module"}
+    removed_sidecar_ops = {"dsv4_hca_attn_module", "dsv4_csa_attn_module"}  # removed 2026-10-15
     plan = build_collection_case_plan(backend="vllm", model_path="sgl-project/DeepSeek-V4-Pro-FP8")
 
     assert plan.ops == [
@@ -1651,12 +1651,15 @@ def test_vllm_024_schedules_consumed_dsv4_modules_only():
         "dsv4_csa_generation_module",
         "dsv4_hca_context_module",
         "dsv4_hca_generation_module",
+        "dsv4_paged_mqa_logits_module",  # consumed by the SDK CP chunk walk; shipped for vllm 0.24/0.25
         "gemm",
+        "mhc_module",  # SDK queries mhc pre/post on every backend; scheduled again 2026-10-11
         "moe",
     ]
+    registered_ops = {entry.op for entry in REGISTRY}
     assert consumed_dsv4_ops <= plan.selected_ops
-    assert registry_only_ops.isdisjoint(plan.selected_ops)
-    assert consumed_dsv4_ops | registry_only_ops <= {entry.op for entry in REGISTRY}
+    assert consumed_dsv4_ops <= registered_ops
+    assert removed_sidecar_ops.isdisjoint(registered_ops)
 
 
 def test_model_architecture_can_select_case_file():
@@ -1727,8 +1730,7 @@ def test_vllm_024_model_plans_only_schedule_representable_attention_paths():
         "mla_context",
         "mla_generation",
         "moe",
-        "moe_ep",
-    ]
+    ]  # moe_ep left the default trtllm plan with the separate WideEP pin (2026-10-04)
     assert build_collection_case_plan(backend="vllm_xpu", model_path=kimi_path).ops == ["gemm", "moe"]
 
     models_with_unrepresentable_vllm_attention = (
@@ -1848,6 +1850,7 @@ def test_trtllm_mla_module_getter_requests_backend_canonicalization():
         "get_context_test_cases": lambda _attention_type: [[128, 1, 8, "bfloat16", "bfloat16", "bfloat16"]],
         "get_generation_test_cases": lambda _attention_type: [],
         "get_mla_module_model_specs": get_model_specs,
+        "get_sm_version": lambda: 90,
     }
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)
 
@@ -1855,6 +1858,167 @@ def test_trtllm_mla_module_getter_requests_backend_canonicalization():
 
     assert calls == [{"attention_type": "mla", "backend": "trtllm"}]
     assert cases == [[128, 1, 8, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3", "mla"]]
+
+
+def _load_module_case_builder(backend: str, namespace: dict):
+    from types import SimpleNamespace
+
+    source_path = REPO_ROOT / f"collector/{backend}/collect_mla_module.py"
+    tree = ast.parse(source_path.read_text(), filename=str(source_path))
+    wanted = {"_build_module_test_cases"}
+    if backend == "vllm":
+        # the DSA context grouping expands each series through the plan predicate
+        wanted |= {"_dsa_context_point_allowed", "_dsa_context_budgets"}
+        namespace.setdefault(
+            "get_mla_module_sweep_spec",
+            lambda _backend=None: SimpleNamespace(
+                context_dsa_chunk_prefill_size=16384,
+                context_max_tokens=131072,
+                context_dsa_max_full_sequence_length=1048576,
+            ),
+        )
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
+    exec(compile(ast.Module(body=functions, type_ignores=[]), str(source_path), "exec"), namespace)
+    return namespace["_build_module_test_cases"]
+
+
+@pytest.mark.parametrize("backend", ["vllm", "trtllm"])
+def test_dsa_module_plan_drops_sub_8_head_cells_on_sm100_only(backend):
+    """b200 2026-10-06 (jobs 471043976 / 469988228): per-rank heads 1/2/4 have no sparse-MLA
+    decode kernel on SM100/103 (trtllm-gen tileSizeQ < 8; TRT-LLM FMHA rows % 8) and failed
+    68,435 + 15,408 cases after a full module load each. The planners drop them for DSA on
+    SM100/103 and keep them for MLA and on other SMs."""
+    from types import SimpleNamespace
+
+    heads = [128, 64, 8, 4, 2, 1]
+    base = [[1, 1, h, "bfloat16", "bfloat16", "bfloat16", 0] for h in heads]
+    for sm, expected in ((100, [128, 64, 8]), (103, [128, 64, 8]), (90, heads)):
+        ns = {
+            "get_context_test_cases": lambda _t, base=base: base,
+            "get_generation_test_cases": lambda _t: [],
+            "get_mla_module_model_specs": lambda **_k: [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3.2")],
+            "get_sm_version": lambda sm=sm: sm,
+            "_DSA_SPARSE_DECODE_MIN_HEADS": 8,
+            "_DSA_SPARSE_DECODE_MIN_HEADS_SMS": (100, 103),
+            "_model_max_position_embeddings": lambda _m: None,
+        }
+        build = _load_module_case_builder(backend, ns)
+        assert [c[2] for c in build("dsa", "context")] == expected, (backend, sm)
+        assert [c[2] for c in build("mla", "context")] == heads, (backend, sm)  # dense MLA untouched
+
+
+@pytest.mark.parametrize("backend", ["vllm", "trtllm"])
+def test_module_plan_keeps_only_the_heads_of_declared_tensor_parallel_shards(backend):
+    """A model row that declares tensor_parallel_sizes (case_authoring model-correlated
+    narrowing, as the MSA rows do) measures only native_num_heads // tp; the shared head
+    grid's other entries (96/48/24/12 for the 96-head Kimi-K3 MLA module, 128 for a 64-head
+    model) were 40-50% of the b200 vllm dsa_context rows (2026-10-29). Rows without the
+    declaration keep the full grid."""
+    from types import SimpleNamespace
+
+    heads = [128, 96, 64, 48, 32, 24, 16, 12, 8]
+    base = [[1, 1, h, "bfloat16", "bfloat16", "bfloat16", 0] for h in heads]
+    glm = SimpleNamespace(model_path="zai-org/GLM-5.2", native_num_heads=64, tensor_parallel_sizes=(1, 2, 4, 8))
+    kimi = SimpleNamespace(model_path="moonshotai/Kimi-K3", native_num_heads=96, tensor_parallel_sizes=None)
+    ns = {
+        "get_context_test_cases": lambda _t: base,
+        "get_generation_test_cases": lambda _t: [],
+        "get_mla_module_model_specs": lambda **_k: [glm, kimi],
+        "get_sm_version": lambda: 100,
+        "_DSA_SPARSE_DECODE_MIN_HEADS": 8,
+        "_DSA_SPARSE_DECODE_MIN_HEADS_SMS": (100, 103),
+        "_model_max_position_embeddings": lambda _m: None,
+    }
+    build = _load_module_case_builder(backend, ns)
+    by_model = {}
+    for case in build("dsa", "context"):
+        by_model.setdefault(case[6], []).append(case[2])
+    assert by_model["zai-org/GLM-5.2"] == [64, 32, 16, 8]
+    assert by_model["moonshotai/Kimi-K3"] == heads
+
+
+def test_vllm_module_plan_groups_the_seq_len_points_of_one_module_into_one_case():
+    """One case per (batch, heads, dtypes, gemm, model, attn, prefix) with its seq_len points
+    in slot 0, largest first: run_mla_module builds the module once per case (the module
+    build dominated vllm dsa_context_module in the 2026-10 campaign)."""
+    from types import SimpleNamespace
+
+    base = [
+        [128, 1, 64, "bfloat16", "bfloat16", "bfloat16", 0],
+        [16, 1, 64, "bfloat16", "bfloat16", "bfloat16", 0],
+        [1024, 1, 64, "bfloat16", "bfloat16", "bfloat16", 0],
+        [128, 1, 64, "bfloat16", "bfloat16", "bfloat16", 4096],  # other prefix -> same module series
+        [16, 1, 64, "bfloat16", "bfloat16", "bfloat16", 4096],
+        [1024, 1, 64, "bfloat16", "bfloat16", "bfloat16", 4096],
+        [16, 8, 64, "bfloat16", "bfloat16", "bfloat16", 0],  # other batch -> other case
+        [16, 1, 64, "fp8", "bfloat16", "bfloat16", 0],  # other kv dtype -> other case
+    ]
+    ns = {
+        "get_context_test_cases": lambda _t: base,
+        "get_generation_test_cases": lambda _t: [],
+        "get_mla_module_model_specs": lambda **_k: [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3.2")],
+        "get_sm_version": lambda: 100,
+        "_DSA_SPARSE_DECODE_MIN_HEADS": 8,
+        "_DSA_SPARSE_DECODE_MIN_HEADS_SMS": (100, 103),
+        "_model_max_position_embeddings": lambda _m: None,
+    }
+    build = _load_module_case_builder("vllm", ns)
+    cases = build("dsa", "context")
+    # DSA context: the module series carries its isl list AND its prefix list (the plan's
+    # isl x prefix grid); the runner expands the grid through the same predicate.
+    assert cases == [
+        [[1024, 128, 16], 1, 64, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", "dsa", [4096, 0]],
+        [[16], 8, 64, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", "dsa", [0]],
+        [[16], 1, 64, "fp8", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", "dsa", [0]],
+    ]
+    # the trtllm planner keeps one case per point
+    trt = _load_module_case_builder("trtllm", dict(ns))
+    assert [c[0] for c in trt("dsa", "context")] == [128, 16, 1024, 128, 16, 1024, 16, 16]
+
+
+def test_vllm_dsa_module_plan_refuses_a_grid_the_runner_would_not_reproduce():
+    """The plan generator and run_mla_module share _dsa_context_point_allowed; a base list whose
+    (isl, prefix) points are not that predicate's product cannot be expressed as a series."""
+    from types import SimpleNamespace
+
+    base = [
+        [1024, 1, 64, "bfloat16", "bfloat16", "bfloat16", 0],
+        [16, 1, 64, "bfloat16", "bfloat16", "bfloat16", 4096],  # (1024, 4096) and (16, 0) missing
+    ]
+    ns = {
+        "get_context_test_cases": lambda _t: base,
+        "get_generation_test_cases": lambda _t: [],
+        "get_mla_module_model_specs": lambda **_k: [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3.2")],
+        "get_sm_version": lambda: 100,
+        "_DSA_SPARSE_DECODE_MIN_HEADS": 8,
+        "_DSA_SPARSE_DECODE_MIN_HEADS_SMS": (100, 103),
+        "_model_max_position_embeddings": lambda _m: None,
+    }
+    build = _load_module_case_builder("vllm", ns)
+    with pytest.raises(RuntimeError, match="expands to 4 points but the plan holds 2"):
+        build("dsa", "context")
+
+
+def test_vllm_dsa_module_plan_caps_prefix_at_the_model_max_position():
+    """7,050 b200 vllm DSA cases (job 471043976) asked vLLM for max_model_len > the model's
+    max_position_embeddings (prefix 262144+ on DeepSeek-V3.2 / GLM-5): the planner now
+    applies the same per-model cap the sglang module collector applies."""
+    from types import SimpleNamespace
+
+    base = [[16, 1, 64, "bfloat16", "bfloat16", "bfloat16", p] for p in (0, 4096, 163824, 163825, 262144)]
+    ns = {
+        "get_context_test_cases": lambda _t: base,
+        "get_generation_test_cases": lambda _t: [],
+        "get_mla_module_model_specs": lambda **_k: [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3.2")],
+        "get_sm_version": lambda: 100,
+        "_DSA_SPARSE_DECODE_MIN_HEADS": 8,
+        "_DSA_SPARSE_DECODE_MIN_HEADS_SMS": (100, 103),
+        "_model_max_position_embeddings": lambda _m: 163840,
+    }
+    build = _load_module_case_builder("vllm", ns)
+    assert [c[-1] for c in build("dsa", "context")] == [[163824, 4096, 0]]
+    ns["_model_max_position_embeddings"] = lambda _m: None  # unknown ceiling -> no cap
+    assert [c[-1] for c in build("dsa", "context")] == [[262144, 163825, 163824, 4096, 0]]
 
 
 def test_support_matrix_models_have_model_case_aliases():
@@ -2228,3 +2392,22 @@ def test_nvfp4_checkpoint_targets_msa_module_specs(monkeypatch):
         assert all(s.model_path == "MiniMaxAI/MiniMax-M3" for s in specs), (
             "alias rows must stay keyed to the canonical model path"
         )
+
+
+def test_msa_head_axis_derives_from_declared_shards():
+    """MSA is one fixed geometry (MiniMax-M3 64q/4kv/4idx): the collectors sweep
+    native // tp for the model row's tensor_parallel_sizes, never the shared
+    GQA-style head grid (owner decision 2026-09-29; TP 16 is the ceiling)."""
+    from collector.case_generator import get_mla_module_model_specs, get_msa_head_counts
+
+    (spec,) = [
+        s
+        for s in get_mla_module_model_specs(attention_type="msa", apply_model_filter=False)
+        if s.model_path == "MiniMaxAI/MiniMax-M3"
+    ]
+    assert spec.tensor_parallel_sizes == (1, 2, 4, 8, 16)
+    for backend in ("vllm", "trtllm", "sglang"):
+        heads = get_msa_head_counts(backend)
+        assert heads == [64, 32, 16, 8, 4], (backend, heads)
+        # every derived shard keeps the index-head count a power of two
+        assert all((max(1, h // 16) & (max(1, h // 16) - 1)) == 0 for h in heads)

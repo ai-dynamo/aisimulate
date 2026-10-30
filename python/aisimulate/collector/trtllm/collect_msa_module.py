@@ -55,8 +55,19 @@ import weakref
 import tensorrt_llm
 import torch
 import transformers
-from tensorrt_llm._torch.attention_backend.interface import AttentionRuntimeFeatures
-from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
+
+# trtllm >=1.3.0rc29 moved _torch.attention_backend.* -> _torch.attention.backends.* and
+# _torch.modules.fused_moe -> _torch.moe.fused_moe (the old package root is a deprecation shim
+# without submodules). Path-only compat: same classes, same kernels (layer_permissions.md
+# 'API-compat shims may only change HOW the same kernel is constructed').
+try:
+    from tensorrt_llm._torch.attention.backends.interface import AttentionRuntimeFeatures
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend.interface import AttentionRuntimeFeatures
+try:
+    from tensorrt_llm._torch.attention.backends.utils import get_attention_backend
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
 from tensorrt_llm._torch.metadata import KVCacheParams
 from tensorrt_llm._torch.model_config import ModelConfig
 from tensorrt_llm._torch.models.modeling_minimaxm3 import MiniMaxM3DecoderLayer
@@ -104,8 +115,15 @@ from collector.case_generator import (
     get_mla_module_model_specs,
     get_mla_module_precision_specs,
     get_mla_module_sweep_spec,
+    get_msa_head_counts,
 )
-from collector.helper import _resolve_local_model_path, benchmark_with_power, get_sm_version, log_perf
+from collector.helper import (
+    PeriodicGarbageCollector,
+    _resolve_local_model_path,
+    benchmark_with_power,
+    get_sm_version,
+    log_perf,
+)
 from collector.registry_types import PerfFile
 
 if not hasattr(_trtllm_configs, "PretrainedConfig"):
@@ -134,6 +152,18 @@ def _get_precision_combos(phase: str):
     ]
 
 
+def _msa_implementation(sm_version: int) -> str:
+    """Which MiniMax-M3 sparse implementation TRT-LLM can run on this SM.
+
+    "msa" = the fmha_sm100 kernels, hard-gated to the SM100 family
+    (msa_availability.py:ensure_msa_available@1.3.0rc29 raises off SM100/103,
+    SM120 included); everything else runs the Triton reference
+    (triton_backend.py). Single source of truth for the plan-time budget
+    below and the layer construction in build_msa_layer.
+    """
+    return "msa" if sm_version in (100, 103) else "triton"
+
+
 def get_context_test_cases():
     """Context-phase test cases.
 
@@ -142,11 +172,26 @@ def get_context_test_cases():
     """
     cases = []
     sweep = get_mla_module_sweep_spec("trtllm")
+    head_counts = get_msa_head_counts("trtllm")  # native // tp of the declared shards, not the shared head grid
+    # Declared budget for the Triton reference implementation
+    # (mla_module.yaml mla_module_trtllm.context.msa_triton_max_tokens): its
+    # masked-dense FP32 prefill is quadratic per sequence (24.5 s per forward
+    # at 64 heads / isl 32768 on rtxpro6000) and OOMs at b*isl=131072, so the
+    # SMs that only have it stop at 32K tokens; fmha_sm100 keeps the shared cap.
+    sm_version = get_sm_version()
+    max_tokens = sweep.context_max_tokens
+    triton_max_tokens = sweep.context_msa_triton_max_tokens
+    if triton_max_tokens and _msa_implementation(sm_version) == "triton":
+        max_tokens = min(max_tokens, triton_max_tokens)
+    dropped_triton_budget = 0
     for compute_dtype, kv_dtype, gemm_type in _get_precision_combos("context"):
-        for num_heads in sweep.inner_sweep_head_counts:
+        for num_heads in head_counts:
             for b in sweep.context_batch_sizes:
                 for s in sweep.context_sequence_lengths:
                     if b * s > sweep.context_max_tokens:
+                        continue
+                    if b * s > max_tokens:
+                        dropped_triton_budget += len(sweep.context_prefix_lengths)
                         continue
                     if (
                         sweep.context_large_sequence_min
@@ -156,6 +201,12 @@ def get_context_test_cases():
                         continue
                     for prefix_len in sweep.context_prefix_lengths:
                         cases.append([s, b, num_heads, kv_dtype, compute_dtype, gemm_type, prefix_len])
+    if dropped_triton_budget:
+        print(
+            f"[trtllm-msa-module-cases] context: dropped {dropped_triton_budget} cases with batch*isl > "
+            f"{max_tokens} (SM{sm_version} runs the Triton reference implementation; "
+            "mla_module_trtllm.context.msa_triton_max_tokens)"
+        )
     return cases
 
 
@@ -167,8 +218,9 @@ def get_generation_test_cases():
     """
     cases = []
     sweep = get_mla_module_sweep_spec("trtllm")
+    head_counts = get_msa_head_counts("trtllm")
     for compute_dtype, kv_dtype, gemm_type in _get_precision_combos("generation"):
-        for num_heads in sweep.inner_sweep_head_counts:
+        for num_heads in head_counts:
             for b in sweep.generation_batch_sizes:
                 for s in sweep.generation_sequence_lengths:
                     if b * s > sweep.generation_max_tokens:
@@ -362,7 +414,7 @@ def create_msa_attention_layer(
     # elsewhere. kernel_source records which one actually ran. Field-presence
     # probe keeps rc19/rc20 (no such field, pydantic strict) working.
     if "implementation" in getattr(MiniMaxM3SparseAttentionConfig, "model_fields", {}):
-        sparse_kwargs["implementation"] = "msa" if get_sm_version() in (100, 103) else "triton"
+        sparse_kwargs["implementation"] = _msa_implementation(get_sm_version())
     sparse_attention_config = MiniMaxM3SparseAttentionConfig(**sparse_kwargs)
 
     # NOTE: sparse_attention_config is intentionally NOT passed as a
@@ -509,9 +561,14 @@ def _resolve_msa_metadata_cls():
     instead of sniffing the version string.
     """
     try:
-        from tensorrt_llm._torch.attention_backend.sparse.minimax_m3.msa_backend import (
-            MiniMaxM3MsaSparseAttentionMetadata,
-        )
+        try:
+            from tensorrt_llm._torch.attention.backends.sparse.minimax_m3.msa_backend import (
+                MiniMaxM3MsaSparseAttentionMetadata,
+            )
+        except ModuleNotFoundError:  # < rc29 layout
+            from tensorrt_llm._torch.attention_backend.sparse.minimax_m3.msa_backend import (
+                MiniMaxM3MsaSparseAttentionMetadata,
+            )
     except ImportError:  # rc19/rc20 layout — Triton contract only
         return None
     return MiniMaxM3MsaSparseAttentionMetadata
@@ -538,6 +595,28 @@ def _resolve_attention_backend_cls(model_config: ModelConfig):
         model_config.attn_backend,
         sparse_attention_config=model_config.sparse_attention_config,
     )
+
+
+# One MiniMax-M3 sparse attention layer per (model, heads, gemm type) per worker —
+# same pattern and rationale as collect_mla_module._cached_attention_layer /
+# collect_dsv4_attn._cached_dsv4_attention_module: the layer build does not depend
+# on the point; the per-case KV cache manager, metadata, dry run and timing are
+# untouched (b300 base run: msa_context_module 1.8 GPU-s per one-row case).
+_LAYER_CACHE: dict = {}
+
+
+def _cached_msa_attention_layer(model_path: str, num_heads: int, gemm_type: str, device: str):
+    key = (model_path, int(num_heads), gemm_type, device)
+    hit = _LAYER_CACHE.get(key)
+    if hit is not None:
+        return hit
+    if _LAYER_CACHE:
+        _LAYER_CACHE.clear()
+        gc.collect()
+        torch.cuda.empty_cache()
+    entry = create_msa_attention_layer(model_path=model_path, num_heads=num_heads, gemm_type=gemm_type, device=device)
+    _LAYER_CACHE[key] = entry
+    return entry
 
 
 def create_kv_cache_and_metadata(
@@ -756,7 +835,15 @@ def create_kv_cache_and_metadata(
                 "the MSA cache-write buffers (msa_backend.py:549-609@1.3.0rc23); "
                 "the KV cache manager is not the M3 sparse manager"
             )
-        if not is_context and attn_metadata.msa_decode_proxy_plan is None:
+        # rc23 exposed the graph-safe decode plan as ``msa_decode_proxy_plan``; rc29's
+        # MiniMaxM3MsaSparseAttentionMetadata no longer has that attribute (AttributeError
+        # on every generation case: 2,760/2,760, b200 job 469988228). Check the plan only
+        # where the contract still names it; on later series rely on _msa_fields_ready
+        # above. FIXME(re-verify): confirm rc29's decode-plan field name and restore an
+        # explicit check once known.
+        unset = object()
+        proxy_plan = getattr(attn_metadata, "msa_decode_proxy_plan", unset)
+        if not is_context and proxy_plan is None:
             raise RuntimeError(
                 "MSA decode plans were not built for a pure generation batch "
                 "(msa_backend.py:428-460@1.3.0rc23); sparse_metadata_params "
@@ -817,11 +904,8 @@ def run_msa_module(
         f"compute={compute_dtype}, kv={kv_cache_dtype}, model={model_path}"
     )
 
-    attn_module, model_config, original_architecture = create_msa_attention_layer(
-        model_path=model_path,
-        num_heads=num_heads,
-        gemm_type=gemm_type,
-        device=device,
+    attn_module, model_config, original_architecture = _cached_msa_attention_layer(
+        model_path, num_heads, gemm_type, device
     )
 
     kv_cache_manager, attn_metadata, kernel_source = create_kv_cache_and_metadata(
@@ -907,6 +991,10 @@ def run_msa_module(
             device=torch_device,
             kernel_func=kernel_func,
             num_warmups=warming_up,
+            # Graph-timed cases: the dry run already executed this forward, three
+            # eager passes suffice before capture. Eager-timed MSA prefill keeps
+            # the full warmup since it IS the measurement's warmup.
+            num_eager_warmups=3 if use_cuda_graph else warming_up,
             num_runs=test_ite,
             repeat_n=1,
             allow_graph_fail=False,
@@ -1000,11 +1088,15 @@ def run_msa_module_worker(
     )
 
 
+# gc.collect() after every case cost 0.17 s of a ~1 s module case; collect periodically instead.
+_CASE_GC = PeriodicGarbageCollector()
+
+
 def _cleanup(kv_cache_manager):
     if kv_cache_manager is not None:
         kv_cache_manager.shutdown()
     torch.cuda.empty_cache()
-    gc.collect()
+    _CASE_GC.maybe_collect()
 
 
 # ═══════════════════════════════════════════════════════════════════════

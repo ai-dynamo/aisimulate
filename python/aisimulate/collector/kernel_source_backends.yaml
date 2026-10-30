@@ -137,6 +137,7 @@ mappings:
   - {framework: sglang, kernel_source: sglang_torch_linear, backend: cublas, source: "PR#1342 collect_gemm.py (torch.matmul/linear)"}
   - {framework: sglang, kernel_source: sglang_torch_bmm, backend: cublas, source: "PR#1342 collect_mla_bmm.py (torch.bmm)"}
   - {framework: sglang, kernel_source: sglang_sgl_kernel_bmm_fp8, backend: cublas, source: "PR#1342 collect_mla_bmm.py (sgl_kernel bmm_fp8 = cublasLt)"}
+  - {framework: sglang, kernel_source: sglang_flashinfer_bmm_fp8, backend: cublas, source: "collector/sglang/collect_mla_bmm.py:22-26 (sglang>=0.5.21: fp8_utils.bmm_fp8 wraps flashinfer.bmm_fp8 as custom op flashinfer_bmm_fp8_batched, docstring 'via flashinfer's cuBLAS backend', fp8_utils.py:246-273 @0.5.21); flashinfer csrc/bmm_fp8.cu bmm_fp8_internal_cublaslt"}
   - {framework: sglang, kernel_source: sglang_sgl_kernel_fp8_scaled_mm, backend: cutlass, source: "PR#1342 collect_gemm.py (sgl_kernel fp8_scaled_mm)"}
   - {framework: sglang, kernel_source: sglang_deepgemm_gemm_nt_f8f8bf16, backend: deepgemm, source: "PR#1342 collect_gemm.py"}
   - {framework: sglang, kernel_source: sglang_triton_w8a8_block_fp8, backend: triton, source: "sglang/collect_gemm_0520.py (fp8_utils.py:1094-1107 @v0.5.20 N%64/K%128 fallback)"}
@@ -152,6 +153,8 @@ mappings:
   # GDN sub-kernels and mHC.
   - {framework: sglang, kernel_source: chunk_gated_delta_rule, backend: fla_triton, source: "PR#1342 collect_gdn.py (fla triton chunk kernel)"}
   - {framework: sglang, kernel_source: fused_recurrent_gated_delta_rule_packed_decode, backend: fla_triton, source: "PR#1342 collect_gdn.py"}
+  - {framework: sglang, kernel_source: flashinfer_chunk_gated_delta_rule, backend: flashinfer, source: "collector/sglang/collect_gdn.py:366-371 (FlashInferGDNKernel.extend lane); sglang srt/layers/attention/linear/kernels/gdn_flashinfer.py:129-131,465 @0.5.21 imports flashinfer.gdn_prefill.chunk_gated_delta_rule"}
+  - {framework: sglang, kernel_source: fused_qkvzba_causal_conv1d_update_contiguous, backend: triton, source: "collector/sglang/collect_gdn.py:505-514 (decode fused proj + conv update); sglang kernels/ops/attention/triton_gdn_fused_proj.py:576 @0.5.21 (@triton.jit kernels), gdn_backend.py:668-760"}
   - {framework: sglang, kernel_source: sglang_tilelang_mhc_pre, backend: tilelang, source: "PR#1342 collect_mhc_module.py"}
   - {framework: sglang, kernel_source: sglang_tilelang_mhc_post, backend: tilelang, source: "PR#1342 collect_mhc_module.py"}
   - {framework: sglang, kernel_source: sglang_torch_mhc_pre, backend: torch, source: "PR#1342 collect_mhc_module.py (torch fallback leaf)"}
@@ -220,10 +223,15 @@ mappings:
 
   # Mamba/GDN kernels.
   - {framework: trtllm, kernel_source: causal_conv1d_fn, backend: causal_conv1d, source: "trtllm _torch mamba modules"}
+  - {framework: trtllm, kernel_source: causal_conv1d_fn_token_major, backend: causal_conv1d, source: "collector/trtllm/collect_mamba2.py _run_prefill_conv_token_major: channel-last view + token-major out, the 1.3.0rc29 Mamba2Mixer default (mamba2_mixer.py:319,541-569; causal_conv1d_channellast_fwd_kernel)"}
   - {framework: trtllm, kernel_source: causal_conv1d_update, backend: causal_conv1d, source: "trtllm _torch mamba modules"}
   - {framework: trtllm, kernel_source: chunk_gated_delta_rule, backend: fla_triton, source: "trtllm _torch GDN (triton)"}
-  - {framework: trtllm, kernel_source: fused_recurrent_gated_delta_rule, backend: fla_triton, source: "trtllm _torch GDN (triton)"}
+  - {framework: trtllm, kernel_source: fused_recurrent_gated_delta_rule, backend: fla_triton, source: "trtllm _torch GDN (triton) — FLA recurrent fallback lane; serving's pure-decode entry is the fused_sigmoid_gating row below (rc23)"}
+  - {framework: trtllm, kernel_source: chunk_gated_delta_rule_flashinfer, backend: flashinfer, source: "collector/trtllm/collect_gdn.py: gdn_mixer._resolve_chunk_gated_delta_rule picked fla/flashinfer_chunk (FlashInfer cute-DSL GDN chunk, SM90/SM100; gdn_mixer.py:57-70 @1.3.0rc23)"}
+  - {framework: trtllm, kernel_source: fused_sigmoid_gating_delta_rule_update_flashinfer, backend: flashinfer, source: "collector/trtllm/collect_gdn.py:_bench_serving_decode_entry — fla/fused_sigmoid_gating_recurrent.py:452-458 dispatched to FlashInfer gdn_decode_bf16_state (kernel_cutlass_gdn_decode_*) @1.3.0rc23"}
+  - {framework: trtllm, kernel_source: fused_sigmoid_gating_delta_rule_update_triton, backend: fla_triton, source: "collector/trtllm/collect_gdn.py:_bench_serving_decode_entry — same entry, _can_use_flashinfer_gdn_decode False (non-SM90/100, K/V != 128, T != N) -> fused_sigmoid_gating_delta_rule_update_kernel (Triton)"}
   - {framework: trtllm, kernel_source: mamba_chunk_scan_combined, backend: flashinfer, source: "collector/trtllm/collect_mamba2.py:290 (mamba2 SSD chunk scan; tensorrt_llm/_torch/modules/mamba/ssd_combined.py:437-444@1.3.0rc15 flashinfer SSDCombined on SM100+ when _flashinfer_ssd_supported; Triton fallback on non-SM100 or unsupported tile sizes — no shipped row takes it: all rc15 scan rows are (chunk=128, dstate=128, headdim=64) on b200_sxm, flashinfer-eligible by construction; label split for future fallback coverage: AIC-1677)"}
+  - {framework: trtllm, kernel_source: selective_state_update_flashinfer, backend: flashinfer, source: "collector/trtllm/collect_mamba2.py:194-219 (_decode_state_update_kernel imports flashinfer.mamba.selective_state_update when serving selects it; mamba2_mixer.py:23 @1.3.0rc29)"}
 
   # Comm.
   - {framework: trtllm, kernel_source: TRTLLM, backend: custom_allreduce, source: "collector/network/collect_all_reduce.py (trtllm custom AR)"}
@@ -274,7 +282,13 @@ mappings:
   - {framework: vllm, kernel_source: vllm_flashinfer_fidecode, backend: flashinfer, source: "PR#1344 collect_attn.py"}
   - {framework: vllm, kernel_source: vllm_flashinfer_trtllmprefill, backend: trtllm_mha, source: "PR#1344 collect_attn.py (flashinfer trtllm-gen prefill)"}
   - {framework: vllm, kernel_source: vllm_flashinfer_trtllmdecode, backend: trtllm_mha, source: "PR#1344 collect_attn.py (flashinfer trtllm-gen decode)"}
-  - {framework: vllm, kernel_source: vllm_flashinfer_flashinfertrtllmapidecode, backend: unverified, source: "collector/vllm/collect_attn.py:_dense_kernel_source records only the metadata class; vllm/v1/attention/backends/flashinfer.py:502-509,1539-1546@v0.25.0 uses FlashInferTrtllmAPIDecode for both XQA and TRTLLM_GEN. The label omits the kernel discriminator, so it cannot identify one backend across systems. https://github.com/vllm-project/vllm/blob/v0.25.0/vllm/v1/attention/backends/flashinfer.py"}
+  # vLLM 0.30.0 merged the trtllm-gen and XQA decode metadata into FlashInferTrtllmAPIDecode (flashinfer.py:608, kernel field
+  # FlashInferDecodeKernel xqa|trtllm-gen :568-572); collect_attn appends the kernel to the label. Both are TRT-LLM MHA kernels
+  # (XQA = kernel_mha in the opharness sm120 records, trtllm-gen = the SM100 fmha cubins) -> trtllm_mha. The bare class label is
+  # kept for rows collected before the kernel suffix (2026-10-01).
+  - {framework: vllm, kernel_source: vllm_flashinfer_flashinfertrtllmapidecode_xqa, backend: trtllm_mha, source: "collect_attn.py _dense_kernel_source (FlashInferTrtllmAPIDecode.kernel == XQA; sm120 fp8-KV decode, opharness serving record kernel_mha)"}
+  - {framework: vllm, kernel_source: vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen, backend: trtllm_mha, source: "collect_attn.py _dense_kernel_source (FlashInferTrtllmAPIDecode.kernel == TRTLLM_GEN; SM100 decode)"}
+  - {framework: vllm, kernel_source: vllm_flashinfer_flashinfertrtllmapidecode, backend: trtllm_mha, source: "collect_attn.py before the kernel suffix (0.30.0 rows collected 2026-09-29..10-01 on B200/RTX 5000)"}
   # MLA module labels: the AttentionBackendEnum member that ran.
   - {framework: vllm, kernel_source: FLASH_ATTN, backend: flash_attn, source: "PR#1344 collect_mla_module.py (enum-name labels)"}
   - {framework: vllm, kernel_source: FLASH_ATTN_MLA, backend: flash_attn, source: "PR#1344 collect_mla_module.py"}
@@ -283,6 +297,9 @@ mappings:
   - {framework: vllm, kernel_source: FLASHMLA_SPARSE_DSV4, backend: flashmla, source: "PR#1344 collect_dsv4_attn.py"}
   - {framework: vllm, kernel_source: FLASHINFER_MLA, backend: flashinfer, source: "PR#1344 collect_mla_module.py"}
   - {framework: vllm, kernel_source: FLASHINFER_MLA_SPARSE, backend: flashinfer, source: "PR#1344 collect_mla_module.py"}
+  - {framework: vllm, kernel_source: FLASHINFER_MLA_SPARSE_SM120, backend: flashinfer, source: "collect_mla_module.py enum-name label; vllm v0.30.0 v1/attention/backends/registry.py:82 FlashInferMLASparseSM120Backend -> mla/flashinfer_mla_sparse_sm120.py:221-226 flashinfer_trtllm_batch_decode_with_kv_cache_mla (flashinfer.decode)"}
+  - {framework: vllm, kernel_source: FLASHINFER_MLA_SPARSE_DSV4, backend: flashinfer, source: "collect_dsv4_attn.py enum-name label; vllm v0.30.0 registry.py:100 DeepseekV4FlashInferMLASparseBackend -> models/deepseek_v4/nvidia/flashinfer_sparse.py:27,519 flashinfer_trtllm_batch_decode_sparse_mla_dsv4 (flashinfer.decode)"}
+  - {framework: vllm, kernel_source: FLASH_ATTN_MLA_SPARSE, backend: flash_attn, source: "collect_mla_module.py enum-name label; vllm v0.30.0 registry.py:119 FlashAttnMLASparseBackend -> mla/flashattn_mla_sparse.py:31,315 vllm_flash_attn flash_attn_varlen_func (fa_utils.flash_attn_supports_mla: FA3 on SM90)"}
   - {framework: vllm, kernel_source: TRITON_MLA, backend: triton, source: "PR#1344 collect_mla_module.py"}
   - {framework: vllm, kernel_source: TRTLLM_RAGGED, backend: trtllm_ragged, source: "PR#1344 collect_mla_module.py:438-444 (MLAPrefillBackendEnum.TRTLLM_RAGGED, trtllm-gen ragged prefill)"}
   # GEMM / quant labels: vllm kernel class names.
@@ -293,6 +310,7 @@ mappings:
   - {framework: vllm, kernel_source: FlashInferFp8BlockScaledMMKernel, backend: flashinfer, source: "PR#1344 collect_gemm.py"}
   - {framework: vllm, kernel_source: FlashInferCutlassNvFp4LinearKernel, backend: flashinfer_cutlass, source: "PR#1344 collect_gemm.py"}
   - {framework: vllm, kernel_source: FlashInferCuteDslNvFp4LinearKernel, backend: flashinfer_cutedsl, source: "PR#1344 collect_gemm.py"}
+  - {framework: vllm, kernel_source: MarlinFP8ScaledMMLinearKernel, backend: marlin, source: "collect_gemm.py kernel class label; vllm v0.30.0 model_executor/kernels/linear/scaled_mm/marlin.py (apply_fp8_marlin_linear)"}
   - {framework: vllm, kernel_source: "torch.nn.functional.linear", backend: cublas, source: "PR#1344 collect_gemm.py (bf16)"}
   - {framework: vllm, kernel_source: static_scaled_fp8_quant, backend: vllm_kernel, source: "PR#1344 collect_computescale.py:73 (vllm _custom_ops)"}
   - {framework: vllm, kernel_source: dynamic_per_token_scaled_fp8_quant_minus_static_scaled_fp8_quant, backend: vllm_kernel, source: "PR#1344 collect_computescale.py:63 (derived overhead measure)"}
@@ -305,12 +323,15 @@ mappings:
   - {framework: vllm, kernel_source: vllm_fp8moe_flashinfer_cutlass_flashinferexperts, backend: flashinfer_cutlass, source: "PR#1344 collect_moe.py"}
   - {framework: vllm, kernel_source: vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmodular, backend: flashinfer_trtllm_gen, source: "PR#1344 collect_moe.py"}
   - {framework: vllm, kernel_source: vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic, backend: flashinfer_trtllm_gen, source: "PR#1344 collect_moe.py"}
+  - {framework: vllm, kernel_source: vllm_fp8moe_deepgemm_deepgemmexperts, backend: deepgemm, source: "collect_moe.py:795 label = quant method + oracle backend + experts class; vllm v0.30.0 fused_moe/experts/deep_gemm_moe.py:125 DeepGemmExperts (TritonOrDeepGemmExperts leaf, triton_deep_gemm_moe.py:29)"}
   - {framework: vllm, kernel_source: vllm_modeloptfp8moe_triton_tritonexperts, backend: triton_fused_moe, source: "PR#1344 collect_moe.py"}
   - {framework: vllm, kernel_source: vllm_modeloptfp8moe_flashinfer_cutlass_flashinferexperts, backend: flashinfer_cutlass, source: "PR#1344 collect_moe.py"}
   - {framework: vllm, kernel_source: vllm_modeloptfp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic, backend: flashinfer_trtllm_gen, source: "PR#1344 collect_moe.py"}
   - {framework: vllm, kernel_source: vllm_compressedtensorsw4a4nvfp4moe_flashinfer_cutlass_flashinferexperts, backend: flashinfer_cutlass, source: "PR#1344 collect_moe.py"}
   - {framework: vllm, kernel_source: vllm_compressedtensorsw4a4nvfp4moe_flashinfer_trtllm_trtllmnvfp4expertsmodular, backend: flashinfer_trtllm_gen, source: "PR#1344 collect_moe.py"}
   - {framework: vllm, kernel_source: vllm_compressedtensorsw4a4nvfp4moe_flashinfer_trtllm_trtllmnvfp4expertsmonolithic, backend: flashinfer_trtllm_gen, source: "PR#1344 collect_moe.py"}
+  - {framework: vllm, kernel_source: vllm_compressedtensorsw4a4nvfp4moe_flashinfer_cutedsl_flashinfercutedslexperts, backend: flashinfer_cutedsl, source: "collect_moe.py:795; vllm v0.30.0 fused_moe/experts/flashinfer_cutedsl_moe.py:31 FlashInferCuteDSLExperts"}
+  - {framework: vllm, kernel_source: vllm_compressedtensorswna16moe_marlin_marlinexperts, backend: marlin, source: "collect_moe.py:795; vllm v0.30.0 fused_moe/experts/marlin_moe.py:648 MarlinExperts"}
   - {framework: vllm, kernel_source: vllm_modeloptnvfp4fusedmoe_flashinfer_trtllm_trtllmnvfp4expertsmonolithic, backend: flashinfer_trtllm_gen, source: "vllm/collect_moe.py GLM-5.3-Flash ModelOptNvFp4Config lane (trtllm_nvfp4_moe.py:498-520 @v0.31.0; :486-508 @v0.30.0)"}
   - {framework: vllm, kernel_source: vllm_compressedtensorswna16marlinmoe_marlin_marlinexperts, backend: marlin, source: "PR#1344 collect_moe.py"}
   - {framework: vllm, kernel_source: vllm_gptossmxfp4moe_marlin_marlinexperts, backend: marlin, source: "PR#1344 collect_moe.py"}

@@ -313,7 +313,8 @@ def test_vllm_0_20_1_cli_args_golden_contract():
     assert _value_after(tokens, "--data-parallel-size") == "1"
     assert _value_after(tokens, "--kv-cache-dtype") == "bfloat16"
     assert _value_after(tokens, "--gpu-memory-utilization") == "0.82"
-    assert _value_after(tokens, "--max-num-batched-tokens") == "4060"
+    # token budgets round up to a multiple of 64 (backend_config_mapping.yaml): 4060 -> 4096
+    assert _value_after(tokens, "--max-num-batched-tokens") == "4096"
     assert "--enable-expert-parallel" in flags
     assert "--enforce-eager" in flags
     assert "--no-enable-prefix-caching" not in flags
@@ -362,7 +363,8 @@ def test_sglang_0_5_11_cli_args_golden_contract():
     assert _value_after(tokens, "--kv-cache-dtype") == "auto"
     assert _value_after(tokens, "--mem-fraction-static") == "0.82"
     assert _value_after(tokens, "--chunked-prefill-size") == "-1"
-    assert _value_after(tokens, "--max-prefill-tokens") == "3548"
+    # token budgets round up to a multiple of 64 (backend_config_mapping.yaml): 3548 -> 3584
+    assert _value_after(tokens, "--max-prefill-tokens") == "3584"
     assert _value_after(tokens, "--context-length") == "4096"
     assert _value_after(tokens, "--max-running-requests") == "512"
     assert _value_after(tokens, "--speculative-algorithm") == "NEXTN"

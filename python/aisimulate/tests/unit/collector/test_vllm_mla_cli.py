@@ -73,6 +73,8 @@ def cli(monkeypatch):
     names = {
         "_supported_model_map",
         "_get_precision_combos",
+        "_dsa_context_point_allowed",
+        "_dsa_context_budgets",
         "get_context_test_cases",
         "get_generation_test_cases",
         "run_mla_module_worker",

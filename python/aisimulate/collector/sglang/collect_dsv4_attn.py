@@ -26,7 +26,9 @@ Manual CLI use::
 # Requires stock SGLang 0.5.14 with its matching ``sgl-kernel`` package.
 from __future__ import annotations
 
-__compat__ = "sglang==0.5.14"
+# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
+__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20"
 
 import argparse
 import contextlib
@@ -54,10 +56,24 @@ os.environ.setdefault("SGLANG_APPLY_CONFIG_BACKUP", "none")
 # few shapes which the bench's own warmup JIT-compiles on first use.
 os.environ["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] = "0"
 try:
-    from helper import _resolve_local_model_path, benchmark_with_power, log_perf
+    from helper import (
+        PeriodicGarbageCollector,
+        PhaseClock,
+        _resolve_local_model_path,
+        benchmark_with_power,
+        log_perf,
+        render_phase_totals,
+    )
 except ModuleNotFoundError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from helper import _resolve_local_model_path, benchmark_with_power, log_perf
+    from helper import (
+        PeriodicGarbageCollector,
+        PhaseClock,
+        _resolve_local_model_path,
+        benchmark_with_power,
+        log_perf,
+        render_phase_totals,
+    )
 
 try:
     from collector.sglang.runtime_limits import (
@@ -504,7 +520,16 @@ def _resolve_model_path(
     # model_type to "deepseek_v3" mirrors what sglang's
     # _load_deepseek_temp_model produces internally, so AutoConfig succeeds
     # and the V4 model class is still selected via the architectures field.
-    config["model_type"] = "deepseek_v3"
+    try:
+        # sglang>=0.5.21 ships a native DeepseekV4Config (configs/deepseek_v4.py, model_type
+        # "deepseek_v4") and its DSV4 model reads V4-only fields from it
+        # (hc_pre_from_prev_sublayer, models/deepseek_v4.py:2679); the v3 rewrite below
+        # would hand the model a DeepseekV3Config and fail there.
+        import sglang.srt.configs.deepseek_v4  # noqa: F401
+
+        config["model_type"] = "deepseek_v4"
+    except ImportError:
+        config["model_type"] = "deepseek_v3"
 
     # gemm_type "fp8_block" overrides disable_weight_quant: we MUST keep the
     # fp8 quantization_config so sglang dispatches projections to DeepGEMM.
@@ -689,7 +714,11 @@ def _derive_csa_context_pool_cap(
     if not isinstance(configurator, DSV4PoolConfigurator):
         raise TypeError(f"expected SGLang 0.5.14 DSV4PoolConfigurator, got {type(configurator).__name__}")
 
-    page_size = int(model_runner.server_args.page_size)
+    from collector.sglang.runtime_compat import resolved_arg
+
+    page_size = int(
+        resolved_arg(model_runner.server_args, "page_size")
+    )  # 0.5.21: derived, read through the resolving view
     if page_size != _DSV4_CUDA_PAGE_SIZE:
         raise RuntimeError(f"expected DSV4 CUDA page_size={_DSV4_CUDA_PAGE_SIZE}, got {page_size}")
     window_size = int(model_runner.model_config.window_size)
@@ -705,7 +734,17 @@ def _derive_csa_context_pool_cap(
     if not chunk_eligible_shapes:
         raise RuntimeError(f"DSV4 CSA context pool derivation has no shape within effective_chunk={effective_chunk}")
 
-    profiled_bytes = int(model_runner._profile_available_bytes(model_runner.pre_model_load_memory))
+    # sglang>=0.5.21 moved the pool profiling off ModelRunner onto the KV-cache
+    # configurator (mem_cache/kv_cache_configurator.py:2177 _profile_available_bytes,
+    # same free-memory-minus-slack arithmetic). Serving builds that object inside
+    # alloc_memory_pool (model_runner.py:885 init_kv_cache_configurator, then
+    # configure); build it the same way here, before the pool exists.
+    _profile = getattr(model_runner, "_profile_available_bytes", None)
+    if _profile is None:
+        if getattr(model_runner, "kv_cache_configurator", None) is None:
+            model_runner.init_kv_cache_configurator()
+        _profile = model_runner.kv_cache_configurator._profile_available_bytes
+    profiled_bytes = int(_profile(model_runner.pre_model_load_memory))
     profiled_config = configurator.calculate_pool_sizes(profiled_bytes, page_size)
     compress_ratio = ATTN_KIND_TO_COMPRESS_RATIO["csa"]
     if page_size % compress_ratio != 0:
@@ -908,20 +947,18 @@ def _load_model_runner(
 
     _set_envs_and_config(server_args)
     model_config = ModelConfig.from_server_args(server_args)
+    from collector.sglang.runtime_compat import init_runtime_config
+
+    _runner_parallel_kwargs = init_runtime_config(server_args, gpu_id, nccl_port=nccl_port, model_config=model_config)
     with _tp_load_model_patch(tp_size):
         model_runner = ModelRunner(
             model_config=model_config,
             # Use sglang's own __post_init__-derived value, not a collector knob.
             mem_fraction_static=server_args.mem_fraction_static,
             gpu_id=gpu_id,
-            tp_rank=0,
-            tp_size=1,
-            pp_rank=0,
-            pp_size=1,
-            moe_ep_rank=0,
-            moe_ep_size=1,
             nccl_port=nccl_port,
             server_args=server_args,
+            **_runner_parallel_kwargs,
         )
     derived_requirements = None
     if csa_context_shapes is not None:
@@ -931,7 +968,18 @@ def _load_model_runner(
             model_runner,
             csa_context_shapes,
         )
-        model_runner.server_args.max_total_tokens = derived_requirements[0]
+        try:
+            model_runner.server_args.max_total_tokens = derived_requirements[0]
+        except AttributeError:
+            # sglang>=0.5.21: ServerArgs is read-only once resolved (server_args.py:396);
+            # post-publish config changes go through the context's config bags
+            # (runtime_context.py:1080 override(source, **fields) — the same call
+            # serving uses for control-plane updates, tokenizer_manager.py:2204). The
+            # configurator reads the cap from get_schedule().max_total_tokens
+            # (kv_cache_configurator.py:2269 _apply_token_constraints).
+            from sglang.srt.runtime_context import get_context
+
+            get_context().override("collector-dsv4-csa-context", max_total_tokens=derived_requirements[0])
     # SGLang 0.5.14 separates model construction from serving-state setup.
     model_runner.alloc_memory_pool()
     if derived_requirements is not None:
@@ -1036,7 +1084,11 @@ def _make_reqs(
         req.full_untruncated_fill_ids = array("q", req.origin_input_ids)
         req.fill_len = full_len
         req.logprob_start_len = 0
-        req.set_extend_input_len(seq_len if prefix_len else full_len)
+        _n = seq_len if prefix_len else full_len
+        if hasattr(req, "set_extend_input_len"):
+            req.set_extend_input_len(_n)
+        else:  # sglang 0.5.16: schedule_batch.py:1153 set_extend_range(start, end)
+            req.set_extend_range(full_len - _n, full_len)
         req.swa_evicted_seqlen = swa_evicted_seqlen
         if decode:
             req.cached_tokens = 0
@@ -1113,7 +1165,16 @@ def _build_forward_batch(
                 req.output_ids.append(0)
             batch.prepare_for_decode()
 
-    forward_batch = ForwardBatch.init_new(batch, model_runner)
+    import inspect as _inspect
+
+    # sglang 0.5.16: return_hidden_states_before_norm is a required keyword of
+    # ForwardBatch.init_new; older pins reject it (collect_msa_module.py:1015 pattern)
+    _fb_kw = (
+        {"return_hidden_states_before_norm": False}
+        if "return_hidden_states_before_norm" in _inspect.signature(ForwardBatch.init_new).parameters
+        else {}
+    )
+    forward_batch = ForwardBatch.init_new(batch, model_runner, **_fb_kw)
     model_runner.attn_backend.init_forward_metadata(forward_batch)
     return forward_batch
 
@@ -1209,6 +1270,7 @@ def _bench_cuda_events(
         "used_cuda_graph": True,
         "power_stats": result.get("power_stats"),
         "throttled": bool(result.get("throttled", False)),
+        "phase_seconds": result.get("phase_seconds"),
     }
 
 
@@ -1345,10 +1407,29 @@ def run_dsv4_mla_module(
             seq_lens_by_prefix.get(cur_prefix, default_seq_lens) if seq_lens_by_prefix is not None else default_seq_lens
         )
     ]
+    phase_totals: dict[str, float] = {}
+    # gc.collect() after every point cost 0.2-0.4 s (half of a context sweep); collect periodically instead.
+    point_gc = PeriodicGarbageCollector()
 
     # SGLang derives compressed-pool sizes from max_total_tokens. Direct
     # probes with an explicit value must account for both the full pool and
     # the smaller page-rounded SWA tail pool before ModelRunner construction.
+    #
+    # HCA always takes this path since sglang 0.5.21: the ratio-128 stage prices a
+    # full token at ~1/128 of a paged slot (pool_configurator.py:1264-1283
+    # _compressed_bytes_per_full_token / _get_bytes_per_full_token), so the
+    # framework-derived pool on an otherwise empty 140 GB device reaches ~2e9 full
+    # tokens, and the hybrid allocator's int64 full_to_swa_index_mapping
+    # (mem_cache/allocator/swa.py:99-108, size + page_size entries, not priced by the
+    # configurator) then needs ~15 GiB that the sizing already handed to the pools
+    # (OOM in SWATokenToKVPoolAllocator.__init__, kv_cache_configurator.py:2080,
+    # H20 2026-10-01). Serving never meets this corner because weights leave far
+    # less free memory; the collector sizes the pool to what the planned shapes
+    # allocate instead. sglang treats the value as an upper bound only
+    # (kv_cache_configurator.py:2269-2277 _apply_token_constraints: min(profiled,
+    # user cap)), so no cell gains capacity it would not have in serving.
+    if max_total_tokens is None and attn_kind == "hca":
+        max_total_tokens = 0
     if max_total_tokens is not None:
         max_full_alloc = 0
         max_swa_alloc = 0
@@ -1495,6 +1576,7 @@ def run_dsv4_mla_module(
                             skipped_shapes.append((batch_size, seq_len, cur_prefix, "KVPoolSWACapacity"))
                             continue
                     print(f"\n{mode}: batch_size={batch_size}, seq_len={seq_len}, prefix_len={cur_prefix}")
+                    point_clock = PhaseClock()
                     try:
                         forward_batch = _build_forward_batch(
                             model_runner,
@@ -1503,6 +1585,7 @@ def run_dsv4_mla_module(
                             is_prefill=is_prefill,
                             prefix_len=cur_prefix,
                         )
+                        point_clock.mark("forward_batch")
                         hidden_states, positions = _make_inputs(
                             model_runner,
                             batch_size=batch_size,
@@ -1511,6 +1594,7 @@ def run_dsv4_mla_module(
                             device=device,
                             prefix_len=cur_prefix,
                         )
+                        point_clock.mark("inputs")
 
                         def kernel_func(model_runner=model_runner):
                             from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
@@ -1536,6 +1620,8 @@ def run_dsv4_mla_module(
                             graph_repeat=graph_repeat,
                             device=device,
                         )
+                        point_clock.mark("bench")
+                        point_clock.absorb(stats.get("phase_seconds"), prefix="bench_")
                         print(
                             f"  latency mean={stats['mean_ms']:.4f} ms, "
                             f"median={stats['median_ms']:.4f} ms, "
@@ -1593,7 +1679,7 @@ def run_dsv4_mla_module(
                             ("req_to_token_pool.clear", model_runner.req_to_token_pool.clear),
                             ("token_to_kv_pool_allocator.clear", model_runner.token_to_kv_pool_allocator.clear),
                             ("torch.cuda.empty_cache", torch.cuda.empty_cache),
-                            ("gc.collect", gc.collect),
+                            ("gc.collect", point_gc.maybe_collect),
                         ):
                             try:
                                 _cleanup_step()
@@ -1606,6 +1692,12 @@ def run_dsv4_mla_module(
                                 f"dsv4-flash {sweep_label} bs={batch_size} sl={seq_len} "
                                 f"prefix={cur_prefix}: cleanup failed: {'; '.join(cleanup_errors)}"
                             )
+                        point_clock.mark("cleanup")
+                        point_clock.add_to(phase_totals)
+                        print(
+                            f"  [dsv4 point timing] {sweep_label} bs={batch_size} sl={seq_len} prefix={cur_prefix}: "
+                            + point_clock.render()
+                        )
     finally:
         final_cleanup_errors = []
         del model_runner
@@ -1633,6 +1725,7 @@ def run_dsv4_mla_module(
     if skipped_shapes:
         skipped_str = ", ".join(f"(bs={b},sl={s},prefix={p},reason={r})" for b, s, p, r in skipped_shapes)
         print(f"[WARN] dsv4-flash {sweep_label}: skipped or errored shapes: {skipped_str}")
+    print(f"[dsv4 timing] {sweep_label}: {render_phase_totals(phase_totals)}")
     print(f"[dsv4-collector] {sweep_label}: {summary}")
     if ok_count == 0 or error_count > 0:
         raise RuntimeError(f"dsv4-flash {sweep_label}: {summary}")

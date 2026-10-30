@@ -1,6 +1,14 @@
 {#
 SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 SPDX-License-Identifier: Apache-2.0
+SGLang >= 0.5.20: ServerArgs became a msgspec Struct whose argparse flags are
+derived from field names, and the old spellings `--cuda-graph-bs` /
+`--cuda-graph-max-bs` (aliases of the *-decode fields in 0.5.16-0.5.19) are
+gone: 0.5.21 rejects `--cuda-graph-bs` as ambiguous (matches
+--cuda-graph-bs-decode / --cuda-graph-bs-prefill). The unified param keys are
+unchanged; only the rendered spelling differs from cli_args.0.5.11.j2.
+Verified against lmsysorg/sglang:v0.5.21 `launch_server --help` (2026-10-01);
+boundary from v0.5.20 server_args.py (Struct form, no alias).
 -#}
 {%- set args = [] -%}
 {%- if sglang['tensor-parallel-size'] is defined and sglang['tensor-parallel-size'] is not none -%}{%- set _ = args.append('--tensor-parallel-size "' ~ sglang['tensor-parallel-size'] ~ '"') -%}{%- endif -%}
@@ -48,4 +56,5 @@ SPDX-License-Identifier: Apache-2.0
 {%- if sglang['speculative-num-draft-tokens'] is defined and sglang['speculative-num-draft-tokens'] is not none -%}{%- set _ = args.append('--speculative-num-draft-tokens "' ~ sglang['speculative-num-draft-tokens'] ~ '"') -%}{%- endif -%}
 {%- if sglang['disable-overlap-schedule'] -%}{%- set _ = args.append('--disable-overlap-schedule') -%}{%- endif -%}
 {%- if sglang['load-balance-method'] is defined and sglang['load-balance-method'] is not none -%}{%- set _ = args.append('--load-balance-method "' ~ sglang['load-balance-method'] ~ '"') -%}{%- endif -%}
+{%- if sglang['cuda-graph-backend-prefill'] is defined and sglang['cuda-graph-backend-prefill'] is not none -%}{%- set _ = args.append('--cuda-graph-backend-prefill "' ~ sglang['cuda-graph-backend-prefill'] ~ '"') -%}{%- endif -%}
 {{ args | join(' ') }}

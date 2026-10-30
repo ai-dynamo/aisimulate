@@ -135,6 +135,7 @@ _NEMOTRON_H = {
     "nvidia--NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16_config.json",
     "nvidia--NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8_config.json",
     "nvidia--NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4_config.json",
+    "nvidia--NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16_config.json",
     "nvidia--NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4_config.json",
     "nvidia--Nemotron-H-56B-Base-8K_config.json",
 }
@@ -216,6 +217,7 @@ def test_packaged_unrecognized_architectures_are_pending_and_mla_keeps_explicit_
     assert unloadable == {
         "nvidia--DeepSeek-V4-Flash-NVFP4",
         "nvidia--DeepSeek-V4-Pro-NVFP4",
+        "nvidia--DeepSeek-V4.1-Flash-NVFP4",
         "nvidia--Gemma-4-31B-IT-NVFP4",
     }
     assert unrecognized == {name: [f"unrecognized architecture {arch}"] for name, arch in _UNRECOGNIZED.items()}

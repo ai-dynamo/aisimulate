@@ -9,13 +9,17 @@ this file owns SGLang MLA backend choice, paged KV-cache setup, DP-attention
 mocking, runtime dispatch, and perf logging.
 """
 
-__compat__ = "sglang==0.5.14"
+# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
+__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20"
 
+import contextlib
+import inspect
 import math
 import os
 import random
+from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from sglang>=0.5.21 images
 
-import pkg_resources
 import sglang.srt.layers.dp_attention
 import sglang.srt.server_args
 import torch
@@ -93,6 +97,9 @@ def _mla_compute_dtype(backend: str, kv_cache_dtype: torch.dtype) -> str:
 
 
 class MockModelConfig:
+    def get_max_num_attention_heads(self) -> int:  # model_config.py:1504 @0.5.21 (triton_backend.py:255)
+        return int(self.num_attention_heads)
+
     def __init__(
         self,
         context_len: int = 32768,
@@ -120,10 +127,26 @@ class MockModelConfig:
         self.head_dim = 256
         self.v_head_dim = v_head_dim
         self.hf_text_config = self
+        # sglang>=0.5.21 TritonAttnBackend.__init__ (the sm89 / sm120 MLA default) asks
+        # mambaish_config(model_config) whether this is a hybrid linear-attention arch
+        # (triton_backend.py:287 -> configs/hybrid_arch.py reads hf_config / get_text_config()
+        # / linear_attn_registry_result); an MLA module is none of them. fa3 / trtllm_mla
+        # (sm90 / sm100) never reach that probe, so only the Triton lane needs this.
+        self.linear_attn_registry_result = None
+        self.is_draft_model = False
+
+        class _MockHFConfig:
+            architectures = ["DeepseekV3ForCausalLM"]  # noqa: RUF012
+            model_type = "deepseek_v3"
+
+            def get_text_config(self):
+                return self
+
+        self.hf_config = _MockHFConfig()
         self.scaling = scaling
         self.is_local_attention_model = False
 
-    def get_num_kv_heads(self, tp_size: int):
+    def get_num_kv_heads(self, tp_size: int, dcp_size: int = 1):  # model_config.py:1512 @0.5.21
         return 1
 
 
@@ -160,9 +183,14 @@ class MockServerArgs:
         # stays off exactly as in production (triton_backend.py:214-217).
         # The SM90 fa3 / SM100 trtllm_mla init paths never read this field.
         self.cuda_graph_config = None
+        self.enable_prefill_cp = False  # sglang 0.5.16 flashattention_backend.py:51
+        self.enable_dp_attention = False  # same site: prefill-CP/DP-attention gate
 
 
 class MockModelRunner:
+    def decode_num_tokens_per_req(self, *, num_draft_tokens=None) -> int:
+        return 1
+
     def __init__(
         self,
         device: torch.device,
@@ -175,6 +203,8 @@ class MockModelRunner:
         self.gpu_id = device.index if device.index is not None else torch.cuda.current_device()
         self.tp_size = 1
         self.kv_cache_dtype = kv_cache_dtype
+        # sglang>=0.5.21 backends read the runner's server-arg spelling (model_runner.py:1481)
+        self.kv_cache_dtype_str = "fp8_e4m3" if kv_cache_dtype == torch.float8_e4m3fn else "auto"
         self.dtype = torch.bfloat16
         self.page_size = page_size
         self.req_to_token_pool = None
@@ -190,7 +220,48 @@ class MockModelRunner:
         # Keep attributes for compatibility across sglang versions (older code ignores them)
         self.is_hybrid_swa = self.model_config.is_hybrid_swa
         self.attn_cp_size = 1  # Context parallelism size; required by FlashAttentionBackend in sglang >=0.5.10
+        # sglang 0.5.21 TRTLLMMLABackend (the MLA backend sglang picks on SM100, _get_backends) reads
+        # model_runner.max_running_requests (workspace sizing) and model_runner.is_draft_worker;
+        # on Hopper fa3/flashinfer never asked, so the attributes were missing until the first
+        # Blackwell smoke (B200 2026-10-04: AttributeError 'MockModelRunner' has no attribute
+        # 'max_running_requests'). 512 = the generator's --max-running-requests default.
+        self.max_running_requests = 512
+        self.is_draft_worker = False
+        # sglang 0.5.16 reads the parallel geometry from model_runner.ps
+        # (flashattention_backend.py:183,271-274; parallel_state_wrapper.py:6-24)
+        try:
+            from sglang.srt.distributed.parallel_state_wrapper import ParallelState
+
+            self.ps = ParallelState.trivial(gpu_id=0)
+        except ImportError:
+            from types import SimpleNamespace
+
+            self.ps = SimpleNamespace(
+                tp_rank=0,
+                tp_size=1,
+                pp_rank=0,
+                pp_size=1,
+                dp_rank=0,
+                dp_size=1,
+                attn_tp_rank=0,
+                attn_tp_size=1,
+                attn_cp_rank=0,
+                attn_cp_size=1,
+                attn_dp_rank=0,
+                attn_dp_size=1,
+                moe_ep_rank=0,
+                moe_ep_size=1,
+                moe_dp_rank=0,
+                moe_dp_size=1,
+                dcp_size=1,
+                gpu_id=0,
+            )
         self.server_args = MockServerArgs(kv_cache_dtype, page_size)
+        self.is_draft_worker = False
+        # sglang>=0.5.21 backends ask the runner for logits rows per decode slot
+        # (model_runner.py:796 decode_num_tokens_per_req; triton_backend.py:218,222);
+        # the kernel collectors never run speculative decoding -> 1
+        self.spec_algorithm = None  # read by the 0.5.16 attention backends (draft-worker branches)
         self.use_mla_backend = True
 
 
@@ -214,8 +285,91 @@ def create_req_to_token_pool(
     return pool, token_matrix.contiguous()
 
 
+def _extend_seq_lens_cpu(forward_batch):
+    """CPU int32 mirror of the per-request extend lengths of a plain EXTEND batch, else None.
+
+    The values are sglang's own ``forward_batch.extend_seq_lens_cpu`` — the list its
+    trtllm_mla backend already reads for ``max_seq_len`` (trtllm_mla_backend.py:850
+    @v0.5.21) — so nothing is reconstructed, only mirrored into a CPU tensor.
+    """
+    if forward_batch.forward_mode != ForwardMode.EXTEND:
+        return None
+    extend_seq_lens = getattr(forward_batch, "extend_seq_lens_cpu", None)
+    if not extend_seq_lens:
+        return None
+    return torch.tensor([int(n) for n in extend_seq_lens], dtype=torch.int32, device="cpu")
+
+
+@contextlib.contextmanager
+def _ragged_prefill_with_cpu_seq_lens(seq_lens_cpu):
+    """Hand flashinfer the CPU length mirrors that keep trtllm_ragged_attention_deepseek capturable.
+
+    flashinfer 0.6.18 (sglang 0.5.21's pin) takes optional ``q_seq_lens_cpu`` /
+    ``kv_seq_lens_cpu`` (prefill.py:4797-4798). Without them the wrapper derives
+    the per-row lengths from the device indptrs with a host sync and refuses to
+    run under CUDA-graph capture ("q_seq_lens_cpu and kv_seq_lens_cpu must be
+    provided during CUDA graph capture", prefill.py:5083-5091); with them it
+    validates the mirrors on the host (prefill.py:5053-5077) and launches the
+    same trtllm-gen kernel with the same device arguments. Older flashinfer
+    builds without the parameters never synchronized here and are left alone.
+    """
+    import flashinfer.prefill as flashinfer_prefill
+
+    original = flashinfer_prefill.trtllm_ragged_attention_deepseek
+    parameters = inspect.signature(original).parameters
+    if "q_seq_lens_cpu" not in parameters or "kv_seq_lens_cpu" not in parameters:
+        yield
+        return
+
+    def _with_cpu_seq_lens(*args, **kwargs):
+        kwargs.setdefault("q_seq_lens_cpu", seq_lens_cpu)
+        kwargs.setdefault("kv_seq_lens_cpu", seq_lens_cpu)
+        return original(*args, **kwargs)
+
+    flashinfer_prefill.trtllm_ragged_attention_deepseek = _with_cpu_seq_lens
+    try:
+        yield
+    finally:
+        flashinfer_prefill.trtllm_ragged_attention_deepseek = original
+
+
+class _GraphCapturableTRTLLMMLABackend(TRTLLMMLABackend):
+    """sglang's trtllm_mla backend with a CUDA-graph-capturable prefill kernel call.
+
+    Serving never graph-captures prefill, so sglang 0.5.21's
+    ``TRTLLMMLABackend._run_prefill_kernel`` (trtllm_mla_backend.py:1098-1141)
+    calls ``flashinfer.prefill.trtllm_ragged_attention_deepseek`` without the
+    CPU length mirrors and flashinfer refuses the capture (see
+    ``_ragged_prefill_with_cpu_seq_lens``). The collector times the kernel under
+    graph replay — eager timing of this lane floors at the Python launch loop
+    (0.13 ms on B200, 0.29 ms on GB200 for every isl <= 1024 cell; data
+    validation 2026-10-11) — so the no-prefix prefill call gets the mirrors
+    here. This changes how the kernel is invoked, never which kernel runs: the
+    chunked-prefix calls (their own ``cum_seq_lens_kv``) and every other
+    backend path go through sglang unchanged.
+    """
+
+    _prefill_seq_lens_cpu = None
+
+    def init_forward_metadata(self, forward_batch):
+        super().init_forward_metadata(forward_batch)
+        self._prefill_seq_lens_cpu = _extend_seq_lens_cpu(forward_batch)
+
+    def _run_prefill_kernel(self, *args, **kwargs):
+        seq_lens_cpu = self._prefill_seq_lens_cpu
+        cum_seq_lens_q = kwargs.get("cum_seq_lens_q")
+        cum_seq_lens_kv = kwargs.get("cum_seq_lens_kv")
+        if seq_lens_cpu is None or cum_seq_lens_q is None or cum_seq_lens_kv is not cum_seq_lens_q:
+            return super()._run_prefill_kernel(*args, **kwargs)
+        with _ragged_prefill_with_cpu_seq_lens(seq_lens_cpu):
+            return super()._run_prefill_kernel(*args, **kwargs)
+
+
 def benchmark_layer(layer, forward_batch, q, k, v, q_rope, k_rope, **kwargs):
-    # Use benchmark_with_power context manager
+    # CUDA-graph replay for every lane: a capture failure raises (helper default
+    # allow_graph_fail=False) and an eager result is refused below, so a kernel
+    # that stops being capturable fails the case instead of shipping its launch
+    # floor (sglang mla_context on B200/GB200, data validation 2026-10-11).
     device = q.device
 
     def kernel_func():
@@ -236,6 +390,8 @@ def benchmark_layer(layer, forward_batch, q, k, v, q_rope, k_rope, **kwargs):
     ) as results:
         pass
 
+    if results.get("used_cuda_graph") is not True:
+        raise RuntimeError("SGLang MLA requires CUDA graph timing; refusing to publish eager timing")
     return results["latency_ms"], results["power_stats"]
 
 
@@ -349,6 +505,9 @@ def run_mla(
     perf_filename,
     device="cuda:0",
 ):
+    from collector.sglang.runtime_compat import ensure_offline_runtime_published
+
+    ensure_offline_runtime_published()  # sglang>=0.5.20 backends read get_exec()/get_parallel()
     torch.cuda.set_device(device)
     torch_device = torch.device(device)
     random.seed(0)
@@ -363,6 +522,28 @@ def run_mla(
     expected_page_size = 64 if selected_backend == "trtllm_mla" else 1
     if tokens_per_block != expected_page_size:
         raise ValueError(f"SGLang {selected_backend} requires page_size={expected_page_size}, got {tokens_per_block}")
+    # FIXME(kernel-limit): sglang 0.5.21 trtllm_mla DECODE on Blackwell with 64 < local heads < 128.
+    # flashinfer's trtllm-gen MLA decode refuses that head range (flashinfer mla/_core.py:3948) and
+    # falls back to the cute-dsl runner, but sglang 0.5.21's trtllm_mla_backend passes
+    # multi_ctas_kv_counter_buffer unconditionally on Blackwell -> "multi_ctas_kv_counter_buffer is
+    # only supported when a trtllm-gen runner is selected" (_core.py:4278). Serving hits the same
+    # raise (B200 identity probe: Kimi-K3 bf16 tp1, 96 heads; finding
+    # sm100_probe_failures_recheck_2026_10_04 (i)), so the cell is serving-unreachable at this tp;
+    # the b200_sxm shard run (GitLab job 469988017) failed exactly the 362 num_heads=96 decode cases
+    # (bf16 + fp8 KV) and nothing else. Prefill (mla_context, 96 heads) is unaffected. Fail-closed:
+    # recorded as a classified failure, never a predicted skip or a silent backend swap.
+    if (
+        not is_context_phase
+        and selected_backend == "trtllm_mla"
+        and get_sm_version() in {100, 103}
+        and 64 < local_num_heads < 128
+    ):
+        raise RuntimeError(
+            "FIXME(kernel-limit): sglang 0.5.21 trtllm_mla decode on SM100/103 does not support "
+            f"64 < local_num_heads < 128 (num_heads={num_heads}, tp_size={tp_size} -> {local_num_heads}); "
+            "flashinfer trtllm-gen MLA decode rejects the head range and the cute-dsl fallback rejects "
+            "multi_ctas_kv_counter_buffer (mla/_core.py:3948, :4278); serving fails identically (Kimi-K3 tp1)"
+        )
 
     model_runner = MockModelRunner(
         torch_device,
@@ -385,7 +566,12 @@ def run_mla(
     model_runner.server_args.prefill_attention_backend = selected_backend
     model_runner.server_args.decode_attention_backend = selected_backend
     # Set global args after potential overrides.
-    sglang.srt.server_args.set_global_server_args_for_scheduler(model_runner.server_args)
+    try:
+        from sglang.srt.runtime_context import publish as _publish  # noqa: F401
+    except ImportError:
+        sglang.srt.server_args.set_global_server_args_for_scheduler(model_runner.server_args)
+    # >=0.5.20: set_global_server_args_for_scheduler publishes (resolve_once on a real ServerArgs record);
+    # ensure_offline_runtime_published() already installed the process record, the mock drives the backends directly.
 
     # Define dimensions based on phase
     kv_lora_rank = KV_LORA_RANK
@@ -432,6 +618,9 @@ def run_mla(
         enable_memory_saver=False,
     )
     model_runner.token_to_kv_pool = kv_pool
+    from collector.sglang.runtime_compat import attach_kv_index_translator
+
+    attach_kv_index_translator(model_runner)
 
     if selected_backend == "trtllm_mla":
         # TRTLLMMLABackend inherits FlashInferMLAAttnBackend which creates
@@ -440,7 +629,7 @@ def run_mla(
         import gc
 
         gc.collect()
-        attn_backend = TRTLLMMLABackend(model_runner)
+        attn_backend = _GraphCapturableTRTLLMMLABackend(model_runner)
         kernel_source = "trtllm_mla"
     elif selected_backend == "triton":
         attn_backend = TritonAttnBackend(model_runner)
@@ -628,7 +817,7 @@ def run_mla(
             }
         ],
         framework="SGLang",
-        version=pkg_resources.get_distribution("sglang").version,
+        version=_dist_version("sglang"),
         device_name=torch.cuda.get_device_name(device),
         op_name=f"mla_{'context' if is_context_phase else 'generation'}",
         kernel_source=kernel_source,

@@ -40,6 +40,10 @@ import numpy as np
 
 # Exit codes
 EXIT_CODE_RESTART = 10  # Exit code to indicate restart is needed
+# collect.py exits with this when --ops names an op the collector v2 case plan does not
+# contain (registry-only op, or a stale shard plan). Distinct from argparse's 2 so a
+# scheduler can mark the shard terminal instead of retrying it.
+EXIT_CODE_OPS_NOT_IN_PLAN = 3
 PERF_TRANSACTION_FILENAME = ".perf-finalization.transaction.json"
 SIDECAR_TRANSACTION_FILENAME = ".collection_meta.transaction.json"
 SIDECAR_STAGING_FILENAME = ".collection_meta.pending.yaml"
@@ -71,6 +75,40 @@ class PerfLogError(RuntimeError):
 # Global NVML state per worker process
 _NVML_INITIALIZED = False
 _NVML_LOCK = threading.Lock()
+
+# Stall-watchdog heartbeat. collect.py's worker registers a sink in each worker
+# process and benchmark_with_power beats once per measurement, so one task that
+# measures hundreds of points (a DSA context series over the whole isl x prefix
+# grid) keeps counting as progress, while a point wedged inside a kernel still
+# goes silent and gets the watchdog's kill after STALL_TIMEOUT_SEC.
+_WORKER_HEARTBEAT: Callable[[], None] | None = None
+
+
+def set_worker_heartbeat(sink: Callable[[], None] | None) -> None:
+    """Register (or clear) the callable that reports liveness to the executor."""
+    global _WORKER_HEARTBEAT
+    _WORKER_HEARTBEAT = sink
+
+
+def worker_heartbeat() -> None:
+    """Report that the running task is still measuring; a no-op outside the executor."""
+    global _WORKER_HEARTBEAT
+    sink = _WORKER_HEARTBEAT
+    if sink is None:
+        # collect.py imports this module as ``helper`` while the op modules import
+        # ``collector.helper``: two module objects, so a sink registered through
+        # one has to be found from the other.
+        for name in ("helper", "collector.helper"):
+            other = sys.modules.get(name)
+            if other is not None and getattr(other, "_WORKER_HEARTBEAT", None) is not None:
+                sink = _WORKER_HEARTBEAT = other._WORKER_HEARTBEAT
+                break
+    if sink is None:
+        return
+    try:
+        sink()
+    except Exception:  # liveness must never fail a measurement
+        pass
 
 
 def _parse_bool_env(env_var: str, default: bool = False) -> bool:
@@ -207,6 +245,97 @@ class PowerMonitor:
             self._stop_event.wait(self.interval_s)
 
 
+class PhaseClock:
+    """Wall-clock split of one collector case or sweep point into named phases.
+
+    ``mark(name)`` closes the phase that began at the previous mark (or at
+    construction); ``absorb`` folds a nested breakdown (for example the
+    ``phase_seconds`` that ``benchmark_with_power`` reports) into the clock
+    under a prefix; ``add_to`` accumulates the phases into a per-sweep total
+    that ``render_phase_totals`` prints. Collectors print these lines so the
+    campaign log shows where a case spends its seconds; they never change
+    what is measured.
+    """
+
+    def __init__(self) -> None:
+        self.start = self.last = time.perf_counter()
+        self.phases: dict[str, float] = {}
+
+    def mark(self, name: str) -> None:
+        now = time.perf_counter()
+        self.phases[name] = self.phases.get(name, 0.0) + (now - self.last)
+        self.last = now
+
+    def absorb(self, phases, prefix: str = "") -> None:
+        for name, seconds in (phases or {}).items():
+            key = f"{prefix}{name}"
+            self.phases[key] = self.phases.get(key, 0.0) + float(seconds)
+
+    def total(self) -> float:
+        return time.perf_counter() - self.start
+
+    def render(self) -> str:
+        parts = [f"{name}={seconds:.2f}s" for name, seconds in self.phases.items()]
+        return " ".join(parts + [f"total={self.total():.2f}s"])
+
+    def add_to(self, totals: dict[str, float]) -> None:
+        for name, seconds in self.phases.items():
+            totals[name] = totals.get(name, 0.0) + seconds
+        totals["total"] = totals.get("total", 0.0) + self.total()
+        totals["points"] = totals.get("points", 0) + 1
+
+
+def render_phase_totals(totals: dict[str, float]) -> str:
+    points = int(totals.get("points", 0))
+    parts = [f"{name}={seconds:.1f}s" for name, seconds in totals.items() if name != "points"]
+    return f"{points} point(s): " + " ".join(parts)
+
+
+class PeriodicGarbageCollector:
+    """Run ``gc.collect()`` every ``every`` calls, or sooner when allocated CUDA
+    memory sits more than ``growth_bytes`` above the lowest level seen after a
+    collection.
+
+    A full collection in a process that holds a loaded model costs 0.2-0.4 s;
+    running it after every case or sweep point was half of an SGLang DSV4
+    context sweep and 0.17 s of every TRT-LLM module case. The collectors
+    release framework state (KV pools, CUDA graphs, workspace buffers)
+    explicitly, so the collection only has to catch reference cycles, and the
+    memory guard keeps a cycle-heavy sweep from growing unbounded.
+    """
+
+    def __init__(self, every: int = 16, growth_bytes: int = 2 << 30) -> None:
+        self.every = max(1, int(every))
+        self.growth_bytes = int(growth_bytes)
+        self.calls = 0
+        self.floor: int | None = None
+
+    @staticmethod
+    def _allocated() -> int:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                return int(torch.cuda.memory_allocated())
+        except Exception:
+            pass
+        return 0
+
+    def maybe_collect(self) -> bool:
+        import gc
+
+        self.calls += 1
+        allocated = self._allocated()
+        if self.floor is None:
+            self.floor = allocated
+        if self.calls < self.every and allocated <= self.floor + self.growth_bytes:
+            return False
+        gc.collect()
+        self.calls = 0
+        self.floor = min(self.floor, self._allocated())
+        return True
+
+
 @contextmanager
 def benchmark_with_power(
     device,
@@ -220,6 +349,7 @@ def benchmark_with_power(
     use_cuda_graph: bool = True,  # Set False only for explicitly eager measurements.
     *,
     explicit_graph_cleanup: bool = False,
+    num_eager_warmups: int | None = None,
 ):
     """
     Context manager that handles warmup, graph capture, timing, and power monitoring.
@@ -243,6 +373,10 @@ def benchmark_with_power(
                          when capture fails or a traceback retains it. Opted into
                          by the vLLM MLA/DSA collector; other callers retain their
                          existing graph lifetime and synchronization behavior.
+        num_eager_warmups: Eager passes before capture (default: num_warmups). Graph
+                         replay warmups stay at num_warmups. Set lower when the
+                         kernel already ran (a dry run) and the measurement is
+                         graph-based; eager measurements should keep the default.
 
     Yields:
         dict with keys:
@@ -255,6 +389,8 @@ def benchmark_with_power(
     import torch
 
     dev_mod = get_device_module(device)
+    # One beat per measurement: the executor's stall watchdog counts it as progress.
+    worker_heartbeat()
 
     # Auto-detect configuration from environment if not explicitly provided
     if measure_power is None:
@@ -264,19 +400,35 @@ def benchmark_with_power(
 
     # Adaptive num_runs calculation
     actual_num_runs = num_runs
+    # Eager passes before capture. They exist so lazily initialised paths (JIT,
+    # autotune, plan caches) run outside the capture; a caller whose kernel
+    # already executed (a dry run) can ask for fewer than the replay warmups,
+    # since the Python-heavy eager forward costs several times a graph replay.
+    eager_warmups = num_warmups if num_eager_warmups is None else max(int(num_eager_warmups), 0)
+    # Wall time of each protocol phase, reported as results["phase_seconds"].
+    phase_seconds: dict[str, float] = {}
+    _phase_start = time.perf_counter()
+
+    def _close_phase(name: str) -> None:
+        nonlocal _phase_start
+        now = time.perf_counter()
+        phase_seconds[name] = phase_seconds.get(name, 0.0) + (now - _phase_start)
+        _phase_start = now
+
     if measure_power:
         # Estimate single iteration time with warmup
         start_warmup = dev_mod.Event(enable_timing=True)
         end_warmup = dev_mod.Event(enable_timing=True)
 
+        estimate_runs = max(eager_warmups, 1)
         dev_mod.synchronize()
         start_warmup.record()
-        for _ in range(num_warmups):
+        for _ in range(estimate_runs):
             kernel_func()
         end_warmup.record()
         dev_mod.synchronize()
 
-        single_iter_time = start_warmup.elapsed_time(end_warmup) / num_warmups / 1000.0  # seconds
+        single_iter_time = start_warmup.elapsed_time(end_warmup) / estimate_runs / 1000.0  # seconds
 
         # Adaptive duration: use shorter duration for very fast kernels to reduce memory pressure
         target_duration = power_min_duration
@@ -292,9 +444,11 @@ def benchmark_with_power(
     else:
         # Normal warmup
         dev_mod.synchronize()
-        for _ in range(num_warmups):
+        for _ in range(eager_warmups):
             kernel_func()
         dev_mod.synchronize()
+
+    _close_phase("eager_warmup")
 
     # ═══════════════════════════════════════════════════════════════════
     # Device Graph Capture with Optional Fallback (CUDA: CUDAGraph, XPU: XPUGraph)
@@ -347,19 +501,20 @@ def benchmark_with_power(
                 dev_mod.empty_cache()
                 use_graph = False
 
+        _close_phase("capture")
         capture_phase_completed = True
         # ═══════════════════════════════════════════════════════════════
         # Warmup the ACTUAL execution path (after graph capture)
         # ═══════════════════════════════════════════════════════════════
-        dev_mod.synchronize()
-        for _ in range(num_warmups):
-            if use_graph:
+        # Eager callers already ran their warmups before the capture step;
+        # repeating them here re-ran the same eager path (23% of an SGLang
+        # MSA context sweep) ahead of an identical timed loop.
+        if use_graph:
+            dev_mod.synchronize()
+            for _ in range(num_warmups):
                 g.replay()
-            else:
-                # Fallback: Direct execution matching actual execution path
-                for _ in range(repeat_n):
-                    kernel_func()
-        dev_mod.synchronize()
+            dev_mod.synchronize()
+        _close_phase("graph_warmup")
 
         # Initialize power monitor if enabled
         power_monitor = None
@@ -396,6 +551,7 @@ def benchmark_with_power(
                     kernel_func()
         end_event.record()
         dev_mod.synchronize()
+        _close_phase("timed")
 
         # Check for throttling
         throttled = False
@@ -428,6 +584,7 @@ def benchmark_with_power(
             "throttled": throttled,
             "num_runs_executed": actual_num_runs,
             "used_cuda_graph": use_graph,  # NEW: Inform caller which path was used
+            "phase_seconds": phase_seconds,
         }
     finally:
         # Preserve default cleanup after timing starts. Explicit cleanup also
@@ -440,6 +597,7 @@ def benchmark_with_power(
             if not explicit_graph_cleanup:
                 dev_mod.synchronize()
             dev_mod.empty_cache()
+        _close_phase("cleanup")
 
 
 @contextmanager
@@ -474,6 +632,409 @@ def power_monitoring_only(device, measure_power: bool | None = None):
         pass
 
 
+# Set to 0/false to time FlashInfer-backed kernels on FlashInfer's untuned default
+# tactic (the pre-2026-10-27 behavior). Default on.
+FLASHINFER_AUTOTUNE_ENV = "COLLECTOR_FLASHINFER_AUTOTUNE"
+FLASHINFER_AUTOTUNE_BUDGET_ENV = "COLLECTOR_FLASHINFER_AUTOTUNE_BUDGET"
+FLASHINFER_AUTOTUNE_BUDGET_FLASHINFER = "flashinfer"
+
+
+@dataclass(frozen=True)
+class FlashInferTuneBudget:
+    """Per-tactic profiling budget applied to FlashInfer's autotuner during the tuning pass.
+
+    FlashInfer profiles every candidate tactic with ``warmup`` untimed launches, ``repeat``
+    timed launches and a ``stream_delay_us`` delay kernel in front of the timed block (its
+    defaults: 3 / 10 / 5000, enough to rank tactics for a server that tunes once per
+    process). The collector tunes once per (shape, EP, num_tokens), so that budget is the
+    dominant cost of a FlashInfer-backed sweep (the 2026-10-27 b200 probe: +3.6 s per
+    row, 28x the untuned collection time). The collector only needs the *ranking* -- the
+    final measurement is still ``benchmark_with_power``'s own warm-ups and runs -- and the
+    tactics that matter differ by 2x, so a smaller budget ranks them just as well while
+    near-ties stay inside collector noise.
+    """
+
+    warmup: int = 1
+    repeat: int = 3
+    stream_delay_us: int = 1000
+
+    def __str__(self) -> str:
+        return f"warmup={self.warmup} repeat={self.repeat} delay_us={self.stream_delay_us}"
+
+
+def flashinfer_autotune_enabled() -> bool:
+    return _parse_bool_env(FLASHINFER_AUTOTUNE_ENV, default=True)
+
+
+def flashinfer_autotune_budget() -> FlashInferTuneBudget | None:
+    """``COLLECTOR_FLASHINFER_AUTOTUNE_BUDGET``: ``"warmup,repeat,delay_us"`` (default
+    ``"1,3,1000"``), or ``"flashinfer"`` to leave FlashInfer's own 3/10/5000 untouched
+    (returns ``None``)."""
+    raw = os.environ.get(FLASHINFER_AUTOTUNE_BUDGET_ENV, "").strip()
+    if not raw:
+        return FlashInferTuneBudget()
+    if raw.lower() == FLASHINFER_AUTOTUNE_BUDGET_FLASHINFER:
+        return None
+    parts = [part.strip() for part in raw.split(",")]
+    try:
+        warmup, repeat, delay_us = (int(part) for part in parts)
+    except ValueError:
+        raise ValueError(
+            f"{FLASHINFER_AUTOTUNE_BUDGET_ENV}={raw!r}: expected 'warmup,repeat,delay_us' "
+            f"(three integers) or '{FLASHINFER_AUTOTUNE_BUDGET_FLASHINFER}'"
+        ) from None
+    if warmup < 0 or repeat < 1 or delay_us < 0:
+        raise ValueError(f"{FLASHINFER_AUTOTUNE_BUDGET_ENV}={raw!r}: warmup and delay_us must be >= 0, repeat >= 1")
+    return FlashInferTuneBudget(warmup, repeat, delay_us)
+
+
+def cuda_context_error(device=None) -> str | None:
+    """Probe whether the CUDA context of ``device`` (default: current) is still usable.
+
+    A sticky CUDA error (illegal memory access, launch failure) poisons the whole
+    context: every later kernel on this process fails, so a case that merely runs
+    next on the worker is reported as failed for a crash it did not cause. The probe
+    synchronises the device and launches one trivial kernel; it returns the error
+    text when either raises, ``None`` when the context is healthy or torch is absent.
+    """
+    try:
+        import torch
+    except ImportError:
+        return None
+    try:
+        if device is None:
+            device = torch.cuda.current_device()
+        torch.cuda.synchronize(device)
+        torch.ones(1, device=device).sum().item()
+    except Exception as exc:  # any failure here means the context is gone
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
+def _flashinfer_failed_tactics(tuner) -> str:
+    stats = getattr(tuner, "stats", None)
+    failed = getattr(stats, "failed_tactics", None)
+    if not failed:
+        return "no failed tactics recorded"
+    try:
+        parts = []
+        for op, tactics in failed.items():
+            names = sorted(str(t) for t in tactics)
+            shown = ", ".join(names[:4]) + (", ..." if len(names) > 4 else "")
+            parts.append(f"{op}: {len(names)} failed tactics ({shown})")
+        return "; ".join(parts)
+    except Exception:  # diagnostics only
+        return f"failed tactics: {failed!r}"[:400]
+
+
+_FLASHINFER_TUNER_BUDGET_ATTRS = (
+    ("warmup", "warmup"),
+    ("repeat", "repeat"),
+    ("stream_delay_us", "stream_delay_micro_secs"),
+)
+
+
+@contextmanager
+def _flashinfer_tuner_budget(tuner, budget: FlashInferTuneBudget | None):
+    """Apply ``budget`` to the ``AutoTuner`` singleton's plain profiling attributes for the
+    duration of the block, restoring whatever was there afterwards."""
+    if budget is None:
+        yield
+        return
+    saved = {}
+    for field_name, attr in _FLASHINFER_TUNER_BUDGET_ATTRS:
+        if hasattr(tuner, attr):
+            saved[attr] = getattr(tuner, attr)
+            setattr(tuner, attr, getattr(budget, field_name))
+    try:
+        yield
+    finally:
+        for attr, value in saved.items():
+            setattr(tuner, attr, value)
+
+
+_FLASHINFER_TUNER_DIAG_MARKERS = (
+    # MoERunner.get_valid_tactics: C++ enumeration error swallowed, [] returned (DEBUG).
+    "failed to get valid tactics",
+    # Per-tactic profiling failure: "Failed when profiling <runner> <tactic> ... Error
+    # occurred: <exc>" (DEBUG) and the "Skipped N unsupported tactic(s)" summary (INFO).
+    "error occurred",
+    "unsupported tactic",
+    # Nothing profiled at all: the op is served by the fallback tactic.
+    "no valid tactic",
+    "fallback",
+    "oom",
+)
+
+
+def _flashinfer_loggers() -> list[logging.Logger]:
+    """The loggers FlashInfer's autotuner writes to. ``flashinfer.jit.core.logger`` is a
+    ``FlashInferJITLogger`` built directly (not via ``logging.getLogger``), so it has to be
+    imported; the stdlib name is included for builds that register it normally."""
+    loggers: list[logging.Logger] = []
+    try:
+        from flashinfer.jit.core import logger as fi_logger
+
+        loggers.append(fi_logger)
+    except Exception:  # optional dependency: any import failure means "absent"
+        pass
+    std = logging.getLogger("flashinfer")
+    if all(lg is not std for lg in loggers):
+        loggers.append(std)
+    return loggers
+
+
+class _LogMessageCapture(logging.Handler):
+    def __init__(self):
+        super().__init__(logging.DEBUG)
+        self.messages: list[str] = []
+
+    def emit(self, record):
+        try:
+            self.messages.append(record.getMessage())
+        except Exception:  # diagnostics must never break the tuning pass
+            pass
+
+
+@contextmanager
+def _flashinfer_tuner_log_capture():
+    """Collect FlashInfer's autotuner log at DEBUG for the block without changing what it
+    prints: the loggers' pre-existing handlers are pinned at the old effective threshold
+    while the logger level is lowered, and everything is restored afterwards."""
+    handler = _LogMessageCapture()
+    saved: list[tuple[logging.Logger, int, list[tuple[logging.Handler, int]]]] = []
+    for lg in _flashinfer_loggers():
+        effective = lg.getEffectiveLevel()
+        pinned = []
+        for existing in lg.handlers:
+            pinned.append((existing, existing.level))
+            existing.setLevel(max(existing.level, effective))
+        saved.append((lg, lg.level, pinned))
+        lg.addHandler(handler)
+        lg.setLevel(logging.DEBUG)
+    try:
+        yield handler.messages
+    finally:
+        for lg, level, pinned in saved:
+            lg.removeHandler(handler)
+            lg.setLevel(level)
+            for existing, old_level in pinned:
+                existing.setLevel(old_level)
+
+
+def _flashinfer_tuner_diagnostics(messages: Iterable[str]) -> list[str]:
+    """Autotuner messages that explain a tactic *not* being profiled or chosen: the
+    per-runner ``get_valid_tactics`` failure (``core.py`` swallows the C++ exception and
+    returns ``[]`` at DEBUG), per-tactic profiling failures (every candidate runs the full
+    op, routing kernel included, on synthetic inputs; a failing one is marked inf at DEBUG),
+    empty tactic sets, fallback selection and OOM. Duplicates are collapsed."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for msg in messages:
+        low = msg.lower()
+        if not any(marker in low for marker in _FLASHINFER_TUNER_DIAG_MARKERS):
+            continue
+        text = " ".join(msg.split())[:400]
+        if text not in seen:
+            seen.add(text)
+            out.append(text)
+    return out
+
+
+def _flashinfer_failed_tactic_counts(tuner) -> dict[str, int]:
+    """``{op::runner: failed tactic count}`` from the tuner's statistics (empty if absent)."""
+    try:
+        failed = tuner.stats.failed_tactics
+        return {str(k): len(v) for k, v in failed.items()}
+    except Exception:  # diagnostics only
+        return {}
+
+
+def _flashinfer_moe_tactic_tables() -> dict[str, dict]:
+    """``{module: MoERunner.valid_tactics_dict}`` for the FlashInfer trtllm-gen MoE modules
+    already built in this process. The class-level dict caches, per instance key
+    ``(dtype_act, dtype_weights, fp8_quant, top_k, hidden, intermediate, local_experts,
+    activation, shuffled, layout, per_token, num_tokens, lora)``, the tactic list the C++
+    launcher enumerated -- exactly what the autotuner had to choose from. Only modules whose
+    ``functools.cache`` is populated are read, so nothing is JIT-built here."""
+    tables: dict[str, dict] = {}
+    try:
+        import flashinfer.fused_moe.core as fi_core
+    except Exception:  # optional dependency
+        return tables
+    impl = getattr(fi_core, "_get_trtllm_moe_sm100_module_impl", None)
+    cache_info = getattr(impl, "cache_info", None)
+    try:
+        if cache_info is not None and cache_info().currsize > 0:
+            table = getattr(fi_core.get_trtllm_moe_sm100_module().MoERunner, "valid_tactics_dict", None)
+            if isinstance(table, dict):
+                tables["trtllm_sm100"] = table
+    except Exception:  # diagnostics only
+        pass
+    return tables
+
+
+def _flashinfer_new_tactic_entries(before: dict[str, set]) -> list[str]:
+    """Human-readable ``module key -> N tactics [...]`` lines for tactic-table keys that
+    appeared since ``before`` (a ``{module: set(keys)}`` snapshot)."""
+    lines = []
+    for module, table in _flashinfer_moe_tactic_tables().items():
+        for key in table:
+            if key in before.get(module, set()):
+                continue
+            tactics = table[key]
+            try:
+                shown = [tuple(int(x) for x in t) if isinstance(t, (list, tuple)) else t for t in list(tactics)[:8]]
+                count = len(tactics)
+            except Exception:  # diagnostics only
+                shown, count = [repr(tactics)[:200]], -1
+            more = f" (+{count - 8} more)" if count > 8 else ""
+            lines.append(f"{module} {key!r} -> {count} tactics {shown}{more}")
+    return lines
+
+
+def _flashinfer_device_tag() -> str:
+    """`` dev<N>`` for the current CUDA device, so the per-process tuning decisions of
+    parallel workers can be told apart in a shared log; empty without CUDA."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return f" dev{torch.cuda.current_device()}"
+    except Exception:  # diagnostics only
+        pass
+    return ""
+
+
+def _flashinfer_autotune_api():
+    """FlashInfer's ``autotune`` context manager and ``AutoTuner`` class, or ``(None, None)``."""
+    try:
+        from flashinfer.autotuner import AutoTuner, autotune
+    except ImportError:
+        return None, None
+    return autotune, AutoTuner
+
+
+@contextmanager
+def flashinfer_autotuned(num_tokens: int, tune_fn: Callable[[], None], *, label: str = ""):
+    """Time FlashInfer-backed kernels on the tactic FlashInfer's autotuner picks, as serving does.
+
+    vLLM (``enable_flashinfer_autotune``, default on for Blackwell) and SGLang (warm-up
+    autotune, plus the extend bucket since sglang #32556) both run FlashInfer kernels on
+    autotuned tactics. Without this context the collector times FlashInfer's *untuned*
+    fallback: tile = clamp(next_pow2(num_tokens * top_k / local_num_experts), 8, 128) and
+    the first config of an unstable ``std::sort`` over the kernel manifest -- a value that
+    moved between FlashInfer 0.6.12 and 0.6.18 (flashinfer #6838) and broke every SM100
+    nvfp4 MoE EP sweep whose average tokens per local expert exceeded 128 (vLLM 0.30.0 /
+    SGLang 0.5.21 campaign tables, 2026-10-27).
+
+    ``tune_fn()`` runs once inside ``autotune(True, tuning_buckets=(num_tokens,))`` so
+    every FlashInfer op it reaches is profiled at exactly this token count (with the
+    caller's real routing, so the EP-local expert load is what gets tuned). The ``with``
+    body then runs under ``autotune(False, ...)`` with the same bucket: lookups hit the
+    entries just profiled, nothing is profiled inside the body (CUDA-graph capture safe),
+    and an op the tuner has no entry for keeps FlashInfer's fallback exactly as before.
+
+    The tuning pass runs under :func:`flashinfer_autotune_budget` (default 1 warm-up, 3
+    timed launches, 1 ms delay per tactic instead of FlashInfer's 3 / 10 / 5 ms; see
+    :class:`FlashInferTuneBudget`), restored afterwards. The log line records the pass's
+    wall time and budget so a probe can read the tuning cost per token point. FlashInfer's
+    own autotuner log is captured at DEBUG during the pass and its fallback / failure
+    messages (an op whose ``get_valid_tactics`` raised is silently timed untuned) are
+    printed as a ``FlashInfer autotune WARNING`` line next to the case.
+
+    Yields ``True`` when a tuning pass ran, ``False`` when FlashInfer is not importable or
+    ``COLLECTOR_FLASHINFER_AUTOTUNE`` is off (then the body runs untouched and ``tune_fn``
+    is not called). Non-FlashInfer kernels inside the body are unaffected either way.
+    """
+    autotune, auto_tuner_cls = _flashinfer_autotune_api()
+    if autotune is None or not flashinfer_autotune_enabled():
+        yield False
+        return
+    budget = flashinfer_autotune_budget()
+    tuner = auto_tuner_cls.get()
+    cache = getattr(tuner, "profiling_cache", None)
+    entries_before = len(cache) if hasattr(cache, "__len__") else None
+    cache_keys_before = set(cache.keys()) if isinstance(cache, dict) else set()
+    buckets = (int(num_tokens),)
+    started = time.perf_counter()
+    tune_error: BaseException | None = None
+    tuner_log: list[str] = []
+    failed_before = _flashinfer_failed_tactic_counts(tuner)
+    tactic_keys_before = {module: set(table) for module, table in _flashinfer_moe_tactic_tables().items()}
+    try:
+        with (
+            _flashinfer_tuner_log_capture() as tuner_log,
+            _flashinfer_tuner_budget(tuner, budget),
+            autotune(True, tuning_buckets=buckets),
+        ):
+            tune_fn()
+    except Exception as exc:  # re-raised below, after the context probe
+        tune_error = exc
+    elapsed = time.perf_counter() - started
+    # FlashInfer profiles every candidate tactic and swallows per-tactic exceptions
+    # (logged at DEBUG, tactic marked inf). A tactic that faults leaves a sticky CUDA
+    # error behind: the chosen tactic then fails with an unrelated-looking "Got CUDA
+    # error", and the next case on this worker inherits the dead context. Probe here so
+    # the failure record names the tuning pass and the worker is recycled right away.
+    poisoned = cuda_context_error()
+    if poisoned is not None:
+        raise RuntimeError(
+            f"FlashInfer autotune pass at num_tokens={num_tokens} {label} left the CUDA context "
+            f"in error state ({poisoned}); {_flashinfer_failed_tactics(tuner)}"
+        ) from tune_error
+    if tune_error is not None:
+        raise tune_error
+    budget_desc = str(budget) if budget is not None else "flashinfer defaults"
+    if entries_before is not None:
+        outcome = f"{len(cache) - entries_before} new tactic entries"
+    else:
+        outcome = "tuning pass done"
+    dev = _flashinfer_device_tag()
+    print(
+        f"FlashInfer autotune: {outcome} at num_tokens={num_tokens} {label}".rstrip()
+        + f" [{elapsed:.2f}s, {budget_desc}]{dev}"
+    )
+    # An op the tuner could not enumerate tactics for is timed on the untuned fallback
+    # with no visible trace (b300 sglang 0.5.21 Nemotron-3-Nano nvfp4 relu2 shape,
+    # 2026-10-28: unchanged against the untuned table while every other shape moved).
+    # Surface FlashInfer's own DEBUG explanation next to the case.
+    # What the tuner chose: every cache entry this pass added, with its tactic. Two worker
+    # processes tune the same key independently (per-process cache), so a slow cell whose
+    # sibling distributions are fine is told apart from a slow kernel by comparing these.
+    if isinstance(cache, dict):
+        for key in cache:
+            if key in cache_keys_before:
+                continue
+            entry = cache[key]
+            tactic = entry[0] if isinstance(entry, (tuple, list)) and entry else entry
+            print(
+                f"FlashInfer autotune chosen at num_tokens={num_tokens} {label}".rstrip()
+                + f": {' '.join(str(key).split())[:300]} -> tactic {tactic!r}{dev}"
+            )
+    # What the tuner had to choose from: the launcher-enumerated tactic list per instance
+    # key (shows the intermediate size / activation the kernel really saw and whether the
+    # candidate set was a single tactic, i.e. tuned == untuned by construction).
+    for line in _flashinfer_new_tactic_entries(tactic_keys_before):
+        print(f"FlashInfer autotune tactics at num_tokens={num_tokens} {label}".rstrip() + f": {line}{dev}")
+    diagnostics = _flashinfer_tuner_diagnostics(tuner_log)
+    failed_after = _flashinfer_failed_tactic_counts(tuner)
+    newly_failed = {k: n - failed_before.get(k, 0) for k, n in failed_after.items() if n > failed_before.get(k, 0)}
+    if diagnostics or newly_failed:
+        parts = []
+        if newly_failed:
+            parts.append(
+                "tactics failed while profiling: " + ", ".join(f"{k}={n}" for k, n in sorted(newly_failed.items()))
+            )
+        if diagnostics:
+            more = f" (+{len(diagnostics) - 4} more)" if len(diagnostics) > 4 else ""
+            parts.append(f"{len(diagnostics)} autotuner messages: " + "; ".join(diagnostics[:4]) + more)
+        head = f"FlashInfer autotune WARNING at num_tokens={num_tokens} {label}".rstrip()
+        print(f"{head}: " + " | ".join(parts) + dev)
+    with autotune(False, tuning_buckets=buckets):
+        yield True
+
+
 def setup_signal_handlers(worker_id):
     """Setup signal handlers to log crashes."""
     import traceback as _tb
@@ -498,6 +1059,18 @@ def setup_signal_handlers(worker_id):
     # Register handlers for common signals
     for sig in [signal.SIGTERM, signal.SIGABRT]:
         signal.signal(sig, signal_handler)
+
+    # SIGUSR1 = "dump every thread's stack to stderr and keep running". The
+    # executor's stall watchdog sends it before killing a wedged worker, so a
+    # hang leaves the exact frame in the log (sglang 0.5.21 moe/bf16 on l40s
+    # and b300, 2026-10-06: 8 workers took their first task and never returned,
+    # 76 min of silence, nothing to diagnose from).
+    try:
+        import faulthandler
+
+        faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+    except Exception:
+        pass
 
     # SIGSEGV might not be catchable on all platforms
     try:
@@ -607,7 +1180,9 @@ def setup_logging(scope=["all"], debug=False, worker_id=None):
 
     # Create log directory
     time_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    _LOG_DIR = Path(f"{log_scope_dirname(scope)}_{time_stamp}")
+    # Absolute: workers and the profiler read it back from the environment,
+    # possibly after the working directory changed.
+    _LOG_DIR = Path.cwd() / f"{log_scope_dirname(scope)}_{time_stamp}"
     if not _LOG_DIR.is_dir():
         _LOG_DIR.mkdir()
 
@@ -678,7 +1253,19 @@ def save_error_report(errors, filename):
 
 
 def get_sm_version():
-    """Get CUDA compute capability (SM version)"""
+    """Get CUDA compute capability (SM version).
+
+    ``AIS_SM`` (``sm100`` or ``100``; legacy ``AIC_SM``) overrides the probe so
+    case getters can be enumerated for a target SM on a box without that GPU
+    (the op-probe harness's case inventory: the case set is a pure function
+    of (SM, framework version, case files) and must be derivable without
+    collecting). Real collection never sets it.
+    """
+    forced = os.environ.get("AIS_SM") or os.environ.get("AIC_SM")
+    if forced:
+        digits = "".join(ch for ch in str(forced) if ch.isdigit())
+        if digits:
+            return int(digits)
     try:
         import torch
 
@@ -1911,6 +2498,7 @@ def _prepare_perf_file(
         snapshot_file.seek(0)
         table = pc_csv.read_csv(snapshot_file)
     _validate_moe_default_eligibility(table, parquet_path, pa=pa)
+    table, _duplicate_rows = _dedupe_staged_perf_rows(table, parquet_path, pa=pa, pc=pc_compute)
     new_rows = table.num_rows
     merged_existing = False
     merge_target = None
@@ -1922,7 +2510,7 @@ def _prepare_perf_file(
             merge_target_was_absent = True
         else:
             old_table, merge_target = _read_attested_parquet(parquet_path, pq=pq, locked_root=locked_root)
-            table, merged_existing, new_rows = _merge_perf_rows(table, old_table, parquet_path, pa=pa)
+            table, merged_existing, new_rows = _merge_perf_rows(table, old_table, parquet_path, pa=pa, pc=pc_compute)
     table = _normalize_power_metrics(table, pa=pa, pc=pc_compute)
 
     temporary = perf_preparation_path(parquet_path)
@@ -2566,13 +3154,71 @@ def _validate_moe_default_eligibility(table, parquet_path: Path, *, pa):
         raise ValueError(f"{parquet_path}: default_eligible=false requires a nonblank string kernel_source")
 
 
-def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa):
+def _dedupe_staged_perf_rows(table, parquet_path: Path, *, pa, pc):
+    """Keep the last row per identity key within one staging file.
+
+    The staging ``*_perf.txt`` is opened in append mode and kept across resumed
+    windows, and ``--resume --resume-retry-failed`` re-runs a task that failed
+    after logging some of its rows, so those rows are appended a second time
+    (2026-10-11: rtxpro msa_context 10,342 of 13,972 rows, gb200 moe/fp8_block
+    2,590 pairs). The merge-with-existing path already dedupes on the identity
+    key; this applies the same rule to the rows of the staging file itself,
+    keeping the newest measurement and the original row order. Identity = every
+    column except the measured metrics and MoE eligibility metadata.
+    """
+    metadata_columns = {"default_eligible"} if parquet_path.name == "moe_perf.parquet" else set()
+    identity = [c for c in table.column_names if c not in PERF_METRIC_COLUMNS and c not in metadata_columns]
+    deduped, dropped = _keep_last_row_per_identity(table, identity, pa=pa, pc=pc)
+    if dropped:
+        logging.getLogger(__name__).info(
+            "convert_perf_csv_to_parquet: %s: dropped %d re-appended duplicate rows "
+            "(%d identity keys kept the newest measurement)",
+            parquet_path.name,
+            dropped,
+            deduped.num_rows,
+        )
+    return deduped, dropped
+
+
+def _keep_last_row_per_identity(table, identity: list[str], *, pa, pc):
+    """Keep the last row per identity key, in the original order of the kept rows.
+
+    pyarrow only: the collector images ship pyarrow (the harness installs it
+    into ``pyarrow-site``) but not pandas, and the merge path used to need
+    pandas — the second finalize of a shard (resume / retry-failed) died with
+    ``No module named 'pandas'`` (b200 vllm dsa_context_module, 2026-10-12).
+    Returns ``(deduped_table, dropped_rows)``.
+    """
+    if table.num_rows < 2 or not identity:
+        return table, 0
+    index_name = "__row_index__"
+    while index_name in table.column_names:
+        index_name = "_" + index_name
+    keyed = table.select(identity)
+    # group_by cannot hash an all-null (null-typed) column; its values carry no identity anyway
+    for i, field in enumerate(keyed.schema):
+        if pa.types.is_null(field.type):
+            keyed = keyed.set_column(i, field.name, keyed.column(i).cast(pa.string()))
+    keyed = keyed.append_column(index_name, pa.array(range(table.num_rows), type=pa.int64()))
+    last = keyed.group_by(identity).aggregate([(index_name, "max")])
+    keep = last.column(f"{index_name}_max")
+    keep = pc.take(keep, pc.sort_indices(keep))
+    deduped = table.take(keep)
+    return deduped, table.num_rows - deduped.num_rows
+
+
+def _identity_keys(table, identity: list[str]) -> list[tuple]:
+    """One hashable key per row, in row order."""
+    columns = [table.column(name).to_pylist() for name in identity]
+    return list(zip(*columns, strict=True)) if columns else [()] * table.num_rows
+
+
+def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa, pc):
     """Merge freshly-collected rows into an existing perf parquet, keeping the
     newest row per identity key. Returns ``(table, merged_existing,
     current_event_rows)``; schema incompatibility returns the new table with
-    ``merged_existing=False`` and its unchanged row count."""
-    import pandas as pd
-
+    ``merged_existing=False`` and its unchanged row count. pyarrow only — see
+    ``_keep_last_row_per_identity``."""
     log = logging.getLogger(__name__)
     _validate_moe_default_eligibility(old_table, parquet_path, pa=pa)
 
@@ -2595,8 +3241,8 @@ def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa):
             )
 
     # Compare (name, type) pairs for IDENTITY columns only: matching names
-    # with drifted types would otherwise round-trip through pandas and
-    # silently rewrite the parquet under a different schema. Metric columns
+    # with drifted types would otherwise be concatenated and silently rewrite
+    # the parquet under a different schema. Metric columns
     # are exempt from the type check — pyarrow.csv infers an all-empty
     # optional metric column as `null` while populated runs infer `double`,
     # and treating that drift as a mismatch made the merge silently OVERWRITE
@@ -2604,10 +3250,21 @@ def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa):
     # the finalizer then casts power metrics to double and replaces nulls with
     # the repository's 0.0 unavailable-measurement sentinel. Order-insensitive
     # (the merge realigns column order below); Arrow metadata is ignored
-    # (pandas round-trips change it).
+    # (parquets written by the pandas-based merges before 2026-10-12 carry
+    # pandas metadata).
+    # `string` and `large_string` are one logical type: pyarrow.csv infers
+    # `string`, but a parquet that went through one of those pandas merges
+    # comes back as `large_string`, so the THIRD finalize of a table (run ->
+    # resume -> retry-failed) used to read as a schema mismatch and OVERWRITE
+    # the accumulated rows (sm120 attention_generation fp8kv, 2026-10-01:
+    # 27,303 rows replaced by 5,067). Compare the logical string type.
+    def _logical(type_str: str) -> str:
+        return {"large_string": "string", "large_binary": "binary"}.get(type_str, type_str)
+
     def fields(schema):
         return sorted(
-            (f.name, str(f.type)) if f.name not in PERF_METRIC_COLUMNS else (f.name, "<metric>") for f in schema
+            (f.name, _logical(str(f.type))) if f.name not in PERF_METRIC_COLUMNS else (f.name, "<metric>")
+            for f in schema
         )
 
     old_fields = fields(old_table.schema)
@@ -2644,30 +3301,50 @@ def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa):
                 new_table.column(f.name).cast(f.type),
             )
 
-    new_df = new_table.to_pandas()
-    old_df = old_table.to_pandas()
+    # align string width variants (string vs large_string) on the new side so the
+    # concatenation below does not widen or fail on a logical-type-equal column
+    for f in old_table.schema:
+        if f.name in PERF_METRIC_COLUMNS:
+            continue
+        new_field = new_table.schema.field(f.name)
+        if new_field.type != f.type and _logical(str(new_field.type)) == _logical(str(f.type)):
+            new_table = new_table.set_column(
+                new_table.schema.get_field_index(f.name), f.name, new_table.column(f.name).cast(f.type)
+            )
 
-    new_df = new_df[old_df.columns.tolist()]  # align column order
-    identity = [c for c in old_df.columns if c not in PERF_METRIC_COLUMNS and c not in metadata_columns]
+    new_table = new_table.select(old_table.column_names)  # align column order
+    identity = [c for c in old_table.column_names if c not in PERF_METRIC_COLUMNS and c not in metadata_columns]
     if inherit_eligibility:
-        annotations = old_df.drop_duplicates(subset=identity, keep="last")[identity + ["default_eligible"]]
-        new_df = new_df.drop(columns="default_eligible").merge(annotations, on=identity, how="left", sort=False)
-        flags = new_df["default_eligible"]
-        new_df["default_eligible"] = flags.where(flags.notna(), True).astype(bool)
-        new_df = new_df[old_df.columns.tolist()]
-    current_event_rows = len(new_df.drop_duplicates(subset=identity, keep="last"))
-    combined = pd.concat([old_df, new_df], ignore_index=True)
-    deduped = combined.drop_duplicates(subset=identity, keep="last").reset_index(drop=True)
+        # newest existing annotation per identity key; keys the existing table
+        # never annotated (or annotated null) stay eligible
+        annotations: dict[tuple, bool] = {}
+        existing_flags = old_table.column("default_eligible").to_pylist()
+        for key, flag in zip(_identity_keys(old_table, identity), existing_flags, strict=True):
+            annotations[key] = True if flag is None else bool(flag)
+        flags = [annotations.get(key, True) for key in _identity_keys(new_table, identity)]
+        new_table = new_table.set_column(
+            new_table.schema.get_field_index("default_eligible"),
+            "default_eligible",
+            pa.array(flags, type=pa.bool_()),
+        )
+    current_event_rows = _keep_last_row_per_identity(new_table, identity, pa=pa, pc=pc)[0].num_rows
+    # Drop schema metadata on both sides: a parquet written by an earlier
+    # pandas-based merge carries pandas index metadata that would otherwise
+    # make concat_tables see two different schemas (and be re-published).
+    old_table = old_table.replace_schema_metadata(None)
+    new_table = new_table.replace_schema_metadata(None)
+    combined = pa.concat_tables([old_table, new_table], promote_options="default")
+    deduped, replaced = _keep_last_row_per_identity(combined, identity, pa=pa, pc=pc)
     log.info(
         "convert_perf_csv_to_parquet: merged %s: %d existing + %d new -> %d rows "
         "(%d identity keys replaced by newer measurements)",
         parquet_path.name,
-        len(old_df),
-        len(new_df),
-        len(deduped),
-        len(combined) - len(deduped),
+        old_table.num_rows,
+        new_table.num_rows,
+        deduped.num_rows,
+        replaced,
     )
-    return pa.Table.from_pandas(deduped, preserve_index=False), True, current_event_rows
+    return deduped, True, current_event_rows
 
 
 def find_perf_csv_outputs(output_root: str | os.PathLike = ".", *, recursive: bool = False) -> list[Path]:

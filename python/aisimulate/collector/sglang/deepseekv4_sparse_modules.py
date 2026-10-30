@@ -5,35 +5,38 @@
 
 Collects the DeepSeek-V4 NSA sparse-attention sub-kernels at the kernel level.
 DeepSeek-V4's primary AIC path uses prefix-aware full CSA/HCA attention-module
-rows; paged_mqa_logits / csa_attn / hca_attn here are supporting kernel-level
-data for prefix/past_kv correction and residual analysis, while the topk_calib
-DELTA is actively consumed by perf_database's topK correction.
+rows; paged_mqa_logits here is supporting kernel-level data for the SDK CP
+chunk walk, while the topk_calib DELTA is actively consumed by
+perf_database's topK correction.
 
-The four sub-kernels form ONE sparse-op family — the CSA/HCA sparse path in
+The two sub-kernels form ONE sparse-op family — the CSA sparse path in
 order — all collected, none modeled analytically:
 
     1. ``deep_gemm.fp8_paged_mqa_logits``      CSA indexer scoring
     2. ``topk_transform`` (topk_512/_1024)     CSA selection — phase-specific
                                                v1/v2 flat-vs-top_last DELTA calib
-    3. ``flash_mla_with_kvcache`` (csa_attn)   CSA sparse FMLA over the
-                                               topk-selected c4 positions
-    4. ``flash_mla_with_kvcache`` (hca_attn)   HCA c128 sparse FMLA
+
+The standalone FMLA sidecars (``flash_mla_with_kvcache`` as csa_attn / hca_attn)
+were removed 2026-10-15: their SDK readers were retired design placeholders with
+no query path (csa_attn never shipped data) and, as registry-only ops, they
+failed every shard plan generated from the registry.
 
 Inputs are SAME-SOURCE: every sub-kernel derives its ``(prefix, isl, bs[, tp])``
-shapes STRICTLY 1:1 from the CSA/HCA attention-module CSV it belongs to
-(paged_mqa / topk / csa_attn ← CSA module; hca_attn ← HCA module) — no separate
-sweep grid — benched at upstream layouts (DeepGEMM ``test_attention.py`` for the
-indexer GEMM, FlashMLA ``MODEL1_FP8Sparse`` quant for the FMLA kernel).
+shapes STRICTLY 1:1 from the CSA attention-module INPUT sweep it belongs to — no
+separate sweep grid — benched at the upstream layout (DeepGEMM
+``test_attention.py`` for the indexer GEMM).
 
 CSV schema matches existing aic dsv4 module CSVs (so loaders can be shared):
-``isl`` carries M, ``step`` carries past_kv, ``compress_ratio`` distinguishes
-CSA(=4) / HCA(=128).
+``isl`` carries M, ``step`` carries past_kv, ``compress_ratio`` carries the CSA
+c4 path (=4).
 """
 
 # Requires stock SGLang 0.5.14 with its matching ``sgl-kernel`` package.
 from __future__ import annotations
 
-__compat__ = "sglang==0.5.14"
+# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
+__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20"
 
 import functools
 import json
@@ -63,10 +66,10 @@ except ModuleNotFoundError:
 
 def _dsv4_sparse_kernel_cases(kernel, models=None):
     # One task per (model, bs); collect.py spreads bs across GPU workers (no
-    # single-worker cuda-graph buildup). All sparse kernels run a single fixed
-    # head config: the FMLA pads to its required head count OUTSIDE the kernel
-    # (model TP zero-pad), so the kernel is TP-independent -> one config per bs,
-    # no tp sweep. Each task sweeps (isl, prefix) for its bs.
+    # single-worker cuda-graph buildup). The sparse kernels run a single fixed
+    # head config (the indexer heads are not TP-sharded), so each is
+    # TP-independent -> one config per bs, no tp sweep. Each task sweeps
+    # (isl, prefix) for its bs.
     if models is None:
         try:
             from collector.case_generator import _selected_dsv4_models
@@ -87,24 +90,12 @@ def get_dsv4_paged_mqa_logits_test_cases():
     return _dsv4_sparse_kernel_cases("paged_mqa_logits")
 
 
-def get_dsv4_hca_attn_test_cases():
-    return _dsv4_sparse_kernel_cases("hca_attn")
-
-
-def get_dsv4_csa_attn_test_cases():
-    return _dsv4_sparse_kernel_cases("csa_attn")
-
-
 get_dsv4_flash_paged_mqa_logits_test_cases = get_dsv4_paged_mqa_logits_test_cases
-get_dsv4_flash_hca_attn_test_cases = get_dsv4_hca_attn_test_cases
 
 
 __all__ = [
     "DEFAULT_MODEL",
-    "get_dsv4_csa_attn_test_cases",
-    "get_dsv4_flash_hca_attn_test_cases",
     "get_dsv4_flash_paged_mqa_logits_test_cases",
-    "get_dsv4_hca_attn_test_cases",
     "get_dsv4_paged_mqa_logits_test_cases",
     "get_dsv4_topk_calib_test_cases",
     "run_dsv4_sparse_kernel_worker",
@@ -180,25 +171,6 @@ def _dsv4_sparse_config(model_path: str) -> SimpleNamespace:
     )
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# DeepSeek-V4 sparse architectural constants
-# ═══════════════════════════════════════════════════════════════════════
-# Shape fields below are identical across DSV4 variants (Flash/Pro), so the
-# default model config is authoritative; read them via the sparse config.
-_DEFAULT_SC = _dsv4_sparse_config(DEFAULT_MODEL)
-V_HEAD_DIM = _DEFAULT_SC.head_dim  # 512
-FMLA_D_QK = V_HEAD_DIM  # FlashMLA d_qk == head_dim (NOT 576)
-FMLA_D_ROPE = _DEFAULT_SC.d_rope  # 64
-FMLA_D_NOPE = _DEFAULT_SC.d_nope  # 448
-
-# Kernel-layout invariants — NOT in the model config. The FlashMLA
-# MODEL1_FP8Sparse fp8 quant tile size and the deep_gemm / FlashMLA paged block
-# size are hardcoded in the kernels themselves (deep_gemm blocksize 64;
-# flashmla_backend.PAGE_SIZE = 64), so they are fixed constants here.
-# bytes_per_token = d_nope + d_rope*2 + num_tiles + 1 pad = 448 + 128 + 7 + 1 = 584
-FMLA_TILE_SIZE = 64
-FMLA_NUM_TILES = FMLA_D_NOPE // FMLA_TILE_SIZE  # 448 / 64 = 7
-
 DEFAULT_ARCHITECTURE = "DeepseekV4ForCausalLM"
 
 
@@ -224,49 +196,36 @@ def _device_num_sms(device: str | torch.device) -> int:
     return torch.cuda.get_device_properties(device).multi_processor_count
 
 
-# The DSV4 sparse-op family — all four collected by ONE worker
+# The DSV4 sparse-op family — both collected by ONE worker
 # (run_dsv4_sparse_kernel_worker), all driven by the KERNEL_* maps below, all
-# same-source (shapes read 1:1 from the CSA/HCA attention-module CSV they belong
-# to), all writing the SAME row schema (one ``latency`` per row):
+# same-source (shapes derived 1:1 from the CSA attention-module INPUT sweep),
+# all writing the SAME row schema (one ``latency`` per row):
 #   - paged_mqa_logits: CSA indexer scoring (deep_gemm)            -> 1 row/shape
 #   - topk:           CSA selection — context runs v1 and generation runs v2,
 #                     each under two score distributions, emitted as TWO
 #                     rows/shape (score_mode=v1_flat | v1_top_last or
 #                     v2_flat | v2_top_last); perf_database takes the matching
 #                     DELTA = flat.latency - top_last.latency -> 2 rows/shape
-#   - csa_attn:       CSA's flash_mla over the topk-selected c4
-#                     positions (K_per_query = min(index_topk, full_s//4))
-#   - hca_attn:       HCA's flash_mla over c128 cache.
-#                     (production DSV4 at TP>1 also runs FlashMLA with
-#                      the native h_q — sglang pads Q to full native heads,
-#                      then slices output back; see deepseek_v4.py:847.  So
-#                      TP=1 data is valid for any deployment TP.)
 KERNEL_TO_OP_NAME = {
     "paged_mqa_logits": "dsv4_paged_mqa_logits_module",
     "topk": "dsv4_csa_topk_calib",
-    "hca_attn": "dsv4_hca_attn_module",
-    "csa_attn": "dsv4_csa_attn_module",
 }
 
 KERNEL_TO_KERNEL_SOURCE = {
     "paged_mqa_logits": "deep_gemm.fp8_paged_mqa_logits",
-    "hca_attn": "flash_mla_with_kvcache",
-    "csa_attn": "flash_mla_with_kvcache",
 }
 
-# compress_ratio: 4 for the CSA c4 path (indexer/topk/csa_attn), 128 for HCA c128.
+# compress_ratio: 4 for the CSA c4 path (indexer/topk).
 KERNEL_TO_COMPRESS_RATIO = {
     "paged_mqa_logits": 4,
     "topk": 4,
-    "hca_attn": 128,
-    "csa_attn": 4,
 }
 
 # Each sparse sub-kernel derives its (prefix, isl, bs) shapes from its owning
-# attention module's INPUT sweep (paged_mqa/topk/csa_attn <- CSA, hca_attn <-
-# HCA) via _dsv4_context_derived_shapes / _dsv4_generation_derived_shapes —
-# NOT from the already-collected module CSVs.
-# ALL four sparse kernels are TP-independent — the indexer/FMLA latency does not
+# attention module's INPUT sweep (paged_mqa/topk <- CSA) via
+# _dsv4_context_derived_shapes / _dsv4_generation_derived_shapes — NOT from the
+# already-collected module CSVs.
+# Both sparse kernels are TP-independent — the indexer latency does not
 # change with tp (the module's per-tp rows differ only by the attention module's
 # comms/sharding, not the sparse sub-kernel). So each is benched ONCE per unique
 # (prefix, isl, bs) module shape and written one row per shape (tp_size=1),
@@ -326,7 +285,7 @@ def _bench_cuda_graph(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Cache packing helpers (mirror DeepGEMM/FlashMLA test code)
+# Cache packing helpers (mirror DeepGEMM test code)
 # ═══════════════════════════════════════════════════════════════════════
 
 
@@ -348,76 +307,11 @@ def _kv_cache_cast_to_fp8_indexer(x: torch.Tensor) -> torch.Tensor:
     return out.view(num_blocks, block_size, 1, head_dim + 4)
 
 
-def _quantize_k_cache_model1(k_bf16: torch.Tensor) -> torch.Tensor:
-    """FlashMLA MODEL1_FP8Sparse pack (DSV4 sparse layout).
-
-    k_bf16: (num_blocks, block_size, 1, d_qk=512) bf16
-    out:    (num_blocks, block_size, 1, bytes_per_token=584) packed fp8
-
-    Layout per token (inside the bytes_per_token slab):
-        [d_nope=448 fp8 nope][d_rope*2=128 bf16 rope][num_tiles=7 fp8 e8m0 sf][1 pad]
-    """
-    num_blocks, block_size, num_heads, d_qk = k_bf16.shape
-    assert num_heads == 1 and d_qk == FMLA_D_QK
-    k = k_bf16.squeeze(2)  # (num_blocks, block_size, d_qk)
-
-    bytes_per_token = FMLA_D_NOPE + 2 * FMLA_D_ROPE + FMLA_NUM_TILES + 1  # 584
-    size_per_block_padded = (block_size * bytes_per_token + 576 - 1) // 576 * 576
-    # Allocate padded (so memory layout matches kernel TMA expectations) but
-    # SLICE back to exact ``block_size*bytes_per_token`` so the final view has
-    # last-dim = bytes_per_token (kernel asserts on this).
-    out = torch.empty((num_blocks, size_per_block_padded), dtype=torch.float8_e4m3fn, device=k_bf16.device)
-    out_view = out[:, : block_size * bytes_per_token]
-
-    # nope+rope region
-    nope_rope_part = out_view[:, : block_size * (FMLA_D_NOPE + 2 * FMLA_D_ROPE)].view(
-        num_blocks, block_size, FMLA_D_NOPE + 2 * FMLA_D_ROPE
-    )
-    nope = nope_rope_part[:, :, :FMLA_D_NOPE]
-    rope = nope_rope_part[:, :, FMLA_D_NOPE:].view(k_bf16.dtype)
-
-    sf = (
-        out_view[:, block_size * (FMLA_D_NOPE + 2 * FMLA_D_ROPE) :]
-        .view(num_blocks, block_size, 8)[:, :, :7]
-        .view(torch.float8_e8m0fnu)
-    )
-
-    rope[:] = k[..., FMLA_D_NOPE:]
-    for tile_idx in range(FMLA_NUM_TILES):
-        s, e = tile_idx * FMLA_TILE_SIZE, (tile_idx + 1) * FMLA_TILE_SIZE
-        scale_inv = (k[..., s:e].abs().float().amax(dim=-1).float() / 448.0).clamp_min(1e-4)
-        scale_inv = torch.pow(2, scale_inv.log2().ceil()).to(torch.float32)
-        sf[:, :, tile_idx] = scale_inv.to(torch.float8_e8m0fnu)
-
-        scale_inv = scale_inv.unsqueeze(-1)
-        nope[:, :, s:e] = (k[..., s:e].float() / scale_inv.float()).to(torch.float8_e4m3fn)
-
-    # Return a view whose stride(0) is the padded per-block size — FlashMLA's
-    # MODEL1 path asserts ``k_cache.stride(0) % TMA_K_STRIDE == 0`` (with
-    # TMA_K_STRIDE = D_NOPE + 2*D_ROPE = 576), and ``bytes_per_token * block_size``
-    # = 37376 is *not* a multiple of 576, so we need the per-block padding to be
-    # visible in the tensor's stride. ``.view`` collapses stride(0) to the
-    # contiguous value when num_blocks == 1, breaking the assertion for small
-    # shapes; ``as_strided`` lets us pin stride(0) to size_per_block_padded for
-    # any num_blocks.
-    return out.as_strided(
-        size=(num_blocks, block_size, 1, bytes_per_token),
-        stride=(size_per_block_padded, bytes_per_token, bytes_per_token, 1),
-        storage_offset=0,
-    )
-
-
 def _expand_block_table(num_blocks: int, batch_size: int, device) -> torch.Tensor:
     """Block list [0..num_blocks) replicated to (batch_size, num_blocks) int32.
     All requests share the same physical blocks (KV cache is shared in-bench)."""
     row = torch.arange(num_blocks, dtype=torch.int32, device=device)
     return row.unsqueeze(0).expand(batch_size, num_blocks).contiguous()
-
-
-def _expand_indices(k: int, batch_size: int, m: int, device) -> torch.Tensor:
-    """Sequential KV indices [0..k) replicated to (batch_size, m, k) int32."""
-    base = torch.arange(k, dtype=torch.int32, device=device)
-    return base.view(1, 1, k).expand(batch_size, m, k).contiguous()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -440,7 +334,19 @@ def _bench_paged_mqa_logits(
     to ``batch_dim`` with ``next_n=1``. Per-request causal lengths remain
     distinct even though those token rows share one physical KV cache.
     """
-    from deep_gemm import fp8_paged_mqa_logits, get_paged_mqa_logits_metadata
+    from deep_gemm import fp8_paged_mqa_logits
+
+    try:
+        # sglang>=0.5.21 builds the paged-MQA schedule with its own JIT kernel
+        # (sglang::paged_mqa_metadata_tiny_kernel) whenever SGLANG_OPT_USE_JIT_INDEXER_METADATA
+        # is set (default True, environ.py:1570) or the query row count exceeds 11673
+        # (dsv4/metadata.py:213-224, force_deep_gemm_metadata defaults False :184); the
+        # DeepGEMM sched kernel is only the opt-out path. Same (seq_lens, page_size, num_sm)
+        # contract (kernels/ops/attention/dsv4/attn.py:57). H20 gate 2026-10-01: the serving
+        # decode trace carries the tiny kernel, never deep_gemm::sched::sm90_paged_mqa_logits_metadata.
+        from sglang.kernels.ops.attention.dsv4.attn import get_paged_mqa_logits_metadata
+    except ImportError:
+        from deep_gemm import get_paged_mqa_logits_metadata
 
     if batch_size <= 0 or M % batch_size:
         raise ValueError(f"M={M} must be divisible by positive batch_size={batch_size}")
@@ -482,173 +388,6 @@ def _bench_paged_mqa_logits(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Helpers for FlashMLA HCA
-# ═══════════════════════════════════════════════════════════════════════
-
-
-def _build_flash_mla_inputs(
-    M: int,  # noqa: N803
-    past_kv: int,
-    *,
-    K_per_query: int,  # noqa: N803
-    batch_size: int,
-    n_local_heads: int,
-    device: str,
-) -> tuple[torch.Tensor, ...]:
-    """Build fp8 paged K cache + Q + indices + scheduler metadata.
-
-    Layout = MODEL1_FP8Sparse (DSV4 NSA): d_qk=512 with 584-byte fp8 cache.
-    """
-    M_per_req = M // batch_size if batch_size > 1 else M  # noqa: N806
-    # Per-request sequence length: each of the ``batch_size`` requests has
-    # ``M_per_req`` new query tokens over ``past_kv`` prefix (NOT the flattened
-    # total M), so cache_seqlens / indices mirror the owning module
-    # (prefix, isl, bs) row 1:1 instead of one giant bs*isl request.
-    full_s = M_per_req + past_kv
-    K_per_query = max(min(K_per_query, full_s), 1)  # noqa: N806
-
-    # Q: (batch, M_per_req, n_local_heads, FMLA_D_QK=512) bf16
-    q = torch.randn(batch_size, M_per_req, n_local_heads, FMLA_D_QK, dtype=torch.bfloat16, device=device)
-
-    # K cache: SHARED across batch entries to avoid b-fold blowup.
-    blocks_per_req = (full_s + _dsv4_kv_page_size() - 1) // _dsv4_kv_page_size()
-    k_bf16 = torch.randn(blocks_per_req, _dsv4_kv_page_size(), 1, FMLA_D_QK, dtype=torch.bfloat16, device=device)
-    k_cache = _quantize_k_cache_model1(k_bf16)
-
-    block_table = _expand_block_table(blocks_per_req, batch_size, device)
-
-    # indices_in_kvcache: (batch, M_per_req, K_per_query) int32 — first K_per_query positions per Q
-    indices = _expand_indices(K_per_query, batch_size, M_per_req, device)
-
-    # Pad indices to multiple of 64 (FlashMLA assertion)
-    if K_per_query % 64 != 0:
-        pad = 64 - K_per_query % 64
-        pad_t = torch.full((batch_size, M_per_req, pad), -1, dtype=torch.int32, device=device)
-        indices = torch.cat([indices, pad_t], dim=-1).contiguous()
-
-    cache_seqlens = torch.full((batch_size,), full_s, dtype=torch.int32, device=device)
-
-    return q, k_cache, block_table, indices, cache_seqlens
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# Kernel 2 (HCA): flash_mla_with_kvcache
-# ═══════════════════════════════════════════════════════════════════════
-
-
-def _bench_flash_mla_sparse(
-    M: int,  # noqa: N803
-    past_kv: int,
-    *,
-    K_per_query: int,  # noqa: N803
-    native_heads: int,
-    sliding_window: int,
-    batch_size: int = 1,
-    tp_size: int = 1,
-    device: str = "cuda:0",
-) -> float:
-    """Benchmark sparse FlashMLA matching V4's V4 backend call shape.
-
-    Real V4 HCA backend (deepseek_v4_backend_radix.py:1087+) passes:
-      - main K cache + indices = SWA window (128 fixed positions)
-      - extra K cache + indices = c128 (HCA) positions
-    Total K attended per query = SWA_WINDOW + extra_K_per_query.
-
-    TP zero-pad (mirrors ``sglang/srt/models/deepseek_v4.py:847``):
-      1. Projection produces ``q_local`` of shape (..., native_heads//tp, d_qk) —
-         the rank's actual computed heads.
-      2. ``q_padded`` is allocated full (..., native_heads, d_qk) and the rank's
-         ``tp_slice`` is filled from ``q_local``; other heads are zeros.
-      3. FlashMLA always receives the full native head count.
-    """
-    from flash_mla import flash_mla_with_kvcache, get_mla_metadata
-
-    # rank-local head count (what the upstream projection actually produces)
-    n_local_heads = max(1, native_heads // tp_size)
-    M_per_req = M // batch_size if batch_size > 1 else M  # noqa: N806
-    _full_s = M_per_req + past_kv  # per-request sequence length (bs requests, M_per_req new tokens each)
-
-    # Build main K cache + ``q_local`` (per-rank Q at n_local_heads)
-    q_local, k_cache_main, _, _, cache_seqlens = _build_flash_mla_inputs(
-        M,
-        past_kv,
-        K_per_query=K_per_query,
-        batch_size=batch_size,
-        n_local_heads=n_local_heads,
-        device=device,
-    )
-
-    # Zero-pad ``q_local`` to the full native head count before the FlashMLA
-    # call. Passing the unpadded TP-local head count trips ``Unsupported h_q``.
-    if n_local_heads == native_heads:
-        q = q_local
-    else:
-        q = torch.zeros(batch_size, M_per_req, native_heads, FMLA_D_QK, dtype=torch.bfloat16, device=device)
-        q[:, :, :n_local_heads, :] = q_local  # rank-0's tp_slice
-
-    # Kernel always sees full h_q.
-    n_local_heads = native_heads
-    swa_window = sliding_window
-    swa_indices = _expand_indices(swa_window, batch_size, M_per_req, device)
-    swa_topk_lengths = torch.full((batch_size,), swa_window, dtype=torch.int32, device=device)
-
-    # Build extra K cache (c128 or c4) + extra indices
-    _pg = _dsv4_kv_page_size()
-    extra_blocks = (K_per_query + _pg - 1) // _pg
-    extra_k_bf16 = torch.randn(max(1, extra_blocks), _pg, 1, FMLA_D_QK, dtype=torch.bfloat16, device=device)
-    extra_k_cache = _quantize_k_cache_model1(extra_k_bf16)
-    extra_K = max(64, ((K_per_query + 63) // 64) * 64)  # noqa: N806
-    extra_indices = _expand_indices(extra_K, batch_size, M_per_req, device)
-    extra_topk_lengths = torch.full((batch_size,), K_per_query, dtype=torch.int32, device=device)
-
-    sched_meta, _ = get_mla_metadata(
-        cache_seqlens=cache_seqlens,
-        num_q_tokens_per_head_k=M_per_req * n_local_heads,
-        num_heads_k=1,
-        num_heads_q=n_local_heads,
-        is_fp8_kvcache=True,
-        topk=swa_indices.size(-1),
-    )
-
-    softmax_scale = 1.0 / (FMLA_D_QK**0.5)
-    attn_sink = torch.zeros(n_local_heads, dtype=torch.float32, device=device)
-
-    def kernel_fn():
-        flash_mla_with_kvcache(
-            q=q,
-            k_cache=k_cache_main,
-            block_table=None,
-            cache_seqlens=None,
-            head_dim_v=V_HEAD_DIM,
-            tile_scheduler_metadata=sched_meta,
-            num_splits=None,
-            softmax_scale=softmax_scale,
-            causal=False,
-            is_fp8_kvcache=True,
-            indices=swa_indices,
-            topk_length=swa_topk_lengths,
-            attn_sink=attn_sink,
-            extra_k_cache=extra_k_cache,
-            extra_indices_in_kvcache=extra_indices,
-            extra_topk_length=extra_topk_lengths,
-        )
-
-    return _bench_cuda_graph(kernel_fn, allow_graph_fail=False, device=device)
-
-
-# HCA and CSA are the SAME FlashMLA kernel (``_bench_flash_mla_sparse``) — they
-# differ only in how many KV positions each query attends to:
-#   - hca_attn: all c128 positions               -> full_s // 128
-#   - csa_attn: the topk-selected c4 positions    -> min(index_topk, full_s // 4)
-# (csa uses the same sequential-index approximation as hca; the real topk
-# scatter pattern is not reproducible in a kernel-level bench.)
-_FMLA_K_PER_QUERY = {
-    "hca_attn": lambda full_s, sc: max(1, full_s // 128),
-    "csa_attn": lambda full_s, sc: max(1, min(sc.index_topk, full_s // 4)),
-}
-
-
-# ═══════════════════════════════════════════════════════════════════════
 # CSV write helper
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -678,7 +417,7 @@ def _write_row(
 ) -> None:
     os.makedirs(os.path.dirname(os.path.abspath(perf_filename)) or ".", exist_ok=True)
 
-    mla_dtype = "bfloat16" if kernel in ("hca_attn", "csa_attn") else "fp8_e4m3"
+    mla_dtype = "fp8_e4m3"
     kv_cache_dtype = "fp8_e4m3"
     gemm_type = "fp8_block"
 
@@ -745,29 +484,13 @@ def _guarded_bench(bench_fn: Callable[[], object], label: str):
 def _bench_sparse_kernel_shape(kernel, prefix, isl, bs, sc, device, *, topk_variant=None):
     """Bench one module ``(prefix, isl, bs)`` shape; return a list of
     ``(score_mode, latency_ms)`` rows. TP-independent (paged_mqa maps tokens to
-    b=M while preserving request-local causal lengths; FMLA pads to full native
-    heads), so this is computed once per shape.
+    b=M while preserving request-local causal lengths), so this is computed
+    once per shape.
 
     Single-latency kernels return one ``(None, latency)``; topk returns the
     phase-qualified flat-vs-representative pair whose matching-variant DELTA
     perf_database consumes (flat.latency - top_last.latency)."""
     M = bs * isl  # noqa: N806
-    if kernel in _FMLA_K_PER_QUERY:
-        # FMLA mirrors the module row 1:1: bs requests, each isl new query tokens
-        # over `prefix` past_kv. Pass batch_size=bs (so M_per_req=isl) and base
-        # K_per_query on the PER-REQUEST sequence length (isl+prefix), not the
-        # flattened total (bs*isl+prefix).
-        full_s = isl + prefix
-        lat = _bench_flash_mla_sparse(
-            M,
-            prefix,
-            K_per_query=_FMLA_K_PER_QUERY[kernel](full_s, sc),
-            native_heads=sc.num_attention_heads,
-            sliding_window=sc.sliding_window,
-            batch_size=bs,
-            device=device,
-        )["latency_ms"]
-        return [(None, lat)]
     if kernel == "topk":
         if topk_variant not in ("v1", "v2"):
             raise ValueError(f"topk requires variant v1 or v2, got {topk_variant!r}")
@@ -843,7 +566,12 @@ def _sglang_chunked_prefill_size():
     if _CHUNKED_PREFILL is None:
         try:
             from sglang.srt.model_executor.cuda_graph_config import default_cuda_graph_config
-            from sglang.srt.server_args import ServerArgs, get_device_memory_capacity
+            from sglang.srt.server_args import ServerArgs
+
+            try:  # 0.5.21: moved to utils/common.py:904 (server_args no longer re-exports it)
+                from sglang.srt.utils.common import get_device_memory_capacity
+            except ImportError:
+                from sglang.srt.server_args import get_device_memory_capacity
         except ModuleNotFoundError:
             from srt.model_executor.cuda_graph_config import default_cuda_graph_config
             from srt.server_args import ServerArgs, get_device_memory_capacity
@@ -852,16 +580,23 @@ def _sglang_chunked_prefill_size():
             gpu_mem = get_device_memory_capacity("cuda")
         except Exception:
             pass
-        sa = ServerArgs.__new__(ServerArgs)
-        sa.chunked_prefill_size = None
-        sa.cuda_graph_config = default_cuda_graph_config()
-        sa.tp_size = 1
-        sa.device = "cuda"
+        chunked = None
         try:
-            sa._handle_gpu_memory_settings(gpu_mem)
-        except Exception:
-            pass  # chunked_prefill_size is set first, before any model-dependent step
-        chunked = sa.chunked_prefill_size
+            sa = ServerArgs.__new__(ServerArgs)
+        except TypeError:
+            # sglang>=0.5.20: ServerArgs is a msgspec Struct (no bare __new__); the
+            # GPU-memory tiering below is sglang's own and needs no instance.
+            sa = None
+        if sa is not None:
+            sa.chunked_prefill_size = None
+            sa.cuda_graph_config = default_cuda_graph_config()
+            sa.tp_size = 1
+            sa.device = "cuda"
+            try:
+                sa._handle_gpu_memory_settings(gpu_mem)
+            except Exception:
+                pass  # chunked_prefill_size is set first, before any model-dependent step
+            chunked = sa.chunked_prefill_size
         if chunked is None and gpu_mem is not None:
             # Newer sglang (0.0.0.dev / >=0.5.x) refactored cuda_graph_max_bs/_bs
             # into a cuda_graph_config object that _handle_gpu_memory_settings
@@ -887,7 +622,7 @@ def _sglang_chunked_prefill_size():
 def _dsv4_context_derived_shapes(model_path):
     """DSV4 sparse-kernel context shapes derived from the csa/hca context MODULE
     INPUT sweep (same source as GLM5's dsa derive) — NOT read back from the
-    module CSV. paged_mqa_logits / topk / csa_attn / hca_attn therefore cover
+    module CSV. paged_mqa_logits / topk therefore cover
     the full-chunk isl the module drops at runtime; CSA and HCA share one grid
     (the module input validity does not depend on attn_kind).
 
@@ -988,9 +723,9 @@ def run_dsv4_sparse_kernel_worker(
     """Single worker for the whole DSV4 sparse-op family (invoked by collect.py,
     one case per model from get_func).
 
-    Reads the kernel's owning module CSV(s) — paged_mqa_logits/topk/csa_attn ←
-    CSA, hca_attn ← HCA — dedups to the unique ``(prefix, isl, bs)`` module shapes
-    (the kernels are TP-independent), and benches each once.
+    Derives the kernel's shapes from its owning CSA module INPUT sweep
+    (paged_mqa_logits / topk ← CSA) — dedups to the unique ``(prefix, isl, bs)``
+    module shapes (the kernels are TP-independent), and benches each once.
     ``_bench_sparse_kernel_shape`` returns one or more ``(score_mode, latency)``
     rows per shape — one for the single-latency kernels, two for topk
     (variant-qualified flat + top_last) — each written as one row (tp_size=1)."""
@@ -1131,11 +866,30 @@ def _bench_topk_512(
     uses planned v2. Both execute inside production CUDA graphs, so capture is
     mandatory here too.
     """
-    from sglang.jit_kernel.dsv4.topk import (
-        plan_topk_v2,
-        topk_transform_512,
-        topk_transform_512_v2,
-    )
+    try:
+        from sglang.jit_kernel.dsv4.topk import (
+            plan_topk_v2,
+            topk_transform_512,
+            topk_transform_512_v2,
+        )
+    except ImportError:
+        # sglang>=0.5.21 moved the JIT ops to sglang.kernels.ops.attention.dsv4.topk and
+        # renamed the entry points: topk_transform_512 -> topk_transform_paged (CUDA branch =
+        # the same _jit_topk_v1_module().topk_transform, topk.py:104-125; the ROCm branch is the
+        # deepseek_v4_topk_transform_512 AOT op) and topk_transform_512_v2 ->
+        # topk_transform_paged_v2 (topk.py:222, identical positional signature, out_raw_indices
+        # now optional). Serving DSV4 dispatches exactly these two from
+        # indexer.topk_transform_paged_from_metadata (srt/layers/attention/dsv4/indexer.py:446-486,
+        # v2 iff metadata.use_topk_v2), so the v1/v2 calib lanes keep their meaning.
+        from sglang.kernels.ops.attention.dsv4.topk import (
+            plan_topk_v2,
+        )
+        from sglang.kernels.ops.attention.dsv4.topk import (
+            topk_transform_paged as topk_transform_512,
+        )
+        from sglang.kernels.ops.attention.dsv4.topk import (
+            topk_transform_paged_v2 as topk_transform_512_v2,
+        )
 
     if variant not in ("v1", "v2"):
         raise ValueError(f"unknown topk variant: {variant}")

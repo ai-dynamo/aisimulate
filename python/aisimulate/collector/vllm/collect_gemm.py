@@ -58,9 +58,11 @@ quantized-weight preparation, and selected-kernel reporting.
 # 322-363); NVFP4 still uses CT's factory and records the selected kernel
 # (schemes/compressed_tensors_w4a4_nvfp4.py:29-31,95-141). This adds the
 # exact 0.25.0 release to the existing lane, not 0.25.1/0.26.0/0.27.0.
-# 0.30.0 source audit (2026-09-30: tag v0.30.0 == ced6857afa0e vs v0.27.1),
-# the baseline of the 0.31.0 audit below. 0.28.0, 0.29.0 and 0.30.0 itself
-# are not admitted: no consumer reads their tables.
+# 0.30.0 source audit (2026-09-30: tag v0.30.0 == ced6857afa0e vs v0.27.1):
+# the collector default (framework_manifest.yaml; the 2026-10 campaign
+# tables) and the baseline of the 0.31.0 audit below, which admits the
+# GLM-5.3-Flash model-pinned run. 0.28.0/0.29.0 stay admitted from the
+# 0.27.1 -> 0.30.0 upgrade path.
 # bf16: UnquantizedLinearMethod now binds its GEMM at __init__ from
 #   kernel_config.linear_backend (layers/linear.py:169-174, apply :234-238);
 #   dispatch_unquantized_gemm (layers/utils.py:584-616) returns
@@ -128,8 +130,8 @@ quantized-weight preparation, and selected-kernel reporting.
 #   0.7.0.post1 (was 0.6.18.post1).
 # Helpers with identical bodies: scaled_fp4_quant (_custom_ops.py:1513-1588),
 #   per_block_cast_to_fp8 (utils/deep_gemm.py:983-1002). All imports below
-#   resolve at 0.31.0. 0.28.0/0.29.0 are still not audited.
-__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0,!=0.28.0,!=0.29.0,!=0.30.0"
+#   resolve at 0.31.0.
+__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0"
 
 from types import SimpleNamespace
 
@@ -204,6 +206,19 @@ def get_gemm_test_cases():
 
 @with_exit_stack
 def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
+    if gemm_type == "fp8_block" and (n % 16 or k % 16):
+        # FIXME(kernel-limit): vLLM routes block-fp8 GEMMs whose weight dims are not multiples
+        # of 16 away from cutlass (_custom_ops.cutlass_scaled_mm: `cutlass_compatible_b =
+        # b.shape[0] % 16 == 0 and b.shape[1] % 16 == 0` @0.30.0:819) into triton_scaled_mm,
+        # whose scale-shape assert cannot take 128x128 block scales (triton_scaled_mm.py:201).
+        # Deterministic per shape: gb200 1,110 cases, every one N in {1,4,8,12,24} (pipeline
+        # 72343556; b200/b300 ~130 of the same shard). The ed9109ec attempt to classify by a
+        # pre-flight forward never ran: create_gemm()'s own dry run asserts first. Refuse before
+        # the layer is built; serving linears with these N take the same path.
+        raise RuntimeError(
+            f"FIXME(kernel-limit): vLLM fp8_block GEMM needs n and k multiples of 16 for cutlass_scaled_mm "
+            f"(n={n}, k={k}); the triton_scaled_mm fallback asserts on 128x128 block scales"
+        )
     setup_distributed(device)
 
     if envs.VLLM_BATCH_INVARIANT:

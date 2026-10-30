@@ -60,10 +60,16 @@ def _stub_torch(monkeypatch):
     )
 
 
+class _PeriodicGCStub:
+    def maybe_collect(self):
+        return False
+
+
 def _install_helper_stub(monkeypatch):
     _stub_module(
         monkeypatch,
         "collector.helper",
+        PeriodicGarbageCollector=_PeriodicGCStub,
         _resolve_local_model_path=lambda path: path,
         benchmark_with_power=_noop,
         get_sm_version=lambda: 100,
@@ -235,6 +241,29 @@ def test_targeted_msa_getters_keep_prefixes_and_worker_tuple_compatibility(monke
     assert captured[0]["perf_filename"] == "context.txt"
     assert captured[1]["prefix_len"] == 0
     assert captured[1]["perf_filename"] == "generation.txt"
+
+
+@pytest.mark.parametrize(
+    "sm_version,expected_max_tokens",
+    [(89, 32768), (90, 32768), (120, 32768), (100, 131072), (103, 131072)],
+)
+def test_trtllm_context_getter_caps_only_the_triton_reference_implementation(
+    monkeypatch, capsys, sm_version, expected_max_tokens
+):
+    """mla_module_trtllm.context.msa_triton_max_tokens binds where the collector
+    resolves implementation="triton" (off SM100/103); fmha_sm100 systems keep
+    the shared context budget. isl 32768 itself stays at b=1 on both."""
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", MODEL_PATH)
+    module = _load_backend(monkeypatch, "trtllm")
+    monkeypatch.setattr(module, "get_sm_version", lambda: sm_version)
+
+    cases = module.get_msa_context_module_test_cases()
+    shapes = {(case[0], case[1]) for case in cases}
+
+    assert max(s * b for s, b in shapes) == expected_max_tokens
+    assert (32768, 1) in shapes
+    dropped = "[trtllm-msa-module-cases] context: dropped" in capsys.readouterr().out
+    assert dropped == (expected_max_tokens == 32768)
 
 
 def test_vllm_public_generation_getter_applies_live_memory_filter(monkeypatch, capsys):

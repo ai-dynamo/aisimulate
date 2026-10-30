@@ -78,10 +78,12 @@ from collector.case_generator import (
     get_mla_module_sweep_spec,
 )
 from collector.helper import (
+    PhaseClock,
     _resolve_local_model_path,
     benchmark_with_power,
     get_sm_version,
     log_perf,
+    render_phase_totals,
 )
 
 try:
@@ -134,6 +136,10 @@ SGLANG_KV_DTYPE = {"bfloat16": "bfloat16", "fp8": "fp8_e4m3"}
 #             max(1, total_idx // attn_tp_size), replica ranks share one
 #             head when attn_tp_size > total_idx (minimax_m3.py:509-521).
 # All three are emulated on one GPU by shrinking the config head counts.
+
+
+# Per-subprocess sum of the point phase times printed by run_msa_module.
+_POINT_PHASE_TOTALS: dict[str, float] = {}
 
 
 def _ceil_div(a: int, b: int) -> int:
@@ -323,17 +329,31 @@ _M3_INDEX_DIM = 128
 _M3_NATIVE_GQA_RATIO = 16  # 64 q / 4 kv heads (bundled config)
 
 
+def _loaded_num_layers() -> int:
+    """Layers the worker loads (SGLANG_TEST_NUM_LAYERS, default 2) — every one of
+    them owns a slot in the main pool and the index-K pool, so the plan-time
+    footprint is per token x layers (memory_pool.py:5404 MiniMaxSparseKVPool
+    builds one MHA pool over start_layer..end_layer plus one index pool per
+    sparse layer @0.5.21)."""
+    return int(os.environ.get("SGLANG_TEST_NUM_LAYERS", "2"))
+
+
 def _estimated_kv_bytes_per_token(num_heads: int, kv_cache_dtype: str) -> int:
-    """Upper-bound bytes/token of the M3 pools at this per-GPU head count:
-    main paged K+V (kv-head sharded; fp8 stores 1 B/elem, else bf16) plus the
-    index-K side cache (always model dtype, kv_cache_configurator.py:1246
-    index_dtype=model_dtype @v0.5.16)."""
+    """Upper-bound bytes/token of the M3 pools at this per-GPU head count, for
+    ALL loaded layers: main paged K+V (kv-head sharded; fp8 stores 1 B/elem, else
+    bf16) plus the index-K side cache (model dtype unless fp8 attn-GEMM,
+    memory_pool.py:5392 get_minimax_sparse_index_dtype @0.5.21; index_dtype=
+    model_dtype @v0.5.16 kv_cache_configurator.py:1246). The 0.5.16-era
+    estimate priced one layer while the worker loads two: the three
+    largest-batch decode cells (b=256/512/1024 x 131072/65536/32768) passed the
+    plan filter and then failed the worker's execute-or-raise capacity check
+    (33.6M planned tokens > 24.5M real pool, H20 0.5.21 smoke 2026-10-01)."""
     kv_heads = max(1, num_heads // _M3_NATIVE_GQA_RATIO)
     main_elem = 1 if kv_cache_dtype == "fp8" else 2
     main = 2 * kv_heads * _M3_HEAD_DIM * main_elem
     index_heads = min(_M3_INDEX_HEADS, num_heads)
     index = index_heads * _M3_INDEX_DIM * 2
-    return main + index
+    return (main + index) * _loaded_num_layers()
 
 
 def _plan_memory_filter(shapes, *, num_heads: int, kv_cache_dtype: str, is_prefill: bool):
@@ -400,11 +420,12 @@ def _build_module_test_cases(mode: str):
     empty_groups = 0
     for model_spec in model_specs:
         for compute_dtype, kv_dtype, gemm_type in _get_precision_combos(mode):
-            for target_tp in sweep.module_tp_sizes:
+            # the model row's declared shards win over the sweep's module_tp_sizes
+            for target_tp in model_spec.tensor_parallel_sizes or sweep.module_tp_sizes:
                 if model_spec.native_num_heads % target_tp != 0:
                     continue
                 num_heads = model_spec.native_num_heads // target_tp
-                if num_heads not in sweep.inner_sweep_head_counts:
+                if model_spec.tensor_parallel_sizes is None and num_heads not in sweep.inner_sweep_head_counts:
                     continue
                 batch_sizes = sweep.context_batch_sizes if mode == "context" else [0]
                 for batch_size in batch_sizes:
@@ -656,11 +677,7 @@ def load_model_runner(
     (server_args.py _handle_gpu_memory_settings) and would go negative.
     """
     from sglang.srt.configs.model_config import ModelConfig
-    from sglang.srt.distributed.parallel_state_wrapper import ParallelState
     from sglang.srt.entrypoints.engine import _set_envs_and_config
-    from sglang.srt.layers.moe import initialize_moe_config
-    from sglang.srt.layers.quantization.fp4_utils import initialize_fp4_gemm_config
-    from sglang.srt.layers.quantization.fp8_utils import initialize_fp8_gemm_config
     from sglang.srt.model_executor.model_runner import ModelRunner
     from sglang.srt.server_args import ServerArgs
     from sglang.srt.utils import suppress_other_loggers
@@ -725,9 +742,6 @@ def load_model_runner(
     )
 
     _set_envs_and_config(server_args)
-    initialize_moe_config(server_args)
-    initialize_fp8_gemm_config(server_args)
-    initialize_fp4_gemm_config(server_args)
 
     model_config = ModelConfig.from_server_args(server_args)
     actual_architecture = (model_config.hf_config.architectures or [None])[0]
@@ -745,12 +759,15 @@ def load_model_runner(
         _sock.bind(("127.0.0.1", 0))
         nccl_port = _sock.getsockname()[1]
 
+    from collector.sglang.runtime_compat import init_runtime_config
+
+    _runner_parallel_kwargs = init_runtime_config(server_args, gpu_id, nccl_port=nccl_port, model_config=model_config)
     model_runner = ModelRunner(
         model_config=model_config,
         mem_fraction_static=server_args.mem_fraction_static,
         gpu_id=gpu_id,
-        ps=ParallelState.trivial(gpu_id=gpu_id),
         nccl_port=nccl_port,
+        **_runner_parallel_kwargs,
         server_args=server_args,
     )
     model_runner.alloc_memory_pool()
@@ -840,7 +857,13 @@ def _decode_graph_covered(model_runner, num_tokens: int) -> bool:
     graph: cuda_graph_config.decode coverage (backend != disabled; bs list
     or max_bs — resolved per GPU tier by server_args
     _handle_gpu_memory_settings, e.g. 256 on the SM90 validation node at tp<4)."""
-    decode_cfg = model_runner.server_args.cuda_graph_config.decode
+    cuda_graph_config = model_runner.server_args.cuda_graph_config
+    if cuda_graph_config is None:
+        # sglang>=0.5.21: derived config lives behind the resolving view (arg_groups/model_override_base.py:120)
+        from sglang.srt.arg_groups.model_override_base import resolving_view
+
+        cuda_graph_config = resolving_view(model_runner.server_args).cuda_graph_config
+    decode_cfg = cuda_graph_config.decode
     if decode_cfg.backend == "disabled":
         return False
     if decode_cfg.bs:
@@ -996,6 +1019,7 @@ def _run_prefill_point(
     """
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
+    point_clock = PhaseClock()
     model_runner.req_to_token_pool.clear()
     model_runner.token_to_kv_pool_allocator.clear()
 
@@ -1010,6 +1034,7 @@ def _run_prefill_point(
     batch = _make_schedule_batch(model_runner, reqs)
     with temporarily_chunked_alloc_extend(model_runner, batch_size * seq_len):
         batch.prepare_for_extend()
+    point_clock.mark("batch")
     # return_hidden_states_before_norm=False mirrors the serving worker
     # (managers/tp_worker.py:267,548@v0.5.16).
     forward_batch = ForwardBatch.init_new(batch, model_runner, return_hidden_states_before_norm=False)
@@ -1019,6 +1044,7 @@ def _run_prefill_point(
     # minimax_sparse_backend.py:505-507, base_attn_backend.py:48-54).
     with _forward_ctx(model_runner):
         model_runner.attn_backend.init_forward_metadata(forward_batch)
+    point_clock.mark("metadata")
 
     hidden_states = torch.randn(
         batch_size * seq_len,
@@ -1033,6 +1059,7 @@ def _run_prefill_point(
         .contiguous()
         .flatten()
     )
+    point_clock.mark("inputs")
 
     def kernel_func():
         with _forward_ctx(model_runner):
@@ -1053,11 +1080,16 @@ def _run_prefill_point(
             use_cuda_graph=False,
         ) as results:
             pass
+        point_clock.mark("bench")
+        point_clock.absorb(results.get("phase_seconds"), prefix="bench_")
         return results["latency_ms"], results["power_stats"]
     finally:
         model_runner.req_to_token_pool.clear()
         model_runner.token_to_kv_pool_allocator.clear()
         torch.cuda.empty_cache()
+        point_clock.mark("cleanup")
+        point_clock.add_to(_POINT_PHASE_TOTALS)
+        print(f"  [MSA point timing] context b={batch_size}, s={seq_len}, prefix={prefix_len}: {point_clock.render()}")
 
 
 def _run_decode_point(
@@ -1083,6 +1115,7 @@ def _run_decode_point(
     """
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
+    point_clock = PhaseClock()
     model_runner.req_to_token_pool.clear()
     model_runner.token_to_kv_pool_allocator.clear()
 
@@ -1094,6 +1127,7 @@ def _run_decode_point(
         req.output_ids.append(0)
     batch.prepare_for_decode()
     forward_batch = ForwardBatch.init_new(batch, model_runner, return_hidden_states_before_norm=False)
+    point_clock.mark("batch")
 
     use_graph = _decode_graph_covered(model_runner, batch_size)
     with _forward_ctx(model_runner):
@@ -1108,6 +1142,7 @@ def _run_decode_point(
             # the serving decode graph runner owns — the module bench never
             # executes a dense layer, so its eager metadata is kept.
             model_runner.attn_backend.sparse.init_forward_metadata_out_graph(forward_batch, in_capture=True)
+    point_clock.mark("metadata")
 
     hidden_states = torch.randn(
         batch_size,
@@ -1116,6 +1151,7 @@ def _run_decode_point(
         device="cuda",
     )
     positions = torch.full((batch_size,), kv_len, device="cuda", dtype=torch.int64)
+    point_clock.mark("inputs")
 
     def kernel_func():
         with _forward_ctx(model_runner):
@@ -1136,11 +1172,16 @@ def _run_decode_point(
             use_cuda_graph=use_graph,
         ) as results:
             pass
+        point_clock.mark("bench")
+        point_clock.absorb(results.get("phase_seconds"), prefix="bench_")
         return results["latency_ms"], results["power_stats"], use_graph
     finally:
         model_runner.req_to_token_pool.clear()
         model_runner.token_to_kv_pool_allocator.clear()
         torch.cuda.empty_cache()
+        point_clock.mark("cleanup")
+        point_clock.add_to(_POINT_PHASE_TOTALS)
+        print(f"  [MSA point timing] generation b={batch_size}, kv={kv_len}: {point_clock.render()}")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1342,6 +1383,7 @@ def run_msa_module(
 
         summary = f"ok={ok} error={len(failures)} skip=0 total={len(shapes)}"
         print(f"[MSA] {phase} {summary}")
+        print(f"[MSA timing] {phase}: {render_phase_totals(_POINT_PHASE_TOTALS)}")
         if ok == 0:
             raise RuntimeError(f"MSA module {phase} persisted no rows; {summary}")
         if failures:

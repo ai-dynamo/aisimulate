@@ -534,3 +534,94 @@ def test_no_fabricated_node_num_derivation_remains():
     # (the docstrings cite the legacy expression, so match its code shape).
     assert "node_num = max(" not in SOURCE_TEXT
     assert "world_size // gpus_per_node" in SOURCE_TEXT
+
+
+# ---------------------------------------------------------------------------
+# CUDA-graph timing — no eager fallback, capture outcome agreed across ranks
+# ---------------------------------------------------------------------------
+
+
+def test_benchmark_op_agrees_capture_before_timing_and_never_falls_back():
+    import ast
+
+    tree = ast.parse(SOURCE_TEXT)
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_benchmark_op")
+    callees = [ast.unparse(node.func) for node in ast.walk(function) if isinstance(node, ast.Call)]
+    assert callees.index("_agree_graph_capturable") < callees.index("benchmark_with_power")
+    bench = next(
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call) and ast.unparse(node.func) == "benchmark_with_power"
+    )
+    assert all(keyword.arg != "allow_graph_fail" for keyword in bench.keywords)
+    assert "allow_graph_fail=True" not in SOURCE_TEXT
+
+
+class _Flag:
+    def __init__(self, value):
+        self.value = value
+
+    def item(self):
+        return self.value
+
+
+def _fake_runtime(monkeypatch, *, local_capture_fails, peer_fails, world_size):
+    import sys
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    events = []
+
+    @contextmanager
+    def graph(_graph):
+        events.append("capture")
+        if local_capture_fails:
+            raise RuntimeError("operation not permitted when stream is capturing")
+        yield
+
+    def all_reduce(flag, op=None):
+        events.append("all_reduce")
+        flag.value = max(flag.value, 1 if peer_fails else 0)
+
+    dist = SimpleNamespace(
+        is_available=lambda: True,
+        is_initialized=lambda: world_size > 1,
+        get_world_size=lambda: world_size,
+        all_reduce=all_reduce,
+        ReduceOp=SimpleNamespace(MAX="max"),
+    )
+    torch = SimpleNamespace(
+        cuda=SimpleNamespace(CUDAGraph=lambda: object(), graph=graph, synchronize=lambda: events.append("sync")),
+        tensor=lambda data, **_kwargs: _Flag(data[0]),
+        int32="int32",
+        distributed=dist,
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "torch.distributed", dist)
+    return events
+
+
+def test_capture_probe_warms_eagerly_then_captures_and_agrees(monkeypatch):
+    events = _fake_runtime(monkeypatch, local_capture_fails=False, peer_fails=False, world_size=8)
+    ata._agree_graph_capturable(lambda: events.append("func"), "dispatch", "cuda:0")
+    # one eager call (lazy init is not capturable), the probe capture, then the agreement
+    assert events == ["func", "sync", "capture", "func", "sync", "all_reduce"]
+
+
+def test_capture_probe_skips_the_collective_in_a_single_rank_world(monkeypatch):
+    events = _fake_runtime(monkeypatch, local_capture_fails=False, peer_fails=False, world_size=1)
+    ata._agree_graph_capturable(lambda: None, "dispatch", "cuda:0")
+    assert "all_reduce" not in events
+
+
+def test_local_capture_failure_is_agreed_then_raises_classified(monkeypatch):
+    events = _fake_runtime(monkeypatch, local_capture_fails=True, peer_fails=False, world_size=8)
+    with pytest.raises(ata.TrtllmAlltoallBenchmarkError, match=r"CUDA graph capture of combine failed \(RuntimeError"):
+        ata._agree_graph_capturable(lambda: None, "combine", "cuda:0")
+    assert "all_reduce" in events  # the peers learn before any of them replays
+
+
+def test_peer_capture_failure_raises_on_this_rank_too(monkeypatch):
+    _fake_runtime(monkeypatch, local_capture_fails=False, peer_fails=True, world_size=8)
+    with pytest.raises(ata.TrtllmAlltoallBenchmarkError, match="peer rank"):
+        ata._agree_graph_capturable(lambda: None, "prepare", "cuda:0")

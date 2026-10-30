@@ -558,6 +558,8 @@ def test_packaged_targets_only_checkpoints_are_reviewed():
         _PACKAGED: "DEEPSEEKV32",
         "nvidia/MiniMax-M3-NVFP4": "MINIMAXM3",
         "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4": "NEMOTRONH",
+        # QWEN35 family: outside the changed DEEPSEEK/KIMIK25/DEEPSEEKV32 resolvers.
+        "nvidia/Qwen3.8-2.4T-A95B-NVFP4": "QWEN35",
         "nvidia/Qwen3.6-27B-NVFP4": "QWEN35",
         "nvidia/Qwen3.6-35B-A3B-NVFP4": "QWEN35",
     }

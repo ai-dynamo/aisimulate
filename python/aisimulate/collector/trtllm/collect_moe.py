@@ -13,6 +13,7 @@ __compat__ = "trtllm>=1.3.0rc20"
 
 import gc
 import glob
+import importlib
 import inspect
 import json
 import os
@@ -26,7 +27,15 @@ import torch
 from tensorrt_llm._torch.autotuner import AutoTuner, autotune
 from tensorrt_llm._torch.model_config import ModelConfig
 from tensorrt_llm._torch.models.modeling_deepseekv3 import DeepseekV3Gate
-from tensorrt_llm._torch.modules.fused_moe import RenormalizeMoeRoutingMethod, create_moe
+
+# trtllm >=1.3.0rc29 moved _torch.attention_backend.* -> _torch.attention.backends.* and
+# _torch.modules.fused_moe -> _torch.moe.fused_moe (the old package root is a deprecation shim
+# without submodules). Path-only compat: same classes, same kernels (layer_permissions.md
+# 'API-compat shims may only change HOW the same kernel is constructed').
+try:
+    from tensorrt_llm._torch.moe.fused_moe import RenormalizeMoeRoutingMethod, create_moe
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.modules.fused_moe import RenormalizeMoeRoutingMethod, create_moe
 from tensorrt_llm._utils import is_sm_100f
 from tensorrt_llm.mapping import Mapping
 from tensorrt_llm.models.modeling_utils import QuantAlgo, QuantConfig
@@ -56,11 +65,51 @@ from collector.helper import (
     log_perf,
     power_law_logits_v3,
 )
+from collector.version_resolver import _check_compat
 
 aic_debug = int(os.getenv("aic_moe_debug", "0"))  # noqa: SIM112
 
 moe_tune_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "moe_tuned_cache_path")
 _TRTLLM_VERSION = tensorrt_llm.__version__
+
+
+_DEEPGEMM_WORKSPACE_POOL_WARNED = False
+
+
+def _clear_deepgemm_moe_workspaces() -> None:
+    """Drop DeepGEMM's fp8_block MoE workspace pool between token counts.
+
+    DeepGemmFusedMoE sizes its workspaces per num_tokens and parks every size
+    in the memory_buffer_utils pool (``DeepGemmFusedMoE.buffers``); left alone
+    over the 27-token-count sweep the pool reached 251 GB on gb300 and the
+    next 63 GiB request OOMed (2026-10-11: gb300 60 / gb200 108 fp8_block
+    cases, Kimi-K2 / DeepSeek-V3 geometries). 1.3.0rc29 moved the module from
+    ``_torch.modules.fused_moe`` to ``_torch.moe.fused_moe``; the previous
+    single-path import failed silently inside a try/except and the pool was
+    never cleared. Both layouts are tried here and an unreachable pool is
+    reported once instead of swallowed.
+    """
+    global _DEEPGEMM_WORKSPACE_POOL_WARNED
+    cls = None
+    for module_name in (
+        "tensorrt_llm._torch.moe.fused_moe.fused_moe_deepgemm",  # >= 1.3.0rc29
+        "tensorrt_llm._torch.modules.fused_moe.fused_moe_deepgemm",  # < rc29
+    ):
+        try:
+            cls = importlib.import_module(module_name).DeepGemmFusedMoE
+            break
+        except (ImportError, AttributeError):
+            continue
+    pool = getattr(getattr(cls, "buffers", None), "buffers", None)
+    if pool is None:
+        if not _DEEPGEMM_WORKSPACE_POOL_WARNED:
+            _DEEPGEMM_WORKSPACE_POOL_WARNED = True
+            print(
+                "[trtllm-moe] DeepGemmFusedMoE workspace pool is not reachable on this TRT-LLM build; "
+                "fp8_block MoE workspaces will accumulate across token counts"
+            )
+        return
+    pool.clear()
 
 
 def _moe_model_behavior(model_name: str) -> str:
@@ -207,7 +256,9 @@ def get_moe_test_cases():
 
             min_latency_mode_options = [False]
 
-            if moe_type == "nvfp4" and get_sm_version() == 100 and common_moe_testcase.num_experts <= 256:
+            if moe_type == "nvfp4" and get_sm_version() in (100, 103) and common_moe_testcase.num_experts <= 256:
+                # SM103 treated as SM100 (owner decision 2026-10-05: "sm103 可以认为等价sm100" —
+                # same capability major, same trtllm-gen kernel family; re-verify on a B300 box).
                 # FIXME: recent version only supports SM100 for min-latency mode.
                 # current support, DS router only support up to 256 experts.
                 # Renormalize router only support <=128 experts. trtllmgen kernels only
@@ -270,7 +321,19 @@ def get_moe_test_cases():
     return test_cases
 
 
-def run_moe_torch(
+def _declared_moe_routing(model_name: str):
+    """The model row's routing declaration (cases/models/*_cases.yaml
+    model_case_values.moe: sglang_moe_routing_method_type / _num_expert_group /
+    _topk_group / _routed_scaling_factor). Framework-neutral model facts despite
+    the sglang_ prefix: TensorRT-LLM reads the same numbers from the checkpoint
+    config (n_group, topk_group, routed_scaling_factor) when it builds the gate."""
+    for case in get_common_moe_test_cases():
+        if case.model_name == model_name:
+            return case
+    return None
+
+
+def _run_moe_case(
     moe_type,
     num_tokens_lists,
     hidden_size,
@@ -287,7 +350,7 @@ def run_moe_torch(
     perf_filename,
     device="cuda:0",
 ):
-    """Run MoE forward passes and log latency/power to perf file (trtllm >= 1.1 collector)."""
+    """Run one MoE case (its token sweep) and log latency/power rows (trtllm >= 1.1 collector)."""
     device = torch.device(device)
     torch.cuda.set_device(device)
     torch.set_default_device(device)
@@ -298,18 +361,37 @@ def run_moe_torch(
         print("MOE Allocated GDRAM:", torch.cuda.memory_allocated(device.index) / 1024**2, "MB")
         print("MOE Reserved GDRAM:", torch.cuda.memory_reserved(device) / 1024**2, "MB")
     # moe type support bfloat16, fp8_qdq, fp8_block, w4a8, nvfp4(not implemented yet)
+    # ``dtype`` is the MODEL/activation dtype serving hands to create_moe
+    # (modeling_deepseekv3.py:798 ``dtype=config.torch_dtype`` -> DeepseekV3MoE
+    # -> create_moe(dtype=dtype) @1.3.0rc29; identical at rc23). Quantization
+    # travels in quant_config only. Passing float8 here (pre-rc29 habit) is
+    # rejected by rc29's MoE resolution ("CutlassFusedMoE FP8_BLOCK_SCALES
+    # requires torch.bfloat16, got torch.float8_e4m3fn") and never matched
+    # serving, where activations are bf16 and quantized inside the kernel path.
     dtype = torch.bfloat16
     quant_group_size = 128
     quant_algo = None
+    # FIXME(kernel-limit): TRT-LLM >= 1.3.0rc29 MoE resolution has no implementation for W4A16 on
+    # SM100/103 ("no MoE implementation can serve this layer ... CutlassFusedMoE: quant_unsupported
+    # (quant_algo=W4A16)", 114/114 int4_wo cases, b200 job 469988228). Serving cannot load the
+    # W4A16 checkpoint either (benchmarks/evidence/collector/op-probe-2026-10/results/sm100/trtllm-1.3.0rc29.yaml:
+    # Kimi-K2.5 fail, finding sm100_probe_failures_recheck_2026_10_04 (g)). The lane is unreachable on this pin, not a
+    # per-shape failure; refuse before building weights.
+    if (
+        moe_type == "int4_wo"
+        and get_sm_version() in (100, 103)
+        and _check_compat("tensorrt_llm>=1.3.0rc29", _TRTLLM_VERSION)
+    ):
+        raise RuntimeError(
+            "FIXME(kernel-limit): TRT-LLM int4_wo (W4A16) MoE has no implementation on SM100/103 at "
+            f"{_TRTLLM_VERSION}; serving fails identically (Kimi-K2.5 identity probe)"
+        )
     if moe_type == "fp8_block":
         quant_algo = QuantAlgo.FP8_BLOCK_SCALES
-        dtype = torch.float8_e4m3fn
     elif moe_type == "w4afp8":
         quant_algo = QuantAlgo.W4A8_AWQ
-        dtype = torch.float8_e4m3fn
     elif moe_type == "fp8":
         quant_algo = QuantAlgo.FP8
-        dtype = torch.float8_e4m3fn
     elif moe_type == "int4_wo":
         quant_algo = QuantAlgo.W4A16
         int4_config = get_moe_quantization_module_config("trtllm", moe_type, model_name=model_name)
@@ -392,7 +474,7 @@ def run_moe_torch(
     # next framework version bump.
     if moe_type == "fp8_block" and (hidden_size % 128 != 0 or (inter_size // moe_tp_size) % 128 != 0):
         raise ValueError(
-            f"fp8_block MoE requires 128-aligned hidden_size and TP-sharded intermediate "
+            f"FIXME(kernel-limit): fp8_block MoE requires 128-aligned hidden_size and TP-sharded intermediate "
             f"size (128x128-blocked weight scales; deepgemm layout.hpp:78 on SM90/100/103, "
             f"Triton block-scale on SM120); got hidden_size={hidden_size}, "
             f"inter_size={inter_size} / moe_tp={moe_tp_size} = {inter_size // moe_tp_size}"
@@ -400,7 +482,7 @@ def run_moe_torch(
 
     if moe_type == "w4afp8" and (inter_size // moe_tp_size) % 128 != 0:
         raise ValueError(
-            f"w4afp8 MoE requires a 128-aligned TP-sharded intermediate size (grouped-GEMM "
+            f"FIXME(kernel-limit): w4afp8 MoE requires a 128-aligned TP-sharded intermediate size (grouped-GEMM "
             f"k alignment); got inter_size={inter_size} / moe_tp={moe_tp_size} = "
             f"{inter_size // moe_tp_size}"
         )
@@ -426,7 +508,7 @@ def run_moe_torch(
     native_mxfp4_padding = moe_type in _MXFP4_MOE_TYPES and 100 <= sm_version < 120
     if not native_mxfp4_padding and (inter_size // moe_tp_size) % (256 // _weight_bits) != 0:
         raise ValueError(
-            f"TRT-LLM fused MoE requires the TP-sharded intermediate size to be a multiple "
+            f"FIXME(kernel-limit): TRT-LLM fused MoE requires the TP-sharded intermediate size to be a multiple "
             f"of 256/weight_bits = {256 // _weight_bits} for {moe_type} (TLLM_CHECK_WITH_INFO "
             f"weight-layout alignment); got inter_size={inter_size} / moe_tp={moe_tp_size} = "
             f"{inter_size // moe_tp_size}"
@@ -505,14 +587,38 @@ def run_moe_torch(
         ).routing_method
         router_logits_dtype = torch.float32
     else:
-        # for low latency mode in fp4, experts > 128 is not supported.
-        # Native GPT-OSS uses BF16 routing weights for TRTLLM, FP32 otherwise:
-        # modeling_gpt_oss.py:159-162@1.3.0rc14 (93cb6518), :165-168@1.3.0rc20.
-        if is_gpt_oss:
+        declared = _declared_moe_routing(model_name)
+        if declared is not None and declared.sglang_moe_routing_method_type == "DeepSeekV3":
+            # Serving routes DeepSeek-V3-family / GLM / Nemotron-H MoE through
+            # DeepseekV3Gate.routing_method (noaux_tc, grouped top-k with the
+            # e_score_correction_bias; Deepseekv3RoutingImpl is_fused=True ->
+            # deepseek_v3_topk_kernel) built from the checkpoint's n_group /
+            # topk_group / routed_scaling_factor and the resolved moe_backend —
+            # modeling_deepseekv3.py:979-990, modeling_glm.py:273-285,
+            # modeling_nemotron_h.py:236 @1.3.0rc29. RenormalizeMoeRoutingMethod
+            # (customMoeRoutingKernel) is the softmax-top-k family (Qwen3-MoE,
+            # Mixtral, ...), and running it for DeepSeek-V3 diverged the
+            # moe_fp8block gate on H20 (2026-10-01). The router GEMM that feeds the
+            # gate (dsv3_router_gemm_op) stays outside this op, as before.
+            routing_method = DeepseekV3Gate(
+                hidden_size,
+                num_experts,
+                top_k=topk,
+                n_group=int(declared.sglang_moe_num_expert_group or 1),
+                topk_group=int(declared.sglang_moe_topk_group or 1),
+                routed_scaling_factor=float(declared.sglang_moe_routed_scaling_factor or 1.0),
+                dtype=dtype,
+                moe_backend=model_config.moe_backend,
+            ).routing_method
+            router_logits_dtype = torch.float32
+        elif is_gpt_oss:
+            # Native GPT-OSS uses BF16 routing weights for TRTLLM, FP32 otherwise:
+            # modeling_gpt_oss.py:159-162@1.3.0rc14 (93cb6518), :165-168@1.3.0rc20.
             routing_method = RenormalizeMoeRoutingMethod(
                 topk, output_dtype=torch.bfloat16 if model_config.moe_backend == "trtllm" else torch.float32
             )
         else:
+            # softmax top-k renormalized routing (fused custom routing kernel).
             routing_method = RenormalizeMoeRoutingMethod(topk)
 
     create_moe_kwargs = {
@@ -725,12 +831,7 @@ def run_moe_torch(
 
     del hidden_states_max_tokens, logits_max_tokens
     if moe_type == "fp8_block":
-        try:
-            from tensorrt_llm._torch.modules.fused_moe.fused_moe_deepgemm import DeepGemmFusedMoE
-
-            DeepGemmFusedMoE.buffers.buffers.clear()
-        except (ImportError, AttributeError):
-            pass
+        _clear_deepgemm_moe_workspaces()
         torch.cuda.empty_cache()
 
     for num_tokens in num_tokens_lists:
@@ -766,28 +867,27 @@ def run_moe_torch(
                 moe.forward(hidden_states, actual_logits, do_finalize=not min_latency_mode)  # noqa: F821
 
         # ═══════════════════════════════════════════════════════════════════════════════
-        # Benchmark with automatic power measurement and graph fallback
+        # Benchmark under CUDA-graph replay with automatic power measurement
         # ═══════════════════════════════════════════════════════════════════════════════
         # Determine base warmups and runs based on distribution mode
         num_warmups = 1 if distributed == "power_law" else 3
         num_runs = 1 if distributed == "power_law" else 6
 
-        # Use benchmark_with_power with graceful graph fallback
+        # CUDA-graph timing is mandatory: a failed capture raises
+        # (benchmark_with_power default allow_graph_fail=False) and the case
+        # fails classified. The moe row has no column that could record an
+        # eager-timed measurement, and the fallback used until 2026-10-12
+        # shipped the Python launch-loop floor as kernel latency.
         with benchmark_with_power(
             device=device,
             kernel_func=run_forward_pass,
             num_warmups=num_warmups,
             num_runs=num_runs,
             repeat_n=1,
-            allow_graph_fail=True,  # Enable graceful fallback to eager execution
         ) as results:
             # Calculate per-iteration latency (accounting for internal iterations)
             latency = results["latency_ms"] / num_iter
             power_stats = results["power_stats"]
-
-            # Log if CUDA graph capture failed (for debugging)
-            if not results["used_cuda_graph"] and aic_debug == 1:
-                print(f"CUDA graph capture failed for {num_tokens} tokens, used eager execution fallback")
 
         if moe_type == "fp8_block" and is_sm_100f(sm_version):
             source = "deepgemm"
@@ -847,18 +947,168 @@ def run_moe_torch(
             del actual_logits
         del hidden_states
         if moe_type == "fp8_block" and num_tokens != max_tokens:
-            try:
-                from tensorrt_llm._torch.modules.fused_moe.fused_moe_deepgemm import DeepGemmFusedMoE
-
-                DeepGemmFusedMoE.buffers.buffers.clear()
-            except (ImportError, AttributeError):
-                pass
+            _clear_deepgemm_moe_workspaces()
             torch.cuda.empty_cache()
 
-    if os.getenv("TRTLLM_MOE_RESTART_WORKER", "1") != "0":
-        # Exit the worker process after completing MOE task to ensure complete resource cleanup.
-        # This forces OS to reclaim all GPU memory, CUDA context, and other resources.
-        sys.exit(EXIT_CODE_RESTART)
+
+# ── Worker recycling ─────────────────────────────────────────────────────────
+# AIConfigurator's collector (40bc989a9) exited the worker after EVERY case so the
+# OS reclaimed all GPU memory. collect.py spawns its workers, so each recycle
+# re-imports tensorrt_llm and re-creates the CUDA context (10-15 s); on the b300
+# base run (job 471159002) that was most of a 14-20 GPU-s case of 27 token
+# points. The policy is now:
+#   TRTLLM_MOE_RESTART_EVERY=N    recycle after N completed cases on this worker
+#                                 (default 16; 1 = the legacy per-case recycle;
+#                                 0 = never recycle on the count)
+#   TRTLLM_MOE_RESTART_LEAK_MB=M  recycle at once when more than M MiB are still
+#                                 allocated after the case's own cleanup (default
+#                                 1024; 0 disables the guard) — the residue the
+#                                 per-case exit used to hide
+#   TRTLLM_MOE_RESTART_WORKER=0   legacy switch: never recycle (overrides both)
+# A recycle is always announced on one greppable line so a run log shows how
+# often, and why, workers were replaced.
+_cases_since_worker_start = 0
+
+
+def _worker_restart_policy() -> tuple[int, int] | None:
+    """(cases per worker, leak guard MiB), or None when recycling is disabled."""
+    if os.getenv("TRTLLM_MOE_RESTART_WORKER", "1") == "0":
+        return None
+    every = int(os.getenv("TRTLLM_MOE_RESTART_EVERY", "16"))
+    leak_mb = int(os.getenv("TRTLLM_MOE_RESTART_LEAK_MB", "1024"))
+    if every < 0 or leak_mb < 0:
+        raise ValueError(
+            f"TRTLLM_MOE_RESTART_EVERY and TRTLLM_MOE_RESTART_LEAK_MB must be >= 0; got {every} and {leak_mb}"
+        )
+    return every, leak_mb
+
+
+def _release_trtllm_memory_buffers() -> int:
+    """Drop TRT-LLM's global workspace buffer pool between cases; returns MiB released.
+
+    b200 probe 2026-10-29 (job 514855922, TRTLLM_MOE_LEAK_DEBUG=1): everything still
+    allocated after a case was `BufferBlock` tensors of
+    tensorrt_llm/_torch/memory_buffer_utils.py — the module-level ``_buffer = Buffers()``
+    pool the fused-MoE kernels draw their workspaces from (2.7-86 GiB, the two
+    largest blocks in the 2:1 shape of w3_w1 / w2). It is a reuse pool, not a leak:
+    the next case replaces it, so memory did not grow across 117 cases. Serving keeps
+    it alive for the model's lifetime; between collector cases nothing is live, so
+    every block (reserved ones included — ``clear_memory_buffers`` keeps those) is
+    released here and the leak guard measures real residue again. @1.3.0rc29; a
+    TRT-LLM without this module (older pins) makes this a no-op.
+    """
+    try:
+        from tensorrt_llm._torch import memory_buffer_utils
+    except ImportError:
+        return 0
+    pool = memory_buffer_utils.get_memory_buffers()
+    released = 0
+    for blocks in list(pool.buffers.values()):
+        for block in blocks:
+            tensor = getattr(block, "buffer", None)
+            if tensor is not None:
+                released += tensor.numel() * tensor.element_size()
+            block.buffer = None
+    pool.buffers.clear()
+    return released // 2**20
+
+
+def _print_live_cuda_tensors(device, top: int = 8) -> None:
+    """TRTLLM_MOE_LEAK_DEBUG=1: name what still pins CUDA memory after a case.
+
+    b200 probe 2026-10-29 (jobs 514778748/514778867): 2.7-86 GiB stayed allocated after
+    every DeepSeek-V3 fp8_block case, so the leak guard recycled the worker each time and
+    the policy bought nothing. Lists the largest live CUDA tensors with the types of the
+    objects that reference them (gc view; a traceback-free best effort).
+    """
+    sizes = []
+    for obj in gc.get_objects():
+        try:
+            if isinstance(obj, torch.Tensor) and obj.is_cuda and obj.device == device:
+                sizes.append((obj.numel() * obj.element_size(), obj))
+        except Exception:  # gc.get_objects can hand back half-built objects
+            continue
+    sizes.sort(key=lambda item: -item[0])
+    total = sum(size for size, _ in sizes)
+    print(f"trtllm.moe: leak debug: {len(sizes)} live CUDA tensors, {total / 2**20:.0f} MiB; largest:")
+    for size, tensor in sizes[:top]:
+        referrers = [type(r).__name__ for r in gc.get_referrers(tensor) if r is not sizes][:4]
+        print(
+            f"  {size / 2**20:8.0f} MiB {tuple(tensor.shape)} {tensor.dtype} "
+            f"param={isinstance(tensor, torch.nn.Parameter)} referrers={referrers}"
+        )
+
+
+def _recycle_worker_if_due(device) -> None:
+    """Exit this worker with EXIT_CODE_RESTART when the recycling policy says so.
+
+    Runs after the case's rows are persisted; collect.py marks the task done and
+    starts a fresh worker on the same device (worker(): SystemExit handling).
+    """
+    global _cases_since_worker_start
+    policy = _worker_restart_policy()
+    if policy is None:
+        return
+    every, leak_mb = policy
+    _cases_since_worker_start += 1
+    workspace_mb = _release_trtllm_memory_buffers()
+    gc_collect()
+    allocated_mb = torch.cuda.memory_allocated(device) / 2**20
+    reserved_mb = torch.cuda.memory_reserved(device) / 2**20
+    print(
+        f"trtllm.moe: after case {_cases_since_worker_start} on this worker: "
+        f"{allocated_mb:.0f} MiB allocated, {reserved_mb:.0f} MiB reserved "
+        f"(released {workspace_mb} MiB of TRT-LLM workspace buffers)"
+    )
+    if os.getenv("TRTLLM_MOE_LEAK_DEBUG", "0") == "1" and allocated_mb > 256:
+        _print_live_cuda_tensors(device)
+    due_count = every > 0 and _cases_since_worker_start >= every
+    due_leak = leak_mb > 0 and allocated_mb > leak_mb
+    if not (due_count or due_leak):
+        return
+    reason = "leak guard" if due_leak else f"every {every}"
+    print(
+        f"trtllm.moe: recycling worker after {_cases_since_worker_start} case(s) "
+        f"({allocated_mb:.0f} MiB still allocated, {reason})"
+    )
+    sys.exit(EXIT_CODE_RESTART)
+
+
+def run_moe_torch(
+    moe_type,
+    num_tokens_lists,
+    hidden_size,
+    inter_size,
+    topk,
+    num_experts,
+    moe_tp_size,
+    moe_ep_size,
+    min_latency_mode,
+    model_name,
+    distributed="power_law",
+    power_law_alpha=0.0,
+    *,
+    perf_filename,
+    device="cuda:0",
+):
+    """Run one MoE case, then recycle the worker when the policy above is due."""
+    _run_moe_case(
+        moe_type,
+        num_tokens_lists,
+        hidden_size,
+        inter_size,
+        topk,
+        num_experts,
+        moe_tp_size,
+        moe_ep_size,
+        min_latency_mode,
+        model_name,
+        distributed=distributed,
+        power_law_alpha=power_law_alpha,
+        perf_filename=perf_filename,
+        device=device,
+    )
+    _recycle_worker_if_due(torch.device(device))
 
 
 if __name__ == "__main__":

@@ -19,12 +19,11 @@ from collections import defaultdict
 import tensorrt_llm
 import torch
 import torch.nn.functional as F
-from case_generator import get_gemm_case_specs
+from collector.case_generator import get_gemm_case_specs
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from tensorrt_llm._torch.modules.linear import Linear
 from tensorrt_llm._utils import is_sm_100f
 from tensorrt_llm.models.modeling_utils import QuantAlgo, QuantConfig
-
-from helper import benchmark_with_power, get_sm_version, log_perf
 
 
 def pad_up(x: int, y: int) -> int:
@@ -50,7 +49,47 @@ def _compute_fp8_block_weight_scales(weight: torch.Tensor, group_size: int) -> t
 # Per-worker-process weight cache for large shapes (outside_loop_count == 1).
 # Keyed by (gemm_type, n, k).  Only the most recently used entry is kept so
 # that GPU memory is not accumulated across (n, k) groups.
-_weight_cache: dict = {}
+# One worker builds the Linear modules (and their weights) once per
+# (gemm_type, n, k) and reuses them for every m that follows on this worker:
+# the modules do not depend on m, and the per-case rebuild was the shard's
+# cost — nvfp4 unswizzles its block scales on the CPU and the sub-L2 shapes
+# build up to 5 copies per case (b300 base run, job 471159002: gemm/nvfp4
+# 1.3 GPU-s/row and gemm/fp8_block 1.7 GPU-s/row against 0.04 for bf16).
+# get_gemm_test_cases orders the plan by (n, k) then gemm_type then m, so a
+# worker sees runs of equal keys. The cache holds one key at a time, so peak
+# memory is unchanged.
+_gemm_op_cache: dict = {}
+
+
+def _gemm_ops(gemm_type: str, n: int, k: int, *, quant_config, group_size, outside_loop_count: int, device, dtype, x):
+    """The ``outside_loop_count`` Linear copies for (gemm_type, n, k), built on first use."""
+    key = (gemm_type, n, k, outside_loop_count)
+    op_list = _gemm_op_cache.get(key)
+    if op_list is not None:
+        return op_list
+    _gemm_op_cache.clear()  # release the previous key's modules before building
+    torch.cuda.empty_cache()
+    op_list = []
+    for _i in range(outside_loop_count):
+        # nvfp4's per-tensor activation scale is a calibration constant in
+        # serving; the first x of this key provides it, and the kernel's
+        # timing does not depend on its value.
+        weights = _build_weights(gemm_type, n, k, device, dtype, group_size, x)
+        gemm = Linear(
+            k,
+            n,
+            bias=False,
+            dtype=dtype,
+            quant_config=quant_config,
+            force_dynamic_quantization=False,
+        )
+        gemm.load_weights([weights])
+        if gemm_type == "fp8_block" and callable(getattr(gemm, "post_load_weights", None)):
+            gemm.post_load_weights()
+        gemm.to(torch.device(device))
+        op_list.append(gemm)
+    _gemm_op_cache[key] = op_list
+    return op_list
 
 
 def _get_l2_cache_bytes(device_id: int = 0) -> int:
@@ -157,6 +196,17 @@ def run_gemm(gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
     torch.set_default_device(device)
     sm_version = get_sm_version()
 
+    if gemm_type == "fp8" and (n % 16 or k % 16):
+        # FP8QDQLinearMethod.apply -> torch.ops.trtllm.cublas_scaled_mm / cuda_scaled_mm,
+        # which TORCH_CHECK the 16-element alignment of the output row stride (= n)
+        # and of mat_b's column stride (= k): cpp/tensorrt_llm/thop/cublasScaledMM.cpp:260
+        # and cutlassScaledMM.cpp:152 @1.3.0rc29. The shared GEMM grid carries
+        # n in {1, 4, 8, 12, 24} (1,110 cases per system on gb200/gb300).
+        raise RuntimeError(
+            "FIXME(kernel-limit): TRT-LLM fp8 GEMM (cublas/cutlass scaled_mm) requires n and k to be "
+            f"multiples of 16 (out.strides()[0] % 16 == 0 && mat_b.strides()[1] % 16 == 0), got n={n}, k={k}"
+        )
+
     dtype = torch.bfloat16
     x = torch.randn((m, k), dtype=dtype).to(torch.device(device))
 
@@ -167,7 +217,12 @@ def run_gemm(gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
         group_size = 128
         qc = QuantConfig(quant_algo=QuantAlgo.FP8_BLOCK_SCALES, group_size=group_size)
     elif gemm_type == "nvfp4":
-        group_size = 128
+        # NVFP4 scale blocks are 16 elements (the weights above are quantized with
+        # fp4_quantize(..., 16, ...)); 1.3.0rc29 NVFP4LinearMethod.resolve_scaling_vector_size
+        # rejects any other declared group_size ("supports NVFP4 scale blocks of (16,) elements,
+        # but the checkpoint declares group_size=128" — first seen on B200 2026-10-04; on Hopper
+        # the nvfp4 lane is a platform floor and never constructed the module).
+        group_size = 16
         qc = QuantConfig(quant_algo=QuantAlgo.NVFP4, group_size=group_size)
     else:
         qc = None
@@ -177,63 +232,20 @@ def run_gemm(gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
     _bytes_per_elem = {"bfloat16": 2, "fp8": 1, "fp8_block": 1, "nvfp4": 0.5}
     _weight_bytes = int(n * k * _bytes_per_elem[gemm_type])
     outside_loop_count = max(1, min(5, math.ceil(_l2_cache_bytes / _weight_bytes)))
-    op_list = []
+    op_list = _gemm_ops(
+        gemm_type,
+        n,
+        k,
+        quant_config=qc,
+        group_size=group_size,
+        outside_loop_count=outside_loop_count,
+        device=device,
+        dtype=dtype,
+        x=x,
+    )
+    for op in op_list:
+        op.forward(x)  # dry run at this m (lazy init / JIT) before graph capture
 
-    if outside_loop_count == 1:
-        # Large weight (exceeds GPU L2): reuse cached tensor across consecutive
-        # tasks with the same (gemm_type, n, k) to avoid re-running the slow
-        # torch.randn call for every batch-size variant.
-        cache_key = (gemm_type, n, k)
-        if cache_key not in _weight_cache:
-            _weight_cache.clear()  # release the previous (n,k) weight
-            _weight_cache[cache_key] = _build_weights(gemm_type, n, k, device, dtype, group_size, x)
-
-        weights = _weight_cache[cache_key]
-
-        # For nvfp4 the input_scale is x-dependent; recompute it cheaply.
-        if gemm_type == "nvfp4":
-            x_sf_global = (448 * 6) / x.abs().max().float()
-            weights = {**weights, "input_scale": 1.0 / x_sf_global.cpu()}
-
-        # The fp8 weights carry no input_scale, so TRT-LLM's FP8QDQ method runs
-        # its dynamic-quantization path and the collected fp8 GEMM includes the
-        # compute-scale overhead.  AIC derives fp8_static at query time by
-        # subtracting that overhead, so no separate fp8_static GEMM is collected.
-        gemm = Linear(
-            k,
-            n,
-            bias=False,
-            dtype=dtype,
-            quant_config=qc,
-            force_dynamic_quantization=False,
-        )
-        gemm.load_weights([weights])
-        if gemm_type == "fp8_block" and callable(getattr(gemm, "post_load_weights", None)):
-            gemm.post_load_weights()
-        gemm.to(torch.device(device))
-        gemm.forward(x)  # dry run to init
-        op_list.append(gemm)
-    else:
-        # Small weight: create distinct copies so that repeated calls span more
-        # than the GPU L2 cache, giving a realistic memory-pressure measurement.
-        for _i in range(outside_loop_count):
-            weights = _build_weights(gemm_type, n, k, device, dtype, group_size, x)
-            gemm = Linear(
-                k,
-                n,
-                bias=False,
-                dtype=dtype,
-                quant_config=qc,
-                force_dynamic_quantization=False,
-            )
-            gemm.load_weights([weights])
-            if gemm_type == "fp8_block" and callable(getattr(gemm, "post_load_weights", None)):
-                gemm.post_load_weights()
-            gemm.to(torch.device(device))
-            gemm.forward(x)  # dry run to init
-            op_list.append(gemm)
-
-    # Use benchmark_with_power context manager
     def kernel_func():
         for op in op_list:
             op.forward(x)
