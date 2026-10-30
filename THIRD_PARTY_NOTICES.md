@@ -210,6 +210,36 @@ The full Apache-2.0 license text is reproduced in `LICENSE`. This section
 records provenance for NVIDIA-authored predecessor code; it is not a claim
 that Dynamo is owned by an unaffiliated third party.
 
+## SGLang 0.5.20 attention-module collector compatibility
+
+The runtime adapters, request setup and decode-graph eligibility in
+`collector/sglang/collect_mla_module.py`, with regression tests under
+`tests/unit/collector/sglang/` in `test_collect_mla_module.py`,
+`test_dsa_history.py` and `test_dsa_measurement_boundary.py`, adapt and modify
+SGLang serving contracts at immutable commit
+`94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (v0.5.20). The source paths under
+`python/sglang/srt/` are:
+
+- `arg_groups/overrides.py` and `arg_groups/cuda_graph_hook.py`
+- `runtime_context.py` and `distributed/parallel_state_wrapper.py`
+- `managers/schedule_batch.py`, `managers/overlap_utils.py`,
+  `managers/tp_worker.py` and `managers/scheduler.py`
+- `model_executor/model_runner.py` and
+  `model_executor/runner/decode_cuda_graph_runner.py`
+
+The version-specific index-cache quantization import calls the native kernel
+at `python/sglang/kernels/ops/attention/dsa/triton_kernel.py` in that revision.
+These adaptations retain the existing collector's historical-cache seeding,
+native projection and forward-input contracts. They use the framework's own
+runtime APIs for standalone module measurements and exact-shape decode graph
+capture; no upstream serving implementation is vendored.
+
+Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+Copyright 2023-2026 SGLang Team and contributors. Licensed under Apache-2.0:
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
+The upstream tree has no root NOTICE file. Modified for AISimulate collection;
+the new regression fixtures are synthetic and contain no external data.
+
 ## SGLang feed-forward/decode composition and quantization exclusions
 
 The dense-prefix composition and exclusion resolver in `src/aisimulate_core/sdk/models/deepseek_v32.py` and their regression fixtures in `tests/unit/sdk/models/test_deepseek_v32_dense.py` and `tests/unit/sdk/models/test_large_ep_model_graphs.py` adapt and modify the tensor-parallel communication and packed-linear selection behavior from SGLang revision `02c5a855aceb968c310e6fbc6632270e26edc84b`. Original source paths are `python/sglang/srt/models/deepseek_v2.py`, `python/sglang/srt/layers/communicator.py`, `python/sglang/srt/layers/quantization/modelopt_quant.py`, and `python/sglang/srt/layers/quantization/utils.py`. The adaptation models operator composition and projection precision without importing the serving runtime or its GPU dependencies.
