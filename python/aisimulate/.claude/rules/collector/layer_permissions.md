@@ -228,19 +228,24 @@ only when the entry carries ALL of:
    exact tables/backend/systems the exception covers. Prose-only scoping is
    invalid. `versions: all` (the default; owner decision 2026-10-30) covers
    every version of the backend: an exception follows the deviation, not a
-   release, and `expires` is what bounds it. A version list narrows it.
+   release, and re-verification (item 3) is what bounds it. A version list
+   narrows it.
 2. **The standards owner's `approved_by` sign-off.** These rule files are
    human-owned policy; only their owner can except them.
-3. **An `expires` date and a linked retirement work item.** An exception is
-   a debt with a due date, not a policy change; on expiry the exception is
-   renewed by the owner or the deviation is fixed.
+3. **A `verified_on` release and a linked retirement work item** (owner
+   decision 2026-10-30; replaces the former `expires` date). An exception
+   is a debt, not a policy change. Every bump of the collector pin for the
+   covered tables re-checks the deviation against the new release, by a
+   source check or a run, as for a `FIXME(kernel-limit)`: if it still
+   holds, `verified_on` moves to that release; if not, the entry is
+   deleted. An entry whose `verified_on` is behind the pin is stale.
 4. **Consumer-visible provenance** — the deviation must be discoverable from
    the shipped data's own declaration layer (e.g. the `reuse.yaml` reason or
    sidecar for the affected tables), never only from this registry.
 
 An exception documents and bounds a deviation; it does not weaken the rule.
-Reviews treat an in-scope, unexpired entry as compliant and everything
-outside its scope as an ordinary violation.
+Reviews treat an in-scope entry verified on the current pin as compliant;
+a stale entry, and everything outside its scope, is an ordinary violation.
 
 ## Meta rules
 

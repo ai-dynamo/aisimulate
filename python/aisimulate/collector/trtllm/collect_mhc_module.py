@@ -45,8 +45,8 @@ rc23 tables) — that figure is mHC's SHARE of layer cost, i.e. the ceiling
 of the approximation if fused_hc were free, NOT a measured Blackwell
 fused/unfused delta (which is unmeasured; owner-accepted). Direction is
 conservative (cost-overestimating). Governed standards exception:
-collector/evidence_exceptions.yaml standards_exceptions (expires
-2026-10-31); retirement = the coordinated fused_hc table + SDK consumer
+collector/evidence_exceptions.yaml standards_exceptions (verified on
+1.3.0rc29); retirement = the coordinated fused_hc table + SDK consumer
 switch for SM100/103.
 """
 
