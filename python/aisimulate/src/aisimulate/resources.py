@@ -875,119 +875,21 @@ def _estimate_trace(
         return ResourceEstimate(
             "trace-unqualified-v1", None, 0, 0, None, "trace format or runner has no qualified allocation model"
         )
+    estimate = _estimate_finite_trace(
+        workload, format_name=format_name, inspection_budget_bytes=inspection_budget_bytes
+    )
     # Snapshot and warmup replays share the finite replay's single corpus graph;
-    # each lane adds one play's requests, not a corpus copy. Only a continuing
-    # profile retains evidence beyond the corpus.
-    if workload.get("agentic_profile") is not None:
-        return _estimate_trace_legacy(
-            workload, format_name=format_name, inspection_budget_bytes=inspection_budget_bytes
-        )
-    return _estimate_finite_trace(workload, format_name=format_name, inspection_budget_bytes=inspection_budget_bytes)
-
-
-def _estimate_trace_legacy(
-    workload: Mapping[str, Any], *, format_name: str, inspection_budget_bytes: int | None
-) -> ResourceEstimate:
-    """Keep the conservative storage estimate for continuing profile replays."""
-    unqualified = lambda reason: ResourceEstimate("trace-unqualified-v1", None, 0, 0, None, reason)
-    length_keys = {
-        "in",
-        "out",
-        "input_length",
-        "output_length",
-        "input_tokens",
-        "output_tokens",
-        "input_prompt_length",
-        "assistant_response_length",
-        "tool_call_output_length",
-        "final_assistant_response_length",
-        "max_output_tokens",
-        "tool_tokens",
-        "system_tokens",
-    }
-    token_keys = {"input_token_ids", "output_token_ids", "prompt_token_ids"}
-    record_keys = length_keys | token_keys
-    hash_keys = {"hash_ids", "input_sequence_hashes"}
-    total_bytes = tokens = hashes = records = turns = 0
-    block_size = int(workload.get("trace_block_size") or 512)
-
-    paths = workload.get("trace_paths") or [workload["trace_path"]]
-    try:
-        for raw_path in paths:
-            source = Path(raw_path)
-            files = source.rglob("*") if source.is_dir() else (source,)
-            for path in files:
-                if path.is_symlink():
-                    return unqualified("trace symlinks have no stable resource identity")
-                if not path.is_file() or (format_name == "weka" and path.suffix.lower() not in {".json", ".jsonl"}):
-                    continue
-                storage_estimate = WORKER_BASELINE_BYTES + 128 * (total_bytes + path.stat().st_size)
-                if inspection_budget_bytes is not None and storage_estimate > inspection_budget_bytes:
-                    return ResourceEstimate(
-                        "trace-json-metadata-v1",
-                        None,
-                        0,
-                        0,
-                        storage_estimate,
-                        "trace storage estimate exceeds live headroom before metadata parsing",
-                    )
-                # Stream documents and arrays. The parser still holds individual
-                # scalar values in memory.
-                maps: list[bool] = []
-                with (
-                    gzip.open(path, "rb") if format_name == "dynamo" and path.suffix == ".gz" else path.open("rb")
-                ) as stream:
-                    for prefix, event, value in ijson.parse(stream, multiple_values=True, buf_size=64 * 1024):
-                        if event == "start_map":
-                            maps.append(False)
-                        elif event == "end_map":
-                            records += int(maps.pop())
-                        elif event == "map_key" and value in record_keys:
-                            maps[-1] = True
-                        else:
-                            parts = prefix.rsplit(".", 2)
-                            key = parts[-2] if parts[-1] == "item" and len(parts) > 1 else parts[-1]
-                            if key in length_keys and event not in {"start_array", "end_array"}:
-                                if event != "number" or type(value) is not int or value < 0:
-                                    raise ValueError("trace token lengths must be nonnegative integers")
-                                tokens += value
-                            elif key in token_keys and parts[-1] == "item" and event == "number":
-                                tokens += 1
-                            elif key in hash_keys and parts[-1] == "item" and event in {"number", "string"}:
-                                hashes += 1
-                            elif key in {"block_size", "trace_block_size"} and event == "number":
-                                block_size = max(block_size, int(value))
-                            elif key == "num_turns" and event == "number":
-                                turns += int(value) + 1
-                    total_bytes += stream.tell()
-    except (OSError, EOFError, ValueError, ijson.JSONError) as exc:
-        return unqualified(f"cannot inspect trace metadata: {exc}")
-    if records == 0:
-        return unqualified("trace metadata contains no recognized request token lengths")
-    tokens += hashes * block_size
-    count = max(records, turns)
-    # Delta and tool-turn sources can accumulate every preceding turn's tokens.
-    cumulative = count if format_name in {"mooncake-delta", "applied_compute_agentic"} else 1
-    lanes = int(workload.get("agentic_lanes") or 1)
-    peak = WORKER_BASELINE_BYTES + 128 * total_bytes + lanes * (32 * tokens * cumulative + 65536 * count)
-    # Retired plays release their large payloads, but retain identities and
-    # lifecycle rows. Their count depends on simulated completion times, so
-    # neither the finite corpus nor duration alone bounds the full profile.
-    # Keep the initial-materialization refusal before admitting unknown peaks.
-    if inspection_budget_bytes is not None and peak > inspection_budget_bytes:
-        return ResourceEstimate(
-            "agentic-profile-materialization-v1",
-            None,
-            0,
-            0,
-            peak,
-            "initial profile trace materialization estimate exceeds live headroom",
-        )
+    # each lane adds one play's requests, not a corpus copy. A profile starts
+    # from that snapshot, so the corpus arrays bound it from below, but retired
+    # plays keep identities and lifecycle rows until the profile ends. That
+    # growth depends on simulated completion times, so no replay's peak sizes another.
+    if workload.get("agentic_profile") is None or estimate.allocation_model != OBSERVED_TRACE_MODEL:
+        return estimate
     return ResourceEstimate(
         "agentic-profile-unqualified-v1",
         None,
         0,
-        0,
+        estimate.lower_bound_bytes,
         None,
         "agentic profile retains evidence beyond the initial corpus; total memory has no qualified static bound "
         "and requires supervised serial execution",
