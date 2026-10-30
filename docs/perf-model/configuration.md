@@ -102,10 +102,17 @@ serializes back to `"unknown"`, so the configuration round-trips exactly;
 each other (`tp * attention_dp * cp_size == moe_tp_size * moe_ep_size`). An
 unknown `tp`, `pp` or `attention_dp` neither conflicts with nor derives an
 engine launch's `tensor_parallel_size` and `dp_size`, and replay takes the
-engine's own topology for it. `deployment_limits` is identity too: estimates never read it,
-snapshot restoration compares it exactly, and replay and recommendation use the
-known limits to bound the deployment (see [engine replay timing](#engine-replay-timing)
-and [snapshot roles](#recommending-with-a-calibrated-snapshot)).
+engine's own topology for it. `deployment_limits` is identity too: estimates
+never read it and snapshot restoration compares it exactly. Replay and
+`predict` read only a known `max_kv_tokens`, as the KV capacity of a regression
+or learned role without explicit capacity (see
+[engine replay timing](#engine-replay-timing)); they do not check the worker's
+shape or scheduler limits against the other limits. Recommendation of such a
+snapshot role also requires its GPUs per replica to equal a known `num_gpus`
+and caps its `max_batched_tokens` and `max_sequences` domains at
+`max_num_batched_tokens` and `max_num_seqs` (see
+[snapshot roles](#recommending-with-a-calibrated-snapshot)). Nothing reads
+`context_length`.
 
 The canonical configuration also carries quantization overrides and `attention_backend`, `moe_backend`, `moe_kernel_source` (default absent), `enable_eplb` (default `false`), and `wideep_num_slots` (default absent). These controls reach model construction, KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend or kernel-source selection require an MoE model. Collected FPM interpolation cannot represent EPLB, slots, MoE backend, or kernel-source overrides; it rejects an explicit incompatible request and is skipped during automatic selection for those identities.
 
@@ -816,20 +823,27 @@ the model reads per-request detail (a regression request feature axis, or a
 learned `req_*`, `slot*` or length-variance feature), each rank also carries
 `extend_lengths` and `past_kv_lengths` (each prefill request's new tokens and
 prefix, each decode request's one token and past KV) and the population
-variances of the prefill lengths through the pass and of the decode requests'
-past KV; those passes are not reused from the iteration cache.
+variances of the prefill requests' full prompt lengths, as the telemetry
+reports them whatever chunk of a prompt the pass computes, and of the decode
+requests' past KV; those passes are not reused from the iteration cache. Each
+rank's metrics carry its position in the group as `dp_rank`.
 
 Construction checks that the role's workload stores are ready: pure prefill
-for a prefill worker, pure decode for a decode worker, and pure prefill, pure
-decode and locally mixed for an aggregated worker, plus cross-rank aggregated
-when its attention DP is above one. A regression store is ready with a usable
-fit and a learned store when the forest has it. It rejects a rank hosting the
-vision encoder, speculative decoding (`nextn > 0` or a speculation scheme) and
-bounded decoder replay, and an automatic selection that would fall back to an
-untrained regression. Replay also rejects such a role whose engine sets a
-`decode_speedup_ratio` other than 1: replay then prices each rank's phases,
-which these estimators never do. A pass on which no rank computes model work
-takes no time without a query, as for every estimator. These estimators are
+for a prefill worker, pure decode for a decode worker, and pure prefill and
+pure decode for an aggregated worker. An aggregated vLLM or TensorRT-LLM worker
+also needs locally mixed, since its scheduler computes chunked prefill beside
+decode in one rank pass; an SGLang rank runs a prefill batch alone (mixed chunk
+is not modeled), so it does not. Every aggregated worker whose engine runs
+attention DP above one also needs cross-rank aggregated. A regression store is
+ready with a usable fit and a learned store when the forest has it. It rejects
+a rank hosting the vision encoder, speculative decoding (`nextn > 0` or a
+speculation scheme) and bounded decoder replay, and an automatic selection that
+would fall back to an untrained regression. Replay also rejects such a role
+whose engine sets a `decode_speedup_ratio` other than 1: replay then prices
+each rank's phases, which these estimators never do. A pass on which no rank
+computes model work takes no time without a query, as for every estimator; so
+does an SGLang decode step whose page reservation failed, which a native
+estimator is still asked to price at no charge. These estimators are
 latency-only: they record no operation evidence, so replay reports
 `power_w: null` as for other latency-only timing.
 
@@ -837,7 +851,9 @@ Without explicit KV capacity, a regression or learned role takes
 `deployment_limits.max_kv_tokens` in whole scheduler blocks. Without a
 recorded capacity the AIC memory estimate needs the complete identity, so an
 identity with unknown facts must then set `num_gpu_blocks`. A `tp` or
-`attention_dp` recorded as `"unknown"` takes the engine's.
+`attention_dp` recorded as `"unknown"` takes the engine's, and a `pp` recorded
+so takes the engine's single pipeline stage, including for `kv_cache.kvcr`.
+Replay reads no other `deployment_limits` entry.
 
 ## Unified CLI timing fields
 
@@ -937,9 +953,10 @@ A Dynamo planner without an `ais_perf_model` role configuration saves an
 way. Replay prices every pass of such a role with the saved model (see
 [engine replay timing](#engine-replay-timing)), so the snapshot needs a ready
 workload store for each kind of iteration the role computes: pure prefill for a
-prefill worker, pure decode for a decode worker, and pure prefill, pure decode
-and locally mixed for an aggregated worker, plus cross-rank aggregated when the
-role runs attention DP above one. Its identity facts may be
+prefill worker, pure decode for a decode worker, and pure prefill and pure
+decode for an aggregated worker, plus locally mixed for an aggregated vLLM or
+TensorRT-LLM worker and cross-rank aggregated when the role runs attention DP
+above one. Its identity facts may be
 [`"unknown"`](#engine-identity-controls); the planner should record what it
 does not know that way rather than defaults such as `system: unprofiled` or
 `tp: 1`:
@@ -976,11 +993,16 @@ handled as follows:
 
 A snapshot whose `backend_version` is unset (`null`) is rejected: save the
 deployed version or `"unknown"`. `deployment_limits.num_gpus` and
-`context_length` may stay unknown. A native snapshot keeps the rules above this
-section and does not apply its `deployment_limits`. The exported prediction
-YAML names the snapshot with the role's explicit shape and fixed KV capacity,
-and `predict` spells the unknown facts as the snapshot does, so it replays the
-same model.
+`context_length` may stay unknown, and `context_length` is not read. A native
+snapshot keeps the rules above this section and does not apply its
+`deployment_limits`. The exported prediction YAML names the snapshot with the
+role's explicit shape and fixed KV capacity, but no systems root, since these
+models read no performance data, and no quantization mode the snapshot records
+as unknown. `predict` spells the unknown facts as the snapshot does, so it
+replays the same model. A `backend_version` alias such as `current` resolves
+from the roles that know their version, or on the role's hardware when none
+does. Candidate provenance reports the hardware the role ran on when its
+identity's `system` is unknown.
 
 ## Flat engine precision and execution controls
 

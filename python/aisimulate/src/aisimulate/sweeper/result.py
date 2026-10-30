@@ -24,6 +24,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, PrivateAttr, field_validator, model_validator
 
+from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
+
 from ..power import POWER_FIELDS, normalize_power_summary, power_unavailable_reason
 from .config import Candidate, SmartSearchConfig
 from .replay import ReplaySpec, canonical_json, validate_json_value
@@ -548,13 +550,21 @@ def make_candidate_provenance(
                     }
                 )
     identity_config: dict[str, JsonValue] = {}
+    identity_role: str | None = None
     if isinstance(encoder, dict):
         performance_data.append({"role": "encoder", "provider": "aic", "database_mode": "SILICON", **deepcopy(encoder)})
     if deployment is not None:
-        for raw_metadata in deployment.performance_model_metadata.values():
+        for role, raw_metadata in deployment.performance_model_metadata.items():
             if isinstance(raw_metadata, dict) and isinstance(raw_metadata.get("config"), dict):
-                identity_config = raw_metadata["config"]
+                identity_config, identity_role = raw_metadata["config"], role
                 break
+    hardware = identity_config.get("system")
+    if hardware is None or hardware == UNKNOWN_IDENTITY:
+        # A regression or learned identity may not know its hardware; the
+        # candidate ran on its role's engine hardware.
+        hardware = candidate_config.get(f"{identity_role}_hardware_sku") or candidate_config.get(
+            "hardware_sku", "unknown"
+        )
     raw_operations = runner_metadata.get("operations", [])
     operations: list[OperationProvenance] = []
     if isinstance(raw_operations, list):
@@ -606,7 +616,7 @@ def make_candidate_provenance(
         goal_payload = deepcopy(replay_spec.goal)
     return CandidateProvenance(
         model=str(identity_config.get("model_path", candidate_config.get("model_name", "unknown"))),
-        hardware=str(identity_config.get("system", candidate_config.get("hardware_sku", "unknown"))),
+        hardware=str(hardware),
         backend=(
             deployment.backend
             if deployment is not None

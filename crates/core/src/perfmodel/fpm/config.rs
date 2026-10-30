@@ -164,9 +164,13 @@ impl<'de> Deserialize<'de> for DeploymentLimit {
 }
 
 /// Limits of the deployment a model was calibrated on, recorded as identity
-/// by a producer such as the Dynamo planner. Estimation never reads them;
-/// callers that plan a deployment around the model (recommendation, replay
-/// capacity) bound it by the known ones. An omitted field is unknown.
+/// by a producer such as the Dynamo planner. Estimation never reads them and
+/// snapshot restoration compares them exactly. Replay and prediction read only
+/// a known `max_kv_tokens`, as the KV capacity of a regression or learned role
+/// without explicit capacity. Recommendation of such a snapshot role also
+/// requires its GPUs per replica to equal a known `num_gpus` and caps its
+/// scheduler domains at `max_num_batched_tokens` and `max_num_seqs`. Nothing
+/// reads `context_length`. An omitted field is unknown.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeploymentLimits {

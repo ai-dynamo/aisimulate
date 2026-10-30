@@ -39,12 +39,17 @@ _REPLAY_MODES = {"op_level", "fpm_interpolation"}
 # Regression and learned snapshots price every replay iteration themselves.
 _FITTED_KINDS = {"regression", "learned_frozen", "learned_online", "causal_selector"}
 # Workload stores such a snapshot needs for the iterations replay schedules for
-# each role; an aggregated role with attention DP also needs the cross-rank store.
+# each role. An aggregated role also needs the locally mixed store on a backend
+# whose scheduler computes prefill and decode in one rank pass, and the
+# cross-rank store with attention DP.
 _FITTED_STORES = {
-    "agg": {"pure_prefill", "pure_decode", "contains_locally_mixed"},
+    "agg": {"pure_prefill", "pure_decode"},
     "prefill": {"pure_prefill"},
     "decode": {"pure_decode"},
 }
+# vLLM, and TensorRT-LLM on the shared vLLM core, schedule chunked prefill beside
+# running decodes; SGLang runs a prefill batch alone (mixed chunk is not modeled).
+_LOCALLY_MIXED_BACKENDS = {"vllm", "trtllm"}
 _PARALLEL = (
     ("tp", "tp"),
     ("pp", "pp"),
@@ -314,7 +319,10 @@ def _validate_fitted(snapshot: SnapshotRole) -> None:
     summary, role, identity = snapshot.summary, snapshot.role, snapshot.identity
     mode = summary["selected_estimation_mode"]
     ready = {store["workload_kind"] for store in summary["readiness"]["stores"] if store["ready"]}
-    missing = sorted(_FITTED_STORES[role] - ready)
+    required = set(_FITTED_STORES[role])
+    if role == "agg" and identity["backend"] in _LOCALLY_MIXED_BACKENDS:
+        required.add("contains_locally_mixed")
+    missing = sorted(required - ready)
     if missing:
         raise ValueError(
             f"{snapshot.describe()} holds an {mode} model without a ready {', '.join(missing)} workload store; "
@@ -610,6 +618,10 @@ def _pin_deployment_limits(value: dict[str, Any], snapshot: SnapshotRole) -> Non
                 raise _exceeds(snapshot, setting, [low, high], limit, cap)
             if min(high, cap) > low:
                 ranges[name] = [low, min(high, cap)]
+            else:
+                # A range the cap collapses to one value is that value, not
+                # the knob's uncapped default domain.
+                value[name] = [low]
             value["engine_integer_log_ranges"] = ranges
             continue
         domain = value.get(name, SearchSpace.model_fields[name].default)

@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
+
 from .capacity import (
     estimate_kv_bytes_per_token,
     materialize_aic_num_gpu_blocks,
@@ -64,7 +66,7 @@ def prediction_to_replay_spec(
         workload=workload,
         afd_performance_model=afd_performance_model,
     )
-    deployment = _pin_estimator_version_aliases(deployment)
+    deployment = _pin_estimator_version_aliases(deployment, config.engine)
     metadata = dict(deployment.performance_model_metadata)
     for role, field in (
         ("aggregated", "agg_engine_args"),
@@ -116,7 +118,9 @@ def prediction_to_replay_spec(
     )
 
 
-def _pin_estimator_version_aliases(deployment: BackendDeploymentSpec) -> BackendDeploymentSpec:
+def _pin_estimator_version_aliases(
+    deployment: BackendDeploymentSpec, engine: EnginePredictionConfig
+) -> BackendDeploymentSpec:
     if deployment.backend_version not in {"current", "previous", "next"}:
         return deployment
     from aisimulate_core.sdk import RustForwardPassPerfModel
@@ -124,6 +128,7 @@ def _pin_estimator_version_aliases(deployment: BackendDeploymentSpec) -> Backend
     updates = {}
     metadata = dict(deployment.performance_model_metadata)
     versions = set()
+    unversioned = []
     for role, field in (
         ("aggregated", "agg_engine_args"),
         ("prefill", "prefill_engine_args"),
@@ -152,15 +157,39 @@ def _pin_estimator_version_aliases(deployment: BackendDeploymentSpec) -> Backend
         if diagnostics["readiness"] != "ready":
             raise ValueError(unready_estimator_message(diagnostics))
         resolved = diagnostics["provenance"]["config"]
-        versions.add(resolved["backend_version"])
+        # A regression or learned identity may not know its version; it then
+        # neither resolves the alias nor conflicts with a role that does.
+        if resolved["backend_version"] != UNKNOWN_IDENTITY:
+            versions.add(resolved["backend_version"])
+        else:
+            unversioned.append(role)
         updates[field] = {**args, "timing_model": {**timing, "config": {**resolved, **memory}}}
         metadata[role] = {**metadata.get(role, {}), "provider": "aic", "config": resolved, "selection": diagnostics}
+    if not versions and unversioned:
+        # No role knows its version: the alias resolves on the hardware those
+        # roles run on, which their identities do not record.
+        from aisimulate_core.sdk.perf_database import resolve_query_version
+
+        from .sweeper.forward_pass_estimator import resolve_systems_paths
+
+        for role in unversioned:
+            worker = getattr(engine.workers, role)
+            versions.add(
+                resolve_query_version(
+                    worker.hardware or engine.hardware,
+                    deployment.backend,
+                    deployment.backend_version,
+                    systems_paths=list(resolve_systems_paths(worker.timing.systems_paths)),
+                )
+            )
     if len(versions) > 1:
         raise ValueError(
             f"estimator version alias resolves to different backend versions across roles: {sorted(versions)}"
         )
+    if updates:
+        updates["performance_model_metadata"] = metadata
     if versions:
-        updates.update(backend_version=versions.pop(), performance_model_metadata=metadata)
+        updates["backend_version"] = versions.pop()
     return replace(deployment, **updates)
 
 

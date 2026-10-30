@@ -2612,8 +2612,9 @@ fn attention_dp_prices_each_group_pass_with_one_iteration_query(
             requests,
         )
     };
-    assert_eq!(totals(&prefill[0]), (1, 4, vec![(4, 0)]));
-    assert_eq!(totals(&prefill[1]), (2, 16, vec![(8, 0), (8, 0)]));
+    // Each whole prompt reports its own length.
+    assert_eq!(totals(&prefill[0]), (1, 4, vec![(4, 0, 4)]));
+    assert_eq!(totals(&prefill[1]), (2, 16, vec![(8, 0, 8), (8, 0, 8)]));
     let decode = iterations[1][1].decode.as_ref().unwrap();
     // Each 8-token prompt decodes its first output at length 9.
     assert_eq!(

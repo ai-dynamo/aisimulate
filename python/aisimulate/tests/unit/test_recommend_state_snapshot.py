@@ -24,6 +24,7 @@ from aisimulate.runner import EngineReplayRunnerFactory
 from aisimulate.sweeper.config import SearchSpace
 from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolutionError, ForwardPassEstimatorResolver
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisimulate_core.sdk.perf_database import resolve_query_version
 
 pytestmark = pytest.mark.unit
 
@@ -536,10 +537,13 @@ def _scheduled(prefills: int, prefill_tokens: int, decodes: int, kv: int) -> dic
     }
 
 
-def _planner(worker: str, kinds=("prefill", "decode", "mixed"), **overrides) -> RustForwardPassPerfModel:
+def _planner(
+    worker: str, kinds=("prefill", "decode", "mixed"), *, cross_rank: bool = False, **overrides
+) -> RustForwardPassPerfModel:
     """A planner's regression for an unknown deployment: hardware, version and
     shape unknown, its limits recorded. It observes every forward pass
-    `_PLANNER_SLOWER` times slower than the op-level estimate."""
+    `_PLANNER_SLOWER` times slower than the op-level estimate; `cross_rank`
+    adds two-rank passes on which one rank prefills while the other decodes."""
     fields = {
         "model": _MODEL,
         "system": "unknown",
@@ -568,6 +572,11 @@ def _planner(worker: str, kinds=("prefill", "decode", "mixed"), **overrides) -> 
             rank = _scheduled(*shapes[kind])
             rank["wall_time"] = reference.estimate_forward_pass_time_ms([rank]) * _PLANNER_SLOWER / 1000.0
             iterations.append([rank])
+        if cross_rank:
+            ranks = [{**_scheduled(*shapes[kind]), "dp_rank": rank} for rank, kind in enumerate(("prefill", "decode"))]
+            slowest = max(reference.estimate_forward_pass_time_ms([rank]) for rank in ranks)
+            ranks[0]["wall_time"] = slowest * _PLANNER_SLOWER / 1000.0
+            iterations.append(ranks)
     model.tune_with_fpms(iterations)
     return model
 
@@ -591,6 +600,18 @@ def planner_snapshots(tmp_path_factory) -> dict[str, Path]:
         "no-sequences": save(
             "no-sequences",
             _planner("decode", kinds=("decode",), deployment_limits={**_LIMITS, "max_num_seqs": "unknown"}),
+        ),
+        # Pure prefill and pure decode telemetry, as an SGLang worker reports.
+        "sglang-pure": save("sglang-pure", _planner("aggregated", kinds=("prefill", "decode"), backend="sglang")),
+        "vllm-pure": save("vllm-pure", _planner("aggregated", kinds=("prefill", "decode"))),
+        # Two GPUs per replica, with and without passes whose ranks computed different work.
+        "two-gpus": save("two-gpus", _planner("aggregated", deployment_limits={**_LIMITS, "num_gpus": 2})),
+        "two-gpus-cross": save(
+            "two-gpus-cross",
+            _planner("aggregated", cross_rank=True, deployment_limits={**_LIMITS, "num_gpus": 2}),
+        ),
+        "prefill-unknown-kv": save(
+            "prefill-unknown-kv", _planner("prefill", kinds=("prefill",), kvcache_quant_mode="unknown")
         ),
         # A regression whose identity is known pins it like a native snapshot.
         "known": save(
@@ -663,6 +684,9 @@ def test_a_planner_regression_snapshot_times_its_role_in_its_explicit_shape(plan
     decode = candidate.prediction_config["engine"]["workers"]["decode"]
     capacity = decode["kv_cache"]["capacity"]
     assert (capacity["type"], capacity["blocks"]) == ("fixed", _LIMITS["max_kv_tokens"] // _BLOCK)
+    # The model reads no performance data, so the prediction names no
+    # environment-specific systems root.
+    assert "systems_paths" not in decode["timing"]
     replayed = _replay(candidate.prediction_config).metrics
     assert (replayed["mean_ttft_ms"], replayed["mean_tpot_ms"]) == (
         candidate.metrics["mean_ttft_ms"],
@@ -681,9 +705,20 @@ def test_an_aggregated_planner_regression_prices_prefill_decode_and_mixed_passes
     [candidate] = result.selected_candidates
     [reference] = baseline.selected_candidates
     assert candidate.config["forward_pass_estimators"]["agg"]["config"]["estimation_mode"] == "fpm_regression"
+    # The identity does not know its hardware; the candidate ran on the engine's.
+    assert candidate.config["forward_pass_estimators"]["agg"]["config"]["system"] == "unknown"
+    assert result.candidates[0].provenance.hardware == _SYSTEM
     for metric in ("mean_ttft_ms", "mean_tpot_ms"):
         assert candidate.metrics[metric] > reference.metrics[metric] * 1.5, metric
     assert _replay(candidate.prediction_config).metrics["mean_tpot_ms"] == candidate.metrics["mean_tpot_ms"]
+    # No role knows its version, so a version alias resolves on the hardware
+    # the role runs on, never to the identity's "unknown".
+    aliased = deepcopy(candidate.prediction_config)
+    aliased["engine"]["backend_version"] = "current"
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(aliased))
+    assert spec.backend_deployment.backend_version == resolve_query_version(_SYSTEM, "vllm", "current")
+    assert spec.backend_deployment.agg_engine_args["timing_model"]["config"]["backend_version"] == "unknown"
+    assert _replay(aliased).metrics["mean_tpot_ms"] == candidate.metrics["mean_tpot_ms"]
 
 
 @pytest.mark.parametrize(
@@ -761,3 +796,128 @@ def test_unknown_hardware_takes_the_engine_and_known_regression_identity_is_pinn
     known = _space(_planner_request(planner_snapshots["known"], decode_parallelism={"preset": False, "replicas": 1}))
     assert known.backend_version == "0.19.0"
     assert known.parallel_independent_by_mode["disagg"]["decode_tp"] == [1]
+
+
+def test_an_sglang_aggregated_planner_snapshot_needs_no_locally_mixed_store(planner_snapshots):
+    # An SGLang rank runs a prefill batch alone, so pure prefill and pure
+    # decode stores price every pass of its aggregated role.
+    raw = _planner_request(planner_snapshots["sglang-pure"], mode="aggregated")
+    raw["engine"]["backend"] = "sglang"
+    result = _planner_run(raw)
+    assert result.counts.feasible == 1, [record.reason for record in result.candidates]
+    [candidate] = result.selected_candidates
+    assert _replay(candidate.prediction_config).metrics["mean_tpot_ms"] == candidate.metrics["mean_tpot_ms"]
+    # A vLLM scheduler computes chunked prefill beside decode in one rank
+    # pass, so the same telemetry cannot price its role.
+    with pytest.raises((ValidationError, ValueError), match=r"without a ready contains_locally_mixed workload store"):
+        _space(_planner_request(planner_snapshots["vllm-pure"], mode="aggregated"))
+
+
+def test_an_aggregated_planner_snapshot_with_attention_dp_needs_its_cross_rank_store(planner_snapshots):
+    # Two attention-DP ranks use the two GPUs the snapshot records.
+    shape = {**_DECODE_SHAPE, "attention_data": 2}
+    raw = _planner_request(planner_snapshots["two-gpus"], decode_parallelism=shape, mode="aggregated")
+    with pytest.raises((ValidationError, ValueError), match=r"no ready cross_rank_aggregated .*attention_dp=2"):
+        _space(raw)
+    raw = _planner_request(planner_snapshots["two-gpus-cross"], decode_parallelism=shape, mode="aggregated")
+    assert _space(raw).parallel_independent_by_mode["agg"]["attention_dp"] == [2]
+
+
+@pytest.mark.parametrize(
+    ("log_range", "expected_range", "expected_domain"),
+    [
+        # A range that starts at the recorded limit, and one below it of a single value.
+        ([256, 1024], None, [256]),
+        ([128, 128], None, [128]),
+        # A wider range keeps its values up to the limit.
+        ([64, 1024], [64, 256], None),
+    ],
+)
+def test_scheduler_ranges_are_capped_by_the_recorded_limits(
+    planner_snapshots, log_range, expected_range, expected_domain
+):
+    space = SearchSpace(
+        model_name=_MODEL,
+        hardware_sku=_SYSTEM,
+        backend=["vllm"],
+        deployment_mode=["disagg"],
+        role_estimator_controls={
+            "decode": {"estimator_config": {"state_snapshot": {"path": str(planner_snapshots["decode"])}}}
+        },
+        parallel_independent_by_mode={"disagg": {"decode_tp": [1], "decode_pp": [1], "decode_attention_dp": [1]}},
+        decode_block_size=_BLOCK,
+        engine_integer_log_ranges={"decode_max_num_seqs": log_range},
+    )
+    assert space.engine_integer_log_ranges.get("decode_max_num_seqs") == expected_range
+    if expected_domain is not None:
+        # The collapsed range is its one value, not the uncapped default domain.
+        assert space.decode_max_num_seqs == expected_domain
+    saved = space.model_dump(mode="json")
+    assert SearchSpace.model_validate(deepcopy(saved)).model_dump(mode="json") == saved
+
+
+def test_predict_sizes_a_fitted_role_from_its_recorded_kv_capacity(planner_snapshots):
+    from aisimulate.capacity import materialize_aic_num_gpu_blocks
+    from aisimulate_core.sdk.rust_engine_step import _snapshot_config
+
+    def lower(name: str) -> dict:
+        config = _snapshot_config(planner_snapshots[name])
+        return materialize_aic_num_gpu_blocks(
+            {"timing_model": {"type": "external", "provider": "aic", "config": config}, "block_size": _BLOCK}
+        )
+
+    assert lower("decode")["num_gpu_blocks"] == _LIMITS["max_kv_tokens"] // _BLOCK
+    # Without a recorded capacity, the AIC memory estimate cannot size an unknown deployment.
+    with pytest.raises(ValueError, match=r"cannot estimate KV-cache capacity for an identity with unknown .*system"):
+        lower("no-kv")
+
+    [candidate] = _planner_run(_planner_request(planner_snapshots["decode"])).selected_candidates
+    prediction = deepcopy(candidate.prediction_config)
+    decode = prediction["engine"]["workers"]["decode"]
+    del decode["kv_cache"]["capacity"]
+    replayed = _replay(prediction).metrics
+    assert (replayed["mean_ttft_ms"], replayed["mean_tpot_ms"]) == (
+        candidate.metrics["mean_ttft_ms"],
+        candidate.metrics["mean_tpot_ms"],
+    )
+    decode["timing"]["estimator_config"]["state_snapshot"] = {"path": str(planner_snapshots["no-kv"])}
+    with pytest.raises(ValueError, match=r"cannot estimate KV-cache capacity"):
+        _replay(prediction)
+
+
+def _prefill_planner_candidate(snapshot: Path):
+    raw = _request(snapshot, mode="disaggregated", role="prefill")
+    raw["engine"]["backend"] = "vllm"
+    for worker in raw["engine"]["workers"].values():
+        worker["parallelism"] = {"preset": False, "replicas": 1}
+        worker["kv_cache"] = {"block_size": _BLOCK}
+    raw["engine"]["workers"]["prefill"]["parallelism"] = deepcopy(_DECODE_SHAPE)
+    # Transfer bytes per token are estimated from the KV dtype.
+    raw["engine"]["kv_transfer"] = {"bandwidth_gb_per_second": 50}
+    result = _planner_run(raw)
+    assert result.counts.feasible == 1, [record.reason for record in result.candidates]
+    [candidate] = result.selected_candidates
+    return candidate
+
+
+def test_exported_fitted_predictions_leave_unknown_facts_to_the_snapshot(planner_snapshots):
+    candidate = _prefill_planner_candidate(planner_snapshots["prefill-unknown-kv"])
+    exported = candidate.prediction_config
+    prefill = exported["engine"]["workers"]["prefill"]
+    assert "kvcache_quant_mode" not in prefill["timing"]
+    capacity = prefill["kv_cache"]["capacity"]
+    assert (capacity["type"], capacity["blocks"]) == ("fixed", _LIMITS["max_kv_tokens"] // _BLOCK)
+    # The snapshot's identity keeps the unknown dtype; predict estimates the
+    # transfer bytes without it and replays the recommended candidate.
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(exported))
+    assert spec.backend_deployment.prefill_engine_args["timing_model"]["config"]["kvcache_quant_mode"] == "unknown"
+    assert _replay(exported).metrics["mean_ttft_ms"] == candidate.metrics["mean_ttft_ms"]
+
+    # A version alias resolves from the role that knows its version.
+    aliased = deepcopy(exported)
+    aliased["engine"]["backend_version"] = "current"
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(aliased))
+    known = spec.backend_deployment.performance_model_metadata["decode"]["config"]["backend_version"]
+    assert spec.backend_deployment.backend_version == known != "unknown"
+    assert spec.backend_deployment.performance_model_metadata["prefill"]["config"]["backend_version"] == "unknown"
+    assert _replay(aliased).metrics["mean_ttft_ms"] == candidate.metrics["mean_ttft_ms"]

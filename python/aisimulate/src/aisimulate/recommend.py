@@ -13,6 +13,8 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
+from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
+
 from .capacity import resolve_model_context_length
 from .config.cli import CorePredictionConfig, CoreRecommendationConfig
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS
@@ -31,6 +33,9 @@ from .sweeper.provider import InfeasibleCandidate, SweepContext
 from .sweeper.replay import ReplayOutputRequirements, ReplaySpec, RunnerFactory
 from .sweeper.result import SweepResult
 from .sweeper.state_snapshot import packed_systems_root, state_snapshot_reference
+
+# Estimators fitted to forward-pass telemetry, which read no performance data.
+_FITTED_MODES = frozenset({"fpm_regression", "fpm_learned"})
 
 
 def run_recommendation(
@@ -1058,8 +1063,13 @@ def _candidate_prediction(
             }
             # Per-role roots can differ; preserve them next to the role's timing.
             # A packed snapshot's own root moves with the snapshot, which the
-            # timing already names.
-            if resolved["systems_paths"] and packed_systems_root(resolved["estimator_config"]) is None:
+            # timing already names. A regression or learned model reads no
+            # performance data, so its prediction names no root to relocate.
+            if (
+                resolved["systems_paths"]
+                and resolved["estimation_mode"] not in _FITTED_MODES
+                and packed_systems_root(resolved["estimator_config"]) is None
+            ):
                 timing["systems_paths"] = list(resolved["systems_paths"])
             timing["database_mode"] = resolved["database_mode"]
             policy = resolved["transfer_policy"]
@@ -1075,7 +1085,9 @@ def _candidate_prediction(
                         "comm_quant_mode",
                         "attention_backend",
                     )
-                    if resolved.get(field) is not None
+                    # A fact the snapshot does not know stays in its identity;
+                    # predict would read an unknown KV dtype for byte estimates.
+                    if resolved.get(field) not in (None, UNKNOWN_IDENTITY)
                 }
             )
         kv_cache = {
