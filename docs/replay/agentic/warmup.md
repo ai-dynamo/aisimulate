@@ -65,7 +65,7 @@ the existing cold snapshot behavior. The built-in Engine runner supports offline
 vLLM and SGLang replay with either aggregated workers or separate prefill/decode
 pools and HBM-only KV cache, including
 [speculative decoding](../engine/speculation.md) with explicit acceptance
-assumptions. vLLM also supports local or shared
+assumptions; ngram requires vLLM. vLLM also supports local or shared
 [G2 host offload](../engine/kv-cache.md#agentic-g2) on a static single aggregated worker or 1P1D,
 with attention DP1 on every role and speculative decoding disabled. For example:
 
