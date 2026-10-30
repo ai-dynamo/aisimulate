@@ -813,7 +813,7 @@ def _trace_scan_identity(files: list[Path]) -> tuple[Any, ...]:
 
 
 _TRACE_SCAN_CACHE_SIZE = 16
-_TRACE_SCAN_CACHE: OrderedDict[tuple[Any, ...], _TraceCounters] = OrderedDict()
+_TRACE_SCAN_CACHE: OrderedDict[tuple[Any, ...], _TraceCounters | tuple[int, ...]] = OrderedDict()
 _WEKA_SCAN_CACHE: OrderedDict[tuple[Any, ...], ResourceEstimate] = OrderedDict()
 _TRACE_SCAN_CACHE_LOCK = threading.Lock()
 
@@ -914,6 +914,23 @@ def _estimate_trace_legacy(
 
     paths = workload.get("trace_paths") or [workload["trace_path"]]
     try:
+        # Counters depend only on file contents, so admission and the per-run
+        # guard share one pass. Lanes and headroom are applied on every call.
+        trace_files = _trace_files(workload, format_name)
+        scan_key = (
+            ("trace-legacy-v1", format_name, workload.get("trace_block_size"), _trace_scan_identity(trace_files))
+            if trace_files
+            else None
+        )
+        cached = None
+        if scan_key:
+            with _TRACE_SCAN_CACHE_LOCK:
+                cached = _TRACE_SCAN_CACHE.get(scan_key)
+                if cached is not None:
+                    _TRACE_SCAN_CACHE.move_to_end(scan_key)
+        if cached is not None:
+            total_bytes, tokens, hashes, records, turns, block_size = cached
+            paths = ()
         for raw_path in paths:
             source = Path(raw_path)
             files = source.rglob("*") if source.is_dir() else (source,)
@@ -961,6 +978,11 @@ def _estimate_trace_legacy(
                             elif key == "num_turns" and event == "number":
                                 turns += int(value) + 1
                     total_bytes += stream.tell()
+        if scan_key and cached is None:
+            with _TRACE_SCAN_CACHE_LOCK:
+                _TRACE_SCAN_CACHE[scan_key] = (total_bytes, tokens, hashes, records, turns, block_size)
+                while len(_TRACE_SCAN_CACHE) > _TRACE_SCAN_CACHE_SIZE:
+                    _TRACE_SCAN_CACHE.popitem(last=False)
     except (OSError, EOFError, ValueError, ijson.JSONError) as exc:
         return unqualified(f"cannot inspect trace metadata: {exc}")
     if records == 0:

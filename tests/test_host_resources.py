@@ -1294,6 +1294,33 @@ def test_trace_scan_cache_keeps_recent_traces_and_serves_threads(tmp_path, monke
     assert len(set(estimates)) == 1
 
 
+def test_snapshot_trace_scan_is_shared_by_admission_and_guard(tmp_path, monkeypatch, host):
+    trace = tmp_path / "agentic.jsonl"
+    trace.write_text(json.dumps({"input_length": 4, "output_length": 1, "hash_ids": [1]}) + "\n")
+    parses = _count_parses(monkeypatch)
+    workload = {
+        "trace_path": str(trace),
+        "trace_format": "agentic_mooncake",
+        "agentic_lanes": 16,
+        "agentic_snapshot": {"seed": 1},
+    }
+    _supervised(monkeypatch)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    plan = build_plan(workload, stack="engine", host=host)
+    spec = SimpleNamespace(workload=workload, concurrency=None)
+    assert guard_replay(spec, stack="engine")["estimate"] == plan["estimate"]
+    assert plan["estimate"]["allocation_model"] == "trace-json-metadata-v1"
+    # Lanes apply after the scan.
+    peak = plan["estimate"]["estimated_peak_bytes"]
+    assert estimate_workload({**workload, "agentic_lanes": 32}, stack="engine").estimated_peak_bytes > peak
+    assert len(parses) == 1
+
+    with trace.open("a") as stream:
+        stream.write(json.dumps({"input_length": 8, "output_length": 1, "hash_ids": [1, 2]}) + "\n")
+    assert estimate_workload(workload, stack="engine").estimated_peak_bytes > peak
+    assert len(parses) == 2
+
+
 def test_observed_peaks_admit_parallel_waves_for_the_same_trace(tmp_path, monkeypatch, host):
     _supervised(monkeypatch)
     monkeypatch.setattr(resources, "discover_host", lambda: host)
