@@ -1,15 +1,27 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Modifications Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""vLLM 0.24.0 dense-attention collector for CUDA backends."""
+"""Dense-attention microbenchmarks using vLLM's selected CUDA backend.
+
+``AISIM_VLLM_ATTENTION_BLOCK_SIZE`` selects the kernel page size for a
+campaign (default 64). It is not a persisted lookup axis: keep different
+page-size campaigns separate and retain this setting in their provenance.
+"""
 
 # B200 0.25.0 qualification (installed vLLM dd10e03f9), job 1967975:
 # attention_context and attention_generation: 8/8 representative cases each. The native framework
 # builders/selectors remain authoritative; no kernel fallback is introduced.
+# B300 0.31.0, Slurm 138015/138021: five smoke controls and 95 Qwen TP8
+# BF16 prefill cases passed with kernel page 16.
 # The campaign manifest still selects one exact release per run.
-__compat__ = "vllm>=0.24.0,<=0.25.0"
+# This declaration preserves the older release lane and admits 0.31.0;
+# exact campaign manifests remain the runtime gate. The compatibility parser
+# cannot express a union and does not interpret wildcard exclusions.
+__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.26.0,!=0.27.0,!=0.28.0,!=0.29.0,!=0.30.0"
 
 import os
+from unittest.mock import patch
 
 import torch
 from collector.case_generator import (
@@ -19,6 +31,7 @@ from collector.case_generator import (
 )
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from collector.vllm.utils import (
+    VLLM_031_ATTENTION_API,
     BatchSpec,
     create_common_attn_metadata,
     create_kv_cache_and_block_mappings,
@@ -32,9 +45,69 @@ from vllm.platforms import current_platform
 from vllm.utils.import_utils import resolve_obj_by_qualname
 from vllm.utils.torch_utils import set_random_seed
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
-from vllm.v1.attention.backends.utils import set_kv_cache_layout
+from vllm.v1.attention.backends.utils import PerLayerParameters
 from vllm.v1.attention.selector import AttentionSelectorConfig
 from vllm.version import __version__ as vllm_version
+
+if VLLM_031_ATTENTION_API:
+    from vllm.v1.attention.backends.utils import get_supported_kv_cache_layouts, resolve_kv_cache_layout
+    from vllm.v1.kv_cache_interface import KVCacheTensor, create_kv_cache_views
+    from vllm.v1.worker.utils import select_common_block_size
+else:
+    from vllm.v1.attention.backends.utils import set_kv_cache_layout
+
+
+def _attention_block_size():
+    value = os.environ.get("AISIM_VLLM_ATTENTION_BLOCK_SIZE", "64")
+    block_size = int(value)
+    if block_size <= 0:
+        raise ValueError("AISIM_VLLM_ATTENTION_BLOCK_SIZE must be a positive integer")
+    return block_size
+
+
+def _prepare_dense_kv_cache(kv_cache, kv_cache_spec, vllm_config, backend_cls, num_blocks, exit_stack):
+    if not VLLM_031_ATTENTION_API:
+        # v0.24/0.25 use [B, 2, N, H, D] plus a backend-specific stride order.
+        kv_cache = kv_cache.transpose(0, 1).contiguous()
+        set_kv_cache_layout(backend_cls.get_required_kv_cache_layout())
+        exit_stack.callback(set_kv_cache_layout, None)
+        stride_order = backend_cls.get_kv_cache_stride_order()
+        if stride_order != tuple(range(kv_cache.ndim)):
+            inverse_order = [stride_order.index(i) for i in range(kv_cache.ndim)]
+            kv_cache = kv_cache.permute(*stride_order).contiguous().permute(*inverse_order)
+        return kv_cache
+
+    # Native vLLM v0.31.0 db9527a46873454610df6dbedf79a36d6bf1a7f6:
+    # v1/worker/utils.py:350-391 chooses the actual kernel page, and
+    # v1/attention/backends/utils.py:209-240,259-345 resolves the model layout.
+    # https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/worker/utils.py#L350
+    # This microbenchmark accepts a kernel page, not a larger manager block
+    # that would need virtual block-table splitting.
+    block_size = kv_cache_spec.block_size
+    selected_size = select_common_block_size(block_size, [backend_cls])
+    if selected_size != block_size:
+        raise ValueError(
+            f"Attention block size {block_size} is not a native kernel page for {backend_cls.get_name()}; "
+            f"vLLM would split it into {selected_size}-token pages"
+        )
+    layout = resolve_kv_cache_layout(
+        vllm_config,
+        [[item.name for item in get_supported_kv_cache_layouts([backend_cls])]],
+        [kv_cache_spec],
+    )
+    # Use the production view constructor, not hand-built HND/NHD strides:
+    # v1/worker/utils.py:395-460 and v1/kv_cache_interface.py:353-424.
+    # One layer occupies a contiguous region; the backing tensor is still
+    # empty here, and the framework writer below populates history/new KV.
+    page_bytes = kv_cache_spec.page_size_bytes
+    raw = kv_cache.view(torch.int8).reshape(-1)
+    placement = KVCacheTensor(
+        size=raw.numel(),
+        layers=["placeholder"],
+        layer_stride=num_blocks * page_bytes,
+        block_stride=page_bytes,
+    )
+    return create_kv_cache_views(raw, kv_cache_spec, num_blocks, layout, placement)[0]
 
 
 class MockAttentionLayer:
@@ -73,7 +146,14 @@ def _dense_kernel_source(backend_name_str, impl, attn_metadata):
             phase_metadata = attn_metadata.decode
         if phase_metadata is None:
             raise RuntimeError("vLLM FlashInfer metadata has neither a prefill nor a decode portion")
-        return f"vllm_flashinfer_{type(phase_metadata).__name__}".lower()
+        source = f"vllm_flashinfer_{type(phase_metadata).__name__}".lower()
+        if VLLM_031_ATTENTION_API and attn_metadata.num_prefills == 0:
+            # v0.31 flashinfer.py:572-576,2058-2066: the API metadata class
+            # is shared by XQA and trtllm-gen; persist which kernel ran.
+            kernel = getattr(phase_metadata, "kernel", None)
+            if kernel is not None:
+                source += "_" + kernel.value.replace("-", "_")
+        return source
     return f"vllm_{backend_name_str}".lower()
 
 
@@ -96,7 +176,7 @@ def run_attention_torch(
 
     dtype = torch.bfloat16
     model = os.path.join(os.path.dirname(__file__), "fake_hf_model")
-    block_size = 64
+    block_size = _attention_block_size()
 
     if is_context_phase:
         batch_spec = BatchSpec(
@@ -124,6 +204,7 @@ def run_attention_torch(
         head_dim=head_dim,
         num_heads=num_heads,
         num_kv_heads=num_kv_heads,
+        **({"max_num_batched_tokens": max(8192, batch_spec.compute_num_tokens())} if VLLM_031_ATTENTION_API else {}),
     )
 
     exit_stack.enter_context(set_current_vllm_config(vllm_config))
@@ -195,24 +276,13 @@ def run_attention_torch(
         randomize_blocks=True,
     )
 
-    # The helper populates [2, num_blocks, ...]; vLLM 0.24 uses logical
-    # [num_blocks, 2, ...] and may impose a backend-specific physical stride.
-    kv_cache = kv_cache.transpose(0, 1).contiguous()
-    set_kv_cache_layout(backend_cls.get_required_kv_cache_layout())
-    exit_stack.callback(set_kv_cache_layout, None)
-    stride_order = backend_cls.get_kv_cache_stride_order()
-    if stride_order != tuple(range(kv_cache.ndim)):
-        inverse_order = [stride_order.index(i) for i in range(kv_cache.ndim)]
-        kv_cache = kv_cache.permute(*stride_order).contiguous().permute(*inverse_order)
+    kv_cache = _prepare_dense_kv_cache(kv_cache, kv_cache_spec, vllm_config, backend_cls, num_blocks, exit_stack)
 
     builder_cls, impl_cls = get_attention_backend(backend_name)
     layer_names = ["placeholder"]
 
     # Mock flashinfer's get_per_layer_parameters if needed
     if backend_name_str == "FLASHINFER":
-        import unittest.mock
-
-        from vllm.v1.attention.backends.utils import PerLayerParameters
 
         def mock_get_per_layer_parameters(vllm_config, layer_names, impl_cls):
             window_left = window_size - 1 if window_size > 0 else -1
@@ -225,9 +295,7 @@ def run_attention_torch(
                 for layer_name in layer_names
             }
 
-        with unittest.mock.patch(
-            "vllm.v1.attention.backends.flashinfer.get_per_layer_parameters", mock_get_per_layer_parameters
-        ):
+        with patch("vllm.v1.attention.backends.flashinfer.get_per_layer_parameters", mock_get_per_layer_parameters):
             builder = builder_cls(kv_cache_spec, layer_names, vllm_config, device)
             attn_metadata = builder.build(
                 common_prefix_len=0,
@@ -288,6 +356,14 @@ def run_attention_torch(
     # Output buffer is always BF16 — the impl dequantises internally.
     output = torch.empty_like(query_vllm)
 
+    kernel_source = _dense_kernel_source(backend_name_str, impl, attn_metadata)
+    layout_name = vllm_config.cache_config.kv_cache_layout if VLLM_031_ATTENTION_API else "legacy-backend-layout"
+    print(
+        f"dense_attention_dispatch framework=vllm/{vllm_version} backend={backend_name_str} "
+        f"kernel_source={kernel_source} kernel_page={block_size} layout={layout_name} "
+        f"cache_shape={tuple(kv_cache.shape)} query_tokens={sum(batch_spec.query_lens)} timing=cuda_graph"
+    )
+
     # FIXME(kernel-limit): on SM100/SM110 the FA4 CuTe kernel rejects
     # (head_dim, head_dim_v)=(192, 192): _validate_head_dims allows 8..128,
     # DeepSeek (192, 128), or hd256 (vllm_flash_attn/cute/interface.py:104
@@ -339,8 +415,6 @@ def run_attention_torch(
 
     kv_cache_dtype_str = "bfloat16" if not use_fp8_kv_cache else "fp8"
     dtype_str = "bfloat16"
-    kernel_source = _dense_kernel_source(backend_name_str, impl, attn_metadata)
-
     log_perf(
         item_list=[
             {
