@@ -3720,10 +3720,27 @@ def xpu_graph_measure_enabled() -> bool:
         return False
 
 
+def torch_npu_module():
+    """Return ``torch.npu``, or None when the torch_npu plugin is unavailable.
+
+    Unlike CUDA and XPU, ``torch.npu`` does not exist in stock PyTorch: the
+    out-of-tree ``torch_npu`` plugin attaches it as an import side effect, so
+    callers cannot probe the device with ``hasattr(torch, "npu")`` alone.
+    """
+    import torch
+
+    if not hasattr(torch, "npu"):
+        try:
+            import torch_npu  # noqa: F401  # attaches torch.npu
+        except ImportError:
+            return None
+    return getattr(torch, "npu", None)
+
+
 def get_device_module(device=None):
     import torch
 
-    # Resolve the module from the requested device so a mixed CUDA+XPU host
+    # Resolve the module from the requested device so a mixed CUDA+XPU+NPU host
     # targets the caller's device, not just the first available accelerator.
     if device is not None:
         dev = str(device)
@@ -3731,11 +3748,24 @@ def get_device_module(device=None):
             return torch.cuda
         if dev.startswith("xpu"):
             return torch.xpu
+        if dev.startswith("npu"):
+            npu = torch_npu_module()
+            if npu is None:
+                raise RuntimeError(f"device {dev!r} needs the torch_npu plugin, which is not installed")
+            return npu
     if torch.cuda.is_available():
         return torch.cuda
     elif torch.xpu.is_available():
         return torch.xpu
-    raise RuntimeError("No supported device (need CUDA or XPU)")
+    # NPU is probed last: its probe imports torch_npu, so an in-tree accelerator
+    # must win before that side effect happens on a mixed host. collect.py's
+    # collect_vllm probes CUDA -> NPU -> XPU instead, because there the lane
+    # choice must not depend on an import side effect ordering; the two orders
+    # differ only on a host with both an Intel XPU and the Ascend plugin.
+    npu = torch_npu_module()
+    if npu is not None and npu.is_available():
+        return npu
+    raise RuntimeError("No supported device (need CUDA, XPU or NPU)")
 
 
 @functools.lru_cache(maxsize=1)
@@ -3746,4 +3776,7 @@ def get_device_str():
         return "cuda"
     elif torch.xpu.is_available():
         return "xpu"
-    raise RuntimeError("No supported device (need CUDA or XPU)")
+    npu = torch_npu_module()
+    if npu is not None and npu.is_available():
+        return "npu"
+    raise RuntimeError("No supported device (need CUDA, XPU or NPU)")

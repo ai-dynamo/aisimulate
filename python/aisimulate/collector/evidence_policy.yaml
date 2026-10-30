@@ -38,6 +38,7 @@ system_generations:
   blackwell: [b200_sxm, b300_sxm, gb200, gb300]
   blackwell_workstation: [rtx_pro_6000_server]
   xpu: [b60]
+  ascend: [ascend_950dt]
 
 evidence_systems:
   # One designated representative system per SM generation: used for
@@ -51,6 +52,7 @@ evidence_systems:
   blackwell: b200_sxm
   blackwell_workstation: rtx_pro_6000_server
   xpu: b60
+  ascend: ascend_950dt
 
 rules:
   # Pin version change (design §9 row 1): fresh silicon for the family's
