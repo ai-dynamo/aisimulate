@@ -309,7 +309,7 @@ class SweepResult(BaseModel):
 
     @property
     def feasible_candidates(self) -> list[Candidate]:
-        """All retained feasible candidates, in evaluation order."""
+        """All retained feasible candidates, in ledger order."""
 
         return [record.as_candidate() for record in self.candidates if record.status is CandidateStatus.FEASIBLE]
 

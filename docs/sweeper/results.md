@@ -43,7 +43,7 @@ when supplied by the runner. GPU-count selection happens before the top-N view i
 | `schema_version` | Result contract version. New results emit `1.1`; reading `1.0` explicitly upgrades the envelope and defaults resource-limited counts to zero. |
 | `candidate_retention` | `all`, `feasible`, or `views`; counts always describe the complete run. |
 | `counts` | Outcome and cache counts for the complete run. |
-| `candidates` | Retained candidate records in suggestion order, independent of which parallel evaluation finishes first. |
+| `candidates` | Retained candidate records in a reproducible order: each batch's pre-replay rejections, then its replays in suggestion order, independent of which parallel evaluation finishes first. |
 | `views.top_n` | Best-first scalar candidate IDs, limited by `top_n`. |
 | `views.pareto_front` | Non-dominated candidate IDs in frontier order. |
 | `provenance` | Search strategy, run ID/time, implementation, input fingerprint, and validated input config. |

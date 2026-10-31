@@ -28,7 +28,7 @@ import math
 import multiprocessing as mp
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import contextmanager
@@ -1148,21 +1148,25 @@ def _worker_eval(spec: ReplaySpec) -> _ReplayEvaluation:
     return _run_replay_detailed(spec, _WORKER_CTX["runner"], _WORKER_CTX.get("output_requirements"))
 
 
-def _in_suggestion_order(todo, results):
+def _in_suggestion_order(
+    todo: list[tuple[Suggestion, _PreparedCandidate]],
+    results: Iterable[tuple[Suggestion, _EvalResult]],
+) -> Iterator[tuple[Suggestion, _EvalResult]]:
     """Yield a batch's ``(suggestion, result)`` pairs in ``todo`` order, each as soon as
     every earlier suggestion has finished, so candidate ids, the ledger and optimizer
-    feedback do not depend on which worker finished first.
+    feedback do not depend on which worker finished first. A finished result therefore
+    reaches the ledger and the execution checkpoint only after its earlier siblings.
     """
     position = {id(suggestion): index for index, (suggestion, _) in enumerate(todo)}
-    finished: dict[int, Any] = {}
+    finished: dict[int, tuple[Suggestion, _EvalResult]] = {}
     next_position = 0
     for suggestion, result in results:
         finished[position[id(suggestion)]] = (suggestion, result)
         while next_position in finished:
             yield finished.pop(next_position)
             next_position += 1
-    for index in sorted(finished):
-        yield finished[index]
+    if next_position != len(todo):
+        raise RuntimeError("Sweeper runner contract violation: a batch did not report every suggestion")
 
 
 class Sweeper:
@@ -1217,7 +1221,8 @@ class Sweeper:
         ``on_candidate``, when provided, is invoked once per recorded candidate
         outcome (feasible, infeasible, unsupported, resource-limited, timed-out, or
         failed) with a deep copy of the ``CandidateRecord`` appended to the run's
-        candidate ledger, in suggestion order. The copy is detached: mutating it
+        candidate ledger, in recording order: each batch's pre-replay rejections,
+        then its replays in suggestion order. The copy is detached: mutating it
         has no effect on the ledger used to build ``SweepResult``. It complements
         ``on_round``, which only reports the cumulative feasible-candidate list at
         round boundaries.
