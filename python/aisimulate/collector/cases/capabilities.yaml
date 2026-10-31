@@ -10,9 +10,9 @@
 #   - backend_gaps: a whole region of an op plan (collector/op_plans.py) that
 #     one backend's collector cannot run on the listed SMs although the
 #     hardware can. A region is a dtype, or another region field the op plan
-#     declares (MoE: parallel = tp, ep or tp_ep). Each entry names the guard
-#     note in collector/notes/<backend>.yaml that says why; R8 keeps that
-#     note's verified_on current.
+#     declares (MoE: parallel = tp, ep or tp_ep; mhc_module: architecture).
+#     Each entry names the guard note in collector/notes/<backend>.yaml that
+#     says why; R8 keeps that note's verified_on current.
 #
 # NOT allowed here (by design -- see .claude/rules/collector/):
 #   - shape conditions (batch/seq/token/feature axes)
@@ -124,3 +124,18 @@ backend_gaps:
     dtype: bfloat16
     sm: [80, 86]
     note: G-sglang-mla-backend-unmapped
+  - backend: sglang
+    op: mhc_module
+    architecture: Glm5NextForConditionalGeneration
+    sm: [80, 86, 89, 90, 100, 103, 120]
+    note: G-sglang-mhc-glm5next-not-ported
+  - backend: trtllm
+    op: mhc_module
+    architecture: Glm5NextForConditionalGeneration
+    sm: [80, 86, 89, 90, 100, 103, 120]
+    note: G-trtllm-mhc-glm5next-not-served
+  - backend: vllm
+    op: mhc_module
+    architecture: DeepseekV4ForCausalLM
+    sm: [80, 86, 89, 90, 100, 103, 120]
+    note: G-vllm-mhc-dsv4-shared-key

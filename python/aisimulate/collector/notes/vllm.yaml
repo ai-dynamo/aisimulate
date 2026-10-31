@@ -109,3 +109,24 @@ notes:
       - vllm vllm/_aiter_ops.py:2084-2085 @v0.30.0 (is_fp8bmm_enabled)
     retire_via: Delete the backend gaps if vLLM dispatches an fp8 MLA BMM on NVIDIA.
     approved_by: tianhaox
+  - id: G-vllm-mhc-dsv4-shared-key
+    kind: guard
+    summary: >-
+      mhc_module_perf is keyed (op_name, hc_mult, hidden_size) without an
+      architecture, and DeepSeek-V4-Flash shares (4, 4096) with GLM-5.3-Flash,
+      whose fused-site rows the pinned vLLM collects. DeepSeek-V4 rows in the
+      same table would merge with GLM's under one key, so the collector admits
+      only GLM-5.3-Flash at the pin and capabilities.yaml backend_gaps leaves
+      the architecture=DeepseekV4ForCausalLM region out. DeepSeek-V4 rows stay
+      on the earlier vLLM tables.
+    reason: mismeasure
+    scope:
+      tables: [mhc_module_perf]
+      systems: [l40s, h100_sxm, h200_sxm, b200_sxm, b300_sxm, gb200, gb300, rtx_pro_6000_server]
+    verified_on: "0.31.0"
+    sources:
+      - aisimulate python/aisimulate/collector/vllm/collect_mhc_module.py (_ARCHITECTURE_COMPAT)
+    retire_via: >-
+      Key the DeepSeek-V4 lookup by architecture (consumer change), admit
+      DeepSeek-V4 in _ARCHITECTURE_COMPAT and delete the backend gap.
+    approved_by: tianhaox

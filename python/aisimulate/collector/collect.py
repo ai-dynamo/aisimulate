@@ -1885,6 +1885,13 @@ def worker(
                 get_device_module().empty_cache()
 
 
+def _run_case_id(task, func_name: str, module_name: str) -> str:
+    """The ID a run records for one queued row; an ``{id, params}`` row carries its own."""
+    if isinstance(task, dict) and "id" in task and "params" in task:
+        return task["id"]
+    return create_test_case_id(task, func_name, module_name)
+
+
 def parallel_run(tasks, func, num_processes, module_name="unknown", resume_options=None):
     """parallel runner with error collection
 
@@ -1896,13 +1903,8 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
     func_name = getattr(func, "__name__", None) or getattr(func, "func", func).__name__
     raw_task_infos = []
     for i, task in enumerate(tasks):
-        if isinstance(task, dict) and "id" in task and "params" in task:
-            task_id = task["id"]
-            task_params = task["params"]
-        else:
-            task_id = create_test_case_id(task, func_name, module_name)
-            task_params = task
-        raw_task_infos.append({"id": task_id, "params": task_params, "index": i})
+        task_params = task["params"] if isinstance(task, dict) and "id" in task and "params" in task else task
+        raw_task_infos.append({"id": _run_case_id(task, func_name, module_name), "params": task_params, "index": i})
 
     checkpoint_dir = (
         resume_options.get("checkpoint_dir", ".collector_checkpoint") if resume_options else ".collector_checkpoint"
@@ -2907,7 +2909,7 @@ def generate_collection_summary(all_errors, backend, version):
 def _op_plan_report(backend: str, ops: list[str], sm_version: int, table_dir: str | None) -> dict:
     """Expand the requested ops that have an op plan and summarize each one.
 
-    ``plan_hash`` uses the case IDs a run records (``<backend>.<op>:<run_func>:<case>``).
+    ``plan_hash`` uses the case IDs a run records (:func:`_run_case_id`).
     With ``table_dir``, each op's cases are also written there as CSV.
     """
     import csv
@@ -2924,7 +2926,7 @@ def _op_plan_report(backend: str, ops: list[str], sm_version: int, table_dir: st
         report[op] = summarize(
             op,
             op_plan,
-            case_id=lambda row, op=op: create_test_case_id(row, run_funcs[op], f"{backend}.{op}"),
+            case_id=lambda row, op=op: _run_case_id(row, run_funcs[op], f"{backend}.{op}"),
         )
         if table_dir:
             path = Path(table_dir) / f"{backend}_sm{sm_version}_{op}.csv"

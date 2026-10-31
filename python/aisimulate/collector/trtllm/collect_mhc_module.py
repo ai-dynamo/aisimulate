@@ -58,14 +58,15 @@ try:
     from case_generator import get_common_mhc_test_cases
     from registry_types import PerfFile
 
-    from helper import benchmark_with_power, log_perf
+    from helper import benchmark_with_power, get_sm_version, log_perf
 except ModuleNotFoundError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from case_generator import get_common_mhc_test_cases
     from registry_types import PerfFile
 
-    from helper import benchmark_with_power, log_perf
+    from helper import benchmark_with_power, get_sm_version, log_perf
 
+from collector.op_plans import plan_cases
 
 ARCHITECTURE = "DeepseekV4ForCausalLM"
 DEFAULT_HIDDEN_SIZE = 4096
@@ -94,28 +95,8 @@ def _resolve_perf_path(output_path: str | None, filename: str | None) -> str:
     return os.path.join(output_path, filename)
 
 
-def _active_mhc_common_cases():
-    seen: set[tuple[str, int, int]] = set()
-    for case in get_common_mhc_test_cases():
-        key = (case.phase, case.hidden_size, case.hc_mult)
-        if key in seen:
-            continue
-        seen.add(key)
-        yield case
-
-
 def get_mhc_module_test_cases() -> list[dict]:
-    cases: list[dict] = []
-    for case in _active_mhc_common_cases():
-        num_tokens_list = [16] if "--smoke" in sys.argv else case.num_tokens_list
-        for num_tokens in num_tokens_list:
-            cases.append(
-                {
-                    "id": f"mhc_{case.phase}_hs{case.hidden_size}_hcm{case.hc_mult}_{num_tokens}",
-                    "params": [case.phase, num_tokens, case.hidden_size, case.hc_mult],
-                }
-            )
-    return cases
+    return plan_cases("mhc_module", "trtllm", get_sm_version())
 
 
 def _default_num_tokens() -> list[int]:

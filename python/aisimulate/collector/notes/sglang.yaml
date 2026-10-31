@@ -142,3 +142,24 @@ notes:
       Take the backend from the serving probe record for SM80/86 and delete the
       backend gaps.
     approved_by: tianhaox
+  - id: G-sglang-mhc-glm5next-not-ported
+    kind: guard
+    summary: >-
+      The SGLang mHC collector has no GLM-5.3-Flash route for the pinned
+      SGLang: the pin moved MHCState to layer_boundary, removed
+      ParallelState/init_torch_distributed and fuses post+pre for up to 16
+      tokens, and the GLM call sites were never ported, so
+      _ARCHITECTURE_COMPAT admits only DeepSeek-V4 and every GLM case would
+      fail. capabilities.yaml backend_gaps leaves the
+      architecture=Glm5NextForConditionalGeneration region out.
+    reason: expensive
+    scope:
+      tables: [mhc_module_perf]
+      systems: [h100_sxm, h200_sxm, b200_sxm, b300_sxm, gb200, gb300, rtx_pro_6000_server]
+    verified_on: "0.5.21"
+    sources:
+      - aisimulate python/aisimulate/collector/sglang/collect_mhc_module.py (_ARCHITECTURE_COMPAT)
+    retire_via: >-
+      Port the GLM-5.3-Flash call sites to the pinned SGLang, admit the
+      architecture in _ARCHITECTURE_COMPAT and delete the backend gap.
+    approved_by: tianhaox
