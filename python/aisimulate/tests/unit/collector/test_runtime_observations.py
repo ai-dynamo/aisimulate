@@ -1756,6 +1756,34 @@ def test_v031_importer_diagnostics_are_reachable(tmp_path, case, layout, diagnos
     assert result["diagnostics"] == [f"tp2: {diagnostic}"]
 
 
+@pytest.mark.parametrize("change", ["missing_view", "shape", "element_size", "real_page"])
+def test_v031_mamba_layer_views_must_match_the_recorded_state_tensors(tmp_path, change):
+    path, launches = observation_fixture(tmp_path, layout="mamba_hybrid")
+
+    def edit(record):
+        if change == "real_page":
+            # Every record of the group keeps one state, now with a real page that the views do not fill.
+            record["cache"]["groups"][1]["state"]["real_page_size_bytes"] = 8064
+            return
+        if (record["phase"], record["kind"], record["dp_rank"], record["tp_rank"]) != ("prefill", "worker", 0, 0):
+            return
+        # A bfloat16 [10, 4, 100] convolution view and a float32 [10, 2, 30, 30] SSM view cut the recorded
+        # states [4, 100] and [2, 30, 30] from the 8,192-byte page of mamba.0 (mamba/abstract.py:28-42).
+        views = record["cache"]["layer_tensors"]["mamba.0"]
+        if change == "missing_view":
+            # The convolution view alone is nonempty, fits the page and aliases nothing.
+            views.pop(1)
+        elif change == "shape":
+            views[1]["shape"][1] = 1
+        else:
+            views[1]["element_size_bytes"] = 2
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == ["tp2: layer views do not match the recorded state tensors: mamba.0"]
+
+
 def test_v031_state_group_layer_specs_stay_compared_across_phases(tmp_path):
     path, launches = observation_fixture(tmp_path, layout="mamba_hybrid", decode_prefix_caching=False)
 

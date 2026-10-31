@@ -24,7 +24,7 @@ from aisimulate_core.sdk.perf_database import load_system_spec
 from . import runtime_memory
 from .config import PrefillSamplingProfile, collection_phases
 from .planner import BackendPolicy, FPMCell
-from .runtime.fpm_memory_observer import _LEGACY_SPECS
+from .runtime.fpm_memory_observer import _LEGACY_SPECS, _MAMBA_SPEC
 from .runtime_instrumentation import (
     OBSERVATION_SCHEMA,
     InstrumentationBundle,
@@ -480,6 +480,11 @@ def _check_element_size(item_size: int, precision: str) -> None:
         raise ValueError("tensor element size contradicts cache dtype")
 
 
+# The element bytes of the vLLM 0.31.0 Mamba state dtypes. MambaStateDtypeCalculator gives every state the model
+# dtype, a MambaDType choice (config/cache.py:61) or float32 (model_executor/layers/mamba/mamba_utils.py:53-158).
+_STATE_DTYPE_BYTES = {"torch.float32": 4, "torch.float16": 2, "torch.bfloat16": 2}
+
+
 def _indexer(spec: dict[str, Any]) -> bool:
     """The sparse MLA indexer, an MLAAttentionSpec with role INDEXER (vLLM 0.31.0 kv_cache_interface.py:668).
 
@@ -544,6 +549,26 @@ def _layer_views(
         raise ValueError(f"views of one layer overlap inside the block: {name}")
     if dense > spec["page_size_bytes"]:
         raise ValueError(f"layer views exceed the page of their cache spec: {name}")
+    if spec.get("spec_type") == _MAMBA_SPEC:
+        # bind_kv_cache cuts one view per state from the page, in the order of the spec's shapes and dtypes: the
+        # block axis, then the state's shape (mamba/abstract.py:28-42, :69-71). The states fill the spec's real
+        # page, and the page may pad it (kv_cache_interface.py:1057-1077).
+        state = group["state"]
+        shapes, dtypes = state.get("shapes"), state.get("dtypes")
+        if (
+            not isinstance(shapes, list)
+            or not isinstance(dtypes, list)
+            or not len(entries) == len(shapes) == len(dtypes)
+            or any(
+                view["shape"][1:] != shape
+                or not isinstance(dtype, str)
+                or view["element_size_bytes"] != _STATE_DTYPE_BYTES.get(dtype)
+                for view, shape, dtype in zip(entries, shapes, dtypes, strict=True)
+            )
+            or type(state.get("real_page_size_bytes")) is not int
+            or dense != state["real_page_size_bytes"]
+        ):
+            raise ValueError(f"layer views do not match the recorded state tensors: {name}")
     return views
 
 
