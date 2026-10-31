@@ -92,8 +92,18 @@ backend_gaps:
   - backend: trtllm
     op: moe
     dtype: int4_wo
-    sm: [100, 103]
+    sm: [80, 86, 89, 90, 100, 103, 120]
     note: G-trtllm-moe-int4-wo-no-implementation
+  - backend: trtllm
+    op: moe
+    dtype: fp8_block
+    sm: [89]
+    note: G-trtllm-moe-cutlass-sm-support
+  - backend: trtllm
+    op: moe
+    dtype: w4a16_mxfp4
+    sm: [89, 120]
+    note: G-trtllm-moe-cutlass-sm-support
   - backend: vllm
     op: moe
     parallel: tp_ep
