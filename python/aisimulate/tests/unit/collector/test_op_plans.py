@@ -168,7 +168,7 @@ def test_summary_counts_per_dtype_and_hashes_the_planned_ids():
     assert "rows" not in summary
 
 
-def test_plan_only_reports_op_plans_and_writes_the_table(tmp_path):
+def test_plan_only_reports_op_plans_and_writes_the_table(tmp_path, monkeypatch):
     env = dict(os.environ)
     env.pop("COLLECTOR_MODEL_PATH", None)
     result = subprocess.run(
@@ -197,6 +197,14 @@ def test_plan_only_reports_op_plans_and_writes_the_table(tmp_path):
     assert len(rows) == 1 + gemm["cases"]
     for op in plans:
         assert len((tmp_path / f"vllm_sm89_{op}.csv").read_text().splitlines()) == 1 + plans[op]["cases"], op
+
+    # A run records an {id, params} row (mHC) under its own id, so the plan hash covers those ids.
+    from collector.op_plans import plan_cases
+    from collector.provenance import case_plan_hash
+
+    monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
+    mhc_ids = [row["id"] for row in plan_cases("mhc_module", "vllm", 89)]
+    assert plans["mhc_module"]["plan_hash"] == case_plan_hash(mhc_ids)
 
 
 def test_planning_imports_no_framework():

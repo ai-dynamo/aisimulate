@@ -39,6 +39,7 @@ from collector.case_generator import (
     get_common_gdn_test_cases,
     get_common_kda_test_cases,
     get_common_mamba2_test_cases,
+    get_common_mhc_test_cases,
     get_common_moe_test_cases,
     get_compute_scale_case_specs,
     get_context_mla_case_specs,
@@ -723,6 +724,82 @@ def _trtllm_mla_rows(case: MlaCase, sm_version: int | None, runner: str | None) 
     return [_mla_run_args(case, dtype, _mla_tokens_per_block())]
 
 
+# --- mHC: mhc_module ---------------------------------------------------------------
+
+_DSV4_ARCHITECTURE = "DeepseekV4ForCausalLM"
+# The mHC call sites each architecture's serving forward runs. GLM-5.3-Flash also
+# fuses the previous sublayer's post into the next pre and expands/contracts the
+# residual stream once per forward (collector/vllm/collect_mhc_module.py).
+_MHC_SITES = {
+    _DSV4_ARCHITECTURE: ("pre", "post"),
+    "Glm5NextForConditionalGeneration": ("pre", "post", "fused_post_pre", "expand", "contract"),
+}
+# The case-ID prefix of each architecture's rows.
+_MHC_ID_PREFIX = {_DSV4_ARCHITECTURE: "mhc", "Glm5NextForConditionalGeneration": "mhc_glm5next"}
+
+
+class MhcCase(NamedTuple):
+    """One mHC call site of an architecture at one geometry, with the token sweep it runs."""
+
+    architecture: str
+    site: str
+    hidden_size: int
+    hc_mult: int
+    num_tokens: tuple[int, ...]
+    # The first model declared with this architecture and geometry; SGLang builds its layer from it.
+    model_name: str
+
+    __str__ = __repr__ = _list_form
+
+    @property
+    def dtype(self) -> str:
+        return "bfloat16"
+
+
+def _expand_mhc() -> list[MhcCase]:
+    """One case per call site of each (architecture, hidden size, hc_mult); models that share one reuse it."""
+    cases: dict[tuple, MhcCase] = {}
+    for spec in get_common_mhc_test_cases():
+        if spec.architecture not in _MHC_SITES:
+            raise ValueError(f"No mHC call sites declared for {spec.architecture} ({spec.model_name})")
+        for site in _MHC_SITES[spec.architecture]:
+            key = (spec.architecture, site, spec.hidden_size, spec.hc_mult)
+            cases.setdefault(key, MhcCase(*key, tuple(spec.num_tokens_list), spec.model_name))
+    return list(cases.values())
+
+
+def _mhc_row_id(case: MhcCase, suffix: object) -> str:
+    return f"{_MHC_ID_PREFIX[case.architecture]}_{case.site}_hs{case.hidden_size}_hcm{case.hc_mult}_{suffix}"
+
+
+def _trtllm_mhc_rows(case: MhcCase, sm_version: int | None, runner: str | None) -> list[dict]:
+    """One row per token count; TRT-LLM drives the DeepSeek-V4 module API, which takes no model."""
+    return [
+        {"id": _mhc_row_id(case, tokens), "params": [case.site, tokens, case.hidden_size, case.hc_mult]}
+        for tokens in case.num_tokens
+    ]
+
+
+def _vllm_mhc_rows(case: MhcCase, sm_version: int | None, runner: str | None) -> list[dict]:
+    """One row per token count; rows other than DeepSeek-V4's also name their architecture and model."""
+    model = [] if case.architecture == _DSV4_ARCHITECTURE else [case.architecture, case.model_name]
+    return [
+        {"id": _mhc_row_id(case, tokens), "params": [case.site, tokens, case.hidden_size, case.hc_mult, *model]}
+        for tokens in case.num_tokens
+    ]
+
+
+def _sglang_mhc_rows(case: MhcCase, sm_version: int | None, runner: str | None) -> list[dict]:
+    """One row per site: SGLang builds the model's layer once and sweeps every token count in it."""
+    architecture = [] if case.architecture == _DSV4_ARCHITECTURE else [case.architecture]
+    return [
+        {
+            "id": _mhc_row_id(case, case.model_name.replace("/", "_")),
+            "params": [case.site, case.model_name, *architecture],
+        }
+    ]
+
+
 OP_PLANS: dict[str, OpPlan] = {
     "gemm": OpPlan(GemmCase, _expand_gemm, dtype_field="gemm_type", group_fields=("gemm_type", "n", "k")),
     "moe": OpPlan(
@@ -767,5 +844,13 @@ OP_PLANS: dict[str, OpPlan] = {
     ),
     "mla_bmm_gen_post": OpPlan(
         MlaBmmCase, _mla_bmm_expand("mla_bmm_gen_post"), dtype_field="dtype", group_fields=MlaBmmCase._fields
+    ),
+    "mhc_module": OpPlan(
+        MhcCase,
+        _expand_mhc,
+        dtype_field="dtype",
+        group_fields=MhcCase._fields,
+        region_fields=("architecture",),
+        rows={"sglang": _sglang_mhc_rows, "trtllm": _trtllm_mhc_rows, "vllm": _vllm_mhc_rows},
     ),
 }
