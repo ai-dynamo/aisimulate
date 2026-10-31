@@ -155,8 +155,11 @@ def _v031_runtime(storage, layout, blocks):
     speculation (kv_cache_utils.py:1213-1292): G0 the 11 MLA latent and 11 indexer
     layers, G1 the 11 tail layers and G2 to G5 the 34 KDA layers. KDA layer i of each
     Mamba group shares the region of MLA layer i, and tail layer i the region of
-    indexer layer i (:1725-1755). Returns the worker and scheduler cache configs,
-    the forward-context layers, the attention groups and the kernel block sizes.
+    indexer layer i (:1725-1755). The specs keep the static_forward_context order:
+    a GLM layer builds its indexer caches before its MLA layer
+    (glm5next/common/attention.py:546, :581). Returns the worker and scheduler
+    cache configs, the forward-context layers, the attention groups and the kernel
+    block sizes.
     """
     from enum import Enum
     from types import SimpleNamespace
@@ -289,7 +292,7 @@ def _v031_runtime(storage, layout, blocks):
         real_page_size_bytes=1_085_440,
         tokens_per_state=-1,
     )
-    attention_names = [name for index in mla for name in (f"layers.{index}.mla", f"layers.{index}.indexer")]
+    attention_names = [name for index in mla for name in (f"layers.{index}.indexer", f"layers.{index}.mla")]
     tails = [f"layers.{index}.tail" for index in mla]
     uniform = {name: latent if name.endswith(".mla") else indexer for name in attention_names}
     groups = [
@@ -312,10 +315,11 @@ def _v031_runtime(storage, layout, blocks):
     for position, index in enumerate(mla):
         offset = position * 8_912_896
         tensors.append(tensor(f"layers.{index}.mla", 1_114_112, offset))
+        # MLA and the indexer bind the view with H squeezed (mla_attention.py:733-735, deepseek_v2.py:652-655).
         layers[f"layers.{index}.mla"] = layer(
             "vllm.model_executor.layers.attention.mla_attention",
             "MLAAttention",
-            View([272, 1, 64, 512], [32_768, 32_768, 512, 1], 1, offset),
+            View([272, 64, 512], [32_768, 512, 1], 1, offset),
         )
         for names in mamba_groups:
             if position < len(names):
@@ -332,14 +336,21 @@ def _v031_runtime(storage, layout, blocks):
     for position, index in enumerate(mla):
         offset = 98_041_856 + position * 574_464
         for name, cls, view in (
-            ("indexer", "Glm5NextIndexerCache", View([136, 1, 32, 132], [4224, 4224, 132, 1], 1, offset)),
+            ("indexer", "Glm5NextIndexerCache", View([136, 32, 132], [4224, 132, 1], 1, offset)),
             ("tail", "Glm5NextTailCache", View([8, 2, 4, 128], [71_808, 1024, 256, 2], 2, offset)),
         ):
             tensors.append(tensor(f"layers.{index}.{name}", 71_808, offset))
             layers[f"layers.{index}.{name}"] = layer("vllm.models.glm5next.common.attention", cls, view)
     gdn = backend("vllm.v1.attention.backends.gdn_attn", "GDNAttentionBackend", "GDN_ATTN")
+    # init_attn_backend makes the attention groups in G0 layer order (gpu/attn_utils.py:222-249).
     attn = [
         [
+            attention(
+                backend("vllm.v1.attention.backends.mla.indexer", "DeepseekV32IndexerBackend", "DEEPSEEK_V32_INDEXER"),
+                [f"layers.{index}.indexer" for index in mla],
+                indexer,
+                0,
+            ),
             attention(
                 backend(
                     "vllm.v1.attention.backends.mla.flashinfer_mla_sparse",
@@ -348,12 +359,6 @@ def _v031_runtime(storage, layout, blocks):
                 ),
                 [f"layers.{index}.mla" for index in mla],
                 latent,
-                0,
-            ),
-            attention(
-                backend("vllm.v1.attention.backends.mla.indexer", "DeepseekV32IndexerBackend", "DEEPSEEK_V32_INDEXER"),
-                [f"layers.{index}.indexer" for index in mla],
-                indexer,
                 0,
             ),
         ],
@@ -367,10 +372,11 @@ def _v031_runtime(storage, layout, blocks):
     cache = SimpleNamespace(
         num_blocks=blocks, kv_cache_groups=groups, kv_cache_tensors=tensors, kv_cache_layout="LBHNC"
     )
-    # The scheduler copy keeps the first inner spec of each uniform group (kv_cache_utils.py:2434-2440).
+    # The scheduler copy keeps the first inner spec of each uniform group (kv_cache_utils.py:2434-2440):
+    # the first indexer for G0 and the first tail for G1.
     scheduler_cache = SimpleNamespace(
         num_blocks=blocks,
-        kv_cache_groups=[group(attention_names, latent), group(tails, tail), *groups[2:]],
+        kv_cache_groups=[group(attention_names, indexer), group(tails, tail), *groups[2:]],
         kv_cache_tensors=tensors,
         kv_cache_layout="LBHNC",
     )
@@ -994,10 +1000,23 @@ def test_v031_glm_worker_record_is_complete(tmp_path, monkeypatch):
             kernels.setdefault(name.rsplit(".", 1)[1], set()).update(view["kernel_block_size_tokens"] for view in layer)
         assert kernels == {"mla": {64}, "indexer": {128}, "tail": {4}, "kda": {2176}}
         assert {view["block_axis"] for layer in views.values() for view in layer} == {0}
+        # MLA and the indexer bind 3-D views: their bind_kv_cache squeezes H.
+        latent, indexer = views["layers.3.mla"][0], views["layers.3.indexer"][0]
+        assert (latent["shape"], latent["stride_bytes"]) == ([272, 64, 512], [32_768, 512, 1])
+        assert (indexer["shape"], indexer["stride_bytes"]) == ([136, 32, 132], [4224, 132, 1])
         # The SSM state starts after the 36,864-byte convolution state of the page.
         assert [view["storage_offset_bytes"] for view in views["layers.0.kda"]] == [0, 36_864]
         allocation = cache["tensor_allocations"][0]
         assert (allocation["layers"], allocation["layer_stride"]) == (["layers.3.mla"], 8_912_896)
+        # G0 lists each indexer before its MLA layer, and the scheduler copy holds the first inner spec.
+        attention = cache["groups"][0]
+        first = attention["layer_specs"][attention["layer_names"][0]]
+        assert (attention["layer_names"][0], first["page_size_bytes"], first["cache_role"]) == (
+            "layers.3.indexer",
+            71_808,
+            "INDEXER",
+        )
+        assert scheduler["cache"]["groups"][0]["spec_page_size_bytes"] == 71_808
         assert worker["raw_cache_config"]["kv_cache_layout"] == "LBHNC"
         assert worker["raw_cache_config"]["tensor_allocations"][0]["layer_stride"] == 8_912_896
         assert scheduler["cache"]["prefix_caching"] == {
@@ -1015,24 +1034,36 @@ def test_v031_glm_worker_record_is_complete(tmp_path, monkeypatch):
 
 def test_v031_view_shape_mismatch_is_unresolved(tmp_path, monkeypatch):
     campaign = _glm_campaign(tmp_path, monkeypatch)
-    campaign.config.compilation_config.static_forward_context["layers.3.mla"].kv_cache.shape = [270, 1, 64, 512]
+    campaign.config.compilation_config.static_forward_context["layers.3.mla"].kv_cache.shape = [270, 64, 512]
     worker = next(record for record in campaign.run() if record["kind"] == "worker")
     assert worker["unresolved_fields"] == ["cache.layer_tensors"]
     assert "layers.3.mla" in worker["error"]
 
 
-def test_v031_indexer_storage_block_is_the_kernel_block(tmp_path, monkeypatch):
+@pytest.mark.parametrize("change", [None, "latent_storage_block", "indexer_role"])
+def test_v031_indexer_storage_block_is_the_kernel_block(tmp_path, monkeypatch, change):
     campaign = _glm_campaign(tmp_path, monkeypatch)
-    records = campaign.run("prefill")
-    assert all(record["unresolved_fields"] == [] for record in records)
-    worker = next(record for record in records if record["kind"] == "worker")
-    assert worker["cache"]["layer_tensors"]["layers.3.indexer"][0]["kernel_block_size_tokens"] == 128
+    specs = campaign.cache.kv_cache_groups[0].kv_cache_spec.kv_cache_specs
     # Only the sparse MLA indexer stores its tokens in blocks other than the cache block.
-    latent = campaign.cache.kv_cache_groups[0].kv_cache_spec.kv_cache_specs["layers.3.mla"]
-    latent.storage_block_size = 128
-    for record in campaign.run("decode"):
+    if change == "latent_storage_block":
+        specs["layers.3.mla"].storage_block_size = 128
+    elif change == "indexer_role":
+        specs["layers.3.indexer"].cache_role = type(specs["layers.3.indexer"].cache_role)["SPARSE"]
+    records = campaign.run()
+    worker, scheduler = (
+        next(record for record in records if record["kind"] == kind) for kind in ("worker", "scheduler")
+    )
+    if change is None:
+        assert worker["unresolved_fields"] == scheduler["unresolved_fields"] == []
+        assert worker["cache"]["layer_tensors"]["layers.3.indexer"][0]["kernel_block_size_tokens"] == 128
+        return
+    # The scheduler copy of G0 holds the indexer spec only, so only the worker sees a latent storage block.
+    flagged = [worker] if change == "latent_storage_block" else [worker, scheduler]
+    for record in flagged:
         assert "cache.groups" in record["unresolved_fields"]
         assert "compressed cache storage" in record["error"]
+    if change == "latent_storage_block":
+        assert scheduler["unresolved_fields"] == []
 
 
 def test_v031_backend_module_outside_the_manifest_is_unresolved(tmp_path, monkeypatch):
@@ -1060,3 +1091,42 @@ def test_v031_hisparse_placement_is_unresolved(tmp_path, monkeypatch, change):
     for record in campaign.run():
         assert "cache.groups" in record["unresolved_fields"]
         assert name in record["error"]
+
+
+@pytest.mark.parametrize("runner_version", [1, 2])
+def test_v031_plain_attention_record_is_complete(tmp_path, monkeypatch, runner_version):
+    campaign = _fake_campaign(tmp_path, monkeypatch, version="0.31.0", runner_version=runner_version)
+    records = campaign.run()
+    assert len(records) == 2
+    assert all(record["unresolved_fields"] == [] for record in records), [record.get("error") for record in records]
+    worker, scheduler = (
+        next(record for record in records if record["kind"] == kind) for kind in ("worker", "scheduler")
+    )
+    assert [group["kind"] for group in worker["cache"]["groups"]] == ["attention"]
+    # A plain attention layer binds the [B, H, N, C] view unchanged.
+    assert worker["cache"]["layer_tensors"]["layer0"] == [
+        {
+            "storage_id": "storage-0",
+            "storage_offset_bytes": 0,
+            "shape": [10, 1, 16, 128],
+            "stride_bytes": [4096, 4096, 256, 2],
+            "element_size_bytes": 2,
+            "block_axis": 0,
+            "kernel_block_size_tokens": 16,
+        }
+    ]
+    assert scheduler["cache"]["prefix_caching"] == {
+        "enable_prefix_caching": True,
+        "mamba_cache_mode": "none",
+        "block_size": 16,
+        "hash_block_size": 16,
+    }
+
+
+def test_v031_only_an_mla_storage_block_sets_the_view_kernel_block(tmp_path, monkeypatch):
+    campaign = _fake_campaign(tmp_path, monkeypatch, version="0.31.0", runner_version=2)
+    # vLLM views a layer with its storage block only for an MLAAttentionSpec (worker/utils.py:449-450).
+    campaign.cache.kv_cache_groups[0].kv_cache_spec.storage_block_size = 8
+    worker = next(record for record in campaign.run() if record["kind"] == "worker")
+    assert worker["unresolved_fields"] == ["cache.groups"]
+    assert worker["cache"]["layer_tensors"]["layer0"][0]["kernel_block_size_tokens"] == 16

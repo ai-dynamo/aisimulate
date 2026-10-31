@@ -269,15 +269,20 @@ def _groups(cache: dict, config: Any, version: str, pool_id: str) -> None:
         raise ValueError("; ".join(errors))
 
 
+# vLLM 0.31.0 MLAAttentionSpec and its one subclass (kv_cache_interface.py:662, :739):
+# the classes that pass the isinstance check of worker/utils.py:449.
+_MLA_SPECS = frozenset(legacy._SPEC_MODULE + name for name in ("MLAAttentionSpec", "HiddenStateCacheSpec"))
+
+
 def _view_kernel_block(spec: Any, kernel: int, block: int) -> int:
     """The kernel block of a vLLM 0.31.0 layer view.
 
-    It is the group's kernel block, except for an MLA layer with a storage block
-    (the indexer), which the worker views with it (worker/utils.py:449-450), and
-    for a Mamba layer, which keeps the group block size (worker/utils.py:500-502).
+    It is the group's kernel block, except for an MLAAttentionSpec with a storage
+    block (the indexer), which the worker views with it (worker/utils.py:449-450),
+    and for a Mamba layer, which keeps the group block size (worker/utils.py:500-502).
     """
     storage = getattr(spec, "storage_block_size", None)
-    if storage is not None:
+    if legacy._class_name(spec) in _MLA_SPECS and storage is not None:
         return legacy._positive(storage, "storage block size")
     if legacy._class_name(spec) == legacy._MAMBA_SPEC:
         return block
