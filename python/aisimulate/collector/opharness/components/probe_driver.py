@@ -1481,11 +1481,14 @@ def _fail_cause(note: str) -> str:
         # pin accepts (B200 2026-10-04: hardware.yaml b200 `moe_backend: trtllm: WIDEEP`
         # -> rc29 pydantic literal_error; `sglang: deepep_moe` -> 0.5.21 argparse
         # invalid choice). Not a framework or model gap: the rendered config is wrong.
+        # The generator stopped filling WIDEEP from rc25 on 2026-10-31; the rule stays
+        # for older records and any other rejected fact.
         ("literal_error|invalid choice:|Input should be '", "generator fact rejected by framework"),
         # the generator's platform-blind MoE backend default (trtllm typed builder:
         # moe_config.backend CUTLASS when no fact fills it) names a kernel the framework
         # refuses on this SM (B200 2026-10-04: CutlassFusedMoE FP8_BLOCK_SCALES only
-        # supports SM90/SM120 -> every fp8-block MoE checkpoint). AUTO boots them.
+        # supports SM90/SM120 -> every fp8-block MoE checkpoint). AUTO boots them; the
+        # rc29 template renders AUTO when unset since 2026-10-31.
         # Scoped to Blackwell (got SM1xx): on SM89 the same message means no candidate
         # at all serves the quant — the platform-floor rule further down.
         (

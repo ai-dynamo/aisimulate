@@ -295,4 +295,3 @@ rules:
      match: "flashinfergemmkernelsdense_blockscaled_gemm_sm10|flashinferquantizationkernelsmxfp8_quantize|^vllm::cvt_fp16_to_fp4"}
   - {backend: trtllm_gen_moe, role: moe_gemm,
      match: "^bmm_(MxE4m3|Bfloat16|E4m3)_(MxE2m1|E2m1E2m1|E4m3E4m3)|^moe::dev::"}
-

@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 import sys
 
-sys.argv = ["x"]
 import torch
 
+sys.argv = ["x"]
 from collector.sglang.collect_attn import run_attention_torch
 
 # gemma-4-26B-A4B GLOBAL-layer context cell: 16 q heads / 2 kv heads (num_global_key_value_heads), global_head_dim 512,
