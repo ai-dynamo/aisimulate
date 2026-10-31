@@ -1421,6 +1421,53 @@ def test_state_group_blocks_per_request_must_follow_its_spec(tmp_path, layout, n
     assert result["diagnostics"] == [f"tp2: runtime state cache group blocks_per_request contradicts its spec: {names}"]
 
 
+@pytest.mark.parametrize("uniform", [False, True], ids=["mamba", "uniform"])
+@pytest.mark.parametrize("field", [None, "num_prefill_checkpoint_blocks", "num_speculative_blocks"])
+def test_v031_mamba_state_groups_require_their_block_counts(tmp_path, field, uniform):
+    path, launches = observation_fixture(tmp_path, layout="mamba_hybrid")
+
+    def edit(record):
+        group = record["cache"]["groups"][1]
+        if uniform and record["kind"] == "worker":
+            # The worker groups the two Mamba layers as a UniformTypeKVCacheSpecs, whose page holds both layer
+            # pages. The scheduler copy keeps the first inner spec (kv_cache_utils.py:2434-2440).
+            group.update(spec_type=_V031_SPEC + "UniformTypeKVCacheSpecs", spec_page_size_bytes=16_384)
+        if field is not None:
+            # Every worker and scheduler Mamba state lacks the count, so the records still agree with each other.
+            for item in record["cache"]["groups"]:
+                if "mamba_cache_mode" in item.get("state", {}):
+                    item["state"].pop(field)
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    if field is None:
+        assert result["status"] == "complete", result["diagnostics"]
+        return
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == [
+        "tp2: runtime state cache group lacks blocks_per_request evidence: ['mamba.0', 'mamba.2']"
+    ]
+
+
+def test_v031_mamba_speculative_blocks_are_refused_without_the_speculative_marker(tmp_path):
+    path, launches = observation_fixture(tmp_path, layout="mamba_hybrid")
+
+    def edit(record):
+        # The count matches 1 + num_speculative_blocks, while speculative_config stays None and the worker's
+        # speculative marker stays false.
+        for group in record["cache"]["groups"]:
+            if "mamba_cache_mode" in group.get("state", {}):
+                group["state"].update(num_speculative_blocks=1, blocks_per_request=2)
+
+    _mutate(path, edit)
+    records = _phase_records(path, "prefill", "worker")
+    assert {record["cache"]["semantics"]["speculative"] for record in records} == {False}
+    assert {record["resolved_config"]["speculative_config"] for record in records} == {None}
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == ["tp2: mamba speculative blocks are not modeled: ['mamba.0', 'mamba.2']"]
+
+
 @pytest.mark.parametrize("change", [None, "latent_page", "block_size"])
 def test_uniform_type_groups_compare_their_first_spec_with_the_scheduler(tmp_path, change):
     path, launches = observation_fixture(tmp_path, layout="glm_tp4")

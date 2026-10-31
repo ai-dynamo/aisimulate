@@ -631,7 +631,20 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
             # A state group holds a fixed number of pool blocks for every running request.
             state = group.get("state")
             blocks = state.get("blocks_per_request") if isinstance(state, dict) else None
-            if type(blocks) is not int or blocks <= 0:
+            # The vLLM 0.31.0 record of a MambaSpec group, also inside a uniform group, holds its speculative
+            # and prefill checkpoint blocks (kv_cache_interface.py:1048-1049). A missing count is not zero.
+            mamba = strided and _MAMBA_SPEC in spec_classes
+            if (
+                type(blocks) is not int
+                or blocks <= 0
+                or (
+                    mamba
+                    and any(
+                        type(state.get(name)) is not int
+                        for name in ("num_speculative_blocks", "num_prefill_checkpoint_blocks")
+                    )
+                )
+            ):
                 raise ValueError(f"runtime state cache group lacks blocks_per_request evidence: {names}")
             # The Mamba "all" mode is refused from the group itself, with or without prefix-caching evidence.
             if state.get("mamba_cache_mode") == "all":
@@ -639,15 +652,13 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
             checkpoint = state.get("num_prefill_checkpoint_blocks", 0)
             if type(checkpoint) is not int or checkpoint != 0:
                 raise ValueError(f"mamba prefill checkpoint blocks are not modeled: {names}")
+            # Grouped profiles hold no speculative state blocks, whatever the speculative marker says.
+            if mamba and state["num_speculative_blocks"] != 0:
+                raise ValueError(f"mamba speculative blocks are not modeled: {names}")
             # The spec gives the count. A MambaSpec holds one state block and its speculative
             # blocks (kv_cache_interface.py:1048); a KpoolTailSpec or CircularBufferSpec holds one block
-            # (:1019-1025, :904-911). Every spec class of the group must give the recorded count. The
-            # allocation semantics refuse speculation itself.
-            expected = {1 for value in spec_classes if value != _MAMBA_SPEC}
-            if _MAMBA_SPEC in spec_classes:
-                speculative = state.get("num_speculative_blocks", 0)
-                expected.add(1 + speculative if type(speculative) is int else None)
-            if expected != {blocks}:
+            # (:1019-1025, :904-911). Without speculative blocks, every state spec class gives one block.
+            if blocks != 1:
                 raise ValueError(f"runtime state cache group blocks_per_request contradicts its spec: {names}")
             normalized["blocks_per_request"] = blocks
         groups.append(normalized)
