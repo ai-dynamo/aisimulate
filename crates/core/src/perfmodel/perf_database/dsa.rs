@@ -81,12 +81,13 @@ pub struct DsaTable {
     sparse: Mutex<BTreeMap<(String, u32), Arc<DsaSparseTables>>>,
 }
 
-/// The vLLM collector/engine correction is backend scoped. Other backends keep
+/// The vLLM/SGLang reuse correction is backend scoped. Other backends keep
 /// their calibrated roofline, including the historical reuse approximation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DsaReuseSolPolicy {
     Legacy,
     Vllm,
+    Sglang,
 }
 
 /// One CP sparse sub-kernel grid: `bs -> {(isl, step) -> latency_ms}`.
@@ -309,10 +310,10 @@ impl DsaTable {
 
     /// Opt in using the serving backend, never the kernel bucket or data path.
     pub(crate) fn with_backend(mut self, backend: &str) -> Self {
-        self.reuse_sol_policy = if backend == "vllm" {
-            DsaReuseSolPolicy::Vllm
-        } else {
-            DsaReuseSolPolicy::Legacy
+        self.reuse_sol_policy = match backend {
+            "vllm" => DsaReuseSolPolicy::Vllm,
+            "sglang" => DsaReuseSolPolicy::Sglang,
+            _ => DsaReuseSolPolicy::Legacy,
         };
         self
     }
@@ -903,9 +904,15 @@ pub(crate) fn dsa_context_sol(
     let tokens = b * s;
 
     // ── Compute (FLOPs) ─────────────────────────────────────────
-    // vLLM reuse layers skip the entire indexer, including its projections.
+    // vLLM and SGLang reuse layers skip the entire indexer, including projections.
+    // SGLang 0.5.14 @ 49e384ce9d304648e9959666ecb8ce8cd98d0deb:
+    // models/deepseek_common/attention_forward_methods/forward_mla.py:261-295.
     // Keep other backends' calibrated projection model unchanged.
-    let skip_projections = skip_indexer && reuse_policy == DsaReuseSolPolicy::Vllm;
+    let skip_projections = skip_indexer
+        && matches!(
+            reuse_policy,
+            DsaReuseSolPolicy::Vllm | DsaReuseSolPolicy::Sglang
+        );
     let indexer_heads = if skip_projections { 0 } else { inh };
     let indexer_dim = if skip_projections { 0 } else { ihd };
     let proj_out = q_lora + kv_lora + qk_rope + indexer_dim;
@@ -1027,8 +1034,12 @@ pub(crate) fn dsa_generation_sol(
     flops: DsaSolFlops,
 ) -> SolComponents {
     // The historical decode roofline charges indexer work for both variants.
-    // Only vLLM opts in to the executed reuse-layer ledger in this change.
-    let skip_indexer = skip_indexer && reuse_policy == DsaReuseSolPolicy::Vllm;
+    // vLLM and SGLang opt in to the executed reuse-layer ledger.
+    let skip_indexer = skip_indexer
+        && matches!(
+            reuse_policy,
+            DsaReuseSolPolicy::Vllm | DsaReuseSolPolicy::Sglang
+        );
     let (b, s, num_heads) = (b as i128, s as i128, num_heads as i128);
     // Decode CP: the global top-k is filtered to this rank's owned slots
     // (vLLM `triton_filter_and_convert_dcp_index` + compact), so the sparse
@@ -1506,21 +1517,23 @@ mod tests {
             attn: 1e12,
         };
         for sequence in [8193, 131073, 1048576] {
-            let got = dsa_generation_sol(
-                &spec,
-                dsa_dims("GlmMoeDsaForCausalLM"),
-                KvCacheQuantMode::Bfloat16,
-                GemmQuantMode::Bfloat16,
-                1,
-                sequence,
-                8,
-                1,
-                true,
-                DsaReuseSolPolicy::Vllm,
-                flops,
-            );
-            approx_rel(got.math_ms, 0.105119744);
-            approx_rel(got.mem_ms, 0.068157440);
+            for policy in [DsaReuseSolPolicy::Vllm, DsaReuseSolPolicy::Sglang] {
+                let got = dsa_generation_sol(
+                    &spec,
+                    dsa_dims("GlmMoeDsaForCausalLM"),
+                    KvCacheQuantMode::Bfloat16,
+                    GemmQuantMode::Bfloat16,
+                    1,
+                    sequence,
+                    8,
+                    1,
+                    true,
+                    policy,
+                    flops,
+                );
+                approx_rel(got.math_ms, 0.105119744);
+                approx_rel(got.mem_ms, 0.068157440);
+            }
         }
         // Full indexer adds 9,371,648 weight elements, their projection
         // FLOPs, 67,117,056 logit FLOPs and 1,081,476 history-cache bytes.
@@ -1540,26 +1553,28 @@ mod tests {
         approx_rel(full.math_ms, 0.190980096);
         approx_rel(full.mem_ms, 0.087982212);
         // Context's one-new-token reuse path executes the same projections.
-        let context = dsa_context_sol(
-            &spec,
-            dsa_dims("GlmMoeDsaForCausalLM"),
-            2048,
-            KvCacheQuantMode::Bfloat16,
-            FmhaQuantMode::Bfloat16,
-            GemmQuantMode::Bfloat16,
-            1,
-            1,
-            8192,
-            8,
-            true,
-            DsaReuseSolPolicy::Vllm,
-            flops,
-        );
-        approx_rel(context.math_ms, 0.105119744);
+        for policy in [DsaReuseSolPolicy::Vllm, DsaReuseSolPolicy::Sglang] {
+            let context = dsa_context_sol(
+                &spec,
+                dsa_dims("GlmMoeDsaForCausalLM"),
+                2048,
+                KvCacheQuantMode::Bfloat16,
+                FmhaQuantMode::Bfloat16,
+                GemmQuantMode::Bfloat16,
+                1,
+                1,
+                8192,
+                8,
+                true,
+                policy,
+                flops,
+            );
+            approx_rel(context.math_ms, 0.105119744);
+        }
 
         // The pre-existing context approximation omits indexer logits/cache,
         // but retains 18,743,296 projection FLOPs. Decode retains the entire
-        // full-indexer ledger above. Preserve both for non-vLLM backends.
+        // full-indexer ledger above. Preserve both for legacy backends.
         let legacy_context = dsa_context_sol(
             &spec,
             dsa_dims("GlmMoeDsaForCausalLM"),
@@ -1612,34 +1627,36 @@ mod tests {
                 ),
             ],
         );
-        let table = DsaTable::new(tmp.path().to_path_buf()).with_backend("vllm");
         let spec = b200_sxm_spec();
-        let query = |s, skip| {
-            table
-                .query_generation(
-                    &spec,
-                    1,
-                    s,
-                    128,
-                    KvCacheQuantMode::Bfloat16,
-                    FmhaQuantMode::Bfloat16,
-                    GemmQuantMode::Bfloat16,
-                    "DeepseekV32ForCausalLM",
-                    "trtllm",
-                    skip,
-                )
-                .unwrap()
-                .latency
-        };
-        approx_rel(query(8193, false), 3.0);
-        approx_rel(query(8193, true), 2.0);
-        approx_rel(query(131073, true), 2.0);
-        assert!(query(131073, false) > 3.0);
+        for backend in ["vllm", "sglang"] {
+            let table = DsaTable::new(tmp.path().to_path_buf()).with_backend(backend);
+            let query = |s, skip| {
+                table
+                    .query_generation(
+                        &spec,
+                        1,
+                        s,
+                        128,
+                        KvCacheQuantMode::Bfloat16,
+                        FmhaQuantMode::Bfloat16,
+                        GemmQuantMode::Bfloat16,
+                        "DeepseekV32ForCausalLM",
+                        "trtllm",
+                        skip,
+                    )
+                    .unwrap()
+                    .latency
+            };
+            approx_rel(query(8193, false), 3.0);
+            approx_rel(query(8193, true), 2.0);
+            approx_rel(query(131073, true), 2.0);
+            assert!(query(131073, false) > 3.0);
+        }
 
         // The same raw rows and coordinates retain legacy extrapolation for
-        // SGLang/TRTLLM. A kernel bucket named "trtllm" does not select the
-        // serving backend's policy: the vLLM query above uses that bucket too.
-        for backend in ["sglang", "trtllm"] {
+        // TRTLLM. A kernel bucket named "trtllm" does not select the serving
+        // backend's policy: the vLLM/SGLang queries above use that bucket too.
+        for backend in ["trtllm", "unknown"] {
             let table = DsaTable::new(tmp.path().to_path_buf()).with_backend(backend);
             assert_eq!(table.reuse_sol_policy, DsaReuseSolPolicy::Legacy);
             let latency = table

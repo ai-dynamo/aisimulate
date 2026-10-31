@@ -468,7 +468,7 @@ fn dsa_context_module_sol(
 
 /// Whole-forward SOL leaf for the DSA generation module (`Op::DsaGeneration`): the
 /// op-level decode roofline (`dsa_generation_sol_ms`; the attention group is bf16),
-/// blended over full/reuse layers for vLLM, then `scale_factor`. Other serving
+/// blended over full/reuse layers for vLLM/SGLang, then `scale_factor`. Other serving
 /// backends retain the legacy full-indexer approximation.
 fn dsa_generation_module_sol(
     op: &DsaModuleOp,
@@ -484,9 +484,9 @@ fn dsa_generation_module_sol(
     // `ceil(topk / dcp)` owned slots.
     let dcp = op.dcp_size.max(1) as f64;
     let s_local = if dcp > 1.0 { ceil_div(s, dcp) } else { s };
-    // Reuse-aware decode SOL is a vLLM change; other serving backends retain
+    // vLLM and SGLang use reuse-aware decode SOL; other serving backends retain
     // the previous full-indexer approximation without an extra blend.
-    let w = if db.backend == "vllm" {
+    let w = if matches!(db.backend.as_str(), "vllm" | "sglang") {
         op.full_frac
     } else {
         1.0
@@ -1436,21 +1436,24 @@ mod tests {
         approx(got, 1.0842777257142857);
     }
 
-    /// The non-vLLM FPM approximation retains the full-indexer frozen ledger
-    /// above on every layer: 78 * 0.019327371428571428 ms. The serving backend
-    /// selects this behavior even when an op explicitly requests reuse.
+    /// SGLang uses the same reuse ledger as vLLM above; TRTLLM retains the
+    /// full-indexer ledger on every layer: 78 * 0.019327371428571428 ms.
+    /// The serving backend selects the policy even with an explicit reuse fraction.
     #[test]
-    fn dsa_generation_fpm_sol_preserves_non_vllm_reuse_approximation() {
+    fn dsa_generation_fpm_sol_scopes_reuse_policy_by_backend() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../python/aisimulate/src/aisimulate_core/systems");
-        for (backend, version) in [("sglang", "0.5.14"), ("trtllm", "1.3.0rc20")] {
+        for (backend, version, expected) in [
+            ("sglang", "0.5.14", 1.0842777257142857),
+            ("trtllm", "1.3.0rc20", 78.0 * 0.019327371428571428),
+        ] {
             let d = PerfDatabase::load(&root, "b200_sxm", backend, version).unwrap();
             let mut op = glm_dsa_op("generation_attention");
             op.full_frac = 21.0 / 78.0;
             op.scale_factor = 78.0;
             let got =
                 op_sol_latency_ms(&Op::DsaGeneration(op), &d, 6.0, 6.0, 65536.5, 0.0).unwrap();
-            approx(got, 78.0 * 0.019327371428571428);
+            approx(got, expected);
         }
     }
 
