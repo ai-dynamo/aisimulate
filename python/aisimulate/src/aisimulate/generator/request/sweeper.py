@@ -11,7 +11,6 @@ does not import Sweeper or Dynamo implementation types.
 from __future__ import annotations
 
 import copy
-import logging
 import math
 from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass, replace
@@ -30,8 +29,6 @@ from .schema import (
     SlaSpec,
     Topology,
 )
-
-logger = logging.getLogger(__name__)
 
 
 class SweeperCandidateError(ValueError):
@@ -154,10 +151,9 @@ def _role_sizing(
         config.get(f"{role}_max_num_batched_tokens"),
         path=f"candidate.config.{role}_max_num_batched_tokens",
     )
-    tokens_per_block = _positive_int(
-        config.get(f"{role}_block_size"),
-        path=f"candidate.config.{role}_block_size",
-    )
+    tokens_per_block = config.get(f"{role}_block_size")
+    if tokens_per_block is not None:
+        tokens_per_block = _positive_int(tokens_per_block, path=f"candidate.config.{role}_block_size")
     memory_path = f"candidate.config.{role}_gpu_memory_utilization"
     blocks_path = f"candidate.config.{role}_num_gpu_blocks"
     memory_value = config.get(f"{role}_gpu_memory_utilization")
@@ -180,14 +176,23 @@ def _role_sizing(
         # Prefill CP ranks are extra GPUs; decode CP reuses the TP ranks.
         "gpus_per_worker": tp * pp * dp * cp,
         "max_num_tokens": max_num_tokens,
-        "tokens_per_block": tokens_per_block,
         "disable_prefix_cache": not bool(config.get(f"{role}_enable_prefix_caching")),
         **cp_params,
     }
+    # An unset block size delegates selection to the backend at startup.
+    if tokens_per_block is not None:
+        extra["tokens_per_block"] = tokens_per_block
     if blocks_value is not None:
         num_gpu_blocks = _positive_int(blocks_value, path=blocks_path)
         extra["num_gpu_blocks"] = num_gpu_blocks
         if backend in {"sglang", "trtllm"}:
+            # These backends accept a token capacity, so converting a block
+            # count requires known geometry rather than a simulation default.
+            if tokens_per_block is None:
+                raise SweeperCandidateError(
+                    f"candidate.config.{role}_block_size is required to convert {blocks_path} "
+                    f"to a token capacity for {backend}; the runtime block size is unknown"
+                )
             extra["kv_cache_max_tokens"] = num_gpu_blocks * tokens_per_block
     else:
         if memory_value is None:
@@ -318,26 +323,6 @@ def _request_lengths(workload: Mapping[str, Any], raw: Mapping[str, Any]) -> tup
     return _positive_int(isl, path="workload.isl"), _positive_int(osl, path="workload.osl")
 
 
-def _warn_unaligned_trace_transfer_buffer(roles: Mapping[str, RoleSizing]) -> None:
-    """Warn when TRT-LLM may size a trace's KV-transfer buffer off the block grid.
-
-    A trace leaves the buffer size to TRT-LLM. The candidate's backend version
-    is not the deployed runtime, so this only warns instead of rejecting.
-    """
-    for role, sizing in roles.items():
-        max_seq_len = sizing.extra.get("max_seq_len")
-        tokens_per_block = sizing.extra["tokens_per_block"]
-        if max_seq_len is not None and max_seq_len % tokens_per_block:
-            logger.warning(
-                "TRT-LLM %s max_seq_len %d is not a multiple of tokens_per_block %d. A trace leaves the KV-transfer "
-                "buffer size to TRT-LLM, and 1.3.0rc3 through 1.3.0rc22 use max_seq_len unrounded, so the worker "
-                "can fail at startup on those runtimes.",
-                role,
-                max_seq_len,
-                tokens_per_block,
-            )
-
-
 def from_sweeper_candidate(
     candidate: Any,
     *,
@@ -441,8 +426,6 @@ def from_sweeper_candidate(
     if isl is None and deployment_target == "slurm":
         # The Slurm bundle's default operation replays one fixed ISL/OSL.
         raise SweeperCandidateError("a Slurm bundle needs a fixed request length; use a Dynamo target for a trace")
-    if isl is None and backend == "trtllm" and mode == "disagg":
-        _warn_unaligned_trace_transfer_buffer(roles)
 
     # Evaluated facts take precedence over deployment-environment overrides.
     raw["backend"] = backend

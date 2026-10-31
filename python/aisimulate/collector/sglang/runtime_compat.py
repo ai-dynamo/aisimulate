@@ -170,6 +170,22 @@ def resolved_arg(server_args, name: str, default=None):
     return default if value is None else value
 
 
+def reset_expert_location_metadata() -> None:
+    """Return the publish-once EPLB expert-location metadata to its pre-init state, so a
+    second ModelRunner in the same worker can initialise. sglang 0.5.21 keeps it in
+    ``get_resources().expert_location_metadata`` (runtime_context.py:621) and
+    ``set_global_expert_location_metadata`` asserts it is None (eplb/expert_location.py:
+    484-489); older pins kept the ``_global_expert_location_metadata`` module global."""
+    try:
+        from sglang.srt.runtime_context import get_resources
+    except ImportError:
+        from sglang.srt.eplb import expert_location
+
+        expert_location._global_expert_location_metadata = None
+        return
+    get_resources().expert_location_metadata = None
+
+
 def causal_conv1d_uses_int64_offsets() -> bool:
     """Whether the installed causal_conv1d Triton kernel computes token offsets in
     int64. The 0.5.14 kernel used int32 pointer arithmetic (causal_conv1d_triton.py:373-379,

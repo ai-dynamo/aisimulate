@@ -679,6 +679,7 @@ def test_legacy_single_sample_optional_row_policy_retains_prior_behavior(tmp_pat
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.filterwarnings("error:Hybrid FPM/OP:FutureWarning")
 class TestForwardModelRewrite:
     def test_default_keeps_op_level_lists(self):
         model = models.get_model("Qwen/Qwen3-0.6B", _model_config(), "vllm")
@@ -844,7 +845,9 @@ class TestForwardModelRewrite:
                 kind="draft_model", params={"num_speculative_tokens": 3}, draft_model_path="Qwen/Qwen3-0.6B"
             ),
         )
-        model = models.get_model("Qwen/Qwen3-8B", cfg, "vllm")
+        with pytest.warns(FutureWarning, match="Hybrid FPM/OP.*OP-based draft estimation") as caught:
+            model = models.get_model("Qwen/Qwen3-8B", cfg, "vllm")
+        assert len(caught) == 1
         assert model.generation_ops[0]._verify_width == 4
         assert model.generation_ops[1:]
         assert all(not isinstance(op, FPMForwardOp) for op in model.generation_ops[1:])
@@ -867,7 +870,15 @@ class TestForwardModelRewrite:
         )
         baseline = models.get_model("Qwen/Qwen3-0.6B", _model_config(), "vllm")
         target_weights = float(sum(op.get_weights() for op in baseline.context_ops))
-        model = models.get_model("Qwen/Qwen3-0.6B", cfg, "vllm")
+        with pytest.warns(FutureWarning, match="Hybrid FPM/OP.*OP-based draft estimation") as caught:
+            model = models.get_model("Qwen/Qwen3-0.6B", cfg, "vllm")
+        assert len(caught) == 1
+        assert caught[0].filename == __file__
+        guidance = str(caught[0].message)
+        assert "Option 1" in guidance and "draft_length" in guidance
+        assert "Option 2" in guidance and "measured SD-round" in guidance
+        assert "Pure OP-based SD remains supported" in guidance
+        assert "no removal release is set" in guidance
 
         # Phase lists LEAD with the whole-model op; draft ops follow op-level.
         assert isinstance(model.generation_ops[0], FPMForwardOp)

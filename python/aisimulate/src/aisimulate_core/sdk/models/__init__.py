@@ -30,6 +30,7 @@ import copy
 import importlib
 import json
 import pkgutil
+import warnings
 
 from aisimulate_core.sdk import config
 from aisimulate_core.sdk.errors import InvalidEngineConfigurationError
@@ -149,6 +150,18 @@ def _apply_forward_model_fpm(model: BaseModel, backend_name: str = "vllm") -> Ba
     decode_op._resident_weight_bytes = resident_weights
     if has_draft_scheme:
         decode_op._verify_width = int(model.verify_width)
+    if draft_context_ops or draft_generation_ops:
+        warnings.warn(
+            "Hybrid FPM/OP speculative decoding (FPM target verification plus OP-based draft estimation) "
+            "is deprecated. Migrate to Option 1: an ordinary non-SD/STP FPM queried with draft_length, "
+            "or Option 2: a measured SD-round FPM profile matching the execution identity. "
+            "Both options price the complete decode iteration; do not add OP draft cost. "
+            "Pure OP-based SD remains supported. The hybrid path remains available until replacements "
+            "cover its callers; no removal release is set. See docs/perf-model/methods/whole-forward.md"
+            "#hybrid-fpmop-deprecation-and-migration.",
+            FutureWarning,
+            stacklevel=3,
+        )
     model.context_ops = [prefill_op, *draft_context_ops]
     model.generation_ops = [decode_op, *draft_generation_ops]
     model.forward_model = "fpm"

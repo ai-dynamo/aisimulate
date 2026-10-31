@@ -11,8 +11,9 @@ decode disable_overlap_scheduler = false
 agg disable_overlap_scheduler = false
 
 # Ensure maxNumTokens.value() % tokensPerBlock == 0
-agg_prefill_decode tokens_per_block = (tokens_per_block if tokens_per_block else 32)
+# Preserve an unset runtime block size when keeping evaluated engine limits.
 when not (preserve_engine_limits or false):
+    agg_prefill_decode tokens_per_block = (tokens_per_block if tokens_per_block else 32)
     prefill max_num_tokens = (((SlaConfig.isl + 1500) + tokens_per_block - 1) // tokens_per_block) * tokens_per_block
     decode max_num_tokens = ((max_batch_size + tokens_per_block - 1) // tokens_per_block) * tokens_per_block
     agg max_num_tokens = ((max_batch_size + SlaConfig.isl + 1500 + tokens_per_block - 1) // tokens_per_block) * tokens_per_block
@@ -20,10 +21,10 @@ when not (preserve_engine_limits or false):
 # P/D needs KV transfer even when evaluated scheduler limits are preserved.
 # Guard: TRT-LLM disables KV transfer when cache_transceiver_config has no backend.
 prefill_decode cache_transceiver_backend = (cache_transceiver_backend if cache_transceiver_backend else "DEFAULT")
-# Why: a trace has no fixed ISL/OSL. Without both lengths the size stays unset
-# rather than guessed, and TRT-LLM applies its own default (max_seq_len since
-# 1.3.0rc3, rounded up to a KV block since 1.3.0rc22.post1).
-prefill_decode cache_transceiver_max_tokens_in_buffer = (cache_transceiver_max_tokens_in_buffer if ((preserve_engine_limits or false) and cache_transceiver_max_tokens_in_buffer) else (((((SlaConfig.isl + SlaConfig.osl + 1500) + tokens_per_block - 1) // tokens_per_block) * tokens_per_block) if (SlaConfig.isl and SlaConfig.osl) else none))
+# Why: without fixed request lengths or an explicit block size, leave the
+# buffer size unset. TRT-LLM sizes it at runtime (max_seq_len since 1.3.0rc3,
+# rounded up to its effective KV block size since 1.3.0rc22.post1).
+prefill_decode cache_transceiver_max_tokens_in_buffer = (cache_transceiver_max_tokens_in_buffer if ((preserve_engine_limits or false) and cache_transceiver_max_tokens_in_buffer) else (((((SlaConfig.isl + SlaConfig.osl + 1500) + tokens_per_block - 1) // tokens_per_block) * tokens_per_block) if (SlaConfig.isl and SlaConfig.osl and tokens_per_block) else none))
 
 agg_prefill_decode cuda_graph_batch_sizes = ((range(1, max_batch_size + 1) | list) if max_batch_size else [])
 

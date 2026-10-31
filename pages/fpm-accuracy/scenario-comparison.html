@@ -1,0 +1,181 @@
+<!doctype html>
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Compare five data collection scenarios using AISimulate predictors and a pinned Hugging Face measurement dataset."
+    />
+    <title>AISimulate - FPM Scenario Comparison</title>
+    <script>
+      try {
+        const savedTheme = localStorage.getItem("sm-theme") || localStorage.getItem("aisimulate-accuracy-theme");
+        const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        document.documentElement.dataset.theme =
+          savedTheme === "light" || savedTheme === "dark"
+            ? savedTheme
+            : prefersDark
+              ? "dark"
+              : "light";
+        localStorage.setItem("sm-theme", document.documentElement.dataset.theme);
+      } catch (_) {
+        document.documentElement.dataset.theme = "dark";
+      }
+    </script>
+    <link rel="stylesheet" href="../e2e-accuracy/styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=workload-banner-1" />
+    <link rel="stylesheet" href="./scenario-comparison.css?v=13" />
+  </head>
+  <body>
+    <header class="top-header">
+      <div class="shell top-header-inner">
+        <div class="brand">
+          <a href="../" aria-label="AISimulate documentation home">
+            <img class="brand-logo" src="https://avatars.githubusercontent.com/u/201626793" alt="ai-dynamo" width="32" height="32" />
+          </a>
+          <h1 id="page-title"><a href="../">AISimulate</a>
+            <span class="page-name">- FPM Scenario Comparison</span>
+          </h1>
+        </div>
+        <div class="header-controls">
+          <label class="branch-control" for="branch">Branch:
+            <select id="branch" disabled><option>Loading…</option></select>
+          </label>
+          <nav class="source-nav" aria-label="Source links">
+            <a class="github-link" href="https://github.com/ai-dynamo/aisimulate" aria-label="View on GitHub" title="View on GitHub">
+              <svg height="20" width="20" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.65 7.65 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z" />
+              </svg>
+            </a>
+            <button
+              class="theme-toggle"
+              id="theme-toggle"
+              type="button"
+              aria-label="Switch to light theme"
+              title="Switch theme"
+            >
+              <svg class="theme-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="5" />
+                <path d="M12 1v2m0 18v2M1 12h2m18 0h2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+              </svg>
+              <svg class="theme-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+              </svg>
+            </button>
+          </nav>
+        </div>
+      </div>
+    </header>
+
+    <nav class="shell fpm-tabs" aria-label="FPM dashboard">
+      <a href="index.html">Overview</a><a href="predictors.html">Predictors</a><a href="trends.html">Trends</a>
+      <a href="evaluation-detail.html">Details</a><a href="3d-visualization.html">3D Visualization</a>
+      <a href="scenario-comparison.html">Scenario Comparison</a>
+    </nav>
+    <div class="shell evaluation-context">
+      <section id="evaluation-banner" class="evaluation-banner" aria-label="Evaluation snapshot" aria-live="polite">Loading evaluation…</section>
+    </div>
+    <main class="shell dashboard" id="scenario-comparison" data-ready="loading">
+      <section class="sc-intro" aria-labelledby="sc-heading">
+        <div><p class="sc-eyebrow">FPM Gym · Evaluation protocols</p>
+          <h2 id="sc-heading">One dataset. Five ways to learn.</h2>
+          <p>Compare interpolation, linear regression, spline regression, GBDT, hybrid calibration, and the causal selector under the same training and evaluation protocol.</p>
+        </div>
+        <a class="sc-protocol-link" href="#sc-protocols">How the scenarios work ↓</a>
+      </section>
+
+      <div class="sc-source-note">Measurements come from the pinned Hugging Face dataset in the evaluation snapshot. Strict C starts empty and admits one scored observation every five seconds, including warmup.</div>
+      <p id="sc-protocol-version-note" class="sc-replay-note" role="status">Loading protocol…</p>
+      <section class="sc-controls" aria-label="Comparison controls">
+        <fieldset class="sc-scenarios"><legend>Training scenario</legend>
+          <div class="sc-scenario-options">
+            <label><input type="radio" name="scenario" value="a" checked><span><strong>A only</strong><small>Self-benchmark → frozen</small></span></label>
+            <label><input type="radio" name="scenario" value="b"><span><strong>B only</strong><small>Train / test → frozen</small></span></label>
+            <label><input type="radio" name="scenario" value="c"><span><strong>C only</strong><small>Learn as data arrives</small></span></label>
+            <label><input type="radio" name="scenario" value="ac"><span><strong>A + C</strong><small>Self-benchmark → online</small></span></label>
+            <label><input type="radio" name="scenario" value="bc"><span><strong>B + C</strong><small>Past data → online</small></span></label>
+          </div>
+        </fieldset>
+        <div class="sc-scenario-explainer"><span id="sc-scenario-code" class="sc-code">A</span><p id="sc-scenario-description"></p></div>
+        <div class="sc-split-control">
+          <div class="sc-split-slider">
+            <div><label for="sc-train-percent">Offline training share · B and B+C</label><output id="sc-split-value" for="sc-train-percent">50%</output></div>
+            <input type="range" id="sc-train-percent" min="10" max="90" step="10" value="50" aria-describedby="sc-split-meaning sc-split-note" disabled>
+            <div class="sc-split-endpoints" aria-hidden="true"><span>10% training</span><span>90% training</span></div>
+          </div>
+          <div class="sc-split-explanation"><p id="sc-split-meaning"></p><p id="sc-split-note" role="status" aria-live="polite">Waiting for split results.</p></div>
+        </div>
+        <div class="sc-filters">
+          <label>Model<select id="sc-model"><option value="">All models</option></select></label>
+          <label>GPU<select id="sc-gpu"><option value="">All GPUs</option></select></label>
+          <label>Framework<select id="sc-framework"><option value="">All frameworks</option></select></label>
+          <label>Workload<select id="sc-workload"><option value="all">All workloads</option><option value="prefill">Prefill</option><option value="decode">Decode</option><option value="mixed">Mixed</option></select></label>
+          <label>Metric<select id="sc-metric"><option value="mape">MAPE (%)</option><option value="coverage">Prediction coverage (%)</option><option value="fit">Initial training (ms)</option><option value="predict">Prediction (µs / call)</option><option value="update">Online update (µs / call)</option></select></label>
+          <button type="button" id="sc-reset" class="sc-reset">Reset controls</button>
+        </div>
+        <label class="sc-availability-toggle"><input type="checkbox" id="sc-show-unavailable"> Show unavailable configurations</label>
+      </section>
+
+      <div id="sc-status" class="sc-status" role="status" aria-live="polite">Loading scenario results…</div>
+      <section class="matrix-panel sc-matrix" aria-labelledby="sc-matrix-heading">
+        <div class="sc-panel-heading"><div><h3 id="sc-matrix-heading">Compare methods</h3><p id="sc-metric-note"></p></div><span id="sc-count"></span></div>
+        <div class="table-scroll" role="region" tabindex="0" aria-label="Configuration by performance model comparison">
+          <table id="sc-table"><caption class="sr-only">Choose a scenario above, then a configuration to compare all five scenarios below. Select a score to inspect its evidence.</caption>
+            <thead><tr><th scope="col">Model / configuration</th><th scope="col">GPU / framework</th>
+              <th scope="col" data-method="warmup"><button type="button" data-sort="warmup">Interpolation<small>KV warmup on</small></button></th>
+              <th scope="col" data-method="nowarmup"><button type="button" data-sort="nowarmup">Interpolation<small>KV warmup off</small></button></th>
+              <th scope="col" data-method="linear"><button type="button" data-sort="linear">Linear<small>regression</small></button></th>
+              <th scope="col" data-method="spline"><button type="button" data-sort="spline">Spline<small>regression</small></button></th>
+              <th scope="col" data-method="gbdt"><button type="button" data-sort="gbdt">GBDT<small>gradient-boosted trees</small></button></th>
+              <th scope="col" data-method="hybrid" data-hybrid-column><button type="button" data-sort="hybrid">Hybrid calibration<small>frozen GBDT + correction</small></button></th>
+              <th scope="col" data-method="selector" data-selector-column><button type="button" data-sort="selector">GBDT selector<small data-selector-caption="caption">Causal expert selection</small></button></th>
+            </tr></thead><tbody id="sc-body"></tbody>
+          </table>
+        </div>
+        <div class="sc-legend"><span><i class="sc-blank-key" aria-hidden="true"></i> Hatched = unsupported combination</span><span>Blank = unavailable · Hover or select for the reason</span><span>Errors and evaluated zero-coverage results stay visible.</span><span>Counts show successful / measured test observations.</span></div>
+      </section>
+
+      <section class="matrix-panel sc-detail" id="sc-detail" aria-labelledby="sc-detail-heading" hidden>
+        <div class="sc-panel-heading"><div><p class="sc-eyebrow">All scenarios · Selected configuration</p><h3 id="sc-detail-heading"></h3><p id="sc-detail-description"></p></div><a id="sc-dataset-link">Dataset details ↗</a></div>
+        <div class="table-scroll" role="region" tabindex="0" aria-label="All scenarios for the selected configuration">
+          <table id="sc-detail-table"><caption class="sr-only">The selected metric across all scenarios and methods for one configuration.</caption><thead><tr><th scope="col">Scenario</th><th scope="col">Interpolation<small>KV warmup on</small></th><th scope="col">Interpolation<small>KV warmup off</small></th><th scope="col">Linear</th><th scope="col">Spline</th><th scope="col">GBDT</th><th scope="col" data-hybrid-column>Hybrid calibration<small>frozen GBDT</small></th><th scope="col" data-selector-column>GBDT selector<small data-selector-caption="detail">Causal expert selection</small></th></tr></thead><tbody id="sc-detail-body"></tbody></table>
+        </div>
+        <section id="sc-evidence" class="sc-evidence" aria-labelledby="sc-evidence-heading" hidden><h4 id="sc-evidence-heading" tabindex="-1"></h4><p id="sc-evidence-note"></p><p id="sc-evidence-protocol"></p><p id="sc-evidence-count-note"></p><dl id="sc-evidence-values"></dl></section>
+      </section>
+
+      <section class="sc-protocols" id="sc-protocols" aria-labelledby="sc-protocols-heading">
+        <h3 id="sc-protocols-heading">Read each result in its training context</h3>
+        <p>The scenario is the third dimension: switch scenarios to compare methods across configurations, then select a configuration to see every scenario together.</p>
+        <div class="sc-protocol-grid">
+          <article><span class="sc-code">A</span><h4>Self-benchmark, then freeze</h4><p id="sc-protocol-a">Loading protocol…</p></article>
+          <article><span class="sc-code">B</span><h4>Split the collected dataset</h4><p id="sc-protocol-b">Loading protocol…</p></article>
+          <article><span class="sc-code">C</span><h4>Learn from the stream</h4><p id="sc-protocol-c">Loading protocol…</p></article>
+          <article><span class="sc-code">A + C</span><h4>Bootstrap, then adapt</h4><p id="sc-protocol-ac">Loading protocol…</p></article>
+          <article><span class="sc-code">B + C</span><h4>Train on the past, adapt to the future</h4><p id="sc-protocol-bc">Loading protocol…</p></article>
+        </div>
+        <p class="sc-replay-note">These scenarios reuse the same recorded measurement corpus to emulate offline training and online adaptation; they do not run a live deployment. A scenario does not establish a named workload or production traffic distribution.</p>
+        <p id="sc-cadence-note" class="sc-replay-note"></p>
+        <details class="sc-protocol-notes"><summary>Applicability, coverage, and timing</summary>
+          <p>Interpolation uses a collected library and is evaluated only in A. KV warmup on/off select different collected libraries.</p>
+          <p id="sc-gbdt-note"></p>
+          <p id="sc-hybrid-note"></p>
+          <p id="sc-selector-note"></p>
+          <p id="sc-fallback-note">For A and A+C, learned predictors use AISim’s verified original-A fallback for missing mixed-workload stores: a whole-forward interpolation prior, with calibration and online expert routing where applicable. B, C, and B+C receive no original-A prior. Unsupported interpolation remains unavailable.</p>
+          <p>Direct interpolation operates on the measured self-benchmark table. SOL interpolation uses model-based normalization before interpolation. Successful cells show the recorded choice when available; these results do not all use the same interpolation calculation. Select a result to inspect its timing-only, text-only, and verified legacy metadata recovery settings. Results without these fields remain unclassified.</p>
+          <p>MAPE includes successful predictions only. Read it with prediction coverage and the test count: cold starts, missing inputs, and prediction failures remain in the measured denominator. Different scenarios use different training and test populations; lower MAPE alone does not establish a better method.</p>
+          <p>Training time covers initialization and offline fit. C has no offline fit; any cold-start fitting happens inside update calls and contributes to update cost. Preparation counts describe selected inputs, not successfully fitted samples. Self-benchmark regression repeats artifact rows for each worker; interpolation counts artifact rows. Unavailable results can retain nominal selections even when preparation did not run. Prediction and update costs are mean host wall times per invocation in the evaluator, not GPU serving latency. Cost metrics describe the entire scenario, independent of the workload filter. Missing timings remain unavailable.</p>
+          <p id="sc-update-cost-note"></p>
+          <p>Each evaluation pins its code and dataset revisions in the snapshot above. Results are loaded from its published scenario artifact; no scores are estimated in the browser. These are single-run measurements; timing can vary between repeated runs.</p>
+        </details>
+      </section>
+      <footer class="sc-footer">Data: <a href="https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset">nvidia/aisimulate-fpm-dataset</a> · Protocol: <span id="sc-protocol-label">Loading…</span></footer>
+    </main>
+    <script src="./navigation.js?v=collection-parquet-1" defer></script>
+    <script src="./scenario-comparison.js?v=13" defer></script>
+  </body>
+</html>

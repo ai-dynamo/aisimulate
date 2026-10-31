@@ -407,16 +407,24 @@ impl<'a> OpInterpConfig<'a> {
 }
 
 fn miss(cfg: &OpInterpConfig, coords: &[f64], reason: &str) -> AicError {
+    AicError::PerfDatabase(miss_message(cfg, coords, reason))
+}
+
+fn coverage_miss(cfg: &OpInterpConfig, coords: &[f64], reason: &str) -> AicError {
+    AicError::InterpolationCoverage(miss_message(cfg, coords, reason))
+}
+
+fn miss_message(cfg: &OpInterpConfig, coords: &[f64], reason: &str) -> String {
     let pairs: Vec<String> = cfg
         .axes
         .iter()
         .zip(coords)
         .map(|(a, c)| format!("{a}={c}"))
         .collect();
-    AicError::PerfDatabase(format!(
+    format!(
         "perf_interp: no data to anchor query {{{}}} ({reason})",
         pairs.join(", ")
-    ))
+    )
 }
 
 /// Internal signal: the query left the collected range at some level.
@@ -1126,7 +1134,7 @@ impl SiteIndex {
 
         // Unknown shape: transfer util from the nearest collected sites.
         if self.sites.is_empty() {
-            return Err(miss(cfg, coords, "no sites collected"));
+            return Err(coverage_miss(cfg, coords, "no sites collected"));
         }
         let q_log: Vec<f64> = site_axes
             .iter()
@@ -1216,7 +1224,13 @@ impl SiteIndex {
                 let q_site: Vec<f64> = site_axes.iter().map(|&p| coords[p]).collect();
                 match self.frontier_waiver_anchors(&ranked, &q_site, &q_log, *gate) {
                     Some(admissible) => ranked = admissible,
-                    None => return Err(miss(cfg, coords, "no site within max_site_distance")),
+                    None => {
+                        return Err(coverage_miss(
+                            cfg,
+                            coords,
+                            "no site within max_site_distance",
+                        ));
+                    }
                 }
             }
         }
@@ -1565,7 +1579,10 @@ mod tests {
     fn grid_empty_table_is_a_miss() {
         let t = Node::branch();
         let cfg = attn_cfg(&attn_lat);
-        assert!(query(&cfg, &t, &[8.0, 512.0, 1.0]).is_err());
+        assert!(matches!(
+            query(&cfg, &t, &[8.0, 512.0, 1.0]),
+            Err(AicError::PerfDatabase(_))
+        ));
     }
 
     #[test]
@@ -1769,7 +1786,41 @@ mod tests {
         let t = gemm_table();
         let cfg = gemm_cfg(&gemm_lat);
         // (64, 64): > 2 octaves from every collected site -> miss, not a guess.
-        assert!(query(&cfg, &t, &[64.0, 64.0, 64.0]).is_err());
+        assert!(matches!(
+            query(&cfg, &t, &[64.0, 64.0, 64.0]),
+            Err(AicError::InterpolationCoverage(_))
+        ));
+    }
+
+    #[test]
+    fn typed_site_coverage_does_not_hide_malformed_tables_or_invalid_sol() {
+        let cfg = gemm_cfg(&gemm_lat);
+        let index = SiteIndex::build(&[1, 2], 0, &Node::branch());
+        let error = index
+            .resolve_value(&cfg, &[64.0, 4096.0, 1024.0])
+            .unwrap_err();
+        assert!(matches!(error, AicError::InterpolationCoverage(_)));
+        assert!(error.to_string().contains("no sites collected"));
+
+        let mut malformed = Node::branch();
+        malformed.insert(&[1], 1.0);
+        malformed.insert(&[2], 2.0);
+        let grid = OpInterpConfig::grid(&["x", "y"], &|_| 1.0);
+        assert!(matches!(
+            query(&grid, &malformed, &[1.5, 1.0]),
+            Err(AicError::PerfDatabase(_))
+        ));
+
+        // A nearby supported site with an unusable roofline is a numerical
+        // failure, never permission to report an uncovered query.
+        for invalid_sol in [0.0, f64::NAN, f64::INFINITY] {
+            let sol = |_: &[f64]| invalid_sol;
+            let cfg = gemm_cfg(&sol);
+            assert!(matches!(
+                query(&cfg, &gemm_table(), &[64.0, 4608.0, 1536.0]),
+                Err(AicError::PerfDatabase(_))
+            ));
+        }
     }
 
     /// Own site (4096, 1024) sweeps only m<=64 and its measured latencies run
@@ -1870,7 +1921,10 @@ mod tests {
             t.insert(&[m, 4096, 1024], gemm_lat(&[m as f64, 4096.0, 1024.0]));
         }
         let cfg = gemm_cfg_with_fallback(&gemm_lat, true);
-        assert!(query(&cfg, &t, &[512.0, 4096.0, 1024.0]).is_err());
+        assert!(matches!(
+            query(&cfg, &t, &[512.0, 4096.0, 1024.0]),
+            Err(AicError::InterpolationCoverage(_))
+        ));
     }
 
     #[test]

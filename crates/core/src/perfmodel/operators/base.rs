@@ -74,6 +74,19 @@ impl SolComponents {
     pub fn time_ms(self) -> f64 {
         self.math_ms.max(self.mem_ms)
     }
+
+    // Keep optional-component arithmetic behind calls made only for Some.
+    // Inlining lets LLVM compute on inactive None payloads, which can trigger
+    // costly denormal assists even though those values are discarded.
+    #[inline(never)]
+    fn scaled(self, factor: f64) -> Self {
+        Self::new(self.math_ms * factor, self.mem_ms * factor)
+    }
+
+    #[inline(never)]
+    fn clamp_non_negative(self) -> Self {
+        Self::new(self.math_ms.max(0.0), self.mem_ms.max(0.0))
+    }
 }
 
 /// Actual MoE communication topology substitution used by one query.
@@ -261,10 +274,7 @@ impl PerformanceResult {
             latency_ms: self.latency_ms * factor,
             energy_wms: self.energy_wms * factor,
             source: self.source,
-            sol: self.sol.map(|c| SolComponents {
-                math_ms: c.math_ms * factor,
-                mem_ms: c.mem_ms * factor,
-            }),
+            sol: self.sol.map(|c| c.scaled(factor)),
             moe_comm_fallbacks: self.moe_comm_fallbacks,
             fpm_queries: self.fpm_queries,
         }
@@ -318,10 +328,7 @@ impl PerformanceResult {
             latency_ms: self.latency_ms.max(0.0),
             energy_wms: self.energy_wms.max(0.0),
             source: self.source,
-            sol: self.sol.map(|c| SolComponents {
-                math_ms: c.math_ms.max(0.0),
-                mem_ms: c.mem_ms.max(0.0),
-            }),
+            sol: self.sol.map(SolComponents::clamp_non_negative),
             moe_comm_fallbacks: self.moe_comm_fallbacks,
             fpm_queries: self.fpm_queries,
         }
@@ -488,6 +495,27 @@ mod tests {
         // subtract_sol: either side missing -> None.
         assert_eq!(subtract_sol(Some(SolComponents::default()), None), None);
         assert_eq!(subtract_sol(None, Some(SolComponents::default())), None);
+    }
+
+    #[test]
+    fn optional_sol_arithmetic_preserves_subnormal_values() {
+        // IEEE-754: bit 50 is 2^-1024; halving yields bit 49 (2^-1025).
+        // Avoiding work on None must not flush genuine subnormal components.
+        let tiny = f64::from_bits(1 << 50);
+        let half_tiny = f64::from_bits(1 << 49);
+        let result = PerformanceResult::sol(SolComponents::new(tiny, -tiny))
+            .clamp_non_negative()
+            .scaled(0.5);
+        assert_eq!(result.latency_ms, half_tiny);
+        assert_eq!(result.sol, Some(SolComponents::new(half_tiny, 0.0)));
+        assert_eq!(result.source, Source::Sol);
+
+        let result = PerformanceResult::new(tiny, Source::Empirical)
+            .clamp_non_negative()
+            .scaled(0.5);
+        assert_eq!(result.latency_ms, half_tiny);
+        assert_eq!(result.sol, None);
+        assert_eq!(result.source, Source::Empirical);
     }
 
     #[test]

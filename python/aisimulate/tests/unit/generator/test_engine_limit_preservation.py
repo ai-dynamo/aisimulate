@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import shlex
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ import pandas as pd
 import pytest
 import yaml
 
+from aisimulate.generator.api import generate_backend_artifacts
 from aisimulate.generator.module_bridge import task_config_to_generator_config
 from aisimulate.generator.rendering.engine import render_backend_templates
 from aisimulate.generator.rendering.rule_engine import apply_rule_plugins
@@ -84,13 +86,20 @@ def test_default_vllm_rules_still_resize_unpinned_requests():
 
 
 @pytest.mark.parametrize("rule", [None, "benchmark"])
-def test_trtllm_preserved_limits_still_default_missing_transfer_buffer(rule):
+@pytest.mark.parametrize("block_size", [64, None])
+def test_trtllm_preserved_limits_still_default_missing_transfer_buffer(rule, block_size):
     params = _params(preserve=True, rule=rule)
     params["params"]["prefill"].pop("cache_transceiver_max_tokens_in_buffer")
+    if block_size is None:
+        for role in ("prefill", "decode"):
+            params["params"][role].pop("tokens_per_block")
 
     result = apply_rule_plugins(copy.deepcopy(params), "trtllm")
 
-    assert result["params"]["prefill"]["cache_transceiver_max_tokens_in_buffer"] > 0
+    if block_size is None:
+        assert result["params"]["prefill"].get("cache_transceiver_max_tokens_in_buffer") is None
+    else:
+        assert result["params"]["prefill"]["cache_transceiver_max_tokens_in_buffer"] > 0
     assert result["params"]["decode"]["cache_transceiver_max_tokens_in_buffer"] == 8192
     for role in ("prefill", "decode"):
         for key in ("max_batch_size", "max_num_tokens", "max_seq_len"):
@@ -125,6 +134,107 @@ def test_trtllm_explicit_transfer_backend_is_rendered(rule):
 
 
 @pytest.mark.parametrize("rule", [None, "benchmark"])
+@pytest.mark.parametrize(
+    ("block_size", "max_seq_len", "sla", "keep_buffer", "extra", "expected"),
+    [
+        (None, 8192, {}, False, None, "tokens_per_block is unset"),
+        (64, 10000, {}, False, None, "max_seq_len 10000 is not a multiple of tokens_per_block 64"),
+        (64, 8192, {}, False, None, None),
+        (64, None, {}, False, None, "max_seq_len is unset"),
+        (64, 10000, {"isl": 128, "osl": 16}, False, None, None),
+        (None, 10000, {}, True, None, None),
+        # extra_engine_args is appended to the engine YAML, so its keys win.
+        (64, 8192, {}, False, {"max_seq_len": 10000}, "max_seq_len 10000 is not a multiple of tokens_per_block 64"),
+        (64, 8192, {}, False, {"kv_cache_config": {"free_gpu_memory_fraction": 0.8}}, "tokens_per_block is unset"),
+        (
+            64,
+            10000,
+            {},
+            False,
+            {"cache_transceiver_config": {"backend": "DEFAULT", "max_tokens_in_buffer": 10048}},
+            None,
+        ),
+    ],
+    ids=[
+        "unset-block",
+        "trace-unaligned",
+        "trace-aligned",
+        "unset-length",
+        "rule-sized",
+        "explicit-buffer",
+        "override-unaligned",
+        "override-drops-block",
+        "override-buffer",
+    ],
+)
+def test_public_trtllm_generation_warns_on_runtime_sized_transfer_buffer(
+    caplog, rule, block_size, max_seq_len, sla, keep_buffer, extra, expected
+):
+    # Direct generation bypasses the Sweeper bridge, so the renderer must warn.
+    params = _params(preserve=True, rule=rule)
+    params["SlaConfig"] = sla
+    for role in ("prefill", "decode"):
+        role_params = params["params"][role]
+        if max_seq_len is None:
+            role_params.pop("max_seq_len")
+        else:
+            role_params["max_seq_len"] = max_seq_len
+        if not keep_buffer:
+            role_params.pop("cache_transceiver_max_tokens_in_buffer")
+        if block_size is None:
+            role_params.pop("tokens_per_block")
+        if extra is not None:
+            role_params["extra_engine_args"] = extra
+
+    with caplog.at_level(logging.WARNING, logger="aisimulate.generator.rendering.engine"):
+        generate_backend_artifacts(params, "trtllm")
+
+    messages = [record.getMessage() for record in caplog.records if "tokens_per_block" in record.getMessage()]
+    if expected is None:
+        assert messages == []
+    else:
+        assert len(messages) == 2
+        for message, role in zip(messages, ("prefill", "decode"), strict=True):
+            assert message.startswith(f"TRT-LLM {role} {expected}")
+
+
+@pytest.mark.parametrize(
+    ("max_seq_len", "override", "target", "expected"),
+    [
+        (10000, 8192, "dynamo-j2", None),
+        (10000, 8192, "dynamo-python", "max_seq_len 10000 is not a multiple of tokens_per_block 64"),
+        (8192, 10000, "dynamo-j2", "max_seq_len 10000 is not a multiple of tokens_per_block 64"),
+        (8192, 10000, "dynamo-python", None),
+    ],
+    ids=["yaml-aligned", "cli-unaligned", "yaml-unaligned", "cli-aligned"],
+)
+def test_trtllm_alignment_warning_checks_the_deployed_max_seq_len(caplog, max_seq_len, override, target, expected):
+    # dynamo-j2 deploys the engine YAML, where the appended override wins.
+    # dynamo-python translates that YAML into flags without max_seq_len and
+    # deploys the role's --max-seq-len.
+    params = _params(preserve=True)
+    params["SlaConfig"] = {}
+    for role in ("prefill", "decode"):
+        role_params = params["params"][role]
+        role_params["max_seq_len"] = max_seq_len
+        role_params.pop("cache_transceiver_max_tokens_in_buffer")
+        role_params["extra_engine_args"] = {"max_seq_len": override}
+
+    with caplog.at_level(logging.WARNING, logger="aisimulate.generator.rendering.engine"):
+        artifacts = generate_backend_artifacts(params, "trtllm", deployment_target=target)
+
+    if target == "dynamo-python":
+        assert shlex.split(artifacts["cli_args_decode"]).count("--max-seq-len") == 1
+        assert f"--max-seq-len {max_seq_len}" in artifacts["cli_args_decode"]
+    messages = [record.getMessage() for record in caplog.records if "tokens_per_block" in record.getMessage()]
+    if expected is None:
+        assert messages == []
+    else:
+        assert [message.split(" ", 2)[1] for message in messages] == ["prefill", "decode"]
+        assert all(expected in message for message in messages)
+
+
+@pytest.mark.parametrize("rule", [None, "benchmark"])
 def test_trtllm_transfer_settings_stay_off_aggregated_workers(rule):
     params = _params(preserve=True, rule=rule)
     params["DynConfig"] = {"mode": "agg"}
@@ -153,6 +263,28 @@ def test_preserve_engine_limits_survives_typed_request_round_trip():
     result = to_legacy_params(from_legacy_params(params, backend="vllm"))
 
     assert result["preserve_engine_limits"] is True
+
+
+@pytest.mark.parametrize("rule", [None, "benchmark"])
+@pytest.mark.parametrize("preserve", [False, True])
+def test_trtllm_rules_only_default_block_size_for_unpinned_requests(rule, preserve):
+    params = _params(preserve=preserve, rule=rule)
+    for role in ("prefill", "decode"):
+        params["params"][role].pop("tokens_per_block")
+        params["params"][role].pop("cache_transceiver_max_tokens_in_buffer")
+
+    result = apply_rule_plugins(params, "trtllm")
+
+    for role in ("prefill", "decode"):
+        actual = result["params"][role]
+        if preserve:
+            assert "tokens_per_block" not in actual
+            assert actual.get("cache_transceiver_max_tokens_in_buffer") is None
+        else:
+            assert actual["tokens_per_block"] == 32
+            assert actual["cache_transceiver_max_tokens_in_buffer"] > 0
+            assert actual["cache_transceiver_max_tokens_in_buffer"] % 32 == 0
+        assert actual["cache_transceiver_backend"] == "DEFAULT"
 
 
 @pytest.mark.parametrize("value", [True, False])

@@ -152,7 +152,8 @@ class TestGetGenerationTestCases:
 
 
 class TestDsaContextPrefixShape:
-    def test_rejects_single_token_prefill(self):
+    def test_single_token_extend_stays_out_while_prefill_is_timed_eagerly(self):
+        # 0.5.21: prefill graphs off, and the eager DSA indexer faulted on a one-token extend
         mod = _import_module()
         assert not mod._dsa_context_prefix_shape_is_valid(1, 1, 0)
         assert not mod._dsa_context_prefix_shape_is_valid(32, 1, 1024)
@@ -242,7 +243,16 @@ class TestDsaSkipIndexer:
         assert "attention_module.next_skip_topk = True" in prefill
         assert '_skip_state["prev_topk"] = warmup_output[1].detach()' in prefill
         assert "attention_module.skip_topk = _skip_uses_dense_mha" in prefill
-        assert 'not _skip_uses_dense_mha and _skip_state["prev_topk"] is None' in prefill
+        prefill_tree = ast.parse(prefill)
+        missing_producer = ast.parse(
+            "_skip_indexer and native_graph_context is None "
+            'and not _skip_uses_dense_mha and _skip_state["prev_topk"] is None',
+            mode="eval",
+        ).body
+        assert any(
+            isinstance(node, ast.If) and ast.dump(node.test) == ast.dump(missing_producer)
+            for node in ast.walk(prefill_tree)
+        )
         assert "sglang_dsa_dense_mha_" in prefill
         assert "dsa_backend.dsa_prefill_impl" in prefill
 

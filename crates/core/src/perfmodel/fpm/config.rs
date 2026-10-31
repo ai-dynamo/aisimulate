@@ -345,6 +345,9 @@ impl ForwardPassPerfModelConfig {
         self.validate()?;
         if self.estimation_mode == EstimationMode::FpmLearned {
             self.estimator_config.fpm_learned.resolve_source()?;
+            if let Some(mixed) = &mut self.estimator_config.temporary_mixed_composition {
+                mixed.original_a.resolve_source()?;
+            }
         }
         if let Some(snapshot) = self.estimator_config.state_snapshot.as_mut() {
             snapshot.resolve_source()?;
@@ -445,6 +448,38 @@ impl ForwardPassPerfModelConfig {
             return Err(invalid_config(
                 "non-default estimator_config.selector requires estimation_mode='fpm_learned' and adaptation='causal_selector'",
             ));
+        }
+
+        if let Some(mixed) = &self.estimator_config.temporary_mixed_composition {
+            if self.estimator_config.state_snapshot.is_some() {
+                return Err(invalid_config(
+                    "temporary_mixed_composition does not support portable state_snapshot restoration; use an online checkpoint or explicit mixed state",
+                ));
+            }
+            if mixed.quality_gate.is_some()
+                && learned.adaptation != super::LearnedAdaptation::Online
+            {
+                return Err(invalid_config(
+                    "temporary_mixed_composition.quality_gate requires standalone online learned adaptation",
+                ));
+            }
+            if self.estimation_mode != EstimationMode::FpmLearned {
+                return Err(invalid_config(
+                    "temporary_mixed_composition requires explicit estimation_mode='fpm_learned'",
+                ));
+            }
+            if self.worker_type != ForwardPassWorkerType::Aggregated {
+                return Err(invalid_config(
+                    "temporary_mixed_composition requires worker_type='aggregated'",
+                ));
+            }
+            if mixed.scenario == super::TemporaryMixedCompositionScenario::A
+                && learned.adaptation != super::LearnedAdaptation::Frozen
+            {
+                return Err(invalid_config(
+                    "temporary_mixed_composition scenario='a' requires frozen learned adaptation",
+                ));
+            }
         }
         if self.estimation_mode == EstimationMode::FpmLearned {
             if self.fallback_policy != ForwardPassFallbackPolicy::Deny {
@@ -721,6 +756,211 @@ mod tests {
             .unwrap()
             .extend(value.as_object().unwrap().clone());
         serde_json::from_value(base).unwrap()
+    }
+
+    fn mixed_config(scenario: &str, mode: &str) -> ForwardPassPerfModelConfig {
+        config(serde_json::json!({
+            "estimation_mode": "fpm_learned",
+            "estimator_config": {
+                "fpm_learned": {"artifact_path": "seed.json", "adaptation": "frozen"},
+                "temporary_mixed_composition": {
+                    "scenario": scenario,
+                    "mode": mode,
+                    "original_a": {"manifest_path": "original-a.json"}
+                }
+            }
+        }))
+    }
+
+    #[test]
+    fn temporary_mixed_composition_rejects_portable_snapshot_restoration() {
+        let mut cfg = mixed_config("a_c", "compose_calibrated");
+        cfg.estimator_config.state_snapshot = Some(super::super::StateSnapshotConfig {
+            path: "unused-snapshot".into(),
+            sha256: None,
+            on_tune: super::super::StateSnapshotTuning::Continue,
+        });
+        assert!(
+            cfg.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("does not support portable")
+        );
+    }
+
+    #[test]
+    fn temporary_mixed_composition_round_trip_pins_both_sources() {
+        let off = serde_json::to_value(EstimatorConfig::default()).unwrap();
+        assert!(off.get("temporary_mixed_composition").is_none());
+        let directory = tempfile::tempdir().unwrap();
+        let seed_path = directory.path().join("seed.json");
+        let manifest_path = directory.path().join("original-a.json");
+        // Configuration resolution binds bytes; model construction validates
+        // the actual artifact and manifest schemas separately.
+        std::fs::write(&seed_path, b"seed source bytes").unwrap();
+        std::fs::write(&manifest_path, b"original A source bytes").unwrap();
+        let mut requested = mixed_config("a", "compose");
+        requested.estimator_config.fpm_learned.artifact_path = Some(seed_path);
+        requested
+            .estimator_config
+            .temporary_mixed_composition
+            .as_mut()
+            .unwrap()
+            .original_a
+            .manifest_path = manifest_path.clone();
+        let resolved = requested.resolve().unwrap();
+        let learned = &resolved.estimator_config.fpm_learned;
+        assert_eq!(learned.source_sha256.as_ref().unwrap().len(), 64);
+        let source = &resolved
+            .estimator_config
+            .temporary_mixed_composition
+            .as_ref()
+            .unwrap()
+            .original_a;
+        assert!(source.manifest_path.is_absolute());
+        assert_eq!(source.source_sha256.as_ref().unwrap().len(), 64);
+        let reloaded: ForwardPassPerfModelConfig =
+            serde_json::from_value(serde_json::to_value(&resolved).unwrap()).unwrap();
+        assert_eq!(reloaded.resolve().unwrap(), resolved);
+
+        std::fs::write(manifest_path, b"changed original A bytes").unwrap();
+        assert!(
+            resolved
+                .resolve()
+                .unwrap_err()
+                .to_string()
+                .contains("original_a.source_sha256")
+        );
+    }
+
+    #[test]
+    fn temporary_mixed_composition_requires_explicit_scenario_and_supported_scope() {
+        use super::super::LearnedAdaptation;
+
+        mixed_config("a", "compose").validate().unwrap();
+        let companion = mixed_config("a_c", "compose_calibrated");
+        companion.validate().unwrap();
+        for adaptation in [LearnedAdaptation::Online, LearnedAdaptation::CausalSelector] {
+            let mut supported = companion.clone();
+            supported.estimator_config.fpm_learned.adaptation = adaptation;
+            supported.estimator_config.fpm_learned.artifact_path = None;
+            supported.estimator_config.fpm_learned.checkpoint_path = Some("seed-checkpoint".into());
+            supported.estimator_config.correction.enabled =
+                adaptation == LearnedAdaptation::CausalSelector;
+            supported.validate().unwrap();
+
+            let policy = supported
+                .estimator_config
+                .temporary_mixed_composition
+                .as_mut()
+                .unwrap();
+            policy.scenario = super::super::TemporaryMixedCompositionScenario::A;
+            policy.mode = super::super::TemporaryMixedCompositionMode::Compose;
+            assert!(
+                supported
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("frozen")
+            );
+        }
+        for (scenario, mode) in [("a", "compose_calibrated"), ("a_c", "compose")] {
+            assert!(mixed_config(scenario, mode).validate().is_err());
+        }
+        for estimation_mode in [
+            EstimationMode::Auto,
+            EstimationMode::FpmRegression,
+            EstimationMode::FpmInterpolation,
+        ] {
+            let mut invalid = companion.clone();
+            invalid.estimation_mode = estimation_mode;
+            assert!(
+                invalid
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("temporary_mixed_composition")
+            );
+        }
+        for worker_type in [
+            ForwardPassWorkerType::Prefill,
+            ForwardPassWorkerType::Decode,
+        ] {
+            let mut invalid = companion.clone();
+            invalid.worker_type = worker_type;
+            assert!(
+                invalid
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("aggregated")
+            );
+        }
+        let mut speculative = companion;
+        speculative.nextn = 1;
+        assert!(speculative.validate().is_err());
+    }
+
+    #[test]
+    fn temporary_mixed_composition_validates_independent_calibration_and_weights() {
+        let mut cfg = mixed_config("a_c", "compose_calibrated");
+        cfg.estimator_config.correction.enabled = false;
+        let mixed = cfg
+            .estimator_config
+            .temporary_mixed_composition
+            .as_mut()
+            .unwrap();
+        mixed.calibration.sampling.bins_per_axis = [3, 7];
+        mixed.calibration.sampling.max_observations = 24;
+        mixed.calibration.min_observations = 6;
+        mixed.calibration.factor_bounds.min = Some(0.8);
+        mixed.calibration.factor_bounds.max = Some(1.4);
+        let options = mixed.calibration.options();
+        assert_eq!(
+            options.correction_mode,
+            super::super::CorrectionMode::Hybrid
+        );
+        assert_eq!(options.bucket_shape, Some([3, 7]));
+        assert_eq!(
+            (options.max_observations, options.min_observations),
+            (24, 6)
+        );
+        assert_eq!(options.min_faster_correction_factor, Some(0.8));
+        assert_eq!(options.max_slower_correction_factor, Some(1.4));
+        cfg.validate().unwrap();
+        for axis in 0..3 {
+            for weight in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+                let mut invalid = cfg.clone();
+                let weights = &mut invalid.estimator_config.features;
+                *match axis {
+                    0 => &mut weights.attention_kv_weight,
+                    1 => &mut weights.prefill_attention_pair_weight,
+                    _ => &mut weights.ffn_token_weight,
+                } = weight;
+                assert!(
+                    invalid
+                        .validate()
+                        .unwrap_err()
+                        .to_string()
+                        .contains("features.")
+                );
+                invalid.estimator_config.temporary_mixed_composition = None;
+                // A learned-only model still ignores regression score weights.
+                invalid.validate().unwrap();
+            }
+        }
+        let mixed = cfg
+            .estimator_config
+            .temporary_mixed_composition
+            .as_mut()
+            .unwrap();
+        mixed.calibration.min_observations = 25;
+        assert!(
+            cfg.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("calibration")
+        );
     }
 
     #[test]
