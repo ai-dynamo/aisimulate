@@ -474,7 +474,7 @@ def _fake_campaign(
             kv_cache_max_concurrency=None,
         )
         if layout == "glm_tp4":
-            # The probe launches GLM-5.3-Flash with an fp8_e4m3 cache, which its uint8 specs store (ruling R-V).
+            # The probe launches GLM-5.3-Flash with an fp8_e4m3 cache, which its uint8 specs store.
             config.cache_config.cache_dtype = "fp8_e4m3"
         # The engine core sets the startup capacity in its own process, before it
         # builds the scheduler (engine/core.py:346-351); workers keep None.
@@ -1040,7 +1040,7 @@ def test_v031_glm_records_import_complete(tmp_path, monkeypatch):
 
     from .test_runtime_observations import glm_tp4_cache_groups
 
-    # The records that the 0.31.0 adapter writes go through the importer unchanged (ruling R-V).
+    # The records that the 0.31.0 adapter writes go through the importer unchanged.
     campaign = _glm_campaign(tmp_path, monkeypatch)
     for phase in ("prefill", "decode"):
         records = campaign.run(phase)

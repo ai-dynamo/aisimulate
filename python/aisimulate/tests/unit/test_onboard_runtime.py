@@ -1780,7 +1780,7 @@ def test_reversed_phase_bindings_merge_into_the_record_of_the_first_collection_p
     from aisimulate.support.runtime import verify_collection_runtime_bindings
 
     request, _, bindings = _formal_phase_bindings(tmp_path, capsys)
-    # Decision 3: the record holds the role's first collection phase, prefill, in whatever order the caller binds.
+    # The record holds the role's first collection phase, prefill, in whatever order the caller binds.
     resources = verify_collection_runtime_bindings(request, bindings()[::-1])["resources"]
     runtime = resources["runtime_memory"]
     assert (runtime["enable_prefix_caching"], runtime["mamba_cache_mode"], runtime["hash_block_size_tokens"]) == (

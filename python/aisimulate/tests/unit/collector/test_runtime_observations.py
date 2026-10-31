@@ -73,8 +73,8 @@ _V031_SPEC = "vllm.v1.kv_cache_interface."
 def _v031_records(layout, *, prefix_caching, dp, max_model_len=4096):
     """The worker cache, scheduler cache and resolved config of one vLLM 0.31.0 rank.
 
-    ``glm_tp4`` follows the live GLM-5.3-Flash TP4 fake of ``test_runtime_adapter._v031_runtime``
-    (ruling R-S): G0 lists each indexer before its MLA latent layer, the scheduler copy of G0 is
+    ``glm_tp4`` follows the live GLM-5.3-Flash TP4 fake of ``test_runtime_adapter._v031_runtime``:
+    G0 lists each indexer before its MLA latent layer, the scheduler copy of G0 is
     the first indexer spec, MLA and indexer views are 3-D, KDA layer i of every Mamba group
     overlays the region of MLA layer i and cuts its two states from that page, and tail layer i
     overlays the region of indexer layer i. ``mamba_hybrid`` is vLLM's generic layer-outer
@@ -1283,7 +1283,7 @@ def test_mamba_hybrid_observations_import_state_groups(tmp_path):
 
 def test_aggregated_phases_with_different_prefix_caching_import_the_prefill_values(tmp_path):
     path, launches = observation_fixture(tmp_path, layout="mamba_hybrid", decode_prefix_caching=False)
-    # The engine core sets a different startup capacity in each phase; nothing compares it (rulings R-D, R-O).
+    # The engine core sets a different startup capacity in each phase; nothing compares it.
     capacity = {
         phase: _phase_records(path, phase, "scheduler")[0]["cache"]["kv_cache_size_tokens"]
         for phase in ("prefill", "decode")
@@ -1302,7 +1302,7 @@ def test_aggregated_phases_with_different_prefix_caching_import_the_prefill_valu
         "decode: runtime_group_1 block_size_tokens 4096 != 64",
         "decode: runtime_group_2 block_size_tokens 4096 != 64",
     ]
-    # Decision 4 and rulings R-D, R-D+: the mode-dependent settings leave the compared runtime settings.
+    # The mode-dependent settings and the engine-core block size leave the compared runtime settings.
     cache = provenance["runtime_settings"]["cache_config"]
     assert not {
         "enable_prefix_caching",
@@ -1379,7 +1379,7 @@ def test_speculative_or_checkpoint_mamba_groups_are_incomplete(tmp_path, change)
             if "num_speculative_blocks" not in state:
                 continue
             if change == "speculative":
-                # What a speculative run records (ruling R-F): the marker and one more block per request.
+                # What a speculative run records: the marker and one more block per request.
                 state.update(num_speculative_blocks=1, blocks_per_request=2)
             else:
                 state["num_prefill_checkpoint_blocks"] = 1
@@ -1410,7 +1410,7 @@ def test_state_group_blocks_per_request_must_follow_its_spec(tmp_path, layout, n
     path, launches = observation_fixture(tmp_path, layout=layout)
 
     def edit(record):
-        # Every record of the group gets the same count, so only the spec rule (decision 6) can refuse it.
+        # Every record of the group gets the same count, so only the check against the spec's count can refuse it.
         state = record["cache"]["groups"][1]["state"]
         assert (state["blocks_per_request"], state.get("num_speculative_blocks", 0)) == (1, 0)
         state["blocks_per_request"] = 2
@@ -1424,7 +1424,7 @@ def test_state_group_blocks_per_request_must_follow_its_spec(tmp_path, layout, n
 @pytest.mark.parametrize("change", [None, "latent_page", "block_size"])
 def test_uniform_type_groups_compare_their_first_spec_with_the_scheduler(tmp_path, change):
     path, launches = observation_fixture(tmp_path, layout="glm_tp4")
-    # The live scheduler copy of G0 is its first inner spec, the indexer (ruling R-S).
+    # The live scheduler copy of G0 is its first inner spec, the indexer.
     scheduled = _phase_records(path, "prefill", "scheduler")[0]["cache"]["groups"][0]
     assert scheduled["spec_page_size_bytes"] == 71_808
     assert scheduled["layer_specs"]["layers.3.indexer"]["cache_role"] == "INDEXER"
@@ -1452,7 +1452,7 @@ def test_unknown_spec_class_is_incomplete_with_its_name(tmp_path):
     def edit(record):
         group = record["cache"]["groups"][2]
         group["spec_type"] = "vllm.v1.kv_cache_interface.HiSparseHotSpec"
-        if "kind" in group:  # Only the worker records the kind (ruling R-B).
+        if "kind" in group:  # Only the worker records the kind.
             group["kind"] = "hisparse"
 
     _mutate(path, edit)
@@ -1471,7 +1471,8 @@ def test_unknown_spec_class_is_incomplete_with_its_name(tmp_path):
     ],
 )
 def test_v031_generic_layouts_with_a_short_last_group_import_complete(tmp_path, layout, groups):
-    # Overlapping tensors of different groups differ in layer count, and block-outer ones in offset (ruling R-U).
+    # Overlapping tensors of different groups differ in layer count, and block-outer ones in offset, but
+    # their pages share bytes only for the same block ID in different groups.
     path, launches = observation_fixture(tmp_path, layout=layout)
     result = validate_observations(path, launches)["tp2"]
     assert result["status"] == "complete", result["diagnostics"]
@@ -1688,7 +1689,7 @@ def test_v031_state_group_layer_specs_stay_compared_across_phases(tmp_path):
     path, launches = observation_fixture(tmp_path, layout="mamba_hybrid", decode_prefix_caching=False)
 
     def edit(record):
-        # A layer spec field that followed the Mamba block size would differ between the phases (ruling R-W).
+        # A layer spec field that followed the Mamba block size would differ between the phases.
         for group in record["cache"]["groups"]:
             if "mamba_cache_mode" in group.get("state", {}):
                 for spec in group["layer_specs"].values():
@@ -1724,7 +1725,7 @@ def test_legacy_bundle_imports_are_unchanged_by_the_state_mapping(tmp_path, pack
     provenance = result["provenance"]
     assert len(provenance["rank_capacities"]) == 8
     assert len(provenance["artifacts"]) == 12
-    # Ruling R-M: the provenance keeps the keys that 5bf93cb0 writes, because finalized campaigns compare the
+    # The provenance keeps the keys of imports before vLLM 0.31.0 support, because finalized campaigns compare the
     # runtime memory provenance byte for byte.
     assert not {"prefix_caching", "phase_geometry_differences"} & set(provenance)
     assert (
@@ -1766,7 +1767,7 @@ def test_legacy_bundle_imports_are_unchanged_by_the_state_mapping(tmp_path, pack
 )
 def test_v031_worker_block_size_is_not_compared_with_the_scheduler(tmp_path, layout, field, value, complete):
     path, launches = observation_fixture(tmp_path, layout=layout)
-    # vLLM 0.31.0 resolves block_size in the engine-core process only (engine/core.py:341-350, ruling R-D+).
+    # vLLM 0.31.0 resolves block_size in the engine-core process only (engine/core.py:341-350).
     _mutate(
         path,
         lambda record: record["resolved_config"]["cache_config"].update({field: value})

@@ -786,7 +786,7 @@ def test_grouped_automatic_intake_defers_rank_resources_until_after_topology(tmp
     assert SupportRequest.from_yaml(output).profile_deployment().resources.cache_layout == "grouped"
 
 
-# Ruling R-Z: collection observes memory only on vLLM 0.27.0 (collector runner._observe_runtime_memory and
+# Collection observes pending memory only on vLLM 0.27.0 (collector runner._observe_runtime_memory and
 # support/plan.py). The bundled vLLM 0.31.0 instrumentation observes it in runtime probes only.
 _PENDING_MEMORY_LINES = {
     "0.27.0": [

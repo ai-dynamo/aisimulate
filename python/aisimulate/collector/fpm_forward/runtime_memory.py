@@ -33,12 +33,11 @@ from .runtime.fpm_memory_observer import (
 from .types import ParallelTopology
 
 _CELL_EXECUTION_FIELDS = frozenset({"execution_identity", "input_text_sha256"})
-# The spec classes of the shared class table (decision 1) and the uniform wrapper of their inner specs.
+# The spec classes that the shared class table maps to FPM cache kinds, and the uniform wrapper of their inner specs.
 _SPEC_TYPES = frozenset({*(_SPEC_MODULE + name for name in SPEC_KINDS), _UNIFORM_SPEC})
 # vLLM 0.31.0 cache settings that follow the prefix-caching mode (models/config.py:640-675), the
 # user prefix-match unit, and the block size that the engine core resolves in its own process
-# (engine/core.py:341-350). Importers record the mode per phase instead of comparing them
-# (decision 4, rulings R-D and R-D+).
+# (engine/core.py:341-350). Importers record the mode per phase instead of comparing them.
 _PHASE_CACHE_SETTINGS = (
     "enable_prefix_caching",
     "mamba_cache_mode",
@@ -46,12 +45,12 @@ _PHASE_CACHE_SETTINGS = (
     "prefix_match_unit",
     "block_size",
 )
-# Decision 5: the Mamba "all" mode keeps a state per block, which no cache kind models.
+# The Mamba "all" mode keeps a state per block, which no cache kind models.
 _MAMBA_ALL_UNMODELED = "mamba_cache_mode all is not modeled; run the probe with prefix caching off (none) or on (align)"
 
 
 def _layer_strided(cache: Any) -> bool:
-    """vLLM 0.31.0 allocation records place layers with ``layer_stride``; older records never do (ruling R-A)."""
+    """vLLM 0.31.0 allocation records place layers with ``layer_stride``; older records never do."""
     allocations = cache.get("tensor_allocations") if isinstance(cache, dict) else None
     return isinstance(allocations, list) and any(
         isinstance(item, dict) and "layer_stride" in item for item in allocations
@@ -513,7 +512,7 @@ def _scheduler_copy(group: dict[str, Any]) -> dict[str, Any]:
 
     The scheduler copy of a UniformTypeKVCacheSpecs group keeps only its first inner spec
     (vLLM 0.31.0 kv_cache_utils.py:2434-2440). The record writer sorts keys, so the first spec
-    is the one of the first layer name (ruling R-R). Every other group is the worker group
+    is the one of the first layer name. Every other group is the worker group
     without its kind and layer classes.
     """
     expected = {key: value for key, value in group.items() if key not in {"kind", "layer_classes"}}
@@ -629,18 +628,18 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
             "sliding_window": window,
         }
         if kind == "state":
-            # A state group holds a fixed number of pool blocks for every running request (decision 6).
+            # A state group holds a fixed number of pool blocks for every running request.
             state = group.get("state")
             blocks = state.get("blocks_per_request") if isinstance(state, dict) else None
             if type(blocks) is not int or blocks <= 0:
                 raise ValueError(f"runtime state cache group lacks blocks_per_request evidence: {names}")
-            # Ruling R-W: refused from the group itself, with or without prefix-caching evidence.
+            # The Mamba "all" mode is refused from the group itself, with or without prefix-caching evidence.
             if state.get("mamba_cache_mode") == "all":
                 raise ValueError(_MAMBA_ALL_UNMODELED)
             checkpoint = state.get("num_prefill_checkpoint_blocks", 0)
             if type(checkpoint) is not int or checkpoint != 0:
                 raise ValueError(f"mamba prefill checkpoint blocks are not modeled: {names}")
-            # Decision 6: the spec gives the count. A MambaSpec holds one state block and its speculative
+            # The spec gives the count. A MambaSpec holds one state block and its speculative
             # blocks (kv_cache_interface.py:1048); a KpoolTailSpec or CircularBufferSpec holds one block
             # (:1019-1025, :904-911). Every spec class of the group must give the recorded count. The
             # allocation semantics refuse speculation itself.
@@ -841,10 +840,10 @@ def resolve_runtime_resources(
         free = accounting["initial_free_blocks"]
         allocated = accounting["allocated_cache_bytes"]
         groups = _normalized_groups(cache, scheduled, allocated // count)
-        # Decision 1 and ruling R-G: this vLLM 0.27.0 path refuses every state group.
+        # _normalized_groups accepts a state group on any runtime, so this vLLM 0.27.0 path refuses every state group.
         if any(group["kind"] == "state" for group in groups):
             raise ValueError("runtime memory cache kind is unsupported")
-        # Ruling R-W+: and every class outside the vLLM 0.27.0 allow-list.
+        # This path also refuses every spec class outside the vLLM 0.27.0 allow-list: full and sliding-window attention.
         for group in cache["groups"]:
             if group.get("spec_type") not in _LEGACY_SPECS:
                 raise ValueError(f"unsupported runtime cache spec: {group.get('spec_type')!r}")

@@ -716,7 +716,7 @@ def verify_collection_runtime(
     capacity = actual["runtime_memory"].pop("kv_cache_bytes")
     if actual != expected:
         raise ValueError("formal runtime cache layout or settings differ from the accepted probe")
-    # vLLM 0.27.0 and 0.28.0 imports record no prefix-caching evidence (ruling R-M).
+    # vLLM 0.27.0 and 0.28.0 imports record no prefix-caching evidence.
     accepted = source["provenance"].get("prefix_caching", {})
     formal = result["provenance"].get("prefix_caching", {})
     for phase in accepted:

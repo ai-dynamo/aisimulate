@@ -506,8 +506,9 @@ def _layer_views(
     A layer views its pages as one tensor, or as one tensor per state that a Mamba layer
     cuts from its page (kv_cache_interface.py:353-417, mamba/abstract.py:28-42). Each view
     starts and ends inside the layer's page of a block, the views of one layer do not
-    overlap there, and together they hold at most that page (ruling R-U). A block-outer
-    block also holds the pages of the tensor's other layers.
+    overlap there, and together they hold at most that page, because pages share bytes only
+    for the same block ID in different groups. A block-outer block also holds the pages of
+    the tensor's other layers.
     """
     spec = group["layer_specs"][name]
     if not isinstance(entries, list) or not entries:
@@ -558,10 +559,10 @@ def _layer_strided_views(
 
     Block ``b`` of layer ``layers[l]`` starts at ``offset + l * layer_stride + b * block_stride``
     (kv_cache_interface.py:1417-1438). The last page of the last layer bounds the region in
-    layer-outer and block-outer layouts (ruling R-L). Tensors whose regions intersect overlay
+    layer-outer and block-outer layouts. Tensors whose regions intersect overlay
     cache groups, which is sound because a block ID belongs to one group at a time (:1428-1430).
     The generic layouts start every group's tensors at byte 0 (kv_cache_utils.py:1775-1819), so
-    overlapping tensors may differ in offset and layer count. Ruling R-U therefore checks pages:
+    overlapping tensors may differ in offset and layer count. The overlap check therefore compares pages:
     two pages may share bytes only when they hold one block ID for layers of different groups.
     """
     if len(storages) != 1:
@@ -651,7 +652,7 @@ def _physical_views(
     strided = runtime_memory._layer_strided(cache)
     layer_groups = {}
     for group_id, group in enumerate(cache["groups"]):
-        # Rulings R-G and R-W: vLLM 0.27.0 and 0.28.0 records hold only the legacy classes.
+        # _normalized_groups accepts every table class, but vLLM 0.27.0 and 0.28.0 records hold only the legacy ones.
         if not strided and group.get("spec_type") not in _LEGACY_SPECS:
             raise ValueError(f"unsupported runtime cache spec: {group.get('spec_type')!r}")
         if group.get("pool_id") != pool:
@@ -781,7 +782,7 @@ def _physical_views(
 def _prefix_caching_settings(cache: dict[str, Any], *, scheduler: bool) -> dict[str, Any] | None:
     """The prefix-caching settings that one vLLM 0.31.0 process recorded; None for older records.
 
-    vLLM 0.27.0 and 0.28.0 records have no ``prefix_caching`` key (ruling R-M). The scheduler
+    vLLM 0.27.0 and 0.28.0 records have no ``prefix_caching`` key. The scheduler
     adds its block size and hash block size (core/sched/scheduler.py:198, :310-312).
     """
     if "prefix_caching" not in cache:
@@ -812,7 +813,7 @@ def _phase_prefix_caching(
 
     The hash block size comes from the scheduler. Every MambaSpec takes the mode of its cache
     config (mamba/abstract.py:76), so each Mamba state group reports the phase's mode. A vLLM
-    0.31.0 record always carries the evidence; only older records lack the key (ruling R-W).
+    0.31.0 record always carries the evidence; only older records lack the key.
     """
     label = f"{phase} prefix-caching settings across ranks"
     if any(runtime_memory._layer_strided(record["cache"]) for record in workers.values()) and any(
@@ -843,7 +844,7 @@ def _phase_prefix_caching(
 
 
 def _mode_free(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Cache groups without the parts of a state group that follow the prefix-caching mode (rulings R-H, R-W).
+    """Cache groups without the parts of a state group that follow the prefix-caching mode.
 
     A Mamba block holds the hybrid block in align mode and max_model_len in none mode
     (models/config.py:663-675), and every MambaSpec records the mode (kv_cache_interface.py:1047).
@@ -953,8 +954,8 @@ def _configuration(
                         "hardware across phases/ranks",
                     )
                 settings = copy.deepcopy(config)
-                # Decision 4, rulings R-D and R-D+: these follow the phase's prefix-caching mode or
-                # the engine core. Provenance prefix_caching records the mode of every phase instead.
+                # These settings follow the phase's prefix-caching mode or the engine core. Provenance
+                # prefix_caching records the mode of every phase instead.
                 for name in runtime_memory._PHASE_CACHE_SETTINGS:
                     settings["cache_config"].pop(name, None)
                 if canonical_settings is None:
@@ -1018,9 +1019,9 @@ def _configuration(
         prefix_caching[phase] = _phase_prefix_caching(phase, workers, schedulers)
     if len({value is None for value in prefix_caching.values()}) > 1:
         raise ValueError("runtime observation prefix-caching evidence across phases mismatch")
-    # Decision 3: the record holds the first collection phase of the role that this validation covers.
+    # The record holds the prefix-caching values of the role's first collection phase that this validation covers.
     record_phase = next(item for item in collection_phases(launch.get("worker_type")) if item in required_phases)
-    # Ruling R-M: only vLLM 0.31.0 evidence adds these keys. Its records carry prefix caching, which every
+    # Only vLLM 0.31.0 evidence adds these keys. Its records carry prefix caching, which every
     # layer-strided record must, and every phase agrees on that (checked above). The provenance of a vLLM 0.27.0
     # or 0.28.0 import stays as it was, because finalized campaigns compare it byte for byte.
     hybrid_evidence = (

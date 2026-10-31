@@ -556,7 +556,7 @@ def _json_bytes(value):
 
 
 def test_legacy_runtime_records_stay_byte_identical_with_the_new_fields_present():
-    # Expected values are the 5bf93cb0 observer's output for the same objects.
+    # Expected values are what the observer wrote before vLLM 0.31.0 support, for the same objects.
     worker, scheduler, cache = _with_engine_core_values(*_initialized())
     resolved = {
         "model_config": {
@@ -981,14 +981,14 @@ def test_runtime_memory_rejects_incomplete_stale_mixed_or_unsupported_evidence(t
         payload["cache"]["groups"][0]["spec_type"] = "vllm.v1.kv_cache_interface.HiSparseHotSpec"
         scheduler["cache"]["groups"][0]["spec_type"] = payload["cache"]["groups"][0]["spec_type"]
     elif change in ("mamba_spec_without_state", "mamba_spec_with_state"):
-        # The vLLM 0.27.0 path refuses every state group (rulings R-C and R-G).
+        # The vLLM 0.27.0 path refuses every state group.
         for group in (payload["cache"]["groups"][0], scheduler["cache"]["groups"][0]):
             group["spec_type"] = "vllm.v1.kv_cache_interface.MambaSpec"
             if change == "mamba_spec_with_state":
                 group["state"] = {"blocks_per_request": 1}
         payload["cache"]["groups"][0]["kind"] = "state"
     elif change == "mla_spec":
-        # Hand-made records of every rank with a class outside the vLLM 0.27.0 allow-list (ruling R-W+).
+        # Hand-made records of every rank with a class outside the vLLM 0.27.0 allow-list.
         mla = "vllm.v1.kv_cache_interface.MLAAttentionSpec"
         for other in sorted(tmp_path.glob("pod-*/fpm-memory-*.json")):
             if other not in (path, scheduler_path):
@@ -1385,7 +1385,7 @@ def test_glm5next_launch_loads_the_language_model_only(architecture):
     assert (plan.capability.architecture == "Glm5NextForConditionalGeneration") == (architecture is not None)
     for cell in plan.cells:
         args = runner._cell_generator_overrides(plan, cell, {})["params"]["agg"]["extra_cli_args"]
-        # Decision 8: GLM probes and collection load the text decoder only (docs/glm53flash-fpm.md:70-73).
+        # GLM probes and collection load the text decoder only (docs/glm53flash-fpm.md:70-73).
         assert ("--language-model-only" in args) == (architecture is not None)
 
 

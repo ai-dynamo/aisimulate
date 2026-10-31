@@ -415,7 +415,7 @@ def verify_collection_runtime_bindings(request: SupportRequest, bindings: list[d
             capacity = actual["runtime_memory"].pop("kv_cache_bytes")
             if actual != expected:
                 raise ValueError("runtime cache layout or settings differ from the accepted probe")
-            # vLLM 0.27.0 and 0.28.0 imports record no prefix-caching evidence (ruling R-M).
+            # vLLM 0.27.0 and 0.28.0 imports record no prefix-caching evidence.
             accepted = source["provenance"].get("prefix_caching", {}).get(phase)
             if result["provenance"].get("prefix_caching", {}).get(phase) != accepted:
                 raise ValueError("runtime prefix-caching settings differ from the accepted probe")
@@ -434,7 +434,7 @@ def verify_collection_runtime_bindings(request: SupportRequest, bindings: list[d
             )
         except (OSError, ValueError, TypeError, KeyError, AttributeError, StopIteration) as error:
             raise ValueError(f"{phase}: {error}") from error
-    # Decision 3: the record holds the role's first collection phase, whatever order the caller binds the phases in.
+    # The record holds the role's first collection phase, whatever order the caller binds the phases in.
     # _plans requires every collection phase exactly once.
     resources = deepcopy(phases[request.collection_phases[0]]["resources"])
     capacity = min(item["resources"]["runtime_memory"]["kv_cache_bytes"] for item in phases.values())
