@@ -4,9 +4,12 @@
 """Coverage for the current NVIDIA NVFP4 support-matrix checkpoints."""
 
 import dataclasses
+import hashlib
+from pathlib import Path
 
 import pytest
 
+import aisimulate_core
 from aisimulate.sdk import common, config
 from aisimulate.sdk.models import get_model
 from aisimulate.sdk.task_v2 import Task
@@ -307,6 +310,21 @@ def test_qwen35_nvfp4_exclusions_keep_attention_and_shared_experts_bf16():
     assert by_name["context_qkv_gemm"]._quant_mode == common.GEMMQuantMode.bfloat16
     assert by_name["context_gdn_shared_gate_up_gemm"]._quant_mode == common.GEMMQuantMode.bfloat16
     assert by_name["context_gdn_moe"]._quant_mode == common.MoEQuantMode.nvfp4
+
+
+# nvidia/Qwen3.5-397B-A17B-NVFP4-V2@8f590eae8f10bf55d9a46f79ea0280bde435c9f8, byte for byte
+# (model_configs/QWEN35_397B_NVFP4_V2_PROVENANCE.md).
+QWEN35_NVFP4_V2_SHA256 = {
+    "config": "9408a9e559cc2f05f0b357738213666353e6651160ce8ff477b1c26982bc4f63",
+    "hf_quant_config": "2be0a371edb1983ace9b776b12ff3a19e2b4841efc15c69df8d9f4aa5ec1c56c",
+}
+
+
+@pytest.mark.parametrize("suffix", list(QWEN35_NVFP4_V2_SHA256))
+def test_qwen35_nvfp4_v2_bundle_is_the_pinned_upstream_bytes(suffix):
+    configs = Path(aisimulate_core.__file__).parent / "model_configs"
+    data = (configs / f"nvidia--Qwen3.5-397B-A17B-NVFP4-V2_{suffix}.json").read_bytes()
+    assert hashlib.sha256(data).hexdigest() == QWEN35_NVFP4_V2_SHA256[suffix]
 
 
 def test_gemma4_exclusions_keep_attention_and_mlp_bf16():
