@@ -596,9 +596,9 @@
     "llama4-scout-b200-vllm-isl1024-osl2": {
       "agg": {
         "values": {
-          "agg_request": 83.36025598147515,
-          "agg_tpot": 18.898943991282422,
-          "agg_ttft": 64.46131199019273
+          "agg_request": 83.39250623752467,
+          "agg_tpot": 18.91412058236455,
+          "agg_ttft": 64.47838565516012
         }
       },
       "disagg": {
@@ -610,42 +610,42 @@
       },
       "mixed": {
         "values": {
-          "mixed_step": 18.898943991282426
+          "mixed_step": 18.914120582364554
         }
       },
       "static": {
         "values": {
-          "static_ctx": 18.142,
-          "static_gen": 4.597,
-          "static_total": 22.739
+          "static_ctx": 18.141,
+          "static_gen": 4.613,
+          "static_total": 22.753999999999998
         }
       }
     },
     "mimo-v2-flash-b200-vllm-hybrid-attn-xshape": {
       "agg": {
         "values": {
-          "agg_request": 94.39598629244203,
-          "agg_tpot": 24.092228843502127,
-          "agg_ttft": 70.3037574489399
+          "agg_request": 91.55289412004906,
+          "agg_tpot": 22.7543031153172,
+          "agg_ttft": 68.79859100473186
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 51.395,
-          "disagg_tpot": 6.21,
-          "disagg_ttft": 45.185
+          "disagg_request": 48.669,
+          "disagg_tpot": 6.223,
+          "disagg_ttft": 42.446
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 24.09222884350213
+          "mixed_step": 22.754303115317203
         }
       },
       "static": {
         "values": {
-          "static_ctx": 22.821,
-          "static_gen": 4.392,
-          "static_total": 27.213
+          "static_ctx": 21.437,
+          "static_gen": 4.437,
+          "static_total": 25.874000000000002
         }
       }
     },
@@ -2223,35 +2223,35 @@
     },
     "llama4-scout-b200-vllm-isl1024-osl2::agg": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "cc48595cbc5c4d81c9d9ea3220cd7884227d7dd2"
     },
     "llama4-scout-b200-vllm-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "cc48595cbc5c4d81c9d9ea3220cd7884227d7dd2"
     },
     "llama4-scout-b200-vllm-isl1024-osl2::mixed": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "cc48595cbc5c4d81c9d9ea3220cd7884227d7dd2"
     },
     "llama4-scout-b200-vllm-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "cc48595cbc5c4d81c9d9ea3220cd7884227d7dd2"
     },
     "mimo-v2-flash-b200-vllm-hybrid-attn-xshape::agg": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "cc48595cbc5c4d81c9d9ea3220cd7884227d7dd2"
     },
     "mimo-v2-flash-b200-vllm-hybrid-attn-xshape::disagg": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "cc48595cbc5c4d81c9d9ea3220cd7884227d7dd2"
     },
     "mimo-v2-flash-b200-vllm-hybrid-attn-xshape::mixed": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "cc48595cbc5c4d81c9d9ea3220cd7884227d7dd2"
     },
     "mimo-v2-flash-b200-vllm-hybrid-attn-xshape::static": {
       "engine": "rust",
-      "git_head": "ed91582f6b9dff7c5cb7b5842fd1de5236ba4726"
+      "git_head": "cc48595cbc5c4d81c9d9ea3220cd7884227d7dd2"
     },
     "minimax-m25-b200-sglang-isl1024-osl2::agg": {
       "engine": "rust",

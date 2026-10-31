@@ -95,6 +95,123 @@ requirement, pinned thread caps, byte-reproducible output, and
 all-payloads-before-any-write. `TestGoldenComparisonGuards` proves the
 comparison itself still bites.
 
+### MiMo-V2-Flash and Llama 4 attention layer types
+
+The op-level SDK now reads which layers use full (global) attention as the
+reference models define them. MiMo-V2-Flash marks a sliding-window layer with
+`hybrid_layer_pattern[i] == 1`. Its packaged config has 9 full-attention
+layers (0, 5, 11, ..., 47) and 39 sliding-window layers. The SDK used to model
+39 full-attention layers and 9 sliding-window layers. In Llama 4, layers 3, 7,
+11, ..., 47 use full attention (12 layers). The other 36 layers use chunked
+attention. The SDK used to model every odd layer (24 layers) as full
+attention.
+
+Eight engine-step records were refreshed. The four
+`mimo-v2-flash-b200-vllm-hybrid-attn-xshape` records failed the 0.01%
+tolerance of the HYBRID cases. Three of the four
+`llama4-scout-b200-vllm-isl1024-osl2` records (static, mixed and aggregated)
+still passed their 1% tolerance, but they moved. The disaggregated Scout
+record kept its values at the three decimals that it stores. Rule 1 in
+`python/aisimulate/.claude/rules/rust-core/parity.md` asks a PR to refresh
+every record that its change affects. PR #517 made vLLM 0.30.0 the `current`
+slot that these cases read. It re-pinned every engine-step record, these
+eight included, on the 2026-10 tables. "Before" in both tables below is the
+record of PR #517. The MiMo records were refreshed from
+`cc48595cbc5c4d81c9d9ea3220cd7884227d7dd2` with a matching native build:
+
+| Metric (ms) | Before | After |
+| --- | ---: | ---: |
+| Static context | 22.821 | 21.437 |
+| Static generation | 4.392 | 4.437 |
+| Static total | 27.213 | 25.874 |
+| Mixed step | 24.092 | 22.754 |
+| Aggregated TTFT | 70.304 | 68.799 |
+| Aggregated TPOT | 24.092 | 22.754 |
+| Aggregated request | 94.396 | 91.553 |
+| Disaggregated TTFT | 45.185 | 42.446 |
+| Disaggregated TPOT | 6.210 | 6.223 |
+| Disaggregated request | 51.395 | 48.669 |
+
+Only attention changes. At TP 8, both layer types have one KV head per GPU and
+the same projection shapes. Every other operation therefore keeps its total.
+Only the split of that total between the `global_*` and `swa_*` operations
+changes. Every layer changes type: 39 layers move to the 128-token window, and
+9 layers, with the dense layer 0, move to full attention. The net change is 30
+window layers. Each layer type emits one attention operation, scaled by its
+layer count. The two layer plans therefore give the cost of one layer of each
+type:
+
+- Static context: a layer costs 89.729 µs with full attention over 1,024
+  tokens and 43.607 µs with the window, so the phase falls by
+  30 × 46.123 µs = 1.384 ms.
+- Static generation: in the decode step at batch 1, a window layer costs
+  1.525 µs more (12.546 against 11.021 µs), so the phase rises by 0.046 ms.
+- Mixed step: the 1,024-token prefill plus one decode token, −1.338 ms.
+- Aggregated: TPOT is the mixed step. TTFT is (mixed step + 48 layers ×
+  0.8 ms dispatch) × 1.125, the vLLM queueing factor at batch 2. Request
+  latency is TTFT + TPOT.
+- Disaggregated: TTFT is static context × 1.1 (prefill correction) × 1.8
+  (TTFT correction). The code rounds this prefill TTFT (the unrounded static
+  context × 1.1) to three decimals before it applies the 1.8 factor. TPOT is
+  the batch-4 decode step × 1.08 (decode correction). In that step, a window
+  layer costs 0.41 µs more (13.504 against 13.096 µs), which is +0.0123 ms
+  for 30 layers. Request latency is TTFT + TPOT.
+
+The `llama4-scout-b200-vllm-isl1024-osl2` records were refreshed the same way.
+At main, the live engine gives exactly the "Before" values:
+
+| Metric (ms) | Before | After |
+| --- | ---: | ---: |
+| Static context | 18.142 | 18.141 |
+| Static generation | 4.597 | 4.613 |
+| Static total | 22.739 | 22.754 |
+| Mixed step | 18.899 | 18.914 |
+| Aggregated TTFT | 64.461 | 64.478 |
+| Aggregated TPOT | 18.899 | 18.914 |
+| Aggregated request | 83.360 | 83.393 |
+| Disaggregated TTFT | 35.921 | 35.921 |
+| Disaggregated TPOT | 5.544 | 5.544 |
+| Disaggregated request | 41.465 | 41.465 |
+
+The move from "Before" to "After" comes from the layer-type correction.
+The 24 odd layers used to be global. Now only layers 3, 7, ..., 47 are global,
+so 12 layers change type. At ISL 1024, the 8,192-token chunk never limits
+attention. The change therefore comes only from the attention lookup. The
+window-8192 lookup costs a little less than the window-0 lookup in the context
+phase and more in the decode step at batch 1. Llama 4 gives a global layer and
+a chunked layer the same projection and MoE shapes. Every other operation
+therefore keeps its total. Only the split of that total between the `global_*`
+and `swa_*` operations changes. The two layer plans give the cost of one layer
+of each type:
+
+- Static context: attention costs 40.555 µs per chunked layer and 40.614 µs per
+  global layer, so the phase falls by 0.704 µs.
+- Static generation: in the decode step at batch 1, attention costs 12.286 µs
+  per chunked layer and 10.964 µs per global layer, so the phase rises by
+  15.860 µs.
+- Mixed step: the 1,024-token prefill plus one decode token, +15.177 µs.
+- Disaggregated: the prefill TTFT is 19.956388 ms before and 19.955614 ms
+  after. Both round to 19.956 ms, so disaggregated TTFT keeps its value. In
+  the batch-4 decode step, the two layer types cost the same to within 0.005 µs
+  (10.925 against 10.930 µs). The disaggregated records therefore keep their
+  values at the three decimals that they store.
+
+The largest relative move is +0.35%, in static generation. Memory predictions
+do not change, because HybridMoE KV-cache memory is the same for every layer
+type.
+
+```bash
+python/aisimulate/.venv/bin/python crates/core/parity_tests/perfmodel/pin_goldens.py \
+  --refresh mimo-v2-flash-b200-vllm-hybrid-attn-xshape::static \
+  mimo-v2-flash-b200-vllm-hybrid-attn-xshape::mixed \
+  mimo-v2-flash-b200-vllm-hybrid-attn-xshape::agg \
+  mimo-v2-flash-b200-vllm-hybrid-attn-xshape::disagg \
+  llama4-scout-b200-vllm-isl1024-osl2::static \
+  llama4-scout-b200-vllm-isl1024-osl2::mixed \
+  llama4-scout-b200-vllm-isl1024-osl2::agg \
+  llama4-scout-b200-vllm-isl1024-osl2::disagg
+```
+
 ### GLM-5.3-Flash Ops data and the fleet `next` slot
 
 Packaging the GLM-5.3-Flash Ops tables makes SGLang 0.5.20 and vLLM 0.31.0
