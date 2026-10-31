@@ -608,9 +608,11 @@ def worker_memory(worker: Any) -> dict[str, Any]:
 
     # Every observed alias must be declared by the runtime allocation plan.
     # Packed tensors explicitly share one backing allocation through block_stride.
-    # vLLM 0.31.0 tensors share one buffer; layer l starts at offset + l * layer_stride.
+    # vLLM 0.31.0 tensors share one buffer; the page of layer l for block b starts
+    # at offset + l * layer_stride + b * block_stride (kv_cache_interface.py:1422-1428).
     tensors = list(config.kv_cache_tensors)
     layer_strided = any(hasattr(tensor, "layer_stride") for tensor in tensors)
+    pages = {name: spec["page_size_bytes"] for group in groups for name, spec in group["layer_specs"].items()}
     expected: dict[tuple[str, int], int] = {}
     covered: set[str] = set()
     packed_key = None
@@ -635,7 +637,11 @@ def worker_memory(worker: Any) -> dict[str, Any]:
                 raise ValueError("invalid cache tensor layer stride or offset")
             if expected and key not in expected:
                 raise ValueError("cache tensors with layer strides use multiple backing allocations")
-            if offset + (len(names) - 1) * layer_stride + num_blocks * stride > size:
+            # The last page of the last layer bounds the region, in layer-outer and block-outer layouts.
+            page = max(pages[name] for name in names)
+            if page > stride:
+                raise ValueError("cache tensor page exceeds its block stride")
+            if offset + (len(names) - 1) * layer_stride + (num_blocks - 1) * stride + page > size:
                 raise ValueError("cache tensor layers exceed their backing allocation")
             allocation["layer_stride"] = layer_stride
         elif stride:

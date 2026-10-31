@@ -421,9 +421,29 @@ def test_worker_memory_reads_layers_and_tuple_caches():
     )
 
 
+def test_block_outer_tensor_region_ends_at_its_last_page():
+    worker, _scheduler, cache = _initialized(layers=True)
+    # Block-outer (kv_cache_interface.py:1422-1428): each 128-byte block holds the
+    # 64-byte pages of both layers, so the last page ends exactly at the buffer end.
+    tensor = cache.kv_cache_tensors[1]
+    tensor.layer_stride, tensor.block_stride, tensor.offset = 64, 128, 0
+    allocation = observer.worker_memory(worker)["tensor_allocations"][1]
+    assert {key: allocation[key] for key in ("layers", "layer_stride", "block_stride", "offset")} == {
+        "layers": ["full.1", "slide.1"],
+        "layer_stride": 64,
+        "block_stride": 128,
+        "offset": 0,
+    }
+
+
 @pytest.mark.parametrize(
     "change,match",
-    [("region", "exceed their backing allocation"), ("storage", "layer strides use multiple backing allocations")],
+    [
+        ("region", "exceed their backing allocation"),
+        ("last_page", "exceed their backing allocation"),
+        ("page", "page exceeds its block stride"),
+        ("storage", "layer strides use multiple backing allocations"),
+    ],
 )
 def test_layer_strided_tensors_share_one_buffer_that_holds_every_region(change, match):
     worker, _scheduler, cache = _initialized(layers=True)
@@ -431,6 +451,12 @@ def test_layer_strided_tensors_share_one_buffer_that_holds_every_region(change, 
     if change == "region":
         # The second layer starts one byte later, so its last block passes the end of the buffer.
         tensor.layer_stride = 1
+    elif change == "last_page":
+        # Block-outer, one page later: the second layer's last page ends one page past the buffer.
+        tensor.layer_stride, tensor.block_stride, tensor.offset = 64, 128, 64
+    elif change == "page":
+        # A 64-byte page does not fit in a 32-byte block stride.
+        tensor.block_stride = 32
     else:
         context = worker.vllm_config.compilation_config.static_forward_context
         moved = _Storage(300, tensor.size)
