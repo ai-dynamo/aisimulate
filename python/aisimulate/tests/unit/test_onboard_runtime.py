@@ -1826,6 +1826,46 @@ def test_formal_phase_binding_compares_the_raw_block_size_of_a_state_group(tmp_p
         verify_collection_runtime_bindings(request, bindings())
 
 
+def test_formal_collection_compares_the_cache_geometry_of_every_phase(tmp_path, capsys):
+    from aisimulate.support.runtime import verify_collection_runtime
+
+    # Decode runs without prefix caching, so the accepted probe's decode Mamba groups hold 4096-token blocks. The
+    # first worker records and the resource records belong to prefill, so only a per-phase comparison sees the
+    # decode block.
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, layout="mamba_hybrid", decode_prefix_caching=False
+    )
+    checkpoint = json.loads((root / "fpm-checkpoint/fpm_forward.json").read_text())
+    index = Path(checkpoint["runtime_observations"])
+    _record_decode_state_block_size(index, 2048)
+    with pytest.raises(ValueError, match="decode: runtime cache group geometry differs from the accepted probe"):
+        verify_collection_runtime(request, index, collection_checkpoint=checkpoint)
+
+
+@pytest.mark.parametrize("decode_block", [None, 2048])
+def test_finalization_compares_the_cache_geometry_of_every_formal_phase(tmp_path, capsys, decode_block):
+    from aisimulate.support.finalization import finalization_manifest, finalize
+    from aisimulate.support.runtime import verify_runtime_profile
+
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, layout="mamba_hybrid", decode_prefix_caching=False
+    )
+    target = tmp_path / "finalized"
+    if decode_block is None:
+        finalize(request, root, target)
+        resolved = SupportRequest.from_yaml(target / "request.yaml")
+        assert finalization_manifest(resolved)["runtime_compatibility"]["status"] == "compatible"
+        # Re-verification of the finalized profile runs the formal comparison again.
+        verify_runtime_profile(resolved)
+        return
+    checkpoint = json.loads((root / "fpm-checkpoint/fpm_forward.json").read_text())
+    _record_decode_state_block_size(Path(checkpoint["runtime_observations"]), decode_block)
+    # Finalization verifies the formal observations against the accepted probe before it writes anything.
+    with pytest.raises(ValueError, match="decode: runtime cache group geometry differs from the accepted probe"):
+        finalize(request, root, target)
+    assert not target.exists()
+
+
 def _reviewed_capacity_revision(tmp_path, capsys, resource_overrides=None):
     checkpoint, original, files, root = _completed_runtime_collection(
         tmp_path, capsys, resource_overrides=resource_overrides

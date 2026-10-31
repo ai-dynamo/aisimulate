@@ -698,8 +698,8 @@ def verify_collection_runtime(
 
     # Both validations cover the complete role of the same launch with the same rule. Their first worker records
     # and their resource records therefore belong to the same phase, so the raw groups and the whole records,
-    # including that phase's prefix-caching settings, compare as they are. The settings of the other phases
-    # compare per phase below.
+    # including that phase's prefix-caching settings, compare as they are. The settings and the cache geometry of
+    # the other phases compare per phase below.
     def geometry(evidence):
         groups = next(
             item["evidence"]["cache"]["groups"]
@@ -722,6 +722,17 @@ def verify_collection_runtime(
     for phase in accepted:
         if phase in formal and formal[phase] != accepted[phase]:
             raise ValueError(f"{phase}: runtime prefix-caching settings differ from the accepted probe")
+    # Import lets another phase differ from the first phase's groups only in state group block sizes, which it records
+    # in phase_geometry_differences, and in the Mamba cache mode, which follows the prefix-caching settings compared
+    # above. Equal differences therefore give every phase the cache geometry of the accepted probe. Imports before
+    # vLLM 0.31.0 record no differences.
+    accepted_geometry = source["provenance"].get("phase_geometry_differences", [])
+    formal_geometry = result["provenance"].get("phase_geometry_differences", [])
+    for phase in request.collection_phases:
+        if [item for item in formal_geometry if item.startswith(f"{phase}: ")] != [
+            item for item in accepted_geometry if item.startswith(f"{phase}: ")
+        ]:
+            raise ValueError(f"{phase}: runtime cache group geometry differs from the accepted probe")
     bound = request.profile_deployment().resources.runtime_memory.kv_cache_bytes
     if memory_request is not None:
         if collection_checkpoint is None:
