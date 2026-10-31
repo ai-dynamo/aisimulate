@@ -131,8 +131,8 @@ from types import SimpleNamespace
 
 import torch
 import vllm.envs as envs
-from collector.case_generator import get_gemm_cases
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 from collector.vllm.utils import setup_distributed, with_exit_stack
 from vllm._custom_ops import scaled_fp4_quant as _scaled_fp4_quant
 from vllm.config import VllmConfig, set_current_vllm_config
@@ -164,7 +164,7 @@ _NVFP4_QUANT_ARGS = {
 
 
 def get_gemm_test_cases():
-    return get_gemm_cases("vllm", get_sm_version())
+    return plan_cases("gemm", "vllm", get_sm_version())
 
 
 @with_exit_stack

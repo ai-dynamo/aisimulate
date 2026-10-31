@@ -166,14 +166,20 @@ def test_denylist_loader_rejects_empty_contains(monkeypatch, tmp_path):
 def test_region_reason_names_the_floor_or_the_backend_gap():
     from collector.capabilities import region_reason
 
-    assert region_reason("gemm", "nvfp4", "vllm", 90) == "dtype nvfp4 requires SM>=100"
-    assert region_reason("dsa_context_module", "bfloat16", "vllm", 89) == "op dsa_context_module requires SM>=90"
-    assert region_reason("gemm", "fp8_block", "sglang", 120) == "backend gap G-sglang-gemm-fp8-block-deepgemm-only"
-    # A gap removes only its own backend, op, dtype and SMs.
-    assert region_reason("gemm", "fp8_block", "sglang", 100) is None
-    assert region_reason("gemm", "fp8_block", "trtllm", 120) is None
-    assert region_reason("gemm", "fp8", "sglang", 120) is None
-    assert region_reason("gemm", "nvfp4", "vllm", None) is None
+    assert region_reason("gemm", {"dtype": "nvfp4"}, "vllm", 90) == ("dtype=nvfp4", "dtype nvfp4 requires SM>=100")
+    assert region_reason("dsa_context_module", {"dtype": "bfloat16"}, "vllm", 89) == (
+        "op=dsa_context_module",
+        "op dsa_context_module requires SM>=90",
+    )
+    assert region_reason("gemm", {"dtype": "fp8_block"}, "sglang", 120) == (
+        "dtype=fp8_block",
+        "backend gap G-sglang-gemm-fp8-block-deepgemm-only",
+    )
+    # A gap removes only its own backend, op, region and SMs.
+    assert region_reason("gemm", {"dtype": "fp8_block"}, "sglang", 100) is None
+    assert region_reason("gemm", {"dtype": "fp8_block"}, "trtllm", 120) is None
+    assert region_reason("gemm", {"dtype": "fp8"}, "sglang", 120) is None
+    assert region_reason("gemm", {"dtype": "nvfp4"}, "vllm", None) is None
 
 
 def test_backend_gaps_cite_existing_guard_notes():
@@ -191,15 +197,17 @@ def test_backend_gaps_cite_existing_guard_notes():
 @pytest.mark.parametrize(
     ("entry", "message"),
     [
-        ({"backend": "sglang", "op": "gemm", "dtype": "fp8_block", "sm": [89]}, "exactly the keys"),
+        ({"backend": "sglang", "op": "gemm", "dtype": "fp8_block", "sm": [89]}, "must have the keys"),
+        ({"backend": "sglang", "op": "gemm", "sm": [89], "note": "G-sglang-x"}, "at least one region field"),
         ({"backend": "sglang", "op": "gemm", "dtype": "fp8_block", "sm": [], "note": "G-sglang-x"}, "SM versions"),
         ({"backend": "sglang", "op": "gemm", "dtype": "fp8_block", "sm": ["89"], "note": "G-sglang-x"}, "SM versions"),
         ({"backend": "sglang", "op": "gemm", "dtype": " ", "sm": [89], "note": "G-sglang-x"}, "non-empty string"),
         ({"backend": "sglang", "op": "gemm", "dtype": "fp8_block", "sm": [89], "note": "D-sglang-x"}, "guard note"),
         ({"backend": "sglang", "op": "gemm", "dtype": "fp8_block", "sm": [89], "note": "G-vllm-x"}, "guard note"),
+        ({"backend": "sglang", "op": "mla_bmm", "dtype": "fp8", "sm": [89], "note": "G-sglang-x"}, "no op plan"),
         (
-            {"backend": "sglang", "op": "gemm", "dtype": "fp8_block", "sm": [89], "note": "G-sglang-x", "n_max": 128},
-            "exactly the keys",
+            {"backend": "sglang", "op": "gemm", "dtype": "fp8_block", "sm": [89], "note": "G-sglang-x", "n_max": "128"},
+            "names \\['n_max'\\]",
         ),
     ],
 )

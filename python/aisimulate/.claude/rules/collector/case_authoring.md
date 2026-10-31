@@ -100,16 +100,34 @@ poison the database with mislabeled rows.
    drops (capability floors, memory filter). Zero cases with no logged
    reason is a population bug to fix — not a clean completion.
 
-## Typed plans (GEMM so far)
+## Op plans (GEMM so far)
 
-A typed plan expands one grid for every CUDA backend and leaves out only
-whole regions. For GEMM, `case_generator.plan_gemm(backend, sm)` takes the
-`gemm_types` axis of `cases/base_ops/gemm.yaml` times the shared shapes (base
-grid plus `model_case_values.gemm` widths) and removes the dtypes that a floor
-or a backend gap rules out. Each backend's `get_gemm_test_cases` is one line
-that calls it; `test_gemm_plan.py` checks that. Cases are `GemmCase`
-named tuples whose string form is still `['fp8', 64, 4096, 7168]`, so case IDs,
-checkpoints and `--case-filter` strings are unchanged.
+An op plan expands one case list for every CUDA backend and leaves out only
+whole regions. `collector/op_plans.py` holds one `OpPlan` entry per migrated
+op: its case type (a named tuple whose string form is still the list form,
+`['fp8', 64, 4096, 7168]`, so case IDs, checkpoints and `--case-filter`
+strings do not change), its expand function (every case, in run order, from
+the YAML above), its dtype field and the fields that share one module build.
+`plan(op, backend, sm)` removes the regions a floor or a backend gap rules
+out; each backend's getter is one line,
+`return plan_cases("<op>", "<backend>", get_sm_version())`.
+
+A backend whose run function takes more arguments than the shared case may
+declare `rows`: the run arguments for one case. Rows say how a case runs,
+never whether; a case with no row is an error.
+
+`tests/unit/collector/test_op_plans.py` runs over every entry, so moving an
+op onto a plan needs no new test: it checks the one-line getters, that the
+backends differ only by backend gaps, that only whole regions are left out,
+and the case string form.
+
+To move an op: write its case type and expand function from the existing
+shared YAML, add the `OP_PLANS` entry, make each getter the one-line call and
+delete what the getters filtered. Decide each deleted filter by
+`overview.md`: it either goes (the cases run and failures are recorded),
+becomes a `backend_gaps` entry with a guard note (a whole region one backend
+cannot run), or becomes a guard that raises in the worker (mismeasure, hang,
+or significant wasted time).
 
 Inspect a plan without a GPU:
 
@@ -118,9 +136,9 @@ python3 collect.py --backend sglang --model-cases-full --sm 120 --ops gemm \
   --plan-only --plan-table /tmp/plan
 ```
 
-The `plans` block gives cases per consumer key, the regions left out with the
-reason or note id, and `plan_hash`, the case_plan_hash of a run that attempts
-every case. `--plan-table` writes one CSV row per case for diffing.
+The `plans` block gives cases per dtype, the regions left out with the reason
+or note id, and `plan_hash`, the case_plan_hash of a run that attempts every
+case. `--plan-table` writes one CSV row per case for diffing.
 
 ## Running subsets (healing)
 

@@ -133,6 +133,7 @@ collector.sglang.collect_kda:
 collector.sglang.collect_gemm:
   - collector/cases/base_ops/gemm.yaml
   - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.sglang.collect_mhc_module:
   - collector/cases/base_ops/mhc.yaml
@@ -188,6 +189,7 @@ collector.trtllm.collect_gdn:
 collector.trtllm.collect_gemm:
   - collector/cases/base_ops/gemm.yaml
   - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.trtllm.collect_mamba2:
   - collector/cases/base_ops/mamba2.yaml
@@ -266,6 +268,7 @@ collector.vllm.collect_gemm:
   - collector/vllm/utils.py
   - collector/cases/base_ops/gemm.yaml
   - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.vllm.collect_gemm_xpu:
   - collector/cases/base_ops/gemm.yaml
