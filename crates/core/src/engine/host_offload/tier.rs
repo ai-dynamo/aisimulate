@@ -270,6 +270,8 @@ struct Client {
 pub(crate) struct HostTier {
     config: HostTierConfig,
     entries: FxHashMap<HostBlockKey, Entry>,
+    /// Includes pinned residents; pending destinations count only in `entries`.
+    resident_blocks: usize,
     /// Resident, currently unpinned blocks. Blocks a framework operation makes
     /// evictable together are one cohort because vLLM exposes no stable policy
     /// order within its Python-set completion cohort.
@@ -317,6 +319,7 @@ impl HostTier {
         Ok(Self {
             config,
             entries: FxHashMap::default(),
+            resident_blocks: 0,
             lru: Lru::default(),
             transfers: FxHashMap::default(),
             transport,
@@ -536,6 +539,7 @@ impl HostTier {
                 .expect("selected host victim disappeared");
             assert_eq!(entry.state, EntryState::Resident);
             assert_eq!(entry.load_pins, 0);
+            self.resident_blocks -= 1;
             self.lru.remove(&mut entry.lru_slot);
             self.observe(HostOffloadObservation {
                 request_id,
@@ -785,6 +789,7 @@ impl HostTier {
                 self.lru.touch(&mut entry.lru_slot, *key);
             }
         }
+        self.resident_blocks += transfer.blocks.len();
         self.mark_resident(&transfer.blocks);
         self.notify_peers(transfer.client);
     }
@@ -1198,6 +1203,7 @@ impl HostTier {
                 entry.state = EntryState::Resident;
                 entry.load_pins += u32::from(hold);
             }
+            self.resident_blocks += blocks.len();
             if !hold {
                 self.touch_cohort(&mut blocks.clone());
             }
@@ -1299,14 +1305,26 @@ impl HostTier {
         self.config.block_bytes
     }
 
+    /// Called by telemetry sampling, never by individual forward passes.
+    pub(crate) fn metrics(&self, scope: crate::engine::G2Scope) -> crate::engine::HostCacheMetrics {
+        let (resident, used) = self.occupancy();
+        let block_bytes = self.block_bytes() as u64;
+        crate::engine::HostCacheMetrics {
+            scope,
+            worker_id: None,
+            dp_rank: None,
+            capacity_blocks: self.capacity_blocks() as u64,
+            resident_blocks: resident as u64,
+            used_blocks: used as u64,
+            capacity_bytes: self.capacity_blocks() as u64 * block_bytes,
+            resident_bytes: resident as u64 * block_bytes,
+            used_bytes: used as u64 * block_bytes,
+        }
+    }
+
     /// `(resident, used)` blocks; used includes pending destinations.
     pub(crate) fn occupancy(&self) -> (usize, usize) {
-        let resident = self
-            .entries
-            .values()
-            .filter(|entry| entry.state == EntryState::Resident)
-            .count();
-        (resident, self.entries.len())
+        (self.resident_blocks, self.entries.len())
     }
 
     fn client(&mut self, client: u64) -> &mut Client {
@@ -1561,6 +1579,101 @@ pub(crate) mod tests {
 
     fn request_id() -> Uuid {
         Uuid::from_u128(1)
+    }
+
+    fn assert_occupancy(tier: &HostTier, resident: usize, used: usize) {
+        assert_eq!(tier.occupancy(), (resident, used));
+        assert_eq!(tier.resident_snapshot().len(), resident);
+        let scope = if tier.is_shared() {
+            crate::engine::G2Scope::ClusterShared
+        } else {
+            crate::engine::G2Scope::DpRankLocal
+        };
+        let metrics = tier.metrics(scope);
+        assert_eq!(metrics.resident_blocks, resident as u64);
+        assert_eq!(metrics.used_blocks, used as u64);
+        assert_eq!(metrics.capacity_blocks, tier.capacity_blocks() as u64);
+        assert_eq!(metrics.resident_bytes, resident as u64 * 1_000_000);
+        assert_eq!(metrics.used_bytes, used as u64 * 1_000_000);
+    }
+
+    #[test]
+    fn occupancy_tracks_native_and_external_residency_without_counting_pins() {
+        for (mut tier, client) in [(private(2, 1.0, 1.0), C), (shared(2, 1.0), A)] {
+            assert_occupancy(&tier, 0, 0);
+            assert!(matches!(
+                tier.prepare_store(client, request_id(), &[key(1), key(1), key(2)], None, 0.0),
+                StoreOutcome::Prepared {
+                    stored_blocks: 2,
+                    ..
+                }
+            ));
+            assert_occupancy(&tier, 0, 2);
+            assert_eq!(
+                tier.prepare_store(client, request_id(), &[key(1)], None, 0.0),
+                StoreOutcome::AlreadyPresent
+            );
+            assert!(matches!(
+                tier.prepare_store(client, request_id(), &[key(3)], None, 0.0),
+                StoreOutcome::RetryCapacity { .. }
+            ));
+            assert_occupancy(&tier, 0, 2);
+            tier.submit_prepared_stores(client, 0.0);
+            let advancing_client = if tier.is_shared() { B } else { client };
+            tier.tick(advancing_client, 2.0);
+            assert_occupancy(&tier, 2, 2);
+            tier.tick(client, 2.0);
+            assert_occupancy(&tier, 2, 2);
+
+            let LoadOutcome::Queued(load) =
+                tier.schedule_load(client, request_id(), &[key(1)], 2.0, 2.0)
+            else {
+                panic!("resident block should load");
+            };
+            assert_occupancy(&tier, 2, 2);
+            let mut plan = tier.plan_external(&[], 2.0);
+            assert!(tier.plan_reserve(&mut plan, key(3)));
+            assert_occupancy(&tier, 2, 2);
+            let reservation = tier.reserve_planned(client, request_id(), plan, None, 2.0);
+            assert_occupancy(&tier, 1, 2);
+            assert_eq!(tier.lookup(key(2)), Lookup::Miss);
+            tier.cancel_external(reservation);
+            assert_occupancy(&tier, 1, 1);
+            assert!(tier.cancel_load(client, load, 2.0, 2.0));
+            assert_occupancy(&tier, 1, 1);
+
+            for (block, kvcr) in [(key(3), true), (key(4), false)] {
+                tier.pin_external(&[key(1)]);
+                let StoreOutcome::Prepared { transfer_id, .. } =
+                    tier.reserve_external(client, request_id(), &[block], None, 2.0)
+                else {
+                    panic!("external reservation should fit");
+                };
+                assert_occupancy(&tier, 1, 2);
+                if kvcr {
+                    tier.complete_external_from_kvcr(transfer_id);
+                } else {
+                    tier.complete_external(transfer_id);
+                }
+                assert_occupancy(&tier, 2, 2);
+                tier.unpin_external(&[key(1)]);
+                assert_occupancy(&tier, 2, 2);
+            }
+
+            assert!(matches!(
+                tier.schedule_load(client, request_id(), &[key(1)], 2.0, 2.0),
+                LoadOutcome::Queued(_)
+            ));
+            tier.tick(client, 4.0);
+            assert_occupancy(&tier, 2, 2);
+            assert!(matches!(
+                tier.prepare_store(client, request_id(), &[key(5)], None, 4.0),
+                StoreOutcome::Prepared { .. }
+            ));
+            assert_occupancy(&tier, 1, 2);
+            tier.retire(client);
+            assert_occupancy(&tier, 1, 1);
+        }
     }
 
     type ExternalReservationEvent = (Uuid, f64, Vec<HostBlockKey>, Option<bool>);
@@ -2126,6 +2239,7 @@ pub(crate) mod tests {
         tier.tick(B, 1.0);
         // Complete but unconsumed: B cannot evict A's G3 write source.
         assert!(tier.is_resident(key(1)) && tier.pins(key(1)) == 1);
+        assert_occupancy(&tier, 1, 1);
         assert!(matches!(
             tier.prepare_store(B, request_id(), &[key(2)], None, 1.0),
             StoreOutcome::RetryCapacity { .. }
@@ -2134,6 +2248,7 @@ pub(crate) mod tests {
         tier.unpin_external(&[key(1)]);
         store(&mut tier, B, &[2], 1.0);
         assert_eq!(tier.lookup(key(1)), Lookup::Miss);
+        assert_occupancy(&tier, 0, 1);
     }
 
     #[test]
@@ -2173,9 +2288,11 @@ pub(crate) mod tests {
         tier.submit_prepared_stores(A, 0.0);
         let peer = store(&mut tier, B, &[2], 0.0);
         tier.retire(A);
+        assert_occupancy(&tier, 0, 2);
         // The accepted D2H keeps its equal share of the 1 GB/s pool cap.
         assert_eq!(tier.next_deadline(B), Some(2.0));
         assert_eq!(delivered(&mut tier, B, 2.0), [(true, peer.get())]);
+        assert_occupancy(&tier, 2, 2);
         // No owner remains to hand the source to G3, so it lands unpinned.
         assert_eq!((tier.lookup(key(1)), tier.pins(key(1))), (Lookup::Hit, 0));
         assert!(tier.transfers.is_empty());
@@ -2184,6 +2301,7 @@ pub(crate) mod tests {
         // The block is routable and remains an ordinary LRU victim.
         store(&mut tier, B, &[3], 2.0);
         assert_eq!(tier.resident_snapshot(), [key(2)]);
+        assert_occupancy(&tier, 1, 2);
         assert_eq!(
             tier.take_events(B),
             [

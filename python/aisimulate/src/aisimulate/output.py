@@ -39,6 +39,9 @@ def prepare_output_directory(path: str | Path, *, overwrite: bool) -> Path:
             "recommendation.json",
             "recommendation.csv",
             "requests.jsonl",
+            "telemetry-requests.jsonl",
+            "telemetry-samples.jsonl",
+            "telemetry-lifecycle.jsonl",
             "resource-plan.json",
             "resource-runtime.json",
             "execution-events.jsonl",
@@ -85,6 +88,32 @@ def write_requests(root: Path, records: list[dict[str, Any]]) -> Path:
             output.write(json.dumps(record, sort_keys=True, separators=(",", ":")))
             output.write("\n")
     return path
+
+
+def write_telemetry(root: Path, telemetry: dict[str, Any]) -> dict[str, Any]:
+    """Write all-phase telemetry streams and return their compact report manifest."""
+
+    streams = ("requests", "samples", "lifecycle")
+    for stream in streams:
+        records = telemetry.get(stream)
+        if not isinstance(records, list) or any(not isinstance(record, dict) for record in records):
+            raise ValueError(f"telemetry.{stream} must be a list of JSON mappings")
+    paths = {stream: root / f"telemetry-{stream}.jsonl" for stream in streams}
+    try:
+        for stream, path in paths.items():
+            with path.open("w", encoding="utf-8") as output:
+                for record in telemetry[stream]:
+                    json.dump(record, output, sort_keys=True, separators=(",", ":"), allow_nan=False)
+                    output.write("\n")
+    except BaseException:
+        for path in paths.values():
+            path.unlink(missing_ok=True)
+        raise
+    return {
+        **{key: value for key, value in telemetry.items() if key not in streams},
+        "artifacts": {stream: path.name for stream, path in paths.items()},
+        "record_counts": {stream: len(telemetry[stream]) for stream in streams},
+    }
 
 
 def write_recommendation_result(root: Path, result: SweepResult) -> Path:

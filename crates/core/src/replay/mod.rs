@@ -178,8 +178,11 @@ pub use spec::{
     ReplayRoutingMetadata, ReplaySpec, ReplayTopology, WorkerPoolSpec, WorkerStage,
 };
 pub use telemetry::{
-    ReplaySchedulerIntervalMetrics, ReplaySchedulerMetricsSnapshot, ReplayTelemetryObserver,
-    ReplayTelemetrySampleKind, ReplayTelemetrySnapshot, ReplayTrafficMetricsSnapshot,
+    ReplayPromptSourceCounters, ReplaySchedulerIntervalMetrics, ReplaySchedulerMetricsSnapshot,
+    ReplayTelemetryCapture, ReplayTelemetryHostCache, ReplayTelemetryLifecycle,
+    ReplayTelemetryObserver, ReplayTelemetryPhaseBoundary, ReplayTelemetryRequest,
+    ReplayTelemetrySample, ReplayTelemetrySampleKind, ReplayTelemetrySnapshot,
+    ReplayTelemetryUnits, ReplayTrafficMetricsSnapshot,
 };
 
 // Typed power diagnostics are exported by the native Replay/PyO3 engine path.

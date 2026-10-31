@@ -71,6 +71,12 @@ impl G2Registry {
         let (resident, used) = tier.occupancy();
         Some((tier.capacity_blocks(), resident, used))
     }
+
+    pub(crate) fn metrics(&self) -> Option<crate::engine::HostCacheMetrics> {
+        let state = self.0.lock().unwrap();
+        let tier = state.pool.as_ref()?.1.lock().unwrap();
+        Some(tier.metrics(G2Scope::ClusterShared))
+    }
 }
 
 /// One cluster-shared G2 pool that engines built by separate

@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{HandoffId, HandoffTransferTiming};
+use super::{G2Scope, HandoffId, HandoffTransferTiming};
 
 /// Encoder work behind one image, as the checkpoint's processor lays it out.
 ///
@@ -409,6 +409,66 @@ pub struct CommandEffects {
     pub suppressed_pending_output: bool,
 }
 
+/// Native G1 prefix-cache lookup observations at scheduler pass start.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct PrefixCacheLookupCounts {
+    pub query_count: u64,
+    /// Known sequence tokens submitted to native G1 prefix lookup, including
+    /// repeated admission attempts and recomputation after preemption.
+    pub queried_tokens: u64,
+    /// Native lookup matches before scheduler recomputation clipping or G2
+    /// attribution. These are not first-admission request reuse counters.
+    pub matched_tokens: u64,
+}
+
+impl PrefixCacheLookupCounts {
+    pub(crate) fn checked_add_assign(&mut self, other: Self) -> anyhow::Result<()> {
+        self.query_count = self
+            .query_count
+            .checked_add(other.query_count)
+            .ok_or_else(|| anyhow::anyhow!("native prefix lookup query counter overflow"))?;
+        self.queried_tokens = self
+            .queried_tokens
+            .checked_add(other.queried_tokens)
+            .ok_or_else(|| anyhow::anyhow!("native prefix lookup token counter overflow"))?;
+        self.matched_tokens = self
+            .matched_tokens
+            .checked_add(other.matched_tokens)
+            .ok_or_else(|| anyhow::anyhow!("native prefix lookup match counter overflow"))?;
+        Ok(())
+    }
+
+    pub(crate) fn record(
+        &mut self,
+        queried_tokens: usize,
+        matched_tokens: usize,
+    ) -> anyhow::Result<()> {
+        self.checked_add_assign(Self {
+            query_count: 1,
+            queried_tokens: queried_tokens as u64,
+            matched_tokens: matched_tokens as u64,
+        })
+    }
+}
+
+/// Physical occupancy of one host-cache ownership domain. Shared pools omit
+/// worker/rank identity and must be sampled only once per deployment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HostCacheMetrics {
+    pub scope: G2Scope,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dp_rank: Option<u32>,
+    pub capacity_blocks: u64,
+    pub resident_blocks: u64,
+    /// Includes reserved transfer destinations that are not resident yet.
+    pub used_blocks: u64,
+    pub capacity_bytes: u64,
+    pub resident_bytes: u64,
+    pub used_bytes: u64,
+}
+
 /// Effects visible as soon as an engine pass starts.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PassStartEffects {
@@ -418,6 +478,10 @@ pub struct PassStartEffects {
     pub admissions: Vec<Admission>,
     pub pressure_events: Vec<PressureEvent>,
     pub kv_events: Vec<KvEvent>,
+    /// Native vLLM G1 lookup attempts at this pass's admission boundary.
+    /// Absent for other backends or when prefix caching is disabled. Counters
+    /// alone do not imply model work or scheduler progress.
+    pub native_prefix_cache_lookup: Option<PrefixCacheLookupCounts>,
 }
 
 /// Decode/verification work contributing to acceptance-length telemetry.

@@ -48,9 +48,10 @@ pub use handoff::{
 pub use kvcr::{KvcrPullCounts, KvcrStats};
 pub use protocol::{
     Admission, CacheTierAttribution, Command, CommandEffects, CommandResult, DecodeAcceptance,
-    EncoderShape, ForwardPassMetrics, ImageSpec, KvBlock, KvEvent, KvEventData, KvEventTier,
-    KvHintSource, LifecycleEvent, Metrics, Output, PassCompletionEffects, PassStartEffects,
-    PressureEvent, PressureKind, PressureState, Request, StoredBlocks, TtftMilestone,
+    EncoderShape, ForwardPassMetrics, HostCacheMetrics, ImageSpec, KvBlock, KvEvent, KvEventData,
+    KvEventTier, KvHintSource, LifecycleEvent, Metrics, Output, PassCompletionEffects,
+    PassStartEffects, PrefixCacheLookupCounts, PressureEvent, PressureKind, PressureState, Request,
+    StoredBlocks, TtftMilestone,
 };
 pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;

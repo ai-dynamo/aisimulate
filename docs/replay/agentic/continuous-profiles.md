@@ -134,13 +134,18 @@ Then run:
 ```bash
 python/aisimulate/.venv/bin/aisimulate predict \
   --config examples/cli/agentic-profile.yaml \
-  --capture-per-request --format json --output-dir /tmp/agentic-profile
+  --capture-per-request --capture-telemetry --format json --output-dir /tmp/agentic-profile
 ```
 
 The example uses the repository's self-authored two-play trace and fixed timing
 to exercise control flow without downloading a model or dataset. To change the
 duration on the existing CLI, use
 `--set traffic.load.agentic_profile.duration_seconds=3600`.
+
+`--capture-telemetry` additionally preserves preparation requests and lifecycle
+events and samples scheduler/cache/traffic state across the full run. It writes
+three native telemetry JSONL files; `requests.jsonl` and summary metrics remain
+profiling-only. See the [output contract](../../getting-started/understand-results.md#replay-telemetry).
 
 ## Behavioral reference
 
