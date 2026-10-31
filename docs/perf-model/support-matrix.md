@@ -47,7 +47,10 @@ approximation: it spreads the cost of the attention-plus-MoE MTP block
 evenly over the hybrid graph. Accepted-token progress is applied
 separately by the upper prediction layer, and the MTP weights and KV
 cache are not counted. This support adds no vision modeling and no
-measured timing data.
+measured timing data. The text path compiles, but the published matrix
+marks every row of this checkpoint `FAIL` with `ENCODER_UNSUPPORTED`,
+because the export declares a vision encoder that AISimulate does not
+model; the SDK tests cover the text path.
 
 ## Published FPE matrix
 
