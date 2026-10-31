@@ -1067,9 +1067,16 @@ def _configuration(
                         "hardware across phases/ranks",
                     )
                 settings = copy.deepcopy(config)
-                # These settings follow the phase's prefix-caching mode or the engine core. Provenance
-                # prefix_caching records the mode of every phase instead.
-                for name in runtime_memory._PHASE_CACHE_SETTINGS:
+                # In a vLLM 0.31.0 record these settings follow the phase's prefix-caching mode or the engine core,
+                # and provenance prefix_caching records the mode of every phase instead. Another record can hold
+                # them only from a campaign-local adapter, and its provenance keeps them, as finalized campaigns
+                # compare that provenance byte for byte.
+                removed = (
+                    runtime_memory._PHASE_CACHE_SETTINGS
+                    if runtime_memory._layer_strided(record["cache"])
+                    else ("enable_prefix_caching",)
+                )
+                for name in removed:
                     settings["cache_config"].pop(name, None)
                 if canonical_settings is None:
                     canonical_settings = settings

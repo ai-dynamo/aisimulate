@@ -2048,6 +2048,50 @@ def test_legacy_bundle_imports_are_unchanged_by_the_state_mapping(tmp_path, pack
     }
 
 
+@pytest.mark.parametrize("version", ["0.27.0", "0.28.0"])
+@pytest.mark.parametrize(
+    "field,value",
+    [("block_size", 16), ("mamba_cache_mode", "none"), ("mamba_block_size", 16), ("prefix_match_unit", 16)],
+)
+def test_legacy_imports_keep_extra_cache_settings_in_the_runtime_settings(tmp_path, version, field, value):
+    path, launches = observation_fixture(tmp_path, version=version)
+    # A campaign-local adapter can record more cache settings than the bundled adapters. Finalized campaigns compare
+    # the runtime settings of the provenance byte for byte, so only a vLLM 0.31.0 record drops these settings.
+    _mutate(path, lambda record: record["resolved_config"]["cache_config"].update({field: value}))
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "complete", result["diagnostics"]
+    expected = {"cache_dtype": "bfloat16", "gpu_memory_utilization": 0.9, "kv_cache_memory_bytes": None, field: value}
+    assert result["provenance"]["runtime_settings"]["cache_config"] == expected
+    recorded = json.loads(result["resources"]["runtime_memory"]["provenance"])
+    assert recorded["runtime_settings"]["cache_config"] == expected
+
+
+@pytest.mark.parametrize(
+    "field,values",
+    [
+        ("block_size", (16, 32)),
+        ("mamba_cache_mode", ("none", "align")),
+        ("mamba_block_size", (16, 64)),
+        ("prefix_match_unit", (16, 32)),
+    ],
+)
+def test_legacy_imports_compare_extra_cache_settings_across_phases(tmp_path, field, values):
+    path, launches = observation_fixture(tmp_path)
+    # The extra settings stay in the compared runtime settings, so phases that disagree on them are refused.
+    for phase, value in zip(("prefill", "decode"), values, strict=True):
+        _mutate(
+            path,
+            lambda record, phase=phase, value=value: (
+                record["resolved_config"]["cache_config"].update({field: value}) if record["phase"] == phase else None
+            ),
+        )
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == [
+        "tp2: runtime observation effective runtime/graph settings across phases/ranks mismatch"
+    ]
+
+
 @pytest.mark.parametrize(
     "layout,field,value,complete",
     [
