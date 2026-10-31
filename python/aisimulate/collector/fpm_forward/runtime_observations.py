@@ -748,6 +748,15 @@ def _physical_views(
         ):
             raise ValueError(f"compressed cache storage is unsupported: {group['layer_names']}")
         _positive(group.get("spec_page_size_bytes"), "cache spec page bytes")
+        # The page of a vLLM 0.31.0 uniform group is the sum of its layer pages (kv_cache_interface.py:1261-1263). In
+        # any other group, the spec of each layer is the group spec (runtime/fpm_memory_observer.py:544).
+        if strided:
+            pages = [spec["page_size_bytes"] for spec in group["layer_specs"].values()]
+            if any(
+                page != group["spec_page_size_bytes"]
+                for page in ([sum(pages)] if runtime_memory._uniform(group) else pages)
+            ):
+                raise ValueError(f"cache group page contradicts its layer specs: {group['layer_names']}")
         for name in group["layer_names"]:
             layer_groups[name] = (group_id, group)
     storages = {}

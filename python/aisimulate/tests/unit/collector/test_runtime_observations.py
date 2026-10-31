@@ -1728,6 +1728,43 @@ def test_v031_compressed_storage_outside_the_indexer_is_incomplete(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "case,layout,names",
+    [
+        (
+            "uniform_group_page",
+            "glm_tp4",
+            [f"layers.{i}.{kind}" for i in range(3, 45, 4) for kind in ("indexer", "mla")],
+        ),
+        ("state_layer_page", "mamba_hybrid", ["mamba.0", "mamba.2"]),
+        ("attention_group_page", "mamba_hybrid", ["attn.0", "attn.1"]),
+    ],
+    ids=["uniform_group_page", "state_layer_page", "attention_group_page"],
+)
+def test_v031_cache_group_page_must_follow_its_layer_specs(tmp_path, case, layout, names):
+    path, launches = observation_fixture(tmp_path, layout=layout)
+
+    def edit(record):
+        groups = record["cache"]["groups"]
+        if case == "uniform_group_page" and record["kind"] == "worker":
+            # The page of a uniform group is the sum of its layer pages (kv_cache_interface.py:1261-1263). The
+            # scheduler copy of G0 takes the page of its first inner spec (kv_cache_utils.py:2434-2440), so it still
+            # matches.
+            groups[0]["spec_page_size_bytes"] = 1
+        elif case == "state_layer_page":
+            # Every layer of a MambaSpec group has the group spec. This 8,000-byte page still holds the 8,000 bytes
+            # of states that the views of mamba.2 cut from it.
+            groups[1]["layer_specs"]["mamba.2"]["page_size_bytes"] = 8000
+        elif case == "attention_group_page":
+            groups[0]["spec_page_size_bytes"] = 4096
+
+    # A change is the same in every record that it touches, so the worker and scheduler copies and the phases agree.
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == [f"tp2: cache group page contradicts its layer specs: {names}"]
+
+
+@pytest.mark.parametrize(
     "layout,name,kernel,shape,strides",
     [
         # The indexer view with the group's kernel block of 64 tokens instead of its 128-token storage block:
