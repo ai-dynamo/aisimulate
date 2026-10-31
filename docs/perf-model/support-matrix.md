@@ -41,9 +41,13 @@ the stored precision and are approximations. An inferred `W4A16_NVFP4` MoE
 label, which this export does not use, selects the vLLM `nvfp4` execution
 lane. Explicit precision overrides retain their values. AISimulate does
 not build the MTP layer as its own attention and MoE block. With `nextn`
-above zero, it scales the decode graph by `(nextn + L) / L` for `L`
-decoder layers and does not count the MTP weights or KV cache. This
-support adds no vision modeling and no measured timing data.
+above zero, it scales every decode operation, the Mamba operations
+included, by `(nextn + L) / L` for `L` decoder layers. That factor is an
+approximation: it spreads the cost of the attention-plus-MoE MTP block
+evenly over the hybrid graph. Accepted-token progress is applied
+separately by the upper prediction layer, and the MTP weights and KV
+cache are not counted. This support adds no vision modeling and no
+measured timing data.
 
 ## Published FPE matrix
 
