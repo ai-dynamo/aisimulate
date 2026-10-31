@@ -21,12 +21,17 @@ fn invalid(message: impl Into<String>) -> AicError {
 pub enum FpmCacheKind {
     Attention,
     Convolution,
+    /// Cache whose size does not depend on the request length, such as the
+    /// recurrent state of linear-attention or Mamba layers. vLLM holds a fixed
+    /// number of pool blocks for each running request.
+    State,
 }
 
 /// One cache group on one TP rank. `page_size_bytes` includes every layer in
 /// this group and any runtime padding; it is not a per-layer or logical-token
 /// rate. Window lengths describe retained history, independently of FPM timing
-/// query context lengths.
+/// query context lengths. A `state` group instead holds `blocks_per_request`
+/// blocks of `page_size_bytes` for every running request and has no window.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FpmCacheGroup {
@@ -36,6 +41,10 @@ pub struct FpmCacheGroup {
     pub block_size_tokens: u32,
     pub page_size_bytes: u64,
     pub sliding_window: Option<u32>,
+    /// Pool blocks held per running request. Required for `state` groups and
+    /// invalid for every other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocks_per_request: Option<u32>,
 }
 
 impl FpmCacheGroup {
@@ -54,11 +63,26 @@ impl FpmCacheGroup {
         if self.kind == FpmCacheKind::Convolution && self.sliding_window.is_none() {
             return Err(invalid("convolution cache groups require a sliding_window"));
         }
+        if self.kind == FpmCacheKind::State {
+            if self.blocks_per_request.is_none_or(|blocks| blocks == 0) {
+                return Err(invalid(
+                    "state cache groups require a positive blocks_per_request",
+                ));
+            }
+            if self.sliding_window.is_some() {
+                return Err(invalid("state cache groups cannot have a sliding_window"));
+            }
+        } else if self.blocks_per_request.is_some() {
+            return Err(invalid(
+                "blocks_per_request applies only to state cache groups",
+            ));
+        }
         Ok(())
     }
 
     /// Blocks live during one forward pass. All newly scheduled tokens remain
-    /// allocated until the next pass, including temporary prefill storage.
+    /// allocated until the next pass, including temporary prefill storage. A
+    /// state group holds its fixed blocks for any positive target.
     pub fn block_range(
         &self,
         computed_tokens: u64,
@@ -67,6 +91,11 @@ impl FpmCacheGroup {
         self.validate()?;
         if target_tokens < computed_tokens {
             return Err(invalid("cache target_tokens must be >= computed_tokens"));
+        }
+        if self.kind == FpmCacheKind::State {
+            // `validate` guarantees a positive count for state groups.
+            let blocks = self.blocks_per_request.map_or(0, u64::from);
+            return Ok(0..if target_tokens == 0 { 0 } else { blocks });
         }
         let block = u64::from(self.block_size_tokens);
         let first = self.sliding_window.map_or(0, |window| {
@@ -90,7 +119,8 @@ impl FpmCacheGroup {
     /// Conservative maximum for a request up to `context_length`, with forward
     /// chunks no larger than `max_num_tokens`. The extra block alignment can
     /// coexist with the entire new chunk; clipping only to the retention window
-    /// would underestimate prefill memory.
+    /// would underestimate prefill memory. A state group needs only its fixed
+    /// blocks, whatever the context.
     pub fn peak_request_bytes(
         &self,
         context_length: u64,
@@ -100,13 +130,18 @@ impl FpmCacheGroup {
         if context_length == 0 || max_num_tokens == 0 {
             return Err(invalid("cache context and max_num_tokens must be positive"));
         }
-        let block = u64::from(self.block_size_tokens);
-        let full = context_length.div_ceil(block);
-        let pages = if let Some(window) = self.sliding_window {
-            let span = u64::from(window) - 1 + u64::from(max_num_tokens) + block - 1;
-            full.min(span.div_ceil(block))
+        let pages = if self.kind == FpmCacheKind::State {
+            // `validate` guarantees a positive count for state groups.
+            self.blocks_per_request.map_or(0, u64::from)
         } else {
-            full
+            let block = u64::from(self.block_size_tokens);
+            let full = context_length.div_ceil(block);
+            if let Some(window) = self.sliding_window {
+                let span = u64::from(window) - 1 + u64::from(max_num_tokens) + block - 1;
+                full.min(span.div_ceil(block))
+            } else {
+                full
+            }
         };
         pages
             .checked_mul(self.page_size_bytes)
@@ -122,9 +157,22 @@ pub enum FpmCacheLayout {
     Grouped,
 }
 
+/// How the runtime probe cached the state of its Mamba layers. vLLM's `all`
+/// mode is not modeled, so it cannot be recorded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FpmMambaCacheMode {
+    None,
+    Align,
+}
+
 /// Cache capacity observed for the exact deployment and scheduler settings.
 /// This includes the runtime's graph/workspace reservations; it is not a
 /// non-KV memory limit or a capacity that can be scaled to another setting.
+///
+/// The three optional prefix-caching fields record the settings that the probe
+/// ran with. They are evidence only: selection, sizing and replay do not read
+/// them, and the simulated deployment decides prefix caching.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FpmRuntimeMemoryConfig {
@@ -132,6 +180,15 @@ pub struct FpmRuntimeMemoryConfig {
     pub gpu_memory_utilization: f64,
     pub max_model_len: u64,
     pub provenance: String,
+    /// The probe's `enable_prefix_caching` setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable_prefix_caching: Option<bool>,
+    /// The probe's `mamba_cache_mode`. `align` requires prefix caching.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mamba_cache_mode: Option<FpmMambaCacheMode>,
+    /// The probe's resolved `hash_block_size`, in tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash_block_size_tokens: Option<u32>,
 }
 
 impl FpmRuntimeMemoryConfig {
@@ -147,6 +204,16 @@ impl FpmRuntimeMemoryConfig {
             return Err(invalid(
                 "runtime memory requires positive kv_cache_bytes <= 2**53, finite gpu_memory_utilization in (0, 1], positive max_model_len and provenance",
             ));
+        }
+        if self.mamba_cache_mode == Some(FpmMambaCacheMode::Align)
+            && self.enable_prefix_caching != Some(true)
+        {
+            return Err(invalid(
+                "mamba_cache_mode align requires enable_prefix_caching=true",
+            ));
+        }
+        if self.hash_block_size_tokens == Some(0) {
+            return Err(invalid("hash_block_size_tokens must be positive"));
         }
         Ok(())
     }
@@ -653,6 +720,30 @@ mod tests {
             block_size_tokens: 16,
             page_size_bytes: 160,
             sliding_window: window,
+            blocks_per_request: None,
+        }
+    }
+
+    fn state_group(blocks_per_request: Option<u32>) -> FpmCacheGroup {
+        FpmCacheGroup {
+            name: "state".into(),
+            kind: FpmCacheKind::State,
+            blocks_per_request,
+            ..group(None)
+        }
+    }
+
+    fn rejection(group: &FpmCacheGroup) -> String {
+        match group.validate() {
+            Err(AicError::InvalidEngineConfig(message)) => message,
+            other => panic!("expected an invalid cache group, got {other:?}"),
+        }
+    }
+
+    fn memory_rejection(memory: &FpmRuntimeMemoryConfig) -> String {
+        match memory.validate() {
+            Err(AicError::InvalidEngineConfig(message)) => message,
+            other => panic!("expected an invalid runtime memory record, got {other:?}"),
         }
     }
 
@@ -697,6 +788,9 @@ mod tests {
                 gpu_memory_utilization: 0.8,
                 max_model_len: 4096,
                 provenance: "Synthetic initialized-worker cache allocation".into(),
+                enable_prefix_caching: None,
+                mamba_cache_mode: None,
+                hash_block_size_tokens: None,
             }),
             ..resources()
         }
@@ -1015,6 +1109,104 @@ mod tests {
     }
 
     #[test]
+    fn runtime_memory_records_prefix_caching_evidence() {
+        let plain = runtime_resources().runtime_memory.unwrap();
+        // A record without the evidence serializes without its keys, as before.
+        let plain_json = r#"{"kv_cache_bytes":600,"gpu_memory_utilization":0.8,"max_model_len":4096,"provenance":"Synthetic initialized-worker cache allocation"}"#;
+        assert_eq!(serde_json::to_string(&plain).unwrap(), plain_json);
+        let with = |caching, mode, hash_block| FpmRuntimeMemoryConfig {
+            enable_prefix_caching: caching,
+            mamba_cache_mode: mode,
+            hash_block_size_tokens: hash_block,
+            ..plain.clone()
+        };
+
+        // The probe's settings are valid and round trip, after the existing keys.
+        let evidence = with(Some(true), Some(FpmMambaCacheMode::Align), Some(4));
+        evidence.validate().unwrap();
+        let saved = serde_json::to_string(&evidence).unwrap();
+        assert_eq!(
+            saved,
+            r#"{"kv_cache_bytes":600,"gpu_memory_utilization":0.8,"max_model_len":4096,"provenance":"Synthetic initialized-worker cache allocation","enable_prefix_caching":true,"mamba_cache_mode":"align","hash_block_size_tokens":4}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<FpmRuntimeMemoryConfig>(&saved).unwrap(),
+            evidence
+        );
+        // An explicit null is an absent value and is not written back.
+        let mut nulls = serde_json::to_value(&plain).unwrap();
+        for key in [
+            "enable_prefix_caching",
+            "mamba_cache_mode",
+            "hash_block_size_tokens",
+        ] {
+            nulls[key] = serde_json::Value::Null;
+        }
+        let parsed = serde_json::from_value::<FpmRuntimeMemoryConfig>(nulls).unwrap();
+        assert_eq!(parsed, plain);
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), plain_json);
+
+        // The resource section validates the record, so it carries the evidence and the rules.
+        let mut resources = runtime_resources();
+        resources.runtime_memory = Some(evidence.clone());
+        resources.validate().unwrap();
+        let saved = serde_json::to_value(&resources).unwrap();
+        assert_eq!(saved["runtime_memory"]["mamba_cache_mode"], "align");
+        assert_eq!(
+            serde_json::from_value::<FpmResourceConfig>(saved).unwrap(),
+            resources
+        );
+        resources.runtime_memory = Some(with(Some(false), Some(FpmMambaCacheMode::Align), None));
+        assert_eq!(
+            resources.validate().unwrap_err().to_string(),
+            "invalid engine config: mamba_cache_mode align requires enable_prefix_caching=true"
+        );
+
+        // `none` and an absent mode need no prefix caching; `align` does.
+        for caching in [None, Some(false), Some(true)] {
+            for mode in [None, Some(FpmMambaCacheMode::None)] {
+                with(caching, mode, None).validate().unwrap();
+            }
+        }
+        for caching in [None, Some(false)] {
+            let align = with(caching, Some(FpmMambaCacheMode::Align), Some(4));
+            assert_eq!(
+                memory_rejection(&align),
+                "mamba_cache_mode align requires enable_prefix_caching=true"
+            );
+        }
+        // A hash block size must be positive; the largest u32 is valid.
+        assert_eq!(
+            memory_rejection(&with(None, None, Some(0))),
+            "hash_block_size_tokens must be positive"
+        );
+        for size in [1, u32::MAX] {
+            with(None, None, Some(size)).validate().unwrap();
+        }
+        // With both rules broken, the mode rule reports first, as in the Python model.
+        let both = with(Some(false), Some(FpmMambaCacheMode::Align), Some(0));
+        assert_eq!(
+            memory_rejection(&both),
+            "mamba_cache_mode align requires enable_prefix_caching=true"
+        );
+
+        // The wire names are `none` and `align`. vLLM's `all` is refused, and so is any other text.
+        let mut wire = serde_json::to_value(&evidence).unwrap();
+        for (text, mode) in [
+            ("none", FpmMambaCacheMode::None),
+            ("align", FpmMambaCacheMode::Align),
+        ] {
+            wire["mamba_cache_mode"] = text.into();
+            let parsed = serde_json::from_value::<FpmRuntimeMemoryConfig>(wire.clone()).unwrap();
+            assert_eq!(parsed.mamba_cache_mode, Some(mode));
+        }
+        for text in ["all", "Align", ""] {
+            wire["mamba_cache_mode"] = text.into();
+            assert!(serde_json::from_value::<FpmRuntimeMemoryConfig>(wire.clone()).is_err());
+        }
+    }
+
+    #[test]
     fn grouped_page_boundaries_keep_full_history_and_evict_windows() {
         let local = group(Some(32));
         // First 32 tokens occupy two physical pages. Token 33 retains parts of
@@ -1119,5 +1311,127 @@ mod tests {
         // Token 9 uses pages containing 5..8 and 9..12, even for a four-token window.
         assert_eq!(conv.block_range(8, 9).unwrap(), 1..3);
         assert_eq!(conv.bytes_for_forward(8, 9).unwrap(), 16);
+    }
+
+    #[test]
+    fn state_group_requires_blocks_and_rejects_windows() {
+        state_group(Some(1)).validate().unwrap();
+        for blocks in [None, Some(0)] {
+            let state = state_group(blocks);
+            assert_eq!(
+                rejection(&state),
+                "state cache groups require a positive blocks_per_request"
+            );
+            // An unusable group fails sizing instead of guessing a block count.
+            assert!(state.block_range(0, 1).is_err());
+            assert!(state.peak_request_bytes(1, 1).is_err());
+        }
+        let mut windowed = state_group(Some(1));
+        windowed.sliding_window = Some(32);
+        assert_eq!(
+            rejection(&windowed),
+            "state cache groups cannot have a sliding_window"
+        );
+        for (kind, window) in [
+            (FpmCacheKind::Attention, None),
+            (FpmCacheKind::Convolution, Some(32)),
+        ] {
+            let mut counted = group(window);
+            counted.kind = kind;
+            counted.blocks_per_request = Some(1);
+            assert_eq!(
+                rejection(&counted),
+                "blocks_per_request applies only to state cache groups"
+            );
+        }
+    }
+
+    #[test]
+    fn state_group_holds_a_fixed_range_for_any_length() {
+        let state = state_group(Some(2));
+        // No tokens, no state; any positive target holds the same two blocks.
+        assert_eq!(state.block_range(0, 0).unwrap(), 0..0);
+        assert_eq!(state.block_range(0, 1).unwrap(), 0..2);
+        assert_eq!(state.block_range(4, 8).unwrap(), 0..2);
+        assert_eq!(state.block_range(100_000, 100_001).unwrap(), 0..2);
+        assert!(state.block_range(5, 4).is_err());
+        assert_eq!(state.bytes_for_forward(0, 0).unwrap(), 0);
+        assert_eq!(state.bytes_for_forward(100_000, 100_001).unwrap(), 320);
+        let two_blocks = 2 * state.page_size_bytes;
+        assert_eq!(state.peak_request_bytes(1, 1).unwrap(), two_blocks);
+        assert_eq!(
+            state.peak_request_bytes(1_000_000, 8_192).unwrap(),
+            two_blocks
+        );
+        // The exact-byte limit still applies: 2**53 passes, twice that fails.
+        let mut huge = state_group(Some(1));
+        huge.page_size_bytes = MAX_EXACT_BYTES;
+        assert_eq!(huge.peak_request_bytes(1, 1).unwrap(), MAX_EXACT_BYTES);
+        huge.blocks_per_request = Some(2);
+        assert!(huge.bytes_for_forward(0, 1).is_err());
+        assert!(huge.peak_request_bytes(1, 1).is_err());
+    }
+
+    #[test]
+    fn glm_shaped_groups_charge_five_pool_blocks_of_state() {
+        // GLM-5.3-Flash at TP 4, fp8, k = 0: one MLA indexer group and five
+        // fixed per-request state groups (four KDA groups and the kpool tail).
+        // Every group uses 2,176-token pool blocks of 13,045,120 bytes, and
+        // each state group holds one block per request.
+        let pool_group = |name: &str, kind, num_layers, blocks_per_request| FpmCacheGroup {
+            name: name.into(),
+            kind,
+            num_layers,
+            block_size_tokens: 2_176,
+            page_size_bytes: 13_045_120,
+            sliding_window: None,
+            blocks_per_request,
+        };
+        let attention = pool_group("mla_indexer", FpmCacheKind::Attention, 22, None);
+        let states = [
+            pool_group("kpool_tail", FpmCacheKind::State, 11, Some(1)),
+            pool_group("kda_0", FpmCacheKind::State, 9, Some(1)),
+            pool_group("kda_1", FpmCacheKind::State, 9, Some(1)),
+            pool_group("kda_2", FpmCacheKind::State, 8, Some(1)),
+            pool_group("kda_3", FpmCacheKind::State, 8, Some(1)),
+        ];
+        let peak = |group: &FpmCacheGroup| group.peak_request_bytes(8_192, 8_192).unwrap();
+        // 8,192 tokens fill four attention blocks; the state adds five more.
+        assert_eq!(peak(&attention), 52_180_480);
+        let state_bytes: u64 = states.iter().map(peak).sum();
+        assert_eq!(state_bytes, 65_225_600);
+        assert_eq!(peak(&attention) + state_bytes, 117_406_080);
+
+        // The budget sums the same groups for its per-request bounds.
+        let mut grouped = resources();
+        grouped.cache_groups = std::iter::once(attention).chain(states).collect();
+        grouped.max_num_tokens = 8_192;
+        let mut query = request();
+        query.max_num_tokens = 8_192;
+        query.request_occupancy_tokens = Some(8_192);
+        let budget = grouped.estimate_budget(&query, 8_192).unwrap();
+        assert_eq!(budget.request_peak_cache_bytes, 117_406_080);
+        assert_eq!(budget.request_occupancy_cache_bytes, Some(117_406_080));
+    }
+
+    #[test]
+    fn state_group_serde_round_trip_omits_absent_blocks() {
+        let attention = group(Some(32));
+        // A group without a block count serializes exactly as before.
+        assert_eq!(
+            serde_json::to_string(&attention).unwrap(),
+            r#"{"name":"attention","kind":"attention","num_layers":2,"block_size_tokens":16,"page_size_bytes":160,"sliding_window":32}"#
+        );
+        let state = state_group(Some(1));
+        let saved = serde_json::to_value(&state).unwrap();
+        assert_eq!(saved["kind"], "state");
+        assert_eq!(saved["blocks_per_request"], 1);
+        for original in [attention, state] {
+            let saved = serde_json::to_string(&original).unwrap();
+            assert_eq!(
+                serde_json::from_str::<FpmCacheGroup>(&saved).unwrap(),
+                original
+            );
+        }
     }
 }

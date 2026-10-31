@@ -457,7 +457,8 @@ Rejected: `recommend`, G2/G3 offload, and speculative decoding with sub-block
 
 - **Grouped caches.** Some whole-forward (FPM) profiles describe several KV
   groups, such as sliding-window and full attention, sharing one byte budget.
-  Replay then allocates each group separately. Grouped caches require cold
+  Replay then allocates each group separately. A `state` group holds a fixed
+  number of blocks for each running request. Grouped caches require cold
   aggregated vLLM with `prefix_caching: false`, no offload, no P/D and default
   capacity. See [memory accounting](../../perf-model/memory.md).
 - **Belady eviction.** The native ReplaySpec field
