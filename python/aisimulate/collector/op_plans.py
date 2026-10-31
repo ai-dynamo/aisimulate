@@ -41,8 +41,10 @@ from collector.case_generator import (
     get_common_mamba2_test_cases,
     get_common_moe_test_cases,
     get_compute_scale_case_specs,
+    get_context_mla_case_specs,
     get_gemm_case_specs,
     get_gemm_type_specs,
+    get_generation_mla_case_specs,
     get_mla_bmm_case_specs,
     get_moe_quantization_module_config,
     get_sglang_moe_backend,
@@ -91,16 +93,33 @@ class Plan:
     """The cases one backend runs for an op on one SM."""
 
     cases: list
-    # What the getter queues: the cases, or the backend's rows for them.
-    rows: list
     removed: list[RemovedRegion]
     # The dispatch of each case, for a backend whose plan picks it; else empty.
     dispatches: list[str] = dataclasses.field(default_factory=list)
+    # The backend's rows function and where it runs, applied on demand: rows may
+    # build the backend's framework objects (a torch dtype), cases never do.
+    to_rows: Callable[[object, int | None, str | None], list] | None = None
+    sm_version: int | None = None
+    where: str = ""
 
     @property
     def by_dispatch(self) -> dict[str, int]:
         """How many cases run on each dispatch."""
         return dict(Counter(self.dispatches))
+
+    @property
+    def rows(self) -> list:
+        """What the getter queues: the cases, or the backend's rows for them."""
+        if self.to_rows is None:
+            return self.cases
+        runs_on = self.dispatches or [None] * len(self.cases)
+        rows = []
+        for case, runner in zip(self.cases, runs_on, strict=True):
+            case_rows = self.to_rows(case, self.sm_version, runner)
+            if not case_rows:
+                raise ValueError(f"{self.where} rows dropped case {case}; rows may only say how a case runs")
+            rows.extend(case_rows)
+        return rows
 
 
 def plan(op: str, backend: str, sm_version: int | None) -> Plan:
@@ -121,21 +140,13 @@ def plan(op: str, backend: str, sm_version: int | None) -> Plan:
             removed[reasons[key]] += 1
 
     dispatch = spec.dispatch.get(backend)
-    runs_on = [dispatch(case, sm_version) for case in kept] if dispatch is not None else [None] * len(kept)
-    rows = kept
-    to_rows = spec.rows.get(backend)
-    if to_rows is not None:
-        rows = []
-        for case, runner in zip(kept, runs_on, strict=True):
-            case_rows = to_rows(case, sm_version, runner)
-            if not case_rows:
-                raise ValueError(f"{backend} {op} rows dropped case {case}; rows may only say how a case runs")
-            rows.extend(case_rows)
     return Plan(
         cases=kept,
-        rows=rows,
         removed=[RemovedRegion(region, count, reason) for (region, reason), count in removed.items()],
-        dispatches=runs_on if dispatch is not None else [],
+        dispatches=[dispatch(case, sm_version) for case in kept] if dispatch is not None else [],
+        to_rows=spec.rows.get(backend),
+        sm_version=sm_version,
+        where=f"{backend} {op}",
     )
 
 
@@ -158,10 +169,18 @@ def summarize(op: str, op_plan: Plan, case_id: Callable[[object], str]) -> dict:
         "groups": len({tuple(getattr(case, field) for field in spec.group_fields) for case in op_plan.cases}),
         "by_dtype": dict(Counter(getattr(case, spec.dtype_field) for case in op_plan.cases)),
         "removed": [dataclasses.asdict(region) for region in op_plan.removed],
-        "plan_hash": case_plan_hash([case_id(row) for row in op_plan.rows]),
     }
-    if len(op_plan.rows) != len(op_plan.cases):
-        summary["rows"] = len(op_plan.rows)
+    try:
+        rows = op_plan.rows
+    except ImportError as exc:
+        # This backend's rows hold framework objects; without the framework the
+        # cases are still counted, but the run IDs (and plan_hash) are not known.
+        summary["plan_hash"] = None
+        summary["rows_need"] = str(exc)
+    else:
+        summary["plan_hash"] = case_plan_hash([case_id(row) for row in rows])
+        if len(rows) != len(op_plan.cases):
+            summary["rows"] = len(rows)
     if op_plan.by_dispatch:
         summary["by_dispatch"] = op_plan.by_dispatch
     return summary
@@ -610,6 +629,100 @@ def _mla_bmm_expand(op: str) -> Callable[[], list[MlaBmmCase]]:
     return expand
 
 
+# --- MLA attention: mla_context, mla_generation ---------------------------------
+
+# The MLA geometry both collectors' harnesses build (the DeepSeek-V3 family). A
+# catalog entry with another geometry raises rather than being timed under the
+# wrong key.
+_MLA_GEOMETRY = {
+    "q_lora_rank": 1536,
+    "kv_lora_rank": 512,
+    "qk_nope_head_dim": 128,
+    "qk_rope_head_dim": 64,
+    "v_head_dim": 128,
+}
+_MLA_TP_SIZES = (1, 2, 4, 8, 16, 32, 64, 128)
+
+
+class MlaCase(NamedTuple):
+    """One MLA attention case: sequence length, batch, KV-cache dtype, and total heads split over TP."""
+
+    input_len: int
+    batch_size: int
+    kv_cache_dtype: str
+    num_heads: int
+    tp_size: int
+    is_context_phase: bool
+
+    __str__ = __repr__ = _list_form
+
+
+def _mla_expand(is_context: bool) -> Callable[[], list[MlaCase]]:
+    def expand() -> list[MlaCase]:
+        """The MLA catalog per KV dtype and TP. The perf key holds local heads, not total heads or TP,
+        so of the TP splits that give the same local heads only the smallest is kept."""
+        cases: dict[tuple, MlaCase] = {}
+        for spec in get_context_mla_case_specs() if is_context else get_generation_mla_case_specs():
+            geometry = {name: getattr(spec, name) for name in _MLA_GEOMETRY}
+            if geometry != _MLA_GEOMETRY:
+                raise ValueError(f"Unsupported MLA geometry for {spec.model_name}: {geometry}")
+            for kv_cache_dtype in ("bfloat16", "fp8"):
+                for tp_size in _MLA_TP_SIZES:
+                    if spec.num_heads % tp_size:
+                        continue
+                    key = (kv_cache_dtype, spec.num_heads // tp_size, spec.batch_size, spec.input_len)
+                    if key not in cases or tp_size < cases[key].tp_size:
+                        cases[key] = MlaCase(
+                            spec.input_len, spec.batch_size, kv_cache_dtype, spec.num_heads, tp_size, is_context
+                        )
+        return list(cases.values())
+
+    return expand
+
+
+def _mla_run_args(case: MlaCase, kv_cache_dtype, tokens_per_block: int) -> list:
+    """The legacy run_mla tuple both backends take; output_len 1, 10 warm-up and 6 timed iterations."""
+    return [
+        case.input_len,
+        case.batch_size,
+        1,
+        kv_cache_dtype,
+        case.num_heads,
+        case.tp_size,
+        case.tp_size,
+        tokens_per_block,
+        10,
+        6,
+        case.is_context_phase,
+    ]
+
+
+def _sglang_mla_rows(case: MlaCase, sm_version: int | None, runner: str | None) -> list[list]:
+    """SGLang's run_mla takes a torch dtype and the page size of its MLA backend (64 for trtllm_mla, else 1).
+
+    The backend depends on the runtime CUDA version, so it is resolved here, in
+    the SGLang image, not when the plan is expanded.
+    """
+    import torch
+
+    from collector.sglang.collect_mla import _select_default_mla_backend
+
+    page_size = 64 if _select_default_mla_backend() == "trtllm_mla" else 1
+    dtype = torch.bfloat16 if case.kv_cache_dtype == "bfloat16" else torch.float8_e4m3fn
+    return [_mla_run_args(case, dtype, page_size)]
+
+
+def _trtllm_mla_rows(case: MlaCase, sm_version: int | None, runner: str | None) -> list[list]:
+    """TRT-LLM's run_mla takes a TensorRT-LLM dtype and the KV block size serving uses on this SM."""
+    import tensorrt_llm
+
+    from collector.trtllm.collect_mla import _mla_tokens_per_block
+
+    data_type = tensorrt_llm.bindings.DataType
+    dtype = data_type.BF16 if case.kv_cache_dtype == "bfloat16" else data_type.FP8
+    return [_mla_run_args(case, dtype, _mla_tokens_per_block())]
+
+
 OP_PLANS: dict[str, OpPlan] = {
     "gemm": OpPlan(GemmCase, _expand_gemm, dtype_field="gemm_type", group_fields=("gemm_type", "n", "k")),
     "moe": OpPlan(
@@ -635,6 +748,20 @@ OP_PLANS: dict[str, OpPlan] = {
     ),
     "kda": OpPlan(KdaCase, _expand_kda, dtype_field="dtype", group_fields=KdaCase._fields),
     "mamba2": OpPlan(Mamba2Case, _expand_mamba2, dtype_field="dtype", group_fields=Mamba2Case._fields),
+    "mla_context": OpPlan(
+        MlaCase,
+        _mla_expand(is_context=True),
+        dtype_field="kv_cache_dtype",
+        group_fields=MlaCase._fields,
+        rows={"sglang": _sglang_mla_rows, "trtllm": _trtllm_mla_rows},
+    ),
+    "mla_generation": OpPlan(
+        MlaCase,
+        _mla_expand(is_context=False),
+        dtype_field="kv_cache_dtype",
+        group_fields=MlaCase._fields,
+        rows={"sglang": _sglang_mla_rows, "trtllm": _trtllm_mla_rows},
+    ),
     "mla_bmm_gen_pre": OpPlan(
         MlaBmmCase, _mla_bmm_expand("mla_bmm_gen_pre"), dtype_field="dtype", group_fields=MlaBmmCase._fields
     ),

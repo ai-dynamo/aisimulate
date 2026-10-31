@@ -15,8 +15,8 @@ from dataclasses import dataclass
 
 import tensorrt_llm
 import torch
-from collector.case_generator import get_context_mla_case_specs, get_generation_mla_case_specs
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 
 # trtllm >=1.3.0rc29 moved _torch.attention_backend.* -> _torch.attention.backends.* and
 # _torch.modules.fused_moe -> _torch.moe.fused_moe (the old package root is a deprecation shim
@@ -67,74 +67,13 @@ def _mla_tokens_per_block() -> int:
 
 
 def get_context_mla_test_cases():
-    dtype_list = [tensorrt_llm.bindings.DataType.BF16, tensorrt_llm.bindings.DataType.FP8]
-    return _build_mla_test_cases(get_context_mla_case_specs(), dtype_list=dtype_list)
+    return plan_cases("mla_context", "trtllm", get_sm_version())
 
 
 def get_generation_mla_test_cases():
-    dtype_list = [tensorrt_llm.bindings.DataType.BF16, tensorrt_llm.bindings.DataType.FP8]
-    return _build_mla_test_cases(get_generation_mla_case_specs(), dtype_list=dtype_list)
+    return plan_cases("mla_generation", "trtllm", get_sm_version())
 
 
-def _build_mla_test_cases(case_specs, *, dtype_list):
-    """Adapt the shared YAML MLA catalog to TRT-LLM's legacy run tuple."""
-
-    cases_by_physical_key = {}
-    scenario = Scenario()
-    expected_geometry = (
-        scenario.q_lora_rank,
-        scenario.kv_lora_rank,
-        scenario.qk_nope_head_dim,
-        scenario.qk_rope_head_dim,
-        scenario.v_head_dim,
-    )
-    for spec in case_specs:
-        geometry = (
-            spec.q_lora_rank,
-            spec.kv_lora_rank,
-            spec.qk_nope_head_dim,
-            spec.qk_rope_head_dim,
-            spec.v_head_dim,
-        )
-        if geometry != expected_geometry:
-            raise ValueError(f"Unsupported TRT-LLM MLA geometry for {spec.model_name}: {geometry}")
-
-        for dtype in dtype_list:
-            for tp_size in (1, 2, 4, 8, 16, 32, 64, 128):
-                if spec.num_heads % tp_size:
-                    continue
-                case = (
-                    spec.input_len,
-                    spec.batch_size,
-                    1,
-                    dtype,
-                    spec.num_heads,
-                    tp_size,
-                    tp_size,
-                    _mla_tokens_per_block(),
-                    10,
-                    6,
-                    spec.is_context_phase,
-                )
-                # The perf loader keys on local heads, not total heads or TP.
-                # Equivalent total-head/TP pairs therefore share one row.
-                physical_key = (
-                    dtype,
-                    spec.num_heads // tp_size,
-                    spec.batch_size,
-                    spec.input_len,
-                )
-                # Selectors run after getter population and commonly cap TP.
-                # Prefer the smallest-TP representation of an equivalent
-                # local-head key so targeted plans do not lose that key.
-                existing = cases_by_physical_key.get(physical_key)
-                if existing is None or tp_size < existing[6]:
-                    cases_by_physical_key[physical_key] = list(case)
-    return list(cases_by_physical_key.values())
-
-
-# Copied from transformers v4.57.1:
-# transformers.models.llama.modeling_llama.rotate_half
 def rotate_half(x):
     """Rotates half the hidden dims of the input."""
     x1 = x[..., : x.shape[-1] // 2]
