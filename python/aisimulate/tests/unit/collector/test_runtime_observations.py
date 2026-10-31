@@ -1668,6 +1668,49 @@ def test_v031_prefix_caching_evidence_must_match_the_resolved_cache_settings(tmp
     assert result["diagnostics"] == ["tp2: runtime prefix-caching evidence contradicts the resolved cache settings"]
 
 
+@pytest.mark.parametrize("uniform", [False, True], ids=["mamba", "uniform"])
+@pytest.mark.parametrize("records", ["worker_and_scheduler", "scheduler"])
+def test_v031_mamba_state_groups_require_their_cache_mode(tmp_path, records, uniform):
+    path, launches = observation_fixture(tmp_path, layout="mamba_hybrid")
+
+    def edit(record):
+        group = record["cache"]["groups"][1]
+        if uniform and record["kind"] == "worker":
+            # The worker groups the two Mamba layers as a UniformTypeKVCacheSpecs, whose page holds both layer
+            # pages. The scheduler copy keeps the first inner spec (kv_cache_utils.py:2434-2440).
+            group.update(spec_type=_V031_SPEC + "UniformTypeKVCacheSpecs", spec_page_size_bytes=16_384)
+        if record["phase"] == "decode" and (records == "worker_and_scheduler" or record["kind"] == "scheduler"):
+            group["state"].pop("mamba_cache_mode")
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    if records == "scheduler":
+        # The scheduler copy of every group is compared with the worker group field by field.
+        assert result["diagnostics"] == ["tp2: worker and scheduler cache group geometry disagrees"]
+        return
+    # Every copy of the group lacks the mode, so the copies still agree with each other.
+    assert result["diagnostics"] == [
+        "tp2: runtime state cache group lacks Mamba cache mode evidence: ['mamba.0', 'mamba.2']"
+    ]
+
+
+@pytest.mark.parametrize("field,value", [("hash_block_size", 128), ("block_size", 128), ("block_size", 64.0)])
+def test_v031_prefix_caching_evidence_must_match_the_scheduler_block_sizes(tmp_path, field, value):
+    path, launches = observation_fixture(tmp_path, layout="mamba_hybrid")
+
+    def edit(record):
+        # One scheduler reports its own block size apart from the accepted copy in its prefix-caching evidence.
+        if (record["phase"], record["kind"], record["dp_rank"]) == ("prefill", "scheduler", 0):
+            assert record["cache"][field] == record["cache"]["prefix_caching"][field] == 64
+            record["cache"][field] = value
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == ["tp2: runtime prefix-caching evidence contradicts the scheduler block sizes"]
+
+
 @pytest.mark.parametrize("spec", ["MLAAttentionSpec", "MambaSpec"])
 def test_legacy_records_refuse_classes_outside_the_legacy_allow_list(tmp_path, spec):
     path, launches = observation_fixture(tmp_path)

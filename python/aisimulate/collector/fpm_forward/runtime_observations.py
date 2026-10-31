@@ -858,6 +858,15 @@ def _phase_prefix_caching(
     for record in workers.values():
         for group in record["cache"]["groups"]:
             state = group.get("state")
+            # A vLLM 0.31.0 record holds the mode of every MambaSpec, also inside a uniform group
+            # (runtime/fpm_memory_observer.py:488-504). The scheduler copy of each group equals the worker group
+            # (runtime_memory._normalized_groups), so it holds the mode too.
+            if (
+                strided
+                and _MAMBA_SPEC in runtime_memory._spec_classes(group, group["layer_names"], strided)
+                and "mamba_cache_mode" not in state
+            ):
+                raise ValueError(f"runtime state cache group lacks Mamba cache mode evidence: {group['layer_names']}")
             if group.get("kind") == "state" and isinstance(state, dict) and "mamba_cache_mode" in state:
                 _same(state["mamba_cache_mode"], scheduled["mamba_cache_mode"], f"{phase} Mamba cache mode")
     # Each process reads this evidence from the cache config that it resolved
@@ -871,6 +880,15 @@ def _phase_prefix_caching(
                 [resolved.get(name) for name in names]
             ):
                 raise ValueError("runtime prefix-caching evidence contradicts the resolved cache settings")
+        # A scheduler copies its own block size and hash block size into the evidence
+        # (runtime/instrumentation/observer.py:483-484).
+        sizes = ("block_size", "hash_block_size")
+        for record in schedulers.values():
+            cache = record["cache"]
+            if canonical_json([cache["prefix_caching"][name] for name in sizes]) != canonical_json(
+                [cache.get(name) for name in sizes]
+            ):
+                raise ValueError("runtime prefix-caching evidence contradicts the scheduler block sizes")
     return {
         "enable_prefix_caching": scheduled["enable_prefix_caching"],
         "mamba_cache_mode": scheduled["mamba_cache_mode"],
