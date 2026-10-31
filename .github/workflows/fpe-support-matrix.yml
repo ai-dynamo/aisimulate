@@ -118,6 +118,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       shards: ${{ steps.shards.outputs.shards }}
+      required-probes: ${{ steps.shards.outputs.required_probes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -239,8 +240,10 @@ jobs:
       - name: Require complete same-wheel reports and native sentinels
         env:
           EXPECTED_SHARDS: ${{ needs.discover-shards.outputs.shards }}
+          EXPECTED_PROBES: ${{ needs.discover-shards.outputs.required-probes }}
         run: |
           printf '%s\n' "${EXPECTED_SHARDS}" > fpe-release-shards.json
+          printf '%s\n' "${EXPECTED_PROBES}" > fpe-release-probes.json
           python3 scripts/fpe/run_release_fpe.py package --wheel-dir fpe-wheel \
             --reports fpe-support-matrix --destination fpe-nightly-web
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

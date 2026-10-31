@@ -112,16 +112,65 @@ def load_tool(name: str):
     return module
 
 
-def package_reports(reports: Path, expected: dict, wheel_sha: str, shards: list, destination: Path) -> None:
+def required_probe_selectors() -> list[dict]:
+    selectors = json.loads((ROOT / ".github/fpe-required-probes.json").read_text())["probes"]
+    if not selectors or any(p["backend_version"] != "current" for p in selectors):
+        raise ValueError("required FPE probes must select the source wheel's current versions")
+    if len({json.dumps(p, sort_keys=True) for p in selectors}) != len(selectors):
+        raise ValueError("required FPE probe selectors must be unique")
+    return selectors
+
+
+def discover_required_probes(combinations: list[tuple], receipt: dict, resolve_version) -> dict:
+    """Resolve policy before observing results, using the verified source wheel's SDK."""
+    selectors = required_probe_selectors()
+    inventory = set(combinations)
+    probes = []
+    for selector in selectors:
+        version = resolve_version(selector["system"], selector["backend"], selector["backend_version"])
+        probe = {**selector, "backend_version": version}
+        if tuple(probe[k] for k in ("model", "system", "backend", "backend_version")) not in inventory:
+            raise ValueError(f"required FPE probe is absent from the selected-source inventory: {probe}")
+        probes.append(probe)
+    plan = {**receipt, "selectors": selectors, "probes": probes}
+    validate_required_probes(plan, receipt)
+    return plan
+
+
+def validate_required_probes(plan: dict, receipt: dict) -> list[dict]:
+    """Reject stale/mixed plans and require one concrete identity per selector."""
+    selectors = required_probe_selectors()
+    if {k: v for k, v in plan.items() if k != "probes"} != {**receipt, "selectors": selectors}:
+        raise ValueError("required FPE probe plan does not match its source/tooling/wheel provenance or policy")
+    probes = plan.get("probes")
+    if not isinstance(probes, list) or len(probes) != len(selectors):
+        raise ValueError("required FPE probe plan must resolve every selector exactly once")
+    for selector, probe in zip(selectors, probes, strict=True):
+        version = probe.get("backend_version") if isinstance(probe, dict) else None
+        if (
+            not isinstance(version, str)
+            or not version.strip()
+            or version in {"current", "previous", "next"}
+            or probe != {**selector, "backend_version": version}
+        ):
+            raise ValueError(f"invalid resolved FPE probe: {probe}")
+    return probes
+
+
+def package_reports(
+    reports: Path, expected: dict, wheel_sha: str, shards: list, destination: Path, *, probe_plan: dict
+) -> None:
+    required_probes = validate_required_probes(probe_plan, {**expected, "wheel_sha256": wheel_sha})
     qualifier = load_tool("qualify_fpe_support_matrix")
     report = qualifier.qualify(
         reports,
         expected_shards=shards,
         expected_sha=expected["source_sha"],
         expected_wheel_sha256=wheel_sha,
-        required_probes=json.loads((ROOT / ".github/fpe-required-probes.json").read_text())["probes"],
+        required_probes=required_probes,
     )
     report.update(expected)
+    report["required_probes"] = required_probes
     destination.mkdir(parents=True)
     (destination / "fpe-qualification.json").write_text(json.dumps(report, indent=2) + "\n")
     builder = ROOT / PROBES / "build_fpe_support_matrix.py"
@@ -163,6 +212,7 @@ def main() -> None:
     parser.add_argument("--harness-dir", type=Path, default=ROOT / "release-probe-harness")
     parser.add_argument("--reports", type=Path, default=ROOT / "fpe-release-results")
     parser.add_argument("--shards", type=Path, default=ROOT / "fpe-release-shards.json")
+    parser.add_argument("--required-probes", type=Path, default=ROOT / "fpe-release-probes.json")
     parser.add_argument("--destination", type=Path, default=ROOT / "fpe-release-web")
     args, probe_args = parser.parse_known_args()
     if probe_args and args.action != "probe":
@@ -188,19 +238,30 @@ def main() -> None:
     if json.loads(receipt_path.read_text()) != receipt:
         raise ValueError("release wheel does not match its source/tooling provenance")
     if args.action == "package":
-        package_reports(args.reports, expected, wheel_sha, json.loads(args.shards.read_text()), args.destination)
+        package_reports(
+            args.reports,
+            expected,
+            wheel_sha,
+            json.loads(args.shards.read_text()),
+            args.destination,
+            probe_plan=json.loads(args.required_probes.read_text()),
+        )
         return
     verify_installed_wheel(wheel)
     sys.path.insert(0, str(prepare_harness(args.source_root, args.harness_dir)))
     if args.action == "discover":
-        from tools.support_matrix.support_matrix import SupportMatrix
+        from tools.support_matrix.support_matrix import SupportMatrix, perf_database
 
-        shards = sorted({(s, b) for _, s, b, _ in SupportMatrix().generate_combinations()})
+        combinations = SupportMatrix().generate_combinations()
+        plan = discover_required_probes(combinations, receipt, perf_database.resolve_query_version)
+        shards = sorted({(s, b) for _, s, b, _ in combinations})
         if not shards:
             raise ValueError("release inventory has no FPE shards")
         value = json.dumps([{"system": s, "backend": b} for s, b in shards])
         args.shards.write_text(value + "\n")
+        args.required_probes.write_text(json.dumps(plan, indent=2) + "\n")
         output("shards", value)
+        output("required_probes", json.dumps(plan))
     else:
         from tools.support_matrix import generate_fpe_support_matrix as generator
 
