@@ -1538,6 +1538,29 @@ def test_v031_records_require_prefix_caching_evidence_and_refuse_mamba_mode_all(
     assert result["diagnostics"] == [f"tp2: {diagnostic}"]
 
 
+@pytest.mark.parametrize(
+    "shape", ["scheduler_without_hash_block_size", "enable_prefix_caching_string", "unknown_mamba_cache_mode"]
+)
+def test_v031_malformed_prefix_caching_evidence_is_incomplete(tmp_path, shape):
+    path, launches = observation_fixture(tmp_path, layout="mamba_hybrid")
+
+    def edit(record):
+        # The evidence key is present, so only the malformed-evidence rule can refuse it.
+        evidence = record["cache"]["prefix_caching"]
+        if shape == "scheduler_without_hash_block_size":
+            if record["kind"] == "scheduler":
+                evidence.pop("hash_block_size")
+        elif shape == "enable_prefix_caching_string":
+            evidence["enable_prefix_caching"] = "true"
+        else:
+            evidence["mamba_cache_mode"] = "auto"
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == ["tp2: runtime observation requires complete prefix-caching evidence"]
+
+
 @pytest.mark.parametrize("spec", ["MLAAttentionSpec", "MambaSpec"])
 def test_legacy_records_refuse_classes_outside_the_legacy_allow_list(tmp_path, spec):
     path, launches = observation_fixture(tmp_path)
