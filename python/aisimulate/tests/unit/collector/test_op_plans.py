@@ -13,11 +13,13 @@ IDs use.
 from __future__ import annotations
 
 import ast
+import csv
 import importlib
 import json
 import os
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -112,7 +114,7 @@ def test_rows_may_not_drop_a_case(monkeypatch):
         lambda: [GemmCase("bfloat16", 1, 128, 128)],
         dtype_field="gemm_type",
         group_fields=("n", "k"),
-        rows={"vllm": lambda case, sm: []},
+        rows={"vllm": lambda case, sm, runner: []},
     )
     monkeypatch.setitem(OP_PLANS, "probe", dropping)
 
@@ -167,7 +169,7 @@ def test_plan_only_reports_op_plans_and_writes_the_table(tmp_path):
         [
             sys.executable,
             str(PKG_ROOT / "collector" / "collect.py"),
-            *("--backend", "vllm", "--model-cases-full", "--sm", "89", "--ops", "gemm"),
+            *("--backend", "vllm", "--model-cases-full", "--sm", "89", "--ops", *sorted(OP_PLANS)),
             *("--plan-only", "--plan-table", str(tmp_path)),
         ],
         cwd=PKG_ROOT,
@@ -178,10 +180,79 @@ def test_plan_only_reports_op_plans_and_writes_the_table(tmp_path):
     )
     assert result.returncode == 0, result.stderr[-2000:]
 
-    gemm = json.loads(result.stdout)["plans"]["gemm"]
+    plans = json.loads(result.stdout)["plans"]
+    assert set(plans) == set(OP_PLANS)
+    gemm = plans["gemm"]
     shapes = gemm["by_dtype"]["bfloat16"]
     assert gemm["by_dtype"] == {"bfloat16": shapes, "fp8": shapes, "fp8_block": shapes}
     assert gemm["removed"] == [{"region": "dtype=nvfp4", "cases": shapes, "reason": "dtype nvfp4 requires SM>=100"}]
     rows = (tmp_path / "vllm_sm89_gemm.csv").read_text().splitlines()
     assert rows[0] == "gemm_type,m,n,k"
     assert len(rows) == 1 + gemm["cases"]
+    for op in OP_PLANS:
+        assert len((tmp_path / f"vllm_sm89_{op}.csv").read_text().splitlines()) == 1 + plans[op]["cases"], op
+
+
+def test_planning_imports_no_framework():
+    """--plan-only runs on any CPU: no op plan imports SGLang, vLLM, TensorRT-LLM or torch."""
+    script = """
+import sys
+for name in ("sglang", "vllm", "tensorrt_llm", "torch"):
+    sys.modules[name] = None
+from collector.op_plans import OP_PLANS, plan
+for op in OP_PLANS:
+    for backend in ("sglang", "trtllm", "vllm"):
+        assert plan(op, backend, 100).cases, (op, backend)
+"""
+    env = dict(os.environ)
+    env.pop("COLLECTOR_MODEL_PATH", None)
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=PKG_ROOT, env=env, capture_output=True, text=True, timeout=300
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+
+
+@pytest.mark.parametrize("op", sorted(OP_PLANS))
+def test_region_fields_are_few_categories(op):
+    """A backend gap names a whole region: dtype or a categorical field, never a shape axis."""
+    spec = OP_PLANS[op]
+    for field in spec.region_fields:
+        assert field in spec.case_type._fields or isinstance(getattr(spec.case_type, field, None), property), field
+        values = {getattr(case, field) for backend in BACKENDS for case in plan(op, backend, 100).cases}
+        assert all(isinstance(value, str) for value in values), (field, values)
+        assert len(values) <= 8, (field, values)
+
+
+def test_moe_plan_reports_the_runner_sglang_picks_on_each_sm():
+    sm100 = plan("moe", "sglang", 100)
+    assert sum(sm100.by_dispatch.values()) == len(sm100.cases)
+    assert {"triton", "flashinfer_trtllm", "flashinfer_mxfp4"} <= set(sm100.by_dispatch)
+    assert "marlin" in plan("moe", "sglang", 90).by_dispatch
+    assert plan("moe", "vllm", 100).by_dispatch == {}
+
+
+def test_plan_table_carries_the_dispatch_of_each_case(tmp_path):
+    env = dict(os.environ)
+    env.pop("COLLECTOR_MODEL_PATH", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(PKG_ROOT / "collector" / "collect.py"),
+            *("--backend", "sglang", "--model-cases-full", "--sm", "90", "--ops", "moe"),
+            *("--plan-only", "--plan-table", str(tmp_path)),
+        ],
+        cwd=PKG_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+
+    with (tmp_path / "sglang_sm90_moe.csv").open(newline="") as handle:
+        table = list(csv.DictReader(handle))
+    plans = json.loads(result.stdout)["plans"]["moe"]
+    assert len(table) == plans["cases"]
+    assert Counter(row["dispatch"] for row in table) == Counter(plans["by_dispatch"])
+    # SGLang serves Kimi-K2.5 INT4 on SM90 through Marlin.
+    assert {row["dispatch"] for row in table if row["model_name"] == "moonshotai/Kimi-K2.5"} == {"marlin"}

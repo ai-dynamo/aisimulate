@@ -8,9 +8,13 @@ every backend. :func:`plan` then leaves out only whole regions: the
 ``capabilities.yaml`` floors and backend gaps (:func:`capabilities.region_reason`).
 A case inside a kept region always runs; if it fails, the failure is recorded.
 
-A backend whose run function takes more arguments than the shared case
-declares ``rows``: the run arguments for one case. Rows decide how a case
-runs, never whether it runs, so every case gives at least one row.
+Where the plan picks the kernel or runner a backend measures a case on (the
+one serving selects, Rule 2), the op declares it in ``dispatch``. A backend
+whose run function takes more arguments than the case declares ``rows``: the
+run arguments for one case and its dispatch. Rows decide how a case runs,
+never whether it runs, so every case gives at least one row.
+
+Planning never imports a framework, so ``--plan-only`` runs on any CPU.
 
 Each backend's getter is one line, ``return plan_cases("<op>", "<backend>",
 get_sm_version())``. To move an op onto a plan, add its case type, its expand
@@ -21,6 +25,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
@@ -42,6 +47,9 @@ from collector.case_generator import (
     moe_planned_modes,
 )
 
+# Plan logs go to the collector log, never stdout: --plan-only prints JSON there.
+logger = logging.getLogger(__name__)
+
 
 @dataclasses.dataclass(frozen=True)
 class OpPlan:
@@ -54,11 +62,15 @@ class OpPlan:
     dtype_field: str
     # The case fields whose values share one module build in a worker.
     group_fields: tuple[str, ...]
-    # Other case fields a capabilities.yaml backend gap may name, besides dtype.
+    # Other categorical case fields (or properties derived from them) a
+    # capabilities.yaml backend gap may name, besides dtype. Never a shape axis.
     region_fields: tuple[str, ...] = ()
-    # backend -> the run arguments for one case, for a run function that takes
-    # more than the case.
-    rows: Mapping[str, Callable[[object, int | None], list]] = MappingProxyType({})
+    # backend -> the kernel or runner the backend measures a case on, where the
+    # plan picks it.
+    dispatch: Mapping[str, Callable[[object, int | None], str]] = MappingProxyType({})
+    # backend -> the run arguments for one case and its dispatch (None without
+    # one), for a run function that takes more than the case.
+    rows: Mapping[str, Callable[[object, int | None, str | None], list]] = MappingProxyType({})
 
 
 @dataclasses.dataclass(frozen=True)
@@ -78,6 +90,13 @@ class Plan:
     # What the getter queues: the cases, or the backend's rows for them.
     rows: list
     removed: list[RemovedRegion]
+    # The dispatch of each case, for a backend whose plan picks it; else empty.
+    dispatches: list[str] = dataclasses.field(default_factory=list)
+
+    @property
+    def by_dispatch(self) -> dict[str, int]:
+        """How many cases run on each dispatch."""
+        return dict(Counter(self.dispatches))
 
 
 def plan(op: str, backend: str, sm_version: int | None) -> Plan:
@@ -97,12 +116,14 @@ def plan(op: str, backend: str, sm_version: int | None) -> Plan:
         else:
             removed[reasons[key]] += 1
 
+    dispatch = spec.dispatch.get(backend)
+    runs_on = [dispatch(case, sm_version) for case in kept] if dispatch is not None else [None] * len(kept)
     rows = kept
     to_rows = spec.rows.get(backend)
     if to_rows is not None:
         rows = []
-        for case in kept:
-            case_rows = to_rows(case, sm_version)
+        for case, runner in zip(kept, runs_on, strict=True):
+            case_rows = to_rows(case, sm_version, runner)
             if not case_rows:
                 raise ValueError(f"{backend} {op} rows dropped case {case}; rows may only say how a case runs")
             rows.extend(case_rows)
@@ -110,6 +131,7 @@ def plan(op: str, backend: str, sm_version: int | None) -> Plan:
         cases=kept,
         rows=rows,
         removed=[RemovedRegion(region, count, reason) for (region, reason), count in removed.items()],
+        dispatches=runs_on if dispatch is not None else [],
     )
 
 
@@ -136,6 +158,8 @@ def summarize(op: str, op_plan: Plan, case_id: Callable[[object], str]) -> dict:
     }
     if len(op_plan.rows) != len(op_plan.cases):
         summary["rows"] = len(op_plan.rows)
+    if op_plan.by_dispatch:
+        summary["by_dispatch"] = op_plan.by_dispatch
     return summary
 
 
@@ -290,7 +314,7 @@ def _expand_moe() -> list[MoeCase]:
                 )
     empty = sorted({row[0] for row, row_modes in modes.items() if not row_modes})
     if empty:
-        print(f"moe: {len(empty)} model row(s) plan no case (quantization_modes: []): {', '.join(empty)}")
+        logger.info("moe: %d model row(s) plan no case (quantization_modes: []): %s", len(empty), ", ".join(empty))
     return cases
 
 
@@ -298,8 +322,17 @@ def _moe_layer_of(case: MoeCase) -> MoeCommonTestCase:
     return moe_model_layer(case.model_name, case.hidden_size, case.inter_size, case.topk, case.num_experts)
 
 
-def _sglang_moe_rows(case: MoeCase, sm_version: int | None) -> list[list]:
-    """SGLang's run_moe_torch also takes the row's routing and activation and the runner serving picks on this SM."""
+def _sglang_moe_runner(case: MoeCase, sm_version: int | None) -> str:
+    """The MoE runner SGLang serving picks for this case's checkpoint and quant mode on this SM.
+
+    Pinned in cases/base_ops/moe.yaml moe_sglang.backends and a model row's
+    sglang_moe_backends.
+    """
+    return get_sglang_moe_backend(_moe_layer_of(case), case.moe_type, sm_version)
+
+
+def _sglang_moe_rows(case: MoeCase, sm_version: int | None, runner: str | None) -> list[list]:
+    """SGLang's run_moe_torch also takes the row's routing and activation and the runner."""
     layer = _moe_layer_of(case)
     return [
         [
@@ -307,7 +340,7 @@ def _sglang_moe_rows(case: MoeCase, sm_version: int | None) -> list[list]:
             list(case.num_tokens),
             *case[2:11],
             layer.sglang_moe_swiglu_limit,
-            get_sglang_moe_backend(layer, case.moe_type, sm_version),
+            runner,
             layer.sglang_moe_activation,
             layer.sglang_moe_is_gated,
             layer.sglang_moe_has_bias,
@@ -326,13 +359,15 @@ def _sglang_moe_rows(case: MoeCase, sm_version: int | None) -> list[list]:
     ]
 
 
-def _trtllm_moe_rows(case: MoeCase, sm_version: int | None) -> list[list]:
+def _trtllm_moe_rows(case: MoeCase, sm_version: int | None, runner: str | None) -> list[list]:
     """TRT-LLM's run_moe_torch takes min_latency_mode after ep.
 
     An nvfp4 case on SM100/103 with at most 256 experts also times the
     min-latency (trtllm-gen) kernel, a second row of moe_perf
     (kernel_source moe_torch_flow_min_latency); its DeepSeek router supports
-    at most 256 experts.
+    at most 256 experts. That row is a second measurement, not just how the
+    case runs; it becomes a declared variant when the Record counts rows per
+    consumer key.
     """
     min_latency_modes = [False]
     if case.moe_type == "nvfp4" and sm_version in (100, 103) and case.num_experts <= 256:
@@ -412,7 +447,9 @@ def _expand_encoder_attention() -> list[EncoderAttentionCase]:
                         over_budget += 1
                         continue
                     cases.append(EncoderAttentionCase(b, s, n, head_dim))
-    print(f"encoder_attention: left out {over_budget} of {len(cases) + over_budget} cases over the per-case budgets")
+    logger.info(
+        "encoder_attention: left out %d of %d cases over the per-case budgets", over_budget, len(cases) + over_budget
+    )
     return cases
 
 
@@ -425,6 +462,7 @@ OP_PLANS: dict[str, OpPlan] = {
         # Every case builds its own layer.
         group_fields=MoeCase._fields,
         region_fields=("parallel",),
+        dispatch={"sglang": _sglang_moe_runner},
         rows={"sglang": _sglang_moe_rows, "trtllm": _trtllm_moe_rows},
     ),
     "compute_scale": OpPlan(ComputeScaleCase, _expand_compute_scale, dtype_field="dtype", group_fields=("m", "k")),

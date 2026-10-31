@@ -112,9 +112,17 @@ the YAML above), its dtype field and the fields that share one module build.
 out; each backend's getter is one line,
 `return plan_cases("<op>", "<backend>", get_sm_version())`.
 
-A backend whose run function takes more arguments than the shared case may
-declare `rows`: the run arguments for one case. Rows say how a case runs,
-never whether; a case with no row is an error.
+Where the plan picks the kernel or runner a backend measures a case on (the
+one serving selects), the op declares it in `dispatch`, and `--plan-only`
+counts the cases per dispatch. A backend whose run function takes more
+arguments than the shared case may declare `rows`: the run arguments for one
+case and its dispatch. Rows say how a case runs, never whether; a case with
+no row is an error. A field that enters the persisted key or changes the
+kernel belongs in the case or the dispatch, not in rows.
+
+Planning imports no framework, so `--plan-only` runs on any CPU;
+`test_op_plans.py` checks that, and that `region_fields` stay a few
+categories (never a shape axis).
 
 `tests/unit/collector/test_op_plans.py` runs over every entry, so moving an
 op onto a plan needs no new test: it checks the one-line getters, that the

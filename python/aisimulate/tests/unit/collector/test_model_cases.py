@@ -250,7 +250,7 @@ def test_nvfp4_quant_artifacts_have_exact_moe_profiles_and_lanes(monkeypatch, mo
 
 
 @pytest.mark.parametrize("backend", ["sglang", "trtllm", "vllm"])
-def test_qwen36_w4a16_nvfp4_moe_is_transferred_but_explicitly_deferred(monkeypatch, capsys, backend):
+def test_qwen36_w4a16_nvfp4_moe_is_transferred_but_explicitly_deferred(monkeypatch, caplog, backend):
     from collector.case_generator import get_common_moe_test_cases
     from collector.op_plans import plan_cases
 
@@ -263,8 +263,9 @@ def test_qwen36_w4a16_nvfp4_moe_is_transferred_but_explicitly_deferred(monkeypat
     assert {case.model_name for case in transferred_shapes} == {model_path}
     assert "w4a16_nvfp4" not in {spec.name for spec in get_moe_quantization_specs()}
 
-    assert plan_cases("moe", backend, 100) == []
-    assert f"plan no case (quantization_modes: []): {model_path}" in capsys.readouterr().out
+    with caplog.at_level("INFO", logger="collector.op_plans"):
+        assert plan_cases("moe", backend, 100) == []
+    assert f"plan no case (quantization_modes: []): {model_path}" in caplog.text
 
 
 @pytest.mark.parametrize(
