@@ -4,9 +4,9 @@
 """Unit tests for tools/perf_database/check_collector_data.py.
 
 Builds synthetic family-layout trees (`<system>/<family>/<backend>/<version>/`)
-under `tmp_path` and exercises each of the seven fail-closed rules (R1-R7,
-design §6/§6.5/§8) both green (a fully compliant tree) and red (one named
-offender per rule). Uses the REAL op catalog (`collector/op_backend_catalog.yaml`)
+and notes files under `tmp_path` and exercises each of the eight fail-closed
+rules (R1-R8) both green (a fully compliant tree) and red (one named offender
+per rule). Uses the REAL op catalog (`collector/op_backend_catalog.yaml`)
 for family-placement checks -- same convention as
 `tests/unit/tools/test_backend_facts.py` -- so table/family names below
 (`gemm_perf`/`gemm`, `context_attention_perf`/`attention`,
@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 pytestmark = pytest.mark.unit
 
@@ -500,3 +501,113 @@ class TestR7AttestedCasePlan:
         assert len(failures) == 1
         assert "collections[1]" in failures[0]
         assert "EMPTY attempted-case set" in failures[0]
+
+
+# ---------------------------------------------------------------------------
+# R8: notes
+# ---------------------------------------------------------------------------
+
+# gemm has a family pin; scale_matrix_perf (quantize) falls back to the default.
+_FRAMEWORKS = {"vllm": {"default": {"version": "0.30.0"}, "families": {"gemm": {"version": "0.31.0"}}}}
+_SYSTEMS = {"h200_sxm", "b200_sxm"}
+
+
+def _note(**overrides) -> dict:
+    note = {
+        "id": "D-vllm-example",
+        "kind": "deviation",
+        "summary": "Serving runs a different kernel than the one the table times.",
+        "direction": "over",
+        "scope": {"tables": ["gemm_perf"], "systems": ["h200_sxm"]},
+        "verified_on": "0.31.0",
+        "sources": ["vllm model_executor/example.py:1-2 @0.31.0"],
+    }
+    note.update(overrides)
+    return note
+
+
+def _check_notes(mod, tmp_path: Path, notes: list, backend: str = "vllm") -> list[str]:
+    _write(tmp_path, f"notes/{backend}.yaml", yaml.safe_dump({"schema_version": 1, "notes": notes}))
+    family_map = mod.load_family_map(REAL_CATALOG)
+    return mod.check_r8_notes(tmp_path / "notes", family_map, _FRAMEWORKS, _SYSTEMS)
+
+
+class TestR8Notes:
+    def test_valid_deviation_passes(self, mod, tmp_path):
+        assert _check_notes(mod, tmp_path, [_note()]) == []
+
+    def test_valid_guard_passes(self, mod, tmp_path):
+        guard = _note(id="G-vllm-example", kind="guard", reason="mismeasure")
+        del guard["direction"]
+        assert _check_notes(mod, tmp_path, [guard]) == []
+
+    def test_missing_notes_dir_passes(self, mod, tmp_path):
+        family_map = mod.load_family_map(REAL_CATALOG)
+        assert mod.check_r8_notes(tmp_path / "notes", family_map, _FRAMEWORKS, _SYSTEMS) == []
+
+    def test_file_must_be_named_after_a_framework(self, mod, tmp_path):
+        failures = _check_notes(mod, tmp_path, [_note()], backend="nccl")
+        assert failures == ["notes/nccl.yaml: 'nccl' is not a framework in framework_manifest.yaml"]
+
+    def test_missing_field_is_named(self, mod, tmp_path):
+        failures = _check_notes(mod, tmp_path, [_note(sources=[])])
+        assert failures == ["notes/vllm.yaml[0]: missing sources"]
+
+    def test_unknown_key_is_rejected(self, mod, tmp_path):
+        failures = _check_notes(mod, tmp_path, [_note(expires="2026-10-31")])
+        assert failures == ["notes/vllm.yaml[0]: unsupported key(s) expires"]
+
+    def test_duplicate_id_is_named(self, mod, tmp_path):
+        failures = _check_notes(mod, tmp_path, [_note(), _note()])
+        assert len(failures) == 1
+        assert "duplicate id, first defined at notes/vllm.yaml[0]" in failures[0]
+
+    def test_id_prefix_follows_kind(self, mod, tmp_path):
+        failures = _check_notes(mod, tmp_path, [_note(kind="guard", reason="hang", direction=None)])
+        assert any("a guard id is G-<backend>-<slug>" in failure for failure in failures)
+
+    def test_deviation_needs_direction(self, mod, tmp_path):
+        note = _note()
+        del note["direction"]
+        failures = _check_notes(mod, tmp_path, [note])
+        assert failures == ["notes/vllm.yaml[0] D-vllm-example: a deviation needs direction: over | under | unknown"]
+
+    def test_guard_needs_reason(self, mod, tmp_path):
+        guard = _note(id="G-vllm-example", kind="guard")
+        del guard["direction"]
+        failures = _check_notes(mod, tmp_path, [guard])
+        assert failures == ["notes/vllm.yaml[0] G-vllm-example: a guard needs reason: mismeasure | hang | expensive"]
+
+    def test_unknown_table_and_system_are_named(self, mod, tmp_path):
+        failures = _check_notes(mod, tmp_path, [_note(scope={"tables": ["nope_perf"], "systems": ["h999"]})])
+        assert any("unknown system(s) h999" in failure for failure in failures)
+        assert any("unknown table nope_perf" in failure for failure in failures)
+
+    def test_verified_on_behind_the_family_pin_is_stale(self, mod, tmp_path):
+        failures = _check_notes(mod, tmp_path, [_note(verified_on="0.30.0")])
+        assert len(failures) == 1
+        assert "verified_on 0.30.0 is behind the gemm pin 0.31.0 (gemm_perf)" in failures[0]
+
+    def test_framework_default_pins_a_family_without_override(self, mod, tmp_path):
+        scope = {"tables": ["scale_matrix_perf"], "systems": "all"}
+        assert _check_notes(mod, tmp_path, [_note(scope=scope, verified_on="0.30.0")]) == []
+        failures = _check_notes(mod, tmp_path, [_note(scope=scope, verified_on="0.29.0")])
+        assert "behind the quantize pin 0.30.0" in failures[0]
+
+    def test_note_limited_to_older_versions_is_not_stale(self, mod, tmp_path):
+        scope = {"tables": ["gemm_perf"], "systems": ["h200_sxm"], "versions": ["0.29.0"]}
+        assert _check_notes(mod, tmp_path, [_note(scope=scope, verified_on="0.29.0")]) == []
+
+    def test_verified_on_must_be_a_version(self, mod, tmp_path):
+        failures = _check_notes(mod, tmp_path, [_note(verified_on="latest")])
+        assert failures == ["notes/vllm.yaml[0] D-vllm-example: verified_on 'latest' is not a version"]
+
+    def test_wrong_schema_version_is_named(self, mod, tmp_path):
+        _write(tmp_path, "notes/vllm.yaml", yaml.safe_dump({"schema_version": 2, "notes": []}))
+        failures = mod.check_r8_notes(tmp_path / "notes", mod.load_family_map(REAL_CATALOG), _FRAMEWORKS, _SYSTEMS)
+        assert failures == ["notes/vllm.yaml: expected schema_version: 1 and a notes list"]
+
+    def test_runs_without_a_data_root(self, mod, tmp_path):
+        _write(tmp_path, "notes/vllm.yaml", yaml.safe_dump({"schema_version": 1, "notes": [_note(id=7)]}))
+        results = mod.run_checks(tmp_path / "does-not-exist", REAL_CATALOG, notes_dir=tmp_path / "notes")
+        assert any("a deviation id is D-<backend>-<slug>" in failure for failure in results["R8"])

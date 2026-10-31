@@ -127,7 +127,7 @@ def test_dsv4_cases_skip_unrelated_model_filter(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["pytest"])
 
     assert common_test_cases.get_dsv4_csa_context_test_cases() == []
-    assert common_test_cases.get_dsv4_hca_attn_test_cases() == []
+    assert common_test_cases.get_dsv4_paged_mqa_logits_test_cases() == []
 
 
 def test_sglang_sparse_modules_topk_calib_uses_canonical_model(monkeypatch, capsys):

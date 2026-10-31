@@ -5,7 +5,7 @@ collector as a flat op list. The whole declaration surface is:
 
 ```text
 plan cases = dedup( expand(base_ops sweep grids) ∪ expand(model_case_values shapes) )
-runnable   = plan cases ∩ hardware capability floors  −  hang denylist
+runnable   = plan cases ∩ hardware capability floors  −  backend gaps  −  hang denylist
 ```
 
 There is intentionally no per-case selector or exception rule engine. Cases
@@ -21,9 +21,10 @@ See `.claude/rules/collector/failure_handling.md` for the escalation rules.
   activated.
 - `models/<architecture>_cases.yaml`: architecture-specific op activation,
   model path aliases, and model shape values.
-- `capabilities.yaml`: positive hardware floors (dtype/op → min SM), applied
-  as a generation-time intersection. Hardware facts only — no shapes, no
-  framework versions, no per-backend nesting.
+- `capabilities.yaml`: positive hardware floors (dtype/op → min SM) and
+  `backend_gaps` (a whole (op, dtype) region one backend's collector cannot
+  run on given SMs, citing a guard note), applied when cases are generated.
+  No shapes, no framework versions, no other per-backend nesting.
 - `denylist.yaml`: cases that hang or kill the node (substring match, dated,
   with reason). Ordinary crashes never go here.
 
@@ -142,26 +143,28 @@ the token counts, batch/sequence sweeps, parallelism sizes, routing
 distributions, and generator constraints. Model YAML stores model dimensions;
 base op YAML stores the reusable sweep policy.
 
-MoE quantization is resolved before a case is queued. Base `quantization_modes`
-may declare `min_sm` (axis-level hardware floor), runtime features, an
-`allowed_model_paths` allowlist, and optional `module_config`. A model row
-narrows that list with `framework_quantization.<backend>.allowed_modes`.
-Quant-sensitive checkpoint artifacts use separate model rows even when all
-geometry fields are identical.
+MoE is planned once for every CUDA backend (`collector/op_plans.py`). The
+shared quant-mode axis is `common_case_values.moe.quantization_modes`; a mode
+may keep a checkpoint-specific format to the models that ship it
+(`allowed_model_paths`) and carry a `module_config`. A model row declares its
+checkpoint's modes in `quantization_modes`, the same for every backend; a row
+that declares none plans every mode. Quant-sensitive checkpoint artifacts use
+separate model rows even when all geometry fields are identical.
+`framework_quantization.<backend>` holds only a backend's `module_config` (and
+vllm_xpu's own policy). SM floors are `capabilities.yaml` `dtype_min_sm`; a
+mode or layout one backend cannot run on an SM is a `backend_gaps` entry.
 
 Artifact-keyed vLLM MoE rows also require a checked-in
 `src/aisimulate_core/model_configs/<org>--<model>_config.json`. The collector
 uses that local structural config to reproduce serving routing without a Hub
 download.
 
-When frameworks invoke different routed-expert geometry for the same artifact,
-a MoE model row may positively declare `frameworks: [vllm]` (or another list).
-Omitting the field means all frameworks. `get_common_moe_test_cases()` without
-a backend retains the legacy union during collector migrations; upgraded
-collectors pass their backend so geometry and quantization remain separate facts.
-Backend MoE values may also declare correlated `parallel_topologies`; each row
-expands only its listed TP and EP axes, and the union defines representable
-framework topologies without a collector-side skip.
+When frameworks invoke different routed-expert geometry for the same artifact
+(vLLM routes Nemotron-H experts through a latent width), declare one row per
+geometry; every backend plans both. A MoE row may not declare `frameworks`.
+vLLM cannot run routed experts with TP and EP both above 1, so the plan leaves
+the MoE region `parallel: tp_ep` out for vLLM (a `backend_gaps` entry,
+G-vllm-moe-tp-and-ep).
 
 `include_base: true` means "include the small universal base set" declared by
 base-file `model_ops` (currently dense attention and GEMM). Use an explicit
@@ -172,22 +175,34 @@ into `compute_scale`).
 
 ## Capability Floors
 
-`capabilities.yaml` holds positive hardware facts:
+`capabilities.yaml` holds positive hardware facts, plus the whole regions one
+backend's collector cannot run:
 
 ```yaml
 dtype_min_sm:
   fp8: 89
-  fp8_block: 90
+  fp8_block: 89
   nvfp4: 100
 op_min_sm:
   dsa_context_module: 90
+backend_gaps:
+  - backend: sglang
+    op: gemm
+    dtype: fp8_block
+    sm: [89, 120]
+    note: G-sglang-gemm-fp8-block-deepgemm-only
 ```
 
-`collector/capabilities.py` filters generated cases by typed field access
-(`moe_type`, `gemm_type`, `dtype`, `kv_cache_dtype`, FP8 flags) before
-queueing. Unknown dtypes and unknown ops are permissive: the table encodes
-known hardware facts, never guesses. Framework-version gaps do NOT belong
-here — they are runtime observations.
+An op plan (`OP_PLANS` in `collector/op_plans.py`) applies both when it
+expands, one region at a time, and `collect.py --plan-only --sm N` reports
+what it left out and why. For other ops, `collector/capabilities.py` filters
+generated cases by typed field access (`moe_type`, `gemm_type`, `dtype`,
+`kv_cache_dtype`, FP8 flags) before queueing. Unknown dtypes and unknown ops
+are permissive: the table encodes known facts, never guesses. A
+`backend_gaps` entry covers a whole region of an op plan on listed SMs (a
+dtype, or another region field the plan declares) and names a guard note in
+`collector/notes/<backend>.yaml`. Shape-level kernel limits and
+framework-version gaps do NOT belong here; they are runtime observations.
 
 ## Denylist
 

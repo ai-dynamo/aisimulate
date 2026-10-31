@@ -11,13 +11,14 @@ paths:
 Which layer of the collector may hold which kind of rule. This is the single
 most important reference when "fixing" a failing case: pick the layer first,
 then act. Violating these boundaries is how the retired sm_exceptions rule
-engine grew to 1400 lines of shape-sniping rules.
+engine grew to 1400 lines of shape-sniping rules. Read `overview.md` first for
+the vocabulary (Pin, Plan, Record, Note, Rule) and the failure principle.
 
 ## The one-line architecture
 
 ```text
 plan cases = dedup( expand(base_ops sweep grids) ∪ expand(model_case_values shapes) )
-runnable   = plan cases ∩ hardware capability floors  −  hang denylist
+runnable   = plan cases ∩ hardware capability floors  −  backend gaps  −  hang denylist
 result     = perf rows  +  classified failure records   (failure is DATA, not a defect)
 ```
 
@@ -27,7 +28,7 @@ result     = perf rows  +  classified failure records   (failure is DATA, not a 
 |---|---|---|
 | `cases/base_ops/*.yaml` | sweep density/ranges; axis-level `min_sm` on quant/precision modes; quant-mode-level `max_sm_exclusive` **iff** the entry carries a serving-dispatch citation (file:line at the pinned framework version) showing the framework itself excludes the platform — re-verified on every version bump like `FIXME(kernel-limit)` | per-model special cases; shape exclusion rules; `max_sm_exclusive` without a citation or below the quant-mode axis |
 | `cases/models/*_cases.yaml` | model structural shapes, correlated tuples, artifact/quant policy, op activation (`cases: all`) | selectors, match rules, a second generator recipe |
-| `cases/capabilities.yaml` | positive dtype/op → min-SM floors (hardware facts only) | negative "drop" rules; shape axes; framework-version conditions; per-backend nesting |
+| `cases/capabilities.yaml` | positive dtype/op → min-SM floors (hardware facts); `backend_gaps`: a whole region of an op plan on listed SMs that one backend's collector cannot run, citing a guard note. A region is a dtype or another region field the op plan declares (MoE `parallel`: tp, ep or tp_ep; mHC `architecture`) | any region finer than a declared region field on an SM; shape axes; framework-version conditions; other per-backend nesting |
 | `<backend>/registry.py` | version routing (`VersionRoute`); maturity markers `unverified=True` (op × backend) and `unverified_sms=(...)` (op × backend × SM) | any shape-level information |
 | `collect_*.py` collector code | **dispatch**: pick kernel path by SM/version, record `kernel_source`; runtime probe → **raise a classified exception**; **memory-feasibility filter** (see below) | silent `continue`/skip of a queued case; any other case filtering; patching code so one shape passes |
 | `cases/denylist.yaml` | cases that HANG or kill the node (dated, with reason) | ordinary crashes — those belong to the failure log |
@@ -45,8 +46,8 @@ result     = perf rows  +  classified failure records   (failure is DATA, not a 
 
 A collector has exactly two legal responses to a queued case: **execute it, or
 raise**. "Whether it runs" is decided only outside the collector, in three
-auditable places: capability floors (generation time), registry `unverified`
-markers, and the hang denylist.
+auditable places: capability floors and backend gaps (generation time),
+registry `unverified` markers, and the hang denylist.
 
 ## Kernel/backend selection: framework truth, never your guess
 
@@ -69,7 +70,7 @@ wrong data, which is worse than a crash.
    never the intended one.
 4. **Re-verify on every version bump.** Dispatch logic is precisely what
    framework upgrades change. The upgrade audit re-checks every pinned
-   backend and every `FIXME(kernel-limit)` against the new source before
+   backend and every note in `collector/notes/` against the new source before
    collected data is trusted.
 5. **No invented fallbacks.** If the framework-selected path cannot be
    constructed or invoked, raise a classified error — never substitute
@@ -101,8 +102,8 @@ path consumes that field for dense-input walking.
    metadata field changed without a citation is a review finding even when
    the change makes cases pass.
 2. **Serving-parity audit before framework blame.** Before concluding a
-   crash is a framework bug — and before writing any FIXME(kernel-limit)
-   for it — diff EVERY collector-constructed field against the serving
+   crash is a framework bug — and before adding any guard for it — diff
+   EVERY collector-constructed field against the serving
    population code (`model_engine._prepare_tp_inputs` and friends) for the
    failing request shape, field by field. Kernel localization (traceback,
    compute-sanitizer) tells you WHERE it faulted, never WHOSE contract was
@@ -133,31 +134,74 @@ feasibility, under exactly these conditions:
 
 Anything beyond this pattern goes back to the normal rule: run it or raise.
 
-## Parking framework kernel limits: `FIXME(kernel-limit)`
+## Framework kernel limits: let them fail, guard only three cases
 
-Framework kernel limits (backend × SM constraints with shape flavor, e.g.
-"Blackwell attention rejects GQA ratio >= 32 unless divisible by 32") are
-neither hardware facts (not capabilities.yaml material) nor version bugs
-(too stable to ignore). Their home is a **`FIXME(kernel-limit)` comment at
-the invocation site in the owning collector**, stating the claimed limit,
-its origin, and that it is unverified. The affected cases simply fail at
-runtime meanwhile.
+A framework kernel limit (a backend × SM constraint with a shape flavor, such
+as "Blackwell attention rejects GQA ratio >= 32 unless divisible by 32") is
+neither a hardware fact nor a version bug. Usually it needs nothing: the case
+runs, fails, lands in the failure log, and the next run is compared with this
+one. Do not write a probe, a guard or a YAML rule for it, and never express
+it in YAML.
 
-Lifecycle: on the next framework version bump, the upgrade audit greps
-`FIXME(kernel-limit)`, verifies each claim against the framework source, and
-either implements it as a probe (ask the framework's own selector — never a
-prediction) or a guard that raises a classified error citing the framework
-source line, or deletes the note. Do not implement guards from unverified
-claims, and never express these limits in YAML.
+A guard is legal only when running the case would:
+
+1. **mismeasure**: succeed on a different kernel than the framework selects
+   in serving, producing a wrongly labeled row;
+2. **hang** or kill the worker; or
+3. **waste significant time**, such as a full module load per case before the
+   failure.
+
+Such a guard raises in the worker before the expensive step, never at plan
+time, so the case stays queued and its failure is recorded on every run. Its
+message starts with `FIXME(kernel-limit):` (the failure classifier keys on
+that prefix) and names its guard note, `G-<backend>-<slug>` in
+`collector/notes/<backend>.yaml`. The note carries the evidence (a framework
+source line, or a reproducible failing run whose passing rows bound the
+guarded envelope) and `verified_on`, so R8 forces a re-check at every pin
+bump.
+
+When the guarded set is a whole (op, dtype) region on an SM, such as a dtype
+the backend's collector has no kernel for there, do not raise per case:
+declare it in `capabilities.yaml` `backend_gaps` with the same kind of guard
+note (reason `expensive`). The plan then leaves the region out and
+`--plan-only` reports it with the note id. Example:
+`G-sglang-gemm-fp8-block-deepgemm-only`.
+
+Existing `FIXME(kernel-limit)` raises without a guard note are legacy. When a
+change touches one, delete it if it guards none of the three cases above, or
+give it a guard note.
+
+## Version contract: one release per collector file
+
+Owner policy (2026-09-20, made binding 2026-10-30): version history lives in
+git, not in side-by-side files or version ranges.
+
+1. **Each collector module targets exactly one framework release.** Its
+   `__compat__` is a single exact pin, `"<framework>==<version>"`, equal to
+   the runtime `framework_manifest.yaml` resolves for its op (the framework
+   default or a family pin). No ranges, no `!=` exclusions, no per-version
+   branches for releases the manifest does not collect. Per-architecture
+   gates inside a module may only narrow that one release.
+2. **Upgrade in place.** A version bump rewrites the module for the new
+   release and moves its pin. Prior-version code is `git log -- <file>`
+   away; prior-version data stays permanent under its version key. Do not
+   add `_<version>` fork modules or keep old releases admitted "so they
+   still work".
+3. **Pin consolidation.** A model or family pin below the target version
+   upgrades with it; a pin above the default is the next version for that
+   family and needs its own GPU validation.
+4. **Enforced by tests.** `tests/unit/collector/test_framework_manifest.py`
+   fails when a stock vLLM, SGLang or TRT-LLM registry module declares
+   anything but `==` its resolved runtime.
 
 ## Module boundary: a collector task may only touch collector/
 
 The collector's outward surface is its **data contract**: the perf row schema
 (columns written by `helper.log_perf`), the canonical filenames
 (`registry_types.PerfFile`), and the parquet finalization format. Everything
-downstream — `src/aiconfigurator/sdk/perf_database.py`, the Rust
-`aiconfigurator-core` operators, `tools/support_matrix/`, packaged data under
-`src/aiconfigurator/systems/data/` — consumes that contract.
+downstream — `src/aisimulate_core/sdk/perf_database.py`, the Rust perf
+database in `crates/core`, `tools/support_matrix/`, packaged data under
+`src/aisimulate_core/systems/data/` — consumes that contract.
 
 Rules:
 
@@ -179,27 +223,21 @@ Rules:
    policy. Do not edit them as a side effect of a fix task; propose changes
    instead.
 
-## Governed exceptions
+## Deviations are notes
 
-A rule in this file may be temporarily excepted ONLY through an entry in the
-`standards_exceptions` registry (`collector/evidence_exceptions.yaml`), and
-only when the entry carries ALL of:
+When a table cannot follow the serving-parity rules above (it times an
+unfused path where serving fuses, or a row is derived from another kernel),
+record a deviation note in `collector/notes/<backend>.yaml`: a
+machine-readable scope (tables, systems, versions), the direction of the
+error, its sources, `verified_on`, and optionally the plan that would retire
+it. The owner accepts it in review (`approved_by`). The note is the one home
+for that fact: code, data comments and docs cite its id instead of restating
+it. Every pin bump re-checks it, moving `verified_on` when it still holds and
+deleting it when it does not; R8 fails a note left behind the pin. Field
+reference: `docs/perf-model/collector/data-format.md` ("Collector notes").
 
-1. **A self-contained machine-readable scope** — the rule excepted, plus the
-   exact tables/backend/versions/systems the exception covers. Prose-only
-   scoping is invalid.
-2. **The standards owner's `approved_by` sign-off.** These rule files are
-   human-owned policy; only their owner can except them.
-3. **An `expires` date and a linked retirement work item.** An exception is
-   a debt with a due date, not a policy change; on expiry the exception is
-   renewed by the owner or the deviation is fixed.
-4. **Consumer-visible provenance** — the deviation must be discoverable from
-   the shipped data's own declaration layer (e.g. the `reuse.yaml` reason or
-   sidecar for the affected tables), never only from this registry.
-
-An exception documents and bounds a deviation; it does not weaken the rule.
-Reviews treat an in-scope, unexpired entry as compliant and everything
-outside its scope as an ordinary violation.
+A deviation note documents and bounds a deviation; it does not weaken the
+rule. Anything outside a note's scope is an ordinary violation.
 
 ## Meta rules
 

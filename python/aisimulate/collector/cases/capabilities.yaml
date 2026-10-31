@@ -1,22 +1,26 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Positive hardware capability floors, applied as a generation-time
-# intersection: a case whose dtype (or op) floor is above the target SM is
-# never queued.
+# Whole regions the plan leaves out, applied when cases are generated: a
+# case in a region the target cannot run is never queued.
 #
 # This file is intentionally flat. Allowed content:
 #   - dtype_min_sm: canonical dtype/quant name -> minimum SM version
 #   - op_min_sm:    op name -> minimum SM version
+#   - backend_gaps: a whole region of an op plan (collector/op_plans.py) that
+#     one backend's collector cannot run on the listed SMs although the
+#     hardware can. A region is a dtype, or another region field the op plan
+#     declares (MoE: parallel = tp, ep or tp_ep; mhc_module: architecture).
+#     Each entry names the guard note in collector/notes/<backend>.yaml that
+#     says why; R8 keeps that note's verified_on current.
 #
 # NOT allowed here (by design -- see .claude/rules/collector/):
 #   - shape conditions (batch/seq/token/feature axes)
 #   - framework version conditions
-#   - per-backend nesting
-# Framework-version gaps and shape-level kernel bugs are runtime observations:
-# they fail fast, every failure is recorded and labeled with its (model, dtype)
-# group, and systemic groups are surfaced in the collection summary
-# (errors_by_group) as fix-me signals. They must not be encoded here.
+#   - any other per-backend nesting
+# Shape-level kernel limits and framework-version bugs are runtime
+# observations: those cases run, fail, and every failure is recorded and
+# compared with the previous run. They must not be encoded here.
 
 schema_version: 1
 
@@ -47,11 +51,101 @@ op_min_sm:
   # The DSV4/GLM-5 sparse sub-kernel collectors depend on the same SM90+
   # kernel libraries (DeepGEMM fp8_mqa_logits, FlashMLA sparse, jit topk).
   dsv4_paged_mqa_logits_module: 90
-  dsv4_hca_attn_module: 90
-  dsv4_csa_attn_module: 90
   dsv4_csa_topk_calib: 90
   glm5_mqa_logits_module: 90
   glm5_topk_module: 90
   glm5_dsa_attn_module: 90
+  # The DSV4 attention module collectors run the production DSV4 attention class, whose
+  # only backends are FlashMLA (SM90 / SM10x) and the SM100+ paths: on SM89 the selector
+  # falls back to a FlashMLA that does not support the arch, and serving fails the same way
+  # (vLLM 0.30.0 probe on L40, DeepGEMM hyperconnection "Unsupported architecture",
+  # collector/opharness findings sm89_*). Before this entry every sm89 case was queued and
+  # failed one by one as an `unexpected` RuntimeError.
+  dsv4_csa_context_module: 90
+  dsv4_csa_generation_module: 90
+  dsv4_hca_context_module: 90
+  dsv4_hca_generation_module: 90
   # compute_scale measures FP8 quantization overhead.
   compute_scale: 89
+
+backend_gaps:
+  - backend: sglang
+    op: gemm
+    dtype: fp8_block
+    sm: [89, 120]
+    note: G-sglang-gemm-fp8-block-deepgemm-only
+  - backend: sglang
+    op: moe
+    dtype: fp8
+    sm: [89, 90, 100, 103, 120]
+    note: G-sglang-moe-fp8-not-collected
+  - backend: sglang
+    op: moe
+    dtype: int4_wo
+    sm: [80, 86]
+    note: G-sglang-moe-runner-unpinned
+  - backend: sglang
+    op: moe
+    dtype: w4a8_mxfp4_mxfp8
+    sm: [120]
+    note: G-sglang-moe-runner-unpinned
+  - backend: trtllm
+    op: moe
+    dtype: int4_wo
+    sm: [80, 86, 89, 90, 100, 103, 120]
+    note: G-trtllm-moe-int4-wo-no-implementation
+  - backend: trtllm
+    op: moe
+    dtype: fp8_block
+    sm: [89]
+    note: G-trtllm-moe-cutlass-sm-support
+  - backend: trtllm
+    op: moe
+    dtype: w4a16_mxfp4
+    sm: [89, 120]
+    note: G-trtllm-moe-cutlass-sm-support
+  - backend: vllm
+    op: moe
+    parallel: tp_ep
+    sm: [80, 86, 89, 90, 100, 103, 120]
+    note: G-vllm-moe-tp-and-ep
+  - backend: vllm
+    op: moe
+    dtype: w4a8_mxfp4_mxfp8
+    sm: [120]
+    note: G-vllm-moe-w4a8-mxfp4-sm120
+  - backend: vllm
+    op: mla_bmm_gen_pre
+    dtype: fp8
+    sm: [89, 90, 100, 103, 120]
+    note: G-vllm-mla-bmm-fp8-not-served
+  - backend: vllm
+    op: mla_bmm_gen_post
+    dtype: fp8
+    sm: [89, 90, 100, 103, 120]
+    note: G-vllm-mla-bmm-fp8-not-served
+  - backend: sglang
+    op: mla_context
+    dtype: bfloat16
+    sm: [80, 86]
+    note: G-sglang-mla-backend-unmapped
+  - backend: sglang
+    op: mla_generation
+    dtype: bfloat16
+    sm: [80, 86]
+    note: G-sglang-mla-backend-unmapped
+  - backend: sglang
+    op: mhc_module
+    architecture: Glm5NextForConditionalGeneration
+    sm: [80, 86, 89, 90, 100, 103, 120]
+    note: G-sglang-mhc-glm5next-not-ported
+  - backend: trtllm
+    op: mhc_module
+    architecture: Glm5NextForConditionalGeneration
+    sm: [80, 86, 89, 90, 100, 103, 120]
+    note: G-trtllm-mhc-glm5next-not-served
+  - backend: vllm
+    op: mhc_module
+    architecture: DeepseekV4ForCausalLM
+    sm: [80, 86, 89, 90, 100, 103, 120]
+    note: G-vllm-mhc-dsv4-shared-key

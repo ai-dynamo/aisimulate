@@ -13,13 +13,17 @@ recorded automatically with a classification. A prediction rule costs
 maintenance forever, rots when the framework fixes the bug, and depends on
 fragile matching contracts. The system therefore has NO declarative
 expected-failure layer — and deliberately no auto-skip either: if a whole
-group is failing, it should be FIXED, not silently tolerated.
+group is failing, it should be FIXED, not silently tolerated. `overview.md`
+defines the failure principle and the per-consumer-key accounting; this page
+is the operating procedure.
 
 ## What happens automatically (no action needed)
 
 - Every worker failure is recorded in `errors_<module>.json` and
-  `collection_summary_<backend>.json` with `classification: "unexpected"`,
-  the case parameters, exception type/message, and a `(model, dtype)` group
+  `collection_summary_<backend>.json` with a classification: `kernel_limit`
+  when the message starts with `FIXME(kernel-limit)` (a guard with a guard
+  note, see layer_permissions.md), otherwise `unexpected`. Each record carries the
+  case parameters, exception type/message, and a `(model, dtype)` group
   label. The summary aggregates `errors_by_group`; a group with many failures
   is logged as a fix-me warning.
 - CUDA-fatal errors reset the worker process; the task is already recorded
@@ -34,19 +38,23 @@ group is failing, it should be FIXED, not silently tolerated.
 ```text
 case failed
 ├─ Is it recorded & classified in the failure log?  → yes → DONE (default path)
+├─ Would it SUCCEED on the wrong kernel?            → fail closed: guard + guard note
+│    (layer_permissions.md "Framework kernel limits")
 ├─ Does it HANG or kill the node?                   → denylist.yaml entry (dated + reason)
 ├─ Whole (op × backend) never debugged?             → registry OpEntry unverified=True
 ├─ Not validated on THIS SM only?                   → registry OpEntry unverified_sms=(sm,)
 ├─ Physically impossible on this hardware?          → capabilities.yaml positive floor
 │    (dtype doesn't exist below SM X — NOT "this framework version lacks a kernel")
+├─ A whole (op, dtype) fails on an SM for one backend → capabilities.yaml backend_gaps
+│    because its collector has no kernel there?        entry + guard note
 ├─ Out of memory?                                   → treat as unclassified until it
 │    reproduces on a clean GPU; if real, the collector's generation-time memory
 │    filter may exclude it (see layer_permissions.md — the one sanctioned filter)
 ├─ Crash inside framework code, framework suspected? → serving-parity audit FIRST
 │    (diff every collector-built metadata/input field against the serving
 │    population site for the failing shape — layer_permissions.md
-│    "Metadata/input parity"); a FIXME(kernel-limit) or framework-bug report
-│    is only legitimate after the audit finds no collector-side divergence
+│    "Metadata/input parity"); a guard or a framework-bug report is only
+│    legitimate after the audit finds no collector-side divergence
 └─ Proven collector-code bug?                       → fix the code; never fix via skip;
                                                       re-check the dispatch/skip rule
 ```
@@ -60,10 +68,15 @@ accept the gap knowingly).
 
 ## Triage thresholds (from collection-campaign experience)
 
-- Isolated failures — even a few dozen across a large plan — are acceptable
-  when explained and unclustered.
-- Investigate around 10% unexpected failures, or earlier when failures cluster
-  by op, backend, dtype, model, shape family, or SM.
+- Scattered failures, up to about 5% of a table, are acceptable when explained
+  and unclustered.
+- Count failures per consumer key bucket: the dimensions the SDK matches
+  exactly (dtype or quant, head count, head_dim, window, experts, top-k, TP,
+  EP). A bucket below about 20% success is an unavailable key. Report it in
+  the run summary and the PR; it needs action only when a supported model
+  queries that key or the bucket was available in the previous run.
+- Investigate when scattered failures pass about 5% of a table, or cluster by
+  op, backend, model, shape family or SM.
 - Roughly one third failing, or an entire family failing, is a systemic
   collector problem — stop collecting, fix the collector.
 - Treat an OOM as unclassified until the same case fails on a clean GPU.
@@ -76,6 +89,8 @@ before resetting a worker after a fatal CUDA error.
 
 - Compare against the previous run of the same (backend, version): only NEW
   failure groups deserve attention.
+- Re-check a failure with a targeted run of the affected cases (`--ops`,
+  `--model-path`, `--case-filter`), never a full collection.
 - Failure records are observations. Do not machine-translate them into
   denylist/capability entries — each escalation above requires the specific
   evidence named in the tree.

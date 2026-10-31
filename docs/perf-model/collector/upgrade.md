@@ -32,17 +32,18 @@ Record these decisions before changing code:
 - what may be committed, pushed, or opened as a PR.
 
 `collector/framework_manifest.yaml` is the source of truth for the stock
-framework pin and image. Module-level `__compat__` metadata may narrow that
-contract but must not silently widen it. Treat stock and WideEP/special images
+framework pin and image. Each collector module pins exactly the release the
+manifest resolves for its op (the "Version contract" in
+`python/aisimulate/.claude/rules/collector/layer_permissions.md`). Treat stock and WideEP/special images
 as separate runtimes with separate evidence.
 
 Do not silently broaden the work to another framework, XPU, WideEP, host
 upgrades, or performance-data publication. If the work is stacked on another
 PR, keep that dependency explicit when creating the branch and eventual PR.
 
-For a fixed-release collector, prefer an exact version contract when the
-framework API and kernel selection changed materially. Do not add compatibility
-branches for versions that the project no longer intends to collect.
+Upgrade collectors in place: move the exact `__compat__` pin to the new
+release and do not keep compatibility branches for earlier releases; their
+code stays in git history and their data stays under its version key.
 
 ## 2. Pin and prove the runtime
 
@@ -111,11 +112,14 @@ python3 collector/collect.py \
 ```
 
 It does not mean the raw backend-registry Cartesian run with no model-case
-flags. Preserve the pruning invariants documented in
-[`collector-v2-population-design.md`](data-format.md).
+flags. Preserve the identity and deduplication invariants in
+[the data format](data-format.md).
+
+For GEMM, the `plans` block of that output gives the retained count per dtype
+and each region left out with its reason.
 
 For each operation, record raw and retained task counts, physical-key counts,
-model/artifact coverage, dtype counts, and SM exception counts. Quant-sensitive
+model/artifact coverage, dtype counts, and capability-floor drop counts. Quant-sensitive
 artifacts remain separate when the checkpoint changes the executed kernel.
 Verify that every required model emits at least one executable case; a
 successful empty plan is a failure.
@@ -143,6 +147,13 @@ itself has a BF16 key.
 
 ## 5. Progress from smoke to full collection
 
+Collect only the families whose kernels changed under the new pin, and declare
+reuse (`reuse.yaml` with `approved_by`) for the rest. Re-check every note in
+`collector/notes/<backend>.yaml` that covers a bumped family, by a source check
+or a targeted run of its cases: move `verified_on` when it still holds, delete
+the note when it does not. `check_collector_data.py` R8 fails a note left
+behind the pin.
+
 For each operation, use deterministic smoke coverage rather than relying only
 on a few random cases. Cover representative and boundary combinations of:
 
@@ -163,7 +174,11 @@ on its observed speed. After the operation finishes, verify its checkpoint,
 summary, output shape, errors, container exit, and GPU state, then continue to
 the next operation without waiting for approval unless a real anomaly appears.
 
-Use one output/checkpoint namespace per framework, version, platform, and
+`tools/perf_database/collect_campaign.py` is the checked-in way to run this
+stage: manifest-pinned image plus finalize deps, one namespace per declared
+shard, `--resume` always and `--keep-csv` never (that flag skips finalization
+and leaves no parquet or provenance), a GPU pool, and a `campaign.jsonl` work
+log. Use one output/checkpoint namespace per framework, version, platform, and
 operation. Resume only when the current plan still contains the completed task
 IDs. If enumeration changes, prove which completed IDs remain valid and keep a
 hash-verified checkpoint backup before migration.

@@ -19,7 +19,8 @@ if str(REPO_ROOT) not in sys.path:
 
 import torch
 from collector.case_generator import get_common_mhc_test_cases
-from collector.helper import benchmark_with_power, log_perf
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 from collector.registry_types import PerfFile
 from collector.version_resolver import _check_compat
 
@@ -28,13 +29,12 @@ from collector.version_resolver import _check_compat
 # builders/selectors remain authoritative; no kernel fallback is introduced.
 # The campaign manifest still selects one exact release per run.
 #
-# The file-level range spans the two audited routes; each architecture is
-# additionally gated to its own audited release(s) by ``_ARCHITECTURE_COMPAT``
-# below, so DeepSeek-V4 behaviour on 0.24.0-0.25.0 is unchanged and neither
-# architecture runs on an unaudited release in between (it raises instead).
-# GLM-5.3-Flash moved to stock vLLM 0.31.0 (no overlay); the upper bound
-# admits it while DeepSeek-V4 stays gated to its own releases.
-__compat__ = "vllm>=0.24.0,<=0.31.0"
+# The mhc family runs on 0.31.0 (framework_manifest.yaml family pin,
+# 2026-10-30). Each architecture is additionally gated by
+# ``_ARCHITECTURE_COMPAT`` below; an architecture that is not audited on the
+# installed release raises instead of running.
+# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+__compat__ = "vllm==0.31.0"
 
 # vLLM imports stay lazy in this module so that a mismatched install fails
 # inside collect.py's per-op error handling (after the __compat__ gate can
@@ -63,8 +63,13 @@ GLM5NEXT_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 # Per-architecture audited vLLM releases. A case whose architecture is not
 # audited on the installed release raises MhcRuntimeNotAuditedError (a
 # classified failure) instead of running an unverified dispatch.
+# DeepSeek-V4 is NOT audited on 0.31.0. mhc_module_perf's architecture-free
+# view (MhcKey = op_name, hc_mult, hidden_size; the DeepSeek-V4 consumer)
+# would merge GLM-5.3-Flash's fused-site rows at (4, 4096) into one
+# 0.31.0 table, so DeepSeek-V4 rows stay on the 0.24.0-0.30.0 tables and
+# their collector route is `git log -- <this file>` away. Re-admitting it
+# needs an architecture-keyed DeepSeek-V4 lookup first (consumer change).
 _ARCHITECTURE_COMPAT = {
-    ARCHITECTURE: "vllm>=0.24.0,<=0.25.0",
     # Stock vllm 0.31.0 only (no overlay) — see the GLM audit below.
     GLM5NEXT_ARCHITECTURE: "vllm==0.31.0",
 }
@@ -161,46 +166,8 @@ def _init_cuda(device: str) -> None:
     init_workspace_manager(torch.device(device))
 
 
-def _active_mhc_common_cases():
-    # Architecture is part of the invocation identity: DeepSeek-V4-Flash and
-    # GLM-5.3-Flash share (hidden_size, hc_mult) but run different call sites.
-    seen: set[tuple[str, str, int, int]] = set()
-    for case in get_common_mhc_test_cases():
-        key = (case.architecture, case.phase, case.hidden_size, case.hc_mult)
-        if key in seen:
-            continue
-        seen.add(key)
-        yield case
-
-
 def get_mhc_module_test_cases() -> list[dict]:
-    cases: list[dict] = []
-    glm5next_profiles: dict[tuple[int, int], tuple[str, list[int]]] = {}
-    for case in _active_mhc_common_cases():
-        num_tokens_list = [16] if "--smoke" in sys.argv else case.num_tokens_list
-        if case.architecture == GLM5NEXT_ARCHITECTURE:
-            # GLM call sites are a framework-dispatch fact (see the audit
-            # above), not the generator's pre/post phase pair: collect the
-            # model profile once and expand every serving op below.
-            glm5next_profiles.setdefault((case.hidden_size, case.hc_mult), (case.model_name, num_tokens_list))
-            continue
-        for num_tokens in num_tokens_list:
-            cases.append(
-                {
-                    "id": f"mhc_{case.phase}_hs{case.hidden_size}_hcm{case.hc_mult}_{num_tokens}",
-                    "params": [case.phase, num_tokens, case.hidden_size, case.hc_mult],
-                }
-            )
-    for (hidden_size, hc_mult), (model_path, num_tokens_list) in glm5next_profiles.items():
-        for op in GLM5NEXT_VLLM_OPS:
-            for num_tokens in num_tokens_list:
-                cases.append(
-                    {
-                        "id": f"mhc_glm5next_{op}_hs{hidden_size}_hcm{hc_mult}_{num_tokens}",
-                        "params": [op, num_tokens, hidden_size, hc_mult, GLM5NEXT_ARCHITECTURE, model_path],
-                    }
-                )
-    return cases
+    return plan_cases("mhc_module", "vllm", get_sm_version())
 
 
 def _default_num_tokens() -> list[int]:

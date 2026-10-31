@@ -12,14 +12,15 @@ whose persisted rows satisfy the existing AIC consumer contract.
 
 Before editing, read:
 
-1. `.claude/rules/collector/layer_permissions.md`,
-   `.claude/rules/collector/failure_handling.md`, and
-   `.claude/rules/collector/case_authoring.md` — the repository-owned policy.
-   It is authoritative over anything restated in this skill.
+1. `.claude/rules/collector/overview.md` (the five things, the failure
+   principle, the seven rules), then `layer_permissions.md`,
+   `failure_handling.md` and `case_authoring.md` in the same directory — the
+   repository-owned policy. It is authoritative over anything restated in
+   this skill.
 2. `collector/README.md`
 3. `collector/cases/README.md`
-4. `docs/perf_database/collector-v2-population-design.md`, especially
-   **Three identities**, **Population flow**, and **Safe deduplication rules**
+4. `docs/perf-model/collector/data-format.md`, especially **Identity layers**
+   and **Collector notes**
 5. The relevant `collector/<backend>/registry.py`, collector module, and model/base
    case YAML
 6. Every Python and Rust loader/query that consumes the op's perf file
@@ -54,8 +55,9 @@ If the task proceeds to GPU collection, also use `$aic-auto-collect`.
   plan selection required by the resolved case plan. Generic resume, retry,
   checkpoint, logging, and output-finalization behavior require separate
   explicit scope.
-- Anchor collector behavior to the requested framework version. Prefer one
-  verified `__compat__`/version route over speculative multi-version branches.
+- Anchor collector behavior to the requested framework version: pin exactly
+  one release (`__compat__ = "<fw>==<version>"`, see the "Version contract"
+  section of `.claude/rules/collector/layer_permissions.md`).
 
 ## Step 1: Establish the consumer contract
 
@@ -151,17 +153,33 @@ population path. If a later design decision removes either side, delete the
 orphan. Do not retain speculative aliases, phase selectors, compatibility
 modes, or one-time audit scaffolding.
 
-## Step 5: Narrow coverage only through the declared homes
+## Step 5: Filter only whole regions; let the rest run
 
 A queued case has two legal collector outcomes: execute it, or raise
-(`layer_permissions.md`). Coverage narrowing happens only in the auditable
-declaration homes — `capabilities.yaml` positive floors, registry
-`unverified`/`unverified_sms` markers, the hang denylist, declared model
-correlations, and the sanctioned memory-feasibility filter — each backed by:
+(`layer_permissions.md`). Follow the failure principle in `overview.md`:
 
-- Exact-version framework source showing the path is unsupported, or
-- A minimal runtime repro on the target framework/GPU, or
-- A proven invocation/key duplicate.
+- **Whole regions that cannot run** (an SM without a dtype, an op that needs
+  a newer SM) leave the plan at expansion, through a `capabilities.yaml` floor
+  or a quant-axis `min_sm` / cited `max_sm_exclusive`. When the hardware can
+  run a dtype but this backend's collector cannot, add a `backend_gaps` entry
+  with a guard note. Never filter them in a getter or with a hard-coded SM
+  check. GEMM and MoE are the reference: their getters are one line that
+  calls the shared op plan (`case_authoring.md`, "Op plans"); a backend
+  whose run function needs more arguments declares `rows` there, and the
+  kernel or runner the plan picks goes in `dispatch` (MoE: SGLang's runner
+  pin is its dispatch; its routing arguments and TRT-LLM's min-latency row
+  are rows).
+- **Everything finer runs.** A shape boundary, a head count or one
+  framework's own limit fails and is recorded. Do not prune it and do not
+  narrow a shared grid for one framework. Count the failures per consumer key
+  and name the unavailable keys.
+- **A guard** is legal only when the case would mismeasure, hang, or waste
+  significant time. It raises in the worker and cites a `G-` note in
+  `collector/notes/<backend>.yaml`.
+- The other auditable homes stay: registry `unverified`/`unverified_sms`
+  markers, the hang denylist, declared model correlations, the
+  memory-feasibility filter, and deduplication backed by a proven invocation
+  or key duplicate (Step 2).
 
 An op with no production consumer stays registry-only or explicitly
 experimental instead of joining default model plans. Keep shared generators
@@ -251,7 +269,8 @@ Do not call the op complete until the handoff states:
 - Exact framework version, GPU/SM, backend, and `__compat__` route
 - Consumer lookup contract and fallback behavior
 - Case counts by backend/op: kept, added, removed, deduplicated, skipped
-- Evidence for every prune/skip
+- The floor or note id behind every filter and guard; failure counts per
+  consumer key, with unavailable keys named
 - Unit/lint/runtime-smoke results
 - A real consumer query or support-matrix sanity check
 - Remaining gaps, especially required EP/TP/quant/window buckets

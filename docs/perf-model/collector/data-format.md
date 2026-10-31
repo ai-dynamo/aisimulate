@@ -94,9 +94,10 @@ remain valid observed outcomes. Never infer complete model coverage from a
 `complete` table status. A table without corresponding provenance is a coverage
 failure. Legacy provenance remains explicitly legacy, not newly measured.
 
-Changed-operation manifests identify which family/system evidence a collector or
-runtime change requires. CI checks that evidence separately from per-directory
-execution status. See [CI](../../ci/README.md) for the repository gates.
+Full CI reports which (framework, family) pairs a collector or runtime change
+touches: the `tools/perf_database/changed_ops.py` output, uploaded as the
+`changed-ops` artifact for reviewers. The report does not gate the change. See
+[CI](../../ci/README.md) for the repository gates.
 
 ## Reuse and source priority
 
@@ -113,6 +114,42 @@ version directory can contain both primary rows and a declaration. Reuse does
 not relabel the donor's runtime as a new measurement. Some operation loaders
 have pinned overwrite semantics; preserve their source order and parity tests
 instead of assuming every raw loader uses the same merge algorithm.
+
+## Collector notes
+
+A collector note records one known fact about collected tables that the rows
+cannot express. Code, data and docs cite the note by its id instead of
+restating it. Notes live in `python/aisimulate/collector/notes/<backend>.yaml`,
+one file per framework in the collector manifest, as a `schema_version: 1`
+mapping with a `notes` list. A note has one of two kinds:
+
+- A **deviation** (`D-` id): the table measures a different path than serving
+  runs, for example an unfused kernel where serving fuses.
+- A **guard** (`G-` id): collector code refuses a case because running it would
+  measure the wrong kernel, hang, or waste significant time. A `backend_gaps`
+  entry in `collector/cases/capabilities.yaml` cites a guard note when a whole
+  (op, dtype) region is left out of one backend's plan.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `id` | yes | `D-<backend>-<slug>` or `G-<backend>-<slug>`, unique across all notes |
+| `kind` | yes | `deviation` or `guard` |
+| `summary` | yes | What differs or is refused, in plain words |
+| `direction` | deviations | Effect on predicted latency: `over`, `under` or `unknown` |
+| `reason` | guards | `mismeasure`, `hang` or `expensive` |
+| `scope.tables` | yes | Table names from the op catalog |
+| `scope.systems` | yes | `all`, or a list of system names |
+| `scope.versions` | no | `all` (the default), or a list of framework versions |
+| `verified_on` | yes | Last framework version on which the note was re-checked |
+| `sources` | yes | Framework source lines (`file:line @version`) or evidence paths |
+| `retire_via` | no | Issue link or one-line plan that would remove the note |
+| `approved_by` | no | Owner who accepted the deviation |
+
+Rule R8 of `tools/perf_database/check_collector_data.py` rejects unknown
+fields, tables and systems. It also fails a note that covers the collected
+version when its `verified_on` is behind the pinned framework version of any
+table in its scope. Moving a pin therefore means re-checking each affected
+note: move `verified_on` when the note still holds, or delete it.
 
 The authoritative implementations are
 [`collector`](../../../python/aisimulate/collector/),

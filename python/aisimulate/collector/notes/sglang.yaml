@@ -1,0 +1,165 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Known gaps between what the SGLang collector measures and what SGLang
+# serving runs. Code, data and docs cite a note by its id instead of restating
+# it. Schema and lifecycle: .claude/rules/collector/overview.md ("Note");
+# tools/perf_database/check_collector_data.py R8 validates this file.
+
+schema_version: 1
+notes:
+  - id: G-sglang-gemm-fp8-block-deepgemm-only
+    kind: guard
+    summary: >-
+      The collector times fp8_block GEMMs by calling DeepGEMM directly, and
+      DeepGEMM has no SM89 or SM120 kernel, so every case in those regions
+      would fail. capabilities.yaml backend_gaps leaves them out of the plan.
+      Serving does run fp8_block there: Triton on SM89, CUTLASS on SM120.
+    reason: expensive
+    scope:
+      tables: [gemm_perf]
+      systems: [l40s, rtx_pro_6000_server]
+    verified_on: "0.5.21"
+    sources:
+      - sglang python/sglang/srt/layers/quantization/fp8_utils.py:930-958 @v0.5.21 (_dispatch_auto_backend)
+    retire_via: >-
+      Time fp8_block through dispatch_w8a8_block_fp8_linear, as serving does,
+      then delete the backend gap.
+    approved_by: tianhaox
+  - id: D-sglang-gemm-bf16-cutedsl
+    kind: deviation
+    summary: >-
+      On SM100/103 serving resolves the auto bf16 GEMM backend to CuTe DSL.
+      That backend sends the 68 shapes in _BF16_SPLITK_TUNED_TACTICS (m <= 32)
+      to FlashInfer split-K or direct, and runs the TGV kernel where
+      use_cutedsl_bf16_gemm(m, n, k) picks it (small m, 2048 <= k <= 6144,
+      n >= 1024). The table times F.linear for every shape, which matches
+      serving everywhere else.
+    direction: unknown
+    scope:
+      tables: [gemm_perf]
+      systems: [b200_sxm, gb200, b300_sxm, gb300]
+    verified_on: "0.5.21"
+    sources:
+      - sglang python/sglang/srt/layers/quantization/unquant.py:215-220 @v0.5.21
+      - sglang python/sglang/srt/layers/quantization/unquant.py:107-182 @v0.5.21 (_BF16_SPLITK_TUNED_TACTICS)
+      - sglang python/sglang/srt/layers/quantization/unquant.py:322-347 @v0.5.21 (dispatch)
+      - sglang python/sglang/srt/environ.py:1175 @v0.5.21 (SGLANG_ENABLE_BF16_SPLITK_GEMM defaults True)
+      - sglang python/sglang/kernels/ops/gemm/cutedsl_bf16_gemm.py:1357 @v0.5.21 (use_cutedsl_bf16_gemm)
+    retire_via: Time bf16 GEMMs through the backend serving selects.
+    approved_by: tianhaox
+  - id: D-sglang-gemm-nvfp4-act-quant
+    kind: deviation
+    summary: >-
+      On SM100/103 serving quantizes nvfp4 activations with FlashInfer's
+      cute-dsl backend; the table quantizes them with the default cuda
+      backend. The mm_fp4 GEMM itself matches serving.
+    direction: unknown
+    scope:
+      tables: [gemm_perf]
+      systems: [b200_sxm, gb200, b300_sxm, gb300]
+    verified_on: "0.5.21"
+    sources:
+      - sglang python/sglang/srt/layers/quantization/fp4_utils.py:24 @v0.5.21
+    retire_via: Quantize activations with the backend serving selects.
+    approved_by: tianhaox
+  - id: D-sglang-gemm-fp8-block-triton-fallback
+    kind: deviation
+    summary: >-
+      On SM90 and SM100/103 serving runs fp8_block through DeepGEMM only when
+      the weight has N % 64 == 0 and K % 128 == 0, and falls back to Triton
+      otherwise (for example the GLM-5.3-Flash widths 288, 3336, 6416, 12576
+      and 19360). The table times DeepGEMM for every shape.
+    direction: unknown
+    scope:
+      tables: [gemm_perf]
+      systems: [h100_sxm, h200_sxm, b200_sxm, gb200, b300_sxm, gb300]
+    verified_on: "0.5.21"
+    sources:
+      - sglang python/sglang/srt/layers/quantization/fp8_utils.py:1228-1243 @v0.5.21 (deepgemm_w8a8_block_fp8_linear_with_fallback)
+    retire_via: >-
+      Time fp8_block through dispatch_w8a8_block_fp8_linear, as serving does;
+      the same change retires G-sglang-gemm-fp8-block-deepgemm-only.
+    approved_by: tianhaox
+  - id: G-sglang-moe-fp8-not-collected
+    kind: guard
+    summary: >-
+      The SGLang MoE collector has no per-tensor fp8 path: run_moe_torch
+      accepts bfloat16, fp8_block, int4_wo, nvfp4 and the two MXFP4 modes,
+      so every fp8 case would fail. capabilities.yaml backend_gaps leaves the
+      region out. Serving does run per-tensor fp8 MoE, through
+      ModelOptFp8MoEMethod for ModelOpt FP8 checkpoints.
+    reason: expensive
+    scope:
+      tables: [moe_perf]
+      systems: [l40s, h100_sxm, h200_sxm, b200_sxm, b300_sxm, gb200, gb300, rtx_pro_6000_server]
+    verified_on: "0.5.21"
+    sources:
+      - aisimulate python/aisimulate/collector/sglang/collect_moe.py:1446 (run_moe_torch moe_type assertion)
+      - sglang python/sglang/srt/layers/quantization/modelopt_quant.py:1088 @v0.5.21 (ModelOptFp8MoEMethod)
+    retire_via: >-
+      Build per-tensor fp8 cases through the serving quant method, then delete
+      the backend gap.
+    approved_by: tianhaox
+  - id: G-sglang-moe-runner-unpinned
+    kind: guard
+    summary: >-
+      Each SGLang MoE case runs on the runner serving selects, pinned per
+      quant mode and SM in cases/base_ops/moe.yaml moe_sglang.backends.
+      int4_wo has no pin for SM80 or SM86 and w4a8_mxfp4_mxfp8 none for
+      SM120, so capabilities.yaml backend_gaps leaves those regions out
+      instead of timing a guessed runner. SGLang 0.5.21 does have an SM120
+      MXFP8 x MXFP4 path (flashinfer_mxfp4, cutlass_sm120); which runner
+      serving picks there by default is not verified.
+    reason: mismeasure
+    scope:
+      tables: [moe_perf]
+      systems: [a100_sxm, rtx_pro_6000_server]
+    verified_on: "0.5.21"
+    sources:
+      - sglang python/sglang/srt/layers/quantization/mxfp4.py:398-425 @v0.5.21 (flashinfer_mxfp4 entry point per SM)
+      - aisimulate python/aisimulate/collector/cases/base_ops/moe.yaml (moe_sglang.backends)
+    retire_via: >-
+      Verify serving's default runner for these SMs at the pin, add it to
+      moe_sglang.backends, and delete the backend gaps.
+    approved_by: tianhaox
+  - id: G-sglang-mla-backend-unmapped
+    kind: guard
+    summary: >-
+      The SGLang MLA collector builds each case on the attention backend SGLang
+      serving picks (collect_mla.py _select_default_mla_backend), mapped for
+      SM89, 90, 100, 103 and 120 only. SM80/86 have no mapping, so every case
+      there would fail; capabilities.yaml backend_gaps leaves those regions
+      out instead of timing a guessed backend.
+    reason: expensive
+    scope:
+      tables: [context_mla_perf, generation_mla_perf]
+      systems: [a100_sxm]
+    verified_on: "0.5.21"
+    sources:
+      - aisimulate python/aisimulate/collector/sglang/collect_mla.py (_select_default_mla_backend)
+    retire_via: >-
+      Take the backend from the serving probe record for SM80/86 and delete the
+      backend gaps.
+    approved_by: tianhaox
+  - id: G-sglang-mhc-glm5next-not-ported
+    kind: guard
+    summary: >-
+      The SGLang mHC collector has no GLM-5.3-Flash route for the pinned
+      SGLang: the pin moved MHCState to layer_boundary, removed
+      ParallelState/init_torch_distributed and fuses post+pre for up to 16
+      tokens, and the GLM call sites were never ported, so
+      _ARCHITECTURE_COMPAT admits only DeepSeek-V4 and every GLM case would
+      fail. capabilities.yaml backend_gaps leaves the
+      architecture=Glm5NextForConditionalGeneration region out.
+    reason: expensive
+    scope:
+      tables: [mhc_module_perf]
+      systems: [h100_sxm, h200_sxm, b200_sxm, b300_sxm, gb200, gb300, rtx_pro_6000_server]
+    verified_on: "0.5.21"
+    sources:
+      - aisimulate python/aisimulate/collector/sglang/collect_mhc_module.py (_ARCHITECTURE_COMPAT)
+    retire_via: >-
+      Port the GLM-5.3-Flash call sites to the pinned SGLang, admit the
+      architecture in _ARCHITECTURE_COMPAT and delete the backend gap.
+    approved_by: tianhaox

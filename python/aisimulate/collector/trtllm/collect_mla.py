@@ -8,22 +8,38 @@ context/generation MLA kernels. The module adapts shared MLA cases to current
 metadata objects, request/cache helpers, and backend-specific timing paths.
 """
 
-__compat__ = "trtllm>=1.3.0rc20"
+__compat__ = "trtllm==1.3.0rc29"
 
 import math
 from dataclasses import dataclass
 
 import tensorrt_llm
 import torch
-from collector.case_generator import get_context_mla_case_specs, get_generation_mla_case_specs
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
-from tensorrt_llm._torch.attention_backend.interface import (
-    AttentionInputType,
-    MLAParams,
-    PositionalEmbeddingParams,
-    RopeParams,
-)
-from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
+from collector.op_plans import plan_cases
+
+# trtllm >=1.3.0rc29 moved _torch.attention_backend.* -> _torch.attention.backends.* and
+# _torch.modules.fused_moe -> _torch.moe.fused_moe (the old package root is a deprecation shim
+# without submodules). Path-only compat: same classes, same kernels (layer_permissions.md
+# 'API-compat shims may only change HOW the same kernel is constructed').
+try:
+    from tensorrt_llm._torch.attention.backends.interface import (
+        AttentionInputType,
+        MLAParams,
+        PositionalEmbeddingParams,
+        RopeParams,
+    )
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend.interface import (
+        AttentionInputType,
+        MLAParams,
+        PositionalEmbeddingParams,
+        RopeParams,
+    )
+try:
+    from tensorrt_llm._torch.attention.backends.utils import get_attention_backend
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
 from tensorrt_llm._torch.metadata import KVCacheParams
 from tensorrt_llm._torch.pyexecutor.resource_manager import KVCacheManager
 from tensorrt_llm.bindings.executor import KvCacheConfig
@@ -51,74 +67,13 @@ def _mla_tokens_per_block() -> int:
 
 
 def get_context_mla_test_cases():
-    dtype_list = [tensorrt_llm.bindings.DataType.BF16, tensorrt_llm.bindings.DataType.FP8]
-    return _build_mla_test_cases(get_context_mla_case_specs(), dtype_list=dtype_list)
+    return plan_cases("mla_context", "trtllm", get_sm_version())
 
 
 def get_generation_mla_test_cases():
-    dtype_list = [tensorrt_llm.bindings.DataType.BF16, tensorrt_llm.bindings.DataType.FP8]
-    return _build_mla_test_cases(get_generation_mla_case_specs(), dtype_list=dtype_list)
+    return plan_cases("mla_generation", "trtllm", get_sm_version())
 
 
-def _build_mla_test_cases(case_specs, *, dtype_list):
-    """Adapt the shared YAML MLA catalog to TRT-LLM's legacy run tuple."""
-
-    cases_by_physical_key = {}
-    scenario = Scenario()
-    expected_geometry = (
-        scenario.q_lora_rank,
-        scenario.kv_lora_rank,
-        scenario.qk_nope_head_dim,
-        scenario.qk_rope_head_dim,
-        scenario.v_head_dim,
-    )
-    for spec in case_specs:
-        geometry = (
-            spec.q_lora_rank,
-            spec.kv_lora_rank,
-            spec.qk_nope_head_dim,
-            spec.qk_rope_head_dim,
-            spec.v_head_dim,
-        )
-        if geometry != expected_geometry:
-            raise ValueError(f"Unsupported TRT-LLM MLA geometry for {spec.model_name}: {geometry}")
-
-        for dtype in dtype_list:
-            for tp_size in (1, 2, 4, 8, 16, 32, 64, 128):
-                if spec.num_heads % tp_size:
-                    continue
-                case = (
-                    spec.input_len,
-                    spec.batch_size,
-                    1,
-                    dtype,
-                    spec.num_heads,
-                    tp_size,
-                    tp_size,
-                    _mla_tokens_per_block(),
-                    10,
-                    6,
-                    spec.is_context_phase,
-                )
-                # The perf loader keys on local heads, not total heads or TP.
-                # Equivalent total-head/TP pairs therefore share one row.
-                physical_key = (
-                    dtype,
-                    spec.num_heads // tp_size,
-                    spec.batch_size,
-                    spec.input_len,
-                )
-                # Selectors run after getter population and commonly cap TP.
-                # Prefer the smallest-TP representation of an equivalent
-                # local-head key so targeted plans do not lose that key.
-                existing = cases_by_physical_key.get(physical_key)
-                if existing is None or tp_size < existing[6]:
-                    cases_by_physical_key[physical_key] = list(case)
-    return list(cases_by_physical_key.values())
-
-
-# Copied from transformers v4.57.1:
-# transformers.models.llama.modeling_llama.rotate_half
 def rotate_half(x):
     """Rotates half the hidden dims of the input."""
     x1 = x[..., : x.shape[-1] // 2]
@@ -208,14 +163,14 @@ def run_mla(
     # (cpp/kernels/fmha_v2/setup.py:6926-6931@v1.3.0rc20); the hand-added
     # sm89 576x512 generation cubin entry from 1.0.0 was dropped in the same
     # window. Layout-level, so it kills every dtype at once. Fail closed with
-    # a cited, classified raise (Gemma4/DSA precedent). Re-verify on the next
-    # framework version bump.
+    # a cited, classified raise (Gemma4/DSA precedent). Re-verified on 1.3.0rc29 / L40 2026-10-04 (the module
+    # collector's twin guard, collect_mla_module.py): same assert, now attentionOp.cpp:3234 — still SM89-less.
     if get_sm_version() < 90:
         phase = "context" if is_context_phase else "generation"
         raise ValueError(
-            f"TRT-LLM MLA has no pre-Hopper FMHA kernel; DeepSeek MLA {phase} "
+            f"FIXME(kernel-limit): TRT-LLM MLA has no pre-Hopper FMHA kernel; DeepSeek MLA {phase} "
             f"is unsupported on SM{get_sm_version()} (attentionOp.cpp:"
-            f"{'3097' if is_context_phase else '3091'} assert @1.3.0rc20)"
+            f"{'3240' if is_context_phase else '3234'} assert @1.3.0rc29)"
         )
     scenario = Scenario()
     q_lora_rank = scenario.q_lora_rank
@@ -247,6 +202,15 @@ def run_mla(
     assert num_heads % tp_size == 0, "num_heads != N * tp_size"
     num_heads = num_heads // tp_size
     num_kv_heads = num_heads
+    # FIXME(kernel-limit): TRT-LLM's MLA decode FMHA on SM100/103 tiles 16 q-heads per CTA and
+    # rejects head counts above 16 that are not a multiple of 16 ("Internal error numHeadsQ=24,
+    # numHeadsPerCta=16", 724 cases = every heads-24 decode cell of the 96-head model at tp4,
+    # b200 rc29 job 469988228). Classified before the layer is built.
+    if not is_context_phase and get_sm_version() in (100, 103) and num_heads > 16 and num_heads % 16:
+        raise RuntimeError(
+            "FIXME(kernel-limit): TRT-LLM MLA decode on SM100/103 needs per-rank heads <= 16 or a multiple "
+            f"of 16 (numHeadsPerCta=16); got {num_heads}"
+        )
 
     context_sequence_lengths = [input_len for _ in range(batch_size)]
 

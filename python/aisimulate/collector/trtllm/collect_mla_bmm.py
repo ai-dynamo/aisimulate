@@ -31,28 +31,13 @@ consumes the YAML-backed shape grid, sets up BF16/FP8 tensors, runs benchmarks,
 and logs MLA BMM perf rows for pre/post generation operations.
 """
 
-__compat__ = "trtllm>=1.3.0rc20"
+__compat__ = "trtllm==1.3.0rc29"
 
 import tensorrt_llm
 import tensorrt_llm.quantization.utils.fp8_utils as fp8_utils
 import torch
-from case_generator import get_mla_bmm_case_specs
-
-from helper import benchmark_with_power, get_sm_version, log_perf
-
-
-def _supported_dtypes() -> set[str]:
-    # fp8 axis opens wherever fp8 checkpoints exist (sm > 86, matching the
-    # fp8-KV floors elsewhere). WHICH kernel an fp8 case measures is a
-    # runtime dispatch decision in the run functions (_fp8_bmm_serving_path),
-    # mirroring serving's fp8_block_scaling_bmm_out wrapper
-    # (attention.py:1159-1190@1.3.0rc20) — closing the axis at generation
-    # time silently removed SM100/103 coverage (layer_permissions.md:
-    # execute or raise; dispatch may change HOW, never WHETHER).
-    dtype_list = ["bfloat16"]
-    if get_sm_version() > 86:
-        dtype_list += ["fp8"]
-    return set(dtype_list)
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 
 
 def _fp8_bmm_serving_path() -> bool:
@@ -126,21 +111,12 @@ def _quantize_fp8_activation(x: torch.Tensor):
     return torch.ops.trtllm.fp8_batched_quantize_1x128_permute102(x)
 
 
-def _get_mla_bmm_test_cases(op_name: str):
-    supported_dtypes = _supported_dtypes()
-    return [
-        [case.num_tokens, case.num_heads, case.dtype, case.num_warmups, case.num_runs]
-        for case in get_mla_bmm_case_specs("trtllm", op_name)
-        if case.dtype in supported_dtypes
-    ]
-
-
 def get_mla_gen_pre_test_cases():
-    return _get_mla_bmm_test_cases("mla_bmm_gen_pre")
+    return plan_cases("mla_bmm_gen_pre", "trtllm", get_sm_version())
 
 
 def get_mla_gen_post_test_cases():
-    return _get_mla_bmm_test_cases("mla_bmm_gen_post")
+    return plan_cases("mla_bmm_gen_post", "trtllm", get_sm_version())
 
 
 def run_mla_gen_pre(num_tokens, num_heads, dtype, num_warmups, num_runs, *, perf_filename, device="cuda:0"):

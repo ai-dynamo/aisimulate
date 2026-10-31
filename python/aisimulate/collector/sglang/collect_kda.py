@@ -17,7 +17,8 @@ Context (prefill/extend) phase (kda_backend.forward_extend):
 
 Generation (decode) phase (kda_backend.forward_decode):
     - causal_conv1d_update: packed single-step conv over 3P channels
-    - fused_recurrent_kda_packed_decode: packed KDA recurrence (T=1)
+    - fused_sigmoid_gating_delta_rule_update: KDA recurrence with lower_bound (T=1;
+      the packed kernel is skipped for lower-bound layers, kda_backend.py:737-742)
     - "kda_fused_decode" where serving's attempt-and-verify covered() probe
       accepts the shard (see _fused_decode_module below)
 
@@ -53,21 +54,24 @@ Output:
 """
 
 # The kimi-k3 branch build (https://github.com/sgl-project/sglang/tree/kimi-k3)
-# reports 0.5.16. 0.5.20 adds GLM-5.3-Flash (glm5_next) KDA, audited against
-# the GB300 0.5.20 image (see the GLM section below). The file-level range
-# spans both; each KDA architecture is additionally gated at runtime to its
-# own audited release by _KDA_ARCHITECTURE_COMPAT (Kimi-K3 0.5.16, GLM-5.3-
-# Flash 0.5.20), raising KdaRuntimeNotAuditedError otherwise.
-__compat__ = "sglang>=0.5.16,<=0.5.20,!=0.5.17,!=0.5.18,!=0.5.19"
+# reports 0.5.16 and was the only KDA runtime until the kernels landed in the
+# official releases (0.5.21: models/kimi_linear.py, layers/attention/linear/
+# kda_backend.py with the same Triton lanes — chunk_kda, fused_recurrent_kda_
+# packed_decode / fused_sigmoid_gating_delta_rule_update, kda_fused_decode,
+# causal_conv1d_fn/update — kda_backend.py:6-34, kernels/kda_triton.py:109-237;
+# H20 smoke 2026-10-01, 91 cells ok, the remaining 21 are the >=2**31 conv
+# guard cells). 0.5.20 added GLM-5.3-Flash (glm5_next) KDA, audited against
+# the GB300 0.5.20 image (see the GLM section below). Each KDA architecture
+# is additionally gated at runtime by _KDA_ARCHITECTURE_COMPAT, raising
+# KdaRuntimeNotAuditedError otherwise.
+# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+__compat__ = "sglang==0.5.21"
 
 import gc
 import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from sglang.kernels.ops.attention.fla.fused_recurrent import (
-        fused_recurrent_kda_packed_decode,
-    )
     from sglang.kernels.ops.attention.fla.fused_sigmoid_gating_recurrent import (
         fused_sigmoid_gating_delta_rule_update,
     )
@@ -77,7 +81,6 @@ if TYPE_CHECKING:
 import torch
 
 try:
-    from collector.case_generator import get_common_kda_test_cases
     from collector.helper import (
         WORKER_RESTART,
         benchmark_with_power,
@@ -89,7 +92,6 @@ except ModuleNotFoundError:
     import sys
 
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from case_generator import get_common_kda_test_cases
     from version_resolver import _check_compat
 
     from helper import (
@@ -99,6 +101,8 @@ except ModuleNotFoundError:
         log_perf,
     )
 
+from collector.op_plans import plan_cases
+
 aic_debug = int(os.getenv("aic_kda_debug", "0"))  # noqa: SIM112
 
 # KDA safe-gate lower bound: fixed model constant for Kimi-K3
@@ -107,31 +111,7 @@ KDA_LOWER_BOUND = -5.0
 
 
 def get_kda_test_cases():
-    """
-    Generate test cases for KDA kernel benchmarking.
-
-    Returns a list of test case configurations for context (prefill),
-    generation (decode) and verify (speculative target-verify) phases.
-    """
-    test_cases = []
-
-    for common_case in get_common_kda_test_cases():
-        test_cases.append(
-            [
-                common_case.phase,
-                common_case.d_model,
-                common_case.d_conv,
-                common_case.num_k_heads,
-                common_case.head_k_dim,
-                common_case.num_v_heads,
-                common_case.head_v_dim,
-                common_case.batch_size_list,
-                common_case.seq_len_list,
-                common_case.model_name,
-            ]
-        )
-
-    return test_cases
+    return plan_cases("kda", "sglang", get_sm_version())
 
 
 def _cleanup(tag: str):
@@ -213,6 +193,11 @@ def run_kda_context_benchmark(
                 # [2**31, 3*2**31) crash with cudaErrorIllegalAddress on both
                 # Hopper SM90 (2026-07 campaign coverage boundary) and SM100
                 # (B200, 2026-07-28), while every cell under this bound passes.
+                # NOT relaxed for sglang 0.5.21: its causal_conv1d_triton casts the sequence
+                # offsets to tl.int64 (:95,:185), yet the >=2**31 cells still fault with
+                # cudaErrorIllegalAddress on H20 (0.5.21 smoke 2026-10-01, facts/upgrade_rc29/
+                # sgl_smoke_r6) — silicon evidence keeps the guard; the int32 arithmetic is
+                # elsewhere in the kernel's per-block view strides.
                 if total_tokens * conv_channels >= 2**31:
                     raise ValueError(
                         "SGLang causal_conv1d Triton kernel int32 token-offset overflow: "
@@ -406,7 +391,7 @@ def run_kda_generation_benchmark(
             print(f"  Benchmarking batch_size={batch_size}")
 
         a = a_log = b = conv_pool = dt_bias = mixed_qkv = None
-        output = recurrent_state = state_indices = None
+        recurrent_state = state_indices = None
         try:
             num_warmups = 3
             num_runs = 10
@@ -421,7 +406,6 @@ def run_kda_generation_benchmark(
             b = torch.randn(batch_size, num_v_heads, dtype=dtype, device=device)
             a_log = torch.zeros(num_v_heads, dtype=torch.float32, device=device)
             dt_bias = torch.ones(num_v_heads * head_k_dim, dtype=torch.float32, device=device)
-            output = torch.empty(batch_size, 1, num_v_heads, head_v_dim, dtype=dtype, device=device)
 
             common_log_data = {
                 "phase": "generation",
@@ -543,24 +527,43 @@ def run_kda_generation_benchmark(
                 ):
                     raise RuntimeError(f"failed to persist SGLang KDA generation row to {perf_filename}")
 
-            def run_kda_packed_decode():
-                fused_recurrent_kda_packed_decode(
-                    mixed_qkv=mixed_qkv,
-                    a=a,
-                    b=b,
+            # kda_backend.py:737-742 @0.5.21 skips the packed T=1 kernel for a layer with a
+            # lower_bound (Kimi-K3: KDA_LOWER_BOUND); :771-786: after the conv update, q/k/v are the
+            # [Q|K|V] split viewed as 1 x n x h x d, and the plain Triton decode runs
+            # fused_sigmoid_gating_delta_rule_update over cu_seqlens with lower_bound.
+            recurrence_kernel_source = "fused_sigmoid_gating_delta_rule_update"
+            plain_q, plain_k, plain_v = (
+                t.unflatten(-1, (-1, dim)).unsqueeze(0)
+                for t, dim in zip(
+                    mixed_qkv.split([proj_size] * 3, dim=-1), (head_k_dim, head_k_dim, head_v_dim), strict=True
+                )
+            )
+            plain_a = a.view(1, batch_size, num_v_heads, head_k_dim)
+            plain_b = b.view(1, batch_size, num_v_heads)
+            plain_cu_seqlens = torch.arange(0, batch_size + 1, dtype=torch.int32, device=device)
+
+            def run_kda_decode():
+                fused_sigmoid_gating_delta_rule_update(
                     A_log=a_log,
                     dt_bias=dt_bias,
-                    scale=head_k_dim**-0.5,
-                    initial_state=recurrent_state,
-                    out=output,
-                    ssm_state_indices=state_indices,
+                    q=plain_q,
+                    k=plain_k,
+                    v=plain_v,
+                    a=plain_a,
+                    b=plain_b,
+                    initial_state_source=recurrent_state,
+                    initial_state_indices=state_indices,
+                    cu_seqlens=plain_cu_seqlens,
                     use_qk_l2norm_in_kernel=True,
+                    softplus_beta=1.0,
+                    softplus_threshold=20.0,
+                    is_kda=True,
                     lower_bound=KDA_LOWER_BOUND,
                 )
 
             with benchmark_with_power(
                 device=device,
-                kernel_func=run_kda_packed_decode,
+                kernel_func=run_kda_decode,
                 num_warmups=num_warmups,
                 num_runs=num_runs,
                 repeat_n=1,
@@ -571,7 +574,7 @@ def run_kda_generation_benchmark(
                     version=sglang_version,
                     device_name=torch.cuda.get_device_name(device),
                     op_name="kda",
-                    kernel_source="fused_recurrent_kda_packed_decode",
+                    kernel_source=recurrence_kernel_source,
                     perf_filename=perf_filename,
                     power_stats=results["power_stats"],
                 ):
@@ -585,7 +588,7 @@ def run_kda_generation_benchmark(
             continue
         finally:
             a = a_log = b = conv_pool = dt_bias = mixed_qkv = None
-            output = recurrent_state = state_indices = None
+            recurrent_state = state_indices = None
             _cleanup("generation")
 
     summary = f"ok={successful_points} error={failed_points} skip=0"
@@ -951,8 +954,11 @@ GLM5_NEXT_KDA_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 # replicates; any other installed release raises KdaRuntimeNotAuditedError (a
 # classified failure) instead of timing a possibly different kernel path.
 _KDA_ARCHITECTURE_COMPAT = {
-    KIMI_K3_KDA_ARCHITECTURE: "sglang==0.5.16",
-    GLM5_NEXT_KDA_ARCHITECTURE: "sglang==0.5.20",
+    KIMI_K3_KDA_ARCHITECTURE: "sglang==0.5.21",
+    # GLM-5.3-Flash (0.5.20 only) retired 2026-10-30: its route is git history
+    # (main at c540ff90a (before #649)). On 0.5.21 serving fuses the unquantized
+    # qkvbfg/bfg projections (strided views), so the GLM path needs a port
+    # before it is re-admitted; GLM rows raise KdaRuntimeNotAuditedError.
 }
 
 
@@ -968,7 +974,9 @@ def _kda_architecture(model_name: str) -> str:
 
 def _require_audited_runtime(model_name: str, runtime_version: str) -> None:
     architecture = _kda_architecture(model_name)
-    compat = _KDA_ARCHITECTURE_COMPAT[architecture]
+    compat = _KDA_ARCHITECTURE_COMPAT.get(architecture)
+    if compat is None:
+        raise KdaRuntimeNotAuditedError(f"sglang {runtime_version} is not an audited KDA runtime for {architecture}")
     if not _check_compat(compat, runtime_version):
         raise KdaRuntimeNotAuditedError(
             f"sglang {runtime_version} is not an audited KDA runtime for {architecture} (audited: {compat})"
@@ -1325,9 +1333,6 @@ def run_kda_torch(
         contextlib.redirect_stdout(_devnull_file),
         contextlib.redirect_stderr(_devnull_file),
     ):
-        from sglang.kernels.ops.attention.fla.fused_recurrent import (
-            fused_recurrent_kda_packed_decode,
-        )
         from sglang.kernels.ops.attention.fla.fused_sigmoid_gating_recurrent import (
             fused_sigmoid_gating_delta_rule_update,
         )
@@ -1341,7 +1346,6 @@ def run_kda_torch(
             "causal_conv1d_fn": causal_conv1d_fn,
             "causal_conv1d_update": causal_conv1d_update,
             "chunk_kda": chunk_kda,
-            "fused_recurrent_kda_packed_decode": fused_recurrent_kda_packed_decode,
             "fused_sigmoid_gating_delta_rule_update": fused_sigmoid_gating_delta_rule_update,
         }
     )

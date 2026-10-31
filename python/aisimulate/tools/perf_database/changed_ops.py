@@ -3,10 +3,10 @@
 
 """Changed-operation manifest: diff two git revisions per (framework, family).
 
-Collector V3 design §8 (docs/perf_database/collector-v3-op-centric-design.md):
-this is the single input consumed by the evidence resolver (§9), the CI gate
-(AIC-1214), and the out-of-repo support-matrix healer — its output schema is
-a LOCKED contract.
+Full CI uploads the output as the `changed-ops` artifact so reviewers can see
+which (framework, family) pairs a change touches. It is a report, not a gate:
+nothing fails on it. tests/unit/tools/test_changed_ops.py pins the output
+schema.
 
 For each (framework, family) pair the tool compares three GPU-free signals
 between `--base` and `--head`:

@@ -217,6 +217,14 @@ Recommended order:
 4. module-level ops such as DSA, GDN, MHC, WideEP
 5. communication ops separately, because they may require multi-GPU or full-node ownership
 
+Collect only what the question needs (`.claude/rules/collector/overview.md`,
+"Collection cost"). An upgrade or a fix runs the affected ops and cases on one
+system per SM generation. A full plan is for bringing up a new system, or for
+a family whose kernels changed at a pin bump; the other families declare
+reuse. To run exact cases, pass each case's full string as its own
+`--case-filter`, for example `--case-filter "['fp8_block', 64, 32, 4096]"`.
+For GEMM, `--plan-only --sm <sm> --plan-table DIR` lists every planned case.
+
 For new GPUs, prioritize ops used by the target models and backend first, but do not claim full support until all expected ops for that backend/version are collected or explicitly marked unsupported.
 
 For an all-backend bring-up, run this as separate draft PRs:
@@ -238,6 +246,37 @@ python3 collector/collect.py --backend <backend> --ops <op> --shuffle --limit 10
 python3 collector/collect.py --backend <backend> --ops <op> \
   --checkpoint-dir "$COLLECTOR_CHECKPOINT_DIR/<backend>/<version>/<op>" --resume
 ```
+
+### Campaign mode (full plan, several GPUs) — use the checked-in launcher, do not hand-roll one
+
+Once an op's smoke/limited runs are clean, run the full retained plan through
+`tools/perf_database/collect_campaign.py`. It fixes the parameters that every
+hand-written launcher has drifted on (sm120 campaign 2026-09-30: `--keep-csv`
+skipped finalize for 13 shards; the official image lacked pyarrow):
+
+```bash
+# 1. image = the framework_manifest pin for (backend, op) + the finalize deps (pyarrow, pandas)
+python3 tools/perf_database/collect_campaign.py build-image --backend <backend> --op <op> [--build-arg http_proxy=...]
+# 2. declare the shards once (YAML: backend, sm, shards[{op, name, case_filter}]) — one shard = one
+#    output/checkpoint namespace <root>/<op>/<shard>/; case_filter is collect.py's substring filter
+# 3. run the GPU pool; re-run the same command after any interruption (DONE shards skip, others --resume)
+python3 tools/perf_database/collect_campaign.py run      --plan shards.yaml --root <ws>/collect --gpus 0,1,2,3
+python3 tools/perf_database/collect_campaign.py status   --plan shards.yaml --root <ws>/collect
+# 4. shards that were produced by hand with --keep-csv have no parquet: finalize them (resume-only re-entry)
+python3 tools/perf_database/collect_campaign.py finalize --plan shards.yaml --root <ws>/collect --gpus 0
+```
+
+Parameter rules the tool enforces (and that apply to any manual `collect.py` run too):
+
+- `--resume` always, `--keep-csv` never for data you intend to deliver: `--keep-csv` means
+  "keep CSV *instead of* finalizing" — no parquet, no `collection_meta.yaml`, no provenance.
+  Its only use is inspecting raw staging rows.
+- `--sm <sm>` explicit on every run (never rely on auto-detect inside a container).
+- Never point two concurrent runs at one cwd: staging files are named per table
+  (`gemm_perf.txt`) and would interleave. Shards of one op are merged at delivery
+  (playbook §8), not by sharing a directory.
+- The image is the manifest pin for the op (family pins can differ per op) — a
+  hand-typed tag is a review finding.
 
 Use a separate log directory per op when iterating:
 
@@ -305,17 +344,16 @@ Fix policy:
   2. Read the failing `collector/<backend>/collect_*.py`.
   3. Search the framework source checkout for the missing class, function, import path, or attribute.
   4. Verify the real API in source. Do not trust Python's "Did you mean" suggestions blindly.
-  5. Patch the collector with a minimal compatibility-preserving change.
-- For API changes, use version routing and `__compat__` where needed.
-- For GPU capability gaps, filter test cases before execution using `get_sm_version()`.
-- For Blackwell/SM100+ features, gate FP4/NVFP4/FP8 paths carefully.
-- For dimension constraints, filter on per-rank dimensions such as `inter_size // tp`.
-- For CUDA-fatal errors, prefer worker restart and skip only the exact invalid region.
+  5. Patch the collector in place for the target release (one release per file: `.claude/rules/collector/layer_permissions.md`, "Version contract").
+- For API changes, upgrade the collector in place and pin `__compat__` to exactly the target release.
+- For a dtype or op the GPU cannot run at all (FP4/NVFP4 below SM100, FP8 below SM89), add a `capabilities.yaml` floor or a quant-axis `min_sm`. If the hardware can run the dtype but this backend's collector cannot, for the whole (op, dtype) on that SM, add a `backend_gaps` entry with a guard note. Never filter in collector code with `get_sm_version()`.
+- For a shape or dimension boundary that one framework rejects, per-rank sizes such as `inter_size // tp` included, change nothing: the cases fail and are recorded. Count failures per consumer key and name the unavailable keys in the PR.
+- Add a guard only when a case would mismeasure, hang or kill the worker, or waste significant time. It raises in the worker and cites a `G-` note (`.claude/rules/collector/layer_permissions.md`).
+- For CUDA-fatal errors, the worker restarts and the failure is already recorded; do not add skips.
 - Preserve data quality. Do not reduce benchmark repetitions or broad test dimensions just to pass.
-- Keep older backend versions working.
 - Keep shared test-case generators deterministic when unit tests depend on them. Put runtime availability probes in backend collector wrappers when the skip is caused by a partially installed framework package.
 - Guard `importlib.util.find_spec("a.b.c")` with `try/except ModuleNotFoundError`; partial packages can make `find_spec` raise instead of return `None`.
-- If a collector route only exists for future framework versions, use `VersionRoute` in `collector/<backend>/registry.py` and add a wrapper module with an explicit `__compat__`.
+- Do not add side-by-side version fork modules; prior-version code is `git log -- <file>` away.
 - If a collector helper silently returns `None` after a dry-run or subprocess failure, make it raise or record the skip explicitly so failed coverage is visible.
 - If a valid production-like case fails in the framework kernel, file or prepare an upstream bug for SGLang, vLLM, or TRT-LLM with exact image/version, SM, minimal repro, and traceback. Link it in the PR or failure ledger.
 - If the case is not production-like or the runtime explicitly does not support that SM/path, skip it in `collect_xx.py` before execution with a clear comment and a narrow predicate.
@@ -383,7 +421,8 @@ Therefore ALWAYS verify results by content, never by status:
    rows and no capability-floor explanation is a failure regardless of status.
 2. Read `errors_*.json` / `collection_summary_*.json`; any
    `ModuleCollectionFailure` means that op collected nothing.
-3. Compare collected vs planned counts (`--plan-only` gives the plan size);
+3. Compare collected vs planned counts (`--plan-only --sm <sm>` prints the
+   plan size per dtype for ops with an op plan, listed in `OP_PLANS`);
    large shortfalls mean the run died early — check the tail of the log for
    container/cluster death, not just collector errors.
 
@@ -529,8 +568,7 @@ Before marking the draft PR ready:
 ```bash
 git status --short
 git diff --stat main...HEAD
-pytest tests/unit/collector -q
-pytest tests/unit/sdk/test_common.py -q
+python -m pytest -q tests/unit tests/golden   # what CI runs, with no marker filter
 ```
 
 PR body checklist:
@@ -544,7 +582,9 @@ PR body checklist:
 - Ops collected and perf files added.
 - Row counts by backend/version and perf file count.
 - Collector errors fixed.
-- Unsupported/skipped configs with reasons and whether they are runtime-version limits, SM limits, or collector gaps.
+- Failure counts per consumer key, the unavailable keys, and the comparison with the previous run of the same backend/version.
+- Capability floors and notes added, changed or retired (`collector/notes/`), with `verified_on` moved for the new pin.
+- Whether measured values change; when they do, a before/after diff of the affected ops on one system per SM generation.
 - Validation commands and results.
 - Remaining risks.
 
@@ -566,9 +606,9 @@ Ruff CI runs both `ruff check` and `ruff format --check`; local targeted `ruff c
 If the draft PR does not exist yet, open it before more long-running work:
 
 ```bash
-gh repo fork ai-dynamo/aiconfigurator --clone=false
+gh repo fork ai-dynamo/aisimulate --clone=false
 git push -u <your-fork-remote> HEAD
-gh pr create --repo ai-dynamo/aiconfigurator --head <your-user>:<branch> --title "<title>" --body-file <body-file>
+gh pr create --repo ai-dynamo/aisimulate --head <your-user>:<branch> --title "<title>" --body-file <body-file>
 ```
 
 ## Stop And Escalate

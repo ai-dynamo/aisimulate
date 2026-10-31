@@ -142,12 +142,16 @@ reviews:
 
     - path: "python/aisimulate/collector/**"
       instructions: |
-        Enforce the mapped collector guidelines. A queued case must execute or
-        raise; only generation-time memory feasibility may filter cases, with
-        counted drops. Reject invented geometry or kernel fallbacks, selector
-        exception machinery, untraceable results, and undocumented producer to
-        consumer schema changes. Verify runtime versions, commands, GPU
-        assumptions, and failure evidence.
+        Enforce the mapped collector guidelines (start from overview.md). A
+        queued case must execute or raise. Only whole regions (capability
+        floors, quant-axis min_sm) and memory feasibility may filter cases at
+        generation time, with counted drops; finer boundaries run and fail.
+        A guard is legal only for a case that would mismeasure, hang or waste
+        significant time, and must cite a G- note in collector/notes/. Reject
+        invented geometry or kernel fallbacks, selector exception machinery,
+        deviations described outside collector/notes/, untraceable results,
+        and undocumented producer to consumer schema changes. Verify runtime
+        versions, commands, GPU assumptions, and failure evidence.
 
     - path: "crates/core/src/engine/**"
       instructions: |

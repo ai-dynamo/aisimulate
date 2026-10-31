@@ -3,9 +3,7 @@
 
 import ast
 import csv
-import itertools
 import json
-import random
 import subprocess
 import sys
 from itertools import pairwise
@@ -31,55 +29,11 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SUPPORT_MATRIX_ROOT = REPO_ROOT / "src" / "aisimulate_core" / "systems" / "support_matrix"
 
 
-def _load_mla_adapter(module_path: str, globals_dict: dict):
-    source_path = REPO_ROOT / module_path
-    tree = ast.parse(source_path.read_text(), filename=str(source_path))
-    function = next(
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_build_mla_test_cases"
-    )
-    namespace = dict(globals_dict)
-    exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)
-    return namespace["_build_mla_test_cases"]
+def _planned_moe_modes(monkeypatch, backend: str, model_path: str, sm_version: int) -> set[str]:
+    from collector.op_plans import plan
 
-
-def _load_gdn_getter(module_path: str):
-    from collector.case_generator import get_common_gdn_test_cases
-
-    source_path = REPO_ROOT / module_path
-    tree = ast.parse(source_path.read_text(), filename=str(source_path))
-    function = next(
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "get_gdn_test_cases"
-    )
-    namespace = {"get_common_gdn_test_cases": get_common_gdn_test_cases}
-    exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)
-    return namespace["get_gdn_test_cases"]
-
-
-def _load_moe_getter(module_path: str):
-    from collector.case_generator import (
-        get_common_moe_test_cases,
-        get_moe_quantization_modes,
-        get_sglang_moe_backend,
-        moe_model_allows_quantization,
-    )
-
-    source_path = REPO_ROOT / module_path
-    tree = ast.parse(source_path.read_text(), filename=str(source_path))
-    function = next(
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "get_moe_test_cases"
-    )
-    namespace = {
-        "get_common_moe_test_cases": get_common_moe_test_cases,
-        "get_moe_quantization_modes": get_moe_quantization_modes,
-        "get_sglang_moe_backend": get_sglang_moe_backend,
-        "get_sm_version": lambda: 100,
-        "itertools": itertools,
-        "moe_model_allows_quantization": moe_model_allows_quantization,
-        "random": random,
-        "vllm_version": "0.24.0",
-    }
-    exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)
-    return namespace["get_moe_test_cases"]
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
+    return {case.moe_type for case in plan("moe", backend, sm_version).cases if case.model_name == model_path}
 
 
 def test_model_case_plan_merges_required_base_and_framework_specific_ops():
@@ -271,28 +225,23 @@ def test_nvfp4_quant_artifacts_have_exact_moe_profiles_and_lanes(monkeypatch, mo
         assert moe_model_allows_quantization(backend, model_path, quant_mode)
 
 
-@pytest.mark.parametrize(
-    ("backend", "module_path"),
-    [
-        ("sglang", "collector/sglang/collect_moe.py"),
-        ("trtllm", "collector/trtllm/collect_moe.py"),
-        ("vllm", "collector/vllm/collect_moe.py"),
-    ],
-)
-def test_qwen36_w4a16_nvfp4_moe_is_transferred_but_explicitly_deferred(monkeypatch, capsys, backend, module_path):
+@pytest.mark.parametrize("backend", ["sglang", "trtllm", "vllm"])
+def test_qwen36_w4a16_nvfp4_moe_is_transferred_but_explicitly_deferred(monkeypatch, caplog, backend):
     from collector.case_generator import get_common_moe_test_cases
+    from collector.op_plans import plan_cases
 
     model_path = "nvidia/Qwen3.6-35B-A3B-NVFP4"
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
 
     assert "moe" in build_collection_case_plan(backend=backend, model_path=model_path).selected_ops
-    transferred_shapes = get_common_moe_test_cases(backend=backend)
+    transferred_shapes = get_common_moe_test_cases()
     assert transferred_shapes
     assert {case.model_name for case in transferred_shapes} == {model_path}
-    assert "w4a16_nvfp4" not in {spec.name for spec in get_moe_quantization_specs(backend)}
+    assert "w4a16_nvfp4" not in {spec.name for spec in get_moe_quantization_specs()}
 
-    assert _load_moe_getter(module_path)() == []
-    assert f"by declared {backend} quantization policy (allowed_modes): {model_path}" in capsys.readouterr().out
+    with caplog.at_level("INFO", logger="collector.op_plans"):
+        assert plan_cases("moe", backend, 100) == []
+    assert f"plan no case (quantization_modes: []): {model_path}" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -327,8 +276,10 @@ def test_qwen35_gdn_getters_expand_tp_local_physical_keys(
         for tp in tp_sizes
     }
 
-    for module_path in ("collector/sglang/collect_gdn.py", "collector/vllm/collect_gdn.py"):
-        cases = _load_gdn_getter(module_path)()
+    from collector.op_plans import plan_cases
+
+    for backend in ("sglang", "trtllm", "vllm"):
+        cases = plan_cases("gdn", backend, 100)
         assert {(case[0], case[1], case[2], case[3], case[4], case[5], case[6]) for case in cases} == expected
 
 
@@ -522,6 +473,7 @@ def test_moe_model_quantization_policy_is_yaml_backed():
     # -BF16 suffix (there is no zai-org/GLM-5.3-FP8 repository).
     assert moe_model_allows_quantization("sglang", "zai-org/GLM-5.3", "fp8_block")
     assert not moe_model_allows_quantization("sglang", "zai-org/GLM-5.3", "bfloat16")
+    assert not moe_model_allows_quantization("sglang", "zai-org/GLM-5.3", "nvfp4")
     assert moe_model_allows_quantization("sglang", "zai-org/GLM-5.3-BF16", "bfloat16")
     assert not moe_model_allows_quantization("sglang", "zai-org/GLM-5.3-BF16", "fp8_block")
 
@@ -599,32 +551,31 @@ def test_qwen35_397b_nvfp4_moe_row_is_nvfp4_only_on_every_backend():
         assert allowed == {"nvfp4"}, (backend, model_path, allowed)
 
 
-def test_kimi_moe_quantization_is_artifact_specific():
+def test_kimi_moe_quantization_is_artifact_specific(monkeypatch):
     expected_by_artifact = {
         "moonshotai/Kimi-K2-Instruct": {"fp8_block"},
         "moonshotai/Kimi-K2.5": {"int4_wo"},
         "nvidia/Kimi-K2.5-NVFP4": {"nvfp4"},
     }
 
+    available_modes = {spec.name for spec in get_moe_quantization_specs()}
     for backend in ("sglang", "trtllm", "vllm"):
-        available_modes = {spec.name for spec in get_moe_quantization_specs(backend)}
         for model_path, expected in expected_by_artifact.items():
             allowed = {mode for mode in available_modes if moe_model_allows_quantization(backend, model_path, mode)}
             assert allowed == expected, (backend, model_path)
 
-    from collector.case_generator import get_moe_quantization_modes, get_moe_quantization_module_config
+    from collector.case_generator import get_moe_quantization_module_config
 
     assert get_moe_quantization_module_config("sglang", "int4_wo", model_name="moonshotai/Kimi-K2.5") == {
         "group_size": 32
     }
-    sm90_modes = get_moe_quantization_modes("sglang", sm_version=90)
-    assert "int4_wo" in sm90_modes
-    assert "nvfp4" not in sm90_modes
-    assert "w4a16_mxfp4" in sm90_modes
-    # int4_wo opened to SM100/103 (2026-07-11): serving auto-selects
-    # flashinfer_trtllm for Kimi INT4 there (server_args.py:3736).
-    assert "int4_wo" in get_moe_quantization_modes("sglang", sm_version=100)
-    assert "nvfp4" in get_moe_quantization_modes("sglang", sm_version=100)
+    # SGLang pins the int4 runner on SM89/90/120 (Marlin) and SM100/103
+    # (flashinfer_trtllm), not on SM80 (G-sglang-moe-runner-unpinned).
+    assert _planned_moe_modes(monkeypatch, "sglang", "moonshotai/Kimi-K2.5", 90) == {"int4_wo"}
+    assert _planned_moe_modes(monkeypatch, "sglang", "moonshotai/Kimi-K2.5", 100) == {"int4_wo"}
+    assert _planned_moe_modes(monkeypatch, "sglang", "moonshotai/Kimi-K2.5", 80) == set()
+    assert _planned_moe_modes(monkeypatch, "sglang", "nvidia/Kimi-K2.5-NVFP4", 90) == set()
+    assert _planned_moe_modes(monkeypatch, "sglang", "nvidia/Kimi-K2.5-NVFP4", 100) == {"nvfp4"}
 
 
 def test_sglang_marlin_is_declared_only_for_weight_only_modes():
@@ -738,85 +689,40 @@ def test_deepseek_minimax_and_nemotron_moe_quantization_is_artifact_specific():
         "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4": {"nvfp4"},
     }
 
+    expected_by_artifact = {
+        **shared_expected,
+        "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8": {"fp8"},
+        "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8": {"fp8"},
+    }
+    available_modes = {spec.name for spec in get_moe_quantization_specs()}
     for backend in ("sglang", "trtllm", "vllm"):
-        available_modes = {spec.name for spec in get_moe_quantization_specs(backend)}
-        expected_by_artifact = {
-            **shared_expected,
-            "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8": set() if backend == "sglang" else {"fp8"},
-        }
-        if backend == "vllm":
-            expected_by_artifact["nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8"] = {"fp8"}
-            expected_by_artifact["nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"] = set()
-            expected_by_artifact["nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4"] = set()
         for model_path, expected in expected_by_artifact.items():
             allowed = {mode for mode in available_modes if moe_model_allows_quantization(backend, model_path, mode)}
             assert allowed == expected, (backend, model_path)
 
 
-def test_gptoss_mxfp4_modes_are_additive_on_blackwell():
-    from collector.case_generator import get_moe_quantization_modes
+def test_gptoss_mxfp4_modes_are_additive_on_blackwell(monkeypatch):
+    model_path = "openai/gpt-oss-120b"
 
-    def selected_modes(backend, sm_version):
-        return {
-            mode
-            for mode in get_moe_quantization_modes(backend, sm_version=sm_version)
-            if moe_model_allows_quantization(backend, "openai/gpt-oss-120b", mode)
-        }
-
-    assert selected_modes("sglang", 100) == {"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"}
-    assert selected_modes("sglang", 109) == {"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"}
-    assert selected_modes("sglang", 110) == {"w4a16_mxfp4"}
-    assert selected_modes("sglang", 119) == {"w4a16_mxfp4"}
-    assert selected_modes("sglang", 90) == {"w4a16_mxfp4"}
-    assert selected_modes("trtllm", 90) == {"w4a16_mxfp4"}
-    assert selected_modes("trtllm", 100) == {"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"}
+    for backend in ("sglang", "trtllm", "vllm"):
+        assert _planned_moe_modes(monkeypatch, backend, model_path, 90) == {"w4a16_mxfp4"}, backend
+        assert _planned_moe_modes(monkeypatch, backend, model_path, 100) == {"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"}, backend
+    # SM120: SGLang has no verified w4a8 runner pin and vLLM serves MXFP4 there
+    # without MXFP8 activations (G-sglang-moe-runner-unpinned, G-vllm-moe-w4a8-mxfp4-sm120).
+    assert _planned_moe_modes(monkeypatch, "sglang", model_path, 120) == {"w4a16_mxfp4"}
+    assert _planned_moe_modes(monkeypatch, "vllm", model_path, 120) == {"w4a16_mxfp4"}
 
 
-def test_sglang_dsv4_native_w4a8_mode_is_sm100_interval_gated():
-    from collector.case_generator import get_moe_quantization_modes
+@pytest.mark.parametrize("backend", ["sglang", "trtllm", "vllm"])
+def test_dsv4_native_w4a8_mode_is_planned_from_sm100(monkeypatch, backend):
+    model_path = "deepseek-ai/DeepSeek-V4-Flash"
 
-    def selected_modes(sm_version):
-        return {
-            mode
-            for mode in get_moe_quantization_modes("sglang", sm_version=sm_version)
-            if moe_model_allows_quantization("sglang", "deepseek-ai/DeepSeek-V4-Flash", mode)
-        }
-
-    assert selected_modes(90) == set()
-    assert selected_modes(100) == {"w4a8_mxfp4_mxfp8"}
-    assert selected_modes(103) == {"w4a8_mxfp4_mxfp8"}
-    assert selected_modes(109) == {"w4a8_mxfp4_mxfp8"}
-    assert selected_modes(110) == set()
-    assert selected_modes(119) == set()
-    assert selected_modes(120) == set()
-
-
-def test_vllm_dsv4_native_w4a8_mode_is_sm100_interval_gated():
-    from collector.case_generator import get_moe_quantization_modes
-
-    def selected_modes(sm_version, *, mxfp4=True):
-        return {
-            mode
-            for mode in get_moe_quantization_modes(
-                "vllm",
-                sm_version=sm_version,
-                runtime_features={"per_block_fp8": True, "nvfp4": True, "mxfp4": mxfp4},
-            )
-            if moe_model_allows_quantization("vllm", "deepseek-ai/DeepSeek-V4-Flash", mode)
-        }
-
-    # The trtllm-gen MXFP4xMXFP8 kernel exists only on the SM100 capability
-    # family (10.x); SM90 serves this artifact as Marlin W4A16 and SM110+
-    # routes elsewhere, so the label must not be collected there.
-    assert selected_modes(90) == set()
-    assert selected_modes(100) == {"w4a8_mxfp4_mxfp8"}
-    assert selected_modes(103) == {"w4a8_mxfp4_mxfp8"}
-    assert selected_modes(109) == {"w4a8_mxfp4_mxfp8"}
-    assert selected_modes(110) == set()
-    assert selected_modes(119) == set()
-    assert selected_modes(120) == set()
-    # The mxfp4 runtime-feature gate must hold even inside the SM interval.
-    assert selected_modes(100, mxfp4=False) == set()
+    # The trtllm-gen MXFP4 x MXFP8 kernel starts at SM100 (capabilities.yaml floor).
+    assert _planned_moe_modes(monkeypatch, backend, model_path, 90) == set()
+    assert _planned_moe_modes(monkeypatch, backend, model_path, 100) == {"w4a8_mxfp4_mxfp8"}
+    assert _planned_moe_modes(monkeypatch, backend, model_path, 103) == {"w4a8_mxfp4_mxfp8"}
+    expected_sm120 = {"w4a8_mxfp4_mxfp8"} if backend == "trtllm" else set()
+    assert _planned_moe_modes(monkeypatch, backend, model_path, 120) == expected_sm120
 
 
 def test_sglang_mxfp4_quant_labels_select_explicit_activation_precision():
@@ -1053,61 +959,18 @@ def test_cross_model_common_cases_expand_from_base_op_yaml_sweeps(monkeypatch):
     }
 
 
-def test_mla_collectors_dedupe_on_loader_physical_keys(monkeypatch):
-    from types import SimpleNamespace
-
-    from collector.case_generator import get_context_mla_case_specs, get_generation_mla_case_specs
-
-    sglang_adapter = _load_mla_adapter(
-        "collector/sglang/collect_mla.py",
-        {
-            "KV_LORA_RANK": 512,
-            "QK_NOPE_HEAD_DIM": 128,
-            "QK_ROPE_HEAD_DIM": 64,
-        },
-    )
-    trtllm_adapter = _load_mla_adapter(
-        "collector/trtllm/collect_mla.py",
-        {
-            "Scenario": lambda: SimpleNamespace(
-                q_lora_rank=1536,
-                kv_lora_rank=512,
-                qk_nope_head_dim=128,
-                qk_rope_head_dim=64,
-                v_head_dim=128,
-            ),
-            "_mla_tokens_per_block": lambda: 32,
-        },
-    )
-
-    def physical_keys(cases):
-        return {(case[3], case[4] // case[6], case[1], case[0]) for case in cases}
+@pytest.mark.parametrize("op", ["mla_context", "mla_generation"])
+def test_mla_plan_dedupes_on_loader_physical_keys(monkeypatch, op):
+    """The perf key holds local heads, not total heads or TP: one case per key, at the smallest TP."""
+    from collector.op_plans import plan
 
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
-    full_specs = (get_context_mla_case_specs(), get_generation_mla_case_specs())
-    for adapter, kwargs in (
-        (sglang_adapter, {"tp_sizes": (1, 2, 4, 8, 16, 32, 64)}),
-        (trtllm_adapter, {}),
-    ):
-        context_cases = adapter(full_specs[0], dtype_list=("bf16", "fp8"), **kwargs)
-        generation_cases = adapter(full_specs[1], dtype_list=("bf16", "fp8"), **kwargs)
-        assert len(context_cases) == len(physical_keys(context_cases))
-        assert len(generation_cases) == len(physical_keys(generation_cases))
-        assert 1 in {case[4] // case[6] for case in context_cases}
-        assert 1 in {case[4] // case[6] for case in generation_cases}
+    cases = plan(op, "trtllm", 100).cases
 
-    large_generation_spec = SimpleNamespace(
-        model_name="large-generation-regression",
-        kv_lora_rank=512,
-        qk_nope_head_dim=128,
-        qk_rope_head_dim=64,
-        v_head_dim=128,
-        num_heads=128,
-        batch_size=1024,
-        input_len=4096,
-        is_context_phase=False,
-    )
-    assert sglang_adapter([large_generation_spec], dtype_list=("bf16",), tp_sizes=(1,), backend="fa3")
+    keys = [(case.kv_cache_dtype, case.num_heads // case.tp_size, case.batch_size, case.input_len) for case in cases]
+    assert len(keys) == len(set(keys))
+    assert 1 in {case.num_heads // case.tp_size for case in cases}
+    assert {case.kv_cache_dtype for case in cases} == {"bfloat16", "fp8"}
 
 
 def test_kimi_mla_plan_includes_generation_bmm_helpers():
@@ -1128,7 +991,7 @@ def test_kimi_k3_vllm_plan_activates_mla_module_ops():
     assert {"mla_context", "mla_generation"} <= sglang_plan.selected_ops
 
 
-def test_kimi_k3_moe_is_planned_per_framework_and_never_for_trtllm():
+def test_kimi_k3_scoped_run_activates_moe_for_sglang_and_vllm_only():
     # K3 has no trtllm serving lane. moe activation is framework-specific
     # (sglang/vllm), so a K3-scoped trtllm run plans NO moe at all — a
     # planned-op zero-case expansion with no logged drop is structurally
@@ -1139,20 +1002,11 @@ def test_kimi_k3_moe_is_planned_per_framework_and_never_for_trtllm():
     trtllm_plan = build_collection_case_plan(backend="trtllm", model_path="moonshotai/Kimi-K3")
     assert "moe" not in trtllm_plan.selected_ops
 
-    # Cross-model trtllm sweeps (getter runs with no model filter) still see
-    # the K3 moe row: the declared empty trtllm allowlist rejects EVERY mode,
-    # and the trtllm getter logs the fully-dropped model instead of silently
-    # expanding to zero.
-    from collector.case_generator import get_moe_quantization_modes, moe_model_allows_quantization
+    # A full-plan run plans K3's checkpoint modes on every backend.
+    from collector.case_generator import moe_model_allows_quantization
 
-    modes = get_moe_quantization_modes(
-        "trtllm",
-        sm_version=100,
-        runtime_features={"per_block_fp8": True, "nvfp4": True, "mxfp4": True},
-    )
-    assert modes  # the sweep itself is non-empty
-    for mode in modes:
-        assert not moe_model_allows_quantization("trtllm", "moonshotai/Kimi-K3", mode), mode
+    for backend in ("sglang", "trtllm", "vllm"):
+        assert moe_model_allows_quantization(backend, "moonshotai/Kimi-K3", "w4a8_mxfp4_mxfp8"), backend
 
 
 def test_dsa_module_prefix_context_sweeps_are_yaml_backed():
@@ -1164,29 +1018,17 @@ def test_dsa_module_prefix_context_sweeps_are_yaml_backed():
 
 
 def test_vllm_moe_quantization_metadata_is_yaml_backed():
-    from collector.case_generator import (
-        get_moe_quantization_modes,
-        get_moe_quantization_module_config,
-        moe_model_allows_quantization,
-    )
+    from collector.case_generator import get_moe_quantization_module_config, moe_model_allows_quantization
 
-    assert get_moe_quantization_modes("vllm", sm_version=90, runtime_features={"per_block_fp8": True}) == [
+    assert [spec.name for spec in get_moe_quantization_specs("vllm")] == [
         "bfloat16",
-        "int4_wo",
         "fp8",
         "fp8_block",
+        "int4_wo",
+        "nvfp4",
+        "w4a16_mxfp4",
+        "w4a8_mxfp4_mxfp8",
     ]
-    assert get_moe_quantization_modes(
-        "vllm",
-        sm_version=100,
-        runtime_features={"per_block_fp8": True, "nvfp4": True, "mxfp4": True},
-    ) == ["bfloat16", "int4_wo", "fp8", "fp8_block", "nvfp4", "w4a16_mxfp4", "w4a8_mxfp4_mxfp8"]
-    assert get_moe_quantization_modes(
-        "vllm",
-        sm_version=120,
-        runtime_version="0.24.0",
-        runtime_features={"per_block_fp8": True, "nvfp4": True, "mxfp4": True},
-    ) == ["bfloat16", "int4_wo", "fp8", "fp8_block", "nvfp4", "w4a16_mxfp4"]
 
     assert moe_model_allows_quantization("vllm", "openai/gpt-oss-20b", "w4a16_mxfp4")
     assert not moe_model_allows_quantization("vllm", "openai/gpt-oss-20b", "bfloat16")
@@ -1328,8 +1170,6 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
         ("bfloat16", "fp8", "bfloat16"),
         ("fp8", "fp8", "bfloat16"),
         ("bfloat16", "bfloat16", "fp8_block"),
-        ("bfloat16", "bfloat16", "fp8"),
-        ("bfloat16", "fp8", "fp8"),
         ("bfloat16", "fp8", "fp8_block"),
         ("fp8", "fp8", "fp8_block"),
         ("bfloat16", "bfloat16", "nvfp4"),
@@ -1359,8 +1199,6 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
         ("bfloat16", "bfloat16", "bfloat16"),
         ("bfloat16", "fp8", "bfloat16"),
         ("bfloat16", "bfloat16", "fp8_block"),
-        ("bfloat16", "bfloat16", "fp8"),
-        ("bfloat16", "fp8", "fp8"),
         ("bfloat16", "fp8", "fp8_block"),
         # MSA-scoped combos (attention_types [msa]) at SM90: both KV dtypes
         # for the bf16 and fp8_block gemm tiers (fp8-KV has no SM floor for
@@ -1382,8 +1220,6 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
         ("bfloat16", "bfloat16", "bfloat16"),
         ("bfloat16", "fp8", "bfloat16"),
         ("bfloat16", "bfloat16", "fp8_block"),
-        ("bfloat16", "bfloat16", "fp8"),
-        ("bfloat16", "fp8", "fp8"),
         ("bfloat16", "fp8", "fp8_block"),
         ("bfloat16", "bfloat16", "nvfp4"),
         ("bfloat16", "fp8", "nvfp4"),
@@ -1399,8 +1235,6 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
         ("bfloat16", "fp8", "bfloat16"),
         ("fp8", "fp8", "bfloat16"),
         ("bfloat16", "bfloat16", "fp8_block"),
-        ("bfloat16", "bfloat16", "fp8"),
-        ("bfloat16", "fp8", "fp8"),
         ("bfloat16", "fp8", "fp8_block"),
         ("fp8", "fp8", "fp8_block"),
         ("bfloat16", "bfloat16", "nvfp4"),
@@ -1422,8 +1256,8 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
         "zai-org/GLM-5.2",
         "zai-org/GLM-5.2-FP8",
         "nvidia/GLM-5.2-NVFP4",
-        "zai-org/GLM-5.3",
         "zai-org/GLM-5.3-BF16",
+        "zai-org/GLM-5.3",
         "nvidia/GLM-5.3-NVFP4",
     }
     assert {spec.native_num_heads for spec in dsa_specs if spec.architecture == "GlmMoeDsaForCausalLM"} == {64}
@@ -1585,11 +1419,10 @@ def test_model_cases_path_can_infer_model_path():
     assert "dsv4_csa_context_module" in plan.selected_ops
     assert "dsv4_csa_topk_calib" in plan.selected_ops
     assert "mhc_module" in plan.selected_ops
-    assert {
-        "dsv4_paged_mqa_logits_module",
-        "dsv4_hca_attn_module",
-        "dsv4_csa_attn_module",
-    }.isdisjoint(plan.selected_ops)
+    # the SDK's only live sparse sidecar (CP chunk walk) is planned; the FMLA sidecars
+    # (hca_attn / csa_attn) were removed from the registry on 2026-10-15
+    assert "dsv4_paged_mqa_logits_module" in plan.selected_ops
+    assert {"dsv4_hca_attn_module", "dsv4_csa_attn_module"}.isdisjoint(plan.selected_ops)
 
 
 def test_plan_rejects_model_declared_ops_unknown_to_backend_registry(tmp_path):
@@ -1643,7 +1476,7 @@ def test_vllm_024_schedules_consumed_dsv4_modules_only():
         "dsv4_csa_generation_module",
         "dsv4_hca_generation_module",
     }
-    registry_only_ops = {"dsv4_paged_mqa_logits_module", "dsv4_hca_attn_module", "mhc_module"}
+    removed_sidecar_ops = {"dsv4_hca_attn_module", "dsv4_csa_attn_module"}  # removed 2026-10-15
     plan = build_collection_case_plan(backend="vllm", model_path="sgl-project/DeepSeek-V4-Pro-FP8")
 
     assert plan.ops == [
@@ -1651,12 +1484,15 @@ def test_vllm_024_schedules_consumed_dsv4_modules_only():
         "dsv4_csa_generation_module",
         "dsv4_hca_context_module",
         "dsv4_hca_generation_module",
+        "dsv4_paged_mqa_logits_module",  # consumed by the SDK CP chunk walk; shipped for vllm 0.24/0.25
         "gemm",
+        "mhc_module",  # SDK queries mhc pre/post on every backend; scheduled again 2026-10-11
         "moe",
     ]
+    registered_ops = {entry.op for entry in REGISTRY}
     assert consumed_dsv4_ops <= plan.selected_ops
-    assert registry_only_ops.isdisjoint(plan.selected_ops)
-    assert consumed_dsv4_ops | registry_only_ops <= {entry.op for entry in REGISTRY}
+    assert consumed_dsv4_ops <= registered_ops
+    assert removed_sidecar_ops.isdisjoint(registered_ops)
 
 
 def test_model_architecture_can_select_case_file():
@@ -1727,8 +1563,7 @@ def test_vllm_024_model_plans_only_schedule_representable_attention_paths():
         "mla_context",
         "mla_generation",
         "moe",
-        "moe_ep",
-    ]
+    ]  # moe_ep left the default trtllm plan with the separate WideEP pin (2026-10-04)
     assert build_collection_case_plan(backend="vllm_xpu", model_path=kimi_path).ops == ["gemm", "moe"]
 
     models_with_unrepresentable_vllm_attention = (
@@ -1848,6 +1683,7 @@ def test_trtllm_mla_module_getter_requests_backend_canonicalization():
         "get_context_test_cases": lambda _attention_type: [[128, 1, 8, "bfloat16", "bfloat16", "bfloat16"]],
         "get_generation_test_cases": lambda _attention_type: [],
         "get_mla_module_model_specs": get_model_specs,
+        "get_sm_version": lambda: 90,
     }
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)
 
@@ -1855,6 +1691,183 @@ def test_trtllm_mla_module_getter_requests_backend_canonicalization():
 
     assert calls == [{"attention_type": "mla", "backend": "trtllm"}]
     assert cases == [[128, 1, 8, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3", "mla"]]
+
+
+def _load_module_case_builder(backend: str, namespace: dict):
+    from types import SimpleNamespace
+
+    source_path = REPO_ROOT / f"collector/{backend}/collect_mla_module.py"
+    tree = ast.parse(source_path.read_text(), filename=str(source_path))
+    wanted = {"_build_module_test_cases"}
+    if backend == "vllm":
+        # the DSA context grouping expands each series through the plan predicate
+        wanted |= {"_dsa_context_point_allowed", "_dsa_context_budgets"}
+        namespace.setdefault(
+            "get_mla_module_sweep_spec",
+            lambda _backend=None: SimpleNamespace(
+                context_dsa_chunk_prefill_size=16384,
+                context_max_tokens=131072,
+                context_dsa_max_full_sequence_length=1048576,
+            ),
+        )
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
+    exec(compile(ast.Module(body=functions, type_ignores=[]), str(source_path), "exec"), namespace)
+    return namespace["_build_module_test_cases"]
+
+
+@pytest.mark.parametrize("backend", ["vllm", "trtllm"])
+def test_dsa_sub_8_head_cells_stay_queued_and_raise_before_the_module_build(backend):
+    """b200 2026-10-06 (jobs 471043976 / 469988228): per-rank heads 1/2/4 have no sparse-MLA
+    kernel on SM100/103 and failed 68,435 + 15,408 cases after a full module load each. The
+    plan keeps them (a kernel limit is never a plan-time drop); the worker raises a
+    kernel_limit failure before building anything, on SM100/103 and for DSA only."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    heads = [128, 64, 8, 4, 2, 1]
+    base = [[1, 1, h, "bfloat16", "bfloat16", "bfloat16", 0] for h in heads]
+    ns = {
+        "get_context_test_cases": lambda _t: base,
+        "get_generation_test_cases": lambda _t: [],
+        "get_mla_module_model_specs": lambda **_k: [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3.2")],
+        "get_sm_version": lambda: 100,
+        "_model_max_position_embeddings": lambda _m: None,
+    }
+    build = _load_module_case_builder(backend, ns)
+    assert sorted({c[2] for c in build("dsa", "context")}) == sorted(heads)
+
+    source_path = REPO_ROOT / "collector" / backend / "collect_mla_module.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+    worker = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "run_mla_module_worker"]
+    built = []
+    for sm, attn_type, num_heads, raises in (
+        (100, "dsa", 4, True),
+        (103, "dsa", 1, True),
+        (100, "dsa", 8, False),
+        (100, "mla", 4, False),
+        (90, "dsa", 4, False),
+    ):
+        namespace = {
+            "get_sm_version": lambda sm=sm: sm,
+            "run_mla_module": lambda **kwargs: built.append(kwargs),
+            "torch": SimpleNamespace(inference_mode=nullcontext),
+        }
+        exec(compile(ast.Module(body=worker, type_ignores=[]), str(source_path), "exec"), namespace)
+        args = (16, 1, num_heads, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", attn_type)
+        before = len(built)
+        if raises:
+            with pytest.raises(RuntimeError, match=r"^FIXME\(kernel-limit\): "):
+                namespace["run_mla_module_worker"](*args, perf_filename="x")
+            assert len(built) == before, (backend, sm, attn_type, num_heads)
+        else:
+            namespace["run_mla_module_worker"](*args, perf_filename="x")
+            assert len(built) == before + 1, (backend, sm, attn_type, num_heads)
+
+
+@pytest.mark.parametrize("backend", ["vllm", "trtllm"])
+def test_module_plan_keeps_only_the_heads_of_declared_tensor_parallel_shards(backend):
+    """A model row that declares tensor_parallel_sizes (case_authoring model-correlated
+    narrowing, as the MSA rows do) measures only native_num_heads // tp; the shared head
+    grid's other entries (96/48/24/12 for the 96-head Kimi-K3 MLA module, 128 for a 64-head
+    model) were 40-50% of the b200 vllm dsa_context rows (2026-10-29). Rows without the
+    declaration keep the full grid."""
+    from types import SimpleNamespace
+
+    heads = [128, 96, 64, 48, 32, 24, 16, 12, 8]
+    base = [[1, 1, h, "bfloat16", "bfloat16", "bfloat16", 0] for h in heads]
+    glm = SimpleNamespace(model_path="zai-org/GLM-5.2", native_num_heads=64, tensor_parallel_sizes=(1, 2, 4, 8))
+    kimi = SimpleNamespace(model_path="moonshotai/Kimi-K3", native_num_heads=96, tensor_parallel_sizes=None)
+    ns = {
+        "get_context_test_cases": lambda _t: base,
+        "get_generation_test_cases": lambda _t: [],
+        "get_mla_module_model_specs": lambda **_k: [glm, kimi],
+        "get_sm_version": lambda: 100,
+        "_model_max_position_embeddings": lambda _m: None,
+    }
+    build = _load_module_case_builder(backend, ns)
+    by_model = {}
+    for case in build("dsa", "context"):
+        by_model.setdefault(case[6], []).append(case[2])
+    assert by_model["zai-org/GLM-5.2"] == [64, 32, 16, 8]
+    assert by_model["moonshotai/Kimi-K3"] == heads
+
+
+def test_vllm_module_plan_groups_the_seq_len_points_of_one_module_into_one_case():
+    """One case per (batch, heads, dtypes, gemm, model, attn, prefix) with its seq_len points
+    in slot 0, largest first: run_mla_module builds the module once per case (the module
+    build dominated vllm dsa_context_module in the 2026-10 campaign)."""
+    from types import SimpleNamespace
+
+    base = [
+        [128, 1, 64, "bfloat16", "bfloat16", "bfloat16", 0],
+        [16, 1, 64, "bfloat16", "bfloat16", "bfloat16", 0],
+        [1024, 1, 64, "bfloat16", "bfloat16", "bfloat16", 0],
+        [128, 1, 64, "bfloat16", "bfloat16", "bfloat16", 4096],  # other prefix -> same module series
+        [16, 1, 64, "bfloat16", "bfloat16", "bfloat16", 4096],
+        [1024, 1, 64, "bfloat16", "bfloat16", "bfloat16", 4096],
+        [16, 8, 64, "bfloat16", "bfloat16", "bfloat16", 0],  # other batch -> other case
+        [16, 1, 64, "fp8", "bfloat16", "bfloat16", 0],  # other kv dtype -> other case
+    ]
+    ns = {
+        "get_context_test_cases": lambda _t: base,
+        "get_generation_test_cases": lambda _t: [],
+        "get_mla_module_model_specs": lambda **_k: [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3.2")],
+        "get_sm_version": lambda: 100,
+        "_model_max_position_embeddings": lambda _m: None,
+    }
+    build = _load_module_case_builder("vllm", ns)
+    cases = build("dsa", "context")
+    # DSA context: the module series carries its isl list AND its prefix list (the plan's
+    # isl x prefix grid); the runner expands the grid through the same predicate.
+    assert cases == [
+        [[1024, 128, 16], 1, 64, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", "dsa", [4096, 0]],
+        [[16], 8, 64, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", "dsa", [0]],
+        [[16], 1, 64, "fp8", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", "dsa", [0]],
+    ]
+    # the trtllm planner keeps one case per point
+    trt = _load_module_case_builder("trtllm", dict(ns))
+    assert [c[0] for c in trt("dsa", "context")] == [128, 16, 1024, 128, 16, 1024, 16, 16]
+
+
+def test_vllm_dsa_module_plan_refuses_a_grid_the_runner_would_not_reproduce():
+    """The plan generator and run_mla_module share _dsa_context_point_allowed; a base list whose
+    (isl, prefix) points are not that predicate's product cannot be expressed as a series."""
+    from types import SimpleNamespace
+
+    base = [
+        [1024, 1, 64, "bfloat16", "bfloat16", "bfloat16", 0],
+        [16, 1, 64, "bfloat16", "bfloat16", "bfloat16", 4096],  # (1024, 4096) and (16, 0) missing
+    ]
+    ns = {
+        "get_context_test_cases": lambda _t: base,
+        "get_generation_test_cases": lambda _t: [],
+        "get_mla_module_model_specs": lambda **_k: [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3.2")],
+        "get_sm_version": lambda: 100,
+        "_model_max_position_embeddings": lambda _m: None,
+    }
+    build = _load_module_case_builder("vllm", ns)
+    with pytest.raises(RuntimeError, match="expands to 4 points but the plan holds 2"):
+        build("dsa", "context")
+
+
+def test_vllm_dsa_module_plan_caps_prefix_at_the_model_max_position():
+    """7,050 b200 vllm DSA cases (job 471043976) asked vLLM for max_model_len > the model's
+    max_position_embeddings (prefix 262144+ on DeepSeek-V3.2 / GLM-5): the planner now
+    applies the same per-model cap the sglang module collector applies."""
+    from types import SimpleNamespace
+
+    base = [[16, 1, 64, "bfloat16", "bfloat16", "bfloat16", p] for p in (0, 4096, 163824, 163825, 262144)]
+    ns = {
+        "get_context_test_cases": lambda _t: base,
+        "get_generation_test_cases": lambda _t: [],
+        "get_mla_module_model_specs": lambda **_k: [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3.2")],
+        "get_sm_version": lambda: 100,
+        "_model_max_position_embeddings": lambda _m: 163840,
+    }
+    build = _load_module_case_builder("vllm", ns)
+    assert [c[-1] for c in build("dsa", "context")] == [[163824, 4096, 0]]
+    ns["_model_max_position_embeddings"] = lambda _m: None  # unknown ceiling -> no cap
+    assert [c[-1] for c in build("dsa", "context")] == [[262144, 163825, 163824, 4096, 0]]
 
 
 def test_support_matrix_models_have_model_case_aliases():
@@ -1925,7 +1938,7 @@ def test_nemotron_super_fp8_vllm_moe_case_covers_missing_consumer_key(monkeypatc
     model_path = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8"
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
 
-    cases = get_common_moe_test_cases(backend="vllm")
+    cases = get_common_moe_test_cases()
 
     assert cases
     assert {case.model_name for case in cases} == {model_path}
@@ -2039,30 +2052,18 @@ def test_qwen38_max_plan_only_schedules_attention_on_compatible_collector():
     assert attention_ops <= trtllm_plan.selected_ops
 
 
-def test_qwen38_max_base_moe_quantization_is_fail_closed_by_framework():
-    model_path = "Qwen/Qwen3.8-2.4T-A95B"
-    expected_by_backend = {
-        "sglang": {"bfloat16", "fp8_block"},
-        "trtllm": set(),
-        "vllm": {"bfloat16", "fp8_block"},
-    }
-
-    for backend, expected in expected_by_backend.items():
-        available_modes = {spec.name for spec in get_moe_quantization_specs(backend)}
+@pytest.mark.parametrize(
+    ("model_path", "expected"),
+    [
+        ("Qwen/Qwen3.8-2.4T-A95B", {"bfloat16", "fp8_block"}),
+        ("RadixArk/Qwen3.8-2.4T-A95B-NVFP4", {"nvfp4"}),
+    ],
+)
+def test_qwen38_max_moe_rows_plan_their_checkpoint_modes(model_path, expected):
+    available_modes = {spec.name for spec in get_moe_quantization_specs()}
+    for backend in ("sglang", "trtllm", "vllm"):
         allowed = {mode for mode in available_modes if moe_model_allows_quantization(backend, model_path, mode)}
         assert allowed == expected, (backend, model_path, allowed)
-
-
-def test_radixark_qwen38_max_nvfp4_row_is_sglang_only():
-    model_path = "RadixArk/Qwen3.8-2.4T-A95B-NVFP4"
-    for backend in ("trtllm", "vllm"):
-        available_modes = {spec.name for spec in get_moe_quantization_specs(backend)}
-        allowed = {mode for mode in available_modes if moe_model_allows_quantization(backend, model_path, mode)}
-        assert allowed == set(), (backend, model_path, allowed)
-
-    sglang_modes = {spec.name for spec in get_moe_quantization_specs("sglang")}
-    sglang_allowed = {mode for mode in sglang_modes if moe_model_allows_quantization("sglang", model_path, mode)}
-    assert sglang_allowed == {"nvfp4"}, (model_path, sglang_allowed)
 
 
 def test_nemotron_ultra_quant_artifact_keeps_moe_path_but_reuses_mamba_profile(monkeypatch):
@@ -2228,3 +2229,16 @@ def test_nvfp4_checkpoint_targets_msa_module_specs(monkeypatch):
         assert all(s.model_path == "MiniMaxAI/MiniMax-M3" for s in specs), (
             "alias rows must stay keyed to the canonical model path"
         )
+
+
+def test_msa_head_axis_derives_from_declared_shards():
+    """MSA is one fixed geometry (MiniMax-M3 64q/4kv/4idx): the collectors sweep
+    native // tp for the model row's tensor_parallel_sizes, never the shared
+    GQA-style head grid (owner decision 2026-09-29; TP 16 is the ceiling)."""
+    from collector.case_generator import get_msa_head_counts
+
+    for backend in ("vllm", "trtllm", "sglang"):
+        heads = get_msa_head_counts(backend)
+        assert heads == [64, 32, 16, 8, 4], (backend, heads)
+        # every derived shard keeps the index-head count a power of two
+        assert all((max(1, h // 16) & (max(1, h // 16) - 1)) == 0 for h in heads)

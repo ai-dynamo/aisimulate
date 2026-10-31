@@ -78,8 +78,7 @@ to parquet under
 The model-centric case layer (introduced as "collector v2") is how collection
 coverage is declared, and it is unchanged under Collector V3 — V3 adds
 op-centric *management* on top (per-family runtime pins, provenance sidecars,
-declared reuse; see `docs/perf_database/collector-v3-op-centric-design.md`),
-it does not replace how cases are declared or healed. A healing run collects
+declared reuse), it does not replace how cases are declared or healed. A healing run collects
 cases for a specific model/GPU pair instead of running every op bucket and
 hoping the support matrix improves. Use `--model-cases-full` when you want
 the case YAML to define a full model-centric run. Omitting all model-case
@@ -118,14 +117,17 @@ Case files (see `cases/README.md` for the full authoring guide):
 ```text
 cases/base_ops/<op>.yaml               — shared sweep recipes (interpolation grid)
 cases/models/<architecture>_cases.yaml — op activation + model shape values
-cases/capabilities.yaml                — positive hardware floors (dtype/op -> min SM)
+cases/capabilities.yaml                — hardware floors (dtype/op -> min SM) and backend gaps
 cases/denylist.yaml                    — hang/node-killer cases only
 model_cases.py                         — resolves which ops a model plan collects
 capabilities.py                        — generation-time capability/denylist filter
 ```
 
 The plan is one equation: cases = dedup(base grid ∪ model shapes), then
-intersected with hardware capability floors and minus the hang denylist.
+intersected with hardware capability floors, minus backend gaps and the hang
+denylist. For an op with an op plan (`OP_PLANS` in `op_plans.py`), `--plan-only`
+with `--sm` or `--gpu` also prints case counts per dtype and the regions left
+out; `--plan-table DIR` writes one CSV row per case.
 
 TRT-LLM MLA precision and GPT-OSS TP profile collection evidence is recorded
 in [the September 17 campaign](trtllm/gym-profiles-20260917.md).
@@ -300,9 +302,7 @@ resolve a single op's runtime, and
 `collector.framework_manifest.validate_resolution()` to check the whole
 manifest against every backend registry at once — it returns a list of error
 strings (empty = valid) and is the fail-closed CI gate asserting every
-registered op resolves to exactly one pinned runtime. See
-`docs/perf_database/collector-v3-op-centric-design.md` §4 for the full
-design.
+registered op resolves to exactly one pinned runtime.
 
 ## File Naming Convention
 
@@ -451,15 +451,28 @@ If unavailable, a warning is logged and execution continues without power data.
 - Kernel iterations are automatically adjusted to meet minimum duration for accurate measurements
 - Backward compatible: without `--measure_power`, CSVs remain unchanged
 
-## CUDA Graph Fallback Support
+## CUDA Graph Timing Policy
 
-The `benchmark_with_power` helper function now supports graceful fallback to eager execution when CUDA graph capture fails. This is particularly useful for complex operations like MOE (Mixture of Experts) with large batch sizes.
+`benchmark_with_power` times kernels under CUDA-graph replay. A failed capture
+raises (`allow_graph_fail=False`, the default) and the case fails classified.
 
-### Features
-- **Automatic fallback**: When `allow_graph_fail=True`, CUDA graph capture failures trigger eager execution instead of raising exceptions
-- **Power measurement in both paths**: Power monitoring works correctly in both graph replay and eager execution modes
-- **Memory safety**: Automatic `torch.cuda.empty_cache()` call on graph capture failure to prevent memory fragmentation
-- **Transparency**: Results include `used_cuda_graph` flag to indicate which execution path was used
+- **No collector that writes a perf table may pass `allow_graph_fail=True`.**
+  The eager fallback times the Python launch loop and ships that floor as the
+  kernel latency, and no perf table records the helper's `used_cuda_graph`
+  flag — `.claude/rules/collector/layer_permissions.md` allows a
+  measurement-method degradation only when it is recorded in the output row.
+  `tests/unit/collector/test_no_eager_graph_fallback_sites.py` pins this for
+  every file under `collector/`. The last fallback sites (trtllm mamba2 and
+  moe, wideep moe_compute, network trtllm alltoall) were closed on 2026-10-12;
+  the sglang trtllm_mla prefill (B1) and the trtllm GDN lanes the day before.
+- A collector that sweeps several cells inside one task counts failed cells
+  and raises a strict-completeness error at the end (GDN, mamba2), so the
+  other cells still ship rows and the failure lands in `errors_<module>.json`.
+- Multi-rank collectors agree on the capture outcome before any rank replays
+  (`collect_trtllm_alltoall._agree_graph_capturable`); a one-sided capture
+  failure would otherwise hang the peers' first replay.
+- `allow_graph_fail=True` remains available for ad-hoc diagnosis only; the
+  result then carries `used_cuda_graph=False` and must not be persisted.
 
 ### Usage Example
 ```python
@@ -469,32 +482,16 @@ def my_kernel():
     # Your kernel code here
     moe.forward(hidden_states, logits)
 
-# Use benchmark_with_power with fallback support
 with benchmark_with_power(
     device=device,
     kernel_func=my_kernel,
     num_warmups=3,
     num_runs=6,
     repeat_n=1,
-    allow_graph_fail=True,  # Enable graceful fallback
 ) as results:
     latency = results["latency_ms"]
-    power_stats = results["power_stats"]  # Available in both paths
-
-    # Check which execution path was used
-    if not results["used_cuda_graph"]:
-        print("CUDA graph capture failed, used eager execution")
+    power_stats = results["power_stats"]
 ```
-
-### When to Use
-- **Complex operations**: MOE, dynamic memory patterns, or operations that may not be graph-compatible
-- **Large batch sizes**: When graph capture may fail due to memory constraints
-- **Development/debugging**: To ensure collection continues even if graph capture fails
-
-### Backward Compatibility
-- Default behavior unchanged: `allow_graph_fail=False` maintains existing behavior
-- Existing collectors work without modifications
-- Only opt-in when needed for specific use cases
 
 ## For TensorRT-LLM
 ### Optional( Read if collecting for mxfp4 kernels)

@@ -35,13 +35,16 @@ collector.sglang.collect_attn:
   - __model_cases__
 collector.sglang.collect_attn_encoder:
   - collector/cases/base_ops/attention_encoder.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.sglang.collect_computescale:
-  # get_compute_scale_case_specs() reads the "trtllm" section of
-  # compute_scale.yaml unconditionally and falls back to gemm.yaml-derived
-  # shapes (via get_gemm_case_specs) when that section is empty.
+  # get_compute_scale_case_specs() reads compute_scale.yaml and falls back to
+  # gemm.yaml-derived shapes (via get_gemm_case_specs) when it has no sweep.
   - collector/cases/base_ops/compute_scale.yaml
   - collector/cases/base_ops/gemm.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.sglang.collect_dsv41_module:
   # The native runner and workload helper execute the model-derived manifest;
@@ -126,24 +129,34 @@ collector.sglang.glm53flash_attention_runner:
   - __model_cases__
 collector.sglang.collect_gdn:
   - collector/cases/base_ops/gdn.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.sglang.collect_kda:
   - collector/cases/base_ops/kda.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.sglang.collect_gemm:
-  # SGLang 0.5.20 runs are delegated to collect_gemm_0520.py.
-  - collector/sglang/collect_gemm_0520.py
   - collector/cases/base_ops/gemm.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.sglang.collect_mhc_module:
   - collector/cases/base_ops/mhc.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.sglang.collect_mla:
   - collector/cases/base_ops/mla.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.sglang.collect_mla_bmm:
   - collector/cases/base_ops/mla_bmm_gen_pre.yaml
   - collector/cases/base_ops/mla_bmm_gen_post.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.sglang.collect_mla_module:
   - collector/sglang/dsa_prefill_graph.py
@@ -155,6 +168,8 @@ collector.sglang.collect_mla_module:
   - __model_cases__
 collector.sglang.collect_moe:
   - collector/cases/base_ops/moe.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.sglang.deepseekv4_sparse_modules:
   - __model_cases__
@@ -170,10 +185,14 @@ collector.trtllm.collect_attn:
   - __model_cases__
 collector.trtllm.collect_attn_encoder:
   - collector/cases/base_ops/attention_encoder.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.trtllm.collect_computescale:
   - collector/cases/base_ops/compute_scale.yaml
   - collector/cases/base_ops/gemm.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.trtllm.collect_dsv4_attn:
   # Cases derive from case_generator's DSV4 model constants (module batch/
@@ -185,22 +204,34 @@ collector.trtllm.collect_dsv4_attn:
   - __model_cases__
 collector.trtllm.collect_gdn:
   - collector/cases/base_ops/gdn.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.trtllm.collect_gemm:
   - collector/cases/base_ops/gemm.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.trtllm.collect_mamba2:
   - collector/cases/base_ops/mamba2.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.trtllm.collect_mla:
   - collector/cases/base_ops/mla.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.trtllm.collect_mla_bmm:
   - collector/cases/base_ops/mla_bmm_gen_pre.yaml
   - collector/cases/base_ops/mla_bmm_gen_post.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.trtllm.collect_mhc_module:
   - collector/cases/base_ops/mhc.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.trtllm.collect_mla_module:
   - collector/cases/base_ops/mla_module.yaml
@@ -217,6 +248,8 @@ collector.sglang.collect_msa_module:
   - __model_cases__
 collector.trtllm.collect_moe:
   - collector/cases/base_ops/moe.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 
 # --- vllm -------------------------------------------------------------
@@ -232,18 +265,26 @@ collector.vllm.collect_attn_xpu:
   - __model_cases__
 collector.vllm.collect_attn_encoder:
   - collector/cases/base_ops/attention_encoder.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.vllm.collect_computescale:
   - collector/vllm/utils.py
   - collector/cases/base_ops/compute_scale.yaml
   - collector/cases/base_ops/gemm.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.vllm.collect_mla_bmm:
   - collector/cases/base_ops/mla_bmm_gen_pre.yaml
   - collector/cases/base_ops/mla_bmm_gen_post.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.vllm.collect_kda:
   - collector/cases/base_ops/kda.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.vllm.collect_dsv4_attn:
   - collector/vllm/utils.py
@@ -261,10 +302,14 @@ collector.vllm.glm53flash_attention_runner:
   - __model_cases__
 collector.vllm.collect_gdn:
   - collector/cases/base_ops/gdn.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.vllm.collect_gemm:
   - collector/vllm/utils.py
   - collector/cases/base_ops/gemm.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.vllm.collect_gemm_xpu:
   - collector/cases/base_ops/gemm.yaml
@@ -273,21 +318,18 @@ collector.vllm.collect_gemm_xpu:
 collector.vllm.collect_mhc_module:
   - collector/vllm/utils.py
   - collector/cases/base_ops/mhc.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.vllm.collect_mla_module:
   - collector/vllm/utils.py
   - collector/cases/base_ops/mla_module.yaml
   - __model_cases__
-collector.vllm.collect_mla_module_027:
-  - collector/vllm/utils.py
-  - collector/vllm/collect_mla_module.py
-  # 0.27.0-route shim whose get/run functions are re-exported from
-  # collector/vllm/collect_mla_module.py — identical case reads.
-  - collector/cases/base_ops/mla_module.yaml
-  - __model_cases__
 collector.vllm.collect_moe:
   - collector/vllm/utils.py
   - collector/cases/base_ops/moe.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.vllm.collect_moe_xpu:
   - collector/cases/base_ops/moe.yaml

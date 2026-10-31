@@ -60,7 +60,7 @@ Input/output projection GEMMs remain covered by the GEMM collector.
 # 1968047). Existing framework construction/dispatch is unchanged. Invalid
 # model/quant shapes continue to raise and remain recorded failures; this is
 # API compatibility, not a claim that every Cartesian shape is supported.
-__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.1,!=0.26.0,!=0.27.0"
+__compat__ = "vllm==0.30.0"
 
 import gc
 import os
@@ -77,8 +77,8 @@ except ImportError:
     from vllm.model_executor.layers.fla.ops import (
         fused_recurrent_gated_delta_rule_packed_decode,
     )
-from collector.case_generator import get_common_gdn_test_cases
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import ChunkGatedDeltaRule
 from vllm.model_executor.layers.mamba.ops.causal_conv1d import causal_conv1d_fn, causal_conv1d_update
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadata
@@ -89,47 +89,7 @@ aic_debug = int(os.getenv("aic_gdn_debug", "0"))  # noqa: SIM112
 
 
 def get_gdn_test_cases():
-    """
-    Generate test cases for GDN kernel benchmarking.
-
-    Returns a list of test case configurations for both context (prefill)
-    and generation (decode) phases.
-    """
-    test_cases = []
-
-    for common_case in get_common_gdn_test_cases():
-        if common_case.phase == "context":
-            test_cases.append(
-                [
-                    common_case.phase,
-                    common_case.d_model,
-                    common_case.d_conv,
-                    common_case.num_k_heads,
-                    common_case.head_k_dim,
-                    common_case.num_v_heads,
-                    common_case.head_v_dim,
-                    common_case.batch_size_list,
-                    common_case.seq_len_list,
-                    common_case.model_name,
-                ]
-            )
-        else:
-            test_cases.append(
-                [
-                    common_case.phase,
-                    common_case.d_model,
-                    common_case.d_conv,
-                    common_case.num_k_heads,
-                    common_case.head_k_dim,
-                    common_case.num_v_heads,
-                    common_case.head_v_dim,
-                    common_case.batch_size_list,
-                    None,  # seq_len_list not used for generation
-                    common_case.model_name,
-                ]
-            )
-
-    return test_cases
+    return plan_cases("gdn", "vllm", get_sm_version())
 
 
 def run_gdn_context_benchmark(
@@ -369,6 +329,10 @@ def run_gdn_context_benchmark(
             # present and source-unchanged, so the claim is not dangling, but
             # the bug reproduction itself is unconfirmed at this version.
             # Re-verify on the next vLLM bump or the first 0.27.1 GPU run.
+            # RE-VERIFIED on hardware at 0.30.0, SM89 (L40, 2026-10-04, clean GPU, container per op):
+            # a 40-case --shuffle sample of the gdn op failed 21 tasks, 17 of them CUDA faults
+            # (9 illegal memory access + 8 SIGABRT) in this same chunked prefill at the large-token
+            # sub-points, 3 the grid-y limit below, 1 capacity OOM — the family is unchanged from 0.24.0.
             def run_gdn_scan(_q=q, _k=k, _v=v, _g=g, _beta=beta, _state=gdn_state):
                 chunk_gdn(
                     q=_q,

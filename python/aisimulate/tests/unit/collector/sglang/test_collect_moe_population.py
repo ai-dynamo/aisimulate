@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ast
-import itertools
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -86,33 +85,33 @@ def _populate_gptoss_cases(
     module_config=None,
     resolved_backend=None,
 ):
-    from collector.case_generator import get_moe_quantization_modes
+    """SGLang's queued MoE rows for these model layers through the shared op plan."""
+    from collector import op_plans
+    from collector.case_generator import MoeCommonTestCase
 
     allowed_modes = {allowed_mode} if isinstance(allowed_mode, str) else set(allowed_mode)
-    loaded = _load_functions(
-        "get_moe_test_cases",
-        namespace={
-            "itertools": itertools,
-            "get_sm_version": lambda: sm_version,
-            "get_common_moe_test_cases": lambda: cases,
-            "get_moe_quantization_modes": get_moe_quantization_modes,
-            "moe_model_allows_quantization": (lambda _backend, _model, mode: mode in allowed_modes),
-            "get_moe_quantization_module_config": lambda *_args, **_kwargs: module_config or {},
-            "get_sglang_moe_backend": lambda _case, mode, sm: (
-                resolved_backend
-                or (
-                    "marlin"
-                    if sm == 90 and mode == "int4_wo"
-                    else "flashinfer_trtllm"
-                    if mode == "nvfp4" and sm in {100, 103}
-                    else "flashinfer_mxfp4"
-                    if mode in {"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"}
-                    else "triton"
-                )
-            ),
-        },
-    )
-    return loaded["get_moe_test_cases"]()
+    layers = [MoeCommonTestCase(**vars(case)) for case in cases]
+    by_row = {
+        (layer.model_name, layer.hidden_size, layer.inter_size, layer.topk, layer.num_experts): layer
+        for layer in layers
+    }
+
+    def runner(_case, mode, sm):
+        if resolved_backend:
+            return resolved_backend
+        if sm == 90 and mode == "int4_wo":
+            return "marlin"
+        if mode == "nvfp4" and sm in {100, 103}:
+            return "flashinfer_trtllm"
+        return "flashinfer_mxfp4" if mode in {"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"} else "triton"
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(op_plans, "get_common_moe_test_cases", lambda: layers)
+        patch.setattr(op_plans, "moe_planned_modes", lambda _model, _declared: sorted(allowed_modes))
+        patch.setattr(op_plans, "get_moe_quantization_module_config", lambda *_args, **_kwargs: module_config or {})
+        patch.setattr(op_plans, "get_sglang_moe_backend", runner)
+        patch.setattr(op_plans, "moe_model_layer", lambda *row: by_row[row])
+        return op_plans.plan_cases("moe", "sglang", sm_version)
 
 
 def _glm5_case(model_name: str):
@@ -167,9 +166,12 @@ def test_kimi_int4_population_restores_all_hopper_ep_slices():
         module_config={"group_size": 32},
     )
 
-    assert len(populated) == 3078
-    assert sum(case[7] == 64 for case in populated) == 243
-    assert sum(case[7] == 128 for case in populated) == 162
+    # 114 (quant, shape, tp, ep, distribution) series x 27 token points = the 3078
+    # per-token rows the per-token layout used to schedule as separate cases.
+    assert len(populated) == 114
+    assert sum(len(case[1]) for case in populated) == 3078
+    assert sum(len(case[1]) for case in populated if case[7] == 64) == 243
+    assert sum(len(case[1]) for case in populated if case[7] == 128) == 162
     # int4_wo opened to SM100/103 (owner decision 2026-07-11): serving
     # auto-selects flashinfer_trtllm for Kimi INT4 there (server_args.py:3736),
     # replacing the old zero-population contract.
@@ -179,7 +181,7 @@ def test_kimi_int4_population_restores_all_hopper_ep_slices():
         allowed_mode="int4_wo",
         module_config={"group_size": 32},
     )
-    assert len(sm100) == 3078
+    assert len(sm100) == 114 and sum(len(case[1]) for case in sm100) == 3078
     from types import SimpleNamespace
 
     from collector.case_generator import get_sglang_moe_backend
@@ -291,7 +293,7 @@ def test_dsv4_fp4_population_keeps_runtime_limits_attempted():
         allowed_mode="w4a8_mxfp4_mxfp8",
     )
     assert len(attempted) == 1
-    assert attempted[0][1:8] == [16384, 7168, 3072, 6, 384, 16, 2]
+    assert attempted[0][1:8] == [[16384], 7168, 3072, 6, 384, 16, 2]
 
 
 def test_sm120_shared_memory_predictions_do_not_remove_moe_cases():
@@ -329,7 +331,7 @@ def test_moe_population_deduplicates_equal_persisted_keys_and_rejects_semantic_c
     assert len(_populate_gptoss_cases([first, duplicate])) == 1
 
     duplicate.sglang_moe_activation = "gelu"
-    with pytest.raises(ValueError, match="share one perf DB key but require different execution semantics"):
+    with pytest.raises(ValueError, match="time different layers under one consumer key"):
         _populate_gptoss_cases([first, duplicate])
 
 
@@ -391,11 +393,9 @@ def test_case_generator_preserves_representative_sglang_moe_runtime_contracts():
 
 
 def test_sm120_population_gates_w4a8_and_keeps_w4a16_marlin():
-    # w4a8_mxfp4_mxfp8 is SM100-family-only (max_sm_exclusive: 110): SGLang
-    # 0.5.14 has no SM120 mxfp8-activation MXFP4 path (mxfp4.py:344-360), and
-    # SM120 serving routes MXFP4 checkpoints to weight-only Marlin instead
-    # (server_args.py:3876-3887). The w4a16_mxfp4 slice therefore populates
-    # on SM120 while the w4a8 slice must not.
+    # SGLang's w4a8_mxfp4_mxfp8 runner has no verified SM120 pin
+    # (G-sglang-moe-runner-unpinned), so the plan leaves that region out on
+    # SM120 while the w4a16_mxfp4 slice runs on Marlin.
     populated = _populate_gptoss_cases(
         [_gptoss_case(tp=1, ep=1)],
         sm_version=120,
@@ -504,7 +504,9 @@ def test_quantized_moe_uses_framework_path_and_fails_closed(
 
     def framework_benchmark(**kwargs):
         framework_calls.append(kwargs)
-        return 1.25, {"power": 100.0}, kernel_source
+        for num_tokens in kwargs["num_tokens_list"]:
+            kwargs["on_result"](num_tokens, 1.25, {"power": 100.0}, kernel_source)
+        return kernel_source
 
     run = _load_functions(
         "run_moe_torch",
@@ -781,5 +783,157 @@ def test_framework_moe_source_comes_from_the_constructed_quant_method():
         "ModelOptNvFp4FusedMoEMethod",
     ):
         assert method_name in framework_bench
-    assert 'return results["latency_ms"] / len(logits), results["power_stats"], kernel_source' in framework_bench
     assert 'model_name == "deepseek-ai/DeepSeek-V4-Pro"' not in run_moe
+
+
+def test_moe_population_emits_one_case_per_token_sweep():
+    """2026-10-28: SGLang nvfp4 shards took 4.4-5.8 h against 1-1.4 h for vLLM on the same
+    shapes because every token point was its own case and rebuilt the framework layer.
+    Cases now carry the whole sweep (vLLM/TRT-LLM layout) and dedup on the series."""
+    case = _gptoss_case(tp=1, ep=1)
+    case.num_tokens_list = [1, 8, 64, 512]
+    duplicate = SimpleNamespace(**vars(case))
+    duplicate.model_name = "example/equivalent-gptoss"
+
+    populated = _populate_gptoss_cases([case, duplicate])
+
+    assert len(populated) == 1
+    assert populated[0][1] == [1, 8, 64, 512]
+    assert populated[0][8] == "openai/gpt-oss-120b"
+
+
+def test_run_moe_torch_times_every_token_point_on_one_framework_layer():
+    logged = []
+    framework_calls = []
+    fake_torch = SimpleNamespace(
+        bfloat16=object(),
+        device=lambda value: value,
+        set_default_device=lambda _device: None,
+        cuda=SimpleNamespace(
+            set_device=lambda _device: None,
+            empty_cache=lambda: None,
+            memory_allocated=lambda _device: 0,
+            get_device_properties=lambda _device: SimpleNamespace(total_memory=100),
+            get_device_name=lambda _device: "B200",
+        ),
+    )
+
+    def framework_benchmark(**kwargs):
+        framework_calls.append(kwargs["num_tokens_list"])
+        for num_tokens in kwargs["num_tokens_list"]:
+            kwargs["on_result"](num_tokens, float(num_tokens), {"power": 1.0}, "sglang_flashinfer_trtllm_moe")
+        return "sglang_flashinfer_trtllm_moe"
+
+    run = _load_functions(
+        "run_moe_torch",
+        namespace={
+            "torch": fake_torch,
+            "_benchmark_framework_quantized_moe": framework_benchmark,
+            "benchmark": lambda *_args, **_kwargs: pytest.fail("nvfp4 must use the framework layer"),
+            "get_moe_quantization_module_config": lambda *_args, **_kwargs: {},
+            "get_sm_version": lambda: 100,
+            "_fmoe_kernels_mod": SimpleNamespace(_B_DESC_CACHE=SimpleNamespace(clear=lambda: None)),
+            "gc": SimpleNamespace(collect=lambda: None),
+            "log_perf": lambda **kwargs: logged.append(kwargs) or True,
+            "EXIT_CODE_RESTART": 10,
+        },
+    )["run_moe_torch"]
+
+    assert (
+        run(
+            "nvfp4",
+            [1, 64, 4096],
+            7168,
+            2048,
+            8,
+            256,
+            1,
+            8,
+            "nvidia/GLM-5-NVFP4",
+            distributed="power_law",
+            power_law_alpha=1.2,
+            moe_backend="flashinfer_trtllm",
+            perf_filename="moe.csv",
+        )
+        is None
+    )
+    # One layer build for the whole sweep, one persisted row per token point.
+    assert framework_calls == [[1, 64, 4096]]
+    assert [row["item_list"][0]["num_tokens"] for row in logged] == [1, 64, 4096]
+    assert [row["item_list"][0]["latency"] for row in logged] == [1.0, 64.0, 4096.0]
+    assert {row["item_list"][0]["distribution"] for row in logged} == {"power_law_1.2"}
+    assert {row["kernel_source"] for row in logged} == {"sglang_flashinfer_trtllm_moe"}
+
+    # A bare int (fills, direct callers) still measures exactly that point.
+    logged.clear()
+    run(
+        "nvfp4",
+        768,
+        7168,
+        2048,
+        8,
+        256,
+        1,
+        8,
+        "nvidia/GLM-5-NVFP4",
+        moe_backend="flashinfer_trtllm",
+        perf_filename="moe.csv",
+    )
+    assert [row["item_list"][0]["num_tokens"] for row in logged] == [768]
+
+
+def test_raw_moe_case_persists_each_token_point_and_cleans_up_once():
+    logged = []
+    bench_calls = []
+    cleared = []
+    fake_torch = SimpleNamespace(
+        bfloat16=object(),
+        device=lambda value: value,
+        set_default_device=lambda _device: None,
+        cuda=SimpleNamespace(
+            set_device=lambda _device: None,
+            empty_cache=lambda: None,
+            memory_allocated=lambda _device: 0,
+            get_device_properties=lambda _device: SimpleNamespace(total_memory=100),
+            get_device_name=lambda _device: "H200",
+        ),
+    )
+
+    def fake_benchmark(num_tokens, *_args, **_kwargs):
+        bench_calls.append(num_tokens)
+        return 0.5 * num_tokens, {"power": 1.0}
+
+    run = _load_functions(
+        "run_moe_torch",
+        namespace={
+            "torch": fake_torch,
+            "benchmark": fake_benchmark,
+            "build_rank0_workloads": lambda **_kwargs: pytest.fail("EP=1 must not build rank-local workloads"),
+            "get_moe_quantization_module_config": lambda *_args, **_kwargs: {},
+            "_benchmark_framework_quantized_moe": lambda **_kwargs: pytest.fail("BF16 must use the raw benchmark"),
+            "_fmoe_kernels_mod": SimpleNamespace(_B_DESC_CACHE=SimpleNamespace(clear=lambda: cleared.append(True))),
+            "gc": SimpleNamespace(collect=lambda: None),
+            "get_sm_version": lambda: 90,
+            "log_perf": lambda **kwargs: logged.append(kwargs) or True,
+            "EXIT_CODE_RESTART": 10,
+        },
+    )["run_moe_torch"]
+
+    run(
+        "bfloat16",
+        [16, 32],
+        4096,
+        14336,
+        2,
+        8,
+        1,
+        1,
+        "mistralai/Mixtral-8x7B-v0.1",
+        distributed="balanced",
+        perf_filename="moe.csv",
+    )
+
+    assert bench_calls == [16, 32]
+    assert [row["item_list"][0]["num_tokens"] for row in logged] == [16, 32]
+    assert [row["kernel_source"] for row in logged] == ["sglang_fused_moe_triton"] * 2
+    assert cleared == [True]

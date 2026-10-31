@@ -24,8 +24,9 @@ description: >
   Checkpoints: zai-org/GLM-5.3-Flash (FP8 e4m3 128x128 block for dense MLP,
   shared + routed experts and MLA q_a/q_b/kv_a/o; BF16 elsewhere) and
   nvidia/GLM-5.3-Flash-NVFP4 (NVFP4 routed experts + dense MLP; everything
-  else, including the shared expert, BF16). Runtimes are model-pinned in
-  framework_manifest.yaml (stock vLLM 0.31.0, SGLang 0.5.20).
+  else, including the shared expert, BF16). KDA / mHC are audited on stock
+  vLLM 0.31.0 only: the SGLang 0.5.20 lane retired (#649), and 0.5.21 needs a
+  port of both paths before SGLang collects them again (the 0.5.20 tables stay).
   Generic ops land in the generic tables (gemm_perf, moe_perf, kda_perf,
   mhc_module_perf, comm); only the GLM attention layer gets a GLM-specific
   module table (DeepSeek-V4.1 precedent).
@@ -92,13 +93,7 @@ model_case_values:
       # recorded in moe_perf.triton_config.jsonl (sglang/collect_moe.py).
       sglang_moe_backends:
         fp8_block: {90: triton, 100: flashinfer_trtllm, 103: flashinfer_trtllm}
-      framework_quantization:
-        sglang:
-          allowed_modes: [fp8_block]
-        vllm:
-          allowed_modes: [fp8_block]
-        trtllm:
-          allowed_modes: []
+      quantization_modes: [fp8_block]
     - model_path: nvidia/GLM-5.3-Flash-NVFP4
       hidden_size: 4096
       inter_size: 2048
@@ -118,13 +113,7 @@ model_case_values:
       # resolved args record moe_runner_backend 'flashinfer_trtllm').
       sglang_moe_backends:
         nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
-      framework_quantization:
-        sglang:
-          allowed_modes: [nvfp4]
-        vllm:
-          allowed_modes: [nvfp4]
-        trtllm:
-          allowed_modes: []
+      quantization_modes: [nvfp4]
 
   # KDA. GLM-5.3-Flash KDA structural tuple per attention-TP
   # shard (text_config.linear_attn_config: 64 heads x head_dim 128,
@@ -204,8 +193,6 @@ framework_specific_op_cases:
   sglang:
     moe:
       cases: all
-    # SGLang 0.5.20 is the audited GLM KDA / mHC runtime.
-    kda:
-      cases: all
-    mhc_module:
-      cases: all
+    # No kda / mhc_module: SGLang 0.5.21 is not an audited GLM KDA / mHC runtime
+    # (collect_kda.py _KDA_ARCHITECTURE_COMPAT, collect_mhc_module.py
+    # _ARCHITECTURE_COMPAT); scheduling them would only log certain failures.

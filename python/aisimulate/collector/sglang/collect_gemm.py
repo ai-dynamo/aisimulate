@@ -5,8 +5,9 @@
 
 Benchmarks SGLang/sgl-kernel matrix multiplication paths for shared GEMM case
 specs, including BF16, FP8, FP8 block/DeepGEMM, and FP4-capable kernels where
-available. The module owns SGLang-specific kernel selection, quantization
-helpers, SM filters, and perf logging.
+available. The case plan is shared with the other backends
+(``op_plans.OP_PLANS["gemm"]``); this module owns SGLang-specific kernel
+selection, quantization helpers, and perf logging.
 """
 
 # Verified 2026-08-17 against sglang v0.5.14 and v0.5.17 tags (source clones,
@@ -37,44 +38,28 @@ helpers, SM filters, and perf logging.
 # per layer_permissions.md); the caveat is for data consumers: fp8_block
 # gemm rows collected at 0.5.14 and at 0.5.17 are NOT cross-version
 # comparable, because they time different kernels for the identical
-# (m, n, k) inputs. 0.5.15/0.5.16 stay excluded: never verified, and
-# version_resolver's __compat__ grammar (AND-of-comparators only, no OR) has
-# no way to express a true two-point set either -- this bounded range with
-# the two untested base releases carved out via != is the closest
-# expressible approximation, NOT an exact {0.5.14, 0.5.17} gate (CORRECTED
-# 2026-08-18, code review): `_check_compat`'s `!=` only excludes the literal
-# point version, so 0.5.15.post1/0.5.15rc1/0.5.16.post2-style variants of
-# the excluded releases still satisfy this specifier (see
-# tests/unit/collector/test_version_resolver.py's TestExactVersionSet for
-# the honest, probed semantics). This is an accepted, narrow gap: the
-# framework_manifest digest-pinned gate is the true version enforcement
-# upstream and only ever supplies exactly 0.5.14 or 0.5.17 in a sanctioned
-# run, so the leak is unreachable there.
-# SGLang 0.5.20 (GLM-5.3-Flash model pin; audited 2026-09-30 against tag
-# commit 94602c9c2b7c): serving changed WHICH kernels this module's raw
-# calls map to (bf16 CuTe DSL/split-K dispatch, JIT per-token fp8 quant,
-# Fp8ScaledMMOp, fp8_block Triton fallback for N%64/K%128, NVFP4 padding and
-# cute-dsl activation quant), so 0.5.20 runs delegate get_gemm_test_cases/
-# run_gemm to collect_gemm_0520.py (serving-built linear layers; full audit
-# there). That is a whole-implementation fork selected by the installed
-# version at the bottom of this module, not a per-call shim; it lives here
-# instead of a registry VersionRoute because tools/perf_database/
-# changed_ops.py fails closed on versioned registry entries. 0.5.18/0.5.19
-# are not audited and stay excluded (same != caveat as above).
-__compat__ = "sglang>=0.5.14,<=0.5.20,!=0.5.15,!=0.5.16,!=0.5.18,!=0.5.19"
+# (m, n, k) inputs.
+# 0.5.21 since 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
+# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+# The SGLang 0.5.20 fork (collect_gemm_0520.py, serving-built linear layers)
+# retired with the 0.5.20 lane 2026-10-30; it is git history (main at c540ff90a (before #649)).
+# Serving gaps: notes D-sglang-gemm-bf16-cutedsl, D-sglang-gemm-nvfp4-act-quant and
+# D-sglang-gemm-fp8-block-triton-fallback in collector/notes/sglang.yaml.
+__compat__ = "sglang==0.5.21"
 
 import os
-import random
 
 # SGLang reads this flag while importing ``deep_gemm_wrapper.compile_utils``.
 # Set it before any SGLang imports so a task compiles only its requested M.
 os.environ.setdefault("SGLANG_JIT_DEEPGEMM_PRECOMPILE", "0")
 
+# setuptools/pkg_resources is absent from recent framework images.
 from importlib.metadata import version as _dist_version
 
 import torch
 import torch.nn.functional as F
-from collector.case_generator import get_gemm_case_specs
+from collector.op_plans import plan_cases
 from sgl_kernel import (
     fp8_scaled_mm,
     sgl_per_token_quant_fp8,
@@ -139,71 +124,8 @@ from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from sglang.srt.layers.quantization.fp8_utils import requant_weight_ue8m0
 
 
-def _sglang_release() -> tuple[int, ...]:
-    """Installed SGLang release as an int tuple (local/pre-release tags dropped).
-
-    Collection always runs with SGLang installed (collect.py resolves the
-    pinned runtime from the installed version first); without the
-    distribution metadata (offline import tests) the legacy path is kept.
-    """
-    from importlib.metadata import PackageNotFoundError
-
-    from packaging.version import Version
-
-    try:
-        return Version(_dist_version("sglang")).release
-    except PackageNotFoundError:
-        return (0,)
-
-
 def get_gemm_test_cases():
-    test_cases = []
-
-    sm_version = get_sm_version()
-    if sm_version < 89:
-        gemm_list = ["bfloat16"]
-    elif sm_version < 90:
-        # SM89 (L40S) and earlier don't have TMA - skip fp8_block
-        gemm_list = ["bfloat16", "fp8"]
-    elif sm_version < 100:
-        # Hopper supports fp8_block
-        # fp8_block (DeepGEMM) requires SM90+ for TMA support
-        gemm_list = ["fp8_block", "bfloat16", "fp8"]
-    elif sm_version < 110:
-        # SM100/SM103 (B100/B200 datacenter Blackwell): fp8_block + nvfp4
-        gemm_list = ["fp8_block", "bfloat16", "fp8", "nvfp4"]
-    else:
-        # SM120+ (RTX PRO 6000 Blackwell workstation): no DeepGEMM recipe for fp8_block
-        gemm_list = ["bfloat16", "fp8", "nvfp4"]
-
-    requested_gemm_types = os.environ.get("AIC_COLLECT_GEMM_TYPES")
-    if requested_gemm_types:
-        requested = {item.strip() for item in requested_gemm_types.split(",") if item.strip()}
-        gemm_list = [gemm_type for gemm_type in gemm_list if gemm_type in requested]
-
-    for gemm_common_testcase in get_gemm_case_specs():
-        x = gemm_common_testcase.x
-        n = gemm_common_testcase.n
-        k = gemm_common_testcase.k
-        for gemm_type in gemm_list:
-            # FIXME(kernel-limit, 2026-07-05): inherited pre-#1302 claim that
-            # DeepGEMM fp8_block (128x128 block scales) and the FlashInfer
-            # NVFP4 layout cannot represent n<128 or k<128. Removing it adds
-            # 6,216 (n,k,x) specs per affected mode on BOTH platforms (SM90
-            # fp8_block included), so it is a shared coverage-contract change
-            # that must not ride along a Blackwell fix; re-verify against
-            # framework source on the next version bump and either convert to
-            # a probe-and-raise or delete.
-            if (gemm_type == "nvfp4" or gemm_type == "fp8_block") and (n < 128 or k < 128):
-                continue
-
-            test_cases.append([gemm_type, x, n, k])
-
-    # Try to optimize number of JIT precompile cache hits by shuffling test cases.
-    random.seed(42)
-    random.shuffle(test_cases)
-
-    return test_cases
+    return plan_cases("gemm", "sglang", get_sm_version())
 
 
 def cdiv(a: int, b: int) -> int:
@@ -491,12 +413,3 @@ def run_gemm(gemm_type, batch_size, N, K, *, perf_filename, device="cuda:0"):  #
     finally:
         op_list.clear()
         torch.cuda.empty_cache()
-
-
-# Whole-implementation version fork (see the __compat__ comment): SGLang
-# 0.5.20 collects through serving-built linear layers.
-if _sglang_release() >= (0, 5, 20):
-    from collector.sglang import collect_gemm_0520 as _fork_0520
-
-    get_gemm_test_cases = _fork_0520.get_gemm_test_cases
-    run_gemm = _fork_0520.run_gemm

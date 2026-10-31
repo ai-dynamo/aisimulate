@@ -47,25 +47,15 @@ model_case_values:
       sglang_moe_has_bias: true
       sglang_moe_gemm1_alpha: 1.702
       sglang_moe_gemm1_clamp_limit: 7.0
+      quantization_modes: [w4a16_mxfp4, w4a8_mxfp4_mxfp8]
       framework_quantization:
-        sglang:
-          allowed_modes:
-            - w4a16_mxfp4
-            - w4a8_mxfp4_mxfp8
-        trtllm:
-          allowed_modes:
-            - w4a16_mxfp4
-            - w4a8_mxfp4_mxfp8
         vllm:
-          allowed_modes:
-            - w4a16_mxfp4
           module_config:
             w4a16_mxfp4:
               has_bias: true
               activation: swigluoai
         vllm_xpu:
-          allowed_modes:
-            - w4a16_mxfp4
+          allowed_modes: [w4a16_mxfp4]
       framework_cases:
         vllm_xpu:
           sweep: full
@@ -79,25 +69,15 @@ model_case_values:
       sglang_moe_has_bias: true
       sglang_moe_gemm1_alpha: 1.702
       sglang_moe_gemm1_clamp_limit: 7.0
+      quantization_modes: [w4a16_mxfp4, w4a8_mxfp4_mxfp8]
       framework_quantization:
-        sglang:
-          allowed_modes:
-            - w4a16_mxfp4
-            - w4a8_mxfp4_mxfp8
-        trtllm:
-          allowed_modes:
-            - w4a16_mxfp4
-            - w4a8_mxfp4_mxfp8
         vllm:
-          allowed_modes:
-            - w4a16_mxfp4
           module_config:
             w4a16_mxfp4:
               has_bias: true
               activation: swigluoai
         vllm_xpu:
-          allowed_modes:
-            - w4a16_mxfp4
+          allowed_modes: [w4a16_mxfp4]
       framework_cases:
         vllm_xpu:
           sweep: full

@@ -82,21 +82,6 @@ def test_glm5_next_decode_uses_bounded_gate_recurrence_not_packed_decode():
     assert "fused_recurrent_kda_packed_decode" not in names
 
 
-@pytest.mark.parametrize(
-    ("version", "accepted"),
-    [("0.5.16", True), ("0.5.17", False), ("0.5.19", False), ("0.5.20", True), ("0.5.21", False)],
-)
-def test_kda_compat_admits_kimi_branch_and_glm_runtime(version, accepted):
-    from collector.version_resolver import _check_compat
-
-    declaration = next(
-        node.value.value
-        for node in ast.parse(SOURCE_PATH.read_text(encoding="utf-8")).body
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "__compat__" for t in node.targets)
-    )
-    assert _check_compat(declaration, version) is accepted
-
-
 def test_glm5_next_chunk_kda_int32_offset_guard_precedes_the_scan():
     # chunk_kda's Triton kernels use int32 (bos * H + i_h) * K offsets
     # (fla/kda.py:265-268 @v0.5.20); an overflowing launch is an illegal
@@ -134,23 +119,14 @@ def _gate_namespace():
     return namespace
 
 
-def test_kda_audited_release_sets_do_not_overlap():
-    from collector.version_resolver import _check_compat
-
-    compat = _gate_namespace()["_KDA_ARCHITECTURE_COMPAT"]
-    audited = {arch: spec.split("==", 1)[1] for arch, spec in compat.items()}
-    assert set(audited) == {"KimiK3ForConditionalGeneration", "Glm5NextForConditionalGeneration"}
-    for arch, version in audited.items():
-        for other, spec in compat.items():
-            assert _check_compat(spec, version) is (other == arch), (arch, other)
-
-
 @pytest.mark.parametrize(
     ("model_name", "version", "audited"),
     [
-        ("moonshotai/Kimi-K3", "0.5.16", True),
+        ("moonshotai/Kimi-K3", "0.5.16", False),
+        ("moonshotai/Kimi-K3", "0.5.21", True),
         ("moonshotai/Kimi-K3", "0.5.20", False),
-        ("zai-org/GLM-5.3-Flash", "0.5.20", True),
+        ("zai-org/GLM-5.3-Flash", "0.5.21", False),
+        ("zai-org/GLM-5.3-Flash", "0.5.20", False),  # 0.5.20 lane retired 2026-10-30
         ("zai-org/GLM-5.3-Flash", "0.5.16", False),
     ],
 )

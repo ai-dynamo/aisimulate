@@ -12,10 +12,17 @@ How to add or change collection coverage. The declaration surface is exactly
 two kinds of YAML plus one capability table — if you feel the need for a new
 kind of rule, re-read `layer_permissions.md` first.
 
+Read `overview.md` first. Two of its principles govern every change below:
+generate the same cases for all three frameworks (a framework that cannot run
+part of a grid fails those cases and the failures are recorded), and remove
+only whole regions that cannot run, such as an SM without a dtype, when the
+plan is expanded.
+
 ## The equation
 
 ```text
 plan cases = dedup( expand(base sweep grid) ∪ expand(model shapes) )
+runnable   = plan cases − whole regions (capabilities.yaml floors and backend_gaps)
 ```
 
 - **Base grids** (`cases/base_ops/<op>.yaml`) give interpolation its uniform
@@ -33,11 +40,13 @@ plan cases = dedup( expand(base sweep grid) ∪ expand(model shapes) )
 |---|---|
 | New architecture | one new `cases/models/<architecture>_cases.yaml` |
 | New model, same architecture | add path to `model_paths` in the existing file |
-| New checkpoint quant artifact | new `model_case_values` row / `framework_quantization` allowed_modes — never merge quant-distinct artifacts into one row |
+| New checkpoint quant artifact | new `model_case_values` row with its `quantization_modes` (MoE) — never merge quant-distinct artifacts into one row |
 | Change a shared sweep | edit the op's `cases/base_ops/<op>.yaml` |
 | New op collector | only when no existing op can produce the data points |
 | Op needs newer SM than some GPUs | axis `min_sm` (quant modes) or `cases/capabilities.yaml` |
-| Quant mode exists on an SM interval, not a floor (framework routes the platform elsewhere) | quant-mode `max_sm_exclusive` with a mandatory serving-dispatch citation (owner decision 2026-07-13: negative gates are sanctioned only on the quant-mode axis, only with a file:line@version citation, and every citation is re-verified on version bumps — the default-open behavior lets NEW SMs be probed and fail loudly instead of being silently whitelisted out) |
+| One backend's collector cannot run a whole (op, dtype) on some SMs | `capabilities.yaml` `backend_gaps` entry naming a guard note `G-<backend>-<slug>` in `collector/notes/<backend>.yaml` |
+| New GEMM dtype | add it to `gemm_types` in `cases/base_ops/gemm.yaml`, plus a floor if the hardware needs one |
+| Quant mode exists on an SM interval, not a floor (framework routes the platform elsewhere) | quant-mode `max_sm_exclusive` with a mandatory serving-dispatch citation (owner decision 2026-07-13: negative gates are sanctioned only on the quant-mode axis, only with a file:line@version citation, and every citation is re-verified on version bumps — the default-open behavior lets NEW SMs be probed and fail loudly instead of being silently whitelisted out) For an op on an op plan, the same fact is a `backend_gaps` entry whose guard note carries the citation, so R8 re-checks it at every pin bump |
 
 ## Model file structure (unchanged from v2 core)
 
@@ -63,7 +72,7 @@ valid combinations**. Route by who owns the fact:
 | the model (head count, valid TP shards, windows) | a field on its `model_case_values.<op>` row | `attention` profiles: `tensor_parallel_sizes` — the generator expands only valid shards of that tuple |
 | the op's universal math (identities, budgets) | generator constraint / base-op budget field | `tp*ep == num_gpu`; `batch*seq <= max_context_tokens` |
 | the platform (dtype floor, memory) | `capabilities.yaml` / the collector memory filter | see `layer_permissions.md` |
-| the framework (kernel limits) | probe-and-raise / `FIXME(kernel-limit)` | see `layer_permissions.md` |
+| the framework (kernel limits) | nothing: the cases fail and are recorded. A whole (op, dtype, SM) region goes in `backend_gaps`; a case that would mismeasure, hang or waste time gets a guard | see `layer_permissions.md` |
 
 If the op's generator does not yet support the model-correlated field you
 need (e.g. `mla_bmm` sweeps a global head grid with no model axis), the fix
@@ -91,6 +100,59 @@ poison the database with mislabeled rows.
    drops (capability floors, memory filter). Zero cases with no logged
    reason is a population bug to fix — not a clean completion.
 
+## Op plans
+
+An op plan expands one case list for every CUDA backend and leaves out only
+whole regions. `collector/op_plans.py` holds one `OpPlan` entry per migrated
+op (`OP_PLANS` lists them): its case type (a named tuple whose string form is still the list form,
+`['fp8', 64, 4096, 7168]`, so case IDs, checkpoints and `--case-filter`
+strings do not change), its expand function (every case, in run order, from
+the YAML above), its dtype field and the fields that share one module build.
+`plan(op, backend, sm)` removes the regions a floor or a backend gap rules
+out; each backend's getter is one line,
+`return plan_cases("<op>", "<backend>", get_sm_version())`.
+
+Where the plan picks the kernel or runner a backend measures a case on (the
+one serving selects), the op declares it in `dispatch`, and `--plan-only`
+counts the cases per dispatch. A backend whose run function takes more
+arguments than the shared case may declare `rows`: the run arguments for one
+case and its dispatch. Rows say how a case runs, never whether; a case with
+no row is an error. A field that enters the persisted key or changes the
+kernel belongs in the case or the dispatch, not in rows. A row may be an
+`{id, params}` mapping (mHC): a run records it under its `id`, and
+`--plan-only` hashes that `id`.
+
+Planning imports no framework, so `--plan-only` runs on any CPU;
+`test_op_plans.py` checks that, and that `region_fields` stay a few
+categories (never a shape axis). Rows may build framework objects (MLA's
+torch or TensorRT-LLM dtypes); they are built only when the getter runs, so
+on a CPU `--plan-only` still counts those cases but reports `plan_hash: null`
+with the missing module.
+
+`tests/unit/collector/test_op_plans.py` runs over every entry, so moving an
+op onto a plan needs no new test: it checks the one-line getters, that the
+backends differ only by backend gaps, that only whole regions are left out,
+and the case string form.
+
+To move an op: write its case type and expand function from the existing
+shared YAML, add the `OP_PLANS` entry, make each getter the one-line call and
+delete what the getters filtered. Decide each deleted filter by
+`overview.md`: it either goes (the cases run and failures are recorded),
+becomes a `backend_gaps` entry with a guard note (a whole region one backend
+cannot run), or becomes a guard that raises in the worker (mismeasure, hang,
+or significant wasted time).
+
+Inspect a plan without a GPU:
+
+```bash
+python3 collect.py --backend sglang --model-cases-full --sm 120 --ops gemm \
+  --plan-only --plan-table /tmp/plan
+```
+
+The `plans` block gives cases per dtype, the regions left out with the reason
+or note id, and `plan_hash`, the case_plan_hash of a run that attempts every
+case. `--plan-table` writes one CSV row per case for diffing.
+
 ## Running subsets (healing)
 
 Subset selection is a RUNTIME concern, never persisted to YAML:
@@ -98,6 +160,7 @@ Subset selection is a RUNTIME concern, never persisted to YAML:
 ```bash
 python3 collect.py --backend sglang --model-path <model> --gpu b200_sxm   # one model
 python3 collect.py --backend trtllm --ops moe --case-filter "tp=4"        # substring filter
+python3 collect.py --backend sglang --ops gemm --case-filter "['fp8_block', "  # one GEMM dtype
 python3 collect.py --backend trtllm --resume                              # finish an interrupted run
 ```
 
@@ -108,4 +171,9 @@ python3 collect.py --backend trtllm --resume                              # fini
 2. No per-model narrowing of another op's grid "to save time" — extra points
    are cheap; missing interpolation support is not. Tune the base grid instead.
 3. No new YAML keys that condition on batch/seq/token/feature values.
-4. Do not edit `capabilities.yaml` for a framework gap — hardware facts only.
+4. Do not put a framework gap in `dtype_min_sm` or `op_min_sm`: those hold
+   hardware facts only. A backend that cannot run a whole (op, dtype) region
+   goes in `backend_gaps` with a guard note; anything finer fails and is
+   recorded.
+5. No per-framework narrowing of a shared grid. If one framework cannot run
+   part of it, those cases fail and are recorded.

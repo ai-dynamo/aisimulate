@@ -33,9 +33,9 @@ COLLECTOR_ROOT = Path(__file__).resolve().parent
 BASE_OP_CASES_DIR = COLLECTOR_ROOT / "cases" / "base_ops"
 MODEL_CASES_DIR = COLLECTOR_ROOT / "cases" / "models"
 
-# Backend names a model_case_values row may target via `frameworks:`. A typo
-# here would otherwise silently exclude the row from its intended backend.
-_KNOWN_CASE_FRAMEWORKS = frozenset({"sglang", "trtllm", "vllm", "wideep"})
+# The CUDA backends. Ops on an op plan (collector/op_plans.py) read the YAML
+# they share; vllm_xpu keeps its own sections.
+_CUDA_BACKENDS = frozenset({"sglang", "trtllm", "vllm"})
 
 
 def _load_yaml_mapping(path: Path) -> dict:
@@ -89,6 +89,22 @@ def get_base_framework_op_case_specs(backend: str, op_name: str) -> list[dict[st
     if not isinstance(cases, list):
         return []
     return [case for case in cases if isinstance(case, dict)]
+
+
+def get_shared_base_op_case_specs(op_name: str) -> list[dict[str, object]]:
+    """Return the base specs every CUDA backend plans for an op on an op plan.
+
+    A CUDA backend's framework_specific_op_cases list for the op would make
+    the backends plan different cases, so it raises; ``cases: all`` (an
+    activation without cases) is allowed.
+    """
+    for backend in sorted(_CUDA_BACKENDS):
+        if get_base_framework_op_case_specs(backend, op_name):
+            raise ValueError(
+                f"{op_name} is planned once for every backend; move framework_specific_op_cases.{backend}."
+                f"{op_name} cases into all_frameworks_op_cases"
+            )
+    return get_base_op_case_specs(op_name)
 
 
 def get_merged_base_op_case_specs(backend: str, op_name: str) -> list[dict[str, object]]:
@@ -715,6 +731,12 @@ class MLAModuleModelSpec:
     architecture: str
     native_num_heads: int
     wideep_mla: bool
+    # Declared real tensor-parallel shards of this model (case_authoring's
+    # model-correlated narrowing). When set, the MSA collectors derive their
+    # per-rank head axis as native_num_heads // tp instead of sweeping the
+    # shared inner_sweep_head_counts grid (owner decision 2026-09-29: MSA is
+    # one fixed geometry, MiniMax-M3 64q/4kv/4idx; TP 16 is the ceiling).
+    tensor_parallel_sizes: tuple[int, ...] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -745,6 +767,19 @@ class MLAModuleSweepSpec:
     # memory contract (their guard tests pin it). None -> fall back to
     # generation_max_tokens.
     generation_msa_max_tokens: int | None = None
+    # Optional MSA context budget for the TRT-LLM Triton reference
+    # implementation (cases/base_ops/mla_module.yaml mla_module_trtllm.context
+    # .msa_triton_max_tokens): the collector applies it only where it resolves
+    # implementation="triton" (off SM100/103); fmha_sm100 systems keep
+    # context_max_tokens. None -> no extra cap.
+    context_msa_triton_max_tokens: int | None = None
+    # Optional DSA-specific context budget: DSA context follows serving's
+    # chunked-prefill shape (new-token budget = chunk size, long context via
+    # prefix). None on all three -> the DSA branch falls back to the shared
+    # context axes (context_max_tokens / context_prefix_lengths).
+    context_dsa_chunk_prefill_size: int | None = None
+    context_dsa_max_full_sequence_length: int | None = None
+    context_dsa_prefix_lengths: list[int] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -790,13 +825,28 @@ def get_mla_module_model_specs(
             continue
         if wideep_mla is not None and bool(value.get("wideep_mla", False)) != wideep_mla:
             continue
+        native_num_heads = int(value["native_num_heads"])
+        tp_sizes = None
+        if value.get("tensor_parallel_sizes") is not None:
+            tp_list = _as_int_list(
+                value.get("tensor_parallel_sizes"),
+                field_name="model_case_values.mla_module.tensor_parallel_sizes",
+            )
+            for tp in tp_list:
+                if tp <= 0 or native_num_heads % tp != 0:
+                    raise ValueError(
+                        "model_case_values.mla_module.tensor_parallel_sizes must be positive divisors of "
+                        f"native_num_heads: model={value['model_path']}, native_num_heads={native_num_heads}, tp={tp}"
+                    )
+            tp_sizes = tuple(tp_list)
         specs.append(
             MLAModuleModelSpec(
                 model_path=str(value["model_path"]),
                 attention_type=str(value["attention_type"]),
                 architecture=str(value["architecture"]),
-                native_num_heads=int(value["native_num_heads"]),
+                native_num_heads=native_num_heads,
                 wideep_mla=bool(value.get("wideep_mla", False)),
+                tensor_parallel_sizes=tp_sizes,
             )
         )
 
@@ -845,6 +895,28 @@ def get_mla_module_model_specs(
             )
 
     return specs
+
+
+def get_msa_head_counts(backend: str | None = None) -> list[int]:
+    """Per-rank head axis for the MSA module collectors, descending.
+
+    Derived from the declared MSA model rows: ``native_num_heads // tp`` for
+    each ``tensor_parallel_sizes`` entry (falling back to the sweep's
+    ``module_tp_sizes`` when a row declares none). MSA serves one fixed
+    geometry, so unlike GQA attention there is no shared head grid to sweep;
+    head counts no real shard produces (48/96 -> 3/6 index heads) are never
+    generated.
+    """
+    sweep = get_mla_module_sweep_spec(backend)
+    heads: set[int] = set()
+    for spec in get_mla_module_model_specs(attention_type="msa", backend=backend):
+        tp_sizes = spec.tensor_parallel_sizes or tuple(sweep.module_tp_sizes)
+        for tp in tp_sizes:
+            if spec.native_num_heads % tp == 0:
+                heads.add(spec.native_num_heads // tp)
+    if not heads:
+        raise ValueError("mla_module: no MSA model row yields a per-rank head count (check tensor_parallel_sizes)")
+    return sorted(heads, reverse=True)
 
 
 def _required_mapping(value: object, *, field_name: str) -> dict[str, object]:
@@ -1013,6 +1085,7 @@ def get_mla_module_sweep_spec(backend: str | None = None) -> MLAModuleSweepSpec:
         context_max_tokens=int(context["max_tokens"]),
         context_large_sequence_min=_optional_int(context.get("large_sequence_min")),
         context_large_sequence_max_batch_size=_optional_int(context.get("large_sequence_max_batch_size")),
+        context_msa_triton_max_tokens=_optional_int(context.get("msa_triton_max_tokens")),
         generation_max_tokens=int(generation["max_tokens"]),
         generation_msa_max_tokens=_optional_int(generation.get("msa_max_tokens")),
         generation_large_sequence_min=_optional_int(generation.get("large_sequence_min")),
@@ -1022,6 +1095,16 @@ def get_mla_module_sweep_spec(backend: str | None = None) -> MLAModuleSweepSpec:
             context.get("prefix_lengths"),
             field_name="mla_module.context.prefix_lengths",
             default=[0],
+        ),
+        context_dsa_chunk_prefill_size=_optional_int(context.get("dsa_chunk_prefill_size")),
+        context_dsa_max_full_sequence_length=_optional_int(context.get("dsa_max_full_sequence_length")),
+        context_dsa_prefix_lengths=(
+            _optional_int_list(
+                context.get("dsa_prefix_lengths"),
+                field_name="mla_module.context.dsa_prefix_lengths",
+                default=[],
+            )
+            or None
         ),
     )
 
@@ -1096,6 +1179,8 @@ class MoeCommonTestCase:
     token_expert_distribution: str
     power_law_alpha: Optional[float]
     architecture: str = ""  # config-derived (cases-YAML architecture); for model-family checks
+    # The checkpoint's quant modes (model row quantization_modes); None plans every mode.
+    quantization_modes: Optional[tuple[str, ...]] = None
     sglang_moe_backends: dict[str, object] = dataclasses.field(default_factory=dict)
     sglang_moe_activation: str = "silu"
     sglang_moe_is_gated: bool = True
@@ -1148,21 +1233,30 @@ def _moe_backend_values(backend: str) -> dict[str, object]:
     return get_base_common_case_values(f"moe_{backend}")
 
 
-def get_moe_quantization_specs(backend: str) -> list[MoeQuantizationSpec]:
-    """Return YAML-backed MoE quantization mode metadata for one backend."""
+def get_moe_quantization_specs(backend: str | None = None) -> list[MoeQuantizationSpec]:
+    """Return the YAML-backed MoE quant-mode axis.
 
-    values = _moe_backend_values(backend)
+    Without a backend (or for a CUDA backend) this is the axis every CUDA
+    backend shares, ``common_case_values.moe.quantization_modes``; vllm_xpu
+    has its own.
+    """
+
+    if backend is None or backend in _CUDA_BACKENDS:
+        backend, values = None, _required_base_common_case_values("moe")
+    else:
+        values = _moe_backend_values(backend)
+    section = "moe" if backend is None else f"moe_{backend}"
     raw_modes = values.get("quantization_modes", [])
     if not isinstance(raw_modes, list):
-        raise TypeError(f"common_case_values.moe_{backend}.quantization_modes must be a list")
+        raise TypeError(f"common_case_values.{section}.quantization_modes must be a list")
 
     specs = []
     for raw_mode in raw_modes:
         if not isinstance(raw_mode, dict):
-            raise TypeError(f"common_case_values.moe_{backend}.quantization_modes entries must be mappings")
+            raise TypeError(f"common_case_values.{section}.quantization_modes entries must be mappings")
         module_config = raw_mode.get("module_config", {})
         if not isinstance(module_config, dict):
-            raise TypeError(f"common_case_values.moe_{backend}.quantization_modes module_config must be a mapping")
+            raise TypeError(f"common_case_values.{section}.quantization_modes module_config must be a mapping")
         specs.append(
             MoeQuantizationSpec(
                 name=str(raw_mode["name"]),
@@ -1182,13 +1276,41 @@ def get_moe_quantization_specs(backend: str) -> list[MoeQuantizationSpec]:
                 allowed_model_paths=tuple(
                     _as_str_list(
                         raw_mode.get("allowed_model_paths", []),
-                        field_name=f"moe_{backend}.quantization_modes.allowed_model_paths",
+                        field_name=f"{section}.quantization_modes.allowed_model_paths",
                     )
                 ),
                 module_config=dict(module_config),
             )
         )
     return specs
+
+
+def moe_planned_modes(model_name: str, declared: Optional[tuple[str, ...]]) -> list[str]:
+    """Return the quant modes a MoE model row plans on every CUDA backend.
+
+    ``declared`` is the row's ``quantization_modes`` (its checkpoint's
+    quantization), or None for a row that declares none and so plans every
+    mode of the shared axis. A checkpoint-specific mode (one with
+    ``allowed_model_paths``) stays with the models that ship it.
+    """
+    specs = get_moe_quantization_specs()
+    if declared is not None:
+        unknown = sorted(set(declared) - {spec.name for spec in specs})
+        if unknown:
+            raise ValueError(f"MoE row {model_name!r} declares quantization_modes {unknown} not in the shared axis")
+    modes = []
+    for spec in specs:
+        if declared is not None and spec.name not in declared:
+            continue
+        if spec.allowed_model_paths and model_name not in spec.allowed_model_paths:
+            if declared is not None:
+                raise ValueError(
+                    f"MoE row {model_name!r} declares {spec.name}, but moe.quantization_modes "
+                    f"keeps {spec.name} to {list(spec.allowed_model_paths)}"
+                )
+            continue
+        modes.append(spec.name)
+    return modes
 
 
 def get_moe_quantization_modes(
@@ -1198,8 +1320,13 @@ def get_moe_quantization_modes(
     runtime_version: str = "",
     runtime_features: dict[str, bool] | None = None,
 ) -> list[str]:
-    """Return enabled MoE quantization modes after YAML SM/runtime-feature filtering."""
+    """Return vllm_xpu's enabled MoE quantization modes after YAML SM/runtime-feature filtering.
 
+    CUDA backends plan MoE through collector/op_plans.py instead.
+    """
+
+    if backend in _CUDA_BACKENDS:
+        raise ValueError(f"{backend} plans MoE through collector/op_plans.py, not per-backend quant modes")
     features = runtime_features or {}
     modes = []
     for spec in get_moe_quantization_specs(backend):
@@ -1259,15 +1386,35 @@ def get_sglang_moe_backend(test_case: MoeCommonTestCase, moe_type: str, sm_versi
     raise ValueError(f"No SGLang MoE backend for moe_type={moe_type!r}, sm_version={sm_version}")
 
 
+def _declared_moe_modes(model_case: dict[str, object]) -> Optional[tuple[str, ...]]:
+    """A MoE row's quantization_modes, rejecting per-backend mode policy.
+
+    A MoE row applies to every CUDA backend: ``frameworks`` and a CUDA
+    backend's ``framework_quantization`` allowed_modes/excluded_modes are not
+    allowed (framework_quantization keeps a backend's module_config only).
+    """
+    name = model_case.get("model_path")
+    if "frameworks" in model_case:
+        raise ValueError(f"MoE row {name!r} declares frameworks; MoE rows apply to every backend")
+    framework_quantization = model_case.get("framework_quantization") or {}
+    if not isinstance(framework_quantization, dict):
+        raise TypeError("model_case_values.moe.framework_quantization must be a mapping")
+    for backend in sorted(_CUDA_BACKENDS & set(framework_quantization)):
+        policy = sorted(set(framework_quantization[backend] or {}) - {"module_config"})
+        if policy:
+            raise ValueError(
+                f"MoE row {name!r} sets framework_quantization.{backend}.{policy}; "
+                "declare the checkpoint's modes in quantization_modes"
+            )
+    declared = model_case.get("quantization_modes")
+    if declared is None:
+        return None
+    return tuple(_as_str_list(declared, field_name=f"model_case_values.moe[{name}].quantization_modes"))
+
+
 def _model_moe_backend_quantization(model_name: str, backend: str) -> dict[str, object]:
     for model_case in _model_case_values("moe", apply_model_filter=False):
         if not _model_case_matches_path(model_case, model_name):
-            continue
-        raw_frameworks = model_case.get("frameworks")
-        if raw_frameworks is not None and backend not in _as_str_list(
-            raw_frameworks,
-            field_name="model_case_values.moe.frameworks",
-        ):
             continue
         framework_quantization = model_case.get("framework_quantization", {})
         if not isinstance(framework_quantization, dict):
@@ -1319,8 +1466,18 @@ def get_moe_quantization_module_config(
 
 
 def moe_model_allows_quantization(backend: str, model_name: str, moe_type: str) -> bool:
-    """Return whether backend YAML allows a MoE quantization mode for a model."""
+    """Return whether a model plans a MoE quantization mode on this backend.
 
+    Every CUDA backend plans the same modes for a model (:func:`moe_planned_modes`);
+    vllm_xpu keeps its own axis and per-model policy.
+    """
+
+    if backend in _CUDA_BACKENDS:
+        return any(
+            moe_type in moe_planned_modes(model_name, _declared_moe_modes(row))
+            for row in _model_case_values("moe", apply_model_filter=False)
+            if _model_case_matches_path(row, model_name)
+        )
     model_quantization = _model_moe_backend_quantization(model_name, backend)
     for spec in get_moe_quantization_specs(backend):
         if spec.name != moe_type:
@@ -1495,16 +1652,107 @@ def get_moe_backend_test_cases(backend: str) -> list[MoeCommonTestCase]:
     return test_cases
 
 
+def _moe_common_case(
+    model_config: dict[str, object],
+    quantization_modes: Optional[tuple[str, ...]],
+    *,
+    num_tokens_list: list[int],
+    tp: int,
+    ep: int,
+    token_expert_distribution: str,
+    power_law_alpha: Optional[float],
+) -> MoeCommonTestCase:
+    return MoeCommonTestCase(
+        num_tokens_list=num_tokens_list,
+        hidden_size=int(model_config["hidden_size"]),
+        inter_size=int(model_config["inter_size"]),
+        topk=int(model_config["topk"]),
+        num_experts=int(model_config["num_experts"]),
+        tp=tp,
+        ep=ep,
+        model_name=str(model_config["model_path"]),
+        token_expert_distribution=token_expert_distribution,
+        power_law_alpha=power_law_alpha,
+        architecture=str(model_config.get("architecture") or ""),
+        quantization_modes=quantization_modes,
+        sglang_moe_backends=dict(model_config.get("sglang_moe_backends") or {}),
+        sglang_moe_activation=str(model_config.get("sglang_moe_activation", "silu")),
+        sglang_moe_is_gated=bool(model_config.get("sglang_moe_is_gated", True)),
+        sglang_moe_has_bias=bool(model_config.get("sglang_moe_has_bias", False)),
+        sglang_moe_gemm1_alpha=(
+            None
+            if model_config.get("sglang_moe_gemm1_alpha") is None
+            else float(model_config["sglang_moe_gemm1_alpha"])
+        ),
+        sglang_moe_gemm1_clamp_limit=(
+            None
+            if model_config.get("sglang_moe_gemm1_clamp_limit") is None
+            else float(model_config["sglang_moe_gemm1_clamp_limit"])
+        ),
+        sglang_moe_swiglu_limit=(
+            None
+            if model_config.get("sglang_moe_swiglu_limit") is None
+            else float(model_config["sglang_moe_swiglu_limit"])
+        ),
+        sglang_moe_scoring_func=str(model_config.get("sglang_moe_scoring_func", "softmax")),
+        sglang_moe_routing_method_type=(
+            None
+            if model_config.get("sglang_moe_routing_method_type") is None
+            else str(model_config["sglang_moe_routing_method_type"])
+        ),
+        sglang_moe_routed_scaling_factor=(
+            None
+            if model_config.get("sglang_moe_routed_scaling_factor") is None
+            else float(model_config["sglang_moe_routed_scaling_factor"])
+        ),
+        sglang_moe_renormalize=bool(model_config.get("sglang_moe_renormalize", True)),
+        sglang_moe_has_correction_bias=bool(model_config.get("sglang_moe_has_correction_bias", False)),
+        sglang_moe_num_expert_group=(
+            None
+            if model_config.get("sglang_moe_num_expert_group") is None
+            else int(model_config["sglang_moe_num_expert_group"])
+        ),
+        sglang_moe_topk_group=(
+            None if model_config.get("sglang_moe_topk_group") is None else int(model_config["sglang_moe_topk_group"])
+        ),
+        sglang_moe_apply_router_weight_on_input=bool(
+            model_config.get("sglang_moe_apply_router_weight_on_input", False)
+        ),
+    )
+
+
+def moe_model_layer(
+    model_name: str, hidden_size: int, inter_size: int, topk: int, num_experts: int
+) -> MoeCommonTestCase:
+    """Return the MoE model row with this name and layer shape (its routing, activation and runner pins).
+
+    Its sweep fields (tokens, TP, EP, distribution) are placeholders.
+    """
+    for model_config in _model_case_values("moe", apply_model_filter=False):
+        shape = tuple(int(model_config[key]) for key in ("hidden_size", "inter_size", "topk", "num_experts"))
+        if model_config.get("model_path") == model_name and shape == (hidden_size, inter_size, topk, num_experts):
+            return _moe_common_case(
+                model_config,
+                _declared_moe_modes(model_config),
+                num_tokens_list=[],
+                tp=1,
+                ep=1,
+                token_expert_distribution="balanced",
+                power_law_alpha=0.0,
+            )
+    raise KeyError(f"no MoE model row {model_name!r} with shape {(hidden_size, inter_size, topk, num_experts)}")
+
+
 def get_common_moe_test_cases(
     *,
-    backend: str | None = None,
     required_expert_parallel_size: int | None = None,
 ):
     """Return declared MoE recipes with optional runtime constraints.
 
-    ``num_experts % expert_parallel_size == 0`` is universal MoE sharding
-    math, so callers that collect one fixed EP world declare that requirement
-    here rather than silently discarding generated shapes in collector code.
+    Every model row applies to every backend. ``num_experts %
+    expert_parallel_size == 0`` is universal MoE sharding math, so callers
+    that collect one fixed EP world declare that requirement here rather than
+    silently discarding generated shapes in collector code.
     """
     if required_expert_parallel_size is not None and required_expert_parallel_size <= 0:
         raise ValueError(f"required_expert_parallel_size must be positive, got {required_expert_parallel_size}")
@@ -1514,70 +1762,31 @@ def get_common_moe_test_cases(
     ep_list = _as_int_list(moe_sweep.get("expert_parallel_sizes"), field_name="moe.expert_parallel_sizes")
     num_gpu_list = _as_int_list(moe_sweep.get("gpu_counts"), field_name="moe.gpu_counts")
     token_distributions = _moe_token_expert_distributions(moe_sweep)
-
-    allowed_parallel_topologies = None
-    if backend is not None:
-        raw_topologies = _moe_backend_values(backend).get("parallel_topologies")
-        if raw_topologies is not None:
-            if not isinstance(raw_topologies, list):
-                raise TypeError(f"common_case_values.moe_{backend}.parallel_topologies must be a list")
-            allowed_parallel_topologies = set()
-            for index, topology in enumerate(raw_topologies):
-                if not isinstance(topology, dict):
-                    raise TypeError(f"common_case_values.moe_{backend}.parallel_topologies[{index}] must be a mapping")
-                topology_tps = _as_int_list(
-                    topology.get("tensor_parallel_sizes"),
-                    field_name=f"moe_{backend}.parallel_topologies[{index}].tensor_parallel_sizes",
-                )
-                topology_eps = _as_int_list(
-                    topology.get("expert_parallel_sizes"),
-                    field_name=f"moe_{backend}.parallel_topologies[{index}].expert_parallel_sizes",
-                )
-                allowed_parallel_topologies.update(itertools.product(topology_tps, topology_eps))
-
-    model_config_list = []
-    for model_config in _model_case_values("moe"):
-        raw_frameworks = model_config.get("frameworks")
-        if raw_frameworks is not None:
-            frameworks = _as_str_list(raw_frameworks, field_name="model_case_values.moe.frameworks")
-            unknown_frameworks = sorted(set(frameworks) - _KNOWN_CASE_FRAMEWORKS)
-            if unknown_frameworks:
-                raise ValueError(
-                    f"model_case_values.moe row {model_config.get('model_path')!r} declares unknown "
-                    f"frameworks {unknown_frameworks}; known: {sorted(_KNOWN_CASE_FRAMEWORKS)}"
-                )
-            if backend is not None and backend not in frameworks:
-                continue
-        model_config_list.append(model_config)
+    model_config_list = _model_case_values("moe")
+    declared_modes = [_declared_moe_modes(model_config) for model_config in model_config_list]
 
     test_cases: list[MoeCommonTestCase] = []
 
     for (
         num_gpu,  # starting from fewer gpus. workaround for potential buffer bug in moe impl.
-        model_config,
+        (model_config, quantization_modes),
         tp,
         ep,
         (token_distribution, power_law_alpha),
     ) in itertools.product(
         num_gpu_list,
-        model_config_list,
+        list(zip(model_config_list, declared_modes, strict=True)),
         tp_list,
         ep_list,
         token_distributions,
     ):
-        hs = int(model_config["hidden_size"])
         inter_s = int(model_config["inter_size"])
-        topk = int(model_config["topk"])
         num_experts = int(model_config["num_experts"])
-        model_name = str(model_config["model_path"])
 
         if required_expert_parallel_size is not None and num_experts % required_expert_parallel_size != 0:
             continue
         max_tp_exclusive = model_config.get("max_tp_exclusive")
         if max_tp_exclusive is not None and tp >= int(max_tp_exclusive):
-            continue
-
-        if allowed_parallel_topologies is not None and (tp, ep) not in allowed_parallel_topologies:
             continue
 
         if tp * ep != num_gpu:
@@ -1591,63 +1800,14 @@ def get_common_moe_test_cases(
             continue
 
         test_cases.append(
-            MoeCommonTestCase(
+            _moe_common_case(
+                model_config,
+                quantization_modes,
                 num_tokens_list=num_tokens,
-                hidden_size=hs,
-                inter_size=inter_s,
-                topk=topk,
-                num_experts=num_experts,
                 tp=tp,
                 ep=ep,
-                model_name=model_name,
                 token_expert_distribution=token_distribution,
                 power_law_alpha=power_law_alpha,
-                architecture=str(model_config.get("architecture") or ""),
-                sglang_moe_backends=dict(model_config.get("sglang_moe_backends") or {}),
-                sglang_moe_activation=str(model_config.get("sglang_moe_activation", "silu")),
-                sglang_moe_is_gated=bool(model_config.get("sglang_moe_is_gated", True)),
-                sglang_moe_has_bias=bool(model_config.get("sglang_moe_has_bias", False)),
-                sglang_moe_gemm1_alpha=(
-                    None
-                    if model_config.get("sglang_moe_gemm1_alpha") is None
-                    else float(model_config["sglang_moe_gemm1_alpha"])
-                ),
-                sglang_moe_gemm1_clamp_limit=(
-                    None
-                    if model_config.get("sglang_moe_gemm1_clamp_limit") is None
-                    else float(model_config["sglang_moe_gemm1_clamp_limit"])
-                ),
-                sglang_moe_swiglu_limit=(
-                    None
-                    if model_config.get("sglang_moe_swiglu_limit") is None
-                    else float(model_config["sglang_moe_swiglu_limit"])
-                ),
-                sglang_moe_scoring_func=str(model_config.get("sglang_moe_scoring_func", "softmax")),
-                sglang_moe_routing_method_type=(
-                    None
-                    if model_config.get("sglang_moe_routing_method_type") is None
-                    else str(model_config["sglang_moe_routing_method_type"])
-                ),
-                sglang_moe_routed_scaling_factor=(
-                    None
-                    if model_config.get("sglang_moe_routed_scaling_factor") is None
-                    else float(model_config["sglang_moe_routed_scaling_factor"])
-                ),
-                sglang_moe_renormalize=bool(model_config.get("sglang_moe_renormalize", True)),
-                sglang_moe_has_correction_bias=bool(model_config.get("sglang_moe_has_correction_bias", False)),
-                sglang_moe_num_expert_group=(
-                    None
-                    if model_config.get("sglang_moe_num_expert_group") is None
-                    else int(model_config["sglang_moe_num_expert_group"])
-                ),
-                sglang_moe_topk_group=(
-                    None
-                    if model_config.get("sglang_moe_topk_group") is None
-                    else int(model_config["sglang_moe_topk_group"])
-                ),
-                sglang_moe_apply_router_weight_on_input=bool(
-                    model_config.get("sglang_moe_apply_router_weight_on_input", False)
-                ),
             )
         )
 
@@ -1735,8 +1895,12 @@ def get_gemm_case_specs(backend: str | None = None) -> list[GemmCommonTestCase]:
     return test_cases
 
 
-def get_gemm_type_specs(backend: str) -> list[str]:
-    """Return YAML-backed GEMM dtype/quantization labels for a backend."""
+def get_gemm_type_specs(backend: str | None = None) -> list[str]:
+    """Return YAML-backed GEMM dtype/quantization labels.
+
+    Without a backend this is the axis every CUDA backend shares; a backend
+    with its own sweep (vllm_xpu) gets that sweep's labels.
+    """
 
     gemm_types = []
     seen = set()
@@ -1757,7 +1921,7 @@ class ComputeScaleCommonTestCase:
 
 
 def get_compute_scale_case_specs() -> list[ComputeScaleCommonTestCase]:
-    shape_sweeps = get_base_framework_op_case_specs("trtllm", "compute_scale")
+    shape_sweeps = get_shared_base_op_case_specs("compute_scale")
     if not shape_sweeps:
         seen_mk = set()
         test_cases = []
@@ -1894,9 +2058,11 @@ class MLABMMCommonTestCase:
     num_runs: int
 
 
-def get_mla_bmm_case_specs(backend: str, op_name: str) -> list[MLABMMCommonTestCase]:
-    """Return YAML-backed MLA generation BMM helper shapes."""
-    shape_sweeps = get_merged_base_op_case_specs(backend, op_name)
+def get_mla_bmm_case_specs(backend: str | None, op_name: str) -> list[MLABMMCommonTestCase]:
+    """Return YAML-backed MLA generation BMM helper shapes; without a backend, the ones every backend shares."""
+    shape_sweeps = (
+        get_merged_base_op_case_specs(backend, op_name) if backend else get_shared_base_op_case_specs(op_name)
+    )
     if not shape_sweeps:
         raise RuntimeError(f"{BASE_OP_CASES_DIR} is missing all_frameworks_op_cases.{op_name}.cases")
 
@@ -2475,10 +2641,6 @@ _DSV4_SPARSE_PAST_KV_LIST = _as_int_list(
 _DSV4_SPARSE_CHUNK_PREFILL_SIZE = int(_DSV4_CONFIG["sparse_chunk_prefill_size"])
 _DSV4_SPARSE_MAX_FULL_S = int(_DSV4_CONFIG["sparse_max_full_sequence_length"])
 _DSV4_SPARSE_TP_SIZES = _required_mapping(_DSV4_CONFIG["sparse_tp_sizes"], field_name="dsv4.sparse_tp_sizes")
-_DSV4_SPARSE_TP_LIST_ATTN = _as_int_list(
-    _DSV4_SPARSE_TP_SIZES["hca_attn"],
-    field_name="dsv4.sparse_tp_sizes.hca_attn",
-)
 _DSV4_SPARSE_TP_LIST_INDEXER = _as_int_list(
     _DSV4_SPARSE_TP_SIZES["paged_mqa_logits"],
     field_name="dsv4.sparse_tp_sizes.paged_mqa_logits",
@@ -2695,8 +2857,8 @@ def get_dsv4_hca_generation_test_cases():
 
 def get_dsv4_topk_calib_test_cases():
     """One case per model (the topk DELTA calibration is just another member of
-    the sparse-op family — same ``[model_path, kernel]`` shape as paged_mqa /
-    csa_attn / hca_attn, dispatched through ``run_dsv4_sparse_kernel_worker``).
+    the sparse-op family — same ``[model_path, kernel]`` shape as
+    paged_mqa_logits, dispatched through ``run_dsv4_sparse_kernel_worker``).
 
     The grid matches the CSA module data 1:1: the worker reads the
     already-collected ``dsv4_csa_*_module_perf.txt`` and benches exactly those
@@ -2709,7 +2871,11 @@ def get_dsv4_topk_calib_test_cases():
     return [[model_path, "topk"] for model_path in _selected_dsv4_calib_models()]
 
 
-DSV4_SPARSE_KERNELS = ("paged_mqa_logits", "hca_attn")
+# The CSA indexer scoring GEMM is the only sparse sub-kernel collected standalone.
+# hca_attn / csa_attn (FMLA sidecars) were removed 2026-10-15: retired SDK
+# placeholders with no query path, and registry-only ops that failed every
+# shard plan generated from the registry.
+DSV4_SPARSE_KERNELS = ("paged_mqa_logits",)
 
 
 def _build_dsv4_sparse_test_cases(
@@ -2717,7 +2883,6 @@ def _build_dsv4_sparse_test_cases(
     bs_list=None,
     isl_list=None,
     past_kv_list=None,
-    tp_list_attn=None,
     tp_list_indexer=None,
 ):
     """Generate ``(bs, isl, past_kv, tp_size, kernel, model)`` tuples.
@@ -2729,14 +2894,12 @@ def _build_dsv4_sparse_test_cases(
     bs_list = list(bs_list) if bs_list is not None else list(_DSV4_SPARSE_BS_LIST)
     isl_list = list(isl_list) if isl_list is not None else list(_DSV4_SPARSE_ISL_LIST)
     past_kv_list = list(past_kv_list) if past_kv_list is not None else list(_DSV4_SPARSE_PAST_KV_LIST)
-    tp_list_attn = list(tp_list_attn) if tp_list_attn is not None else list(_DSV4_SPARSE_TP_LIST_ATTN)
     tp_list_indexer = list(tp_list_indexer) if tp_list_indexer is not None else list(_DSV4_SPARSE_TP_LIST_INDEXER)
 
     cases = []
     for model_path in _selected_dsv4_models():
         for kernel in kernels:
-            tp_list = tp_list_attn if kernel == "hca_attn" else tp_list_indexer
-            for tp_size in tp_list:
+            for tp_size in tp_list_indexer:
                 for bs in bs_list:
                     for isl in isl_list:
                         if bs * isl > _DSV4_SPARSE_CHUNK_PREFILL_SIZE:
@@ -2746,8 +2909,6 @@ def _build_dsv4_sparse_test_cases(
                                 continue
                             full_s = isl + past_kv
                             if kernel == "paged_mqa_logits" and full_s < 4:
-                                continue
-                            if kernel == "hca_attn" and full_s < 64:
                                 continue
                             cases.append(
                                 [
@@ -2769,19 +2930,6 @@ def get_dsv4_paged_mqa_logits_test_cases():
     return [[model_path, "paged_mqa_logits"] for model_path in _selected_dsv4_models()]
 
 
-def get_dsv4_hca_attn_test_cases():
-    """One case per model. The worker derives shapes from the HCA module CSV
-    (hca_attn is the HCA c128 FMLA sub-kernel), 1:1 with the hca-module rows."""
-    return [[model_path, "hca_attn"] for model_path in _selected_dsv4_models()]
-
-
-def get_dsv4_csa_attn_test_cases():
-    """One case per model. The worker derives shapes from the CSA module CSV
-    (csa_attn is the CSA sparse FMLA over the topk-selected c4 positions),
-    1:1 with the csa-module rows — same source as paged_mqa_logits/topk."""
-    return [[model_path, "csa_attn"] for model_path in _selected_dsv4_models()]
-
-
 # Backward-compatible names for older PR comments/tests while the registry and
 # persisted perf files use the upstream DeepSeek-V4 op names.
 _DSV4_FLASH_CONFIG = _DSV4_CONFIG
@@ -2796,7 +2944,6 @@ _DSV4_FLASH_SPARSE_ISL_LIST = _DSV4_SPARSE_ISL_LIST
 _DSV4_FLASH_SPARSE_PAST_KV_LIST = _DSV4_SPARSE_PAST_KV_LIST
 _DSV4_FLASH_SPARSE_CHUNK_PREFILL_SIZE = _DSV4_SPARSE_CHUNK_PREFILL_SIZE
 _DSV4_FLASH_SPARSE_MAX_FULL_S = _DSV4_SPARSE_MAX_FULL_S
-_DSV4_FLASH_SPARSE_TP_LIST_ATTN = _DSV4_SPARSE_TP_LIST_ATTN
 _DSV4_FLASH_SPARSE_TP_LIST_INDEXER = _DSV4_SPARSE_TP_LIST_INDEXER
 DSV4_FLASH_SPARSE_KERNELS = DSV4_SPARSE_KERNELS
 _dsv4_flash_config = _dsv4_config
@@ -2819,4 +2966,3 @@ get_dsv4_flash_hca_context_test_cases = get_dsv4_hca_context_test_cases
 get_dsv4_flash_csa_generation_test_cases = get_dsv4_csa_generation_test_cases
 get_dsv4_flash_hca_generation_test_cases = get_dsv4_hca_generation_test_cases
 get_dsv4_flash_paged_mqa_logits_test_cases = get_dsv4_paged_mqa_logits_test_cases
-get_dsv4_flash_hca_attn_test_cases = get_dsv4_hca_attn_test_cases

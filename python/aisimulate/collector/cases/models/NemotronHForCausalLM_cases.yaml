@@ -37,13 +37,7 @@ model_case_values:
       sglang_moe_topk_group: 1
       sglang_moe_backends:
         bfloat16: {90: flashinfer_cutlass, 100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
-      framework_quantization:
-        sglang:
-          allowed_modes: [bfloat16]
-        trtllm:
-          allowed_modes: [bfloat16]
-        vllm:
-          allowed_modes: [bfloat16]
+      quantization_modes: [bfloat16]
     - model_path: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
       hidden_size: 2688
       inter_size: 1856
@@ -58,22 +52,13 @@ model_case_values:
       sglang_moe_has_correction_bias: true
       sglang_moe_num_expert_group: 1
       sglang_moe_topk_group: 1
-      framework_quantization:
-        sglang:
-          allowed_modes: [nvfp4]
-        trtllm:
-          allowed_modes: [nvfp4]
-        vllm:
-          allowed_modes: [nvfp4]
+      quantization_modes: [nvfp4]
     # Lightning is the nvfp4-native checkpoint release of the 30B/A3B shape
     # (same topk=6/e128/h2688/i1856 router geometry as Nano-BF16 above,
     # verified against the published checkpoint config); a separate row
     # keeps its quant-distinct identity out of the BF16 row
     # (case_authoring.md: quant-sensitive checkpoint artifacts use separate
-    # model rows even when geometry is identical). vLLM's pinned FlashInfer
-    # NVFP4 path is limited to top-k <= 10 (see the Super/Ultra rows below,
-    # topk=22); this shape's topk=6 is under that limit, so the topk
-    # restriction does not apply here. AIC-1743/AIC-1748.
+    # model rows even when geometry is identical).
     - model_path: nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4
       hidden_size: 2688
       inter_size: 1856
@@ -90,20 +75,10 @@ model_case_values:
       sglang_moe_topk_group: 1
       sglang_moe_backends:
         nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
-      framework_quantization:
-        sglang:
-          allowed_modes: [nvfp4]
-        trtllm:
-          allowed_modes: [nvfp4]
-        vllm:
-          # Not the topk restriction (topk=6 is fine). vLLM's moe getter
-          # additionally needs a packaged HF config
-          # (collect_moe.py::_load_model_moe_config) at
-          # model_configs/nvidia--NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4_config.json
-          # -- outside collector/'s module boundary, so it was added as its
-          # own human-approved commit (layer_permissions.md) rather than
-          # bundled with this row. AIC-1743/AIC-1748.
-          allowed_modes: [nvfp4]
+      # vLLM reads this checkpoint's packaged HF config
+      # (model_configs/nvidia--NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4_config.json,
+      # added in its own human-approved commit). AIC-1743/AIC-1748.
+      quantization_modes: [nvfp4]
     - model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
       hidden_size: 4096
       inter_size: 2688
@@ -120,16 +95,10 @@ model_case_values:
       sglang_moe_topk_group: 1
       sglang_moe_backends:
         nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
-      framework_quantization:
-        sglang:
-          allowed_modes: [nvfp4]
-        trtllm:
-          allowed_modes: [nvfp4]
-        vllm:
-          # vLLM's pinned FlashInfer NVFP4 path is limited to top-k <= 10;
-          # this row's topk=22 exceeds it (the 30B/Lightning shape's topk=6
-          # does not — see that row above). AIC-1743/AIC-1748.
-          allowed_modes: []
+      # vLLM: its FlashInfer NVFP4 path was limited to top-k <= 10
+      # (AIC-1743/AIC-1748, not re-checked at 0.31.0), so these topk=22
+      # cases may fail on vLLM; a failure is recorded.
+      quantization_modes: [nvfp4]
     - model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
       hidden_size: 1024
       inter_size: 2688
@@ -146,29 +115,19 @@ model_case_values:
       sglang_moe_topk_group: 1
       sglang_moe_backends:
         nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
-      framework_quantization:
-        sglang:
-          allowed_modes: [nvfp4]
-        trtllm:
-          allowed_modes: [nvfp4]
-        vllm:
-          # Same topk=22 > 10 vLLM FlashInfer NVFP4 restriction as above.
-          # AIC-1743/AIC-1748.
-          allowed_modes: []
+      # Same vLLM top-k note as above.
+      quantization_modes: [nvfp4]
     # vLLM routes Nemotron-H experts through moe_latent_size=1024.
     - model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8
-      frameworks: [vllm]
       hidden_size: 1024
       inter_size: 2688
       topk: 22
       num_experts: 512
-      framework_quantization:
-        vllm:
-          allowed_modes: [fp8]
+      quantization_modes: [fp8]
     # Ultra uses its outer hidden width in SGLang/TRT-LLM, while vLLM routes
-    # experts through moe_latent_size=2048. Declare that geometry directly.
+    # experts through moe_latent_size=2048. Both geometries are planned for
+    # every backend.
     - model_path: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16
-      frameworks: [sglang, trtllm]
       hidden_size: 8192
       inter_size: 5120
       topk: 22
@@ -184,13 +143,8 @@ model_case_values:
       sglang_moe_topk_group: 1
       sglang_moe_backends:
         bfloat16: {90: flashinfer_cutlass, 100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
-      framework_quantization:
-        sglang:
-          allowed_modes: [bfloat16]
-        trtllm:
-          allowed_modes: [bfloat16]
+      quantization_modes: [bfloat16]
     - model_path: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16
-      frameworks: [vllm]
       hidden_size: 2048
       inter_size: 5120
       topk: 22
@@ -206,31 +160,20 @@ model_case_values:
       sglang_moe_topk_group: 1
       sglang_moe_backends:
         bfloat16: {90: flashinfer_cutlass, 100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
-      framework_quantization:
-        vllm:
-          allowed_modes: [bfloat16]
+      quantization_modes: [bfloat16]
     - model_path: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8
-      frameworks: [sglang, trtllm]
       hidden_size: 8192
       inter_size: 5120
       topk: 22
       num_experts: 512
-      framework_quantization:
-        sglang:
-          allowed_modes: []
-        trtllm:
-          allowed_modes: [fp8]
+      quantization_modes: [fp8]
     - model_path: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8
-      frameworks: [vllm]
       hidden_size: 2048
       inter_size: 5120
       topk: 22
       num_experts: 512
-      framework_quantization:
-        vllm:
-          allowed_modes: [fp8]
+      quantization_modes: [fp8]
     - model_path: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
-      frameworks: [sglang, trtllm]
       hidden_size: 8192
       inter_size: 5120
       topk: 22
@@ -246,13 +189,8 @@ model_case_values:
       sglang_moe_topk_group: 1
       sglang_moe_backends:
         nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
-      framework_quantization:
-        sglang:
-          allowed_modes: [nvfp4]
-        trtllm:
-          allowed_modes: [nvfp4]
+      quantization_modes: [nvfp4]
     - model_path: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
-      frameworks: [vllm]
       hidden_size: 2048
       inter_size: 5120
       topk: 22
@@ -268,11 +206,8 @@ model_case_values:
       sglang_moe_topk_group: 1
       sglang_moe_backends:
         nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
-      framework_quantization:
-        vllm:
-          # Same topk=22 > 10 vLLM FlashInfer NVFP4 restriction as the Super
-          # rows above. AIC-1743/AIC-1748.
-          allowed_modes: []
+      # Same vLLM top-k note as the Super rows above.
+      quantization_modes: [nvfp4]
   mamba2:
     - model_path: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
       model_aliases:
