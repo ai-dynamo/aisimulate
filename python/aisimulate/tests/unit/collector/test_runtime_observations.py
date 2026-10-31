@@ -1396,6 +1396,31 @@ def test_speculative_or_checkpoint_mamba_groups_are_incomplete(tmp_path, change)
         assert "mamba prefill checkpoint blocks are not modeled: ['mamba.0', 'mamba.2']" in diagnostics
 
 
+@pytest.mark.parametrize(
+    "layout,names",
+    [
+        # A MambaSpec without speculative blocks holds one block per request (kv_cache_interface.py:1048).
+        ("mamba_hybrid", ["mamba.0", "mamba.2"]),
+        # A KpoolTailSpec holds one block per request (kv_cache_interface.py:1019-1025).
+        ("glm_tp4", [f"layers.{index}.tail" for index in range(3, 45, 4)]),
+    ],
+    ids=["mamba", "tail"],
+)
+def test_state_group_blocks_per_request_must_follow_its_spec(tmp_path, layout, names):
+    path, launches = observation_fixture(tmp_path, layout=layout)
+
+    def edit(record):
+        # Every record of the group gets the same count, so only the spec rule (decision 6) can refuse it.
+        state = record["cache"]["groups"][1]["state"]
+        assert (state["blocks_per_request"], state.get("num_speculative_blocks", 0)) == (1, 0)
+        state["blocks_per_request"] = 2
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == [f"tp2: runtime state cache group blocks_per_request contradicts its spec: {names}"]
+
+
 @pytest.mark.parametrize("change", [None, "latent_page", "block_size"])
 def test_uniform_type_groups_compare_their_first_spec_with_the_scheduler(tmp_path, change):
     path, launches = observation_fixture(tmp_path, layout="glm_tp4")

@@ -21,6 +21,7 @@ from .native_artifact import COLLECTOR_PROVENANCE_FILENAME, validate_native_coll
 from .planner import BackendPolicy, FPMCell, _canonical_hash
 from .runtime.fpm_memory_observer import (
     _LEGACY_SPECS,
+    _MAMBA_SPEC,
     _SPEC_MODULE,
     _UNIFORM_SPEC,
     _WINDOW_SPECS,
@@ -639,6 +640,16 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
             checkpoint = state.get("num_prefill_checkpoint_blocks", 0)
             if type(checkpoint) is not int or checkpoint != 0:
                 raise ValueError(f"mamba prefill checkpoint blocks are not modeled: {names}")
+            # Decision 6: the spec gives the count. A MambaSpec holds one state block and its speculative
+            # blocks (kv_cache_interface.py:1048); a KpoolTailSpec or CircularBufferSpec holds one block
+            # (:1019-1025, :904-911). Every spec class of the group must give the recorded count. The
+            # allocation semantics refuse speculation itself.
+            expected = {1 for value in spec_classes if value != _MAMBA_SPEC}
+            if _MAMBA_SPEC in spec_classes:
+                speculative = state.get("num_speculative_blocks", 0)
+                expected.add(1 + speculative if type(speculative) is int else None)
+            if expected != {blocks}:
+                raise ValueError(f"runtime state cache group blocks_per_request contradicts its spec: {names}")
             normalized["blocks_per_request"] = blocks
         groups.append(normalized)
     return groups
