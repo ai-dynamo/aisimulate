@@ -9,7 +9,7 @@ With ``ModelConfig.forward_model == "fpm"`` the model builder replaces each
 phase op list with exactly one :class:`FPMForwardOp`. The op is
 CONSTRUCTION-ONLY on the Python side: it carries the cell-match identity, the
 whole-model weight bytes, and the original granular op list, and
-``sdk/engine.py::_to_opspec`` serializes those into the compiled engine's
+``sdk/engine.py::_as_engine_op`` converts those into the compiled engine's
 ``Op::FpmForward`` — the Rust core owns the loader
 (``perf_database/fpm_forward.rs``), the interpolation/clamp semantics
 (``operators/fpm_forward.rs``), and the whole-model SOL roofline derived from
