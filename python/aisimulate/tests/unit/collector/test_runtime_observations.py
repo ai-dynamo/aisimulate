@@ -1711,6 +1711,80 @@ def test_v031_prefix_caching_evidence_must_match_the_scheduler_block_sizes(tmp_p
     assert result["diagnostics"] == ["tp2: runtime prefix-caching evidence contradicts the scheduler block sizes"]
 
 
+def test_v031_compressed_storage_outside_the_indexer_is_incomplete(tmp_path):
+    path, launches = observation_fixture(tmp_path, layout="glm_tp4")
+
+    def edit(record):
+        # Every worker records a storage block on a sparse MLA latent spec. The scheduler copy of G0 holds the first
+        # indexer spec only (kv_cache_utils.py:2434-2440), so the copies still agree.
+        if record["kind"] == "worker":
+            record["cache"]["groups"][0]["layer_specs"]["layers.3.mla"]["storage_block_size"] = 128
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    names = [name for index in range(3, 45, 4) for name in (f"layers.{index}.indexer", f"layers.{index}.mla")]
+    assert result["diagnostics"] == [f"tp2: compressed cache storage is unsupported: {names}"]
+
+
+@pytest.mark.parametrize(
+    "layout,name,kernel,shape,strides",
+    [
+        # The indexer view with the group's kernel block of 64 tokens instead of its 128-token storage block:
+        # 34 kernel blocks of 16 x 132 bytes per 71,808-byte page (worker/utils.py:449-450).
+        ("glm_tp4", "layers.3.indexer", 64, [272, 16, 132], [2112, 132, 1]),
+        # An attention view with 32-token kernel blocks while the runner gives the group 16-token ones.
+        ("mamba_hybrid", "attn.0", 32, [20, 2, 32, 32], [4096, 2048, 64, 2]),
+    ],
+    ids=["indexer", "attention"],
+)
+def test_v031_layer_view_kernel_block_must_follow_its_cache_spec(tmp_path, layout, name, kernel, shape, strides):
+    path, launches = observation_fixture(tmp_path, layout=layout)
+
+    def edit(record):
+        # The view keeps its bytes and pool block geometry; only its kernel block contradicts the spec.
+        if record["kind"] == "worker":
+            (view,) = record["cache"]["layer_tensors"][name]
+            view.update(kernel_block_size_tokens=kernel, shape=shape, stride_bytes=strides)
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == [f"tp2: layer view kernel block contradicts its cache spec: {name}"]
+
+
+@pytest.mark.parametrize(
+    "change,diagnostic",
+    [
+        ("missing", "initialized kernel block sizes do not cover every cache group"),
+        ("short", "initialized kernel block sizes do not cover every cache group"),
+        ("zero", "kernel block size must be a positive integer no greater than 2**53"),
+    ],
+    ids=["missing", "short", "zero"],
+)
+def test_v031_runner_kernel_blocks_must_cover_every_cache_group(tmp_path, change, diagnostic):
+    path, launches = observation_fixture(tmp_path, layout="mamba_hybrid")
+
+    def edit(record):
+        if record["kind"] != "worker":
+            return
+        if change == "missing":
+            record["cache"].pop("model_runner")
+            return
+        kernels = record["cache"]["model_runner"]["kernel_block_sizes"]
+        # The runner gives the two Mamba groups their 64-token group block; no view takes its kernel block from them.
+        assert kernels == [16, 64, 64]
+        if change == "short":
+            kernels.pop()
+        else:
+            kernels[2] = 0
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == [f"tp2: {diagnostic}"]
+
+
 @pytest.mark.parametrize("spec", ["MLAAttentionSpec", "MambaSpec"])
 def test_legacy_records_refuse_classes_outside_the_legacy_allow_list(tmp_path, spec):
     path, launches = observation_fixture(tmp_path)

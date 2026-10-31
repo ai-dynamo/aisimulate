@@ -24,7 +24,7 @@ from aisimulate_core.sdk.perf_database import load_system_spec
 from . import runtime_memory
 from .config import PrefillSamplingProfile, collection_phases
 from .planner import BackendPolicy, FPMCell
-from .runtime.fpm_memory_observer import _LEGACY_SPECS, _MAMBA_SPEC
+from .runtime.fpm_memory_observer import _LEGACY_SPECS, _MAMBA_SPEC, _SPEC_MODULE
 from .runtime_instrumentation import (
     OBSERVATION_SCHEMA,
     InstrumentationBundle,
@@ -495,6 +495,11 @@ def _indexer(spec: dict[str, Any]) -> bool:
     )
 
 
+# vLLM 0.31.0 MLAAttentionSpec and its one subclass (kv_cache_interface.py:662, :739): the classes whose storage
+# block, when they have one, is the kernel block of their views (worker/utils.py:449-450).
+_MLA_SPECS = frozenset(_SPEC_MODULE + name for name in ("MLAAttentionSpec", "HiddenStateCacheSpec"))
+
+
 def _layer_views(
     name: str,
     entries: Any,
@@ -505,6 +510,7 @@ def _layer_views(
     size: int,
     group: dict[str, Any],
     precision: str,
+    group_kernel: int,
 ) -> list[tuple[dict[str, Any], int]]:
     """Check the views of one vLLM 0.31.0 layer, of any rank with the block axis first.
 
@@ -569,6 +575,15 @@ def _layer_views(
             or dense != state["real_page_size_bytes"]
         ):
             raise ValueError(f"layer views do not match the recorded state tensors: {name}")
+    # The worker views a layer with the storage block of an MLA spec that has one (the indexer), a Mamba layer
+    # with the group block, and every other layer with the runner's kernel block of the group
+    # (worker/utils.py:449-450, :500-502; runtime/instrumentation/observer.py:277-289).
+    if spec.get("spec_type") in _MLA_SPECS and spec.get("storage_block_size") is not None:
+        kernel = spec["storage_block_size"]
+    else:
+        kernel = block if spec.get("spec_type") == _MAMBA_SPEC else group_kernel
+    if type(kernel) is not int or any(view["kernel_block_size_tokens"] != kernel for view in entries):
+        raise ValueError(f"layer view kernel block contradicts its cache spec: {name}")
     return views
 
 
@@ -579,6 +594,7 @@ def _layer_strided_views(
     layer_groups: dict[str, tuple[int, dict[str, Any]]],
     count: int,
     precision: str,
+    kernels: list[int],
 ) -> None:
     """Check the vLLM 0.31.0 placement of every cache layer in one backing buffer.
 
@@ -623,9 +639,9 @@ def _layer_strided_views(
         placements.append((names, offset, layer_stride, block_stride, end))
         for position, name in enumerate(names):
             region = offset + position * layer_stride
-            group = layer_groups[name][1]
+            group_id, group = layer_groups[name]
             views[name] = _layer_views(
-                name, tensors[name], storage_id, region, block_stride, count, size, group, precision
+                name, tensors[name], storage_id, region, block_stride, count, size, group, precision, kernels[group_id]
             )
     if views.keys() != layer_groups.keys():
         raise ValueError("allocation plan does not account for every layer and backing storage")
@@ -707,6 +723,16 @@ def _physical_views(
             # resolved cache precision establishes FP8; retain raw storage evidence.
             if storage_dtype != precision and not (storage_dtype == "torch.uint8" and precision == "fp8"):
                 raise ValueError("cache group dtype contradicts requested KV precision")
+        # Only the sparse MLA indexer stores its tokens in blocks other than the cache block
+        # (runtime/instrumentation/observer.py:220-226). Every layer spec of a group has the group's block size
+        # (kv_cache_interface.py:1297-1300, :1312-1313).
+        if strided and any(
+            spec.get("storage_block_size") is not None
+            and canonical_json(spec["storage_block_size"]) != canonical_json(group["block_size_tokens"])
+            and not _indexer(spec)
+            for spec in group["layer_specs"].values()
+        ):
+            raise ValueError(f"compressed cache storage is unsupported: {group['layer_names']}")
         _positive(group.get("spec_page_size_bytes"), "cache spec page bytes")
         for name in group["layer_names"]:
             layer_groups[name] = (group_id, group)
@@ -726,7 +752,15 @@ def _physical_views(
     ):
         raise ValueError("physical layer tensor/allocation coverage is incomplete")
     if strided:
-        _layer_strided_views(allocations, tensors, storages, layer_groups, count, precision)
+        # The runner's kernel block of every group, which the worker records before any view
+        # (runtime/instrumentation/observer.py:338-342).
+        runner = cache.get("model_runner")
+        kernels = runner.get("kernel_block_sizes") if isinstance(runner, dict) else None
+        if not isinstance(kernels, list) or len(kernels) != len(cache["groups"]):
+            raise ValueError("initialized kernel block sizes do not cover every cache group")
+        for kernel in kernels:
+            _positive(kernel, "kernel block size")
+        _layer_strided_views(allocations, tensors, storages, layer_groups, count, precision, kernels)
         return groups, accounting
     covered, used_storage = set(), set()
     intervals: dict[str, list[tuple[int, int]]] = {}
