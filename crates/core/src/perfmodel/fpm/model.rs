@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::perfmodel::engine::runtime::{RankDetail, RankPricing};
 use crate::perfmodel::engine::spec::EncoderImageShape;
 use crate::perfmodel::engine::{Engine, PerOpValue};
 use crate::{AicError, ForwardPassMetrics};
@@ -42,6 +43,18 @@ use super::options::{
 };
 use super::regression::{ForwardPassSplineDiagnostics, RegressionStore};
 use super::samples::{AxisRange, StoreStats, WithOptions};
+
+/// A native iteration estimate with each rank's pricing shared; see
+/// [`ForwardPassPerfModel::estimate_native_iteration`].
+#[derive(Debug)]
+pub(crate) struct NativeIterationEstimate {
+    /// The rank maximum under the iteration's correction.
+    pub(crate) latency_ms: f64,
+    /// The heaviest rank's workload correction.
+    pub(crate) correction_factor: f64,
+    /// Every rank's native pricing, in rank order, idle ranks included.
+    pub(crate) ranks: Vec<Arc<RankPricing>>,
+}
 
 /// Current readiness and tuning state for a `ForwardPassPerfModel`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1230,6 +1243,50 @@ impl ForwardPassPerfModel {
                 self.estimate_ordinary_time_ms(metrics_by_rank)?,
             ))
         }
+    }
+
+    /// [`Self::estimate_forward_pass_detailed`] of a native estimator with
+    /// each rank's native pricing shared instead of copied: the same
+    /// corrected iteration latency and correction, and an operation graph's
+    /// executed operations in `detail`, either their values under shared
+    /// names or the diagnostics the detailed estimate reports. `None` for
+    /// estimators without a native rank dispatch (regression, learned and
+    /// mixed composition), whose detailed estimate reports no ranks.
+    pub(crate) fn estimate_native_iteration(
+        &self,
+        metrics_by_rank: &[ForwardPassMetrics],
+        detail: RankDetail,
+    ) -> Result<Option<NativeIterationEstimate>, AicError> {
+        let ForwardPassPerfMode::Native {
+            engine,
+            corrections,
+            ..
+        } = &self.mode
+        else {
+            return Ok(None);
+        };
+        if self.mixed_composition.is_some() {
+            return Ok(None);
+        }
+        let Some(feature) = IterationFeatures::from_metrics(metrics_by_rank)? else {
+            return Ok(Some(NativeIterationEstimate {
+                latency_ms: 0.0,
+                correction_factor: 1.0,
+                ranks: Vec::new(),
+            }));
+        };
+        let mut coverage = self
+            .query_coverage
+            .as_ref()
+            .map(FpmCoverageState::lock)
+            .transpose()?;
+        let native = engine.forward_pass_ranks(metrics_by_rank, detail, coverage.as_deref_mut())?;
+        let factor = self.correction_factor(corrections, &feature);
+        Ok(Some(NativeIterationEstimate {
+            latency_ms: native.latency_ms * factor,
+            correction_factor: factor,
+            ranks: native.ranks,
+        }))
     }
 
     fn learned_estimate_details(latency_ms: Option<f64>) -> crate::ForwardPassEstimate {
