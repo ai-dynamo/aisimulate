@@ -738,8 +738,8 @@ def _physical_views(
             if storage_dtype != precision and not (storage_dtype == "torch.uint8" and precision == "fp8"):
                 raise ValueError("cache group dtype contradicts requested KV precision")
         # Only the sparse MLA indexer stores its tokens in blocks other than the cache block
-        # (runtime/instrumentation/observer.py:220-226). Every layer spec of a group has the group's block size
-        # (kv_cache_interface.py:1297-1300, :1312-1313).
+        # (runtime/instrumentation/observer.py:220-226). In every group that a supported record can hold, every layer
+        # spec has the group's block size (kv_cache_interface.py:1297-1300, :1312-1313).
         if strided and any(
             spec.get("storage_block_size") is not None
             and canonical_json(spec["storage_block_size"]) != canonical_json(group["block_size_tokens"])
