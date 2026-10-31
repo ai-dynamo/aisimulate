@@ -77,8 +77,8 @@ except ImportError:
     from vllm.model_executor.layers.fla.ops import (
         fused_recurrent_gated_delta_rule_packed_decode,
     )
-from collector.case_generator import get_common_gdn_test_cases
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import ChunkGatedDeltaRule
 from vllm.model_executor.layers.mamba.ops.causal_conv1d import causal_conv1d_fn, causal_conv1d_update
 from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadata
@@ -89,47 +89,7 @@ aic_debug = int(os.getenv("aic_gdn_debug", "0"))  # noqa: SIM112
 
 
 def get_gdn_test_cases():
-    """
-    Generate test cases for GDN kernel benchmarking.
-
-    Returns a list of test case configurations for both context (prefill)
-    and generation (decode) phases.
-    """
-    test_cases = []
-
-    for common_case in get_common_gdn_test_cases():
-        if common_case.phase == "context":
-            test_cases.append(
-                [
-                    common_case.phase,
-                    common_case.d_model,
-                    common_case.d_conv,
-                    common_case.num_k_heads,
-                    common_case.head_k_dim,
-                    common_case.num_v_heads,
-                    common_case.head_v_dim,
-                    common_case.batch_size_list,
-                    common_case.seq_len_list,
-                    common_case.model_name,
-                ]
-            )
-        else:
-            test_cases.append(
-                [
-                    common_case.phase,
-                    common_case.d_model,
-                    common_case.d_conv,
-                    common_case.num_k_heads,
-                    common_case.head_k_dim,
-                    common_case.num_v_heads,
-                    common_case.head_v_dim,
-                    common_case.batch_size_list,
-                    None,  # seq_len_list not used for generation
-                    common_case.model_name,
-                ]
-            )
-
-    return test_cases
+    return plan_cases("gdn", "vllm", get_sm_version())
 
 
 def run_gdn_context_benchmark(

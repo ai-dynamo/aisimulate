@@ -66,7 +66,6 @@ import os
 import torch
 
 try:
-    from collector.case_generator import get_common_kda_test_cases
     from collector.helper import (
         WORKER_RESTART,
         benchmark_with_power,
@@ -78,7 +77,6 @@ except ModuleNotFoundError:
     import sys
 
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from case_generator import get_common_kda_test_cases
     from version_resolver import _check_compat
 
     from helper import (
@@ -87,6 +85,8 @@ except ModuleNotFoundError:
         get_sm_version,
         log_perf,
     )
+
+from collector.op_plans import plan_cases
 
 aic_debug = int(os.getenv("aic_kda_debug", "0"))  # noqa: SIM112
 
@@ -113,24 +113,7 @@ NUM_RUNS = 10
 
 
 def get_kda_test_cases():
-    """Test cases for KDA kernel benchmarking (context/generation/verify)."""
-    test_cases = []
-    for c in get_common_kda_test_cases():
-        test_cases.append(
-            [
-                c.phase,
-                c.d_model,
-                c.d_conv,
-                c.num_k_heads,
-                c.head_k_dim,
-                c.num_v_heads,
-                c.head_v_dim,
-                c.batch_size_list,
-                c.seq_len_list,
-                c.model_name,
-            ]
-        )
-    return test_cases
+    return plan_cases("kda", "vllm", get_sm_version())
 
 
 def _cleanup(tag: str):

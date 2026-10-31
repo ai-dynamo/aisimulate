@@ -81,7 +81,6 @@ if TYPE_CHECKING:
 import torch
 
 try:
-    from collector.case_generator import get_common_kda_test_cases
     from collector.helper import (
         WORKER_RESTART,
         benchmark_with_power,
@@ -93,7 +92,6 @@ except ModuleNotFoundError:
     import sys
 
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from case_generator import get_common_kda_test_cases
     from version_resolver import _check_compat
 
     from helper import (
@@ -103,6 +101,8 @@ except ModuleNotFoundError:
         log_perf,
     )
 
+from collector.op_plans import plan_cases
+
 aic_debug = int(os.getenv("aic_kda_debug", "0"))  # noqa: SIM112
 
 # KDA safe-gate lower bound: fixed model constant for Kimi-K3
@@ -111,31 +111,7 @@ KDA_LOWER_BOUND = -5.0
 
 
 def get_kda_test_cases():
-    """
-    Generate test cases for KDA kernel benchmarking.
-
-    Returns a list of test case configurations for context (prefill),
-    generation (decode) and verify (speculative target-verify) phases.
-    """
-    test_cases = []
-
-    for common_case in get_common_kda_test_cases():
-        test_cases.append(
-            [
-                common_case.phase,
-                common_case.d_model,
-                common_case.d_conv,
-                common_case.num_k_heads,
-                common_case.head_k_dim,
-                common_case.num_v_heads,
-                common_case.head_v_dim,
-                common_case.batch_size_list,
-                common_case.seq_len_list,
-                common_case.model_name,
-            ]
-        )
-
-    return test_cases
+    return plan_cases("kda", "sglang", get_sm_version())
 
 
 def _cleanup(tag: str):

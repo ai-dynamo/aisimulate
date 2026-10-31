@@ -44,6 +44,12 @@ def _region(op: str, case) -> dict:
     return {"dtype": getattr(case, spec.dtype_field), **{field: getattr(case, field) for field in spec.region_fields}}
 
 
+def _registered_ops(backend: str) -> list[str]:
+    """The ops with an op plan that this backend's registry collects."""
+    registry = importlib.import_module(f"collector.{backend}.registry").REGISTRY
+    return sorted({entry.op for entry in registry} & set(OP_PLANS))
+
+
 def _getters():
     for backend in BACKENDS:
         for entry in importlib.import_module(f"collector.{backend}.registry").REGISTRY:
@@ -169,7 +175,7 @@ def test_plan_only_reports_op_plans_and_writes_the_table(tmp_path):
         [
             sys.executable,
             str(PKG_ROOT / "collector" / "collect.py"),
-            *("--backend", "vllm", "--model-cases-full", "--sm", "89", "--ops", *sorted(OP_PLANS)),
+            *("--backend", "vllm", "--model-cases-full", "--sm", "89", "--ops", *_registered_ops("vllm")),
             *("--plan-only", "--plan-table", str(tmp_path)),
         ],
         cwd=PKG_ROOT,
@@ -181,7 +187,7 @@ def test_plan_only_reports_op_plans_and_writes_the_table(tmp_path):
     assert result.returncode == 0, result.stderr[-2000:]
 
     plans = json.loads(result.stdout)["plans"]
-    assert set(plans) == set(OP_PLANS)
+    assert set(plans) == set(_registered_ops("vllm"))
     gemm = plans["gemm"]
     shapes = gemm["by_dtype"]["bfloat16"]
     assert gemm["by_dtype"] == {"bfloat16": shapes, "fp8": shapes, "fp8_block": shapes}
@@ -189,7 +195,7 @@ def test_plan_only_reports_op_plans_and_writes_the_table(tmp_path):
     rows = (tmp_path / "vllm_sm89_gemm.csv").read_text().splitlines()
     assert rows[0] == "gemm_type,m,n,k"
     assert len(rows) == 1 + gemm["cases"]
-    for op in OP_PLANS:
+    for op in plans:
         assert len((tmp_path / f"vllm_sm89_{op}.csv").read_text().splitlines()) == 1 + plans[op]["cases"], op
 
 
