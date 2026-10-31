@@ -9398,6 +9398,9 @@ mod tests {
                 .clear();
             let timing = &timing;
             let pricing = timing.iteration.as_ref().unwrap();
+            let IterationQuery::Native(dispatch) = pricing.query else {
+                panic!("a packaged operation graph prices natively");
+            };
             // Reference: the detailed estimate's named operations, recorded
             // by the provider accumulator and by the checked accumulator.
             let mut named = TimingEvidenceAccumulator::default();
@@ -9407,11 +9410,7 @@ mod tests {
                 let total_ms = iteration_ms(timing, ranks);
                 let queries: Vec<_> = ranks
                     .iter()
-                    .map(|rank| {
-                        AicTimingModel::rank_query(pricing.dispatch, rank)
-                            .unwrap()
-                            .unwrap()
-                    })
+                    .map(|rank| AicTimingModel::rank_query(dispatch, rank).unwrap().unwrap())
                     .collect();
                 let metrics: Vec<_> = queries.iter().map(AicTimingModel::rank_metrics).collect();
                 let estimate = model.estimate_forward_pass_detailed(&metrics).unwrap();
