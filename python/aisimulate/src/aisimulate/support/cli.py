@@ -656,12 +656,16 @@ def _review_config_profile(
             print("  No activation or non-KV byte estimate is required.")
             print("  Displayed byte estimates are planning evidence. Finalize the collected memory before simulation.")
             version = request.identity.framework_version
-            if bundled_instrumentation(version) is not None:
+            # Ruling R-Z: collection observes memory only on vLLM 0.27.0 (collector runner._observe_runtime_memory
+            # and support/plan.py). Another bundled version observes memory in runtime probes only.
+            if version == "0.27.0":
                 print(f"  Memory is observed during initialized vLLM {version} probes and collection.")
                 print(
                     "  Collection policy: synchronous scheduling in both phases, "
                     "matching supported prefill benchmarking."
                 )
+            elif bundled_instrumentation(version) is not None:
+                print(f"  Memory is observed during initialized vLLM {version} probes only.")
             else:
                 print(
                     "  Memory observation needs a bundled or campaign-local instrumentation bundle for this vLLM "

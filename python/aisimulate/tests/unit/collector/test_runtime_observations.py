@@ -1564,7 +1564,13 @@ def test_v031_records_require_prefix_caching_evidence_and_refuse_mamba_mode_all(
 
 
 @pytest.mark.parametrize(
-    "shape", ["scheduler_without_hash_block_size", "enable_prefix_caching_string", "unknown_mamba_cache_mode"]
+    "shape",
+    [
+        "scheduler_without_hash_block_size",
+        "enable_prefix_caching_string",
+        "unknown_mamba_cache_mode",
+        "evidence_not_a_mapping",
+    ],
 )
 def test_v031_malformed_prefix_caching_evidence_is_incomplete(tmp_path, shape):
     path, launches = observation_fixture(tmp_path, layout="mamba_hybrid")
@@ -1577,6 +1583,10 @@ def test_v031_malformed_prefix_caching_evidence_is_incomplete(tmp_path, shape):
                 evidence.pop("hash_block_size")
         elif shape == "enable_prefix_caching_string":
             evidence["enable_prefix_caching"] = "true"
+        elif shape == "evidence_not_a_mapping":
+            # A list of the record's own key names passes the key-set comparison, so only the mapping check refuses
+            # it. A string such as "align" would also fail the key-set comparison.
+            record["cache"]["prefix_caching"] = sorted(evidence)
         else:
             evidence["mamba_cache_mode"] = "auto"
 

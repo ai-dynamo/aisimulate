@@ -434,7 +434,9 @@ def verify_collection_runtime_bindings(request: SupportRequest, bindings: list[d
             )
         except (OSError, ValueError, TypeError, KeyError, AttributeError, StopIteration) as error:
             raise ValueError(f"{phase}: {error}") from error
-    resources = deepcopy(next(iter(phases.values()))["resources"])
+    # Decision 3: the record holds the role's first collection phase, whatever order the caller binds the phases in.
+    # _plans requires every collection phase exactly once.
+    resources = deepcopy(phases[request.collection_phases[0]]["resources"])
     capacity = min(item["resources"]["runtime_memory"]["kv_cache_bytes"] for item in phases.values())
     provenance = {
         "source": "bound_collection_phases",

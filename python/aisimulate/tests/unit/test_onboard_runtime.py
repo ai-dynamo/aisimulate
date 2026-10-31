@@ -920,6 +920,20 @@ def test_plan_names_the_cache_geometry_of_an_observed_profile(tmp_path, capsys, 
     )
 
 
+def test_plan_admits_the_imported_glm_draft_at_its_observed_capacity(tmp_path, capsys):
+    # The GLM probe leaves 7 usable pool blocks of 13,045,120 bytes. A 4096-token request needs two 2176-token
+    # attention blocks and one block in each of the five state groups, the 4-token tail group too: all 7 blocks.
+    _, _, _, files = _imported(tmp_path, capsys, tp=4, layout="glm_tp4")
+    root = tmp_path / "collection"
+    assert cli.main(["onboard", "plan", "--config", files["request"], "--output-dir", str(root)]) == 0
+    plan = json.loads((root / "support-plan.json").read_text())
+    assert plan["prerequisites"][0]["status"] == "runtime_memory_resolved"
+    assert plan["prerequisites"][0]["detail"] == (
+        "Observed cache capacity and grouped geometry are bound to this deployment and runtime envelope."
+    )
+    assert plan["resources"]["request_peak_cache_bytes"] == plan["resources"]["total_kv_size_bytes"] == 7 * 13_045_120
+
+
 @pytest.mark.parametrize("claim", [False, True], ids=["grouped", "linear"])
 @pytest.mark.parametrize("block", [16, 256])
 def test_generated_configs_replay_a_linear_runtime_profile_with_the_measured_block_size(tmp_path, capsys, block, claim):
@@ -1707,12 +1721,11 @@ def test_formal_collection_compares_prefix_caching_of_every_phase(tmp_path, caps
         verify_collection_runtime(request, index, collection_checkpoint=checkpoint)
 
 
-def test_formal_phase_binding_compares_prefix_caching_per_phase(tmp_path, capsys):
+def _formal_phase_bindings(tmp_path, capsys):
+    """A completed formal campaign of the mamba_hybrid probe, its observation index and a binding builder."""
     from collector.fpm_forward.cli import _parser
     from collector.fpm_forward.entry import _load_generator_overrides
     from collector.fpm_forward.repeatability import load_repeatability_source
-
-    from aisimulate.support.runtime import verify_collection_runtime_bindings
 
     # Decode runs without prefix caching: its Mamba groups hold max_model_len tokens per block in none mode, while
     # the accepted record holds the prefill phase's align mode and 64-token blocks.
@@ -1744,6 +1757,13 @@ def test_formal_phase_binding_compares_prefix_caching_per_phase(tmp_path, capsys
             for cell in plan.cells
         ]
 
+    return request, index, bindings
+
+
+def test_formal_phase_binding_compares_prefix_caching_per_phase(tmp_path, capsys):
+    from aisimulate.support.runtime import verify_collection_runtime_bindings
+
+    request, index, bindings = _formal_phase_bindings(tmp_path, capsys)
     result = verify_collection_runtime_bindings(request, bindings())
     assert result["status"] == "complete"
     assert result["phases"]["decode"]["provenance"]["prefix_caching"]["decode"] == {
@@ -1753,6 +1773,56 @@ def test_formal_phase_binding_compares_prefix_caching_per_phase(tmp_path, capsys
     }
     _record_decode_hash_block_size(index, 64)
     with pytest.raises(ValueError, match="decode: runtime prefix-caching settings differ from the accepted probe"):
+        verify_collection_runtime_bindings(request, bindings())
+
+
+def test_reversed_phase_bindings_merge_into_the_record_of_the_first_collection_phase(tmp_path, capsys):
+    from aisimulate.support.runtime import verify_collection_runtime_bindings
+
+    request, _, bindings = _formal_phase_bindings(tmp_path, capsys)
+    # Decision 3: the record holds the role's first collection phase, prefill, in whatever order the caller binds.
+    resources = verify_collection_runtime_bindings(request, bindings()[::-1])["resources"]
+    runtime = resources["runtime_memory"]
+    assert (runtime["enable_prefix_caching"], runtime["mamba_cache_mode"], runtime["hash_block_size_tokens"]) == (
+        True,
+        "align",
+        64,
+    )
+    assert [group["block_size_tokens"] for group in resources["cache_groups"]] == [64, 64, 64]
+    assert resources == verify_collection_runtime_bindings(request, bindings())["resources"]
+
+
+def _record_decode_state_block_size(index, tokens):
+    """Rewrite the block size of the first state group in every decode record of an observation index.
+
+    Every record of the phase changes together, and each Mamba view keeps one kernel block per pool block, so
+    the phase still validates on its own.
+    """
+    document = json.loads(index.read_text())
+    phase = document["configurations"]["tp2"]["attempts"][0]["phases"]["decode"]
+    for reference in phase["artifacts"]:
+        path = index.parent / reference["path"]
+        record = json.loads(path.read_text())
+        group = record["cache"]["groups"][1]
+        assert "state" in group
+        group["block_size_tokens"] = tokens
+        if record["kind"] == "worker":
+            for name in group["layer_names"]:
+                for view in record["cache"]["layer_tensors"][name]:
+                    view["kernel_block_size_tokens"] = tokens
+        _write(path, record)
+        reference["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    _write(index, document)
+
+
+def test_formal_phase_binding_compares_the_raw_block_size_of_a_state_group(tmp_path, capsys):
+    from aisimulate.support.runtime import verify_collection_runtime_bindings
+
+    request, index, bindings = _formal_phase_bindings(tmp_path, capsys)
+    # The whole-record comparison leaves out the block sizes of state groups, so the raw groups of the bound phase
+    # are the only check of the decode Mamba block, 4096 tokens in the accepted probe.
+    _record_decode_state_block_size(index, 2048)
+    with pytest.raises(ValueError, match="decode: runtime cache group geometry differs from the accepted probe"):
         verify_collection_runtime_bindings(request, bindings())
 
 
