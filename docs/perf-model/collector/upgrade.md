@@ -115,6 +115,9 @@ It does not mean the raw backend-registry Cartesian run with no model-case
 flags. Preserve the identity and deduplication invariants in
 [the data format](data-format.md).
 
+For GEMM, the `plans` block of that output gives the retained count per dtype
+and each region left out with its reason.
+
 For each operation, record raw and retained task counts, physical-key counts,
 model/artifact coverage, dtype counts, and capability-floor drop counts. Quant-sensitive
 artifacts remain separate when the checkpoint changes the executed kernel.

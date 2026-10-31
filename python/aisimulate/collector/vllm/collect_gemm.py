@@ -42,13 +42,7 @@ quantized-weight preparation, and selected-kernel reporting.
 # addition -- selection is first-match by is_supported(), so today's
 # selected kernels for fp8/fp8_block are unaffected); vllm.utils.deep_gemm
 # (per_block_cast_to_fp8 -- file byte-identical in its entirety, both
-# clones). The fp8_block SM120 FIXME(kernel-limit) below still holds: its
-# vllm-side citations (platforms/cuda.py's support_deep_gemm,
-# utils/deep_gemm.py's should_use_deepgemm_for_fp8_linear) are unchanged in
-# content at 0.27.1 (only support_deep_gemm's def line shifted 663->665);
-# the DeepGEMM/CUTLASS-side citations (csrc/apis/layout.hpp,
-# cutlass_gemm_caller.cuh) live outside this vllm clone and were not
-# re-derived, but nothing on the vllm side suggests the upstream gap closed.
+# clones).
 # 0.25.0 collection audit against the installed official runtime, vLLM
 # dd10e03f95f94edbea1975c67ace3a35ec9a8a40.
 # RowParallelLinear's class body is AST-identical to 0.24.0; Fp8LinearMethod
@@ -137,7 +131,7 @@ from types import SimpleNamespace
 
 import torch
 import vllm.envs as envs
-from collector.case_generator import get_gemm_case_specs
+from collector.case_generator import get_gemm_cases
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from collector.vllm.utils import setup_distributed, with_exit_stack
 from vllm._custom_ops import scaled_fp4_quant as _scaled_fp4_quant
@@ -170,57 +164,11 @@ _NVFP4_QUANT_ARGS = {
 
 
 def get_gemm_test_cases():
-    sm = get_sm_version()
-
-    # Open floors matching cases/capabilities.yaml (fp8: 89, fp8_block: 89,
-    # nvfp4: 100) — a closed SM whitelist here would silently drop unlisted
-    # SMs (e.g. SM101/SM121) with no logged reason.
-    gemm_list = ["bfloat16"]
-    if sm >= 89:
-        gemm_list += ["fp8"]
-    # Blockwise FP8 runs on fp8 hardware from SM89 (Ada): below SM90 the
-    # DeepGEMM/cutlass tiers of vLLM's block-scale dispatch are unavailable
-    # and _POSSIBLE_FP8_BLOCK_KERNELS falls through to the Marlin/Triton
-    # tiers (model_executor/kernels/linear/__init__.py:319-330 @0.24.0;
-    # Marlin is selected first on SM89 from 0.30.0, __init__.py:457-466,
-    # :458-467 @0.31.0 unchanged);
-    # verified end-to-end on L40S (SM89) at 0.24.0, with kernel_source
-    # recording the actually-selected kernel per row.
-    if sm >= 89:
-        gemm_list += ["fp8_block"]
-
-    if sm >= 100:
-        gemm_list += ["nvfp4"]
-
-    test_cases = []
-
-    for gemm_common_testcase in get_gemm_case_specs():
-        x = gemm_common_testcase.x
-        n = gemm_common_testcase.n
-        k = gemm_common_testcase.k
-        for gemm_type in gemm_list:
-            test_cases.append([gemm_type, x, n, k])
-
-    return test_cases
+    return get_gemm_cases("vllm", get_sm_version())
 
 
 @with_exit_stack
 def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
-    if gemm_type == "fp8_block" and (n % 16 or k % 16) and get_sm_version() >= 90:
-        # FIXME(kernel-limit): vLLM routes block-fp8 GEMMs whose weight dims are not multiples
-        # of 16 away from cutlass (_custom_ops.cutlass_scaled_mm: `cutlass_compatible_b =
-        # b.shape[0] % 16 == 0 and b.shape[1] % 16 == 0` @0.31.0:807) into triton_scaled_mm,
-        # whose scale-shape assert cannot take 128x128 block scales (triton_scaled_mm.py:201).
-        # Deterministic per shape: gb200 1,110 cases, every one N in {1,4,8,12,24} (pipeline
-        # 72343556; b200/b300 ~130 of the same shard). The ed9109ec attempt to classify by a
-        # pre-flight forward never ran: create_gemm()'s own dry run asserts first. Refuse before
-        # the layer is built; serving linears with these N take the same path. SM89 never
-        # reaches it: the cutlass block tier needs SM90 and Marlin is selected first
-        # (_POSSIBLE_FP8_BLOCK_KERNELS, model_executor/kernels/linear/__init__.py:458-467 @0.31.0).
-        raise RuntimeError(
-            f"FIXME(kernel-limit): vLLM fp8_block GEMM needs n and k multiples of 16 for cutlass_scaled_mm "
-            f"(n={n}, k={k}); the triton_scaled_mm fallback asserts on 128x128 block scales"
-        )
     setup_distributed(device)
 
     if envs.VLLM_BATCH_INVARIANT:
@@ -250,38 +198,6 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
             weight_block_size=None,
         )
     elif gemm_type == "fp8_block":
-        # FIXME(kernel-limit): on SM120, vLLM's default block-fp8 linear
-        # dispatch is broken end to end: support_deep_gemm claims the 12x
-        # family (platforms/cuda.py:663-669 @0.24.0, :665-671 @0.27.1 --
-        # body byte-identical, only the def line shifted) so DeepGEMM takes
-        # shapes with N%64==0 and K%128==0 (should_use_deepgemm_for_fp8_linear,
-        # utils/deep_gemm.py:700-720, unchanged at 0.27.1 -- the whole file
-        # is byte-identical between the two pinned tags) and asserts "Unknown
-        # SF transformation" (deepgemm csrc/apis/layout.hpp:59, outside this
-        # repo, not re-verified at this bump); the remaining shapes go to
-        # cutlass c3x which fails "Invalid status" (cutlass_gemm_caller.cuh
-        # :51, also outside this repo). 29/30 sampled fp8_block shapes failed
-        # on RTX PRO 6000 Blackwell at 0.24.0; module collectors with
-        # fp8_block linears (mla/dsa/dsv4/moe) inherit the same failure at
-        # build time. Serving fails identically. Upstream: vllm#47436/#47130
-        # (open, same assertion), DeepGEMM#318 (SM120 support PR, open); the
-        # Triton block-fp8 kernel works on SM120 (verified) and
-        # vllm#40929/#41834 move DSV4-on-SM120 onto that fallback. Re-verified
-        # 2026-08-21 against the v0.27.1 source clone: nothing on the vllm
-        # side (the two citations above) suggests this gap closed since
-        # 0.24.0 -- re-verify again on the next vLLM/DeepGEMM bump.
-        # 2026-09-30 v0.30.0 re-verification: support_deep_gemm body unchanged
-        # (platforms/cuda.py:721-727), should_use_deepgemm_for_fp8_linear
-        # unchanged (utils/deep_gemm.py:775-794); cutlass_gemm_caller.cuh's
-        # check is at :52 and the SM120 blockwise swap_ab/CTA-swizzle dispatch
-        # changed (#55180), so which shapes hit "Invalid status" may differ.
-        # The new B12x block kernel sits after DeepGemm/Cutlass and never
-        # auto-selects. Claim still unverified on SM120 at 0.30.0.
-        # 2026-10-07 v0.31.0 re-verification: support_deep_gemm is unchanged
-        # (platforms/cuda.py:709-715), as is should_use_deepgemm_for_fp8_linear
-        # (utils/deep_gemm.py:1020-1039). The SM120 blockwise dispatch and
-        # cutlass_gemm_caller.cuh are byte-identical (only the SM100
-        # blockwise dispatch changed). Claim still unverified on SM120.
         qc = Fp8Config(
             is_checkpoint_fp8_serialized=True,
             activation_scheme="dynamic",

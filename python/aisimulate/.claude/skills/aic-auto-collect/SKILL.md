@@ -221,7 +221,9 @@ Collect only what the question needs (`.claude/rules/collector/overview.md`,
 "Collection cost"). An upgrade or a fix runs the affected ops and cases on one
 system per SM generation. A full plan is for bringing up a new system, or for
 a family whose kernels changed at a pin bump; the other families declare
-reuse.
+reuse. To run exact cases, pass each case's full string as its own
+`--case-filter`, for example `--case-filter "['fp8_block', 64, 32, 4096]"`.
+For GEMM, `--plan-only --sm <sm> --plan-table DIR` lists every planned case.
 
 For new GPUs, prioritize ops used by the target models and backend first, but do not claim full support until all expected ops for that backend/version are collected or explicitly marked unsupported.
 
@@ -344,7 +346,7 @@ Fix policy:
   4. Verify the real API in source. Do not trust Python's "Did you mean" suggestions blindly.
   5. Patch the collector in place for the target release (one release per file: `.claude/rules/collector/layer_permissions.md`, "Version contract").
 - For API changes, upgrade the collector in place and pin `__compat__` to exactly the target release.
-- For a dtype or op the GPU cannot run at all (FP4/NVFP4 below SM100, FP8 below SM89), add a `capabilities.yaml` floor or a quant-axis `min_sm`; never filter in collector code with `get_sm_version()`.
+- For a dtype or op the GPU cannot run at all (FP4/NVFP4 below SM100, FP8 below SM89), add a `capabilities.yaml` floor or a quant-axis `min_sm`. If the hardware can run the dtype but this backend's collector cannot, for the whole (op, dtype) on that SM, add a `backend_gaps` entry with a guard note. Never filter in collector code with `get_sm_version()`.
 - For a shape or dimension boundary that one framework rejects, per-rank sizes such as `inter_size // tp` included, change nothing: the cases fail and are recorded. Count failures per consumer key and name the unavailable keys in the PR.
 - Add a guard only when a case would mismeasure, hang or kill the worker, or waste significant time. It raises in the worker and cites a `G-` note (`.claude/rules/collector/layer_permissions.md`).
 - For CUDA-fatal errors, the worker restarts and the failure is already recorded; do not add skips.
@@ -419,7 +421,8 @@ Therefore ALWAYS verify results by content, never by status:
    rows and no capability-floor explanation is a failure regardless of status.
 2. Read `errors_*.json` / `collection_summary_*.json`; any
    `ModuleCollectionFailure` means that op collected nothing.
-3. Compare collected vs planned counts (`--plan-only` gives the plan size);
+3. Compare collected vs planned counts (`--plan-only --sm <sm>` prints the
+   plan size per consumer key for typed ops, GEMM so far);
    large shortfalls mean the run died early — check the tail of the log for
    container/cluster death, not just collector errors.
 

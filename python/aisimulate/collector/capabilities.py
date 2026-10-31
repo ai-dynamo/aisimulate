@@ -1,12 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Hardware capability floors and the hang denylist.
+"""Hardware capability floors, backend gaps and the hang denylist.
 
-Both are flat, generation-time filters applied before cases are queued:
+All are flat, generation-time filters applied before cases are queued:
 
 - ``capabilities.yaml``: positive dtype/op -> min SM floors. A case whose
-  dtype requires a newer SM than the target is never queued.
+  dtype requires a newer SM than the target is never queued. Its
+  ``backend_gaps`` list removes a whole (op, dtype) region that one
+  backend's collector cannot run on given SMs; each entry names a guard
+  note in ``collector/notes/<backend>.yaml``.
 - ``denylist.yaml``: substring matches for cases that hang or kill the node.
   Ordinary crashes do not belong there -- they fail fast, get classified in
   the failure log with a (model, dtype) group label, and systemic groups are
@@ -20,6 +23,7 @@ from __future__ import annotations
 
 import functools
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -41,6 +45,41 @@ def _load_capabilities() -> tuple[dict[str, int], dict[str, int]]:
     dtype_min_sm = {str(k): int(v) for k, v in (data.get("dtype_min_sm") or {}).items()}
     op_min_sm = {str(k): int(v) for k, v in (data.get("op_min_sm") or {}).items()}
     return dtype_min_sm, op_min_sm
+
+
+_BACKEND_GAP_KEYS = frozenset(("backend", "op", "dtype", "sm", "note"))
+
+
+@dataclass(frozen=True)
+class BackendGap:
+    """A whole (op, dtype) region one backend's collector cannot run on ``sms``."""
+
+    backend: str
+    op: str
+    dtype: str
+    sms: tuple[int, ...]
+    note: str
+
+
+@functools.lru_cache(maxsize=1)
+def _load_backend_gaps() -> tuple[BackendGap, ...]:
+    path = _CASES_DIR / "capabilities.yaml"
+    data = yaml.safe_load(path.read_text()) or {}
+    gaps = []
+    for index, entry in enumerate(data.get("backend_gaps") or []):
+        where = f"capabilities.yaml backend_gaps[{index}]"
+        if not isinstance(entry, dict) or set(entry) != _BACKEND_GAP_KEYS:
+            raise ValueError(f"{where} must have exactly the keys {sorted(_BACKEND_GAP_KEYS)}")
+        for key in ("backend", "op", "dtype", "note"):
+            if not isinstance(entry[key], str) or not entry[key].strip():
+                raise ValueError(f"{where}.{key} must be a non-empty string")
+        sms = entry["sm"]
+        if not (isinstance(sms, list) and sms and all(type(sm) is int for sm in sms)):
+            raise ValueError(f"{where}.sm must be a non-empty list of SM versions")
+        if not entry["note"].startswith(f"G-{entry['backend']}-"):
+            raise ValueError(f"{where}.note must name a guard note, G-{entry['backend']}-<slug>")
+        gaps.append(BackendGap(entry["backend"], entry["op"], entry["dtype"], tuple(sms), entry["note"]))
+    return tuple(gaps)
 
 
 @functools.lru_cache(maxsize=1)
@@ -96,6 +135,28 @@ def unsupported_reason(test_case, op: str, sm_version: int | None) -> str | None
         floor = dtype_min_sm.get(dtype)
         if floor is not None and sm_version < floor:
             return f"dtype {dtype} requires SM>={floor}"
+    return None
+
+
+def region_reason(op: str, dtype: str, backend: str, sm_version: int | None) -> str | None:
+    """Return why the whole (op, dtype) region is left out for this backend and SM, or None.
+
+    Typed plans call this once per dtype when they expand, so a removed
+    region never reaches the queue. ``sm_version`` None (e.g. XPU) removes
+    nothing, as in :func:`unsupported_reason`.
+    """
+    if sm_version is None:
+        return None
+    dtype_min_sm, op_min_sm = _load_capabilities()
+    op_floor = op_min_sm.get(op)
+    if op_floor is not None and sm_version < op_floor:
+        return f"op {op} requires SM>={op_floor}"
+    floor = dtype_min_sm.get(dtype)
+    if floor is not None and sm_version < floor:
+        return f"dtype {dtype} requires SM>={floor}"
+    for gap in _load_backend_gaps():
+        if (gap.backend, gap.op, gap.dtype) == (backend, op, dtype) and sm_version in gap.sms:
+            return f"backend gap {gap.note}"
     return None
 
 

@@ -126,7 +126,9 @@ mapping with a `notes` list. A note has one of two kinds:
 - A **deviation** (`D-` id): the table measures a different path than serving
   runs, for example an unfused kernel where serving fuses.
 - A **guard** (`G-` id): collector code refuses a case because running it would
-  measure the wrong kernel, hang, or waste significant time.
+  measure the wrong kernel, hang, or waste significant time. A `backend_gaps`
+  entry in `collector/cases/capabilities.yaml` cites a guard note when a whole
+  (op, dtype) region is left out of one backend's plan.
 
 | Field | Required | Meaning |
 |---|---|---|

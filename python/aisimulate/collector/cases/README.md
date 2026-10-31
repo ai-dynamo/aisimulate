@@ -5,7 +5,7 @@ collector as a flat op list. The whole declaration surface is:
 
 ```text
 plan cases = dedup( expand(base_ops sweep grids) ∪ expand(model_case_values shapes) )
-runnable   = plan cases ∩ hardware capability floors  −  hang denylist
+runnable   = plan cases ∩ hardware capability floors  −  backend gaps  −  hang denylist
 ```
 
 There is intentionally no per-case selector or exception rule engine. Cases
@@ -21,9 +21,10 @@ See `.claude/rules/collector/failure_handling.md` for the escalation rules.
   activated.
 - `models/<architecture>_cases.yaml`: architecture-specific op activation,
   model path aliases, and model shape values.
-- `capabilities.yaml`: positive hardware floors (dtype/op → min SM), applied
-  as a generation-time intersection. Hardware facts only — no shapes, no
-  framework versions, no per-backend nesting.
+- `capabilities.yaml`: positive hardware floors (dtype/op → min SM) and
+  `backend_gaps` (a whole (op, dtype) region one backend's collector cannot
+  run on given SMs, citing a guard note), applied when cases are generated.
+  No shapes, no framework versions, no other per-backend nesting.
 - `denylist.yaml`: cases that hang or kill the node (substring match, dated,
   with reason). Ordinary crashes never go here.
 
@@ -172,22 +173,33 @@ into `compute_scale`).
 
 ## Capability Floors
 
-`capabilities.yaml` holds positive hardware facts:
+`capabilities.yaml` holds positive hardware facts, plus the whole regions one
+backend's collector cannot run:
 
 ```yaml
 dtype_min_sm:
   fp8: 89
-  fp8_block: 90
+  fp8_block: 89
   nvfp4: 100
 op_min_sm:
   dsa_context_module: 90
+backend_gaps:
+  - backend: sglang
+    op: gemm
+    dtype: fp8_block
+    sm: [89, 120]
+    note: G-sglang-gemm-fp8-block-deepgemm-only
 ```
 
-`collector/capabilities.py` filters generated cases by typed field access
-(`moe_type`, `gemm_type`, `dtype`, `kv_cache_dtype`, FP8 flags) before
-queueing. Unknown dtypes and unknown ops are permissive: the table encodes
-known hardware facts, never guesses. Framework-version gaps do NOT belong
-here — they are runtime observations.
+A typed plan (GEMM so far, `case_generator.plan_gemm`) applies both when it
+expands, one dtype at a time, and `collect.py --plan-only --sm N` reports what
+it left out and why. For other ops, `collector/capabilities.py` filters
+generated cases by typed field access (`moe_type`, `gemm_type`, `dtype`,
+`kv_cache_dtype`, FP8 flags) before queueing. Unknown dtypes and unknown ops
+are permissive: the table encodes known facts, never guesses. A
+`backend_gaps` entry covers a whole (op, dtype) on listed SMs and names a
+guard note in `collector/notes/<backend>.yaml`. Shape-level kernel limits and
+framework-version gaps do NOT belong here; they are runtime observations.
 
 ## Denylist
 

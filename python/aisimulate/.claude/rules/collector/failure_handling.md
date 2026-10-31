@@ -45,6 +45,8 @@ case failed
 ├─ Not validated on THIS SM only?                   → registry OpEntry unverified_sms=(sm,)
 ├─ Physically impossible on this hardware?          → capabilities.yaml positive floor
 │    (dtype doesn't exist below SM X — NOT "this framework version lacks a kernel")
+├─ A whole (op, dtype) fails on an SM for one backend → capabilities.yaml backend_gaps
+│    because its collector has no kernel there?        entry + guard note
 ├─ Out of memory?                                   → treat as unclassified until it
 │    reproduces on a clean GPU; if real, the collector's generation-time memory
 │    filter may exclude it (see layer_permissions.md — the one sanctioned filter)

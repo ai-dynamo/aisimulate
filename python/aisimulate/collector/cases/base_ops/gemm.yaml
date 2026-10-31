@@ -14,6 +14,14 @@ all_frameworks_op_cases:
         output_features].
 
         '
+      # The dtype axis every CUDA backend expands over the same shapes. A whole
+      # dtype an SM or a backend cannot run leaves at expansion
+      # (cases/capabilities.yaml); single shapes that fail are recorded.
+      gemm_types:
+      - bfloat16
+      - fp8
+      - fp8_block
+      - nvfp4
       token_counts:
       - 1
       - 2

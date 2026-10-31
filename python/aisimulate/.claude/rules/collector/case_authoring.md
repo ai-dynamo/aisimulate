@@ -22,6 +22,7 @@ plan is expanded.
 
 ```text
 plan cases = dedup( expand(base sweep grid) ∪ expand(model shapes) )
+runnable   = plan cases − whole regions (capabilities.yaml floors and backend_gaps)
 ```
 
 - **Base grids** (`cases/base_ops/<op>.yaml`) give interpolation its uniform
@@ -43,6 +44,8 @@ plan cases = dedup( expand(base sweep grid) ∪ expand(model shapes) )
 | Change a shared sweep | edit the op's `cases/base_ops/<op>.yaml` |
 | New op collector | only when no existing op can produce the data points |
 | Op needs newer SM than some GPUs | axis `min_sm` (quant modes) or `cases/capabilities.yaml` |
+| One backend's collector cannot run a whole (op, dtype) on some SMs | `capabilities.yaml` `backend_gaps` entry naming a guard note `G-<backend>-<slug>` in `collector/notes/<backend>.yaml` |
+| New GEMM dtype | add it to `gemm_types` in `cases/base_ops/gemm.yaml`, plus a floor if the hardware needs one |
 | Quant mode exists on an SM interval, not a floor (framework routes the platform elsewhere) | quant-mode `max_sm_exclusive` with a mandatory serving-dispatch citation (owner decision 2026-07-13: negative gates are sanctioned only on the quant-mode axis, only with a file:line@version citation, and every citation is re-verified on version bumps — the default-open behavior lets NEW SMs be probed and fail loudly instead of being silently whitelisted out) |
 
 ## Model file structure (unchanged from v2 core)
@@ -69,7 +72,7 @@ valid combinations**. Route by who owns the fact:
 | the model (head count, valid TP shards, windows) | a field on its `model_case_values.<op>` row | `attention` profiles: `tensor_parallel_sizes` — the generator expands only valid shards of that tuple |
 | the op's universal math (identities, budgets) | generator constraint / base-op budget field | `tp*ep == num_gpu`; `batch*seq <= max_context_tokens` |
 | the platform (dtype floor, memory) | `capabilities.yaml` / the collector memory filter | see `layer_permissions.md` |
-| the framework (kernel limits) | probe-and-raise / `FIXME(kernel-limit)` | see `layer_permissions.md` |
+| the framework (kernel limits) | nothing: the cases fail and are recorded. A whole (op, dtype, SM) region goes in `backend_gaps`; a case that would mismeasure, hang or waste time gets a guard | see `layer_permissions.md` |
 
 If the op's generator does not yet support the model-correlated field you
 need (e.g. `mla_bmm` sweeps a global head grid with no model axis), the fix
@@ -97,6 +100,28 @@ poison the database with mislabeled rows.
    drops (capability floors, memory filter). Zero cases with no logged
    reason is a population bug to fix — not a clean completion.
 
+## Typed plans (GEMM so far)
+
+A typed plan expands one grid for every CUDA backend and leaves out only
+whole regions. For GEMM, `case_generator.plan_gemm(backend, sm)` takes the
+`gemm_types` axis of `cases/base_ops/gemm.yaml` times the shared shapes (base
+grid plus `model_case_values.gemm` widths) and removes the dtypes that a floor
+or a backend gap rules out. Each backend's `get_gemm_test_cases` is one line
+that calls it; `test_gemm_plan.py` checks that. Cases are `GemmCase`
+named tuples whose string form is still `['fp8', 64, 4096, 7168]`, so case IDs,
+checkpoints and `--case-filter` strings are unchanged.
+
+Inspect a plan without a GPU:
+
+```bash
+python3 collect.py --backend sglang --model-cases-full --sm 120 --ops gemm \
+  --plan-only --plan-table /tmp/plan
+```
+
+The `plans` block gives cases per consumer key, the regions left out with the
+reason or note id, and `plan_hash`, the case_plan_hash of a run that attempts
+every case. `--plan-table` writes one CSV row per case for diffing.
+
 ## Running subsets (healing)
 
 Subset selection is a RUNTIME concern, never persisted to YAML:
@@ -104,6 +129,7 @@ Subset selection is a RUNTIME concern, never persisted to YAML:
 ```bash
 python3 collect.py --backend sglang --model-path <model> --gpu b200_sxm   # one model
 python3 collect.py --backend trtllm --ops moe --case-filter "tp=4"        # substring filter
+python3 collect.py --backend sglang --ops gemm --case-filter "['fp8_block', "  # one GEMM dtype
 python3 collect.py --backend trtllm --resume                              # finish an interrupted run
 ```
 
@@ -114,6 +140,9 @@ python3 collect.py --backend trtllm --resume                              # fini
 2. No per-model narrowing of another op's grid "to save time" — extra points
    are cheap; missing interpolation support is not. Tune the base grid instead.
 3. No new YAML keys that condition on batch/seq/token/feature values.
-4. Do not edit `capabilities.yaml` for a framework gap — hardware facts only.
+4. Do not put a framework gap in `dtype_min_sm` or `op_min_sm`: those hold
+   hardware facts only. A backend that cannot run a whole (op, dtype) region
+   goes in `backend_gaps` with a guard note; anything finer fails and is
+   recorded.
 5. No per-framework narrowing of a shared grid. If one framework cannot run
    part of it, those cases fail and are recorded.

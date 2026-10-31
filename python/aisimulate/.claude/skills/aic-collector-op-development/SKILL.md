@@ -160,8 +160,11 @@ A queued case has two legal collector outcomes: execute it, or raise
 
 - **Whole regions that cannot run** (an SM without a dtype, an op that needs
   a newer SM) leave the plan at expansion, through a `capabilities.yaml` floor
-  or a quant-axis `min_sm` / cited `max_sm_exclusive`. Never filter them in a
-  getter or with a hard-coded SM check.
+  or a quant-axis `min_sm` / cited `max_sm_exclusive`. When the hardware can
+  run a dtype but this backend's collector cannot, add a `backend_gaps` entry
+  with a guard note. Never filter them in a getter or with a hard-coded SM
+  check. GEMM is the reference: its getters are one line that calls the
+  shared typed plan (`case_authoring.md`, "Typed plans").
 - **Everything finer runs.** A shape boundary, a head count or one
   framework's own limit fails and is recorded. Do not prune it and do not
   narrow a shared grid for one framework. Count the failures per consumer key

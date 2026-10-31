@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for collector.capabilities: hardware capability floors and the hang denylist."""
+"""Tests for collector.capabilities: hardware capability floors, backend gaps and the hang denylist."""
 
 from dataclasses import dataclass
 
@@ -161,3 +161,56 @@ def test_denylist_loader_rejects_empty_contains(monkeypatch, tmp_path):
             capabilities._load_denylist()
     finally:
         capabilities._load_denylist.cache_clear()
+
+
+def test_region_reason_names_the_floor_or_the_backend_gap():
+    from collector.capabilities import region_reason
+
+    assert region_reason("gemm", "nvfp4", "vllm", 90) == "dtype nvfp4 requires SM>=100"
+    assert region_reason("dsa_context_module", "bfloat16", "vllm", 89) == "op dsa_context_module requires SM>=90"
+    assert region_reason("gemm", "fp8_block", "sglang", 120) == "backend gap G-sglang-gemm-fp8-block-deepgemm-only"
+    # A gap removes only its own backend, op, dtype and SMs.
+    assert region_reason("gemm", "fp8_block", "sglang", 100) is None
+    assert region_reason("gemm", "fp8_block", "trtllm", 120) is None
+    assert region_reason("gemm", "fp8", "sglang", 120) is None
+    assert region_reason("gemm", "nvfp4", "vllm", None) is None
+
+
+def test_backend_gaps_cite_existing_guard_notes():
+    import yaml
+
+    gaps = capabilities._load_backend_gaps()
+    assert gaps, "capabilities.yaml declares no backend_gaps"
+    for gap in gaps:
+        notes_path = capabilities._CASES_DIR.parent / "notes" / f"{gap.backend}.yaml"
+        notes = {note["id"]: note for note in yaml.safe_load(notes_path.read_text())["notes"]}
+        assert gap.note in notes, f"{gap.note} is not in {notes_path.name}"
+        assert notes[gap.note]["kind"] == "guard"
+
+
+@pytest.mark.parametrize(
+    ("entry", "message"),
+    [
+        ({"backend": "sglang", "op": "gemm", "dtype": "fp8_block", "sm": [89]}, "exactly the keys"),
+        ({"backend": "sglang", "op": "gemm", "dtype": "fp8_block", "sm": [], "note": "G-sglang-x"}, "SM versions"),
+        ({"backend": "sglang", "op": "gemm", "dtype": "fp8_block", "sm": ["89"], "note": "G-sglang-x"}, "SM versions"),
+        ({"backend": "sglang", "op": "gemm", "dtype": " ", "sm": [89], "note": "G-sglang-x"}, "non-empty string"),
+        ({"backend": "sglang", "op": "gemm", "dtype": "fp8_block", "sm": [89], "note": "D-sglang-x"}, "guard note"),
+        ({"backend": "sglang", "op": "gemm", "dtype": "fp8_block", "sm": [89], "note": "G-vllm-x"}, "guard note"),
+        (
+            {"backend": "sglang", "op": "gemm", "dtype": "fp8_block", "sm": [89], "note": "G-sglang-x", "n_max": 128},
+            "exactly the keys",
+        ),
+    ],
+)
+def test_backend_gap_loader_rejects_anything_but_a_whole_cited_region(monkeypatch, tmp_path, entry, message):
+    import yaml
+
+    (tmp_path / "capabilities.yaml").write_text(yaml.safe_dump({"schema_version": 1, "backend_gaps": [entry]}))
+    monkeypatch.setattr(capabilities, "_CASES_DIR", tmp_path)
+    capabilities._load_backend_gaps.cache_clear()
+    try:
+        with pytest.raises(ValueError, match=message):
+            capabilities._load_backend_gaps()
+    finally:
+        capabilities._load_backend_gaps.cache_clear()

@@ -169,3 +169,13 @@ def test_fp8_block_post_load_runs_once_per_copy_and_is_tagged_deepgemm_on_sm100(
     assert [op.kwargs["quant_config"] for op in _Linear.instances] == [expected_quant] * 2
     assert [row["kernel_source"] for row in published] == ["deepgemm", "deepgemm"]
     assert all(row["item_list"][0]["latency"] == pytest.approx(0.5) for row in published)
+
+
+def test_unaligned_fp8_runs_instead_of_being_refused():
+    """The collector does not predict TRT-LLM's fp8 alignment limit. rc29 serves
+    m <= 8 with n in {1, 4, 8, 12, 24} on SM89/SM120 (rows exist), and where the
+    kernel rejects the shape its own TORCH_CHECK fails the case, which is recorded."""
+    namespace, built, _, _, published = _load()
+    namespace["run_gemm"]("fp8", 16, 24, 4096, perf_filename="gemm_perf.txt", device="cuda:0")
+    assert built and set(built) == {("fp8", 24, 4096, None)}
+    assert [row["item_list"][0]["n"] for row in published] == [24]

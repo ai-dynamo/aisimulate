@@ -19,9 +19,9 @@ that file is out of date.
 | Thing | What it is | Where it lives | Written by | Used by |
 |---|---|---|---|---|
 | **Pin** | The framework version and image each (backend, op family) is collected with | `collector/framework_manifest.yaml` | Owner, at an upgrade | Collector (refuses any other installed version), CI |
-| **Plan** | Every case an op collects | `collector/cases/`: base grids, model shapes, `capabilities.yaml` (see `case_authoring.md`) | Owner or agent | Collector, reviewers, CI |
+| **Plan** | Every case an op collects | `collector/cases/`: base grids, model shapes, `capabilities.yaml` floors and backend gaps (see `case_authoring.md`). `collect.py --plan-only --sm N` counts a typed plan (GEMM so far) | Owner or agent | Collector, reviewers, CI |
 | **Record** | How a data table came to be: collected or reused, with which runtime, code and plan, and how the run went | `collection_meta.yaml` and `reuse.yaml` next to the parquet | Collector writes `collection_meta.yaml`; a person writes `reuse.yaml` | SDK loader, CI (R1-R7) |
-| **Note** | A known gap the rows cannot show. A **deviation** (`D-` id): the table measures a different path than serving runs. A **guard** (`G-` id): collector code refuses a case that would mismeasure, hang or waste significant time | `collector/notes/<backend>.yaml`; fields in `docs/perf-model/collector/data-format.md` | Owner or agent, accepted in review | Code cites guard ids; reviewers and consumers read deviations; CI (R8) |
+| **Note** | A known gap the rows cannot show. A **deviation** (`D-` id): the table measures a different path than serving runs. A **guard** (`G-` id): collector code, or a `backend_gaps` entry in `capabilities.yaml`, refuses cases that would mismeasure, hang or waste significant time | `collector/notes/<backend>.yaml`; fields in `docs/perf-model/collector/data-format.md` | Owner or agent, accepted in review | Code cites guard ids; reviewers and consumers read deviations; CI (R8) |
 | **Rule** | What every collector change must satisfy | The seven rules below | Owner | Agents, reviewers, CI |
 
 Each word has one meaning:
@@ -40,8 +40,10 @@ Generate the same cases for all three frameworks. A few boundary points may
 fail: a failure is a recorded observation, not a defect to filter away.
 
 - **Whole regions that cannot run** (an SM without a dtype, an op that needs a
-  newer SM) are removed when the plan is expanded, from `capabilities.yaml` or
-  a quant-axis `min_sm`. This is the only plan-time filter.
+  newer SM, or a dtype one backend's collector has no kernel for on an SM) are
+  removed when the plan is expanded: `capabilities.yaml` floors and
+  `backend_gaps`, or a quant-axis `min_sm`. A backend gap cites a guard note.
+  This is the only plan-time filter.
 - **Everything finer** runs: a head count, a shape boundary, one framework's
   own limit. If it fails, the failure is recorded and compared with the
   previous run of the same (backend, version).
@@ -71,8 +73,8 @@ that settles it:
 |---|---|---|---|
 | 1 | Each (backend, op) has one pin, and the collector refuses any other installed version | Collector at start-up; `test_framework_manifest.py`; R5 | In force |
 | 2 | Measure what serving runs: the same kernel, fusion, graph or eager mode and autotuning. When that is impossible, write a deviation note | Op-probe comparison and review; `backend_facts.py --check` for labels | In force, by review |
-| 3 | Generate the same cases for every framework; never filter per framework inside a getter | Review | Target; existing getters migrate op by op |
-| 4 | Filter only whole regions at plan expansion; guard only mismeasure, hang or expensive cases, each with a `G-` note | Review | In force for new code; existing guards migrate |
+| 3 | Generate the same cases for every framework; never filter per framework inside a getter | Review; for GEMM, `test_gemm_plan.py` | GEMM migrated; other getters migrate op by op |
+| 4 | Filter only whole regions at plan expansion; guard only mismeasure, hang or expensive cases, each with a `G-` note | Review; `test_capabilities.py` checks that each backend gap cites a guard note | In force for new code; existing guards migrate |
 | 5 | Rows depend only on the pin and the plan, never on environment variables | Collector refuses known switches | Partly in force |
 | 6 | Every table has a record; failures stay within budget and unavailable keys are reported | R1-R7; budget counts by hand until the Record migrates | Partly in force |
 | 7 | Notes are re-checked at every pin bump: `verified_on` is never behind the pin | R8 | In force |
@@ -91,7 +93,7 @@ that settles it:
 |---|---|---|
 | Notes | In force (R8) | Done |
 | Evidence policy, resolver, waivers | Removed | Done |
-| Plan | YAML inputs plus Python getters; `--plan-only` lists ops only | One plan table per backend × op × system, model dimensions read from bundled HF configs, typed cases |
+| Plan | GEMM: typed cases, one grid for every backend, floors and backend gaps applied at expansion, `--plan-only --sm N` counts and `--plan-table` rows. Other ops: YAML inputs plus Python getters | Every op typed; model dimensions read from bundled HF configs |
 | Record | Provenance and reuse; failures only in `errors_*.json` | Result counts, unavailable keys, execution mode |
-| Kernel-limit guards | `FIXME(kernel-limit)` raises, classified `kernel_limit` | Only mismeasure, hang and expensive guards, each citing a `G-` note; other limits simply fail |
+| Kernel-limit guards | GEMM has none. Other ops: `FIXME(kernel-limit)` raises, classified `kernel_limit` | Only mismeasure, hang and expensive guards, each citing a `G-` note; other limits simply fail |
 | Consumer signal | Extrapolated answers are silent | The engine tags extrapolation and reports grid coverage |
