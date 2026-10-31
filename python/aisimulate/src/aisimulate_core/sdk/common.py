@@ -765,6 +765,11 @@ DefaultHFModels = {
     "Qwen/Qwen3.5-397B-A17B",
     "nvidia/Qwen3.5-122B-A10B-NVFP4",
     "nvidia/Qwen3.5-397B-A17B-NVFP4",
+    # Unmodified copy of nvidia/Qwen3.5-397B-A17B-NVFP4-V2@8f590eae (ModelOpt
+    # MIXED_PRECISION: static FP8 GDN, full-attention and shared-expert
+    # projections, NVFP4 routed experts). See
+    # model_configs/QWEN35_397B_NVFP4_V2_PROVENANCE.md.
+    "nvidia/Qwen3.5-397B-A17B-NVFP4-V2",
     # Qwen 3.6 Models
     "nvidia/Qwen3.6-27B-NVFP4",
     "nvidia/Qwen3.6-35B-A3B-NVFP4",

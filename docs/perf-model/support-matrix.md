@@ -32,6 +32,19 @@ accepts `linear_attention` and `full_attention` layer names. Inferred
 Explicit precision overrides retain their values. This recognition does not
 add vision modeling or measured timing coverage.
 
+The bundled `nvidia/Qwen3.5-397B-A17B-NVFP4-V2` export has the same text
+configuration as `nvidia/Qwen3.5-397B-A17B-NVFP4` and a different
+quantization recipe. Its routed experts are NVFP4. Its Gated DeltaNet (GDN),
+full-attention and shared-expert projections are static per-tensor FP8, and
+its KV cache is FP8. AISimulate prices those projections as `fp8_static`, the
+routed experts as `nvfp4`, and the router, shared-expert gate and LM-head
+GEMMs in BF16, as the export stores them. Two lanes are approximations. The
+export keeps the GDN `in_proj_a` and `in_proj_b` projections in BF16, but
+AISimulate prices them with the other GDN projections as `fp8_static`. The
+export also keeps its multi-token prediction (MTP) layer in BF16. With
+`nextn` above zero, AISimulate scales the decode graph by `(nextn + L) / L`
+for `L` decoder layers, so it prices that layer with the decoder-layer lanes.
+
 ## Published FPE matrix
 
 The [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/)
