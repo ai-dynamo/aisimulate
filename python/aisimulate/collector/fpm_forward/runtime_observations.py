@@ -916,19 +916,23 @@ def _scheduler_hash_block_size(record: dict[str, Any]) -> Any:
     """The hash block size that vLLM 0.31.0 derives for a scheduler from its cache groups and cache settings.
 
     The engine core resolves it from the scheduler copies of the cache groups (engine/core.py:164-176,
-    v1/core/kv_cache_utils.py:739-798). One group hashes in its own block size. With prefix caching on and every Mamba
-    group in align mode, several groups hash in prefix_match_unit tokens or in the GCD of the block sizes of the groups
-    that take part in prefix caching. None stands for any other scheduler, and for one with a SlidingWindowMLASpec
-    group, which may or may not take part.
+    v1/core/kv_cache_utils.py:739-798). One group hashes in its own block size. Several groups hash in the scheduler
+    block size, the LCM of their block sizes, when prefix caching is off or a Mamba group is outside align mode. A KV
+    connector would give them finer hashes without prefix caching, but every accepted record has no
+    kv_transfer_config. Otherwise several groups hash in prefix_match_unit tokens or in the GCD of the block sizes of
+    the groups that take part in prefix caching. None stands for that GCD when a SlidingWindowMLASpec group may or may
+    not take part.
     """
     groups, settings = record["cache"]["groups"], record["resolved_config"]["cache_config"]
     blocks = [_positive(group["block_size_tokens"], "cache block size") for group in groups]
-    if len(groups) == 1:
-        return blocks[0]
-    if not settings.get("enable_prefix_caching") or any(
-        group["spec_type"] == _MAMBA_SPEC and group["state"].get("mamba_cache_mode") != "align" for group in groups
+    if (
+        len(groups) == 1
+        or not settings.get("enable_prefix_caching")
+        or any(
+            group["spec_type"] == _MAMBA_SPEC and group["state"].get("mamba_cache_mode") != "align" for group in groups
+        )
     ):
-        return None
+        return math.lcm(*blocks)
     if settings.get("prefix_match_unit") is not None:
         return settings["prefix_match_unit"]
     if any(group["spec_type"] == _SPEC_MODULE + "SlidingWindowMLASpec" for group in groups):

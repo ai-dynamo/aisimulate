@@ -1910,6 +1910,8 @@ _STATE_VIEWS = "layer views do not match the recorded state tensors: mamba.0"
         ("prefix_match_unit_control", "mamba_hybrid", None),
         ("mamba_state_order", "mamba_hybrid", _STATE_VIEWS),
         ("mamba_state_strides", "mamba_hybrid", _STATE_VIEWS),
+        ("no_prefix_caching_hash_block_size", "mamba_hybrid", _BLOCK_SIZES),
+        ("no_prefix_caching_control", "glm_tp4", None),
     ],
     ids=[
         "scheduler_block_size",
@@ -1918,13 +1920,22 @@ _STATE_VIEWS = "layer views do not match the recorded state tensors: mamba.0"
         "prefix_match_unit_control",
         "mamba_state_order",
         "mamba_state_strides",
+        "no_prefix_caching_hash_block_size",
+        "no_prefix_caching_control",
     ],
 )
 def test_v031_records_must_hold_what_vllm_derives_from_them(tmp_path, case, layout, diagnostic):
-    path, launches = observation_fixture(tmp_path, layout=layout)
+    # The no_prefix_caching cases run the decode phase without prefix caching.
+    path, launches = observation_fixture(
+        tmp_path, layout=layout, decode_prefix_caching=not case.startswith("no_prefix_caching")
+    )
 
     def edit(record):
         cache, worker = record["cache"], record["kind"] == "worker"
+        if case == "no_prefix_caching_hash_block_size" and not worker and record["phase"] == "decode":
+            # Both copies of every decode scheduler hash in 64 tokens, while the scheduler block is the 4,096-token
+            # LCM of the group blocks.
+            cache["hash_block_size"] = cache["prefix_caching"]["hash_block_size"] = 64
         if case == "mamba_state_order" and worker:
             # The SSM state first and the convolution state after it. The views still hold the 8,000 bytes of states
             # in the 8,192-byte page of mamba.0, without overlap.
@@ -1956,32 +1967,46 @@ def test_v031_records_must_hold_what_vllm_derives_from_them(tmp_path, case, layo
     result = validate_observations(path, launches)["tp2"]
     if diagnostic is None:
         assert result["status"] == "complete", result["diagnostics"]
-        assert _evidence(result) == (True, "align", 32)
+        if case == "prefix_match_unit_control":
+            assert _evidence(result) == (True, "align", 32)
+        else:
+            # Without prefix caching, the scheduler hashes in its block size: the LCM of the 2,176-token attention,
+            # 4-token tail and 4,096-token Mamba group blocks.
+            assert result["provenance"]["prefix_caching"]["decode"] == {
+                "enable_prefix_caching": False,
+                "mamba_cache_mode": "none",
+                "hash_block_size_tokens": 69_632,
+            }
         return
     assert result["status"] == "incomplete"
     assert result["diagnostics"] == [f"tp2: {diagnostic}"]
 
 
 @pytest.mark.parametrize(
-    "specs,unit,expected",
+    "specs,prefix_caching,unit,expected",
     [
-        (["FullAttentionSpec", "FullAttentionSpec"], None, 32),
+        (["FullAttentionSpec", "FullAttentionSpec"], True, None, 32),
         # A SlidingWindowMLASpec group takes part in prefix caching unless it replays a bounded window
         # (kv_cache_interface.py:949-951), which no record holds, so the hash block size is 32 or 64 tokens.
-        (["SlidingWindowMLASpec", "FullAttentionSpec"], None, None),
+        (["SlidingWindowMLASpec", "FullAttentionSpec"], True, None, None),
         # One cache group hashes in its own block size, whatever the prefix-match unit (kv_cache_utils.py:761-765).
-        (["FullAttentionSpec"], 32, 96),
+        (["FullAttentionSpec"], True, 32, 96),
+        # Several groups hash in the scheduler block size, the LCM of their block sizes, without prefix caching or
+        # with a Mamba group outside align mode, whatever the prefix-match unit (kv_cache_utils.py:767-790).
+        (["FullAttentionSpec", "FullAttentionSpec"], False, 32, 192),
+        (["FullAttentionSpec", "MambaSpec"], True, 32, 192),
     ],
-    ids=["two_groups", "bounded_replay_unknown", "one_group"],
+    ids=["two_groups", "bounded_replay_unknown", "one_group", "prefix_caching_off", "mamba_none_mode"],
 )
-def test_v031_scheduler_hash_block_size_follows_its_cache_groups(specs, unit, expected):
+def test_v031_scheduler_hash_block_size_follows_its_cache_groups(specs, prefix_caching, unit, expected):
     groups = [
         {"spec_type": _V031_SPEC + spec, "block_size_tokens": block}
+        | ({"state": {"mamba_cache_mode": "none"}} if spec == "MambaSpec" else {})
         for spec, block in zip(specs, (96, 64), strict=False)
     ]
     record = {
         "cache": {"groups": groups},
-        "resolved_config": {"cache_config": {"enable_prefix_caching": True, "prefix_match_unit": unit}},
+        "resolved_config": {"cache_config": {"enable_prefix_caching": prefix_caching, "prefix_match_unit": unit}},
     }
     assert runtime_observations._scheduler_hash_block_size(record) == expected
 

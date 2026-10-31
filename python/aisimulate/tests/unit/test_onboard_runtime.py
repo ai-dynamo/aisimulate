@@ -1689,17 +1689,33 @@ def test_serving_role_round_trip_import_collection_and_finalization(tmp_path, ca
     check_plan(resolved, target)
 
 
-def _record_decode_hash_block_size(index, tokens):
-    """Rewrite the hash block size that the decode scheduler record of an observation index reports."""
+def _run_decode_with_prefix_caching(index):
+    """Give the decode phase of an observation index the records of a run with prefix caching on.
+
+    With prefix caching on, vLLM resolves the Mamba cache mode to align and the Mamba block to the attention block
+    (models/config.py:640-667, platforms/interface.py:995-996). The engine core then gives the scheduler the LCM and
+    the GCD of the group blocks as its block and hash block sizes (v1/core/kv_cache_utils.py:761-798). The prefill
+    records of the same run hold these values, so each decode record takes the cache and the cache settings of the
+    prefill record of its rank.
+    """
     document = json.loads(index.read_text())
     phase = document["configurations"]["tp2"]["attempts"][0]["phases"]["decode"]
-    reference = next(ref for ref in phase["artifacts"] if Path(ref["path"]).name.startswith("scheduler-"))
-    path = index.parent / reference["path"]
-    record = json.loads(path.read_text())
-    # The importer reads the prefix_caching copy; the record keeps the top-level one consistent with it.
-    record["cache"]["prefix_caching"]["hash_block_size"] = record["cache"]["hash_block_size"] = tokens
-    _write(path, record)
-    reference["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    for reference in phase["artifacts"]:
+        if reference.get("kind") != "observation":
+            continue
+        path = index.parent / reference["path"]
+        assert path.parent.name == "decode"
+        record = json.loads(path.read_text())
+        prefill = json.loads((path.parent.parent / "prefill" / path.name).read_text())
+        assert (record["kind"], record["dp_rank"], record["tp_rank"]) == (
+            prefill["kind"],
+            prefill["dp_rank"],
+            prefill["tp_rank"],
+        )
+        record["cache"] = prefill["cache"]
+        record["resolved_config"]["cache_config"] = prefill["resolved_config"]["cache_config"]
+        _write(path, record)
+        reference["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
     _write(index, document)
 
 
@@ -1715,8 +1731,9 @@ def test_formal_collection_compares_prefix_caching_of_every_phase(tmp_path, caps
     index = Path(checkpoint["runtime_observations"])
     compatibility = verify_collection_runtime(request, index, collection_checkpoint=checkpoint)["compatibility"]
     assert compatibility["status"] == "compatible"
-    # The probe's decode phase hashes 4096-token blocks. A change confined to the decode phase is refused too.
-    _record_decode_hash_block_size(index, 64)
+    # The probe's decode phase runs without prefix caching and hashes 4096-token blocks. A formal decode phase that ran
+    # with prefix caching on is refused too, although its records agree with each other.
+    _run_decode_with_prefix_caching(index)
     with pytest.raises(ValueError, match="decode: runtime prefix-caching settings differ from the accepted probe"):
         verify_collection_runtime(request, index, collection_checkpoint=checkpoint)
 
@@ -1771,8 +1788,11 @@ def test_formal_phase_binding_compares_prefix_caching_per_phase(tmp_path, capsys
         "mamba_cache_mode": "none",
         "hash_block_size_tokens": 4096,
     }
-    _record_decode_hash_block_size(index, 64)
-    with pytest.raises(ValueError, match="decode: runtime prefix-caching settings differ from the accepted probe"):
+    # A formal decode phase that ran with prefix caching on holds align-mode Mamba groups of 64-token blocks. vLLM
+    # changes these groups together with the prefix-caching settings, and the binding compares the raw groups of the
+    # phase first, so the cache geometry check refuses the phase.
+    _run_decode_with_prefix_caching(index)
+    with pytest.raises(ValueError, match="decode: runtime cache group geometry differs from the accepted probe"):
         verify_collection_runtime_bindings(request, bindings())
 
 
