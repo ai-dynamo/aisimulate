@@ -97,10 +97,11 @@ spaces. Public config adapters and SDK providers are distinct contracts; see
 | `backend_version` | `None` | exact version for one backend, or a per-backend version mapping; omitted backends resolve once to latest |
 | `database_mode` | `SILICON` | forward-pass estimator data-source policy; see [performance-model configuration](../perf-model/configuration.md) |
 | `transfer_policy` | `None` (all) | Core-owned empirical-transfer preset or tier list; used only by `HYBRID` and `EMPIRICAL` |
-| `estimation_mode` | `auto` | search op-level, FPM interpolation, then regression; or select `op_level`, `fpm_interpolation`, or `fpm_regression` explicitly. `fpm_learned` is rejected because replay cannot supply complete iteration features. |
+| `estimation_mode` | `auto` | search op-level, FPM interpolation, then regression; or select `op_level`, `fpm_interpolation`, `fpm_regression`, or `fpm_learned` explicitly. Regression and learned roles are priced per iteration; see [engine replay timing](../perf-model/configuration.md#engine-replay-timing). |
 | `fallback_policy` | `deny` | constrain explicit estimator selection; auto always searches the full priority order |
 | `estimator_config` | `{}` (Core defaults) | runtime tuning controls such as observation limits, regression buckets, correction bounds, and workload-axis capacity |
 | `systems_paths` | omitted | preserve configured SDK/environment discovery; an explicit list sets ordered request-scoped roots, with `default` selecting the packaged Core root |
+| `role_estimator_controls` | `{}` | per-role (`agg`, `prefill`, `decode`) `estimation_mode`, `fallback_policy`, `estimator_config`, `systems_paths`, `database_mode` and `transfer_policy` overrides. `{"estimator_config": {"state_snapshot": {"path": ...}}}` times the role with a calibrated snapshot and pins the role's engine identity to it; see [snapshot roles](../perf-model/configuration.md#recommending-with-a-calibrated-snapshot) |
 | `gpu_budget` | `32` | maximum GPUs per candidate |
 | `min_gpu_budget` | `None` | optional lower bound during enumeration |
 | `context_length` | `None` | optional KV-feasibility and runtime prompt-plus-output token limit |
@@ -110,11 +111,11 @@ spaces. Public config adapters and SDK providers are distinct contracts; see
 | `startup_time` | `None` | optional simulated worker startup time |
 | `aic_nextn` | `None` | optional speculative-decoding depth |
 
-Sweeper rejects `fpm_learned` in both the global `estimation_mode` and
-`role_estimator_controls.<role>.estimation_mode` during configuration validation,
-before loading artifacts or enumerating candidates. Learned prediction requires
-complete `ForwardPassMetrics` through the
-[canonical estimate/tune API](../perf-model/fpm_ml/configuration.md).
+Sweeper accepts `fpm_learned` in both the global `estimation_mode` and
+`role_estimator_controls.<role>.estimation_mode`; each candidate constructs the
+learned model through the canonical constructor, which reads its source and
+rejects a role whose forest lacks a store the role needs. See the
+[learned configuration](../perf-model/fpm_ml/configuration.md).
 
 An explicit positive `context_length` is passed as AISimulate's internal
 `max_model_len` for vLLM, TRT-LLM, and SGLang in both aggregated and

@@ -177,7 +177,8 @@ def test_explicit_untrained_regression_keeps_training_message(vllm_slots):
     diagnostics["last_warning"] = None
 
     assert unready_estimator_message(diagnostics) == (
-        "regression estimator is not ready; replay requires training observations"
+        "fpm_regression estimator is not ready: no workload store has a usable fit; tune it with observed "
+        "forward passes or restore a calibrated state snapshot"
     )
 
 

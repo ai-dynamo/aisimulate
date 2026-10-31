@@ -30,8 +30,9 @@ use crate::replay::{
     },
 };
 use crate::{
-    EstimationMode, EstimatorConfig, ForwardPassFallbackPolicy, ForwardPassPerfModel,
-    ForwardPassPerfModelConfig, ForwardPassWorkerType,
+    DeploymentLimits, EstimationMode, EstimatorConfig, ForwardPassFallbackPolicy,
+    ForwardPassPerfModel, ForwardPassPerfModelConfig, ForwardPassRegressionWorkloadKind,
+    ForwardPassWorkerType, UNKNOWN_SIZE,
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use pyo3::exceptions::{PyMemoryError, PyRuntimeError};
@@ -285,19 +286,38 @@ struct AicTimingConfig {
     model: String,
     backend: String,
     system: String,
-    #[serde(default = "one", alias = "tp_size")]
+    /// Sizes a saved identity records as `"unknown"` hold `UNKNOWN_SIZE`.
+    #[serde(
+        default = "one",
+        alias = "tp_size",
+        deserialize_with = "crate::perfmodel::fpm::identity_size::deserialize"
+    )]
     tp: u32,
     #[serde(default)]
     backend_version: Option<String>,
-    #[serde(default = "one", alias = "pp_size")]
+    #[serde(
+        default = "one",
+        alias = "pp_size",
+        deserialize_with = "crate::perfmodel::fpm::identity_size::deserialize"
+    )]
     pp: u32,
-    #[serde(default = "one", alias = "attention_dp_size")]
+    #[serde(
+        default = "one",
+        alias = "attention_dp_size",
+        deserialize_with = "crate::perfmodel::fpm::identity_size::deserialize"
+    )]
     attention_dp: u32,
     #[serde(default)]
     dcp: Option<u32>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::perfmodel::fpm::identity_optional_size::deserialize"
+    )]
     moe_tp_size: Option<u32>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::perfmodel::fpm::identity_optional_size::deserialize"
+    )]
     moe_ep_size: Option<u32>,
     /// Prefill context parallelism (SGLang attn-cp / vLLM PCP): folds into the
     /// attention width like attention_dp. `None` means 1.
@@ -372,6 +392,8 @@ struct AicTimingConfig {
     enable_shared_layer: Option<bool>,
     #[serde(default)]
     strict_provenance: bool,
+    #[serde(default)]
+    deployment_limits: Option<DeploymentLimits>,
 }
 
 const fn one() -> u32 {
@@ -465,6 +487,7 @@ impl AicTimingConfig {
             enable_shared_layer: self.enable_shared_layer,
             strict_provenance: self.strict_provenance,
             encoder_parallel: self.encoder_parallel,
+            deployment_limits: self.deployment_limits,
         })
     }
 
@@ -548,6 +571,7 @@ impl AicTimingConfig {
             let cp = u64::from(self.cp_size.unwrap_or(1));
             ensure!(
                 self.fpm_profile.is_some()
+                    || [self.tp, self.attention_dp, moe_tp, moe_ep].contains(&UNKNOWN_SIZE)
                     || u64::from(self.tp) * u64::from(self.attention_dp) * cp
                         == u64::from(moe_tp) * u64::from(moe_ep),
                 "AIC topology requires tp * attention_dp * cp_size == moe_tp_size * moe_ep_size"
@@ -564,6 +588,9 @@ type PythonPerOpEntries = Vec<(String, f64, f64, String)>;
 
 enum AicPhaseProvider {
     Native(Arc<PerfEngine>),
+    /// A regression or learned estimator, which has no native engine and
+    /// prices only whole iterations (see [`IterationQuery::Fitted`]).
+    Fitted,
     /// Keep the original bridge as an independent test reference and probe seam.
     #[cfg(test)]
     Python,
@@ -617,17 +644,32 @@ type IterationKey = Vec<RankQuery>;
 /// iteration's correction.
 type FpmIterationKey = (IterationKind, RankQuery, u64);
 
+/// How an attention-DP iteration is asked of the canonical model, decided
+/// once at construction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IterationQuery {
+    /// A native engine's convention (see [`IterationDispatch`]).
+    Native(IterationDispatch),
+    /// A regression or learned estimator, fitted to `ForwardPassMetrics`
+    /// telemetry: each rank's scheduled totals as Dynamo's vLLM telemetry
+    /// reports them, decode KV the requests' past KV, excluding each
+    /// request's current token. `detail` adds the per-request lengths and
+    /// length variances the estimator reads. Every iteration is priced here.
+    Fitted { detail: bool },
+}
+
 /// Whole-iteration pricing through the canonical `ForwardPassMetrics` query,
 /// decided once at construction.
 struct IterationPricing {
     model: Arc<ForwardPassPerfModel>,
-    dispatch: IterationDispatch,
+    query: IterationQuery,
     /// The mix-step pass of each operation an operation-graph rank reports,
     /// when every name belongs to one pass. Attributes a mixed rank's
     /// operations to prefill and decode evidence.
     mix_step_passes: Option<std::collections::HashMap<String, MixedPass>>,
     /// Priced iterations keyed by the complete ordered rank list. Absent while
-    /// the model collects lookup coverage, which counts every invocation.
+    /// the model collects lookup coverage, which counts every invocation, and
+    /// when the estimator reads per-request detail the key does not hold.
     cache: Option<quick_cache::sync::Cache<IterationKey, Arc<PricedIteration>>>,
     /// How a mixed operation-graph rank's operations split into prefill and
     /// decode evidence, per operation-name list the model reports.
@@ -736,7 +778,7 @@ impl IterationPricing {
         }
         Ok(Some(Self {
             model: Arc::clone(model),
-            dispatch,
+            query: IterationQuery::Native(dispatch),
             mix_step_passes: native.mix_step_passes(),
             cache: model
                 .fpm_query_coverage()?
@@ -818,11 +860,13 @@ impl AicTimingModel {
         vision: bool,
     ) -> Result<Self> {
         let request = config.estimator_request(worker_type)?;
-        ensure!(
-            request.estimation_mode != EstimationMode::FpmLearned,
-            "fpm_learned requires complete ForwardPassMetrics; engine replay's phase-only timing \
-             interface cannot supply its batch features. Use the canonical FPM estimate/tune API"
-        );
+        if matches!(
+            request.estimation_mode,
+            EstimationMode::FpmRegression | EstimationMode::FpmLearned
+        ) {
+            // Reject before a learned source is loaded.
+            Self::require_fitted_role(config, request.estimation_mode, vision)?;
+        }
         config.resolved_memory_fraction()?;
         if vision {
             ensure!(
@@ -877,9 +921,9 @@ impl AicTimingModel {
         config.attention_backend = provenance.config.attention_backend.clone();
         let use_fpm_decode_totals =
             provenance.selected_estimation_mode == EstimationMode::FpmInterpolation;
-        let native = model.native_engine().context(
-            "AIC regression estimator is not ready: offline replay requires trained observations or a native estimator"
-        )?;
+        let Some(native) = model.native_engine() else {
+            return Self::build_fitted(config, worker_type, vision, model);
+        };
         if vision {
             ensure!(
                 native.has_vision(),
@@ -925,6 +969,106 @@ impl AicTimingModel {
             vision,
             iteration,
         })
+    }
+
+    /// A role a regression or learned estimator times. It prices every pass
+    /// through [`TimingModel::predict_iteration_ms`] and never a phase, so
+    /// work the iteration query cannot describe is rejected here: a vision
+    /// tower, speculative verification widths and bounded decoder replay.
+    fn require_fitted_role(
+        config: &AicTimingConfig,
+        mode: EstimationMode,
+        vision: bool,
+    ) -> Result<()> {
+        let mode = wire_name(mode);
+        ensure!(
+            !vision,
+            "{mode} cannot time a rank hosting the vision encoder; it prices only language-model iterations"
+        );
+        ensure!(
+            config.nextn == 0
+                && config
+                    .speculation
+                    .as_ref()
+                    .is_none_or(|speculation| speculation.kind == "none"),
+            "{mode} replay does not support speculative decoding (nextn or speculation); \
+             the iteration query has no verification width"
+        );
+        ensure!(
+            !config.decoder_replay,
+            "{mode} replay does not support bounded decoder replay"
+        );
+        Ok(())
+    }
+
+    /// The timing model of a regression or learned estimator: latency-only,
+    /// priced once per group pass from the iteration query.
+    fn build_fitted(
+        config: &AicTimingConfig,
+        worker_type: ForwardPassWorkerType,
+        vision: bool,
+        model: Arc<ForwardPassPerfModel>,
+    ) -> Result<Self> {
+        let provenance = model
+            .provenance()
+            .context("canonical estimator omitted construction provenance")?;
+        let mode = provenance.selected_estimation_mode;
+        ensure!(
+            matches!(
+                mode,
+                EstimationMode::FpmRegression | EstimationMode::FpmLearned
+            ),
+            "canonical {mode:?} estimator has no native engine"
+        );
+        if provenance.requested_estimation_mode != mode {
+            let failures = provenance.selection_failures.join("; ");
+            return Err(anyhow!(
+                "no native estimator is available for replay ({failures}); replay does not fall back to an \
+                 untrained fpm_regression model"
+            ));
+        }
+        Self::require_fitted_role(config, mode, vision)?;
+        require_iteration_stores(&model, worker_type, config.attention_dp)?;
+        let detail = model.reads_request_detail();
+        let iteration = IterationPricing {
+            model: Arc::clone(&model),
+            query: IterationQuery::Fitted { detail },
+            mix_step_passes: None,
+            cache: (!detail).then(|| quick_cache::sync::Cache::new(256)),
+            // Fitted estimators report no operation evidence.
+            mixed_splits: Mutex::default(),
+            rank_evidence: quick_cache::sync::Cache::new(1),
+        };
+        Ok(Self {
+            engine: Python::with_gil(|py| py.None()),
+            diagnostic_model: None,
+            fpm_model: None,
+            corrections: None,
+            decoder_replay: false,
+            phase_provider: AicPhaseProvider::Fitted,
+            use_fpm_decode_totals: false,
+            fpm_decode_kv_ceiling: None,
+            evidence: Mutex::new(TimingEvidenceAccumulator::default()),
+            fpm_evidence: Mutex::default(),
+            fpm_iteration_evidence: Mutex::default(),
+            phase_cache: quick_cache::sync::Cache::new(1),
+            vision: None,
+            iteration: Some(iteration),
+        })
+    }
+
+    fn is_fitted(&self) -> bool {
+        matches!(self.phase_provider, AicPhaseProvider::Fitted)
+    }
+
+    /// Phase pricing is never a fallback for an estimator fitted to whole
+    /// iterations, which would otherwise price work it was not fitted on.
+    fn require_phase_pricing(&self) -> Result<()> {
+        ensure!(
+            !self.is_fitted(),
+            "a regression or learned estimator prices only whole iterations; replay asked it for a separate phase"
+        );
+        Ok(())
     }
 
     /// Operation evidence of one encoder call over `shape.count` equal images,
@@ -1002,6 +1146,11 @@ impl AicTimingModel {
             return Ok(phase);
         }
         let phase = match &self.phase_provider {
+            AicPhaseProvider::Fitted => {
+                return Err(anyhow!(
+                    "a regression or learned estimator has no {mode} operation evidence"
+                ));
+            }
             #[cfg(test)]
             AicPhaseProvider::NativeEntries(entries) => {
                 ensure!(
@@ -1358,11 +1507,18 @@ impl AicTimingModel {
         &self,
         pricing: &IterationPricing,
         queries: &[RankQuery],
+        ranks: &[RankWork],
         capture: bool,
     ) -> Result<PricedIteration> {
+        let dispatch = match pricing.query {
+            IterationQuery::Native(dispatch) => dispatch,
+            IterationQuery::Fitted { detail } => {
+                return Self::price_fitted_iteration(&pricing.model, queries, ranks, detail);
+            }
+        };
         let model = &pricing.model;
         let metrics: Vec<_> = queries.iter().map(Self::rank_metrics).collect();
-        let whole_model = matches!(pricing.dispatch, IterationDispatch::WholeModel { .. });
+        let whole_model = matches!(dispatch, IterationDispatch::WholeModel { .. });
         if whole_model && !capture {
             let total_ms = model
                 .estimate_forward_pass_time_ms(&metrics)
@@ -1408,6 +1564,164 @@ impl AicTimingModel {
             evidence: self.rank_operation_evidence(pricing, &estimate, queries)?,
             estimate: None,
         })
+    }
+
+    /// Price one iteration with a regression or learned estimator: one plain
+    /// estimate of every rank. The role's stores were checked at
+    /// construction, so a missing estimate is an error, never another
+    /// estimator. Latency-only: no evidence is recorded.
+    fn price_fitted_iteration(
+        model: &ForwardPassPerfModel,
+        queries: &[RankQuery],
+        ranks: &[RankWork],
+        detail: bool,
+    ) -> Result<PricedIteration> {
+        let metrics = Self::fitted_metrics(queries, ranks, detail)?;
+        let total_ms = model
+            .estimate_forward_pass_time_ms(&metrics)
+            .context("AIC iteration prediction failed")?
+            .with_context(|| {
+                format!("the regression or learned model has no iteration estimate for {metrics:?}")
+            })?;
+        Ok(PricedIteration {
+            total_ms,
+            estimate: None,
+            evidence: Vec::new(),
+        })
+    }
+
+    /// The group's metrics for a regression or learned estimator, one per
+    /// rank in DP-rank order, idle ranks included. Each carries its rank's
+    /// position as `dp_rank`, as an attention-DP group's telemetry does; a
+    /// learned model's mixed composition validates complete rank groups.
+    fn fitted_metrics(
+        queries: &[RankQuery],
+        ranks: &[RankWork],
+        detail: bool,
+    ) -> Result<Vec<crate::ForwardPassMetrics>> {
+        queries
+            .iter()
+            .zip(ranks)
+            .enumerate()
+            .map(|(index, (query, rank))| {
+                let mut metrics = if detail {
+                    Self::detailed_rank_metrics(query, rank)?
+                } else {
+                    Self::rank_metrics(query)
+                };
+                metrics.dp_rank =
+                    u32::try_from(index).context("attention-DP rank overflows u32")?;
+                Ok(metrics)
+            })
+            .collect()
+    }
+
+    /// One rank's query for a regression or learned estimator: its scheduled
+    /// totals as the `ForwardPassMetrics` telemetry such models are fitted to
+    /// reports them. Dynamo's vLLM telemetry sums each decode request's
+    /// computed tokens, so decode KV is the requests' past KV, their context
+    /// lengths minus one current token each, as whole-model FPM reads it but
+    /// without the scheduler's KV clamp. No other query prices the pass, so
+    /// totals beyond the 32-bit counters are an error.
+    fn fitted_rank_query(rank: &RankWork) -> Result<RankQuery> {
+        let mut query = [0; 5];
+        if let Some(prefill) = &rank.prefill
+            && prefill.totals.batch_size > 0
+            && prefill.totals.new_tokens > 0
+        {
+            let totals = prefill.totals;
+            query[0] = checked_u32(totals.batch_size, "prefill batch size")?;
+            query[1] = checked_u32(totals.new_tokens, "total prefill tokens")?;
+            query[2] = checked_u32(totals.prefix_tokens, "total prefill KV tokens")?;
+        }
+        if let Some(decode) = &rank.decode
+            && decode.batch_size > 0
+        {
+            ensure!(
+                decode.verify_width == 1,
+                "a regression or learned estimator cannot price speculative verification"
+            );
+            let past_kv_tokens = decode
+                .active_kv_tokens
+                .checked_sub(decode.batch_size)
+                .context("active decode tokens must include one current token per request")?;
+            query[3] = checked_u32(decode.batch_size, "decode batch size")?;
+            query[4] = checked_u32(past_kv_tokens, "total decode past KV tokens")?;
+        }
+        Ok(query)
+    }
+
+    /// `query`'s metrics with the per-request detail of `rank`'s work in it:
+    /// each prefill request's new tokens and prefix, and each decode
+    /// request's one token and past KV (its context excluding the current
+    /// token), as `extend_lengths` / `past_kv_lengths`; and the population
+    /// variances of the prefill requests' full prompt lengths, as Dynamo's
+    /// vLLM telemetry and the canonical field report them whatever chunk of
+    /// the prompt a pass computes, and of the decode requests' past KV, the
+    /// totals' decode KV convention.
+    fn detailed_rank_metrics(
+        query: &RankQuery,
+        rank: &RankWork,
+    ) -> Result<crate::ForwardPassMetrics> {
+        fn variance(values: impl Iterator<Item = usize> + Clone) -> f64 {
+            let count = values.clone().count() as f64;
+            let mean = values.clone().map(|value| value as f64).sum::<f64>() / count;
+            values
+                .map(|value| (value as f64 - mean).powi(2))
+                .sum::<f64>()
+                / count
+        }
+        let mut metrics = Self::rank_metrics(query);
+        let scheduled = &mut metrics.scheduled_requests;
+        let (mut extend, mut past) = (Vec::new(), Vec::new());
+        if query[1] > 0 {
+            let prefill = rank
+                .prefill
+                .as_ref()
+                .context("prefill query without prefill work")?;
+            ensure!(
+                prefill.requests.len() == prefill.totals.batch_size,
+                "rank {} reported {} prefill requests for a batch of {}",
+                rank.dp_rank,
+                prefill.requests.len(),
+                prefill.totals.batch_size
+            );
+            for &(new_tokens, prefix_tokens, _) in &prefill.requests {
+                extend.push(new_tokens as u64);
+                past.push(prefix_tokens as u64);
+            }
+            scheduled.var_prefill_length = variance(
+                prefill
+                    .requests
+                    .iter()
+                    .map(|&(_, _, prompt_len)| prompt_len),
+            );
+        }
+        if query[3] > 0 {
+            let decode = rank
+                .decode
+                .as_ref()
+                .context("decode query without decode work")?;
+            ensure!(
+                decode.lengths.len() == decode.batch_size
+                    && decode.lengths.iter().all(|length| *length > 0),
+                "rank {} reported {} decode context lengths for a batch of {}, each including its current token",
+                rank.dp_rank,
+                decode.lengths.len(),
+                decode.batch_size
+            );
+            for &length in &decode.lengths {
+                extend.push(1);
+                past.push(length as u64 - 1);
+            }
+            scheduled.var_decode_kv_tokens =
+                variance(decode.lengths.iter().map(|length| length - 1));
+        }
+        if !extend.is_empty() {
+            scheduled.extend_lengths = Some(extend);
+            scheduled.past_kv_lengths = Some(past);
+        }
+        Ok(metrics)
     }
 
     /// Power evidence of an operation-graph iteration: every working rank's
@@ -1865,7 +2179,11 @@ impl TimingModel for AicTimingModel {
         };
         let mut queries = Vec::with_capacity(ranks.len());
         for rank in ranks {
-            let Some(query) = Self::rank_query(pricing.dispatch, rank)? else {
+            let query = match pricing.query {
+                IterationQuery::Native(dispatch) => Self::rank_query(dispatch, rank)?,
+                IterationQuery::Fitted { .. } => Some(Self::fitted_rank_query(rank)?),
+            };
+            let Some(query) = query else {
                 return Ok(None);
             };
             queries.push(query);
@@ -1880,19 +2198,26 @@ impl TimingModel for AicTimingModel {
         let mixed_rank = queries
             .iter()
             .any(|query| IterationKind::of(query) == Some(IterationKind::Mixed));
-        match pricing.dispatch {
+        match pricing.query {
             // Measured rounds stay outside attention DP; their mixed rank is
             // the prefill plus a full decode round.
-            IterationDispatch::WholeModel { sd_round: true } if queries.len() != 1 => {
+            IterationQuery::Native(IterationDispatch::WholeModel { sd_round: true })
+                if queries.len() != 1 =>
+            {
                 return Ok(None);
             }
-            IterationDispatch::Operations { mixed: false, .. } if mixed_rank => {
+            IterationQuery::Native(IterationDispatch::Operations { mixed: false, .. })
+                if mixed_rank =>
+            {
                 return Ok(None);
             }
             _ => {}
         }
         let capture = self.diagnostic_model.is_some();
-        let whole_model = matches!(pricing.dispatch, IterationDispatch::WholeModel { .. });
+        let whole_model = matches!(
+            pricing.query,
+            IterationQuery::Native(IterationDispatch::WholeModel { .. })
+        );
         let cached = pricing
             .cache
             .as_ref()
@@ -1901,7 +2226,7 @@ impl TimingModel for AicTimingModel {
         let (priced, hit) = match cached {
             Some(priced) => (priced, true),
             None => (
-                Arc::new(self.price_iteration(pricing, &queries, capture)?),
+                Arc::new(self.price_iteration(pricing, &queries, ranks, capture)?),
                 false,
             ),
         };
@@ -1947,6 +2272,7 @@ impl TimingModel for AicTimingModel {
         mean_isl: usize,
         mean_prefix: usize,
     ) -> Result<f64> {
+        self.require_phase_pricing()?;
         let correction = if self.corrections.is_some() {
             let tokens = |per_request: usize| {
                 per_request
@@ -1970,6 +2296,7 @@ impl TimingModel for AicTimingModel {
         new_tokens: usize,
         prefix_tokens: usize,
     ) -> Result<f64> {
+        self.require_phase_pricing()?;
         let correction = self.prefill_correction(batch_size, new_tokens, prefix_tokens)?;
         if !self.use_fpm_decode_totals {
             // Operation graphs price per-request shapes.
@@ -2028,6 +2355,7 @@ impl TimingModel for AicTimingModel {
         mean_context_length: usize,
         total_kv_tokens: usize,
     ) -> Result<f64> {
+        self.require_phase_pricing()?;
         if self.use_fpm_decode_totals {
             let total_past_kv_tokens =
                 total_past_kv_tokens(batch_size, active_kv_tokens, total_kv_tokens)?;
@@ -2102,6 +2430,7 @@ impl TimingModel for AicTimingModel {
         _mean_context_length: usize,
         total_kv_tokens: usize,
     ) -> Result<Option<MixedPassMs>> {
+        self.require_phase_pricing()?;
         // Whole-model FPM prices a mixed pass as one forward: the prefill it
         // computes plus the latency its decode requests add, which does not
         // depend on that prefill. A tuned model corrects that forward as the
@@ -2170,8 +2499,13 @@ impl TimingModel for AicTimingModel {
         }))
     }
 
+    fn prices_phases(&self) -> bool {
+        !self.is_fitted()
+    }
+
     fn evidence_summary(&self) -> Option<TimingEvidenceSummary> {
-        if self.use_fpm_decode_totals {
+        // Whole-model FPM, regression and learned estimators are latency-only.
+        if self.use_fpm_decode_totals || self.is_fitted() {
             return None;
         }
         self.evidence
@@ -2243,6 +2577,94 @@ impl TimingModel for AicTimingModel {
             .map_err(|_| anyhow!("AIC timing evidence accumulator was poisoned"))? =
             TimingEvidenceAccumulator::default();
         Ok(())
+    }
+}
+
+/// Require the workload stores a regression or learned estimator needs to
+/// price every iteration replay schedules for a `worker_type` role with
+/// `attention_dp` ranks: pure prefill for a prefill worker, pure decode for a
+/// decode worker, and both for an aggregated worker. An aggregated rank also
+/// computes prefill and decode together when its backend's scheduler does
+/// (see [`schedules_locally_mixed`]), and its ranks compute different kinds of
+/// work when attention DP is known to be above one. Unknown attention DP adds
+/// no store here; the role checks again with its engine's width.
+fn require_iteration_stores(
+    model: &ForwardPassPerfModel,
+    worker_type: ForwardPassWorkerType,
+    attention_dp: u32,
+) -> Result<()> {
+    use ForwardPassRegressionWorkloadKind::*;
+    let provenance = model
+        .provenance()
+        .context("canonical estimator omitted construction provenance")?;
+    let mut required = match worker_type {
+        ForwardPassWorkerType::Prefill => vec![PurePrefill],
+        ForwardPassWorkerType::Decode => vec![PureDecode],
+        ForwardPassWorkerType::Aggregated => vec![PurePrefill, PureDecode],
+    };
+    if worker_type == ForwardPassWorkerType::Aggregated {
+        if schedules_locally_mixed(&provenance.config.backend) {
+            required.push(ContainsLocallyMixed);
+        }
+        if attention_dp > 1 && attention_dp != UNKNOWN_SIZE {
+            required.push(CrossRankAggregated);
+        }
+    }
+    let report = model.readiness_report();
+    let missing = report
+        .stores
+        .iter()
+        .filter(|store| required.contains(&store.workload_kind) && !store.ready)
+        .map(|store| match store.not_ready_reason {
+            Some(reason) => format!("{} ({})", wire_name(store.workload_kind), wire_name(reason)),
+            None => wire_name(store.workload_kind),
+        })
+        .collect::<Vec<_>>();
+    ensure!(
+        missing.is_empty(),
+        "the {} estimator cannot price every iteration of a {} worker: workload store(s) {} not ready; \
+         tune it with observed forward passes of that work, or restore a snapshot calibrated on it, before replay",
+        wire_name(provenance.selected_estimation_mode),
+        wire_name(worker_type),
+        missing.join(", ")
+    );
+    Ok(())
+}
+
+/// Whether `backend`'s replay scheduler computes prefill and decode in one
+/// rank pass. vLLM, and TensorRT-LLM on the shared vLLM core, schedule chunked
+/// prefill beside running decodes. SGLang runs a formed prefill batch alone
+/// (prefill and decode share a forward only with `--enable-mixed-chunk`,
+/// which is not modeled), so its ranks never compute locally mixed work.
+fn schedules_locally_mixed(backend: &crate::BackendKind) -> bool {
+    !matches!(backend, crate::BackendKind::Sglang)
+}
+
+/// Require the unit `decode_speedup_ratio` a regression or learned role needs.
+/// Replay prices a group pass with one iteration query only at a unit decode
+/// speedup; at any other, each rank prices its own phases, which such an
+/// estimator never does, so the role would fail at its first pass.
+fn require_unit_decode_speedup(
+    model: &ForwardPassPerfModel,
+    decode_speedup_ratio: f64,
+) -> Result<()> {
+    ensure!(
+        decode_speedup_ratio == 1.0,
+        "{} replay requires decode_speedup_ratio=1.0, got {decode_speedup_ratio}: it prices only whole \
+         iterations, and replay prices a pass as one iteration only at a unit decode speedup",
+        model.provenance().map_or_else(
+            || "regression or learned".to_owned(),
+            |provenance| wire_name(provenance.selected_estimation_mode)
+        )
+    );
+    Ok(())
+}
+
+/// The snake-case wire spelling of a unit enum value.
+fn wire_name(value: impl serde::Serialize) -> String {
+    match serde_json::to_value(value) {
+        Ok(serde_json::Value::String(name)) => name,
+        other => format!("{other:?}"),
     }
 }
 
@@ -2401,8 +2823,9 @@ fn materialize_aic_capacity(
         "AIC backend {:?} does not match engine backend {engine_backend:?}",
         config.backend
     );
+    // A size the timing identity records as unknown takes the engine's.
     ensure!(
-        config.tp == role.tensor_parallel_size,
+        config.tp == UNKNOWN_SIZE || config.tp == role.tensor_parallel_size,
         "AIC tp={} does not match engine tensor_parallel_size={}",
         config.tp,
         role.tensor_parallel_size
@@ -2413,7 +2836,7 @@ fn materialize_aic_capacity(
         role.prefill_context_parallel_size
     );
     ensure!(
-        config.attention_dp == role.dp_size,
+        config.attention_dp == UNKNOWN_SIZE || config.attention_dp == role.dp_size,
         "AIC attention_dp={} does not match engine dp_size={}",
         config.attention_dp,
         role.dp_size
@@ -2482,10 +2905,54 @@ fn materialize_aic_capacity(
     if capacity_is_explicit || role.rank.state_cache.is_some() {
         return Ok(());
     }
+    if let Some(blocks) = recorded_kv_blocks(config, role)? {
+        role.rank.num_gpu_blocks = blocks;
+        return Ok(());
+    }
     let blocks = estimate(config, role)?;
     ensure!(blocks > 0, "AIC estimated zero KV-cache blocks");
     role.rank.num_gpu_blocks = blocks;
     Ok(())
+}
+
+/// The KV capacity a regression or learned estimator's identity records for
+/// its deployment, `deployment_limits.max_kv_tokens` in whole scheduler
+/// blocks; `None` leaves capacity to the AIC memory estimate. That estimate
+/// needs the complete identity, so a fitted identity with unknown facts and
+/// no recorded capacity is an error.
+fn recorded_kv_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig) -> Result<Option<usize>> {
+    if !matches!(
+        config.estimation_mode,
+        Some(EstimationMode::FpmRegression | EstimationMode::FpmLearned)
+    ) {
+        return Ok(None);
+    }
+    let max_kv_tokens = config
+        .deployment_limits
+        .and_then(|limits| limits.max_kv_tokens.known());
+    let Some(max_kv_tokens) = max_kv_tokens else {
+        let unknown = config
+            .estimator_request(
+                config
+                    .worker_type
+                    .unwrap_or(ForwardPassWorkerType::Aggregated),
+            )?
+            .unknown_identity_facts();
+        ensure!(
+            unknown.is_empty(),
+            "AIC cannot estimate KV-cache capacity for an identity with unknown {}; set num_gpu_blocks \
+             or record deployment_limits.max_kv_tokens",
+            unknown.join(", ")
+        );
+        return Ok(None);
+    };
+    let blocks = usize::try_from(max_kv_tokens)? / role.rank.block_size;
+    ensure!(
+        blocks > 0,
+        "deployment_limits.max_kv_tokens={max_kv_tokens} does not cover one scheduler block of {} tokens",
+        role.rank.block_size
+    );
+    Ok(Some(blocks))
 }
 
 fn cap_role_capacity_to_fpm_decode_domain(
@@ -2674,6 +3141,11 @@ fn resolve_role_timing(
         resources.require_memory()?;
     }
     let mut timing = AicTimingModel::build(&mut config, worker_type, role.rank.vision)?;
+    if let Some(pricing) = timing.iteration.as_ref().filter(|_| timing.is_fitted()) {
+        // The identity may not record attention DP; the engine's width decides.
+        require_iteration_stores(&pricing.model, worker_type, role.dp_size)?;
+        require_unit_decode_speedup(&pricing.model, role.rank.decode_speedup_ratio)?;
+    }
     if let Some(speculation) = &config.speculation {
         ensure!(
             speculation.kind == "ngram"
@@ -3630,10 +4102,11 @@ fn infer_aic_timing_topology(engine: &mut serde_json::Value) -> Result<()> {
             ("dp_size", ["attention_dp", "attention_dp_size"]),
             ("prefill_context_parallel_size", ["cp_size", "cp_size"]),
         ] {
+            // An unknown size leaves the engine's own topology.
             if let Some(value) = config
                 .get(fields[0])
                 .or_else(|| config.get(fields[1]))
-                .filter(|value| !value.is_null())
+                .filter(|value| !value.is_null() && value.as_str() != Some(crate::UNKNOWN_IDENTITY))
             {
                 if let Some(explicit) = engine.get(target) {
                     ensure!(
@@ -5330,7 +5803,9 @@ mod tests {
         native.diagnostic_model = None;
         let raw = match &native.phase_provider {
             AicPhaseProvider::Native(engine) => Arc::clone(engine),
-            AicPhaseProvider::Python | AicPhaseProvider::NativeEntries(_) => unreachable!(),
+            AicPhaseProvider::Fitted
+            | AicPhaseProvider::Python
+            | AicPhaseProvider::NativeEntries(_) => unreachable!(),
         };
         let bridge = Python::with_gil(|py| python_timing_model(native.engine.clone_ref(py), false));
         let check =
@@ -5602,21 +6077,910 @@ mod tests {
     }
 
     #[test]
-    fn learned_replay_rejection_precedes_source_loading() {
+    fn fitted_replay_rejects_unsupported_work_before_loading_a_learned_source() {
+        pyo3::prepare_freethreaded_python();
         for source in ["artifact_path", "checkpoint_path"] {
-            let mut config = aic_config();
-            config.estimation_mode = Some(EstimationMode::FpmLearned);
-            config.estimator_config = serde_json::from_value(serde_json::json!({
-                "fpm_learned": {(source): "/missing/learned-source"}
-            }))
-            .unwrap();
-            let error = AicTimingModel::build(&mut config, ForwardPassWorkerType::Decode, false)
-                .err()
-                .expect("learned replay must fail before constructing a model");
-            assert!(
-                error
+            let learned = || {
+                let mut config = aic_config();
+                config.estimation_mode = Some(EstimationMode::FpmLearned);
+                config.estimator_config = serde_json::from_value(serde_json::json!({
+                    "fpm_learned": {(source): "/missing/learned-source", "adaptation": "frozen"}
+                }))
+                .unwrap();
+                config
+            };
+            let build = |mut config: AicTimingConfig, vision: bool| {
+                AicTimingModel::build(&mut config, ForwardPassWorkerType::Decode, vision)
+                    .err()
+                    .expect("this learned replay must fail")
                     .to_string()
-                    .contains("engine replay's phase-only timing")
+            };
+            let mut speculative = learned();
+            speculative.nextn = 1;
+            assert!(build(speculative, false).contains("does not support speculative decoding"));
+            assert!(build(learned(), true).contains("vision encoder"));
+            let mut decoder = learned();
+            decoder.decoder_replay = true;
+            assert!(build(decoder, false).contains("bounded decoder replay"));
+            // Supported work reaches the source, which is missing.
+            assert!(build(learned(), false).contains("could not construct"));
+        }
+    }
+
+    /// Wall time of a synthetic iteration, linear in its totals.
+    fn observed_iteration(ranks: &[RankQuery]) -> Vec<crate::ForwardPassMetrics> {
+        let total = |index: usize| ranks.iter().map(|rank| f64::from(rank[index])).sum::<f64>();
+        let wall_ms = 1.5 + 0.004 * total(1) + 0.0002 * total(2) + 0.0003 * total(4);
+        let mut metrics: Vec<_> = ranks.iter().map(AicTimingModel::rank_metrics).collect();
+        metrics[0].wall_time = wall_ms / 1000.0;
+        metrics
+    }
+
+    /// Every kind of aggregated iteration, unless `kinds` leaves some out.
+    fn fitted_training_iterations(
+        kinds: &[IterationKind],
+        cross_rank: bool,
+    ) -> Vec<Vec<crate::ForwardPassMetrics>> {
+        let mut iterations = Vec::new();
+        for i in 0..24_u32 {
+            let prefill = [1 + i % 3, 64 * (1 + i % 7), 16 * (i % 5), 0, 0];
+            let decode = [0, 0, 0, 1 + i % 8, 512 * (1 + i % 9)];
+            let mixed = [
+                1,
+                32 * (1 + i % 5),
+                8 * (i % 3),
+                1 + i % 4,
+                256 * (1 + i % 6),
+            ];
+            for (kind, ranks) in [
+                (IterationKind::Prefill, vec![prefill]),
+                (IterationKind::Decode, vec![decode]),
+                (IterationKind::Mixed, vec![mixed]),
+            ] {
+                if kinds.contains(&kind) {
+                    iterations.push(observed_iteration(&ranks));
+                }
+            }
+            if cross_rank {
+                iterations.push(observed_iteration(&[prefill, decode]));
+            }
+        }
+        iterations
+    }
+
+    /// A planner-style identity: the deployment's hardware, versions and
+    /// shape are unknown, its limits recorded.
+    fn unknown_regression_identity(
+        worker_type: ForwardPassWorkerType,
+    ) -> ForwardPassPerfModelConfig {
+        let mut config = ForwardPassPerfModelConfig::new(
+            "Qwen/Qwen3-0.6B",
+            crate::UNKNOWN_IDENTITY,
+            crate::BackendKind::Vllm,
+            worker_type,
+        );
+        config.estimation_mode = EstimationMode::FpmRegression;
+        config.backend_version = Some(crate::UNKNOWN_IDENTITY.into());
+        (config.tp, config.pp, config.attention_dp) = (UNKNOWN_SIZE, UNKNOWN_SIZE, UNKNOWN_SIZE);
+        config.kv_block_size = Some(16);
+        config.deployment_limits = Some(DeploymentLimits {
+            num_gpus: crate::DeploymentLimit::Known(2),
+            max_kv_tokens: crate::DeploymentLimit::Known(4096),
+            ..Default::default()
+        });
+        config
+    }
+
+    /// [`unknown_regression_identity`] calibrated on an SGLang deployment.
+    fn unknown_sglang_identity(worker_type: ForwardPassWorkerType) -> ForwardPassPerfModelConfig {
+        let mut config = unknown_regression_identity(worker_type);
+        config.backend = crate::BackendKind::Sglang;
+        config
+    }
+
+    /// Save `model` and return the timing configuration replay restores it with.
+    fn snapshot_timing_config(
+        model: &ForwardPassPerfModel,
+        path: &std::path::Path,
+    ) -> AicTimingConfig {
+        let saved = model
+            .save_state_snapshot(path, &crate::StateSnapshotOptions::default())
+            .unwrap();
+        serde_json::from_value(serde_json::to_value(saved).unwrap()).unwrap()
+    }
+
+    /// A rank's work: prefill `(new_tokens, prefix_tokens)` requests, each
+    /// completing its prompt in this pass, and decode context lengths.
+    fn fitted_work(
+        dp_rank: u32,
+        prefill: Option<&[(usize, usize)]>,
+        decode: Option<&[usize]>,
+    ) -> RankWork {
+        RankWork {
+            dp_rank,
+            prefill: prefill.map(|requests| crate::engine::PrefillWork {
+                totals: PrefillTotals {
+                    batch_size: requests.len(),
+                    new_tokens: requests.iter().map(|request| request.0).sum(),
+                    prefix_tokens: requests.iter().map(|request| request.1).sum(),
+                },
+                requests: requests
+                    .iter()
+                    .map(|&(new_tokens, prefix_tokens)| {
+                        (new_tokens, prefix_tokens, new_tokens + prefix_tokens)
+                    })
+                    .collect(),
+            }),
+            decode: decode.map(|lengths| {
+                let active_kv_tokens = lengths.iter().sum::<usize>();
+                crate::engine::DecodeWork {
+                    batch_size: lengths.len(),
+                    active_kv_tokens,
+                    mean_context_length: active_kv_tokens / lengths.len(),
+                    // A clamp below the logical total that fitted queries ignore.
+                    kv_bound_tokens: active_kv_tokens / 2,
+                    lengths: lengths.to_vec(),
+                    verify_width: 1,
+                }
+            }),
+        }
+    }
+
+    /// The telemetry totals of `rank`, as a hand-written expectation: decode
+    /// KV is past KV, each context length but its current token, as Dynamo's
+    /// vLLM telemetry sums decode requests' computed tokens.
+    fn telemetry_query(rank: &RankWork) -> RankQuery {
+        let prefill = rank.prefill.as_ref().map_or([0; 3], |prefill| {
+            [
+                prefill.totals.batch_size,
+                prefill.totals.new_tokens,
+                prefill.totals.prefix_tokens,
+            ]
+            .map(|value| value as u32)
+        });
+        let decode = rank.decode.as_ref().map_or([0; 2], |decode| {
+            [
+                decode.batch_size as u32,
+                decode
+                    .lengths
+                    .iter()
+                    .map(|length| length - 1)
+                    .sum::<usize>() as u32,
+            ]
+        });
+        [prefill[0], prefill[1], prefill[2], decode[0], decode[1]]
+    }
+
+    #[test]
+    fn fitted_regression_prices_each_iteration_as_the_canonical_estimate() {
+        pyo3::prepare_freethreaded_python();
+        let dir = tempfile::tempdir().unwrap();
+        let identity = unknown_regression_identity(ForwardPassWorkerType::Aggregated);
+        let mut model = ForwardPassPerfModel::best_available(identity).unwrap();
+        model
+            .tune_with_fpms(&fitted_training_iterations(
+                &[
+                    IterationKind::Prefill,
+                    IterationKind::Decode,
+                    IterationKind::Mixed,
+                ],
+                true,
+            ))
+            .unwrap();
+        assert!(
+            model
+                .readiness_report()
+                .stores
+                .iter()
+                .all(|store| store.ready)
+        );
+        let mut config = snapshot_timing_config(&model, &dir.path().join("snapshot"));
+        assert_eq!(
+            (config.tp, config.attention_dp),
+            (UNKNOWN_SIZE, UNKNOWN_SIZE)
+        );
+        let timing =
+            AicTimingModel::build(&mut config, ForwardPassWorkerType::Aggregated, false).unwrap();
+        assert!(timing.is_fitted());
+        assert_eq!(
+            timing.iteration.as_ref().unwrap().query,
+            IterationQuery::Fitted { detail: false }
+        );
+
+        let prefill = fitted_work(0, Some(&[(200, 40), (100, 0)]), None);
+        let decode = fitted_work(0, None, Some(&[700, 900, 1100]));
+        let mixed = fitted_work(0, Some(&[(96, 16)]), Some(&[300, 500]));
+        let decode_one = fitted_work(1, None, Some(&[400, 1600]));
+        let prefill_one = fitted_work(1, Some(&[(128, 64)]), None);
+        for ranks in [
+            // dp=1
+            vec![prefill.clone()],
+            vec![decode.clone()],
+            vec![mixed.clone()],
+            // dp=2, idle ranks included
+            vec![prefill.clone(), decode_one.clone()],
+            vec![decode.clone(), decode_one.clone()],
+            vec![mixed.clone(), prefill_one.clone()],
+            vec![prefill.clone(), RankWork::idle(1)],
+        ] {
+            let queries: Vec<_> = ranks.iter().map(telemetry_query).collect();
+            let expected = canonical_ms(&model, &queries);
+            assert_eq!(iteration_ms(&timing, &ranks), expected, "{queries:?}");
+            // Priced again from the cache.
+            assert_eq!(iteration_ms(&timing, &ranks), expected);
+        }
+        // A group without model work takes no time and asks the model
+        // nothing (see `fitted_role_passes_without_model_work_take_no_time`).
+        assert_eq!(
+            timing
+                .predict_iteration_ms(&[RankWork::idle(0), RankWork::idle(1)])
+                .unwrap(),
+            Some(IterationMs { total_ms: 0.0 })
+        );
+        // Latency-only, and never priced by phase.
+        assert!(timing.evidence_summary().is_none());
+        assert!(timing.fpm_evidence_summary().is_none());
+        assert!(timing.predict_decode_ms(1, 100, 100, 1000).is_err());
+        assert!(timing.predict_prefill_totals_ms(1, 100, 0).is_err());
+        assert!(
+            timing
+                .predict_mixed_pass_ms(
+                    PrefillTotals {
+                        batch_size: 1,
+                        new_tokens: 8,
+                        prefix_tokens: 0
+                    },
+                    1,
+                    10,
+                    10,
+                    100
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn fitted_role_passes_without_model_work_take_no_time() {
+        use crate::engine::generalized::{EngineIdentity, SchedulerCommand};
+        use crate::engine::{Command, EngineConfig, EngineFactory, Request, SglangConfig};
+        pyo3::prepare_freethreaded_python();
+        let dir = tempfile::tempdir().unwrap();
+        let mut model = ForwardPassPerfModel::best_available(unknown_sglang_identity(
+            ForwardPassWorkerType::Aggregated,
+        ))
+        .unwrap();
+        // An SGLang rank never computes prefill and decode together, so its
+        // telemetry has no locally mixed pass and the role needs none.
+        model
+            .tune_with_fpms(&fitted_training_iterations(
+                &[IterationKind::Prefill, IterationKind::Decode],
+                true,
+            ))
+            .unwrap();
+        let mut config = snapshot_timing_config(&model, &dir.path().join("snapshot"));
+        let timing = Arc::new(
+            AicTimingModel::build(&mut config, ForwardPassWorkerType::Aggregated, false).unwrap(),
+        );
+        assert!(!timing.prices_phases());
+        // SGLang with a prefill-decode interval of 2 and attention DP 2: one
+        // 12-token prompt on rank 0 runs in 4-token chunks, each followed by
+        // two deferred rounds on which neither rank computes model work.
+        let engine_config = EngineConfig {
+            num_gpu_blocks: 1024,
+            block_size: 1,
+            max_num_seqs: 16,
+            max_num_batched_tokens: 128,
+            prefill_decode_interval: 2,
+            enable_prefix_caching: false,
+            sglang: SglangConfig {
+                // Divided among the two ranks.
+                chunked_prefill_size: 8,
+                schedule_conservativeness: 0.0,
+                ..SglangConfig::default()
+            },
+            ..EngineConfig::for_backend(Backend::Sglang)
+        };
+        let mut engine = EngineFactory::with_timing_model(engine_config, timing)
+            .unwrap()
+            .build(
+                EngineIdentity::new(0),
+                std::num::NonZeroU32::new(2).unwrap(),
+            )
+            .unwrap();
+        engine
+            .apply_command_effects(
+                SchedulerCommand::new(
+                    0,
+                    Command::Submit(Request {
+                        request_id: uuid::Uuid::from_u128(1),
+                        tokens: vec![1; 12],
+                        max_output_tokens: 1,
+                        output_token_ids: None,
+                        session_id: None,
+                        images: Vec::new(),
+                        kv_hint: None,
+                    }),
+                ),
+                0.0,
+            )
+            .unwrap();
+        let mut now_ms = 0.0;
+        let mut rounds = Vec::new();
+        for _ in 0..7 {
+            // A phase query would fail: the fitted role has no phase pricing.
+            let started = engine.execute_pass(now_ms).unwrap().unwrap();
+            let completed = engine
+                .complete_pass(started.pass_id, started.end_ms)
+                .unwrap();
+            let fpm = &completed.effects.by_rank[0].effects.forward_pass_metrics;
+            rounds.push((
+                fpm.num_prefill_requests,
+                started.end_ms - started.started_at_ms,
+            ));
+            now_ms = started.end_ms;
+        }
+        for (round, (prefills, duration_ms)) in rounds.iter().enumerate() {
+            if round % 3 == 0 {
+                assert_eq!(*prefills, 1, "{rounds:?}");
+                assert!(*duration_ms > 0.0, "{rounds:?}");
+            } else {
+                assert_eq!((*prefills, *duration_ms), (0, 0.0), "{rounds:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn fitted_replay_rejects_a_decode_speedup_other_than_one() {
+        pyo3::prepare_freethreaded_python();
+        let dir = tempfile::tempdir().unwrap();
+        let mut model = ForwardPassPerfModel::best_available(unknown_regression_identity(
+            ForwardPassWorkerType::Decode,
+        ))
+        .unwrap();
+        model
+            .tune_with_fpms(&fitted_training_iterations(&[IterationKind::Decode], false))
+            .unwrap();
+        let saved = model
+            .save_state_snapshot(
+                &dir.path().join("snapshot"),
+                &crate::StateSnapshotOptions::default(),
+            )
+            .unwrap();
+        let resolve = |decode_speedup_ratio: f64| {
+            let mut role = ReplayRoleConfig::default();
+            role.rank.block_size = 16;
+            role.rank.decode_speedup_ratio = decode_speedup_ratio;
+            role.rank.timing_model = TimingModelConfig::External {
+                provider: "aic".into(),
+                config: serde_json::to_value(&saved).unwrap(),
+            };
+            resolve_role_timing(
+                &mut role,
+                false,
+                ForwardPassWorkerType::Decode,
+                false,
+                &mut Vec::new(),
+            )
+            .map(|timing| (timing.is_some(), role.rank.num_gpu_blocks))
+        };
+        // At a unit decode speedup the role takes its recorded 4096 KV
+        // tokens in 16-token blocks.
+        assert_eq!(resolve(1.0).unwrap(), (true, 256));
+        for ratio in [0.5, 2.0] {
+            let error = resolve(ratio).unwrap_err().to_string();
+            assert!(
+                error.contains("fpm_regression replay requires decode_speedup_ratio=1.0"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn fitted_replay_requires_every_store_its_role_prices() {
+        pyo3::prepare_freethreaded_python();
+        let dir = tempfile::tempdir().unwrap();
+        let build = |kinds: &[IterationKind],
+                     cross_rank: bool,
+                     worker: ForwardPassWorkerType,
+                     name: &str| {
+            let mut model =
+                ForwardPassPerfModel::best_available(unknown_regression_identity(worker)).unwrap();
+            let iterations = fitted_training_iterations(kinds, cross_rank);
+            if !iterations.is_empty() {
+                model.tune_with_fpms(&iterations).unwrap();
+            }
+            let mut config = snapshot_timing_config(&model, &dir.path().join(name));
+            (model, AicTimingModel::build(&mut config, worker, false))
+        };
+        let message =
+            |result: Result<AicTimingModel>| result.err().expect("unready stores").to_string();
+        // A cold regression has no store.
+        let (_, cold) = build(&[], false, ForwardPassWorkerType::Decode, "cold");
+        assert!(
+            message(cold).contains("workload store(s) pure_decode (insufficient_data) not ready")
+        );
+        // An aggregated worker also needs prefill and locally mixed stores.
+        let (_, decode_only) = build(
+            &[IterationKind::Decode],
+            false,
+            ForwardPassWorkerType::Aggregated,
+            "decode-only",
+        );
+        let error = message(decode_only);
+        assert!(
+            error.contains(
+                "contains_locally_mixed (insufficient_data), pure_prefill (insufficient_data)"
+            ) && !error.contains("pure_decode"),
+            "{error}"
+        );
+        // Without cross-rank observations the role builds for one rank only.
+        let (model, timing) = build(
+            &[
+                IterationKind::Prefill,
+                IterationKind::Decode,
+                IterationKind::Mixed,
+            ],
+            false,
+            ForwardPassWorkerType::Aggregated,
+            "local",
+        );
+        timing.unwrap();
+        require_iteration_stores(&model, ForwardPassWorkerType::Aggregated, 1).unwrap();
+        let error = require_iteration_stores(&model, ForwardPassWorkerType::Aggregated, 2)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("cross_rank_aggregated"), "{error}");
+        // A dedicated role needs only its own store.
+        let (_, decode) = build(
+            &[IterationKind::Decode],
+            false,
+            ForwardPassWorkerType::Decode,
+            "decode",
+        );
+        decode.unwrap();
+        // Speculation and vision are rejected for a restored regression too.
+        let mut model = ForwardPassPerfModel::best_available(unknown_regression_identity(
+            ForwardPassWorkerType::Decode,
+        ))
+        .unwrap();
+        model
+            .tune_with_fpms(&fitted_training_iterations(&[IterationKind::Decode], false))
+            .unwrap();
+        let config = snapshot_timing_config(&model, &dir.path().join("rejections"));
+        let mut speculative = config.clone();
+        speculative.nextn = 1;
+        assert!(
+            message(AicTimingModel::build(
+                &mut speculative,
+                ForwardPassWorkerType::Decode,
+                false
+            ))
+            .contains("does not support speculative decoding")
+        );
+        let mut vision = config;
+        assert!(
+            message(AicTimingModel::build(
+                &mut vision,
+                ForwardPassWorkerType::Decode,
+                true
+            ))
+            .contains("vision encoder")
+        );
+    }
+
+    #[test]
+    fn fitted_rank_metrics_carry_telemetry_totals_and_request_detail() {
+        let mixed = fitted_work(3, Some(&[(200, 40), (100, 0)]), Some(&[700, 900, 1100]));
+        let query = AicTimingModel::fitted_rank_query(&mixed).unwrap();
+        // Decode KV is past KV, as Dynamo's vLLM telemetry sums each decode
+        // request's computed tokens: contexts 700, 900 and 1100 each hold one
+        // current token, so 699 + 899 + 1099 = 2697, unclamped by the
+        // scheduler's KV bound of 1350.
+        assert_eq!(query, [2, 300, 40, 3, 2697]);
+        let metrics = AicTimingModel::detailed_rank_metrics(&query, &mixed).unwrap();
+        let scheduled = &metrics.scheduled_requests;
+        assert_eq!(
+            scheduled.extend_lengths.as_deref(),
+            Some([200, 100, 1, 1, 1].as_slice())
+        );
+        assert_eq!(
+            scheduled.past_kv_lengths.as_deref(),
+            Some([40, 0, 699, 899, 1099].as_slice())
+        );
+        // The decode requests' past KV sums to the totals' decode KV.
+        let decode_past: u64 = scheduled.past_kv_lengths.as_ref().unwrap()[2..]
+            .iter()
+            .sum();
+        assert_eq!(decode_past, u64::from(query[4]));
+        // Prefill lengths 240 and 100: mean 170, variance 70^2. Decode past
+        // KV 699, 899 and 1099: mean 899, variance 2 * 200^2 / 3.
+        assert_eq!(scheduled.var_prefill_length, 4900.0);
+        assert!((scheduled.var_decode_kv_tokens - 80_000.0 / 3.0).abs() < 1e-9);
+        crate::perfmodel::fpm::validate_forward_pass_metrics(&metrics).unwrap();
+        // A first decode step after a 1-token prompt has no past KV.
+        let first = fitted_work(0, None, Some(&[1]));
+        assert_eq!(
+            AicTimingModel::fitted_rank_query(&first).unwrap(),
+            [0, 0, 0, 1, 0]
+        );
+        let idle = AicTimingModel::detailed_rank_metrics(&[0; 5], &RankWork::idle(0)).unwrap();
+        assert_eq!(idle.scheduled_requests.extend_lengths, None);
+        // Scheduler lists that disagree with the totals are an error.
+        let mut short = mixed.clone();
+        short.decode.as_mut().unwrap().lengths.pop();
+        assert!(AicTimingModel::detailed_rank_metrics(&query, &short).is_err());
+        let mut speculative = mixed.clone();
+        speculative.decode.as_mut().unwrap().verify_width = 2;
+        assert!(AicTimingModel::fitted_rank_query(&speculative).is_err());
+        // Decode totals without a current token per request are an error.
+        let mut no_current = mixed;
+        no_current.decode.as_mut().unwrap().active_kv_tokens = 2;
+        assert!(AicTimingModel::fitted_rank_query(&no_current).is_err());
+    }
+
+    #[test]
+    fn fitted_regression_with_request_axes_reads_per_request_detail() {
+        pyo3::prepare_freethreaded_python();
+        let dir = tempfile::tempdir().unwrap();
+        let mut identity = unknown_regression_identity(ForwardPassWorkerType::Decode);
+        identity.estimator_config = serde_json::from_value(serde_json::json!({
+            "fpm_regression": {"fit": {"linear": {"feature_axes": ["attention", "moe", "P2"]}}}
+        }))
+        .unwrap();
+        let mut model = ForwardPassPerfModel::best_available(identity).unwrap();
+        let ranks = |i: usize| {
+            let lengths: Vec<usize> = (0..1 + i % 5)
+                .map(|j| 100 + 37 * ((i * 7 + j * 13) % 41))
+                .collect();
+            fitted_work(0, None, Some(&lengths))
+        };
+        let iterations: Vec<_> = (0..32)
+            .map(|i| {
+                let rank = ranks(i);
+                let query = AicTimingModel::fitted_rank_query(&rank).unwrap();
+                let mut metrics = AicTimingModel::detailed_rank_metrics(&query, &rank).unwrap();
+                let squares: f64 = metrics
+                    .scheduled_requests
+                    .past_kv_lengths
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .map(|p| (*p as f64).powi(2))
+                    .sum();
+                metrics.wall_time = (2.0 + 0.001 * f64::from(query[4]) + 1e-6 * squares) / 1000.0;
+                vec![metrics]
+            })
+            .collect();
+        model.tune_with_fpms(&iterations).unwrap();
+        assert!(model.reads_request_detail());
+        let mut config = snapshot_timing_config(&model, &dir.path().join("snapshot"));
+        let timing =
+            AicTimingModel::build(&mut config, ForwardPassWorkerType::Decode, false).unwrap();
+        let pricing = timing.iteration.as_ref().unwrap();
+        assert_eq!(pricing.query, IterationQuery::Fitted { detail: true });
+        assert!(pricing.cache.is_none());
+        for i in [3, 8, 21] {
+            let rank = ranks(i);
+            let query = AicTimingModel::fitted_rank_query(&rank).unwrap();
+            let expected = model
+                .estimate_forward_pass_time_ms(&[AicTimingModel::detailed_rank_metrics(
+                    &query, &rank,
+                )
+                .unwrap()])
+                .unwrap()
+                .unwrap();
+            assert_eq!(iteration_ms(&timing, &[rank]), expected);
+        }
+    }
+
+    #[test]
+    fn fitted_aggregated_role_needs_a_locally_mixed_store_only_where_ranks_mix_work() {
+        pyo3::prepare_freethreaded_python();
+        let dir = tempfile::tempdir().unwrap();
+        for backend in [
+            crate::BackendKind::Vllm,
+            crate::BackendKind::Trtllm,
+            crate::BackendKind::Sglang,
+        ] {
+            let mut identity = unknown_regression_identity(ForwardPassWorkerType::Aggregated);
+            identity.backend = backend.clone();
+            let mut model = ForwardPassPerfModel::best_available(identity).unwrap();
+            // Pure prefill and pure decode telemetry only.
+            model
+                .tune_with_fpms(&fitted_training_iterations(
+                    &[IterationKind::Prefill, IterationKind::Decode],
+                    false,
+                ))
+                .unwrap();
+            let mut config = snapshot_timing_config(&model, &dir.path().join(backend.as_str()));
+            let built =
+                AicTimingModel::build(&mut config, ForwardPassWorkerType::Aggregated, false);
+            if backend == crate::BackendKind::Sglang {
+                // An SGLang rank runs a prefill batch alone, so no pass of
+                // the role is locally mixed.
+                built.unwrap();
+                require_iteration_stores(&model, ForwardPassWorkerType::Aggregated, 1).unwrap();
+                // Its attention-DP ranks still compute different work.
+                let error = require_iteration_stores(&model, ForwardPassWorkerType::Aggregated, 2)
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    error.contains("cross_rank_aggregated")
+                        && !error.contains("contains_locally_mixed"),
+                    "{error}"
+                );
+            } else {
+                // vLLM and TensorRT-LLM schedule chunked prefill beside decode.
+                let error = built.err().expect("no locally mixed store").to_string();
+                assert!(
+                    error.contains(
+                        "workload store(s) contains_locally_mixed (insufficient_data) not ready"
+                    ),
+                    "{backend:?}: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fitted_aggregated_role_checks_its_cross_rank_store_at_the_engine_width() {
+        pyo3::prepare_freethreaded_python();
+        let dir = tempfile::tempdir().unwrap();
+        // The identity records unknown attention DP and two GPUs; engine
+        // dp_size 2 at tensor parallelism 1 uses both.
+        let resolve = |cross_rank: bool, dp_size: u32| {
+            let mut model = ForwardPassPerfModel::best_available(unknown_regression_identity(
+                ForwardPassWorkerType::Aggregated,
+            ))
+            .unwrap();
+            model
+                .tune_with_fpms(&fitted_training_iterations(
+                    &[
+                        IterationKind::Prefill,
+                        IterationKind::Decode,
+                        IterationKind::Mixed,
+                    ],
+                    cross_rank,
+                ))
+                .unwrap();
+            let saved = model
+                .save_state_snapshot(
+                    &dir.path().join(format!("{cross_rank}-{dp_size}")),
+                    &crate::StateSnapshotOptions::default(),
+                )
+                .unwrap();
+            let mut role = ReplayRoleConfig {
+                dp_size,
+                ..Default::default()
+            };
+            role.rank.block_size = 16;
+            role.rank.timing_model = TimingModelConfig::External {
+                provider: "aic".into(),
+                config: serde_json::to_value(&saved).unwrap(),
+            };
+            resolve_role_timing(
+                &mut role,
+                false,
+                ForwardPassWorkerType::Aggregated,
+                false,
+                &mut Vec::new(),
+            )
+            .map(|timing| timing.is_some())
+        };
+        assert!(resolve(false, 1).unwrap());
+        // Construction cannot see the engine's width; the role check does.
+        let error = resolve(false, 2).unwrap_err().to_string();
+        assert!(
+            error.contains("workload store(s) cross_rank_aggregated")
+                && error.contains("not ready"),
+            "{error}"
+        );
+        assert!(resolve(true, 2).unwrap());
+    }
+
+    #[test]
+    fn fitted_kvcr_role_with_an_unknown_pipeline_width_runs_one_stage() {
+        use crate::engine::{KvcrConfig, NativeHostOffloadConfig};
+        use crate::replay::WorkerStage;
+        pyo3::prepare_freethreaded_python();
+        let dir = tempfile::tempdir().unwrap();
+        let mut model = ForwardPassPerfModel::best_available(unknown_regression_identity(
+            ForwardPassWorkerType::Aggregated,
+        ))
+        .unwrap();
+        model
+            .tune_with_fpms(&fitted_training_iterations(
+                &[
+                    IterationKind::Prefill,
+                    IterationKind::Decode,
+                    IterationKind::Mixed,
+                ],
+                false,
+            ))
+            .unwrap();
+        let saved = model
+            .save_state_snapshot(
+                &dir.path().join("snapshot"),
+                &crate::StateSnapshotOptions::default(),
+            )
+            .unwrap();
+        let mut role = ReplayRoleConfig::default();
+        role.rank.block_size = 16;
+        role.rank.kv_cache_bytes_per_token = Some(250_000);
+        role.rank.native_host_offload = Some(NativeHostOffloadConfig::new(4));
+        role.rank.kvcr = Some(KvcrConfig::default());
+        role.rank.timing_model = TimingModelConfig::External {
+            provider: "aic".into(),
+            config: serde_json::to_value(&saved).unwrap(),
+        };
+        let timing = resolve_role_timing(
+            &mut role,
+            false,
+            ForwardPassWorkerType::Aggregated,
+            false,
+            &mut Vec::new(),
+        )
+        .unwrap()
+        .unwrap();
+        // The resolved identity the role keeps spells its pipeline width unknown.
+        let TimingModelConfig::External { config, .. } = &role.rank.timing_model else {
+            panic!("the role keeps its AIC timing");
+        };
+        assert_eq!(config["pp"], "unknown");
+        let engine = ReplayEngineConfig {
+            rank: role.rank.clone(),
+            ..Default::default()
+        };
+        let factory = ReplayEngineFactory::with_timing_model(timing)
+            .role_factory(&engine, WorkerStage::Aggregated, false)
+            .unwrap();
+        assert_eq!(factory.kvcr_config, Some(KvcrConfig::default()));
+    }
+
+    #[test]
+    fn fitted_metrics_number_every_rank_of_the_group() {
+        let ranks = [
+            fitted_work(0, Some(&[(64, 0)]), None),
+            RankWork::idle(1),
+            fitted_work(2, None, Some(&[10, 20])),
+        ];
+        let queries: Vec<_> = ranks
+            .iter()
+            .map(|rank| AicTimingModel::fitted_rank_query(rank).unwrap())
+            .collect();
+        for detail in [false, true] {
+            let metrics = AicTimingModel::fitted_metrics(&queries, &ranks, detail).unwrap();
+            // A learned model's mixed composition requires the complete,
+            // unique rank IDs 0..attention_dp.
+            assert_eq!(
+                metrics
+                    .iter()
+                    .map(|metrics| metrics.dp_rank)
+                    .collect::<Vec<_>>(),
+                [0, 1, 2]
+            );
+            assert_eq!(metrics[1].scheduled_requests, Default::default());
+        }
+    }
+
+    /// Records each group pass's work and prices it at 1 ms.
+    #[derive(Default)]
+    struct CapturedIterations(Mutex<Vec<Vec<RankWork>>>);
+
+    impl TimingModel for CapturedIterations {
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> Result<f64> {
+            anyhow::bail!("passes are priced as iterations")
+        }
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> Result<f64> {
+            anyhow::bail!("passes are priced as iterations")
+        }
+        fn predict_iteration_ms(&self, ranks: &[RankWork]) -> Result<Option<IterationMs>> {
+            self.0.lock().unwrap().push(ranks.to_vec());
+            Ok(Some(IterationMs { total_ms: 1.0 }))
+        }
+        fn prices_phases(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn fitted_detail_reports_the_full_prompt_variance_of_a_chunked_prefill() {
+        use crate::engine::generalized::{EngineIdentity, SchedulerCommand};
+        use crate::engine::{Command, EngineFactory, Request, SglangConfig};
+        // The first 4096-token chunk of an 8000-token prompt beside a whole
+        // 4000-token prompt. Dynamo's vLLM telemetry reports the prompts'
+        // lengths, 8000 and 4000: mean 6000, variance 2000^2. The tokens
+        // through this pass, 4096 and 4000, would give 48^2.
+        let mut chunked = fitted_work(0, Some(&[(4096, 0), (4000, 0)]), None);
+        chunked.prefill.as_mut().unwrap().requests[0].2 = 8000;
+        let query = AicTimingModel::fitted_rank_query(&chunked).unwrap();
+        let metrics = AicTimingModel::detailed_rank_metrics(&query, &chunked).unwrap();
+        assert_eq!(metrics.scheduled_requests.var_prefill_length, 4_000_000.0);
+        assert_eq!(
+            metrics.scheduled_requests.extend_lengths.as_deref(),
+            Some([4096, 4000].as_slice())
+        );
+
+        // Both schedulers carry each request's prompt length: on every pass of
+        // a chunked prefill the detail's variance is the one their own
+        // forward-pass metrics publish.
+        for backend in [Backend::Vllm, Backend::Sglang] {
+            let timing = Arc::new(CapturedIterations::default());
+            let engine_config = EngineConfig {
+                num_gpu_blocks: 1024,
+                block_size: 16,
+                max_num_seqs: 16,
+                max_num_batched_tokens: 64,
+                enable_chunked_prefill: true,
+                enable_prefix_caching: false,
+                sglang: SglangConfig {
+                    chunked_prefill_size: 64,
+                    ..SglangConfig::default()
+                },
+                ..EngineConfig::for_backend(backend)
+            };
+            let mut engine = EngineFactory::with_timing_model(
+                engine_config,
+                Arc::clone(&timing) as Arc<dyn TimingModel>,
+            )
+            .unwrap()
+            .build(EngineIdentity::new(0), std::num::NonZeroU32::MIN)
+            .unwrap();
+            // A short prompt first, so the long one is cut to the rest of the
+            // first pass's token budget.
+            for (id, length) in [(1, 40), (2, 200)] {
+                engine
+                    .apply_command_effects(
+                        SchedulerCommand::new(
+                            0,
+                            Command::Submit(Request {
+                                request_id: uuid::Uuid::from_u128(id),
+                                tokens: (0..length).map(|token| token as u32).collect(),
+                                max_output_tokens: 2,
+                                output_token_ids: None,
+                                session_id: None,
+                                images: Vec::new(),
+                                kv_hint: None,
+                            }),
+                        ),
+                        0.0,
+                    )
+                    .unwrap();
+            }
+            let (mut now_ms, mut mid_chunk_mixed_lengths) = (0.0, 0);
+            while let Some(started) = engine.execute_pass(now_ms).unwrap() {
+                let completed = engine
+                    .complete_pass(started.pass_id, started.end_ms)
+                    .unwrap();
+                now_ms = started.end_ms;
+                let published = &completed.effects.by_rank[0].effects.forward_pass_metrics;
+                let Some(ranks) = timing.0.lock().unwrap().pop() else {
+                    continue;
+                };
+                let rank = &ranks[0];
+                let Some(prefill) = rank.prefill.as_ref() else {
+                    continue;
+                };
+                let query = AicTimingModel::fitted_rank_query(rank).unwrap();
+                let detail = AicTimingModel::detailed_rank_metrics(&query, rank).unwrap();
+                assert!(
+                    (detail.scheduled_requests.var_prefill_length - published.var_prefill_length)
+                        .abs()
+                        < 1e-6,
+                    "{backend:?}: {prefill:?} vs {published:?}"
+                );
+                if prefill.requests.len() > 1
+                    && prefill
+                        .requests
+                        .iter()
+                        .any(|&(new_tokens, prefix, prompt)| new_tokens + prefix < prompt)
+                {
+                    mid_chunk_mixed_lengths += 1;
+                }
+            }
+            assert!(
+                mid_chunk_mixed_lengths > 0,
+                "{backend:?} never cut a prompt beside another prefill"
             );
         }
     }
@@ -5668,6 +7032,7 @@ mod tests {
             fpm_parquet_path: None,
             decoder_replay: false,
             encoder_parallel: None,
+            deployment_limits: None,
         }
     }
 
@@ -7375,7 +8740,7 @@ mod tests {
         let pricing = timing.iteration.as_mut().unwrap();
         // A measured SD-round profile prices exactly one rank, mixed or pure
         // (see `sd_round_iteration_prices_a_mixed_rank_as_one_forward`).
-        pricing.dispatch = IterationDispatch::WholeModel { sd_round: true };
+        pricing.query = IterationQuery::Native(IterationDispatch::WholeModel { sd_round: true });
         assert!(timing.predict_iteration_ms(&pure).unwrap().is_some());
         assert!(timing.predict_iteration_ms(&mixed).unwrap().is_some());
         let two_ranks = [prefill_work(0, 1, 8, 0), RankWork::idle(1)];
@@ -7383,16 +8748,16 @@ mod tests {
         // Measured scopes without a mix-step composition decline mixed ranks,
         // and a scheduler at another speculative depth keeps phase pricing.
         let pricing = timing.iteration.as_mut().unwrap();
-        pricing.dispatch = IterationDispatch::Operations {
+        pricing.query = IterationQuery::Native(IterationDispatch::Operations {
             verify_width: 1,
             mixed: false,
-        };
+        });
         assert_eq!(timing.predict_iteration_ms(&mixed).unwrap(), None);
         let pricing = timing.iteration.as_mut().unwrap();
-        pricing.dispatch = IterationDispatch::Operations {
+        pricing.query = IterationQuery::Native(IterationDispatch::Operations {
             verify_width: 2,
             mixed: true,
-        };
+        });
         assert_eq!(
             timing
                 .predict_iteration_ms(&[decode_work(0, 1, 9, 1024)])
@@ -7409,12 +8774,14 @@ mod tests {
         let dispatch = |use_fpm_decode_totals, decoder_replay| {
             IterationPricing::for_replay(&model, &native, use_fpm_decode_totals, decoder_replay)
                 .unwrap()
-                .map(|pricing| pricing.dispatch)
+                .map(|pricing| pricing.query)
         };
         // Whole-model FPM timing reads decode totals from this engine.
         assert_eq!(
             dispatch(true, false),
-            Some(IterationDispatch::WholeModel { sd_round: false })
+            Some(IterationQuery::Native(IterationDispatch::WholeModel {
+                sd_round: false
+            }))
         );
         assert_eq!(dispatch(true, true), None);
         assert_eq!(dispatch(false, false), None);
@@ -7495,11 +8862,11 @@ mod tests {
             AicTimingModel::build(&mut config, ForwardPassWorkerType::Aggregated, false).unwrap();
         timing.diagnostic_model = None;
         assert!(matches!(
-            timing.iteration.as_ref().unwrap().dispatch,
-            IterationDispatch::Operations {
+            timing.iteration.as_ref().unwrap().query,
+            IterationQuery::Native(IterationDispatch::Operations {
                 verify_width: 1,
                 mixed: true
-            }
+            })
         ));
         Some(timing)
     }
@@ -8031,6 +9398,9 @@ mod tests {
                 .clear();
             let timing = &timing;
             let pricing = timing.iteration.as_ref().unwrap();
+            let IterationQuery::Native(dispatch) = pricing.query else {
+                panic!("a packaged operation graph prices natively");
+            };
             // Reference: the detailed estimate's named operations, recorded
             // by the provider accumulator and by the checked accumulator.
             let mut named = TimingEvidenceAccumulator::default();
@@ -8040,11 +9410,7 @@ mod tests {
                 let total_ms = iteration_ms(timing, ranks);
                 let queries: Vec<_> = ranks
                     .iter()
-                    .map(|rank| {
-                        AicTimingModel::rank_query(pricing.dispatch, rank)
-                            .unwrap()
-                            .unwrap()
-                    })
+                    .map(|rank| AicTimingModel::rank_query(dispatch, rank).unwrap().unwrap())
                     .collect();
                 let metrics: Vec<_> = queries.iter().map(AicTimingModel::rank_metrics).collect();
                 let estimate = model.estimate_forward_pass_detailed(&metrics).unwrap();
@@ -8114,8 +9480,8 @@ mod tests {
         ));
         let (mut phase, mut iteration) = fpm_timing_pair(&model);
         assert_eq!(
-            iteration.iteration.as_ref().unwrap().dispatch,
-            IterationDispatch::WholeModel { sd_round: true }
+            iteration.iteration.as_ref().unwrap().query,
+            IterationQuery::Native(IterationDispatch::WholeModel { sd_round: true })
         );
         // `full_round_spec`'s hand rows: the B1 prefill of 256 tokens after
         // 128 KV is 13 ms and the complete K3 decode round of one request at

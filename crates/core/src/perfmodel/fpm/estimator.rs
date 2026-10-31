@@ -86,11 +86,11 @@ impl StateSnapshotConfig {
     }
 
     /// Anchor the directory and bind the manifest bytes before caller caches
-    /// use the resolved configuration. Relative paths resolve against the
-    /// working directory and are normalized lexically, without resolving
-    /// symlinks, matching the path `save_state_snapshot` records. The manifest read is
-    /// bounded.
-    pub(crate) fn resolve_source(&mut self) -> Result<(), AicError> {
+    /// use the resolved configuration, and return those bytes. Relative paths
+    /// resolve against the working directory and are normalized lexically,
+    /// without resolving symlinks, matching the path `save_state_snapshot`
+    /// records. The manifest read is bounded.
+    pub(crate) fn resolve_source(&mut self) -> Result<Vec<u8>, AicError> {
         use sha2::{Digest, Sha256};
         self.path = super::snapshot::normalized_absolute(&self.path)?;
         let bytes = super::snapshot::read_manifest_bytes(&self.path)?;
@@ -105,7 +105,7 @@ impl StateSnapshotConfig {
             ));
         }
         self.sha256 = Some(actual);
-        Ok(())
+        Ok(bytes)
     }
 }
 

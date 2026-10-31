@@ -1178,8 +1178,10 @@ pub struct PrefillWork {
     /// Exact batch totals, as [`TimingModel::predict_prefill_totals_ms`]
     /// receives them.
     pub totals: PrefillTotals,
-    /// Per-request `(new_tokens, prefix_tokens)`, in no particular order.
-    pub requests: Vec<(usize, usize)>,
+    /// Per-request `(new_tokens, prefix_tokens, prompt_len)`, in no particular
+    /// order. `prompt_len` is the request's full prompt, which a chunk of it
+    /// does not cover, as forward-pass telemetry reports prefill lengths.
+    pub requests: Vec<(usize, usize, usize)>,
 }
 
 /// The decode batch one attention-DP rank computes in a forward pass, in the
@@ -1342,6 +1344,16 @@ pub trait TimingModel: Send + Sync {
     /// prices its own work and the group ends with its slowest rank.
     fn predict_iteration_ms(&self, _ranks: &[RankWork]) -> Result<Option<IterationMs>> {
         Ok(None)
+    }
+
+    /// Whether the provider prices separate prefill and decode phases. One
+    /// that prices only whole iterations (`false`) answers every pass with
+    /// model work through [`Self::predict_iteration_ms`] and rejects phase
+    /// queries, so a scheduler charges a step that computes no forward, such
+    /// as an SGLang decode whose page reservation failed, no time without
+    /// asking it.
+    fn prices_phases(&self) -> bool {
+        true
     }
 
     /// Return typed evidence accumulated by this provider so far.
@@ -1631,7 +1643,7 @@ pub(crate) mod tests {
                     new_tokens: 8,
                     prefix_tokens: 0,
                 },
-                requests: vec![(8, 0)],
+                requests: vec![(8, 0, 8)],
             }),
             decode: None,
         }

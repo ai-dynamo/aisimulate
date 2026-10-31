@@ -1162,7 +1162,28 @@ mod tests {
         assert!(restored.tune_with_fpms(&observations).is_err());
         let report: ForwardPassReadinessReport = restored.readiness_report();
         assert_eq!(report, model.readiness_report());
-        let summary = ForwardPassPerfModel::inspect_state_snapshot(&directory).unwrap();
+        // A copy restores from its own directory once the original is gone.
+        let moved = root.path().join("moved");
+        std::fs::create_dir(&moved).unwrap();
+        for name in ["manifest.json", "config.json", "state.bin"] {
+            std::fs::copy(directory.join(name), moved.join(name)).unwrap();
+        }
+        std::fs::remove_dir_all(&directory).unwrap();
+        let mut config: aisimulate_core::ForwardPassPerfModelConfig =
+            serde_json::from_slice(&std::fs::read(moved.join("config.json")).unwrap()).unwrap();
+        config.estimator_config.state_snapshot.as_mut().unwrap().path = moved.clone();
+        let relocated = ForwardPassPerfModel::best_available(config).unwrap();
+        assert_eq!(
+            relocated
+                .estimate_forward_pass_time_ms(&query)
+                .unwrap()
+                .map(f64::to_bits),
+            model
+                .estimate_forward_pass_time_ms(&query)
+                .unwrap()
+                .map(f64::to_bits)
+        );
+        let summary = ForwardPassPerfModel::inspect_state_snapshot(&moved).unwrap();
         assert_eq!(summary.kind, StateSnapshotKind::Regression);
         assert_eq!(summary.state_layout_version, STATE_SNAPSHOT_LAYOUT_VERSION);
         assert_eq!(summary.topology, model.deployment_topology());
@@ -1175,6 +1196,30 @@ mod tests {
             mismatches,
             ["dp_size conflicts with canonical attention_dp"]
         );
+    }
+
+    #[test]
+    fn unknown_identity_and_deployment_limits_are_public() {
+        use aisimulate_core::{
+            DeploymentLimit, DeploymentLimits, EstimationMode, ForwardPassPerfModelConfig,
+            UNKNOWN_IDENTITY, UNKNOWN_SIZE,
+        };
+        let mut config: ForwardPassPerfModelConfig = serde_json::from_value(serde_json::json!({
+            "model": "dynamo-planner/model", "system": UNKNOWN_IDENTITY, "backend": "vllm",
+            "worker_type": "decode", "tp": "unknown", "estimation_mode": "fpm_regression",
+            "deployment_limits": {"num_gpus": 4, "max_kv_tokens": 65536}
+        }))
+        .unwrap();
+        assert_eq!(config.tp, UNKNOWN_SIZE);
+        assert_eq!(config.unknown_identity_facts(), ["system", "tp"]);
+        let limits: DeploymentLimits = config.deployment_limits.unwrap();
+        assert_eq!(limits.num_gpus, DeploymentLimit::Known(4));
+        assert_eq!(limits.max_num_seqs.known(), None);
+        let model = ForwardPassPerfModel::best_available(config.clone()).unwrap();
+        let topology = serde_json::to_value(model.deployment_topology().unwrap()).unwrap();
+        assert_eq!(topology["tp"], UNKNOWN_IDENTITY);
+        config.estimation_mode = EstimationMode::OpLevel;
+        assert!(ForwardPassPerfModel::best_available(config).is_err());
     }
 }
 

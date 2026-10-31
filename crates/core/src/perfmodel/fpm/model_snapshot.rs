@@ -140,6 +140,276 @@ fn unpinned(config: &ForwardPassPerfModelConfig) -> ForwardPassPerfModelConfig {
     config
 }
 
+/// Configuration paths of the inputs a snapshot owns, each with its fixed
+/// location relative to the snapshot directory. Other paths, such as the
+/// systems root of an unpacked native snapshot, name external inputs.
+fn owned_paths(
+    config: &mut ForwardPassPerfModelConfig,
+    kind: StateSnapshotKind,
+    packed: bool,
+) -> Result<Vec<(&mut PathBuf, String)>, AicError> {
+    let ForwardPassPerfModelConfig {
+        systems_paths,
+        estimator_config,
+        ..
+    } = config;
+    let learned = &mut estimator_config.fpm_learned;
+    let mut owned = Vec::new();
+    match kind {
+        StateSnapshotKind::Native => {
+            if packed {
+                let [root] = systems_paths.as_mut_slice() else {
+                    return Err(invalid(
+                        "a packed snapshot identity must name exactly one systems path",
+                    ));
+                };
+                owned.push((root, perf_db::PACKED_SYSTEMS_DIR.to_owned()));
+                if let Some(parquet) = estimator_config.fpm_interpolation.fpm_parquet_path.as_mut()
+                {
+                    let name = parquet
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or_else(|| invalid("packed fpm_parquet_path must name a UTF-8 file"))?
+                        .to_owned();
+                    owned.push((parquet, format!("{}/{name}", perf_db::PACKED_FPM_DIR)));
+                }
+            }
+            if let Some(selection) = estimator_config.op_level.execution_profile.as_mut() {
+                owned.push((&mut selection.path, EXECUTION_PROFILE_FILE.to_owned()));
+            }
+        }
+        StateSnapshotKind::LearnedFrozen => {
+            match (&mut learned.artifact_path, &learned.checkpoint_path) {
+                (Some(artifact), None) => owned.push((artifact, LEARNED_ARTIFACT_FILE.to_owned())),
+                _ => {
+                    return Err(invalid(
+                        "a frozen forest snapshot identity must name only its artifact",
+                    ));
+                }
+            }
+        }
+        StateSnapshotKind::LearnedOnline | StateSnapshotKind::CausalSelector => {
+            match (&learned.artifact_path, &mut learned.checkpoint_path) {
+                (None, Some(checkpoint)) => {
+                    owned.push((checkpoint, ONLINE_CHECKPOINT_DIR.to_owned()))
+                }
+                _ => {
+                    return Err(invalid(
+                        "an online forest snapshot identity must name only its checkpoint",
+                    ));
+                }
+            }
+        }
+        StateSnapshotKind::Regression | StateSnapshotKind::LearnedWithoutIdentity => {}
+    }
+    Ok(owned)
+}
+
+/// The directory that holds `relative` at `path`, if `path` ends with it.
+fn strip_relative(path: &Path, relative: &str) -> Option<PathBuf> {
+    let mut base = path.to_path_buf();
+    for component in Path::new(relative).components().rev() {
+        if base.file_name() != Some(component.as_os_str()) {
+            return None;
+        }
+        base.pop();
+    }
+    base.is_absolute().then_some(base)
+}
+
+/// The manifest identity with its owned inputs resolved against the snapshot
+/// directory `root`; `None` for a `from_learned` snapshot. Version 2 stores
+/// them relative to the snapshot; version 1 stored them below the save
+/// location, which is recovered from their fixed relative suffixes.
+pub(super) fn rebased_identity(
+    manifest: &Manifest,
+    root: &Path,
+) -> Result<Option<ForwardPassPerfModelConfig>, AicError> {
+    let Some(mut identity) = manifest.identity.clone() else {
+        return Ok(None);
+    };
+    let packed = manifest.native.as_ref().is_some_and(|native| native.packed);
+    let mut origin: Option<PathBuf> = None;
+    for (path, relative) in owned_paths(&mut identity, manifest.kind, packed)? {
+        if manifest.schema_version == snapshot::PATH_PINNED_SCHEMA_VERSION {
+            let saved = strip_relative(path, &relative).ok_or_else(|| {
+                invalid(format!(
+                    "schema version 1 snapshot records {} for its {relative}, so it cannot be relocated; save the model again",
+                    path.display()
+                ))
+            })?;
+            if *origin.get_or_insert_with(|| saved.clone()) != saved {
+                return Err(invalid(
+                    "schema version 1 snapshot records its owned inputs below different directories",
+                ));
+            }
+        } else if path.as_path() != Path::new(&relative) {
+            return Err(invalid(format!(
+                "manifest identity names {} instead of the snapshot's {relative}",
+                path.display()
+            )));
+        }
+        *path = root.join(&relative);
+    }
+    Ok(Some(identity))
+}
+
+/// Point the inputs a snapshot owns at the directory named by the
+/// configuration's `state_snapshot`, whose manifest is `manifest_bytes`.
+/// Owned inputs are read only from the snapshot, never from a path the
+/// configuration supplies, so a copied or moved snapshot restores from its
+/// own files; their content is pinned by the manifest. Whether an optional
+/// owned input (an external parquet or execution profile) is configured
+/// remains identity, compared at restoration.
+pub(crate) fn relocate_snapshot_inputs(
+    config: &mut ForwardPassPerfModelConfig,
+    manifest_bytes: &[u8],
+) -> Result<(), AicError> {
+    let root = config
+        .estimator_config
+        .state_snapshot
+        .as_ref()
+        .ok_or_else(|| invalid("configuration has no state_snapshot"))?
+        .path
+        .clone();
+    let manifest = Manifest::parse(manifest_bytes)?;
+    // Report a different model before touching the configuration; automatic
+    // selection is rejected by validation with its own message.
+    if config.estimation_mode != EstimationMode::Auto
+        && (config.worker_type != manifest.worker_type
+            || config.estimation_mode != manifest.selected_estimation_mode)
+    {
+        return Err(saved_model_mismatch());
+    }
+    let Some(identity) = rebased_identity(&manifest, &root)? else {
+        let learned = &mut config.estimator_config.fpm_learned;
+        learned.artifact_path = Some(root.join(LEARNED_ARTIFACT_FILE));
+        learned.checkpoint_path = None;
+        return Ok(());
+    };
+    let saved = identity.estimator_config;
+    match manifest.kind {
+        StateSnapshotKind::Native => {
+            if manifest.native.as_ref().is_some_and(|native| native.packed) {
+                config.systems_paths = identity.systems_paths;
+                if let (Some(path), Some(packed)) = (
+                    config
+                        .estimator_config
+                        .fpm_interpolation
+                        .fpm_parquet_path
+                        .as_mut(),
+                    saved.fpm_interpolation.fpm_parquet_path,
+                ) {
+                    *path = packed;
+                }
+            }
+            if let (Some(selection), Some(profile)) = (
+                config.estimator_config.op_level.execution_profile.as_mut(),
+                saved.op_level.execution_profile,
+            ) {
+                selection.path = profile.path;
+            }
+        }
+        StateSnapshotKind::LearnedFrozen
+        | StateSnapshotKind::LearnedOnline
+        | StateSnapshotKind::CausalSelector => {
+            let learned = &mut config.estimator_config.fpm_learned;
+            learned.artifact_path = saved.fpm_learned.artifact_path;
+            learned.checkpoint_path = saved.fpm_learned.checkpoint_path;
+        }
+        StateSnapshotKind::Regression | StateSnapshotKind::LearnedWithoutIdentity => {}
+    }
+    Ok(())
+}
+
+fn saved_model_mismatch() -> AicError {
+    invalid("worker_type or estimation_mode differs from the saved model")
+}
+
+/// Check a normalized snapshot configuration against the saved identity,
+/// whose manifest is `manifest_bytes`, before anything is restored.
+pub(crate) fn verify_snapshot_identity(
+    config: &ForwardPassPerfModelConfig,
+    manifest_bytes: &[u8],
+) -> Result<(), AicError> {
+    let root = &config
+        .estimator_config
+        .state_snapshot
+        .as_ref()
+        .ok_or_else(|| invalid("configuration has no state_snapshot"))?
+        .path;
+    check_identity(config, &Manifest::parse(manifest_bytes)?, root)
+}
+
+/// Compare everything but location: the snapshot's owned inputs were
+/// relocated into `root`, and where an unpacked native snapshot finds its
+/// external data is environment, verified by content at restoration. Whether
+/// an external parquet is configured stays identity. Other estimators read no
+/// performance data.
+fn check_identity(
+    config: &ForwardPassPerfModelConfig,
+    manifest: &Manifest,
+    root: &Path,
+) -> Result<(), AicError> {
+    let base = unpinned(config);
+    if base.worker_type != manifest.worker_type
+        || base.estimation_mode != manifest.selected_estimation_mode
+    {
+        return Err(saved_model_mismatch());
+    }
+    let packed = manifest.native.as_ref().is_some_and(|native| native.packed);
+    let expected = match rebased_identity(manifest, root)? {
+        Some(mut identity) => {
+            if !packed {
+                identity.systems_paths = base.systems_paths.clone();
+            }
+            if manifest.native.is_some()
+                && !packed
+                && let (Some(saved), Some(supplied)) = (
+                    identity
+                        .estimator_config
+                        .fpm_interpolation
+                        .fpm_parquet_path
+                        .as_mut(),
+                    base.estimator_config
+                        .fpm_interpolation
+                        .fpm_parquet_path
+                        .as_ref(),
+                )
+            {
+                *saved = supplied.clone();
+            }
+            identity
+        }
+        None => {
+            let options = manifest
+                .learned
+                .as_ref()
+                .and_then(|learned| learned.options.as_ref())
+                .ok_or_else(|| invalid("from_learned snapshot has no constructor options"))?;
+            from_learned_config(
+                manifest.worker_type,
+                options,
+                root.join(LEARNED_ARTIFACT_FILE),
+            )
+            .resolve()?
+        }
+    };
+    if expected != base {
+        return Err(identity_mismatch(&expected, &base));
+    }
+    if manifest.native.is_some()
+        && !packed
+        && let Some(missing) = base.systems_paths.iter().find(|root| !root.is_dir())
+    {
+        return Err(invalid(format!(
+            "systems_paths entry {} is not a directory; a snapshot saved without include_perf_db reads its performance data from systems_paths",
+            missing.display()
+        )));
+    }
+    Ok(())
+}
+
 /// First differing JSON path, for actionable identity-mismatch errors.
 fn first_difference(saved: &serde_json::Value, supplied: &serde_json::Value) -> String {
     match (saved, supplied) {
@@ -425,6 +695,20 @@ impl ForwardPassPerfModel {
                 config
             }
         };
+        // The manifest names owned inputs relative to the snapshot, so the
+        // directory restores wherever it is copied or moved.
+        if let Some(identity) = identity.as_mut() {
+            let packed = native.as_ref().is_some_and(|native| native.packed);
+            for (path, relative) in owned_paths(identity, kind, packed)? {
+                if *path != destination.join(&relative) {
+                    return Err(invalid(format!(
+                        "{} is not the snapshot's {relative}",
+                        path.display()
+                    )));
+                }
+                *path = PathBuf::from(relative);
+            }
+        }
         let diagnostics = self.diagnostics();
         let manifest = Manifest {
             schema: snapshot::SCHEMA.into(),
@@ -467,8 +751,10 @@ impl ForwardPassPerfModel {
     pub fn inspect_state_snapshot(
         path: impl AsRef<Path>,
     ) -> Result<ForwardPassStateSnapshotSummary, AicError> {
-        let bytes = snapshot::read_manifest_bytes(path.as_ref())?;
+        let root = snapshot::normalized_absolute(path.as_ref())?;
+        let bytes = snapshot::read_manifest_bytes(&root)?;
         let manifest = Manifest::parse(&bytes)?;
+        let identity = rebased_identity(&manifest, &root)?;
         Ok(ForwardPassStateSnapshotSummary {
             manifest_sha256: snapshot::sha256_hex(&bytes),
             kind: manifest.kind,
@@ -476,11 +762,10 @@ impl ForwardPassPerfModel {
             state_layout_version: manifest.state_layout_version,
             worker_type: manifest.worker_type,
             selected_estimation_mode: manifest.selected_estimation_mode,
-            topology: manifest
-                .identity
+            topology: identity
                 .as_ref()
                 .map(ForwardPassDeploymentTopology::from_config),
-            identity: manifest.identity,
+            identity,
             readiness: manifest.readiness,
         })
     }
@@ -717,34 +1002,8 @@ fn restore_verified(
         return Err(invalid("manifest.json changed after normalization"));
     }
     let manifest = Manifest::parse(&manifest_bytes)?;
+    check_identity(&config, &manifest, &root)?;
     let base = unpinned(&config);
-    if base.worker_type != manifest.worker_type
-        || base.estimation_mode != manifest.selected_estimation_mode
-    {
-        return Err(invalid(
-            "worker_type or estimation_mode differs from the saved model",
-        ));
-    }
-    match &manifest.identity {
-        Some(identity) if *identity != base => return Err(identity_mismatch(identity, &base)),
-        Some(_) => {}
-        None => {
-            let options = manifest
-                .learned
-                .as_ref()
-                .and_then(|learned| learned.options.as_ref())
-                .ok_or_else(|| invalid("from_learned snapshot has no constructor options"))?;
-            let expected = from_learned_config(
-                manifest.worker_type,
-                options,
-                root.join(LEARNED_ARTIFACT_FILE),
-            )
-            .resolve()?;
-            if expected != base {
-                return Err(identity_mismatch(&expected, &base));
-            }
-        }
-    }
     let expected_mode = match manifest.kind {
         StateSnapshotKind::Native => matches!(
             base.estimation_mode,

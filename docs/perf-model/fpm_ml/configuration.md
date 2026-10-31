@@ -20,11 +20,14 @@ feedback and checkpoint examples, see the
 The learned forest is selected only with explicit `estimation_mode: fpm_learned`;
 it is outside the automatic search order. Its supported execution surface is the
 standalone canonical model with complete per-iteration `ForwardPassMetrics`
-for estimation and feedback. Current engine replay, engine CLI prediction and
-Sweeper timing callers provide phase aggregates through a `native_engine`
-interface. They cannot supply the learned model's full iteration/request
-features. Python prediction and Sweeper configurations reject learned mode during
-validation; native replay rejects it before loading the learned source.
+for estimation and feedback. Engine replay, engine CLI prediction and
+recommendation, and Sweeper timing price each pass of a learned role with one
+such query over the worker's attention-DP ranks, filled in the telemetry
+convention of Dynamo's vLLM worker (decode KV excludes each request's current
+token) and carrying `extend_lengths` / `past_kv_lengths` and the length
+variances when the artifact reads request, slot or variance features (see
+[engine replay timing](../configuration.md#engine-replay-timing)). Replay does
+not tune the model.
 Supply exactly one of
 `estimator_config.fpm_learned.artifact_path` and `checkpoint_path`. Frozen
 adaptation accepts either source; online adaptation is the default and requires

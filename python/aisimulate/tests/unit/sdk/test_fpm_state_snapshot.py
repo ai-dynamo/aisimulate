@@ -123,6 +123,13 @@ def _continue(config: dict) -> dict:
     return config
 
 
+def _renamed(config: dict, directory: Path) -> dict:
+    """A saved configuration naming a copy of its snapshot; its owned paths still name the original."""
+    config = json.loads(json.dumps(config))
+    config["estimator_config"]["state_snapshot"]["path"] = str(directory)
+    return config
+
+
 def test_state_snapshot_round_trips_through_directory_config_and_dataclass(tmp_path):
     model = RustForwardPassPerfModel.best_available(_regression_config())
     model.tune_with_fpms(_stream(1, 120))
@@ -317,6 +324,53 @@ def test_readiness_topology_and_launch_compatibility_without_loading(tmp_path):
         model.engine_launch_mismatches({"dp_size": "eight"})
 
 
+def test_unknown_identity_and_deployment_limits_pass_through_to_rust_unchanged(tmp_path):
+    limits = {
+        "num_gpus": 4,
+        "max_num_batched_tokens": 8192,
+        "max_num_seqs": "unknown",
+        "max_kv_tokens": 65536,
+        "context_length": "unknown",
+    }
+    config = ForwardPassPerfModelConfig(
+        model="test/model",
+        system="unknown",
+        backend="vllm",
+        backend_version="unknown",
+        worker_type="aggregated",
+        tp="unknown",
+        pp="unknown",
+        attention_dp="unknown",
+        kvcache_quant_mode="unknown",
+        estimation_mode="fpm_regression",
+        deployment_limits=limits,
+    )
+    # Python adds no defaults: an unset block stays out of the payload.
+    assert (
+        "deployment_limits"
+        not in ForwardPassPerfModelConfig(model="m", system="s", backend="vllm", worker_type="decode").to_dict()
+    )
+    normalized = RustForwardPassPerfModel.normalize_config(config)
+    for name in ("system", "backend_version", "tp", "pp", "attention_dp", "kvcache_quant_mode"):
+        assert normalized[name] == "unknown", name
+    assert normalized["deployment_limits"] == limits
+    model = RustForwardPassPerfModel.best_available(config)
+    model.tune_with_fpms(_stream(3, 80))
+    saved = model.save_state_snapshot(tmp_path / "snap")
+    assert (saved["tp"], saved["deployment_limits"]) == ("unknown", limits)
+    summary = RustForwardPassPerfModel.inspect_state_snapshot(tmp_path / "snap")
+    assert (summary["identity"]["system"], summary["topology"]["attention_dp"]) == ("unknown", "unknown")
+    restored = RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "snap")
+    assert _bits(restored, _queries()) == _bits(model, _queries())
+    # Restoration compares the recorded limits exactly.
+    with pytest.raises(ValueError, match="pinned identity at deployment_limits.max_num_seqs"):
+        RustForwardPassPerfModel.best_available({**saved, "deployment_limits": {**limits, "max_num_seqs": 256}})
+    # Estimators that read performance data reject unknown facts.
+    native = ForwardPassPerfModelConfig(**{**config.to_dict(), "estimation_mode": "op_level"})
+    with pytest.raises(ValueError, match='may be "unknown" only with estimation_mode'):
+        RustForwardPassPerfModel.best_available(native)
+
+
 def _systems_copy(destination: Path, system: str) -> Path:
     """Copy one system's fingerprinted inputs: top-level files and its data dir."""
     packaged = Path(str(resources.files("aisimulate_core") / "systems"))
@@ -361,16 +415,40 @@ def test_native_snapshot_pins_engine_and_perf_data_across_processes(tmp_path):
     # A fresh interpreter recompiles the engine; its spec digest must match.
     assert _child(packed, [], queries, None)["bits"] == expected
     assert _bits(RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "reference"), queries) == expected
+    # Moved snapshots restore in another process once the originals are gone.
+    # A packed snapshot needs nothing outside its directory; a reference
+    # snapshot finds identical data under any systems root.
+    for name in ("reference", "packed"):
+        shutil.copytree(tmp_path / name, tmp_path / "mount" / name)
+    moved_root = _systems_copy(tmp_path / "moved-systems", "h200_sxm")
+    shutil.rmtree(tmp_path / "packed")
+    moved = _renamed(packed, tmp_path / "mount" / "packed")
+    relocated = RustForwardPassPerfModel.normalize_config(moved)
+    assert relocated["systems_paths"] == [os.path.abspath(tmp_path / "mount" / "packed" / "perf_db" / "systems")]
+    assert _child(moved, [], queries, None)["bits"] == expected
+    for restored in (
+        RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "mount" / "packed"),
+        RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**moved)),
+    ):
+        assert _bits(restored, queries) == expected
+        assert restored.diagnostics()["provenance"]["config"] == relocated
+    by_reference = _renamed(reference, tmp_path / "mount" / "reference")
+    by_reference["systems_paths"] = [str(moved_root)]
+    assert _child(by_reference, [], queries, None)["bits"] == expected
+    shutil.rmtree(tmp_path / "reference")
     # Changing referenced data invalidates only the reference snapshot.
     data = next((root / "data" / "h200_sxm").rglob("*.parquet"))
     data.write_bytes(data.read_bytes() + b"\0")
     with pytest.raises(ValueError, match="fingerprint"):
-        RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "reference")
-    assert _bits(RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "packed"), queries) == expected
+        RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "mount" / "reference")
+    assert (
+        _bits(RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "mount" / "packed"), queries)
+        == expected
+    )
 
 
 @pytest.mark.parametrize("profile_version", [1, 2])
-def test_execution_profile_is_copied_and_perf_data_packed(profile, tmp_path, profile_version):  # noqa: F811
+def test_execution_profile_is_copied_and_perf_data_packed(profile, tmp_path, profile_version, monkeypatch):  # noqa: F811
     config, payload, publish, root, path = profile
     payload["schema_version"] = profile_version
     publish()
@@ -389,8 +467,22 @@ def test_execution_profile_is_copied_and_perf_data_packed(profile, tmp_path, pro
         str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()
     )
     path.unlink()
-    restored = RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "packed")
+    # The snapshot owns the profile wherever it is moved. (The fixture's stubbed
+    # compiler pins the original systems root, so that root stays.)
+    shutil.move(tmp_path / "packed", tmp_path / "moved")
+    restored = RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "moved")
+    assert restored.diagnostics()["provenance"]["config"]["estimator_config"]["op_level"]["execution_profile"] == {
+        **selection,
+        "path": os.path.abspath(tmp_path / "moved" / "execution_profile.json"),
+    }
     assert restored.predict_prefill_latency(1, 4, 0) == 6.0
+    # Inspection resolves owned inputs against the absolute snapshot directory.
+    monkeypatch.chdir(tmp_path)
+    identity = RustForwardPassPerfModel.inspect_state_snapshot("moved")["identity"]
+    assert identity["systems_paths"] == [os.path.abspath(tmp_path / "moved" / "perf_db" / "systems")]
+    assert identity["estimator_config"]["op_level"]["execution_profile"]["path"] == os.path.abspath(
+        tmp_path / "moved" / "execution_profile.json"
+    )
     query = [{"version": 1, "scheduled_requests": {"num_prefill_requests": 1, "sum_prefill_tokens": 4}}]
     if profile_version == 1:
         with pytest.raises(ValueError, match="schema_version 2"):
@@ -462,21 +554,96 @@ def test_data_dir_with_parent_components_restores_by_reference_but_cannot_be_pac
     assert not (tmp_path / "packed").exists()
 
 
-def test_state_snapshot_must_name_the_pinned_directory_and_io_errors_are_os_errors(tmp_path):
+def _rewrite_manifest(directory: Path, edit) -> None:
+    """Edit a snapshot manifest and re-pin config.json to it, as another writer would have."""
+    manifest = json.loads((directory / "manifest.json").read_text())
+    edit(manifest)
+    data = json.dumps(manifest).encode()
+    (directory / "manifest.json").write_bytes(data)
+    config = json.loads((directory / "config.json").read_text())
+    config["estimator_config"]["state_snapshot"]["sha256"] = hashlib.sha256(data).hexdigest()
+    (directory / "config.json").write_text(json.dumps(config))
+
+
+def test_snapshots_of_other_formats_load_where_possible_and_report_their_versions(tmp_path):
+    model = RustForwardPassPerfModel.best_available(_regression_config())
+    model.tune_with_fpms(_stream(15, 40))
+    queries = _queries()
+    for name in ("legacy", "nightly", "future"):
+        model.save_state_snapshot(tmp_path / name)
+    # A path-pinned schema 1 snapshot from this same build still loads; a
+    # regression owns no paths, so nothing needs relocating.
+    _rewrite_manifest(tmp_path / "legacy", lambda manifest: manifest.update(schema_version=1))
+    shutil.move(tmp_path / "legacy", tmp_path / "moved-legacy")
+    restored = RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "moved-legacy")
+    assert _bits(restored, queries) == _bits(model, queries)
+
+    # Every other build, including the nightly that introduced snapshots,
+    # wrote a different producer version and is rejected with its versions.
+    def nightly(manifest: dict) -> None:
+        manifest.update(schema_version=1)
+        manifest["producer"]["aisimulate_core_version"] = "0.13.0-dev.202610280000000086"
+
+    _rewrite_manifest(tmp_path / "nightly", nightly)
+    for call in (
+        lambda: RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "nightly"),
+        lambda: RustForwardPassPerfModel.inspect_state_snapshot(tmp_path / "nightly"),
+    ):
+        with pytest.raises(
+            ValueError,
+            match=r"written by aisimulate-core 0\.13\.0-dev\.202610280000000086 \(manifest schema version 1.*"
+            r"restore it with that version or tune and save a new snapshot with this one",
+        ):
+            call()
+    _rewrite_manifest(tmp_path / "future", lambda manifest: manifest.update(schema_version=3))
+    with pytest.raises(ValueError, match="version 3; this binary reads aisimulate_fpm_state_snapshot versions 1 and 2"):
+        RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "future")
+
+
+def test_copied_snapshots_restore_from_their_own_directory_and_io_errors_are_os_errors(tmp_path):
     from aisimulate_core.sdk.errors import PerfDataNotAvailableError
 
     model = RustForwardPassPerfModel.best_available(_regression_config())
     model.tune_with_fpms(_stream(13, 40))
     pinned = model.save_state_snapshot(tmp_path / "snap")
     queries = _queries()
-    # Restoration reads the pinned path, so a copy must not silently restore it.
+    # A copy restores from its own files after the original is gone, through
+    # the directory and through the saved configuration renamed to the copy.
     shutil.copytree(tmp_path / "snap", tmp_path / "copy")
-    with pytest.raises(ValueError, match="pinned to .*snap"):
-        RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "copy")
+    shutil.copytree(tmp_path / "snap", tmp_path / "kept")
+    shutil.rmtree(tmp_path / "snap")
+    renamed = _renamed(pinned, tmp_path / "copy")
+    config = RustForwardPassPerfModel.normalize_config(renamed)
+    assert config["estimator_config"]["state_snapshot"] == {
+        **pinned["estimator_config"]["state_snapshot"],
+        "path": os.path.abspath(tmp_path / "copy"),
+    }
+    for restored in (
+        RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "copy"),
+        RustForwardPassPerfModel.best_available(renamed),
+        RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**renamed)),
+    ):
+        assert _bits(restored, queries) == _bits(model, queries)
+        assert restored.diagnostics()["provenance"]["config"] == config
+        with pytest.raises(ValueError, match="on_tune='reject'"):
+            restored.tune_with_fpms(_stream(2, 1))
+    assert _child(_continue(config), [], queries, None)["bits"] == _bits(model, queries)
+    assert RustForwardPassPerfModel.config_engine_launch_mismatches({}, state_snapshot=tmp_path / "copy") == []
     # Another name for the same directory is the same snapshot.
-    (tmp_path / "alias").symlink_to(tmp_path / "snap", target_is_directory=True)
+    (tmp_path / "alias").symlink_to(tmp_path / "copy", target_is_directory=True)
     restored = RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "alias")
     assert _bits(restored, queries) == _bits(model, queries)
+    # Every file stays pinned by the manifest; config.json is pinned to it.
+    state = tmp_path / "copy" / "state.bin"
+    state.write_bytes(bytes([state.read_bytes()[0] ^ 1]) + state.read_bytes()[1:])
+    with pytest.raises(ValueError, match="does not match its manifest size or SHA-256"):
+        RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "copy")
+    other = RustForwardPassPerfModel.best_available(_regression_config())
+    other.tune_with_fpms(_stream(14, 40))
+    other.save_state_snapshot(tmp_path / "other")
+    shutil.copy(tmp_path / "other" / "config.json", tmp_path / "kept" / "config.json")
+    with pytest.raises(ValueError, match="sha256 does not match manifest.json"):
+        RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "kept")
     # Missing snapshots raise the same OSError subclass through state_snapshot= and
     # config=, never the skippable missing-performance-data class.
     missing = json.loads(json.dumps(pinned))

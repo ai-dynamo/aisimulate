@@ -13,6 +13,8 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
+from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
+
 from .capacity import resolve_model_context_length
 from .config.cli import CorePredictionConfig, CoreRecommendationConfig
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS
@@ -30,6 +32,10 @@ from .sweeper.config import SmartSearchConfig
 from .sweeper.provider import InfeasibleCandidate, SweepContext
 from .sweeper.replay import ReplayOutputRequirements, ReplaySpec, RunnerFactory
 from .sweeper.result import SweepResult
+from .sweeper.state_snapshot import packed_systems_root, state_snapshot_reference
+
+# Estimators fitted to forward-pass telemetry, which read no performance data.
+_FITTED_MODES = frozenset({"fpm_regression", "fpm_learned"})
 
 
 def run_recommendation(
@@ -256,6 +262,14 @@ def recommendation_to_sweeper(
         and not set(modes) & {"afd", "afd+pd"}
         and workers.get("encoder") is None
     }
+    active_roles = ({"agg"} if "agg" in modes else set()) | ({"prefill", "decode"} if "disagg" in modes else set())
+    if "backend" not in config.engine.model_fields_set and any(
+        role in active_roles and state_snapshot_reference(controls) is not None
+        for role, controls in search_space["role_estimator_controls"].items()
+    ):
+        # A role timed by a state snapshot takes the backend from the snapshot,
+        # not from the default backend domain.
+        del search_space["backend"]
     if engine.get("speculation") is not None:
         search_space["speculation"] = deepcopy(engine["speculation"])
     for role in ("prefill", "decode"):
@@ -1048,7 +1062,15 @@ def _candidate_prediction(
                 "estimator_config": deepcopy(resolved["estimator_config"]),
             }
             # Per-role roots can differ; preserve them next to the role's timing.
-            timing["systems_paths"] = list(resolved["systems_paths"])
+            # A packed snapshot's own root moves with the snapshot, which the
+            # timing already names. A regression or learned model reads no
+            # performance data, so its prediction names no root to relocate.
+            if (
+                resolved["systems_paths"]
+                and resolved["estimation_mode"] not in _FITTED_MODES
+                and packed_systems_root(resolved["estimator_config"]) is None
+            ):
+                timing["systems_paths"] = list(resolved["systems_paths"])
             timing["database_mode"] = resolved["database_mode"]
             policy = resolved["transfer_policy"]
             timing["transfer_policy"] = list(policy) if policy is not None else None
@@ -1063,7 +1085,9 @@ def _candidate_prediction(
                         "comm_quant_mode",
                         "attention_backend",
                     )
-                    if resolved.get(field) is not None
+                    # A fact the snapshot does not know stays in its identity;
+                    # predict would read an unknown KV dtype for byte estimates.
+                    if resolved.get(field) not in (None, UNKNOWN_IDENTITY)
                 }
             )
         kv_cache = {
@@ -1151,6 +1175,11 @@ def _candidate_prediction(
     except ValueError as exc:
         raise InfeasibleCandidate(f"generated prediction config is infeasible: {exc}") from exc
     public = prediction.model_dump(mode="python", exclude_none=True)
+    # Recommendation has no decoder_replay setting. Leaving it unset lets
+    # predict take each snapshot role's saved value; a written default would
+    # read back as an explicit false.
+    if "decoder_replay" not in prediction.engine.model_fields_set:
+        public["engine"].pop("decoder_replay", None)
     public.update(concrete_adapters)
     return public
 

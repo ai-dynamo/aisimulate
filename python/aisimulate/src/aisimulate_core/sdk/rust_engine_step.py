@@ -90,6 +90,11 @@ def _python_step_fallback_reset() -> None:
         _PYTHON_BACKEND_DEPRECATION_WARNED = False
 
 
+# The literal a saved identity records for a fact its producer did not know;
+# only fpm_regression and fpm_learned configurations accept it.
+UNKNOWN_IDENTITY = "unknown"
+
+
 class RustEngineUnsupportedError(RuntimeError):
     """The model's op graph cannot be expressed as a compiled ``EngineSpec``
     (``engine.OpConversionError``). For op-level models this is a hard error —
@@ -168,10 +173,21 @@ class ForwardPassPerfModelConfig:
 
     ``estimator_config["state_snapshot"]`` restores a model saved by
     ``save_state_snapshot``: ``{"path": ..., "sha256": ..., "on_tune": "reject"}``. Rust
-    resolves ``path``, pins ``sha256`` to the snapshot manifest and requires
-    the rest of the configuration to equal the saved identity, an explicit
+    resolves ``path``, pins ``sha256`` to the snapshot manifest, reads the
+    inputs the snapshot owns from ``path`` and requires the rest of the
+    configuration to equal the saved identity, an explicit
     ``estimation_mode`` and ``fallback_policy="deny"``. ``on_tune="reject"``
     (the default) makes tuning an error; ``"continue"`` resumes it.
+
+    With ``estimation_mode`` ``"fpm_regression"`` or ``"fpm_learned"``, identity
+    facts the producer did not know (``system``, ``backend_version``, ``tp``,
+    ``pp``, ``attention_dp``, ``moe_tp_size``, ``moe_ep_size``, the quantization
+    modes and ``attention_backend``) may be the literal ``"unknown"``; every
+    other mode rejects it. ``deployment_limits`` optionally records the
+    calibrated deployment's ``num_gpus``, ``max_num_batched_tokens``,
+    ``max_num_seqs``, ``max_kv_tokens`` (per attention-DP rank) and
+    ``context_length``, each a positive integer or ``"unknown"``. Rust owns
+    their validation and round trip; ``None`` omits the block.
     """
 
     model: str
@@ -180,12 +196,12 @@ class ForwardPassPerfModelConfig:
     worker_type: str
     backend_version: str | None = None
     fpm_profile: dict[str, Any] | None = dataclass_field(default=None, kw_only=True)
-    tp: int = 1
-    pp: int = 1
-    attention_dp: int = 1
+    tp: int | str = 1
+    pp: int | str = 1
+    attention_dp: int | str = 1
     dcp: int | None = dataclass_field(default=None, kw_only=True)
-    moe_tp_size: int | None = None
-    moe_ep_size: int | None = None
+    moe_tp_size: int | str | None = None
+    moe_ep_size: int | str | None = None
     # Prefill context parallelism (widens the attention side) and decode
     # context parallelism (stripes the decode KV across the TP ranks); None
     # keeps both at one and out of the serialized identity.
@@ -216,6 +232,8 @@ class ForwardPassPerfModelConfig:
     # Compile the vision tower with this layout ("tp" or "dp") so the estimator
     # prices encoder calls; None prices the language model only.
     encoder_parallel: str | None = None
+    # Recorded limits of the calibrated deployment; identity only.
+    deployment_limits: dict[str, Any] | None = dataclass_field(default=None, kw_only=True)
 
     @classmethod
     def from_legacy_engine_config(
@@ -239,11 +257,15 @@ class ForwardPassPerfModelConfig:
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
-        if self.encoder_parallel is None:
-            payload.pop("encoder_parallel")
+        # Additive identity stays out of payloads that do not set it.
+        for name in ("encoder_parallel", "deployment_limits"):
+            if payload[name] is None:
+                payload.pop(name)
         payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(self.transfer_policy)
         if self.estimation_mode not in {"fpm_regression", "fpm_learned"} or self.systems_paths:
-            payload["systems_paths"] = _resolve_forward_pass_systems_paths(self.systems_paths)
+            payload["systems_paths"] = _resolve_forward_pass_systems_paths(
+                self.systems_paths, require_directories=not _carries_state_snapshot(self.estimator_config)
+            )
         return payload
 
 
@@ -427,16 +449,18 @@ class RustForwardPassPerfModel:
 
         Pass exactly one of ``config`` and ``state_snapshot``.
         ``state_snapshot`` names a snapshot directory written by
-        :meth:`save_state_snapshot`; its ``config.json`` is passed to the same
-        Rust constructor unchanged, so ``best_available(state_snapshot=path)``
-        and ``best_available(config=json.load(open(path / "config.json")))``
-        are equivalent. Snapshots are pinned to the path they were saved to:
-        ``state_snapshot`` must be that directory (compared with
-        ``os.path.samefile``), otherwise ``ValueError`` is raised. A configuration with
-        ``estimator_config.state_snapshot`` restores the saved model and fails
-        on any mismatch instead of selecting another estimator. Snapshot I/O
-        failures raise ``OSError`` subclasses such as ``FileNotFoundError``,
-        never ``PerfDataNotAvailableError``.
+        :meth:`save_state_snapshot`, wherever it was copied or moved: its
+        ``config.json`` is passed to the same Rust constructor with
+        ``estimator_config.state_snapshot.path`` naming that directory. A
+        configuration with ``estimator_config.state_snapshot`` restores the
+        saved model from the directory it names, reading the inputs the
+        snapshot owns (packed performance data, an execution profile, learned
+        artifacts and checkpoints) from there whatever paths the
+        configuration gives for them, and fails on any other mismatch instead
+        of selecting another estimator. ``systems_paths`` of a snapshot saved
+        without ``include_perf_db`` only locates the data, which must match
+        the snapshot's content fingerprint. Snapshot I/O failures raise ``OSError`` subclasses
+        such as ``FileNotFoundError``, never ``PerfDataNotAvailableError``.
         """
         import aisimulate_core
 
@@ -452,10 +476,11 @@ class RustForwardPassPerfModel:
 
         Returns ``kind``, ``manifest_sha256``, ``aisimulate_core_version``,
         ``state_layout_version``, ``worker_type``, ``selected_estimation_mode``,
-        the pinned ``identity`` configuration (``None`` for ``from_learned``
-        snapshots), its deployment ``topology``, and the ``readiness`` report
-        recorded at save time, which restoration verifies. Requires the same
-        format versions as restoration; the state file is not read.
+        the pinned ``identity`` configuration with owned inputs resolved
+        against ``path`` (``None`` for ``from_learned`` snapshots), its
+        deployment ``topology``, and the ``readiness`` report recorded at save
+        time, which restoration verifies. Requires the same format versions as
+        restoration; the state file is not read.
         """
         import aisimulate_core
 
@@ -945,35 +970,36 @@ def _json_dumps(value: Any) -> str:
 
 
 def _snapshot_config(state_snapshot: str | os.PathLike[str]) -> dict[str, Any]:
-    """Read a snapshot's pinned configuration and require ``state_snapshot`` to be its pinned directory.
+    """Read a snapshot's ``config.json`` and name the snapshot directory in it.
 
-    Restoration reads the pinned path, not ``state_snapshot``, so a moved or
-    copied snapshot directory would otherwise silently restore the original.
+    The saved manifest digest and ``on_tune`` are kept; Rust points the inputs
+    the snapshot owns into the named directory during construction.
     """
-    directory = os.fspath(state_snapshot)
-    with open(os.path.join(directory, "config.json"), encoding="utf-8") as handle:
+    directory = os.path.abspath(os.fspath(state_snapshot))
+    path = os.path.join(directory, "config.json")
+    with open(path, encoding="utf-8") as handle:
         config = json.load(handle)
     estimator = config.get("estimator_config") if isinstance(config, dict) else None
     snapshot = estimator.get("state_snapshot") if isinstance(estimator, dict) else None
-    pinned = snapshot.get("path") if isinstance(snapshot, dict) else None
-    if not isinstance(pinned, str):
-        raise ValueError(f"{os.path.join(directory, 'config.json')} does not pin a state snapshot")
-    try:
-        same = os.path.samefile(directory, pinned)
-    except FileNotFoundError:
-        same = False
-    if not same:
-        raise ValueError(
-            f"state snapshot {directory} is pinned to {pinned}; snapshots are pinned to the path "
-            "they were saved to and cannot be restored after being moved or copied"
-        )
+    if not isinstance(snapshot, dict):
+        raise ValueError(f"{path} does not pin a state snapshot")
+    snapshot["path"] = directory
     return config
+
+
+def _carries_state_snapshot(estimator_config: Any) -> bool:
+    return isinstance(estimator_config, Mapping) and estimator_config.get("state_snapshot") is not None
 
 
 def _forward_pass_config_json(config: ForwardPassPerfModelConfig | Mapping[str, Any]) -> str:
     payload = config.to_dict() if isinstance(config, ForwardPassPerfModelConfig) else dict(config)
     if payload.get("estimation_mode") not in {"fpm_regression", "fpm_learned"} or payload.get("systems_paths"):
-        payload["systems_paths"] = _resolve_forward_pass_systems_paths(tuple(payload.get("systems_paths") or ()))
+        # A snapshot owns its packed performance data; Rust points those paths
+        # into the snapshot before it reads them.
+        payload["systems_paths"] = _resolve_forward_pass_systems_paths(
+            tuple(payload.get("systems_paths") or ()),
+            require_directories=not _carries_state_snapshot(payload.get("estimator_config")),
+        )
     if "transfer_policy" in payload:
         payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(payload["transfer_policy"])
     estimator_config = payload.get("estimator_config")
@@ -1009,7 +1035,7 @@ def _validate_worker_type(worker_type: str) -> str:
     return worker_type
 
 
-def _resolve_forward_pass_systems_paths(entries: tuple[str, ...]) -> list[str]:
+def _resolve_forward_pass_systems_paths(entries: tuple[str, ...], *, require_directories: bool = True) -> list[str]:
     packaged = os.fspath(pkg_resources.files("aisimulate_core") / "systems")
     if not entries:
         from aisimulate_core.sdk.perf_database import get_systems_paths
@@ -1022,7 +1048,7 @@ def _resolve_forward_pass_systems_paths(entries: tuple[str, ...]) -> list[str]:
         if not isinstance(entry, str) or not entry.strip():
             raise ValueError("systems_paths entries must be nonempty strings")
         path = packaged if entry.lower() == "default" else os.path.abspath(os.path.expanduser(entry))
-        if not os.path.isdir(path):
+        if require_directories and not os.path.isdir(path):
             raise ValueError(f"forward-pass systems path is not a directory: {path}")
         if path not in resolved:
             resolved.append(path)

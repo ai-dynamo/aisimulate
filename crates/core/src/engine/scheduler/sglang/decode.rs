@@ -59,7 +59,8 @@ pub(super) struct DecodeShape {
     /// Each row's sequence length.
     pub(super) lengths: Vec<usize>,
     /// Whether the batch ran. A step whose page reservation failed after the
-    /// capacity preflight asks the provider but charges no time.
+    /// capacity preflight asks the provider but charges no time; a provider
+    /// that prices only whole iterations is not asked.
     pub(super) charged: bool,
 }
 
@@ -70,6 +71,10 @@ pub(super) fn price_decode_shape(
     config: &SglangConfig,
     apply_speedup: bool,
 ) -> anyhow::Result<Duration> {
+    if !shape.charged && !config.perf_model.prices_phases() {
+        // The step computed no forward, and the provider has no decode phase.
+        return Ok(Duration::ZERO);
+    }
     let decode_time = config.perf_model.predict_decode_time(
         shape.batch_size,
         shape.active_kv_tokens,

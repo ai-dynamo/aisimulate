@@ -2532,7 +2532,7 @@ impl VllmCore {
                 requests: scheduled
                     .values()
                     .filter(|work| work.prompt_tokens > 0)
-                    .map(|work| (work.prompt_tokens, work.prefix_tokens))
+                    .map(|work| (work.prompt_tokens, work.prefix_tokens, work.prompt_len))
                     .collect(),
             }),
             decode: (forward.decode_count > 0).then(|| DecodeWork {

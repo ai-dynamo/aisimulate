@@ -362,8 +362,11 @@ pub(crate) fn loaded(root: &Path, system: &str, fpm_parquet: Option<&Path>) -> L
 /// Fingerprint `root` as it is now, before a restore loads it. When this
 /// process has not loaded the root yet, the result is also its load-time
 /// fingerprint, so the load that follows does not hash the same data again.
-/// Tables parsed before this check are no longer shared, so the restored
-/// estimator reads the data that matched the snapshot.
+/// Tables parsed before that are no longer shared, so the restored estimator
+/// reads the data that matched the snapshot. Once this process has loaded the
+/// root, its shared tables were parsed after that load-time fingerprint, so
+/// they stay shared while the data still matches it; repeated restores, such
+/// as one per replayed candidate, then reuse the parsed tables.
 pub(crate) fn current(
     root: &Path,
     system: &str,
@@ -371,7 +374,12 @@ pub(crate) fn current(
 ) -> Result<PerfDbFingerprint, AicError> {
     let cell = loaded_cell(root, system, fpm_parquet);
     let current = fingerprint(root, system, fpm_parquet)?;
-    unshare_tables(root, system);
+    let unchanged = cell
+        .get()
+        .is_some_and(|loaded| loaded.as_ref().as_ref() == Ok(&current));
+    if !unchanged {
+        unshare_tables(root, system);
+    }
     cell.get_or_init(|| Arc::new(Ok(current.clone())));
     Ok(current)
 }

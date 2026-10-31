@@ -84,11 +84,35 @@ identities must be quoted to preserve their exact spelling:
 | --- | --- | --- |
 | `model` | Required | String model name or path; write a numeric identifier as `model: "123"`. |
 | `backend_version` | `null` | Optional string version; write `backend_version: "0.10"` to preserve the trailing zero. |
+| `system`, `backend_version`, `tp`, `pp`, `attention_dp`, `moe_tp_size`, `moe_ep_size`, `gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `kvcache_quant_mode`, `comm_quant_mode`, `attention_backend` | As above | With `estimation_mode` `fpm_regression` or `fpm_learned`, each may be the literal `"unknown"` for a fact the saver did not know. Every other mode, a `fallback_policy` other than `deny` and an `fpm_profile` reject it. The integer fields accept only the string spelling. |
+| `deployment_limits` | absent | Optional mapping of the calibrated deployment's `num_gpus` (GPUs of one worker, `tp * pp * attention_dp`), `max_num_batched_tokens`, `max_num_seqs`, `max_kv_tokens` (KV capacity of one attention-DP rank, in tokens) and `context_length`. Each is a positive integer or `"unknown"`; an omitted entry is `"unknown"`. Absent, it is omitted from the serialized configuration. Accepted in every mode. |
 
 This is an intentional compatibility change for direct Rust YAML parsing:
 earlier parsing accepted numeric scalars for string fields, while canonical
 normalization now rejects them. Quote numeric, Boolean, or null-like values
 when they represent text. An actual `backend_version: null` still means unset.
+
+Regression and learned models read no performance data, so their identity only
+records the deployment they were calibrated on. A producer such as the Dynamo
+planner, which may not know that deployment's hardware, versions, parallelism or
+precision, records `"unknown"` instead of a guess. In memory an unknown integer
+holds `UNKNOWN_SIZE` (`u32::MAX`, Rust `aisimulate_core::UNKNOWN_SIZE`), which
+serializes back to `"unknown"`, so the configuration round-trips exactly;
+`unknown_identity_facts()` lists them. Unknown widths are not checked against
+each other (`tp * attention_dp * cp_size == moe_tp_size * moe_ep_size`). An
+unknown `tp`, `pp` or `attention_dp` neither conflicts with nor derives an
+engine launch's `tensor_parallel_size` and `dp_size`, and replay takes the
+engine's own topology for it. `deployment_limits` is identity too: estimates
+never read it and snapshot restoration compares it exactly. Replay and
+`predict` read only a known `max_kv_tokens`, as the KV capacity of a regression
+or learned role without explicit capacity (see
+[engine replay timing](#engine-replay-timing)); they do not check the worker's
+shape or scheduler limits against the other limits. Recommendation of such a
+snapshot role also requires its GPUs per replica to equal a known `num_gpus`
+and caps its `max_batched_tokens` and `max_sequences` domains at
+`max_num_batched_tokens` and `max_num_seqs` (see
+[snapshot roles](#recommending-with-a-calibrated-snapshot)). Nothing reads
+`context_length`.
 
 The canonical configuration also carries quantization overrides and `attention_backend`, `moe_backend`, `moe_kernel_source` (default absent), `enable_eplb` (default `false`), and `wideep_num_slots` (default absent). These controls reach model construction, KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend or kernel-source selection require an MoE model. Collected FPM interpolation cannot represent EPLB, slots, MoE backend, or kernel-source overrides; it rejects an explicit incompatible request and is skipped during automatic selection for those identities.
 
@@ -128,9 +152,10 @@ adaptation is the default; set `adaptation: frozen` explicitly for a fixed fores
 Frozen adaptation accepts either source, online adaptation requires a training or
 runtime checkpoint, and `causal_selector` requires a training seed checkpoint.
 Learned models support the standalone canonical API with complete per-iteration
-`ForwardPassMetrics` for prediction and feedback. Replay, engine CLI prediction
-and recommendation, and Sweeper timing use phase aggregates that cannot supply
-these features, so they reject learned mode before loading its source. See
+`ForwardPassMetrics` for prediction and feedback. Engine replay, engine CLI
+prediction and recommendation, and Sweeper timing price every pass of a learned
+role with one iteration query, adding the per-request lengths an artifact
+reads (see [engine replay timing](#engine-replay-timing)). See
 [learned configuration](fpm_ml/configuration.md#selection-and-supported-execution)
 for source identity checks, adaptation controls and correction requirements.
 
@@ -513,9 +538,10 @@ Configuration describes a cold model. To keep what a model has learned from
 Saving atomically writes a new directory and returns the pinned canonical
 configuration, which is also written to `path/config.json`. Restore through
 the same constructor: `RustForwardPassPerfModel.best_available(state_snapshot=path)`
-reads that file, and passing the returned configuration is equivalent. There is no
-separate loader; `best_available` restores whenever
-`estimator_config.state_snapshot` is present.
+reads that file with `state_snapshot.path` naming `path`, wherever the
+directory now is, and passing the returned configuration is equivalent while
+the snapshot stays where it was saved. There is no separate loader;
+`best_available` restores whenever `estimator_config.state_snapshot` is present.
 
 ```python
 config = model.save_state_snapshot("/tmp/decode-snapshot")
@@ -526,7 +552,7 @@ resumed = RustForwardPassPerfModel.best_available(config)
 
 | Field | Default | Behavior |
 | --- | --- | --- |
-| `estimator_config.state_snapshot.path` | required | Snapshot directory written by `save_state_snapshot`. Normalization makes it absolute against the working directory and removes `.` and `..` lexically; symbolic links are kept, so a stable mount alias stays valid. |
+| `estimator_config.state_snapshot.path` | required | Snapshot directory written by `save_state_snapshot`, at its save location or wherever it was copied or moved. Normalization makes it absolute against the working directory and removes `.` and `..` lexically; symbolic links are kept. The inputs the snapshot owns are read from this directory (see [relocation](#relocating-a-snapshot)). |
 | `estimator_config.state_snapshot.sha256` | `null` | SHA-256 of `path/manifest.json`. Normalization fills it; a supplied value that differs is an error. |
 | `estimator_config.state_snapshot.on_tune` | `reject` | `reject` makes `tune_with_fpms()` and `flush_updates()` return an error. `continue` resumes tuning from the saved state exactly as the saving model would have continued. |
 
@@ -594,7 +620,8 @@ non-UTF-8 names. A native model fingerprints its data when the process first
 loads that systems root; later constructions reuse that result. Performance
 tables that another engine in the process parsed before then are not shared
 with the model, so it reads the fingerprinted data; restoration does the same
-after its check.
+after its check, unless this process already loaded the same data, whose
+tables were parsed after that load and stay shared.
 `save_state_snapshot` fingerprints the data again and fails if it changed
 since it was loaded; restart the process to save a model of the current data. Pass
 `include_perf_db=True` (Rust: `StateSnapshotOptions { include_perf_db: true }`)
@@ -610,19 +637,51 @@ configuration bundled with the package, a local directory or Hugging Face, so
 a packed native snapshot still needs it, and restoration fails if it compiles
 a different engine specification from the saved one.
 
-Snapshot configurations pin absolute paths. Restoration reads the pinned
-`state_snapshot.path`, so `best_available(state_snapshot=path)` raises
-`ValueError` unless `path` is the directory the snapshot was saved to (compared with
-`os.path.samefile`) rather than silently restoring the original. A
-configuration is not compared with that location. Edited to name a copy, a
-snapshot with a deployment identity restores the copy after verifying it
-against its manifest, but its other pinned paths (packed performance data, an
-execution profile, learned artifacts and checkpoints) belong to that identity
-and must keep naming the original directory. A `from_learned` snapshot derives
-its artifact path from `state_snapshot.path`, so it rejects the edit unless
-`fpm_learned.artifact_path` names the copy too. Save a new snapshot instead of
-moving one. Snapshot
-I/O failures raise an `OSError` subclass (for example `FileNotFoundError` for
+#### Relocating a snapshot
+
+A snapshot directory can be copied or moved, for example to another host or
+mount point, and restored after the original is deleted. The manifest names
+the inputs a snapshot owns (packed performance data under `perf_db/`, a
+copied execution profile, learned artifacts and online checkpoints) by their
+fixed paths inside the snapshot, and construction reads them from the
+directory that `state_snapshot.path` names, whatever paths the rest of the
+configuration gives for them. Restore a moved snapshot with
+`best_available(state_snapshot=new_path)`, or set
+`estimator_config.state_snapshot.path` in a saved configuration;
+`config.json` and the returned configuration record the absolute paths at the
+save location. The manifest pins the content of every owned input, so a copy
+is verified exactly like the original.
+
+Where external performance data is found is not identity. A snapshot saved
+without `include_perf_db` reads its data through `systems_paths` (and
+`fpm_parquet_path`), which may name any root with the same content: the
+fingerprint decides. `best_available(state_snapshot=path)` keeps the roots
+recorded at save time, so on another host either save with
+`include_perf_db=True` or pass a configuration with `systems_paths` replaced.
+Regression and learned estimators read no performance data, so their
+`systems_paths` are not compared. Every other field, such as the model,
+hardware, backend version, parallelism, `kv_block_size`, quantization and the
+estimator controls, must still equal the saved identity. A snapshot is
+self-contained only when saved with `include_perf_db=True`: re-saving a model
+restored from a packed snapshot without it references that snapshot's packed
+data as external data.
+
+The manifest schema version is 2. Version 1 manifests, written before
+snapshots were relocatable (for example by nightly
+`0.13.0.dev202610280000000086`), recorded owned inputs as absolute paths below
+the save location. A snapshot restores only in the aisimulate-core version
+that wrote it, so a version 1 snapshot from a published nightly cannot be
+relocated: restore it in place with the build that wrote it, or tune and save
+a new snapshot with a current build, which rejects the old one with an error
+naming the writer's version and manifest schema version. A current build still
+reads a version 1 manifest that carries its own version string, such as one
+from an unstamped local `0.13.0` build, and relocates it by recovering the save
+location from the owned inputs' fixed relative paths. Newer schema versions
+are rejected with the versions this build reads.
+
+#### Errors, replay and inspection
+
+Snapshot I/O failures raise an `OSError` subclass (for example `FileNotFoundError` for
 a missing snapshot or a missing learned artifact or checkpoint inside it)
 through both `state_snapshot=` and a configuration, never the skippable
 `PerfDataNotAvailableError`. A manifest from another release
@@ -740,16 +799,61 @@ work, at its own queries and native latency under the pass's correction, as
 each rank recorded its own estimate under per-rank phase timing; a rank that
 computes prefill and decode is reported with decode.
 
-Replay keeps per-rank phase timing, each rank pricing its own phases and the
-pass ending with the slowest rank, for a `decode_speedup_ratio` other than 1,
-bounded decoder replay, v1 execution profiles, hybrid speculative FPM
-(operation-level draft tails, or `nextn > 0` without a measured SD-round
+A native estimator keeps per-rank phase timing, each rank pricing its own
+phases and the pass ending with the slowest rank, for a `decode_speedup_ratio`
+other than 1, bounded decoder replay, v1 execution profiles, hybrid speculative
+FPM (operation-level draft tails, or `nextn > 0` without a measured SD-round
 profile), a measured SD-round profile with attention DP above one, a scheduler
 whose speculative depth differs from the model's, an operation graph whose
 measured scopes cannot compose a mix step when a rank computes prefill and
 decode, and totals beyond the query's 32-bit counters. Lookup coverage
 collection counts every pass, so replay does not reuse a priced iteration while
 it is enabled.
+
+Regression and learned estimators (`fpm_regression`, and `fpm_learned` with
+any adaptation) have no native engine. Replay prices every pass of their role
+with the iteration query and never asks them for a separate phase, so totals
+beyond the 32-bit counters are an error. Each rank's metrics follow the
+`ForwardPassMetrics` telemetry such models are fitted to, which Dynamo's vLLM
+worker reports: prefill passes its scheduled totals, and decode KV is the
+requests' past KV, the sum of their computed tokens excluding each request's
+current token. That is the whole-model FPM convention, the context lengths
+minus one token per decode request, but without the scheduler's KV clamp. When
+the model reads per-request detail (a regression request feature axis, or a
+learned `req_*`, `slot*` or length-variance feature), each rank also carries
+`extend_lengths` and `past_kv_lengths` (each prefill request's new tokens and
+prefix, each decode request's one token and past KV) and the population
+variances of the prefill requests' full prompt lengths, as the telemetry
+reports them whatever chunk of a prompt the pass computes, and of the decode
+requests' past KV; those passes are not reused from the iteration cache. Each
+rank's metrics carry its position in the group as `dp_rank`.
+
+Construction checks that the role's workload stores are ready: pure prefill
+for a prefill worker, pure decode for a decode worker, and pure prefill and
+pure decode for an aggregated worker. An aggregated vLLM or TensorRT-LLM worker
+also needs locally mixed, since its scheduler computes chunked prefill beside
+decode in one rank pass; an SGLang rank runs a prefill batch alone (mixed chunk
+is not modeled), so it does not. Every aggregated worker whose engine runs
+attention DP above one also needs cross-rank aggregated. A regression store is
+ready with a usable fit and a learned store when the forest has it. It rejects
+a rank hosting the vision encoder, speculative decoding (`nextn > 0` or a
+speculation scheme) and bounded decoder replay, and an automatic selection that
+would fall back to an untrained regression. Replay also rejects such a role
+whose engine sets a `decode_speedup_ratio` other than 1: replay then prices
+each rank's phases, which these estimators never do. A pass on which no rank
+computes model work takes no time without a query, as for every estimator; so
+does an SGLang decode step whose page reservation failed, which a native
+estimator is still asked to price at no charge. These estimators are
+latency-only: they record no operation evidence, so replay reports
+`power_w: null` as for other latency-only timing.
+
+Without explicit KV capacity, a regression or learned role takes
+`deployment_limits.max_kv_tokens` in whole scheduler blocks. Without a
+recorded capacity the AIC memory estimate needs the complete identity, so an
+identity with unknown facts must then set `num_gpu_blocks`. A `tp` or
+`attention_dp` recorded as `"unknown"` takes the engine's, and a `pp` recorded
+so takes the engine's single pipeline stage, including for `kv_cache.kvcr`.
+Replay reads no other `deployment_limits` entry.
 
 ## Unified CLI timing fields
 
@@ -761,24 +865,144 @@ concrete-only.
 
 | Knob | Default | Default Range | Preset | Rules |
 |---|---:|---|---|---|
-| `engine.estimation_mode` | `auto` | `x` | `-` | `auto`, `op_level`, `fpm_interpolation`, or `fpm_regression`. `fpm_learned` is rejected by prediction and recommendation configuration validation. |
-| `engine.workers.<role>.timing.estimation_mode` | `null` | `x` | `-` | Optional role override using the same four modes; omission inherits the global selection. `fpm_learned` is rejected here too. |
+| `engine.estimation_mode` | `auto` | `x` | `-` | `auto`, `op_level`, `fpm_interpolation`, `fpm_regression`, or `fpm_learned`. Regression and learned roles are priced per iteration (see [engine replay timing](#engine-replay-timing)). |
+| `engine.workers.<role>.timing.estimation_mode` | `null` | `x` | `-` | Optional role override using the same five modes; omission inherits the global selection. |
 | `engine.workers.<role>.timing.type` | `default` | `x` | `-` | `default`, `fixed`, or `polynomial`. |
 | `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.forward_model` | `op_level` | `x` | `-` | `op_level` or `fpm`; `default` timing only. `fpm` replays whole-forward (FPM) latency measured for the role's exact model, hardware, backend version, parallel shape and quantization, and fails closed when no such cell exists. |
 | `engine.workers.<role>.timing.fpm_parquet_path` | `null` | `x` | `-` | External FPM parquet for `forward_model: fpm`; the adjacent same-stem `.metadata.json` sidecar is required. Relative paths are anchored to the working directory when the engine is constructed. Preserved per role in recommendations, candidate YAML, and regular prefill/decode companions in AFD+PD. |
+| `engine.workers.<role>.timing.estimator_config.state_snapshot` | `null` | `x` | `-` | `recommend`: `{path, sha256}` of a calibrated snapshot; the role takes its estimator and engine identity from it. See [snapshot roles](#recommending-with-a-calibrated-snapshot). `predict` requires the complete saved configuration, as for any `state_snapshot`. |
 
 The supported `estimation_mode`, `fallback_policy`, `estimator_config`, and
 `fpm_profile` controls pass through the CLI into the same native constructor.
-The CLI and Sweeper reject `fpm_learned` because their phase timing interface
-lacks complete iteration features; the same restriction applies to global and
-role-specific settings. The generated configuration schemas advertise only the
-four supported modes above.
+The generated configuration schemas advertise the five modes above; a learned
+source is read when the canonical model is constructed, not during configuration
+validation.
 A role's `timing.estimator_config` replaces the global dictionary for that role;
 include all required controls in that override. Legacy `timing.forward_model: fpm`
 and `timing.fpm_parquet_path` normalize to FPM interpolation and its external pair.
 The mode does not fall back to op-level on a missing measured cell.
+
+### Recommending with a calibrated snapshot
+
+A `recommend` role can be timed by a model calibrated online, such as a
+Dynamo planner's, by naming only its [state snapshot](#state-snapshots). Native
+`op_level` and `fpm_interpolation` snapshots follow the rules below;
+[regression and learned snapshots](#regression-and-learned-snapshots) add
+their own:
+
+```yaml
+engine:
+  mode: disaggregated
+  model: Qwen/Qwen3-32B
+  hardware: h200_sxm
+  workers:
+    prefill: {}
+    decode:
+      timing:
+        estimator_config:
+          state_snapshot:
+            path: /mnt/planner/decode-snapshot  # sha256 optional
+```
+
+A snapshot restores exactly one engine identity, so the role is pinned to it.
+Before the search starts, the backend and backend version, the role's tensor,
+pipeline, attention-data and MoE parallelism, its KV block size, the
+engine-wide quantization and model controls and the MTP depth (`nextn`) are
+taken from the snapshot; omit them, or give values that include the saved
+ones. A conflicting explicit value fails configuration validation and names
+the snapshot's value. Replicas, scheduler limits (`max_batched_tokens`,
+`max_sequences`), KV memory, prefix caching and the other roles are still
+searched. Scheduler limits are not capped at the snapshot's correction grid:
+outside the observed region a fixed correction applies factor 1.0 and a
+dynamic or hybrid correction a constant recent ratio. The engine-wide values
+also apply to roles without a snapshot, and two snapshot roles must agree on
+them. A snapshot with `nextn > 0` needs `engine.nextn` set to the saved depth
+and `engine.nextn_accepted`, which a snapshot does not record.
+
+The role takes every estimator control from the snapshot, so `timing` may
+name only the snapshot, plus `estimation_mode` equal to the saved mode,
+`fallback_policy: deny` and, for a snapshot saved without `include_perf_db`,
+`systems_paths` naming one root that holds the referenced data. A packed
+snapshot also serves as the role's systems root for enumeration and capacity.
+Each candidate restores the snapshot through `best_available`, which compares
+its complete engine identity with the saved one and rejects any difference;
+the sweeper restores each role's snapshot once per run, and replay once per
+candidate. The recommended deployment's prediction YAML keeps the restored
+configuration, so `predict` replays the same calibrated model. For a role whose
+timing names a snapshot, `predict` takes `decoder_replay`,
+`enable_shared_layer`, `strict_provenance` and `fpm_fmha_quant_mode` from the
+snapshot unless the engine sets them, and reads packed data from the snapshot
+wherever `systems_paths` points.
+
+Configuration validation rejects snapshots replay cannot use: a `from_learned`
+model, which records no identity; a native snapshot without an enabled, ready
+correction store for the iterations replay prices for the role (prefill, decode,
+or any of prefill, decode and mixed for an aggregated worker); a snapshot
+without `kv_block_size`; one saved for another worker role, model or hardware;
+and snapshots with an FPM profile, speculation, pipeline parallelism (engine
+replay runs only `pipeline: 1`) or context parallelism.
+`engine.estimator_config.state_snapshot` is rejected: a snapshot belongs to one
+role.
+
+#### Regression and learned snapshots
+
+A Dynamo planner without an `ais_perf_model` role configuration saves an
+`fpm_regression` snapshot, and learned (`fpm_learned`) snapshots work the same
+way. Replay prices every pass of such a role with the saved model (see
+[engine replay timing](#engine-replay-timing)), so the snapshot needs a ready
+workload store for each kind of iteration the role computes: pure prefill for a
+prefill worker, pure decode for a decode worker, and pure prefill and pure
+decode for an aggregated worker, plus locally mixed for an aggregated vLLM or
+TensorRT-LLM worker and cross-rank aggregated when the role runs attention DP
+above one. Its identity facts may be
+[`"unknown"`](#engine-identity-controls); the planner should record what it
+does not know that way rather than defaults such as `system: unprofiled` or
+`tp: 1`:
+
+```yaml
+# Saved identity (excerpt)
+estimation_mode: fpm_regression
+system: unknown
+backend_version: unknown
+tp: unknown
+pp: unknown
+attention_dp: unknown
+kv_block_size: 16
+deployment_limits:
+  num_gpus: 1
+  max_num_batched_tokens: 8192
+  max_num_seqs: 256
+  max_kv_tokens: 16384
+  context_length: unknown
+```
+
+Known identity facts are pinned exactly as for a native snapshot, and a
+conflicting value names the saved one. Facts the snapshot does not know are
+handled as follows:
+
+| Saved identity | Recommendation |
+| --- | --- |
+| `system: unknown` | The role runs on `engine.hardware` (or its own `hardware`) without a conflict. |
+| `backend_version`, a quantization mode or `attention_backend` `unknown` | Not pinned engine-wide; the caller's value applies to the other roles and the role's estimator identity stays `"unknown"`. |
+| `tp`, `pp`, `attention_dp`, `moe_tp_size` or `moe_ep_size` `unknown` | The role needs one explicit value for each unknown width, such as `parallelism: {preset: false, tensor: 1, pipeline: 1, attention_data: 1}`; known widths are still pinned. `tp * pp * attention_dp` must equal `deployment_limits.num_gpus` when known. |
+| `deployment_limits.max_kv_tokens` | Required. The role's KV capacity is fixed to that many tokens in whole `kv_block_size` blocks and KV memory is not searched; a different fixed capacity or a `memory_fraction` search is a conflict. |
+| `deployment_limits.max_num_batched_tokens`, `max_num_seqs` | Required. The role's `max_batched_tokens` and `max_sequences` domains keep only values at most the recorded limit; an empty domain is an error. |
+| `nextn > 0` | Rejected: these models price no speculative decoding. |
+
+A snapshot whose `backend_version` is unset (`null`) is rejected: save the
+deployed version or `"unknown"`. `deployment_limits.num_gpus` and
+`context_length` may stay unknown, and `context_length` is not read. A native
+snapshot keeps the rules above this section and does not apply its
+`deployment_limits`. The exported prediction YAML names the snapshot with the
+role's explicit shape and fixed KV capacity, but no systems root, since these
+models read no performance data, and no quantization mode the snapshot records
+as unknown. `predict` spells the unknown facts as the snapshot does, so it
+replays the same model. A `backend_version` alias such as `current` resolves
+from the roles that know their version, or on the role's hardware when none
+does. Candidate provenance reports the hardware the role ran on when its
+identity's `system` is unknown.
 
 ## Flat engine precision and execution controls
 

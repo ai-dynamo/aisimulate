@@ -15,6 +15,7 @@ from aisimulate_core.sdk import (
     ForwardPassPerfModelConfig,
     RustForwardPassPerfModel,
 )
+from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
 
 from ..estimator_readiness import unready_estimator_message
 from .config import ENGINE_MODEL_CONTROL_FIELDS, SearchSpace
@@ -26,12 +27,12 @@ class ForwardPassEstimatorResolutionError(ValueError):
     """A configured forward-pass estimator identity cannot be resolved exactly."""
 
 
-def resolve_systems_paths(configured: list[str] | None) -> tuple[str, ...]:
+def resolve_systems_paths(configured: list[str] | None, *, require_directories: bool = True) -> tuple[str, ...]:
     """Expand and validate request-scoped system roots without setting globals."""
 
     from aisimulate_core.sdk.rust_engine_step import _resolve_forward_pass_systems_paths
 
-    return tuple(_resolve_forward_pass_systems_paths(tuple(configured or ())))
+    return tuple(_resolve_forward_pass_systems_paths(tuple(configured or ()), require_directories=require_directories))
 
 
 _DEFAULT_BLOCK_SIZE = {"vllm": 64, "sglang": 1, "trtllm": 32}
@@ -81,7 +82,13 @@ class ForwardPassEstimatorResolver:
             if interpolation.get("fpm_parquet_path", path) != path:
                 raise ValueError("conflicting fpm_parquet_path and estimator_config.fpm_interpolation.fpm_parquet_path")
             interpolation["fpm_parquet_path"] = path
-        return ForwardPassPerfModelConfig(
+        # A snapshot pins every estimator control; the candidate supplies the
+        # engine identity, which restoration compares with the saved one.
+        snapshot = self._search_space.state_snapshot_role(role)
+        pinned = snapshot.estimator_controls() if snapshot is not None else {}
+        if snapshot is not None:
+            controls, estimator_config = pinned, pinned["estimator_config"]
+        fields = dict(
             model=self._search_space.model_name,
             fpm_profile=self._search_space.fpm_profile,
             system=_role_hardware_sku(sample, role),
@@ -109,7 +116,15 @@ class ForwardPassEstimatorResolver:
             estimator_config=estimator_config,
             # A language worker hosting the vision tower prices encoder calls too.
             encoder_parallel=(sample.get(f"{role}_vision") or {}).get("encoder_parallel"),
+            **{
+                name: pinned[name]
+                for name in ("decoder_replay", "enable_shared_layer", "strict_provenance", "fpm_fmha_quant_mode")
+                if name in pinned
+            },
         )
+        if snapshot is not None:
+            fields.update(snapshot.saved_spellings(fields))
+        return ForwardPassPerfModelConfig(**fields)
 
     def _resolve(self, request: ForwardPassPerfModelConfig, role: str) -> ForwardPassEstimatorSpec:
         # Bind an external file before caching so identical relative spellings
@@ -206,7 +221,8 @@ class ForwardPassEstimatorResolver:
             for role in roles
             if sample.get(f"{role}_timing_model") is None
         }
-        versions = {spec.backend_version for spec in resolved.values()}
+        # A regression or learned role may not know its version; the others agree.
+        versions = {spec.backend_version for spec in resolved.values()} - {UNKNOWN_IDENTITY}
         if len(versions) > 1:
             raise ForwardPassEstimatorResolutionError(
                 f"Core resolved inconsistent backend versions across candidate roles: {sorted(versions)}"

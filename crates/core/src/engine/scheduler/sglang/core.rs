@@ -1577,7 +1577,7 @@ impl SglangCore {
                 requests: prefill_fpm
                     .iter()
                     .filter(|item| item.tokens_computed > 0)
-                    .map(|item| (item.tokens_computed, item.prefix_tokens))
+                    .map(|item| (item.tokens_computed, item.prefix_tokens, item.prompt_len))
                     .collect(),
             }),
             decode: decode_shape

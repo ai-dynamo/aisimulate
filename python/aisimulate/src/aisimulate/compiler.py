@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+from aisimulate_core.sdk.rust_engine_step import UNKNOWN_IDENTITY
+
 from .capacity import (
     estimate_kv_bytes_per_token,
     materialize_aic_num_gpu_blocks,
@@ -64,7 +66,7 @@ def prediction_to_replay_spec(
         workload=workload,
         afd_performance_model=afd_performance_model,
     )
-    deployment = _pin_estimator_version_aliases(deployment)
+    deployment = _pin_estimator_version_aliases(deployment, config.engine)
     metadata = dict(deployment.performance_model_metadata)
     for role, field in (
         ("aggregated", "agg_engine_args"),
@@ -116,7 +118,9 @@ def prediction_to_replay_spec(
     )
 
 
-def _pin_estimator_version_aliases(deployment: BackendDeploymentSpec) -> BackendDeploymentSpec:
+def _pin_estimator_version_aliases(
+    deployment: BackendDeploymentSpec, engine: EnginePredictionConfig
+) -> BackendDeploymentSpec:
     if deployment.backend_version not in {"current", "previous", "next"}:
         return deployment
     from aisimulate_core.sdk import RustForwardPassPerfModel
@@ -124,6 +128,7 @@ def _pin_estimator_version_aliases(deployment: BackendDeploymentSpec) -> Backend
     updates = {}
     metadata = dict(deployment.performance_model_metadata)
     versions = set()
+    unversioned = []
     for role, field in (
         ("aggregated", "agg_engine_args"),
         ("prefill", "prefill_engine_args"),
@@ -152,15 +157,39 @@ def _pin_estimator_version_aliases(deployment: BackendDeploymentSpec) -> Backend
         if diagnostics["readiness"] != "ready":
             raise ValueError(unready_estimator_message(diagnostics))
         resolved = diagnostics["provenance"]["config"]
-        versions.add(resolved["backend_version"])
+        # A regression or learned identity may not know its version; it then
+        # neither resolves the alias nor conflicts with a role that does.
+        if resolved["backend_version"] != UNKNOWN_IDENTITY:
+            versions.add(resolved["backend_version"])
+        else:
+            unversioned.append(role)
         updates[field] = {**args, "timing_model": {**timing, "config": {**resolved, **memory}}}
         metadata[role] = {**metadata.get(role, {}), "provider": "aic", "config": resolved, "selection": diagnostics}
+    if not versions and unversioned:
+        # No role knows its version: the alias resolves on the hardware those
+        # roles run on, which their identities do not record.
+        from aisimulate_core.sdk.perf_database import resolve_query_version
+
+        from .sweeper.forward_pass_estimator import resolve_systems_paths
+
+        for role in unversioned:
+            worker = getattr(engine.workers, role)
+            versions.add(
+                resolve_query_version(
+                    worker.hardware or engine.hardware,
+                    deployment.backend,
+                    deployment.backend_version,
+                    systems_paths=list(resolve_systems_paths(worker.timing.systems_paths)),
+                )
+            )
     if len(versions) > 1:
         raise ValueError(
             f"estimator version alias resolves to different backend versions across roles: {sorted(versions)}"
         )
+    if updates:
+        updates["performance_model_metadata"] = metadata
     if versions:
-        updates.update(backend_version=versions.pop(), performance_model_metadata=metadata)
+        updates["backend_version"] = versions.pop()
     return replace(deployment, **updates)
 
 
@@ -832,9 +861,16 @@ def _worker_engine_args(
         from aisimulate_core.sdk import ForwardPassPerfModelConfig
 
         from .sweeper.forward_pass_estimator import resolve_systems_paths
+        from .sweeper.state_snapshot import saved_snapshot_config, snapshot_pinned_controls, spell_as_saved
 
         timing = worker.timing
         sharded_moe = parallel.moe_tensor * parallel.moe_expert > 1
+        estimator_config = timing.estimator_config if timing.estimator_config is not None else engine.estimator_config
+        # A role timed by a state snapshot reads controls the sweeper never
+        # searches from the snapshot unless the engine states them, and its
+        # packed data from the snapshot wherever the configuration places it.
+        saved = saved_snapshot_config(estimator_config)
+        snapshot = snapshot_pinned_controls(saved)
         canonical = ForwardPassPerfModelConfig(
             model=engine.model,
             fpm_profile=engine.fpm_profile.model_dump(mode="json") if engine.fpm_profile is not None else None,
@@ -842,9 +878,16 @@ def _worker_engine_args(
             backend=backend,
             backend_version=engine.backend_version,
             worker_type=role,
-            decoder_replay=engine.decoder_replay,
-            enable_shared_layer=engine.enable_shared_layer,
-            strict_provenance=bool(engine.strict_provenance),
+            decoder_replay=engine.decoder_replay
+            if "decoder_replay" in engine.model_fields_set
+            else bool(snapshot.get("decoder_replay")),
+            enable_shared_layer=engine.enable_shared_layer
+            if engine.enable_shared_layer is not None
+            else snapshot.get("enable_shared_layer"),
+            strict_provenance=bool(
+                engine.strict_provenance if engine.strict_provenance is not None else snapshot.get("strict_provenance")
+            ),
+            fpm_fmha_quant_mode=snapshot.get("fpm_fmha_quant_mode"),
             tp=parallel.tensor,
             pp=parallel.pipeline,
             attention_dp=parallel.attention_data,
@@ -861,16 +904,20 @@ def _worker_engine_args(
             speculation=engine.speculation.cost_config() if engine.speculation is not None else None,
             estimation_mode=timing.estimation_mode or engine.estimation_mode,
             fallback_policy=timing.fallback_policy or engine.fallback_policy,
-            estimator_config=timing.estimator_config
-            if timing.estimator_config is not None
-            else engine.estimator_config,
+            estimator_config=estimator_config,
             database_mode=timing.database_mode or engine.database_mode,
             transfer_policy=timing.transfer_policy if timing.transfer_policy is not None else engine.transfer_policy,
-            systems_paths=resolve_systems_paths(timing.systems_paths or engine.systems_paths),
+            systems_paths=resolve_systems_paths(
+                timing.systems_paths or engine.systems_paths, require_directories=not snapshot
+            ),
             # A rank hosting the vision tower prices encoder calls through the same estimator.
             encoder_parallel=vision.encoder_parallel if vision is not None else None,
         )
         timing_config = omit_inactive_moe_controls(canonical.to_dict())
+        if saved:
+            # Restoration compares the saved identity exactly, including how
+            # it spells unset context parallelism, MoE and model controls.
+            timing_config.update(spell_as_saved(saved, timing_config))
         if timing.fpm_parquet_path is not None:
             interpolation = timing_config["estimator_config"].setdefault("fpm_interpolation", {})
             if interpolation.get("fpm_parquet_path", timing.fpm_parquet_path) != timing.fpm_parquet_path:

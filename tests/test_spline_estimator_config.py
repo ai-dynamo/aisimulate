@@ -247,6 +247,6 @@ def test_spline_selection_does_not_bypass_offline_readiness(monkeypatch):
     )
     with pytest.raises(
         ForwardPassEstimatorResolutionError,
-        match="requires training observations",
+        match="no workload store has a usable fit",
     ):
         resolver._resolve(request, "decode")

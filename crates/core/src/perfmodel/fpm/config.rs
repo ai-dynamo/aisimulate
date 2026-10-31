@@ -15,6 +15,195 @@ const fn one() -> u32 {
     1
 }
 
+/// The literal a saved identity records for a fact its producer did not
+/// know, such as a Dynamo planner's deployment hardware or parallelism.
+pub const UNKNOWN_IDENTITY: &str = "unknown";
+
+/// The in-memory value of an integer identity fact recorded as `"unknown"`.
+/// Configuration input cannot spell it as a number, and validation admits it
+/// only for estimators that read no performance data.
+pub const UNKNOWN_SIZE: u32 = u32::MAX;
+
+/// Integer identity fact whose JSON/YAML form is a number or `"unknown"`.
+struct IdentitySize(u32);
+
+impl Serialize for IdentitySize {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if serializer.is_human_readable() && self.0 == UNKNOWN_SIZE {
+            serializer.serialize_str(UNKNOWN_IDENTITY)
+        } else {
+            serializer.serialize_u32(self.0)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for IdentitySize {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{Error, Unexpected};
+        if !deserializer.is_human_readable() {
+            return u32::deserialize(deserializer).map(Self);
+        }
+        struct Visitor;
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = IdentitySize;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("an integer below 4294967295 or \"unknown\"")
+            }
+            fn visit_u64<E: Error>(self, value: u64) -> Result<IdentitySize, E> {
+                u32::try_from(value)
+                    .ok()
+                    .filter(|value| *value != UNKNOWN_SIZE)
+                    .map(IdentitySize)
+                    .ok_or_else(|| E::invalid_value(Unexpected::Unsigned(value), &self))
+            }
+            fn visit_i64<E: Error>(self, value: i64) -> Result<IdentitySize, E> {
+                u64::try_from(value)
+                    .map_err(|_| E::invalid_value(Unexpected::Signed(value), &self))
+                    .and_then(|value| self.visit_u64(value))
+            }
+            fn visit_str<E: Error>(self, value: &str) -> Result<IdentitySize, E> {
+                (value == UNKNOWN_IDENTITY)
+                    .then_some(IdentitySize(UNKNOWN_SIZE))
+                    .ok_or_else(|| E::invalid_value(Unexpected::Str(value), &self))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+/// Serde adapter for an integer identity fact that may be `"unknown"`.
+pub(crate) mod identity_size {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(crate) fn serialize<S: Serializer>(value: &u32, serializer: S) -> Result<S::Ok, S::Error> {
+        super::IdentitySize(*value).serialize(serializer)
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+        super::IdentitySize::deserialize(deserializer).map(|size| size.0)
+    }
+}
+
+/// Serde adapter for an optional integer identity fact that may be `"unknown"`.
+pub(crate) mod identity_optional_size {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(crate) fn serialize<S: Serializer>(
+        value: &Option<u32>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value.map(super::IdentitySize).serialize(serializer)
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<u32>, D::Error> {
+        Option::<super::IdentitySize>::deserialize(deserializer).map(|size| size.map(|size| size.0))
+    }
+}
+
+/// One recorded deployment limit: a positive integer or `"unknown"`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum DeploymentLimit {
+    Known(u64),
+    #[default]
+    Unknown,
+}
+
+impl DeploymentLimit {
+    /// The recorded value, `None` when it is unknown.
+    pub fn known(self) -> Option<u64> {
+        match self {
+            Self::Known(value) => Some(value),
+            Self::Unknown => None,
+        }
+    }
+}
+
+impl Serialize for DeploymentLimit {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match (self, serializer.is_human_readable()) {
+            (Self::Known(value), true) => serializer.serialize_u64(*value),
+            (Self::Unknown, true) => serializer.serialize_str(UNKNOWN_IDENTITY),
+            (_, false) => self.known().serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DeploymentLimit {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{Error, Unexpected};
+        if !deserializer.is_human_readable() {
+            return Option::<u64>::deserialize(deserializer)
+                .map(|value| value.map_or(Self::Unknown, Self::Known));
+        }
+        struct Visitor;
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = DeploymentLimit;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a positive integer or \"unknown\"")
+            }
+            fn visit_u64<E: Error>(self, value: u64) -> Result<DeploymentLimit, E> {
+                (value > 0)
+                    .then_some(DeploymentLimit::Known(value))
+                    .ok_or_else(|| E::invalid_value(Unexpected::Unsigned(value), &self))
+            }
+            fn visit_i64<E: Error>(self, value: i64) -> Result<DeploymentLimit, E> {
+                u64::try_from(value)
+                    .map_err(|_| E::invalid_value(Unexpected::Signed(value), &self))
+                    .and_then(|value| self.visit_u64(value))
+            }
+            fn visit_str<E: Error>(self, value: &str) -> Result<DeploymentLimit, E> {
+                (value == UNKNOWN_IDENTITY)
+                    .then_some(DeploymentLimit::Unknown)
+                    .ok_or_else(|| E::invalid_value(Unexpected::Str(value), &self))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+/// Limits of the deployment a model was calibrated on, recorded as identity
+/// by a producer such as the Dynamo planner. Estimation never reads them and
+/// snapshot restoration compares them exactly. Replay and prediction read only
+/// a known `max_kv_tokens`, as the KV capacity of a regression or learned role
+/// without explicit capacity. Recommendation of such a snapshot role also
+/// requires its GPUs per replica to equal a known `num_gpus` and caps its
+/// scheduler domains at `max_num_batched_tokens` and `max_num_seqs`. Nothing
+/// reads `context_length`. An omitted field is unknown.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeploymentLimits {
+    /// GPUs of one worker: tp * pp * attention_dp (* cp_size).
+    #[serde(default)]
+    pub num_gpus: DeploymentLimit,
+    /// The scheduler's token budget per iteration.
+    #[serde(default)]
+    pub max_num_batched_tokens: DeploymentLimit,
+    /// The scheduler's concurrent sequence limit.
+    #[serde(default)]
+    pub max_num_seqs: DeploymentLimit,
+    /// KV-cache capacity of one attention-DP rank, in tokens.
+    #[serde(default)]
+    pub max_kv_tokens: DeploymentLimit,
+    /// Maximum model context length.
+    #[serde(default)]
+    pub context_length: DeploymentLimit,
+}
+
+impl DeploymentLimits {
+    /// Every limit with its field name, in field order.
+    pub fn entries(&self) -> [(&'static str, DeploymentLimit); 5] {
+        [
+            ("num_gpus", self.num_gpus),
+            ("max_num_batched_tokens", self.max_num_batched_tokens),
+            ("max_num_seqs", self.max_num_seqs),
+            ("max_kv_tokens", self.max_kv_tokens),
+            ("context_length", self.context_length),
+        ]
+    }
+}
+
 /// Estimator selection. Auto searches the fixed priority list independently
 /// of the fallback policy used for an explicitly requested estimator.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,18 +311,20 @@ pub struct ForwardPassPerfModelConfig {
     #[serde(default)]
     pub fpm_profile: Option<serde_json::Map<String, serde_json::Value>>,
 
-    #[serde(default = "one", alias = "tp_size")]
+    /// `tp`, `pp`, `attention_dp`, `moe_tp_size` and `moe_ep_size` hold
+    /// [`UNKNOWN_SIZE`] for a fact recorded as `"unknown"`.
+    #[serde(default = "one", alias = "tp_size", with = "identity_size")]
     pub tp: u32,
-    #[serde(default = "one", alias = "pp_size")]
+    #[serde(default = "one", alias = "pp_size", with = "identity_size")]
     pub pp: u32,
-    #[serde(default = "one", alias = "attention_dp_size")]
+    #[serde(default = "one", alias = "attention_dp_size", with = "identity_size")]
     pub attention_dp: u32,
     /// Recorded decode context parallelism within the TP group.
     #[serde(default)]
     pub dcp: Option<u32>,
-    #[serde(default)]
+    #[serde(default, with = "identity_optional_size")]
     pub moe_tp_size: Option<u32>,
-    #[serde(default)]
+    #[serde(default, with = "identity_optional_size")]
     pub moe_ep_size: Option<u32>,
     /// Prefill context parallelism (SGLang `--attn-cp-size`, vLLM `-pcp`): extra
     /// attention ranks that split prefill tokens, so it widens the attention side
@@ -199,6 +390,9 @@ pub struct ForwardPassPerfModelConfig {
     /// price encoder calls; `None` prices the language model only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encoder_parallel: Option<EncoderParallel>,
+    /// Recorded limits of the calibrated deployment; identity only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_limits: Option<DeploymentLimits>,
 }
 }
 
@@ -289,7 +483,33 @@ impl ForwardPassPerfModelConfig {
             enable_shared_layer: None,
             strict_provenance: false,
             encoder_parallel: None,
+            deployment_limits: None,
         }
+    }
+
+    /// Identity facts this configuration records as `"unknown"`, in field
+    /// order. Only `fpm_regression` and `fpm_learned` accept them.
+    pub fn unknown_identity_facts(&self) -> Vec<&'static str> {
+        let text = |value: Option<&String>| value.is_some_and(|value| value == UNKNOWN_IDENTITY);
+        let size = |value: Option<u32>| value == Some(UNKNOWN_SIZE);
+        [
+            ("system", text(Some(&self.system))),
+            ("backend_version", text(self.backend_version.as_ref())),
+            ("tp", size(Some(self.tp))),
+            ("pp", size(Some(self.pp))),
+            ("attention_dp", size(Some(self.attention_dp))),
+            ("moe_tp_size", size(self.moe_tp_size)),
+            ("moe_ep_size", size(self.moe_ep_size)),
+            ("gemm_quant_mode", text(self.gemm_quant_mode.as_ref())),
+            ("moe_quant_mode", text(self.moe_quant_mode.as_ref())),
+            ("fmha_quant_mode", text(self.fmha_quant_mode.as_ref())),
+            ("kvcache_quant_mode", text(self.kvcache_quant_mode.as_ref())),
+            ("comm_quant_mode", text(self.comm_quant_mode.as_ref())),
+            ("attention_backend", text(self.attention_backend.as_ref())),
+        ]
+        .into_iter()
+        .filter_map(|(name, unknown)| unknown.then_some(name))
+        .collect()
     }
 
     pub fn candidate_modes(&self) -> Vec<EstimationMode> {
@@ -337,6 +557,17 @@ impl ForwardPassPerfModelConfig {
 
     fn normalize(mut self) -> Result<(Self, Option<bool>), AicError> {
         self.estimator_config.resolve_defaults();
+        // Resolve the inputs a snapshot owns against its directory before
+        // anything validates or reads them.
+        let manifest = match self.estimator_config.state_snapshot.as_mut() {
+            Some(snapshot) => {
+                snapshot.validate()?;
+                let manifest = snapshot.resolve_source()?;
+                super::model::relocate_snapshot_inputs(&mut self, &manifest)?;
+                Some(manifest)
+            }
+            None => None,
+        };
         if self.estimation_mode == EstimationMode::FpmLearned
             && self.estimator_config.correction.mode == super::CorrectionMode::Auto
         {
@@ -348,9 +579,6 @@ impl ForwardPassPerfModelConfig {
             if let Some(mixed) = &mut self.estimator_config.temporary_mixed_composition {
                 mixed.original_a.resolve_source()?;
             }
-        }
-        if let Some(snapshot) = self.estimator_config.state_snapshot.as_mut() {
-            snapshot.resolve_source()?;
         }
         if let Some(speculation) = &self.speculation {
             #[cfg(feature = "python")]
@@ -425,6 +653,9 @@ impl ForwardPassPerfModelConfig {
             ));
         }
         self.validate()?;
+        if let Some(manifest) = manifest {
+            super::model::verify_snapshot_identity(&self, &manifest)?;
+        }
         Ok((self, registered))
     }
 
@@ -546,6 +777,42 @@ impl ForwardPassPerfModelConfig {
                 "collect_coverage requires estimation_mode='fpm_interpolation', method='direct', and fallback_policy='deny'",
             ));
         }
+        let unknown = self.unknown_identity_facts();
+        if !unknown.is_empty() {
+            // Native estimators compile and look up performance data by
+            // these facts; regression and learned models only record them.
+            if !matches!(
+                self.estimation_mode,
+                EstimationMode::FpmRegression | EstimationMode::FpmLearned
+            ) {
+                return Err(invalid_config(format!(
+                    "{} may be \"unknown\" only with estimation_mode 'fpm_regression' or 'fpm_learned'",
+                    unknown.join(", ")
+                )));
+            }
+            if self.fallback_policy != ForwardPassFallbackPolicy::Deny {
+                return Err(invalid_config(format!(
+                    "unknown {} requires fallback_policy='deny': no native estimator can fall back to it",
+                    unknown.join(", ")
+                )));
+            }
+            if self.fpm_profile.is_some() {
+                return Err(invalid_config(format!(
+                    "an fpm_profile describes its own identity; {} cannot be \"unknown\"",
+                    unknown.join(", ")
+                )));
+            }
+        }
+        if let Some((name, _)) = self.deployment_limits.as_ref().and_then(|limits| {
+            limits
+                .entries()
+                .into_iter()
+                .find(|(_, limit)| *limit == DeploymentLimit::Known(0))
+        }) {
+            return Err(invalid_config(format!(
+                "deployment_limits.{name} must be a positive integer or \"unknown\""
+            )));
+        }
         if self.model.trim().is_empty() {
             return Err(invalid_config("model cannot be empty"));
         }
@@ -574,7 +841,10 @@ impl ForwardPassPerfModelConfig {
         }
         // Decode CP stripes the KV inside the TP group: it must divide tp and
         // never enters the width identity below.
-        if self.dcp.is_some_and(|dcp| dcp == 0 || self.tp % dcp != 0) {
+        if self
+            .dcp
+            .is_some_and(|dcp| dcp == 0 || (self.tp != UNKNOWN_SIZE && self.tp % dcp != 0))
+        {
             return Err(invalid_config("dcp must be positive and divide tp"));
         }
         self.estimator_config
@@ -601,8 +871,10 @@ impl ForwardPassPerfModelConfig {
             // replay-side `AicTimingConfig::validate_parallel_shape`). Profile
             // schema also admits dense TP with unused MoE dimensions equal to
             // one, and checks the exact requested deployment below.
+            // An unknown size leaves the recorded widths unchecked.
             let cp = u64::from(self.cp_size.unwrap_or(1));
             if self.fpm_profile.is_none()
+                && ![self.tp, self.attention_dp, moe_tp, moe_ep].contains(&UNKNOWN_SIZE)
                 && u64::from(self.tp) * u64::from(self.attention_dp) * cp
                     != u64::from(moe_tp) * u64::from(moe_ep)
             {
@@ -689,7 +961,10 @@ impl ForwardPassPerfModelConfig {
             if root.to_str().is_none() {
                 return Err(invalid_config("systems_paths entries must be valid UTF-8"));
             }
-            if !root.is_dir() {
+            // A snapshot configuration may still name the save location of
+            // packed data; construction points it into the snapshot first and
+            // fingerprints whatever root it reads.
+            if self.estimator_config.state_snapshot.is_none() && !root.is_dir() {
                 return Err(invalid_config(format!(
                     "systems_paths entry is not an existing directory: {}",
                     root.display()
@@ -1601,6 +1876,202 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    fn unknown_identity_json() -> serde_json::Value {
+        serde_json::json!({
+            "model": "Qwen/Qwen3-0.6B", "system": "unknown", "backend": "vllm",
+            "worker_type": "decode", "backend_version": "unknown",
+            "tp": "unknown", "pp": "unknown", "attention_dp": "unknown",
+            "moe_tp_size": "unknown", "moe_ep_size": "unknown",
+            "gemm_quant_mode": "unknown", "moe_quant_mode": "unknown",
+            "fmha_quant_mode": "unknown", "kvcache_quant_mode": "unknown",
+            "comm_quant_mode": "unknown", "attention_backend": "unknown",
+            "estimation_mode": "fpm_regression"
+        })
+    }
+
+    #[test]
+    fn unknown_identity_facts_round_trip_and_need_a_fitted_estimator() {
+        let cfg: ForwardPassPerfModelConfig =
+            serde_json::from_value(unknown_identity_json()).unwrap();
+        assert_eq!(
+            (cfg.tp, cfg.pp, cfg.attention_dp, cfg.moe_tp_size),
+            (UNKNOWN_SIZE, UNKNOWN_SIZE, UNKNOWN_SIZE, Some(UNKNOWN_SIZE))
+        );
+        assert_eq!(
+            cfg.unknown_identity_facts(),
+            [
+                "system",
+                "backend_version",
+                "tp",
+                "pp",
+                "attention_dp",
+                "moe_tp_size",
+                "moe_ep_size",
+                "gemm_quant_mode",
+                "moe_quant_mode",
+                "fmha_quant_mode",
+                "kvcache_quant_mode",
+                "comm_quant_mode",
+                "attention_backend"
+            ]
+        );
+        let resolved = cfg.clone().resolve().unwrap();
+        let saved = serde_json::to_value(&resolved).unwrap();
+        for (field, value) in unknown_identity_json().as_object().unwrap() {
+            assert_eq!(&saved[field], value, "{field}");
+        }
+        let reloaded: ForwardPassPerfModelConfig = serde_json::from_value(saved.clone()).unwrap();
+        assert_eq!(reloaded, resolved);
+        assert_eq!(
+            serde_yaml::from_str::<ForwardPassPerfModelConfig>(
+                &serde_yaml::to_string(&resolved).unwrap()
+            )
+            .unwrap(),
+            resolved
+        );
+        // Learned models record identity like regression does.
+        let mut learned = cfg.clone();
+        learned.estimation_mode = EstimationMode::FpmLearned;
+        learned.estimator_config.fpm_learned.artifact_path = Some("seed.json".into());
+        learned.estimator_config.fpm_learned.adaptation = super::super::LearnedAdaptation::Frozen;
+        learned.validate().unwrap();
+        // Estimators that read performance data by these facts reject them.
+        for mode in [
+            EstimationMode::Auto,
+            EstimationMode::OpLevel,
+            EstimationMode::FpmInterpolation,
+        ] {
+            let mut native = cfg.clone();
+            native.estimation_mode = mode;
+            let error = native.validate().unwrap_err().to_string();
+            assert!(
+                error.contains(
+                    "may be \"unknown\" only with estimation_mode 'fpm_regression' or 'fpm_learned'"
+                ),
+                "{error}"
+            );
+            let error = crate::ForwardPassPerfModel::best_available(native).unwrap_err();
+            assert!(error.to_string().contains("may be \"unknown\""), "{error}");
+        }
+        for one in ["system", "tp", "moe_ep_size", "attention_backend"] {
+            let mut value = serde_json::json!({"estimation_mode": "op_level"});
+            value[one] = "unknown".into();
+            if one == "moe_ep_size" {
+                value["moe_tp_size"] = 1.into();
+            }
+            let error = config(value).validate().unwrap_err().to_string();
+            assert!(error.contains(&format!("{one} may be")), "{error}");
+        }
+        let mut fallback = cfg.clone();
+        fallback.fallback_policy = ForwardPassFallbackPolicy::Allow;
+        assert!(
+            fallback
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("requires fallback_policy='deny'")
+        );
+        // Unknown widths are not compared; a known DCP need not divide them.
+        let mut partial = cfg;
+        (partial.moe_tp_size, partial.moe_ep_size, partial.dcp) = (Some(3), Some(5), Some(2));
+        partial.validate().unwrap();
+    }
+
+    #[test]
+    fn unknown_sizes_have_one_spelling() {
+        for (field, value) in [
+            ("tp", serde_json::json!(4294967295_u64)),
+            ("tp", serde_json::json!("Unknown")),
+            ("tp", serde_json::json!(-1)),
+            ("tp", serde_json::json!(2.0)),
+            ("moe_tp_size", serde_json::json!(4294967295_u64)),
+            ("dcp", serde_json::json!("unknown")),
+            ("nextn", serde_json::json!("unknown")),
+        ] {
+            let mut value_json = unknown_identity_json();
+            value_json[field] = value.clone();
+            let error =
+                serde_json::from_value::<ForwardPassPerfModelConfig>(value_json).unwrap_err();
+            assert!(
+                error.to_string().contains(field),
+                "{field}={value}: {error}"
+            );
+        }
+        // Aliases accept the literal too, and known sizes keep their numbers.
+        let cfg = config(serde_json::json!({
+            "estimation_mode": "fpm_regression", "tp_size": "unknown", "pp_size": 2,
+            "moe_tp_size": 4294967294_u64, "moe_ep_size": 1
+        }));
+        assert_eq!(
+            (cfg.tp, cfg.pp, cfg.moe_tp_size),
+            (UNKNOWN_SIZE, 2, Some(UNKNOWN_SIZE - 1))
+        );
+        let saved = serde_json::to_value(&cfg).unwrap();
+        assert_eq!((&saved["tp"], &saved["pp"]), (&"unknown".into(), &2.into()));
+    }
+
+    #[test]
+    fn deployment_limits_are_additive_identity() {
+        let plain = config(serde_json::json!({}));
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("deployment_limits"), "{json}");
+        let cfg = config(serde_json::json!({
+            "deployment_limits": {"num_gpus": 8, "max_kv_tokens": 524288, "max_num_seqs": "unknown"}
+        }));
+        let limits = cfg.deployment_limits.unwrap();
+        assert_eq!(limits.num_gpus.known(), Some(8));
+        assert_eq!(limits.max_kv_tokens, DeploymentLimit::Known(524288));
+        // Omitted limits are unknown and serialize so.
+        assert_eq!(
+            (
+                limits.max_num_seqs,
+                limits.max_num_batched_tokens,
+                limits.context_length
+            ),
+            (
+                DeploymentLimit::Unknown,
+                DeploymentLimit::Unknown,
+                DeploymentLimit::Unknown
+            )
+        );
+        let saved = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(
+            saved["deployment_limits"],
+            serde_json::json!({
+                "num_gpus": 8, "max_num_batched_tokens": "unknown", "max_num_seqs": "unknown",
+                "max_kv_tokens": 524288, "context_length": "unknown"
+            })
+        );
+        let reloaded: ForwardPassPerfModelConfig = serde_json::from_value(saved).unwrap();
+        assert_eq!(reloaded, cfg);
+        // Identity only: every estimation mode accepts recorded limits.
+        cfg.validate().unwrap();
+        cfg.clone().resolve().unwrap();
+        for invalid in [
+            serde_json::json!({"num_gpus": 0}),
+            serde_json::json!({"num_gpus": -1}),
+            serde_json::json!({"num_gpus": 1.5}),
+            serde_json::json!({"num_gpus": "none"}),
+            serde_json::json!({"num_gpus": null}),
+            serde_json::json!({"gpus": 8}),
+        ] {
+            let value = serde_json::json!({
+                "model": "m", "system": "s", "backend": "vllm", "worker_type": "decode",
+                "deployment_limits": invalid
+            });
+            let error = serde_json::from_value::<ForwardPassPerfModelConfig>(value).unwrap_err();
+            assert!(error.to_string().contains("deployment_limits"), "{error}");
+        }
+        let mut zero = cfg;
+        zero.deployment_limits.as_mut().unwrap().context_length = DeploymentLimit::Known(0);
+        assert!(
+            zero.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("deployment_limits.context_length must be a positive integer")
+        );
     }
 
     #[test]
