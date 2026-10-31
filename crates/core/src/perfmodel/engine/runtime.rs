@@ -34,6 +34,7 @@ use crate::session::{
     ContextOpFilter, OpListPlan, QueryMemo, get_mix_step_ops, query_context_op,
     query_generation_op, run_context_ops, run_context_ops_planned, run_context_ops_with,
     run_generation_ops_step, run_generation_ops_step_beamed_with, run_generation_ops_step_planned,
+    run_telemetry_decode_ops,
 };
 use crate::{ForwardPassMetrics, ForwardPassWorkerType, validate_forward_pass_metrics};
 
@@ -545,6 +546,8 @@ impl Engine {
             .as_ref()
             .and_then(|s| s.nextn)
             .unwrap_or(0);
+        Self::validate_mamba_ops(&spec.context_ops, None, true)?;
+        Self::validate_mamba_ops(&spec.generation_ops, Some(nextn.saturating_add(1)), true)?;
         super::readiness::validate_glm53_kv(
             &db,
             spec.context_ops.iter().chain(&spec.generation_ops),
@@ -599,6 +602,84 @@ impl Engine {
             vision: spec.vision,
             tp_size: spec.engine.parallel.tp_size,
         })
+    }
+
+    /// Mixed steps price only top-level qualified Mamba ops per phase, so a
+    /// qualified op inside a composite is rejected. Generation Mamba queries
+    /// carry `requests * (nextn + 1)` flattened tokens and the op divides by
+    /// its own width (`decode_width`); the two must agree. Whole-model FPM
+    /// `sol_ops` use a separate path and are not walked.
+    fn validate_mamba_ops(
+        ops: &[Op],
+        decode_width: Option<u32>,
+        top_level: bool,
+    ) -> Result<(), AicError> {
+        let invalid = |name: &str, why: String| {
+            Err(AicError::InvalidEngineConfig(format!(
+                "Mamba op {name}: {why}"
+            )))
+        };
+        for op in ops {
+            match op {
+                Op::Mamba2(m) => {
+                    let qualified = op.is_qualified_mamba();
+                    if !matches!(
+                        m.state_dtype.as_str(),
+                        "unrecorded" | "float16" | "bfloat16" | "float32"
+                    ) {
+                        return invalid(
+                            &m.name,
+                            format!("unsupported state_dtype {:?}", m.state_dtype),
+                        );
+                    }
+                    if m.token_width == 0 || (!qualified && m.token_width != 1) {
+                        return invalid(
+                            &m.name,
+                            format!(
+                                "token_width {} must be positive, and 1 for an unrecorded state_dtype",
+                                m.token_width
+                            ),
+                        );
+                    }
+                    if qualified && !top_level {
+                        return invalid(
+                            &m.name,
+                            "a qualified op cannot be nested in a composite".into(),
+                        );
+                    }
+                    if let Some(width) = decode_width
+                        && qualified
+                        && m.token_width != width
+                    {
+                        return invalid(
+                            &m.name,
+                            format!(
+                                "qualified op has token_width {} but speculative nextn+1 is {width}",
+                                m.token_width
+                            ),
+                        );
+                    }
+                }
+                Op::TokenScale(o) => {
+                    Self::validate_mamba_ops(std::slice::from_ref(&o.op), decode_width, false)?
+                }
+                Op::Dsv41Stage(o) => Self::validate_mamba_ops(&o.children, decode_width, false)?,
+                Op::Overlap(o) => {
+                    Self::validate_mamba_ops(&o.group_a, decode_width, false)?;
+                    Self::validate_mamba_ops(&o.group_b, decode_width, false)?;
+                }
+                Op::Fallback(o) => {
+                    Self::validate_mamba_ops(
+                        std::slice::from_ref(&o.primary),
+                        decode_width,
+                        false,
+                    )?;
+                    Self::validate_mamba_ops(&o.fallback, decode_width, false)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     fn reject_sd_round_ops(ops: &[Op]) -> Result<(), AicError> {
@@ -1688,6 +1769,12 @@ impl Engine {
         // a guard — callers always pass isl >= 1. Clamp to avoid a Rust
         // div-by-zero panic on degenerate input Python would crash on.
         let isl = isl.max(1);
+        if ctx_tokens > 0 && prefix >= isl {
+            return Err(AicError::InvalidEngineConfig(format!(
+                "isl must be greater than 0 after removing prefix, but got {}",
+                isl as i64 - prefix as i64
+            )));
+        }
 
         // ---- Pass 1: combined non-attention work ----
         // Speculative progress model: every decode request verifies one
@@ -1706,6 +1793,34 @@ impl Engine {
         }
         let mut shared_non_attention = 0.0;
         for op in &self.context_ops {
+            if op.is_qualified_mamba() {
+                // Each prefill chunk reads and writes its recurrent state once.
+                // Decode Mamba is priced in pass 3 at its own request shape.
+                // `ctx_tokens` packs `floor(ctx/isl)` complete requests (each
+                // `isl - prefix` new tokens) plus one trailing partial extend.
+                // shortcut: sum uniform timing rows until variable-length batches are
+                // calibrated; this can overcount launch overhead for ragged batches.
+                for (batch, tokens) in [
+                    (ctx_tokens / isl, isl.saturating_sub(prefix)),
+                    (1, ctx_tokens % isl),
+                ] {
+                    if batch == 0 || tokens == 0 {
+                        continue;
+                    }
+                    let result = query_context_op(
+                        op,
+                        &self.db,
+                        batch,
+                        tokens,
+                        prefix,
+                        seq_imbalance_correction_scale,
+                        None,
+                    )?;
+                    shared_non_attention += result.latency_ms;
+                    on_op(MixedPass::SharedNonAttention, op, result);
+                }
+                continue;
+            }
             // Only target operations share a forward across prefill and
             // verification. The draft has its own phase-specific graph.
             if op.is_context_attention() || op.name().starts_with("draft_") {
@@ -1730,17 +1845,13 @@ impl Engine {
         // Python's `np.ceil(isl/0)` is +inf and the division yields 0 — skip.
         let mut context_attention = 0.0_f64;
         if ctx_tokens > 0 {
-            if prefix >= isl {
-                return Err(AicError::InvalidEngineConfig(format!(
-                    "isl must be greater than 0 after removing prefix, but got {}",
-                    isl as i64 - prefix as i64
-                )));
-            }
             let batch2 = ctx_tokens.div_ceil(isl);
             let scale2 = isl.div_ceil(ctx_tokens) as f64;
             let mut attn = 0.0;
             for op in &self.context_ops {
-                if !op.is_context_attention() && !op.name().starts_with("draft_") {
+                if op.is_qualified_mamba()
+                    || (!op.is_context_attention() && !op.name().starts_with("draft_"))
+                {
                     continue;
                 }
                 // Draft prefill uses the same whole-prefill amortization
@@ -1766,7 +1877,7 @@ impl Engine {
             context_attention = attn / scale2;
         }
 
-        // ---- Pass 3: decode attention ----
+        // ---- Pass 3: decode attention and qualified Mamba ----
         let mut decode_attention = 0.0_f64;
         if gen_tokens > 0 {
             let bs = gen_tokens.saturating_mul(self.nextn.saturating_add(1));
@@ -1774,7 +1885,10 @@ impl Engine {
             // isl_pass3 = isl + osl//2 and a single step (osl=2, i=0).
             let s = isl + osl / 2 + 1;
             for op in &self.generation_ops {
-                if !op.is_generation_attention() && !op.name().starts_with("draft_") {
+                if !op.is_generation_attention()
+                    && !op.name().starts_with("draft_")
+                    && !op.is_qualified_mamba()
+                {
                     continue;
                 }
                 // The draft's TokenScale maps this verification-width
@@ -3085,6 +3199,7 @@ impl Engine {
                 sched.sum_prefill_kv_tokens,
                 kv_per_req,
                 n_decode,
+                n_prefill,
             );
         }
 
@@ -3108,14 +3223,8 @@ impl Engine {
         if has_decode {
             let n_decode = sched.num_decode_requests.max(1);
             let kv_per_req = sched.sum_decode_kv_tokens / n_decode;
-            total += run_generation_ops_step(
-                &self.generation_ops,
-                &self.db,
-                n_decode,
-                kv_per_req,
-                1.0,
-                false,
-            )?;
+            total +=
+                run_telemetry_decode_ops(&self.generation_ops, &self.db, n_decode, kv_per_req)?;
         }
 
         Ok(total)
@@ -3436,6 +3545,157 @@ pub(crate) mod tests {
             generation_ops(),
         );
         Engine::build(spec, Arc::new(db)).unwrap()
+    }
+
+    /// FP16 Mamba2 op with a 1 MiB state; decode verifies four tokens (MTP3).
+    fn qualified_mamba(prefill: bool, token_width: u32) -> Op {
+        Op::Mamba2(crate::operators::Mamba2Op {
+            name: if prefill {
+                "context_ssm"
+            } else {
+                "generation_ssm"
+            }
+            .into(),
+            scale_factor: 1.0,
+            kernel_source: if prefill {
+                "vllm_mamba_chunk_scan_combined_varlen"
+            } else {
+                "vllm_flashinfer_selective_state_update"
+            }
+            .into(),
+            phase: if prefill { "context" } else { "generation" }.into(),
+            d_model: 4096,
+            d_state: 128,
+            d_conv: 4,
+            nheads: 64,
+            head_dim: 64,
+            n_groups: 4,
+            chunk_size: 128,
+            state_dtype: "float16".into(),
+            token_width,
+        })
+    }
+
+    #[test]
+    fn qualified_mamba_mixed_steps_preserve_prefill_and_decode_shapes() {
+        let mut engine = build_engine(Some(3));
+        engine.context_ops = vec![qualified_mamba(true, 1)];
+        engine.generation_ops = vec![qualified_mamba(false, 4)];
+        // Per token 18,560 activation bytes. Each prefill chunk reads and writes
+        // its 1 MiB state; two width-four decodes add 10,634,240 bytes.
+        let ms = |bytes: f64| bytes / engine.db.system_spec.gpu.mem_bw * 1000.0;
+        let close = |got: f64, bytes: f64| (got - ms(bytes)).abs() < 1e-12;
+        let decode_bytes = 10_634_240.0;
+        let packed = |prefill_tokens: u32, prefills: u32, decodes: u32| {
+            engine
+                .forward_pass_time_ms(&[ForwardPassMetrics {
+                    scheduled_requests: crate::ScheduledRequestMetrics {
+                        num_prefill_requests: prefills,
+                        sum_prefill_tokens: prefill_tokens,
+                        num_decode_requests: decodes,
+                        sum_decode_kv_tokens: decodes * 8,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }])
+                .unwrap()
+        };
+        // (ctx, isl, prefix, prefill requests, new tokens): a partially cached
+        // chunk, a complete cached request plus a partial extend, a budget that
+        // splits two requests, and no prefill.
+        for (ctx, isl, prefix, requests, new_tokens) in [
+            (512, 4096, 1024, 1, 512),
+            (6000, 4096, 3000, 2, 3000),
+            (8128, 4096, 1024, 2, 7104),
+            (0, 4096, 1024, 0, 0),
+        ] {
+            let bytes =
+                f64::from(new_tokens) * 18_560.0 + f64::from(requests) * 2_097_152.0 + decode_bytes;
+            let mixed = engine
+                .mixed_step_latency(ctx, 2, isl, 1, prefix, 1.0, 1.0)
+                .unwrap();
+            assert!(close(mixed, bytes), "chunk={ctx}, prefix={prefix}");
+            let (shared, context, decode) = engine
+                .mixed_step_breakdown_per_op(ctx, 2, isl, 1, prefix, 1.0, 1.0)
+                .unwrap();
+            let sum: f64 = shared
+                .iter()
+                .chain(&context)
+                .chain(&decode)
+                .map(|row| row.1)
+                .sum();
+            assert!((sum - mixed).abs() < 1e-12);
+            assert!(
+                close(packed(new_tokens, requests, 2), bytes),
+                "telemetry chunk={ctx}"
+            );
+        }
+        // Telemetry carries request counts: two prefills of 17 tokens are two
+        // state pairs (9 + 8 tokens), never a third request from the average.
+        assert!(close(
+            packed(17, 2, 1),
+            17.0 * 18_560.0 + 2.0 * 2_097_152.0 + 5_317_120.0
+        ));
+        assert!(close(packed(16, 1, 0), 16.0 * 18_560.0 + 2_097_152.0));
+        assert!(close(
+            engine.decode_step_latency(2, 16, 1, 1.0).unwrap(),
+            decode_bytes
+        ));
+        // A draft-named Mamba op is priced once.
+        if let Op::Mamba2(op) = &mut engine.context_ops[0] {
+            op.name = "draft_context_ssm".into();
+        }
+        let draft_named = engine
+            .mixed_step_latency(16, 2, 16, 1, 0, 1.0, 1.0)
+            .unwrap();
+        assert!(close(
+            draft_named,
+            16.0 * 18_560.0 + 2_097_152.0 + decode_bytes
+        ));
+        assert!(
+            engine
+                .mixed_step_latency(4096, 2, 4096, 4097, 4097, 1.0, 1.0)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn mamba_ops_are_validated_at_build() {
+        let db = build_engine(None).db;
+        let build = |nextn: Option<u32>, op: Op| {
+            let mut ops = generation_ops();
+            ops.push(op);
+            Engine::build(
+                EngineSpec::new(fixture_engine_config(nextn), context_ops(), ops),
+                db.clone(),
+            )
+        };
+        let with = |state_dtype: &str, token_width: u32| match qualified_mamba(false, token_width) {
+            Op::Mamba2(mut m) => {
+                m.state_dtype = state_dtype.into();
+                Op::Mamba2(m)
+            }
+            _ => unreachable!(),
+        };
+        // Width one matches a non-speculative engine; MTP3 needs width four.
+        build(None, qualified_mamba(false, 1)).unwrap();
+        build(Some(3), qualified_mamba(false, 4)).unwrap();
+        build(None, with("unrecorded", 1)).unwrap();
+        let nested = Op::Overlap(crate::operators::op::OverlapOp::new(
+            "pair",
+            vec![qualified_mamba(false, 1)],
+            vec![],
+        ));
+        for (nextn, op, message) in [
+            (Some(3), qualified_mamba(false, 1), "token_width 1"),
+            (None, with("fp16", 1), "unsupported state_dtype"),
+            (None, with("float16", 0), "must be positive"),
+            (None, with("unrecorded", 4), "unrecorded"),
+            (None, nested, "nested"),
+        ] {
+            let err = build(nextn, op).unwrap_err().to_string();
+            assert!(err.contains(message), "{err}");
+        }
     }
 
     fn runtime(batch_size: u32, isl: u32, osl: u32) -> RuntimeConfig {
@@ -6519,6 +6779,8 @@ pub(crate) mod tests {
             head_dim: 64,
             n_groups: 8,
             chunk_size: 256,
+            state_dtype: "unrecorded".into(),
+            token_width: 1,
         })];
         let ops_json = serde_json::to_string(&ops).unwrap();
         let err = engine
@@ -7097,6 +7359,7 @@ pub(crate) mod tests {
             2 * prefix,
             kv,
             generation,
+            2,
         )
         .unwrap();
         let want = sol(&ctx_attn, 2, new_tokens, prefix) + sol(&gen_attn, generation, kv, 0);

@@ -248,7 +248,7 @@ def test_engine_spec_schema_version_is_twenty_nine():
     (v29) on top of the schema-28 layout."""
     from aisimulate.sdk import engine
 
-    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 29
+    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 30
 
 
 def test_lanes_outside_the_known_vocabulary_stay_reachable():
