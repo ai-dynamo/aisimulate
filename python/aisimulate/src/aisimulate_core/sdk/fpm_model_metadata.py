@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Checkpoint precision reconciliation shared by FPM onboarding and collection.
+"""Checkpoint decoder selection and precision reconciliation shared by FPM onboarding and collection.
 
 These functions do not change the general SDK's model-loading precedence.
 """
@@ -9,6 +9,9 @@ These functions do not change the general SDK's model-loading precedence.
 from __future__ import annotations
 
 from typing import Any
+
+# The helper lives in a standard-library module so that FPM config intake can use it without importing the SDK.
+from aisimulate_core.decoder_config import decoder_config_key as decoder_config_key
 
 from .utils import (
     _attach_hf_quant_config,

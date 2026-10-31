@@ -1585,6 +1585,96 @@ def test_model_architecture_names_an_unnamed_config_as_intake_does(tmp_path):
     assert capability.template_id == "aic_family:deepseekv32:moe_dsa"
 
 
+_NEMOTRON_SUPER = "nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-FP8"
+_NEMOTRON_REASONS = "recurrent-state field mamba_num_heads, recurrent-state field ssm_state_size"
+
+
+def _nemotron_super(tmp_path, *, nested, decoder_names_itself=True, sidecar=False):
+    """The packaged Nemotron 3 Super config, flat or under llm_config in the #562 Nemotron 3.5 Super VL shape.
+
+    decoder_names_itself=False deletes the decoder's architectures entry. None writes it as null, as a wrapper's
+    PretrainedConfig.to_dict() writes a field that is not set.
+    """
+    config = _packaged_config(_NEMOTRON_SUPER)
+    if decoder_names_itself is None:
+        config["architectures"] = None
+    elif not decoder_names_itself:
+        del config["architectures"]
+    if nested:
+        config = {"architectures": ["NemotronH_Omni_Reasoning_V3"], "llm_config": config}
+    directory = tmp_path / ("nested" if nested else "flat")
+    directory.mkdir()
+    (directory / "config.json").write_text(json.dumps(config))
+    if sidecar:
+        quant = _MODEL_CONFIGS / f"{_NEMOTRON_SUPER}_hf_quant_config.json"
+        (directory / "hf_quant_config.json").write_text(quant.read_text())
+    return directory
+
+
+@pytest.mark.parametrize(
+    "nested,decoder_names_itself,architecture",
+    [
+        (False, True, "NemotronHForCausalLM"),
+        (True, True, "NemotronHForCausalLM"),
+        (True, False, "NemotronH_Omni_Reasoning_V3"),
+    ],
+    ids=["flat", "llm-config", "llm-config-without-decoder-architecture"],
+)
+def test_nemotron_super_vl_llm_config_gets_no_attention_template(
+    tmp_path, monkeypatch, nested, decoder_names_itself, architecture
+):
+    directory = _nemotron_super(tmp_path, nested=nested, decoder_names_itself=decoder_names_itself)
+    _forbid_templates_and_timing_data(monkeypatch)
+    with pytest.raises(ValueError) as error:
+        _layout_capability(directory, native=False)
+    assert str(error.value) == _LAYOUT_REFUSAL.format(architecture=architecture, reasons=_NEMOTRON_REASONS)
+    capability = _layout_capability(directory, native=True)
+    assert capability.architecture == architecture
+    _assert_native_runtime(capability, _NEMOTRON_REASONS, is_moe=True)
+
+
+def test_nemotron_super_vl_llm_config_keeps_the_checkpoint_precision(tmp_path):
+    flat, nested = (
+        _layout_capability(_nemotron_super(tmp_path, nested=value, sidecar=True), native=True)
+        for value in (False, True)
+    )
+    assert nested.template_id == flat.template_id == GENERIC_RUNTIME_TEMPLATE_ID
+    assert nested.dtype.to_dict() == flat.dtype.to_dict()
+    assert nested.dtype.native_kv_cache_dtype == "fp8"
+
+
+def test_llm_config_decoder_under_an_unregistered_wrapper_is_checked_against_its_sidecar(tmp_path):
+    directory = _nemotron_super(tmp_path, nested=True, sidecar=True)
+    document = json.loads((directory / "config.json").read_text())
+    # This synthetic wrapper is not in MULTIMODAL_TEXT_CONFIG_KEY, so only decoder_config_key finds its decoder.
+    document["architectures"] = ["ExampleMultimodalForConditionalGeneration"]
+    document["llm_config"]["quantization_config"] = {"quant_method": "modelopt", "quant_algo": "NVFP4"}
+    (directory / "config.json").write_text(json.dumps(document))
+    with pytest.raises(ValueError, match="conflicting.*hf_quant_config"):
+        load_model_config(str(directory))
+
+
+@pytest.mark.parametrize("decoder_names_itself", [True, False, pytest.param(None, id="null")])
+def test_llm_config_markers_and_architecture_match_config_intake(tmp_path, decoder_names_itself):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+    from aisimulate_core.sdk.fpm_profile import _validate_checkpoint_architecture
+
+    directory = _nemotron_super(tmp_path, nested=True, decoder_names_itself=decoder_names_itself)
+    intake = load_intake_config(directory / "config.json")
+    capability = _layout_capability(directory, native=True)
+    assert ", ".join(intake.runtime_layout) == _NEMOTRON_REASONS
+    assert capability.support_reason == (
+        f"config.json cannot describe this cache layout ({_NEMOTRON_REASONS}). The native runtime measures every cell."
+    )
+    # Onboarding writes the intake architecture into the profile, and the planner requires the collector's to match.
+    assert capability.architecture == intake.suggestions["architecture"]
+    # The prediction-time profile check reads the same checkpoint and must accept that profile architecture.
+    profile = SimpleNamespace(
+        model=str(directory), model_revision=None, architecture=intake.suggestions["architecture"]
+    )
+    _validate_checkpoint_architecture(profile)
+
+
 def _detected_layout_plan(tmp_path, monkeypatch, generator_overrides):
     config = _unknown_fp8_moe_config()
     config["layer_types"] = ["linear_attention", "full_attention"] * 2

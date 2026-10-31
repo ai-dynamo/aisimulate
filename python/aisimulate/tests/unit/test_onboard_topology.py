@@ -543,7 +543,8 @@ from aisimulate.supervision import main
 code = main(sys.argv[1:])
 assert not any(name == prefix or name.startswith(prefix + '.') for name in sys.modules for prefix in blocked)
 core = {name for name in sys.modules if name == 'aisimulate_core' or name.startswith('aisimulate_core.')}
-assert core <= {'aisimulate_core', 'aisimulate_core.fpm_profile', 'aisimulate_core.quantization'}, core
+assert core <= {'aisimulate_core', 'aisimulate_core.decoder_config', 'aisimulate_core.fpm_profile',
+                'aisimulate_core.quantization'}, core
 raise SystemExit(code)
 """
     result = subprocess.run([sys.executable, "-c", script, *command], text=True, capture_output=True, timeout=30)

@@ -604,6 +604,10 @@ def _validate_architecture(raw: Mapping[str, Any], architecture: str | None, exp
 
 def load_model_config(path: str | Path) -> ModelConfig:
     """Load local config/ModelOpt metadata with separate byte-level provenance."""
+    # Imported here, not at module level: tests/unit/test_fpm_config_imports.py and the repository-root
+    # tests/test_resource_supervision.py fail when aisimulate_core.decoder_config loads before a config is read.
+    from aisimulate_core.decoder_config import decoder_config_key
+
     path = Path(path).expanduser().absolute()
     payload = path.read_bytes()
     # JSON Infinity and NaN parse as floats: fields intake reads reject them, and other fields are never read.
@@ -619,17 +623,20 @@ def load_model_config(path: str | Path) -> ModelConfig:
             "for all components actually loaded by the worker; full multimodal latency is not modeled."
         )
     }
-    if "text_config" in document:
-        text_config = document["text_config"]
-        if not isinstance(text_config, dict) or not text_config:
+    decoder_key = decoder_config_key(document)
+    if decoder_key is not None:
+        decoder = document[decoder_key]
+        if not isinstance(decoder, dict) or not decoder:
             raise ValueError(
-                "text_config must be a nonempty object describing one text decoder; "
+                f"{decoder_key} must be a nonempty object describing one text decoder; "
                 "supply its decoder config or a complete --fpm-profile"
             )
-        if "text_config" in text_config:
-            raise ValueError("ambiguous nested text_config; supply one text decoder config or a complete --fpm-profile")
-        raw = dict(text_config)
-        notes["decoder_config"] = "config text_config; outer model and encoder geometry are excluded"
+        if decoder_key in decoder:
+            raise ValueError(
+                f"ambiguous nested {decoder_key}; supply one text decoder config or a complete --fpm-profile"
+            )
+        raw = dict(decoder)
+        notes["decoder_config"] = f"config {decoder_key}; outer model and encoder geometry are excluded"
         inherited = []
         for keys, inferred_keys in (
             (("dtype", "torch_dtype"), ()),
@@ -647,7 +654,7 @@ def load_model_config(path: str | Path) -> ModelConfig:
                     inherited.append(key)
         if inherited:
             notes["shared_metadata"] = (
-                f"config-level {', '.join(inherited)} inherited because text_config does not declare that metadata"
+                f"config-level {', '.join(inherited)} inherited because {decoder_key} does not declare that metadata"
             )
     for key in _UNTYPED_READ_FIELDS:
         _require_finite(raw.get(key), key)
@@ -682,9 +689,10 @@ def load_model_config(path: str | Path) -> ModelConfig:
                 f"config wrapper architecture={architecture} retained for checkpoint/collector identity"
             )
         notes["decoder_architecture"] = (
-            f"text_config decoder architecture={decoder_architecture}; used for decoder validation/resource estimates"
+            f"{decoder_key} decoder architecture={decoder_architecture}; used for decoder validation/resource estimates"
             if decoder_architecture
-            else "text_config does not identify a decoder architecture; decoder resource bounds require explicit input"
+            else f"{decoder_key} does not identify a decoder architecture; "
+            "decoder resource bounds require explicit input"
         )
     inkling = architecture == _INKLING_ARCHITECTURE
     # A runtime-resolved layout may use zero or absent ordinary attention dimensions.

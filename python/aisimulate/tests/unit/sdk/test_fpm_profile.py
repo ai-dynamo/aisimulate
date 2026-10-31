@@ -214,6 +214,30 @@ def test_profile_architecture_matches_collector_text_config_view(profile_dict, c
     assert _normalize(_request(profile_dict))["estimator_config"]["fpm_interpolation"]["method"] == "direct"
 
 
+@pytest.mark.parametrize("wrapper", ["NemotronH_Omni_Reasoning_V3", "InternVLChatModel"])
+def test_profile_architecture_matches_collector_llm_config_view(profile_dict, checkpoint_configs, wrapper):
+    checkpoint_configs[profile_dict["model"]] = {
+        "architectures": [wrapper],
+        "llm_config": {"architectures": [profile_dict["architecture"]]},
+    }
+    assert _normalize(_request(profile_dict))["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+
+
+@pytest.mark.parametrize("key", ["text_config", "llm_config"])
+@pytest.mark.parametrize("declared", ["absent", "null"])
+def test_profile_architecture_keeps_the_wrapper_for_a_decoder_without_architectures(
+    profile_dict, checkpoint_configs, key, declared
+):
+    # Intake and the collector read a null decoder architecture as absent, so onboarding writes the wrapper name.
+    wrapper = "UnknownForConditionalGeneration"
+    decoder = {"model_type": "example_text"}
+    if declared == "null":
+        decoder["architectures"] = None
+    profile_dict["architecture"] = wrapper
+    checkpoint_configs[profile_dict["model"]] = {"architectures": [wrapper], key: decoder}
+    assert _normalize(_request(profile_dict))["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+
+
 @pytest.mark.parametrize("metadata", [None, "not JSON"])
 def test_local_checkpoint_missing_or_invalid_config_fails_without_download(
     profile_dict, monkeypatch, tmp_path, metadata
