@@ -1692,9 +1692,10 @@ def profile_from_observations(
     Runtime grouping need not match config-derived planning groups. No estimated
     geometry or non-KV byte declaration is substituted for the observation. Cache
     geometry, scheduler and precision overrides must agree with it, and the
-    measurement is authoritative: cache groups compare without names or order,
-    and a cache_layout: linear or kv_bytes_per_token claim compares with the
-    measured bytes per token.
+    measurement is authoritative: cache groups compare without names or order
+    and a state group compares its blocks_per_request, and a cache_layout:
+    linear or kv_bytes_per_token claim compares with the measured bytes per
+    token.
     """
     supplied = validate_overrides(overrides)
     metadata = {key: config.suggestions[key] for key in _MODEL_FIELDS if key in config.suggestions}

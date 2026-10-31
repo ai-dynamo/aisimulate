@@ -1760,8 +1760,8 @@ def _glm_precision(tmp_path):
 def _stops_with_guidance(command, capsys, *, import_limit=True):
     """Run init to its nonzero exit and return its (stdout, stderr).
 
-    ``import_limit`` says whether a pending reason comes from cache_layout_markers, which is when the stop warns
-    that observation import cannot take cache groups other than full or sliding attention yet.
+    ``import_limit`` says whether a pending reason comes from cache_layout_markers, which is when the stop says
+    which vLLM version observation import maps state cache groups for.
     """
     with pytest.raises(SystemExit) as result:
         cli.main(command)
@@ -1770,8 +1770,9 @@ def _stops_with_guidance(command, capsys, *, import_limit=True):
     assert "Cache geometry: pending runtime probe" in captured.err
     assert "model config did not produce a complete FPM profile" not in captured.err
     limit = (
-        "Importing cache groups other than full or sliding attention (for example recurrent state) is not supported "
-        "yet. Import reports such probes as incomplete."
+        "Import maps vLLM recurrent-state and one-block-per-request cache specs to state cache groups on vLLM 0.31.0. "
+        "Other runtime versions need a campaign-local instrumentation bundle (guide: "
+        "docs/perf-model/fpm-self-service/implementation.md#choose-or-author-the-instrumentation-bundle)."
     )
     assert (limit in captured.err) is import_limit
     return captured.out, captured.err

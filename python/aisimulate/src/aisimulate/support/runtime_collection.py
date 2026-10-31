@@ -295,12 +295,17 @@ def verify_collection_runtime_plans(request: SupportRequest, bindings: list[dict
     }
 
 
-def _worker(result):
-    return next(item["evidence"] for item in result["provenance"]["artifacts"] if item["evidence"]["kind"] == "worker")
+def _worker(result, phase=None):
+    """The first worker record of the result, or of one of its phases."""
+    return next(
+        item["evidence"]
+        for item in result["provenance"]["artifacts"]
+        if item["evidence"]["kind"] == "worker" and (phase is None or item["evidence"]["phase"] == phase)
+    )
 
 
-def _geometry(result):
-    groups = _worker(result)["cache"]["groups"]
+def _geometry(result, phase=None):
+    groups = _worker(result, phase)["cache"]["groups"]
     return [{key: value for key, value in group.items() if key != "pool_id"} for group in groups]
 
 
@@ -328,7 +333,7 @@ def verify_collection_runtime_bindings(request: SupportRequest, bindings: list[d
     from collector.fpm_forward.runtime_instrumentation import contained_file, read_json
     from collector.fpm_forward.runtime_observations import validate_observation_phase
 
-    from .runtime import _resource_values, runtime_probe_manifest
+    from .runtime import _resource_values, prefix_caching_evidence, runtime_probe_manifest
 
     source = _source(request)
     verified = _plans(request, bindings, source)
@@ -389,16 +394,29 @@ def verify_collection_runtime_bindings(request: SupportRequest, bindings: list[d
                 raise ValueError(
                     "effective runtime/graph settings differ from accepted probe: " + json.dumps(settings_diff)
                 )
-            if _geometry(result) != _geometry(source):
+            # The accepted probe covers every phase of the role, and its first worker record can belong to another
+            # phase. The block size and Mamba cache mode of a state group follow the phase's prefix-caching mode,
+            # so the bound phase compares with the same phase of the probe.
+            if _geometry(result, phase) != _geometry(source, phase):
                 raise ValueError("runtime cache group geometry differs from the accepted probe")
             for field in ("gpu", "device_name", "sm"):
                 if _worker(result)["hardware"][field] != _worker(source)["hardware"][field]:
                     raise ValueError("runtime hardware across phases differs from the accepted probe")
+            # The accepted record holds the prefix-caching settings and state block sizes of the role's first
+            # phase, and this record holds those of the bound phase. Both leave the whole-record comparison: the
+            # raw groups above compared the block sizes, and the settings compare per phase below.
             expected, actual = _resource_values(source["resources"]), _resource_values(result["resources"])
+            for values in (expected, actual):
+                prefix_caching_evidence(values)
+                for group in values["cache_groups"]:
+                    if group["kind"] == "state":
+                        group.pop("block_size_tokens")
             expected["runtime_memory"].pop("kv_cache_bytes")
             capacity = actual["runtime_memory"].pop("kv_cache_bytes")
             if actual != expected:
                 raise ValueError("runtime cache layout or settings differ from the accepted probe")
+            if result["provenance"]["prefix_caching"].get(phase) != source["provenance"]["prefix_caching"].get(phase):
+                raise ValueError("runtime prefix-caching settings differ from the accepted probe")
             if capacity < bound:
                 raise ValueError(f"runtime usable capacity {capacity} is smaller than the accepted bound {bound}")
             result["binding"] = deepcopy(binding)

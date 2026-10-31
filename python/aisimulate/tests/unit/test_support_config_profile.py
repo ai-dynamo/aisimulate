@@ -958,6 +958,48 @@ def test_state_group_is_not_linear():
         ) in str(error.value)
 
 
+def test_profile_from_observations_accepts_state_groups():
+    # The resources that observation import gives for the GLM-5.3-Flash TP4 probe fixture: one attention group and
+    # five state groups whose pages are one pool block each, and the prefill phase's prefix-caching settings.
+    groups = [
+        {
+            "name": f"runtime_group_{index}",
+            "kind": "attention" if index == 0 else "state",
+            "num_layers": layers,
+            "block_size_tokens": 4 if index == 1 else 2176,
+            "page_size_bytes": 13_045_120,
+            "sliding_window": None,
+            **({} if index == 0 else {"blocks_per_request": 1}),
+        }
+        for index, layers in enumerate((22, 11, 9, 9, 8, 8))
+    ]
+    observed = {
+        "cache_layout": "grouped",
+        "cache_groups": groups,
+        "max_num_tokens": 1024,
+        "max_batch_size": 64,
+        "runtime_memory": {
+            "kv_cache_bytes": 7 * 13_045_120,
+            "gpu_memory_utilization": 0.9,
+            "max_model_len": 4096,
+            "enable_prefix_caching": True,
+            "mamba_cache_mode": "align",
+            "hash_block_size_tokens": 2176,
+            "provenance": "observed runtime capacity",
+        },
+        "provenance": "observed runtime resources",
+    }
+    resources = _import(observed).deployments[0].resources
+    assert [group.kind for group in resources.cache_groups].count("state") == 5
+    assert resources.runtime_memory.mamba_cache_mode == "align"
+    # A claim names its groups itself; names carry no geometry, but a state group's blocks_per_request does.
+    claim = [{**group, "name": f"claimed_{index}"} for index, group in enumerate(groups)]
+    _import(observed, {"cache_groups": claim})
+    claim[2]["blocks_per_request"] = 2
+    with pytest.raises(ValueError, match="differs from the runtime probe"):
+        _import(observed, {"cache_groups": claim})
+
+
 def test_import_labels_every_compared_override_that_matches():
     overrides = {
         "cache_layout": "grouped",
