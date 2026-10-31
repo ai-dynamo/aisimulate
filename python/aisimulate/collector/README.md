@@ -125,9 +125,9 @@ capabilities.py                        — generation-time capability/denylist f
 
 The plan is one equation: cases = dedup(base grid ∪ model shapes), then
 intersected with hardware capability floors, minus backend gaps and the hang
-denylist. For an op with a typed plan (GEMM so far), `--plan-only` with `--sm`
-or `--gpu` also prints case counts per consumer key and the regions left out;
-`--plan-table DIR` writes one CSV row per case.
+denylist. For an op with an op plan (`op_plans.py`, GEMM so far), `--plan-only`
+with `--sm` or `--gpu` also prints case counts per dtype and the regions left
+out; `--plan-table DIR` writes one CSV row per case.
 
 TRT-LLM MLA precision and GPT-OSS TP profile collection evidence is recorded
 in [the September 17 campaign](trtllm/gym-profiles-20260917.md).

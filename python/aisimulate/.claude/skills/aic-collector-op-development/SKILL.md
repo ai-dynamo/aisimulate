@@ -164,7 +164,7 @@ A queued case has two legal collector outcomes: execute it, or raise
   run a dtype but this backend's collector cannot, add a `backend_gaps` entry
   with a guard note. Never filter them in a getter or with a hard-coded SM
   check. GEMM is the reference: its getters are one line that calls the
-  shared typed plan (`case_authoring.md`, "Typed plans").
+  shared op plan (`case_authoring.md`, "Op plans").
 - **Everything finer runs.** A shape boundary, a head count or one
   framework's own limit fails and is recorded. Do not prune it and do not
   narrow a shared grid for one framework. Count the failures per consumer key

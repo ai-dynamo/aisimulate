@@ -6,7 +6,7 @@
 Benchmarks SGLang/sgl-kernel matrix multiplication paths for shared GEMM case
 specs, including BF16, FP8, FP8 block/DeepGEMM, and FP4-capable kernels where
 available. The case plan is shared with the other backends
-(``case_generator.plan_gemm``); this module owns SGLang-specific kernel
+(``op_plans.OP_PLANS["gemm"]``); this module owns SGLang-specific kernel
 selection, quantization helpers, and perf logging.
 """
 
@@ -59,7 +59,7 @@ from importlib.metadata import version as _dist_version
 
 import torch
 import torch.nn.functional as F
-from collector.case_generator import get_gemm_cases
+from collector.op_plans import plan_cases
 from sgl_kernel import (
     fp8_scaled_mm,
     sgl_per_token_quant_fp8,
@@ -125,7 +125,7 @@ from sglang.srt.layers.quantization.fp8_utils import requant_weight_ue8m0
 
 
 def get_gemm_test_cases():
-    return get_gemm_cases("sglang", get_sm_version())
+    return plan_cases("gemm", "sglang", get_sm_version())
 
 
 def cdiv(a: int, b: int) -> int:

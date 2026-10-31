@@ -191,14 +191,15 @@ backend_gaps:
     note: G-sglang-gemm-fp8-block-deepgemm-only
 ```
 
-A typed plan (GEMM so far, `case_generator.plan_gemm`) applies both when it
-expands, one dtype at a time, and `collect.py --plan-only --sm N` reports what
-it left out and why. For other ops, `collector/capabilities.py` filters
+An op plan (GEMM so far, `collector/op_plans.py`) applies both when it
+expands, one region at a time, and `collect.py --plan-only --sm N` reports
+what it left out and why. For other ops, `collector/capabilities.py` filters
 generated cases by typed field access (`moe_type`, `gemm_type`, `dtype`,
 `kv_cache_dtype`, FP8 flags) before queueing. Unknown dtypes and unknown ops
 are permissive: the table encodes known facts, never guesses. A
-`backend_gaps` entry covers a whole (op, dtype) on listed SMs and names a
-guard note in `collector/notes/<backend>.yaml`. Shape-level kernel limits and
+`backend_gaps` entry covers a whole region of an op plan on listed SMs (a
+dtype, or another region field the plan declares) and names a guard note in
+`collector/notes/<backend>.yaml`. Shape-level kernel limits and
 framework-version gaps do NOT belong here; they are runtime observations.
 
 ## Denylist

@@ -17,8 +17,8 @@ import math
 import tensorrt_llm
 import torch
 import torch.nn.functional as F
-from collector.case_generator import get_gemm_cases
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 from tensorrt_llm._torch.modules.linear import Linear
 from tensorrt_llm._utils import is_sm_100f
 from tensorrt_llm.models.modeling_utils import QuantAlgo, QuantConfig
@@ -53,7 +53,7 @@ def _compute_fp8_block_weight_scales(weight: torch.Tensor, group_size: int) -> t
 # cost — nvfp4 unswizzles its block scales on the CPU and the sub-L2 shapes
 # build up to 5 copies per case (b300 base run, job 471159002: gemm/nvfp4
 # 1.3 GPU-s/row and gemm/fp8_block 1.7 GPU-s/row against 0.04 for bf16).
-# The shared GEMM plan (case_generator.plan_gemm) orders cases by (n, k), then
+# The shared GEMM plan (op_plans.OP_PLANS["gemm"]) orders cases by (n, k), then
 # gemm_type, then m, so a worker sees runs of equal keys. The cache holds one
 # key at a time, so peak memory is unchanged.
 _gemm_op_cache: dict = {}
@@ -136,7 +136,7 @@ def _build_weights(gemm_type: str, n: int, k: int, device, dtype, group_size, x)
 
 
 def get_gemm_test_cases():
-    return get_gemm_cases("trtllm", get_sm_version())
+    return plan_cases("gemm", "trtllm", get_sm_version())
 
 
 def run_gemm(gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
