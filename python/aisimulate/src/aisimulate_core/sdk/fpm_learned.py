@@ -176,7 +176,7 @@ FPM5_FEATURE_NAMES: tuple[str, ...] = tuple(
 )
 
 # Feature presets: ``v1`` uses aggregates only (works on any FPM stream);
-# ``fpm5`` uses the aggregates that need no variance (counts and sums only);
+# ``fpm5`` (the default) uses the aggregates that need no variance (counts and sums only);
 # ``atomic5`` / ``atomic10`` / ``sglang18`` / ``hisim`` need per-request lists;
 # ``all`` is the union. ``sglang18`` is the full SGLang-simulator set the atomic
 # sets were derived from; it is kept for comparison and for prefill models that
@@ -190,20 +190,20 @@ FEATURE_PRESETS: dict[str, tuple[str, ...]] = {
     "hisim": ("req_batch_size",) + SLOT_FEATURE_NAMES,
     "all": FEATURE_NAMES,
 }
-# Defaults: the atomic set of the worker role. A decode worker sees one token per
-# request per step (not valid with speculative decoding: use ``atomic10`` or
-# ``sglang18`` there); prefill and aggregated (mixed) workers use the ten. The
-# producer must emit extend_lengths / past_kv_lengths; aggregate-only streams
-# need an explicit ``--features v1`` (or ``fpm5`` without variances).
+# Defaults: the 17 ``fpm5`` aggregates for every worker role. They need only the
+# five FPM v1 counts and sums, so any FPM stream trains without per-request lists
+# or variances. The atomic sets (``atomic5`` for decode, ``atomic10`` for prefill
+# and aggregated workers) remain explicit opt-ins when the producer emits
+# extend_lengths / past_kv_lengths.
 DEFAULT_FEATURES: dict[str, tuple[str, ...]] = {
-    "decode": ATOMIC_DECODE_FEATURE_NAMES,
-    "prefill": ATOMIC_PREFILL_FEATURE_NAMES,
-    "aggregated": ATOMIC_PREFILL_FEATURE_NAMES,
+    "decode": FPM5_FEATURE_NAMES,
+    "prefill": FPM5_FEATURE_NAMES,
+    "aggregated": FPM5_FEATURE_NAMES,
 }
 DEFAULT_FEATURE_PRESET: dict[str, str] = {
-    "decode": "atomic5",
-    "prefill": "atomic10",
-    "aggregated": "atomic10",
+    "decode": "fpm5",
+    "prefill": "fpm5",
+    "aggregated": "fpm5",
 }
 
 MIN_POSITIVE_PREDICTION_MS = 1e-6
@@ -980,7 +980,7 @@ def train(
     ):
         raise ValueError(
             "per-request features requested but no FPM record carries extend_lengths/past_kv_lengths; "
-            "collect with the per-request FPM extension or pass --features v1 (or fpm5)"
+            "collect with the per-request FPM extension or use the default aggregate --features fpm5 (or v1)"
         )
     dataset = _build_dataset(
         iterations, worker_type, features, provenance=provenance if online_checkpoint_dir is not None else None
@@ -1294,7 +1294,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--features",
         default=None,
         help="preset (v1 | fpm5 | atomic5 | atomic10 | sglang18 | hisim | all) or comma-separated feature names; "
-        "default: atomic5 for decode, atomic10 for prefill / aggregated",
+        "default: fpm5 for every worker type",
     )
     tr.add_argument("--target", choices=TARGETS, default="log_ms")
     tr.add_argument("--max-iter", type=int, default=600)

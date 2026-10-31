@@ -298,12 +298,34 @@ pub(crate) fn query_context_op(
     seq_imbalance_correction_scale: f64,
     x_override: Option<u32>,
 ) -> Result<PerformanceResult, AicError> {
+    op.query(
+        db,
+        &context_op_runtime(
+            op,
+            batch_size,
+            effective_isl,
+            prefix,
+            seq_imbalance_correction_scale,
+            x_override,
+        ),
+    )
+}
+
+/// The [`RuntimeContext`] [`query_context_op`] prices `op` at.
+pub(crate) fn context_op_runtime(
+    op: &Op,
+    batch_size: u32,
+    effective_isl: u32,
+    prefix: u32,
+    seq_imbalance_correction_scale: f64,
+    x_override: Option<u32>,
+) -> RuntimeContext {
     let x = x_override.unwrap_or(if op.is_logits_gemm() {
         batch_size
     } else {
         batch_size * effective_isl
     });
-    let ctx = RuntimeContext {
+    RuntimeContext {
         batch_size,
         beam_width: 1,
         s: effective_isl,
@@ -312,8 +334,7 @@ pub(crate) fn query_context_op(
         seq_imbalance_correction_scale,
         gen_seq_imbalance_correction_scale: 1.0,
         num_image_tokens: 0,
-    };
-    op.query(db, &ctx)
+    }
 }
 
 /// Python `_run_generation_phase` inner loop body for a single decode step
@@ -456,7 +477,29 @@ pub(crate) fn query_generation_op(
     prefix: u32,
     x_override: Option<u32>,
 ) -> Result<PerformanceResult, AicError> {
-    let ctx = RuntimeContext {
+    op.query(
+        db,
+        &generation_op_runtime(
+            batch_size,
+            beam_width,
+            kv_seq_tokens,
+            gen_seq_imbalance_correction_scale,
+            prefix,
+            x_override,
+        ),
+    )
+}
+
+/// The [`RuntimeContext`] [`query_generation_op`] prices an op at.
+pub(crate) fn generation_op_runtime(
+    batch_size: u32,
+    beam_width: u32,
+    kv_seq_tokens: u32,
+    gen_seq_imbalance_correction_scale: f64,
+    prefix: u32,
+    x_override: Option<u32>,
+) -> RuntimeContext {
+    RuntimeContext {
         batch_size,
         beam_width: beam_width.max(1),
         s: kv_seq_tokens,
@@ -465,8 +508,7 @@ pub(crate) fn query_generation_op(
         seq_imbalance_correction_scale: 1.0,
         gen_seq_imbalance_correction_scale,
         num_image_tokens: 0,
-    };
-    op.query(db, &ctx)
+    }
 }
 
 /// FPM-telemetry mix-step composition (the Dynamo mocker contract). Consumed
@@ -484,10 +526,15 @@ pub(crate) fn query_generation_op(
 ///    the prefill batch shape (`batch = ceil(ctx_tokens/isl)`).
 /// 3. Decode attention contribution: iterate `generation_ops`, only
 ///    generation-attention ops, with the decode batch shape.
+///
+/// `on_op` observes each queried op: whether it runs in a context pass
+/// (passes 1 and 2) or the decode pass, the op, its runtime context, its RAW
+/// result and the divisor the total applies to it (pass 2's `scale_factor`,
+/// otherwise 1).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn get_mix_step_ops(
-    context_ops: &[Op],
-    generation_ops: &[Op],
+pub(crate) fn get_mix_step_ops<'a>(
+    context_ops: &'a [Op],
+    generation_ops: &'a [Op],
     db: &PerfDatabase,
     ctx_tokens: u32,
     gen_tokens: u32,
@@ -496,6 +543,7 @@ pub(crate) fn get_mix_step_ops(
     combined_prefix: u32,
     kv_per_decode_req: u32,
     decode_batch: u32,
+    mut on_op: impl FnMut(bool, &'a Op, &RuntimeContext, PerformanceResult, f64),
 ) -> Result<f64, AicError> {
     // ---- Pass 1: combined non-attention work (batch=1, isl=ctx+gen) ----
     // Python: `run_static` is called with `isl = num_tokens_combined`
@@ -535,7 +583,9 @@ pub(crate) fn get_mix_step_ops(
             gen_seq_imbalance_correction_scale: 1.0,
             num_image_tokens: 0,
         };
-        total += op.query(db, &ctx)?.latency_ms;
+        let result = op.query(db, &ctx)?;
+        total += result.latency_ms;
+        on_op(true, op, &ctx, result, 1.0);
     }
 
     // ---- Pass 2: context attention with prefill batch ----
@@ -567,7 +617,9 @@ pub(crate) fn get_mix_step_ops(
             gen_seq_imbalance_correction_scale: 1.0,
             num_image_tokens: 0,
         };
-        total += op.query(db, &ctx)?.latency_ms / scale_factor;
+        let result = op.query(db, &ctx)?;
+        total += result.latency_ms / scale_factor;
+        on_op(true, op, &ctx, result, scale_factor);
     }
 
     // ---- Pass 3: generation attention with decode batch ----
@@ -592,7 +644,9 @@ pub(crate) fn get_mix_step_ops(
                 gen_seq_imbalance_correction_scale: 1.0,
                 num_image_tokens: 0,
             };
-            total += op.query(db, &ctx)?.latency_ms;
+            let result = op.query(db, &ctx)?;
+            total += result.latency_ms;
+            on_op(false, op, &ctx, result, 1.0);
         }
     }
 

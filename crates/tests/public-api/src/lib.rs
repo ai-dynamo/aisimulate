@@ -265,6 +265,26 @@ mod tests {
     }
 
     #[test]
+    fn rank_operation_evidence_is_an_additive_field() {
+        // Rank evidence serialized before the field existed still loads, and
+        // whole-model FPM ranks keep their serialized schema.
+        let rank: aisimulate_core::FpmRankEstimate = serde_json::from_value(serde_json::json!({
+            "rank": 0, "latency_ms": 1.0, "prefill_ms": 1.0, "decode_ms": null,
+            "decode_baseline_ms": null, "marginal_decode_ms": null, "queries": [],
+        }))
+        .unwrap();
+        assert!(rank.operations.is_empty());
+        assert!(serde_json::to_value(&rank)
+            .unwrap()
+            .get("operations")
+            .is_none());
+        let _ = aisimulate_core::FpmRankEstimate {
+            operations: Vec::new(),
+            ..rank
+        };
+    }
+
+    #[test]
     fn power_statistics_require_validated_public_construction() {
         use aisimulate_core::replay::TracePowerStats;
 
@@ -1247,6 +1267,24 @@ pub fn operation_diagnostics(
     AicError,
 > {
     model.static_phase_diagnostics(1, 128, 0, true)
+}
+
+/// The canonical detailed estimate carries each operation-graph rank's
+/// operation evidence, in the same type as the static phase diagnostics.
+pub fn rank_operation_evidence(
+    model: &ForwardPassPerfModel,
+    metrics_by_rank: &[aisimulate_core::ForwardPassMetrics],
+) -> Result<
+    Vec<Vec<aisimulate_core::perfmodel::engine::diagnostics::StaticOperationDiagnostics>>,
+    AicError,
+> {
+    let estimate: aisimulate_core::ForwardPassEstimate =
+        model.estimate_forward_pass_detailed(metrics_by_rank)?;
+    Ok(estimate
+        .ranks
+        .into_iter()
+        .map(|rank: aisimulate_core::FpmRankEstimate| rank.operations)
+        .collect())
 }
 
 /// Join engines built by separate factories to one cluster-shared G2 pool.

@@ -2415,6 +2415,35 @@ fn native_model_starts_ready_with_aic_source() {
 }
 
 #[test]
+fn canonical_detailed_estimate_reports_operation_graph_ranks() {
+    let model = native_model(ForwardPassPerfOptions::default());
+    let metrics = [decode_fpm(4, 4 * 513, 0.0), mixed_fpm(256, 513, 0.0)];
+    let detailed = model.estimate_forward_pass_detailed(&metrics).unwrap();
+    assert_eq!(
+        detailed.latency_ms,
+        model.estimate_forward_pass_time_ms(&metrics).unwrap()
+    );
+    assert_eq!(detailed.ranks.len(), 2);
+    for rank in &detailed.ranks {
+        let sum: f64 = rank.operations.iter().map(|op| op.latency_ms).sum();
+        assert!(!rank.operations.is_empty());
+        assert!((sum - rank.latency_ms).abs() <= 1e-12 * rank.latency_ms);
+    }
+    // Oracle: the canonical static diagnostics at the decode rank's shape.
+    assert_eq!(
+        detailed.ranks[0].operations,
+        model.static_phase_diagnostics(4, 512, 0, false).unwrap()
+    );
+    // The field is additive: evidence serialized before it existed still
+    // deserializes, and an empty list is omitted.
+    let mut legacy = serde_json::to_value(&detailed.ranks[0]).unwrap();
+    legacy.as_object_mut().unwrap().remove("operations");
+    let restored: crate::FpmRankEstimate = serde_json::from_value(legacy.clone()).unwrap();
+    assert!(restored.operations.is_empty());
+    assert_eq!(serde_json::to_value(&restored).unwrap(), legacy);
+}
+
+#[test]
 fn canonical_static_phase_diagnostics_are_available_only_for_native_models() {
     let model = native_model(ForwardPassPerfOptions::default());
     let engine = model.native_engine().unwrap();
@@ -2635,6 +2664,44 @@ fn speculative_direct_fpm_preserves_raw_support_and_missing_coverage() {
             .queries
             .unsupported,
         1
+    );
+}
+
+#[test]
+fn speculative_scaling_treats_a_fully_cached_prefill_as_decode() {
+    let tmp = tempfile::tempdir().unwrap();
+    let model = direct_coverage_model(tmp.path());
+    let learned =
+        ForwardPassPerfModel::from_learned(&learned_decode_artifact_json(), Default::default())
+            .unwrap();
+    // A fully prefix-cached prefill keeps request/KV metadata but schedules
+    // no fresh prefill token, so the rank is decode-only like every rank
+    // dispatch. Fixture oracles: direct B=8/K=64 is 8ms * 1.49 (d=3); the
+    // learned stump prices B=6 at 20ms * 1.41 (d=2).
+    let mut cached = decode_fpm(2, 64, 0.0);
+    cached.scheduled_requests.num_prefill_requests = 1;
+    cached.scheduled_requests.sum_prefill_kv_tokens = 4096;
+    for (model, depth, expected) in [(&model, 3, 11.92), (&learned, 2, 28.2)] {
+        assert_close(
+            model
+                .estimate_speculative_forward_pass_time_ms(std::slice::from_ref(&cached), depth)
+                .unwrap()
+                .unwrap(),
+            expected,
+        );
+    }
+    let detail = model
+        .estimate_speculative_forward_pass_detailed(std::slice::from_ref(&cached), 3)
+        .unwrap();
+    assert_eq!(detail.stp_reference.ranks[0].prefill_ms, None);
+    // Fresh prefill tokens are still prefill work.
+    cached.scheduled_requests.sum_prefill_tokens = 100;
+    assert!(
+        model
+            .estimate_speculative_forward_pass_time_ms(&[cached], 3)
+            .unwrap_err()
+            .to_string()
+            .contains("pure decode")
     );
 }
 
