@@ -20,6 +20,7 @@ from .model_capability import ResolvedModelConfig
 from .native_artifact import COLLECTOR_PROVENANCE_FILENAME, validate_native_collection
 from .planner import BackendPolicy, FPMCell, _canonical_hash
 from .runtime.fpm_memory_observer import (
+    _LEGACY_SPECS,
     _SPEC_MODULE,
     _UNIFORM_SPEC,
     _WINDOW_SPECS,
@@ -832,6 +833,10 @@ def resolve_runtime_resources(
         # Decision 1 and ruling R-G: this vLLM 0.27.0 path refuses every state group.
         if any(group["kind"] == "state" for group in groups):
             raise ValueError("runtime memory cache kind is unsupported")
+        # Ruling R-W+: and every class outside the vLLM 0.27.0 allow-list.
+        for group in cache["groups"]:
+            if group.get("spec_type") not in _LEGACY_SPECS:
+                raise ValueError(f"unsupported runtime cache spec: {group.get('spec_type')!r}")
         geometry = [{key: value for key, value in group.items() if key != "layer_classes"} for group in cache["groups"]]
         if canonical_groups is None:
             canonical_groups, canonical_geometry = groups, geometry

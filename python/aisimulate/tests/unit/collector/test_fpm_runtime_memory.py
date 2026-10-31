@@ -945,6 +945,7 @@ def test_full_graph_cannot_fall_back_to_unsupported_attention_mode(tmp_path, mon
         ("unknown_spec", "unsupported runtime cache spec"),
         ("mamba_spec_without_state", "lacks blocks_per_request evidence"),
         ("mamba_spec_with_state", "runtime memory cache kind is unsupported"),
+        ("mla_spec", "unsupported runtime cache spec: 'vllm.v1.kv_cache_interface.MLAAttentionSpec'"),
         ("nonintegral", "non-integral pool page"),
         ("watermark", "pool capacity/reservations"),
         ("second_pool", "pool capacity/reservations"),
@@ -986,6 +987,15 @@ def test_runtime_memory_rejects_incomplete_stale_mixed_or_unsupported_evidence(t
             if change == "mamba_spec_with_state":
                 group["state"] = {"blocks_per_request": 1}
         payload["cache"]["groups"][0]["kind"] = "state"
+    elif change == "mla_spec":
+        # Hand-made records of every rank with a class outside the vLLM 0.27.0 allow-list (ruling R-W+).
+        mla = "vllm.v1.kv_cache_interface.MLAAttentionSpec"
+        for other in sorted(tmp_path.glob("pod-*/fpm-memory-*.json")):
+            if other not in (path, scheduler_path):
+                record = json.loads(other.read_text())
+                record["cache"]["groups"][0]["spec_type"] = mla
+                other.write_text(json.dumps(record))
+        payload["cache"]["groups"][0]["spec_type"] = scheduler["cache"]["groups"][0]["spec_type"] = mla
     elif change == "nonintegral":
         payload["cache"]["allocated_cache_bytes"] -= 1
         payload["cache"]["storages"][0]["size_bytes"] -= 1
