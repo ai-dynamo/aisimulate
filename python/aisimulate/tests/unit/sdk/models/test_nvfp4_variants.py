@@ -12,6 +12,7 @@ import pytest
 import aisimulate_core
 from aisimulate.sdk import common, config
 from aisimulate.sdk.models import get_model
+from aisimulate.sdk.operations import OverlapOp
 from aisimulate.sdk.task_v2 import Task
 from aisimulate.sdk.utils import get_model_config_from_model_path
 
@@ -336,8 +337,8 @@ def test_qwen35_nvfp4_v2_bundle_is_the_pinned_upstream_bytes(suffix):
     assert hashlib.sha256(data).hexdigest() == QWEN35_NVFP4_V2_SHA256[suffix]
 
 
-@pytest.mark.parametrize("backend", ["sglang", "vllm", "trtllm"])
-def test_qwen35_nvfp4_v2_uses_fp8_static_projections_and_nvfp4_experts(backend, monkeypatch):
+def _get_qwen35_nvfp4_v2(monkeypatch, backend, nextn=0):
+    """Build the V2 model from the bundled config with the hub download helpers patched out."""
     import aisimulate.sdk.utils as sdk_utils
     from aisimulate_core.sdk.models.helpers import _get_model_info
 
@@ -346,20 +347,40 @@ def test_qwen35_nvfp4_v2_uses_fp8_static_projections_and_nvfp4_experts(backend, 
 
     monkeypatch.setattr(sdk_utils, "_download_hf_config", _no_network)
     monkeypatch.setattr(sdk_utils, "_download_hf_json", _no_network)
+    model_config = _model_config()
+    model_config.nextn = nextn
     caches = (sdk_utils.get_model_config_from_model_path, sdk_utils._load_model_config_from_model_path, _get_model_info)
     for cached in caches:
         cached.cache_clear()
     try:
-        model = get_model(QWEN35_NVFP4_V2, _model_config(), backend_name=backend)
+        return get_model(QWEN35_NVFP4_V2, model_config, backend_name=backend)
     finally:
         for cached in caches:
             cached.cache_clear()
-    by_name = {op._name: op for op in model.context_ops + model.generation_ops}
+
+
+def _flatten_ops(phase_ops):
+    """Yield leaf ops; vLLM and SGLang decode nest the routed and shared experts in an OverlapOp."""
+    for op in phase_ops:
+        if isinstance(op, OverlapOp):
+            yield from op._group_a
+            yield from op._group_b
+        else:
+            yield op
+
+
+@pytest.mark.parametrize("backend", ["sglang", "vllm", "trtllm"])
+def test_qwen35_nvfp4_v2_uses_fp8_static_projections_and_nvfp4_experts(backend, monkeypatch):
+    model = _get_qwen35_nvfp4_v2(monkeypatch, backend)
+    by_name = {op._name: op for op in _flatten_ops(model.context_ops + model.generation_ops)}
 
     # quantized_layers lists the GDN in_proj_qkv, in_proj_z and out_proj, the full-attention
-    # q/k/v/o and the shared-expert gate/up/down projections as static per-tensor FP8.
+    # q/k/v/o and the shared-expert gate/up/down projections as static per-tensor FP8. The
+    # export keeps in_proj_a and in_proj_b in BF16; pricing their GEMM (in_proj_ba) with the
+    # other GDN projections is an approximation that docs/perf-model/support-matrix.md states.
     for name in (
         "context_gdn_in_proj_gemm",
+        "context_gdn_in_proj_ba_gemm",
         "context_gdn_out_proj_gemm",
         "context_qkv_gemm",
         "context_proj_gemm",
@@ -368,14 +389,60 @@ def test_qwen35_nvfp4_v2_uses_fp8_static_projections_and_nvfp4_experts(backend, 
         "context_full_shared_gate_up_gemm",
         "context_full_shared_down_gemm",
         "generation_gdn_in_proj_gemm",
+        "generation_gdn_in_proj_ba_gemm",
         "generation_gdn_out_proj_gemm",
         "generation_qkv_gemm",
         "generation_proj_gemm",
+        "generation_gdn_shared_gate_up_gemm",
+        "generation_gdn_shared_down_gemm",
+        "generation_full_shared_gate_up_gemm",
+        "generation_full_shared_down_gemm",
     ):
         assert by_name[name]._quant_mode == common.GEMMQuantMode.fp8_static, name
     # The routed experts are NVFP4.
-    for name in ("context_gdn_moe", "context_full_moe"):
+    for name in ("context_gdn_moe", "context_full_moe", "generation_gdn_moe", "generation_full_moe"):
         assert by_name[name]._quant_mode == common.MoEQuantMode.nvfp4, name
+    # The router (mlp.gate), the scalar shared-expert gate and lm_head are not quantized. SGLang
+    # fuses the scalar gate into the merge kernel, so only vLLM and TRT-LLM emit its GEMM.
+    bf16_names = (
+        "context_gdn_router_gemm",
+        "context_full_router_gemm",
+        "context_logits_gemm",
+        "generation_gdn_router_gemm",
+        "generation_full_router_gemm",
+        "generation_logits_gemm",
+    )
+    if backend != "sglang":
+        bf16_names += (
+            "context_gdn_shared_expert_gate_gemm",
+            "context_full_shared_expert_gate_gemm",
+            "generation_gdn_shared_expert_gate_gemm",
+            "generation_full_shared_expert_gate_gemm",
+        )
+    for name in bf16_names:
+        assert by_name[name]._quant_mode == common.GEMMQuantMode.bfloat16, name
+
+
+@pytest.mark.parametrize("backend", ["sglang", "vllm", "trtllm"])
+@pytest.mark.parametrize("nextn", [1, 3])
+def test_qwen35_nvfp4_v2_mtp_scales_only_generation_ops(backend, nextn, monkeypatch):
+    base = _get_qwen35_nvfp4_v2(monkeypatch, backend)
+    mtp = _get_qwen35_nvfp4_v2(monkeypatch, backend, nextn=nextn)
+    # The decode graph scales by (nextn + L) / L for L = 60 decoder layers (45 GDN, 15 full
+    # attention), so the BF16 MTP layer is priced with the decoder-layer lanes. Context does not scale.
+    num_layers = 60
+    scale = (nextn + num_layers) / num_layers
+
+    assert mtp._mtp_scale_factor == pytest.approx(scale)
+    for base_ops, mtp_ops, expected in (
+        (base.context_ops, mtp.context_ops, 1.0),
+        (base.generation_ops, mtp.generation_ops, scale),
+    ):
+        base_by_name = {op._name: op for op in _flatten_ops(base_ops)}
+        mtp_by_name = {op._name: op for op in _flatten_ops(mtp_ops)}
+        assert mtp_by_name.keys() == base_by_name.keys()
+        for name, op in mtp_by_name.items():
+            assert op._scale_factor == pytest.approx(base_by_name[name]._scale_factor * expected), name
 
 
 def test_gemma4_exclusions_keep_attention_and_mlp_bf16():
