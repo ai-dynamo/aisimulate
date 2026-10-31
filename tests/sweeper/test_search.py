@@ -3,6 +3,7 @@
 
 """Core Sweeper orchestration parity through the RunnerFactory/ReplaySpec boundary."""
 
+from concurrent.futures import Future
 from copy import deepcopy
 from pathlib import Path
 
@@ -431,6 +432,75 @@ def test_parallel_batch_uses_worker_sized_timeout_waves(monkeypatch):
     assert pools[0].shutdown_called
     assert pools[0].shutdown_waits == [False]
     assert pools[0].shutdown_wait is False
+
+
+def test_parallel_results_are_recorded_in_suggestion_order(monkeypatch):
+    branch = _branch(_pc())
+    _stub(monkeypatch, branch)
+    submitted = []
+    sampler_seen = {}
+
+    class FakeProcessPool:
+        def __init__(self, *, initializer, initargs, **kwargs):
+            self._processes = {}
+            initializer(*initargs)
+
+        def submit(self, function, *args):
+            future = Future()
+            future.set_result(function(*args))
+            submitted.append(future)
+            return future
+
+        def shutdown(self, *, wait, cancel_futures):
+            pass
+
+    def last_submitted_first(pending, *, timeout, return_when):
+        latest = max(pending, key=submitted.index)
+        return {latest}, set(pending) - {latest}
+
+    def factory(branch, study_id, objectives=None):
+        sampler_seen["sampler"] = _FakeSampler(branch, study_id, objectives)
+        return sampler_seen["sampler"]
+
+    monkeypatch.setattr(search_mod, "ProcessPoolExecutor", FakeProcessPool)
+    monkeypatch.setattr(search_mod, "wait", last_submitted_first)
+
+    result = Sweeper(runner_factory=_FakeRunnerFactory(), sampler_factory=factory, show_progress=False).run(
+        _config(parallel_evals=3, max_eval_seconds=10), top_n=None
+    )
+
+    assert [(record.candidate_id, record.score) for record in result.candidates] == [
+        ("candidate-000001", 256.0),
+        ("candidate-000002", 512.0),
+        ("candidate-000003", 768.0),
+    ]
+    assert sampler_seen["sampler"].scored == [{"objective": 256.0}, {"objective": 512.0}, {"objective": 768.0}]
+
+
+def test_suggestion_order_releases_each_result_once_earlier_ones_finish():
+    todo = [(object(), None) for _ in range(4)]
+    events = []
+
+    def finish(order):
+        for index in order:
+            events.append(("finished", index))
+            yield todo[index][0], index
+
+    for _, index in search_mod._in_suggestion_order(todo, finish([1, 3, 0, 2])):
+        events.append(("recorded", index))
+
+    assert events == [
+        ("finished", 1),
+        ("finished", 3),
+        ("finished", 0),
+        ("recorded", 0),
+        ("recorded", 1),
+        ("finished", 2),
+        ("recorded", 2),
+        ("recorded", 3),
+    ]
+    with pytest.raises(RuntimeError, match="did not report every suggestion"):
+        list(search_mod._in_suggestion_order(todo, finish([1, 0])))
 
 
 def test_timed_out_wave_is_gated_and_pool_is_replaced(monkeypatch):
@@ -1311,7 +1381,7 @@ def test_materialization_preserves_resolved_estimator_or_reports_failure(monkeyp
         }
 
 
-def test_on_candidate_fires_once_per_feasible_outcome_in_evaluation_order(monkeypatch):
+def test_on_candidate_fires_once_per_feasible_outcome_in_suggestion_order(monkeypatch):
     branch = _branch(_pc())  # 8 GPUs
     _stub(monkeypatch, branch)
     factory = _FakeRunnerFactory()
@@ -1324,7 +1394,7 @@ def test_on_candidate_fires_once_per_feasible_outcome_in_evaluation_order(monkey
     ).run(_config(), top_n=None, on_candidate=seen.append)
 
     assert [record.status for record in seen] == [CandidateStatus.FEASIBLE] * 3
-    # Evaluation order (increasing max_num_seqs), not the best-first ranked order.
+    # Suggestion order (increasing max_num_seqs), not the best-first ranked order.
     assert [record.score for record in seen] == [256.0, 512.0, 768.0]
 
     # on_candidate must receive a detached copy: mutating it must not reach the
