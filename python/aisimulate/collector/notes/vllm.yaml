@@ -53,3 +53,42 @@ notes:
       or drop fp8_static support for ModelOpt FP8 checkpoints on those
       systems.
     approved_by: tianhaox
+  - id: G-vllm-moe-tp-and-ep
+    kind: guard
+    summary: >-
+      vLLM never runs routed experts with tensor and expert parallelism
+      together: with expert parallelism on, FusedMoEParallelConfig.make sets
+      tp_size=1 and turns the whole flattened TP x DP world into EP. A case
+      with tp > 1 and ep > 1 would time that EP layout under the wrong key, so
+      capabilities.yaml backend_gaps leaves the MoE region parallel=tp_ep out.
+    reason: mismeasure
+    scope:
+      tables: [moe_perf]
+      systems: [a100_sxm, l40s, h100_sxm, h200_sxm, b200_sxm, b300_sxm, gb200, gb300, rtx_pro_6000_server]
+    verified_on: "0.31.0"
+    sources:
+      - vllm vllm/model_executor/layers/fused_moe/config.py:1182-1228 @v0.31.0 (FusedMoEParallelConfig.make)
+    retire_via: Delete the backend gap if vLLM supports expert TP inside EP.
+    approved_by: tianhaox
+  - id: G-vllm-moe-w4a8-mxfp4-sm120
+    kind: guard
+    summary: >-
+      On SM120 vLLM serves MXFP4 MoE checkpoints without MXFP8 activations.
+      Its default backend order is FLASHINFER_TRTLLM_MXFP4_MXFP8 (SM100 family
+      only), DEEPGEMM_MXFP4, MARLIN, BATCHED_MARLIN; the SM12x b12x MXFP8
+      backend runs only on explicit request. A w4a8_mxfp4_mxfp8 row on SM120
+      would time a path serving does not take, so capabilities.yaml
+      backend_gaps leaves the region out.
+    reason: mismeasure
+    scope:
+      tables: [moe_perf]
+      systems: [rtx_pro_6000_server]
+    verified_on: "0.31.0"
+    sources:
+      - vllm vllm/model_executor/layers/fused_moe/oracle/mxfp4.py:367-390 @v0.31.0 (_get_priority_backends)
+      - vllm vllm/model_executor/layers/fused_moe/oracle/mxfp4.py:490 @v0.31.0 (b12x on request)
+      - vllm vllm/model_executor/layers/fused_moe/experts/trtllm_mxfp4_moe.py:123 @v0.31.0
+    retire_via: >-
+      Delete the backend gap if vLLM's default MXFP4 backend on SM120 runs
+      MXFP8 activations.
+    approved_by: tianhaox

@@ -39,13 +39,7 @@ model_case_values:
         bfloat16: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
         fp8_block: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
       wideep: true
-      framework_quantization:
-        sglang:
-          allowed_modes: [fp8_block]
-        trtllm:
-          allowed_modes: [fp8_block]
-        vllm:
-          allowed_modes: [fp8_block]
+      quantization_modes: [fp8_block]
     - model_path: nvidia/DeepSeek-V3.1-NVFP4
       model_aliases:
         - nvidia/DeepSeek-V3.2-NVFP4
@@ -61,13 +55,7 @@ model_case_values:
       sglang_moe_num_expert_group: 8
       sglang_moe_topk_group: 4
       wideep: true
-      framework_quantization:
-        sglang:
-          allowed_modes: [nvfp4]
-        trtllm:
-          allowed_modes: [nvfp4]
-        vllm:
-          allowed_modes: [nvfp4]
+      quantization_modes: [nvfp4]
   mla:
     - model_path: deepseek-ai/DeepSeek-V3
       model_aliases:

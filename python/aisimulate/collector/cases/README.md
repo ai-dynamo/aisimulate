@@ -143,26 +143,28 @@ the token counts, batch/sequence sweeps, parallelism sizes, routing
 distributions, and generator constraints. Model YAML stores model dimensions;
 base op YAML stores the reusable sweep policy.
 
-MoE quantization is resolved before a case is queued. Base `quantization_modes`
-may declare `min_sm` (axis-level hardware floor), runtime features, an
-`allowed_model_paths` allowlist, and optional `module_config`. A model row
-narrows that list with `framework_quantization.<backend>.allowed_modes`.
-Quant-sensitive checkpoint artifacts use separate model rows even when all
-geometry fields are identical.
+MoE is planned once for every CUDA backend (`collector/op_plans.py`). The
+shared quant-mode axis is `common_case_values.moe.quantization_modes`; a mode
+may keep a checkpoint-specific format to the models that ship it
+(`allowed_model_paths`) and carry a `module_config`. A model row declares its
+checkpoint's modes in `quantization_modes`, the same for every backend; a row
+that declares none plans every mode. Quant-sensitive checkpoint artifacts use
+separate model rows even when all geometry fields are identical.
+`framework_quantization.<backend>` holds only a backend's `module_config` (and
+vllm_xpu's own policy). SM floors are `capabilities.yaml` `dtype_min_sm`; a
+mode or layout one backend cannot run on an SM is a `backend_gaps` entry.
 
 Artifact-keyed vLLM MoE rows also require a checked-in
 `src/aisimulate_core/model_configs/<org>--<model>_config.json`. The collector
 uses that local structural config to reproduce serving routing without a Hub
 download.
 
-When frameworks invoke different routed-expert geometry for the same artifact,
-a MoE model row may positively declare `frameworks: [vllm]` (or another list).
-Omitting the field means all frameworks. `get_common_moe_test_cases()` without
-a backend retains the legacy union during collector migrations; upgraded
-collectors pass their backend so geometry and quantization remain separate facts.
-Backend MoE values may also declare correlated `parallel_topologies`; each row
-expands only its listed TP and EP axes, and the union defines representable
-framework topologies without a collector-side skip.
+When frameworks invoke different routed-expert geometry for the same artifact
+(vLLM routes Nemotron-H experts through a latent width), declare one row per
+geometry; every backend plans both. A MoE row may not declare `frameworks`.
+vLLM cannot run routed experts with TP and EP both above 1, so the plan leaves
+the MoE region `parallel: tp_ep` out for vLLM (a `backend_gaps` entry,
+G-vllm-moe-tp-and-ep).
 
 `include_base: true` means "include the small universal base set" declared by
 base-file `model_ops` (currently dense attention and GEMM). Use an explicit
@@ -191,7 +193,7 @@ backend_gaps:
     note: G-sglang-gemm-fp8-block-deepgemm-only
 ```
 
-An op plan (GEMM so far, `collector/op_plans.py`) applies both when it
+An op plan (GEMM and MoE so far, `collector/op_plans.py`) applies both when it
 expands, one region at a time, and `collect.py --plan-only --sm N` reports
 what it left out and why. For other ops, `collector/capabilities.py` filters
 generated cases by typed field access (`moe_type`, `gemm_type`, `dtype`,

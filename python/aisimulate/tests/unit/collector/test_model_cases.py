@@ -3,9 +3,7 @@
 
 import ast
 import csv
-import itertools
 import json
-import random
 import subprocess
 import sys
 from itertools import pairwise
@@ -55,31 +53,11 @@ def _load_gdn_getter(module_path: str):
     return namespace["get_gdn_test_cases"]
 
 
-def _load_moe_getter(module_path: str):
-    from collector.case_generator import (
-        get_common_moe_test_cases,
-        get_moe_quantization_modes,
-        get_sglang_moe_backend,
-        moe_model_allows_quantization,
-    )
+def _planned_moe_modes(monkeypatch, backend: str, model_path: str, sm_version: int) -> set[str]:
+    from collector.op_plans import plan
 
-    source_path = REPO_ROOT / module_path
-    tree = ast.parse(source_path.read_text(), filename=str(source_path))
-    function = next(
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "get_moe_test_cases"
-    )
-    namespace = {
-        "get_common_moe_test_cases": get_common_moe_test_cases,
-        "get_moe_quantization_modes": get_moe_quantization_modes,
-        "get_sglang_moe_backend": get_sglang_moe_backend,
-        "get_sm_version": lambda: 100,
-        "itertools": itertools,
-        "moe_model_allows_quantization": moe_model_allows_quantization,
-        "random": random,
-        "vllm_version": "0.24.0",
-    }
-    exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)
-    return namespace["get_moe_test_cases"]
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
+    return {case.moe_type for case in plan("moe", backend, sm_version).cases if case.model_name == model_path}
 
 
 def test_model_case_plan_merges_required_base_and_framework_specific_ops():
@@ -271,28 +249,22 @@ def test_nvfp4_quant_artifacts_have_exact_moe_profiles_and_lanes(monkeypatch, mo
         assert moe_model_allows_quantization(backend, model_path, quant_mode)
 
 
-@pytest.mark.parametrize(
-    ("backend", "module_path"),
-    [
-        ("sglang", "collector/sglang/collect_moe.py"),
-        ("trtllm", "collector/trtllm/collect_moe.py"),
-        ("vllm", "collector/vllm/collect_moe.py"),
-    ],
-)
-def test_qwen36_w4a16_nvfp4_moe_is_transferred_but_explicitly_deferred(monkeypatch, capsys, backend, module_path):
+@pytest.mark.parametrize("backend", ["sglang", "trtllm", "vllm"])
+def test_qwen36_w4a16_nvfp4_moe_is_transferred_but_explicitly_deferred(monkeypatch, capsys, backend):
     from collector.case_generator import get_common_moe_test_cases
+    from collector.op_plans import plan_cases
 
     model_path = "nvidia/Qwen3.6-35B-A3B-NVFP4"
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
 
     assert "moe" in build_collection_case_plan(backend=backend, model_path=model_path).selected_ops
-    transferred_shapes = get_common_moe_test_cases(backend=backend)
+    transferred_shapes = get_common_moe_test_cases()
     assert transferred_shapes
     assert {case.model_name for case in transferred_shapes} == {model_path}
-    assert "w4a16_nvfp4" not in {spec.name for spec in get_moe_quantization_specs(backend)}
+    assert "w4a16_nvfp4" not in {spec.name for spec in get_moe_quantization_specs()}
 
-    assert _load_moe_getter(module_path)() == []
-    assert f"by declared {backend} quantization policy (allowed_modes): {model_path}" in capsys.readouterr().out
+    assert plan_cases("moe", backend, 100) == []
+    assert f"plan no case (quantization_modes: []): {model_path}" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -600,32 +572,31 @@ def test_qwen35_397b_nvfp4_moe_row_is_nvfp4_only_on_every_backend():
         assert allowed == {"nvfp4"}, (backend, model_path, allowed)
 
 
-def test_kimi_moe_quantization_is_artifact_specific():
+def test_kimi_moe_quantization_is_artifact_specific(monkeypatch):
     expected_by_artifact = {
         "moonshotai/Kimi-K2-Instruct": {"fp8_block"},
         "moonshotai/Kimi-K2.5": {"int4_wo"},
         "nvidia/Kimi-K2.5-NVFP4": {"nvfp4"},
     }
 
+    available_modes = {spec.name for spec in get_moe_quantization_specs()}
     for backend in ("sglang", "trtllm", "vllm"):
-        available_modes = {spec.name for spec in get_moe_quantization_specs(backend)}
         for model_path, expected in expected_by_artifact.items():
             allowed = {mode for mode in available_modes if moe_model_allows_quantization(backend, model_path, mode)}
             assert allowed == expected, (backend, model_path)
 
-    from collector.case_generator import get_moe_quantization_modes, get_moe_quantization_module_config
+    from collector.case_generator import get_moe_quantization_module_config
 
     assert get_moe_quantization_module_config("sglang", "int4_wo", model_name="moonshotai/Kimi-K2.5") == {
         "group_size": 32
     }
-    sm90_modes = get_moe_quantization_modes("sglang", sm_version=90)
-    assert "int4_wo" in sm90_modes
-    assert "nvfp4" not in sm90_modes
-    assert "w4a16_mxfp4" in sm90_modes
-    # int4_wo opened to SM100/103 (2026-07-11): serving auto-selects
-    # flashinfer_trtllm for Kimi INT4 there (server_args.py:3736).
-    assert "int4_wo" in get_moe_quantization_modes("sglang", sm_version=100)
-    assert "nvfp4" in get_moe_quantization_modes("sglang", sm_version=100)
+    # SGLang pins the int4 runner on SM89/90/120 (Marlin) and SM100/103
+    # (flashinfer_trtllm), not on SM80 (G-sglang-moe-runner-unpinned).
+    assert _planned_moe_modes(monkeypatch, "sglang", "moonshotai/Kimi-K2.5", 90) == {"int4_wo"}
+    assert _planned_moe_modes(monkeypatch, "sglang", "moonshotai/Kimi-K2.5", 100) == {"int4_wo"}
+    assert _planned_moe_modes(monkeypatch, "sglang", "moonshotai/Kimi-K2.5", 80) == set()
+    assert _planned_moe_modes(monkeypatch, "sglang", "nvidia/Kimi-K2.5-NVFP4", 90) == set()
+    assert _planned_moe_modes(monkeypatch, "sglang", "nvidia/Kimi-K2.5-NVFP4", 100) == {"nvfp4"}
 
 
 def test_sglang_marlin_is_declared_only_for_weight_only_modes():
@@ -739,85 +710,40 @@ def test_deepseek_minimax_and_nemotron_moe_quantization_is_artifact_specific():
         "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4": {"nvfp4"},
     }
 
+    expected_by_artifact = {
+        **shared_expected,
+        "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8": {"fp8"},
+        "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8": {"fp8"},
+    }
+    available_modes = {spec.name for spec in get_moe_quantization_specs()}
     for backend in ("sglang", "trtllm", "vllm"):
-        available_modes = {spec.name for spec in get_moe_quantization_specs(backend)}
-        expected_by_artifact = {
-            **shared_expected,
-            "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8": set() if backend == "sglang" else {"fp8"},
-        }
-        if backend == "vllm":
-            expected_by_artifact["nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8"] = {"fp8"}
-            expected_by_artifact["nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"] = set()
-            expected_by_artifact["nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4"] = set()
         for model_path, expected in expected_by_artifact.items():
             allowed = {mode for mode in available_modes if moe_model_allows_quantization(backend, model_path, mode)}
             assert allowed == expected, (backend, model_path)
 
 
-def test_gptoss_mxfp4_modes_are_additive_on_blackwell():
-    from collector.case_generator import get_moe_quantization_modes
+def test_gptoss_mxfp4_modes_are_additive_on_blackwell(monkeypatch):
+    model_path = "openai/gpt-oss-120b"
 
-    def selected_modes(backend, sm_version):
-        return {
-            mode
-            for mode in get_moe_quantization_modes(backend, sm_version=sm_version)
-            if moe_model_allows_quantization(backend, "openai/gpt-oss-120b", mode)
-        }
-
-    assert selected_modes("sglang", 100) == {"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"}
-    assert selected_modes("sglang", 109) == {"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"}
-    assert selected_modes("sglang", 110) == {"w4a16_mxfp4"}
-    assert selected_modes("sglang", 119) == {"w4a16_mxfp4"}
-    assert selected_modes("sglang", 90) == {"w4a16_mxfp4"}
-    assert selected_modes("trtllm", 90) == {"w4a16_mxfp4"}
-    assert selected_modes("trtllm", 100) == {"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"}
+    for backend in ("sglang", "trtllm", "vllm"):
+        assert _planned_moe_modes(monkeypatch, backend, model_path, 90) == {"w4a16_mxfp4"}, backend
+        assert _planned_moe_modes(monkeypatch, backend, model_path, 100) == {"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"}, backend
+    # SM120: SGLang has no verified w4a8 runner pin and vLLM serves MXFP4 there
+    # without MXFP8 activations (G-sglang-moe-runner-unpinned, G-vllm-moe-w4a8-mxfp4-sm120).
+    assert _planned_moe_modes(monkeypatch, "sglang", model_path, 120) == {"w4a16_mxfp4"}
+    assert _planned_moe_modes(monkeypatch, "vllm", model_path, 120) == {"w4a16_mxfp4"}
 
 
-def test_sglang_dsv4_native_w4a8_mode_is_sm100_interval_gated():
-    from collector.case_generator import get_moe_quantization_modes
+@pytest.mark.parametrize("backend", ["sglang", "trtllm", "vllm"])
+def test_dsv4_native_w4a8_mode_is_planned_from_sm100(monkeypatch, backend):
+    model_path = "deepseek-ai/DeepSeek-V4-Flash"
 
-    def selected_modes(sm_version):
-        return {
-            mode
-            for mode in get_moe_quantization_modes("sglang", sm_version=sm_version)
-            if moe_model_allows_quantization("sglang", "deepseek-ai/DeepSeek-V4-Flash", mode)
-        }
-
-    assert selected_modes(90) == set()
-    assert selected_modes(100) == {"w4a8_mxfp4_mxfp8"}
-    assert selected_modes(103) == {"w4a8_mxfp4_mxfp8"}
-    assert selected_modes(109) == {"w4a8_mxfp4_mxfp8"}
-    assert selected_modes(110) == set()
-    assert selected_modes(119) == set()
-    assert selected_modes(120) == set()
-
-
-def test_vllm_dsv4_native_w4a8_mode_is_sm100_interval_gated():
-    from collector.case_generator import get_moe_quantization_modes
-
-    def selected_modes(sm_version, *, mxfp4=True):
-        return {
-            mode
-            for mode in get_moe_quantization_modes(
-                "vllm",
-                sm_version=sm_version,
-                runtime_features={"per_block_fp8": True, "nvfp4": True, "mxfp4": mxfp4},
-            )
-            if moe_model_allows_quantization("vllm", "deepseek-ai/DeepSeek-V4-Flash", mode)
-        }
-
-    # The trtllm-gen MXFP4xMXFP8 kernel exists only on the SM100 capability
-    # family (10.x); SM90 serves this artifact as Marlin W4A16 and SM110+
-    # routes elsewhere, so the label must not be collected there.
-    assert selected_modes(90) == set()
-    assert selected_modes(100) == {"w4a8_mxfp4_mxfp8"}
-    assert selected_modes(103) == {"w4a8_mxfp4_mxfp8"}
-    assert selected_modes(109) == {"w4a8_mxfp4_mxfp8"}
-    assert selected_modes(110) == set()
-    assert selected_modes(119) == set()
-    assert selected_modes(120) == set()
-    # The mxfp4 runtime-feature gate must hold even inside the SM interval.
-    assert selected_modes(100, mxfp4=False) == set()
+    # The trtllm-gen MXFP4 x MXFP8 kernel starts at SM100 (capabilities.yaml floor).
+    assert _planned_moe_modes(monkeypatch, backend, model_path, 90) == set()
+    assert _planned_moe_modes(monkeypatch, backend, model_path, 100) == {"w4a8_mxfp4_mxfp8"}
+    assert _planned_moe_modes(monkeypatch, backend, model_path, 103) == {"w4a8_mxfp4_mxfp8"}
+    expected_sm120 = {"w4a8_mxfp4_mxfp8"} if backend == "trtllm" else set()
+    assert _planned_moe_modes(monkeypatch, backend, model_path, 120) == expected_sm120
 
 
 def test_sglang_mxfp4_quant_labels_select_explicit_activation_precision():
@@ -1129,7 +1055,7 @@ def test_kimi_k3_vllm_plan_activates_mla_module_ops():
     assert {"mla_context", "mla_generation"} <= sglang_plan.selected_ops
 
 
-def test_kimi_k3_moe_is_planned_per_framework_and_never_for_trtllm():
+def test_kimi_k3_scoped_run_activates_moe_for_sglang_and_vllm_only():
     # K3 has no trtllm serving lane. moe activation is framework-specific
     # (sglang/vllm), so a K3-scoped trtllm run plans NO moe at all — a
     # planned-op zero-case expansion with no logged drop is structurally
@@ -1140,20 +1066,11 @@ def test_kimi_k3_moe_is_planned_per_framework_and_never_for_trtllm():
     trtllm_plan = build_collection_case_plan(backend="trtllm", model_path="moonshotai/Kimi-K3")
     assert "moe" not in trtllm_plan.selected_ops
 
-    # Cross-model trtllm sweeps (getter runs with no model filter) still see
-    # the K3 moe row: the declared empty trtllm allowlist rejects EVERY mode,
-    # and the trtllm getter logs the fully-dropped model instead of silently
-    # expanding to zero.
-    from collector.case_generator import get_moe_quantization_modes, moe_model_allows_quantization
+    # A full-plan run plans K3's checkpoint modes on every backend.
+    from collector.case_generator import moe_model_allows_quantization
 
-    modes = get_moe_quantization_modes(
-        "trtllm",
-        sm_version=100,
-        runtime_features={"per_block_fp8": True, "nvfp4": True, "mxfp4": True},
-    )
-    assert modes  # the sweep itself is non-empty
-    for mode in modes:
-        assert not moe_model_allows_quantization("trtllm", "moonshotai/Kimi-K3", mode), mode
+    for backend in ("sglang", "trtllm", "vllm"):
+        assert moe_model_allows_quantization(backend, "moonshotai/Kimi-K3", "w4a8_mxfp4_mxfp8"), backend
 
 
 def test_dsa_module_prefix_context_sweeps_are_yaml_backed():
@@ -1165,29 +1082,17 @@ def test_dsa_module_prefix_context_sweeps_are_yaml_backed():
 
 
 def test_vllm_moe_quantization_metadata_is_yaml_backed():
-    from collector.case_generator import (
-        get_moe_quantization_modes,
-        get_moe_quantization_module_config,
-        moe_model_allows_quantization,
-    )
+    from collector.case_generator import get_moe_quantization_module_config, moe_model_allows_quantization
 
-    assert get_moe_quantization_modes("vllm", sm_version=90, runtime_features={"per_block_fp8": True}) == [
+    assert [spec.name for spec in get_moe_quantization_specs("vllm")] == [
         "bfloat16",
-        "int4_wo",
         "fp8",
         "fp8_block",
+        "int4_wo",
+        "nvfp4",
+        "w4a16_mxfp4",
+        "w4a8_mxfp4_mxfp8",
     ]
-    assert get_moe_quantization_modes(
-        "vllm",
-        sm_version=100,
-        runtime_features={"per_block_fp8": True, "nvfp4": True, "mxfp4": True},
-    ) == ["bfloat16", "int4_wo", "fp8", "fp8_block", "nvfp4", "w4a16_mxfp4", "w4a8_mxfp4_mxfp8"]
-    assert get_moe_quantization_modes(
-        "vllm",
-        sm_version=120,
-        runtime_version="0.24.0",
-        runtime_features={"per_block_fp8": True, "nvfp4": True, "mxfp4": True},
-    ) == ["bfloat16", "int4_wo", "fp8", "fp8_block", "nvfp4", "w4a16_mxfp4"]
 
     assert moe_model_allows_quantization("vllm", "openai/gpt-oss-20b", "w4a16_mxfp4")
     assert not moe_model_allows_quantization("vllm", "openai/gpt-oss-20b", "bfloat16")
@@ -2097,7 +2002,7 @@ def test_nemotron_super_fp8_vllm_moe_case_covers_missing_consumer_key(monkeypatc
     model_path = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8"
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
 
-    cases = get_common_moe_test_cases(backend="vllm")
+    cases = get_common_moe_test_cases()
 
     assert cases
     assert {case.model_name for case in cases} == {model_path}
@@ -2211,30 +2116,18 @@ def test_qwen38_max_plan_only_schedules_attention_on_compatible_collector():
     assert attention_ops <= trtllm_plan.selected_ops
 
 
-def test_qwen38_max_base_moe_quantization_is_fail_closed_by_framework():
-    model_path = "Qwen/Qwen3.8-2.4T-A95B"
-    expected_by_backend = {
-        "sglang": {"bfloat16", "fp8_block"},
-        "trtllm": set(),
-        "vllm": {"bfloat16", "fp8_block"},
-    }
-
-    for backend, expected in expected_by_backend.items():
-        available_modes = {spec.name for spec in get_moe_quantization_specs(backend)}
+@pytest.mark.parametrize(
+    ("model_path", "expected"),
+    [
+        ("Qwen/Qwen3.8-2.4T-A95B", {"bfloat16", "fp8_block"}),
+        ("RadixArk/Qwen3.8-2.4T-A95B-NVFP4", {"nvfp4"}),
+    ],
+)
+def test_qwen38_max_moe_rows_plan_their_checkpoint_modes(model_path, expected):
+    available_modes = {spec.name for spec in get_moe_quantization_specs()}
+    for backend in ("sglang", "trtllm", "vllm"):
         allowed = {mode for mode in available_modes if moe_model_allows_quantization(backend, model_path, mode)}
         assert allowed == expected, (backend, model_path, allowed)
-
-
-def test_radixark_qwen38_max_nvfp4_row_is_sglang_only():
-    model_path = "RadixArk/Qwen3.8-2.4T-A95B-NVFP4"
-    for backend in ("trtllm", "vllm"):
-        available_modes = {spec.name for spec in get_moe_quantization_specs(backend)}
-        allowed = {mode for mode in available_modes if moe_model_allows_quantization(backend, model_path, mode)}
-        assert allowed == set(), (backend, model_path, allowed)
-
-    sglang_modes = {spec.name for spec in get_moe_quantization_specs("sglang")}
-    sglang_allowed = {mode for mode in sglang_modes if moe_model_allows_quantization("sglang", model_path, mode)}
-    assert sglang_allowed == {"nvfp4"}, (model_path, sglang_allowed)
 
 
 def test_nemotron_ultra_quant_artifact_keeps_moe_path_but_reuses_mamba_profile(monkeypatch):

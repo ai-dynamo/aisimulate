@@ -33,9 +33,9 @@ COLLECTOR_ROOT = Path(__file__).resolve().parent
 BASE_OP_CASES_DIR = COLLECTOR_ROOT / "cases" / "base_ops"
 MODEL_CASES_DIR = COLLECTOR_ROOT / "cases" / "models"
 
-# Backend names a model_case_values row may target via `frameworks:`. A typo
-# here would otherwise silently exclude the row from its intended backend.
-_KNOWN_CASE_FRAMEWORKS = frozenset({"sglang", "trtllm", "vllm", "wideep"})
+# The backends that plan MoE from the shared quant-mode axis
+# (common_case_values.moe.quantization_modes). vllm_xpu keeps its own axis.
+_CUDA_MOE_BACKENDS = frozenset({"sglang", "trtllm", "vllm"})
 
 
 def _load_yaml_mapping(path: Path) -> dict:
@@ -1163,6 +1163,8 @@ class MoeCommonTestCase:
     token_expert_distribution: str
     power_law_alpha: Optional[float]
     architecture: str = ""  # config-derived (cases-YAML architecture); for model-family checks
+    # The checkpoint's quant modes (model row quantization_modes); None plans every mode.
+    quantization_modes: Optional[tuple[str, ...]] = None
     sglang_moe_backends: dict[str, object] = dataclasses.field(default_factory=dict)
     sglang_moe_activation: str = "silu"
     sglang_moe_is_gated: bool = True
@@ -1215,21 +1217,30 @@ def _moe_backend_values(backend: str) -> dict[str, object]:
     return get_base_common_case_values(f"moe_{backend}")
 
 
-def get_moe_quantization_specs(backend: str) -> list[MoeQuantizationSpec]:
-    """Return YAML-backed MoE quantization mode metadata for one backend."""
+def get_moe_quantization_specs(backend: str | None = None) -> list[MoeQuantizationSpec]:
+    """Return the YAML-backed MoE quant-mode axis.
 
-    values = _moe_backend_values(backend)
+    Without a backend (or for a CUDA backend) this is the axis every CUDA
+    backend shares, ``common_case_values.moe.quantization_modes``; vllm_xpu
+    has its own.
+    """
+
+    if backend is None or backend in _CUDA_MOE_BACKENDS:
+        backend, values = None, _required_base_common_case_values("moe")
+    else:
+        values = _moe_backend_values(backend)
+    section = "moe" if backend is None else f"moe_{backend}"
     raw_modes = values.get("quantization_modes", [])
     if not isinstance(raw_modes, list):
-        raise TypeError(f"common_case_values.moe_{backend}.quantization_modes must be a list")
+        raise TypeError(f"common_case_values.{section}.quantization_modes must be a list")
 
     specs = []
     for raw_mode in raw_modes:
         if not isinstance(raw_mode, dict):
-            raise TypeError(f"common_case_values.moe_{backend}.quantization_modes entries must be mappings")
+            raise TypeError(f"common_case_values.{section}.quantization_modes entries must be mappings")
         module_config = raw_mode.get("module_config", {})
         if not isinstance(module_config, dict):
-            raise TypeError(f"common_case_values.moe_{backend}.quantization_modes module_config must be a mapping")
+            raise TypeError(f"common_case_values.{section}.quantization_modes module_config must be a mapping")
         specs.append(
             MoeQuantizationSpec(
                 name=str(raw_mode["name"]),
@@ -1249,13 +1260,41 @@ def get_moe_quantization_specs(backend: str) -> list[MoeQuantizationSpec]:
                 allowed_model_paths=tuple(
                     _as_str_list(
                         raw_mode.get("allowed_model_paths", []),
-                        field_name=f"moe_{backend}.quantization_modes.allowed_model_paths",
+                        field_name=f"{section}.quantization_modes.allowed_model_paths",
                     )
                 ),
                 module_config=dict(module_config),
             )
         )
     return specs
+
+
+def moe_planned_modes(model_name: str, declared: Optional[tuple[str, ...]]) -> list[str]:
+    """Return the quant modes a MoE model row plans on every CUDA backend.
+
+    ``declared`` is the row's ``quantization_modes`` (its checkpoint's
+    quantization), or None for a row that declares none and so plans every
+    mode of the shared axis. A checkpoint-specific mode (one with
+    ``allowed_model_paths``) stays with the models that ship it.
+    """
+    specs = get_moe_quantization_specs()
+    if declared is not None:
+        unknown = sorted(set(declared) - {spec.name for spec in specs})
+        if unknown:
+            raise ValueError(f"MoE row {model_name!r} declares quantization_modes {unknown} not in the shared axis")
+    modes = []
+    for spec in specs:
+        if declared is not None and spec.name not in declared:
+            continue
+        if spec.allowed_model_paths and model_name not in spec.allowed_model_paths:
+            if declared is not None:
+                raise ValueError(
+                    f"MoE row {model_name!r} declares {spec.name}, but moe.quantization_modes "
+                    f"keeps {spec.name} to {list(spec.allowed_model_paths)}"
+                )
+            continue
+        modes.append(spec.name)
+    return modes
 
 
 def get_moe_quantization_modes(
@@ -1265,8 +1304,13 @@ def get_moe_quantization_modes(
     runtime_version: str = "",
     runtime_features: dict[str, bool] | None = None,
 ) -> list[str]:
-    """Return enabled MoE quantization modes after YAML SM/runtime-feature filtering."""
+    """Return vllm_xpu's enabled MoE quantization modes after YAML SM/runtime-feature filtering.
 
+    CUDA backends plan MoE through collector/op_plans.py instead.
+    """
+
+    if backend in _CUDA_MOE_BACKENDS:
+        raise ValueError(f"{backend} plans MoE through collector/op_plans.py, not per-backend quant modes")
     features = runtime_features or {}
     modes = []
     for spec in get_moe_quantization_specs(backend):
@@ -1326,15 +1370,35 @@ def get_sglang_moe_backend(test_case: MoeCommonTestCase, moe_type: str, sm_versi
     raise ValueError(f"No SGLang MoE backend for moe_type={moe_type!r}, sm_version={sm_version}")
 
 
+def _declared_moe_modes(model_case: dict[str, object]) -> Optional[tuple[str, ...]]:
+    """A MoE row's quantization_modes, rejecting per-backend mode policy.
+
+    A MoE row applies to every CUDA backend: ``frameworks`` and a CUDA
+    backend's ``framework_quantization`` allowed_modes/excluded_modes are not
+    allowed (framework_quantization keeps a backend's module_config only).
+    """
+    name = model_case.get("model_path")
+    if "frameworks" in model_case:
+        raise ValueError(f"MoE row {name!r} declares frameworks; MoE rows apply to every backend")
+    framework_quantization = model_case.get("framework_quantization") or {}
+    if not isinstance(framework_quantization, dict):
+        raise TypeError("model_case_values.moe.framework_quantization must be a mapping")
+    for backend in sorted(_CUDA_MOE_BACKENDS & set(framework_quantization)):
+        policy = sorted(set(framework_quantization[backend] or {}) - {"module_config"})
+        if policy:
+            raise ValueError(
+                f"MoE row {name!r} sets framework_quantization.{backend}.{policy}; "
+                "declare the checkpoint's modes in quantization_modes"
+            )
+    declared = model_case.get("quantization_modes")
+    if declared is None:
+        return None
+    return tuple(_as_str_list(declared, field_name=f"model_case_values.moe[{name}].quantization_modes"))
+
+
 def _model_moe_backend_quantization(model_name: str, backend: str) -> dict[str, object]:
     for model_case in _model_case_values("moe", apply_model_filter=False):
         if not _model_case_matches_path(model_case, model_name):
-            continue
-        raw_frameworks = model_case.get("frameworks")
-        if raw_frameworks is not None and backend not in _as_str_list(
-            raw_frameworks,
-            field_name="model_case_values.moe.frameworks",
-        ):
             continue
         framework_quantization = model_case.get("framework_quantization", {})
         if not isinstance(framework_quantization, dict):
@@ -1386,8 +1450,18 @@ def get_moe_quantization_module_config(
 
 
 def moe_model_allows_quantization(backend: str, model_name: str, moe_type: str) -> bool:
-    """Return whether backend YAML allows a MoE quantization mode for a model."""
+    """Return whether a model plans a MoE quantization mode on this backend.
 
+    Every CUDA backend plans the same modes for a model (:func:`moe_planned_modes`);
+    vllm_xpu keeps its own axis and per-model policy.
+    """
+
+    if backend in _CUDA_MOE_BACKENDS:
+        return any(
+            moe_type in moe_planned_modes(model_name, _declared_moe_modes(row))
+            for row in _model_case_values("moe", apply_model_filter=False)
+            if _model_case_matches_path(row, model_name)
+        )
     model_quantization = _model_moe_backend_quantization(model_name, backend)
     for spec in get_moe_quantization_specs(backend):
         if spec.name != moe_type:
@@ -1562,16 +1636,107 @@ def get_moe_backend_test_cases(backend: str) -> list[MoeCommonTestCase]:
     return test_cases
 
 
+def _moe_common_case(
+    model_config: dict[str, object],
+    quantization_modes: Optional[tuple[str, ...]],
+    *,
+    num_tokens_list: list[int],
+    tp: int,
+    ep: int,
+    token_expert_distribution: str,
+    power_law_alpha: Optional[float],
+) -> MoeCommonTestCase:
+    return MoeCommonTestCase(
+        num_tokens_list=num_tokens_list,
+        hidden_size=int(model_config["hidden_size"]),
+        inter_size=int(model_config["inter_size"]),
+        topk=int(model_config["topk"]),
+        num_experts=int(model_config["num_experts"]),
+        tp=tp,
+        ep=ep,
+        model_name=str(model_config["model_path"]),
+        token_expert_distribution=token_expert_distribution,
+        power_law_alpha=power_law_alpha,
+        architecture=str(model_config.get("architecture") or ""),
+        quantization_modes=quantization_modes,
+        sglang_moe_backends=dict(model_config.get("sglang_moe_backends") or {}),
+        sglang_moe_activation=str(model_config.get("sglang_moe_activation", "silu")),
+        sglang_moe_is_gated=bool(model_config.get("sglang_moe_is_gated", True)),
+        sglang_moe_has_bias=bool(model_config.get("sglang_moe_has_bias", False)),
+        sglang_moe_gemm1_alpha=(
+            None
+            if model_config.get("sglang_moe_gemm1_alpha") is None
+            else float(model_config["sglang_moe_gemm1_alpha"])
+        ),
+        sglang_moe_gemm1_clamp_limit=(
+            None
+            if model_config.get("sglang_moe_gemm1_clamp_limit") is None
+            else float(model_config["sglang_moe_gemm1_clamp_limit"])
+        ),
+        sglang_moe_swiglu_limit=(
+            None
+            if model_config.get("sglang_moe_swiglu_limit") is None
+            else float(model_config["sglang_moe_swiglu_limit"])
+        ),
+        sglang_moe_scoring_func=str(model_config.get("sglang_moe_scoring_func", "softmax")),
+        sglang_moe_routing_method_type=(
+            None
+            if model_config.get("sglang_moe_routing_method_type") is None
+            else str(model_config["sglang_moe_routing_method_type"])
+        ),
+        sglang_moe_routed_scaling_factor=(
+            None
+            if model_config.get("sglang_moe_routed_scaling_factor") is None
+            else float(model_config["sglang_moe_routed_scaling_factor"])
+        ),
+        sglang_moe_renormalize=bool(model_config.get("sglang_moe_renormalize", True)),
+        sglang_moe_has_correction_bias=bool(model_config.get("sglang_moe_has_correction_bias", False)),
+        sglang_moe_num_expert_group=(
+            None
+            if model_config.get("sglang_moe_num_expert_group") is None
+            else int(model_config["sglang_moe_num_expert_group"])
+        ),
+        sglang_moe_topk_group=(
+            None if model_config.get("sglang_moe_topk_group") is None else int(model_config["sglang_moe_topk_group"])
+        ),
+        sglang_moe_apply_router_weight_on_input=bool(
+            model_config.get("sglang_moe_apply_router_weight_on_input", False)
+        ),
+    )
+
+
+def moe_model_layer(
+    model_name: str, hidden_size: int, inter_size: int, topk: int, num_experts: int
+) -> MoeCommonTestCase:
+    """Return the MoE model row with this name and layer shape (its routing, activation and runner pins).
+
+    Its sweep fields (tokens, TP, EP, distribution) are placeholders.
+    """
+    for model_config in _model_case_values("moe", apply_model_filter=False):
+        shape = tuple(int(model_config[key]) for key in ("hidden_size", "inter_size", "topk", "num_experts"))
+        if model_config.get("model_path") == model_name and shape == (hidden_size, inter_size, topk, num_experts):
+            return _moe_common_case(
+                model_config,
+                _declared_moe_modes(model_config),
+                num_tokens_list=[],
+                tp=1,
+                ep=1,
+                token_expert_distribution="balanced",
+                power_law_alpha=0.0,
+            )
+    raise KeyError(f"no MoE model row {model_name!r} with shape {(hidden_size, inter_size, topk, num_experts)}")
+
+
 def get_common_moe_test_cases(
     *,
-    backend: str | None = None,
     required_expert_parallel_size: int | None = None,
 ):
     """Return declared MoE recipes with optional runtime constraints.
 
-    ``num_experts % expert_parallel_size == 0`` is universal MoE sharding
-    math, so callers that collect one fixed EP world declare that requirement
-    here rather than silently discarding generated shapes in collector code.
+    Every model row applies to every backend. ``num_experts %
+    expert_parallel_size == 0`` is universal MoE sharding math, so callers
+    that collect one fixed EP world declare that requirement here rather than
+    silently discarding generated shapes in collector code.
     """
     if required_expert_parallel_size is not None and required_expert_parallel_size <= 0:
         raise ValueError(f"required_expert_parallel_size must be positive, got {required_expert_parallel_size}")
@@ -1581,70 +1746,31 @@ def get_common_moe_test_cases(
     ep_list = _as_int_list(moe_sweep.get("expert_parallel_sizes"), field_name="moe.expert_parallel_sizes")
     num_gpu_list = _as_int_list(moe_sweep.get("gpu_counts"), field_name="moe.gpu_counts")
     token_distributions = _moe_token_expert_distributions(moe_sweep)
-
-    allowed_parallel_topologies = None
-    if backend is not None:
-        raw_topologies = _moe_backend_values(backend).get("parallel_topologies")
-        if raw_topologies is not None:
-            if not isinstance(raw_topologies, list):
-                raise TypeError(f"common_case_values.moe_{backend}.parallel_topologies must be a list")
-            allowed_parallel_topologies = set()
-            for index, topology in enumerate(raw_topologies):
-                if not isinstance(topology, dict):
-                    raise TypeError(f"common_case_values.moe_{backend}.parallel_topologies[{index}] must be a mapping")
-                topology_tps = _as_int_list(
-                    topology.get("tensor_parallel_sizes"),
-                    field_name=f"moe_{backend}.parallel_topologies[{index}].tensor_parallel_sizes",
-                )
-                topology_eps = _as_int_list(
-                    topology.get("expert_parallel_sizes"),
-                    field_name=f"moe_{backend}.parallel_topologies[{index}].expert_parallel_sizes",
-                )
-                allowed_parallel_topologies.update(itertools.product(topology_tps, topology_eps))
-
-    model_config_list = []
-    for model_config in _model_case_values("moe"):
-        raw_frameworks = model_config.get("frameworks")
-        if raw_frameworks is not None:
-            frameworks = _as_str_list(raw_frameworks, field_name="model_case_values.moe.frameworks")
-            unknown_frameworks = sorted(set(frameworks) - _KNOWN_CASE_FRAMEWORKS)
-            if unknown_frameworks:
-                raise ValueError(
-                    f"model_case_values.moe row {model_config.get('model_path')!r} declares unknown "
-                    f"frameworks {unknown_frameworks}; known: {sorted(_KNOWN_CASE_FRAMEWORKS)}"
-                )
-            if backend is not None and backend not in frameworks:
-                continue
-        model_config_list.append(model_config)
+    model_config_list = _model_case_values("moe")
+    declared_modes = [_declared_moe_modes(model_config) for model_config in model_config_list]
 
     test_cases: list[MoeCommonTestCase] = []
 
     for (
         num_gpu,  # starting from fewer gpus. workaround for potential buffer bug in moe impl.
-        model_config,
+        (model_config, quantization_modes),
         tp,
         ep,
         (token_distribution, power_law_alpha),
     ) in itertools.product(
         num_gpu_list,
-        model_config_list,
+        list(zip(model_config_list, declared_modes, strict=True)),
         tp_list,
         ep_list,
         token_distributions,
     ):
-        hs = int(model_config["hidden_size"])
         inter_s = int(model_config["inter_size"])
-        topk = int(model_config["topk"])
         num_experts = int(model_config["num_experts"])
-        model_name = str(model_config["model_path"])
 
         if required_expert_parallel_size is not None and num_experts % required_expert_parallel_size != 0:
             continue
         max_tp_exclusive = model_config.get("max_tp_exclusive")
         if max_tp_exclusive is not None and tp >= int(max_tp_exclusive):
-            continue
-
-        if allowed_parallel_topologies is not None and (tp, ep) not in allowed_parallel_topologies:
             continue
 
         if tp * ep != num_gpu:
@@ -1658,63 +1784,14 @@ def get_common_moe_test_cases(
             continue
 
         test_cases.append(
-            MoeCommonTestCase(
+            _moe_common_case(
+                model_config,
+                quantization_modes,
                 num_tokens_list=num_tokens,
-                hidden_size=hs,
-                inter_size=inter_s,
-                topk=topk,
-                num_experts=num_experts,
                 tp=tp,
                 ep=ep,
-                model_name=model_name,
                 token_expert_distribution=token_distribution,
                 power_law_alpha=power_law_alpha,
-                architecture=str(model_config.get("architecture") or ""),
-                sglang_moe_backends=dict(model_config.get("sglang_moe_backends") or {}),
-                sglang_moe_activation=str(model_config.get("sglang_moe_activation", "silu")),
-                sglang_moe_is_gated=bool(model_config.get("sglang_moe_is_gated", True)),
-                sglang_moe_has_bias=bool(model_config.get("sglang_moe_has_bias", False)),
-                sglang_moe_gemm1_alpha=(
-                    None
-                    if model_config.get("sglang_moe_gemm1_alpha") is None
-                    else float(model_config["sglang_moe_gemm1_alpha"])
-                ),
-                sglang_moe_gemm1_clamp_limit=(
-                    None
-                    if model_config.get("sglang_moe_gemm1_clamp_limit") is None
-                    else float(model_config["sglang_moe_gemm1_clamp_limit"])
-                ),
-                sglang_moe_swiglu_limit=(
-                    None
-                    if model_config.get("sglang_moe_swiglu_limit") is None
-                    else float(model_config["sglang_moe_swiglu_limit"])
-                ),
-                sglang_moe_scoring_func=str(model_config.get("sglang_moe_scoring_func", "softmax")),
-                sglang_moe_routing_method_type=(
-                    None
-                    if model_config.get("sglang_moe_routing_method_type") is None
-                    else str(model_config["sglang_moe_routing_method_type"])
-                ),
-                sglang_moe_routed_scaling_factor=(
-                    None
-                    if model_config.get("sglang_moe_routed_scaling_factor") is None
-                    else float(model_config["sglang_moe_routed_scaling_factor"])
-                ),
-                sglang_moe_renormalize=bool(model_config.get("sglang_moe_renormalize", True)),
-                sglang_moe_has_correction_bias=bool(model_config.get("sglang_moe_has_correction_bias", False)),
-                sglang_moe_num_expert_group=(
-                    None
-                    if model_config.get("sglang_moe_num_expert_group") is None
-                    else int(model_config["sglang_moe_num_expert_group"])
-                ),
-                sglang_moe_topk_group=(
-                    None
-                    if model_config.get("sglang_moe_topk_group") is None
-                    else int(model_config["sglang_moe_topk_group"])
-                ),
-                sglang_moe_apply_router_weight_on_input=bool(
-                    model_config.get("sglang_moe_apply_router_weight_on_input", False)
-                ),
             )
         )
 

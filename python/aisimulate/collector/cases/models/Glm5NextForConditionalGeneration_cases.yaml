@@ -93,13 +93,7 @@ model_case_values:
       # recorded in moe_perf.triton_config.jsonl (sglang/collect_moe.py).
       sglang_moe_backends:
         fp8_block: {90: triton, 100: flashinfer_trtllm, 103: flashinfer_trtllm}
-      framework_quantization:
-        sglang:
-          allowed_modes: [fp8_block]
-        vllm:
-          allowed_modes: [fp8_block]
-        trtllm:
-          allowed_modes: []
+      quantization_modes: [fp8_block]
     - model_path: nvidia/GLM-5.3-Flash-NVFP4
       hidden_size: 4096
       inter_size: 2048
@@ -119,13 +113,7 @@ model_case_values:
       # resolved args record moe_runner_backend 'flashinfer_trtllm').
       sglang_moe_backends:
         nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
-      framework_quantization:
-        sglang:
-          allowed_modes: [nvfp4]
-        vllm:
-          allowed_modes: [nvfp4]
-        trtllm:
-          allowed_modes: []
+      quantization_modes: [nvfp4]
 
   # KDA. GLM-5.3-Flash KDA structural tuple per attention-TP
   # shard (text_config.linear_attn_config: 64 heads x head_dim 128,

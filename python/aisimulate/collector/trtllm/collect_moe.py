@@ -17,7 +17,6 @@ import importlib
 import inspect
 import json
 import os
-import random
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
@@ -51,12 +50,7 @@ except ImportError:
 NON_GATED_MOE_MODELS = ["Nemotron-3"]
 _MXFP4_MOE_TYPES = {"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"}
 
-from collector.case_generator import (
-    get_common_moe_test_cases,
-    get_moe_quantization_modes,
-    get_moe_quantization_module_config,
-    moe_model_allows_quantization,
-)
+from collector.case_generator import get_common_moe_test_cases, get_moe_quantization_module_config
 from collector.helper import (
     EXIT_CODE_RESTART,
     balanced_logits,
@@ -65,6 +59,7 @@ from collector.helper import (
     log_perf,
     power_law_logits_v3,
 )
+from collector.op_plans import plan_cases
 
 aic_debug = int(os.getenv("aic_moe_debug", "0"))  # noqa: SIM112
 
@@ -120,54 +115,6 @@ def _moe_model_behavior(model_name: str) -> str:
     return "swiglu"
 
 
-def _moe_execution_key(common_moe_testcase, moe_type: str, min_latency_mode: bool):
-    module_config = get_moe_quantization_module_config(
-        "trtllm",
-        moe_type,
-        model_name=common_moe_testcase.model_name,
-    )
-    return (
-        moe_type,
-        tuple(common_moe_testcase.num_tokens_list),
-        common_moe_testcase.hidden_size,
-        common_moe_testcase.inter_size,
-        common_moe_testcase.topk,
-        common_moe_testcase.num_experts,
-        common_moe_testcase.tp,
-        common_moe_testcase.ep,
-        min_latency_mode,
-        common_moe_testcase.token_expert_distribution,
-        common_moe_testcase.power_law_alpha,
-        _moe_model_behavior(common_moe_testcase.model_name),
-        json.dumps(module_config, sort_keys=True, separators=(",", ":")),
-    )
-
-
-def _moe_consumer_keys(common_moe_testcase, moe_type: str, min_latency_mode: bool):
-    """Return every consumer-visible key emitted by one getter task."""
-    distribution = (
-        f"power_law_{common_moe_testcase.power_law_alpha}"
-        if common_moe_testcase.token_expert_distribution == "power_law"
-        else common_moe_testcase.token_expert_distribution
-    )
-    table = "low_latency" if min_latency_mode else "default"
-    return tuple(
-        (
-            table,
-            moe_type,
-            distribution,
-            common_moe_testcase.topk,
-            common_moe_testcase.num_experts,
-            common_moe_testcase.hidden_size,
-            common_moe_testcase.inter_size,
-            common_moe_testcase.tp,
-            common_moe_testcase.ep,
-            num_tokens,
-        )
-        for num_tokens in common_moe_testcase.num_tokens_list
-    )
-
-
 def gc_collect():
     """Run GC and clear CUDA cache to reduce fragmentation between runs."""
     for _ in range(2):
@@ -219,105 +166,7 @@ def cleanup_empty_json_files(directory):
 
 
 def get_moe_test_cases():
-    """Build list of MoE test case tuples for trtllm >= 1.1 (power_law, SM-dependent quant modes)."""
-    sm_version = get_sm_version()
-    # Quant-mode axis (SM floors/intervals) is declared on moe.yaml's
-    # moe_trtllm quantization_modes and filtered here, same as the sglang and
-    # vllm collectors. The previous hand-coded if-chain silently bypassed the
-    # YAML axis, so quant-mode gates (e.g. w4a16_mxfp4 max_sm_exclusive: 120)
-    # never took effect for trtllm. Mode-by-mode the YAML axis reproduces the
-    # old chain exactly, except w4a16_mxfp4 at sm>=120 which is the sanctioned
-    # gate (see the citation on its moe.yaml entry). int4_wo stays in the
-    # sweep (min_sm: 100) so unsupported model rows fail in TensorRT-LLM
-    # itself instead of stopping at AIC validation.
-    moe_list = get_moe_quantization_modes("trtllm", sm_version=sm_version)
-
-    test_cases = []
-    seen = set()
-    consumer_key_owners = {}
-    quant_policy_drops = {}
-    models_with_cases = set()
-
-    for common_moe_testcase in get_common_moe_test_cases():
-        model_name = common_moe_testcase.model_name
-
-        for moe_type in moe_list:
-            if not moe_model_allows_quantization("trtllm", model_name, moe_type):
-                quant_policy_drops[model_name] = quant_policy_drops.get(model_name, 0) + 1
-                continue
-            models_with_cases.add(model_name)
-
-            # Alignment constraints (w4afp8 %128, fp8_block 128x128 block
-            # scales, the TLLM_CHECK weight-bits alignment) are enforced in
-            # run_moe_torch as cited, classified raises — generation-time
-            # drops are sanctioned for memory feasibility only
-            # (layer_permissions.md: execute or raise).
-
-            min_latency_mode_options = [False]
-
-            if moe_type == "nvfp4" and get_sm_version() in (100, 103) and common_moe_testcase.num_experts <= 256:
-                # SM103 treated as SM100 (owner decision 2026-10-05: "sm103 可以认为等价sm100" —
-                # same capability major, same trtllm-gen kernel family; re-verify on a B300 box).
-                # FIXME: recent version only supports SM100 for min-latency mode.
-                # current support, DS router only support up to 256 experts.
-                # Renormalize router only support <=128 experts. trtllmgen kernels only
-                # support renormalize, ds and llama router.
-                min_latency_mode_options.append(True)
-
-            for min_latency_mode in min_latency_mode_options:
-                num_tokens_list = common_moe_testcase.num_tokens_list
-                if not num_tokens_list:
-                    continue
-                execution_key = _moe_execution_key(common_moe_testcase, moe_type, min_latency_mode)
-                if execution_key in seen:
-                    continue
-                consumer_keys = _moe_consumer_keys(common_moe_testcase, moe_type, min_latency_mode)
-                for consumer_key in consumer_keys:
-                    previous_owner = consumer_key_owners.get(consumer_key)
-                    if previous_owner is not None and previous_owner[0] != execution_key:
-                        previous_model = previous_owner[1]
-                        raise ValueError(
-                            "TRT-LLM MoE population collision: "
-                            f"models {previous_model!r} and {model_name!r} map distinct benchmark "
-                            f"invocations to consumer key {consumer_key!r}; "
-                            "the current moe_perf consumer cannot represent both"
-                        )
-                for consumer_key in consumer_keys:
-                    consumer_key_owners[consumer_key] = (execution_key, model_name)
-                seen.add(execution_key)
-                test_cases.append(
-                    [
-                        moe_type,
-                        num_tokens_list,
-                        common_moe_testcase.hidden_size,
-                        common_moe_testcase.inter_size,
-                        common_moe_testcase.topk,
-                        common_moe_testcase.num_experts,
-                        common_moe_testcase.tp,
-                        common_moe_testcase.ep,
-                        min_latency_mode,
-                        common_moe_testcase.model_name,
-                        common_moe_testcase.token_expert_distribution,
-                        common_moe_testcase.power_law_alpha,
-                    ]
-                )
-
-    # Zero-case expansions must be explainable from logged drops
-    # (case_authoring.md): name every planned model whose declared trtllm
-    # quant policy excluded all of its moe cases (mirrors the vllm getter).
-    fully_dropped = sorted(set(quant_policy_drops) - models_with_cases)
-    if fully_dropped:
-        print(
-            f"moe: dropped all cases for {len(fully_dropped)} model(s) by declared trtllm "
-            f"quantization policy (allowed_modes): {', '.join(fully_dropped)}"
-        )
-
-    # Try to optimize number of autotune cache hits by shuffling test cases.
-    # This makes sure the same cache keys are far apart from each other.
-    random.seed(42)
-    random.shuffle(test_cases)
-
-    return test_cases
+    return plan_cases("moe", "trtllm", get_sm_version())
 
 
 def _declared_moe_routing(model_name: str):
@@ -437,17 +286,7 @@ def _run_moe_case(
     dtype = torch.bfloat16
     quant_group_size = 128
     quant_algo = None
-    # FIXME(kernel-limit): TRT-LLM >= 1.3.0rc29 MoE resolution has no implementation for W4A16 on
-    # SM100/103 ("no MoE implementation can serve this layer ... CutlassFusedMoE: quant_unsupported
-    # (quant_algo=W4A16)", 114/114 int4_wo cases, b200 job 469988228). Serving cannot load the
-    # W4A16 checkpoint either (benchmarks/evidence/collector/op-probe-2026-10/results/sm100/trtllm-1.3.0rc29.yaml:
-    # Kimi-K2.5 fail, finding sm100_probe_failures_recheck_2026_10_04 (g)). The lane is unreachable on this pin
-    # (moe_resolution.py:665 @1.3.0rc29 raises it), not a per-shape failure; refuse before building weights.
-    if moe_type == "int4_wo" and get_sm_version() in (100, 103):
-        raise RuntimeError(
-            "FIXME(kernel-limit): TRT-LLM int4_wo (W4A16) MoE has no implementation on SM100/103 at "
-            f"{_TRTLLM_VERSION}; serving fails identically (Kimi-K2.5 identity probe)"
-        )
+    # int4_wo on SM100/103: G-trtllm-moe-int4-wo-no-implementation (backend gap, never queued).
     if moe_type == "fp8_block":
         quant_algo = QuantAlgo.FP8_BLOCK_SCALES
     elif moe_type == "w4afp8":

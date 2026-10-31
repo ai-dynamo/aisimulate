@@ -175,12 +175,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import torch
-from collector.case_generator import (
-    get_common_moe_test_cases,
-    get_moe_quantization_modes,
-    get_moe_quantization_module_config,
-    moe_model_allows_quantization,
-)
+from collector.case_generator import get_moe_quantization_module_config
 from collector.helper import (
     balanced_logits,
     benchmark_with_power,
@@ -189,6 +184,7 @@ from collector.helper import (
     log_perf,
     power_law_logits_v3,
 )
+from collector.op_plans import plan_cases
 from vllm.version import __version__ as vllm_version
 
 aic_debug = int(os.getenv("aic_moe_debug", "0"))  # noqa: SIM112
@@ -383,127 +379,8 @@ def _resolve_moe_runtime_config(model_name: str, module_config: dict) -> dict:
     }
 
 
-def _moe_execution_key(common_moe_testcase, moe_type: str):
-    module_config = get_moe_quantization_module_config(
-        "vllm",
-        moe_type,
-        model_name=common_moe_testcase.model_name,
-    )
-    routing_config = _resolve_moe_runtime_config(common_moe_testcase.model_name, module_config)
-    return (
-        moe_type,
-        tuple(common_moe_testcase.num_tokens_list),
-        common_moe_testcase.hidden_size,
-        common_moe_testcase.inter_size,
-        common_moe_testcase.topk,
-        common_moe_testcase.num_experts,
-        common_moe_testcase.tp,
-        common_moe_testcase.ep,
-        common_moe_testcase.token_expert_distribution,
-        common_moe_testcase.power_law_alpha,
-        json.dumps(module_config, sort_keys=True, separators=(",", ":")),
-        json.dumps(routing_config, sort_keys=True, separators=(",", ":")),
-    )
-
-
-def _moe_consumer_keys(common_moe_testcase, moe_type: str):
-    """Return every consumer-visible key emitted by one getter task."""
-    distribution = (
-        f"power_law_{common_moe_testcase.power_law_alpha}"
-        if common_moe_testcase.token_expert_distribution == "power_law"
-        else common_moe_testcase.token_expert_distribution
-    )
-    return tuple(
-        (
-            moe_type,
-            distribution,
-            common_moe_testcase.topk,
-            common_moe_testcase.num_experts,
-            common_moe_testcase.hidden_size,
-            common_moe_testcase.inter_size,
-            common_moe_testcase.tp,
-            common_moe_testcase.ep,
-            num_tokens,
-        )
-        for num_tokens in common_moe_testcase.num_tokens_list
-    )
-
-
 def get_moe_test_cases():
-    """Generate MoE test cases"""
-
-    sm = get_sm_version()
-    enabled_moe_types = get_moe_quantization_modes(
-        "vllm",
-        sm_version=sm,
-        runtime_version=vllm_version,
-        runtime_features={
-            "per_block_fp8": True,
-            "nvfp4": True,
-            "mxfp4": True,
-        },
-    )
-
-    test_cases = []
-    seen = set()
-    consumer_key_owners = {}
-    quant_policy_drops = {}
-    models_with_cases = set()
-
-    for common_moe_testcase in get_common_moe_test_cases(backend="vllm"):
-        model_name = common_moe_testcase.model_name
-
-        for moe_type in enabled_moe_types:
-            if not moe_model_allows_quantization("vllm", model_name, moe_type):
-                quant_policy_drops[model_name] = quant_policy_drops.get(model_name, 0) + 1
-                continue
-            models_with_cases.add(model_name)
-
-            execution_key = _moe_execution_key(common_moe_testcase, moe_type)
-            if execution_key in seen:
-                continue
-            consumer_keys = _moe_consumer_keys(common_moe_testcase, moe_type)
-            for consumer_key in consumer_keys:
-                previous_owner = consumer_key_owners.get(consumer_key)
-                if previous_owner is not None and previous_owner[0] != execution_key:
-                    previous_model = previous_owner[1]
-                    raise ValueError(
-                        "vLLM MoE population collision: "
-                        f"models {previous_model!r} and {model_name!r} map distinct benchmark "
-                        f"invocations to consumer key {consumer_key!r}; "
-                        "the current moe_perf consumer cannot represent both"
-                    )
-            for consumer_key in consumer_keys:
-                consumer_key_owners[consumer_key] = (execution_key, model_name)
-            seen.add(execution_key)
-
-            test_cases.append(
-                [
-                    moe_type,
-                    common_moe_testcase.num_tokens_list,
-                    common_moe_testcase.hidden_size,
-                    common_moe_testcase.inter_size,
-                    common_moe_testcase.topk,
-                    common_moe_testcase.num_experts,
-                    common_moe_testcase.tp,
-                    common_moe_testcase.ep,
-                    common_moe_testcase.model_name,
-                    common_moe_testcase.token_expert_distribution,
-                    common_moe_testcase.power_law_alpha,
-                ]
-            )
-
-    # Zero-case expansions must be explainable from logged drops
-    # (case_authoring.md): name every planned model whose declared vllm quant
-    # policy excluded all of its moe cases.
-    fully_dropped = sorted(set(quant_policy_drops) - models_with_cases)
-    if fully_dropped:
-        print(
-            f"moe: dropped all cases for {len(fully_dropped)} model(s) by declared vllm "
-            f"quantization policy (allowed_modes): {', '.join(fully_dropped)}"
-        )
-
-    return test_cases
+    return plan_cases("moe", "vllm", get_sm_version())
 
 
 def run_moe_torch(

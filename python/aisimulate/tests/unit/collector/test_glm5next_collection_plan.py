@@ -62,26 +62,24 @@ def test_gemm_widths_reach_both_checkpoints_with_the_full_token_sweep(monkeypatc
     assert (8192, 12288, 4096) in keys
 
 
+@pytest.mark.parametrize("backend", ["sglang", "trtllm", "vllm"])
 @pytest.mark.parametrize(
-    "model_path,backend,allowed,blocked",
+    "model_path,allowed,blocked",
     [
-        (FP8, "vllm", "fp8_block", "nvfp4"),
-        (FP8, "sglang", "fp8_block", "nvfp4"),
-        (NVFP4, "vllm", "nvfp4", "fp8_block"),
-        (NVFP4, "sglang", "nvfp4", "fp8_block"),
+        (FP8, "fp8_block", "nvfp4"),
+        (NVFP4, "nvfp4", "fp8_block"),
     ],
 )
 def test_moe_rows_are_quant_distinct_per_checkpoint(model_path, backend, allowed, blocked):
     assert moe_model_allows_quantization(backend, model_path, allowed)
     assert not moe_model_allows_quantization(backend, model_path, blocked)
     assert not moe_model_allows_quantization(backend, model_path, "bfloat16")
-    assert not moe_model_allows_quantization("trtllm", model_path, allowed)
 
 
 @pytest.mark.parametrize("model_path", [FP8, NVFP4])
 def test_sglang_moe_rows_carry_serving_routing_and_pure_tp(monkeypatch, model_path):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
-    cases = [c for c in get_common_moe_test_cases(backend="sglang") if c.model_name == model_path]
+    cases = [c for c in get_common_moe_test_cases() if c.model_name == model_path]
     assert cases
     assert {(c.hidden_size, c.inter_size, c.topk, c.num_experts) for c in cases} == {(4096, 2048, 8, 288)}
     assert {2, 4} <= {c.tp for c in cases if c.ep == 1}
@@ -101,13 +99,15 @@ def test_sglang_moe_rows_carry_serving_routing_and_pure_tp(monkeypatch, model_pa
             assert get_sglang_moe_backend(case, mode, 90) == "triton"
 
 
-@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("backend", ["sglang", "trtllm", "vllm"])
 @pytest.mark.parametrize("model_path", [FP8, NVFP4])
 def test_pure_tp_moe_shards_are_planned(monkeypatch, backend, model_path):
     # Which TP fits is per-system capacity (NVFP4 TP1 on B300/GB300, FP8 TP8 on
     # Hopper); every pure-TP shard 1/2/4/8 with EP1 must be planned.
+    from collector.op_plans import plan
+
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
-    cases = [c for c in get_common_moe_test_cases(backend=backend) if c.model_name == model_path]
+    cases = [c for c in plan("moe", backend, 100).cases if c.model_name == model_path]
     assert {1, 2, 4, 8} <= {c.tp for c in cases if c.ep == 1}
 
 
@@ -155,13 +155,14 @@ def test_vllm_nvfp4_uses_modelopt_only_for_the_glm53flash_checkpoint(monkeypatch
     assert (qc["quant_method"], qc["quant_algo"]) == ("modelopt", "NVFP4")
 
 
-def test_sglang_nvfp4_allowlist_admits_glm53flash_nvfp4_only():
-    import yaml
+def test_glm53flash_moe_rows_declare_their_checkpoint_modes():
+    from collector.case_generator import _model_case_values
 
-    base = yaml.safe_load((REPO_ROOT / "collector/cases/base_ops/moe.yaml").read_text())
-    modes = {m["name"]: m for m in base["common_case_values"]["moe_sglang"]["quantization_modes"]}
-    assert NVFP4 in modes["nvfp4"]["allowed_model_paths"]
-    assert FP8 not in modes["nvfp4"]["allowed_model_paths"]
+    modes = {
+        row["model_path"]: row.get("quantization_modes") for row in _model_case_values("moe", apply_model_filter=False)
+    }
+    assert modes[FP8] == ["fp8_block"]
+    assert modes[NVFP4] == ["nvfp4"]
 
 
 def test_glm_case_file_declares_no_wideep_and_no_unregistered_ops():

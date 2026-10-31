@@ -163,8 +163,10 @@ A queued case has two legal collector outcomes: execute it, or raise
   or a quant-axis `min_sm` / cited `max_sm_exclusive`. When the hardware can
   run a dtype but this backend's collector cannot, add a `backend_gaps` entry
   with a guard note. Never filter them in a getter or with a hard-coded SM
-  check. GEMM is the reference: its getters are one line that calls the
-  shared op plan (`case_authoring.md`, "Op plans").
+  check. GEMM and MoE are the reference: their getters are one line that
+  calls the shared op plan (`case_authoring.md`, "Op plans"); a backend
+  whose run function needs more arguments declares `rows` there (MoE:
+  SGLang's routing and runner pins, TRT-LLM's min-latency row).
 - **Everything finer runs.** A shape boundary, a head count or one
   framework's own limit fails and is recorded. Do not prune it and do not
   narrow a shared grid for one framework. Count the failures per consumer key

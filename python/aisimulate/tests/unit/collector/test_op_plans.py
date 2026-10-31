@@ -85,8 +85,11 @@ def test_only_whole_regions_are_left_out(op, backend):
 @pytest.mark.parametrize("op", sorted(OP_PLANS))
 def test_case_string_keeps_the_list_form_of_case_ids(op):
     case = OP_PLANS[op].expand()[0]
+    listed = ast.literal_eval(str(case))
 
-    assert str(case) == repr(case) == str(list(case))
+    assert str(case) == repr(case)
+    assert isinstance(listed, list)
+    assert [tuple(value) if isinstance(value, list) else value for value in listed] == list(case)
 
 
 @pytest.mark.parametrize("op", sorted(OP_PLANS))
