@@ -118,7 +118,7 @@ The `optimization` section is required, even when its target uses a default.
 
 | Knob | Default | Default Range | Preset | Rules |
 |---|---:|---|---|---|
-| `optimization.target` | `throughput` | `x` | `-` | Maximize `throughput`, `throughput_per_gpu`, `throughput_per_user`, `goodput`, or `goodput_per_gpu`; minimize `ttft`, `e2e_latency`, or `min_gpus`; or compute `pareto`. |
+| `optimization.target` | `throughput` | `x` | `-` | Maximize `throughput`, `throughput_per_gpu`, `throughput_per_user`, `goodput`, or `goodput_per_gpu`; minimize `ttft`, `e2e_latency`, or `min_gpus`; or compute `pareto`. With `--stack dynamo`, `min_gpus` accepts `router` and rejects `planner`. |
 | `optimization.hardware` | `null` | `x` | `-` | One nonempty hardware identifier; required for `engine.hardware: auto`. |
 | `optimization.strict_sla` | `false` | `x` | `-` | When true, reject candidates whose aggregate mean metrics exceed any configured SLA bound before ranking or Pareto analysis. |
 | `optimization.constraints.min_candidate_gpus` | `null` | `x` | `-` | Positive when set and no greater than the maximum. |

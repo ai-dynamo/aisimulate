@@ -124,6 +124,13 @@ engine-only configuration engine-only.
 1 contract. Replacing the legacy `aic` load-model name with an implementation-neutral public name is
 deferred until the Router exposes that name.
 
+`optimization.target: min_gpus` accepts a `router` section. The Router adds no GPUs and keeps the
+worker pool static, so recommendations still rank qualifying candidates by provisioned GPU count.
+Set `router.policy: kv_router` to size a KV-routed deployment; see
+[minimum GPUs](../sweeper/optimization-goals.md#minimum-gpus). `min_gpus` requires fixed synthetic
+traffic whose requests share no prompt prefixes, so KV routing can change only load placement in
+these searches; prefix-cache affinity gains do not appear in the result.
+
 <a id="planner-dynamo-adapter"></a>
 
 ## Planner configuration
@@ -194,8 +201,10 @@ interval, and the winning predictor mapping is materialized into the candidate.
 are not covered by a preset. `predict` may set a concrete target and otherwise uses `throughput`. In
 `recommend`, target is derived: throughput targets map to `throughput`, `ttft` and `e2e_latency`
 map to `latency`, and goodput targets map to `sla`. Pareto uses `sla` when it includes a goodput
-objective and otherwise uses `throughput`. Thus `planner: {policy: enabled}` is a valid minimal
-prediction configuration: the production Planner normalizes the default target to load-only scaling.
+objective and otherwise uses `throughput`. `min_gpus` has no Planner target: it rejects a `planner`
+section because autoscaling makes the provisioned GPU count time-varying. Thus
+`planner: {policy: enabled}` is a valid minimal prediction configuration: the production Planner
+normalizes the default target to load-only scaling.
 
 Throughput-based Planner scaling is legal only for the `sla` target with concrete
 `evaluation.sla.ttft_ms` and `evaluation.sla.itl_ms`. For `throughput`, `latency`, or `load` Planner

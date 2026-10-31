@@ -141,6 +141,39 @@ def test_min_gpus_rejects_missing_capacity_target_or_variable_load(load, minimum
         )
 
 
+@pytest.mark.parametrize("workers", [{"aggregated": {}}, {"prefill": {}, "decode": {}}], ids=["agg", "disagg"])
+def test_min_gpus_lowers_with_dynamo_router_but_not_planner(workers):
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "engine": {
+                **_engine(),
+                "mode": "aggregated" if "aggregated" in workers else "disaggregated",
+                "workers": workers,
+                "context_length": 4096,
+            },
+            "traffic": {
+                "source": {"type": "synthetic"},
+                "load": {"type": "constant_rate", "requests_per_second": 10},
+                "stop": {"requests": 100},
+            },
+            "evaluation": {"sla": {"itl_ms": 30}},
+            "optimization": {"target": "min_gpus", "constraints": {"min_goodput_rps": 10}},
+        }
+    )
+    router = {"policy": "kv_router"}
+
+    lowered = recommendation_to_sweeper(config, adapter_configs={"router": router}, stack="dynamo")
+
+    assert lowered.adapters["dynamo.router"].search_space == router
+    assert lowered.goal.target.value == "min_gpus"
+    with pytest.raises(ValidationError, match="Planner autoscaling"):
+        recommendation_to_sweeper(
+            config,
+            adapter_configs={"router": router, "planner": {"policy": "enabled"}},
+            stack="dynamo",
+        )
+
+
 def test_prediction_uses_reviewed_default_traffic() -> None:
     config = CorePredictionConfig.model_validate({"engine": _engine()})
 

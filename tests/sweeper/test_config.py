@@ -147,6 +147,35 @@ def test_min_gpus_sdk_validates_synthetic_load_type(load, load_type, valid):
             SmartSearchConfig(**args)
 
 
+@pytest.mark.parametrize("mode", ["agg", "disagg"])
+def test_min_gpus_sdk_accepts_dynamo_router_over_static_pools(mode):
+    config = SmartSearchConfig(
+        search_space=_search_space(deployment_mode=[mode]),
+        adapters={"dynamo.router": {"search_space": {"policy": "kv_router"}}},
+        workload=_workload(),
+        goal={"target": "min_gpus", "sla": {"itl_ms": 30}},
+    )
+    assert list(config.adapters) == ["dynamo.router"]
+
+
+@pytest.mark.parametrize(
+    ("adapters", "error"),
+    [
+        (["dynamo.planner"], "Planner autoscaling"),
+        (["dynamo.router", "dynamo.planner"], "Planner autoscaling"),
+        (["example.placement"], "only the dynamo.router adapter"),
+    ],
+)
+def test_min_gpus_sdk_rejects_planner_and_unknown_adapters(adapters, error):
+    with pytest.raises(ValidationError, match=error):
+        SmartSearchConfig(
+            search_space=_search_space(),
+            adapters={name: {} for name in adapters},
+            workload=_workload(),
+            goal={"target": "min_gpus", "sla": {"itl_ms": 30}},
+        )
+
+
 def test_backend_only_yaml_and_adapter_search_space_load(tmp_path):
     path = tmp_path / "sweep.yaml"
     path.write_text(

@@ -196,9 +196,10 @@ startup and drain count toward the replay duration. Random `min_gpus` searches
 visit the smallest legal backend/topology pairs first, before revisiting their
 scheduler domains. The CLI reports suggestion-budget coverage.
 
-Minimum-GPU selection supports static engine pools and fixed synthetic rate or
-concurrency traffic. It rejects Dynamo/adapters, traces, sessions, searched loads,
-and candidate-relative KV load. Analytical EPD supports fixed concurrency and
+Minimum-GPU selection supports static engine pools, optionally behind the Dynamo
+Router, and fixed synthetic rate or concurrency traffic. It rejects the Dynamo
+Planner and other adapters, traces, sessions, searched loads, and
+candidate-relative KV load. Analytical EPD supports fixed concurrency and
 aggregate latency only. See [optimization goals](../sweeper/optimization-goals.md#minimum-gpus).
 
 ### Context parallelism

@@ -55,7 +55,7 @@ class OptimizationTarget(str, Enum):
     E2E_LATENCY = "e2e_latency"  # minimize mean end-to-end latency
     GOODPUT = "goodput"  # maximize SLA-satisfying throughput
     GOODPUT_PER_GPU = "goodput_per_gpu"  # maximize goodput / avg GPU (tok/s/gpu)
-    # Standalone AISimulate only; Dynamo integration does not support this target.
+    # Static engine pools, optionally behind the Dynamo Router; the Dynamo Planner is unsupported.
     MIN_GPUS = "min_gpus"  # minimize provisioned GPUs subject to workload/SLA constraints
     PARETO = "pareto"  # multi-objective: Pareto front over pareto_objectives
 
@@ -102,6 +102,10 @@ class SLATarget(BaseModel):
 # Used to gate their SLA requirement on both the scalar
 # target and the per-objective list under a pareto goal.
 _SLA_TARGETS = frozenset({OptimizationTarget.GOODPUT, OptimizationTarget.GOODPUT_PER_GPU})
+
+# Adapters that keep min_gpus well defined. Router placement adds no GPUs and leaves the
+# engine pool static; Planner autoscaling would make the provisioned GPU count time-varying.
+_MIN_GPUS_ADAPTERS = frozenset({"dynamo.router"})
 
 # Default Pareto objectives: throughput per GPU (y) vs mean per-user throughput (x) —
 # the InferenceX tok/s/gpu vs tok/s/user frontier.
@@ -1293,8 +1297,16 @@ class SmartSearchConfig(BaseModel):
         if self.goal.target is not OptimizationTarget.MIN_GPUS:
             return self
         workload = self.workload
-        if self.adapters:
-            raise ValueError("min_gpus requires static engine pools without adapters")
+        if "dynamo.planner" in self.adapters:
+            raise ValueError(
+                "min_gpus does not support dynamo.planner: Planner autoscaling makes the provisioned GPU count "
+                "time-varying; remove the planner section or choose another target"
+            )
+        unsupported = sorted(set(self.adapters) - _MIN_GPUS_ADAPTERS)
+        if unsupported:
+            raise ValueError(
+                f"min_gpus supports only the dynamo.router adapter over static engine pools, got {unsupported}"
+            )
         if (
             workload.trace_path is not None
             or workload.trace_paths is not None
