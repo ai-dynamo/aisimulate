@@ -715,6 +715,12 @@ class MLAModuleModelSpec:
     architecture: str
     native_num_heads: int
     wideep_mla: bool
+    # Declared real tensor-parallel shards of this model (case_authoring's
+    # model-correlated narrowing). When set, the MSA collectors derive their
+    # per-rank head axis as native_num_heads // tp instead of sweeping the
+    # shared inner_sweep_head_counts grid (owner decision 2026-09-29: MSA is
+    # one fixed geometry, MiniMax-M3 64q/4kv/4idx; TP 16 is the ceiling).
+    tensor_parallel_sizes: tuple[int, ...] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -745,6 +751,19 @@ class MLAModuleSweepSpec:
     # memory contract (their guard tests pin it). None -> fall back to
     # generation_max_tokens.
     generation_msa_max_tokens: int | None = None
+    # Optional MSA context budget for the TRT-LLM Triton reference
+    # implementation (cases/base_ops/mla_module.yaml mla_module_trtllm.context
+    # .msa_triton_max_tokens): the collector applies it only where it resolves
+    # implementation="triton" (off SM100/103); fmha_sm100 systems keep
+    # context_max_tokens. None -> no extra cap.
+    context_msa_triton_max_tokens: int | None = None
+    # Optional DSA-specific context budget: DSA context follows serving's
+    # chunked-prefill shape (new-token budget = chunk size, long context via
+    # prefix). None on all three -> the DSA branch falls back to the shared
+    # context axes (context_max_tokens / context_prefix_lengths).
+    context_dsa_chunk_prefill_size: int | None = None
+    context_dsa_max_full_sequence_length: int | None = None
+    context_dsa_prefix_lengths: list[int] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -790,13 +809,28 @@ def get_mla_module_model_specs(
             continue
         if wideep_mla is not None and bool(value.get("wideep_mla", False)) != wideep_mla:
             continue
+        native_num_heads = int(value["native_num_heads"])
+        tp_sizes = None
+        if value.get("tensor_parallel_sizes") is not None:
+            tp_list = _as_int_list(
+                value.get("tensor_parallel_sizes"),
+                field_name="model_case_values.mla_module.tensor_parallel_sizes",
+            )
+            for tp in tp_list:
+                if tp <= 0 or native_num_heads % tp != 0:
+                    raise ValueError(
+                        "model_case_values.mla_module.tensor_parallel_sizes must be positive divisors of "
+                        f"native_num_heads: model={value['model_path']}, native_num_heads={native_num_heads}, tp={tp}"
+                    )
+            tp_sizes = tuple(tp_list)
         specs.append(
             MLAModuleModelSpec(
                 model_path=str(value["model_path"]),
                 attention_type=str(value["attention_type"]),
                 architecture=str(value["architecture"]),
-                native_num_heads=int(value["native_num_heads"]),
+                native_num_heads=native_num_heads,
                 wideep_mla=bool(value.get("wideep_mla", False)),
+                tensor_parallel_sizes=tp_sizes,
             )
         )
 
@@ -845,6 +879,28 @@ def get_mla_module_model_specs(
             )
 
     return specs
+
+
+def get_msa_head_counts(backend: str | None = None) -> list[int]:
+    """Per-rank head axis for the MSA module collectors, descending.
+
+    Derived from the declared MSA model rows: ``native_num_heads // tp`` for
+    each ``tensor_parallel_sizes`` entry (falling back to the sweep's
+    ``module_tp_sizes`` when a row declares none). MSA serves one fixed
+    geometry, so unlike GQA attention there is no shared head grid to sweep;
+    head counts no real shard produces (48/96 -> 3/6 index heads) are never
+    generated.
+    """
+    sweep = get_mla_module_sweep_spec(backend)
+    heads: set[int] = set()
+    for spec in get_mla_module_model_specs(attention_type="msa", backend=backend):
+        tp_sizes = spec.tensor_parallel_sizes or tuple(sweep.module_tp_sizes)
+        for tp in tp_sizes:
+            if spec.native_num_heads % tp == 0:
+                heads.add(spec.native_num_heads // tp)
+    if not heads:
+        raise ValueError("mla_module: no MSA model row yields a per-rank head count (check tensor_parallel_sizes)")
+    return sorted(heads, reverse=True)
 
 
 def _required_mapping(value: object, *, field_name: str) -> dict[str, object]:
@@ -1013,6 +1069,7 @@ def get_mla_module_sweep_spec(backend: str | None = None) -> MLAModuleSweepSpec:
         context_max_tokens=int(context["max_tokens"]),
         context_large_sequence_min=_optional_int(context.get("large_sequence_min")),
         context_large_sequence_max_batch_size=_optional_int(context.get("large_sequence_max_batch_size")),
+        context_msa_triton_max_tokens=_optional_int(context.get("msa_triton_max_tokens")),
         generation_max_tokens=int(generation["max_tokens"]),
         generation_msa_max_tokens=_optional_int(generation.get("msa_max_tokens")),
         generation_large_sequence_min=_optional_int(generation.get("large_sequence_min")),
@@ -1022,6 +1079,16 @@ def get_mla_module_sweep_spec(backend: str | None = None) -> MLAModuleSweepSpec:
             context.get("prefix_lengths"),
             field_name="mla_module.context.prefix_lengths",
             default=[0],
+        ),
+        context_dsa_chunk_prefill_size=_optional_int(context.get("dsa_chunk_prefill_size")),
+        context_dsa_max_full_sequence_length=_optional_int(context.get("dsa_max_full_sequence_length")),
+        context_dsa_prefix_lengths=(
+            _optional_int_list(
+                context.get("dsa_prefix_lengths"),
+                field_name="mla_module.context.dsa_prefix_lengths",
+                default=[],
+            )
+            or None
         ),
     )
 
@@ -2475,10 +2542,6 @@ _DSV4_SPARSE_PAST_KV_LIST = _as_int_list(
 _DSV4_SPARSE_CHUNK_PREFILL_SIZE = int(_DSV4_CONFIG["sparse_chunk_prefill_size"])
 _DSV4_SPARSE_MAX_FULL_S = int(_DSV4_CONFIG["sparse_max_full_sequence_length"])
 _DSV4_SPARSE_TP_SIZES = _required_mapping(_DSV4_CONFIG["sparse_tp_sizes"], field_name="dsv4.sparse_tp_sizes")
-_DSV4_SPARSE_TP_LIST_ATTN = _as_int_list(
-    _DSV4_SPARSE_TP_SIZES["hca_attn"],
-    field_name="dsv4.sparse_tp_sizes.hca_attn",
-)
 _DSV4_SPARSE_TP_LIST_INDEXER = _as_int_list(
     _DSV4_SPARSE_TP_SIZES["paged_mqa_logits"],
     field_name="dsv4.sparse_tp_sizes.paged_mqa_logits",
@@ -2695,8 +2758,8 @@ def get_dsv4_hca_generation_test_cases():
 
 def get_dsv4_topk_calib_test_cases():
     """One case per model (the topk DELTA calibration is just another member of
-    the sparse-op family — same ``[model_path, kernel]`` shape as paged_mqa /
-    csa_attn / hca_attn, dispatched through ``run_dsv4_sparse_kernel_worker``).
+    the sparse-op family — same ``[model_path, kernel]`` shape as
+    paged_mqa_logits, dispatched through ``run_dsv4_sparse_kernel_worker``).
 
     The grid matches the CSA module data 1:1: the worker reads the
     already-collected ``dsv4_csa_*_module_perf.txt`` and benches exactly those
@@ -2709,7 +2772,11 @@ def get_dsv4_topk_calib_test_cases():
     return [[model_path, "topk"] for model_path in _selected_dsv4_calib_models()]
 
 
-DSV4_SPARSE_KERNELS = ("paged_mqa_logits", "hca_attn")
+# The CSA indexer scoring GEMM is the only sparse sub-kernel collected standalone.
+# hca_attn / csa_attn (FMLA sidecars) were removed 2026-10-15: retired SDK
+# placeholders with no query path, and registry-only ops that failed every
+# shard plan generated from the registry.
+DSV4_SPARSE_KERNELS = ("paged_mqa_logits",)
 
 
 def _build_dsv4_sparse_test_cases(
@@ -2717,7 +2784,6 @@ def _build_dsv4_sparse_test_cases(
     bs_list=None,
     isl_list=None,
     past_kv_list=None,
-    tp_list_attn=None,
     tp_list_indexer=None,
 ):
     """Generate ``(bs, isl, past_kv, tp_size, kernel, model)`` tuples.
@@ -2729,14 +2795,12 @@ def _build_dsv4_sparse_test_cases(
     bs_list = list(bs_list) if bs_list is not None else list(_DSV4_SPARSE_BS_LIST)
     isl_list = list(isl_list) if isl_list is not None else list(_DSV4_SPARSE_ISL_LIST)
     past_kv_list = list(past_kv_list) if past_kv_list is not None else list(_DSV4_SPARSE_PAST_KV_LIST)
-    tp_list_attn = list(tp_list_attn) if tp_list_attn is not None else list(_DSV4_SPARSE_TP_LIST_ATTN)
     tp_list_indexer = list(tp_list_indexer) if tp_list_indexer is not None else list(_DSV4_SPARSE_TP_LIST_INDEXER)
 
     cases = []
     for model_path in _selected_dsv4_models():
         for kernel in kernels:
-            tp_list = tp_list_attn if kernel == "hca_attn" else tp_list_indexer
-            for tp_size in tp_list:
+            for tp_size in tp_list_indexer:
                 for bs in bs_list:
                     for isl in isl_list:
                         if bs * isl > _DSV4_SPARSE_CHUNK_PREFILL_SIZE:
@@ -2746,8 +2810,6 @@ def _build_dsv4_sparse_test_cases(
                                 continue
                             full_s = isl + past_kv
                             if kernel == "paged_mqa_logits" and full_s < 4:
-                                continue
-                            if kernel == "hca_attn" and full_s < 64:
                                 continue
                             cases.append(
                                 [
@@ -2769,19 +2831,6 @@ def get_dsv4_paged_mqa_logits_test_cases():
     return [[model_path, "paged_mqa_logits"] for model_path in _selected_dsv4_models()]
 
 
-def get_dsv4_hca_attn_test_cases():
-    """One case per model. The worker derives shapes from the HCA module CSV
-    (hca_attn is the HCA c128 FMLA sub-kernel), 1:1 with the hca-module rows."""
-    return [[model_path, "hca_attn"] for model_path in _selected_dsv4_models()]
-
-
-def get_dsv4_csa_attn_test_cases():
-    """One case per model. The worker derives shapes from the CSA module CSV
-    (csa_attn is the CSA sparse FMLA over the topk-selected c4 positions),
-    1:1 with the csa-module rows — same source as paged_mqa_logits/topk."""
-    return [[model_path, "csa_attn"] for model_path in _selected_dsv4_models()]
-
-
 # Backward-compatible names for older PR comments/tests while the registry and
 # persisted perf files use the upstream DeepSeek-V4 op names.
 _DSV4_FLASH_CONFIG = _DSV4_CONFIG
@@ -2796,7 +2845,6 @@ _DSV4_FLASH_SPARSE_ISL_LIST = _DSV4_SPARSE_ISL_LIST
 _DSV4_FLASH_SPARSE_PAST_KV_LIST = _DSV4_SPARSE_PAST_KV_LIST
 _DSV4_FLASH_SPARSE_CHUNK_PREFILL_SIZE = _DSV4_SPARSE_CHUNK_PREFILL_SIZE
 _DSV4_FLASH_SPARSE_MAX_FULL_S = _DSV4_SPARSE_MAX_FULL_S
-_DSV4_FLASH_SPARSE_TP_LIST_ATTN = _DSV4_SPARSE_TP_LIST_ATTN
 _DSV4_FLASH_SPARSE_TP_LIST_INDEXER = _DSV4_SPARSE_TP_LIST_INDEXER
 DSV4_FLASH_SPARSE_KERNELS = DSV4_SPARSE_KERNELS
 _dsv4_flash_config = _dsv4_config
@@ -2819,4 +2867,3 @@ get_dsv4_flash_hca_context_test_cases = get_dsv4_hca_context_test_cases
 get_dsv4_flash_csa_generation_test_cases = get_dsv4_csa_generation_test_cases
 get_dsv4_flash_hca_generation_test_cases = get_dsv4_hca_generation_test_cases
 get_dsv4_flash_paged_mqa_logits_test_cases = get_dsv4_paged_mqa_logits_test_cases
-get_dsv4_flash_hca_attn_test_cases = get_dsv4_hca_attn_test_cases

@@ -393,8 +393,6 @@ model_case_values:
     sparse_chunk_prefill_size: 8192
     sparse_max_full_sequence_length: 1048576
     sparse_tp_sizes:
-      hca_attn:
-        - 1
       paged_mqa_logits:
         - 1
 
@@ -419,17 +417,31 @@ framework_specific_op_cases:
     # after the csa module entries).
     dsv4_csa_topk_calib:
       cases: all
-    # Standalone paged_mqa/hca_attn/csa_attn rows are experimental-only: the
-    # production SDK has no query call-site for them. Keep their registry
-    # entries available for explicit research runs, but do not schedule them in
-    # the default model plan.
+    # paged_mqa_logits IS consumed: it is the only sparse-kernel sidecar with a
+    # live SDK query path (sdk/operations/dsv4.py: the CP chunk walk loads
+    # PerfDataFilename.dsv4_paged_mqa_logits_module) and every shipped platform
+    # carries the table. The 2026-10-05 b200 shard run lost it because this
+    # file still called it experimental (job 469988017). The hca_attn /
+    # csa_attn sidecars were removed from the collector and SDK on 2026-10-15:
+    # their SDK readers had been retired (csa_attn never shipped data) and the
+    # registry-only ops failed every sm100 shard plan generated from the
+    # registry since 2026-10-05.
+    dsv4_paged_mqa_logits_module:
+      cases: all
     mhc_module:
       cases: all
   vllm:
     # These four full-module paths are consumed by the production DSV4 model.
-    # Standalone sparse kernels and mHC remain registry-only because their
-    # current consumer contract/schedule does not represent vLLM 0.24.0's
-    # fused TileLang post->pre+norm and boundary/head calls.
+    # hca_attn / csa_attn were removed 2026-10-15 (see the sglang note above);
+    # paged_mqa_logits is consumed (see the sglang note above) and shipped for
+    # vllm 0.24/0.25. mHC is scheduled again (2026-10-11): the SDK queries
+    # mhc pre/post rows on every backend, collector/vllm/collect_mhc_module.py
+    # measures vLLM's own mhc_pre_tilelang / mhc_post_tilelang (qualified on
+    # B200 0.25, shipped 0.22/0.24/0.25) and documents why pre(no-norm)+post
+    # tracks serving's fused post+pre+norm boundary within 1-2%; the earlier
+    # "contract does not represent the fused TileLang path" note predated that
+    # measurement. Without this row vLLM 0.30 priced mHC from the 0.25 table
+    # through the nearest-earlier fallback.
     dsv4_csa_context_module:
       cases: all
     dsv4_hca_context_module:
@@ -437,6 +449,10 @@ framework_specific_op_cases:
     dsv4_csa_generation_module:
       cases: all
     dsv4_hca_generation_module:
+      cases: all
+    dsv4_paged_mqa_logits_module:
+      cases: all
+    mhc_module:
       cases: all
   trtllm:
     # TRT-LLM 1.3.0rc20 ships the mHC module + torch.ops.trtllm.mhc_* kernels

@@ -35,7 +35,7 @@ deployment.json: |-
           "--max-running-requests",
           "512",
           "--max-prefill-tokens",
-          "1628",
+          "1664",
           "--enable-mixed-chunk",
           "--cuda-graph-bs",
           "1",

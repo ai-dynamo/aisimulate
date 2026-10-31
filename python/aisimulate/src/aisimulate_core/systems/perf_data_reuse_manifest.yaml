@@ -414,11 +414,6 @@ groups:
     tier: shared
     systems: [b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm]
     frameworks: [sglang]
-  - op_file: dsv4_hca_attn_module_perf.parquet
-    kernel_source: 'FLASHMLA_SPARSE_DSV4'
-    tier: shared
-    systems: [b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm]
-    frameworks: [vllm]
   - op_file: dsv4_hca_context_module_perf.parquet
     kernel_source: 'DeepseekV4TrtllmAttention'
     tier: shared

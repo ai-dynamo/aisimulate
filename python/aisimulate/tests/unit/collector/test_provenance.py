@@ -162,7 +162,6 @@ def test_dsa_collector_hash_covers_worker_binding(tmp_path, backend, binding_fil
         "collect_gemm",
         "collect_mhc_module",
         "collect_mla_module",
-        "collect_mla_module_027",
         "collect_moe",
         "collect_msa_module",
     ],
@@ -176,18 +175,6 @@ def test_vllm_collector_hash_covers_native_setup(tmp_path, module_name):
     before = provenance.collector_hash(module, tmp_path, closures)
     utils_path = tmp_path / "collector/vllm/utils.py"
     _write(utils_path, utils_path.read_text(encoding="utf-8") + "\n# rendezvous changed\n")
-    assert provenance.collector_hash(module, tmp_path, closures) != before
-
-
-def test_vllm_mla_shim_hash_covers_executed_module(tmp_path):
-    module = "collector.vllm.collect_mla_module_027"
-    closures = provenance.load_closures(HASH_CLOSURES_PATH)
-    paths = {module.replace(".", "/") + ".py", *provenance.SHARED_CORE, *closures[module]}
-    for relative in paths - {provenance.MODEL_CASES_GROUP}:
-        _write(tmp_path / relative, (REPO_ROOT / relative).read_text(encoding="utf-8"))
-    before = provenance.collector_hash(module, tmp_path, closures)
-    implementation = tmp_path / "collector/vllm/collect_mla_module.py"
-    _write(implementation, implementation.read_text(encoding="utf-8") + "\n# native forward changed\n")
     assert provenance.collector_hash(module, tmp_path, closures) != before
 
 

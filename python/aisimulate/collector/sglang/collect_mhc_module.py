@@ -8,18 +8,18 @@
 # capable image or put a matching SGLang source tree on PYTHONPATH.
 from __future__ import annotations
 
-# The file-level range spans the two audited routes; each architecture is
-# additionally gated to its own audited release by _ARCHITECTURE_COMPAT, so
-# the DeepSeek-V4 path still runs only on 0.5.14 (its ModelRunner/ServerArgs
-# API use is 0.5.14-specific) and GLM only on 0.5.20.
-__compat__ = "sglang>=0.5.14,<=0.5.20"
+# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
+# Each architecture is additionally gated by _ARCHITECTURE_COMPAT
+# (DeepSeek-V4 on 0.5.21 via the native DeepseekV4Config).
+# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+__compat__ = "sglang==0.5.21"
 
 import argparse
 import copy
 import gc
 import json
 import os
-import random
 import sys
 import tempfile
 from collections.abc import Sequence
@@ -57,8 +57,11 @@ GLM5NEXT_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 # Per-architecture audited SGLang releases; anything else raises
 # MhcRuntimeNotAuditedError (a classified failure) instead of running.
 _ARCHITECTURE_COMPAT = {
-    DSV4_ARCHITECTURE: "sglang==0.5.14",
-    GLM5NEXT_ARCHITECTURE: "sglang==0.5.20",
+    DSV4_ARCHITECTURE: "sglang==0.5.21",
+    # GLM-5.3-Flash (0.5.20 only) retired 2026-10-30: its route is git history
+    # (main at c540ff90a (before #649)). 0.5.21 moved MHCState to layer_boundary, removed
+    # ParallelState/init_torch_distributed and fuses post+pre for T<=16, so the
+    # GLM path needs a port before it is re-admitted.
 }
 
 # GLM-5.3-Flash mHC call sites in SGLang 0.5.20 serving
@@ -224,7 +227,13 @@ def _patched_model_dir(model_id: str) -> str:
     # Match collect_dsv4_attn.py: current Transformers does not know a
     # native deepseek_v4 config, while SGLang selects the V4 model class from
     # the architectures field.
-    config["model_type"] = "deepseek_v3"
+    try:
+        # sglang>=0.5.21: native DeepseekV4Config (V4-only fields such as hc_pre_from_prev_sublayer)
+        import sglang.srt.configs.deepseek_v4  # noqa: F401
+
+        config["model_type"] = "deepseek_v4"
+    except ImportError:
+        config["model_type"] = "deepseek_v3"
 
     tmp_dir = os.path.join(
         tempfile.gettempdir(),
@@ -283,18 +292,18 @@ def _load_one_layer_runner(
 
     _set_envs_and_config(server_args)
     model_config = ModelConfig.from_server_args(server_args)
+    from collector.sglang.runtime_compat import free_local_port, init_runtime_config
+
+    nccl_port = free_local_port()
+
+    _runner_parallel_kwargs = init_runtime_config(server_args, gpu_id, nccl_port=nccl_port, model_config=model_config)
     return ModelRunner(
         model_config=model_config,
         mem_fraction_static=mem_fraction_static,
         gpu_id=gpu_id,
-        tp_rank=0,
-        tp_size=1,
-        pp_rank=0,
-        pp_size=1,
-        moe_ep_rank=0,
-        moe_ep_size=1,
-        nccl_port=29500 + random.randint(0, 10000),
+        nccl_port=nccl_port,
         server_args=server_args,
+        **_runner_parallel_kwargs,
     )
 
 
@@ -547,11 +556,11 @@ def run_mhc_module(
                 gc.collect()
     finally:
         del model_runner
+        from collector.sglang.runtime_compat import reset_expert_location_metadata
         from sglang.srt.distributed.parallel_state import (
             destroy_distributed_environment,
             destroy_model_parallel,
         )
-        from sglang.srt.eplb import expert_location as _expert_location
 
         # Mirror SGLang 0.5.14 cleanup_dist_env_and_memory: destroying only the
         # torch process group leaves parallel_state._WORLD pointing at a dead
@@ -562,11 +571,11 @@ def run_mhc_module(
         # and fail the worker rather than hiding retained groups.
         destroy_model_parallel()
         destroy_distributed_environment()
-        # SGLang has no public reset for this module global (its serving
-        # process never re-creates a ModelRunner); set_global_... asserts None,
-        # so a second in-worker task fails init unless it is returned to the
-        # module's pre-init state here.
-        _expert_location._global_expert_location_metadata = None
+        # SGLang has no public reset for the expert-location metadata (its
+        # serving process never re-creates a ModelRunner); set_global_... asserts
+        # None, so a second in-worker task fails init unless it is returned to
+        # its pre-init state here.
+        reset_expert_location_metadata()
         torch.cuda.empty_cache()
         gc.collect()
     summary = f"ok={len(results)} error={error_count} skip=0 total={len(results) + error_count}"
@@ -587,6 +596,7 @@ def _init_glm5next_runtime(model_path: str, *, device: str, mem_fraction_static:
     (model_runner.py L456-458). No model weights are loaded: the mHC kernels
     only need this process state plus the layer's own parameters.
     """
+    from collector.sglang.runtime_compat import free_local_port
     from sglang.srt.configs.model_config import ModelConfig
     from sglang.srt.distributed import bootstrap
     from sglang.srt.distributed.parallel_state_wrapper import ParallelState
@@ -629,7 +639,7 @@ def _init_glm5next_runtime(model_path: str, *, device: str, mem_fraction_static:
         model_config=model_config,
         device="cuda",
         ps=ParallelState.trivial(gpu_id=gpu_id),
-        dist_port=29500 + random.randint(0, 10000),
+        dist_port=free_local_port(),
         is_draft_worker=False,
         local_omp_cpuid=None,
     )

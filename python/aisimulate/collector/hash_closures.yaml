@@ -131,8 +131,6 @@ collector.sglang.collect_kda:
   - collector/cases/base_ops/kda.yaml
   - __model_cases__
 collector.sglang.collect_gemm:
-  # SGLang 0.5.20 runs are delegated to collect_gemm_0520.py.
-  - collector/sglang/collect_gemm_0520.py
   - collector/cases/base_ops/gemm.yaml
   - __model_cases__
 collector.sglang.collect_mhc_module:
@@ -276,13 +274,6 @@ collector.vllm.collect_mhc_module:
   - __model_cases__
 collector.vllm.collect_mla_module:
   - collector/vllm/utils.py
-  - collector/cases/base_ops/mla_module.yaml
-  - __model_cases__
-collector.vllm.collect_mla_module_027:
-  - collector/vllm/utils.py
-  - collector/vllm/collect_mla_module.py
-  # 0.27.0-route shim whose get/run functions are re-exported from
-  # collector/vllm/collect_mla_module.py — identical case reads.
   - collector/cases/base_ops/mla_module.yaml
   - __model_cases__
 collector.vllm.collect_moe:

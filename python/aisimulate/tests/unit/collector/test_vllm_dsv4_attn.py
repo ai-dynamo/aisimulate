@@ -147,7 +147,7 @@ def test_smoke_has_zero_and_nonzero_prefix_without_endpoint_sweep(dsv4_module, m
     assert {(case[0], case[9]) for case in cases} == {(64, 0), (64, 128)}
 
 
-@pytest.mark.parametrize("kernel", ["paged_mqa_logits", "hca_attn"])
+@pytest.mark.parametrize("kernel", ["paged_mqa_logits"])
 def test_sparse_cases_queue_short_shapes_for_runtime_observation(dsv4_module, monkeypatch, kernel):
     mod = dsv4_module
     monkeypatch.setattr(sys, "argv", ["pytest"])
@@ -155,7 +155,6 @@ def test_sparse_cases_queue_short_shapes_for_runtime_observation(dsv4_module, mo
     monkeypatch.setattr(mod, "_DSV4_SPARSE_BS_LIST", [1])
     monkeypatch.setattr(mod, "_DSV4_SPARSE_ISL_LIST", [1])
     monkeypatch.setattr(mod, "_DSV4_SPARSE_PAST_KV_LIST", [0])
-    monkeypatch.setattr(mod, "_DSV4_SPARSE_TP_LIST_ATTN", [1])
     monkeypatch.setattr(mod, "_DSV4_SPARSE_TP_LIST_INDEXER", [1])
 
     assert mod._build_vllm_dsv4_sparse_test_cases(kernel) == [[1, 1, 0, 1, kernel, "model"]]
@@ -188,7 +187,7 @@ def test_dsv4_worker_rejects_ignored_runtime_inputs(dsv4_module, override, messa
         dsv4_module.run_dsv4_attn_worker(**args)
 
 
-@pytest.mark.parametrize("kernel", ["paged_mqa_logits", "hca_attn"])
+@pytest.mark.parametrize("kernel", ["paged_mqa_logits"])
 def test_sparse_worker_observes_short_shapes(dsv4_module, monkeypatch, kernel):
     calls = {}
     monkeypatch.setattr(dsv4_module, "_init_cuda", lambda device: calls.setdefault("device", device))

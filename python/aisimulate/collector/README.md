@@ -451,15 +451,28 @@ If unavailable, a warning is logged and execution continues without power data.
 - Kernel iterations are automatically adjusted to meet minimum duration for accurate measurements
 - Backward compatible: without `--measure_power`, CSVs remain unchanged
 
-## CUDA Graph Fallback Support
+## CUDA Graph Timing Policy
 
-The `benchmark_with_power` helper function now supports graceful fallback to eager execution when CUDA graph capture fails. This is particularly useful for complex operations like MOE (Mixture of Experts) with large batch sizes.
+`benchmark_with_power` times kernels under CUDA-graph replay. A failed capture
+raises (`allow_graph_fail=False`, the default) and the case fails classified.
 
-### Features
-- **Automatic fallback**: When `allow_graph_fail=True`, CUDA graph capture failures trigger eager execution instead of raising exceptions
-- **Power measurement in both paths**: Power monitoring works correctly in both graph replay and eager execution modes
-- **Memory safety**: Automatic `torch.cuda.empty_cache()` call on graph capture failure to prevent memory fragmentation
-- **Transparency**: Results include `used_cuda_graph` flag to indicate which execution path was used
+- **No collector that writes a perf table may pass `allow_graph_fail=True`.**
+  The eager fallback times the Python launch loop and ships that floor as the
+  kernel latency, and no perf table records the helper's `used_cuda_graph`
+  flag — `.claude/rules/collector/layer_permissions.md` allows a
+  measurement-method degradation only when it is recorded in the output row.
+  `tests/unit/collector/test_no_eager_graph_fallback_sites.py` pins this for
+  every file under `collector/`. The last fallback sites (trtllm mamba2 and
+  moe, wideep moe_compute, network trtllm alltoall) were closed on 2026-10-12;
+  the sglang trtllm_mla prefill (B1) and the trtllm GDN lanes the day before.
+- A collector that sweeps several cells inside one task counts failed cells
+  and raises a strict-completeness error at the end (GDN, mamba2), so the
+  other cells still ship rows and the failure lands in `errors_<module>.json`.
+- Multi-rank collectors agree on the capture outcome before any rank replays
+  (`collect_trtllm_alltoall._agree_graph_capturable`); a one-sided capture
+  failure would otherwise hang the peers' first replay.
+- `allow_graph_fail=True` remains available for ad-hoc diagnosis only; the
+  result then carries `used_cuda_graph=False` and must not be persisted.
 
 ### Usage Example
 ```python
@@ -469,32 +482,16 @@ def my_kernel():
     # Your kernel code here
     moe.forward(hidden_states, logits)
 
-# Use benchmark_with_power with fallback support
 with benchmark_with_power(
     device=device,
     kernel_func=my_kernel,
     num_warmups=3,
     num_runs=6,
     repeat_n=1,
-    allow_graph_fail=True,  # Enable graceful fallback
 ) as results:
     latency = results["latency_ms"]
-    power_stats = results["power_stats"]  # Available in both paths
-
-    # Check which execution path was used
-    if not results["used_cuda_graph"]:
-        print("CUDA graph capture failed, used eager execution")
+    power_stats = results["power_stats"]
 ```
-
-### When to Use
-- **Complex operations**: MOE, dynamic memory patterns, or operations that may not be graph-compatible
-- **Large batch sizes**: When graph capture may fail due to memory constraints
-- **Development/debugging**: To ensure collection continues even if graph capture fails
-
-### Backward Compatibility
-- Default behavior unchanged: `allow_graph_fail=False` maintains existing behavior
-- Existing collectors work without modifications
-- Only opt-in when needed for specific use cases
 
 ## For TensorRT-LLM
 ### Optional( Read if collecting for mxfp4 kernels)

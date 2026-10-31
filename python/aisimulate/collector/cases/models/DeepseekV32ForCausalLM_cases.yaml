@@ -20,6 +20,11 @@ model_case_values:
     - model_path: deepseek-ai/DeepSeek-V3.2
       attention_type: dsa
       native_num_heads: 128
+      # Real tensor-parallel shards (case_authoring model-correlated narrowing):
+      # module collectors that honour it sweep per-rank heads = 128 // tp
+      # (128/64/32/16/8) instead of the shared inner head grid, whose
+      # 96/48/24/12 entries belong to the 96-head Kimi-K3 MLA module.
+      tensor_parallel_sizes: [1, 2, 4, 8, 16]
 
 all_frameworks_op_cases:
   moe:
@@ -30,8 +35,6 @@ framework_specific_op_cases:
     dsa_context_module:
       cases: all
     dsa_generation_module:
-      cases: all
-    moe_ep:
       cases: all
   vllm:
     dsa_context_module:

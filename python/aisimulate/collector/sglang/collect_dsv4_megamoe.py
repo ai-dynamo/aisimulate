@@ -446,7 +446,10 @@ def make_pre_dispatch(pre_dispatch: str):
         try:
             from sglang.kernels.ops.attention.dsv4 import mega_moe_pre_dispatch
         except ModuleNotFoundError:
-            from sglang.jit_kernel.deepseek_v4 import mega_moe_pre_dispatch
+            try:
+                from sglang.jit_kernel.deepseek_v4 import mega_moe_pre_dispatch
+            except ImportError:  # sglang>=0.5.21: kernels/ops/moe/dsv4.py:156
+                from sglang.kernels.ops.moe.dsv4 import mega_moe_pre_dispatch
 
         def sglang_jit_pre_dispatch(hidden_states, topk_ids, topk_weights, buffer, num_tokens: int):
             del num_tokens

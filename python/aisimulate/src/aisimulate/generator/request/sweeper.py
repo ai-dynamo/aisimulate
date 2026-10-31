@@ -455,6 +455,18 @@ def from_sweeper_candidate(
         value = getattr(resolved_model_facts, key)
         if value is not None:
             raw[f"ModelConfig.{key}"] = value
+    if backend == "trtllm":
+        # The benchmark rule renders the MiniMax-M3 sparse-attention keys from ModelConfig as the
+        # default path does (module_bridge): TRT-LLM >= 1.3.0rc29 needs `algorithm` to build the M3
+        # KV-cache manager on every SM; `implementation` is the SM100-family prescription.
+        from aisimulate.generator.utils import msa_sparse_algorithm, msa_sparse_implementation
+
+        for key, value in (
+            ("msa_sparse_algorithm", msa_sparse_algorithm(backend, model_path)),
+            ("msa_sparse_implementation", msa_sparse_implementation(backend, model_path, hardware_sku)),
+        ):
+            if value and f"ModelConfig.{key}" not in raw:
+                raw[f"ModelConfig.{key}"] = value
 
     request = GeneratorRequest(
         model=ModelSpec(model_path=model_path),
