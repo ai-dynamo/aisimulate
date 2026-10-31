@@ -816,9 +816,8 @@ def _phase_prefix_caching(
     0.31.0 record always carries the evidence; only older records lack the key.
     """
     label = f"{phase} prefix-caching settings across ranks"
-    if any(runtime_memory._layer_strided(record["cache"]) for record in workers.values()) and any(
-        "prefix_caching" not in record["cache"] for record in (*schedulers.values(), *workers.values())
-    ):
+    strided = any(runtime_memory._layer_strided(record["cache"]) for record in workers.values())
+    if strided and any("prefix_caching" not in record["cache"] for record in (*schedulers.values(), *workers.values())):
         raise ValueError("runtime observation requires complete prefix-caching evidence")
     settings = [_prefix_caching_settings(record["cache"], scheduler=True) for _, record in sorted(schedulers.items())]
     for value in settings[1:]:
@@ -836,6 +835,17 @@ def _phase_prefix_caching(
             state = group.get("state")
             if group.get("kind") == "state" and isinstance(state, dict) and "mamba_cache_mode" in state:
                 _same(state["mamba_cache_mode"], scheduled["mamba_cache_mode"], f"{phase} Mamba cache mode")
+    # Each process reads this evidence from the cache config that it resolved
+    # (runtime/instrumentation/observer.py:476-485). The launch-setting comparisons leave those resolved settings
+    # out, so the evidence must equal them.
+    if strided:
+        names = ("enable_prefix_caching", "mamba_cache_mode")
+        for record in (*schedulers.values(), *workers.values()):
+            resolved = record["resolved_config"]["cache_config"]
+            if canonical_json([record["cache"]["prefix_caching"][name] for name in names]) != canonical_json(
+                [resolved.get(name) for name in names]
+            ):
+                raise ValueError("runtime prefix-caching evidence contradicts the resolved cache settings")
     return {
         "enable_prefix_caching": scheduled["enable_prefix_caching"],
         "mamba_cache_mode": scheduled["mamba_cache_mode"],

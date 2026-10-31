@@ -1597,6 +1597,30 @@ def test_v031_malformed_prefix_caching_evidence_is_incomplete(tmp_path, shape):
     assert result["diagnostics"] == ["tp2: runtime observation requires complete prefix-caching evidence"]
 
 
+@pytest.mark.parametrize(
+    "kind,field,value",
+    [
+        ("worker", "enable_prefix_caching", False),
+        ("worker", "mamba_cache_mode", "none"),
+        ("scheduler", "enable_prefix_caching", False),
+    ],
+)
+def test_v031_prefix_caching_evidence_must_match_the_resolved_cache_settings(tmp_path, kind, field, value):
+    path, launches = observation_fixture(tmp_path, layout="mamba_hybrid")
+
+    def edit(record):
+        # One process resolved a setting that its own evidence contradicts. The evidence of every rank still agrees,
+        # and the launch-setting comparisons leave the prefix-caching settings out.
+        rank = (record["phase"], record["kind"], record["dp_rank"], record["tp_rank"])
+        if rank == ("prefill", kind, 0, 0 if kind == "worker" else None):
+            record["resolved_config"]["cache_config"][field] = value
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == ["tp2: runtime prefix-caching evidence contradicts the resolved cache settings"]
+
+
 @pytest.mark.parametrize("spec", ["MLAAttentionSpec", "MambaSpec"])
 def test_legacy_records_refuse_classes_outside_the_legacy_allow_list(tmp_path, spec):
     path, launches = observation_fixture(tmp_path)
