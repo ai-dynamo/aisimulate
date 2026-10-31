@@ -2931,8 +2931,17 @@ def _op_plan_report(backend: str, ops: list[str], sm_version: int, table_dir: st
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("w", newline="") as handle:
                 writer = csv.writer(handle)
-                writer.writerow(OP_PLANS[op].case_type._fields)
-                writer.writerows(op_plan.cases)
+                # The dispatch column, where the plan picks one, lets a checker
+                # match each case against what serving was observed to run.
+                header = OP_PLANS[op].case_type._fields
+                if op_plan.dispatches:
+                    writer.writerow((*header, "dispatch"))
+                    writer.writerows(
+                        (*case, runner) for case, runner in zip(op_plan.cases, op_plan.dispatches, strict=True)
+                    )
+                else:
+                    writer.writerow(header)
+                    writer.writerows(op_plan.cases)
             report[op]["table"] = str(path)
     return report
 
