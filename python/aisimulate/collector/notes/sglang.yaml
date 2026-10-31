@@ -1,0 +1,83 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Known gaps between what the SGLang collector measures and what SGLang
+# serving runs. Code, data and docs cite a note by its id instead of restating
+# it. Schema and lifecycle: .claude/rules/collector/overview.md ("Note");
+# tools/perf_database/check_collector_data.py R8 validates this file.
+
+schema_version: 1
+notes:
+  - id: G-sglang-gemm-fp8-block-deepgemm-only
+    kind: guard
+    summary: >-
+      The collector times fp8_block GEMMs by calling DeepGEMM directly, and
+      DeepGEMM has no SM89 or SM120 kernel, so every case in those regions
+      would fail. capabilities.yaml backend_gaps leaves them out of the plan.
+      Serving does run fp8_block there: Triton on SM89, CUTLASS on SM120.
+    reason: expensive
+    scope:
+      tables: [gemm_perf]
+      systems: [l40s, rtx_pro_6000_server]
+    verified_on: "0.5.21"
+    sources:
+      - sglang python/sglang/srt/layers/quantization/fp8_utils.py:930-958 @v0.5.21 (_dispatch_auto_backend)
+    retire_via: >-
+      Time fp8_block through dispatch_w8a8_block_fp8_linear, as serving does,
+      then delete the backend gap.
+    approved_by: tianhaox
+  - id: D-sglang-gemm-bf16-cutedsl
+    kind: deviation
+    summary: >-
+      On SM100/103 serving resolves the auto bf16 GEMM backend to CuTe DSL.
+      That backend sends the 68 shapes in _BF16_SPLITK_TUNED_TACTICS (m <= 32)
+      to FlashInfer split-K or direct, and runs the TGV kernel where
+      use_cutedsl_bf16_gemm(m, n, k) picks it (small m, 2048 <= k <= 6144,
+      n >= 1024). The table times F.linear for every shape, which matches
+      serving everywhere else.
+    direction: unknown
+    scope:
+      tables: [gemm_perf]
+      systems: [b200_sxm, gb200, b300_sxm, gb300]
+    verified_on: "0.5.21"
+    sources:
+      - sglang python/sglang/srt/layers/quantization/unquant.py:215-220 @v0.5.21
+      - sglang python/sglang/srt/layers/quantization/unquant.py:107-182 @v0.5.21 (_BF16_SPLITK_TUNED_TACTICS)
+      - sglang python/sglang/srt/layers/quantization/unquant.py:322-347 @v0.5.21 (dispatch)
+      - sglang python/sglang/srt/environ.py:1175 @v0.5.21 (SGLANG_ENABLE_BF16_SPLITK_GEMM defaults True)
+      - sglang python/sglang/kernels/ops/gemm/cutedsl_bf16_gemm.py:1357 @v0.5.21 (use_cutedsl_bf16_gemm)
+    retire_via: Time bf16 GEMMs through the backend serving selects.
+    approved_by: tianhaox
+  - id: D-sglang-gemm-nvfp4-act-quant
+    kind: deviation
+    summary: >-
+      On SM100/103 serving quantizes nvfp4 activations with FlashInfer's
+      cute-dsl backend; the table quantizes them with the default cuda
+      backend. The mm_fp4 GEMM itself matches serving.
+    direction: unknown
+    scope:
+      tables: [gemm_perf]
+      systems: [b200_sxm, gb200, b300_sxm, gb300]
+    verified_on: "0.5.21"
+    sources:
+      - sglang python/sglang/srt/layers/quantization/fp4_utils.py:24 @v0.5.21
+    retire_via: Quantize activations with the backend serving selects.
+    approved_by: tianhaox
+  - id: D-sglang-gemm-fp8-block-triton-fallback
+    kind: deviation
+    summary: >-
+      On SM90 and SM100/103 serving runs fp8_block through DeepGEMM only when
+      the weight has N % 64 == 0 and K % 128 == 0, and falls back to Triton
+      otherwise (for example the GLM-5.3-Flash widths 288, 3336, 6416, 12576
+      and 19360). The table times DeepGEMM for every shape.
+    direction: unknown
+    scope:
+      tables: [gemm_perf]
+      systems: [h100_sxm, h200_sxm, b200_sxm, gb200, b300_sxm, gb300]
+    verified_on: "0.5.21"
+    sources:
+      - sglang python/sglang/srt/layers/quantization/fp8_utils.py:1228-1243 @v0.5.21 (deepgemm_w8a8_block_fp8_linear_with_fallback)
+    retire_via: >-
+      Time fp8_block through dispatch_w8a8_block_fp8_linear, as serving does;
+      the same change retires G-sglang-gemm-fp8-block-deepgemm-only.
+    approved_by: tianhaox

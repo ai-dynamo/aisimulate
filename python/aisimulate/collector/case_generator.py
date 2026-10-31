@@ -14,10 +14,14 @@ import dataclasses
 import functools
 import itertools
 import os
+from collections import Counter, defaultdict
+from collections.abc import Callable
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import yaml
+
+from collector.capabilities import region_reason
 
 
 def _xpu_available() -> bool:
@@ -1802,8 +1806,12 @@ def get_gemm_case_specs(backend: str | None = None) -> list[GemmCommonTestCase]:
     return test_cases
 
 
-def get_gemm_type_specs(backend: str) -> list[str]:
-    """Return YAML-backed GEMM dtype/quantization labels for a backend."""
+def get_gemm_type_specs(backend: str | None = None) -> list[str]:
+    """Return YAML-backed GEMM dtype/quantization labels.
+
+    Without a backend this is the axis every CUDA backend shares; a backend
+    with its own sweep (vllm_xpu) gets that sweep's labels.
+    """
 
     gemm_types = []
     seen = set()
@@ -1815,6 +1823,108 @@ def get_gemm_type_specs(backend: str) -> list[str]:
             seen.add(gemm_type)
             gemm_types.append(gemm_type)
     return gemm_types
+
+
+class GemmCase(NamedTuple):
+    """One GEMM case.
+
+    ``str()`` keeps the list form (``['fp8', 64, 4096, 7168]``) that case IDs,
+    checkpoints, ``--cases-from`` replay and ``--case-filter`` match on.
+    """
+
+    gemm_type: str
+    m: int
+    n: int
+    k: int
+
+    def __str__(self) -> str:
+        return str(list(self))
+
+    __repr__ = __str__
+
+
+@dataclasses.dataclass(frozen=True)
+class RemovedRegion:
+    """A whole dtype region a plan leaves out, how many cases it holds, and why."""
+
+    dtype: str
+    cases: int
+    reason: str
+
+
+def plan_gemm(backend: str, sm_version: int | None) -> tuple[list[GemmCase], list[RemovedRegion]]:
+    """Return the GEMM cases one backend queues on one SM, and the regions left out.
+
+    Every CUDA backend expands the same grid: the shared ``gemm_types`` axis
+    of gemm.yaml times the shared shapes (base grid plus model widths). Only
+    whole dtype regions are removed, by the hardware floors and backend gaps
+    in capabilities.yaml. A failing shape inside a kept region still runs and
+    is recorded. Cases come one weight shape (n, k) at a time, largest first,
+    with m descending, so a worker that built the module for (n, k) reuses it.
+    """
+    gemm_types = get_gemm_type_specs()
+    if not gemm_types:
+        raise RuntimeError(f"{BASE_OP_CASES_DIR / 'gemm.yaml'} must declare gemm_types")
+    m_by_weight: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for spec in get_gemm_case_specs():
+        m_by_weight[(spec.n, spec.k)].append(spec.x)
+    shape_count = sum(len(token_counts) for token_counts in m_by_weight.values())
+
+    kept, removed = [], []
+    for gemm_type in gemm_types:
+        reason = region_reason("gemm", gemm_type, backend, sm_version)
+        if reason is None:
+            kept.append(gemm_type)
+        else:
+            removed.append(RemovedRegion(gemm_type, shape_count, reason))
+    cases = [
+        GemmCase(gemm_type, m, n, k)
+        for n, k in sorted(m_by_weight, reverse=True)
+        for gemm_type in kept
+        for m in sorted(m_by_weight[(n, k)], reverse=True)
+    ]
+    return cases, removed
+
+
+def get_gemm_cases(backend: str, sm_version: int | None) -> list[GemmCase]:
+    """Return the GEMM cases one backend queues on one SM (see :func:`plan_gemm`)."""
+    return plan_gemm(backend, sm_version)[0]
+
+
+@dataclasses.dataclass(frozen=True)
+class TypedPlan:
+    """An op whose plan is generated as typed cases, the same for every backend."""
+
+    expand: Callable[[str, int | None], tuple[list, list[RemovedRegion]]]
+    case_type: type
+    # The case fields the SDK matches exactly: failures are counted per bucket.
+    key_fields: tuple[str, ...]
+    # The case fields that share one module build in a worker.
+    group_fields: tuple[str, ...]
+
+
+TYPED_PLANS: dict[str, TypedPlan] = {
+    "gemm": TypedPlan(plan_gemm, GemmCase, key_fields=("gemm_type",), group_fields=("gemm_type", "n", "k")),
+}
+
+
+def summarize_typed_plan(op: str, cases: list, removed: list[RemovedRegion], case_id: Callable[[object], str]) -> dict:
+    """Count an expanded typed plan per consumer key and list the regions it leaves out.
+
+    ``case_id`` maps a case to the ID a collection run records, so
+    ``plan_hash`` equals the case_plan_hash of a run that attempts every case.
+    """
+    from collector.provenance import case_plan_hash
+
+    plan = TYPED_PLANS[op]
+    by_key = Counter("/".join(str(getattr(case, field)) for field in plan.key_fields) for case in cases)
+    return {
+        "cases": len(cases),
+        "groups": len({tuple(getattr(case, field) for field in plan.group_fields) for case in cases}),
+        "by_key": dict(by_key),
+        "removed": [dataclasses.asdict(region) for region in removed],
+        "plan_hash": case_plan_hash([case_id(case) for case in cases]),
+    }
 
 
 @dataclasses.dataclass

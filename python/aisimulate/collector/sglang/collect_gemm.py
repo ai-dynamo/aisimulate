@@ -5,8 +5,9 @@
 
 Benchmarks SGLang/sgl-kernel matrix multiplication paths for shared GEMM case
 specs, including BF16, FP8, FP8 block/DeepGEMM, and FP4-capable kernels where
-available. The module owns SGLang-specific kernel selection, quantization
-helpers, SM filters, and perf logging.
+available. The case plan is shared with the other backends
+(``case_generator.plan_gemm``); this module owns SGLang-specific kernel
+selection, quantization helpers, and perf logging.
 """
 
 # Verified 2026-08-17 against sglang v0.5.14 and v0.5.17 tags (source clones,
@@ -43,28 +44,11 @@ helpers, SM filters, and perf logging.
 # One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
 # The SGLang 0.5.20 fork (collect_gemm_0520.py, serving-built linear layers)
 # retired with the 0.5.20 lane 2026-10-30; it is git history (main at c540ff90a (before #649)).
-# FIXME(re-verify, 2026-10-30): independent serving gaps, accepted by the owner for
-# the 0.5.21 tables (no re-collection). Re-check at the next bump.
-# 1. bf16 GEMM on SM100/103: serving resolves the auto bf16 backend to CuTe DSL
-#    (quantization/unquant.py:216@v0.5.21). It first sends the 68 shapes in
-#    _BF16_SPLITK_TUNED_TACTICS (unquant.py:105-178: m <= 32 at GB300 TP16 and
-#    B300 Qwen4-Exp TP4 widths) to FlashInfer split-K or direct
-#    (SGLANG_ENABLE_BF16_SPLITK_GEMM defaults True, environ.py:1175; dispatch at
-#    unquant.py:323-347), then runs the TGV kernel only where
-#    use_cutedsl_bf16_gemm(m, n, k) picks it (kernels/ops/gemm/
-#    cutedsl_bf16_gemm.py:1357-1387: small m, 2048 <= k <= 6144, n >= 1024);
-#    everywhere else serving runs F.linear like this module.
-# 2. nvfp4 activation quant on SM100/103: serving quantizes with FlashInfer's
-#    cute-dsl backend (quantization/fp4_utils.py:24@v0.5.21); this module's
-#    flashinfer_fp4_quantize uses the default cuda backend. The mm_fp4 GEMM itself matches.
-# 3. fp8_block on SM90 and SM100/103: serving's DeepGEMM path falls back to Triton
-#    (triton_w8a8_block_fp8_linear) unless weight N % 64 == 0 and K % 128 == 0
-#    (quantization/fp8_utils.py:1228-1243@v0.5.21; e.g. GLM-5.3-Flash widths
-#    288/3336/6416/12576/19360), while this module times DeepGEMM for every shape.
+# Serving gaps: notes D-sglang-gemm-bf16-cutedsl, D-sglang-gemm-nvfp4-act-quant and
+# D-sglang-gemm-fp8-block-triton-fallback in collector/notes/sglang.yaml.
 __compat__ = "sglang==0.5.21"
 
 import os
-import random
 
 # SGLang reads this flag while importing ``deep_gemm_wrapper.compile_utils``.
 # Set it before any SGLang imports so a task compiles only its requested M.
@@ -75,7 +59,7 @@ from importlib.metadata import version as _dist_version
 
 import torch
 import torch.nn.functional as F
-from collector.case_generator import get_gemm_case_specs
+from collector.case_generator import get_gemm_cases
 from sgl_kernel import (
     fp8_scaled_mm,
     sgl_per_token_quant_fp8,
@@ -141,53 +125,7 @@ from sglang.srt.layers.quantization.fp8_utils import requant_weight_ue8m0
 
 
 def get_gemm_test_cases():
-    test_cases = []
-
-    sm_version = get_sm_version()
-    if sm_version < 89:
-        gemm_list = ["bfloat16"]
-    elif sm_version < 90:
-        # SM89 (L40S) and earlier don't have TMA - skip fp8_block
-        gemm_list = ["bfloat16", "fp8"]
-    elif sm_version < 100:
-        # Hopper supports fp8_block
-        # fp8_block (DeepGEMM) requires SM90+ for TMA support
-        gemm_list = ["fp8_block", "bfloat16", "fp8"]
-    elif sm_version < 110:
-        # SM100/SM103 (B100/B200 datacenter Blackwell): fp8_block + nvfp4
-        gemm_list = ["fp8_block", "bfloat16", "fp8", "nvfp4"]
-    else:
-        # SM120+ (RTX PRO 6000 Blackwell workstation): no DeepGEMM recipe for fp8_block
-        gemm_list = ["bfloat16", "fp8", "nvfp4"]
-
-    requested_gemm_types = os.environ.get("AIC_COLLECT_GEMM_TYPES")
-    if requested_gemm_types:
-        requested = {item.strip() for item in requested_gemm_types.split(",") if item.strip()}
-        gemm_list = [gemm_type for gemm_type in gemm_list if gemm_type in requested]
-
-    for gemm_common_testcase in get_gemm_case_specs():
-        x = gemm_common_testcase.x
-        n = gemm_common_testcase.n
-        k = gemm_common_testcase.k
-        for gemm_type in gemm_list:
-            # FIXME(kernel-limit, 2026-07-05): inherited pre-#1302 claim that
-            # DeepGEMM fp8_block (128x128 block scales) and the FlashInfer
-            # NVFP4 layout cannot represent n<128 or k<128. Removing it adds
-            # 6,216 (n,k,x) specs per affected mode on BOTH platforms (SM90
-            # fp8_block included), so it is a shared coverage-contract change
-            # that must not ride along a Blackwell fix; re-verify against
-            # framework source on the next version bump and either convert to
-            # a probe-and-raise or delete.
-            if (gemm_type == "nvfp4" or gemm_type == "fp8_block") and (n < 128 or k < 128):
-                continue
-
-            test_cases.append([gemm_type, x, n, k])
-
-    # Try to optimize number of JIT precompile cache hits by shuffling test cases.
-    random.seed(42)
-    random.shuffle(test_cases)
-
-    return test_cases
+    return get_gemm_cases("sglang", get_sm_version())
 
 
 def cdiv(a: int, b: int) -> int:

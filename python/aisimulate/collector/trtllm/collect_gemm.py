@@ -13,13 +13,11 @@ __compat__ = "trtllm==1.3.0rc29"
 
 import ctypes
 import math
-import os
-from collections import defaultdict
 
 import tensorrt_llm
 import torch
 import torch.nn.functional as F
-from collector.case_generator import get_gemm_case_specs
+from collector.case_generator import get_gemm_cases
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from tensorrt_llm._torch.modules.linear import Linear
 from tensorrt_llm._utils import is_sm_100f
@@ -55,9 +53,9 @@ def _compute_fp8_block_weight_scales(weight: torch.Tensor, group_size: int) -> t
 # cost — nvfp4 unswizzles its block scales on the CPU and the sub-L2 shapes
 # build up to 5 copies per case (b300 base run, job 471159002: gemm/nvfp4
 # 1.3 GPU-s/row and gemm/fp8_block 1.7 GPU-s/row against 0.04 for bf16).
-# get_gemm_test_cases orders the plan by (n, k) then gemm_type then m, so a
-# worker sees runs of equal keys. The cache holds one key at a time, so peak
-# memory is unchanged.
+# The shared GEMM plan (case_generator.plan_gemm) orders cases by (n, k), then
+# gemm_type, then m, so a worker sees runs of equal keys. The cache holds one
+# key at a time, so peak memory is unchanged.
 _gemm_op_cache: dict = {}
 
 
@@ -138,56 +136,7 @@ def _build_weights(gemm_type: str, n: int, k: int, device, dtype, group_size, x)
 
 
 def get_gemm_test_cases():
-    gemm_list = ["bfloat16"]
-    sm_version = get_sm_version()
-    if sm_version > 86:
-        gemm_list += ["fp8"]
-        # SM90 (Hopper) and SM100 (Blackwell) both support fp8_block.
-        # SM90 uses CUTLASS backend with FP32 scale.
-        # SM100 uses TRTLLM/DeepGEMM backend with UE8M0 scale (MXFP8 style).
-        gemm_list += ["fp8_block"]
-    if sm_version >= 100:
-        gemm_list += ["nvfp4"]
-
-    requested_gemm_types = os.environ.get("AIC_COLLECT_GEMM_TYPES")
-    if requested_gemm_types:
-        requested = {item.strip() for item in requested_gemm_types.split(",") if item.strip()}
-        gemm_list = [gemm_type for gemm_type in gemm_list if gemm_type in requested]
-
-    # Group (x, n, k) triples by (n, k) so that all batch sizes for the same
-    # weight shape run consecutively.  This allows the per-process weight cache
-    # in run_gemm to amortise the expensive torch.randn weight allocation across
-    # all 75 x values instead of reallocating on every call.
-    all_cases = get_gemm_case_specs()
-    nk_to_x: dict = defaultdict(list)
-    for c in all_cases:
-        nk_to_x[(c.n, c.k)].append(c.x)
-
-    # Sort: largest (n, k) first so that the most expensive shapes are processed
-    # early (same behaviour as before for progress visibility).
-    nk_pairs_sorted = sorted(nk_to_x.keys(), key=lambda nk: (-nk[0], -nk[1]))
-
-    test_cases = []
-    for n, k in nk_pairs_sorted:
-        x_list = sorted(nk_to_x[(n, k)], reverse=True)  # largest batch size first
-        for gemm_type in gemm_list:
-            if (gemm_type == "nvfp4" or gemm_type == "fp8_block") and (n < 128 or k < 128):
-                continue
-            if gemm_type == "fp8_block" and n * k >= 2**31:
-                continue
-            for x in x_list:
-                if x * n >= 2**31 or x * k >= 2**31:
-                    continue
-                # FIXME(kernel-limit): the fp8 small-M giant-projection IMA
-                # family (m 1..8, n and k >= 51200) known from rc5/rc10 SM120
-                # and rc15 SM89 reproduces on rc20 SM120 (5 recorded IMAs in
-                # the 2026-07-25 RTX PRO 6000 full sweep at m5-8,
-                # n/k 51200-65536). Cases run and fail classified; the
-                # version-scoped skip helper was deleted when this collector
-                # pinned trtllm>=1.3.0rc20. Re-verify on the next bump.
-                test_cases.append([gemm_type, x, n, k])
-
-    return test_cases
+    return get_gemm_cases("trtllm", get_sm_version())
 
 
 def run_gemm(gemm_type, m, n, k, *, perf_filename, device="cuda:0"):

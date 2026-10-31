@@ -2904,6 +2904,41 @@ def generate_collection_summary(all_errors, backend, version):
     logger.info(f"\nDetailed error report saved to: {summary_file}")
 
 
+def _typed_plan_report(backend: str, ops: list[str], sm_version: int, table_dir: str | None) -> dict:
+    """Expand the requested ops whose plan is typed and summarize each one.
+
+    ``plan_hash`` uses the case IDs a run records (``<backend>.<op>:<run_func>:<case>``).
+    With ``table_dir``, each op's cases are also written there as CSV.
+    """
+    import csv
+
+    from collector.case_generator import TYPED_PLANS, summarize_typed_plan
+
+    registry = importlib.import_module(f"collector.{backend}.registry").REGISTRY
+    run_funcs = {entry.op: entry.run_func for entry in registry}
+    report = {}
+    for op in ops:
+        plan = TYPED_PLANS.get(op)
+        if plan is None or op not in run_funcs:
+            continue
+        cases, removed = plan.expand(backend, sm_version)
+        report[op] = summarize_typed_plan(
+            op,
+            cases,
+            removed,
+            case_id=lambda case, op=op: create_test_case_id(case, run_funcs[op], f"{backend}.{op}"),
+        )
+        if table_dir:
+            path = Path(table_dir) / f"{backend}_sm{sm_version}_{op}.csv"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("w", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(plan.case_type._fields)
+                writer.writerows(cases)
+            report[op]["table"] = str(path)
+    return report
+
+
 def _all_op_names() -> list[str]:
     """Collect all unique op names across normal and WideEP registries."""
     from collector.sglang.registry import REGISTRY as SGLANG_REG
@@ -6349,7 +6384,16 @@ def main():
     parser.add_argument(
         "--plan-only",
         action="store_true",
-        help="Print the collector v2 case plan and exit without running collectors.",
+        help="Print the collector v2 case plan and exit without running collectors. With --sm or --gpu, "
+        "ops whose plan is typed (gemm) also report case counts per consumer key and the regions left out.",
+    )
+    parser.add_argument(
+        "--plan-table",
+        type=str,
+        metavar="DIR",
+        default=None,
+        help="With --plan-only and --sm/--gpu: write each typed-plan op's cases to "
+        "DIR/<backend>_sm<sm>_<op>.csv, one row per case.",
     )
     parser.add_argument(
         "--profile",
@@ -6388,6 +6432,8 @@ def main():
     logger_message = None
     if args.plan_only and not (args.model_path or args.model_architecture or args.model_cases or args.model_cases_full):
         parser.error("--plan-only requires --model-path, --model-architecture, --model-cases, or --model-cases-full")
+    if args.plan_table and not (args.plan_only and (args.sm or args.gpu)):
+        parser.error("--plan-table requires --plan-only and --sm or --gpu")
     if args.model_path or args.model_architecture or args.model_cases or args.model_cases_full:
         from collector.model_cases import build_collection_case_plan
 
@@ -6443,6 +6489,8 @@ def main():
         if args.plan_only:
             log_dict = case_plan.to_log_dict()
             log_dict["ops"] = ops
+            if case_plan.sm_version is not None:
+                log_dict["plans"] = _typed_plan_report(args.backend, ops, case_plan.sm_version, args.plan_table)
             print(json.dumps(log_dict, indent=2))
             return
     else:

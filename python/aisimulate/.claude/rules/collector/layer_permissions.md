@@ -18,7 +18,7 @@ the vocabulary (Pin, Plan, Record, Note, Rule) and the failure principle.
 
 ```text
 plan cases = dedup( expand(base_ops sweep grids) ∪ expand(model_case_values shapes) )
-runnable   = plan cases ∩ hardware capability floors  −  hang denylist
+runnable   = plan cases ∩ hardware capability floors  −  backend gaps  −  hang denylist
 result     = perf rows  +  classified failure records   (failure is DATA, not a defect)
 ```
 
@@ -28,7 +28,7 @@ result     = perf rows  +  classified failure records   (failure is DATA, not a 
 |---|---|---|
 | `cases/base_ops/*.yaml` | sweep density/ranges; axis-level `min_sm` on quant/precision modes; quant-mode-level `max_sm_exclusive` **iff** the entry carries a serving-dispatch citation (file:line at the pinned framework version) showing the framework itself excludes the platform — re-verified on every version bump like `FIXME(kernel-limit)` | per-model special cases; shape exclusion rules; `max_sm_exclusive` without a citation or below the quant-mode axis |
 | `cases/models/*_cases.yaml` | model structural shapes, correlated tuples, artifact/quant policy, op activation (`cases: all`) | selectors, match rules, a second generator recipe |
-| `cases/capabilities.yaml` | positive dtype/op → min-SM floors (hardware facts only) | negative "drop" rules; shape axes; framework-version conditions; per-backend nesting |
+| `cases/capabilities.yaml` | positive dtype/op → min-SM floors (hardware facts); `backend_gaps`: a whole (op, dtype) region on listed SMs that one backend's collector cannot run, citing a guard note | any region finer than (op, dtype, SM); shape axes; framework-version conditions; other per-backend nesting |
 | `<backend>/registry.py` | version routing (`VersionRoute`); maturity markers `unverified=True` (op × backend) and `unverified_sms=(...)` (op × backend × SM) | any shape-level information |
 | `collect_*.py` collector code | **dispatch**: pick kernel path by SM/version, record `kernel_source`; runtime probe → **raise a classified exception**; **memory-feasibility filter** (see below) | silent `continue`/skip of a queued case; any other case filtering; patching code so one shape passes |
 | `cases/denylist.yaml` | cases that HANG or kill the node (dated, with reason) | ordinary crashes — those belong to the failure log |
@@ -46,8 +46,8 @@ result     = perf rows  +  classified failure records   (failure is DATA, not a 
 
 A collector has exactly two legal responses to a queued case: **execute it, or
 raise**. "Whether it runs" is decided only outside the collector, in three
-auditable places: capability floors (generation time), registry `unverified`
-markers, and the hang denylist.
+auditable places: capability floors and backend gaps (generation time),
+registry `unverified` markers, and the hang denylist.
 
 ## Kernel/backend selection: framework truth, never your guess
 
@@ -159,6 +159,13 @@ that prefix) and names its guard note, `G-<backend>-<slug>` in
 source line, or a reproducible failing run whose passing rows bound the
 guarded envelope) and `verified_on`, so R8 forces a re-check at every pin
 bump.
+
+When the guarded set is a whole (op, dtype) region on an SM, such as a dtype
+the backend's collector has no kernel for there, do not raise per case:
+declare it in `capabilities.yaml` `backend_gaps` with the same kind of guard
+note (reason `expensive`). The plan then leaves the region out and
+`--plan-only` reports it with the note id. Example:
+`G-sglang-gemm-fp8-block-deepgemm-only`.
 
 Existing `FIXME(kernel-limit)` raises without a guard note are legacy. When a
 change touches one, delete it if it guards none of the three cases above, or
