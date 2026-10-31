@@ -484,7 +484,8 @@ def verify_runtime_profile(request: SupportRequest) -> dict[str, Any] | None:
     actual_capacity = actual["runtime_memory"].pop("kv_cache_bytes")
     # The draft holds the grouped evidence, or the same evidence in the linear layout. Only the evidence decides
     # which layouts exist. Import validated the complete role of this evidence with the same rule, so both records
-    # hold the prefix-caching settings of the same phase, and the whole records compare.
+    # hold the prefix-caching settings of the same phase, and the whole records compare. The draft records no other
+    # phase: the source artifact hashes above pin the records, and so the settings, of every phase.
     linear = linear_runtime_resources(expected)
     if actual != expected and actual != linear:
         raise ValueError("runtime cache geometry or settings changed; a compatible fresh probe is required")
@@ -697,7 +698,8 @@ def verify_collection_runtime(
 
     # Both validations cover the complete role of the same launch with the same rule. Their first worker records
     # and their resource records therefore belong to the same phase, so the raw groups and the whole records,
-    # including the prefix-caching settings, compare as they are.
+    # including that phase's prefix-caching settings, compare as they are. The settings of the other phases
+    # compare per phase below.
     def geometry(evidence):
         groups = next(
             item["evidence"]["cache"]["groups"]
@@ -714,6 +716,10 @@ def verify_collection_runtime(
     capacity = actual["runtime_memory"].pop("kv_cache_bytes")
     if actual != expected:
         raise ValueError("formal runtime cache layout or settings differ from the accepted probe")
+    accepted, formal = source["provenance"]["prefix_caching"], result["provenance"]["prefix_caching"]
+    for phase in accepted:
+        if phase in formal and formal[phase] != accepted[phase]:
+            raise ValueError(f"{phase}: runtime prefix-caching settings differ from the accepted probe")
     bound = request.profile_deployment().resources.runtime_memory.kv_cache_bytes
     if memory_request is not None:
         if collection_checkpoint is None:

@@ -514,8 +514,8 @@ _GLM_PRECISION = {
     "kv_cache_dtype": "bfloat16",
 }
 # The groups stand in for the runtime report, which always reports a grouped layout, names its groups
-# runtime_group_<i> and states each group's sliding_window. A real GLM probe also reports state groups. The spec
-# guard in collector/fpm_forward/runtime_memory.py keeps that probe incomplete until state groups are supported.
+# runtime_group_<i> and states each group's sliding_window. A real GLM probe on vLLM 0.31.0 also reports five state
+# groups; test_profile_from_observations_accepts_state_groups imports them.
 _RUNTIME_GROUP = {
     "name": "runtime_group_0",
     "kind": "attention",

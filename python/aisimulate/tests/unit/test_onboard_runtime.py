@@ -1675,12 +1675,44 @@ def test_serving_role_round_trip_import_collection_and_finalization(tmp_path, ca
     check_plan(resolved, target)
 
 
+def _record_decode_hash_block_size(index, tokens):
+    """Rewrite the hash block size that the decode scheduler record of an observation index reports."""
+    document = json.loads(index.read_text())
+    phase = document["configurations"]["tp2"]["attempts"][0]["phases"]["decode"]
+    reference = next(ref for ref in phase["artifacts"] if Path(ref["path"]).name.startswith("scheduler-"))
+    path = index.parent / reference["path"]
+    record = json.loads(path.read_text())
+    # The importer reads the prefix_caching copy; the record keeps the top-level one consistent with it.
+    record["cache"]["prefix_caching"]["hash_block_size"] = record["cache"]["hash_block_size"] = tokens
+    _write(path, record)
+    reference["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    _write(index, document)
+
+
+def test_formal_collection_compares_prefix_caching_of_every_phase(tmp_path, capsys):
+    from aisimulate.support.runtime import verify_collection_runtime
+
+    # Both records hold the prefill phase's settings, and both first worker records belong to prefill. Decode runs
+    # without prefix caching, so its Mamba groups hold max_model_len tokens per block.
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, layout="mamba_hybrid", decode_prefix_caching=False
+    )
+    checkpoint = json.loads((root / "fpm-checkpoint/fpm_forward.json").read_text())
+    index = Path(checkpoint["runtime_observations"])
+    compatibility = verify_collection_runtime(request, index, collection_checkpoint=checkpoint)["compatibility"]
+    assert compatibility["status"] == "compatible"
+    # The probe's decode phase hashes 4096-token blocks. A change confined to the decode phase is refused too.
+    _record_decode_hash_block_size(index, 64)
+    with pytest.raises(ValueError, match="decode: runtime prefix-caching settings differ from the accepted probe"):
+        verify_collection_runtime(request, index, collection_checkpoint=checkpoint)
+
+
 def test_formal_phase_binding_compares_prefix_caching_per_phase(tmp_path, capsys):
     from collector.fpm_forward.cli import _parser
     from collector.fpm_forward.entry import _load_generator_overrides
     from collector.fpm_forward.repeatability import load_repeatability_source
 
-    from aisimulate.support.runtime import verify_collection_runtime, verify_collection_runtime_bindings
+    from aisimulate.support.runtime import verify_collection_runtime_bindings
 
     # Decode runs without prefix caching: its Mamba groups hold max_model_len tokens per block in none mode, while
     # the accepted record holds the prefill phase's align mode and 64-token blocks.
@@ -1719,19 +1751,7 @@ def test_formal_phase_binding_compares_prefix_caching_per_phase(tmp_path, capsys
         "mamba_cache_mode": "none",
         "hash_block_size_tokens": 4096,
     }
-    # Finalization compares complete roles, whose first worker records belong to the same phase.
-    compatibility = verify_collection_runtime(request, index, collection_checkpoint=checkpoint)["compatibility"]
-    assert compatibility["status"] == "compatible"
-    document = json.loads(index.read_text())
-    phase = document["configurations"]["tp2"]["attempts"][0]["phases"]["decode"]
-    reference = next(ref for ref in phase["artifacts"] if Path(ref["path"]).name.startswith("scheduler-"))
-    path = index.parent / reference["path"]
-    record = json.loads(path.read_text())
-    # The importer reads the prefix_caching copy; the record keeps the top-level one consistent with it.
-    record["cache"]["prefix_caching"]["hash_block_size"] = record["cache"]["hash_block_size"] = 64
-    _write(path, record)
-    reference["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
-    _write(index, document)
+    _record_decode_hash_block_size(index, 64)
     with pytest.raises(ValueError, match="decode: runtime prefix-caching settings differ from the accepted probe"):
         verify_collection_runtime_bindings(request, bindings())
 
