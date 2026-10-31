@@ -81,3 +81,45 @@ notes:
       Time fp8_block through dispatch_w8a8_block_fp8_linear, as serving does;
       the same change retires G-sglang-gemm-fp8-block-deepgemm-only.
     approved_by: tianhaox
+  - id: G-sglang-moe-fp8-not-collected
+    kind: guard
+    summary: >-
+      The SGLang MoE collector has no per-tensor fp8 path: run_moe_torch
+      accepts bfloat16, fp8_block, int4_wo, nvfp4 and the two MXFP4 modes,
+      so every fp8 case would fail. capabilities.yaml backend_gaps leaves the
+      region out. Serving does run per-tensor fp8 MoE, through
+      ModelOptFp8MoEMethod for ModelOpt FP8 checkpoints.
+    reason: expensive
+    scope:
+      tables: [moe_perf]
+      systems: [l40s, h100_sxm, h200_sxm, b200_sxm, b300_sxm, gb200, gb300, rtx_pro_6000_server]
+    verified_on: "0.5.21"
+    sources:
+      - aisimulate python/aisimulate/collector/sglang/collect_moe.py:1446 (run_moe_torch moe_type assertion)
+      - sglang python/sglang/srt/layers/quantization/modelopt_quant.py:1088 @v0.5.21 (ModelOptFp8MoEMethod)
+    retire_via: >-
+      Build per-tensor fp8 cases through the serving quant method, then delete
+      the backend gap.
+    approved_by: tianhaox
+  - id: G-sglang-moe-runner-unpinned
+    kind: guard
+    summary: >-
+      Each SGLang MoE case runs on the runner serving selects, pinned per
+      quant mode and SM in cases/base_ops/moe.yaml moe_sglang.backends.
+      int4_wo has no pin for SM80 or SM86 and w4a8_mxfp4_mxfp8 none for
+      SM120, so capabilities.yaml backend_gaps leaves those regions out
+      instead of timing a guessed runner. SGLang 0.5.21 does have an SM120
+      MXFP8 x MXFP4 path (flashinfer_mxfp4, cutlass_sm120); which runner
+      serving picks there by default is not verified.
+    reason: mismeasure
+    scope:
+      tables: [moe_perf]
+      systems: [a100_sxm, rtx_pro_6000_server]
+    verified_on: "0.5.21"
+    sources:
+      - sglang python/sglang/srt/layers/quantization/mxfp4.py:398-425 @v0.5.21 (flashinfer_mxfp4 entry point per SM)
+      - aisimulate python/aisimulate/collector/cases/base_ops/moe.yaml (moe_sglang.backends)
+    retire_via: >-
+      Verify serving's default runner for these SMs at the pin, add it to
+      moe_sglang.backends, and delete the backend gaps.
+    approved_by: tianhaox

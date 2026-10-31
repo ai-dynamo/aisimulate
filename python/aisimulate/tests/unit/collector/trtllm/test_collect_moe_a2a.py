@@ -207,7 +207,7 @@ def test_declared_shapes_retain_grouped_and_global_routing():
 def test_kimi_k3_is_excluded_by_the_shared_operation_declaration():
     from collector.case_generator import get_common_moe_test_cases, is_wideep_moe_model
 
-    recipes = get_common_moe_test_cases(backend="trtllm", required_expert_parallel_size=8)
+    recipes = get_common_moe_test_cases(required_expert_parallel_size=8)
     kimi = next(recipe for recipe in recipes if recipe.model_name == "moonshotai/Kimi-K3")
 
     assert not is_wideep_moe_model(kimi.model_name)

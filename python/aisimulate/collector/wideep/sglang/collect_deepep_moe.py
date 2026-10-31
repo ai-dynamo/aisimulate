@@ -1227,7 +1227,7 @@ def get_moe_ep_test_cases():
             moe_model_allows_quantization,
         )
 
-    recipes = get_common_moe_test_cases(backend="sglang")
+    recipes = get_common_moe_test_cases()
     dropped_not_declared = 0
     dropped_not_ep = 0
     dropped_quant = 0

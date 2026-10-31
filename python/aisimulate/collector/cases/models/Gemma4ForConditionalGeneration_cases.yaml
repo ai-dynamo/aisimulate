@@ -95,13 +95,7 @@ model_case_values:
       topk: 8
       num_experts: 128
       sglang_moe_activation: gelu
-      framework_quantization:
-        sglang:
-          allowed_modes: [bfloat16]
-        trtllm:
-          allowed_modes: [bfloat16]
-        vllm:
-          allowed_modes: [bfloat16]
+      quantization_modes: [bfloat16]
 
 all_frameworks_op_cases:
   moe:

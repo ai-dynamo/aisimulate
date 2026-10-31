@@ -189,10 +189,7 @@ def get_vllm_moe_a2a_shapes(
     """Resolve correlated WideEP shapes through the vLLM case population."""
     from collector.case_generator import get_common_moe_test_cases
 
-    recipes = get_common_moe_test_cases(
-        backend="vllm",
-        required_expert_parallel_size=required_expert_parallel_size,
-    )
+    recipes = get_common_moe_test_cases(required_expert_parallel_size=required_expert_parallel_size)
     ordered = resolve_moe_a2a_shapes(recipes)
     if not ordered:
         raise VllmMoeA2ADeclarationError(

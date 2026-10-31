@@ -7,10 +7,12 @@
 # This file is intentionally flat. Allowed content:
 #   - dtype_min_sm: canonical dtype/quant name -> minimum SM version
 #   - op_min_sm:    op name -> minimum SM version
-#   - backend_gaps: a whole (op, dtype) region that one backend's collector
-#     cannot run on the listed SMs although the hardware can. Each entry names
-#     the guard note in collector/notes/<backend>.yaml that says why; R8 keeps
-#     that note's verified_on current.
+#   - backend_gaps: a whole region of an op plan (collector/op_plans.py) that
+#     one backend's collector cannot run on the listed SMs although the
+#     hardware can. A region is a dtype, or another region field the op plan
+#     declares (MoE: parallel = tp, ep or tp_ep). Each entry names the guard
+#     note in collector/notes/<backend>.yaml that says why; R8 keeps that
+#     note's verified_on current.
 #
 # NOT allowed here (by design -- see .claude/rules/collector/):
 #   - shape conditions (batch/seq/token/feature axes)
@@ -72,3 +74,33 @@ backend_gaps:
     dtype: fp8_block
     sm: [89, 120]
     note: G-sglang-gemm-fp8-block-deepgemm-only
+  - backend: sglang
+    op: moe
+    dtype: fp8
+    sm: [89, 90, 100, 103, 120]
+    note: G-sglang-moe-fp8-not-collected
+  - backend: sglang
+    op: moe
+    dtype: int4_wo
+    sm: [80, 86]
+    note: G-sglang-moe-runner-unpinned
+  - backend: sglang
+    op: moe
+    dtype: w4a8_mxfp4_mxfp8
+    sm: [120]
+    note: G-sglang-moe-runner-unpinned
+  - backend: trtllm
+    op: moe
+    dtype: int4_wo
+    sm: [100, 103]
+    note: G-trtllm-moe-int4-wo-no-implementation
+  - backend: vllm
+    op: moe
+    parallel: tp_ep
+    sm: [80, 86, 89, 90, 100, 103, 120]
+    note: G-vllm-moe-tp-and-ep
+  - backend: vllm
+    op: moe
+    dtype: w4a8_mxfp4_mxfp8
+    sm: [120]
+    note: G-vllm-moe-w4a8-mxfp4-sm120

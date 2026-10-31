@@ -422,7 +422,7 @@ Therefore ALWAYS verify results by content, never by status:
 2. Read `errors_*.json` / `collection_summary_*.json`; any
    `ModuleCollectionFailure` means that op collected nothing.
 3. Compare collected vs planned counts (`--plan-only --sm <sm>` prints the
-   plan size per dtype for ops with an op plan, GEMM so far);
+   plan size per dtype for ops with an op plan, GEMM and MoE so far);
    large shortfalls mean the run died early — check the tail of the log for
    container/cluster death, not just collector errors.
 

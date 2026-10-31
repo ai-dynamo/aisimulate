@@ -41,13 +41,7 @@ model_case_values:
       # own rows (with their own model_path) — never merged here
       # (case_authoring.md: quant-distinct artifacts are separate rows);
       # see the nvidia/MiniMax-M3-NVFP4 row below.
-      framework_quantization:
-        trtllm:
-          allowed_modes: [bfloat16]
-        sglang:
-          allowed_modes: [bfloat16]
-        vllm:
-          allowed_modes: [bfloat16]
+      quantization_modes: [bfloat16]
     # nvidia/MiniMax-M3-NVFP4 (ModelOpt MIXED_PRECISION): routed experts
     # w1/w2/w3 are NVFP4 group_size 16 — the dtype this MoE row collects.
     # Attention/dense-MLP/shared-expert projections are MXFP8 (priced by the
@@ -65,13 +59,7 @@ model_case_values:
       sglang_moe_routed_scaling_factor: 2.0
       sglang_moe_renormalize: true
       sglang_moe_has_correction_bias: true
-      framework_quantization:
-        trtllm:
-          allowed_modes: [nvfp4]
-        sglang:
-          allowed_modes: [nvfp4]
-        vllm:
-          allowed_modes: [nvfp4]
+      quantization_modes: [nvfp4]
   mla_module:
     # model_aliases (NOT model_paths): the MSA module benchmark is
     # artifact-insensitive — dummy weights, identical sparse geometry in both

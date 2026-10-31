@@ -84,7 +84,7 @@ def _stage_counts() -> dict[str, int]:
         moe_model_allows_quantization,
     )
 
-    recipes = list(get_common_moe_test_cases(backend="vllm"))
+    recipes = list(get_common_moe_test_cases())
     wideep = [case for case in recipes if is_wideep_moe_model(case.model_name)]
     ep_only = [case for case in wideep if case.tp == 1 and case.ep > 1]
     quantized = [case for case in ep_only if moe_model_allows_quantization("vllm", case.model_name, "fp8_block")]
@@ -101,9 +101,11 @@ def _stage_counts() -> dict[str, int]:
 def test_deepseek_v3_population_counts_per_stage(monkeypatch, moe_ep_symbols):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "deepseek-ai/DeepSeek-V3")
 
+    # Every MoE row reaches every backend; this collector keeps the pure-EP
+    # recipes (tp == 1, ep > 1) itself.
     assert _stage_counts() == {
-        "recipes": 42,
-        "wideep_declared": 42,
+        "recipes": 117,
+        "wideep_declared": 117,
         "ep_only": 24,
         "quant_allowed": 24,
         "unique_invocations": 8,
@@ -138,7 +140,10 @@ def test_full_population_covers_every_declared_wideep_model(monkeypatch, moe_ep_
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
     counts = _stage_counts()
     cases = moe_ep_symbols["get_moe_ep_test_cases"]()
-    assert counts["unique_invocations"] == len(cases) == 110
+    # 46 distinct invocations; the GLM-5.x FP8 checkpoints share theirs with
+    # nothing else, since only those rows declare fp8_block.
+    assert counts["unique_invocations"] == len(cases) == 62
+    assert len({tuple(case) for case in cases}) == 46
     for local_experts, ep_size, _hidden, _inter, _topk, num_experts, num_slots, quant in cases:
         assert local_experts * ep_size == num_experts
         assert num_slots == num_experts

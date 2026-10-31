@@ -377,10 +377,7 @@ def get_moe_a2a_shapes(*, required_expert_parallel_size: int | None = None) -> l
     """
     from collector.case_generator import get_common_moe_test_cases, is_wideep_moe_model
 
-    recipes = get_common_moe_test_cases(
-        backend="sglang",
-        required_expert_parallel_size=required_expert_parallel_size,
-    )
+    recipes = get_common_moe_test_cases(required_expert_parallel_size=required_expert_parallel_size)
     ordered = resolve_moe_a2a_shapes(recipes)
     dropped_not_declared = sum(1 for recipe in recipes if not is_wideep_moe_model(recipe.model_name))
     print(

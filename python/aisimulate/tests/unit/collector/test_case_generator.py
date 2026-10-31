@@ -53,7 +53,7 @@ def test_qwen38_fp8_recipe_pins_only_blackwell_moe_runner(monkeypatch):
     """The FP8 artifact follows its serving recipe; bf16 keeps the base default."""
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", QWEN38_MAX_FP8)
 
-    cases = get_common_moe_test_cases(backend="sglang")
+    cases = get_common_moe_test_cases()
     assert cases
 
     for sm_version in (100, 103):

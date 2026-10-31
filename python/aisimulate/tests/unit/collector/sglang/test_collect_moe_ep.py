@@ -75,7 +75,7 @@ def _stage_counts(backend: str = "sglang") -> dict[str, int]:
         moe_model_allows_quantization,
     )
 
-    recipes = list(get_common_moe_test_cases(backend=backend))
+    recipes = list(get_common_moe_test_cases())
     wideep = [case for case in recipes if is_wideep_moe_model(case.model_name)]
     ep_only = [case for case in wideep if case.tp == 1 and case.ep > 1]
     quantized = [case for case in ep_only if moe_model_allows_quantization(backend, case.model_name, "fp8_block")]
@@ -222,7 +222,7 @@ def test_full_population_covers_every_declared_wideep_model(monkeypatch, moe_ep_
 
     declared_models = {
         recipe.model_name
-        for recipe in get_common_moe_test_cases(backend="sglang")
+        for recipe in get_common_moe_test_cases()
         if is_wideep_moe_model(recipe.model_name)
         and recipe.tp == 1
         and recipe.ep > 1

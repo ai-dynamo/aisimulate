@@ -163,171 +163,73 @@ def _persisted_distribution(distribution: str, alpha: float | None) -> str:
     return f"power_law_{alpha}" if distribution == "power_law" else distribution
 
 
-def test_trtllm_moe_getter_dedupes_equal_resolved_invocations(monkeypatch):
-    _install_trtllm_stubs(monkeypatch)
-    module = _load_collector(monkeypatch, "collector.trtllm.collect_moe", "collector/trtllm/collect_moe.py")
-    common_cases = [
-        _moe_case("model-a"),
-        _moe_case("model-b"),
-        _moe_case("model-a", distribution="power_law", alpha=1.2),
-    ]
-    module_configs = {
-        "model-a": {"group_size": 32},
-        "model-b": {"group_size": 32},
-    }
-    monkeypatch.setattr(module, "get_common_moe_test_cases", lambda: common_cases)
-    monkeypatch.setattr(module, "moe_model_allows_quantization", lambda _backend, _model, mode: mode == "int4_wo")
+def _patch_moe_population(monkeypatch, common_cases, module_configs, modes=("int4_wo",)):
+    from collector import op_plans
+
+    monkeypatch.setattr(op_plans, "get_common_moe_test_cases", lambda: common_cases)
+    monkeypatch.setattr(op_plans, "moe_planned_modes", lambda _model, _declared: list(modes))
     monkeypatch.setattr(
-        module,
+        op_plans,
         "get_moe_quantization_module_config",
         lambda _backend, _mode, *, model_name: module_configs[model_name],
     )
+    return op_plans
 
-    cases = module.get_moe_test_cases()
 
-    assert {(case[9], case[10], case[11]) for case in cases} == {
-        ("model-a", "balanced", 0.0),
-        ("model-a", "power_law", 1.2),
-    }
+def test_moe_plan_dedupes_rows_that_time_the_same_layer(monkeypatch):
+    op_plans = _patch_moe_population(
+        monkeypatch,
+        [
+            _moe_case("model-a"),
+            _moe_case("model-b"),
+            _moe_case("model-a", distribution="power_law", alpha=1.2),
+            _moe_case("model-b", ep=2),
+        ],
+        {"model-a": {"group_size": 32}, "model-b": {"group_size": 32}},
+    )
+
+    cases = op_plans._expand_moe()
+
+    assert [(case.model_name, case.distribution, case.ep) for case in cases] == [
+        ("model-a", "balanced", 1),
+        ("model-a", "power_law", 1),
+        ("model-b", "balanced", 2),
+    ]
 
 
 @pytest.mark.parametrize(
-    ("conflicting_model", "conflicting_config"),
+    ("conflicting_case", "conflicting_config"),
     [
-        ("model-c", {"group_size": 128}),
-        ("vendor/Nemotron-3-test", {"group_size": 32}),
+        (_moe_case("model-c"), {"group_size": 128}),
+        (replace(_moe_case("model-c"), sglang_moe_activation="relu2", sglang_moe_is_gated=False), {"group_size": 32}),
     ],
 )
-def test_trtllm_moe_getter_rejects_consumer_key_collision(
-    monkeypatch,
-    conflicting_model,
-    conflicting_config,
-):
-    _install_trtllm_stubs(monkeypatch)
-    module = _load_collector(monkeypatch, "collector.trtllm.collect_moe", "collector/trtllm/collect_moe.py")
-    common_cases = [
-        _moe_case("model-a"),
-        replace(_moe_case(conflicting_model), num_tokens_list=[8, 16]),
-    ]
-    module_configs = {
-        "model-a": {"group_size": 32},
-        conflicting_model: conflicting_config,
-    }
-    monkeypatch.setattr(module, "get_common_moe_test_cases", lambda: common_cases)
-    monkeypatch.setattr(module, "moe_model_allows_quantization", lambda _backend, _model, mode: mode == "int4_wo")
-    monkeypatch.setattr(
-        module,
-        "get_moe_quantization_module_config",
-        lambda _backend, _mode, *, model_name: module_configs[model_name],
+def test_moe_plan_rejects_two_layers_under_one_consumer_key(monkeypatch, conflicting_case, conflicting_config):
+    op_plans = _patch_moe_population(
+        monkeypatch,
+        [_moe_case("model-a"), conflicting_case],
+        {"model-a": {"group_size": 32}, "model-c": conflicting_config},
     )
 
-    with pytest.raises(ValueError, match="TRT-LLM MoE population collision") as exc_info:
-        module.get_moe_test_cases()
-
-    assert "model-a" in str(exc_info.value)
-    assert conflicting_model in str(exc_info.value)
-
-
-def test_trtllm_dsv4_moe_getter_retains_tp_and_ep_buckets(monkeypatch):
-    _install_trtllm_stubs(monkeypatch)
-    module = _load_collector(monkeypatch, "collector.trtllm.collect_moe", "collector/trtllm/collect_moe.py")
-    tp_ep_pairs = {(tp, ep) for tp in (4, 16, 32) for ep in (1, 2, 4, 8)}
-    base_case = MoeCommonTestCase(
-        num_tokens_list=[128],
-        hidden_size=4096,
-        inter_size=2048,
-        topk=6,
-        num_experts=256,
-        tp=1,
-        ep=1,
-        model_name="deepseek-ai/DeepSeek-V4-Flash",
-        token_expert_distribution="balanced",
-        power_law_alpha=None,
-        architecture="DeepseekV4ForCausalLM",
-    )
-    monkeypatch.setattr(
-        module,
-        "get_common_moe_test_cases",
-        lambda: [replace(base_case, tp=tp, ep=ep) for tp, ep in sorted(tp_ep_pairs)],
-    )
-    monkeypatch.setattr(
-        module,
-        "moe_model_allows_quantization",
-        lambda _backend, _model, mode: mode == "w4a8_mxfp4_mxfp8",
-    )
-    monkeypatch.setattr(module, "get_moe_quantization_module_config", lambda *_args, **_kwargs: {})
-
-    cases = module.get_moe_test_cases()
-
-    assert {(case[6], case[7]) for case in cases} == tp_ep_pairs
-    assert {case[0] for case in cases} == {"w4a8_mxfp4_mxfp8"}
-
-
-def test_vllm_moe_getter_dedupes_equal_resolved_invocations(monkeypatch):
-    _install_vllm_stubs(monkeypatch)
-    module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
-    common_cases = [
-        _moe_case("model-a"),
-        _moe_case("model-b"),
-        _moe_case("model-a", distribution="power_law", alpha=1.2),
-        _moe_case("model-b", ep=2),
-    ]
-    module_configs = {
-        "model-a": {"activation": "silu", "has_bias": False},
-        "model-b": {"activation": "silu", "has_bias": False},
-    }
-    monkeypatch.setattr(module, "get_common_moe_test_cases", lambda **_kwargs: common_cases)
-    monkeypatch.setattr(module, "get_moe_quantization_modes", lambda *_args, **_kwargs: ["w4a16_mxfp4"])
-    monkeypatch.setattr(module, "moe_model_allows_quantization", lambda *_args: True)
-    monkeypatch.setattr(
-        module,
-        "_load_model_moe_config",
-        lambda _model_name: {"model_type": "qwen3_moe", "hidden_act": "silu", "norm_topk_prob": True},
-    )
-    monkeypatch.setattr(
-        module,
-        "get_moe_quantization_module_config",
-        lambda _backend, _mode, *, model_name: module_configs[model_name],
-    )
-
-    cases = module.get_moe_test_cases()
-    model_names = [case[8] for case in cases]
-
-    assert len(cases) == 3
-    assert model_names.count("model-a") == 2
-    assert model_names.count("model-b") == 1
-
-
-def test_vllm_moe_getter_rejects_consumer_key_collision(monkeypatch):
-    _install_vllm_stubs(monkeypatch)
-    module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
-    common_cases = [
-        _moe_case("model-a"),
-        replace(_moe_case("model-c"), num_tokens_list=[8, 16]),
-    ]
-    module_configs = {
-        "model-a": {"activation": "silu", "has_bias": False},
-        "model-c": {"activation": "swigluoai", "has_bias": True},
-    }
-    monkeypatch.setattr(module, "get_common_moe_test_cases", lambda **_kwargs: common_cases)
-    monkeypatch.setattr(module, "get_moe_quantization_modes", lambda *_args, **_kwargs: ["w4a16_mxfp4"])
-    monkeypatch.setattr(module, "moe_model_allows_quantization", lambda *_args: True)
-    monkeypatch.setattr(
-        module,
-        "_load_model_moe_config",
-        lambda _model_name: {"model_type": "qwen3_moe", "hidden_act": "silu", "norm_topk_prob": True},
-    )
-    monkeypatch.setattr(
-        module,
-        "get_moe_quantization_module_config",
-        lambda _backend, _mode, *, model_name: module_configs[model_name],
-    )
-
-    with pytest.raises(ValueError, match="vLLM MoE population collision") as exc_info:
-        module.get_moe_test_cases()
+    with pytest.raises(ValueError, match="time different layers under one consumer key") as exc_info:
+        op_plans._expand_moe()
 
     assert "model-a" in str(exc_info.value)
     assert "model-c" in str(exc_info.value)
+
+
+def test_moe_plan_keeps_tp_and_ep_buckets_except_the_vllm_gap(monkeypatch):
+    from collector.op_plans import plan
+
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "deepseek-ai/DeepSeek-V4-Flash")
+    layouts = {
+        backend: {(case.tp, case.ep) for case in plan("moe", backend, 100).cases}
+        for backend in ("sglang", "trtllm", "vllm")
+    }
+
+    assert any(tp > 1 and ep > 1 for tp, ep in layouts["trtllm"])
+    assert layouts["sglang"] == layouts["trtllm"]
+    assert layouts["vllm"] == {(tp, ep) for tp, ep in layouts["trtllm"] if tp == 1 or ep == 1}
 
 
 def test_trtllm_repository_moe_getter_has_unique_consumer_keys(monkeypatch):
@@ -385,30 +287,11 @@ def test_vllm_sm90_repository_moe_getter_excludes_unconsumable_dsv4_cases(monkey
         "sgl-project/DeepSeek-V4-Pro-FP8",
     }
 
-    # 1887 pre-Kimi-K3, +39 K3 w4a16_mxfp4 cases (grouped-topk mapping for
-    # model_type kimi_linear), +99 Step-3.7-Flash executions after identical
-    # physical invocations are deduplicated by their consumer key, +42
-    # Nemotron Super FP8 cases, +39 for MiniMax-M3's MoE row (6144/3072,
-    # 128x4, bf16), and +84 Qwen3.8-Max cases / +2268 flat rows (bf16/
-    # fp8_block vLLM modes on its 8192/2048/topk10/512-expert row; the
-    # RadixArk/Qwen3.8-2.4T-A95B-NVFP4 sibling row is gated
-    # allowed_modes: [] for vllm, AIC-1782 Task V2, so it is absent here).
-    #
-    # AIC-1782 Task V2 (2026-08-21) data-quality fix: this was 2232/126
-    # cases (+3402 flat rows) before the base row's own vllm
-    # framework_quantization gate was added -- moe_model_allows_quantization
-    # defaulted OPEN for "fp8" (per-tensor), a mode this checkpoint's real
-    # artifacts never use (native bfloat16, block-fp8 as its -FP8 alias),
-    # because base_ops/moe.yaml's moe_vllm "fp8" quantization_modes entry
-    # has no allowed_model_paths restriction of its own. Closing the base
-    # row's gate to allowed_modes: [bfloat16, fp8_block] drops exactly the
-    # 42 phantom "fp8" cases (one per already-counted bf16/fp8_block case),
-    # re-derived by running this exact getter before and after the fix, not
-    # assumed.
-    # +33 GLM-5.3-Flash fp8_block cases (288 experts/top-8/4096/2048, TP 1-32
-    # or EP 2-256; its nvfp4 row needs SM100 and is absent here).
-    assert len(cases) == 2223
-    assert sum(len(case[1]) for case in cases) == 60021
+    # Every row plans its checkpoint's quant modes on every backend; vLLM
+    # leaves out tp>1 with ep>1 (G-vllm-moe-tp-and-ep). The count moves only
+    # with the model rows or the shared grid.
+    assert len(cases) == 2265
+    assert sum(len(case[1]) for case in cases) == 61155
     # MiniMax-M3's declared MoE geometry must be present as its own rows —
     # a generator defect could drop it while unrelated cases preserve the
     # aggregate counts above. (case[:8] = moe_type, num_tokens, hidden,
@@ -464,84 +347,52 @@ def test_vllm_sm100_repository_moe_getter_expands_native_dsv4_w4a8_cases(monkeyp
 
 
 @pytest.mark.parametrize(
-    ("model_path", "moe_type", "expected_hidden_size"),
+    ("model_path", "moe_type", "hidden_sizes"),
     [
-        ("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8", "fp8", 1024),
-        ("nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16", "bfloat16", 2048),
-        ("nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8", "fp8", 2048),
+        ("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8", "fp8", {1024}),
+        ("nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16", "bfloat16", {2048, 8192}),
+        ("nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8", "fp8", {2048, 8192}),
     ],
 )
-def test_vllm_nemotron_uses_latent_moe_width(monkeypatch, model_path, moe_type, expected_hidden_size):
-    monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
-    _install_vllm_stubs(monkeypatch)
-    module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
-    monkeypatch.setattr(module, "get_sm_version", lambda: 90)
-
-    cases = module.get_moe_test_cases()
-
-    assert len(cases) == 42
-    assert sum(len(case[1]) for case in cases) == 1134
-    assert {case[0] for case in cases} == {moe_type}
-    assert {case[2] for case in cases} == {expected_hidden_size}
-
-
-@pytest.mark.parametrize(
-    "model_path",
-    [
-        "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
-        "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4",
-    ],
-)
-def test_vllm_nemotron_topk22_nvfp4_artifacts_are_not_scheduled(monkeypatch, model_path):
-    monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
-    _install_vllm_stubs(monkeypatch)
-    module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
-
-    assert module.get_moe_test_cases() == []
-
-
-@pytest.mark.parametrize(
-    "model_path",
-    [
-        "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
-        "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8",
-        "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4",
-    ],
-)
-def test_nemotron_ultra_declares_backend_specific_moe_geometry(monkeypatch, model_path):
-    from collector.case_generator import get_common_moe_test_cases
+def test_nemotron_moe_plans_the_vllm_latent_and_the_outer_width_everywhere(
+    monkeypatch, model_path, moe_type, hidden_sizes
+):
+    from collector.op_plans import plan
 
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
+    for backend in ("trtllm", "vllm"):
+        cases = plan("moe", backend, 90).cases
+        assert {case.hidden_size for case in cases} == hidden_sizes
+        assert {case.moe_type for case in cases} == {moe_type}
+    # SGLang has no per-tensor fp8 path (G-sglang-moe-fp8-not-collected).
+    sglang = plan("moe", "sglang", 90).cases
+    assert {(case.moe_type, case.hidden_size) for case in sglang} == (
+        set() if moe_type == "fp8" else {(moe_type, hidden_size) for hidden_size in hidden_sizes}
+    )
 
-    assert {case.hidden_size for case in get_common_moe_test_cases()} == {2048, 8192}
-    assert {case.hidden_size for case in get_common_moe_test_cases(backend="vllm")} == {2048}
-    assert {case.hidden_size for case in get_common_moe_test_cases(backend="sglang")} == {8192}
-    assert {case.hidden_size for case in get_common_moe_test_cases(backend="trtllm")} == {8192}
 
-
-def test_vllm_moe_declares_representable_parallel_topologies(monkeypatch):
-    from collector.case_generator import get_common_moe_test_cases
+def test_vllm_moe_plan_leaves_out_tensor_and_expert_parallel_together(monkeypatch):
+    from collector.op_plans import plan
 
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
-    cases = get_common_moe_test_cases(backend="vllm")
-    topologies = {(case.tp, case.ep) for case in cases}
+    vllm = plan("moe", "vllm", 100)
+    topologies = {(case.tp, case.ep) for case in vllm.cases}
 
     assert all(tp == 1 or ep == 1 for tp, ep in topologies)
-    assert any(tp > 1 and ep == 1 for tp, ep in topologies)
-    assert any(tp == 1 and ep > 1 for tp, ep in topologies)
+    assert any(tp > 1 for tp, ep in topologies) and any(ep > 1 for tp, ep in topologies)
+    assert [(region.region, region.reason) for region in vllm.removed] == [
+        ("parallel=tp_ep", "backend gap G-vllm-moe-tp-and-ep")
+    ]
 
 
 def test_common_moe_population_can_declare_a_required_ep_world(monkeypatch):
     from collector.case_generator import get_common_moe_test_cases
 
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
-    baseline = get_common_moe_test_cases(backend="vllm")
+    baseline = get_common_moe_test_cases()
 
     for ep_size in (8, 16, 32):
-        constrained = get_common_moe_test_cases(
-            backend="vllm",
-            required_expert_parallel_size=ep_size,
-        )
+        constrained = get_common_moe_test_cases(required_expert_parallel_size=ep_size)
         assert constrained
         baseline_shapes = {
             (case.hidden_size, case.inter_size, case.topk, case.num_experts, case.model_name) for case in baseline
@@ -552,7 +403,7 @@ def test_common_moe_population_can_declare_a_required_ep_world(monkeypatch):
         assert all(case.num_experts % ep_size == 0 for case in constrained)
 
     with pytest.raises(ValueError, match="required_expert_parallel_size must be positive"):
-        get_common_moe_test_cases(backend="vllm", required_expert_parallel_size=0)
+        get_common_moe_test_cases(required_expert_parallel_size=0)
 
 
 def test_vllm_moe_cuda_graph_fails_closed():

@@ -51,23 +51,11 @@ model_case_values:
       sglang_moe_backends:
         w4a8_mxfp4_mxfp8: {100: flashinfer_mxfp4, 103: flashinfer_mxfp4}
       wideep: true
-      framework_quantization:
-        sglang:
-          allowed_modes:
-            - w4a8_mxfp4_mxfp8
-        trtllm:
-          allowed_modes:
-            - w4a8_mxfp4_mxfp8
-        vllm:
-          # Native-FP4 serving path: DeepseekV4FP8Config -> Mxfp4MoEMethod ->
-          # trtllm-gen MXFP4xMXFP8 on the SM100 family (see the base moe_vllm
-          # w4a8_mxfp4_mxfp8 entry for the dispatch citations). The label is
-          # SM-gated there (min_sm 100 / max_sm_exclusive 110), so SM90 —
-          # where vLLM 0.24.0 serves this artifact as Marlin W4A16 — never
-          # collects under it; Hopper stays an observed gap in the failure
-          # log rather than a mislabeled row.
-          allowed_modes:
-            - w4a8_mxfp4_mxfp8
+      # Native-FP4 checkpoint: MXFP4 routed experts, served with MXFP8
+      # activations (trtllm-gen) on the SM100 family. The label's floor is
+      # SM100 (capabilities.yaml); below it serving runs the experts as W4A16,
+      # a different label this row does not plan.
+      quantization_modes: [w4a8_mxfp4_mxfp8]
     - model_path: sgl-project/DeepSeek-V4-Flash-FP8
       hidden_size: 4096
       inter_size: 2048
@@ -80,22 +68,13 @@ model_case_values:
       sglang_moe_renormalize: true
       sglang_moe_has_correction_bias: true
       wideep: true
-      framework_quantization:
-        sglang:
-          allowed_modes:
-            - fp8_block
-        trtllm:
-          allowed_modes:
-            - fp8_block
-        vllm:
-          # The artifact config omits expert_dtype and vLLM defaults it to
-          # FP4, but vLLM 0.24's DeepSeek-V4 quant config has a native
-          # fp8-expert branch — serving works with the documented override
-          # `--hf-overrides '{"expert_dtype": "fp8"}'` (models/deepseek_v4/
-          # quant_config.py @0.24.0). The benchmark constructs Fp8Config from
-          # the label with synthetic weights, matching that serving path.
-          allowed_modes:
-            - fp8_block
+      # vLLM: the artifact config omits expert_dtype and vLLM defaults it to
+      # FP4, but vLLM 0.24's DeepSeek-V4 quant config has a native
+      # fp8-expert branch — serving works with the documented override
+      # `--hf-overrides '{"expert_dtype": "fp8"}'` (models/deepseek_v4/
+      # quant_config.py @0.24.0). The benchmark constructs Fp8Config from
+      # the label with synthetic weights, matching that serving path.
+      quantization_modes: [fp8_block]
     - model_path: deepseek-ai/DeepSeek-V4-Pro
       hidden_size: 7168
       inter_size: 3072
@@ -110,25 +89,16 @@ model_case_values:
       sglang_moe_backends:
         w4a8_mxfp4_mxfp8: {100: flashinfer_mxfp4, 103: flashinfer_mxfp4}
       wideep: true
-      framework_quantization:
-        sglang:
-          # Owner decision (2026-07-05): do not collect the native-FP4 Pro
-          # artifact as w4a16_mxfp4. The shared SM90 w4a16 backend map is
-          # triton (GPT-OSS truth), under which SGLang 0.5.14 constructs plain
-          # Fp8MoEMethod for is_fp4_experts and every case fails closed;
-          # SM100/103 production scheduling uses the w4a8 TRTLLM-gen path
-          # kept below. To restore support, re-add w4a16_mxfp4 here and pin
-          # sglang_moe_backends w4a16_mxfp4 {90: flashinfer_mxfp4} (the native
-          # cutlass mixed-input path, FlashInfer #3084).
-          allowed_modes:
-            - w4a8_mxfp4_mxfp8
-        trtllm:
-          allowed_modes:
-            - w4a8_mxfp4_mxfp8
-        vllm:
-          # See the native Flash note above (same SM100-gated trtllm-gen path).
-          allowed_modes:
-            - w4a8_mxfp4_mxfp8
+      # Owner decision (2026-07-05): do not collect the native-FP4 Pro
+      # artifact as w4a16_mxfp4. The shared SM90 w4a16 backend map is
+      # triton (GPT-OSS truth), under which SGLang 0.5.14 constructs plain
+      # Fp8MoEMethod for is_fp4_experts and every case fails closed;
+      # SM100/103 production scheduling uses the w4a8 TRTLLM-gen path
+      # kept below. To restore support, re-add w4a16_mxfp4 here and pin
+      # sglang_moe_backends w4a16_mxfp4 {90: flashinfer_mxfp4} (the native
+      # cutlass mixed-input path, FlashInfer #3084). Otherwise as the native
+      # Flash row above.
+      quantization_modes: [w4a8_mxfp4_mxfp8]
     - model_path: sgl-project/DeepSeek-V4-Pro-FP8
       hidden_size: 7168
       inter_size: 3072
@@ -141,18 +111,9 @@ model_case_values:
       sglang_moe_renormalize: true
       sglang_moe_has_correction_bias: true
       wideep: true
-      framework_quantization:
-        sglang:
-          allowed_modes:
-            - fp8_block
-        trtllm:
-          allowed_modes:
-            - fp8_block
-        vllm:
-          # See the Flash converted-artifact note above (same expert_dtype
-          # omission; same `--hf-overrides` serving path).
-          allowed_modes:
-            - fp8_block
+      # See the Flash converted-artifact note above (same expert_dtype
+      # omission; same `--hf-overrides` serving path).
+      quantization_modes: [fp8_block]
     - model_path: nvidia/DeepSeek-V4-Flash-NVFP4
       hidden_size: 4096
       inter_size: 2048
@@ -165,32 +126,16 @@ model_case_values:
       sglang_moe_renormalize: true
       sglang_moe_has_correction_bias: true
       wideep: true
-      framework_quantization:
-        # Real ModelOpt export (nvidia/DeepSeek-V4-Flash-NVFP4, verified via its
-        # published config.json/hf_quant_config.json, AIC-1749): quant_algo
-        # MIXED_PRECISION, routed-expert layers at NVFP4 (moe_quant_algo
-        # NVFP4), attention/shared-experts/head/mtp excluded. This is a new,
-        # quant-distinct artifact row (case_authoring.md) — never merged into
-        # the deepseek-ai/DeepSeek-V4-Flash row above. nvfp4 is declared on
-        # every backend that really serves NVFP4 MoE (sglang and trtllm ship
-        # nvfp4 moe rows on Blackwell today; same shape as the
-        # nvidia/GLM-5.2-NVFP4 declaration) — the artifact's ONE true mode
-        # everywhere, so no case can carry a wrong identity and nothing is
-        # excluded. The AIC-1749 recipes consume the vllm rows first; the
-        # sglang/trtllm cases are ordinary coverage that runs or fails into
-        # the classified log (failure_handling.md).
-        sglang:
-          allowed_modes:
-            - nvfp4
-        trtllm:
-          allowed_modes:
-            - nvfp4
-        vllm:
-          # Generic CompressedTensorsConfig nvfp4-pack-quantized path
-          # (collector/vllm/collect_moe.py moe_type == "nvfp4"); architecture-
-          # agnostic, no DeepSeek-V4-specific dispatch needed.
-          allowed_modes:
-            - nvfp4
+      # Real ModelOpt export (nvidia/DeepSeek-V4-Flash-NVFP4, verified via its
+      # published config.json/hf_quant_config.json, AIC-1749): quant_algo
+      # MIXED_PRECISION, routed-expert layers at NVFP4 (moe_quant_algo
+      # NVFP4), attention/shared-experts/head/mtp excluded. This is a new,
+      # quant-distinct artifact row (case_authoring.md) — never merged into
+      # the deepseek-ai/DeepSeek-V4-Flash row above. vLLM times the generic
+      # CompressedTensorsConfig nvfp4-pack-quantized path
+      # (collector/vllm/collect_moe.py moe_type == "nvfp4"); no
+      # DeepSeek-V4-specific dispatch is needed.
+      quantization_modes: [nvfp4]
     - model_path: nvidia/DeepSeek-V4-Pro-NVFP4
       hidden_size: 7168
       inter_size: 3072
@@ -203,20 +148,10 @@ model_case_values:
       sglang_moe_renormalize: true
       sglang_moe_has_correction_bias: true
       wideep: true
-      framework_quantization:
-        # See the Flash-NVFP4 note above (same real ModelOpt MIXED_PRECISION
-        # export shape, verified against nvidia/DeepSeek-V4-Pro-NVFP4's own
-        # published config.json/hf_quant_config.json; same one-true-mode
-        # declaration on every backend).
-        sglang:
-          allowed_modes:
-            - nvfp4
-        trtllm:
-          allowed_modes:
-            - nvfp4
-        vllm:
-          allowed_modes:
-            - nvfp4
+      # See the Flash-NVFP4 note above (same real ModelOpt MIXED_PRECISION
+      # export shape, verified against nvidia/DeepSeek-V4-Pro-NVFP4's own
+      # published config.json/hf_quant_config.json).
+      quantization_modes: [nvfp4]
   mhc:
     - model_paths:
         - deepseek-ai/DeepSeek-V4-Flash

@@ -260,13 +260,7 @@ from sglang.srt.layers.quantization.mxfp4 import Mxfp4Config
 from sglang.srt.utils import is_hip
 
 try:
-    from case_generator import (
-        get_common_moe_test_cases,
-        get_moe_quantization_modes,
-        get_moe_quantization_module_config,
-        get_sglang_moe_backend,
-        moe_model_allows_quantization,
-    )
+    from case_generator import get_moe_quantization_module_config
 
     from helper import (
         WORKER_RESTART,
@@ -283,13 +277,7 @@ except ModuleNotFoundError:
     import sys
 
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from case_generator import (
-        get_common_moe_test_cases,
-        get_moe_quantization_modes,
-        get_moe_quantization_module_config,
-        get_sglang_moe_backend,
-        moe_model_allows_quantization,
-    )
+    from case_generator import get_moe_quantization_module_config
 
     from helper import (
         WORKER_RESTART,
@@ -302,6 +290,7 @@ except ModuleNotFoundError:
         power_law_logits_v3,
     )
 
+from collector.op_plans import plan_cases
 
 _is_hip = is_hip()
 
@@ -338,117 +327,7 @@ def _ensure_writable_flashinfer_cubin_dir() -> None:
 
 
 def get_moe_test_cases():
-    """One case per (quant mode, shape, tp, ep, distribution) carrying the whole token
-    sweep, like the vLLM and TRT-LLM MoE collectors: the framework layer (weights, quant
-    processing, backend pins) is built once per case and every token point is timed and
-    persisted inside it. The previous one-case-per-token layout rebuilt the layer for
-    each of the 27 token points, which made the SGLang nvfp4 tables ~2x the fixed cost of
-    the vLLM ones (2026-10-28 re-collection: 4.4-5.8 h per SGLang shard vs 1-1.4 h per
-    vLLM shard on the same shapes)."""
-    sm_version = get_sm_version()
-    moe_list = get_moe_quantization_modes("sglang", sm_version=sm_version)
-
-    common_cases = get_common_moe_test_cases()
-    test_cases = []
-    seen_physical_cases = {}
-    quant_policy_drops = {}
-    models_with_cases = set()
-
-    for common_moe_testcase in common_cases:
-        model_name = common_moe_testcase.model_name
-        num_tokens_list = common_moe_testcase.num_tokens_list
-
-        for moe_type in moe_list:
-            if not moe_model_allows_quantization("sglang", model_name, moe_type):
-                quant_policy_drops[model_name] = quant_policy_drops.get(model_name, 0) + 1
-                continue
-            models_with_cases.add(model_name)
-            is_fp4_experts = common_moe_testcase.architecture == "DeepseekV4ForCausalLM" and moe_type in {
-                "w4a16_mxfp4",
-                "w4a8_mxfp4_mxfp8",
-            }
-            moe_backend = get_sglang_moe_backend(common_moe_testcase, moe_type, sm_version)
-            base_case = [
-                moe_type,
-                list(num_tokens_list),
-                common_moe_testcase.hidden_size,
-                common_moe_testcase.inter_size,
-                common_moe_testcase.topk,
-                common_moe_testcase.num_experts,
-                common_moe_testcase.tp,
-                common_moe_testcase.ep,
-                common_moe_testcase.model_name,
-                common_moe_testcase.token_expert_distribution,
-                common_moe_testcase.power_law_alpha,
-                common_moe_testcase.sglang_moe_swiglu_limit,
-                moe_backend,
-                common_moe_testcase.sglang_moe_activation,
-                common_moe_testcase.sglang_moe_is_gated,
-                common_moe_testcase.sglang_moe_has_bias,
-                common_moe_testcase.sglang_moe_gemm1_alpha,
-                common_moe_testcase.sglang_moe_gemm1_clamp_limit,
-                common_moe_testcase.sglang_moe_scoring_func,
-                common_moe_testcase.sglang_moe_routing_method_type,
-                common_moe_testcase.sglang_moe_routed_scaling_factor,
-                common_moe_testcase.sglang_moe_renormalize,
-                common_moe_testcase.sglang_moe_has_correction_bias,
-                common_moe_testcase.sglang_moe_num_expert_group,
-                common_moe_testcase.sglang_moe_topk_group,
-                common_moe_testcase.sglang_moe_apply_router_weight_on_input,
-                is_fp4_experts,
-            ]
-            physical_key = (
-                moe_type,
-                tuple(num_tokens_list),
-                common_moe_testcase.hidden_size,
-                common_moe_testcase.inter_size,
-                common_moe_testcase.topk,
-                common_moe_testcase.num_experts,
-                common_moe_testcase.tp,
-                common_moe_testcase.ep,
-                common_moe_testcase.token_expert_distribution,
-                common_moe_testcase.power_law_alpha,
-            )
-            execution_signature = (
-                moe_backend,
-                common_moe_testcase.sglang_moe_activation,
-                common_moe_testcase.sglang_moe_is_gated,
-                common_moe_testcase.sglang_moe_has_bias,
-                common_moe_testcase.sglang_moe_gemm1_alpha,
-                common_moe_testcase.sglang_moe_gemm1_clamp_limit,
-                common_moe_testcase.sglang_moe_swiglu_limit,
-                common_moe_testcase.sglang_moe_scoring_func,
-                common_moe_testcase.sglang_moe_routing_method_type,
-                common_moe_testcase.sglang_moe_routed_scaling_factor,
-                common_moe_testcase.sglang_moe_renormalize,
-                common_moe_testcase.sglang_moe_has_correction_bias,
-                common_moe_testcase.sglang_moe_num_expert_group,
-                common_moe_testcase.sglang_moe_topk_group,
-                common_moe_testcase.sglang_moe_apply_router_weight_on_input,
-                is_fp4_experts,
-            )
-            previous_signature = seen_physical_cases.get(physical_key)
-            if previous_signature is not None and previous_signature != execution_signature:
-                raise ValueError(
-                    "SGLang MoE cases share one perf DB key but require different "
-                    f"execution semantics: key={physical_key}, first={previous_signature}, "
-                    f"current={execution_signature}, model={model_name}"
-                )
-            if previous_signature is None:
-                seen_physical_cases[physical_key] = execution_signature
-                test_cases.append(base_case)
-
-    # Zero-case expansions must be explainable from logged drops
-    # (case_authoring.md): name every planned model whose declared sglang
-    # quant policy excluded all of its moe cases.
-    fully_dropped = sorted(set(quant_policy_drops) - models_with_cases)
-    if fully_dropped:
-        print(
-            f"moe: dropped all cases for {len(fully_dropped)} model(s) by declared sglang "
-            f"quantization policy (allowed_modes): {', '.join(fully_dropped)}"
-        )
-
-    return test_cases
+    return plan_cases("moe", "sglang", get_sm_version())
 
 
 class BenchmarkConfig(TypedDict):

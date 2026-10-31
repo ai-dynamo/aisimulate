@@ -260,35 +260,15 @@ model_case_values:
       #   are both unreferenced anywhere under fused_moe/ -- neither
       #   influences MoE backend selection.
       sglang_moe_routing_method_type: RenormalizeNaive
-      # AIC-1782 Task V2 data-quality fix: this row had no framework_quantization
-      # block for vllm at all, so moe_model_allows_quantization defaulted
-      # OPEN for every vllm quantization_modes entry lacking its own
-      # allowed_model_paths restriction -- and moe_vllm's "fp8" (per-tensor,
-      # base_ops/moe.yaml:243-244) and "nvfp4" (:252-254) entries both lack
-      # one (unlike sglang, which has no bare "fp8" mode at all, and whose
-      # nvfp4 entry IS allowed_model_paths-restricted). Confirmed reachable:
-      # querying get_common_moe_test_cases(backend="vllm") +
-      # moe_model_allows_quantization before this fix showed 1134 planned
-      # rows each for moe_type="fp8" and moe_type="nvfp4" under THIS row's
-      # identity (Qwen/Qwen3.8-2.4T-A95B / -FP8 alias) at SM100+ -- neither
-      # is a real artifact this checkpoint has (it is bfloat16 natively and
-      # block-fp8, weight_block_size=[128,128], as its -FP8 alias; never
-      # per-tensor fp8 or nvfp4). Closed with an explicit allowlist rather
-      # than a new exclude field, matching every other model row's
-      # allowed_modes idiom in this file. The TRT-LLM grid has the same
-      # fail-open risk and no verified Qwen3.8-Max lane, so it stays closed.
-      framework_quantization:
-        sglang:
-          allowed_modes: [bfloat16, fp8_block]
-        trtllm:
-          allowed_modes: []
-        vllm:
-          allowed_modes: [bfloat16, fp8_block]
+      # The checkpoint is bfloat16 natively and block-fp8
+      # (weight_block_size=[128,128]) as its -FP8 alias; it ships no
+      # per-tensor fp8 or nvfp4 experts (AIC-1782).
+      quantization_modes: [bfloat16, fp8_block]
     # NVFP4 collection fixture (ModelOpt experts-only recipe: routed-expert
     # linears only, other components at source precision; collector-only id, no
     # separate model_path row needed for the bf16/fp8_block artifacts above
     # since the routed-expert-only quantization changes the invoked kernel
-    # and requires its own framework_quantization gate -- not a shape-only
+    # and requires its own quantization_modes row -- not a shape-only
     # alias). Same modelopt_quant.py SM100/103 -> FLASHINFER_TRTLLM dispatch
     # citation and style as the 397B NVFP4 row (integration base,
     # base_ops/moe.yaml:97-105 citation style):
@@ -309,58 +289,14 @@ model_case_values:
       sglang_moe_routing_method_type: RenormalizeNaive
       sglang_moe_backends:
         nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
-      framework_quantization:
-        sglang:
-          allowed_modes: [nvfp4]
-        # trtllm is NOT investigated by AIC-1782 (vLLM-scoped) and stays
-        # gated closed (Nemotron precedent, e.g. NemotronHForCausalLM_cases
-        # .yaml's vLLM topk>10 rows) pending its own verification.
-        trtllm:
-          allowed_modes: []
-        # AIC-1782 Task V2 (2026-08-21) traced vLLM v0.27.1's NVFP4 MoE
-        # construction for this artifact and KEEPS the gate closed on two
-        # independent findings, either one decisive on its own:
-        # (1) No packaged HF config exists for this model_path anywhere in
-        #     the repo (unlike Qwen--Qwen3.8-2.4T-A95B[-FP8]_config.json for
-        #     the base/-FP8 ids). collect_moe.py's _load_model_moe_config
-        #     (collect_moe.py:100-104) raises FileNotFoundError when one is
-        #     missing; that root, src/aisimulate_core/model_configs (a
-        #     symlink to src/aisimulate_core/model_configs), is
-        #     OUTSIDE collector/'s module boundary (layer_permissions.md) --
-        #     adding it is a separate, human-approved, cross-module commit,
-        #     same as the NemotronH Lightning row's precedent above.
-        #     get_moe_test_cases() reaches _load_model_moe_config via
-        #     _moe_execution_key() -> _resolve_moe_runtime_config()
-        #     (collect_moe.py:321 -> :251 -> :113) DURING CASE ENUMERATION,
-        #     before any per-case classified-failure handling applies --
-        #     opening this gate without that config would crash vLLM MoE
-        #     case generation for every model on the run, not just this row.
-        # (2) Independent of (1): collect_moe.py's "nvfp4" MoE construction
-        #     is hardcoded to CompressedTensorsConfig.from_config
-        #     (compressed-tensors nvfp4-pack-quantized format,
-        #     collect_moe.py:534-548) for every model -- there is no
-        #     model-specific branch to vLLM's separate native
-        #     ModelOptNvFp4Config class, auto-selected only when a
-        #     checkpoint's own quantization_config.quant_method ==
-        #     "modelopt_fp4" (quantization/__init__.py method_to_config,
-        #     :149 @0.27.1, vs "compressed-tensors" -> CompressedTensorsConfig
-        #     at :155). This artifact is described as a "ModelOpt
-        #     experts-only" recipe, so its real checkpoint plausibly uses
-        #     modelopt_fp4 -- a class vLLM would auto-select differently
-        #     from what this collector constructs. (Both classes route to
-        #     the same select_nvfp4_moe_backend oracle --
-        #     fused_moe/oracle/nvfp4.py:165-292 -- so the resolved KERNEL
-        #     would be identical either way: SM100/103 -> FLASHINFER_TRTLLM
-        #     family-100 device gate, trtllm_nvfp4_moe.py:201-209; SM90/120
-        #     -> FLASHINFER_CUTLASS, flashinfer_cutlass_moe.py:129-140 --
-        #     but the config-CLASS mismatch itself is unverified, and there
-        #     is no packaged config to check it against per (1) either.)
-        # Gate stays closed until both are resolved outside this task (a
-        # human-approved packaged-config commit, plus confirming the real
-        # quant_method string). Superseded the prior "Tracked: AIC-1782"
-        # framing now that the investigation has run.
-        vllm:
-          allowed_modes: []
+      # vLLM (AIC-1782, traced at v0.27.1): no packaged HF config exists for
+      # this model_path, so collect_moe.py's _load_model_moe_config raises and
+      # its vLLM cases fail until one is added under
+      # src/aisimulate_core/model_configs (outside collector/). Its nvfp4
+      # construction is CompressedTensorsConfig while this ModelOpt
+      # experts-only checkpoint may load through ModelOptNvFp4Config; both
+      # reach the same select_nvfp4_moe_backend kernel.
+      quantization_modes: [nvfp4]
   gemm:
     # Exact widths below the base feature grid (min 32): scalar shared-expert
     # gate (hidden -> 1) and GDN in_proj_ba (2 * num_v_heads / tp). At
