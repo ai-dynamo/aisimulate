@@ -1308,28 +1308,30 @@ class SmartSearchConfig(BaseModel):
                 f"min_gpus supports only the dynamo.router adapter over static engine pools, got {unsupported}"
             )
         if (
-            workload.trace_path is not None
-            or workload.trace_paths is not None
-            or workload.source_type not in (None, "synthetic")
-            or workload.turns_per_session != 1
-            or workload.kv_load_ratio is not None
+            workload.kv_load_ratio is not None
             or workload.load_search_field is not None
             or workload.load_choices is not None
             or workload.load_range is not None
         ):
-            raise ValueError("min_gpus requires fixed synthetic request-rate or concurrency traffic")
-        allowed_load_types = (
-            {None, "constant_rate", "poisson"} if workload.request_rate is not None else {None, "concurrency"}
-        )
-        if workload.load_type not in allowed_load_types:
-            raise ValueError("min_gpus requires a synthetic load_type matching the fixed load field")
-        if workload.request_rate is not None:
+            raise ValueError("min_gpus requires a fixed absolute traffic load")
+        if workload.is_trace_based:
+            capped = workload.replay_concurrency is not None
+            closed_loop = capped or workload.agentic_lanes is not None
+            load_types = {None, "concurrency"} if capped else {None, "trace_timestamps"}
+            # Trace timestamps set the offered rate, and validation does not read the trace.
+            offered_rps = None
+        else:
+            closed_loop = workload.concurrency is not None
+            load_types = {None, "concurrency"} if closed_loop else {None, "constant_rate", "poisson"}
+            # A session rate counts sessions; each session offers turns_per_session requests.
+            offered_rps = None if closed_loop else workload.request_rate * workload.turns_per_session
+        if workload.load_type not in load_types:
+            raise ValueError("min_gpus requires a load_type matching the fixed load field")
+        if not closed_loop:
             if self.goal.min_goodput_rps is None:
-                raise ValueError("min_gpus with request-rate traffic requires min_goodput_rps")
-            if self.goal.min_goodput_rps > workload.request_rate:
+                raise ValueError("min_gpus with open-loop traffic requires min_goodput_rps")
+            if offered_rps is not None and self.goal.min_goodput_rps > offered_rps:
                 raise ValueError("min_goodput_rps cannot exceed the offered request rate")
-        elif workload.concurrency is None:
-            raise ValueError("min_gpus requires fixed synthetic request-rate or concurrency traffic")
         encoder = self.search_space.encoder
         if encoder is not None and encoder.mode == "analytical" and self.goal.min_goodput_rps is not None:
             raise ValueError("analytical EPD cannot enforce min_goodput_rps")

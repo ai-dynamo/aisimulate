@@ -120,25 +120,118 @@ def test_min_gpus_lowers_fixed_traffic_and_load_constraint(load, minimum):
             assert lowered.workload.arrival_seed == load["seed"]
 
 
+_REQUESTS = {"source": {"type": "synthetic"}, "stop": {"requests": 100}}
+_SESSIONS = {
+    "source": {
+        "type": "synthetic-session",
+        "session": {"turns": 4, "shared_prefix_ratio": 0.5, "prefix_groups": 8, "inter_turn_delay_ms": 100.0},
+    },
+    "stop": {"sessions": 50},
+}
+_TRACE = {"source": {"type": "trace", "paths": ["trace.jsonl"]}}
+
+
 @pytest.mark.parametrize(
-    ("load", "minimum", "error"),
+    ("traffic", "minimum", "error"),
     [
-        ({"type": "constant_rate", "requests_per_second": 10}, None, "requires constraints.min_goodput_rps"),
-        ({"type": "constant_rate", "requests_per_second": 10}, 11, "cannot exceed"),
-        ({"type": "concurrency", "concurrency": {"choices": [1, 32]}}, None, "fixed synthetic"),
-        ({"type": "kv_capacity_fraction", "fraction": 0.5}, None, "fixed synthetic"),
+        (
+            {**_REQUESTS, "load": {"type": "constant_rate", "requests_per_second": 10}},
+            None,
+            "requires constraints.min_goodput_rps",
+        ),
+        ({**_REQUESTS, "load": {"type": "constant_rate", "requests_per_second": 10}}, 11, "cannot exceed"),
+        (
+            {**_REQUESTS, "load": {"type": "concurrency", "concurrency": {"choices": [1, 32]}}},
+            None,
+            "fixed absolute traffic load",
+        ),
+        (
+            {**_REQUESTS, "load": {"type": "kv_capacity_fraction", "fraction": 0.5}},
+            None,
+            "fixed absolute traffic load",
+        ),
+        # Two sessions/s of four turns offer 8 requests/s.
+        (
+            {**_SESSIONS, "load": {"type": "constant_rate", "sessions_per_second": 2}},
+            None,
+            "requires constraints.min_goodput_rps",
+        ),
+        ({**_SESSIONS, "load": {"type": "poisson", "sessions_per_second": 2}}, 9, "cannot exceed"),
+        ({**_TRACE, "load": {"type": "trace_timestamps"}}, None, "requires constraints.min_goodput_rps"),
+        (
+            {**_TRACE, "load": {"type": "trace_timestamps", "speedup": {"choices": [1.0, 2.0]}}},
+            1,
+            "fixed absolute traffic load",
+        ),
     ],
 )
-def test_min_gpus_rejects_missing_capacity_target_or_variable_load(load, minimum, error):
+def test_min_gpus_rejects_missing_capacity_target_or_variable_load(traffic, minimum, error):
     with pytest.raises(ValidationError, match=error):
         CoreRecommendationConfig.model_validate(
             {
                 "engine": {**_engine(), "mode": "aggregated"},
-                "traffic": {"source": {"type": "synthetic"}, "load": load, "stop": {"requests": 100}},
+                "traffic": traffic,
                 "evaluation": {"sla": {"itl_ms": 30}},
                 "optimization": {"target": "min_gpus", "constraints": {"min_goodput_rps": minimum}},
             }
         )
+
+
+@pytest.mark.parametrize(
+    ("traffic", "minimum", "stack", "expected"),
+    [
+        (
+            {**_SESSIONS, "load": {"type": "constant_rate", "sessions_per_second": 2}},
+            8,
+            "dynamo",
+            {"request_rate": 2, "turns_per_session": 4, "shared_prefix_ratio": 0.5, "num_prefix_groups": 8},
+        ),
+        (
+            {**_SESSIONS, "load": {"type": "concurrency", "concurrency": 4}},
+            None,
+            "dynamo",
+            {"concurrency": 4, "turns_per_session": 4},
+        ),
+        (
+            {**_TRACE, "load": {"type": "trace_timestamps", "speedup": 2.0}},
+            1,
+            "dynamo",
+            {"trace_path": "trace.jsonl", "arrival_speedup_ratio": 2.0},
+        ),
+        (
+            {**_TRACE, "load": {"type": "concurrency", "concurrency": 8}},
+            None,
+            "dynamo",
+            {"trace_path": "trace.jsonl", "replay_concurrency": 8},
+        ),
+        (
+            {
+                "source": {"type": "trace", "paths": ["plays.jsonl"], "format": "agentic_mooncake"},
+                "load": {"type": "trace_timestamps", "agentic_lanes": 4},
+            },
+            None,
+            "engine",
+            {"trace_path": "plays.jsonl", "agentic_lanes": 4},
+        ),
+    ],
+    ids=["session-rate", "session-concurrency", "trace-timestamps", "trace-concurrency", "agentic-lanes"],
+)
+def test_min_gpus_lowers_fixed_session_and_trace_traffic(traffic, minimum, stack, expected):
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "engine": {**_engine(), "mode": "aggregated", "context_length": 4096},
+            "traffic": traffic,
+            "evaluation": {"sla": {"ttft_ms": 500}},
+            "optimization": {"target": "min_gpus", "constraints": {"min_goodput_rps": minimum}},
+        }
+    )
+    adapters = {"router": {"policy": "kv_router"}} if stack == "dynamo" else None
+
+    lowered = recommendation_to_sweeper(config, adapter_configs=adapters, stack=stack)
+
+    workload = lowered.workload.model_dump()
+    assert {name: workload[name] for name in expected} == expected
+    assert lowered.goal.min_goodput_rps == minimum
 
 
 @pytest.mark.parametrize("workers", [{"aggregated": {}}, {"prefill": {}, "decode": {}}], ids=["agg", "disagg"])

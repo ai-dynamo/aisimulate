@@ -32,6 +32,17 @@ def _workload(**overrides):
     }
 
 
+def _session(**load):
+    session = _workload(
+        concurrency=None,
+        source_type="synthetic-session",
+        turns_per_session=4,
+        shared_prefix_ratio=0.5,
+        num_prefix_groups=8,
+    )
+    return {**session, **load}
+
+
 @pytest.mark.parametrize("role", [None, "agg", "prefill", "decode"])
 def test_search_space_rejects_learned_timing_before_loading_source(role):
     policy = {
@@ -97,9 +108,23 @@ def test_min_gpus_rejects_invalid_min_goodput(minimum):
     [
         (_workload(concurrency=None, request_rate=10), None, "requires min_goodput_rps"),
         (_workload(concurrency=None, request_rate=10), 11, "cannot exceed"),
-        (_workload(concurrency=None, kv_load_ratio=0.5), None, "fixed synthetic"),
-        ({"trace_path": "trace.jsonl"}, 1, "fixed synthetic"),
-        (_workload(load_search_field="concurrency", load_choices=[2, 4]), None, "fixed synthetic"),
+        (_workload(concurrency=None, kv_load_ratio=0.5), None, "fixed absolute traffic load"),
+        (_workload(load_search_field="concurrency", load_choices=[2, 4]), None, "fixed absolute traffic load"),
+        # Two sessions/s of four turns offer 8 requests/s.
+        (_session(request_rate=2), None, "requires min_goodput_rps"),
+        (_session(request_rate=2), 9, "cannot exceed"),
+        ({"trace_path": "trace.jsonl"}, None, "requires min_goodput_rps"),
+        (
+            {"trace_path": "trace.jsonl", "load_search_field": "arrival_speedup_ratio", "load_choices": [1.0, 2.0]},
+            1,
+            "fixed absolute traffic load",
+        ),
+        (
+            {"trace_path": "trace.jsonl", "replay_concurrency": 8, "load_type": "trace_timestamps"},
+            None,
+            "load_type matching",
+        ),
+        ({"trace_path": "trace.jsonl", "load_type": "concurrency"}, 1, "load_type matching"),
     ],
 )
 def test_min_gpus_sdk_validates_workload(workload, minimum, error):
@@ -118,6 +143,40 @@ def test_min_gpus_sdk_accepts_goodput_floor_equal_to_offered_request_rate():
         goal={"target": "min_gpus", "sla": {"itl_ms": 30}, "min_goodput_rps": 10},
     )
     assert config.goal.min_goodput_rps == config.workload.request_rate == 10
+
+
+@pytest.mark.parametrize(
+    ("workload", "minimum"),
+    [
+        (_session(request_rate=2, load_type="constant_rate"), 8),
+        (_session(concurrency=4, load_type="concurrency"), None),
+        ({"trace_path": "trace.jsonl"}, 1),
+        ({"trace_path": "trace.jsonl", "source_type": "trace", "load_type": "trace_timestamps"}, 1),
+        (
+            {"trace_path": "trace.jsonl", "source_type": "trace", "load_type": "concurrency", "replay_concurrency": 8},
+            None,
+        ),
+        (
+            {
+                "trace_path": "plays.jsonl",
+                "source_type": "trace",
+                "trace_format": "agentic_mooncake",
+                "load_type": "trace_timestamps",
+                "agentic_lanes": 4,
+            },
+            None,
+        ),
+    ],
+    ids=["session-rate", "session-concurrency", "trace-sdk", "trace-timestamps", "trace-concurrency", "agentic-lanes"],
+)
+def test_min_gpus_sdk_accepts_fixed_session_and_trace_loads(workload, minimum):
+    config = SmartSearchConfig(
+        search_space=_search_space(),
+        adapters={"dynamo.router": {"search_space": {"policy": "kv_router"}}},
+        workload=workload,
+        goal={"target": "min_gpus", "sla": {"ttft_ms": 500}, "min_goodput_rps": minimum},
+    )
+    assert config.goal.target is OptimizationTarget.MIN_GPUS
 
 
 @pytest.mark.parametrize(
@@ -143,7 +202,7 @@ def test_min_gpus_sdk_validates_synthetic_load_type(load, load_type, valid):
     if valid:
         assert SmartSearchConfig(**args).workload.load_type == load_type
     else:
-        with pytest.raises(ValidationError, match="synthetic load_type"):
+        with pytest.raises(ValidationError, match="load_type matching"):
             SmartSearchConfig(**args)
 
 

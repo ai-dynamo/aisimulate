@@ -127,9 +127,11 @@ deferred until the Router exposes that name.
 `optimization.target: min_gpus` accepts a `router` section. The Router adds no GPUs and keeps the
 worker pool static, so recommendations still rank qualifying candidates by provisioned GPU count.
 Set `router.policy: kv_router` to size a KV-routed deployment; see
-[minimum GPUs](../sweeper/optimization-goals.md#minimum-gpus). `min_gpus` requires fixed synthetic
-traffic whose requests share no prompt prefixes, so KV routing can change only load placement in
-these searches; prefix-cache affinity gains do not appear in the result.
+[minimum GPUs](../sweeper/optimization-goals.md#minimum-gpus). KV routing trades prefix-cache hits
+against load balance, and the search sees both only when requests reuse prefixes, so size it with a
+trace that has the deployment's prefix structure. On this stack, later turns of a
+`synthetic-session` do not yet include the earlier turns, so synthetic sessions reuse only their
+`session.shared_prefix_ratio` group prefixes, and independent synthetic requests reuse none.
 
 <a id="planner-dynamo-adapter"></a>
 

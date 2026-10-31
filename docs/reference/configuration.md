@@ -123,7 +123,7 @@ The `optimization` section is required, even when its target uses a default.
 | `optimization.strict_sla` | `false` | `x` | `-` | When true, reject candidates whose aggregate mean metrics exceed any configured SLA bound before ranking or Pareto analysis. |
 | `optimization.constraints.min_candidate_gpus` | `null` | `x` | `-` | Positive when set and no greater than the maximum. |
 | `optimization.constraints.max_candidate_gpus` | `32` | `x` | `-` | Positive. |
-| `optimization.constraints.min_goodput_rps` | `null` | `x` | `-` | Positive finite SLA-compliant requests/s floor for `min_gpus` only; required with request-rate traffic and cannot exceed the offered rate. Optional with fixed concurrency. |
+| `optimization.constraints.min_goodput_rps` | `null` | `x` | `-` | Positive finite SLA-compliant requests/s floor for `min_gpus` only; required with open-loop traffic (a request or session rate, or `trace_timestamps` without `agentic_lanes`). It cannot exceed the offered request rate, which for sessions is `sessions_per_second` times `session.turns`; a trace's timestamp rate is not checked. Optional with fixed concurrency or agentic lanes. |
 
 `optimization.hardware` is one fallback SKU, never a list or inventory.
 Concrete P/D role SKUs can override it. `optimizer` controls execution of the

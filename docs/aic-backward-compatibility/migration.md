@@ -182,7 +182,7 @@ aggregate-only SLA semantics, described in its feature guide.
 | Workflow | Current mapping and limits |
 | --- | --- |
 | Request-rate sizing | `traffic.load.type: constant_rate` and `requests_per_second` set offered load. `goodput_per_gpu` ranks SLA-qualified output tokens/s/GPU; it does not minimize GPU count. |
-| Minimum-GPU sizing | `optimization.target: min_gpus` minimizes GPUs among evaluated qualifying candidates. Fixed request-rate traffic also requires `optimization.constraints.min_goodput_rps`; fixed concurrency does not. |
+| Minimum-GPU sizing | `optimization.target: min_gpus` minimizes GPUs among evaluated qualifying candidates. Open-loop traffic (a request or session rate, or trace timestamps without agentic lanes) also requires `optimization.constraints.min_goodput_rps`; fixed concurrency does not. |
 | Parallelism search | `engine.workers.<role>.parallelism` controls tensor, attention-data, MoE tensor/expert, and replica domains. `optimization.target: pareto` returns throughput/GPU versus throughput/user tradeoffs. |
 | Regular P/D | `engine.mode: disaggregated` with `prefill` and `decode` workers replaces AIC disaggregated estimates with scheduled serving traffic. `engine.kv_transfer` controls bandwidth and prompt-KV accounting. |
 | Traces and sessions | `traffic.source` accepts supported trace/session inputs. `--capture-per-request` writes individual request evidence. AIC has no equivalent replay command. |
@@ -197,8 +197,8 @@ visit the smallest legal backend/topology pairs first, before revisiting their
 scheduler domains. The CLI reports suggestion-budget coverage.
 
 Minimum-GPU selection supports static engine pools, optionally behind the Dynamo
-Router, and fixed synthetic rate or concurrency traffic. It rejects the Dynamo
-Planner and other adapters, traces, sessions, searched loads, and
+Router, and synthetic request, synthetic session, or trace traffic at a fixed
+load. It rejects the Dynamo Planner and other adapters, searched loads, and
 candidate-relative KV load. Analytical EPD supports fixed concurrency and
 aggregate latency only. See [optimization goals](../sweeper/optimization-goals.md#minimum-gpus).
 
