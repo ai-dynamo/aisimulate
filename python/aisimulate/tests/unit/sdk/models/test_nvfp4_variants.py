@@ -22,6 +22,7 @@ NVFP4_VARIANTS = (
     "nvidia/Qwen3.6-35B-A3B-NVFP4",
     "nvidia/Qwen3.6-27B-NVFP4",
     "nvidia/Qwen3.5-397B-A17B-NVFP4",
+    "nvidia/Qwen3.5-397B-A17B-NVFP4-V2",
     "nvidia/Qwen3.5-122B-A10B-NVFP4",
     "nvidia/Gemma-4-31B-IT-NVFP4",
     "nvidia/Gemma-4-26B-A4B-NVFP4",
@@ -129,6 +130,13 @@ def test_lightning_nvfp4_loads_bundled_quant_config_offline(monkeypatch):
                 "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
             )
         ],
+        (
+            "nvidia/Qwen3.5-397B-A17B-NVFP4-V2",
+            common.GEMMQuantMode.fp8_static,
+            common.MoEQuantMode.nvfp4,
+            common.KVCacheQuantMode.fp8,
+            common.FMHAQuantMode.fp8,
+        ),
         *[
             (
                 hf_id,
@@ -312,6 +320,7 @@ def test_qwen35_nvfp4_exclusions_keep_attention_and_shared_experts_bf16():
     assert by_name["context_gdn_moe"]._quant_mode == common.MoEQuantMode.nvfp4
 
 
+QWEN35_NVFP4_V2 = "nvidia/Qwen3.5-397B-A17B-NVFP4-V2"
 # nvidia/Qwen3.5-397B-A17B-NVFP4-V2@8f590eae8f10bf55d9a46f79ea0280bde435c9f8, byte for byte
 # (model_configs/QWEN35_397B_NVFP4_V2_PROVENANCE.md).
 QWEN35_NVFP4_V2_SHA256 = {
@@ -325,6 +334,48 @@ def test_qwen35_nvfp4_v2_bundle_is_the_pinned_upstream_bytes(suffix):
     configs = Path(aisimulate_core.__file__).parent / "model_configs"
     data = (configs / f"nvidia--Qwen3.5-397B-A17B-NVFP4-V2_{suffix}.json").read_bytes()
     assert hashlib.sha256(data).hexdigest() == QWEN35_NVFP4_V2_SHA256[suffix]
+
+
+@pytest.mark.parametrize("backend", ["sglang", "vllm", "trtllm"])
+def test_qwen35_nvfp4_v2_uses_fp8_static_projections_and_nvfp4_experts(backend, monkeypatch):
+    import aisimulate.sdk.utils as sdk_utils
+    from aisimulate_core.sdk.models.helpers import _get_model_info
+
+    def _no_network(*args, **kwargs):
+        raise AssertionError("network path reached")
+
+    monkeypatch.setattr(sdk_utils, "_download_hf_config", _no_network)
+    monkeypatch.setattr(sdk_utils, "_download_hf_json", _no_network)
+    caches = (sdk_utils.get_model_config_from_model_path, sdk_utils._load_model_config_from_model_path, _get_model_info)
+    for cached in caches:
+        cached.cache_clear()
+    try:
+        model = get_model(QWEN35_NVFP4_V2, _model_config(), backend_name=backend)
+    finally:
+        for cached in caches:
+            cached.cache_clear()
+    by_name = {op._name: op for op in model.context_ops + model.generation_ops}
+
+    # quantized_layers lists the GDN in_proj_qkv, in_proj_z and out_proj, the full-attention
+    # q/k/v/o and the shared-expert gate/up/down projections as static per-tensor FP8.
+    for name in (
+        "context_gdn_in_proj_gemm",
+        "context_gdn_out_proj_gemm",
+        "context_qkv_gemm",
+        "context_proj_gemm",
+        "context_gdn_shared_gate_up_gemm",
+        "context_gdn_shared_down_gemm",
+        "context_full_shared_gate_up_gemm",
+        "context_full_shared_down_gemm",
+        "generation_gdn_in_proj_gemm",
+        "generation_gdn_out_proj_gemm",
+        "generation_qkv_gemm",
+        "generation_proj_gemm",
+    ):
+        assert by_name[name]._quant_mode == common.GEMMQuantMode.fp8_static, name
+    # The routed experts are NVFP4.
+    for name in ("context_gdn_moe", "context_full_moe"):
+        assert by_name[name]._quant_mode == common.MoEQuantMode.nvfp4, name
 
 
 def test_gemma4_exclusions_keep_attention_and_mlp_bf16():
