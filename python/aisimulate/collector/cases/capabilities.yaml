@@ -114,3 +114,13 @@ backend_gaps:
     dtype: fp8
     sm: [89, 90, 100, 103, 120]
     note: G-vllm-mla-bmm-fp8-not-served
+  - backend: sglang
+    op: mla_context
+    dtype: bfloat16
+    sm: [80, 86]
+    note: G-sglang-mla-backend-unmapped
+  - backend: sglang
+    op: mla_generation
+    dtype: bfloat16
+    sm: [80, 86]
+    note: G-sglang-mla-backend-unmapped

@@ -125,7 +125,7 @@ def test_rows_may_not_drop_a_case(monkeypatch):
     monkeypatch.setitem(OP_PLANS, "probe", dropping)
 
     with pytest.raises(ValueError, match="rows dropped case"):
-        plan("probe", "vllm", 100)
+        _ = plan("probe", "vllm", 100).rows
     assert plan("probe", "sglang", 100).rows == [GemmCase("bfloat16", 1, 128, 128)]
 
 

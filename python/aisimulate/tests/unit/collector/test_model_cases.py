@@ -29,17 +29,6 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SUPPORT_MATRIX_ROOT = REPO_ROOT / "src" / "aisimulate_core" / "systems" / "support_matrix"
 
 
-def _load_mla_adapter(module_path: str, globals_dict: dict):
-    source_path = REPO_ROOT / module_path
-    tree = ast.parse(source_path.read_text(), filename=str(source_path))
-    function = next(
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_build_mla_test_cases"
-    )
-    namespace = dict(globals_dict)
-    exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)
-    return namespace["_build_mla_test_cases"]
-
-
 def _planned_moe_modes(monkeypatch, backend: str, model_path: str, sm_version: int) -> set[str]:
     from collector.op_plans import plan
 
@@ -970,61 +959,18 @@ def test_cross_model_common_cases_expand_from_base_op_yaml_sweeps(monkeypatch):
     }
 
 
-def test_mla_collectors_dedupe_on_loader_physical_keys(monkeypatch):
-    from types import SimpleNamespace
-
-    from collector.case_generator import get_context_mla_case_specs, get_generation_mla_case_specs
-
-    sglang_adapter = _load_mla_adapter(
-        "collector/sglang/collect_mla.py",
-        {
-            "KV_LORA_RANK": 512,
-            "QK_NOPE_HEAD_DIM": 128,
-            "QK_ROPE_HEAD_DIM": 64,
-        },
-    )
-    trtllm_adapter = _load_mla_adapter(
-        "collector/trtllm/collect_mla.py",
-        {
-            "Scenario": lambda: SimpleNamespace(
-                q_lora_rank=1536,
-                kv_lora_rank=512,
-                qk_nope_head_dim=128,
-                qk_rope_head_dim=64,
-                v_head_dim=128,
-            ),
-            "_mla_tokens_per_block": lambda: 32,
-        },
-    )
-
-    def physical_keys(cases):
-        return {(case[3], case[4] // case[6], case[1], case[0]) for case in cases}
+@pytest.mark.parametrize("op", ["mla_context", "mla_generation"])
+def test_mla_plan_dedupes_on_loader_physical_keys(monkeypatch, op):
+    """The perf key holds local heads, not total heads or TP: one case per key, at the smallest TP."""
+    from collector.op_plans import plan
 
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
-    full_specs = (get_context_mla_case_specs(), get_generation_mla_case_specs())
-    for adapter, kwargs in (
-        (sglang_adapter, {"tp_sizes": (1, 2, 4, 8, 16, 32, 64)}),
-        (trtllm_adapter, {}),
-    ):
-        context_cases = adapter(full_specs[0], dtype_list=("bf16", "fp8"), **kwargs)
-        generation_cases = adapter(full_specs[1], dtype_list=("bf16", "fp8"), **kwargs)
-        assert len(context_cases) == len(physical_keys(context_cases))
-        assert len(generation_cases) == len(physical_keys(generation_cases))
-        assert 1 in {case[4] // case[6] for case in context_cases}
-        assert 1 in {case[4] // case[6] for case in generation_cases}
+    cases = plan(op, "trtllm", 100).cases
 
-    large_generation_spec = SimpleNamespace(
-        model_name="large-generation-regression",
-        kv_lora_rank=512,
-        qk_nope_head_dim=128,
-        qk_rope_head_dim=64,
-        v_head_dim=128,
-        num_heads=128,
-        batch_size=1024,
-        input_len=4096,
-        is_context_phase=False,
-    )
-    assert sglang_adapter([large_generation_spec], dtype_list=("bf16",), tp_sizes=(1,), backend="fa3")
+    keys = [(case.kv_cache_dtype, case.num_heads // case.tp_size, case.batch_size, case.input_len) for case in cases]
+    assert len(keys) == len(set(keys))
+    assert 1 in {case.num_heads // case.tp_size for case in cases}
+    assert {case.kv_cache_dtype for case in cases} == {"bfloat16", "fp8"}
 
 
 def test_kimi_mla_plan_includes_generation_bmm_helpers():

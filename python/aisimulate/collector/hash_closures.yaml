@@ -147,6 +147,8 @@ collector.sglang.collect_mhc_module:
   - __model_cases__
 collector.sglang.collect_mla:
   - collector/cases/base_ops/mla.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.sglang.collect_mla_bmm:
   - collector/cases/base_ops/mla_bmm_gen_pre.yaml
@@ -215,6 +217,8 @@ collector.trtllm.collect_mamba2:
   - __model_cases__
 collector.trtllm.collect_mla:
   - collector/cases/base_ops/mla.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.trtllm.collect_mla_bmm:
   - collector/cases/base_ops/mla_bmm_gen_pre.yaml

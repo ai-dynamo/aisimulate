@@ -123,3 +123,22 @@ notes:
       Verify serving's default runner for these SMs at the pin, add it to
       moe_sglang.backends, and delete the backend gaps.
     approved_by: tianhaox
+  - id: G-sglang-mla-backend-unmapped
+    kind: guard
+    summary: >-
+      The SGLang MLA collector builds each case on the attention backend SGLang
+      serving picks (collect_mla.py _select_default_mla_backend), mapped for
+      SM89, 90, 100, 103 and 120 only. SM80/86 have no mapping, so every case
+      there would fail; capabilities.yaml backend_gaps leaves those regions
+      out instead of timing a guessed backend.
+    reason: expensive
+    scope:
+      tables: [context_mla_perf, generation_mla_perf]
+      systems: [a100_sxm]
+    verified_on: "0.5.21"
+    sources:
+      - aisimulate python/aisimulate/collector/sglang/collect_mla.py (_select_default_mla_backend)
+    retire_via: >-
+      Take the backend from the serving probe record for SM80/86 and delete the
+      backend gaps.
+    approved_by: tianhaox
