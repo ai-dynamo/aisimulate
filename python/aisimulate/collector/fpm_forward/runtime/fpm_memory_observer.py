@@ -33,7 +33,30 @@ SUPPORTED_VERSION = "0.27.0"
 EXECUTION_SUPPORTED_VERSIONS = ("0.27.0", "0.28.0")
 RESULTS_DIR = Path("/results")
 _SPEC_MODULE = "vllm.v1.kv_cache_interface."
+_UNIFORM_SPEC = _SPEC_MODULE + "UniformTypeKVCacheSpecs"
+_MAMBA_SPEC = _SPEC_MODULE + "MambaSpec"
 _CONV_CLASS = "vllm.models.inkling.nvidia.sconv_swa_attn.InklingConvState"
+# Cache spec classes of vllm/v1/kv_cache_interface.py at vLLM 0.31.0
+# (db9527a46873454610df6dbedf79a36d6bf1a7f6), keyed by class name. The table
+# maps by class, not by get_kv_cache_spec_kind: KpoolTailSpec reports a sliding
+# window (1394-1395) but holds one block per request (1019-1025).
+SPEC_KINDS: dict[str, str] = {
+    **dict.fromkeys(
+        (
+            "FullAttentionSpec",
+            "MLAAttentionSpec",
+            "SinkFullAttentionSpec",
+            "RSWASpec",
+            "HiddenStateCacheSpec",
+            "SlidingWindowSpec",
+            "SlidingWindowMLASpec",
+        ),
+        "attention",
+    ),
+    **dict.fromkeys(("KpoolTailSpec", "CircularBufferSpec", "MambaSpec"), "state"),
+}
+# SlidingWindowSpec and its subclasses (831, 930, 1016) declare a positive window.
+_WINDOW_SPECS = frozenset(("SlidingWindowSpec", "SlidingWindowMLASpec", "KpoolTailSpec"))
 _CONFIG_FIELDS = {
     "model_config": ("model", "revision", "dtype", "quantization", "max_model_len", "enforce_eager"),
     "cache_config": (
@@ -42,6 +65,14 @@ _CONFIG_FIELDS = {
         "kv_cache_memory_bytes",
         "enable_prefix_caching",
         "num_gpu_blocks_override",
+        "block_size",
+        "mamba_cache_mode",
+        "mamba_block_size",
+        "prefix_match_unit",
+        "mamba_cache_dtype",
+        "mamba_ssm_cache_dtype",
+        "kv_cache_size_tokens",
+        "kv_cache_max_concurrency",
     ),
     "scheduler_config": ("max_num_batched_tokens", "max_num_seqs", "async_scheduling"),
     "parallel_config": (
@@ -392,14 +423,91 @@ def _positive(value: Any, label: str) -> int:
     return value
 
 
+def _table_kind(spec: Any) -> str:
+    spec_type = _class_name(spec)
+    kind = SPEC_KINDS.get(spec_type.removeprefix(_SPEC_MODULE))
+    if kind is None:
+        raise ValueError(f"unsupported runtime cache spec: {spec_type}")
+    return kind
+
+
+def spec_kind(spec: Any) -> str:
+    """Map a cache spec class to its FPM cache kind; report every other class.
+
+    A UniformTypeKVCacheSpecs group takes the one kind of all its inner specs.
+    """
+    if _class_name(spec) != _UNIFORM_SPEC:
+        return _table_kind(spec)
+    inner = list(spec.kv_cache_specs.values())
+    kinds = {_table_kind(item) for item in inner}
+    if len(kinds) != 1:
+        classes = sorted({_class_name(item) for item in inner})
+        raise ValueError(f"unsupported runtime cache spec: {_UNIFORM_SPEC} of {classes}")
+    return kinds.pop()
+
+
+def _window(spec: Any) -> int | None:
+    window = getattr(spec, "sliding_window", None)
+    if _class_name(spec).removeprefix(_SPEC_MODULE) in _WINDOW_SPECS:
+        return _positive(window, "sliding_window")
+    if window is not None or getattr(spec, "attention_chunk_size", None) is not None:
+        raise ValueError("full-attention cache with alternate retention is unsupported")
+    return None
+
+
+def _spec_dtype(spec: Any) -> str | None:
+    # MambaSpec has one dtype per state tensor (`dtypes`), recorded in the group's state.
+    return None if _class_name(spec) == _MAMBA_SPEC else str(spec.dtype)
+
+
+def _layer_spec(spec: Any) -> dict[str, Any]:
+    return {
+        "spec_type": _class_name(spec),
+        "page_size_bytes": _positive(spec.page_size_bytes, "cache spec page size"),
+        "dtype": _spec_dtype(spec),
+        **{
+            key: _json_value(getattr(spec, key, None))
+            for key in ("tokens_per_state", "cache_role", "storage_block_size")
+        },
+    }
+
+
+def _state(spec: Any) -> dict[str, Any]:
+    # KpoolTailSpec (1019-1025) and CircularBufferSpec (904-911) hold one block per request.
+    if _class_name(spec) != _MAMBA_SPEC:
+        return {"blocks_per_request": 1}
+    fields = (
+        "mamba_cache_mode",
+        "num_speculative_blocks",
+        "num_prefill_checkpoint_blocks",
+        "shapes",
+        "dtypes",
+        "real_page_size_bytes",
+    )
+    # One state block plus the speculative blocks (1048, 1094).
+    return {
+        **{key: _json_value(getattr(spec, key)) for key in fields},
+        "blocks_per_request": 1 + spec.num_speculative_blocks,
+    }
+
+
+def _shared(values: list[Any], label: str) -> Any:
+    if any(value != values[0] for value in values):
+        raise ValueError(f"cache group layers disagree on {label}")
+    return values[0]
+
+
 def cache_groups(cache_config: Any) -> list[dict[str, Any]]:
+    """Record every cache group with its kind, the spec of each layer and state evidence.
+
+    A UniformTypeKVCacheSpecs group keeps one inner spec per layer. Its layers
+    share one window and one state; the group dtype is None when layers differ.
+    """
     groups = []
     all_names: set[str] = set()
     for group in cache_config.kv_cache_groups:
         spec = group.kv_cache_spec
-        spec_type = _class_name(spec)
-        if spec_type not in {_SPEC_MODULE + "FullAttentionSpec", _SPEC_MODULE + "SlidingWindowSpec"}:
-            raise ValueError(f"unsupported runtime cache spec: {spec_type}")
+        kind = spec_kind(spec)
         if getattr(group, "is_eagle_group", False):
             raise ValueError("speculative cache groups are unsupported")
         names = list(group.layer_names)
@@ -408,21 +516,29 @@ def cache_groups(cache_config: Any) -> list[dict[str, Any]]:
         if len(names) != len(set(names)) or all_names.intersection(names):
             raise ValueError("runtime cache group layer aliases are unsupported")
         all_names.update(names)
-        window = getattr(spec, "sliding_window", None)
-        if spec_type.endswith(".SlidingWindowSpec"):
-            _positive(window, "sliding_window")
-        elif window is not None or getattr(spec, "attention_chunk_size", None) is not None:
-            raise ValueError("full-attention cache with alternate retention is unsupported")
-        groups.append(
-            {
-                "layer_names": names,
-                "spec_type": spec_type,
-                "block_size_tokens": _positive(spec.block_size, "cache block size"),
-                "spec_page_size_bytes": _positive(spec.page_size_bytes, "cache spec page size"),
-                "sliding_window": window,
-                "dtype": str(spec.dtype),
-            }
-        )
+        if _class_name(spec) == _UNIFORM_SPEC:
+            specs = dict(spec.kv_cache_specs)
+            if list(specs) != names:
+                raise ValueError("the inner specs of a uniform cache group do not match its layer names")
+        else:
+            specs = dict.fromkeys(names, spec)
+        dtypes = {_spec_dtype(item) for item in specs.values()}
+        record = {
+            "layer_names": names,
+            "spec_type": _class_name(spec),
+            "block_size_tokens": _positive(spec.block_size, "cache block size"),
+            "spec_page_size_bytes": _positive(spec.page_size_bytes, "cache spec page size"),
+            "sliding_window": _shared([_window(item) for item in specs.values()], "sliding window"),
+            # Uniform group layers can differ: an MLA indexer is uint8 at every KV precision.
+            "dtype": dtypes.pop() if len(dtypes) == 1 else None,
+            "kind": kind,
+            "layer_specs": {name: _layer_spec(item) for name, item in specs.items()},
+        }
+        if kind == "state":
+            # A state group keeps blocks_per_request blocks, not a window of tokens.
+            record["sliding_window"] = None
+            record["state"] = _shared([_state(item) for item in specs.values()], "state evidence")
+        groups.append(record)
     if not groups:
         raise ValueError("runtime emitted no cache groups")
     return groups
@@ -434,6 +550,20 @@ def _storage(tensor: Any) -> tuple[tuple[str, int], int]:
     if not device.startswith("cuda:"):
         raise ValueError(f"cache storage is not on a CUDA device: {device}")
     return (device, _positive(storage.data_ptr(), "storage pointer")), _positive(storage.nbytes(), "storage bytes")
+
+
+def _layer_storages(kv_cache: Any) -> set[tuple[str, int]]:
+    """Storage keys of one cache tensor, or of every tensor of a tuple or list.
+
+    A vLLM 0.31.0 Mamba layer binds a tuple of state views of one page.
+    """
+    tensors = kv_cache if isinstance(kv_cache, (tuple, list)) else (kv_cache,)
+    return {_storage(tensor)[0] for tensor in tensors}
+
+
+def _tensor_layers(tensor: Any) -> list[str]:
+    """Layers of one allocation: vLLM 0.31.0 ``layers``, else ``shared_by``."""
+    return list(tensor.layers if hasattr(tensor, "layers") else tensor.shared_by)
 
 
 def _tensor_storages(tensors: Any) -> dict[tuple[str, int], int]:
@@ -467,25 +597,29 @@ def worker_memory(worker: Any) -> dict[str, Any]:
     if getattr(runner, "shared_kv_cache_layers", None):
         raise ValueError("cross-layer KV sharing is not yet supported by memory finalization")
     config = runner.kv_cache_config
+    num_blocks = _positive(config.num_blocks, "cache block count")
     groups = cache_groups(config)
     storages = _tensor_storages(runner.kv_caches)
     context = worker.vllm_config.compilation_config.static_forward_context
     layers = {name: context[name] for group in groups for name in group["layer_names"]}
-    layer_storages = {name: _storage(layer.kv_cache) for name, layer in layers.items()}
-    if dict(layer_storages.values()) != storages:
+    layer_storages = {name: _layer_storages(layer.kv_cache) for name, layer in layers.items()}
+    if set().union(*layer_storages.values()) != set(storages):
         raise ValueError("cache group layers do not account for every model-runner storage")
 
     # Every observed alias must be declared by the runtime allocation plan.
     # Packed tensors explicitly share one backing allocation through block_stride.
+    # vLLM 0.31.0 tensors share one buffer; layer l starts at offset + l * layer_stride.
+    tensors = list(config.kv_cache_tensors)
+    layer_strided = any(hasattr(tensor, "layer_stride") for tensor in tensors)
     expected: dict[tuple[str, int], int] = {}
     covered: set[str] = set()
     packed_key = None
     allocations = []
-    for tensor in config.kv_cache_tensors:
-        names = list(tensor.shared_by)
+    for tensor in tensors:
+        names = _tensor_layers(tensor)
         if not names or covered.intersection(names) or any(name not in layers for name in names):
             raise ValueError("runtime tensor allocation has missing or duplicate cache layers")
-        keys = {layer_storages[name][0] for name in names}
+        keys = set().union(*(layer_storages[name] for name in names))
         if len(keys) != 1:
             raise ValueError("runtime-declared shared tensor uses different physical storages")
         key = next(iter(keys))
@@ -493,7 +627,18 @@ def worker_memory(worker: Any) -> dict[str, Any]:
         stride = getattr(tensor, "block_stride", 0)
         if type(stride) is not int or stride < 0:
             raise ValueError("invalid packed cache block stride")
-        if stride:
+        offset = getattr(tensor, "offset", 0)
+        allocation = {"size": size, "shared_by": names, "layers": list(names), "block_stride": stride, "offset": offset}
+        if layer_strided:
+            layer_stride = getattr(tensor, "layer_stride", None)
+            if any(type(value) is not int or value < 0 for value in (layer_stride, offset)):
+                raise ValueError("invalid cache tensor layer stride or offset")
+            if expected and key not in expected:
+                raise ValueError("cache tensors with layer strides use multiple backing allocations")
+            if offset + (len(names) - 1) * layer_stride + num_blocks * stride > size:
+                raise ValueError("cache tensor layers exceed their backing allocation")
+            allocation["layer_stride"] = layer_stride
+        elif stride:
             if packed_key is None:
                 if key in expected:
                     raise ValueError("packed cache aliases an unpacked allocation")
@@ -506,9 +651,7 @@ def worker_memory(worker: Any) -> dict[str, Any]:
             raise ValueError("packed allocation sizes disagree")
         expected[key] = size
         covered.update(names)
-        allocations.append(
-            {"size": size, "shared_by": names, "block_stride": stride, "offset": getattr(tensor, "offset", 0)}
-        )
+        allocations.append(allocation)
     if covered != set(layers) or expected != storages:
         raise ValueError("runtime allocation plan disagrees with physical cache storage")
     for group in groups:
@@ -516,7 +659,8 @@ def worker_memory(worker: Any) -> dict[str, Any]:
         conv = {value == _CONV_CLASS for value in classes.values()}
         if len(conv) != 1:
             raise ValueError("mixed convolution and attention cache group is unsupported")
-        group["kind"] = "convolution" if conv == {True} else "attention"
+        if conv == {True}:
+            group["kind"] = "convolution"
         group["layer_classes"] = classes
         if group["kind"] == "convolution" and group["sliding_window"] != 4:
             raise ValueError("unsupported Inkling convolution retention")
@@ -533,7 +677,7 @@ def worker_memory(worker: Any) -> dict[str, Any]:
         if hasattr(worker, name)
     }
     return {
-        "num_blocks": _positive(config.num_blocks, "cache block count"),
+        "num_blocks": num_blocks,
         "available_cache_bytes": _positive(worker._fpm_available_cache_bytes, "profiled cache budget"),
         "allocated_cache_bytes": sum(storages.values()),
         "storages": [
@@ -559,6 +703,11 @@ def scheduler_memory(scheduler: Any, config: Any) -> dict[str, Any]:
         raise ValueError("scheduler null block reservation is not observable")
     if type(manager.watermark_blocks) is not int or manager.watermark_blocks != 0:
         raise ValueError("nonzero scheduler cache watermark is unsupported")
+    # vLLM 0.31.0 Scheduler.block_size and hash_block_size (core/sched/scheduler.py:198, :312);
+    # its BlockPool keeps the hash block size too (core/block_pool.py:170). A missing field gives None.
+    hash_block_size = getattr(scheduler, "hash_block_size", None)
+    if hasattr(pool, "hash_block_size") and pool.hash_block_size != hash_block_size:
+        raise ValueError("scheduler hash block size differs from its block pool")
     return {
         "num_blocks": num_blocks,
         "initial_free_blocks": free,
@@ -566,7 +715,11 @@ def scheduler_memory(scheduler: Any, config: Any) -> dict[str, Any]:
         "null_block_id": pool.null_block.block_id,
         "watermark_blocks": manager.watermark_blocks,
         "pool_count": 1,
-        "groups": cache_groups(config),
+        "block_size": _json_value(getattr(scheduler, "block_size", None)),
+        "hash_block_size": _json_value(hash_block_size),
+        "mamba_cache_mode": _json_value(getattr(scheduler.vllm_config.cache_config, "mamba_cache_mode", None)),
+        # The importer compares these groups with the worker groups without their kind.
+        "groups": [{key: value for key, value in group.items() if key != "kind"} for group in cache_groups(config)],
     }
 
 

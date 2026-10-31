@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from dataclasses import replace
+from enum import Enum
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -94,13 +96,19 @@ def fake_runtime_offloader(monkeypatch):
     monkeypatch.setattr(observer, "_offloader_type", lambda: "vllm.model_executor.offloader.base.NoopOffloader")
 
 
-def _initialized(*, blocks=100, free=98, packed=False):
-    """Two physical buffers, five logical layer views and three retention groups."""
+def _initialized(*, blocks=100, free=98, packed=False, layers=False):
+    """Two physical buffers, five logical layer views and three retention groups.
+
+    With ``layers``, the allocation follows vLLM 0.31.0: one buffer backs every
+    tensor, each tensor names its layers in ``layers`` with a ``layer_stride``,
+    and the convolution layer's cache is a tuple of two views.
+    """
     config = _vllm_config()
-    storages = [_Storage(100, blocks * (128 if packed else 64))]
-    storages.append(storages[0] if packed else _Storage(200, blocks * 64))
+    one_buffer = packed or layers
+    storages = [_Storage(100, blocks * (128 if one_buffer else 64))]
+    storages.append(storages[0] if one_buffer else _Storage(200, blocks * 64))
     tensors = [_Tensor(storage) for storage in storages]
-    layers = {}
+    context = {}
     groups = []
     for prefix, count, window, block in (("full", 2, None, 16), ("slide", 2, 32, 16), ("conv", 1, 4, 4)):
         names = [f"{prefix}.{index}" for index in range(count)]
@@ -111,12 +119,14 @@ def _initialized(*, blocks=100, free=98, packed=False):
                 else ("vllm.model_executor.layers.attention", "Attention")
             )
             layer = _typed(module, cls)
-            layer.kv_cache = tensors[index]
-            layers[name] = layer
+            layer.kv_cache = (
+                (_Tensor(storages[0]), _Tensor(storages[0])) if layers and prefix == "conv" else tensors[index]
+            )
+            context[name] = layer
         spec = _typed("vllm.v1.kv_cache_interface", "FullAttentionSpec" if window is None else "SlidingWindowSpec")
         spec.block_size, spec.page_size_bytes, spec.sliding_window, spec.dtype = block, 64, window, "torch.bfloat16"
         groups.append(SimpleNamespace(layer_names=names, kv_cache_spec=spec, is_eagle_group=False))
-    config.compilation_config.static_forward_context = layers
+    config.compilation_config.static_forward_context = context
     cache_config = SimpleNamespace(
         num_blocks=blocks,
         kv_cache_groups=groups,
@@ -135,13 +145,19 @@ def _initialized(*, blocks=100, free=98, packed=False):
             ),
         ],
     )
+    if layers:
+        # Layer l of a tensor starts at offset + l * layer_stride; stride 0 keeps
+        # each tensor's aliased layers on one region of the layer-outer buffer.
+        for index, tensor in enumerate(cache_config.kv_cache_tensors):
+            tensor.layers = vars(tensor).pop("shared_by")
+            tensor.layer_stride, tensor.block_stride, tensor.offset = 0, 64, index * blocks * 64
     worker = SimpleNamespace(
         vllm_config=config,
         _fpm_cache_initialized=True,
         _fpm_available_cache_bytes=blocks * 128 + 200,
         model_runner=SimpleNamespace(
             kv_cache_config=cache_config,
-            kv_caches=[layer.kv_cache for layer in layers.values()],
+            kv_caches=[layer.kv_cache for layer in context.values()],
             shared_kv_cache_layers={},
         ),
         peak_activation_memory=123,
@@ -209,6 +225,236 @@ def test_physical_grouped_capacity_deduplicates_aliases_and_charges_padding(pack
     assert pool["reserved_blocks"] == 2
     assert [group["kind"] for group in observed["groups"]] == ["attention", "attention", "convolution"]
     assert [group["sliding_window"] for group in observed["groups"]] == [None, 32, 4]
+
+
+def _spec(name, **fields):
+    spec = _typed("vllm.v1.kv_cache_interface", name)
+    vars(spec).update(fields)
+    return spec
+
+
+def _group(names, spec):
+    return SimpleNamespace(layer_names=names, kv_cache_spec=spec, is_eagle_group=False)
+
+
+def _mamba(**fields):
+    # GLM-5.3-Flash KDA state at TP 4: bf16 convolution and fp32 SSM views, padded to the MLA page.
+    defaults = {
+        "block_size": 2176,
+        "page_size_bytes": 1_114_112,
+        "mamba_cache_mode": "align",
+        "num_speculative_blocks": 0,
+        "num_prefill_checkpoint_blocks": 0,
+        "shapes": ((6144, 3), (16, 128, 128)),
+        "dtypes": ("torch.bfloat16", "torch.float32"),
+        "real_page_size_bytes": 1_085_440,
+    }
+    return _spec("MambaSpec", **{**defaults, **fields})
+
+
+def test_cache_groups_map_specs_by_class_and_record_state_evidence():
+    full = _spec("FullAttentionSpec", block_size=16, page_size_bytes=8192, sliding_window=None, dtype="torch.bfloat16")
+    tail = _spec("KpoolTailSpec", block_size=4, page_size_bytes=71_808, sliding_window=4, dtype="torch.bfloat16")
+    config = SimpleNamespace(
+        kv_cache_groups=[_group(["attn.0"], full), _group(["tail.0"], tail), _group(["kda.0", "kda.1"], _mamba())]
+    )
+    attention, tail_group, mamba = observer.cache_groups(config)
+    keys = {"layer_names", "spec_type", "block_size_tokens", "spec_page_size_bytes", "sliding_window", "dtype"}
+    assert set(attention) == keys | {"kind", "layer_specs"}
+    assert set(tail_group) == set(mamba) == keys | {"kind", "layer_specs", "state"}
+    assert [group["kind"] for group in (attention, tail_group, mamba)] == ["attention", "state", "state"]
+    assert attention["layer_specs"] == {
+        "attn.0": {
+            "spec_type": "vllm.v1.kv_cache_interface.FullAttentionSpec",
+            "page_size_bytes": 8192,
+            "dtype": "torch.bfloat16",
+            "tokens_per_state": None,
+            "cache_role": None,
+            "storage_block_size": None,
+        }
+    }
+    assert tail_group["state"] == {"blocks_per_request": 1}
+    assert tail_group["sliding_window"] is None
+    assert mamba["dtype"] is None
+    assert mamba["state"] == {
+        "mamba_cache_mode": "align",
+        "num_speculative_blocks": 0,
+        "num_prefill_checkpoint_blocks": 0,
+        "shapes": [[6144, 3], [16, 128, 128]],
+        "dtypes": ["torch.bfloat16", "torch.float32"],
+        "real_page_size_bytes": 1_085_440,
+        "blocks_per_request": 1,
+    }
+    assert mamba["layer_specs"]["kda.1"]["spec_type"].endswith(".MambaSpec")
+    kinds = {
+        **dict.fromkeys(
+            (
+                "FullAttentionSpec",
+                "MLAAttentionSpec",
+                "SinkFullAttentionSpec",
+                "RSWASpec",
+                "HiddenStateCacheSpec",
+                "SlidingWindowSpec",
+                "SlidingWindowMLASpec",
+            ),
+            "attention",
+        ),
+        **dict.fromkeys(("KpoolTailSpec", "CircularBufferSpec", "MambaSpec"), "state"),
+    }
+    assert {name: observer.spec_kind(_spec(name)) for name in kinds} == kinds
+
+
+def test_uniform_type_groups_record_their_inner_specs():
+    role = Enum("SparseCacheRole", {"SPARSE": "sparse", "INDEXER": "indexer"}, type=str)
+    latent, indexer = (
+        _spec(
+            "MLAAttentionSpec",
+            block_size=2176,
+            page_size_bytes=page,
+            sliding_window=None,
+            dtype="torch.uint8",
+            tokens_per_state=tokens,
+            cache_role=cache_role,
+            storage_block_size=storage,
+        )
+        for page, tokens, cache_role, storage in ((1_114_112, 1, role.SPARSE, None), (71_808, 4, role.INDEXER, 128))
+    )
+    names = ["layers.3.mla", "layers.3.indexer"]
+    uniform = _spec(
+        "UniformTypeKVCacheSpecs",
+        block_size=2176,
+        page_size_bytes=1_185_920,
+        kv_cache_specs=dict(zip(names, (latent, indexer), strict=True)),
+    )
+    config = SimpleNamespace(kv_cache_groups=[_group(names, uniform)])
+    (group,) = observer.cache_groups(config)
+    assert group["kind"] == "attention"
+    assert group["spec_type"] == "vllm.v1.kv_cache_interface.UniformTypeKVCacheSpecs"
+    assert (group["block_size_tokens"], group["spec_page_size_bytes"]) == (2176, 1_185_920)
+    assert (group["sliding_window"], group["dtype"]) == (None, "torch.uint8")
+    assert "state" not in group
+    assert group["layer_specs"] == {
+        "layers.3.mla": {
+            "spec_type": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+            "page_size_bytes": 1_114_112,
+            "dtype": "torch.uint8",
+            "tokens_per_state": 1,
+            "cache_role": "SPARSE",
+            "storage_block_size": None,
+        },
+        "layers.3.indexer": {
+            "spec_type": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+            "page_size_bytes": 71_808,
+            "dtype": "torch.uint8",
+            "tokens_per_state": 4,
+            "cache_role": "INDEXER",
+            "storage_block_size": 128,
+        },
+    }
+    # A bf16 latent beside the uint8 indexer has no single group dtype; each layer keeps its own.
+    latent.dtype = "torch.bfloat16"
+    (group,) = observer.cache_groups(config)
+    assert group["dtype"] is None
+    assert [spec["dtype"] for spec in group["layer_specs"].values()] == ["torch.bfloat16", "torch.uint8"]
+
+
+def test_mixed_uniform_group_and_unknown_class_are_unsupported():
+    latent = _spec("MLAAttentionSpec", block_size=2176, page_size_bytes=1_114_112, dtype="torch.uint8")
+    mixed = _spec(
+        "UniformTypeKVCacheSpecs",
+        block_size=2176,
+        page_size_bytes=2_228_224,
+        kv_cache_specs={"mla.0": latent, "kda.0": _mamba()},
+    )
+    with pytest.raises(
+        ValueError, match="unsupported runtime cache spec: .*UniformTypeKVCacheSpecs.*MLAAttentionSpec.*MambaSpec"
+    ):
+        observer.cache_groups(SimpleNamespace(kv_cache_groups=[_group(["mla.0", "kda.0"], mixed)]))
+    for spec in (_spec("HiSparseHotSpec"), _typed("vendor.kv_cache_interface", "FullAttentionSpec")):
+        name = f"{type(spec).__module__}.{type(spec).__name__}"
+        with pytest.raises(ValueError, match=re.escape(f"unsupported runtime cache spec: {name}")):
+            observer.cache_groups(SimpleNamespace(kv_cache_groups=[_group(["layer.0"], spec)]))
+
+
+@pytest.mark.parametrize(
+    "change,match",
+    [
+        ("names", "do not match its layer names"),
+        ("window", "disagree on sliding window"),
+        ("state", "disagree on state evidence"),
+    ],
+)
+def test_uniform_group_layers_must_agree_on_names_retention_and_state(change, match):
+    names = ["kda.0", "kda.1"]
+    specs = [_mamba(), _mamba(shapes=((6144, 4), (16, 128, 128))) if change == "state" else _mamba()]
+    if change == "window":
+        specs = [
+            _spec("SlidingWindowSpec", block_size=16, page_size_bytes=64, sliding_window=window, dtype="torch.bfloat16")
+            for window in (32, 64)
+        ]
+    uniform = _spec(
+        "UniformTypeKVCacheSpecs",
+        block_size=specs[0].block_size,
+        page_size_bytes=sum(spec.page_size_bytes for spec in specs),
+        kv_cache_specs=dict(zip(names, specs, strict=True)),
+    )
+    with pytest.raises(ValueError, match=match):
+        observer.cache_groups(
+            SimpleNamespace(kv_cache_groups=[_group(names[::-1] if change == "names" else names, uniform)])
+        )
+
+
+def test_worker_memory_reads_layers_and_tuple_caches():
+    worker, _scheduler, _cache = _initialized(layers=True)
+    assert isinstance(worker.vllm_config.compilation_config.static_forward_context["conv.0"].kv_cache, tuple)
+    observed = observer.worker_memory(worker)
+    assert observed["allocated_cache_bytes"] == 100 * 128
+    assert [(item["layers"], item["shared_by"], item["layer_stride"]) for item in observed["tensor_allocations"]] == [
+        (["full.0", "slide.0", "conv.0"], ["full.0", "slide.0", "conv.0"], 0),
+        (["full.1", "slide.1"], ["full.1", "slide.1"], 0),
+    ]
+    assert [group["kind"] for group in observed["groups"]] == ["attention", "attention", "convolution"]
+    # Tensors of vLLM 0.27.0 and 0.28.0 have no layer stride, so their records name none.
+    legacy = observer.worker_memory(_initialized()[0])
+    assert all(
+        item["layers"] == item["shared_by"] and "layer_stride" not in item for item in legacy["tensor_allocations"]
+    )
+
+
+@pytest.mark.parametrize(
+    "change,match",
+    [("region", "exceed their backing allocation"), ("storage", "layer strides use multiple backing allocations")],
+)
+def test_layer_strided_tensors_share_one_buffer_that_holds_every_region(change, match):
+    worker, _scheduler, cache = _initialized(layers=True)
+    tensor = cache.kv_cache_tensors[1]
+    if change == "region":
+        # The second layer starts one byte later, so its last block passes the end of the buffer.
+        tensor.layer_stride = 1
+    else:
+        context = worker.vllm_config.compilation_config.static_forward_context
+        moved = _Storage(300, tensor.size)
+        for name in tensor.layers:
+            context[name].kv_cache = _Tensor(moved)
+        worker.model_runner.kv_caches = [layer.kv_cache for layer in context.values()]
+    with pytest.raises(ValueError, match=match):
+        observer.worker_memory(worker)
+
+
+def test_scheduler_memory_records_block_sizes_and_mamba_mode():
+    _worker, scheduler, cache = _initialized()
+    legacy = observer.scheduler_memory(scheduler, cache)
+    assert (legacy["block_size"], legacy["hash_block_size"], legacy["mamba_cache_mode"]) == (None, None, None)
+    scheduler.block_size = scheduler.hash_block_size = 2176
+    scheduler.kv_cache_manager.block_pool.hash_block_size = 2176
+    scheduler.vllm_config.cache_config.mamba_cache_mode = "align"
+    record = observer.scheduler_memory(scheduler, cache)
+    assert (record["block_size"], record["hash_block_size"], record["mamba_cache_mode"]) == (2176, 2176, "align")
+    # The worker record carries the group kind; the scheduler copy keeps the layer specs.
+    assert all("kind" not in group and "layer_specs" in group for group in record["groups"])
+    scheduler.kv_cache_manager.block_pool.hash_block_size = 4
+    with pytest.raises(ValueError, match="hash block size"):
+        observer.scheduler_memory(scheduler, cache)
 
 
 def test_resolve_runtime_resources_requires_all_ranks_and_preserves_graph_evidence(tmp_path, monkeypatch):
@@ -489,7 +735,7 @@ def test_runtime_memory_rejects_incomplete_stale_mixed_or_unsupported_evidence(t
         payload["resolved_config"]["compilation_config"]["cudagraph_capture_sizes"] = [1, 2, 4]
         payload["resolved_config"]["compilation_config"]["max_cudagraph_capture_size"] = 4
     elif change == "unknown_spec":
-        payload["cache"]["groups"][0]["spec_type"] = "vllm.v1.kv_cache_interface.MambaSpec"
+        payload["cache"]["groups"][0]["spec_type"] = "vllm.v1.kv_cache_interface.HiSparseHotSpec"
         scheduler["cache"]["groups"][0]["spec_type"] = payload["cache"]["groups"][0]["spec_type"]
     elif change == "nonintegral":
         payload["cache"]["allocated_cache_bytes"] -= 1
