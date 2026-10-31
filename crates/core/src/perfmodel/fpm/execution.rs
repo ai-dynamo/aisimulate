@@ -19,6 +19,7 @@ pub enum FpmExecutionKind {
 #[serde(rename_all = "snake_case")]
 pub enum FpmSpeculativeMethod {
     Eagle3,
+    Mtp,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,6 +151,7 @@ mod tests {
             assert_eq!(FpmExecutionBinding::parse_selector(label).unwrap(), None);
         }
         for (field, value) in [
+            ("method", "mtp".into()),
             ("model_revision", "3".repeat(40)),
             ("draft_revision", "4".repeat(40)),
             ("draft_model", "test/other-draft".into()),
@@ -157,12 +159,17 @@ mod tests {
         ] {
             let mut changed = original.clone();
             match field {
+                "method" => changed.execution_profile.method = FpmSpeculativeMethod::Mtp,
                 "model_revision" => changed.model_revision = value,
                 "draft_revision" => changed.execution_profile.draft_revision = value,
                 "draft_model" => changed.execution_profile.draft_model = value,
                 _ => changed.execution_profile.num_draft_tokens = 4,
             }
             assert_ne!(changed.selector().unwrap(), selector);
+            assert_eq!(
+                FpmExecutionBinding::parse_selector(&changed.selector().unwrap()).unwrap(),
+                Some(changed)
+            );
         }
     }
 

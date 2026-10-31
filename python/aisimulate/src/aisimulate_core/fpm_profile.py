@@ -165,7 +165,7 @@ class FpmSpeculativeExecutionProfile(_ProfileModel):
     """Explicit full-round timing identity; Rust validates its canonical selector."""
 
     kind: Literal["speculative_round"]
-    method: Literal["eagle3"]
+    method: Literal["eagle3", "mtp"]
     num_draft_tokens: Annotated[int, Field(ge=1, le=5)]
     draft_model: _Nonempty
     draft_revision: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]

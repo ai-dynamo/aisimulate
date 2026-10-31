@@ -152,6 +152,12 @@ execution_profile:
   timing_scope: model_step_cuda
 ```
 
+`method` accepts `eagle3` or `mtp`. MTP draft heads ship inside the target
+checkpoint, so an `mtp` deployment records the profile `model` and
+`model_revision` as `draft_model` and `draft_revision`. Validation does not
+enforce this, but selectors compare these fields exactly. A table recorded with
+other draft values fails with `No FPM cell matches`.
+
 The initial identity contract permits vLLM pure TP with DP1/PP1/CP1 and 1–5
 draft tokens. Acceptance length belongs to replay progress, not this timing
 selector. Omitting `execution_profile` preserves existing AR profile JSON and
