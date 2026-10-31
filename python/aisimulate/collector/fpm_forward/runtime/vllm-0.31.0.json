@@ -34,6 +34,7 @@
       "vllm/transformers_utils/config.py": "bfa2d8ed9fc0971694e7873351a06dc9d5948775984f120148ad8a8e38a5acbc",
       "vllm/platforms/interface.py": "6f5f0f7f304a3899c50a3a558eecd07f66675910befbfa251bc9779ee05a7775",
       "vllm/version.py": "2b08ab3f9bd3412cc40ff0d239b18d18d101369c329460cd07d718f658b97fba",
+      "vllm/_version.py": "b2ed697338f4a6ca2fed3c7904f2d5f539202a681a765a6e9f4a64a46ef40a73",
       "dynamo/vllm/instrumented_scheduler.py": "06fcb26ffcfeb4d58a01704d8d7842d9d838d4a34170a1086f09e5617442da8e"
     }
   },
