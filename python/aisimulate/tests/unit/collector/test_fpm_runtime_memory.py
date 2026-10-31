@@ -943,6 +943,8 @@ def test_full_graph_cannot_fall_back_to_unsupported_attention_mode(tmp_path, mon
         ("wrong_gpu_fraction", "launch mismatch"),
         ("graph_mismatch", "differ across worker ranks"),
         ("unknown_spec", "unsupported runtime cache spec"),
+        ("mamba_spec_without_state", "lacks blocks_per_request evidence"),
+        ("mamba_spec_with_state", "runtime memory cache kind is unsupported"),
         ("nonintegral", "non-integral pool page"),
         ("watermark", "pool capacity/reservations"),
         ("second_pool", "pool capacity/reservations"),
@@ -977,6 +979,13 @@ def test_runtime_memory_rejects_incomplete_stale_mixed_or_unsupported_evidence(t
     elif change == "unknown_spec":
         payload["cache"]["groups"][0]["spec_type"] = "vllm.v1.kv_cache_interface.HiSparseHotSpec"
         scheduler["cache"]["groups"][0]["spec_type"] = payload["cache"]["groups"][0]["spec_type"]
+    elif change in ("mamba_spec_without_state", "mamba_spec_with_state"):
+        # The vLLM 0.27.0 path refuses every state group (rulings R-C and R-G).
+        for group in (payload["cache"]["groups"][0], scheduler["cache"]["groups"][0]):
+            group["spec_type"] = "vllm.v1.kv_cache_interface.MambaSpec"
+            if change == "mamba_spec_with_state":
+                group["state"] = {"blocks_per_request": 1}
+        payload["cache"]["groups"][0]["kind"] = "state"
     elif change == "nonintegral":
         payload["cache"]["allocated_cache_bytes"] -= 1
         payload["cache"]["storages"][0]["size_bytes"] -= 1
@@ -1337,7 +1346,14 @@ def test_pending_memory_plans_without_model_and_renders_audited_hooks(tmp_path):
 
 @pytest.mark.parametrize(
     "flag",
-    ["--worker-cls", "--scheduler-cls", "--kv-cache-memory-bytes", "--num-gpu-blocks-override", "--async-scheduling"],
+    [
+        "--worker-cls",
+        "--scheduler-cls",
+        "--kv-cache-memory-bytes",
+        "--num-gpu-blocks-override",
+        "--async-scheduling",
+        "--mamba-cache-mode",
+    ],
 )
 @pytest.mark.usefixtures("no_models_or_timing_data")
 def test_pending_memory_rejects_conflicting_runtime_policy(flag):
@@ -1348,6 +1364,19 @@ def test_pending_memory_rejects_conflicting_runtime_policy(flag):
     )
     with pytest.raises(ValueError, match="memory"):
         runner._cell_generator_overrides(plan, cell, {})
+
+
+@pytest.mark.parametrize("architecture", ["Glm5NextForConditionalGeneration", None])
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_glm5next_launch_loads_the_language_model_only(architecture):
+    plan = _pending_plan()
+    if architecture is not None:
+        plan = replace(plan, capability=replace(plan.capability, architecture=architecture))
+    assert (plan.capability.architecture == "Glm5NextForConditionalGeneration") == (architecture is not None)
+    for cell in plan.cells:
+        args = runner._cell_generator_overrides(plan, cell, {})["params"]["agg"]["extra_cli_args"]
+        # Decision 8: GLM probes and collection load the text decoder only (docs/glm53flash-fpm.md:70-73).
+        assert ("--language-model-only" in args) == (architecture is not None)
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")

@@ -3,14 +3,15 @@
 
 """CPU-only validation of saved runtime observations, independent of timing data.
 
-The supported allocation representation is one HBM pool shared by full-history
-or sliding-window groups. Runtime mappings are evidence: the importer rechecks
-raw geometry, configuration, physical views, and pool accounting itself.
+The supported allocation representation is one HBM pool shared by full-history,
+sliding-window or fixed-state groups. Runtime mappings are evidence: the importer
+rechecks raw geometry, configuration, physical views, and pool accounting itself.
 """
 
 from __future__ import annotations
 
 import copy
+import itertools
 import math
 import re
 from importlib.resources import files
@@ -440,6 +441,163 @@ def _validate_alias_ownership(views: list[tuple[dict[str, Any], int]], count: in
         span += (dimension - 1) * stride
 
 
+def _indexer(spec: dict[str, Any]) -> bool:
+    """The sparse MLA indexer, an MLAAttentionSpec with role INDEXER (vLLM 0.31.0 kv_cache_interface.py:668).
+
+    It stores uint8 keys at every KV precision (models/glm5next/common/attention.py:293-299).
+    """
+    return (
+        spec.get("spec_type") == "vllm.v1.kv_cache_interface.MLAAttentionSpec" and spec.get("cache_role") == "INDEXER"
+    )
+
+
+def _layer_views(
+    name: str,
+    entries: Any,
+    storage_id: str,
+    region: int,
+    block_stride: int,
+    count: int,
+    size: int,
+    group: dict[str, Any],
+    precision: str,
+) -> list[tuple[dict[str, Any], int]]:
+    """Check the views of one vLLM 0.31.0 layer, of any rank with the block axis first.
+
+    A layer views its pages as one tensor, or as one tensor per state that a Mamba layer
+    cuts from its page (kv_cache_interface.py:353-417, mamba/abstract.py:28-42). Each view
+    starts and ends inside the block of the layer's region, the views of one layer do not
+    overlap there, and together they hold at most the layer's page.
+    """
+    spec = group["layer_specs"][name]
+    if not isinstance(entries, list) or not entries:
+        raise ValueError(f"physical layer views are missing: {name}")
+    block = group["block_size_tokens"]
+    expected_item_size = {"bfloat16": 2, "half": 2, "fp8": 1}.get(precision)
+    views, intervals, dense = [], [], 0
+    for view in entries:
+        if not isinstance(view, dict) or view.get("storage_id") != storage_id:
+            raise ValueError("layer tensor aliases or offsets contradict the allocation plan")
+        start = _nonnegative(view.get("storage_offset_bytes"), "tensor storage byte offset") - region
+        shape, strides = view.get("shape"), view.get("stride_bytes")
+        item_size = _positive(view.get("element_size_bytes"), "tensor element bytes")
+        if not isinstance(shape, list) or not shape or not isinstance(strides, list) or len(shape) != len(strides):
+            raise ValueError("physical tensor shape and strides are incomplete")
+        for dimension in shape:
+            _positive(dimension, "tensor dimension")
+        for value in strides:
+            _nonnegative(value, "tensor byte stride")
+            if value % item_size:
+                raise ValueError("tensor byte strides must align to its element size")
+        kernel = _positive(view.get("kernel_block_size_tokens"), "kernel block tokens")
+        ratio = block // kernel
+        if (
+            view.get("block_axis") != 0
+            or block % kernel
+            or shape[0] != count * ratio
+            or strides[0] * ratio != block_stride
+        ):
+            raise ValueError("kernel tensor block coverage contradicts pool block geometry")
+        span = item_size
+        for byte_stride, dimension in sorted(zip(strides, shape, strict=True)):
+            if dimension > 1:
+                if byte_stride < span:
+                    raise ValueError("physical tensor dimensions overlap")
+                span += (dimension - 1) * byte_stride
+        if region + start + span > size:
+            raise ValueError("physical tensor byte bounds exceed its backing storage")
+        within = item_size + (ratio - 1) * strides[0]
+        within += sum((dimension - 1) * stride for dimension, stride in zip(shape[1:], strides[1:], strict=True))
+        if not 0 <= start < block_stride or start + within > block_stride:
+            raise ValueError(f"layer view lies outside the block of its allocation region: {name}")
+        if (
+            group["kind"] == "attention"
+            and not _indexer(spec)
+            and expected_item_size is not None
+            and item_size != expected_item_size
+        ):
+            raise ValueError("tensor element size contradicts cache dtype")
+        intervals.append((start, start + within))
+        dense += ratio * math.prod(shape[1:]) * item_size
+        views.append((view, ratio))
+    intervals.sort()
+    if any(end > following for (_, end), (following, _) in itertools.pairwise(intervals)):
+        raise ValueError(f"views of one layer overlap inside the block: {name}")
+    if dense > spec["page_size_bytes"]:
+        raise ValueError(f"layer views exceed the page of their cache spec: {name}")
+    return views
+
+
+def _layer_strided_views(
+    allocations: list[Any],
+    tensors: dict[str, Any],
+    storages: dict[str, dict[str, Any]],
+    layer_groups: dict[str, tuple[int, dict[str, Any]]],
+    count: int,
+    precision: str,
+) -> None:
+    """Check the vLLM 0.31.0 placement of every cache layer in one backing buffer.
+
+    Block ``b`` of layer ``layers[l]`` starts at ``offset + l * layer_stride + b * block_stride``
+    (kv_cache_interface.py:1417-1438). The last page of the last layer bounds the region in
+    layer-outer and block-outer layouts (ruling R-L). Tensors whose bytes intersect overlay
+    cache groups, which is sound because one group owns a pool block at a time (:1428-1430).
+    """
+    if len(storages) != 1:
+        raise ValueError("layer-strided cache allocations require one backing storage")
+    ((storage_id, storage),) = storages.items()
+    size = storage["size_bytes"]
+    regions: list[tuple[tuple[int, int, int, int], int, int]] = []
+    aliases: dict[tuple[int, int, int, int], list[list[str]]] = {}
+    views: dict[str, list[tuple[dict[str, Any], int]]] = {}
+    for allocation in allocations:
+        if (
+            not isinstance(allocation, dict)
+            or allocation.get("storage_id") != storage_id
+            or type(allocation.get("size")) is not int
+            or allocation["size"] != size
+        ):
+            raise ValueError("allocation plan differs from actual backing storage")
+        names = allocation.get("layers")
+        if (
+            not isinstance(names, list)
+            or not names
+            or any(not isinstance(name, str) or name not in layer_groups for name in names)
+            or len(set(names)) != len(names)
+            or views.keys() & set(names)
+        ):
+            raise ValueError("allocation plan has missing, duplicate or unknown layers")
+        offset = _nonnegative(allocation.get("offset"), "allocation byte offset")
+        layer_stride = _nonnegative(allocation.get("layer_stride"), "allocation layer stride")
+        block_stride = _positive(allocation.get("block_stride"), "allocation block stride")
+        page = max(layer_groups[name][1]["layer_specs"][name]["page_size_bytes"] for name in names)
+        end = offset + (len(names) - 1) * layer_stride + (count - 1) * block_stride + page
+        if page > block_stride or end > size:
+            raise ValueError("allocation layers exceed their block stride or the backing storage")
+        key = (offset, layer_stride, block_stride, len(names))
+        if any(
+            offset < other_end and other_offset < end and other != key for other, other_offset, other_end in regions
+        ):
+            raise ValueError("aliased allocations must share offset, layer stride, block stride and layer count")
+        regions.append((key, offset, end))
+        aliases.setdefault(key, []).append(names)
+        for position, name in enumerate(names):
+            region = offset + position * layer_stride
+            group = layer_groups[name][1]
+            views[name] = _layer_views(
+                name, tensors[name], storage_id, region, block_stride, count, size, group, precision
+            )
+    if views.keys() != layer_groups.keys():
+        raise ValueError("allocation plan does not account for every layer and backing storage")
+    for aliased in aliases.values():
+        # The layers on one region overlay different cache groups, never two layers of one group.
+        for layers in zip(*aliased, strict=True):
+            owners = [layer_groups[name][0] for name in layers]
+            if len(set(owners)) != len(owners):
+                raise ValueError("layers in one cache group cannot alias the same allocation region")
+        _validate_alias_ownership([item for names in aliased for name in names for item in views[name]], count)
+
+
 def _physical_views(
     cache: dict[str, Any], scheduled: dict[str, Any], precision: str
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
@@ -459,6 +617,7 @@ def _physical_views(
     ):
         raise ValueError("scheduler permanent reservation IDs do not account for usable blocks")
     groups = runtime_memory._normalized_groups(cache, scheduled, page)
+    strided = runtime_memory._layer_strided(cache)
     layer_groups = {}
     for group_id, group in enumerate(cache["groups"]):
         if group.get("pool_id") != pool:
@@ -469,13 +628,25 @@ def _physical_views(
             or group.get("attention_chunk_size") is not None
         ):
             raise ValueError("unsupported or unresolved extra/chunk cache retention")
-        storage_dtype = runtime_memory._dtype(group.get("dtype"))
-        # vLLM 4bdc8a788d2e2ce9165d552b3d4d8b72604626bf
-        # utils/torch_utils.py:STR_DTYPE_TO_TORCH_DTYPE stores FP8 as uint8,
-        # also used by other packed formats. Only the independently validated
-        # resolved cache precision establishes FP8; retain raw storage evidence.
-        if storage_dtype != precision and not (storage_dtype == "torch.uint8" and precision == "fp8"):
-            raise ValueError("cache group dtype contradicts requested KV precision")
+        # A vLLM 0.31.0 uniform group can mix dtypes, so its layers are checked one by one. Only
+        # attention layers store KV at the requested precision; the sparse MLA indexer is exempt.
+        dtypes = (
+            [
+                group["layer_specs"][name].get("dtype")
+                for name in group["layer_names"]
+                if group["kind"] == "attention" and not _indexer(group["layer_specs"][name])
+            ]
+            if strided
+            else [group.get("dtype")]
+        )
+        for dtype in dtypes:
+            storage_dtype = runtime_memory._dtype(dtype)
+            # vLLM 4bdc8a788d2e2ce9165d552b3d4d8b72604626bf
+            # utils/torch_utils.py:STR_DTYPE_TO_TORCH_DTYPE stores FP8 as uint8,
+            # also used by other packed formats. Only the independently validated
+            # resolved cache precision establishes FP8; retain raw storage evidence.
+            if storage_dtype != precision and not (storage_dtype == "torch.uint8" and precision == "fp8"):
+                raise ValueError("cache group dtype contradicts requested KV precision")
         _positive(group.get("spec_page_size_bytes"), "cache spec page bytes")
         for name in group["layer_names"]:
             layer_groups[name] = (group_id, group)
@@ -494,6 +665,9 @@ def _physical_views(
         or not allocations
     ):
         raise ValueError("physical layer tensor/allocation coverage is incomplete")
+    if strided:
+        _layer_strided_views(allocations, tensors, storages, layer_groups, count, precision)
+        return groups, accounting
     covered, used_storage = set(), set()
     intervals: dict[str, list[tuple[int, int]]] = {}
     packing: dict[str, int] = {}
@@ -590,6 +764,86 @@ def _physical_views(
     return groups, accounting
 
 
+def _prefix_caching_settings(cache: dict[str, Any], *, scheduler: bool) -> dict[str, Any] | None:
+    """The prefix-caching settings that one vLLM 0.31.0 process recorded; None for older records.
+
+    vLLM 0.27.0 and 0.28.0 records have no ``prefix_caching`` key (ruling R-M). The scheduler
+    adds its block size and hash block size (core/sched/scheduler.py:198, :310-312).
+    """
+    if "prefix_caching" not in cache:
+        return None
+    value = cache["prefix_caching"]
+    keys = {"enable_prefix_caching", "mamba_cache_mode"} | ({"block_size", "hash_block_size"} if scheduler else set())
+    if (
+        not isinstance(value, dict)
+        or set(value) != keys
+        or type(value["enable_prefix_caching"]) is not bool
+        or value["mamba_cache_mode"] not in {"none", "align", "all"}
+    ):
+        raise ValueError("runtime observation requires complete prefix-caching evidence")
+    if value["mamba_cache_mode"] == "all":
+        raise ValueError(
+            "mamba_cache_mode all is not modeled; run the probe with prefix caching off (none) or on (align)"
+        )
+    if value["mamba_cache_mode"] == "align" and not value["enable_prefix_caching"]:
+        raise ValueError("mamba_cache_mode align requires enable_prefix_caching=true")
+    if scheduler:
+        _positive(value["block_size"], "scheduler block size")
+        _positive(value["hash_block_size"], "scheduler hash block size")
+    return value
+
+
+def _phase_prefix_caching(
+    phase: str, workers: dict[tuple[int, int], dict[str, Any]], schedulers: dict[int, dict[str, Any]]
+) -> dict[str, Any] | None:
+    """The prefix-caching evidence of one phase, on which every rank of the phase agrees.
+
+    The hash block size comes from the scheduler. Every MambaSpec takes the mode of its cache
+    config (mamba/abstract.py:76), so each Mamba state group reports the phase's mode.
+    """
+    label = f"{phase} prefix-caching settings across ranks"
+    settings = [_prefix_caching_settings(record["cache"], scheduler=True) for _, record in sorted(schedulers.items())]
+    for value in settings[1:]:
+        _same(value, settings[0], label)
+    scheduled = settings[0]
+    shared = (
+        None if scheduled is None else {key: scheduled[key] for key in ("enable_prefix_caching", "mamba_cache_mode")}
+    )
+    for _, record in sorted(workers.items()):
+        _same(_prefix_caching_settings(record["cache"], scheduler=False), shared, label)
+    if scheduled is None:
+        return None
+    for record in workers.values():
+        for group in record["cache"]["groups"]:
+            state = group.get("state")
+            if group.get("kind") == "state" and isinstance(state, dict) and "mamba_cache_mode" in state:
+                _same(state["mamba_cache_mode"], scheduled["mamba_cache_mode"], f"{phase} Mamba cache mode")
+    return {
+        "enable_prefix_caching": scheduled["enable_prefix_caching"],
+        "mamba_cache_mode": scheduled["mamba_cache_mode"],
+        "hash_block_size_tokens": scheduled["hash_block_size"],
+    }
+
+
+def _mode_free(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Cache groups without the parts of a state group that follow the prefix-caching mode (ruling R-H).
+
+    A Mamba block holds the hybrid block in align mode and max_model_len in none mode
+    (models/config.py:663-675), and every MambaSpec records the mode (kv_cache_interface.py:1047).
+    """
+    result = copy.deepcopy(groups)
+    for group in result:
+        if group.get("kind") != "state":
+            continue
+        block = group.pop("block_size_tokens", None)
+        if isinstance(group.get("state"), dict):
+            group["state"].pop("mamba_cache_mode", None)
+        for spec in (group.get("layer_specs") or {}).values():
+            for key in [key for key, value in spec.items() if type(value) is int and value == block]:
+                del spec[key]
+    return result
+
+
 def _configuration(
     root: Path,
     label: str,
@@ -632,6 +886,8 @@ def _configuration(
         raise ValueError("runtime evidence requires every phase of the selected serving role")
     canonical_settings, canonical_geometry, canonical_hardware, normalized = None, None, None, None
     capacities, artifacts, launch_artifacts, runtime_artifacts, import_bindings = [], [], [], [], []
+    prefix_caching: dict[str, dict[str, Any] | None] = {}
+    geometry_differences: list[str] = []
     used_paths: set[str] = set()
     for phase in required_phases:
         result = phases[phase]
@@ -683,7 +939,10 @@ def _configuration(
                         "hardware across phases/ranks",
                     )
                 settings = copy.deepcopy(config)
-                settings["cache_config"].pop("enable_prefix_caching", None)
+                # Decision 4, rulings R-D and R-D+: these follow the phase's prefix-caching mode or
+                # the engine core. Provenance prefix_caching records the mode of every phase instead.
+                for name in runtime_memory._PHASE_CACHE_SETTINGS:
+                    settings["cache_config"].pop(name, None)
                 if canonical_settings is None:
                     canonical_settings = settings
                 else:
@@ -703,6 +962,7 @@ def _configuration(
             r["dp_rank"] for r in ranks["schedulers"]
         }:
             raise ValueError(f"{phase} worker/scheduler rank evidence is incomplete")
+        phase_geometry = None
         for (dp, tp), worker in sorted(workers.items()):
             scheduler = schedulers[dp]
             runtime_memory._validate_scheduler_config(worker, scheduler)
@@ -712,11 +972,26 @@ def _configuration(
             geometry = [
                 {key: value for key, value in group.items() if key != "pool_id"} for group in worker["cache"]["groups"]
             ]
+            # The ranks of one phase agree exactly. Another phase may differ only in the parts of a
+            # state group that follow the prefix-caching mode; the first phase's groups are kept.
+            if phase_geometry is None:
+                phase_geometry = geometry, groups
+            else:
+                _same(geometry, phase_geometry[0], "cache geometry across phases/ranks")
+                _same(groups, phase_geometry[1], "physical page cost across phases/ranks")
             if canonical_geometry is None:
                 canonical_geometry, normalized = geometry, groups
             else:
-                _same(geometry, canonical_geometry, "cache geometry across phases/ranks")
-                _same(groups, normalized, "physical page cost across phases/ranks")
+                _same(_mode_free(geometry), _mode_free(canonical_geometry), "cache geometry across phases/ranks")
+                _same(_mode_free(groups), _mode_free(normalized), "physical page cost across phases/ranks")
+                for group, first in zip(groups, normalized, strict=True):
+                    if group["block_size_tokens"] != first["block_size_tokens"]:
+                        difference = (
+                            f"{phase}: {group['name']} block_size_tokens "
+                            f"{group['block_size_tokens']} != {first['block_size_tokens']}"
+                        )
+                        if difference not in geometry_differences:
+                            geometry_differences.append(difference)
             capacities.append(
                 {
                     "phase": phase,
@@ -726,6 +1001,11 @@ def _configuration(
                     "kv_cache_bytes": accounting["initial_free_blocks"] * accounting["page_size_bytes"],
                 }
             )
+        prefix_caching[phase] = _phase_prefix_caching(phase, workers, schedulers)
+    if len({value is None for value in prefix_caching.values()}) > 1:
+        raise ValueError("runtime observation prefix-caching evidence across phases mismatch")
+    # Decision 3: the record holds the first collection phase of the role that this validation covers.
+    record_phase = next(item for item in collection_phases(launch.get("worker_type")) if item in required_phases)
     provenance = {
         "source": "runtime_observations",
         "observation_schema": OBSERVATION_SCHEMA,
@@ -735,6 +1015,8 @@ def _configuration(
         "runtime": bundle.manifest["runtime"],
         "launch": launch,
         "runtime_settings": canonical_settings,
+        "prefix_caching": {item: value for item, value in prefix_caching.items() if value is not None},
+        "phase_geometry_differences": geometry_differences,
         "rank_capacities": capacities,
         "launch_artifacts": launch_artifacts,
         "artifacts": artifacts,
@@ -758,6 +1040,7 @@ def _configuration(
             "kv_cache_bytes": min(value["kv_cache_bytes"] for value in capacities),
             "gpu_memory_utilization": float(collection["gpu_memory_utilization"]),
             "max_model_len": collection["max_model_len"],
+            **(prefix_caching[record_phase] or {}),
             "provenance": canonical_json(provenance),
         },
         "provenance": "Validated runtime shared-pool observations; minimum usable capacity across compatible phases "
