@@ -1689,8 +1689,30 @@ def test_legacy_bundle_imports_are_unchanged_by_the_state_mapping(tmp_path, pack
     provenance = result["provenance"]
     assert len(provenance["rank_capacities"]) == 8
     assert len(provenance["artifacts"]) == 12
-    assert provenance["prefix_caching"] == {}
-    assert provenance["phase_geometry_differences"] == []
+    # Ruling R-M: the provenance keeps the keys that 5bf93cb0 writes, because finalized campaigns compare the
+    # runtime memory provenance byte for byte.
+    assert not {"prefix_caching", "phase_geometry_differences"} & set(provenance)
+    assert (
+        set(provenance)
+        == set(json.loads(resources["runtime_memory"]["provenance"]))
+        == {
+            "source",
+            "observation_schema",
+            "configuration",
+            "attempt_id",
+            "bundle_sha256",
+            "runtime",
+            "launch",
+            "runtime_settings",
+            "rank_capacities",
+            "launch_artifacts",
+            "artifacts",
+            "runtime_artifacts",
+            "instrumentation",
+            "scope",
+            "observations_index",
+        }
+    )
     # Only enable_prefix_caching leaves the legacy settings, as before.
     assert set(provenance["runtime_settings"]["cache_config"]) == {
         "cache_dtype",

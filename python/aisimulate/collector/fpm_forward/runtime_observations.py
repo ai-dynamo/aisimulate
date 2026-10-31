@@ -1020,6 +1020,17 @@ def _configuration(
         raise ValueError("runtime observation prefix-caching evidence across phases mismatch")
     # Decision 3: the record holds the first collection phase of the role that this validation covers.
     record_phase = next(item for item in collection_phases(launch.get("worker_type")) if item in required_phases)
+    # Ruling R-M: only vLLM 0.31.0 evidence adds these keys. Its records carry prefix caching, which every
+    # layer-strided record must, and every phase agrees on that (checked above). The provenance of a vLLM 0.27.0
+    # or 0.28.0 import stays as it was, because finalized campaigns compare it byte for byte.
+    hybrid_evidence = (
+        {
+            "prefix_caching": {item: value for item, value in prefix_caching.items() if value is not None},
+            "phase_geometry_differences": geometry_differences,
+        }
+        if any(value is not None for value in prefix_caching.values())
+        else {}
+    )
     provenance = {
         "source": "runtime_observations",
         "observation_schema": OBSERVATION_SCHEMA,
@@ -1029,8 +1040,7 @@ def _configuration(
         "runtime": bundle.manifest["runtime"],
         "launch": launch,
         "runtime_settings": canonical_settings,
-        "prefix_caching": {item: value for item, value in prefix_caching.items() if value is not None},
-        "phase_geometry_differences": geometry_differences,
+        **hybrid_evidence,
         "rank_capacities": capacities,
         "launch_artifacts": launch_artifacts,
         "artifacts": artifacts,

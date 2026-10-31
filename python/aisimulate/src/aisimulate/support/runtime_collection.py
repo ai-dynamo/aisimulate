@@ -415,7 +415,9 @@ def verify_collection_runtime_bindings(request: SupportRequest, bindings: list[d
             capacity = actual["runtime_memory"].pop("kv_cache_bytes")
             if actual != expected:
                 raise ValueError("runtime cache layout or settings differ from the accepted probe")
-            if result["provenance"]["prefix_caching"].get(phase) != source["provenance"]["prefix_caching"].get(phase):
+            # vLLM 0.27.0 and 0.28.0 imports record no prefix-caching evidence (ruling R-M).
+            accepted = source["provenance"].get("prefix_caching", {}).get(phase)
+            if result["provenance"].get("prefix_caching", {}).get(phase) != accepted:
                 raise ValueError("runtime prefix-caching settings differ from the accepted probe")
             if capacity < bound:
                 raise ValueError(f"runtime usable capacity {capacity} is smaller than the accepted bound {bound}")
