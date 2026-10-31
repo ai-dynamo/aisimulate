@@ -118,11 +118,16 @@ counts the cases per dispatch. A backend whose run function takes more
 arguments than the shared case may declare `rows`: the run arguments for one
 case and its dispatch. Rows say how a case runs, never whether; a case with
 no row is an error. A field that enters the persisted key or changes the
-kernel belongs in the case or the dispatch, not in rows.
+kernel belongs in the case or the dispatch, not in rows. A row may be an
+`{id, params}` mapping (mHC): a run records it under its `id`, and
+`--plan-only` hashes that `id`.
 
 Planning imports no framework, so `--plan-only` runs on any CPU;
 `test_op_plans.py` checks that, and that `region_fields` stay a few
-categories (never a shape axis).
+categories (never a shape axis). Rows may build framework objects (MLA's
+torch or TensorRT-LLM dtypes); they are built only when the getter runs, so
+on a CPU `--plan-only` still counts those cases but reports `plan_hash: null`
+with the missing module.
 
 `tests/unit/collector/test_op_plans.py` runs over every entry, so moving an
 op onto a plan needs no new test: it checks the one-line getters, that the
