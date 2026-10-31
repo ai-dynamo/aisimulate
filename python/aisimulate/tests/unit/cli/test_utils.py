@@ -5,6 +5,7 @@
 Unit tests for CLI utility functions in utils.py.
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pandas as pd
@@ -547,3 +548,296 @@ class TestMergeExperimentResultsByMode:
         assert not merged_configs["agg"].empty
         assert len(merged_configs["agg"]) == 1
         assert merged_throughputs["agg"] == 120.0
+
+
+@pytest.mark.parametrize("load_target", [{"target_request_rate": 1.0}, {"target_concurrency": 1.0}])
+@pytest.mark.parametrize("gpu_cap", [None, 4])
+@pytest.mark.parametrize("multiple_backends", [False, True])
+def test_default_load_match_keeps_minimum_gpu_ranking(monkeypatch, load_target, gpu_cap, multiple_backends):
+    from aisimulate.legacy_cli import main as cli_main
+
+    monkeypatch.setattr(cli_main, "log_final_summary", lambda **kwargs: None)
+    tasks = {}
+    for name, mode, gpus, throughput, capacity in [
+        ("cheap", "agg", 2, 100.0, 1.0),
+        ("fast", "agg", 8, 120.0, 2.0),
+        ("disagg", "disagg", 4, 110.0, 1.0),
+    ]:
+        if name == "fast" and not multiple_backends:
+            continue
+        task = MagicMock(
+            primary_backend_name=name,
+            serving_mode=mode,
+            total_gpus=gpus,
+            tpot=30.0,
+            request_latency=None,
+        )
+        task.to_yaml.return_value = "test config"
+        task.run.return_value = pd.DataFrame(
+            {
+                "parallel": [f"tp{gpus}"],
+                "(d)parallel": [f"tp{gpus}"],
+                "tpot": [25.0],
+                "tokens/s/user": [40.0],
+                "tokens/s/gpu": [throughput],
+                "seq/s": [capacity],
+                "concurrency": [capacity],
+                "num_total_gpus": [gpus],
+            }
+        )
+        tasks[name] = task
+
+    chosen, configs, _, scores, _, _ = cli_main._execute_tasks(
+        tasks, mode="default", top_n=1, max_total_gpus=gpu_cap, **load_target
+    )
+
+    # Both agg options meet the same load/SLA. One replica needs 2 GPUs versus
+    # 8 GPUs, so a faster per-GPU rate cannot justify the more expensive one.
+    agg_key = "agg" if multiple_backends else "cheap"
+    assert configs[agg_key].iloc[0]["total_gpus_needed"] == 2
+    if multiple_backends:
+        assert configs[agg_key].iloc[0]["backend"] == "cheap"
+    assert scores[agg_key] == 0.5
+    # An exact-budget disagg fit must use the same inverse-GPU units as agg.
+    assert scores["disagg"] == 0.25
+    assert chosen == agg_key
+
+
+def test_default_without_load_target_still_chooses_throughput(monkeypatch):
+    from aisimulate.legacy_cli import main as cli_main
+
+    monkeypatch.setattr(cli_main, "log_final_summary", lambda **kwargs: None)
+    tasks = {}
+    for mode, throughput in (("agg", 100.0), ("disagg", 200.0)):
+        for backend in range(2):
+            task = MagicMock(
+                primary_backend_name=f"backend{backend}",
+                serving_mode=mode,
+                total_gpus=4,
+                tpot=30.0,
+                request_latency=None,
+            )
+            task.to_yaml.return_value = "test config"
+            task.run.return_value = pd.DataFrame(
+                {
+                    "parallel": ["shared"],
+                    "(d)parallel": ["shared"],
+                    "tpot": [25.0],
+                    "tokens/s/user": [40.0],
+                    "tokens/s/gpu": [throughput - backend * 5.0],
+                    "num_total_gpus": [2],
+                }
+            )
+            tasks[f"{mode}_{backend}"] = task
+
+    chosen, _, _, scores, _, _ = cli_main._execute_tasks(tasks, mode="default", top_n=1)
+
+    assert scores == {"agg": 100.0, "disagg": 200.0}
+    assert chosen == "disagg"
+
+
+@pytest.mark.parametrize("load_target", ["target_request_rate", "target_concurrency"])
+@pytest.mark.parametrize("multiple_backends", [False, True])
+@pytest.mark.parametrize(
+    "scenario, expected_chosen, expected_scores",
+    [
+        ("full_agg", "agg", {"agg": 0.5, "disagg": 75.0}),
+        ("full_disagg", "disagg", {"agg": 75.0, "disagg": 0.5}),
+        ("all_capped", "agg", {"agg": 100.0, "disagg": 75.0}),
+        ("empty_agg", "disagg", {"agg": 0.0, "disagg": 75.0}),
+        ("all_empty", "none", {"agg": 0.0, "disagg": 0.0}),
+    ],
+)
+def test_load_match_cross_mode_prefers_full_target(
+    monkeypatch, load_target, multiple_backends, scenario, expected_chosen, expected_scores
+):
+    from aisimulate.legacy_cli import main as cli_main
+
+    if scenario != "all_empty":
+        monkeypatch.setattr(cli_main, "log_final_summary", lambda **kwargs: None)
+    tasks = {}
+    for mode in ("agg", "disagg"):
+        for backend in range(2 if multiple_backends else 1):
+            full_target = scenario == f"full_{mode}"
+            gpus = 2 if full_target or (scenario == "all_capped" and mode == "agg") else 3
+            capacity = 1.0 if full_target else 0.1
+            if backend and full_target:
+                # A capped backend gives the merged full-target row a null
+                # load_served_pct column; null still means no fallback.
+                gpus, capacity = 3, 0.1
+            columns = {
+                "parallel": ["shared"],
+                "(d)parallel": ["shared"],
+                "tpot": [25.0],
+                "tokens/s/user": [40.0],
+                "tokens/s/gpu": [100.0 - backend * 10.0],
+                "seq/s": [capacity],
+                "concurrency": [capacity],
+                "num_total_gpus": [gpus],
+            }
+            if scenario == "all_empty" or (scenario == "empty_agg" and mode == "agg"):
+                # A successful sweep can still have no load-match candidate.
+                del columns["seq/s" if load_target == "target_request_rate" else "concurrency"]
+            task = MagicMock(
+                primary_backend_name=f"backend{backend}",
+                serving_mode=mode,
+                total_gpus=4,
+                tpot=30.0,
+                request_latency=None,
+            )
+            task.to_yaml.return_value = "test config"
+            task.run.return_value = pd.DataFrame(columns)
+            name = f"{mode}_{backend}" if multiple_backends else mode
+            tasks[name] = task
+
+    chosen, configs, _, scores, _, _ = cli_main._execute_tasks(
+        tasks, mode="default", top_n=1, max_total_gpus=4, **{load_target: 1.0}
+    )
+
+    # Scores retain their documented units; a full-target 0.5 must beat a
+    # capped 75, while all-capped modes compare throughput (100 beats 75).
+    assert scores == expected_scores
+    if scenario == "all_empty":
+        assert all(frame.empty for frame in configs.values())
+    elif scenario == "empty_agg":
+        assert configs["agg"].empty
+    assert chosen == expected_chosen
+
+
+@pytest.mark.parametrize("mode", ["agg", "disagg"])
+@pytest.mark.parametrize("load_target", ["target_request_rate", "target_concurrency"])
+@pytest.mark.parametrize(
+    "target, gpu_cap, request_latency, expected_backends, expected_gpus, expected_score",
+    [
+        (1.0, None, None, ["cheap", "fast"], [2, 4], 0.5),
+        (1.0, 3, None, ["cheap"], [2], 0.5),
+        (1.0, 2, None, ["cheap"], [2], 0.5),
+        (10.0, 4, None, ["fast", "cheap"], [4, 4], 120.0),
+        (1.0, None, 700.0, ["cheap"], [2], 0.5),
+    ],
+)
+def test_merge_load_match_preserves_constraints_and_backend_choices(
+    mode, load_target, target, gpu_cap, request_latency, expected_backends, expected_gpus, expected_score
+):
+    tasks = {}
+    best_configs = {}
+    for backend, gpus, throughput, capacity, latency in [
+        ("cheap", 2, 100.0, 1.0, 500.0),
+        ("fast", 4, 120.0, 2.0, 1000.0),
+    ]:
+        task = SimpleNamespace(
+            serving_mode=mode,
+            primary_backend_name=backend,
+            tpot=30.0,
+            request_latency=request_latency,
+        )
+        tasks[backend] = task
+        best_configs[backend] = pd.DataFrame(
+            {
+                # Identical parallel labels from different backends are distinct choices.
+                "parallel": ["shared"],
+                "(d)parallel": ["shared"],
+                "tpot": [25.0],
+                "request_latency": [latency],
+                "tokens/s/gpu": [throughput],
+                "seq/s": [capacity],
+                "concurrency": [capacity],
+                "num_total_gpus": [gpus],
+            }
+        )
+
+    configs, scores, _, _ = merge_experiment_results_by_mode(
+        tasks,
+        best_configs,
+        {},
+        {},
+        top_n=2,
+        max_total_gpus=gpu_cap,
+        **{load_target: target},
+    )
+
+    assert configs[mode]["backend"].tolist() == expected_backends
+    assert configs[mode]["total_gpus_needed"].tolist() == expected_gpus
+    assert scores[mode] == expected_score
+
+
+@pytest.mark.parametrize("load_target", ["target_request_rate", "target_concurrency"])
+@pytest.mark.parametrize("multiple_backends", [False, True])
+@pytest.mark.parametrize("sla_fallback_fits_load", [False, True])
+@pytest.mark.parametrize("gpu_cap", [0, 1, 4])
+def test_load_match_prefers_sla_compliant_partial_load(
+    monkeypatch, load_target, multiple_backends, sla_fallback_fits_load, gpu_cap
+):
+    from aisimulate.legacy_cli import main as cli_main
+
+    monkeypatch.setattr(cli_main, "log_final_summary", lambda **kwargs: None)
+    tasks = {}
+    for mode in ("agg", "disagg"):
+        for backend in range(2 if multiple_backends else 1):
+            capacity = (10.0 if sla_fallback_fits_load else 1.0) if mode == "agg" else 3.0
+            task = MagicMock(
+                primary_backend_name=f"backend{backend}",
+                serving_mode=mode,
+                total_gpus=4,
+                tpot=30.0,
+                request_latency=None,
+            )
+            task.to_yaml.return_value = "test config"
+            task.run.return_value = pd.DataFrame(
+                {
+                    "parallel": ["shared"],
+                    "(d)parallel": ["shared"],
+                    "tpot": [40.0 if mode == "agg" else 25.0],
+                    "tokens/s/user": [40.0],
+                    "tokens/s/gpu": [200.0 if mode == "agg" else 150.0],
+                    "seq/s": [capacity],
+                    "concurrency": [capacity],
+                    "num_total_gpus": [2],
+                }
+            )
+            tasks[f"{mode}_{backend}" if multiple_backends else mode] = task
+
+    chosen, configs, _, scores, _, _ = cli_main._execute_tasks(
+        tasks, mode="default", top_n=1, max_total_gpus=gpu_cap, **{load_target: 10.0}
+    )
+
+    if gpu_cap < 2:
+        assert chosen == "none"
+        assert configs == {}
+        return
+    assert chosen == "disagg"
+    assert all((frame["total_gpus_needed"] <= 4).all() for frame in configs.values())
+    assert configs["disagg"].iloc[0]["sla_satisfied"]
+    assert not configs["disagg"].iloc[0]["load_satisfied"]
+    assert not configs["agg"].iloc[0]["sla_satisfied"]
+    assert configs["agg"].iloc[0]["load_satisfied"] == sla_fallback_fits_load
+    assert scores["agg"] == 200.0
+
+
+@pytest.mark.parametrize("load_target", ["target_request_rate", "target_concurrency"])
+def test_merge_load_match_recomputes_fallback_state(load_target):
+    tasks = {
+        "backend": SimpleNamespace(serving_mode="agg", primary_backend_name="backend", tpot=30.0, request_latency=None)
+    }
+    stale = pd.DataFrame(
+        {
+            "tpot": [25.0],
+            "tokens/s/gpu": [100.0],
+            "seq/s": [10.0],
+            "concurrency": [10.0],
+            "num_total_gpus": [2],
+            "load_served_pct": [10.0],
+            "sla_satisfied": [False],
+            "load_satisfied": [False],
+            "gpu_budget_satisfied": [False],
+        }
+    )
+
+    configs, scores, _, _ = merge_experiment_results_by_mode(
+        tasks, {"backend": stale}, {}, {}, top_n=1, max_total_gpus=4, **{load_target: 10.0}
+    )
+
+    row = configs["agg"].iloc[0]
+    assert row["sla_satisfied"] and row["load_satisfied"] and row["gpu_budget_satisfied"]
+    assert "load_served_pct" not in row.index
+    assert scores["agg"] == 0.5
