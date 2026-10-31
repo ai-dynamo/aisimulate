@@ -1044,3 +1044,34 @@ def test_finalize_keeps_power_disabled_schema_column_free(tmp_path):
     [parquet] = finalize_perf_files([perf])
 
     assert pq.read_table(parquet).column_names == ["shape", "latency"]
+
+
+def test_finalize_merge_accepts_large_string_existing_table_and_keeps_its_types(tmp_path):
+    """Existing large_string identity columns (pandas 3 merge output) must merge
+    with a string-typed staging CSV, keep every existing row and keep the
+    existing storage types."""
+    import pyarrow as pa
+
+    perf = tmp_path / "gemm_perf.txt"
+    parquet = perf.with_suffix(".parquet")
+    existing = pa.table({"shape": pa.array(["s1", "s2"], type=pa.large_string()), "latency": pa.array([1.0, 2.0])})
+    pq.write_table(existing, parquet)
+
+    perf.write_text("shape,latency\ns3,3.0\n")
+    finalize_perf_files([perf])
+
+    table = pq.read_table(parquet)
+    assert {r["shape"]: r["latency"] for r in table.to_pylist()} == {"s1": 1.0, "s2": 2.0, "s3": 3.0}
+    assert str(table.schema.field("shape").type) == "large_string"
+
+
+def test_finalize_merge_keeps_string_existing_types(tmp_path):
+    perf = tmp_path / "gemm_perf.txt"
+    parquet = perf.with_suffix(".parquet")
+    perf.write_text("shape,latency\ns1,1.0\n")
+    finalize_perf_files([perf])
+    perf.write_text("shape,latency\ns2,2.0\n")
+    finalize_perf_files([perf])
+    table = pq.read_table(parquet)
+    assert sorted(r["shape"] for r in table.to_pylist()) == ["s1", "s2"]
+    assert str(table.schema.field("shape").type) == "string"

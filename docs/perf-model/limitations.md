@@ -44,6 +44,71 @@ which contributes to the decoder context but not the encoder embeddings.
 For example, a 70×70 image with patch size 14 and merge size 2 gives 36 encoder
 patches, 9 embeddings, and 12 context tokens.
 
+## Per-layer checkpoint precision
+
+For Nemotron-H, Qwen3.5 (including Qwen3.6 and Qwen3.8) and Gemma 4, the SDK
+reads the precision of each GEMM projection and of the routed experts from the
+checkpoint's per-layer metadata (`quantized_layers`, `config_groups`,
+exclusions). The result depends on the checkpoint and not on the model name.
+Other model families keep one precision per op kind, with family-specific BF16
+exclusions.
+
+| Family | Projections priced per layer |
+| --- | --- |
+| Nemotron-H | Mamba `in_proj` and `out_proj`, attention QKV and output, dense MLP, shared experts, `fc1`/`fc2` latent projections |
+| Qwen3.5, 3.6, 3.8 | GDN `in_proj_qkvz`, `in_proj_ba` and `out_proj`, attention QKV and output, dense MLP, shared experts |
+| Gemma 4 | sliding and global attention QKV and output, shared dense MLP |
+
+All three families also price their routed experts per layer.
+
+- A projection that a MIXED_PRECISION listing leaves out is BF16, the rule
+  vLLM and SGLang apply. Metadata that is not a MIXED_PRECISION listing leaves
+  it on the global mode.
+- An excluded projection or routed-expert layer is BF16 in every metadata
+  format. An exclusion of a parent module, such as one decoder layer, also
+  excludes every projection inside it.
+- On non-Blackwell systems, an NVFP4 projection or expert runs weight-only
+  (`nvfp4_wo`), as the global NVFP4 mode does.
+- A `W4A16_NVFP4` projection is priced as `w4a16_nvfp4`: NVFP4 weights with
+  BF16 activations. Measured vLLM `w4a16_nvfp4` GEMM rows exist only for the
+  Nemotron 3.5 Lightning shared-expert shapes, on b200_sxm and gb200 at vLLM
+  0.30.0 and on b200_sxm at 0.31.0. Those rows measure the FlashInfer CuTe-DSL
+  W4A16 kernel. vLLM 0.24.0 runs Marlin, and the vLLM source selects Marlin
+  below SM100 (not measured). On any other system, version or shape, strict
+  SILICON prediction fails for such a projection, and HYBRID estimates it
+  from another quantization profile.
+- Routed experts of a ModelOpt export that are listed `W4A16_NVFP4` are
+  priced as `w4a16_nvfp4`, in uniform and mixed listings. The vLLM source
+  runs them weight-only on Marlin. The vLLM MoE collector has a
+  `w4a16_nvfp4` mode for Nemotron 3.5 Lightning and Qwen3.6-35B-A3B-NVFP4,
+  but no MoE table has `w4a16_nvfp4` rows yet. Strict SILICON prediction
+  fails for them, and HYBRID estimates them from another quantization
+  profile.
+
+If layers give a projection or the routed experts different precisions, the
+SDK prices each precision for its own count of layers. The MoE dispatch ops
+follow the routed-expert split. Loading fails when one module path has
+conflicting or unsupported algorithms, or when the checkpoint modules that one
+op fuses resolve to different modes (for example Q, K and V, or Qwen's
+`in_proj_qkv` and `in_proj_z`). The comparison uses each module's mode after
+the exclusion and unlisted rules. For example, an excluded Q and unlisted K and
+V in a targets-only export are all BF16. The MTP layers use the decoder layers'
+precision.
+
+Known limits:
+
+- The routed-expert precision of a layer comes from expert 0 (Nemotron-H,
+  Gemma 4) or from the listed experts block (Qwen). Different precisions for
+  experts of one layer are not modeled.
+- An FP8 projection is dynamic FP8 only when the global mode is dynamic FP8.
+  Otherwise it is static FP8. A block-scaled FP8 config group (`strategy:
+  block` or `block_structure`) prices its projections and experts as
+  `fp8_block`.
+
+An explicit `gemm_quant_mode` prices all projections with one mode. An
+explicit `moe_quant_mode` prices all routed experts with one mode. Metadata
+without per-layer information keeps the global modes.
+
 ## Other scoped boundaries
 
 - [Support](support-matrix.md) distinguishes engine queries from Replay and accuracy.

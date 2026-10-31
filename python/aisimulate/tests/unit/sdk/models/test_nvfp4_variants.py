@@ -83,7 +83,7 @@ def test_lightning_nvfp4_loads_bundled_quant_config_offline(monkeypatch):
 
         assert model.model_family == "NEMOTRONH"
         assert model_config.gemm_quant_mode == common.GEMMQuantMode.fp8_static
-        assert model_config.moe_quant_mode == common.MoEQuantMode.nvfp4
+        assert model_config.moe_quant_mode == common.MoEQuantMode.w4a16_nvfp4
         assert model_config.kvcache_quant_mode == common.KVCacheQuantMode.fp8
     finally:
         sdk_utils.get_model_config_from_model_path.cache_clear()
@@ -262,12 +262,13 @@ def test_qwen36_preserves_explicit_global_gemm_override(hf_id, ffn_name, gemm_mo
 @pytest.mark.parametrize(
     ("hf_id", "backend", "moe_mode"),
     [
-        # vLLM has no weight-only NVFP4 MoE lane: the compressed-tensors
-        # dispatch quantizes activations at run time and serves the w4a4
-        # FP4-tensor-core kernels (collected kernel_source
-        # vllm_compressedtensorsw4a4nvfp4moe_*), so the W4A16_NVFP4 storage
-        # label resolves to the nvfp4 execution mode there (AIC-1748).
-        ("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", "vllm", common.MoEQuantMode.nvfp4),
+        # Lightning is a ModelOpt export: vLLM builds ModelOptNvFp4FusedMoE with
+        # use_a16 for its W4A16_NVFP4 experts and runs them weight-only on
+        # Marlin, so the label mode is kept (the AIC-1748 w4a4 remap covers
+        # non-ModelOpt checkpoints only).
+        ("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", "vllm", common.MoEQuantMode.w4a16_nvfp4),
+        # Nano's experts are W4A4 NVFP4, so its vLLM lane is unchanged.
+        ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4", "vllm", common.MoEQuantMode.nvfp4),
         # Qwen3.6 stays on the weight-only profile even on vLLM: it is served
         # through HYBRID's calibrated XPROFILE relation by design (the remap
         # is scoped to architectures with PROVEN w4a4 vLLM dispatch).
@@ -283,6 +284,24 @@ def test_w4a16_nvfp4_label_resolves_to_the_backend_execution_lane(hf_id, backend
     model_config = _model_config()
     get_model(hf_id, model_config, backend_name=backend)
     assert model_config.moe_quant_mode == moe_mode
+
+
+@pytest.mark.parametrize(
+    ("raw_config", "expected"),
+    [
+        ({"quantization_config": {"quant_method": "compressed-tensors"}}, common.MoEQuantMode.nvfp4),
+        (None, common.MoEQuantMode.nvfp4),
+        ({"hf_quant_config": {"quantization": {"quant_algo": "MIXED_PRECISION"}}}, common.MoEQuantMode.w4a16_nvfp4),
+        ({"quantization_config": {"quant_method": "modelopt"}}, common.MoEQuantMode.w4a16_nvfp4),
+        ({"quantization_config": {"quant_method": "modelopt_mixed"}}, common.MoEQuantMode.w4a16_nvfp4),
+    ],
+)
+def test_vllm_w4a4_remap_skips_modelopt_exports(raw_config, expected):
+    from aisimulate_core.sdk.models.helpers import resolve_vllm_moe_execution_mode
+
+    mode = common.MoEQuantMode.w4a16_nvfp4
+    assert resolve_vllm_moe_execution_mode(mode, "vllm", "NemotronHForCausalLM", raw_config) == expected
+    assert resolve_vllm_moe_execution_mode(mode, "trtllm", "NemotronHForCausalLM", raw_config) == mode
 
 
 def test_explicit_w4a16_nvfp4_moe_mode_wins_over_the_vllm_remap():
@@ -309,13 +328,15 @@ def test_qwen35_nvfp4_exclusions_keep_attention_and_shared_experts_bf16():
     assert by_name["context_gdn_moe"]._quant_mode == common.MoEQuantMode.nvfp4
 
 
-def test_gemma4_exclusions_keep_attention_and_mlp_bf16():
+def test_gemma4_exclusions_keep_attention_and_mlp_bf16_but_not_routed_experts():
     model = get_model("nvidia/Gemma-4-26B-A4B-NVFP4", _model_config(), backend_name="trtllm")
     by_name = {op._name: op for op in model.context_ops + model.generation_ops}
 
     assert by_name["context_swa_qkv_gemm"]._quant_mode == common.GEMMQuantMode.bfloat16
     assert by_name["context_swa_shared_mlp_gate_up_gemm"]._quant_mode == common.GEMMQuantMode.bfloat16
-    assert by_name["context_swa_moe"]._quant_mode == common.MoEQuantMode.bfloat16
+    # The checkpoint excludes layers.N.mlp* (the shared dense MLP) but quantizes the routed experts
+    # (layers.N.experts.E.* carry NVFP4 weight_scale/weight_scale_2/input_scale tensors).
+    assert by_name["context_swa_moe"]._quant_mode == common.MoEQuantMode.nvfp4
 
 
 def test_kimi_k26_exclusions_keep_attention_and_shared_experts_bf16():

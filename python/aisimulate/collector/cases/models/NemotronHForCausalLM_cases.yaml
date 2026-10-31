@@ -70,10 +70,7 @@ model_case_values:
     # verified against the published checkpoint config); a separate row
     # keeps its quant-distinct identity out of the BF16 row
     # (case_authoring.md: quant-sensitive checkpoint artifacts use separate
-    # model rows even when geometry is identical). vLLM's pinned FlashInfer
-    # NVFP4 path is limited to top-k <= 10 (see the Super/Ultra rows below,
-    # topk=22); this shape's topk=6 is under that limit, so the topk
-    # restriction does not apply here. AIC-1743/AIC-1748.
+    # model rows even when geometry is identical). AIC-1743/AIC-1748.
     - model_path: nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4
       hidden_size: 2688
       inter_size: 1856
@@ -96,15 +93,14 @@ model_case_values:
         trtllm:
           allowed_modes: [nvfp4]
         vllm:
-          # Not the topk restriction (topk=6 is fine). vLLM's moe getter
-          # additionally needs a packaged HF config
-          # (collect_moe.py::_load_model_moe_config) at
-          # model_configs/nvidia--NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4_config.json
-          # -- outside collector/'s module boundary, so it was added as its
-          # own human-approved commit (layer_permissions.md) rather than
-          # bundled with this row. AIC-1743/AIC-1748.
-          allowed_modes: [nvfp4]
+          # The checkpoint's routed experts are W4A16_NVFP4 (weight-only), so
+          # vLLM serves them through ModelOptNvFp4FusedMoE with BF16
+          # activations on Marlin, the distinct w4a16_nvfp4 mode, not W4A4 nvfp4.
+          allowed_modes: [w4a16_nvfp4]
     - model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
+      # vLLM routes experts through moe_latent_size=1024 (next row), so this
+      # outer-width row is SGLang/TRT-LLM only.
+      frameworks: [sglang, trtllm]
       hidden_size: 4096
       inter_size: 2688
       topk: 22
@@ -125,11 +121,6 @@ model_case_values:
           allowed_modes: [nvfp4]
         trtllm:
           allowed_modes: [nvfp4]
-        vllm:
-          # vLLM's pinned FlashInfer NVFP4 path is limited to top-k <= 10;
-          # this row's topk=22 exceeds it (the 30B/Lightning shape's topk=6
-          # does not — see that row above). AIC-1743/AIC-1748.
-          allowed_modes: []
     - model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
       hidden_size: 1024
       inter_size: 2688
@@ -152,9 +143,9 @@ model_case_values:
         trtllm:
           allowed_modes: [nvfp4]
         vllm:
-          # Same topk=22 > 10 vLLM FlashInfer NVFP4 restriction as above.
-          # AIC-1743/AIC-1748.
-          allowed_modes: []
+          # vLLM routes experts through moe_latent_size=1024. The top-k=22
+          # kernel limit is observed at collection time, not predicted here.
+          allowed_modes: [nvfp4]
     # vLLM routes Nemotron-H experts through moe_latent_size=1024.
     - model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8
       frameworks: [vllm]
@@ -270,9 +261,7 @@ model_case_values:
         nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
       framework_quantization:
         vllm:
-          # Same topk=22 > 10 vLLM FlashInfer NVFP4 restriction as the Super
-          # rows above. AIC-1743/AIC-1748.
-          allowed_modes: []
+          allowed_modes: [nvfp4]
   mamba2:
     - model_path: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
       model_aliases:
@@ -312,6 +301,16 @@ model_case_values:
       head_dim: 64
       n_groups: 8
       chunk_size: 128
+  gemm:
+    # Lightning shared-expert projections (hidden 2688, shared intermediate
+    # 3712) at TP1/4/8. hf_quant_config.json lists them W4A16_NVFP4, and the
+    # Nemotron-H model queries them at exactly these off-grid widths.
+    - model_path: nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4
+      output_feature_sizes: [3712, 928, 464]
+      input_feature_sizes: [2688]
+    - model_path: nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4
+      output_feature_sizes: [2688]
+      input_feature_sizes: [3712, 928, 464]
 
 all_frameworks_op_cases:
   moe:

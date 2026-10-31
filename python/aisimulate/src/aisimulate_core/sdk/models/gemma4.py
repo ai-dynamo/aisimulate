@@ -7,7 +7,45 @@ import aisimulate_core.sdk.operations as ops
 from aisimulate_core.sdk import common
 from aisimulate_core.sdk.models.base import BaseModel, register_model
 from aisimulate_core.sdk.models.blocks.vit import build_gemma4_vision_encoder_ops
-from aisimulate_core.sdk.models.helpers import mtp_scale_factor, quant_exclude_patterns
+from aisimulate_core.sdk.models.checkpoint_precision import (
+    bucket_gemms,
+    checkpoint_precision,
+    decoder_paths,
+    moe_buckets,
+    moe_modes_by_kind,
+    projection_modes,
+)
+from aisimulate_core.sdk.models.helpers import mtp_scale_factor, resolve_vllm_moe_execution_mode
+
+_LAYER_PATHS = decoder_paths()
+# Op-name prefix (after the phase) of each layer kind.
+_KIND_PREFIX = {"sliding_attention": "swa", "full_attention": "global"}
+# Routed-expert precision of a MoE layer, read from expert 0 (checkpoint layers.N.experts.E.*).
+_EXPERT_MODULES = {
+    "sliding_attention": ("experts.0.gate_proj", "experts.0.down_proj"),
+    "full_attention": ("experts.0.gate_proj", "experts.0.down_proj"),
+}
+
+
+def _layer_projections(attention_k_eq_v: bool) -> dict:
+    """Checkpoint modules priced by each GEMM op (keyed by op name without its phase), by layer type.
+
+    Global layers reuse K as V when ``attention_k_eq_v`` is set, so they have no v_proj.
+    """
+
+    def layer(prefix: str, qkv: tuple) -> dict:
+        return {
+            f"{prefix}_qkv_gemm": qkv,
+            f"{prefix}_proj_gemm": ("self_attn.o_proj",),
+            f"{prefix}_shared_mlp_gate_up_gemm": ("mlp.gate_proj", "mlp.up_proj"),
+            f"{prefix}_shared_mlp_down_gemm": ("mlp.down_proj",),
+        }
+
+    qkv = ("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj")
+    return {
+        "sliding_attention": layer("swa", qkv),
+        "full_attention": layer("global", qkv[:2] if attention_k_eq_v else qkv),
+    }
 
 
 @register_model("GEMMA4MIX")
@@ -62,6 +100,7 @@ class Gemma4MixModel(BaseModel):
             backend_name=backend_name,
             raw_config=model_info["raw_config"],
             allow_checkpoint_split=not model_info["gemm_quant_mode_is_explicit"],
+            allow_moe_split=not model_info["moe_quant_mode_is_explicit"],
         )
         model.set_gemma4_config(model_info["extra_params"])
         return model
@@ -75,18 +114,17 @@ class Gemma4MixModel(BaseModel):
         backend_name: str = "",
         raw_config: dict | None = None,
         allow_checkpoint_split: bool = True,
+        allow_moe_split: bool = True,
     ) -> None:
         super().__init__(*args)
-        exclusions = tuple(str(pattern).lower() for pattern in quant_exclude_patterns(raw_config or {}))
-        self._projection_gemm_quant_mode = self.config.gemm_quant_mode
-        self._shared_mlp_gemm_quant_mode = self.config.gemm_quant_mode
-        self._routed_moe_quant_mode = self.config.moe_quant_mode
-        if allow_checkpoint_split:
-            if any("self_attn" in pattern for pattern in exclusions):
-                self._projection_gemm_quant_mode = common.GEMMQuantMode.bfloat16
-            if any(".mlp" in pattern for pattern in exclusions):
-                self._shared_mlp_gemm_quant_mode = common.GEMMQuantMode.bfloat16
-                self._routed_moe_quant_mode = common.MoEQuantMode.bfloat16
+        # Checkpoint metadata prices each projection and routed-expert layer at its own
+        # precision once the layer types are known (set_gemma4_config); an explicit mode
+        # prices them all with one. See checkpoint_precision.
+        self._raw_config = raw_config or {}
+        self._allow_checkpoint_split = allow_checkpoint_split
+        self._allow_moe_split = allow_moe_split
+        self._projection_quant_modes: dict = {}
+        self._moe_quant_modes: dict = {}
         # Framework backend, threaded to MoEDispatch (its comm flavor is a
         # constructor field since the pyo3 op unification).
         self._backend_name = backend_name
@@ -139,6 +177,30 @@ class Gemma4MixModel(BaseModel):
             if lt not in ("sliding_attention", "full_attention"):
                 raise ValueError(f"Gemma4MixConfig layer {i} has invalid type {lt!r}")
         self._gemma4_config = cfg
+        checkpoint = checkpoint_precision(self._raw_config)
+        if self._allow_checkpoint_split:
+            self._projection_quant_modes = projection_modes(
+                checkpoint,
+                cfg.layer_types,
+                _layer_projections(cfg.attention_k_eq_v),
+                _LAYER_PATHS,
+                self.config.gemm_quant_mode,
+                self.config.system,
+            )
+        if self._allow_moe_split and not self._is_dense:
+            by_kind = moe_modes_by_kind(
+                checkpoint,
+                cfg.layer_types,
+                _EXPERT_MODULES,
+                _LAYER_PATHS,
+                self.config.moe_quant_mode,
+                self.config.system,
+                lambda mode: resolve_vllm_moe_execution_mode(
+                    mode, self._backend_name, self.architecture, self._raw_config
+                ),
+            )
+            # Routed-expert buckets per layer kind; a kind on the global mode has none.
+            self._moe_quant_modes = {_KIND_PREFIX[kind]: buckets for kind, buckets in by_kind.items()}
         self._build_context_ops()
         self._build_generation_ops()
         self.visual_context_ops = []
@@ -228,13 +290,20 @@ class Gemma4MixModel(BaseModel):
             "dense_inter_per_tp": self._inter_size // tp_size,
         }
 
+    def _gemm(self, name: str, count, n: int, k: int, quant_mode, **kwargs) -> list:
+        """A projection GEMM as one op per checkpoint precision (bucket key: ``name`` without its phase)."""
+        buckets = self._projection_quant_modes.get(name.split("_", 1)[1])
+        return bucket_gemms(name, count, n, k, quant_mode, buckets, **kwargs)
+
     def _shared_mlp_ops(self, prefix: str, count: float, h: int, dense_inter_per_tp: int) -> list:
         """Shared dense MLP (Gemma4TextMLP): gated SwiGLU. Runs on every layer."""
-        gemm_q = self._shared_mlp_gemm_quant_mode
+        gemm_q = self.config.gemm_quant_mode
         return [
-            ops.GEMM(f"{prefix}_shared_mlp_gate_up_gemm", count, 2 * dense_inter_per_tp, h, gemm_q),
+            *self._gemm(f"{prefix}_shared_mlp_gate_up_gemm", count, 2 * dense_inter_per_tp, h, gemm_q),
             ops.ElementWise(f"{prefix}_shared_mlp_act", count, 2 * dense_inter_per_tp, dense_inter_per_tp, 0.8),
-            ops.GEMM(f"{prefix}_shared_mlp_down_gemm", count, h, dense_inter_per_tp, gemm_q, low_precision_input=True),
+            *self._gemm(
+                f"{prefix}_shared_mlp_down_gemm", count, h, dense_inter_per_tp, gemm_q, low_precision_input=True
+            ),
         ]
 
     def _moe_ops(
@@ -260,46 +329,52 @@ class Gemma4MixModel(BaseModel):
             else []
         )
         return router_ops + [
-            ops.MoEDispatch(
-                f"{prefix}_moe_pre_dispatch",
-                count,
-                h,
-                self._topk,
-                self._num_experts,
-                moe_tp,
-                moe_ep,
-                attn_dp,
-                True,
-                quant_mode=moe_q,
-                backend=self._backend_name,
-            ),
-            ops.MoE(
-                f"{prefix}_moe",
-                count,
-                h,
-                self._moe_inter_size,
-                self._topk,
-                self._num_experts,
-                moe_tp,
-                moe_ep,
-                moe_q,
-                wl_dist,
-                attn_dp,
-                moe_kernel_source=self.config.moe_kernel_source,
-            ),
-            ops.MoEDispatch(
-                f"{prefix}_moe_post_dispatch",
-                count,
-                h,
-                self._topk,
-                self._num_experts,
-                moe_tp,
-                moe_ep,
-                attn_dp,
-                False,
-                quant_mode=moe_q,
-                backend=self._backend_name,
-            ),
+            op
+            for bucket_mode, bucket_count in moe_buckets(
+                count, moe_q, self._moe_quant_modes.get(prefix.split("_", 1)[1])
+            )
+            for op in (
+                ops.MoEDispatch(
+                    f"{prefix}_moe_pre_dispatch",
+                    bucket_count,
+                    h,
+                    self._topk,
+                    self._num_experts,
+                    moe_tp,
+                    moe_ep,
+                    attn_dp,
+                    True,
+                    quant_mode=bucket_mode,
+                    backend=self._backend_name,
+                ),
+                ops.MoE(
+                    f"{prefix}_moe",
+                    bucket_count,
+                    h,
+                    self._moe_inter_size,
+                    self._topk,
+                    self._num_experts,
+                    moe_tp,
+                    moe_ep,
+                    bucket_mode,
+                    wl_dist,
+                    attn_dp,
+                    moe_kernel_source=self.config.moe_kernel_source,
+                ),
+                ops.MoEDispatch(
+                    f"{prefix}_moe_post_dispatch",
+                    bucket_count,
+                    h,
+                    self._topk,
+                    self._num_experts,
+                    moe_tp,
+                    moe_ep,
+                    attn_dp,
+                    False,
+                    quant_mode=bucket_mode,
+                    backend=self._backend_name,
+                ),
+            )
         ]
 
     def _build_context_ops(self) -> None:
@@ -314,10 +389,10 @@ class Gemma4MixModel(BaseModel):
         moe_ep = self.config.moe_ep_size
         attn_dp = self.config.attention_dp_size
         pp = self.config.pp_size
-        gemm_q = self._projection_gemm_quant_mode
+        gemm_q = self.config.gemm_quant_mode
         kvcache_q = self.config.kvcache_quant_mode
         fmha_q = self.config.fmha_quant_mode
-        moe_q = self._routed_moe_quant_mode
+        moe_q = self.config.moe_quant_mode
         wl_dist = (
             self.config.workload_distribution + f"_{self._power_law_alpha}"
             if self.config.workload_distribution == "power_law"
@@ -333,7 +408,7 @@ class Gemma4MixModel(BaseModel):
             self.context_ops.extend(
                 [
                     ops.ElementWise("context_swa_attn_norm", c, 2 * h, 2 * h, 0.8),
-                    ops.GEMM("context_swa_qkv_gemm", c, d["swa_qkv_out"], h, gemm_q),
+                    *self._gemm("context_swa_qkv_gemm", c, d["swa_qkv_out"], h, gemm_q),
                     ops.ContextAttention(
                         "context_attention",
                         c,
@@ -344,7 +419,7 @@ class Gemma4MixModel(BaseModel):
                         window_size=cfg.sliding_window_size,
                         head_size=d["swa_hd"],
                     ),
-                    ops.GEMM("context_swa_proj_gemm", c, h, d["swa_proj_in"], gemm_q, low_precision_input=True),
+                    *self._gemm("context_swa_proj_gemm", c, h, d["swa_proj_in"], gemm_q, low_precision_input=True),
                     ops.ElementWise("context_swa_ffn_norm", c, 2 * h, 2 * h, 0.8),
                 ]
                 + self._shared_mlp_ops("context_swa", c, h, d["dense_inter_per_tp"])
@@ -357,7 +432,7 @@ class Gemma4MixModel(BaseModel):
             self.context_ops.extend(
                 [
                     ops.ElementWise("context_global_attn_norm", c, 2 * h, 2 * h, 0.8),
-                    ops.GEMM("context_global_qkv_gemm", c, d["global_qkv_out"], h, gemm_q),
+                    *self._gemm("context_global_qkv_gemm", c, d["global_qkv_out"], h, gemm_q),
                     ops.ContextAttention(
                         "context_attention",
                         c,
@@ -368,7 +443,9 @@ class Gemma4MixModel(BaseModel):
                         window_size=0,
                         head_size=d["global_hd"],
                     ),
-                    ops.GEMM("context_global_proj_gemm", c, h, d["global_proj_in"], gemm_q, low_precision_input=True),
+                    *self._gemm(
+                        "context_global_proj_gemm", c, h, d["global_proj_in"], gemm_q, low_precision_input=True
+                    ),
                     ops.ElementWise("context_global_ffn_norm", c, 2 * h, 2 * h, 0.8),
                 ]
                 + self._shared_mlp_ops("context_global", c, h, d["dense_inter_per_tp"])
@@ -454,9 +531,9 @@ class Gemma4MixModel(BaseModel):
         moe_ep = self.config.moe_ep_size
         attn_dp = self.config.attention_dp_size
         pp = self.config.pp_size
-        gemm_q = self._projection_gemm_quant_mode
+        gemm_q = self.config.gemm_quant_mode
         kvcache_q = self.config.kvcache_quant_mode
-        moe_q = self._routed_moe_quant_mode
+        moe_q = self.config.moe_quant_mode
         wl_dist = (
             self.config.workload_distribution + f"_{self._power_law_alpha}"
             if self.config.workload_distribution == "power_law"
@@ -472,7 +549,7 @@ class Gemma4MixModel(BaseModel):
             self.generation_ops.extend(
                 [
                     ops.ElementWise("generation_swa_attn_norm", c, 2 * h, 2 * h, 0.8),
-                    ops.GEMM("generation_swa_qkv_gemm", c, d["swa_qkv_out"], h, gemm_q),
+                    *self._gemm("generation_swa_qkv_gemm", c, d["swa_qkv_out"], h, gemm_q),
                     ops.GenerationAttention(
                         "generation_attention",
                         c,
@@ -482,7 +559,7 @@ class Gemma4MixModel(BaseModel):
                         window_size=cfg.sliding_window_size,
                         head_size=d["swa_hd"],
                     ),
-                    ops.GEMM("generation_swa_proj_gemm", c, h, d["swa_proj_in"], gemm_q, low_precision_input=True),
+                    *self._gemm("generation_swa_proj_gemm", c, h, d["swa_proj_in"], gemm_q, low_precision_input=True),
                     ops.ElementWise("generation_swa_ffn_norm", c, 2 * h, 2 * h, 0.8),
                 ]
                 + self._shared_mlp_ops("generation_swa", c, h, d["dense_inter_per_tp"])
@@ -495,7 +572,7 @@ class Gemma4MixModel(BaseModel):
             self.generation_ops.extend(
                 [
                     ops.ElementWise("generation_global_attn_norm", c, 2 * h, 2 * h, 0.8),
-                    ops.GEMM("generation_global_qkv_gemm", c, d["global_qkv_out"], h, gemm_q),
+                    *self._gemm("generation_global_qkv_gemm", c, d["global_qkv_out"], h, gemm_q),
                     ops.GenerationAttention(
                         "generation_attention",
                         c,
@@ -505,7 +582,7 @@ class Gemma4MixModel(BaseModel):
                         window_size=0,
                         head_size=d["global_hd"],
                     ),
-                    ops.GEMM(
+                    *self._gemm(
                         "generation_global_proj_gemm", c, h, d["global_proj_in"], gemm_q, low_precision_input=True
                     ),
                     ops.ElementWise("generation_global_ffn_norm", c, 2 * h, 2 * h, 0.8),

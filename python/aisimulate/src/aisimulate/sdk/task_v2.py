@@ -1126,6 +1126,9 @@ class Task:
         self._gemm_quant_mode_explicit_by_role = {
             role: self._role_attr(role, "gemm_quant_mode") is not None for role in roles
         }
+        self._moe_quant_mode_explicit_by_role = {
+            role: self._role_attr(role, "moe_quant_mode") is not None for role in roles
+        }
         base = _infer_quant_modes_from_raw_config(self._raw_config)
 
         # GPT-OSS on Blackwell (trtllm): default MoE to w4a8_mxfp4_mxfp8 for higher
@@ -1175,7 +1178,8 @@ class Task:
                     if arch_mode is not None:
                         from_hf = arch_mode
                     # HF-base-layer remap: vLLM executes W4A16_NVFP4-labeled
-                    # experts on the w4a4 nvfp4 lane (see the helper). Applied
+                    # experts of non-ModelOpt checkpoints on the w4a4 nvfp4
+                    # lane (see the helper). Applied
                     # to the HF-derived value only, so an explicit field still
                     # overrides it — and validate fails fast on an explicit
                     # w4a16_nvfp4, which vLLM has no data lane for.
@@ -1185,6 +1189,7 @@ class Task:
                         self._raw_config.get("architectures", [None])[0]
                         if isinstance(self._raw_config.get("architectures"), list)
                         else self._raw_config.get("architecture"),
+                        self._raw_config,
                     )
                 fallback = _QUANT_FALLBACKS[key]
 
@@ -2004,6 +2009,7 @@ class Task:
             system=self._role_attr(role, "system_name"),
         )
         model_config._gemm_quant_mode_is_explicit = self._gemm_quant_mode_explicit_by_role.get(role, False)
+        model_config._moe_quant_mode_is_explicit = self._moe_quant_mode_explicit_by_role.get(role, False)
         if parallel is not None:
             required_phases = tuple(dict.fromkeys((*self._role_phases(role), *self._required_large_ep_phases(role))))
             resolve_model_config_moe_comm(
@@ -2534,18 +2540,24 @@ class Task:
         return out
 
     def to_yaml(self) -> str:
-        """Serialize public configuration, keeping inferred FMHA modes unset.
+        """Serialize public configuration, keeping inferred GEMM, MoE and FMHA modes unset.
 
         The result is round-trippable through :func:`from_yaml` (modulo
         None fields which are accepted by the constructor as defaults).
+        Writing an inferred mode would turn it into an explicit override on
+        reload and bypass checkpoint-specific per-layer precision.
         """
         import yaml
 
         values = self.to_dict()
-        for role, explicit in self._fmha_explicit.items():
-            if not explicit:
-                key = "fmha_quant_mode" if role == "agg" else f"{role}_fmha_quant_mode"
-                values[key] = None
+        for name, explicit_by_role in (
+            ("gemm_quant_mode", self._gemm_quant_mode_explicit_by_role),
+            ("moe_quant_mode", self._moe_quant_mode_explicit_by_role),
+            ("fmha_quant_mode", self._fmha_explicit),
+        ):
+            for role, explicit in explicit_by_role.items():
+                if not explicit:
+                    values[name if role == "agg" else f"{role}_{name}"] = None
         return yaml.safe_dump(values, sort_keys=False)
 
     # =====================================================================

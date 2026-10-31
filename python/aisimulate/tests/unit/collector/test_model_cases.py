@@ -255,7 +255,6 @@ def test_added_model_moe_profiles_resolve_targeted_aliases(monkeypatch):
         ("nvidia/DeepSeek-V4-Flash-NVFP4", "nvfp4"),
         ("nvidia/DeepSeek-V4-Pro-NVFP4", "nvfp4"),
         ("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4", "nvfp4"),
-        ("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", "nvfp4"),
         ("nvidia/MiniMax-M3-NVFP4", "nvfp4"),
     ],
 )
@@ -269,6 +268,31 @@ def test_nvfp4_quant_artifacts_have_exact_moe_profiles_and_lanes(monkeypatch, mo
     assert {case.model_name for case in cases} == {model_path}
     for backend in ("sglang", "trtllm", "vllm"):
         assert moe_model_allows_quantization(backend, model_path, quant_mode)
+
+
+def test_lightning_w4a16_nvfp4_experts_are_not_collected_as_vllm_w4a4_nvfp4():
+    model_path = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4"
+
+    assert moe_model_allows_quantization("sglang", model_path, "nvfp4")
+    assert moe_model_allows_quantization("trtllm", model_path, "nvfp4")
+    assert not moe_model_allows_quantization("vllm", model_path, "nvfp4")
+    # vLLM collects its weight-only experts as the distinct w4a16_nvfp4 mode, Lightning only.
+    assert moe_model_allows_quantization("vllm", model_path, "w4a16_nvfp4")
+    assert not moe_model_allows_quantization("sglang", model_path, "w4a16_nvfp4")
+    assert not moe_model_allows_quantization("vllm", "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4", "w4a16_nvfp4")
+
+
+@pytest.mark.parametrize("sm_version", [80, 89, 90, 100, 103, 120])
+def test_vllm_w4a16_nvfp4_moe_mode_reaches_every_marlin_sm(sm_version):
+    from collector.case_generator import get_moe_quantization_modes
+
+    modes = get_moe_quantization_modes(
+        "vllm",
+        sm_version=sm_version,
+        runtime_version="0.30.0",
+        runtime_features={"per_block_fp8": True, "nvfp4": True, "mxfp4": True},
+    )
+    assert "w4a16_nvfp4" in modes
 
 
 @pytest.mark.parametrize(
@@ -289,7 +313,17 @@ def test_qwen36_w4a16_nvfp4_moe_is_transferred_but_explicitly_deferred(monkeypat
     transferred_shapes = get_common_moe_test_cases(backend=backend)
     assert transferred_shapes
     assert {case.model_name for case in transferred_shapes} == {model_path}
-    assert "w4a16_nvfp4" not in {spec.name for spec in get_moe_quantization_specs(backend)}
+    if backend == "vllm":
+        # vLLM collects Qwen3.6's W4A16_NVFP4 experts as its w4a16_nvfp4 mode, and nothing else.
+        from collector.case_generator import get_moe_quantization_modes
+
+        modes = get_moe_quantization_modes(
+            backend, sm_version=100, runtime_features={"per_block_fp8": True, "nvfp4": True, "mxfp4": True}
+        )
+        assert [mode for mode in modes if moe_model_allows_quantization(backend, model_path, mode)] == ["w4a16_nvfp4"]
+        return
+    # SGLang and TRT-LLM declare no w4a16_nvfp4 MoE mode, so their collection stays deferred.
+    assert not moe_model_allows_quantization(backend, model_path, "w4a16_nvfp4")
 
     assert _load_moe_getter(module_path)() == []
     assert f"by declared {backend} quantization policy (allowed_modes): {model_path}" in capsys.readouterr().out
@@ -746,8 +780,6 @@ def test_deepseek_minimax_and_nemotron_moe_quantization_is_artifact_specific():
         }
         if backend == "vllm":
             expected_by_artifact["nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8"] = {"fp8"}
-            expected_by_artifact["nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"] = set()
-            expected_by_artifact["nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4"] = set()
         for model_path, expected in expected_by_artifact.items():
             allowed = {mode for mode in available_modes if moe_model_allows_quantization(backend, model_path, mode)}
             assert allowed == expected, (backend, model_path)
@@ -877,13 +909,14 @@ def test_gemm_common_cases_expand_from_base_op_yaml_shape_specs():
     # its other shared-expert projections overlap the existing base shapes.
     # GLM-5.3-Flash adds ten new off-grid output widths at k=4096 (its
     # declared widths minus those another model already declares) across the
-    # 74 standard / 21 XPU token counts.
-    assert len(cases) == 38258
+    # 74 standard / 21 XPU token counts. Nemotron 3.5 Lightning adds its six
+    # TP1/4/8 shared-expert (n, k) sites across the same token counts.
+    assert len(cases) == 38702
     assert cases[0] == GemmCommonTestCase(x=32768, n=65536, k=51200)
     assert cases[-1] == GemmCommonTestCase(x=1, n=1, k=4096)
     assert not any(case.n == 65536 and case.k == 65536 for case in cases)
 
-    assert len(xpu_cases) == 10857
+    assert len(xpu_cases) == 10983
     assert xpu_cases[0] == GemmCommonTestCase(x=8192, n=65536, k=32768)
     assert xpu_cases[-1] == GemmCommonTestCase(x=1, n=1, k=4096)
     assert get_gemm_type_specs("vllm_xpu") == ["bfloat16", "fp8"]
@@ -892,6 +925,9 @@ def test_gemm_common_cases_expand_from_base_op_yaml_shape_specs():
         keys = {(case.x, case.n, case.k) for case in backend_cases}
         assert len(keys) == len(backend_cases)
         assert {x for x, n, k in keys if (n, k) == (7168, 384)} == {x for x, _, _ in keys}
+        lightning_sites = {(3712, 2688), (928, 2688), (464, 2688), (2688, 3712), (2688, 928), (2688, 464)}
+        for site in lightning_sites:
+            assert {x for x, n, k in keys if (n, k) == site} == {x for x, _, _ in keys}
 
     compute_scale_cases = get_compute_scale_case_specs()
     assert len(compute_scale_cases) == 1628
@@ -1175,18 +1211,19 @@ def test_vllm_moe_quantization_metadata_is_yaml_backed():
         "int4_wo",
         "fp8",
         "fp8_block",
+        "w4a16_nvfp4",
     ]
     assert get_moe_quantization_modes(
         "vllm",
         sm_version=100,
         runtime_features={"per_block_fp8": True, "nvfp4": True, "mxfp4": True},
-    ) == ["bfloat16", "int4_wo", "fp8", "fp8_block", "nvfp4", "w4a16_mxfp4", "w4a8_mxfp4_mxfp8"]
+    ) == ["bfloat16", "int4_wo", "fp8", "fp8_block", "nvfp4", "w4a16_nvfp4", "w4a16_mxfp4", "w4a8_mxfp4_mxfp8"]
     assert get_moe_quantization_modes(
         "vllm",
         sm_version=120,
         runtime_version="0.24.0",
         runtime_features={"per_block_fp8": True, "nvfp4": True, "mxfp4": True},
-    ) == ["bfloat16", "int4_wo", "fp8", "fp8_block", "nvfp4", "w4a16_mxfp4"]
+    ) == ["bfloat16", "int4_wo", "fp8", "fp8_block", "nvfp4", "w4a16_nvfp4", "w4a16_mxfp4"]
 
     assert moe_model_allows_quantization("vllm", "openai/gpt-oss-20b", "w4a16_mxfp4")
     assert not moe_model_allows_quantization("vllm", "openai/gpt-oss-20b", "bfloat16")
@@ -2087,6 +2124,20 @@ def test_unverified_nemotron_rl_artifact_has_no_moe_profile(monkeypatch):
 
     assert get_common_moe_test_cases() == []
     assert get_common_mamba2_test_cases()
+
+
+def test_nemotron_super_nvfp4_declares_backend_specific_moe_geometry(monkeypatch):
+    from collector.case_generator import get_common_moe_test_cases
+
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4")
+
+    # vLLM routes experts through moe_latent_size=1024; the others use the outer width.
+    vllm_cases = get_common_moe_test_cases(backend="vllm")
+    assert {(c.hidden_size, c.inter_size, c.topk, c.num_experts) for c in vllm_cases} == {(1024, 2688, 22, 512)}
+    assert {c.tp for c in vllm_cases} >= {1, 2, 4, 8}
+    assert {c.ep for c in vllm_cases if c.tp == 8} == {1}
+    assert 4096 in {c.hidden_size for c in get_common_moe_test_cases(backend="sglang")}
+    assert 4096 in {c.hidden_size for c in get_common_moe_test_cases(backend="trtllm")}
 
 
 def test_support_matrix_mamba_alias_generates_targeted_cases(monkeypatch):

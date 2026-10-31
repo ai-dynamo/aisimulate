@@ -73,8 +73,13 @@ approximation must be retired.
 # model/quant shapes continue to raise and remain recorded failures; this is
 # API compatibility, not a claim that every Cartesian shape is supported.
 # 0.30.0 source audit (2026-09-30; tag v0.30.0 == ced6857afa0e vs v0.27.1),
-# the baseline of the 0.31.0 audit below. 0.28.0, 0.29.0 and 0.30.0 itself
-# are not admitted: no consumer reads their tables.
+# the baseline of the 0.31.0 audit below. 0.30.0 is admitted since it became
+# the vLLM query slot's current version (query_versions.yaml); 0.28.0 and
+# 0.29.0 are not, because no consumer reads their tables. The w4a16_nvfp4
+# lane at 0.30.0: ModelOptMixedPrecisionConfig -> ModelOptNvFp4FusedMoE with
+# use_a16 (modelopt.py:836-846, :1797-1799), Marlin FP4 prep with the local
+# expert count (marlin_utils_fp4.py:476-478), MarlinExperts accepts
+# activation_key=None and non-gated activations (marlin_moe.py:564-593).
 # FusedMoEFactory (layer.py:88-131 @0.30.0, :99-140 @0.27.1): every kwarg
 # passed here is unchanged; 0.30.0 only adds defaulted params. swiglu_limit
 # exists at both (:108 / :119), so other models keep passing None.
@@ -160,7 +165,7 @@ approximation must be retired.
 # K3 SiTU: FusedMoEFactory exposes activation_situ_beta on stock 0.30.0 and
 # 0.31.0, so the probe below passes the betas natively there; the
 # situ-as-silu approximation applies only to older stock builds.
-__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0,!=0.28.0,!=0.29.0,!=0.30.0"
+__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0,!=0.28.0,!=0.29.0"
 
 import contextlib
 import json
@@ -200,7 +205,7 @@ def _load_model_moe_config(model_name: str) -> dict:
 
 
 def _load_checkpoint_quantization_config(model_name: str) -> dict:
-    """Return the checked-in checkpoint's top-level ``quantization_config``.
+    """Return the checked-in checkpoint quantization config, from config.json or its hf_quant_config.json.
 
     ``_load_model_moe_config`` returns the text sub-config, whose
     ``quantization_config`` is null for multimodal wrappers such as
@@ -210,24 +215,113 @@ def _load_checkpoint_quantization_config(model_name: str) -> dict:
     if not config_path.exists():
         raise FileNotFoundError(f"missing packaged model config for vLLM MoE case {model_name!r}: {config_path}")
     with config_path.open() as config_file:
-        return json.load(config_file).get("quantization_config") or {}
+        quant = json.load(config_file).get("quantization_config") or {}
+    # vLLM falls back to hf_quant_config.json when config.json has no quantization
+    # config, or one that resolves to modelopt_mixed without quantized_layers
+    # (weight_utils.py:253-262,377-384; modelopt.py:1568-1575 @v0.31.0).
+    resolves_mixed = (
+        str(quant.get("quant_method", "")).lower().startswith("modelopt")
+        and str(quant.get("quant_algo", "")).upper() == "MIXED_PRECISION"
+    )
+    if not quant or (resolves_mixed and "quantized_layers" not in quant):
+        companion = config_path.with_name(config_path.name.removesuffix("_config.json") + "_hf_quant_config.json")
+        if companion.is_file():
+            with companion.open() as companion_file:
+                return json.load(companion_file)
+    return quant
 
 
 def _uses_modelopt_nvfp4_checkpoint(model_name: str) -> bool:
     """True when serving loads this model's NVFP4 experts via ModelOptNvFp4Config.
 
-    Scoped to GLM-5.3-Flash so every other nvfp4 model keeps its existing
+    Scoped to GLM-5.3-Flash and Nemotron-H so other nvfp4 models keep their
     CompressedTensors construction (and kernel_source label). vLLM resolves
     quant_method "modelopt" + quant_algo "NVFP4" to modelopt_fp4
     (config/model.py:1349-1388, quantization/modelopt.py:756-763 @v0.31.0).
     """
-    if _load_model_moe_config(model_name).get("model_type") != "glm5_next_text":
+    model_type = _load_model_moe_config(model_name).get("model_type")
+    if model_type not in {"glm5_next_text", "nemotron_h"}:
         return False
     checkpoint_qc = _load_checkpoint_quantization_config(model_name)
+    if model_type == "nemotron_h":
+        quant_algo = str(checkpoint_qc.get("quantization", checkpoint_qc).get("quant_algo", "")).upper()
+        if quant_algo == "NVFP4":
+            return True
+        if quant_algo == "MIXED_PRECISION":  # handled by ModelOptMixedPrecisionConfig
+            return False
+        if checkpoint_qc.get("quant_method") != "compressed-tensors":
+            raise ValueError(
+                f"Nemotron-H NVFP4 collection for {model_name!r} requires complete checkpoint quantization metadata"
+            )
+        return False
     return (
         str(checkpoint_qc.get("quant_method", "")).lower() == "modelopt"
         and str(checkpoint_qc.get("quant_algo", "")).upper() == "NVFP4"
     )
+
+
+def _modelopt_mixed_expert_prefix(
+    model_name: str, expert_algo: str = "NVFP4", model_types: tuple[str, ...] | None = ("nemotron_h",)
+) -> str | None:
+    """Return a routed-expert prefix when vLLM loads this checkpoint as modelopt_mixed.
+
+    ``expert_algo`` is the routed-expert algorithm the collected mode measures;
+    every listed routed expert must declare it. ``model_types`` limits the lookup to
+    those model types (``None``: any model with a mixed-precision checkpoint).
+
+    ModelOptMixedPrecisionConfig resolves each layer's algorithm from
+    ``quantized_layers`` by prefix (modelopt.py:1569-1597,1751-1795 @v0.31.0), so
+    the collector layer needs a real expert prefix rather than a placeholder.
+    """
+    if model_types is not None and _load_model_moe_config(model_name).get("model_type") not in model_types:
+        return None
+    quant = _load_checkpoint_quantization_config(model_name)
+    section = quant.get("quantization", quant)
+    if (
+        str(section.get("quant_algo", "")).upper() != "MIXED_PRECISION"
+        and quant.get("quant_method") != "modelopt_mixed"
+    ):
+        return None
+    layers = section.get("quantized_layers")
+    if not isinstance(layers, dict) or not layers:
+        raise ValueError(f"ModelOpt mixed collection for {model_name!r} requires quantized_layers metadata")
+    # Nemotron-H lists every expert (<layer>.mixer.experts.E.up_proj); Qwen3.6 lists the fused
+    # experts block itself (<layer>.mlp.experts). Either names the FusedMoE prefix serving builds.
+    experts = [
+        (name if name.endswith(".experts") else name.split(".experts.")[0] + ".experts", data.get("quant_algo"))
+        for name, data in layers.items()
+        if ".experts." in name or name.endswith(".experts")
+    ]
+    if not experts or any(str(algo).upper() != expert_algo for _, algo in experts):
+        raise ValueError(f"The MoE collector requires uniformly {expert_algo} routed experts for {model_name!r}")
+    # Serving builds the routed-expert prefix as "<layer>.mixer.experts"
+    # (models/nemotron_h.py:242 under the ".mixer" prefix at :357 @v0.31.0) and
+    # renames "backbone" to "model" in both the weights and quantized_layers
+    # (Qwen3.5/3.6: "model.language_model." to "model.", models/qwen3_5.py:321-322 @v0.30.0,
+    # experts prefix f"{prefix}.experts" at models/qwen3_next.py:217-228)
+    # (nemotron_h.py:734-735; ModelOptMixedPrecisionConfig.apply_vllm_mapper,
+    # modelopt.py:1807-1810), then matches "<prefix>." keys (modelopt.py:1692-1697).
+    # The collector never applies that mapper, so the checkpoint "backbone" names
+    # are the pair that resolves the same per-layer algorithm.
+    return experts[0][0]
+
+
+def _require_native_nemotron_h_nvfp4_dispatch(model_name: str) -> None:
+    """Refuse the synthetic CompressedTensors NVFP4 fall-through for latent-MoE Nemotron-H.
+
+    Reached only when no native ModelOpt branch above applied. Latent-MoE Nemotron-H
+    checkpoints (``moe_latent_size`` set, the Super/Ultra geometry) are ModelOpt
+    exports, so vLLM serving never resolves them to CompressedTensors
+    (config/model.py:1349-1388, quantization/modelopt.py:756-763 @v0.31.0). Raise
+    instead of timing a different method (layer_permissions.md, no invented fallbacks).
+    """
+    config = _load_model_moe_config(model_name)
+    if config.get("model_type") == "nemotron_h" and config.get("moe_latent_size") is not None:
+        raise RuntimeError(
+            f"vLLM NVFP4 MoE collection for latent-MoE Nemotron-H {model_name!r} requires native "
+            "ModelOpt dispatch with complete checkpoint quantization metadata; the synthetic "
+            "CompressedTensors config would time a method serving never uses"
+        )
 
 
 def _resolve_moe_runtime_config(model_name: str, module_config: dict) -> dict:
@@ -584,6 +678,7 @@ def run_moe_torch(
 
         custom_routing_function = gemma4_routing_function
 
+    moe_prefix = "collector_moe"
     if moe_type == "bfloat16":
         quant_config = None
     elif moe_type == "fp8":
@@ -655,6 +750,25 @@ def run_moe_torch(
             activation_scheme="dynamic",
             weight_block_size=[128, 128],
         )
+    elif moe_type == "w4a16_nvfp4":
+        # ModelOpt W4A16_NVFP4 experts: serving resolves the layer's algorithm from
+        # quantized_layers by prefix and builds ModelOptNvFp4FusedMoE with use_a16,
+        # which only the Marlin experts accept (modelopt.py:836-846,1797-1799 @v0.30.0).
+        # Only a ModelOpt mixed checkpoint declares this lane; anything else raises.
+        from vllm.model_executor.layers.quantization.modelopt import ModelOptMixedPrecisionConfig
+
+        moe_prefix = _modelopt_mixed_expert_prefix(model_name, "W4A16_NVFP4", model_types=None)
+        if moe_prefix is None:
+            raise ValueError(f"vLLM w4a16_nvfp4 MoE collection requires a ModelOpt mixed checkpoint: {model_name!r}")
+        quant_config = ModelOptMixedPrecisionConfig.from_config(_load_checkpoint_quantization_config(model_name))
+    elif moe_type == "nvfp4" and (mixed_prefix := _modelopt_mixed_expert_prefix(model_name)):
+        # Serving loads MIXED_PRECISION checkpoints with ModelOptMixedPrecisionConfig and
+        # picks each layer's method by prefix, so the layer needs a real expert prefix
+        # (modelopt.py:1569-1597,1751-1795 @v0.31.0).
+        from vllm.model_executor.layers.quantization.modelopt import ModelOptMixedPrecisionConfig
+
+        moe_prefix = mixed_prefix
+        quant_config = ModelOptMixedPrecisionConfig.from_config(_load_checkpoint_quantization_config(model_name))
     elif moe_type == "nvfp4" and _uses_modelopt_nvfp4_checkpoint(model_name):
         # Serving loads this checkpoint with ModelOptNvFp4Config
         # (ModelOptNvFp4FusedMoE, modelopt.py:819-851 @v0.31.0). It shares the
@@ -664,6 +778,7 @@ def run_moe_torch(
 
         quant_config = ModelOptNvFp4Config.from_config(_load_checkpoint_quantization_config(model_name))
     elif moe_type == "nvfp4":
+        _require_native_nemotron_h_nvfp4_dispatch(model_name)
         nvfp4_args = {
             "num_bits": 4,
             "type": "float",
@@ -803,7 +918,7 @@ def run_moe_torch(
             tp_size=logical_parallel_size,
             dp_size=1,
             pcp_size=1,
-            prefix="collector_moe",
+            prefix=moe_prefix,
             custom_routing_function=custom_routing_function,
             scoring_func=runtime_config["scoring_func"],
             routed_scaling_factor=runtime_config["routed_scaling_factor"],

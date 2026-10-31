@@ -50,6 +50,7 @@ CORE_SDK_LEAF_MODULES = [
     "models.base",
     "models.blocks.moe",
     "models.blocks.vit",
+    "models.checkpoint_precision",
     "models.deepseek",
     "models.deepseek_v32",
     "models.deepseek_v4",

@@ -4,6 +4,7 @@
 import ast
 import importlib.util
 import json
+import re
 import sys
 import types
 from dataclasses import replace
@@ -406,8 +407,11 @@ def test_vllm_sm90_repository_moe_getter_excludes_unconsumable_dsv4_cases(monkey
     # assumed.
     # +33 GLM-5.3-Flash fp8_block cases (288 experts/top-8/4096/2048, TP 1-32
     # or EP 2-256; its nvfp4 row needs SM100 and is absent here).
-    assert len(cases) == 2223
-    assert sum(len(case[1]) for case in cases) == 60021
+    # +39 Nemotron 3.5 Lightning and +42 Qwen3.6-35B-A3B vLLM w4a16_nvfp4 groups (Marlin W4A16 experts, SM80+).
+    assert len(cases) == 2304
+    assert (
+        sum(len(case[1]) for case in cases) == 62208
+    )  # +1053 Lightning and +1134 Qwen3.6 w4a16_nvfp4 rows (39 and 42 groups x 27 token counts)
     # MiniMax-M3's declared MoE geometry must be present as its own rows —
     # a generator defect could drop it while unrelated cases preserve the
     # aggregate counts above. (case[:8] = moe_type, num_tokens, hidden,
@@ -466,15 +470,17 @@ def test_vllm_sm100_repository_moe_getter_expands_native_dsv4_w4a8_cases(monkeyp
     ("model_path", "moe_type", "expected_hidden_size"),
     [
         ("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8", "fp8", 1024),
+        ("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4", "nvfp4", 1024),
         ("nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16", "bfloat16", 2048),
         ("nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8", "fp8", 2048),
+        ("nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4", "nvfp4", 2048),
     ],
 )
 def test_vllm_nemotron_uses_latent_moe_width(monkeypatch, model_path, moe_type, expected_hidden_size):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
     _install_vllm_stubs(monkeypatch)
     module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
-    monkeypatch.setattr(module, "get_sm_version", lambda: 90)
+    monkeypatch.setattr(module, "get_sm_version", lambda: 100 if moe_type == "nvfp4" else 90)
 
     cases = module.get_moe_test_cases()
 
@@ -485,18 +491,129 @@ def test_vllm_nemotron_uses_latent_moe_width(monkeypatch, model_path, moe_type, 
 
 
 @pytest.mark.parametrize(
-    "model_path",
+    ("config", "raises"),
     [
-        "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
-        "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4",
+        ({"model_type": "nemotron_h", "moe_latent_size": 1024}, True),
+        ({"model_type": "nemotron_h", "moe_latent_size": None}, False),
+        ({"model_type": "nemotron_h"}, False),
+        ({"model_type": "qwen3_moe", "moe_latent_size": 1024}, False),
     ],
 )
-def test_vllm_nemotron_topk22_nvfp4_artifacts_are_not_scheduled(monkeypatch, model_path):
-    monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
+def test_vllm_nemotron_nvfp4_fallthrough_raises_only_for_latent_moe(monkeypatch, config, raises):
+    _install_vllm_stubs(monkeypatch)
+    module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
+    monkeypatch.setattr(module, "_load_model_moe_config", lambda _model_name: config)
+
+    if raises:
+        with pytest.raises(RuntimeError, match="native ModelOpt dispatch"):
+            module._require_native_nemotron_h_nvfp4_dispatch("synthetic/model")
+    else:
+        module._require_native_nemotron_h_nvfp4_dispatch("synthetic/model")
+
+
+def test_vllm_nemotron_nvfp4_selects_native_modelopt_from_packaged_metadata(monkeypatch):
     _install_vllm_stubs(monkeypatch)
     module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
 
-    assert module.get_moe_test_cases() == []
+    # config.json carries no quantization_config; vLLM reads the companion hf_quant_config.json.
+    nano = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4"
+    assert module._load_checkpoint_quantization_config(nano)["quantization"]["group_size"] == 16
+    assert module._modelopt_mixed_expert_prefix(nano) is None
+    assert module._uses_modelopt_nvfp4_checkpoint(nano)
+    # Published MIXED_PRECISION exports resolve the routed-expert prefix.
+    for mixed in ("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4", "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4"):
+        assert module._modelopt_mixed_expert_prefix(mixed) == "backbone.layers.1.mixer.experts"
+        assert not module._uses_modelopt_nvfp4_checkpoint(mixed)
+    # W4A16_NVFP4 experts do not match the W4A4 nvfp4 collector mode, only the w4a16_nvfp4 one.
+    lightning = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4"
+    with pytest.raises(ValueError, match="uniformly NVFP4 routed experts"):
+        module._modelopt_mixed_expert_prefix(lightning)
+    assert re.fullmatch(
+        r"backbone\.layers\.\d+\.mixer\.experts", module._modelopt_mixed_expert_prefix(lightning, "W4A16_NVFP4")
+    )
+    with pytest.raises(ValueError, match="uniformly W4A16_NVFP4 routed experts"):
+        module._modelopt_mixed_expert_prefix("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4", "W4A16_NVFP4")
+
+
+@pytest.mark.parametrize(
+    ("quant", "expected"),
+    [
+        (
+            {
+                "quantization": {
+                    "quant_algo": "MIXED_PRECISION",
+                    "quantized_layers": {
+                        "backbone.layers.1.mixer.experts.0.up_proj": {"quant_algo": "NVFP4", "group_size": 16},
+                        "backbone.layers.1.mixer.shared_experts.up_proj": {"quant_algo": "FP8"},
+                    },
+                }
+            },
+            "backbone.layers.1.mixer.experts",
+        ),
+        ({"quantization": {"quant_algo": "MIXED_PRECISION"}}, ValueError),
+        ({"quant_method": "modelopt", "quant_algo": "NVFP4"}, None),
+    ],
+)
+def test_vllm_nemotron_mixed_expert_prefix(monkeypatch, quant, expected):
+    _install_vllm_stubs(monkeypatch)
+    module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
+    monkeypatch.setattr(module, "_load_model_moe_config", lambda _name: {"model_type": "nemotron_h"})
+    monkeypatch.setattr(module, "_load_checkpoint_quantization_config", lambda _name: quant)
+
+    if expected is ValueError:
+        with pytest.raises(ValueError, match="quantized_layers"):
+            module._modelopt_mixed_expert_prefix("synthetic/model")
+    else:
+        assert module._modelopt_mixed_expert_prefix("synthetic/model") == expected
+
+
+def test_vllm_modelopt_mixed_config_without_layers_reads_companion(monkeypatch, tmp_path):
+    _install_vllm_stubs(monkeypatch)
+    module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
+    monkeypatch.setattr(module, "_MODEL_CONFIG_ROOT", tmp_path)
+    (tmp_path / "org--m_config.json").write_text(
+        json.dumps({"quantization_config": {"quant_method": "modelopt", "quant_algo": "MIXED_PRECISION"}})
+    )
+    companion = {"quantization": {"quant_algo": "MIXED_PRECISION", "quantized_layers": {"x": {}}}}
+    (tmp_path / "org--m_hf_quant_config.json").write_text(json.dumps(companion))
+
+    assert module._load_checkpoint_quantization_config("org/m") == companion
+
+
+def test_vllm_nemotron_mixed_metadata_is_not_uniform_nvfp4(monkeypatch):
+    _install_vllm_stubs(monkeypatch)
+    module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
+    monkeypatch.setattr(module, "_load_model_moe_config", lambda _name: {"model_type": "nemotron_h"})
+    monkeypatch.setattr(
+        module,
+        "_load_checkpoint_quantization_config",
+        lambda _name: {"quant_method": "modelopt", "quant_algo": "MIXED_PRECISION"},
+    )
+
+    assert not module._uses_modelopt_nvfp4_checkpoint("synthetic/model")
+
+
+def test_vllm_nemotron_nvfp4_without_modelopt_metadata_raises(monkeypatch):
+    _install_vllm_stubs(monkeypatch)
+    module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
+    monkeypatch.setattr(module, "_load_model_moe_config", lambda _name: {"model_type": "nemotron_h"})
+    monkeypatch.setattr(module, "_load_checkpoint_quantization_config", lambda _name: {})
+
+    with pytest.raises(ValueError, match="complete checkpoint quantization metadata"):
+        module._uses_modelopt_nvfp4_checkpoint("synthetic/model")
+
+
+def test_vllm_nemotron_nvfp4_guard_uses_packaged_metadata(monkeypatch):
+    _install_vllm_stubs(monkeypatch)
+    module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
+
+    with pytest.raises(RuntimeError, match="native ModelOpt dispatch"):
+        module._require_native_nemotron_h_nvfp4_dispatch("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4")
+    for unchanged in (
+        "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
+    ):
+        module._require_native_nemotron_h_nvfp4_dispatch(unchanged)
 
 
 @pytest.mark.parametrize(

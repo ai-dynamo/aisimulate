@@ -83,8 +83,8 @@ def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
 def test_vllm_target_lane_collectors_declare_the_exact_bumped_compat_range(module):
     expected = '__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.1,!=0.26.0,!=0.27.0"'
     if module in {"collector.vllm.collect_gemm", "collector.vllm.collect_moe"}:
-        # GLM-5.3-Flash model pin: 0.31.0 is admitted; 0.28.0-0.30.0 are not.
-        expected = '__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0,!=0.28.0,!=0.29.0,!=0.30.0"'
+        # GLM-5.3-Flash model pin admits 0.31.0, and 0.30.0 is the vLLM query slot's current version.
+        expected = '__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0,!=0.28.0,!=0.29.0"'
     source = (REPO_ROOT / f"{module.replace('.', '/')}.py").read_text(encoding="utf-8")
     declarations = [line.strip() for line in source.splitlines() if line.startswith("__compat__")]
     assert declarations == [expected], module
@@ -437,6 +437,19 @@ def test_model_pin_match_resolves_qwen38_max_to_vllm_0_27_1(model_path):
     assert runtime.version == "0.27.1"
     assert runtime.image().startswith("vllm/vllm-openai:v0.27.1@sha256:")
     assert runtime.image("cu129").startswith("vllm/vllm-openai:v0.27.1-cu129@sha256:")
+    assert runtime.family is None
+
+
+@pytest.mark.parametrize(
+    "model_path",
+    ["nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4", "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4"],
+)
+def test_model_pin_match_resolves_nemotron3_nvfp4_to_vllm_0_31_0(model_path):
+    runtime = require_collector_runtime(
+        "vllm", "0.31.0", requested_ops={"moe"}, wideep_ops=set(), model_path=model_path
+    )
+    assert runtime.version == "0.31.0"
+    assert runtime.image().startswith("vllm/vllm-openai:v0.31.0@sha256:")
     assert runtime.family is None
 
 
@@ -798,7 +811,7 @@ frameworks:
         ("0.27.1", True),
         ("0.28.0", False),
         ("0.29.0", False),
-        ("0.30.0", False),
+        ("0.30.0", True),
         ("0.31.0", True),
         ("0.31.1", False),
     ],

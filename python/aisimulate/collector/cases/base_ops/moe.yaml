@@ -257,6 +257,16 @@ common_case_values:
     - name: nvfp4
       min_sm: 100
       requires_runtime_feature: nvfp4
+    - name: w4a16_nvfp4
+      # ModelOpt W4A16_NVFP4 routed experts: ModelOptMixedPrecisionConfig
+      # dispatches them to ModelOptNvFp4FusedMoE with use_a16, whose
+      # activation_key=None only the Marlin experts accept (modelopt.py:836-846,
+      # :1797-1799 @v0.30.0; :836-846, :1793-1796 @v0.31.0). Marlin FP4 runs
+      # from SM75, so the dtype floor (capabilities.yaml w4a16_nvfp4: 80) applies.
+      min_sm: 80
+      allowed_model_paths:
+      - nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4
+      - nvidia/Qwen3.6-35B-A3B-NVFP4
     - name: w4a16_mxfp4
       requires_runtime_feature: mxfp4
       requires_model_quantization_config: true

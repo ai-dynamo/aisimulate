@@ -2605,9 +2605,18 @@ def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa):
     # the repository's 0.0 unavailable-measurement sentinel. Order-insensitive
     # (the merge realigns column order below); Arrow metadata is ignored
     # (pandas round-trips change it).
+    # string and large_string hold identical values (only the offset width
+    # differs); pandas 3 round-trips text as large_string, so earlier merges
+    # left shipped tables in either storage type.
+    def identity_type(arrow_type):
+        if pa.types.is_string(arrow_type) or pa.types.is_large_string(arrow_type):
+            return "<text>"
+        return str(arrow_type)
+
     def fields(schema):
         return sorted(
-            (f.name, str(f.type)) if f.name not in PERF_METRIC_COLUMNS else (f.name, "<metric>") for f in schema
+            (f.name, identity_type(f.type)) if f.name not in PERF_METRIC_COLUMNS else (f.name, "<metric>")
+            for f in schema
         )
 
     old_fields = fields(old_table.schema)
@@ -2667,7 +2676,13 @@ def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa):
         len(deduped),
         len(combined) - len(deduped),
     )
-    return pa.Table.from_pandas(deduped, preserve_index=False), True, current_event_rows
+    merged = pa.Table.from_pandas(deduped, preserve_index=False)
+    # Keep the existing table's storage types so a merge never changes them.
+    return (
+        merged.cast(pa.schema([old_table.schema.field(name) for name in merged.column_names])),
+        True,
+        current_event_rows,
+    )
 
 
 def find_perf_csv_outputs(output_root: str | os.PathLike = ".", *, recursive: bool = False) -> list[Path]:
