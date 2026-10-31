@@ -36,15 +36,15 @@ use crate::engine::scheduler::vllm::policy::{self, AdmissionDecision, PolicySequ
 use crate::engine::scheduler::vllm::request::RequestKvState;
 use crate::engine::scheduler::{
     ActiveHandoffRequests, AdmissionEvent, AdmissionInvariant, AdmissionStage,
-    CapturedKvEventBuffer, DestinationHolds, EnginePassResult, ForwardPassSnapshot,
+    CapturedKvEventBuffer, DestinationHolds, EnginePassResult, ForwardPassSnapshot, ForwardTime,
     KvEventVisibility, MockerMetrics, PendingDestinations, RemovedSource, SchedulerCommand,
     SchedulerCommandEffects, SchedulerCommandResult, SchedulerLifecycleEvent, SourceCompletion,
-    SourceHolds, build_fpm_snapshot, capture_kv_event_sink,
+    SourceHolds, build_fpm_snapshot, capture_kv_event_sink, modeled_duration,
 };
 use crate::engine::trace::TraceCollector;
 use crate::engine::{
-    CacheTierAttribution, DecodeAcceptance, G2Scope, HandoffId, KvHintSource, PrefillTotals,
-    PressureEvent, PressureKind, PressureState, modeled_duration_ms,
+    CacheTierAttribution, DecodeAcceptance, DecodeWork, G2Scope, HandoffId, IterationMs,
+    KvHintSource, PrefillTotals, PrefillWork, PressureEvent, PressureKind, PressureState, RankWork,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -679,6 +679,46 @@ pub(crate) struct VllmCore {
     prefill_capacity_bound: bool,
     passes_executed: u64,
     belady_oracle: Option<BeladyOracle>,
+    /// The scheduled pass awaiting its forward time.
+    unpriced: Option<UnpricedPass>,
+}
+
+/// A pass whose scheduling is committed and whose forward is not yet priced.
+/// Nothing the scheduler committed depends on the forward's duration: it
+/// sets only the pass end, the same-timestamp retry and the FPM wall time.
+struct UnpricedPass {
+    now_ms: f64,
+    compute_start_ms: f64,
+    forward: ForwardWork,
+    /// Native host offload advanced its retry state during this pass, so an
+    /// instantaneous pass asks for a same-timestamp retry.
+    retry_if_instant: bool,
+    result: EnginePassResult,
+}
+
+/// The model work of one pass, as [`VllmCore::forward_time`] prices it.
+#[derive(Clone, Copy, Debug, Default)]
+struct ForwardWork {
+    prefill: Option<PrefillTotals>,
+    decode_count: usize,
+    total_length: usize,
+}
+
+/// The decode batch a pass computes, after speculative reservation.
+#[derive(Debug, Default)]
+struct DecodeBatch {
+    /// Context length of each request priced as decode work.
+    lengths: Vec<usize>,
+}
+
+impl DecodeBatch {
+    fn count(&self) -> usize {
+        self.lengths.len()
+    }
+
+    fn total_length(&self) -> usize {
+        self.lengths.iter().sum()
+    }
 }
 
 struct HeldVllmPrefill {
@@ -919,6 +959,7 @@ impl VllmCore {
             attention_dp_size: 1,
             prefill_capacity_bound: false,
             passes_executed: 0,
+            unpriced: None,
         })
     }
 
@@ -1847,6 +1888,7 @@ impl VllmCore {
         self.execute_pass_internal(Some(collector), now_ms)
     }
 
+    #[cfg(test)]
     pub(crate) fn try_execute_hidden_pass(
         &mut self,
         now_ms: f64,
@@ -1854,11 +1896,69 @@ impl VllmCore {
         self.execute_pass_internal(None, now_ms)
     }
 
+    /// One pass priced by this core's own phase timing.
+    #[cfg(test)]
     pub(super) fn execute_pass_internal(
         &mut self,
         mut collector: Option<&mut TraceCollector>,
         now_ms: f64,
     ) -> anyhow::Result<EnginePassResult> {
+        self.schedule_pass(collector.as_deref_mut(), now_ms)?;
+        let result = self.resolve_pass(None)?;
+        if let Some(collector) = collector {
+            for signal in &result.output_signals {
+                if signal.token_id.is_some() {
+                    collector.on_token(signal.uuid, result.end_ms);
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    /// Finish the scheduled pass. A group `iteration` sets the forward's
+    /// shared duration; without one the pass prices its own prefill and
+    /// decode phases.
+    pub(crate) fn resolve_pass(
+        &mut self,
+        iteration: Option<&IterationMs>,
+    ) -> anyhow::Result<EnginePassResult> {
+        let pass = self
+            .unpriced
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("vLLM scheduler has no scheduled pass to resolve"))?;
+        let forward_time = match iteration {
+            Some(iteration) => ForwardTime::from_iteration(
+                iteration,
+                self.args.speedup_ratio,
+                self.args.decode_speedup_ratio,
+            )?,
+            None => self.forward_time(pass.forward)?,
+        };
+        let end_ms = forward_time.end_ms(pass.compute_start_ms);
+        let mut result = pass.result;
+        result.end_ms = end_ms;
+        if let Some(fpm) = &mut result.fpm {
+            fpm.wall_time_secs = (end_ms - pass.now_ms) / 1000.0;
+        }
+        result.same_timestamp_retry = if pass.retry_if_instant && end_ms == pass.now_ms {
+            crate::engine::generalized::SameTimestampRetry::Retry
+        } else {
+            crate::engine::generalized::SameTimestampRetry::NotApplicable
+        };
+        Ok(result)
+    }
+
+    /// Commit one pass's scheduling, token emission and KV effects, and
+    /// return its model work. The pass waits for [`Self::resolve_pass`].
+    pub(crate) fn schedule_pass(
+        &mut self,
+        mut collector: Option<&mut TraceCollector>,
+        now_ms: f64,
+    ) -> anyhow::Result<RankWork> {
+        anyhow::ensure!(
+            self.unpriced.is_none(),
+            "vLLM scheduler already has a scheduled pass awaiting its forward time"
+        );
         #[cfg(test)]
         let requests_before = self.state.requests.len();
         let retry_epoch_before = self
@@ -2363,14 +2463,8 @@ impl VllmCore {
         let mut decode_acceptance = DecodeAcceptance::default();
         // The forward is priced once its decode work is known, since a pass
         // that computes prefill and decode together may be one forward.
-        let (forward_time, mut output_signals) = self.emit_ready_tokens(
-            collector,
-            compute_start_ms,
-            now_ms,
-            &scheduled,
-            prefill,
-            &mut decode_acceptance,
-        )?;
+        let (decode, mut output_signals) =
+            self.emit_ready_tokens(now_ms, &scheduled, &mut decode_acceptance)?;
         // Emit the terminal signals for the requests the gate rejected above
         // (see the gate comment for why this can't be done inline).
         for uuid in rejected_uuids {
@@ -2383,14 +2477,14 @@ impl VllmCore {
                 cached_tokens: None,
             });
         }
-        let end_ms = forward_time.end_ms(compute_start_ms);
         if (!scheduled.is_empty() || !output_signals.is_empty())
             && let Some(adapter) = self.native_host_offload.as_mut()
         {
             adapter.note_rank_progress();
         }
 
-        let fpm = self.compute_fpm(&scheduled, (end_ms - now_ms) / 1000.0);
+        // The wall time is the forward's duration, set when it is priced.
+        let fpm = self.compute_fpm(&scheduled, 0.0);
         // Speculative lookahead reservation may retract decode candidates after
         // scheduling. Keep already executed prefill, but only count surviving
         // decode work that actually produced an output token.
@@ -2416,19 +2510,46 @@ impl VllmCore {
         committed_requests.dedup();
         self.passes_executed += 1;
         self.state.debug_assert_invariants();
-        Ok(EnginePassResult {
+        let retry_if_instant = retry_epoch_before.is_some()
+            && self.native_host_offload.as_ref().is_some_and(|a| {
+                a.retry_epoch() != retry_epoch_before
+                    || a.next_deadline().is_some_and(|d| d <= now_ms)
+            });
+        let verify_width = if self.speculative_sampler.is_some() {
+            self.args.aic_nextn.map_or(1, |nextn| nextn + 1)
+        } else {
+            1
+        };
+        let forward = ForwardWork {
+            prefill,
+            decode_count: decode.count(),
+            total_length: decode.total_length(),
+        };
+        let work = RankWork {
+            dp_rank: self.dp_rank,
+            prefill: prefill.map(|totals| PrefillWork {
+                totals,
+                requests: scheduled
+                    .values()
+                    .filter(|work| work.prompt_tokens > 0)
+                    .map(|work| (work.prompt_tokens, work.prefix_tokens))
+                    .collect(),
+            }),
+            decode: (forward.decode_count > 0).then(|| DecodeWork {
+                batch_size: forward.decode_count,
+                active_kv_tokens: forward.total_length,
+                mean_context_length: forward.total_length / forward.decode_count,
+                kv_bound_tokens: self.decode_kv_context_bound(forward.total_length),
+                lengths: decode.lengths,
+                verify_width,
+            }),
+        };
+        let result = EnginePassResult {
             committed_requests,
-            end_ms,
-            same_timestamp_retry: if retry_epoch_before.is_some()
-                && end_ms == now_ms
-                && self.native_host_offload.as_ref().is_some_and(|a| {
-                    a.retry_epoch() != retry_epoch_before
-                        || a.next_deadline().is_some_and(|d| d <= now_ms)
-                }) {
-                crate::engine::generalized::SameTimestampRetry::Retry
-            } else {
-                crate::engine::generalized::SameTimestampRetry::NotApplicable
-            },
+            // The forward's end and the retry it implies are set when it is
+            // priced; `now_ms` holds their place.
+            end_ms: now_ms,
+            same_timestamp_retry: crate::engine::generalized::SameTimestampRetry::NotApplicable,
             #[cfg(test)]
             completed_requests: requests_before.saturating_sub(self.state.requests.len()),
             output_signals,
@@ -2447,7 +2568,15 @@ impl VllmCore {
                 .unwrap_or_default(),
             fpm: Some(fpm),
             decode_acceptance,
-        })
+        };
+        self.unpriced = Some(UnpricedPass {
+            now_ms,
+            compute_start_ms,
+            forward,
+            retry_if_instant,
+            result,
+        });
+        Ok(work)
     }
 
     fn drop_request_at(
@@ -2988,12 +3117,12 @@ impl VllmCore {
     /// When it computes both, a provider that prices them as one forward
     /// prices the whole pass; otherwise the decode work is a separate decode
     /// pass after the prefill.
-    fn forward_time(
-        &self,
-        prefill: Option<PrefillTotals>,
-        decode_count: usize,
-        total_length: usize,
-    ) -> anyhow::Result<ForwardTime> {
+    fn forward_time(&self, work: ForwardWork) -> anyhow::Result<ForwardTime> {
+        let ForwardWork {
+            prefill,
+            decode_count,
+            total_length,
+        } = work;
         if decode_count == 0 {
             return Ok(ForwardTime {
                 prefill: predict_prefill_duration(prefill, &self.args)?,
@@ -3046,21 +3175,19 @@ impl VllmCore {
             && work.is_some_and(|work| work.prompt_tokens > 0)
     }
 
+    /// Emit the tokens of the requests ready to decode, returning the decode
+    /// batch the pass's forward computes for them.
     fn emit_ready_tokens(
         &mut self,
-        mut collector: Option<&mut TraceCollector>,
-        compute_start_ms: f64,
         pressure_at_ms: f64,
         scheduled: &FxHashMap<Uuid, ScheduledWork>,
-        prefill: Option<PrefillTotals>,
         decode_acceptance: &mut DecodeAcceptance,
-    ) -> anyhow::Result<(ForwardTime, Vec<OutputSignal>)> {
+    ) -> anyhow::Result<(DecodeBatch, Vec<OutputSignal>)> {
         let mut ready = Vec::with_capacity(self.state.running.len());
         let mut already_complete = Vec::new();
         // Speculative emission prices its own decode work after reservation.
         let speculative = self.speculative_sampler.is_some();
-        let mut total_length = 0usize;
-        let mut decode_count = 0usize;
+        let mut decode = DecodeBatch::default();
         for uuid in self.state.running.iter().copied() {
             let Some(request) = self.state.requests.get(&uuid) else {
                 continue;
@@ -3081,8 +3208,7 @@ impl VllmCore {
             }
             ready.push(uuid);
             if !speculative && !self.is_first_token_from_prefill(request, scheduled.get(&uuid)) {
-                decode_count += 1;
-                total_length += request.sequence.len();
+                decode.lengths.push(request.sequence.len());
             }
         }
 
@@ -3111,47 +3237,37 @@ impl VllmCore {
             if !output_signals.is_empty() {
                 self.state.compact_running();
             }
-            return Ok((self.forward_time(prefill, 0, 0)?, output_signals));
+            return Ok((DecodeBatch::default(), output_signals));
         }
 
         if self.speculative_sampler.is_some() {
             if output_signals.is_empty() {
                 return self.emit_speculative_ready_tokens(
                     ready,
-                    collector,
-                    compute_start_ms,
                     pressure_at_ms,
                     scheduled,
-                    prefill,
                     decode_acceptance,
                 );
             }
 
             self.state.compact_running();
-            let (forward_time, mut speculative_signals) = self.emit_speculative_ready_tokens(
+            let (decode, mut speculative_signals) = self.emit_speculative_ready_tokens(
                 ready,
-                collector,
-                compute_start_ms,
                 pressure_at_ms,
                 scheduled,
-                prefill,
                 decode_acceptance,
             )?;
             output_signals.append(&mut speculative_signals);
-            return Ok((forward_time, output_signals));
+            return Ok((decode, output_signals));
         }
 
         // For prefill workers, the first decode token is produced as part of
         // the prefill forward pass — no separate decode iteration needed.
         // All signals remain visible at the common pass boundary, including
         // first tokens when ongoing decoders add work to a mixed pass.
-        let decode_count = if self.args.worker_type == WorkerType::Prefill {
-            0
-        } else {
-            decode_count
-        };
-        let forward_time = self.forward_time(prefill, decode_count, total_length)?;
-        let pass_end_ms = forward_time.end_ms(compute_start_ms);
+        if self.args.worker_type == WorkerType::Prefill {
+            decode.lengths.clear();
+        }
 
         let mut running_changed = !output_signals.is_empty();
         for uuid in ready {
@@ -3201,9 +3317,6 @@ impl VllmCore {
                 self.complete_source(uuid);
                 running_changed = true;
             }
-            if let Some(collector) = collector.as_deref_mut() {
-                collector.on_token(uuid, pass_end_ms);
-            }
             output_signals.push(output_signal);
         }
 
@@ -3211,13 +3324,13 @@ impl VllmCore {
             if running_changed {
                 self.state.compact_running();
             }
-            return Ok((forward_time, output_signals));
+            return Ok((decode, output_signals));
         }
 
         if running_changed {
             self.state.compact_running();
         }
-        Ok((forward_time, output_signals))
+        Ok((decode, output_signals))
     }
 
     /// Burst inputs for each ready request, in `ready` order, from one request
@@ -3277,17 +3390,13 @@ impl VllmCore {
         required_blocks
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn emit_speculative_ready_tokens(
         &mut self,
         mut ready: Vec<Uuid>,
-        collector: Option<&mut TraceCollector>,
-        compute_start_ms: f64,
         pressure_at_ms: f64,
         scheduled: &FxHashMap<Uuid, ScheduledWork>,
-        prefill: Option<PrefillTotals>,
         decode_acceptance: &mut DecodeAcceptance,
-    ) -> anyhow::Result<(ForwardTime, Vec<OutputSignal>)> {
+    ) -> anyhow::Result<(DecodeBatch, Vec<OutputSignal>)> {
         let nextn = self
             .args
             .aic_nextn
@@ -3317,7 +3426,7 @@ impl VllmCore {
                 self.state.compact_running();
             }
             if ready.is_empty() {
-                return Ok((self.forward_time(prefill, 0, 0)?, rejected_signals));
+                return Ok((DecodeBatch::default(), rejected_signals));
             }
 
             match self.kv_manager.reserve_decode_blocks(required_blocks) {
@@ -3329,7 +3438,7 @@ impl VllmCore {
                 if running_changed {
                     self.state.compact_running();
                 }
-                return Ok((self.forward_time(prefill, 0, 0)?, rejected_signals));
+                return Ok((DecodeBatch::default(), rejected_signals));
             };
             running_changed = true;
 
@@ -3346,21 +3455,20 @@ impl VllmCore {
             }
             if ready.is_empty() {
                 self.state.compact_running();
-                return Ok((self.forward_time(prefill, 0, 0)?, rejected_signals));
+                return Ok((DecodeBatch::default(), rejected_signals));
             }
         };
 
-        let (decode_count, total_length) = bursts
-            .iter()
-            .filter_map(|burst| burst.decode_length)
-            .fold((0, 0), |(count, total), length| (count + 1, total + length));
-        let decode_count = if worker_type == WorkerType::Prefill {
-            0
-        } else {
-            decode_count
+        let decode = DecodeBatch {
+            lengths: if worker_type == WorkerType::Prefill {
+                Vec::new()
+            } else {
+                bursts
+                    .iter()
+                    .filter_map(|burst| burst.decode_length)
+                    .collect()
+            },
         };
-        let forward_time = self.forward_time(prefill, decode_count, total_length)?;
-        let pass_end_ms = forward_time.end_ms(compute_start_ms);
 
         let sampler = self
             .speculative_sampler
@@ -3461,31 +3569,11 @@ impl VllmCore {
 
         self.kv_manager.release_decode_reservation(reservation);
 
-        if let Some(collector) = collector {
-            for signal in &output_signals {
-                collector.on_token(signal.uuid, pass_end_ms);
-            }
-        }
-
         if running_changed {
             self.state.compact_running();
         }
         output_signals.extend(rejected_signals);
-        Ok((forward_time, output_signals))
-    }
-}
-
-/// A pass's forward time: its prefill, then the decode work it adds.
-#[derive(Clone, Copy, Debug)]
-struct ForwardTime {
-    prefill: Duration,
-    decode: Duration,
-}
-
-impl ForwardTime {
-    /// End of the forward started at `start_ms`, adding prefill, then decode.
-    fn end_ms(self, start_ms: f64) -> f64 {
-        start_ms + self.prefill.as_secs_f64() * 1000.0 + self.decode.as_secs_f64() * 1000.0
+        Ok((decode, output_signals))
     }
 }
 
@@ -3526,14 +3614,11 @@ fn predict_prefill_duration(
 }
 
 fn scale_prefill_time(prefill_ms: f64, args: &MockEngineArgs) -> anyhow::Result<Duration> {
-    let modeled_ms = modeled_duration_ms(prefill_ms, args.speedup_ratio)?;
-    Ok(Duration::from_secs_f64(modeled_ms / 1_000.0))
+    modeled_duration(prefill_ms, args.speedup_ratio)
 }
 
 fn scale_decode_time(decode_ms: f64, args: &MockEngineArgs) -> anyhow::Result<Duration> {
-    let effective_ratio = args.speedup_ratio * args.decode_speedup_ratio;
-    let modeled_ms = modeled_duration_ms(decode_ms, effective_ratio)?;
-    Ok(Duration::from_secs_f64(modeled_ms / 1_000.0))
+    modeled_duration(decode_ms, args.speedup_ratio * args.decode_speedup_ratio)
 }
 
 #[cfg(test)]

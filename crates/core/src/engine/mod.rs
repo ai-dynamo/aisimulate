@@ -54,15 +54,18 @@ pub use protocol::{
 };
 pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;
+#[cfg(all(test, feature = "python"))]
+pub(crate) use timing::tests::assert_phase_bits;
 pub use timing::{
-    MixedPassMs, PrefillTotals, TimingEvidenceSource, TimingEvidenceSummary, TimingModel,
-    TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence, VisionShape,
+    DecodeWork, IterationMs, MixedPassMs, PrefillTotals, PrefillWork, RankWork,
+    TimingEvidenceSource, TimingEvidenceSummary, TimingModel, TimingModelConfig,
+    TimingOperationEvidence, TimingPhaseEvidence, VisionShape,
 };
 #[cfg(feature = "python")]
 pub(crate) use timing::{TimingEvidenceAccumulator, ValidatedTimingPhase, mean_prefill_shape};
 
 #[doc(hidden)]
 pub use protocol::PendingPass;
-pub(in crate::engine) use timing::modeled_duration_ms;
+pub(in crate::engine) use timing::{modeled_duration_ms, predict_group_iteration_ms};
 #[doc(hidden)]
 pub use trace::g1_parent_chain_events;

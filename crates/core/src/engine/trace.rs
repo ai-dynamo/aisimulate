@@ -77,7 +77,9 @@ pub struct TraceSnapshot {
     #[cfg(test)]
     pub arrival_ms: Option<f64>,
     pub first_admit_ms: Option<f64>,
+    #[cfg(test)]
     pub first_token_ms: Option<f64>,
+    #[cfg(test)]
     pub last_token_ms: Option<f64>,
 }
 
@@ -106,6 +108,7 @@ impl TraceCollector {
             .get_or_insert(now_ms);
     }
 
+    #[cfg(test)]
     pub fn on_token(&mut self, request_id: Uuid, now_ms: f64) {
         let snapshot = self.snapshots.entry(request_id).or_default();
         snapshot.first_token_ms.get_or_insert(now_ms);

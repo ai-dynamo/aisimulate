@@ -3,7 +3,9 @@
 
 use std::num::NonZeroU32;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
+
+use crate::engine::{IterationMs, RankWork};
 
 /// Stable identity of one logical mock engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -191,6 +193,17 @@ pub struct RankPass<S, P> {
     pub pending: P,
 }
 
+/// The scheduling half of a rank's pass, returned by
+/// [`RankEngine::schedule_pass`].
+#[derive(Debug)]
+pub enum ScheduledPass<S, P> {
+    /// The rank priced its own pass.
+    Priced(RankPass<S, P>),
+    /// The rank committed this work and retains the pass until
+    /// [`RankEngine::resolve_pass`] supplies its duration.
+    Unpriced(RankWork),
+}
+
 /// Pass-start effects from one rank.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RankPassStarted<T> {
@@ -325,6 +338,38 @@ pub trait RankEngine: Sized {
         &mut self,
         now_ms: f64,
     ) -> Result<RankPass<Self::PassStartEffects, Self::PendingPass>>;
+
+    /// Commit one non-preemptive pass's scheduling. A rank that lets its
+    /// group price the pass returns its model work and retains the pass until
+    /// [`Self::resolve_pass`]; the default prices it with
+    /// [`Self::execute_pass`].
+    fn schedule_pass(
+        &mut self,
+        now_ms: f64,
+    ) -> Result<ScheduledPass<Self::PassStartEffects, Self::PendingPass>> {
+        self.execute_pass(now_ms).map(ScheduledPass::Priced)
+    }
+
+    /// Work this rank contributes to a group pass it does not execute.
+    /// `None`, the default, keeps every rank of that pass on its own pricing.
+    fn idle_pass_work(&self) -> Option<RankWork> {
+        None
+    }
+
+    /// Price one group pass at once from every rank's work in DP-rank order.
+    /// Called on one rank; `None`, the default, keeps per-rank pricing.
+    fn price_group_pass(&self, _ranks: &[RankWork]) -> Result<Option<IterationMs>> {
+        Ok(None)
+    }
+
+    /// Finish the pass retained by an unpriced [`Self::schedule_pass`]:
+    /// `iteration` is the group's shared price, or `None` for the rank's own.
+    fn resolve_pass(
+        &mut self,
+        _iteration: Option<&IterationMs>,
+    ) -> Result<RankPass<Self::PassStartEffects, Self::PendingPass>> {
+        bail!("rank engine has no unpriced pass to resolve")
+    }
 
     /// Release the effects of a previously committed pass.
     fn complete_pass(

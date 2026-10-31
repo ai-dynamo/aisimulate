@@ -97,6 +97,25 @@ def kv_first_systems(evidence_systems):
     return evidence_systems
 
 
+@pytest.fixture
+def batching_systems(evidence_systems):
+    path = Path(evidence_systems) / "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet"
+    rows = pq.read_table(path).to_pylist()
+    # Replay caps capacity at the largest collected decode KV: a batch-1 row at
+    # 8192 tokens admits two requests at once. Batch 2 also gains a KV=0 row on
+    # its 1 ms-per-token line, covering both requests' first decode steps.
+    extra = {(1, 64): (8192, 8195.0), (2, 4): (0, 6.0)}
+    for row in list(rows):
+        point = extra.get((row["batch_size"], row["total_kv_read_tokens"]))
+        if row["workload_kind"] == "decode" and point is not None:
+            rows.append({**row, "total_kv_read_tokens": point[0], "latency_ms": point[1]})
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    metadata = json.loads(path.with_suffix(".metadata.json").read_text())
+    metadata.update(row_count=len(rows), parquet_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+    path.with_suffix(".metadata.json").write_text(json.dumps(metadata))
+    return evidence_systems
+
+
 def canonical(profile, systems):
     return {
         "model": profile["model"],
@@ -280,6 +299,11 @@ def prediction(profile, systems):
     }
 
 
+# One request every 1.5 ms (see `evidence_systems`): the second arrives during
+# the first request's 2 ms prefill and joins one of its decode passes.
+MIXED_REQUESTS_PER_SECOND = 1000 / 1.5
+
+
 def records(evidence):
     return [
         record
@@ -432,9 +456,52 @@ def test_public_recommendation_retains_requested_evidence(profile, evidence_syst
     saved = SweepResult.model_validate_json(result.model_dump_json())
     metadata = saved.candidates[0].provenance.runner_metadata
     evidence = metadata["fpm_query_evidence"]
-    assert records(evidence)
-    assert all(record["count"] == 3 for record in records(evidence))
+    estimates = records(evidence)
+    # The selected candidate runs attention DP=2, priced as one iteration over
+    # both ranks per pass. Each rank with work records its own estimate, so the
+    # same request shape on either rank is one record: three shapes of three
+    # passes each.
+    assert len(estimates) == 3
+    assert all(record["count"] == 3 for record in estimates)
+    assert all(len(record["estimate"]["ranks"]) == 1 for record in estimates)
     assert saved.candidates[0].metrics["power_w"] is None
+
+
+def test_replay_prices_a_mixed_rank_as_one_canonical_iteration(profile, batching_systems):
+    raw = prediction(profile, batching_systems)
+    # The second request arrives while the first decodes, so one vLLM pass
+    # computes its prefill beside the first request's decode.
+    raw["traffic"]["load"] = {"type": "constant_rate", "requests_per_second": MIXED_REQUESTS_PER_SECOND}
+    raw["traffic"]["stop"]["requests"] = 2
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    runner = EngineReplayRunnerFactory().create(0)
+    try:
+        report = runner.run(spec, output_requirements=ReplayOutputRequirements(capture_performance_diagnostics=True))
+    finally:
+        runner.close()
+    assert report.metrics["completed_requests"] == 2
+    phases = {
+        operation["name"]: operation["fpm_estimates"]
+        for provider in report.metadata["fpm_query_evidence"]["providers"]
+        for phase in provider["phases"]
+        for operation in phase["operations"]
+    }
+    # Replay prices the pass with one canonical query whose rank holds the
+    # prefill and the latency its decode adds, reported with decode. Per-rank
+    # phase pricing records the prefill and the mixed decode share as two
+    # estimates instead, neither holding both.
+    mixed = [
+        record
+        for record in phases["fpm_decode"]
+        if record["estimate"]["ranks"][0]["prefill_ms"] is not None
+        and record["estimate"]["ranks"][0]["marginal_decode_ms"] is not None
+    ]
+    assert len(mixed) == 1
+    (rank,) = mixed[0]["estimate"]["ranks"]
+    # Hand oracle: the 1-token prefill measures 2 ms; the first request's
+    # decode at 2 past KV interpolates to 5 ms over its 3 ms pass baseline.
+    assert (rank["prefill_ms"], rank["decode_ms"], rank["marginal_decode_ms"]) == (2.0, 5.0, 2.0)
+    assert mixed[0]["estimate"]["latency_ms"] == 4.0
 
 
 def test_prediction_cli_saves_direct_query_evidence(profile, evidence_systems, tmp_path, capsys):

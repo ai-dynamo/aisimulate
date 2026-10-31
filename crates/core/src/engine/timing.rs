@@ -595,18 +595,84 @@ impl ValidatedTimingPhase {
 }
 
 /// Provider-owned state; all inputs pass through `ValidatedTimingPhase`.
-/// The public, checked accumulator remains the fallback for changing layouts
-/// and optional operation diagnostics, whose merge rules it owns.
+/// The public, checked accumulator remains the fallback for new layouts and
+/// optional operation diagnostics, whose merge rules it owns.
 #[derive(Default)]
 #[cfg(any(feature = "python", test))]
 pub(crate) struct TimingEvidenceAccumulator {
     summary: TimingEvidenceSummary,
     pending: Vec<OperationUpdate>,
-    /// Slot names that `summary.prefill` operations equal, in order and
-    /// without diagnostics; slotted passes on them update by index.
-    prefill_names: Option<Arc<[String]>>,
+    /// Accumulated operation index of each operation of a named update.
+    indices: Vec<usize>,
+    /// Slot-name lists that `summary.prefill` holds; slotted passes on them
+    /// update by index.
+    prefill_layouts: SlotLayouts,
     /// The same for `summary.decode`.
-    decode_names: Option<Arc<[String]>>,
+    decode_layouts: SlotLayouts,
+}
+
+/// Slot-name lists whose every name is an accumulated operation without
+/// diagnostics, each with the index of every name's operation. Accumulation
+/// only appends operations, so the indices stay valid until named evidence,
+/// which may attach diagnostics, arrives. Each list is kept alive here, so
+/// pointer identity cannot match a different, later list.
+#[derive(Default)]
+#[cfg(any(feature = "python", test))]
+struct SlotLayouts(Vec<SlotLayout>);
+
+/// A slot-name list and the accumulated operation index of each name.
+#[cfg(any(feature = "python", test))]
+type SlotLayout = (Arc<[String]>, Box<[usize]>);
+
+#[cfg(any(feature = "python", test))]
+impl SlotLayouts {
+    /// Name lists per phase; a replay records a few (pure passes, the parts
+    /// of mixed passes, encoder calls). Further lists take the checked path.
+    const CAPACITY: usize = 16;
+
+    fn get(&self, names: &Arc<[String]>) -> Option<&[usize]> {
+        self.0
+            .iter()
+            .find(|(known, _)| Arc::ptr_eq(known, names))
+            .map(|(_, indices)| &**indices)
+    }
+
+    /// Remember where `phase` holds each of `names`, when it holds them all
+    /// without diagnostics.
+    fn learn(&mut self, phase: &TimingPhaseEvidence, names: &Arc<[String]>) {
+        if self.0.len() >= Self::CAPACITY || names.is_empty() {
+            return;
+        }
+        let indices = names
+            .iter()
+            .map(|name| {
+                phase
+                    .operations
+                    .iter()
+                    .position(|operation| operation.name == *name && operation.details.is_none())
+            })
+            .collect::<Option<Box<[usize]>>>();
+        if let Some(indices) = indices {
+            self.0.push((Arc::clone(names), indices));
+        }
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+#[cfg(test)]
+impl TimingEvidenceAccumulator {
+    /// How many slot-name lists the prefill and decode phases update in place.
+    pub(crate) fn slot_layouts(&self) -> (usize, usize) {
+        (self.prefill_layouts.len(), self.decode_layouts.len())
+    }
 }
 
 #[cfg(any(feature = "python", test))]
@@ -618,9 +684,11 @@ struct OperationUpdate {
     sol: Option<crate::perfmodel::engine::diagnostics::SolDiagnostics>,
 }
 
-/// One incoming operation of an update aligned with the accumulated ones.
+/// One incoming operation and the index of its equally named accumulated
+/// operation.
 #[cfg(any(feature = "python", test))]
 struct IncomingOperation<'a> {
+    index: usize,
     latency_ms: f64,
     energy_wms: Option<f64>,
     covered_latency_ms: f64,
@@ -630,8 +698,9 @@ struct IncomingOperation<'a> {
 
 #[cfg(any(feature = "python", test))]
 impl<'a> IncomingOperation<'a> {
-    fn named(operation: &'a TimingOperationEvidence) -> Self {
+    fn named(index: usize, operation: &'a TimingOperationEvidence) -> Self {
         Self {
+            index,
             latency_ms: operation.latency_ms,
             energy_wms: operation.energy_wms,
             covered_latency_ms: operation.covered_latency_ms,
@@ -640,8 +709,9 @@ impl<'a> IncomingOperation<'a> {
         }
     }
 
-    fn slotted(operation: &'a OperationValues) -> Self {
+    fn slotted(index: usize, operation: &'a OperationValues) -> Self {
         Self {
+            index,
             latency_ms: operation.latency_ms,
             energy_wms: operation.energy_wms,
             covered_latency_ms: operation.covered_latency_ms,
@@ -651,19 +721,6 @@ impl<'a> IncomingOperation<'a> {
     }
 }
 
-/// Whether `phase` holds exactly the operations `names` lists, in order and
-/// without diagnostics.
-#[cfg(any(feature = "python", test))]
-fn matches_slot_names(phase: &TimingPhaseEvidence, names: &[String]) -> bool {
-    !names.is_empty()
-        && phase.operations.len() == names.len()
-        && phase
-            .operations
-            .iter()
-            .zip(names)
-            .all(|(operation, name)| operation.name == *name && operation.details.is_none())
-}
-
 #[cfg(any(feature = "python", test))]
 impl TimingEvidenceAccumulator {
     pub(crate) fn snapshot(&self) -> TimingEvidenceSummary {
@@ -671,38 +728,49 @@ impl TimingEvidenceAccumulator {
     }
 
     pub(crate) fn record(&mut self, incoming: &ValidatedTimingPhase, prefill: bool) -> Result<()> {
-        let (phase, names) = if prefill {
-            (&mut self.summary.prefill, &mut self.prefill_names)
+        let (phase, layouts) = if prefill {
+            (&mut self.summary.prefill, &mut self.prefill_layouts)
         } else {
-            (&mut self.summary.decode, &mut self.decode_names)
+            (&mut self.summary.decode, &mut self.decode_layouts)
         };
         match &incoming.0 {
-            // `phase` equals these slot names without diagnostics, so the
-            // named update would take the aligned path; skip its name checks.
-            ValidatedEvidence::Slotted(slotted)
-                if names
-                    .as_ref()
-                    .is_some_and(|names| Arc::ptr_eq(names, &slotted.names)) =>
-            {
-                Self::accumulate_aligned(
+            ValidatedEvidence::Slotted(slotted) => {
+                // `phase` holds these slot names without diagnostics, so the
+                // named update would add each value in place; skip its name
+                // lookups and copies.
+                if let Some(indices) = layouts.get(&slotted.names) {
+                    return Self::accumulate_at(
+                        phase,
+                        &mut self.pending,
+                        indices
+                            .iter()
+                            .zip(&slotted.operations)
+                            .map(|(&index, operation)| {
+                                IncomingOperation::slotted(index, operation)
+                            }),
+                        slotted.source.as_ref(),
+                    );
+                }
+                Self::record_named(
                     phase,
                     &mut self.pending,
-                    slotted.operations.iter().map(IncomingOperation::slotted),
-                    slotted.source.as_ref(),
-                )
-            }
-            ValidatedEvidence::Slotted(slotted) => {
-                Self::record_named(phase, &mut self.pending, Cow::Owned(slotted.to_named()))?;
-                *names =
-                    matches_slot_names(phase, &slotted.names).then(|| Arc::clone(&slotted.names));
+                    &mut self.indices,
+                    Cow::Owned(slotted.to_named()),
+                )?;
+                layouts.learn(phase, &slotted.names);
                 Ok(())
             }
             ValidatedEvidence::Named(incoming) => {
-                // Named operations may add names or diagnostics.
+                // Named operations may attach diagnostics.
                 if !incoming.operations.is_empty() {
-                    *names = None;
+                    layouts.clear();
                 }
-                Self::record_named(phase, &mut self.pending, Cow::Borrowed(incoming))
+                Self::record_named(
+                    phase,
+                    &mut self.pending,
+                    &mut self.indices,
+                    Cow::Borrowed(incoming),
+                )
             }
         }
     }
@@ -711,6 +779,7 @@ impl TimingEvidenceAccumulator {
     fn record_named(
         phase: &mut TimingPhaseEvidence,
         pending: &mut Vec<OperationUpdate>,
+        indices: &mut Vec<usize>,
         incoming: Cow<'_, TimingPhaseEvidence>,
     ) -> Result<()> {
         // Private provider inputs are empty or built from operations, so stored
@@ -727,37 +796,71 @@ impl TimingEvidenceAccumulator {
             return Ok(());
         }
         // Diagnostics merge in place when both sides carry them and no FPM
-        // estimates need counting; other layouts use the checked path.
+        // estimates need counting; new names and other layouts use the
+        // checked path.
         if phase.operations.is_empty()
             || incoming.operations.is_empty()
-            || phase.operations.len() != incoming.operations.len()
-            || !phase
-                .operations
-                .iter()
-                .zip(&incoming.operations)
-                .all(|(left, right)| {
-                    left.name == right.name
-                        && match (&left.details, &right.details) {
-                            (None, None) => true,
-                            (Some(_), Some(right)) => right.fpm_estimates.is_empty(),
-                            _ => false,
-                        }
-                })
+            || !Self::find_named(phase, &incoming, indices)
         {
             return phase.try_accumulate(incoming.into_owned());
         }
-        Self::accumulate_aligned(
+        Self::accumulate_at(
             phase,
             pending,
-            incoming.operations.iter().map(IncomingOperation::named),
+            indices
+                .iter()
+                .zip(&incoming.operations)
+                .map(|(&index, operation)| IncomingOperation::named(index, operation)),
             incoming.source.as_ref(),
         )
     }
 
-    /// Add `incoming` operation by operation to `phase`'s nonempty, equally
-    /// named operations, each pair carrying diagnostics on both sides or on
-    /// neither. `incoming_source` is the incoming phase's source.
-    fn accumulate_aligned<'a>(
+    /// Fill `indices` with the index of each incoming operation's equally
+    /// named accumulated operation. `false` when an operation has none, or
+    /// when exactly one of the pair carries diagnostics or the incoming one
+    /// carries FPM estimates to count.
+    fn find_named(
+        phase: &TimingPhaseEvidence,
+        incoming: &TimingPhaseEvidence,
+        indices: &mut Vec<usize>,
+    ) -> bool {
+        indices.clear();
+        for (position, right) in incoming.operations.iter().enumerate() {
+            // Names are unique on both sides: equal layouts align by position.
+            let index = phase
+                .operations
+                .get(position)
+                .is_some_and(|left| left.name == right.name)
+                .then_some(position)
+                .or_else(|| {
+                    phase
+                        .operations
+                        .iter()
+                        .position(|left| left.name == right.name)
+                });
+            let Some(index) = index else {
+                return false;
+            };
+            let mergeable = match (&phase.operations[index].details, &right.details) {
+                (None, None) => true,
+                (Some(_), Some(right)) => right.fpm_estimates.is_empty(),
+                _ => false,
+            };
+            if !mergeable {
+                return false;
+            }
+            indices.push(index);
+        }
+        true
+    }
+
+    /// Add each incoming operation to `phase`'s operation at its index, which
+    /// has the same name, each pair carrying diagnostics on both sides or on
+    /// neither. Other operations keep their values. `incoming_source` is the
+    /// incoming phase's source. Arithmetic, validation order and the phase
+    /// totals are the checked accumulator's, which merges each incoming
+    /// operation into its equally named one and reduces every operation again.
+    fn accumulate_at<'a>(
         phase: &mut TimingPhaseEvidence,
         pending: &mut Vec<OperationUpdate>,
         incoming: impl Iterator<Item = IncomingOperation<'a>> + Clone,
@@ -766,7 +869,14 @@ impl TimingEvidenceAccumulator {
         // Stage values before changing any public result. Match the checked
         // accumulator's arithmetic and validation order, including its errors.
         pending.clear();
-        for (left, right) in phase.operations.iter().zip(incoming.clone()) {
+        pending.extend(phase.operations.iter().map(|op| OperationUpdate {
+            latency_ms: op.latency_ms,
+            energy_wms: op.energy_wms,
+            covered_latency_ms: op.covered_latency_ms,
+            sol: None,
+        }));
+        for right in incoming.clone() {
+            let left = &phase.operations[right.index];
             let latency_ms = left.latency_ms + right.latency_ms;
             let covered_latency_ms = left.covered_latency_ms + right.covered_latency_ms;
             let energy_wms = match (left.energy_wms, right.energy_wms) {
@@ -784,7 +894,7 @@ impl TimingEvidenceAccumulator {
                 "invalid SOL evidence"
             );
             let energy_wms = energy_wms.filter(|energy| *energy > 0.0);
-            pending.push(OperationUpdate {
+            pending[right.index] = OperationUpdate {
                 latency_ms,
                 energy_wms,
                 covered_latency_ms: if energy_wms.is_some() {
@@ -793,7 +903,7 @@ impl TimingEvidenceAccumulator {
                     0.0
                 },
                 sol,
-            });
+            };
         }
 
         // Keep the same three reductions as reconcile_operation_totals.
@@ -806,7 +916,9 @@ impl TimingEvidenceAccumulator {
 
         // All fallible work is complete. Retain names and unchanged Other
         // source strings instead of copying them on each prediction.
-        for ((left, right), update) in phase.operations.iter_mut().zip(incoming).zip(&*pending) {
+        for right in incoming {
+            let left = &mut phase.operations[right.index];
+            let update = &mut pending[right.index];
             left.latency_ms = update.latency_ms;
             left.energy_wms = update.energy_wms;
             left.covered_latency_ms = update.covered_latency_ms;
@@ -814,7 +926,7 @@ impl TimingEvidenceAccumulator {
                 left.source = TimingEvidenceSource::Mixed;
             }
             if let (Some(left), Some(right)) = (&mut left.details, right.details) {
-                left.sol = update.sol.clone();
+                left.sol = update.sol.take();
                 merge_reason_and_fallbacks(left, right);
             }
         }
@@ -1060,6 +1172,95 @@ pub struct MixedPassMs {
     pub decode_ms: f64,
 }
 
+/// The prefill one attention-DP rank computes in a forward pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrefillWork {
+    /// Exact batch totals, as [`TimingModel::predict_prefill_totals_ms`]
+    /// receives them.
+    pub totals: PrefillTotals,
+    /// Per-request `(new_tokens, prefix_tokens)`, in no particular order.
+    pub requests: Vec<(usize, usize)>,
+}
+
+/// The decode batch one attention-DP rank computes in a forward pass, in the
+/// scheduler's terms. Lengths include each request's current input token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodeWork {
+    /// Real decode requests, before any speculative widening.
+    pub batch_size: usize,
+    /// Sum of the requests' logical context lengths.
+    pub active_kv_tokens: usize,
+    /// Integer mean of the context lengths, `active_kv_tokens / batch_size`.
+    pub mean_context_length: usize,
+    /// The scheduler's KV clamp, as [`TimingModel::predict_decode_ms`]
+    /// receives it as `total_kv_tokens`.
+    pub kv_bound_tokens: usize,
+    /// Per-request context lengths, in no particular order.
+    pub lengths: Vec<usize>,
+    /// Tokens each request verifies in this forward: one plus the configured
+    /// speculative (MTP) depth, or one without speculation.
+    pub verify_width: usize,
+}
+
+/// One attention-DP rank's model work in a group forward pass. An idle rank,
+/// or one that runs no model work, has neither prefill nor decode.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RankWork {
+    pub dp_rank: u32,
+    pub prefill: Option<PrefillWork>,
+    pub decode: Option<DecodeWork>,
+}
+
+impl RankWork {
+    /// A rank that computes nothing in the group pass.
+    pub const fn idle(dp_rank: u32) -> Self {
+        Self {
+            dp_rank,
+            prefill: None,
+            decode: None,
+        }
+    }
+
+    /// Whether the rank computes no model work.
+    pub const fn is_idle(&self) -> bool {
+        self.prefill.is_none() && self.decode.is_none()
+    }
+}
+
+/// One group forward pass priced as a single iteration, in milliseconds,
+/// before any modeled speedup.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IterationMs {
+    /// Duration shared by every rank of the group.
+    pub total_ms: f64,
+}
+
+/// Price one attention-DP group pass with `timing`'s
+/// [`TimingModel::predict_iteration_ms`], validating its duration.
+///
+/// A group on which no rank computes model work is not sent to the provider
+/// and returns `None`: every rank then resolves with its own phase pricing,
+/// which charges an idle pass nothing. Effect-free passes, such as a vLLM
+/// same-timestamp retry or an SGLang prefill-decode interval round, keep
+/// taking no time whatever overhead the provider adds to an iteration.
+pub(crate) fn predict_group_iteration_ms(
+    timing: &dyn TimingModel,
+    ranks: &[RankWork],
+) -> Result<Option<IterationMs>> {
+    if ranks.iter().all(RankWork::is_idle) {
+        return Ok(None);
+    }
+    let Some(iteration) = timing.predict_iteration_ms(ranks)? else {
+        return Ok(None);
+    };
+    ensure!(
+        iteration.total_ms.is_finite() && iteration.total_ms >= 0.0,
+        "iteration timing provider returned invalid duration {}ms",
+        iteration.total_ms
+    );
+    Ok(Some(iteration))
+}
+
 /// Runtime latency model injected at the engine boundary.
 ///
 /// Implementations may call AIC, interpolate profiler data, or use another
@@ -1127,6 +1328,19 @@ pub trait TimingModel: Send + Sync {
         _mean_context_length: usize,
         _total_kv_tokens: usize,
     ) -> Result<Option<MixedPassMs>> {
+        Ok(None)
+    }
+
+    /// Price one forward pass of an attention-DP group as a single iteration:
+    /// `ranks` holds every rank's work in DP-rank order, idle ranks included,
+    /// and every rank of the group ends at the returned shared duration.
+    /// Replay asks only while `decode_speedup_ratio` is 1, so the whole
+    /// duration takes one speedup, and only when some rank computes model
+    /// work.
+    ///
+    /// The default `None` keeps the per-rank phase methods above: each rank
+    /// prices its own work and the group ends with its slowest rank.
+    fn predict_iteration_ms(&self, _ranks: &[RankWork]) -> Result<Option<IterationMs>> {
         Ok(None)
     }
 
@@ -1268,7 +1482,7 @@ pub(crate) fn modeled_duration_ms(raw_ms: f64, speedup_ratio: f64) -> Result<f64
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -1406,6 +1620,140 @@ mod tests {
         assert_eq!(model.predict_decode_ms(0, 128, 64, 1024).unwrap(), 0.0);
         assert_eq!(model.predict_prefill_ms(2, 128, 0).unwrap(), 7.0);
         assert_eq!(model.predict_decode_ms(2, 128, 64, 1024).unwrap(), 3.0);
+    }
+
+    fn prefill_rank(dp_rank: u32) -> RankWork {
+        RankWork {
+            dp_rank,
+            prefill: Some(PrefillWork {
+                totals: PrefillTotals {
+                    batch_size: 1,
+                    new_tokens: 8,
+                    prefix_tokens: 0,
+                },
+                requests: vec![(8, 0)],
+            }),
+            decode: None,
+        }
+    }
+
+    fn decode_rank(dp_rank: u32) -> RankWork {
+        RankWork {
+            dp_rank,
+            prefill: None,
+            decode: Some(DecodeWork {
+                batch_size: 2,
+                active_kv_tokens: 18,
+                mean_context_length: 9,
+                kv_bound_tokens: 1024,
+                lengths: vec![9, 9],
+                verify_width: 1,
+            }),
+        }
+    }
+
+    #[test]
+    fn built_in_models_keep_per_rank_phase_pricing() {
+        for config in [
+            TimingModelConfig::Polynomial,
+            TimingModelConfig::Fixed {
+                prefill_ms: 7.0,
+                decode_ms: 3.0,
+            },
+        ] {
+            let model = built_in_timing_model(&config).unwrap();
+            let ranks = [prefill_rank(0), RankWork::idle(1)];
+            assert_eq!(model.predict_iteration_ms(&ranks).unwrap(), None);
+            assert_eq!(
+                predict_group_iteration_ms(model.as_ref(), &ranks).unwrap(),
+                None
+            );
+        }
+    }
+
+    /// Prices an iteration at a fixed per-iteration overhead plus 1 ms per
+    /// prefill token and 3 ms per decode request on the busiest rank, or at
+    /// `total_ms` when set, and counts its invocations.
+    #[derive(Default)]
+    struct OverheadTiming {
+        total_ms: Option<f64>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl OverheadTiming {
+        const OVERHEAD_MS: f64 = 5.0;
+
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl TimingModel for OverheadTiming {
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> Result<f64> {
+            unreachable!("iteration pricing only")
+        }
+
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> Result<f64> {
+            unreachable!("iteration pricing only")
+        }
+
+        fn predict_iteration_ms(&self, ranks: &[RankWork]) -> Result<Option<IterationMs>> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let busiest = ranks
+                .iter()
+                .map(|rank| {
+                    rank.prefill
+                        .as_ref()
+                        .map_or(0.0, |prefill| prefill.totals.new_tokens as f64)
+                        + rank
+                            .decode
+                            .as_ref()
+                            .map_or(0.0, |decode| 3.0 * decode.batch_size as f64)
+                })
+                .fold(0.0, f64::max);
+            Ok(Some(IterationMs {
+                total_ms: self.total_ms.unwrap_or(Self::OVERHEAD_MS + busiest),
+            }))
+        }
+    }
+
+    #[test]
+    fn an_all_idle_group_is_not_sent_to_the_iteration_provider() {
+        let timing = OverheadTiming::default();
+        // Hand oracle: 5 ms of overhead plus the 8-token prefill of rank 0,
+        // which outweighs rank 1's two 3 ms decode requests.
+        assert_eq!(
+            predict_group_iteration_ms(&timing, &[prefill_rank(0), decode_rank(1)]).unwrap(),
+            Some(IterationMs { total_ms: 13.0 })
+        );
+        assert_eq!(timing.calls(), 1);
+        // A group without model work would cost the bare overhead; it keeps
+        // per-rank pricing, which charges idle ranks nothing.
+        for idle in [
+            vec![RankWork::idle(0)],
+            vec![RankWork::idle(0), RankWork::idle(1)],
+        ] {
+            assert_eq!(predict_group_iteration_ms(&timing, &idle).unwrap(), None);
+        }
+        assert_eq!(timing.calls(), 1);
+    }
+
+    #[test]
+    fn group_iteration_rejects_an_invalid_provider_duration() {
+        let ranks = [prefill_rank(0), RankWork::idle(1)];
+        let priced = |total_ms| {
+            let timing = OverheadTiming {
+                total_ms: Some(total_ms),
+                ..OverheadTiming::default()
+            };
+            predict_group_iteration_ms(&timing, &ranks)
+        };
+        assert_eq!(priced(0.0).unwrap(), Some(IterationMs { total_ms: 0.0 }));
+        assert_eq!(priced(6.0).unwrap(), Some(IterationMs { total_ms: 6.0 }));
+        for invalid in [f64::NAN, -1.0, f64::INFINITY] {
+            assert!(priced(invalid).is_err(), "{invalid}");
+        }
     }
 
     #[test]
@@ -1836,7 +2184,7 @@ mod tests {
         polynomial.reset_evidence().unwrap();
     }
 
-    fn assert_phase_bits(actual: &TimingPhaseEvidence, expected: &TimingPhaseEvidence) {
+    pub(crate) fn assert_phase_bits(actual: &TimingPhaseEvidence, expected: &TimingPhaseEvidence) {
         assert_eq!(actual, expected);
         let numbers = |phase: &TimingPhaseEvidence| {
             let mut values = vec![
@@ -1926,10 +2274,7 @@ mod tests {
         .unwrap();
         let mut accumulator = TimingEvidenceAccumulator::default();
         accumulator.record(&first, false).unwrap();
-        assert!(Arc::ptr_eq(
-            accumulator.decode_names.as_ref().unwrap(),
-            &names
-        ));
+        assert_eq!(accumulator.decode_layouts.get(&names), Some(&[0, 1, 2][..]));
         accumulator.record(&second, false).unwrap();
         assert_eq!(
             accumulator.pending.len(),
@@ -1984,7 +2329,7 @@ mod tests {
         let mut slotted = TimingEvidenceAccumulator::default();
         let mut named = TimingEvidenceAccumulator::default();
         let mut checked = TimingEvidenceSummary::default();
-        let mut slot_updates = 0;
+        let mut slot_updates = [0; 2];
         for step in 0..2048 {
             let source = if step % 3 == 0 {
                 TimingEvidenceSource::Other("provider-specific".into())
@@ -2041,16 +2386,17 @@ mod tests {
                 ));
             }
             for (incoming, reference) in updates {
-                let by_slot = !prefill
-                    && matches!(incoming.0, ValidatedEvidence::Slotted(_))
-                    && slotted
-                        .decode_names
-                        .as_ref()
-                        .is_some_and(|marker| Arc::ptr_eq(marker, names));
-                slot_updates += usize::from(by_slot);
+                let layouts = if prefill {
+                    &slotted.prefill_layouts
+                } else {
+                    &slotted.decode_layouts
+                };
+                let by_slot = matches!(incoming.0, ValidatedEvidence::Slotted(_))
+                    && layouts.get(names).is_some();
+                slot_updates[usize::from(prefill)] += usize::from(by_slot);
                 slotted.record(&incoming, prefill).unwrap();
                 if named_decode {
-                    assert!(slotted.decode_names.is_none());
+                    assert_eq!(slotted.decode_layouts.len(), 0);
                 }
                 named.record(&reference, prefill).unwrap();
                 let phase = if prefill {
@@ -2068,13 +2414,17 @@ mod tests {
                 assert_phase_bits(&snapshot.decode, &checked.decode);
             }
         }
+        // Both layouts, the reordered subset included, update by slot. A
+        // foreign named prefill operation clears the prefill layouts, and the
+        // next slotted pass, which finds its operations still in place,
+        // restores them: half of the 293 prefill passes follow one.
         assert!(
-            slot_updates > 1000,
-            "slotted decode passes must update by slot"
+            slot_updates[0] > 1500,
+            "slotted decode passes must update by slot: {slot_updates:?}"
         );
         assert!(
-            slotted.prefill_names.is_none(),
-            "foreign operations keep names checked"
+            slot_updates[1] > 100,
+            "slotted prefill passes must update by slot: {slot_updates:?}"
         );
     }
 
@@ -2138,7 +2488,7 @@ mod tests {
                 slotted_pass(&names, (0..count).map(|_| (latency, energy, Silicon))).unwrap();
             let mut accumulator = TimingEvidenceAccumulator::default();
             accumulator.record(&incoming, false).unwrap();
-            assert!(accumulator.decode_names.is_some());
+            assert_eq!(accumulator.decode_layouts.len(), 1);
             let before = accumulator.snapshot();
             let expected = before
                 .decode
@@ -2153,7 +2503,7 @@ mod tests {
                 .unwrap();
             assert_phase_bits(&accumulator.snapshot().decode, &before.decode);
             assert!(
-                accumulator.decode_names.is_some(),
+                accumulator.decode_layouts.get(&names).is_some(),
                 "a failed pass keeps the slots"
             );
         }

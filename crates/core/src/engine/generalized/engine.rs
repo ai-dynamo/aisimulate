@@ -8,8 +8,13 @@ use anyhow::{Context, Result, bail, ensure};
 use super::contracts::{
     CommandContext, EngineEffects, EngineIdentity, EnginePassCompleted, EnginePassStarted,
     GeneralizedEngineConfig, PassId, RankEffects, RankEngine, RankIdentity, RankPassStarted,
-    SameTimestampRetry, SchedulerCommand,
+    SameTimestampRetry, ScheduledPass, SchedulerCommand,
 };
+use crate::engine::IterationMs;
+
+/// One rank's scheduled pass, by DP rank.
+type RankScheduledPass<C> =
+    ScheduledPass<<C as RankEngine>::PassStartEffects, <C as RankEngine>::PendingPass>;
 
 struct PendingRankPass<P> {
     dp_rank: u32,
@@ -238,24 +243,39 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
         for rank in &mut self.ranks {
             rank.prepare_group_pass(wave_step, self.dp_size);
         }
+        // Every ready rank commits its scheduling before any pricing: a
+        // rank's batch never depends on its duration, while an attention-DP
+        // group's duration depends on every rank's batch.
+        let mut scheduled = Vec::new();
         for dp_rank in 0..self.ranks.len() {
             if !self.ranks[dp_rank].is_ready() || self.ranks[dp_rank].waiting_for_external_command()
             {
                 continue;
             }
-            let pass = {
-                let rank = &mut self.ranks[dp_rank];
-                rank.execute_pass(now_ms)
-                    .with_context(|| format!("executing attention-DP rank {dp_rank}"))
-                    .and_then(|pass| {
-                        validate_time(pass.end_ms, "rank pass end time")?;
-                        ensure!(
-                            pass.end_ms >= now_ms,
-                            "attention-DP rank {dp_rank} completed before its pass started"
-                        );
-                        Ok(pass)
-                    })
-            };
+            let pass = self.ranks[dp_rank]
+                .schedule_pass(now_ms)
+                .with_context(|| format!("executing attention-DP rank {dp_rank}"));
+            let pass = pass.map_err(|error| self.poison(error))?;
+            scheduled.push((dp_rank, pass));
+        }
+        let iteration = self
+            .price_group_pass(&mut scheduled)
+            .map_err(|error| self.poison(error))?;
+        for (dp_rank, pass) in scheduled {
+            let pass = match pass {
+                ScheduledPass::Priced(pass) => Ok(pass),
+                ScheduledPass::Unpriced(_) => self.ranks[dp_rank]
+                    .resolve_pass(iteration.as_ref())
+                    .with_context(|| format!("executing attention-DP rank {dp_rank}")),
+            }
+            .and_then(|pass| {
+                validate_time(pass.end_ms, "rank pass end time")?;
+                ensure!(
+                    pass.end_ms >= now_ms,
+                    "attention-DP rank {dp_rank} completed before its pass started"
+                );
+                Ok(pass)
+            });
             let pass = pass.map_err(|error| self.poison(error))?;
             end_ms = end_ms.max(pass.end_ms);
             same_timestamp_retry = match (same_timestamp_retry, pass.same_timestamp_retry) {
@@ -442,6 +462,42 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
         self.poisoned.is_none()
             && self.pending_pass.is_none()
             && self.ranks.iter().all(RankEngine::is_drained)
+    }
+
+    /// Price one group pass with a single timing query when every executing
+    /// rank left its pass unpriced and every idle rank describes its share.
+    /// The ranks' work moves out of `scheduled`; the ranks retain their
+    /// passes. `None` resolves each rank with its own pricing.
+    fn price_group_pass(
+        &self,
+        scheduled: &mut [(usize, RankScheduledPass<C>)],
+    ) -> Result<Option<IterationMs>> {
+        let Some(&(pricer, _)) = scheduled.first() else {
+            return Ok(None);
+        };
+        if scheduled
+            .iter()
+            .any(|(_, pass)| matches!(pass, ScheduledPass::Priced(_)))
+        {
+            return Ok(None);
+        }
+        let mut work = Vec::with_capacity(self.ranks.len());
+        let mut executed = scheduled.iter_mut().peekable();
+        for (dp_rank, rank) in self.ranks.iter().enumerate() {
+            match executed.next_if(|(executed_rank, _)| *executed_rank == dp_rank) {
+                Some((_, ScheduledPass::Unpriced(rank_work))) => {
+                    work.push(std::mem::take(rank_work));
+                }
+                Some((_, ScheduledPass::Priced(_))) => unreachable!("checked above"),
+                None => match rank.idle_pass_work() {
+                    Some(idle) => work.push(idle),
+                    None => return Ok(None),
+                },
+            }
+        }
+        self.ranks[pricer]
+            .price_group_pass(&work)
+            .context("pricing the attention-DP group pass")
     }
 
     fn ensure_healthy(&self) -> Result<()> {

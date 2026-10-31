@@ -19,7 +19,7 @@
 //! orchestrated in Python — there is no Rust `run_agg`.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::FpmQueryCoverage;
 use crate::common::enums::EncoderParallel;
@@ -28,6 +28,7 @@ use crate::common::error::AicError;
 use crate::fpm::FpmExecutionBinding;
 use crate::operators::RuntimeContext;
 use crate::operators::base::PerformanceResult;
+use crate::operators::util_empirical::ProvenanceTier;
 use crate::operators::{FpmForwardOp, FpmPhase, Op};
 use crate::perf_database::PerfDatabase;
 use crate::perfmodel::engine::spec::{EncoderImageShape, EngineSpec, VisionSpec};
@@ -306,7 +307,12 @@ impl PerOpSlotFold {
 
     /// The folded values, once every name slot of `plan` was visited in order.
     fn into_values(self, plan: &OpListPlan) -> Result<Vec<PerOpSlotValue>, AicError> {
-        if self.misordered || (!self.entries.is_empty() && self.entries.len() != plan.names()) {
+        self.into_values_of(plan.names())
+    }
+
+    /// The folded values, once each of `names` slots was visited in order.
+    fn into_values_of(self, names: usize) -> Result<Vec<PerOpSlotValue>, AicError> {
+        if self.misordered || (!self.entries.is_empty() && self.entries.len() != names) {
             return Err(AicError::InvalidEngineConfig(
                 "static phase did not fold every operation name in slot order".into(),
             ));
@@ -393,6 +399,218 @@ impl RankOperationFold {
             .zip(self.sols)
             .map(|(entry, sol)| operation_diagnostics(entry, sol))
             .collect()
+    }
+}
+
+/// Name-folded operation values of one operation-graph rank: each name's
+/// `(latency_ms, energy_wms, source)`, value `k` named `names[k]`. Ranks that
+/// run the same walk share `names`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RankOperationValues {
+    pub(crate) names: Arc<[String]>,
+    pub(crate) values: Vec<PerOpSlotValue>,
+}
+
+/// What an operation-graph rank of [`Engine::forward_pass_ranks`] reports
+/// about the operations it executed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum RankDetail {
+    /// Name-folded values under shared names ([`RankOperationValues`]).
+    Values,
+    /// The operations [`Engine::forward_pass_estimate`] diagnostics report,
+    /// with their SOL comparison.
+    Diagnostics,
+}
+
+/// One rank of [`Engine::forward_pass_ranks`]: its native latency and, for an
+/// operation graph, the operations it executed, in the requested detail.
+#[derive(Debug)]
+pub(crate) struct RankPricing {
+    pub(crate) latency_ms: f64,
+    /// [`RankDetail::Values`]; `None` for whole-model FPM.
+    pub(crate) operations: Option<RankOperationValues>,
+    /// [`RankDetail::Diagnostics`] of an operation graph.
+    pub(crate) diagnostics: Option<Vec<super::diagnostics::StaticOperationDiagnostics>>,
+    /// The least-confident empirical tier the rank's lookups fired, noted
+    /// again whenever the memo answers in their place.
+    provenance: ProvenanceTier,
+}
+
+/// [`Engine::forward_pass_estimate`] keeping each rank's pricing: the rank
+/// maximum and every rank, idle ranks included.
+#[derive(Debug)]
+pub(crate) struct NativeIteration {
+    pub(crate) latency_ms: f64,
+    pub(crate) ranks: Vec<Arc<RankPricing>>,
+}
+
+/// What a rank dispatch ([`Engine::rank_latency_ms`]) observes besides its
+/// latency.
+enum RankObserver<'a> {
+    Latency,
+    /// Diagnostics: a whole-model rank's direct FPM lookups or an operation
+    /// graph's operations with their SOL comparison.
+    Diagnostics(&'a mut crate::FpmRankEstimate),
+    /// An operation graph's operation values; whole-model FPM leaves `None`.
+    Values(&'a mut Option<RankOperationValues>),
+}
+
+/// Every scheduled-work field a rank dispatch reads
+/// ([`Engine::rank_latency_ms`]): the five counters and the prefill-length
+/// variance bits, with the detail the entry keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct RankKey([u32; 5], u64, RankDetail);
+
+impl RankKey {
+    fn of(metrics: &ForwardPassMetrics, detail: RankDetail) -> Self {
+        let sched = &metrics.scheduled_requests;
+        Self(
+            [
+                sched.num_prefill_requests,
+                sched.sum_prefill_tokens,
+                sched.sum_prefill_kv_tokens,
+                sched.num_decode_requests,
+                sched.sum_decode_kv_tokens,
+            ],
+            sched.var_prefill_length.to_bits(),
+            detail,
+        )
+    }
+}
+
+/// Distinct rank workloads a memo keeps. A rank's pricing is a pure
+/// function of its key, so a hit returns exactly what the dispatch would.
+const RANK_MEMO_CAPACITY: usize = 4096;
+
+/// Name lists of walks without name slots (DSv4.1 stages) that
+/// [`Engine::shared_names`] keeps shared.
+const SHARED_NAME_LISTS: usize = 16;
+
+/// Name slots of the mix step's operations ([`get_mix_step_ops`]): every name
+/// its three passes visit, numbered in visit order, so slots arrive in
+/// first-encounter order like a phase walk's.
+#[derive(Debug)]
+struct MixStepPlan {
+    names: Arc<[String]>,
+    /// Slot of each context operation, which runs in the shared or the
+    /// context-attention pass.
+    context_slot: Vec<usize>,
+    /// Slot of each generation-attention operation; the decode-attention
+    /// pass runs no other generation operation.
+    generation_slot: Vec<Option<usize>>,
+}
+
+impl MixStepPlan {
+    fn new<'a>(context: &'a [Op], generation: &'a [Op]) -> Self {
+        let mut slots = HashMap::<&str, usize>::new();
+        let mut names = Vec::new();
+        let mut slot_of = |op: &'a Op| {
+            let name = op.name();
+            *slots.entry(name).or_insert_with(|| {
+                names.push(name.to_owned());
+                names.len() - 1
+            })
+        };
+        let mut context_slot = vec![0; context.len()];
+        // Pass 1 skips context attention, which pass 2 runs alone.
+        for attention in [false, true] {
+            for (index, op) in context.iter().enumerate() {
+                if op.is_context_attention() == attention {
+                    context_slot[index] = slot_of(op);
+                }
+            }
+        }
+        let generation_slot = generation
+            .iter()
+            .map(|op| op.is_generation_attention().then(|| slot_of(op)))
+            .collect();
+        Self {
+            names: names.into(),
+            context_slot,
+            generation_slot,
+        }
+    }
+}
+
+/// Name-folded values of an operation-graph rank without diagnostics, folded
+/// as [`RankOperationFold`] folds its executed values: by the name slots of
+/// the walk, or by name for a walk without slots.
+#[derive(Default)]
+struct RankValueFold {
+    /// The walk's slot names; `None` folds by name.
+    names: Option<Arc<[String]>>,
+    slots: Option<PerOpSlotFold>,
+    by_name: Option<PerOpFold>,
+}
+
+impl RankValueFold {
+    /// Start a walk over `names`' slots, or by name without them.
+    fn begin(&mut self, names: Option<&Arc<[String]>>) {
+        debug_assert!(self.slots.is_none() && self.by_name.is_none());
+        match names {
+            Some(names) => {
+                self.slots = Some(PerOpSlotFold {
+                    entries: Vec::with_capacity(names.len()),
+                    misordered: false,
+                });
+                self.names = Some(Arc::clone(names));
+            }
+            None => self.by_name = Some(PerOpFold::new("context")),
+        }
+    }
+
+    fn add(&mut self, slot: Option<usize>, op: &Op, mut result: PerformanceResult, divisor: f64) {
+        if divisor != 1.0 {
+            result.latency_ms /= divisor;
+            result.energy_wms /= divisor;
+        }
+        match (&mut self.slots, slot, &mut self.by_name) {
+            (Some(slots), Some(slot), _) => slots.add(slot, result),
+            (_, _, Some(by_name)) => by_name.add(op, result),
+            _ => {
+                if let Some(slots) = &mut self.slots {
+                    // A slotted walk reported an operation without a slot.
+                    slots.misordered = true;
+                }
+            }
+        }
+    }
+}
+
+/// How an operation-graph rank dispatch observes its executed operations.
+enum OperationObserver {
+    Latency,
+    Diagnostics(RankOperationFold),
+    Values(RankValueFold),
+}
+
+impl OperationObserver {
+    /// Start a walk whose operations have `names`' slots, or no slots.
+    fn begin(&mut self, names: Option<&Arc<[String]>>) {
+        if let Self::Values(fold) = self {
+            fold.begin(names);
+        }
+    }
+
+    /// Observe `op`'s raw `result` executed in `inference_phase` at the
+    /// `runtime` context, divided by the `divisor` its composition applies.
+    /// `slot` is its name slot in the walk's names.
+    fn add(
+        &mut self,
+        inference_phase: &'static str,
+        slot: Option<usize>,
+        op: &Op,
+        result: PerformanceResult,
+        divisor: f64,
+        runtime: impl FnOnce() -> RuntimeContext,
+    ) {
+        match self {
+            Self::Latency => {}
+            Self::Diagnostics(fold) => fold.add(inference_phase, op, result, divisor, |db| {
+                op.query(db, &runtime())
+            }),
+            Self::Values(fold) => fold.add(slot, op, result, divisor),
+        }
     }
 }
 
@@ -511,10 +729,26 @@ impl PerOpSolFold {
 
 /// Which of the three mixed-step passes produced a sinked per-op value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MixedPass {
+pub(crate) enum MixedPass {
     SharedNonAttention,
     ContextAttention,
     DecodeAttention,
+}
+
+/// How [`Engine::iteration_dispatch`] can price one attention-DP iteration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IterationDispatch {
+    /// No common forward-pass query: a v1 execution profile, or hybrid
+    /// whole-model FPM with operation-level draft tails.
+    Unsupported,
+    /// Whole-model FPM at exact per-rank iteration totals, decode KV excluding
+    /// each request's current token. A measured SD-round profile prices
+    /// exactly one rank; a mixed rank is its prefill plus a full decode round.
+    WholeModel { sd_round: bool },
+    /// An operation graph over packed decode counters: `verify_width` decode
+    /// tokens per request, each at its full context length. `mixed` when one
+    /// rank may compute prefill and decode in one mix step.
+    Operations { verify_width: u32, mixed: bool },
 }
 
 /// Compiled engine: precompiled op lists + the matching perf database.
@@ -553,6 +787,13 @@ pub struct Engine {
     /// [`EngineSpec::content_sha256`] of the spec this engine was built from.
     /// The engine keeps no spec bytes, so state snapshots record this value.
     spec_sha256: String,
+    /// Name slots of a mixed rank's mix step.
+    mix_plan: MixStepPlan,
+    /// Ranks priced without diagnostics or lookup coverage, by workload;
+    /// allocated on first use. See [`Self::rank_pricing`].
+    rank_memo: OnceLock<quick_cache::sync::Cache<RankKey, Arc<RankPricing>>>,
+    /// Name lists of walks without name slots, shared across ranks.
+    shared_names: Mutex<Vec<Arc<[String]>>>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -695,6 +936,9 @@ impl Engine {
                 },
             mixed_ops_supported: Self::supports_mixed_ops(&spec.context_ops, &spec.generation_ops),
             spec_sha256,
+            mix_plan: MixStepPlan::new(&spec.context_ops, &spec.generation_ops),
+            rank_memo: OnceLock::new(),
+            shared_names: Mutex::default(),
             context_plan: OpListPlan::new(&spec.context_ops),
             generation_plan: OpListPlan::new(&spec.generation_ops),
             context_ops: spec.context_ops,
@@ -1027,6 +1271,70 @@ impl Engine {
     /// Whether this engine prices measured complete speculative rounds.
     pub(crate) fn is_measured_speculative_round(&self) -> bool {
         self.fpm_execution_profile.is_some()
+    }
+
+    /// How the per-rank `ForwardPassMetrics` dispatch of
+    /// [`Self::forward_pass_time_ms`] can price an attention-DP iteration of
+    /// this engine. Decided from the compiled graph alone.
+    pub(crate) fn iteration_dispatch(&self) -> IterationDispatch {
+        if self.legacy_profile {
+            // v1 execution profiles reject every common forward-pass query.
+            return IterationDispatch::Unsupported;
+        }
+        match self.fpm_split() {
+            Some((_, _, ctx_tail, gen_tail)) => {
+                if !ctx_tail.is_empty()
+                    || !gen_tail.is_empty()
+                    || (self.nextn > 0 && self.fpm_execution_profile.is_none())
+                {
+                    // Hybrid draft tails have no packed-telemetry mapping.
+                    IterationDispatch::Unsupported
+                } else {
+                    IterationDispatch::WholeModel {
+                        sd_round: self.fpm_execution_profile.is_some(),
+                    }
+                }
+            }
+            None => IterationDispatch::Operations {
+                verify_width: self.nextn.saturating_add(1),
+                mixed: self.mixed_ops_supported,
+            },
+        }
+    }
+
+    /// The mix-step pass of every operation name a mixed operation-graph
+    /// rank of [`Self::forward_pass_estimate`] reports, as
+    /// [`get_mix_step_ops`] composes it: context attention runs in the
+    /// context-attention pass, generation attention in the decode-attention
+    /// pass and every other context operation in the shared non-attention
+    /// pass. `None` when name folding merges operations of different passes,
+    /// as for GLM-5.3 attention named alike in both phases, or when a mixed
+    /// rank is not a mix step: whole-model FPM, DSv4.1 stages, or measured
+    /// scopes without a mix-step composition.
+    pub(crate) fn mix_step_passes(&self) -> Option<HashMap<String, MixedPass>> {
+        if self.fpm_split().is_some() || self.has_dsv41_stages() || !self.mixed_ops_supported {
+            return None;
+        }
+        let context = self.context_ops.iter().map(|op| {
+            let pass = if op.is_context_attention() {
+                MixedPass::ContextAttention
+            } else {
+                MixedPass::SharedNonAttention
+            };
+            (op, pass)
+        });
+        let decode = self
+            .generation_ops
+            .iter()
+            .filter(|op| op.is_generation_attention())
+            .map(|op| (op, MixedPass::DecodeAttention));
+        let mut passes = HashMap::new();
+        for (op, pass) in context.chain(decode) {
+            if *passes.entry(op.name().to_owned()).or_insert(pass) != pass {
+                return None;
+            }
+        }
+        Some(passes)
     }
 
     /// Whether this engine supplies an unscaled STP whole-forward reference.
@@ -2933,6 +3241,77 @@ impl Engine {
         capture: bool,
         mut coverage: Option<&mut FpmQueryCoverage>,
     ) -> Result<crate::ForwardPassEstimate, AicError> {
+        self.check_iteration(metrics_by_rank)?;
+        let mut max_latency = 0.0_f64;
+        let mut max_rank = None;
+        let mut ranks = Vec::new();
+        for (rank, metrics) in metrics_by_rank.iter().enumerate() {
+            let rank_latency = if capture {
+                let mut evidence = crate::FpmRankEstimate {
+                    rank,
+                    ..Default::default()
+                };
+                let rank_latency = if coverage.is_none() && self.fpm_split().is_none() {
+                    // An operation graph reports only its operations, which
+                    // the memo keeps.
+                    let priced = self.rank_pricing(metrics, Some(RankDetail::Diagnostics), None)?;
+                    evidence.operations = priced.diagnostics.clone().unwrap_or_default();
+                    priced.latency_ms
+                } else {
+                    self.rank_latency_ms(
+                        metrics,
+                        RankObserver::Diagnostics(&mut evidence),
+                        coverage.as_deref_mut(),
+                    )?
+                };
+                evidence.latency_ms = rank_latency;
+                ranks.push(evidence);
+                rank_latency
+            } else {
+                self.rank_pricing(metrics, None, coverage.as_deref_mut())?
+                    .latency_ms
+            };
+            if rank_latency > max_latency {
+                max_latency = rank_latency;
+                max_rank = Some(rank);
+            }
+        }
+        Ok(crate::ForwardPassEstimate {
+            unavailable_reason: None,
+            latency_ms: Some(max_latency),
+            native_latency_ms: Some(max_latency),
+            correction_factor: Some(1.0),
+            max_rank,
+            ranks,
+        })
+    }
+
+    /// [`Self::forward_pass_estimate`] keeping each rank's pricing: its
+    /// native latency and, for an operation graph, the operations it
+    /// executed in `detail`: their values under names shared by every rank
+    /// that runs the same walk, or the diagnostics the detailed estimate
+    /// reports. Whole-model FPM ranks report neither; their direct-lookup
+    /// evidence needs [`Self::forward_pass_estimate`].
+    pub(crate) fn forward_pass_ranks(
+        &self,
+        metrics_by_rank: &[ForwardPassMetrics],
+        detail: RankDetail,
+        mut coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<NativeIteration, AicError> {
+        self.check_iteration(metrics_by_rank)?;
+        let mut latency_ms = 0.0_f64;
+        let mut ranks = Vec::with_capacity(metrics_by_rank.len());
+        for metrics in metrics_by_rank {
+            let rank = self.rank_pricing(metrics, Some(detail), coverage.as_deref_mut())?;
+            if rank.latency_ms > latency_ms {
+                latency_ms = rank.latency_ms;
+            }
+            ranks.push(rank);
+        }
+        Ok(NativeIteration { latency_ms, ranks })
+    }
+
+    fn check_iteration(&self, metrics_by_rank: &[ForwardPassMetrics]) -> Result<(), AicError> {
         self.require_common_profile()?;
         if metrics_by_rank.is_empty() {
             return Err(AicError::InvalidForwardPassMetrics(
@@ -2947,36 +3326,123 @@ impl Engine {
         for metrics in metrics_by_rank {
             validate_forward_pass_metrics(metrics)?;
         }
-        let mut max_latency = 0.0_f64;
-        let mut max_rank = None;
-        let mut ranks = Vec::new();
-        for (rank, metrics) in metrics_by_rank.iter().enumerate() {
-            let mut evidence = crate::FpmRankEstimate {
-                rank,
-                ..Default::default()
-            };
-            let rank_latency = self.rank_latency_ms(
-                metrics,
-                capture.then_some(&mut evidence),
-                coverage.as_deref_mut(),
-            )?;
-            if rank_latency > max_latency {
-                max_latency = rank_latency;
-                max_rank = Some(rank);
-            }
-            if capture {
-                evidence.latency_ms = rank_latency;
-                ranks.push(evidence);
-            }
+        Ok(())
+    }
+
+    /// One rank's dispatch, observing its operations in `detail`. Without
+    /// lookup `coverage`, which counts every lookup, a bounded memo keyed by
+    /// the rank's [`RankKey`] answers repeated workloads: the dispatch reads
+    /// nothing else and the engine is immutable, so a hit returns the
+    /// dispatch's own latency and operations and notes again the empirical
+    /// provenance tier its lookups fired. Without a `detail`, the memo keeps
+    /// operation values. Whole-model diagnostics are never memoized: their
+    /// direct lookups are evidence of each call.
+    fn rank_pricing(
+        &self,
+        metrics: &ForwardPassMetrics,
+        detail: Option<RankDetail>,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<Arc<RankPricing>, AicError> {
+        if coverage.is_some()
+            || (detail == Some(RankDetail::Diagnostics) && self.fpm_split().is_some())
+        {
+            return self.price_rank(metrics, detail, coverage).map(Arc::new);
         }
-        Ok(crate::ForwardPassEstimate {
-            unavailable_reason: None,
-            latency_ms: Some(max_latency),
-            native_latency_ms: Some(max_latency),
-            correction_factor: Some(1.0),
-            max_rank,
-            ranks,
+        let detail = detail.unwrap_or(RankDetail::Values);
+        let memo = self
+            .rank_memo
+            .get_or_init(|| quick_cache::sync::Cache::new(RANK_MEMO_CAPACITY));
+        let key = RankKey::of(metrics, detail);
+        if let Some(rank) = memo.get(&key) {
+            if rank.provenance != ProvenanceTier::Silicon {
+                self.db.note_provenance(rank.provenance);
+            }
+            return Ok(rank);
+        }
+        // Observe exactly the tiers this dispatch fires, then restore the
+        // caller's: the accumulator keeps the maximum of both either way.
+        let outer = self.db.take_provenance();
+        let priced = self.price_rank(metrics, Some(detail), None);
+        self.db.note_provenance(outer);
+        let rank = Arc::new(priced?);
+        memo.insert(key, Arc::clone(&rank));
+        Ok(rank)
+    }
+
+    /// One rank's dispatch with its operations in `detail`, and the tiers
+    /// its lookups fired since the accumulator was last taken.
+    fn price_rank(
+        &self,
+        metrics: &ForwardPassMetrics,
+        detail: Option<RankDetail>,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<RankPricing, AicError> {
+        let mut values = None;
+        let mut evidence = crate::FpmRankEstimate::default();
+        let observer = match detail {
+            None => RankObserver::Latency,
+            Some(RankDetail::Values) => RankObserver::Values(&mut values),
+            Some(RankDetail::Diagnostics) => RankObserver::Diagnostics(&mut evidence),
+        };
+        let latency_ms = self.rank_latency_ms(metrics, observer, coverage)?;
+        let diagnostics = (detail == Some(RankDetail::Diagnostics) && self.fpm_split().is_none())
+            .then_some(evidence.operations);
+        Ok(RankPricing {
+            latency_ms,
+            operations: values,
+            diagnostics,
+            provenance: self.db.worst_provenance(),
         })
+    }
+
+    /// `names` as an equal list kept by [`Self::shared_names`], so ranks
+    /// that fold by name share it like slot names.
+    fn shared_names(&self, names: Vec<String>) -> Arc<[String]> {
+        let Ok(mut shared) = self.shared_names.lock() else {
+            return names.into();
+        };
+        if let Some(known) = shared.iter().find(|known| ***known == *names) {
+            return Arc::clone(known);
+        }
+        let names: Arc<[String]> = names.into();
+        if shared.len() < SHARED_NAME_LISTS {
+            shared.push(Arc::clone(&names));
+        }
+        names
+    }
+
+    /// The values a [`RankValueFold`] folded, under shared names.
+    fn rank_operation_values(&self, fold: RankValueFold) -> Result<RankOperationValues, AicError> {
+        let (names, values) = match (fold.names, fold.slots, fold.by_name) {
+            (Some(names), Some(slots), _) => {
+                let values = slots.into_values_of(names.len()).map_err(|_| {
+                    AicError::InvalidEngineConfig(
+                        "operation-graph rank did not fold every operation name in slot order"
+                            .into(),
+                    )
+                })?;
+                (names, values)
+            }
+            (_, _, Some(by_name)) => {
+                let (names, values): (Vec<_>, Vec<_>) = by_name
+                    .into_values()
+                    .into_iter()
+                    .map(|(name, latency_ms, energy_wms, source, _)| {
+                        (name, (latency_ms, energy_wms, source))
+                    })
+                    .unzip();
+                (self.shared_names(names), values)
+            }
+            _ => (Arc::from([]), Vec::new()),
+        };
+        if values.is_empty() {
+            // A walk that executed no operation has no names either.
+            return Ok(RankOperationValues {
+                names: Arc::from([]),
+                values,
+            });
+        }
+        Ok(RankOperationValues { names, values })
     }
 
     /// Dispatch one rank's FPM on its scheduled workload. Literal port of
@@ -2984,14 +3450,20 @@ impl Engine {
     /// prefill+decode -> mix step ([`get_mix_step_ops`]); prefill-only ->
     /// [`run_context_ops`]; decode-only -> [`run_generation_ops_step`]. The FPM
     /// counts pass through unscaled (no `nextn` multiplier — see
-    /// [`Self::forward_pass_time_ms`]). With `evidence`, a whole-model FPM
-    /// rank records its direct lookups and an operation graph its operations.
+    /// [`Self::forward_pass_time_ms`]). With diagnostics, a whole-model FPM
+    /// rank records its direct lookups and an operation graph its operations;
+    /// with values, an operation graph keeps its operations' values.
     fn rank_latency_ms(
         &self,
         metrics: &ForwardPassMetrics,
-        mut evidence: Option<&mut crate::FpmRankEstimate>,
+        observer: RankObserver<'_>,
         mut coverage: Option<&mut FpmQueryCoverage>,
     ) -> Result<f64, AicError> {
+        let (mut evidence, values) = match observer {
+            RankObserver::Latency => (None, None),
+            RankObserver::Diagnostics(evidence) => (Some(evidence), None),
+            RankObserver::Values(values) => (None, Some(values)),
+        };
         let sched = &metrics.scheduled_requests;
         // Token-based dispatch, aligned with `IterationFeatures` (fpm/model.rs):
         // a fully prefix-cached payload can retain prefill request/KV metadata
@@ -3102,11 +3574,21 @@ impl Engine {
             return Ok(total);
         }
 
-        let mut operations = evidence.as_ref().map(|_| RankOperationFold::new(&self.db));
+        let mut operations = match (&evidence, &values) {
+            (Some(_), _) => OperationObserver::Diagnostics(RankOperationFold::new(&self.db)),
+            (None, Some(_)) => OperationObserver::Values(RankValueFold::default()),
+            (None, None) => OperationObserver::Latency,
+        };
         let latency_ms =
-            self.operation_rank_latency_ms(sched, has_prefill, has_decode, operations.as_mut())?;
-        if let (Some(evidence), Some(operations)) = (evidence, operations) {
-            evidence.operations = operations.into_operations();
+            self.operation_rank_latency_ms(sched, has_prefill, has_decode, &mut operations)?;
+        match (operations, evidence, values) {
+            (OperationObserver::Diagnostics(operations), Some(evidence), _) => {
+                evidence.operations = operations.into_operations();
+            }
+            (OperationObserver::Values(fold), _, Some(values)) => {
+                *values = Some(self.rank_operation_values(fold)?);
+            }
+            _ => {}
         }
         Ok(latency_ms)
     }
@@ -3119,7 +3601,7 @@ impl Engine {
         sched: &crate::ScheduledRequestMetrics,
         has_prefill: bool,
         has_decode: bool,
-        mut operations: Option<&mut RankOperationFold>,
+        operations: &mut OperationObserver,
     ) -> Result<f64, AicError> {
         if self.has_dsv41_stages() {
             // Retain every scheduled token in balanced aggregate telemetry;
@@ -3144,6 +3626,8 @@ impl Engine {
                     }
                 }
             }
+            // Stage children have no name slots.
+            operations.begin(None);
             return self
                 .dsv41_mixed_workload(
                     &prefills,
@@ -3152,15 +3636,13 @@ impl Engine {
                     1.0,
                     1.0,
                     |pass, op, runtime, result| {
-                        if let Some(operations) = operations.as_deref_mut() {
-                            // A decode-only rank runs the generation graph.
-                            let phase = if has_prefill && pass != MixedPass::DecodeAttention {
-                                "context"
-                            } else {
-                                "generation"
-                            };
-                            operations.add(phase, op, result, 1.0, |db| op.query(db, runtime));
-                        }
+                        // A decode-only rank runs the generation graph.
+                        let phase = if has_prefill && pass != MixedPass::DecodeAttention {
+                            "context"
+                        } else {
+                            "generation"
+                        };
+                        operations.add(phase, None, op, result, 1.0, || *runtime);
                     },
                 )
                 .map(|parts| parts[0]);
@@ -3179,6 +3661,8 @@ impl Engine {
             let kv_per_req = sched.sum_decode_kv_tokens / n_decode;
             let ctx_tokens = sched.sum_prefill_tokens;
             let gen_tokens = sched.num_decode_requests;
+            let plan = &self.mix_plan;
+            operations.begin(Some(&plan.names));
             return get_mix_step_ops(
                 &self.context_ops,
                 &self.generation_ops,
@@ -3190,11 +3674,13 @@ impl Engine {
                 sched.sum_prefill_kv_tokens,
                 kv_per_req,
                 n_decode,
-                |context, op, runtime, result, divisor| {
-                    if let Some(operations) = operations.as_deref_mut() {
-                        let phase = if context { "context" } else { "generation" };
-                        operations.add(phase, op, result, divisor, |db| op.query(db, runtime));
-                    }
+                |context, index, op, runtime, result, divisor| {
+                    let (phase, slot) = if context {
+                        ("context", Some(plan.context_slot[index]))
+                    } else {
+                        ("generation", plan.generation_slot[index])
+                    };
+                    operations.add(phase, slot, op, result, divisor, || *runtime);
                 },
             );
         }
@@ -3205,8 +3691,8 @@ impl Engine {
             let n_prefill = sched.num_prefill_requests.max(1);
             let new_tokens_per_req = sched.sum_prefill_tokens / n_prefill;
             let prefix_per_req = sched.sum_prefill_kv_tokens / n_prefill;
-            total += match operations.as_deref_mut() {
-                None => run_context_ops(
+            total += match &mut *operations {
+                OperationObserver::Latency => run_context_ops(
                     &self.context_ops,
                     &self.db,
                     n_prefill,
@@ -3215,28 +3701,34 @@ impl Engine {
                     1.0,
                     ContextOpFilter::All,
                 )?,
-                Some(operations) => run_context_ops_with(
-                    &self.context_ops,
-                    &self.db,
-                    n_prefill,
-                    new_tokens_per_req,
-                    prefix_per_req,
-                    1.0,
-                    ContextOpFilter::All,
-                    |op, result| {
-                        operations.add("context", op, result, 1.0, |db| {
-                            let runtime = context_op_runtime(
-                                op,
-                                n_prefill,
-                                new_tokens_per_req,
-                                prefix_per_req,
-                                1.0,
-                                None,
-                            );
-                            op.query(db, &runtime)
-                        });
-                    },
-                )?,
+                operations => {
+                    // The walk visits every op in order, so names fold by
+                    // the plan's first-encounter slots.
+                    operations.begin(Some(self.context_plan.slot_names()));
+                    run_context_ops_planned(
+                        &self.context_ops,
+                        None,
+                        &self.db,
+                        n_prefill,
+                        new_tokens_per_req,
+                        prefix_per_req,
+                        1.0,
+                        ContextOpFilter::All,
+                        |index, op, result| {
+                            let slot = Some(self.context_plan.name_slot(index));
+                            operations.add("context", slot, op, result, 1.0, || {
+                                context_op_runtime(
+                                    op,
+                                    n_prefill,
+                                    new_tokens_per_req,
+                                    prefix_per_req,
+                                    1.0,
+                                    None,
+                                )
+                            });
+                        },
+                    )?
+                }
             };
         }
 
@@ -3244,18 +3736,19 @@ impl Engine {
             let n_decode = sched.num_decode_requests.max(1);
             let kv_per_req = sched.sum_decode_kv_tokens / n_decode;
             let runtime = generation_op_runtime(n_decode, 1, kv_per_req, 1.0, 0, None);
-            total += run_generation_ops_step_beamed_with(
+            operations.begin(Some(self.generation_plan.slot_names()));
+            total += run_generation_ops_step_planned(
                 &self.generation_ops,
+                None,
                 &self.db,
                 n_decode,
                 1,
                 kv_per_req,
                 1.0,
                 false,
-                |op, result| {
-                    if let Some(operations) = operations.as_deref_mut() {
-                        operations.add("generation", op, result, 1.0, |db| op.query(db, &runtime));
-                    }
+                |index, op, result| {
+                    let slot = Some(self.generation_plan.name_slot(index));
+                    operations.add("generation", slot, op, result, 1.0, || runtime);
                 },
             )?;
         }
@@ -3942,6 +4435,31 @@ pub(crate) mod tests {
         config.database_mode = DatabaseMode::Hybrid;
         let spec = EngineSpec::new(config, glm_layer_ops(true), glm_layer_ops(false));
         Engine::build(spec, Arc::new(db)).unwrap()
+    }
+
+    #[test]
+    fn mix_step_passes_name_each_folded_operation_or_decline_merged_names() {
+        // The fixture's mix step: every context operation but context
+        // attention is shared, and generation attention is decode.
+        let passes = build_engine(None).mix_step_passes().unwrap();
+        let mut expected = context_ops()
+            .iter()
+            .map(|op| {
+                let pass = if op.name() == "context_attention" {
+                    MixedPass::ContextAttention
+                } else {
+                    MixedPass::SharedNonAttention
+                };
+                (op.name().to_owned(), pass)
+            })
+            .collect::<HashMap<_, _>>();
+        expected.insert("generation_attention".into(), MixedPass::DecodeAttention);
+        assert!(expected.len() > 2);
+        assert_eq!(passes, expected);
+        // GLM-5.3 runs `attention_{layer}` in both attention passes, which
+        // name folding merges; DSv4.1 stages compose their own mixed work.
+        assert!(glm_layer_engine().mix_step_passes().is_none());
+        assert!(dsv41_probe_engine(false).mix_step_passes().is_none());
     }
 
     fn per_op_bits(entries: &[PerOpValueWithMetadata]) -> Vec<(String, u64, u64, &'static str)> {
@@ -4652,6 +5170,285 @@ pub(crate) mod tests {
                     "{names:?}"
                 );
             }
+        }
+    }
+
+    /// `ranks` priced without diagnostics: each rank's latency and operation
+    /// values, bit for bit, are those its diagnostics report (the oracle of
+    /// `operation_rank_evidence_matches_static_phases_and_sums_to_each_rank`).
+    fn assert_rank_values_match_diagnostics(
+        engine: &Engine,
+        ranks: &[ForwardPassMetrics],
+    ) -> NativeIteration {
+        let detailed = assert_rank_operations_sum(engine, ranks);
+        let iteration = engine
+            .forward_pass_ranks(ranks, RankDetail::Values, None)
+            .unwrap();
+        assert_eq!(
+            iteration.latency_ms.to_bits(),
+            engine.forward_pass_time_ms(ranks).unwrap().to_bits()
+        );
+        assert_eq!(iteration.ranks.len(), ranks.len());
+        for (rank, diagnostics) in iteration.ranks.iter().zip(&detailed) {
+            assert_eq!(rank.latency_ms.to_bits(), diagnostics.latency_ms.to_bits());
+            let operations = rank.operations.as_ref().unwrap();
+            assert_eq!(operations.names.len(), operations.values.len());
+            let actual: Vec<_> = operations
+                .names
+                .iter()
+                .zip(&operations.values)
+                .map(|(name, (latency_ms, energy_wms, source))| {
+                    (
+                        name.clone(),
+                        latency_ms.to_bits(),
+                        energy_wms.to_bits(),
+                        source.to_string(),
+                    )
+                })
+                .collect();
+            let expected: Vec<_> = diagnostics
+                .operations
+                .iter()
+                .map(|op| {
+                    (
+                        op.name.clone(),
+                        op.latency_ms.to_bits(),
+                        op.energy_wms.to_bits(),
+                        op.source.clone(),
+                    )
+                })
+                .collect();
+            assert_eq!(actual, expected);
+        }
+        iteration
+    }
+
+    fn rank_names(iteration: &NativeIteration, rank: usize) -> &Arc<[String]> {
+        &iteration.ranks[rank].operations.as_ref().unwrap().names
+    }
+
+    #[test]
+    fn rank_values_match_diagnostics_under_shared_names() {
+        for nextn in [None, Some(2)] {
+            let engine = build_engine(nextn);
+            let width = nextn.unwrap_or(0) + 1;
+            let ranks = [
+                rank_fpm(2, 1024, 256, 0, 0),
+                rank_fpm(0, 0, 0, 4 * width, 4 * width * 513),
+                rank_fpm(1, 256, 0, 4 * width, 4 * width * 513),
+                ForwardPassMetrics::default(),
+                rank_fpm(3, 300, 0, 0, 0),
+                rank_fpm(0, 0, 0, width, width * 2049),
+                rank_fpm(2, 100, 50, 2 * width, 2 * width * 4097),
+            ];
+            let iteration = assert_rank_values_match_diagnostics(&engine, &ranks);
+            // Every rank that runs the same walk shares its name list: the
+            // phase plans' for pure ranks, the mix step's for mixed ranks.
+            for (rank, names) in [
+                (0, engine.context_plan.slot_names()),
+                (4, engine.context_plan.slot_names()),
+                (1, engine.generation_plan.slot_names()),
+                (5, engine.generation_plan.slot_names()),
+                (2, &engine.mix_plan.names),
+                (6, &engine.mix_plan.names),
+            ] {
+                assert!(Arc::ptr_eq(rank_names(&iteration, rank), names), "{rank}");
+            }
+            let idle = iteration.ranks[3].operations.as_ref().unwrap();
+            assert!(idle.names.is_empty() && idle.values.is_empty());
+        }
+        // GLM-5.3 names attention alike in both attention passes: the mix
+        // step folds both into one name, as diagnostics do.
+        let engine = glm_layer_engine();
+        let iteration = assert_rank_values_match_diagnostics(
+            &engine,
+            &[
+                rank_fpm(1, 512, 0, 0, 0),
+                rank_fpm(0, 0, 0, 8, 8 * 1025),
+                rank_fpm(1, 512, 0, 8, 8 * 1025),
+            ],
+        );
+        assert!(Arc::ptr_eq(
+            rank_names(&iteration, 2),
+            &engine.mix_plan.names
+        ));
+        // DSv4.1 stage children fold by name; equal lists are shared.
+        for replay in [false, true] {
+            let engine = dsv41_probe_engine(replay);
+            let first = assert_rank_values_match_diagnostics(
+                &engine,
+                &[
+                    rank_fpm(1, 129, 1024, 0, 0),
+                    rank_fpm(0, 0, 0, 2, 2 * 1025),
+                    rank_fpm(1, 129, 1024, 2, 2 * 1025),
+                ],
+            );
+            let second = assert_rank_values_match_diagnostics(
+                &engine,
+                &[
+                    rank_fpm(1, 257, 512, 0, 0),
+                    rank_fpm(0, 0, 0, 3, 3 * 2049),
+                    rank_fpm(1, 257, 512, 3, 3 * 2049),
+                ],
+            );
+            for rank in 0..3 {
+                assert!(Arc::ptr_eq(
+                    rank_names(&first, rank),
+                    rank_names(&second, rank)
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn rank_memo_answers_repeated_workloads_with_the_dispatch_result() {
+        let engine = build_engine(None);
+        let ranks = [
+            rank_fpm(2, 1024, 256, 0, 0),
+            rank_fpm(0, 0, 0, 4, 4 * 513),
+            rank_fpm(1, 256, 0, 4, 4 * 513),
+        ];
+        let memo_len = |engine: &Engine| engine.rank_memo.get().map_or(0, |memo| memo.len());
+        assert_eq!(memo_len(&engine), 0);
+        let first = engine
+            .forward_pass_ranks(&ranks, RankDetail::Values, None)
+            .unwrap();
+        assert_eq!(memo_len(&engine), 3);
+        // A hit is the stored pricing, which a fresh dispatch reproduces.
+        let again = engine
+            .forward_pass_ranks(&ranks, RankDetail::Values, None)
+            .unwrap();
+        assert_eq!(memo_len(&engine), 3);
+        assert_eq!(again.latency_ms.to_bits(), first.latency_ms.to_bits());
+        for (rank, metrics) in again.ranks.iter().zip(&ranks) {
+            assert!(first.ranks.iter().any(|stored| Arc::ptr_eq(stored, rank)));
+            let fresh = engine
+                .price_rank(metrics, Some(RankDetail::Values), None)
+                .unwrap();
+            assert_eq!(rank.latency_ms.to_bits(), fresh.latency_ms.to_bits());
+            assert_eq!(rank.operations, fresh.operations);
+        }
+        // Latency-only queries read the same entries.
+        assert_eq!(
+            engine.forward_pass_time_ms(&ranks).unwrap().to_bits(),
+            first.latency_ms.to_bits()
+        );
+        assert_eq!(memo_len(&engine), 3);
+        // Diagnostics are kept apart, and a hit reports every operation
+        // with its SOL comparison as the dispatch did.
+        let detailed = engine.forward_pass_estimate(&ranks, true, None).unwrap();
+        assert_eq!(memo_len(&engine), 6);
+        assert_eq!(
+            engine.forward_pass_estimate(&ranks, true, None).unwrap(),
+            detailed
+        );
+        assert_eq!(memo_len(&engine), 6);
+        for (rank, metrics) in detailed.ranks.iter().zip(&ranks) {
+            let fresh = engine
+                .price_rank(metrics, Some(RankDetail::Diagnostics), None)
+                .unwrap();
+            assert_eq!(Some(&rank.operations), fresh.diagnostics.as_ref());
+            assert_eq!(rank.latency_ms.to_bits(), fresh.latency_ms.to_bits());
+        }
+        assert_rank_operations_sum(&engine, &ranks);
+        // The memo stays bounded however many workloads replay prices.
+        for tokens in 1..=(RANK_MEMO_CAPACITY as u32 + 512) {
+            engine
+                .forward_pass_time_ms(&[rank_fpm(0, 0, 0, 1, tokens)])
+                .unwrap();
+        }
+        assert!(
+            memo_len(&engine) <= RANK_MEMO_CAPACITY,
+            "{}",
+            memo_len(&engine)
+        );
+    }
+
+    #[test]
+    fn rank_memo_never_answers_for_lookup_coverage_or_query_evidence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = full_round_engine(tmp.path());
+        let prefill = [rank_fpm(1, 256, 128, 0, 0)];
+        let lookups = |coverage: &FpmQueryCoverage| {
+            let counts = &coverage.queries;
+            counts.measured + counts.interpolated + counts.unsupported
+        };
+        let mut coverage = FpmQueryCoverage::default();
+        let covered = engine
+            .forward_pass_time_ms_with_coverage(&prefill, Some(&mut coverage))
+            .unwrap();
+        let per_query = lookups(&coverage);
+        assert!(per_query > 0);
+        // Uncovered queries fill the memo...
+        for _ in 0..2 {
+            assert_eq!(engine.forward_pass_time_ms(&prefill).unwrap(), covered);
+        }
+        assert_eq!(engine.rank_memo.get().unwrap().len(), 1);
+        // ...which neither answers nor joins a covered query: every
+        // invocation is counted, and coverage leaves no entry.
+        for repeat in 2..=3 {
+            engine
+                .forward_pass_time_ms_with_coverage(&prefill, Some(&mut coverage))
+                .unwrap();
+            assert_eq!(lookups(&coverage), repeat * per_query);
+        }
+        engine
+            .forward_pass_time_ms_with_coverage(&[rank_fpm(1, 384, 128, 0, 0)], Some(&mut coverage))
+            .unwrap();
+        assert_eq!(engine.rank_memo.get().unwrap().len(), 1);
+        // Diagnostics record their direct lookups on every call.
+        let fresh = full_round_engine(tmp.path());
+        let expected = fresh.forward_pass_estimate(&prefill, true, None).unwrap();
+        assert!(!expected.ranks[0].queries.is_empty());
+        for _ in 0..2 {
+            assert_eq!(
+                engine.forward_pass_estimate(&prefill, true, None).unwrap(),
+                expected
+            );
+        }
+        // Whole-model ranks keep no operation values.
+        let iteration = engine
+            .forward_pass_ranks(&prefill, RankDetail::Values, None)
+            .unwrap();
+        assert!(iteration.ranks[0].operations.is_none());
+        assert_eq!(iteration.latency_ms, covered);
+    }
+
+    #[test]
+    fn rank_memo_notes_the_provenance_its_lookups_fired() {
+        let engine = build_engine(None);
+        let ranks = [rank_fpm(2, 1024, 256, 0, 0), rank_fpm(0, 0, 0, 4, 4 * 513)];
+        // Reference: the tiers a dispatch fires on a fresh accumulator.
+        engine.reset_provenance();
+        engine
+            .price_rank(&ranks[0], Some(RankDetail::Values), None)
+            .unwrap();
+        engine
+            .price_rank(&ranks[1], Some(RankDetail::Values), None)
+            .unwrap();
+        let fired = engine.database().worst_provenance();
+        for _ in 0..2 {
+            // A miss, then a hit: the same tiers, and an earlier worse tier
+            // is kept.
+            engine.reset_provenance();
+            engine.forward_pass_time_ms(&ranks).unwrap();
+            assert_eq!(engine.database().worst_provenance(), fired);
+            engine.reset_provenance();
+            engine.database().note_provenance(ProvenanceTier::XShape);
+            engine.forward_pass_time_ms(&ranks).unwrap();
+            assert_eq!(
+                engine.database().worst_provenance(),
+                fired.max(ProvenanceTier::XShape)
+            );
+        }
+        for rank in &ranks {
+            let stored = engine
+                .rank_memo
+                .get()
+                .unwrap()
+                .get(&RankKey::of(rank, RankDetail::Values))
+                .unwrap();
+            assert!(stored.provenance <= fired);
         }
     }
 
@@ -5422,7 +6219,7 @@ pub(crate) mod tests {
         spec
     }
 
-    fn full_round_engine(tmp: &std::path::Path) -> Engine {
+    pub(crate) fn full_round_engine(tmp: &std::path::Path) -> Engine {
         let spec = full_round_spec(tmp);
         Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp).unwrap()
     }
@@ -7437,7 +8234,7 @@ pub(crate) mod tests {
             2 * prefix,
             kv,
             generation,
-            |_, _, _, _, _| {},
+            |_, _, _, _, _, _| {},
         )
         .unwrap();
         let want = sol(&ctx_attn, 2, new_tokens, prefix) + sol(&gen_attn, generation, kv, 0);
