@@ -29,7 +29,7 @@ from .config.common import (
     RECOMMENDATION_CORE_SECTIONS,
     ResourceConfig,
 )
-from .resources import ResourceLimitError, discover_host, resolve_budget
+from .resources import ResourceLimitError, descendants_of, discover_host, resolve_budget
 
 _CONTEXT = "_AISIMULATE_SUPERVISED_BUDGET"
 _THREAD_VARIABLES = (
@@ -174,7 +174,7 @@ class OwnedTree:
 
     def sample(self) -> int:
         try:
-            processes = [self.root, *self.root.children(recursive=True)]
+            processes = [self.root, *descendants_of(self.root)]
         except psutil.NoSuchProcess:
             processes = []
         for process in processes:

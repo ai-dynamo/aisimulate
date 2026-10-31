@@ -471,6 +471,13 @@ def native_prediction_report(profile, evidence_systems):
     "path,value",
     [
         (("estimate",), {}),
+        (("estimate", "unavailable_reason"), None),
+        (("estimate", "unavailable_reason"), False),
+        (("estimate", "unavailable_reason"), 1),
+        (("estimate", "unavailable_reason"), {}),
+        (("estimate", "unavailable_reason"), []),
+        (("estimate", "unavailable_reason"), ""),
+        (("estimate", "unavailable_reason"), " \t"),
         (("estimate", "latency_ms"), float("inf")),
         (("estimate", "native_latency_ms"), float("nan")),
         (("estimate", "correction_factor"), -1),

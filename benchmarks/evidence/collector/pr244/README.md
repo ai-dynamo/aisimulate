@@ -6,8 +6,17 @@ SPDX-License-Identifier: Apache-2.0
 # Collection audit evidence
 
 This non-packaged bundle verifies the retained vLLM 0.25.0 collection outcomes
-and the 85 shipped Parquet tables. It contains case IDs, status vectors,
-checksums, and table metadata, not diagnostic logs or machine paths.
+and the 80 Parquet tables still shipped from it (85 originally). It contains case
+IDs, status vectors, checksums, and table metadata, not diagnostic logs or
+machine paths.
+
+The five `dsv4_hca_attn_module_perf` tables (one per system) were removed with
+the hca_attn sidecar's SDK reader in #649. The case-outcome ledger keeps their
+reported hashes, which record what was collected. The audit's `RETIRED_TABLES`
+excludes them from the inventory check. The manifest was regenerated: it
+drops their entries and carries the new hashes of the five 0.25.0
+`collection_meta.yaml` sidecars that listed them. Every other table entry is
+unchanged.
 
 Run from the repository root in the development environment:
 

@@ -556,11 +556,11 @@ def run_mhc_module(
                 gc.collect()
     finally:
         del model_runner
+        from collector.sglang.runtime_compat import reset_expert_location_metadata
         from sglang.srt.distributed.parallel_state import (
             destroy_distributed_environment,
             destroy_model_parallel,
         )
-        from sglang.srt.eplb import expert_location as _expert_location
 
         # Mirror SGLang 0.5.14 cleanup_dist_env_and_memory: destroying only the
         # torch process group leaves parallel_state._WORLD pointing at a dead
@@ -571,11 +571,11 @@ def run_mhc_module(
         # and fail the worker rather than hiding retained groups.
         destroy_model_parallel()
         destroy_distributed_environment()
-        # SGLang has no public reset for this module global (its serving
-        # process never re-creates a ModelRunner); set_global_... asserts None,
-        # so a second in-worker task fails init unless it is returned to the
-        # module's pre-init state here.
-        _expert_location._global_expert_location_metadata = None
+        # SGLang has no public reset for the expert-location metadata (its
+        # serving process never re-creates a ModelRunner); set_global_... asserts
+        # None, so a second in-worker task fails init unless it is returned to
+        # its pre-init state here.
+        reset_expert_location_metadata()
         torch.cuda.empty_cache()
         gc.collect()
     summary = f"ok={len(results)} error={error_count} skip=0 total={len(results) + error_count}"

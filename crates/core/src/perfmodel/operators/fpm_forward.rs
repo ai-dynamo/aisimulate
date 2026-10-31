@@ -356,7 +356,7 @@ impl FpmForwardOp {
                 .map(|(result, _)| result);
         }
         let Some(domain) = cell.decode_domain else {
-            return Err(data_err(format!(
+            return Err(AicError::FpmQueryUnsupported(format!(
                 "FPM cell {:?} has no decode rows (model_path={:?}).",
                 cell.cell_ids, cell.model_path
             )));
@@ -514,7 +514,7 @@ impl FpmForwardOp {
         for (axis_index, (axis_name, &value)) in axes.iter().zip(coords).enumerate() {
             let (low, high) = domain[axis_index];
             if !((low as f64) <= value && value <= (high as f64)) {
-                return Err(data_err(format!(
+                return Err(AicError::FpmQueryUnsupported(format!(
                     "FPM {} query {axis_name}={value} is outside the collected domain \
                      [{low}, {high}] for model_path={:?}. FPM never extrapolates; collect a \
                      wider sweep or use forward_model='op_level'.",
@@ -761,11 +761,9 @@ impl FpmForwardOp {
         decode_baseline: bool,
     ) -> Result<(PerformanceResult, DirectFpmResolution), AicError> {
         if !latency.is_finite() || latency <= 0.0 {
-            return Err(self.direct_coverage_err(
-                cell,
-                coords,
-                &format!("interpolation produced an invalid latency ({latency})"),
-            ));
+            return Err(AicError::InvalidPerfData(format!(
+                "FPM direct interpolation produced an invalid latency ({latency}) at {coords:?}"
+            )));
         }
         let coverage_resolution = if resolution == FpmQueryResolution::ExactLookup {
             DirectFpmResolution::Measured
@@ -796,7 +794,7 @@ impl FpmForwardOp {
             .map(|(axis, value)| format!("{axis}={value}"))
             .collect::<Vec<_>>()
             .join(", ");
-        data_err(format!(
+        AicError::FpmQueryUnsupported(format!(
             "FPM direct {} query ({query}) is unsupported for model_path={:?}: {reason}. \
              Collect matching genuine FPM points; direct interpolation never uses SOL or extrapolation.",
             self.phase.as_str(),
@@ -948,7 +946,7 @@ impl FpmForwardOp {
             Self::row_covers(cell, hi_row, kv),
         );
         if !lo_ok && !hi_ok {
-            return Err(data_err(format!(
+            return Err(AicError::FpmQueryUnsupported(format!(
                 "FPM decode bracket rows {lo_row}/{hi_row} do not cover total_kv_read_tokens={kv}                  (curves span {:?} and {:?}); FPM never extrapolates.",
                 cell.decode_curve_bounds[&lo_row], cell.decode_curve_bounds[&hi_row]
             )));
@@ -1009,7 +1007,7 @@ impl FpmForwardOp {
     }
 
     fn no_rows_err(&self, cell: &FpmForwardCell) -> AicError {
-        data_err(format!(
+        AicError::FpmQueryUnsupported(format!(
             "FPM cell {:?} has no {} rows (model_path={:?}).",
             cell.cell_ids,
             self.phase.as_str(),
@@ -2266,6 +2264,7 @@ mod tests {
         assert!((got.latency_ms - 62.0).abs() < 1e-9, "{}", got.latency_ms);
         // kv=6000 covered by NEITHER bracket row: loud miss.
         let err = dec.query_totals(&db, &[600.0, 6000.0]).unwrap_err();
+        assert!(matches!(err, AicError::FpmQueryUnsupported(_)));
         assert!(err.to_string().contains("bracket rows"), "{err}");
         // Own-site hits untouched by any of this.
         let got = dec.query_totals(&db, &[512.0, 2048.0]).unwrap();
@@ -2317,6 +2316,7 @@ mod tests {
         let err = op(FpmPhase::Decode)
             .query(&db, &ctx(8, 16384, 0))
             .unwrap_err();
+        assert!(matches!(err, AicError::FpmQueryUnsupported(_)));
         assert!(
             err.to_string().contains("outside the collected domain"),
             "{err}"
@@ -2325,6 +2325,7 @@ mod tests {
         let err = op(FpmPhase::Decode)
             .query(&db, &ctx(1, 512, 0))
             .unwrap_err();
+        assert!(matches!(err, AicError::FpmQueryUnsupported(_)));
         assert!(
             err.to_string().contains("outside the collected domain"),
             "{err}"
@@ -2339,11 +2340,54 @@ mod tests {
         let err = op(FpmPhase::Decode)
             .query(&db, &ctx(0, 512, 0))
             .unwrap_err();
+        assert!(matches!(
+            err,
+            AicError::PerfDatabase(_) | AicError::InvalidPerfData(_)
+        ));
         assert!(err.to_string().contains("invalid FPM query"), "{err}");
         let mut c = ctx(8, 512, 0);
         c.beam_width = 4;
         let err = op(FpmPhase::Decode).query(&db, &c).unwrap_err();
+        assert!(matches!(
+            err,
+            AicError::PerfDatabase(_) | AicError::InvalidPerfData(_)
+        ));
         assert!(err.to_string().contains("no beam-search data"), "{err}");
+    }
+
+    #[test]
+    fn typed_sol_coverage_preserves_identity_and_corrupt_source_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rows: Vec<_> = default_rows()
+            .into_iter()
+            .filter(|row| row.workload_kind == "prefill")
+            .collect();
+        write_pair(tmp.path(), &rows);
+        let db = db_with_pair(tmp.path());
+        assert!(matches!(
+            op(FpmPhase::Decode).query(&db, &ctx(8, 512, 0)),
+            Err(AicError::FpmQueryUnsupported(_))
+        ));
+        assert!(matches!(
+            op(FpmPhase::Decode).query_pass_baseline(&db, 8, 4096.0),
+            Err(AicError::FpmQueryUnsupported(_))
+        ));
+
+        let mut wrong_identity = op(FpmPhase::Prefill);
+        wrong_identity.model_path = "org/other-model".into();
+        assert!(matches!(
+            wrong_identity.query(&db, &ctx(1, 2048, 2048)),
+            Err(AicError::PerfDatabase(_))
+        ));
+
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &default_rows());
+        let db = db_with_pair(tmp.path());
+        std::fs::write(db.fpm_forward.parquet_path(), b"malformed parquet").unwrap();
+        assert!(matches!(
+            op(FpmPhase::Decode).query(&db, &ctx(8, 512, 0)),
+            Err(AicError::PerfDatabase(_) | AicError::InvalidPerfData(_))
+        ));
     }
 
     #[test]
@@ -2597,6 +2641,7 @@ mod tests {
         // Uncollected batch -> site transfer NEEDS the roofline -> structured
         // miss naming the unported op (not a panic, not a silent number).
         let err = o.query(&db, &ctx(12, 512, 0)).unwrap_err();
+        assert!(matches!(err, AicError::PerfDatabase(_)));
         assert!(
             err.to_string().contains("SOL roofline unavailable"),
             "{err}"

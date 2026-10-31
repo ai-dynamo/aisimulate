@@ -1152,10 +1152,12 @@ class ReplaySpec:
     as ``task_params`` — never by substring and never by reconstructing tuples, so the
     requested set is unambiguous. Nothing else about the run changes: same getter, same
     run_func, same dispatch, same measurement, so a replay observes exactly what the
-    campaign observes. The run leaves ``collector_replay.json`` in the output root;
-    packaging must keep such a result out of shipped tables (it is a diagnosis, not a
-    dataset). This is a selection mechanism like ``--case-filter``: it decides WHICH
-    planned cases run, never whether a case may be skipped once queued.
+    campaign observes. The run leaves ``collector_replay.json`` in the output root. It is
+    a diagnosis, not a dataset: main() refuses an output root that already holds results
+    and never finalizes a replay's CSV staging into parquet or ``collection_meta.yaml``,
+    so its rows cannot replace or extend a table. This is a selection mechanism like
+    ``--case-filter``: it decides WHICH planned cases run, never whether a case may be
+    skipped once queued.
     """
 
     MARKER = "collector_replay.json"
@@ -1235,6 +1237,20 @@ def _load_replay_spec(args, log) -> "ReplaySpec | None":
     spec = ReplaySpec(str(args.cases_from), wanted, control=args.replay_control or 0)
     log.info(f"Replay mode: {len(wanted)} requested cases from {args.cases_from}; control sample {spec.control} per op")
     return spec
+
+
+def _require_replay_output_root_without_results(
+    spec: "ReplaySpec | None", output_root: Path, existing_perf_outputs
+) -> None:
+    """A replay re-measures cases an earlier run already wrote; in that run's output root its
+    rows would replace or extend the dataset, so it needs a directory without results."""
+    if spec is None:
+        return
+    if existing_perf_outputs or (output_root / "collection_meta.yaml").exists() or any(output_root.glob("*.parquet")):
+        raise SystemExit(
+            f"--cases-from: {output_root} already holds collector results; run a replay in an empty "
+            "directory so a diagnosis can never overwrite or extend a dataset"
+        )
 
 
 def _finish_replay(spec: "ReplaySpec | None", output_root: Path, log) -> None:
@@ -6318,8 +6334,9 @@ def main():
         metavar="FILE",
         help="Failure replay: run exactly the cases listed in FILE — an errors_*.json[.gz] or "
         "collection_summary_*.json[.gz] from an earlier run, a JSON list of case strings, or one case per "
-        "line — matched by exact case string. Writes collector_replay.json beside the results; such a run "
-        "is a diagnosis and must never ship.",
+        "line — matched by exact case string. Writes collector_replay.json beside the results. A replay "
+        "is a diagnosis: it needs an output directory without collector results and keeps its rows as CSV "
+        "staging (no parquet, no collection_meta.yaml).",
     )
     parser.add_argument(
         "--replay-control",
@@ -6555,6 +6572,7 @@ def main():
         return resolved not in existing_perf_outputs or path.stat().st_mtime_ns != existing_perf_outputs[resolved]
 
     replay = _load_replay_spec(args, logger)
+    _require_replay_output_root_without_results(replay, output_root, existing_perf_outputs)
 
     # Use profiling context manager
     with ProfilerContext(args.backend, enabled=args.profile):
@@ -6574,7 +6592,12 @@ def main():
     _finish_replay(replay, output_root, logger)
 
     converted: list[Path] = []
-    if args.keep_csv:
+    if replay is not None:
+        logger.info(
+            f"Replay run: keeping collector CSV staging files; a replay never finalizes into parquet or "
+            f"collection_meta.yaml ({ReplaySpec.MARKER})"
+        )
+    elif args.keep_csv:
         logger.info("Keeping collector CSV staging files because --keep-csv was passed")
     else:
         touched_perf_outputs = {path for path in find_perf_csv_outputs(output_root) if was_touched_by_run(path)}

@@ -170,7 +170,16 @@ def sglang_dsa_mqa_logits_chunking_supported() -> bool:
 
 
 def dsa_indexer_prefill_shape_is_supported(batch_size: int, seq_len: int) -> bool:
-    """Return whether SGLang's DSA prefill indexer supports this query shape."""
+    """Validate dimensions without inferring the native forward mode.
+
+    A one-token EXTEND remains prefill. SGLang 0.5.14's native TC runner
+    bucket-pads it (49e384ce, prefill_cuda_graph_runner.py:480-524). At 0.5.21
+    the collector times DSA prefill eagerly (prefill graphs off, as serving runs
+    a one-token extend too: bucket 4 is more than twice its size,
+    prefill_cuda_graph_runner.py:157,1286-1290), and the eager DSA prefill
+    indexer illegal-accessed on that shape. FIXME(re-verify): admit seq_len=1
+    once a 0.5.21 run shows the eager one-token extend no longer faults.
+    """
     return batch_size > 0 and seq_len > 1
 
 

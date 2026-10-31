@@ -1160,9 +1160,44 @@ class GuardedRunner:
         self.runner.close()
 
 
+# psutil's children() reads /proc/<pid>/stat for every host process. These
+# per-thread files list only the children that thread forked. Like psutil's
+# scan, a read can miss a child racing an exit; the next poll finds it.
+_PROC_CHILDREN = Path(f"/proc/self/task/{os.getpid()}/children").exists()
+
+
+def descendants_of(process: psutil.Process) -> list[psutil.Process]:
+    """Descendants of a running process, found without scanning the host where possible."""
+    if not process.is_running():
+        return []
+    if not _PROC_CHILDREN:
+        return process.children(recursive=True)
+    pids = [process.pid]
+    try:
+        for pid in pids:  # Extended while iterating: a breadth-first walk.
+            try:
+                tasks = list(Path(f"/proc/{pid}/task").iterdir())
+            except FileNotFoundError:  # The process exited.
+                continue
+            for task in tasks:
+                try:
+                    pids += map(int, (task / "children").read_text().split())
+                except FileNotFoundError:  # The thread exited.
+                    pass
+    except OSError:  # Anything else, such as EMFILE, would leave a partial tree.
+        return process.children(recursive=True)
+    descendants = []
+    for pid in pids[1:]:
+        try:
+            descendants.append(psutil.Process(pid))
+        except psutil.NoSuchProcess:
+            pass
+    return descendants
+
+
 def _child_memory_bytes() -> int:
     try:
-        children = psutil.Process().children(recursive=True)
+        children = descendants_of(psutil.Process())
         total = 0
         for child in children:
             try:

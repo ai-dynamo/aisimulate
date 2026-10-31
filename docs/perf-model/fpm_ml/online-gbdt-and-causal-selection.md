@@ -325,6 +325,19 @@ changes its trees. Calibration receives ratios against $F_{0,s}$ for its
 entire lifetime, so publishing an adaptive forest cannot invalidate or reset
 those ratios. The adaptive prediction has no correction multiplier.
 
+The temporary mixed-workload policy has one scoped exception: in A+C, a mixed
+class missing sufficient original-A training data uses calibrated interpolation
+as its stable expert, $C_s(x)=c_s(\phi(x))T_{\mathrm{interp}}(x)$, with isolated
+attention/MoE calibration coordinates. Callers can train and append that class's
+online checkpoint after at least 20 admitted C observations. Until it is ready, only the
+interpolation expert can predict. Subsequent observations with both expert
+predictions supply paired losses to the same selector recurrence below; the
+first 20 labels supply no retrospective losses. Warmup remains per store/query
+key. Interpolation calibration continues after online selection, and C never
+creates a frozen seed forest or changes the original-A support decision. See
+[temporary mixed composition](configuration.md#temporary-mixed-composition-for-self-benchmark-seeds)
+for configuration and availability behavior.
+
 ### The stable expert's hybrid factor
 
 For admitted latency $y>0$, calibration stores the absolute ratio
@@ -504,6 +517,11 @@ predict bit-identically and continue with byte-identical state.
 `learned_selector_diagnostics()` exposes selection state;
 `learned_online_diagnostics()` exposes the adaptive fitting state. Neither
 diagnostic snapshot is a resumable model.
+
+The [temporary mixed-workload policy](mixed-workload-fallback.md) does not yet
+support portable state snapshots or full mixed-selector continuation. Its
+partial mixed-state API saves calibration and standalone quality evidence only;
+the constructor and snapshot writer reject combinations that would lose state.
 
 The selector adds constant-size error state per key, while the stable forest
 and its correction stores add their own memory and update costs. Feedback

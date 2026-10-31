@@ -773,6 +773,7 @@ def _create_attention_module(
     gemm_type: str = "bfloat16",
     device: str = "cuda:0",
     is_context: bool = True,
+    max_model_len: int | None = None,
 ):
     """
     Create a DeepseekV2MLAAttention module from vLLM's own modeling code.
@@ -786,6 +787,9 @@ def _create_attention_module(
         model_path: HuggingFace model path (e.g. "deepseek-ai/DeepSeek-V3.2").
         attn_type: Attention type ("mla" or "dsa").
         max_seq_len: Total context length, including the cached prefix.
+        max_model_len: The engine's max_model_len (default: max_seq_len, at least 4096).
+            Indexer buffers scale with it, so a series passes the model's
+            max_position to time every point at the size serving runs.
         max_query_len: New tokens per request for a context forward pass.
         use_prefill_fp8: When True, opt in to FP8 prefill query compute via
             ``attention_config.use_prefill_query_quantization`` plus an
@@ -811,7 +815,7 @@ def _create_attention_module(
     block_size = None  # unconstrained selection; _create_kv_cache_and_metadata asks the selected backend for the page
     # seq_len includes the current token; generation caches only seq_len - 1.
     # Keep exact-limit models such as Kimi-K2-Instruct at their declared limit.
-    max_model_len = max(max_seq_len, 4096)
+    max_model_len = max(max_seq_len, max_model_len or 4096)
     num_kv_cache_blocks = max(
         1
         + math.ceil((max_seq_len + 1) / 16)
@@ -819,6 +823,13 @@ def _create_attention_module(
         8192,
     )
 
+    # FIXME(gap): the module is built at TP=1 with the per-rank head count, so a check that
+    # multiplies by the TP world size sees the shard. vLLM 0.30's sparse-MLA masked-MHA prefill
+    # (SM100, FA4, BF16 KV) admits only model-level head counts 128/64
+    # (sparse_mla_attention.py:93-127, called with num_heads * tp at :708), and _use_masked_mha
+    # reads its thresholds by tensor_parallel_size (mla_attention.py:1844). So for a TP>1 shard,
+    # e.g. GLM-5.2 TP8 BF16 KV, serving runs masked MHA for pure prefills up to 64K while this
+    # module times sparse MQA. Affects SM100 BF16-KV DSA context rows below the full head count.
     # Determine kv cache dtype string for sparse MLA.
     # For DSA (DeepSeekV3.2), fp8 uses the custom ``fp8_ds_mla`` 656-byte
     # cache format (512B quantized NoPE + 16B scales + 128B RoPE).
@@ -1116,10 +1127,19 @@ def _create_kv_cache_and_metadata(
     hf_config = vllm_config.model_config.hf_text_config
     kv_lora_rank = hf_config.kv_lora_rank
     qk_rope_head_dim = hf_config.qk_rope_head_dim
-    # page = what the framework would run the SELECTED backend with (serving re-derives it
-    # from the built model, platforms/interface.py update_block_size_for_backend)
+    # page = what the framework would run the SELECTED backend with. Serving sizes the cache
+    # block from the FIRST non-SSM attention layer (platforms/interface.py:588-640 @0.30.0).
+    # For DSA that is the indexer cache — deepseek_v2.py:1175 builds the Indexer (its
+    # k_cache registers at :724) before :1211 registers .attn — whose CUDA backend accepts
+    # only 64 (v1/attention/backends/mla/indexer.py:203-204), so FLASHINFER_MLA_SPARSE
+    # ([32, 64]) runs at 64, not at its own preferred 32.
+    from vllm.platforms import current_platform
+
     _attn_layer = vllm_config.compilation_config.static_forward_context["model.layers.0.self_attn.attn"]
-    block_size = framework_kv_block_size(_attn_layer.get_attn_backend())
+    block_size = framework_kv_block_size(
+        _attn_layer.get_attn_backend(),
+        cache_backend_cls=current_platform._find_non_ssm_backend(vllm_config),
+    )
     vllm_config.cache_config.block_size = block_size
     is_dsa = attn_type == "dsa"
 
@@ -1466,11 +1486,15 @@ def run_mla_module(
         f"compute={compute_dtype}, kv={kv_cache_dtype}, model={model_path}"
     )
 
-    # 1. Create attention module, sized by the largest point of the series. The
-    #    sizes only reach buffers and capacity declarations (max_model_len,
-    #    max_num_batched_tokens, the top-k index buffer); the backend selection
-    #    is dtype/SM driven and every point's KV cache + metadata is built below
-    #    for that point's own shape.
+    # 1. Create attention module, sized for the series' largest point and at the
+    #    model's max_position_embeddings as max_model_len — serving's default, and
+    #    independent of the batch: the DSA indexer's decode logits
+    #    [rows, max_model_len] (sparse_attn_indexer.py:711-721 @0.30.0) and prefill
+    #    buffer max_model_len * 40 (mla/indexer.py:722-731) scale with it, so a
+    #    series-max size would bend batch scaling within one table. The other sizes
+    #    only reach capacity declarations (max_num_batched_tokens, the top-k index
+    #    buffer); the backend selection is dtype/SM driven and every point's KV
+    #    cache + metadata is built below for that point's own shape.
     attn_module, vllm_config = _create_attention_module(
         model_path=model_path,
         attn_type=attn_type,
@@ -1483,6 +1507,7 @@ def run_mla_module(
         gemm_type=gemm_type,
         device=device,
         is_context=is_context,
+        max_model_len=_model_max_position_embeddings(model_path),
     )
     _lap(_setup_phase, "module")
     if attn_type == "dsa" and use_fp8_kv_cache:
@@ -1791,6 +1816,10 @@ def run_mla_module(
         except Exception as exc:
             if _is_fatal_cuda_error(exc) or len(points) == 1:
                 raise
+            # The traceback holds _run_point's frame (KV cache, indexer cache, metadata,
+            # activations): clear it, or the largest-first series keeps that memory
+            # pinned and the smaller points that would fit fail too.
+            traceback.clear_frames(exc.__traceback__)
             failures.append(((point_seq_len, point_prefix), exc))
             print(
                 f"  [{variant} module] {phase} b={batch_size}, s={point_seq_len}, prefix={point_prefix}: "

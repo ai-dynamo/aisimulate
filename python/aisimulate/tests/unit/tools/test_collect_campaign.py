@@ -46,10 +46,39 @@ def test_one_namespace_per_shard_and_readonly_checkout(tmp_path):
     plan = c.load_plan(_plan(tmp_path, [{"op": "gemm", "name": "bf16"}, {"op": "gemm", "name": "fp8"}]))
     dirs = {c.shard_dir(tmp_path, s) for s in plan.shards}
     assert len(dirs) == 2
+    ref = "0123456789abcdef0123456789abcdef01234567"
     argv = c.docker_argv(
-        plan, plan.shards[0], image="img", gpu=3, checkout=Path("/ck"), shard_dir=dirs.pop(), container_name="x"
+        plan,
+        plan.shards[0],
+        image="img",
+        gpu=3,
+        checkout=Path("/ck"),
+        shard_dir=dirs.pop(),
+        container_name="x",
+        collector_ref=ref,
     )
     assert '"device=3"' in argv and "/ck:/ais:ro" in argv and argv[argv.index("-w") + 1] == "/out"
+    # the mount has no .git and the images no git: provenance gets the commit from the launcher
+    assert f"AISIM_COLLECTOR_REF={ref}" in argv
+
+
+def test_collector_ref_is_the_clean_checkout_commit(tmp_path):
+    import subprocess
+
+    c = _load()
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+
+    git("init", "-q")
+    (tmp_path / "collect.py").write_text("v1\n")
+    git("add", "collect.py")
+    git("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "v1")
+    ref = c.collector_ref(tmp_path)
+    assert len(ref) == 40 and int(ref, 16) >= 0
+    (tmp_path / "collect.py").write_text("v2\n")  # uncommitted: the rows would name the wrong code
+    with pytest.raises(SystemExit, match="uncommitted"):
+        c.collector_ref(tmp_path)
 
 
 def test_duplicate_shard_keys_are_rejected(tmp_path):

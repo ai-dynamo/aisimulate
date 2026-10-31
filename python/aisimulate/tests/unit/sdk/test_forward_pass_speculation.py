@@ -18,7 +18,7 @@ import pytest
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 from aisimulate_core.sdk.engine import EngineHandle
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.filterwarnings("error:Hybrid FPM/OP:FutureWarning")]
 
 
 def _config(**kwargs):

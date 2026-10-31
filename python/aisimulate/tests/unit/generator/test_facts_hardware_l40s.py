@@ -79,7 +79,7 @@ def test_l40s_fills_marlin_for_nvfp4_moe_only():
     for quant in (None, {"quant_method": "fp8", "weight_block_size": [128, 128]}, {"quant_method": "mxfp4"}):
         ctx = {"is_moe": True, "moe_config": {}}
         apply_moe_backend(ctx, hw, backend="trtllm", quantization=quant)
-        assert "backend" not in ctx["moe_config"], quant  # the template default (CUTLASS) applies
+        assert "backend" not in ctx["moe_config"], quant  # the template default applies (rc29: AUTO -> CUTLASS on SM89)
     dense = {"is_moe": False, "moe_config": {}}
     apply_moe_backend(dense, hw, backend="trtllm", quantization={"quant_algo": "NVFP4"})
     assert "backend" not in dense["moe_config"]

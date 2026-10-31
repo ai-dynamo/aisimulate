@@ -169,7 +169,7 @@ fn native_model(options: ForwardPassPerfOptions) -> ForwardPassPerfModel {
 
 /// Synthetic measured timings with no SOL operations. The fixture's expected
 /// answers are its literal measurements and raw linear midpoints.
-fn direct_coverage_model(dir: &std::path::Path) -> ForwardPassPerfModel {
+pub(super) fn direct_coverage_model(dir: &std::path::Path) -> ForwardPassPerfModel {
     use crate::operators::fpm_forward::{FpmForwardOp, FpmInterpolation, FpmPhase};
     use crate::perf_database::fpm_forward::tests::{RowSpec, default_identity, write_pair};
     let mut rows = Vec::new();

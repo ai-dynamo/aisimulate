@@ -1,0 +1,560 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""Real mixed routing, source binding and checkpoint continuation through Python."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from copy import deepcopy
+from pathlib import Path
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
+
+from aisimulate_core.sdk import fpm_learned
+from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
+
+from . import test_fpm_phase_readiness as phase_fixtures
+from .fpm_training_support import import_sklearn
+from .fpm_training_support import isolate_training_dependencies as isolate_training_dependencies
+
+phase_roots = phase_fixtures.phase_roots
+
+pytestmark = pytest.mark.unit
+import_sklearn()
+
+
+def _iteration(kind="mixed", *, wall_ms=8.0, index=0):
+    return [
+        {
+            "version": 1,
+            "worker_id": "worker",
+            "dp_rank": 0,
+            "counter_id": index,
+            "wall_time": wall_ms / 1000,
+            "scheduled_requests": {
+                "num_prefill_requests": int(kind != "decode"),
+                "sum_prefill_tokens": int(kind != "decode"),
+                "num_decode_requests": int(kind != "prefill"),
+                "sum_decode_kv_tokens": int(kind != "prefill"),
+            },
+        }
+    ]
+
+
+@pytest.fixture
+def mixed_seed(tmp_path, phase_roots):
+    config, make_root = phase_roots
+    root = Path(make_root("mixed-direct"))
+    parquet = root / "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet"
+    table = pq.read_table(parquet).to_pylist()
+    baseline = deepcopy(next(row for row in table if row["workload_kind"] == "decode"))
+    baseline.update(total_kv_read_tokens=0, latency_ms=1.0, cell_id="synthetic-decode-zero")
+    table.append(baseline)
+    pq.write_table(pa.Table.from_pylist(table), parquet)
+    sidecar = parquet.with_suffix(".metadata.json")
+    metadata = json.loads(sidecar.read_text())
+    metadata.update(row_count=len(table), parquet_sha256=hashlib.sha256(parquet.read_bytes()).hexdigest())
+    sidecar.write_text(json.dumps(metadata))
+    config["systems_paths"] = [str(root)]
+    rows = [
+        _iteration(kind, wall_ms=2 if kind == "prefill" else 3, index=index)
+        for kind in ("prefill", "decode")
+        for index in range(20)
+    ]
+    seed = tmp_path / "seed"
+    fpm_learned.train(
+        rows,
+        "aggregated",
+        features=fpm_learned.FEATURE_PRESETS["fpm5"],
+        max_iter=3,
+        max_leaf_nodes=3,
+        min_samples_leaf=2,
+        min_store_rows=20,
+        online_checkpoint_dir=seed,
+        identity=config,
+    )
+    source = fpm_learned.write_original_a_manifest(
+        tmp_path / "original-a.json",
+        rows,
+        "aggregated",
+        identity=config,
+        min_store_rows=20,
+        seed_artifact_paths=[seed / "model.json"],
+        provenance={
+            "source_sha256": metadata["parquet_sha256"],
+            "grouping": {"coordinate_system": "iteration_totals_balanced_v1", "synthetic_fixture": True},
+            "sources": [
+                {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                for path in (parquet, sidecar)
+            ],
+        },
+    )
+    return config, seed, source
+
+
+def _config(fixture, checkpoint=None, *, enabled=True, adaptation="online"):
+    config, seed, source = fixture
+    config = deepcopy(config)
+    config["estimation_mode"] = "fpm_learned"
+    estimator = config["estimator_config"]
+    estimator["correction"] = {"enabled": adaptation == "causal_selector", "mode": "hybrid"}
+    estimator["fpm_learned"] = {
+        "checkpoint_path": str(checkpoint or seed),
+        "adaptation": adaptation,
+        "update_mode": "leaf_only",
+        "recent_window": 8,
+        "update_every": 3,
+    }
+    if enabled:
+        estimator["temporary_mixed_composition"] = {
+            "scenario": "a_c",
+            "mode": "compose_calibrated",
+            "original_a": source,
+            "calibration": {"sampling": {"bins_per_axis": [2, 2], "max_observations": 8}, "min_observations": 2},
+        }
+    return config
+
+
+def _load(fixture, checkpoint=None, **kwargs):
+    return RustForwardPassPerfModel.best_available(_config(fixture, checkpoint, **kwargs))
+
+
+@pytest.mark.parametrize("mode", ["a_only", "online", "frozen_hybrid", "quality_gate", "causal_selector"])
+def test_mixed_readiness_and_diagnostics_public_contract(mixed_seed, mode):
+    adaptation = {
+        "a_only": "frozen",
+        "frozen_hybrid": "frozen",
+        "quality_gate": "online",
+    }.get(mode, mode)
+    config = _config(mixed_seed, adaptation=adaptation)
+    estimator = config["estimator_config"]
+    policy = estimator["temporary_mixed_composition"]
+    if mode == "a_only":
+        policy.update(scenario="a", mode="compose")
+    elif mode == "frozen_hybrid":
+        estimator["correction"] = {"enabled": True, "mode": "hybrid"}
+    elif mode == "quality_gate":
+        policy["quality_gate"] = {"alpha": 1.0, "min_comparisons": 1}
+    ordinary_config = deepcopy(config)
+    del ordinary_config["estimator_config"]["temporary_mixed_composition"]
+    model = RustForwardPassPerfModel.best_available(config)
+    ordinary = RustForwardPassPerfModel.best_available(ordinary_config)
+    try:
+        report = model.readiness_report()
+        stores = {entry["workload_kind"]: entry for entry in report["stores"]}
+        ordinary_stores = {entry["workload_kind"]: entry for entry in ordinary.readiness_report()["stores"]}
+        for current in (model, ordinary):
+            assert [(entry["workload_kind"], entry["ready"]) for entry in current.readiness_report()["stores"]] == [
+                (entry["workload_kind"], entry["ready"]) for entry in current.regression_store_diagnostics()
+            ]
+        for kind in ("contains_locally_mixed", "cross_rank_aggregated"):
+            assert stores[kind]["ready"]
+            assert stores[kind]["not_ready_reason"] is None
+            assert not ordinary_stores[kind]["ready"]
+            assert ordinary_stores[kind]["not_ready_reason"] == "untrained_forest_store"
+        for kind in ("pure_decode", "pure_prefill"):
+            assert stores[kind] == ordinary_stores[kind]
+        assert ordinary.estimate_forward_pass_time_ms(_iteration()) is None
+        assert model.estimate_forward_pass_time_ms(_iteration()) == 4.0
+
+        # Readiness names an available route, even when a particular query
+        # falls outside that route's interpolation support.
+        unsupported = _iteration()
+        unsupported[0]["scheduled_requests"].update(num_decode_requests=8, sum_decode_kv_tokens=256)
+        assert model.estimate_forward_pass_time_ms(unsupported) is None
+        assert model.readiness_report() == report
+
+        mixed = model.mixed_composition_diagnostics()
+        assert mixed is not None
+        assert model.diagnostics()["temporary_mixed_composition"] == mixed
+        assert ordinary.mixed_composition_diagnostics() is None
+        assert "temporary_mixed_composition" not in ordinary.diagnostics()
+        if mode != "a_only":
+            model.tune_with_fpms([_iteration(index=1), _iteration(index=2)])
+            updated = model.mixed_composition_diagnostics()
+            assert updated != mixed
+            assert model.diagnostics()["temporary_mixed_composition"] == updated
+    finally:
+        model.close()
+        ordinary.close()
+
+
+def test_original_a_manifest_matches_default_aggregated_training_eligibility(tmp_path, phase_roots):
+    config, make_root = phase_roots
+    config["systems_paths"] = [make_root("default-features")]
+    groups = [_iteration("decode", wall_ms=3.0, index=index) for index in range(21)]
+    for group in groups[:20]:
+        group[0]["scheduled_requests"].update(extend_lengths=[1], past_kv_lengths=[1])
+    seed = tmp_path / "default-seed"
+    artifact = fpm_learned.train(
+        groups,
+        "aggregated",
+        max_iter=3,
+        max_leaf_nodes=3,
+        min_samples_leaf=2,
+        min_store_rows=20,
+        online_checkpoint_dir=seed,
+        identity=config,
+    )
+    assert artifact["features"] == list(fpm_learned.FEATURE_PRESETS["atomic10"])
+    assert artifact["metadata"]["train_rows"] == {"pure_decode": 20}
+    source_path = tmp_path / "original-groups.json"
+    source_path.write_text(json.dumps(groups))
+    source_digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    manifest = tmp_path / "original-a-default.json"
+    source = fpm_learned.write_original_a_manifest(
+        manifest,
+        groups,
+        "aggregated",
+        identity=config,
+        min_store_rows=20,
+        seed_artifact_paths=[seed / "model.json"],
+        provenance={
+            "source_sha256": source_digest,
+            "grouping": {"coordinate_system": "iteration_totals_balanced_v1", "synthetic_fixture": True},
+            "sources": [{"path": str(source_path), "sha256": source_digest}],
+        },
+    )
+    # Both the exporter and the native source binding must agree with the
+    # default trainer's 20 usable request-list groups, excluding the 21st.
+    model = _load((config, seed, source))
+    try:
+        assert json.loads(manifest.read_text())["accepted_iterations"] == groups[:20]
+        assert model.estimate_forward_pass_time_ms(groups[0]) == pytest.approx(3.0)
+    finally:
+        model.close()
+
+
+def test_frozen_hybrid_calibrates_missing_mixed_store_without_training_it(mixed_seed):
+    config = _config(mixed_seed, adaptation="frozen")
+    estimator = config["estimator_config"]
+    estimator["correction"] = {"enabled": True, "mode": "hybrid", "min_observations": 1}
+    estimator["temporary_mixed_composition"]["calibration"]["min_observations"] = 1
+    normalized = RustForwardPassPerfModel.normalize_config(config)
+    assert RustForwardPassPerfModel.normalize_config(json.loads(json.dumps(normalized))) == normalized
+    control_config = deepcopy(config)
+    del control_config["estimator_config"]["temporary_mixed_composition"]
+    model = RustForwardPassPerfModel.best_available(normalized)
+    control = RustForwardPassPerfModel.best_available(control_config)
+    try:
+        frozen = model.export_learned_artifact()
+        query = _iteration()
+        assert control.estimate_forward_pass_time_ms(query) is None
+        # Synthetic phase table: prefill 2 + decode 3 - decode-zero 1 = 4ms.
+        assert model.estimate_forward_pass_time_ms(query) == 4.0
+        for admitted in range(1, 31):
+            model.tune_with_fpms([_iteration(wall_ms=8.0, index=admitted)])
+            prediction = model.estimate_forward_pass_with_route(query)
+            assert prediction["latency_ms"] == 8.0
+            route = prediction["temporary_mixed_composition"]
+            assert route["route"] == "interpolation"
+            assert route["calibration_admissions"] == admitted
+        assert model.export_learned_artifact() == frozen
+        assert "contains_locally_mixed" not in frozen["stores"]
+        with pytest.raises(ValueError, match="online GBDT or causal selector"):
+            model.append_mixed_learned_checkpoint(mixed_seed[1])
+        for kind in ("prefill", "decode"):
+            query = _iteration(kind)
+            assert model.estimate_forward_pass_time_ms(query) == control.estimate_forward_pass_time_ms(query)
+            for current in (model, control):
+                current.tune_with_fpms([_iteration(kind, wall_ms=6.0)])
+            assert model.estimate_forward_pass_time_ms(query) == control.estimate_forward_pass_time_ms(query)
+    finally:
+        model.close()
+        control.close()
+
+
+def test_mixed_support_miss_survives_prediction_details_contract(mixed_seed):
+    import jsonschema
+
+    from aisimulate.detail import build_prediction_details
+
+    model = _load(mixed_seed, adaptation="frozen")
+    try:
+        unsupported = _iteration()
+        unsupported[0]["scheduled_requests"].update(num_decode_requests=8, sum_decode_kv_tokens=256)
+        estimates = [
+            model.estimate_forward_pass_detailed(query) for query in (_iteration("prefill"), _iteration(), unsupported)
+        ]
+    finally:
+        model.close()
+    assert all("unavailable_reason" not in estimate for estimate in estimates[:2])
+    assert estimates[-1]["latency_ms"] is None
+    assert estimates[-1]["unavailable_reason"]
+    assert not estimates[-1]["ranks"]
+
+    # Publish genuine SDK estimates through both consumers of the shared
+    # diagnostics contract; the enclosing diagnostic record is synthetic.
+    evidence = [{"estimate": estimate, "count": 1, "latency_scale": 1.0} for estimate in estimates]
+    timing = {"latency_ms": 0.0, "sol": None, "sol_unavailable_reason": "learned FPM has no SOL evidence"}
+    report = {
+        "performance_diagnostics": {
+            "status": "available",
+            "scope": "accumulated_active_forward_pass_per_gpu",
+            "latency_unit": "ms",
+            "phases": [
+                {
+                    **timing,
+                    "name": "generation",
+                    "operations": [
+                        {
+                            **timing,
+                            "name": "fpm_forward",
+                            "source": "silicon",
+                            "fallbacks": [],
+                            "latency_to_sol_ratio": None,
+                            "fpm_estimates": evidence,
+                        }
+                    ],
+                }
+            ],
+        }
+    }
+    original = deepcopy(report)
+    details = build_prediction_details(report, ("source", "time"))
+    schema = json.loads(
+        (Path(__file__).resolve().parents[5] / "docs/reference/schemas/prediction-details.schema.json").read_text()
+    )
+    jsonschema.validate(details, schema)
+    for section in (details["sections"]["source"], details["sections"]["time"]["diagnostics"]):
+        assert section["phases"][0]["operations"][0]["fpm_estimates"] == evidence
+    assert report == original
+
+    estimate_schema = {"$ref": "#/$defs/fpmEstimate", "$defs": schema["$defs"]}
+    for value in (None, False, 1, {}, [], "", " \t"):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({**estimates[-1], "unavailable_reason": value}, estimate_schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({**estimates[-1], "unknown": None}, estimate_schema)
+
+
+@pytest.fixture
+def c_augmented_artifact(mixed_seed, tmp_path):
+    """Represent an already fitted C store without changing authenticated A."""
+    config, seed, _ = mixed_seed
+    c_rows = [_iteration(wall_ms=12.0, index=index) for index in range(20)]
+    c_artifact = fpm_learned.train(
+        c_rows,
+        "aggregated",
+        features=fpm_learned.FEATURE_PRESETS["fpm5"],
+        max_iter=3,
+        max_leaf_nodes=3,
+        min_samples_leaf=2,
+        min_store_rows=20,
+        online_checkpoint_dir=tmp_path / "c-seed",
+        identity=config,
+    )
+    assert set(c_artifact["stores"]) == {"contains_locally_mixed"}
+    artifact = json.loads((seed / "model.json").read_text())
+    assert artifact["metadata"]["identity"] == c_artifact["metadata"]["identity"]
+    artifact["stores"].update(c_artifact["stores"])
+    for field in ("train_rows", "trees_fitted"):
+        artifact["metadata"].setdefault(field, {}).update(c_artifact["metadata"].get(field, {}))
+    path = tmp_path / "a-plus-c-artifact.json"
+    path.write_text(json.dumps(artifact, allow_nan=False))
+    return path
+
+
+def _augmented_config(mixed_seed, artifact, *, enabled=True):
+    config = _config(mixed_seed, enabled=enabled, adaptation="frozen")
+    config["estimator_config"]["fpm_learned"] = {
+        "artifact_path": str(artifact),
+        "adaptation": "frozen",
+    }
+    config["estimator_config"]["correction"] = {"enabled": True, "mode": "hybrid"}
+    return config
+
+
+def test_available_c_store_preserves_ordinary_predictions_and_independent_prior_calibration(
+    mixed_seed, c_augmented_artifact
+):
+    enabled = RustForwardPassPerfModel.best_available(_augmented_config(mixed_seed, c_augmented_artifact))
+    ordinary = RustForwardPassPerfModel.best_available(
+        _augmented_config(mixed_seed, c_augmented_artifact, enabled=False)
+    )
+    missing = _load(mixed_seed, adaptation="frozen")
+    try:
+        query = _iteration()
+        assert missing.estimate_forward_pass_time_ms(query) == 4.0  # P2 + D3 - D0(1).
+        assert ordinary.estimate_forward_pass_time_ms(query) == pytest.approx(12.0)
+        assert enabled.estimate_forward_pass_time_ms(query) == ordinary.estimate_forward_pass_time_ms(query)
+        route = enabled.mixed_composition_route(query)
+        assert route["fallback_eligible"] and not route["owned"]
+        assert route["route"] == "ordinary"
+        assert missing.mixed_composition_route(query)["owned"]
+        assert enabled.mixed_composition_state() == missing.mixed_composition_state()
+
+        initial = enabled.export_learned_artifact()
+        for index in range(13):
+            observation = _iteration(wall_ms=9 + index % 4, index=index)
+            before = enabled.mixed_composition_state()
+            prediction = enabled.estimate_forward_pass_time_ms(observation)
+            assert prediction == ordinary.estimate_forward_pass_time_ms(observation)
+            hidden_target = deepcopy(observation)
+            hidden_target[0]["wall_time"] = 123.0
+            assert enabled.estimate_forward_pass_time_ms(hidden_target) == prediction
+            assert enabled.mixed_composition_state() == before
+            assert enabled.estimate_forward_pass_detailed(observation)["latency_ms"] == prediction
+            for model in (enabled, ordinary, missing):
+                model.tune_with_fpms([observation])
+            assert enabled.mixed_composition_state() == missing.mixed_composition_state()
+            assert enabled.mixed_composition_route(query)["calibration_admissions"] == index + 1
+            assert enabled.export_learned_artifact() == ordinary.export_learned_artifact() == initial
+            assert enabled.estimate_forward_pass_time_ms(query) == ordinary.estimate_forward_pass_time_ms(query)
+
+        # The ordinary correction is applied to the 12ms forest, while the
+        # independently maintained interpolation correction is capped at 2x4ms.
+        assert missing.estimate_forward_pass_time_ms(query) == 8.0
+        assert enabled.estimate_forward_pass_time_ms(query) > 8.0
+        snapshot = enabled.mixed_composition_state()
+        pure = _iteration("decode", wall_ms=7)
+        for model in (enabled, ordinary):
+            model.tune_with_fpms([pure])
+        assert enabled.mixed_composition_state() == snapshot
+        assert enabled.estimate_forward_pass_time_ms(pure) == ordinary.estimate_forward_pass_time_ms(pure)
+    finally:
+        enabled.close()
+        ordinary.close()
+        missing.close()
+
+
+def test_ready_c_store_mixed_snapshot_restores_and_rejects_old_precedence(mixed_seed, c_augmented_artifact, tmp_path):
+    config = _augmented_config(mixed_seed, c_augmented_artifact)
+    # Only mixed correction is exported by this API; keep ordinary correction
+    # disabled so the resumed model's entire predictive state is accounted for.
+    config["estimator_config"]["correction"]["enabled"] = False
+    model = RustForwardPassPerfModel.best_available(config)
+    restored = RustForwardPassPerfModel.best_available(config)
+    try:
+        for index in range(11):
+            model.tune_with_fpms([_iteration(wall_ms=6 + index % 3, index=index)])
+        snapshot = model.mixed_composition_state()
+        restored.restore_mixed_composition_state(snapshot)
+        assert restored.mixed_composition_state() == snapshot
+        assert restored.mixed_composition_route(_iteration())["route"] == "ordinary"
+        legacy = deepcopy(snapshot)
+        legacy["version"] = "original_a_composition_attention_moe_v1"
+        with pytest.raises(ValueError, match="saved mixed state does not match"):
+            restored.restore_mixed_composition_state(legacy)
+        assert restored.mixed_composition_state() == snapshot
+        for index in range(11, 18):
+            observation = _iteration(wall_ms=6 + index % 3, index=index)
+            assert restored.estimate_forward_pass_time_ms(observation) == model.estimate_forward_pass_time_ms(
+                observation
+            )
+            for current in (model, restored):
+                current.tune_with_fpms([observation])
+            assert restored.mixed_composition_state() == model.mixed_composition_state()
+
+        changed = json.loads(c_augmented_artifact.read_text())
+        changed["metadata"]["identity"]["model"] = "wrong/deployment"
+        invalid = tmp_path / "wrong-c-identity.json"
+        invalid.write_text(json.dumps(changed))
+        with pytest.raises(ValueError, match="identity"):
+            RustForwardPassPerfModel.best_available(_augmented_config(mixed_seed, invalid))
+    finally:
+        model.close()
+        restored.close()
+
+
+def test_mixed_checkpoint_preserves_pending_pure_rows_and_future_calibration(mixed_seed, tmp_path):
+    model = _load(mixed_seed)
+    resumed = None
+    try:
+        mixed = _iteration()
+        assert model.estimate_forward_pass_time_ms(mixed) == 4.0  # P2 + D3 - D0(1).
+        before = model.export_learned_artifact()
+        assert model.mixed_composition_route(mixed)["owned"]
+        assert model.mixed_composition_route(mixed)["calibration_admissions"] == 0
+        for index in range(13):
+            model.tune_with_fpms([_iteration(wall_ms=6 + index % 3, index=index)])
+        assert model.export_learned_artifact() == before
+        assert model.mixed_composition_route(mixed)["calibration_admissions"] == 13
+        model.tune_with_fpms([_iteration("decode", wall_ms=7)])
+        assert model.learned_online_diagnostics()["stores"]["pure_decode"]["pending_rows"] == 1
+        checkpoint = tmp_path / "resume"
+        state = model.mixed_composition_state()
+        model.save_online_checkpoint(checkpoint)
+        assert json.loads((checkpoint / "manifest.json").read_text())["schema_version"] == 5
+        resumed = _load(mixed_seed, checkpoint)
+        assert resumed.mixed_composition_state() == state
+        assert resumed.export_learned_artifact() == model.export_learned_artifact()
+        for index in range(13, 45):
+            observation = _iteration("decode" if index % 3 == 0 else "mixed", wall_ms=5 + index % 5, index=index)
+            assert resumed.estimate_forward_pass_time_ms(observation) == model.estimate_forward_pass_time_ms(
+                observation
+            )
+            for current in (model, resumed):
+                current.tune_with_fpms([observation])
+            assert resumed.mixed_composition_state() == model.mixed_composition_state()
+            assert resumed.export_learned_artifact() == model.export_learned_artifact()
+        with pytest.raises(ValueError, match="policy is disabled"):
+            _load(mixed_seed, checkpoint, enabled=False)
+    finally:
+        model.close()
+        if resumed is not None:
+            resumed.close()
+
+
+def test_policy_off_schema5_continues_and_cannot_enable_on_runtime_checkpoint(mixed_seed, tmp_path):
+    model = _load(mixed_seed, enabled=False)
+    resumed = None
+    try:
+        assert model.mixed_composition_route(_iteration()) is None
+        assert model.mixed_composition_diagnostics() is None
+        assert model.mixed_composition_state() is None
+        for index in range(7):
+            model.tune_with_fpms([_iteration("decode", wall_ms=6, index=index)])
+        checkpoint = tmp_path / "off-resume"
+        model.save_online_checkpoint(checkpoint)
+        assert json.loads((checkpoint / "manifest.json").read_text())["schema_version"] == 5
+        resumed = _load(mixed_seed, checkpoint, enabled=False)
+        assert resumed.export_learned_artifact() == model.export_learned_artifact()
+        for index in range(7, 15):
+            row = _iteration("decode", wall_ms=5 + index % 3, index=index)
+            assert resumed.estimate_forward_pass_time_ms(row) == model.estimate_forward_pass_time_ms(row)
+            for current in (model, resumed):
+                current.tune_with_fpms([row])
+            assert resumed.export_learned_artifact() == model.export_learned_artifact()
+        with pytest.raises(ValueError, match="no mixed calibration state"):
+            _load(mixed_seed, checkpoint)
+    finally:
+        model.close()
+        if resumed is not None:
+            resumed.close()
+
+
+def test_public_snapshot_restore_is_atomic_and_selector_experts_stay_unchanged(mixed_seed, tmp_path):
+    model = _load(mixed_seed, adaptation="causal_selector")
+    restored = _load(mixed_seed, adaptation="causal_selector")
+    try:
+        experts = model.learned_expert_artifacts()
+        selector = model.learned_selector_diagnostics()
+        for index in range(11):
+            model.tune_with_fpms([_iteration(wall_ms=6 + index % 3, index=index)])
+        assert model.learned_expert_artifacts() == experts
+        assert model.learned_selector_diagnostics() == selector
+        checkpoint = tmp_path / "unsupported-selector-checkpoint"
+        with pytest.raises(ValueError, match="selector"):
+            model.save_online_checkpoint(checkpoint)
+        assert not checkpoint.exists()
+        snapshot = model.mixed_composition_state()
+        restored.restore_mixed_composition_state(snapshot)
+        assert restored.mixed_composition_state() == snapshot
+        broken = deepcopy(snapshot)
+        broken["admissions"]["contains_locally_mixed"] += 1
+        with pytest.raises(ValueError, match="admission progress"):
+            restored.restore_mixed_composition_state(broken)
+        assert restored.mixed_composition_state() == snapshot
+        for index in range(11, 40):
+            row = _iteration(wall_ms=6 + index % 3, index=index)
+            assert restored.estimate_forward_pass_time_ms(row) == model.estimate_forward_pass_time_ms(row)
+            for current in (model, restored):
+                current.tune_with_fpms([row])
+            assert restored.mixed_composition_state() == model.mixed_composition_state()
+    finally:
+        model.close()
+        restored.close()

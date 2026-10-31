@@ -655,16 +655,18 @@ def with_exit_stack(func):
     return wrapper
 
 
-def framework_kv_block_size(backend_cls, *, user_block_size: int | None = None) -> int:
+def framework_kv_block_size(backend_cls, *, cache_backend_cls=None, user_block_size: int | None = None) -> int:
     """The KV page the FRAMEWORK would run this backend with — asked, not tabled.
 
     Mirrors serving (vllm 0.30.0): the cache manager block size is
-    ``backend.get_preferred_block_size(CacheConfig.DEFAULT_BLOCK_SIZE)`` unless
-    the user passed --block-size (platforms/interface.py
-    update_block_size_for_backend, phase 1), and the kernel page is
-    ``select_common_block_size(cache_block_size, [backend])`` (v1/worker/utils.py:
-    the manager size when every backend accepts it, else the largest explicit
-    size that divides it). The former per-SM table (removed) was the owner's
+    ``get_preferred_block_size(CacheConfig.DEFAULT_BLOCK_SIZE)`` of the model's
+    FIRST non-SSM attention layer unless the user passed --block-size
+    (platforms/interface.py:588-640, _find_non_ssm_backend +
+    update_block_size_for_backend phase 1) — ``cache_backend_cls``, defaulting to
+    ``backend_cls`` when the measured layer is that first layer — and the kernel
+    page is ``select_common_block_size(cache_block_size, [backend])``
+    (v1/worker/utils.py: the manager size when every backend accepts it, else the
+    largest explicit size that divides it). The former per-SM table (removed) was the owner's
     2026-09-30 interim; the B200 re-run on 2026-10-03 showed it is not
     equivalent: with mla=32 the bf16 DSA cell selected the TRT-LLM FMHA sparse
     cubin while serving ran FA-cute (page 64) — the page is a per-(backend, kv
@@ -674,7 +676,8 @@ def framework_kv_block_size(backend_cls, *, user_block_size: int | None = None) 
     from vllm.config.cache import CacheConfig
     from vllm.v1.worker.utils import select_common_block_size
 
+    cache_backend = cache_backend_cls or backend_cls
     cache_block = (
-        user_block_size if user_block_size else backend_cls.get_preferred_block_size(CacheConfig.DEFAULT_BLOCK_SIZE)
+        user_block_size if user_block_size else cache_backend.get_preferred_block_size(CacheConfig.DEFAULT_BLOCK_SIZE)
     )
     return int(select_common_block_size(int(cache_block), [backend_cls]))

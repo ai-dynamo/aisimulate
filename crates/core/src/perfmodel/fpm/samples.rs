@@ -54,6 +54,22 @@ pub(crate) struct BucketedSamples<T> {
     fixed_bounds: bool,
     buckets_per_axis: Vec<usize>,
     max_observations: usize,
+    // Mixed calibrators use their dedicated snapshot format. Ordinary model
+    // snapshots retain their v1 layout and restore the default tie policy.
+    #[serde(skip)]
+    deterministic_fixed_ties: bool,
+}
+
+/// Fixed-grid retained rows in canonical bucket order and FIFO order per bucket.
+/// Derived counts and hash-map layout are rebuilt after validating the geometry.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FixedSamplesSnapshot<T> {
+    axis_min: Vec<f64>,
+    axis_max: Vec<f64>,
+    buckets_per_axis: Vec<usize>,
+    max_observations: usize,
+    pub(crate) rows: Vec<(Vec<f64>, T)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -68,6 +84,16 @@ impl AxisRange {
             min: 0.0,
             max: f64::from(max),
         }
+    }
+
+    /// Score-space geometry can exceed integer token-counter limits.
+    pub(crate) fn from_zero_to_f64(max: f64) -> Result<Self, AicError> {
+        if !max.is_finite() || max <= 0.0 {
+            return Err(AicError::InvalidEngineConfig(
+                "correction score-axis maximum must be finite and positive".into(),
+            ));
+        }
+        Ok(Self { min: 0.0, max })
     }
 }
 
@@ -88,6 +114,7 @@ impl<T: Clone> BucketedSamples<T> {
             fixed_bounds: false,
             buckets_per_axis: axes_shape.to_vec(),
             max_observations,
+            deterministic_fixed_ties: false,
         })
     }
 
@@ -111,6 +138,7 @@ impl<T: Clone> BucketedSamples<T> {
             fixed_bounds: false,
             buckets_per_axis,
             max_observations: options.max_observations,
+            deterministic_fixed_ties: false,
         }
     }
 
@@ -120,6 +148,85 @@ impl<T: Clone> BucketedSamples<T> {
         samples.axis_max = axis_ranges.iter().map(|range| range.max).collect();
         samples.fixed_bounds = true;
         samples
+    }
+
+    pub(crate) fn use_deterministic_fixed_ties(&mut self) -> Result<(), AicError> {
+        if !self.fixed_bounds
+            || self.total_observations != 0
+            || self
+                .axis_min
+                .iter()
+                .zip(&self.axis_max)
+                .any(|(min, max)| !min.is_finite() || !max.is_finite() || *min != 0.0 || max <= min)
+        {
+            return Err(invalid_fixed_snapshot(
+                "deterministic eviction requires an empty fixed grid with positive finite extents",
+            ));
+        }
+        self.deterministic_fixed_ties = true;
+        Ok(())
+    }
+
+    pub(crate) fn fixed_snapshot(&self) -> Result<FixedSamplesSnapshot<T>, AicError> {
+        if !self.fixed_bounds || !self.deterministic_fixed_ties {
+            return Err(invalid_fixed_snapshot(
+                "snapshots require deterministic fixed-grid eviction",
+            ));
+        }
+        let mut keys = self.buckets.keys().collect::<Vec<_>>();
+        keys.sort_unstable();
+        Ok(FixedSamplesSnapshot {
+            axis_min: self.axis_min.clone(),
+            axis_max: self.axis_max.clone(),
+            buckets_per_axis: self.buckets_per_axis.clone(),
+            max_observations: self.max_observations,
+            rows: keys
+                .into_iter()
+                .flat_map(|key| self.buckets[key].iter().cloned())
+                .collect(),
+        })
+    }
+
+    pub(crate) fn restore_fixed_snapshot(
+        &mut self,
+        snapshot: FixedSamplesSnapshot<T>,
+    ) -> Result<(), AicError> {
+        if !self.fixed_bounds
+            || !self.deterministic_fixed_ties
+            || snapshot.axis_min != self.axis_min
+            || snapshot.axis_max != self.axis_max
+            || snapshot.buckets_per_axis != self.buckets_per_axis
+            || snapshot.max_observations != self.max_observations
+            || snapshot.rows.len() > self.max_observations
+        {
+            return Err(invalid_fixed_snapshot(
+                "fixed-grid geometry or capacity differs",
+            ));
+        }
+        let mut restored = BTreeMap::<Vec<usize>, VecDeque<(Vec<f64>, T)>>::new();
+        let count = snapshot.rows.len();
+        let mut previous_key = None;
+        for (x, value) in snapshot.rows {
+            if !self.is_in_bounds(&x) {
+                return Err(invalid_fixed_snapshot(
+                    "fixed sample is outside its geometry",
+                ));
+            }
+            let key = self.bucket_key(&x);
+            if previous_key
+                .as_ref()
+                .is_some_and(|previous| previous > &key)
+            {
+                return Err(invalid_fixed_snapshot(
+                    "fixed samples are not in canonical bucket order",
+                ));
+            }
+            previous_key = Some(key.clone());
+            restored.entry(key).or_default().push_back((x, value));
+        }
+        self.buckets = restored;
+        self.total_observations = count;
+        Ok(())
     }
 
     pub(crate) fn add(&mut self, x: Vec<f64>, y: T) -> bool {
@@ -252,13 +359,21 @@ impl<T: Clone> BucketedSamples<T> {
     fn retire_from_fattest_bucket(&mut self) -> Option<T> {
         // Eviction removes samples only. Dynamic regression bounds remain
         // monotonic; fixed correction-grid workload ranges are configured at
-        // model creation. Among equally full buckets `max_by_key` keeps the
-        // last, i.e. the greatest bucket key.
-        let key = self
-            .buckets
-            .iter()
-            .max_by_key(|(_, bucket)| bucket.len())
-            .map(|(key, _)| key.clone())?;
+        // model creation.
+        let key = if self.deterministic_fixed_ties {
+            // New mixed calibrators choose the lexicographically first fullest
+            // bucket. Existing consumers retain their established tie behavior.
+            self.buckets
+                .iter()
+                .max_by(|(left_key, left), (right_key, right)| {
+                    left.len()
+                        .cmp(&right.len())
+                        .then_with(|| right_key.cmp(left_key))
+                })
+        } else {
+            self.buckets.iter().max_by_key(|(_, bucket)| bucket.len())
+        }
+        .map(|(key, _)| key.clone())?;
 
         let mut evicted = None;
         if let Some(bucket) = self.buckets.get_mut(&key) {
@@ -351,6 +466,12 @@ impl<T: Clone> BucketedSamples<T> {
     }
 }
 
+fn invalid_fixed_snapshot(reason: &str) -> AicError {
+    AicError::InvalidEngineConfig(format!(
+        "invalid mixed fixed calibration snapshot: {reason}"
+    ))
+}
+
 pub(super) fn validate_regression_shape(
     axes_shape: &[usize],
     max_observations: usize,
@@ -405,6 +526,61 @@ pub(crate) fn integer_sqrt(value: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mixed_fixed_ties_evict_from_first_fullest_bucket_after_restore() {
+        let options = ForwardPassPerfOptions {
+            max_observations: 4,
+            bucket_shape: Some([2, 2]),
+            ..Default::default()
+        };
+        let ranges = [AxisRange::from_zero_to(100); 2];
+        let mut samples = BucketedSamples::new_fixed(&options, &ranges);
+        samples.use_deterministic_fixed_ties().unwrap();
+        for (id, x) in [[0.0, 0.0], [0.0, 0.0], [100.0, 100.0], [100.0, 100.0]]
+            .into_iter()
+            .enumerate()
+        {
+            assert!(samples.add(x.to_vec(), id));
+        }
+        let mut restored = BucketedSamples::new_fixed(&options, &ranges);
+        restored.use_deterministic_fixed_ties().unwrap();
+        restored
+            .restore_fixed_snapshot(samples.fixed_snapshot().unwrap())
+            .unwrap();
+        // Two equally full cells contain IDs [0,1] and [2,3]. A third cell
+        // forces eviction of the oldest ID in lexicographically first [0,0].
+        for model in [&mut samples, &mut restored] {
+            assert_eq!(
+                model.add_with_eviction(vec![0.0, 100.0], 4),
+                SampleInsertion::Accepted { evicted: Some(0) }
+            );
+        }
+        assert_eq!(
+            samples.fixed_snapshot().unwrap(),
+            restored.fixed_snapshot().unwrap()
+        );
+    }
+
+    #[test]
+    fn score_axis_bounds_keep_fractional_and_large_fixed_coordinates() {
+        // Attention-pair work can exceed u32 and still have fractional scores.
+        let max = f64::from(u32::MAX) + 0.5;
+        let range = AxisRange::from_zero_to_f64(max).unwrap();
+        let options = ForwardPassPerfOptions {
+            bucket_shape: Some([4, 1]),
+            ..ForwardPassPerfOptions::default()
+        };
+        let mut samples = BucketedSamples::<usize>::new_fixed(&options, &[range]);
+        assert!(samples.add(vec![0.0], 0));
+        assert_eq!(samples.bucket_key_if_in_bounds(&[0.0]), Some(vec![0]));
+        assert_eq!(samples.bucket_key_if_in_bounds(&[max / 2.0]), Some(vec![2]));
+        assert_eq!(samples.bucket_key_if_in_bounds(&[max]), Some(vec![3]));
+        assert_eq!(samples.bucket_key_if_in_bounds(&[max + 1.0]), None);
+        for max in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(AxisRange::from_zero_to_f64(max).is_err());
+        }
+    }
 
     #[test]
     fn explicit_regression_dimensions_rebucket_and_return_actual_eviction() {

@@ -50,10 +50,24 @@ import torch
 from collector.sglang.runtime_compat import resolved_arg  # 0.5.21: derived server args live behind the resolving view
 
 try:
-    from helper import PhaseClock, benchmark_with_power, get_sm_version, log_perf, render_phase_totals
+    from helper import (
+        PhaseClock,
+        benchmark_with_power,
+        get_sm_version,
+        log_perf,
+        render_phase_totals,
+        run_measurement_subprocess,
+    )
 except ModuleNotFoundError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from helper import PhaseClock, benchmark_with_power, get_sm_version, log_perf, render_phase_totals
+    from helper import (
+        PhaseClock,
+        benchmark_with_power,
+        get_sm_version,
+        log_perf,
+        render_phase_totals,
+        run_measurement_subprocess,
+    )
 
 try:
     from collector.case_generator import (
@@ -234,6 +248,108 @@ def _generation_cuda_graph_enabled_for_tokens(model_runner, num_tokens: int) -> 
         return int(num_tokens) in set(capture_bs)
     max_bs = decode_config.max_bs or 256
     return 0 < int(num_tokens) <= int(max_bs)
+
+
+def _initialize_dsa_history(model_runner, attention_module, forward_batch, history_length: int) -> None:
+    """Populate every referenced historical slot through SGLang's writers.
+
+    The allocator only assigns locations; clearing it does not clear or fill
+    either cache. Seed post-RoPE synthetic activations outside the measurement,
+    including partial pages, rather than exposing zeros or an earlier case's
+    contents. These inputs represent no particular checkpoint distribution.
+
+    Native contracts at SGLang 0.5.21 (ported from #405's 0.5.14 @49e384ce):
+    dsa/dsa_indexer.py:1498-1578 owns index-K quantization and opaque layout
+    (its pool comes from ForwardContext, :1519); dsa_backend.py:1997-2010 writes
+    latent/rotary KV using the attention layer; memory_pool.py:4570-4642 owns
+    BF16/FP8 MLA layouts and their scale fields. Paths above are relative to
+    python/sglang/srt/layers/attention except memory_pool.py, which is in
+    python/sglang/srt/mem_cache.
+    """
+    if history_length < 0:
+        raise ValueError("DSA historical length must be nonnegative")
+    if not history_length:
+        return
+
+    # 0.5.21 moved the DSA Triton kernels out of srt (kernels/ops/attention/dsa/triton_kernel.py:86)
+    from sglang.kernels.ops.attention.dsa.triton_kernel import act_quant
+
+    forward_context_type, forward_context = _import_sglang_forward_context()
+    pool = model_runner.token_to_kv_pool
+    locations = (
+        model_runner.req_to_token_pool.req_to_token[forward_batch.req_pool_indices.long(), :history_length]
+        .flatten()
+        .long()
+        .contiguous()
+    )
+    expected = int(forward_batch.batch_size) * history_length
+    if locations.numel() != expected:
+        raise ValueError(f"DSA history has {locations.numel()} locations; expected {expected}")
+    generator = torch.Generator(device="cpu").manual_seed(0)
+    for start in range(0, expected, 8192):
+        slots = locations[start : start + 8192]
+
+        def random_activations(*shape):
+            return torch.randn(shape, generator=generator, dtype=torch.float32).to(
+                device=slots.device, dtype=torch.bfloat16
+            )
+
+        # Normalized latent K and post-RoPE K are inputs to the native cache
+        # writer. Do not fill the packed cache bytes or scale fields directly.
+        pool.set_mla_kv_buffer(
+            attention_module.attn_mqa,
+            slots,
+            random_activations(slots.numel(), 1, attention_module.kv_lora_rank),
+            random_activations(slots.numel(), 1, attention_module.qk_rope_head_dim),
+        )
+        # The native fused store obtains its pool from ForwardContext, just
+        # as it does during serving Indexer.forward (dsa_indexer.py:1286).
+        with forward_context(forward_context_type(attn_backend=model_runner.attn_backend)):
+            attention_module.indexer._store_index_k_cache(
+                forward_batch,
+                attention_module.layer_id,
+                random_activations(slots.numel(), pool.index_head_dim),
+                act_quant=act_quant,
+                out_cache_loc=slots,
+            )
+
+
+def _dsa_forward_input_relay(model_runner, batch):
+    """Own the native scheduler relay needed by SGLang input staging.
+
+    At 0.5.21 prepare_for_extend leaves input_ids None and stages
+    prefill_input_ids_cpu (schedule_batch.py:2943-2944); resolve_forward_inputs
+    materializes them (managers/overlap_utils.py:87-120), and the scheduler runs
+    it and FutureMap.stash even without overlap (scheduler.py:4588-4597,
+    4674-4696). Attention-only execution skips embeddings, but ForwardBatch still
+    needs these IDs to derive the actual token count (forward_batch_info.py:1064-1071).
+    The relay is built as the scheduler builds it (scheduler.py:1622-1637).
+    """
+    from sglang.srt.managers.overlap_utils import decide_needs_confidence_relay, decide_needs_cpu_seq_lens
+
+    if not hasattr(model_runner, "_aic_dsa_input_relay"):
+        model_runner._aic_dsa_input_relay = batch.spec_algorithm.create_future_map(
+            batch.device,
+            model_runner.req_to_token_pool,
+            needs_cpu_seq_lens=decide_needs_cpu_seq_lens((model_runner.attn_backend,)),
+            needs_confidence_relay=decide_needs_confidence_relay(),
+        )
+    return model_runner._aic_dsa_input_relay
+
+
+def _validate_dsa_forward_tokens(forward_batch, expected_tokens: int) -> None:
+    """Reject missing scheduler inputs before they alter native dispatch."""
+    for name in ("input_ids", "positions", "out_cache_loc"):
+        value = getattr(forward_batch, name)
+        if value is None or value.numel() != expected_tokens:
+            actual = None if value is None else value.numel()
+            raise ValueError(f"DSA {name} has {actual} tokens; expected {expected_tokens}")
+    # 0.5.21 renamed the host count (forward_batch_info.py:673, set at :1071)
+    if forward_batch.global_num_token_non_padded_cpu != expected_tokens:
+        raise ValueError(
+            f"DSA global_num_token_non_padded_cpu={forward_batch.global_num_token_non_padded_cpu}; "
+            f"expected {expected_tokens}"
+        )
 
 
 def _resolve_local_model_path(model_id: str) -> str:
@@ -617,9 +733,8 @@ def _dsa_context_prefix_shape_is_valid(
 ) -> bool:
     """Return whether a DSA prefix-context sample is structurally valid.
 
-    Single-token extension is a decode/generation shape.  SGLang's DSA prefill
-    indexer can illegal-access on that shape, so context collection skips it
-    before launching kernels.
+    A one-token extension stays out at 0.5.21: the collector times DSA prefill
+    eagerly, where it illegal-accessed (runtime_limits.dsa_indexer_prefill_shape_is_supported).
 
     **Per-request context ceiling (SGLang mechanism, not an empirical constant).**
     The DSA/NSA indexer builds its rotary cos/sin cache for
@@ -934,10 +1049,9 @@ def cleanup_distributed():
         if hasattr(parallel_state, var_name):
             setattr(parallel_state, var_name, None)
 
-    import sglang.srt.eplb.expert_location as expert_location
+    from collector.sglang.runtime_compat import reset_expert_location_metadata
 
-    if hasattr(expert_location, "_global_expert_location_metadata"):
-        expert_location._global_expert_location_metadata = None
+    reset_expert_location_metadata()
 
 
 def _ensure_fp8_block_quant_config(hf_cfg) -> None:
@@ -1003,11 +1117,14 @@ def _patch_nsa_rope_contiguity(model_runner):
 
         def _make_contiguous_forward(orig):
             def _forward(positions, query, key, fused_set_kv_buffer_arg=None):
+                # by keyword: the 4th positional of forward_cuda is offsets
+                # (rotary_embedding/base.py:380-387 @0.5.21)
+                kwargs = {} if fused_set_kv_buffer_arg is None else {"fused_set_kv_buffer_arg": fused_set_kv_buffer_arg}
                 return orig(
                     positions.contiguous(),
                     query.contiguous(),
                     key.contiguous() if key is not None else key,
-                    fused_set_kv_buffer_arg,
+                    **kwargs,
                 )
 
             return _forward
@@ -1047,6 +1164,10 @@ def _patch_nsa_indexer_compile_for_module_cuda_graph(attention_module) -> None:
 
 class CudaIllegalAccessError(RuntimeError):
     """Stop the current subprocess after a CUDA illegal access poisons context."""
+
+
+class MeasurementBoundaryError(RuntimeError):
+    """Native dispatch ran, but its module timing boundary is not qualified."""
 
 
 class PerfLogWriteError(RuntimeError):
@@ -1194,6 +1315,10 @@ def load_model_runner(
         tp_size=1,
         trust_remote_code=True,
         disable_radix_cache=True,
+        # FIXME(re-verify): 0.5.21 serves DSA prefill under the "breakable" prefill graph
+        # (cuda_graph_config.py:122-131,160-162; buckets 4..2048, cuda_graph_hook.py:622-639),
+        # not the 0.5.14 tc_piecewise runner dsa_prefill_graph.py adapts, so the collector keeps
+        # prefill graphs off and times DSA prefill eagerly, as the 0.5.21 tables were measured.
         disable_prefill_cuda_graph=True,
         kv_cache_dtype=sglang_kv_dtype,
         max_total_tokens=max_total_tokens,
@@ -1368,16 +1493,19 @@ def run_attention_torch(
         if attn_type != "mla" or any(not case[2] for case in test_cases):
             raise ValueError("ordinary_mla collects MLA context modules only")
         _validate_mla_projection_precision(attention_module, gemm_type)
-        # SGLang 0.5.14 (4289f36), deepseek_v2.py:1902-1921,
-        # 2068: serving supplies this method to AttentionInputs. Invoke the
-        # framework method so its fused/quantized projection dispatch is kept.
-        dummy_qkv_latent_func = attention_module.prepare_qkv_latent
         log_mla_dtype = "fp8" if backend_name == "trtllm_mla" and kv_cache_dtype == "fp8" else "bfloat16"
+
+    if ordinary_mla or attn_type == "dsa":
+        # SGLang 0.5.21 deepseek_v2.py:2462-2487,2622-2626 supplies the
+        # native projection to AttentionInputs for both MLA and DSA. Keep its fused/quantized
+        # dispatch; the module perf row includes this down-projection.
+        dummy_qkv_latent_func = attention_module.prepare_qkv_latent
 
     model_runner.req_to_token_pool.clear()
     model_runner.token_to_kv_pool_allocator.clear()
 
     logged_count = 0
+    boundary_failures = []
     for test_case in test_cases:
         if len(test_case) == 4:
             batch_size, seq_length, is_prefill, prefix_len = test_case
@@ -1386,34 +1514,45 @@ def run_attention_torch(
             prefix_len = 0
 
         if is_prefill:
-            logged_count += int(
-                _run_prefill(
-                    model_runner=model_runner,
-                    attention_module=attention_module,
-                    batch_size=batch_size,
-                    seq_length=seq_length,
-                    head_num=head_num,
-                    num_warmup=num_warmup,
-                    num_iterations=num_iterations,
-                    device=device,
-                    output_path=output_path,
-                    dummy_qkv_latent_func=dummy_qkv_latent_func,
-                    attn_type=attn_type,
-                    model_path=model_path,
-                    architecture=architecture,
-                    backend_name=backend_name,
-                    version=version,
-                    device_name=device_name,
-                    log_mla_dtype=log_mla_dtype,
-                    log_kv_dtype=log_kv_dtype,
-                    log_gemm_type=log_gemm_type,
-                    target_tp_size=target_tp_size,
-                    prefix_len=prefix_len,
-                    use_module_cuda_graph=use_module_cuda_graph,
-                    dsa_prefill_backend=resolved_dsa_prefill_backend,
-                    ordinary_mla=ordinary_mla,
+            try:
+                logged_count += int(
+                    _run_prefill(
+                        model_runner=model_runner,
+                        attention_module=attention_module,
+                        batch_size=batch_size,
+                        seq_length=seq_length,
+                        head_num=head_num,
+                        num_warmup=num_warmup,
+                        num_iterations=num_iterations,
+                        device=device,
+                        output_path=output_path,
+                        dummy_qkv_latent_func=dummy_qkv_latent_func,
+                        attn_type=attn_type,
+                        model_path=model_path,
+                        architecture=architecture,
+                        backend_name=backend_name,
+                        version=version,
+                        device_name=device_name,
+                        log_mla_dtype=log_mla_dtype,
+                        log_kv_dtype=log_kv_dtype,
+                        log_gemm_type=log_gemm_type,
+                        target_tp_size=target_tp_size,
+                        prefix_len=prefix_len,
+                        use_module_cuda_graph=use_module_cuda_graph,
+                        dsa_prefill_backend=resolved_dsa_prefill_backend,
+                        ordinary_mla=ordinary_mla,
+                    )
                 )
-            )
+            except MeasurementBoundaryError as exc:
+                failure = {
+                    "batch_size": batch_size,
+                    "seq_length": seq_length,
+                    "prefix_len": prefix_len,
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                }
+                boundary_failures.append(failure)
+                print(f"DSA measurement boundary failure: {json.dumps(failure, sort_keys=True)}")
         else:
             logged_count += int(
                 _run_decode(
@@ -1441,6 +1580,11 @@ def run_attention_torch(
                     dsa_prefill_backend=resolved_dsa_decode_backend,
                 )
             )
+    if boundary_failures:
+        raise MeasurementBoundaryError(
+            "DSA prefill collection incomplete: "
+            + json.dumps({"logged_count": logged_count, "boundary_failures": boundary_failures}, sort_keys=True)
+        )
     return logged_count
 
 
@@ -1491,6 +1635,7 @@ def _run_prefill(
     print(f"\nPrefill: batch_size={batch_size}, seq_length={seq_length}, prefix_len={prefix_len}")
     point_clock = PhaseClock()
 
+    native_graph_context = None
     try:
         model_runner.req_to_token_pool.clear()
         model_runner.token_to_kv_pool_allocator.clear()
@@ -1542,6 +1687,10 @@ def _run_prefill(
         with _temporarily_chunked_alloc_extend(model_runner, batch_size * seq_length):
             batch.prepare_for_extend()
         point_clock.mark("batch")
+        if attn_type == "dsa":
+            from sglang.srt.managers.overlap_utils import resolve_forward_inputs
+
+            resolve_forward_inputs(batch, _dsa_forward_input_relay(model_runner, batch))
         # sglang 0.5.16 made return_hidden_states_before_norm a required
         # keyword (ForwardBatch.init_new); older pins do not accept it —
         # same dispatch collect_msa_module.py:1015 uses.
@@ -1553,8 +1702,13 @@ def _run_prefill(
             else {}
         )
         forward_batch = ForwardBatch.init_new(batch, model_runner, **_fb_kw)
+        if attn_type == "dsa":
+            _validate_dsa_forward_tokens(forward_batch, batch_size * seq_length)
         model_runner.attn_backend.init_forward_metadata(forward_batch)
         point_clock.mark("metadata")
+        if attn_type == "dsa":
+            _initialize_dsa_history(model_runner, attention_module, forward_batch, prefix_len)
+            point_clock.mark("history")
 
         hidden_states = torch.randn(
             batch_size * seq_length,
@@ -1574,8 +1728,8 @@ def _run_prefill(
         attn_inputs = AttentionInputs(hidden_states, forward_batch, dummy_qkv_latent_func)
         get_attn_tp_context().set_attn_inputs(attn_inputs)
 
-        # SGLang 0.5.14's prefill graph runner owns a full-model compile
-        # contract. This module microbenchmark measures the eager serving path.
+        # Preparation starts eagerly. Below, eligible DSA batches enter the
+        # native TC piecewise runner with an attention-only model adapter.
         use_module_piecewise_replay = False
         use_full_model_piecewise_replay = False
         use_module_cuda_graph = False
@@ -1953,9 +2107,10 @@ def _run_prefill(
             return {}
 
         def call_attention_module():
-            if ordinary_mla:
-                # communicator.py:235-246 caches QKV within AttentionInputs.
-                # Serving constructs fresh inputs per layer/forward (:685-689).
+            if ordinary_mla or attn_type == "dsa":
+                # AttentionInputs caches QKV (layer_boundary/adapters/attention.py:69-80
+                # @0.5.21); serving builds fresh inputs per layer/forward
+                # (layer_boundary/prepare.py:179-189).
                 # Reset inside EVERY timed iteration, including warmup, so the
                 # down-projection is measured rather than reused from warmup.
                 get_attn_tp_context().set_attn_inputs(
@@ -1977,7 +2132,6 @@ def _run_prefill(
                         # Keep DSA dispatch consistent with SGLang's
                         # piecewise path even when we do not replay a
                         # captured CUDA graph for this token count.
-                        model_runner.attn_backend.init_forward_metadata(forward_batch)
                         return attention_module(
                             positions=positions,
                             hidden_states=hidden_states,
@@ -1994,7 +2148,10 @@ def _run_prefill(
                     # graph: the standard forward_context entered above plus the
                     # attention metadata is all the NSA indexer needs (its metadata
                     # is built in init_forward_metadata, not via the forward context).
-                    model_runner.attn_backend.init_forward_metadata(forward_batch)
+                    # Metadata was planned once for this batch above. Serving
+                    # does this before model.forward, not once per layer:
+                    # model_executor/runner/eager_runner.py:293-321 then :370-376 @0.5.21.
+                    # Retain the native ForwardContext while timing the layer.
                     return attention_module(
                         positions=positions,
                         hidden_states=hidden_states,
@@ -2025,6 +2182,40 @@ def _run_prefill(
             else call_attention_module
         )
 
+        if attn_type == "dsa":
+            from collector.sglang.dsa_prefill_graph import dsa_prefill_graph, graph_token_bucket
+
+            if graph_token_bucket(model_runner, token_count) is not None:
+                graph_context = dsa_prefill_graph(
+                    model_runner,
+                    attention_module,
+                    forward_batch,
+                    hidden_states,
+                    zero_allocator,
+                    skip_indexer=_skip_indexer,
+                )
+                call_target = graph_context.__enter__()
+                native_graph_context = graph_context
+                # Native piecewise metadata disables MHA_ONE_SHOT even for
+                # small inputs (dsa_backend.py:2436-2444 @ 49e384ce; at 0.5.21
+                # tc_piecewise or breakable, dsa_backend.py:3603-3606).
+                # Label the path selected after native load_batch, not the
+                # earlier eager preparation or the requested backend.
+                if model_runner.attn_backend.use_mha:
+                    raise RuntimeError("Native piecewise DSA unexpectedly selected dense MHA")
+                indexer_mode = "skip_indexer" if _skip_indexer else "indexer"
+                executed_dsa_source = f"sglang_dsa_{indexer_mode}_{model_runner.attn_backend.dsa_prefill_impl}"
+                # Native dispatch/capture above is observed, not predicted from
+                # the requested shape. The compiled Inner enters model-level
+                # Dynamo on every replay, so its timing cannot represent one
+                # attention layer.
+                # Preserve the native path and its failure; never emit a row
+                # with this known measurement-boundary error or fall back to eager.
+                raise MeasurementBoundaryError(
+                    f"Unqualified SGLang DSA native TC prefill measurement boundary: {executed_dsa_source}; "
+                    "per-model Dynamo entry remains inside per-layer timing; no perf row was written"
+                )
+
         # Warmup — run UNDER the flashinfer autotune context so the fp4_gemm
         # autotuning is absorbed into this module warmup (tuned here, cached for
         # the timed region) instead of running as a separate model-init phase.
@@ -2033,7 +2224,7 @@ def _run_prefill(
         try:
             from flashinfer.autotuner import autotune as _fi_autotune
 
-            _tune_ctx = _fi_autotune(True)
+            _tune_ctx = _fi_autotune(True) if native_graph_context is None else contextlib.nullcontext()
         except Exception:
             _tune_ctx = contextlib.nullcontext()
         try:
@@ -2057,7 +2248,12 @@ def _run_prefill(
         if use_full_model_piecewise_replay or use_module_piecewise_replay:
             print(f"  Piecewise can_run_graph={last_can_run_graph}")
 
-        if _skip_indexer and not _skip_uses_dense_mha and _skip_state["prev_topk"] is None:
+        if (
+            _skip_indexer
+            and native_graph_context is None
+            and not _skip_uses_dense_mha
+            and _skip_state["prev_topk"] is None
+        ):
             raise RuntimeError(
                 f"skip_indexer pass for {attn_type} captured no topk index during warmup; "
                 "refusing to record a skip row with full-indexer latency."
@@ -2144,7 +2340,7 @@ def _run_prefill(
         print(f"  Prefill: {avg_time_ms:.3f} ms (back-to-back avg over {num_iterations} iters)")
         return True
 
-    except PerfLogWriteError:
+    except (MeasurementBoundaryError, PerfLogWriteError):
         raise
     except (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError):
         print(f"  OOM: b={batch_size}, s={seq_length} — skipping")
@@ -2164,11 +2360,19 @@ def _run_prefill(
         return False
     finally:
         cleanup_errors = []
-        for cleanup_name, cleanup_fn in (
-            ("req_to_token_pool.clear", model_runner.req_to_token_pool.clear),
-            ("token_to_kv_pool_allocator.clear", model_runner.token_to_kv_pool_allocator.clear),
-            ("torch.cuda.empty_cache", torch.cuda.empty_cache),
-        ):
+        cleanup_actions = []
+        if native_graph_context is not None:
+            cleanup_actions.append(
+                ("native_prefill_graph.close", lambda: native_graph_context.__exit__(None, None, None))
+            )
+        cleanup_actions.extend(
+            (
+                ("req_to_token_pool.clear", model_runner.req_to_token_pool.clear),
+                ("token_to_kv_pool_allocator.clear", model_runner.token_to_kv_pool_allocator.clear),
+                ("torch.cuda.empty_cache", torch.cuda.empty_cache),
+            )
+        )
+        for cleanup_name, cleanup_fn in cleanup_actions:
             try:
                 cleanup_fn()
             except Exception as cleanup_exc:
@@ -2272,10 +2476,28 @@ def _run_decode(
         )
         # Allocate KV cache slots, then switch to decode
         batch.prepare_for_extend()
+        if attn_type == "dsa":
+            from sglang.srt.managers.overlap_utils import resolve_forward_inputs
+
+            input_relay = _dsa_forward_input_relay(model_runner, batch)
+            resolve_forward_inputs(batch, input_relay)
         for req in batch.reqs:
             req.output_ids.append(0)
+        if attn_type == "dsa":
+            # Match the non-overlap scheduler's sampled-token handoff
+            # (scheduler.py:4588-4597, 4688-4696 @0.5.21). The synthetic next
+            # token is the same zero appended to each Req.
+            from sglang.srt.managers.overlap_utils import RelayPayload
+
+            input_relay.stash(
+                batch.req_pool_indices,
+                RelayPayload(bonus_tokens=torch.zeros(batch_size, dtype=torch.int64, device=batch.device)),
+            )
+            batch.input_ids = None
         batch.prepare_for_decode()
         point_clock.mark("batch")
+        if attn_type == "dsa":
+            resolve_forward_inputs(batch, input_relay)
         import inspect as _inspect
 
         _fb_kw = (
@@ -2284,8 +2506,13 @@ def _run_decode(
             else {}
         )  # sglang 0.5.16 required keyword (see the context path above)
         forward_batch_decode = ForwardBatch.init_new(batch, model_runner, **_fb_kw)
+        if attn_type == "dsa":
+            _validate_dsa_forward_tokens(forward_batch_decode, batch_size)
         model_runner.attn_backend.init_forward_metadata(forward_batch_decode)
         point_clock.mark("metadata")
+        if attn_type == "dsa":
+            _initialize_dsa_history(model_runner, attention_module, forward_batch_decode, seq_length)
+            point_clock.mark("history")
 
         decode_hidden = torch.randn(
             batch_size,
@@ -2340,6 +2567,14 @@ def _run_decode(
 
             capture_context = model_capture_mode() if use_benchmark_cuda_graph else nullcontext()
             with capture_context, forward_context(forward_context_type(attn_backend=model_runner.attn_backend)):
+                if attn_type == "dsa":
+                    # SGLang 0.5.21 layer_boundary/adapters/attention.py:69-80,
+                    # prepare.py:179-189: QKV is cached within one AttentionInputs only.
+                    # Refresh for every forward so capture includes the native
+                    # projection instead of reusing the warmup's latent.
+                    get_attn_tp_context().set_attn_inputs(
+                        AttentionInputs(decode_hidden, forward_batch_decode, dummy_qkv_latent_func)
+                    )
                 return attention_module(
                     positions=decode_positions,
                     hidden_states=decode_hidden,
@@ -2835,30 +3070,29 @@ def _run_mla_subprocess(
         f"chunked_prefill_size={chunked_prefill_size!r})\n"
     )
 
-    proc = subprocess.Popen(
-        [sys.executable, "-c", code],
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        cwd=os.path.dirname(os.path.abspath(__file__)),
-    )
-
     # Per-subprocess timeout is OFF by default. A DSA context subprocess sweeps
     # the full isl x prefix grid for one batch_size and can legitimately run for
     # many minutes; a wall-clock cap silently truncated the sweep (killed mid-grid,
     # kept the partial rows, logged a WARNING not an error) and left the perf DB
-    # with short prefix coverage, forcing AIC to extrapolate. Unset =
-    # communicate(timeout=None) = block until the subprocess finishes on its own.
+    # with short prefix coverage, forcing AIC to extrapolate. Unset = block until
+    # the subprocess finishes on its own; the executor's stall watchdog still sees
+    # liveness, because the wait beats while the child prints its points, and a
+    # reclaimed worker takes the child down with it (helper.run_measurement_subprocess).
     # Users can still opt into a cap by setting AIC_MLA_MODULE_SUBPROCESS_TIMEOUT_SEC.
     _timeout_env = os.environ.get("AIC_MLA_MODULE_SUBPROCESS_TIMEOUT_SEC")
     subprocess_timeout = int(_timeout_env) if _timeout_env else None
     try:
-        stdout, _ = proc.communicate(timeout=subprocess_timeout)
+        returncode, stdout = run_measurement_subprocess(
+            [sys.executable, "-c", code],
+            env=env,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            timeout=subprocess_timeout,
+        )
         if stdout:
             print(stdout.decode("utf-8", errors="replace"))
     except subprocess.TimeoutExpired as exc:
-        proc.kill()
-        proc.wait()
+        if exc.output:
+            print(exc.output.decode("utf-8", errors="replace"))
         raise RuntimeError(
             f"{attn_type.upper()} module {phase} subprocess timed out "
             f"after {subprocess_timeout}s "
@@ -2866,7 +3100,7 @@ def _run_mla_subprocess(
             f"gemm={gemm_type}, target_tp={target_tp_size})"
         ) from exc
 
-    if proc.returncode != 0:
+    if returncode != 0:
         # Include last lines of subprocess output in the error so the cause
         # is visible in the error group (subprocess stderr is merged into stdout).
         tail = ""
@@ -2874,7 +3108,7 @@ def _run_mla_subprocess(
             lines = stdout.decode("utf-8", errors="replace").strip().splitlines()
             tail = "\n".join(lines[-30:])  # last 30 lines should include traceback
         raise RuntimeError(
-            f"{attn_type.upper()} module {phase} subprocess failed (exit code {proc.returncode})\n"
+            f"{attn_type.upper()} module {phase} subprocess failed (exit code {returncode})\n"
             f"--- subprocess output (last 30 lines) ---\n{tail}"
         )
 

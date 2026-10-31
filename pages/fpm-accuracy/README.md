@@ -4,7 +4,7 @@ The public [FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy
 compares forward-pass predictions with measurements from the public
 [nvidia/aisimulate-fpm-dataset](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset).
 
-Details and 3D Visualization are separate tabs with independent controls.
+Details, 3D Visualization, and Scenario Comparison are separate tabs with independent controls.
 
 ## What is published
 
@@ -168,6 +168,48 @@ does not test extrapolation to later traffic. A kind with fewer than 20 training
 rows has no store and its scored observations are unavailable. Summaries
 published before this method list only the first three methods and remain valid.
 
+## Scenario Comparison
+
+[Scenario Comparison](https://ai-dynamo.org/aisimulate/fpm-accuracy/scenario-comparison.html)
+sits next to 3D Visualization. It compares A-only, B-only, C-only, A+C, and B+C
+across interpolation with KV warmup on/off, linear regression, spline regression,
+GBDT, hybrid calibration, and the causal selector. Interpolation applies only to A;
+hybrid calibration and selector apply to C, A+C, and B+C. Choose a configuration
+to compare every scenario, or select a score to inspect coverage, update counts,
+input hashes, recipe controls, and native diagnostics. MAPE includes successful
+predictions only; coverage retains cold starts and prediction failures.
+
+The B/B+C slider selects precomputed training shares from 10% to 90%. B distributes
+training positions uniformly within each workload and freezes the fit. B+C uses
+a chronological training prefix and adapts on the remainder. Integer rounding
+and small workloads can differ from the requested ratio. Model, GPU, framework,
+workload, metric, scenario, ratio, and configuration selections persist in the URL.
+Costs cover all workloads even when the metric filter selects one workload.
+
+Public assets use `fpm-scenarios-v13`. Strict C has zero offline inputs and admits
+only the first scored observation at or after each five-second event-time tick,
+including during cold-start warmup. The first tick is five seconds after the first
+scored timestamp. Prediction and scoring always precede the update. Intervening
+observations never become training data. Gaps skip missed ticks; tied timestamps
+consume a tick once; there is no catch-up update or final flush. A+C and B+C use
+the same schedule after offline initialization. All online scenarios require
+recorded chronology and usable event timestamps. Missing chronology remains
+unavailable, with nominal counts retained for coverage accounting.
+
+GBDT, hybrid calibration, and selector use the canonical AISim performance-model
+API. The original-A missing mixed-workload fallback applies to A/A+C through that
+API, with verified self-benchmark provenance and whole-forward interpolation.
+B, C, and B+C receive no original-A prior. See the
+[mixed-workload fallback guide](../../docs/perf-model/fpm_ml/mixed-workload-fallback.md)
+for eligibility and expert routing.
+
+The browser loads `branches/<branch-key>/scenarios.json` alongside the selected
+summary. Both must identify the same evaluation run, code revision, completion
+time, and pinned Hugging Face revision. The page rejects older fast-warmup
+protocols and displays an unavailable state when no qualified scenario artifact
+has been published. It never estimates scores or downloads a replacement local
+dataset. Synthetic fixtures exist only in the browser check and are not deployed.
+
 ## Daily data flow
 
 `FPM Accuracy Matrix` runs daily at 10:47 UTC. It pins HF `main` once and evaluates
@@ -176,12 +218,19 @@ Manual dispatch accepts an eligible branch and a full commit belonging to it.
 At most two branch jobs run concurrently. A verified exact nightly wheel is
 reused for scheduled main when available; otherwise the exact source is built.
 
-Each completed branch uploads `summary.json`, `details.json`, and `qualification.json` as
+Each completed branch uploads `summary.json`, `details.json`, `scenarios.json`, and `qualification.json` as
 `fpm-accuracy-web-<branch-key>`, retained for 90 days. Results are not committed.
-Upload the output directory as one path so container runners preserve both
+Upload the output directory as one path so container runners preserve all four
 files at the archive root; the publisher rejects missing or extra files.
-Qualification v2 hashes summary and detail separately; legacy v1 remains
-readable for Overview with explicit unavailable detail states.
+Qualification v3 hashes summary, detail, and scenarios separately. All three
+documents share the exact branch wheel, evaluator, HF revision, and run identity.
+Legacy v1/v2 artifacts remain readable for Overview; missing detail or scenario
+assets show an explicit unavailable state. Scenarios are published only with
+their matching selected summary, never borrowed from a different campaign.
+Native diagnostics retain deployment identity, complete configuration hashes,
+forest and source hashes, and route/feedback counters. Repeated full configs and
+per-row retained IDs are summarized to keep the artifact bounded. A scenario
+asset exceeding 64 MiB fails qualification before upload.
 The main-branch Pages publisher verifies checksums, schema, source ancestry,
 producer repository/workflow, evaluator SHA, run attempt, and successful branch
 job. It selects the newest eligible source commit, then latest completion time.
@@ -203,7 +252,7 @@ directory so that both assets are available.
 
 Dashboard script URLs carry a shared version (`collection-parquet-1`) so returning
 visitors fetch scripts compatible with the unified banner. Bump this version
-across all five tabs when changing shared DOM or navigation APIs. The browser
+across all tabs when changing shared DOM or navigation APIs. The browser
 check covers a cached 3D script that still references the removed status header.
 
 ```bash
@@ -217,7 +266,8 @@ python -m http.server --directory /tmp/aisim-pages 8000
 Install an exact AISim wheel with **pip** (which records its SHA-256 in
 `direct_url.json`) before a real evaluation. Run `python -m scripts.fpm_accuracy.run_fpm_accuracy
 --help` for the required source, evaluator, HF, wheel, run-identity, and output
-arguments. `--configuration` limits a local smoke to selected configuration paths;
+arguments. Pass `--scenarios` to include all five cases and the B/B+C split grid,
+as the daily workflow does. `--configuration` limits a local smoke to selected configuration paths;
 it writes `SMOKE_ONLY.txt` and never writes a qualification manifest. Omit it
 for a complete campaign. The output directory must be empty. Only the scheduled
 workflow publishes results; the runner reads HF and writes local output.
@@ -226,6 +276,7 @@ workflow publishes results; the runner reads HF and writes local output.
 python -m pip install playwright==1.63.0
 python -m playwright install chromium
 python scripts/pages/check_fpm_accuracy_browser.py
+python scripts/pages/check_fpm_scenarios_browser.py
 node --test tests/test_fpm_accuracy_workflow.mjs
 ```
 

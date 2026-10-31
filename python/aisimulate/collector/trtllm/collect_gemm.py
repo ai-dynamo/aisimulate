@@ -196,17 +196,6 @@ def run_gemm(gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
     torch.set_default_device(device)
     sm_version = get_sm_version()
 
-    if gemm_type == "fp8" and (n % 16 or k % 16):
-        # FP8QDQLinearMethod.apply -> torch.ops.trtllm.cublas_scaled_mm / cuda_scaled_mm,
-        # which TORCH_CHECK the 16-element alignment of the output row stride (= n)
-        # and of mat_b's column stride (= k): cpp/tensorrt_llm/thop/cublasScaledMM.cpp:260
-        # and cutlassScaledMM.cpp:152 @1.3.0rc29. The shared GEMM grid carries
-        # n in {1, 4, 8, 12, 24} (1,110 cases per system on gb200/gb300).
-        raise RuntimeError(
-            "FIXME(kernel-limit): TRT-LLM fp8 GEMM (cublas/cutlass scaled_mm) requires n and k to be "
-            f"multiples of 16 (out.strides()[0] % 16 == 0 && mat_b.strides()[1] % 16 == 0), got n={n}, k={k}"
-        )
-
     dtype = torch.bfloat16
     x = torch.randn((m, k), dtype=dtype).to(torch.device(device))
 

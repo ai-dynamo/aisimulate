@@ -154,19 +154,30 @@ not recreate the selected recommendation. See the
 
 Generated TRT-LLM prefill/decode engine YAML includes `cache_transceiver_config`
 for both roles, including when candidate batch, token and KV memory limits are
-preserved. A missing transfer buffer size receives the rule's block-aligned
-default; an explicitly preserved buffer size remains unchanged. This enables
+preserved. With fixed request lengths and an explicit block size, a missing
+transfer buffer size receives the rule's block-aligned default; an explicitly
+preserved buffer size remains unchanged. This enables
 the KV transfer required by P/D serving without resizing the evaluated scheduler
 limits. Aggregated deployments do not need this transfer configuration.
 Validate a real completion after readiness: worker startup alone does not test
 prefill-to-decode KV transfer.
 
-The rule derives that default from ISL and OSL. A trace has neither, so its
-`cache_transceiver_config` sets only `backend` and TensorRT-LLM picks the size.
+The rule derives that default from ISL, OSL, and the configured block size.
+When request lengths or block size are unset, `cache_transceiver_config` sets
+only `backend` and TensorRT-LLM picks the size. This avoids assuming a 32-token
+block when the runtime selects a different geometry, such as FlashMLA's 64.
 Since 1.3.0rc3 that default is `max_seq_len`, rounded up to a whole KV block
 since 1.3.0rc22.post1. In 1.3.0rc3 through 1.3.0rc22 it is unrounded, so a
 worker can fail at startup when `max_seq_len` is not a multiple of the KV block
-size; for those runtimes, choose a `context_length` that is. Earlier versions
+size; for those runtimes, choose a `context_length` aligned to the runtime's
+effective block size. Artifact generation warns for each role whose buffer the
+runtime sizes when `max_seq_len` is not a multiple of the block size, or when
+alignment cannot be checked because the block size or `max_seq_len` is unset
+(the runtime then takes the length from the model). It checks the deployed
+value for Sweeper candidates and direct generator calls alike: the final
+engine configuration, including `extra_engine_args` overrides, or for the
+`dynamo-python` target the `--max-seq-len` flag, because that target's
+translation of the engine configuration into flags omits `max_seq_len`. Earlier versions
 use a buffer sized by `TRTLLM_KVCACHE_TRANSFER_BUFFER_SIZE` (512 MB by
 default).
 

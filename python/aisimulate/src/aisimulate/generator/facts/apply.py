@@ -131,12 +131,30 @@ def quant_family_of(quantization: dict[str, Any] | None) -> str | None:
     return method or algo.lower() or None
 
 
+# TRT-LLM MoeConfig.backend literals a release no longer accepts, with the first release that rejects
+# them: WIDEEP is in the literal through 1.3.0rc24 and gone from 1.3.0rc25 (llmapi/llm_args.py MoeConfig).
+_TRTLLM_MOE_BACKEND_REJECTED_FROM = {"WIDEEP": "1.3.0rc25"}
+
+
+def _trtllm_rejects_moe_backend(choice: str, backend_version: str | None) -> bool:
+    from packaging.version import InvalidVersion, Version
+
+    rejected_from = _TRTLLM_MOE_BACKEND_REJECTED_FROM.get(str(choice).upper())
+    if rejected_from is None or not backend_version:
+        return False
+    try:
+        return Version(str(backend_version)) >= Version(rejected_from)
+    except InvalidVersion:
+        return False
+
+
 def apply_moe_backend(
     context: dict[str, Any],
     hardware: dict[str, Any] | None,
     *,
     backend: str,
     quantization: dict[str, Any] | None = None,
+    backend_version: str | None = None,
 ) -> None:
     """Apply the hardware-derived ``moe_backend`` selection (fill-if-absent, MoE-only).
 
@@ -153,7 +171,9 @@ def apply_moe_backend(
     Per-backend seam:
 
     * ``trtllm``: sets ``context["moe_config"]["backend"]`` (consumed by the typed
-      engine-config builder). Only when unset — the builder defaults to CUTLASS.
+      engine-config builder). Only when unset — the template default applies otherwise
+      (AUTO from 1.3.0rc29, CUTLASS before). A literal the target ``backend_version``
+      rejects (WIDEEP from 1.3.0rc25) is not filled.
     * ``sglang``: sets ``context["moe_backend"]`` (mapped to ``--moe-runner-backend``
       via ``backend_config_mapping.yaml``). Only when unset.
     * ``vllm``: no-op — vLLM's MoE backend comes from MODEL ``defaults:`` (handled
@@ -172,6 +192,8 @@ def apply_moe_backend(
     if not context.get("is_moe"):
         return
     if backend == "trtllm":
+        if _trtllm_rejects_moe_backend(choice, backend_version):
+            return
         moe = context.setdefault("moe_config", {})
         # a user/recipe `moe_backend` param (the generic spelling the sglang branch below honours) counts as
         # "already set" here too: until 2026-10-04 the hardware fill ignored it and the trtllm template never

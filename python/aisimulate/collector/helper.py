@@ -24,6 +24,7 @@ import os
 import shutil
 import signal
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -109,6 +110,56 @@ def worker_heartbeat() -> None:
         sink()
     except Exception:  # liveness must never fail a measurement
         pass
+
+
+def _die_with_worker_preexec():
+    """A Popen preexec_fn that gives the child SIGKILL when the launching worker dies
+    (Linux PR_SET_PDEATHSIG), or None elsewhere. prctl is resolved here, in the parent,
+    so the forked child only makes the call."""
+    if not sys.platform.startswith("linux"):
+        return None
+    prctl = ctypes.CDLL(None, use_errno=True).prctl
+    pr_set_pdeathsig = 1
+
+    def _preexec():
+        prctl(pr_set_pdeathsig, signal.SIGKILL)
+
+    return _preexec
+
+
+def run_measurement_subprocess(argv, *, env, cwd, timeout=None, poll_sec: float = 60.0) -> tuple[int, bytes]:
+    """Run a measurement child; beat the executor's stall watchdog while it makes progress.
+
+    Progress is the child's combined stdout/stderr growing between polls: the module
+    collectors print every point, and PYTHONUNBUFFERED keeps that output flowing. A child
+    that prints nothing for the watchdog's STALL_TIMEOUT_SEC is wedged, and the watchdog
+    reclaims the worker; the child dies with it, so it never keeps measuring next to the
+    replacement worker's child. Returns ``(returncode, output)``; raises
+    ``subprocess.TimeoutExpired`` (with the output so far) after ``timeout`` seconds.
+    """
+    env = {**env, "PYTHONUNBUFFERED": "1"}
+    with tempfile.TemporaryFile() as out:
+        proc = subprocess.Popen(
+            argv, env=env, cwd=cwd, stdout=out, stderr=subprocess.STDOUT, preexec_fn=_die_with_worker_preexec()
+        )
+        deadline = None if timeout is None else time.monotonic() + timeout
+        seen = 0
+        while True:
+            try:
+                proc.wait(timeout=poll_sec)
+                break
+            except subprocess.TimeoutExpired:
+                if deadline is not None and time.monotonic() >= deadline:
+                    proc.kill()
+                    proc.wait()
+                    out.seek(0)
+                    raise subprocess.TimeoutExpired(argv, timeout, output=out.read()) from None
+                size = os.fstat(out.fileno()).st_size
+                if size > seen:
+                    seen = size
+                    worker_heartbeat()
+        out.seek(0)
+        return proc.returncode, out.read()
 
 
 def _parse_bool_env(env_var: str, default: bool = False) -> bool:

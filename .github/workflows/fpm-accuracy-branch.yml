@@ -139,7 +139,7 @@ jobs:
         with:
           name: fpm-accuracy-wheel-${{ inputs.artifact_key }}
           path: ${{ runner.temp }}/accuracy-wheel
-      - name: Install the exact wheel shared by both predictors
+      - name: Install the exact wheel shared by all predictors
         env:
           WHEEL_SHA256: ${{ needs.wheel.outputs.sha256 }}
         run: |
@@ -159,6 +159,7 @@ jobs:
             --commit "${EXPECTED_SHA}" --branch "${EVALUATED_BRANCH}" \
             --evaluator-sha "${GITHUB_SHA}" --hf-revision "${HF_REVISION}" \
             --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --scenarios \
             --output "${RUNNER_TEMP}/accuracy-public" \
             --comparison-output "${RUNNER_TEMP}/accuracy-comparison/comparison.json"
       - name: Report advisory accuracy and coverage
@@ -171,7 +172,11 @@ jobs:
           print('Evaluated revision:', summary['snapshot']['commit_sha'])
           print('HF revision:', summary['snapshot']['hf_revision'])
           print('Configurations:', len(summary['rows']))
-          print('\nOnly FPM warmup, FPM no warmup, and Regression are evaluated.')
+          print('\nOverview evaluates FPM warmup, FPM no warmup, and Regression.')
+          scenarios = json.loads((Path(os.environ['RUNNER_TEMP']) / 'accuracy-public/scenarios.json').read_text())
+          print('Scenario protocol:', scenarios['protocol_id'])
+          print('Scenario Comparison evaluates A, B, C, A+C, and B+C with native GBDT, hybrid, and selector APIs.')
+          print('Strict C learns every 5 seconds, including warmup. Older wheels report unsupported native APIs.')
           print('Accuracy values do not gate release staging. Incomplete campaigns cannot publish.')
           PYCODE
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

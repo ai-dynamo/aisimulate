@@ -43,16 +43,24 @@ helpers, SM filters, and perf logging.
 # One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
 # The SGLang 0.5.20 fork (collect_gemm_0520.py, serving-built linear layers)
 # retired with the 0.5.20 lane 2026-10-30; it is git history (main at c540ff90a (before #649)).
-# FIXME(re-verify, 2026-10-30): two independent SM100/103 serving gaps, accepted
-# by the owner for the 0.5.21 tables (no re-collection). Re-check at the next bump.
-# 1. bf16 GEMM kernel: serving resolves the auto bf16 backend to CuTe DSL
-#    (quantization/unquant.py:216@v0.5.21) and runs the TGV kernel only where
+# FIXME(re-verify, 2026-10-30): independent serving gaps, accepted by the owner for
+# the 0.5.21 tables (no re-collection). Re-check at the next bump.
+# 1. bf16 GEMM on SM100/103: serving resolves the auto bf16 backend to CuTe DSL
+#    (quantization/unquant.py:216@v0.5.21). It first sends the 68 shapes in
+#    _BF16_SPLITK_TUNED_TACTICS (unquant.py:105-178: m <= 32 at GB300 TP16 and
+#    B300 Qwen4-Exp TP4 widths) to FlashInfer split-K or direct
+#    (SGLANG_ENABLE_BF16_SPLITK_GEMM defaults True, environ.py:1175; dispatch at
+#    unquant.py:323-347), then runs the TGV kernel only where
 #    use_cutedsl_bf16_gemm(m, n, k) picks it (kernels/ops/gemm/
 #    cutedsl_bf16_gemm.py:1357-1387: small m, 2048 <= k <= 6144, n >= 1024);
 #    everywhere else serving runs F.linear like this module.
-# 2. nvfp4 activation quant: serving quantizes with FlashInfer's cute-dsl backend
-#    (quantization/fp4_utils.py:24@v0.5.21); this module's flashinfer_fp4_quantize
-#    uses the default cuda backend. The mm_fp4 GEMM itself matches.
+# 2. nvfp4 activation quant on SM100/103: serving quantizes with FlashInfer's
+#    cute-dsl backend (quantization/fp4_utils.py:24@v0.5.21); this module's
+#    flashinfer_fp4_quantize uses the default cuda backend. The mm_fp4 GEMM itself matches.
+# 3. fp8_block on SM90 and SM100/103: serving's DeepGEMM path falls back to Triton
+#    (triton_w8a8_block_fp8_linear) unless weight N % 64 == 0 and K % 128 == 0
+#    (quantization/fp8_utils.py:1228-1243@v0.5.21; e.g. GLM-5.3-Flash widths
+#    288/3336/6416/12576/19360), while this module times DeepGEMM for every shape.
 __compat__ = "sglang==0.5.21"
 
 import os
