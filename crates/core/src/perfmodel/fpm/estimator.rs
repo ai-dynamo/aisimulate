@@ -852,6 +852,17 @@ impl RegressionUpdatePolicy {
     }
 }
 
+/// Named fitted-feature sets for linear regression. A set replaces
+/// `feature_axes`; retention still uses `sampling.axes`.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegressionFeatureSet {
+    /// The 17 cross-rank aggregates of the learned `fpm5` preset, computed
+    /// from scheduled FPM v1 counts and sums only.
+    Fpm5,
+}
+
 /// Controls specific to linear fitting. Omission of `fit.linear` keeps the
 /// existing two-coordinate nonnegative fit and eager coefficient updates.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -860,6 +871,10 @@ pub struct LinearFitConfig {
     pub feature_axes: Vec<RegressionFeatureAxis>,
     pub non_negative: bool,
     pub update_policy: RegressionUpdatePolicy,
+    /// Opt-in named feature set fitted instead of `feature_axes`, which must
+    /// then keep its default. Omitted from serialization when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feature_set: Option<RegressionFeatureSet>,
 }
 
 impl Default for LinearFitConfig {
@@ -868,6 +883,7 @@ impl Default for LinearFitConfig {
             feature_axes: default_regression_axes(),
             non_negative: true,
             update_policy: RegressionUpdatePolicy::Always,
+            feature_set: None,
         }
     }
 }
@@ -1399,6 +1415,29 @@ impl EstimatorConfig {
             ));
         }
         validate_regression_axes(&linear.feature_axes, "fit.linear.feature_axes")?;
+        if let Some(RegressionFeatureSet::Fpm5) = linear.feature_set {
+            if !is_default_regression_axes(&linear.feature_axes) {
+                return Err(invalid_regression_config(
+                    "fit.linear.feature_set",
+                    "cannot be combined with non-default fit.linear.feature_axes",
+                ));
+            }
+            // Ratios such as mean_decode_kv duplicate their sums under a fixed
+            // batch; only the ridge keeps those normal equations solvable.
+            if self.fpm_regression.fit.singular_ridge_scale <= 0.0 {
+                return Err(invalid_regression_config(
+                    "fit.singular_ridge_scale",
+                    "must be positive for fit.linear.feature_set='fpm5'",
+                ));
+            }
+            // Each store needs one more retained row than fitted features.
+            if self.fpm_regression.sampling.max_observations <= super::learned::FPM5_FEATURE_COUNT {
+                return Err(invalid_regression_config(
+                    "sampling.max_observations",
+                    "must be at least 18 for fit.linear.feature_set='fpm5'",
+                ));
+            }
+        }
         let RegressionUpdatePolicy::ErrorThreshold {
             relative_tolerance,
             absolute_tolerance_ms,
@@ -2136,6 +2175,89 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("sampling.axes")
+        );
+    }
+
+    #[test]
+    fn fpm5_feature_set_is_opt_in_and_round_trips() {
+        // Absent sets keep the existing wire format of every linear block.
+        assert_eq!(
+            serde_json::to_value(LinearFitConfig::default()).unwrap(),
+            serde_json::json!({
+                "feature_axes": ["attention", "moe"], "non_negative": true,
+                "update_policy": {"kind": "always"},
+            }),
+        );
+        assert!(
+            !serde_json::to_string(&EstimatorConfig::default())
+                .unwrap()
+                .contains("feature_set")
+        );
+        let config: EstimatorConfig = serde_json::from_value(serde_json::json!({
+            "fpm_regression": {"fit": {"linear": {"feature_set": "fpm5", "non_negative": false}}}
+        }))
+        .unwrap();
+        config.validate().unwrap();
+        let linear = config.fpm_regression.fit.linear.as_ref().unwrap();
+        assert_eq!(linear.feature_set, Some(RegressionFeatureSet::Fpm5));
+        assert_eq!(linear.feature_axes, default_regression_axes());
+        let serialized = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            serialized["fpm_regression"]["fit"]["linear"],
+            serde_json::json!({
+                "feature_axes": ["attention", "moe"], "non_negative": false,
+                "update_policy": {"kind": "always"}, "feature_set": "fpm5",
+            }),
+        );
+        assert_eq!(
+            serde_json::from_value::<EstimatorConfig>(serialized).unwrap(),
+            config
+        );
+        assert!(serde_json::from_str::<LinearFitConfig>(r#"{"feature_set":"fpm6"}"#).is_err());
+    }
+
+    #[test]
+    fn fpm5_feature_set_rejects_axes_spline_and_small_stores() {
+        let error = |edit: &dyn Fn(&mut EstimatorConfig)| {
+            let mut config = EstimatorConfig::default();
+            config.fpm_regression.fit.linear = Some(LinearFitConfig {
+                feature_set: Some(RegressionFeatureSet::Fpm5),
+                ..LinearFitConfig::default()
+            });
+            edit(&mut config);
+            config.validate().err().map(|error| error.to_string())
+        };
+        assert_eq!(error(&|_| {}), None);
+        let message = error(&|config| {
+            let linear = config.fpm_regression.fit.linear.as_mut().unwrap();
+            linear.feature_axes = vec![RegressionFeatureAxis::Count];
+        })
+        .unwrap();
+        assert!(message.contains("fit.linear.feature_set"), "{message}");
+        let message = error(&|config| {
+            config.fpm_regression.fit.kind = RegressionFitKind::Spline;
+        })
+        .unwrap();
+        assert!(message.contains("fit.linear requires"), "{message}");
+        let message = error(&|config| {
+            config.fpm_regression.sampling.max_observations = 17;
+        })
+        .unwrap();
+        assert!(message.contains("sampling.max_observations"), "{message}");
+        let message =
+            error(&|config| config.fpm_regression.fit.singular_ridge_scale = 0.0).unwrap();
+        assert!(message.contains("fit.singular_ridge_scale"), "{message}");
+        assert_eq!(
+            error(&|config| config.fpm_regression.sampling.max_observations = 18),
+            None
+        );
+        // Retention axes stay independent of the fitted set.
+        assert_eq!(
+            error(&|config| {
+                config.fpm_regression.sampling.axes = vec![RegressionFeatureAxis::Count];
+                config.fpm_regression.sampling.bins_per_axis = vec![8];
+            }),
+            None
         );
     }
 
