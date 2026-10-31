@@ -1644,3 +1644,32 @@ The modified behavior and synthetic tests in `crates/core/src/engine/kv_manager/
 Running-request cancellation retains its KV lease until the in-flight forward
 is observed, adapting `Scheduler.abort_request` and result-time
 `release_kv_cache` from the same pinned scheduler and batch-result sources.
+
+## AIConfigurator PR #1606 migration
+
+The following repository-root paths contain modified adaptations of the
+AIConfigurator contribution at immutable commit `a97c69677af23190eada7ee893afa6a04a0ef269`:
+
+- `python/aisimulate/tests/unit/collector/_real_torch.py` from
+  https://github.com/ai-dynamo/aiconfigurator/blob/a97c69677af23190eada7ee893afa6a04a0ef269/tests/unit/collector/_real_torch.py
+- `python/aisimulate/tests/unit/collector/test_real_torch.py` from
+  https://github.com/ai-dynamo/aiconfigurator/blob/a97c69677af23190eada7ee893afa6a04a0ef269/tests/unit/collector/test_real_torch.py
+- `python/aisimulate/tests/unit/collector/test_dsv4_megamoe_workload.py` from
+  https://github.com/ai-dynamo/aiconfigurator/blob/a97c69677af23190eada7ee893afa6a04a0ef269/tests/unit/collector/test_dsv4_megamoe_workload.py
+- `python/aisimulate/tests/unit/collector/test_helper_moe_distribution.py` from
+  https://github.com/ai-dynamo/aiconfigurator/blob/a97c69677af23190eada7ee893afa6a04a0ef269/tests/unit/collector/test_helper_moe_distribution.py
+- `python/aisimulate/tests/unit/collector/test_sglang_moe_ep_routing.py` from
+  https://github.com/ai-dynamo/aiconfigurator/blob/a97c69677af23190eada7ee893afa6a04a0ef269/tests/unit/collector/test_sglang_moe_ep_routing.py
+
+- `python/aisimulate/tests/unit/collector/test_vllm_mla_input_population.py`
+  adapts the shared borrow context in
+  https://github.com/ai-dynamo/aiconfigurator/blob/a97c69677af23190eada7ee893afa6a04a0ef269/tests/unit/collector/_real_torch.py
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+The contribution was submitted by xinjun.jiang. Licensed under Apache-2.0;
+the license text is included in the repository and Python distribution.
+Upstream license:
+https://github.com/ai-dynamo/aiconfigurator/blob/a97c69677af23190eada7ee893afa6a04a0ef269/LICENSE
+
+Modified for AISimulate's current layout and contracts; source links are
+preserved beside the adapted content.
