@@ -125,15 +125,21 @@ v1 estimates retain the previous `max(512 MiB, lower_bound_bytes)` reservation,
 since their bounds may already include process memory. Initial and wave admission
 use the same reservation rule; wave admission also deducts live child RSS.
 
-For synthetic workloads, the built-in native-engine planning model accounts for
-eager session/hash metadata, planned output tokens and active prompts. The Dynamo
-compatibility model accounts for the older eager u32 input vectors and additional
-runtime and output storage. A verified newer adapter can supply its own estimate;
-AISimulate does not import Dynamo or assume that installing a core lazy-source
-API automatically changes the adapter's allocation behavior. Ordinary finite
-Agentic Mooncake, Weka, and agentic-Dynamo replay use the shared workload driver
-with deferred prompts on both stacks; they do not use the synthetic eager-prompt
-estimate.
+For synthetic workloads, the built-in native-engine planning model,
+`engine-session-metadata-v2`, charges every turn 4,096 bytes plus 32 bytes per
+input and output token of that turn. This covers the turn's eagerly stored
+prompt delta or hash IDs, planned output IDs, its share of the session
+transcript, and a prefix-cache index with one-token blocks. A turn retains only
+its own tokens, so the charge grows linearly with the number of turns. Only
+active sessions also carry their earlier turns in a request: 32 bytes per
+earlier-turn token, plus 4 bytes per cumulative prompt token. Without a
+concurrency cap, every session counts as active. The Dynamo compatibility model
+accounts for the older eager u32 input vectors and additional runtime and output
+storage. A verified newer adapter can supply its own estimate; AISimulate does
+not import Dynamo or assume that installing a core lazy-source API automatically
+changes the adapter's allocation behavior. Ordinary finite Agentic Mooncake,
+Weka, and agentic-Dynamo replay use the shared workload driver with deferred
+prompts on both stacks; they do not use the synthetic eager-prompt estimate.
 
 An estimate is a planning heuristic, not a hard RSS limit. An unavoidable lower
 bound can prove a candidate does not fit; it cannot prove that execution fits.
@@ -263,7 +269,7 @@ energy, or GPU capacity. Their provenance and qualification are:
 | Term | Basis | Qualification |
 |---|---|---|
 | Four bytes per token ID | The native [request protocol](../../crates/core/src/engine/protocol.rs) and [sequence storage](../../crates/core/src/engine/common/sequence.rs) use `Vec<u32>`. The Dynamo compatibility model explicitly assumes eager u32 prompts. | The width is concrete; applying it to an external adapter requires the stated eager-allocation assumption. |
-| Engine session/token retention | The engine model reserves prompt, output, and session/hash bookkeeping from the declared request and turn counts. | The 32-byte token multiplier and 4,096-byte per-request term are conservative policy allowances, not measured object sizes. |
+| Engine session/token retention | The engine model reserves each turn's prompt, output, and session/hash bookkeeping from the declared session and turn counts, plus the history that active sessions carry. | The 32-byte token multiplier and 4,096-byte per-turn term are conservative policy allowances sized for one-token blocks, where the prefix-cache index adds state per token. They are not measured object sizes; larger blocks need much less. |
 | Dynamo peak expansion | Twice the eager prompt bytes, plus 4,096 bytes per request and 16 bytes per output token. | These extra terms are policy headroom; they do not certify an adapter's peak RSS. |
 | Native Weka traces | Separate per-play import and replay phases; see below. | Uses the native importer/driver contracts, including real output arrays and synthesized hashes. Covers snapshot and warmup storage; Weka on the Dynamo stack uses the finite trace lower bound and observed peak instead. |
 | Process allowances | 256 MiB within the native Weka peak model; 512 MiB for other built-in worker reservations; coordinator RSS plus 256 MiB. | Engineering reserves, not calibrated platform-specific measurements. |

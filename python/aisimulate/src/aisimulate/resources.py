@@ -929,12 +929,14 @@ def estimate_workload(
         model = "dynamo-eager-u32-v1"
         peak = WORKER_BASELINE_BYTES + 2 * tokens + count * (4096 + 16 * osl)
     elif stack == "engine":
-        # A block size of one bounds all supported hash arrays. Sessions may
-        # retain cumulative prompts and planned output IDs until they complete.
-        tokens = active * isl * turns * 4
+        # Every turn retains only its own prompt delta or hash IDs, planned
+        # output IDs and transcript share, which a one-token block prefix cache
+        # can index. Only an active session's request also carries its history.
+        history = (turns - 1) * (isl + osl)
+        tokens = active * (history + isl) * 4
         lower = count * turns * osl * 4
-        model = "engine-session-metadata-v1"
-        peak = WORKER_BASELINE_BYTES + count * turns * (4096 + 32 * (isl + osl) * turns) + tokens
+        model = "engine-session-metadata-v2"
+        peak = WORKER_BASELINE_BYTES + count * turns * (4096 + 32 * (isl + osl)) + active * 32 * history + tokens
     else:
         return ResourceEstimate("runner-unqualified-v1", count, 0, 0, None, "runner allocation model is unqualified")
     return ResourceEstimate(model, count, tokens, lower, peak)
