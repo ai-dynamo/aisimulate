@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "source_collector_commit": "3d41164034624251209588ee0284694e86a13bd8",
+  "launcher_commit": "f3ce58a3e20c29c9b31221073182956efd556324",
+  "parent_pipeline_url": "https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/pipelines/77726488",
+  "child_pipeline_url": "https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/pipelines/77726600",
+  "actual_image": "lmsysorg/sglang:v0.5.20-cu130@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f",
+  "runtime_source_commit": "94602c9c2b7cbdb8efd5c52802dac6a1c180089e",
+  "batches": [
+    4,
+    8,
+    16,
+    32,
+    52
+  ],
+  "past_kv_steps": [
+    1,
+    4,
+    8,
+    16,
+    32,
+    64,
+    128,
+    256,
+    512,
+    1024,
+    2048,
+    4096,
+    8192,
+    16384,
+    32768,
+    65536,
+    131072,
+    262144,
+    393216,
+    524288,
+    655360,
+    720896
+  ],
+  "rows_per_op": 110,
+  "total_rows": 220,
+  "physical_key_columns": [
+    "framework",
+    "version",
+    "op_name",
+    "kernel_source",
+    "model",
+    "architecture",
+    "mla_dtype",
+    "kv_cache_dtype",
+    "gemm_type",
+    "num_heads",
+    "batch_size",
+    "isl",
+    "tp_size",
+    "step"
+  ],
+  "arrow_schema": {
+    "framework": "string",
+    "version": "string",
+    "device": "string",
+    "op_name": "string",
+    "kernel_source": "string",
+    "model": "string",
+    "architecture": "string",
+    "mla_dtype": "string",
+    "kv_cache_dtype": "string",
+    "gemm_type": "string",
+    "num_heads": "int64",
+    "batch_size": "int64",
+    "isl": "int64",
+    "tp_size": "int64",
+    "step": "int64",
+    "latency": "double"
+  },
+  "latency_unit": "ms",
+  "anomalies": {
+    "duplicate_physical_keys": 0,
+    "null_cells": 0,
+    "nonfinite_latency": 0,
+    "nonpositive_latency": 0
+  },
+  "existing_version_slot_overlap_rows": 0,
+  "base_commit": "62519bfd26ee9d9c4cc9b53aba81fb30426f8a3d",
+  "table_path": "python/aisimulate/src/aisimulate_core/systems/data/b300_sxm/sparse_attention/sglang/0.5.20/dsa_generation_module_perf.parquet",
+  "table_sha256": "9614d95a6f2ee013d62c19f243ce26dde274971d2186e2bc1107af5e7f1203d0",
+  "sidecar_sha256": "8150dec9bb6514359ff9e8aaa18f83df76330f982e242412a913f9532dec324e",
+  "shards": [
+    {
+      "job_id": 517782462,
+      "job_url": "https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/jobs/517782462",
+      "slurm_job_id": 135871,
+      "op_name": "dsa_generation_module",
+      "kernel_source": "sglang_dsa_indexer_trtllm",
+      "rows": 110,
+      "parquet_sha256": "58f2eb13a490a7ab9fcd9a47f96fd6bee8f34febaf5f27841817960bae133911",
+      "archive_sha256": "5e75efec4dc2c0f308e2ecdaa69286053bdb519d53dff4f81e2426045a876038",
+      "case_plan_hash": "sha256:244786ad8f50622187ff571eccbb9e8ce3d3bebbc7480454e43dfca64c82b949",
+      "checkpoint_done": [
+        "sglang.dsa_generation_module:run_mla_module_worker:[0, 0, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 'dsa', None, 8, 'trtllm']"
+      ],
+      "checkpoint_failed": [],
+      "checkpoint_unfinished": [],
+      "graph_timed_shapes": 110,
+      "collector_errors": 0,
+      "latency_ms_range": [
+        0.0355,
+        0.8941
+      ]
+    },
+    {
+      "job_id": 517782464,
+      "job_url": "https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/jobs/517782464",
+      "slurm_job_id": 135872,
+      "op_name": "dsa_generation_module_skip_indexer",
+      "kernel_source": "sglang_dsa_skip_indexer_trtllm",
+      "rows": 110,
+      "parquet_sha256": "412f3abfa9f38896a86f33c067694bce1262957a2af1f477775be76754fbbe85",
+      "archive_sha256": "ee18b3a1b8e3bcaafd92c91c5fadc90364da0ada61b48ee006908c464db1de1e",
+      "case_plan_hash": "sha256:a7b6d54b943db2b7150dae1ad8dc628fbb471ca1a087d398f4d0cbc905a025cc",
+      "checkpoint_done": [
+        "sglang.dsa_generation_module_skip_indexer:run_mla_module_worker:[0, 0, 8, 'fp8', 'bfloat16', 'bfloat16', 'nvidia/GLM-5.2-NVFP4', 'dsa', None, 8, 'trtllm']"
+      ],
+      "checkpoint_failed": [],
+      "checkpoint_unfinished": [],
+      "graph_timed_shapes": 110,
+      "collector_errors": 0,
+      "latency_ms_range": [
+        0.0237,
+        0.0496
+      ]
+    }
+  ]
+}
