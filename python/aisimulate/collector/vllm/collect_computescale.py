@@ -17,8 +17,8 @@ binds both to this producer's checkpoint:
 __compat__ = "vllm==0.30.0"
 
 import torch
-from collector.case_generator import get_compute_scale_case_specs
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 from collector.vllm.utils import setup_distributed
 from vllm import _custom_ops as ops
 from vllm.model_executor.layers.quantization.utils.quant_utils import GroupShape
@@ -28,9 +28,7 @@ _OUTSIDE_LOOP_COUNT = 5
 
 
 def get_computescale_test_cases():
-    if get_sm_version() <= 86:
-        return []
-    return [[case.m, case.k] for case in get_compute_scale_case_specs()]
+    return plan_cases("compute_scale", "vllm", get_sm_version())
 
 
 def _setup(m, k, device):

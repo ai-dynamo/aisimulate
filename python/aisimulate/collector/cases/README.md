@@ -193,7 +193,7 @@ backend_gaps:
     note: G-sglang-gemm-fp8-block-deepgemm-only
 ```
 
-An op plan (GEMM and MoE so far, `collector/op_plans.py`) applies both when it
+An op plan (`OP_PLANS` in `collector/op_plans.py`) applies both when it
 expands, one region at a time, and `collect.py --plan-only --sm N` reports
 what it left out and why. For other ops, `collector/capabilities.py` filters
 generated cases by typed field access (`moe_type`, `gemm_type`, `dtype`,

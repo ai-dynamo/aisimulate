@@ -18,8 +18,8 @@ import os
 
 import tensorrt_llm
 import torch
-from collector.case_generator import get_attention_encoder_head_configs, get_attention_encoder_shape_sweeps
-from collector.helper import benchmark_with_power, log_perf
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 from collector.registry_types import PerfFile
 
 # trtllm >=1.3.0rc29 moved _torch.attention_backend.* -> _torch.attention.backends.* and
@@ -49,30 +49,8 @@ from tensorrt_llm.mapping import Mapping
 from tensorrt_llm.models.modeling_utils import QuantConfig
 
 
-def _int_list(values):
-    return [int(value) for value in values]
-
-
 def get_encoder_attention_test_cases():
-    test_cases = []
-
-    for shape_sweep in get_attention_encoder_shape_sweeps("trtllm"):
-        batch_sizes = _int_list(shape_sweep["batch_sizes"])
-        sequence_lengths = _int_list(shape_sweep["sequence_lengths"])
-
-        for head_config in get_attention_encoder_head_configs(shape_sweep):
-            n = head_config.num_heads
-            head_dim = head_config.head_dim
-            for s in sorted(sequence_lengths):
-                for b in sorted(batch_sizes):
-                    # Workload token budget (128K) + 32-bit indexing safety.
-                    if b * s > 131072:
-                        continue
-                    if 4 * b * s * n * head_dim * 2 >= 2**31:
-                        continue
-                    test_cases.append([b, s, n, head_dim])
-
-    return test_cases
+    return plan_cases("encoder_attention", "trtllm", get_sm_version())
 
 
 def run_encoder_attention_torch(

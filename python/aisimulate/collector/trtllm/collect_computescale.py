@@ -19,22 +19,14 @@ __compat__ = "trtllm==1.3.0rc29"
 
 import tensorrt_llm
 import torch
-from collector.case_generator import get_compute_scale_case_specs
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 
 _OUTSIDE_LOOP_COUNT = 5  # to reduce impact of L2 cache hit
 
 
 def get_computescale_test_cases():
-    # compute_scale only applies to fp8 quantization (SM > 86)
-    if get_sm_version() <= 86:
-        return []
-
-    test_cases = []
-    for compute_scale_common_testcase in get_compute_scale_case_specs():
-        test_cases.append([compute_scale_common_testcase.m, compute_scale_common_testcase.k])
-
-    return test_cases
+    return plan_cases("compute_scale", "trtllm", get_sm_version())
 
 
 def _setup(m, k, device):

@@ -33,9 +33,9 @@ COLLECTOR_ROOT = Path(__file__).resolve().parent
 BASE_OP_CASES_DIR = COLLECTOR_ROOT / "cases" / "base_ops"
 MODEL_CASES_DIR = COLLECTOR_ROOT / "cases" / "models"
 
-# The backends that plan MoE from the shared quant-mode axis
-# (common_case_values.moe.quantization_modes). vllm_xpu keeps its own axis.
-_CUDA_MOE_BACKENDS = frozenset({"sglang", "trtllm", "vllm"})
+# The CUDA backends. Ops on an op plan (collector/op_plans.py) read the YAML
+# they share; vllm_xpu keeps its own sections.
+_CUDA_BACKENDS = frozenset({"sglang", "trtllm", "vllm"})
 
 
 def _load_yaml_mapping(path: Path) -> dict:
@@ -89,6 +89,22 @@ def get_base_framework_op_case_specs(backend: str, op_name: str) -> list[dict[st
     if not isinstance(cases, list):
         return []
     return [case for case in cases if isinstance(case, dict)]
+
+
+def get_shared_base_op_case_specs(op_name: str) -> list[dict[str, object]]:
+    """Return the base specs every CUDA backend plans for an op on an op plan.
+
+    A CUDA backend's framework_specific_op_cases list for the op would make
+    the backends plan different cases, so it raises; ``cases: all`` (an
+    activation without cases) is allowed.
+    """
+    for backend in sorted(_CUDA_BACKENDS):
+        if get_base_framework_op_case_specs(backend, op_name):
+            raise ValueError(
+                f"{op_name} is planned once for every backend; move framework_specific_op_cases.{backend}."
+                f"{op_name} cases into all_frameworks_op_cases"
+            )
+    return get_base_op_case_specs(op_name)
 
 
 def get_merged_base_op_case_specs(backend: str, op_name: str) -> list[dict[str, object]]:
@@ -1225,7 +1241,7 @@ def get_moe_quantization_specs(backend: str | None = None) -> list[MoeQuantizati
     has its own.
     """
 
-    if backend is None or backend in _CUDA_MOE_BACKENDS:
+    if backend is None or backend in _CUDA_BACKENDS:
         backend, values = None, _required_base_common_case_values("moe")
     else:
         values = _moe_backend_values(backend)
@@ -1309,7 +1325,7 @@ def get_moe_quantization_modes(
     CUDA backends plan MoE through collector/op_plans.py instead.
     """
 
-    if backend in _CUDA_MOE_BACKENDS:
+    if backend in _CUDA_BACKENDS:
         raise ValueError(f"{backend} plans MoE through collector/op_plans.py, not per-backend quant modes")
     features = runtime_features or {}
     modes = []
@@ -1383,7 +1399,7 @@ def _declared_moe_modes(model_case: dict[str, object]) -> Optional[tuple[str, ..
     framework_quantization = model_case.get("framework_quantization") or {}
     if not isinstance(framework_quantization, dict):
         raise TypeError("model_case_values.moe.framework_quantization must be a mapping")
-    for backend in sorted(_CUDA_MOE_BACKENDS & set(framework_quantization)):
+    for backend in sorted(_CUDA_BACKENDS & set(framework_quantization)):
         policy = sorted(set(framework_quantization[backend] or {}) - {"module_config"})
         if policy:
             raise ValueError(
@@ -1456,7 +1472,7 @@ def moe_model_allows_quantization(backend: str, model_name: str, moe_type: str) 
     vllm_xpu keeps its own axis and per-model policy.
     """
 
-    if backend in _CUDA_MOE_BACKENDS:
+    if backend in _CUDA_BACKENDS:
         return any(
             moe_type in moe_planned_modes(model_name, _declared_moe_modes(row))
             for row in _model_case_values("moe", apply_model_filter=False)
@@ -1905,7 +1921,7 @@ class ComputeScaleCommonTestCase:
 
 
 def get_compute_scale_case_specs() -> list[ComputeScaleCommonTestCase]:
-    shape_sweeps = get_base_framework_op_case_specs("trtllm", "compute_scale")
+    shape_sweeps = get_shared_base_op_case_specs("compute_scale")
     if not shape_sweeps:
         seen_mk = set()
         test_cases = []
