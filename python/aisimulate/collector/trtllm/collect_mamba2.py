@@ -46,8 +46,6 @@ import torch
 from einops import repeat
 
 try:
-    from case_generator import get_common_mamba2_test_cases
-
     from helper import (
         EXIT_CODE_RESTART,
         benchmark_with_power,
@@ -58,7 +56,6 @@ except ModuleNotFoundError:
     import sys
 
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from case_generator import get_common_mamba2_test_cases
 
     from helper import (
         EXIT_CODE_RESTART,
@@ -67,6 +64,8 @@ except ModuleNotFoundError:
         log_perf,
     )
 
+from collector.op_plans import plan_cases
+
 aic_debug = int(os.getenv("aic_mamba2_debug", "0"))  # noqa: SIM112
 # Use cached inputs (same data each iteration) instead of randomized inputs
 # Set AIC_MAMBA2_CACHED_INPUTS=1 to enable cached mode (saves memory but may be overly optimistic)
@@ -74,55 +73,7 @@ aic_cached_inputs = int(os.getenv("AIC_MAMBA2_CACHED_INPUTS", "0"))
 
 
 def get_mamba2_test_cases():
-    """
-    Generate test cases for Mamba2 SSM benchmarking.
-
-    Returns a list of test case configurations for both context (prefill)
-    and generation (decode) phases.
-
-    Context phase uses static batching (batch_size x seq_len) for P/D disaggregated serving.
-    Generation phase uses batch_size only (1 token per request).
-    """
-    test_cases = []
-
-    # Get common test cases from centralized definition
-    for common_case in get_common_mamba2_test_cases():
-        if common_case.phase == "context":
-            # Context phase: sweep batch_size x seq_len
-            test_cases.append(
-                [
-                    common_case.phase,
-                    common_case.d_model,
-                    common_case.d_state,
-                    common_case.d_conv,
-                    common_case.nheads,
-                    common_case.head_dim,
-                    common_case.n_groups,
-                    common_case.chunk_size,
-                    common_case.batch_size_list,
-                    common_case.seq_len_list,
-                    common_case.model_name,
-                ]
-            )
-        else:
-            # Generation phase: sweep batch_size only
-            test_cases.append(
-                [
-                    common_case.phase,
-                    common_case.d_model,
-                    common_case.d_state,
-                    common_case.d_conv,
-                    common_case.nheads,
-                    common_case.head_dim,
-                    common_case.n_groups,
-                    common_case.chunk_size,
-                    common_case.batch_size_list,
-                    None,  # seq_len_list not used for generation
-                    common_case.model_name,
-                ]
-            )
-
-    return test_cases
+    return plan_cases("mamba2", "trtllm", get_sm_version())
 
 
 def _token_major_prefill_conv() -> bool:

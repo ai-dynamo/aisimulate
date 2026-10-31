@@ -36,6 +36,9 @@ from collector.case_generator import (
     BASE_OP_CASES_DIR,
     MoeCommonTestCase,
     get_attention_encoder_head_configs,
+    get_common_gdn_test_cases,
+    get_common_kda_test_cases,
+    get_common_mamba2_test_cases,
     get_common_moe_test_cases,
     get_compute_scale_case_specs,
     get_gemm_case_specs,
@@ -163,6 +166,15 @@ def summarize(op: str, op_plan: Plan, case_id: Callable[[object], str]) -> dict:
     return summary
 
 
+def _list_form(case: tuple) -> str:
+    """A case's string: the list form case IDs, checkpoints and ``--case-filter`` match on (tuples print as lists)."""
+    return str([list(value) if isinstance(value, tuple) else value for value in case])
+
+
+def _tuple_or_none(values) -> tuple | None:
+    return None if values is None else tuple(values)
+
+
 # --- GEMM ---------------------------------------------------------------------
 
 
@@ -178,10 +190,7 @@ class GemmCase(NamedTuple):
     n: int
     k: int
 
-    def __str__(self) -> str:
-        return str(list(self))
-
-    __repr__ = __str__
+    __str__ = __repr__ = _list_form
 
 
 def _expand_gemm() -> list[GemmCase]:
@@ -226,10 +235,7 @@ class MoeCase(NamedTuple):
     distribution: str
     power_law_alpha: float | None
 
-    def __str__(self) -> str:
-        return str([list(value) if isinstance(value, tuple) else value for value in self])
-
-    __repr__ = __str__
+    __str__ = __repr__ = _list_form
 
     @property
     def parallel(self) -> str:
@@ -385,10 +391,7 @@ class ComputeScaleCase(NamedTuple):
     m: int
     k: int
 
-    def __str__(self) -> str:
-        return str(list(self))
-
-    __repr__ = __str__
+    __str__ = __repr__ = _list_form
 
     @property
     def dtype(self) -> str:
@@ -412,10 +415,7 @@ class EncoderAttentionCase(NamedTuple):
     num_heads: int
     head_dim: int
 
-    def __str__(self) -> str:
-        return str(list(self))
-
-    __repr__ = __str__
+    __str__ = __repr__ = _list_form
 
     @property
     def dtype(self) -> str:
@@ -453,6 +453,136 @@ def _expand_encoder_attention() -> list[EncoderAttentionCase]:
     return cases
 
 
+# --- linear attention: GDN, KDA, Mamba2 ---------------------------------------
+
+
+class GdnCase(NamedTuple):
+    """One Gated DeltaNet case: a TP-local head geometry and its batch (and, for context, sequence) sweep."""
+
+    phase: str
+    d_model: int
+    d_conv: int
+    num_k_heads: int
+    head_k_dim: int
+    num_v_heads: int
+    head_v_dim: int
+    batch_sizes: tuple[int, ...] | None
+    seq_lens: tuple[int, ...] | None
+    model_name: str
+    # Always float32: the persisted GDN key has no state-dtype dimension.
+    mamba_ssm_dtype: str
+
+    __str__ = __repr__ = _list_form
+
+    @property
+    def dtype(self) -> str:
+        return "bfloat16"
+
+
+def _expand_gdn() -> list[GdnCase]:
+    return [
+        GdnCase(
+            case.phase,
+            case.d_model,
+            case.d_conv,
+            case.num_k_heads,
+            case.head_k_dim,
+            case.num_v_heads,
+            case.head_v_dim,
+            _tuple_or_none(case.batch_size_list),
+            _tuple_or_none(case.seq_len_list) if case.phase == "context" else None,
+            case.model_name,
+            case.mamba_ssm_dtype,
+        )
+        for case in get_common_gdn_test_cases()
+    ]
+
+
+def _gdn_rows_without_state_dtype(case: GdnCase, sm_version: int | None, runner: str | None) -> list[list]:
+    """TRT-LLM's and vLLM's GDN run functions take no SSM state dtype; they run the float32 state."""
+    return [[list(value) if isinstance(value, tuple) else value for value in case[:10]]]
+
+
+class KdaCase(NamedTuple):
+    """One Kimi Delta Attention case: a TP-local head geometry and its batch and sequence (or draft) sweep."""
+
+    phase: str
+    d_model: int
+    d_conv: int
+    num_k_heads: int
+    head_k_dim: int
+    num_v_heads: int
+    head_v_dim: int
+    batch_sizes: tuple[int, ...] | None
+    seq_lens: tuple[int, ...] | None
+    model_name: str
+
+    __str__ = __repr__ = _list_form
+
+    @property
+    def dtype(self) -> str:
+        return "bfloat16"
+
+
+def _expand_kda() -> list[KdaCase]:
+    return [
+        KdaCase(
+            case.phase,
+            case.d_model,
+            case.d_conv,
+            case.num_k_heads,
+            case.head_k_dim,
+            case.num_v_heads,
+            case.head_v_dim,
+            _tuple_or_none(case.batch_size_list),
+            _tuple_or_none(case.seq_len_list),
+            case.model_name,
+        )
+        for case in get_common_kda_test_cases()
+    ]
+
+
+class Mamba2Case(NamedTuple):
+    """One Mamba2 SSM case: a head geometry and its batch (and, for context, sequence) sweep."""
+
+    phase: str
+    d_model: int
+    d_state: int
+    d_conv: int
+    nheads: int
+    head_dim: int
+    n_groups: int
+    chunk_size: int
+    batch_sizes: tuple[int, ...] | None
+    seq_lens: tuple[int, ...] | None
+    model_name: str
+
+    __str__ = __repr__ = _list_form
+
+    @property
+    def dtype(self) -> str:
+        return "bfloat16"
+
+
+def _expand_mamba2() -> list[Mamba2Case]:
+    return [
+        Mamba2Case(
+            case.phase,
+            case.d_model,
+            case.d_state,
+            case.d_conv,
+            case.nheads,
+            case.head_dim,
+            case.n_groups,
+            case.chunk_size,
+            _tuple_or_none(case.batch_size_list),
+            _tuple_or_none(case.seq_len_list) if case.phase == "context" else None,
+            case.model_name,
+        )
+        for case in get_common_mamba2_test_cases()
+    ]
+
+
 OP_PLANS: dict[str, OpPlan] = {
     "gemm": OpPlan(GemmCase, _expand_gemm, dtype_field="gemm_type", group_fields=("gemm_type", "n", "k")),
     "moe": OpPlan(
@@ -469,4 +599,13 @@ OP_PLANS: dict[str, OpPlan] = {
     "encoder_attention": OpPlan(
         EncoderAttentionCase, _expand_encoder_attention, dtype_field="dtype", group_fields=EncoderAttentionCase._fields
     ),
+    "gdn": OpPlan(
+        GdnCase,
+        _expand_gdn,
+        dtype_field="dtype",
+        group_fields=GdnCase._fields,
+        rows={"trtllm": _gdn_rows_without_state_dtype, "vllm": _gdn_rows_without_state_dtype},
+    ),
+    "kda": OpPlan(KdaCase, _expand_kda, dtype_field="dtype", group_fields=KdaCase._fields),
+    "mamba2": OpPlan(Mamba2Case, _expand_mamba2, dtype_field="dtype", group_fields=Mamba2Case._fields),
 }

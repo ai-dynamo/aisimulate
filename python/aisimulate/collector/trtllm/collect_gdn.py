@@ -47,8 +47,6 @@ if TYPE_CHECKING:
 import torch
 
 try:
-    from case_generator import get_common_gdn_test_cases
-
     from helper import (
         EXIT_CODE_RESTART,
         benchmark_with_power,
@@ -59,7 +57,6 @@ except ModuleNotFoundError:
     import sys
 
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from case_generator import get_common_gdn_test_cases
 
     from helper import (
         EXIT_CODE_RESTART,
@@ -68,53 +65,15 @@ except ModuleNotFoundError:
         log_perf,
     )
 
+from collector.op_plans import plan_cases
+
 aic_debug = int(os.getenv("aic_gdn_debug", "0"))  # noqa: SIM112
 # Use cached inputs (same data each iteration) instead of randomized inputs
 aic_cached_inputs = int(os.getenv("AIC_GDN_CACHED_INPUTS", "0"))
 
 
 def get_gdn_test_cases():
-    """
-    Generate test cases for GDN kernel benchmarking.
-
-    Returns a list of test case configurations for both context (prefill)
-    and generation (decode) phases.
-    """
-    test_cases = []
-
-    for common_case in get_common_gdn_test_cases():
-        if common_case.phase == "context":
-            test_cases.append(
-                [
-                    common_case.phase,
-                    common_case.d_model,
-                    common_case.d_conv,
-                    common_case.num_k_heads,
-                    common_case.head_k_dim,
-                    common_case.num_v_heads,
-                    common_case.head_v_dim,
-                    common_case.batch_size_list,
-                    common_case.seq_len_list,
-                    common_case.model_name,
-                ]
-            )
-        else:
-            test_cases.append(
-                [
-                    common_case.phase,
-                    common_case.d_model,
-                    common_case.d_conv,
-                    common_case.num_k_heads,
-                    common_case.head_k_dim,
-                    common_case.num_v_heads,
-                    common_case.head_v_dim,
-                    common_case.batch_size_list,
-                    None,  # seq_len_list not used for generation
-                    common_case.model_name,
-                ]
-            )
-
-    return test_cases
+    return plan_cases("gdn", "trtllm", get_sm_version())
 
 
 def _make_input_pool(

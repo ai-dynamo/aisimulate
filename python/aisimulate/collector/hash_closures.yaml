@@ -129,9 +129,13 @@ collector.sglang.glm53flash_attention_runner:
   - __model_cases__
 collector.sglang.collect_gdn:
   - collector/cases/base_ops/gdn.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.sglang.collect_kda:
   - collector/cases/base_ops/kda.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.sglang.collect_gemm:
   - collector/cases/base_ops/gemm.yaml
@@ -194,6 +198,8 @@ collector.trtllm.collect_dsv4_attn:
   - __model_cases__
 collector.trtllm.collect_gdn:
   - collector/cases/base_ops/gdn.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.trtllm.collect_gemm:
   - collector/cases/base_ops/gemm.yaml
@@ -202,6 +208,8 @@ collector.trtllm.collect_gemm:
   - __model_cases__
 collector.trtllm.collect_mamba2:
   - collector/cases/base_ops/mamba2.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.trtllm.collect_mla:
   - collector/cases/base_ops/mla.yaml
@@ -261,6 +269,8 @@ collector.vllm.collect_mla_bmm:
   - __model_cases__
 collector.vllm.collect_kda:
   - collector/cases/base_ops/kda.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.vllm.collect_dsv4_attn:
   - collector/vllm/utils.py
@@ -278,6 +288,8 @@ collector.vllm.glm53flash_attention_runner:
   - __model_cases__
 collector.vllm.collect_gdn:
   - collector/cases/base_ops/gdn.yaml
+  - collector/cases/capabilities.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.vllm.collect_gemm:
   - collector/vllm/utils.py

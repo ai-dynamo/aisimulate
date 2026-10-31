@@ -40,19 +40,6 @@ def _load_mla_adapter(module_path: str, globals_dict: dict):
     return namespace["_build_mla_test_cases"]
 
 
-def _load_gdn_getter(module_path: str):
-    from collector.case_generator import get_common_gdn_test_cases
-
-    source_path = REPO_ROOT / module_path
-    tree = ast.parse(source_path.read_text(), filename=str(source_path))
-    function = next(
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "get_gdn_test_cases"
-    )
-    namespace = {"get_common_gdn_test_cases": get_common_gdn_test_cases}
-    exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)
-    return namespace["get_gdn_test_cases"]
-
-
 def _planned_moe_modes(monkeypatch, backend: str, model_path: str, sm_version: int) -> set[str]:
     from collector.op_plans import plan
 
@@ -300,8 +287,10 @@ def test_qwen35_gdn_getters_expand_tp_local_physical_keys(
         for tp in tp_sizes
     }
 
-    for module_path in ("collector/sglang/collect_gdn.py", "collector/vllm/collect_gdn.py"):
-        cases = _load_gdn_getter(module_path)()
+    from collector.op_plans import plan_cases
+
+    for backend in ("sglang", "trtllm", "vllm"):
+        cases = plan_cases("gdn", backend, 100)
         assert {(case[0], case[1], case[2], case[3], case[4], case[5], case[6]) for case in cases} == expected
 
 
