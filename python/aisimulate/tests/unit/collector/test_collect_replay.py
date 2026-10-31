@@ -98,3 +98,14 @@ def test_finish_replay_writes_a_marker_listing_unmatched_requests_across_ops(tmp
     marker = json.loads((tmp_path / collect.ReplaySpec.MARKER).read_text())
     assert marker["requested"] == 2 and marker["matched"] == 1 and marker["unmatched"] == ["[9, 9, 9]"]
     assert collect._finish_replay(None, tmp_path, log) is None
+
+
+def test_replay_refuses_an_output_root_that_holds_results(tmp_path: Path):
+    spec = _spec({"[1, 2]"})
+    collect._require_replay_output_root_without_results(spec, tmp_path, {})  # empty root: fine
+    collect._require_replay_output_root_without_results(None, tmp_path, {tmp_path / "gemm_perf.txt": 1})
+    with pytest.raises(SystemExit):
+        collect._require_replay_output_root_without_results(spec, tmp_path, {tmp_path / "gemm_perf.txt": 1})
+    (tmp_path / "gemm_perf.parquet").write_bytes(b"")
+    with pytest.raises(SystemExit):
+        collect._require_replay_output_root_without_results(spec, tmp_path, {})

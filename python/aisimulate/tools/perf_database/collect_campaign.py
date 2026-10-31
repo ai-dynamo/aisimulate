@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -160,8 +161,41 @@ def collector_argv(plan: Plan, shard: Shard) -> list[str]:
     return argv
 
 
+def collector_ref(checkout: Path) -> str:
+    """The commit the mounted checkout runs, for every shard's provenance.
+
+    The container mounts only python/aisimulate (no .git) and the framework images carry no
+    git, so collect.py's own lookup would record "unknown"; it reads AISIM_COLLECTOR_REF
+    instead. A dirty tree is refused: its rows would name a commit that did not produce them.
+    """
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(checkout), *args], capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+    try:
+        ref = git("rev-parse", "HEAD")
+        dirty = git("status", "--porcelain", "--untracked-files=no", "--", ".")
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise SystemExit(f"{checkout}: cannot resolve the collector commit ({error})") from error
+    if dirty:
+        raise SystemExit(f"{checkout}: uncommitted changes; commit them so the rows record the code that ran")
+    if not re.fullmatch(r"[0-9a-f]{40,64}", ref):
+        raise SystemExit(f"{checkout}: `git rev-parse HEAD` gave {ref!r}, not a full commit hash")
+    return ref
+
+
 def docker_argv(
-    plan: Plan, shard: Shard, *, image: str, gpu: int, checkout: Path, shard_dir: Path, container_name: str
+    plan: Plan,
+    shard: Shard,
+    *,
+    image: str,
+    gpu: int,
+    checkout: Path,
+    shard_dir: Path,
+    container_name: str,
+    collector_ref: str,
 ) -> list[str]:
     return [
         "docker",
@@ -179,6 +213,8 @@ def docker_argv(
         "HF_HUB_OFFLINE=1",
         "-e",
         f"PYTHONPATH={CONTAINER_CHECKOUT}",
+        "-e",
+        f"AISIM_COLLECTOR_REF={collector_ref}",
         "-e",
         f"TRITON_CACHE_DIR={CONTAINER_OUT}/.cache/triton",
         "-e",
@@ -220,11 +256,30 @@ def _log(root: Path, record: dict) -> None:
         fh.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), **record}) + "\n")
 
 
-def run_shard(plan: Plan, shard: Shard, *, root: Path, gpu: int, checkout: Path, image: str, mode: str = "run") -> int:
+def run_shard(
+    plan: Plan,
+    shard: Shard,
+    *,
+    root: Path,
+    gpu: int,
+    checkout: Path,
+    image: str,
+    collector_ref: str,
+    mode: str = "run",
+) -> int:
     d = shard_dir(root, shard)
     (d / ".cache").mkdir(parents=True, exist_ok=True)
     name = f"{'f' if mode == 'finalize' else 'c'}_{plan.backend}_{shard.op}_{shard.name}"
-    cmd = docker_argv(plan, shard, image=image, gpu=gpu, checkout=checkout, shard_dir=d, container_name=name)
+    cmd = docker_argv(
+        plan,
+        shard,
+        image=image,
+        gpu=gpu,
+        checkout=checkout,
+        shard_dir=d,
+        container_name=name,
+        collector_ref=collector_ref,
+    )
     _log(
         root,
         {
@@ -234,6 +289,7 @@ def run_shard(plan: Plan, shard: Shard, *, root: Path, gpu: int, checkout: Path,
             "gpu": gpu,
             "image": image,
             "image_digest": image_digest(image),
+            "collector_ref": collector_ref,
             "argv": collector_argv(plan, shard),
         },
     )
@@ -271,6 +327,7 @@ def run_campaign(
             continue
         todo.append(s)
     print(f"{mode}: {len(todo)}/{len(plan.shards)} shards on gpus {gpus}")
+    ref = collector_ref(checkout)  # once, before any shard starts: every shard records the same commit
     images = {s.op: (image_override or collect_image_tag(pinned_image(plan.backend, s.op))) for s in todo}
     for img in sorted(set(images.values())):
         if image_digest(img) is None:
@@ -304,6 +361,8 @@ def run_campaign(
                 str(checkout),
                 "--image",
                 images[s.op],
+                "--collector-ref",
+                ref,
                 "--mode",
                 mode,
             ]
@@ -349,13 +408,21 @@ def main() -> int:
     h.add_argument("--gpu", required=True, type=int)
     h.add_argument("--shard", required=True)
     h.add_argument("--image", required=True)
+    h.add_argument("--collector-ref", required=True)
     h.add_argument("--mode", required=True)
     args = ap.parse_args()
     if args.cmd == "_shard":
         plan = load_plan(args.plan)
         shard = next(s for s in plan.shards if s.key == args.shard)
         return run_shard(
-            plan, shard, root=args.root, gpu=args.gpu, checkout=args.checkout, image=args.image, mode=args.mode
+            plan,
+            shard,
+            root=args.root,
+            gpu=args.gpu,
+            checkout=args.checkout,
+            image=args.image,
+            collector_ref=args.collector_ref,
+            mode=args.mode,
         )
     if args.cmd == "build-image":
         base = pinned_image(args.backend, args.op)

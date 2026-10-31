@@ -462,7 +462,7 @@ def render_backend_templates(
         quantization = (
             _bundled_quantization(str(context.get("model_path") or "")) if keyed and context.get("is_moe") else None
         )
-        apply_moe_backend(context, hardware, backend=backend, quantization=quantization)
+        apply_moe_backend(context, hardware, backend=backend, quantization=quantization, backend_version=version)
 
     # Find template files
     template_path = Path(templates_dir)

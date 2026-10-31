@@ -140,10 +140,10 @@ mappings:
   - {framework: sglang, kernel_source: sglang_flashinfer_bmm_fp8, backend: cublas, source: "collector/sglang/collect_mla_bmm.py:22-26 (sglang>=0.5.21: fp8_utils.bmm_fp8 wraps flashinfer.bmm_fp8 as custom op flashinfer_bmm_fp8_batched, docstring 'via flashinfer's cuBLAS backend', fp8_utils.py:246-273 @0.5.21); flashinfer csrc/bmm_fp8.cu bmm_fp8_internal_cublaslt"}
   - {framework: sglang, kernel_source: sglang_sgl_kernel_fp8_scaled_mm, backend: cutlass, source: "PR#1342 collect_gemm.py (sgl_kernel fp8_scaled_mm)"}
   - {framework: sglang, kernel_source: sglang_deepgemm_gemm_nt_f8f8bf16, backend: deepgemm, source: "PR#1342 collect_gemm.py"}
-  - {framework: sglang, kernel_source: sglang_triton_w8a8_block_fp8, backend: triton, source: "sglang/collect_gemm_0520.py (fp8_utils.py:1094-1107 @v0.5.20 N%64/K%128 fallback)"}
-  - {framework: sglang, kernel_source: sglang_cutedsl_tgv_bf16, backend: cutlass, source: "sglang/collect_gemm_0520.py (CuTe DSL TGV bf16, cutedsl_bf16_gemm.py @v0.5.20)"}
-  - {framework: sglang, kernel_source: sglang_flashinfer_bf16_splitk, backend: flashinfer, source: "sglang/collect_gemm_0520.py (unquant.py split-K @v0.5.20)"}
-  - {framework: sglang, kernel_source: sglang_flashinfer_bf16_direct, backend: flashinfer, source: "sglang/collect_gemm_0520.py (unquant.py direct @v0.5.20)"}
+  - {framework: sglang, kernel_source: sglang_triton_w8a8_block_fp8, backend: triton, source: "sglang/collect_gemm_0520.py @c540ff90a, retired by #649; labels the shipped 0.5.20 tables (fp8_utils.py:1094-1107 @v0.5.20 N%64/K%128 fallback)"}
+  - {framework: sglang, kernel_source: sglang_cutedsl_tgv_bf16, backend: cutlass, source: "sglang/collect_gemm_0520.py @c540ff90a, retired by #649; labels the shipped 0.5.20 tables (CuTe DSL TGV bf16, cutedsl_bf16_gemm.py @v0.5.20)"}
+  - {framework: sglang, kernel_source: sglang_flashinfer_bf16_splitk, backend: flashinfer, source: "sglang/collect_gemm_0520.py @c540ff90a, retired by #649; labels the shipped 0.5.20 tables (unquant.py split-K @v0.5.20)"}
+  - {framework: sglang, kernel_source: sglang_flashinfer_bf16_direct, backend: flashinfer, source: "sglang/collect_gemm_0520.py @c540ff90a, retired by #649; labels the shipped 0.5.20 tables (unquant.py direct @v0.5.20)"}
   - {framework: sglang, kernel_source: sglang_flashinfer_cutlass_nvfp4, backend: flashinfer_cutlass, source: "PR#1342 collect_gemm.py (flashinfer mm_fp4 cutlass)"}
   # MoE labels name the constructed serving method + runner.
   - {framework: sglang, kernel_source: sglang_flashinfer_trtllm_moe, backend: flashinfer_trtllm_gen, source: "PR#1342 collect_moe.py"}

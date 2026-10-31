@@ -332,6 +332,73 @@ def _declared_moe_routing(model_name: str):
     return None
 
 
+def _zero_routing_bias(gate) -> None:
+    """Serving gates allocate e_score_correction_bias with torch.empty and only
+    load_weights fills it (DeepseekV3Gate, modeling_deepseekv3.py:884,926-935
+    @1.3.0rc29; DeepseekV4Gate and MiniMaxM3Gate likewise). Their top-k ranks
+    score + bias, and the collector's balanced / power-law logits separate the
+    intended experts by ~1e-3 after the sigmoid, so whatever that memory holds
+    would pick the experts instead of the row's distribution. Zero it, as
+    vllm/collect_moe.py and wideep/trtllm/collect_moe_a2a.py do."""
+    with torch.no_grad():
+        gate.e_score_correction_bias.zero_()
+
+
+def _serving_moe_gate(declared, hidden_size, num_experts, topk, dtype, moe_backend):
+    """The gate serving builds for this architecture, with a zeroed bias.
+
+    DeepSeek-V3-family / GLM / Kimi / Nemotron-H: DeepseekV3Gate
+    (modeling_deepseekv3.py:979-994 @1.3.0rc29). DeepSeek-V4: DeepseekV4Gate,
+    whose routing runs separately (gate_forward, sqrt-softplus scoring;
+    modeling_deepseekv4.py:1533-1546, moe/fused_moe/routing.py:524-614). The
+    collected layer is a scored one: the first n_hash_layers route by token id
+    (tid2eid) and have no logit distribution to label. MiniMax-M3:
+    MiniMaxM3Gate, MiniMax2 routing (modeling_minimaxm3.py:641-646,
+    routing.py:697-760). Serving resolves moe_backend upper-case; DeepseekV3Gate
+    keeps a bf16 bias only for 'TRTLLM' (modeling_deepseekv3.py:880-883).
+    """
+    n_group = int(declared.sglang_moe_num_expert_group or 1)
+    topk_group = int(declared.sglang_moe_topk_group or 1)
+    routed_scaling_factor = float(declared.sglang_moe_routed_scaling_factor or 1.0)
+    backend = str(moe_backend).upper()
+    if declared.architecture == "DeepseekV4ForCausalLM":
+        from tensorrt_llm._torch.models.modeling_deepseekv4 import DeepseekV4Gate
+
+        gate = DeepseekV4Gate(
+            hidden_size,
+            num_experts,
+            top_k=topk,
+            n_group=n_group,
+            topk_group=topk_group,
+            routed_scaling_factor=routed_scaling_factor,
+            is_hashed=False,
+            dtype=dtype,
+            moe_backend=backend,
+        )
+    elif declared.architecture == "MiniMaxM3ForCausalLM":
+        from tensorrt_llm._torch.models.modeling_minimaxm3 import MiniMaxM3Gate
+
+        gate = MiniMaxM3Gate(
+            hidden_size=hidden_size,
+            num_experts=num_experts,
+            top_k=topk,
+            routed_scaling_factor=routed_scaling_factor,
+        )
+    else:
+        gate = DeepseekV3Gate(
+            hidden_size,
+            num_experts,
+            top_k=topk,
+            n_group=n_group,
+            topk_group=topk_group,
+            routed_scaling_factor=routed_scaling_factor,
+            dtype=dtype,
+            moe_backend=backend,
+        )
+    _zero_routing_bias(gate)
+    return gate
+
+
 def _run_moe_case(
     moe_type,
     num_tokens_lists,
@@ -570,7 +637,7 @@ def _run_moe_case(
         topk_group = 4
         routed_scaling_factor = 2.5
 
-        routing_method = DeepseekV3Gate(
+        min_latency_gate = DeepseekV3Gate(
             hidden_size,
             num_experts,
             top_k=topk,
@@ -579,7 +646,9 @@ def _run_moe_case(
             routed_scaling_factor=routed_scaling_factor,
             dtype=dtype,
             moe_backend="TRTLLM",
-        ).routing_method
+        )
+        _zero_routing_bias(min_latency_gate)
+        routing_method = min_latency_gate.routing_method
         router_logits_dtype = torch.float32
     else:
         declared = _declared_moe_routing(model_name)
@@ -595,15 +664,9 @@ def _run_moe_case(
             # Mixtral, ...), and running it for DeepSeek-V3 diverged the
             # moe_fp8block gate on H20 (2026-10-01). The router GEMM that feeds the
             # gate (dsv3_router_gemm_op) stays outside this op, as before.
-            routing_method = DeepseekV3Gate(
-                hidden_size,
-                num_experts,
-                top_k=topk,
-                n_group=int(declared.sglang_moe_num_expert_group or 1),
-                topk_group=int(declared.sglang_moe_topk_group or 1),
-                routed_scaling_factor=float(declared.sglang_moe_routed_scaling_factor or 1.0),
-                dtype=dtype,
-                moe_backend=model_config.moe_backend,
+            # DeepSeek-V4 and MiniMax-M3 build their own gates (_serving_moe_gate).
+            routing_method = _serving_moe_gate(
+                declared, hidden_size, num_experts, topk, dtype, model_config.moe_backend
             ).routing_method
             router_logits_dtype = torch.float32
         elif is_gpt_oss:

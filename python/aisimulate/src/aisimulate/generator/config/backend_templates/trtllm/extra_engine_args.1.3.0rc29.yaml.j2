@@ -15,8 +15,10 @@ moe_tensor_parallel_size: {{ moe_tensor_parallel_size }}
 moe_config:
 {# moe_config.backend (facts / --generator-set params.agg.moe_config.backend) wins; the generic `moe_backend` param
    (backend_config_mapping.yaml, the sglang --moe-runner-backend spelling) used to be silently dropped for trtllm —
-   it now feeds the same field, upper-cased to the TRT-LLM enum. #}
-    backend: {{ moe_config.backend | default((moe_backend | upper) if moe_backend is defined and moe_backend else 'CUTLASS') }} # MOE backend to use (CUTLASS, CUTEDSL, WIDEEP, TRTLLM, VANILLA, MARLIN, ...)
+   it now feeds the same field, upper-cased to the TRT-LLM enum. Unset renders AUTO, rc29's own MoeConfig default
+   (llmapi/llm_args.py:1657-1659): an explicit CUTLASS fails DeepSeek FP8_BLOCK_SCALES on SM100
+   (findings.yaml sm100_moe_backend_fact_rejected_2026_10_04), and rc29 no longer accepts WIDEEP. #}
+    backend: {{ moe_config.backend | default((moe_backend | upper) if moe_backend is defined and moe_backend else 'AUTO') }} # MOE backend to use (AUTO, CUTLASS, CUTEDSL, TRTLLM, DEEPGEMM, VANILLA, MARLIN, ...)
     {% if moe_config.load_balancer is defined %}  # Configuration for MoE load balancing
     load_balancer: {{ moe_config.load_balancer }} # moe load balancer
     {% endif %}

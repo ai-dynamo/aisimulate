@@ -154,7 +154,7 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
         "log_perf": lambda **kwargs: published.append(kwargs),
         "_cleanup": cleanup,
         "vllm_version": "0.25.0",
-        "traceback": SimpleNamespace(print_exc=lambda: None),
+        "traceback": SimpleNamespace(print_exc=lambda: None, clear_frames=lambda _tb: None),
         "time": time,
     }
     _load_function(COLLECTOR / "vllm/utils.py", "with_exit_stack", namespace)

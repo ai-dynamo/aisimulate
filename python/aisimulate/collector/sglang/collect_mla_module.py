@@ -50,10 +50,24 @@ import torch
 from collector.sglang.runtime_compat import resolved_arg  # 0.5.21: derived server args live behind the resolving view
 
 try:
-    from helper import PhaseClock, benchmark_with_power, get_sm_version, log_perf, render_phase_totals
+    from helper import (
+        PhaseClock,
+        benchmark_with_power,
+        get_sm_version,
+        log_perf,
+        render_phase_totals,
+        run_measurement_subprocess,
+    )
 except ModuleNotFoundError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from helper import PhaseClock, benchmark_with_power, get_sm_version, log_perf, render_phase_totals
+    from helper import (
+        PhaseClock,
+        benchmark_with_power,
+        get_sm_version,
+        log_perf,
+        render_phase_totals,
+        run_measurement_subprocess,
+    )
 
 try:
     from collector.case_generator import (
@@ -3056,30 +3070,29 @@ def _run_mla_subprocess(
         f"chunked_prefill_size={chunked_prefill_size!r})\n"
     )
 
-    proc = subprocess.Popen(
-        [sys.executable, "-c", code],
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        cwd=os.path.dirname(os.path.abspath(__file__)),
-    )
-
     # Per-subprocess timeout is OFF by default. A DSA context subprocess sweeps
     # the full isl x prefix grid for one batch_size and can legitimately run for
     # many minutes; a wall-clock cap silently truncated the sweep (killed mid-grid,
     # kept the partial rows, logged a WARNING not an error) and left the perf DB
-    # with short prefix coverage, forcing AIC to extrapolate. Unset =
-    # communicate(timeout=None) = block until the subprocess finishes on its own.
+    # with short prefix coverage, forcing AIC to extrapolate. Unset = block until
+    # the subprocess finishes on its own; the executor's stall watchdog still sees
+    # liveness, because the wait beats while the child prints its points, and a
+    # reclaimed worker takes the child down with it (helper.run_measurement_subprocess).
     # Users can still opt into a cap by setting AIC_MLA_MODULE_SUBPROCESS_TIMEOUT_SEC.
     _timeout_env = os.environ.get("AIC_MLA_MODULE_SUBPROCESS_TIMEOUT_SEC")
     subprocess_timeout = int(_timeout_env) if _timeout_env else None
     try:
-        stdout, _ = proc.communicate(timeout=subprocess_timeout)
+        returncode, stdout = run_measurement_subprocess(
+            [sys.executable, "-c", code],
+            env=env,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            timeout=subprocess_timeout,
+        )
         if stdout:
             print(stdout.decode("utf-8", errors="replace"))
     except subprocess.TimeoutExpired as exc:
-        proc.kill()
-        proc.wait()
+        if exc.output:
+            print(exc.output.decode("utf-8", errors="replace"))
         raise RuntimeError(
             f"{attn_type.upper()} module {phase} subprocess timed out "
             f"after {subprocess_timeout}s "
@@ -3087,7 +3100,7 @@ def _run_mla_subprocess(
             f"gemm={gemm_type}, target_tp={target_tp_size})"
         ) from exc
 
-    if proc.returncode != 0:
+    if returncode != 0:
         # Include last lines of subprocess output in the error so the cause
         # is visible in the error group (subprocess stderr is merged into stdout).
         tail = ""
@@ -3095,7 +3108,7 @@ def _run_mla_subprocess(
             lines = stdout.decode("utf-8", errors="replace").strip().splitlines()
             tail = "\n".join(lines[-30:])  # last 30 lines should include traceback
         raise RuntimeError(
-            f"{attn_type.upper()} module {phase} subprocess failed (exit code {proc.returncode})\n"
+            f"{attn_type.upper()} module {phase} subprocess failed (exit code {returncode})\n"
             f"--- subprocess output (last 30 lines) ---\n{tail}"
         )
 

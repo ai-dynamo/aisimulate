@@ -15,7 +15,7 @@ import types
 from unittest.mock import patch
 
 import pytest
-from collector.helper import PhaseClock, render_phase_totals
+from collector.helper import PhaseClock, render_phase_totals, run_measurement_subprocess
 
 pytestmark = pytest.mark.unit
 
@@ -47,6 +47,7 @@ def _mock_helper_imports(monkeypatch):
     # the collector imports the phase-timing helpers at module load
     fake_helper.PhaseClock = PhaseClock
     fake_helper.render_phase_totals = render_phase_totals
+    fake_helper.run_measurement_subprocess = run_measurement_subprocess
     monkeypatch.setitem(sys.modules, "helper", fake_helper)
 
     fake_torch = types.ModuleType("torch")

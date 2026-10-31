@@ -1483,9 +1483,14 @@ def run_moe_torch(
         and moe_backend == "flashinfer_cutlass"
         and (hidden_size % 8 != 0 or local_inter_size % 8 != 0)
     ):
+        # FlashInfer 0.6.18 (pinned by SGLang 0.5.21, python/pyproject.toml:42)
+        # flashinfer_cutlass_fused_moe_binding.cu:386-394: min_alignment =
+        # 128 / (8 * min(act_bytes, weight_bytes)) = 8 for BF16, ICHECKed on both
+        # hidden_size and inter_size; SGLang does not pad this path (unquant.py:648-711).
         raise ValueError(
             "FIXME(kernel-limit): SGLang FlashInfer CUTLASS BF16 MoE requires hidden_size and local_inter_size "
-            f"to be divisible by 8, got hidden_size={hidden_size}, local_inter_size={local_inter_size}"
+            "to be divisible by 8 (flashinfer 0.6.18 flashinfer_cutlass_fused_moe_binding.cu:386-394), "
+            f"got hidden_size={hidden_size}, local_inter_size={local_inter_size}"
         )
     activation_vector_size = 16 if sm_version >= 100 else 8
     if (
@@ -1511,9 +1516,14 @@ def run_moe_torch(
         and sm_version == 90
         and (hidden_size % 128 != 0 or local_inter_size % 128 != 0)
     ):
+        # SGLang 0.5.21 selects Mxfp4FlashinferCutlassMoEMethod on SM90 (fp8.py:448-455),
+        # which raises unless both widths are multiples of 128
+        # (mxfp4_flashinfer_cutlass_moe.py:67); the 256 round-up in layer.py:437-443
+        # applies only to the serialized-mxfp4 quant config, not to these FP4 experts.
         raise ValueError(
             "FIXME(kernel-limit): SGLang SM90 DeepSeek-V4 W4A16 FP4 experts require hidden_size and local_inter_size "
-            f"to be divisible by 128, got hidden_size={hidden_size}, local_inter_size={local_inter_size}"
+            "to be divisible by 128 (mxfp4_flashinfer_cutlass_moe.py:67 @0.5.21), "
+            f"got hidden_size={hidden_size}, local_inter_size={local_inter_size}"
         )
     if (
         moe_type == "w4a8_mxfp4_mxfp8"
@@ -1566,17 +1576,30 @@ def run_moe_torch(
         int4_config = get_moe_quantization_module_config("sglang", moe_type, model_name=model_name)
         int4_group_size = int(int4_config.get("group_size", 128))
         if hidden_size % int4_group_size != 0 or local_inter_size % int4_group_size != 0:
+            # FIXME(re-verify): no 0.5.21 source line rejects K % group_size. The kernels'
+            # own limits are stricter and fire on their own: SM100/103 MxInt4 packs
+            # block_k=128 bytes (compressed_tensors_w4a4_mxint4_moe.py:248-254 -> flashinfer
+            # 0.6.18 fused_moe/core.py:581, hidden/local_inter % 256), SM90 Marlin tiles
+            # (moe_wna16_marlin.cuh:140-152,265,747: hidden % 128, local_inter % 64). Marlin
+            # floor-divides the groups (compressed_tensors_wNa16_moe.py:158-159), so an
+            # unaligned K may run with a different group size than the row says — not shown
+            # either way, so this stays an unclassified failure until a run decides it.
             raise ValueError(
-                "FIXME(kernel-limit): SGLang INT4-WO group quantization requires hidden_size and local_inter_size "
+                "SGLang INT4-WO group quantization requires hidden_size and local_inter_size "
                 f"to be divisible by group_size={int4_group_size}, got "
                 f"hidden_size={hidden_size}, local_inter_size={local_inter_size}"
             )
         block_shape = [0, int4_group_size]
     elif moe_type == "fp8_block":
         if moe_backend == "triton" and (hidden_size % 128 != 0 or local_inter_size % 128 != 0):
+            # Both GEMM inputs are per-token-group quantized at block_k=128
+            # (fused_moe_triton_kernels.py:866 -> fp8_kernel.py:577
+            # `assert x.shape[-1] % group_size == 0` @0.5.21): K = hidden_size for the
+            # first GEMM, local_inter_size for the second.
             raise ValueError(
                 "FIXME(kernel-limit): SGLang Triton fp8_block requires hidden_size and local_inter_size "
-                f"to be divisible by 128, got hidden_size={hidden_size}, local_inter_size={local_inter_size}"
+                "to be divisible by 128 (fp8_kernel.py:577 via fused_moe_triton_kernels.py:866 @0.5.21), "
+                f"got hidden_size={hidden_size}, local_inter_size={local_inter_size}"
             )
         block_shape = [128, 128]
     else:

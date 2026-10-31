@@ -84,6 +84,7 @@ from collector.helper import (
     get_sm_version,
     log_perf,
     render_phase_totals,
+    run_measurement_subprocess,
 )
 
 try:
@@ -1432,34 +1433,33 @@ def _run_msa_subprocess(
         f"{batch_repr}, {target_tp_size}, None, {inner_manifest!r})\n"
     )
 
-    proc = subprocess.Popen(
-        [sys.executable, "-c", code],
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        cwd=os.path.dirname(os.path.abspath(__file__)),
-    )
     _timeout_env = os.environ.get("AIC_MLA_MODULE_SUBPROCESS_TIMEOUT_SEC")
     subprocess_timeout = int(_timeout_env) if _timeout_env else None
     try:
-        stdout, _ = proc.communicate(timeout=subprocess_timeout)
+        # beats the stall watchdog while the child prints progress; the child dies with the worker
+        returncode, stdout = run_measurement_subprocess(
+            [sys.executable, "-c", code],
+            env=env,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            timeout=subprocess_timeout,
+        )
         if stdout:
             print(stdout.decode("utf-8", errors="replace"))
     except subprocess.TimeoutExpired as exc:
-        proc.kill()
-        proc.wait()
+        if exc.output:
+            print(exc.output.decode("utf-8", errors="replace"))
         raise RuntimeError(
             f"MSA module {phase} subprocess timed out after {subprocess_timeout}s "
             f"(heads={num_heads}, model={model_path}, kv={kv_cache_dtype})"
         ) from exc
 
-    if proc.returncode != 0:
+    if returncode != 0:
         tail = ""
         if stdout:
             lines = stdout.decode("utf-8", errors="replace").strip().splitlines()
             tail = "\n".join(lines[-30:])
         raise RuntimeError(
-            f"MSA module {phase} subprocess failed (exit code {proc.returncode})\n"
+            f"MSA module {phase} subprocess failed (exit code {returncode})\n"
             f"--- subprocess output (last 30 lines) ---\n{tail}"
         )
 

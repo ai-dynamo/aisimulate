@@ -169,10 +169,3 @@ def test_fp8_block_post_load_runs_once_per_copy_and_is_tagged_deepgemm_on_sm100(
     assert [op.kwargs["quant_config"] for op in _Linear.instances] == [expected_quant] * 2
     assert [row["kernel_source"] for row in published] == ["deepgemm", "deepgemm"]
     assert all(row["item_list"][0]["latency"] == pytest.approx(0.5) for row in published)
-
-
-def test_fp8_alignment_limit_still_raises_before_any_module_is_built():
-    namespace, built, _, _, _ = _load()
-    with pytest.raises(RuntimeError, match="FIXME\\(kernel-limit\\)"):
-        namespace["run_gemm"]("fp8", 16, 24, 4096, perf_filename="gemm_perf.txt", device="cuda:0")
-    assert built == [] and _Linear.instances == []

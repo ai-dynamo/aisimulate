@@ -28,13 +28,20 @@ NVFP4 = "nvidia/GLM-5.3-Flash-NVFP4"
 GLM_OFFGRID_WIDTHS = {8, 16, 32, 288, 3336, 6416, 12576, 19360, 24576, 24896, 38720, 77440, 154880}
 
 
-@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize(
+    ("backend", "ops"),
+    [
+        ("vllm", {"gemm", "moe", "kda", "mhc_module"}),
+        # SGLang 0.5.21 is not an audited GLM KDA / mHC runtime: scheduling them only logs failures
+        ("sglang", {"gemm", "moe"}),
+    ],
+)
 @pytest.mark.parametrize("model_path", [FP8, NVFP4])
-def test_plan_collects_gemm_moe_kda_and_mhc(backend, model_path):
+def test_plan_collects_the_audited_glm_ops(backend, ops, model_path):
     plan = build_collection_case_plan(backend=backend, model_path=model_path, gpu_type="gb300")
     assert plan.model_architecture == "Glm5NextForConditionalGeneration"
     assert plan.sm_version == 103
-    assert set(plan.ops) == {"gemm", "moe", "kda", "mhc_module"}
+    assert set(plan.ops) == ops
 
 
 def test_trtllm_plan_has_no_glm_moe_lane():

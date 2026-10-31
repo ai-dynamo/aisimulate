@@ -186,11 +186,14 @@ def _align_token_budgets(param_values: dict[str, Any]) -> None:
     passes). Applied here, after the rule formulas and before any rendering,
     so the trtllm engine-yaml template — which the mapping transforms cannot
     reach — gets it too; the mapping keeps the same rounding as a guard for
-    values injected past the rule engine. Never rounds down."""
+    values injected past the rule engine. Never rounds down. Values a caller
+    already evaluated (``preserve_engine_limits``, the Sweeper) are rounded too,
+    with a warning, so the deployed limit is visible next to the simulated one."""
     params = param_values.get("params")
     if not isinstance(params, dict):
         return
-    for role in params.values():
+    preserved = bool(param_values.get("preserve_engine_limits") or params.get("preserve_engine_limits"))
+    for role_name, role in params.items():
         if not isinstance(role, dict):
             continue
         for key in _TOKEN_BUDGET_KEYS:
@@ -199,6 +202,16 @@ def _align_token_budgets(param_values: dict[str, Any]) -> None:
                 continue
             aligned = ((v + _TOKEN_BUDGET_ALIGN - 1) // _TOKEN_BUDGET_ALIGN) * _TOKEN_BUDGET_ALIGN
             if aligned != v:
+                if preserved:
+                    logger.warning(
+                        "%s %s=%d was evaluated by the caller; the deployment uses %d (token budgets are "
+                        "rounded up to a multiple of %d on every backend)",
+                        role_name,
+                        key,
+                        v,
+                        aligned,
+                        _TOKEN_BUDGET_ALIGN,
+                    )
                 role[key] = aligned
 
 
