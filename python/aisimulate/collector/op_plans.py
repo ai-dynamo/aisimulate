@@ -43,6 +43,7 @@ from collector.case_generator import (
     get_compute_scale_case_specs,
     get_gemm_case_specs,
     get_gemm_type_specs,
+    get_mla_bmm_case_specs,
     get_moe_quantization_module_config,
     get_sglang_moe_backend,
     get_shared_base_op_case_specs,
@@ -583,6 +584,32 @@ def _expand_mamba2() -> list[Mamba2Case]:
     ]
 
 
+# --- MLA generation BMMs --------------------------------------------------------
+
+
+class MlaBmmCase(NamedTuple):
+    """One MLA generation BMM case (the W_UK_T absorb or the W_UV projection), TP-local heads."""
+
+    num_tokens: int
+    num_heads: int
+    dtype: str
+    num_warmups: int
+    num_runs: int
+
+    __str__ = __repr__ = _list_form
+
+
+def _mla_bmm_expand(op: str) -> Callable[[], list[MlaBmmCase]]:
+    def expand() -> list[MlaBmmCase]:
+        """The token, head and dtype sweep of cases/base_ops/<op>.yaml."""
+        return [
+            MlaBmmCase(spec.num_tokens, spec.num_heads, spec.dtype, spec.num_warmups, spec.num_runs)
+            for spec in get_mla_bmm_case_specs(None, op)
+        ]
+
+    return expand
+
+
 OP_PLANS: dict[str, OpPlan] = {
     "gemm": OpPlan(GemmCase, _expand_gemm, dtype_field="gemm_type", group_fields=("gemm_type", "n", "k")),
     "moe": OpPlan(
@@ -608,4 +635,10 @@ OP_PLANS: dict[str, OpPlan] = {
     ),
     "kda": OpPlan(KdaCase, _expand_kda, dtype_field="dtype", group_fields=KdaCase._fields),
     "mamba2": OpPlan(Mamba2Case, _expand_mamba2, dtype_field="dtype", group_fields=Mamba2Case._fields),
+    "mla_bmm_gen_pre": OpPlan(
+        MlaBmmCase, _mla_bmm_expand("mla_bmm_gen_pre"), dtype_field="dtype", group_fields=MlaBmmCase._fields
+    ),
+    "mla_bmm_gen_post": OpPlan(
+        MlaBmmCase, _mla_bmm_expand("mla_bmm_gen_post"), dtype_field="dtype", group_fields=MlaBmmCase._fields
+    ),
 }

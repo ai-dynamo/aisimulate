@@ -13,8 +13,8 @@ are ROCm/AITER-gated (``rocm_aiter_ops.triton_fp8_bmm``):
 - Kimi-K3 custom MLA: models/kimi_k3/nvidia/mla.py:569 (BMM1 absorb) and
   :401 (W_UV projection) @ the kimi-k3 preview — same torch.bmm.
 
-The lane therefore collects the ``bfloat16`` dtype only; an fp8 row would
-label a kernel NVIDIA vLLM never dispatches. Until this collector existed,
+The lane therefore collects the ``bfloat16`` dtype only: the plan leaves the
+fp8 region out (G-vllm-mla-bmm-fp8-not-served in collector/notes/vllm.yaml). Until this collector existed,
 vLLM MLA-BMM queries fell back to the trtllm tables (the SDK's
 "low-fidelity fallback rows for mla_bmm_perf" warning).
 """
@@ -30,28 +30,16 @@ from importlib.metadata import (
 )
 
 import torch
-from collector.case_generator import get_mla_bmm_case_specs
-from collector.helper import benchmark_with_power, log_perf
-
-# NVIDIA vLLM dispatches these BMMs in bf16 only (module docstring citations);
-# fp8 sweep entries would be mislabeled rows, not coverage.
-_SUPPORTED_DTYPES = {"bfloat16"}
-
-
-def _get_mla_bmm_test_cases(op_name: str):
-    return [
-        [case.num_tokens, case.num_heads, case.dtype, case.num_warmups, case.num_runs]
-        for case in get_mla_bmm_case_specs("vllm", op_name)
-        if case.dtype in _SUPPORTED_DTYPES
-    ]
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 
 
 def get_mla_gen_pre_test_cases():
-    return _get_mla_bmm_test_cases("mla_bmm_gen_pre")
+    return plan_cases("mla_bmm_gen_pre", "vllm", get_sm_version())
 
 
 def get_mla_gen_post_test_cases():
-    return _get_mla_bmm_test_cases("mla_bmm_gen_post")
+    return plan_cases("mla_bmm_gen_post", "vllm", get_sm_version())
 
 
 def _log_row(*, op_name, dtype, num_tokens, num_heads, results, perf_filename, device):

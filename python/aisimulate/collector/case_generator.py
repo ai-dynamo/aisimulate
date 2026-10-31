@@ -2058,9 +2058,11 @@ class MLABMMCommonTestCase:
     num_runs: int
 
 
-def get_mla_bmm_case_specs(backend: str, op_name: str) -> list[MLABMMCommonTestCase]:
-    """Return YAML-backed MLA generation BMM helper shapes."""
-    shape_sweeps = get_merged_base_op_case_specs(backend, op_name)
+def get_mla_bmm_case_specs(backend: str | None, op_name: str) -> list[MLABMMCommonTestCase]:
+    """Return YAML-backed MLA generation BMM helper shapes; without a backend, the ones every backend shares."""
+    shape_sweeps = (
+        get_merged_base_op_case_specs(backend, op_name) if backend else get_shared_base_op_case_specs(op_name)
+    )
     if not shape_sweeps:
         raise RuntimeError(f"{BASE_OP_CASES_DIR} is missing all_frameworks_op_cases.{op_name}.cases")
 
