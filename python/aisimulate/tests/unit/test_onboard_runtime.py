@@ -1738,16 +1738,16 @@ def test_formal_collection_compares_prefix_caching_of_every_phase(tmp_path, caps
         verify_collection_runtime(request, index, collection_checkpoint=checkpoint)
 
 
-def _formal_phase_bindings(tmp_path, capsys):
+def _formal_phase_bindings(tmp_path, capsys, *, decode_prefix_caching=False):
     """A completed formal campaign of the mamba_hybrid probe, its observation index and a binding builder."""
     from collector.fpm_forward.cli import _parser
     from collector.fpm_forward.entry import _load_generator_overrides
     from collector.fpm_forward.repeatability import load_repeatability_source
 
-    # Decode runs without prefix caching: its Mamba groups hold max_model_len tokens per block in none mode, while
-    # the accepted record holds the prefill phase's align mode and 64-token blocks.
+    # By default decode runs without prefix caching: its Mamba groups hold max_model_len tokens per block in none
+    # mode, while the accepted record holds the prefill phase's align mode and 64-token blocks.
     _, request, _, root = _completed_runtime_collection(
-        tmp_path, capsys, layout="mamba_hybrid", decode_prefix_caching=False
+        tmp_path, capsys, layout="mamba_hybrid", decode_prefix_caching=decode_prefix_caching
     )
     checkpoint_path = root / "fpm-checkpoint/fpm_forward.json"
     checkpoint = json.loads(checkpoint_path.read_text())
@@ -1777,22 +1777,57 @@ def _formal_phase_bindings(tmp_path, capsys):
     return request, index, bindings
 
 
-def test_formal_phase_binding_compares_prefix_caching_per_phase(tmp_path, capsys):
+def _resolve_decode_prefix_match_unit(index, tokens):
+    """Give every decode process of an observation index a prefix-match unit of ``tokens``.
+
+    With prefix caching on, the engine core then hashes in that many tokens (v1/core/kv_cache_utils.py:797-805). No
+    block size follows the unit, so only the resolved setting and both copies of the scheduler's hash block size change.
+    """
+    document = json.loads(index.read_text())
+    phase = document["configurations"]["tp2"]["attempts"][0]["phases"]["decode"]
+    for reference in phase["artifacts"]:
+        if reference.get("kind") != "observation":
+            continue
+        path = index.parent / reference["path"]
+        record = json.loads(path.read_text())
+        record["resolved_config"]["cache_config"]["prefix_match_unit"] = tokens
+        if record["kind"] == "scheduler":
+            record["cache"]["hash_block_size"] = record["cache"]["prefix_caching"]["hash_block_size"] = tokens
+        _write(path, record)
+        reference["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    _write(index, document)
+
+
+@pytest.mark.parametrize(
+    "decode_prefix_caching,change,error",
+    [
+        # Both runs hash 64-token blocks in decode with prefix caching on. The formal decode processes resolve a
+        # 32-token prefix-match unit, which changes their hash block size and no cache group, so only the
+        # prefix-caching settings of the phase differ from the accepted probe.
+        (True, "prefix_match_unit", "decode: runtime prefix-caching settings differ from the accepted probe"),
+        # The probe's decode phase runs without prefix caching. A formal decode phase that ran with prefix caching on
+        # holds align-mode Mamba groups of 64-token blocks. vLLM changes these groups together with the prefix-caching
+        # mode, and the binding compares the raw groups of the phase first, so the cache geometry check refuses it.
+        (False, "prefix_caching_mode", "decode: runtime cache group geometry differs from the accepted probe"),
+    ],
+    ids=["prefix_match_unit", "prefix_caching_mode"],
+)
+def test_formal_phase_binding_compares_prefix_caching_per_phase(tmp_path, capsys, decode_prefix_caching, change, error):
     from aisimulate.support.runtime import verify_collection_runtime_bindings
 
-    request, index, bindings = _formal_phase_bindings(tmp_path, capsys)
+    request, index, bindings = _formal_phase_bindings(tmp_path, capsys, decode_prefix_caching=decode_prefix_caching)
     result = verify_collection_runtime_bindings(request, bindings())
     assert result["status"] == "complete"
-    assert result["phases"]["decode"]["provenance"]["prefix_caching"]["decode"] == {
-        "enable_prefix_caching": False,
-        "mamba_cache_mode": "none",
-        "hash_block_size_tokens": 4096,
-    }
-    # A formal decode phase that ran with prefix caching on holds align-mode Mamba groups of 64-token blocks. vLLM
-    # changes these groups together with the prefix-caching settings, and the binding compares the raw groups of the
-    # phase first, so the cache geometry check refuses the phase.
-    _run_decode_with_prefix_caching(index)
-    with pytest.raises(ValueError, match="decode: runtime cache group geometry differs from the accepted probe"):
+    assert result["phases"]["decode"]["provenance"]["prefix_caching"]["decode"] == (
+        {"enable_prefix_caching": True, "mamba_cache_mode": "align", "hash_block_size_tokens": 64}
+        if decode_prefix_caching
+        else {"enable_prefix_caching": False, "mamba_cache_mode": "none", "hash_block_size_tokens": 4096}
+    )
+    if change == "prefix_match_unit":
+        _resolve_decode_prefix_match_unit(index, 32)
+    else:
+        _run_decode_with_prefix_caching(index)
+    with pytest.raises(ValueError, match=error):
         verify_collection_runtime_bindings(request, bindings())
 
 
