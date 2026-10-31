@@ -1644,3 +1644,22 @@ The modified behavior and synthetic tests in `crates/core/src/engine/kv_manager/
 Running-request cancellation retains its KV lease until the in-flight forward
 is observed, adapting `Scheduler.abort_request` and result-time
 `release_kv_cache` from the same pinned scheduler and batch-result sources.
+
+## AIConfigurator PR #1611 migration
+
+The following repository-root paths contain modified adaptations of the
+AIConfigurator contribution at immutable commit `7ce66d6c01f77365e2592956f99be4ff0ae6eecc`:
+
+- `python/aisimulate/collector/sglang/collect_dsv4_attn.py` from
+  https://github.com/ai-dynamo/aiconfigurator/blob/7ce66d6c01f77365e2592956f99be4ff0ae6eecc/collector/sglang/collect_dsv4_attn.py
+- `python/aisimulate/tests/unit/collector/sglang/test_collect_dsv4_attn_contract.py` from
+  https://github.com/ai-dynamo/aiconfigurator/blob/7ce66d6c01f77365e2592956f99be4ff0ae6eecc/tests/unit/collector/sglang/test_collect_dsv4_attn_contract.py
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+The contribution was submitted by xinjun.jiang. Licensed under Apache-2.0;
+the license text is included in the repository and Python distribution.
+Upstream license:
+https://github.com/ai-dynamo/aiconfigurator/blob/7ce66d6c01f77365e2592956f99be4ff0ae6eecc/LICENSE
+
+Modified for AISimulate's current layout and contracts; source links are
+preserved beside the adapted content.
