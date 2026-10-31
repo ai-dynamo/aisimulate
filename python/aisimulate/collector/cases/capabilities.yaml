@@ -33,6 +33,9 @@ dtype_min_sm:
   # kernels/linear/__init__.py:319-330), verified end-to-end on L40S.
   fp8_block: 89
   nvfp4: 100
+  # W4A16 NVFP4 dequantizes FP4 weights to BF16 activations (Marlin FP4 from
+  # SM75, is_fp4_marlin_supported); the BF16 tensor cores set the floor.
+  w4a16_nvfp4: 80
   w4a16_mxfp4: 89
   w4a8_mxfp4_mxfp8: 100
 
