@@ -3,7 +3,7 @@
 
 //! Cold, request-owned cache groups sharing one rank-local physical byte budget.
 
-use crate::perfmodel::FpmCacheGroup;
+use crate::perfmodel::{FpmCacheGroup, FpmCacheKind};
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct GroupedLease {
@@ -69,6 +69,19 @@ impl GroupedKvPool {
             .map(|lease| lease.bytes)
     }
 
+    /// Bytes that the state groups hold for every running request, whatever
+    /// its context length.
+    pub(crate) fn fixed_request_bytes(&self) -> u64 {
+        self.groups
+            .iter()
+            .filter(|group| group.kind == FpmCacheKind::State)
+            .map(|group| {
+                u64::from(group.blocks_per_request.unwrap_or(0))
+                    .saturating_mul(group.page_size_bytes)
+            })
+            .fold(0, u64::saturating_add)
+    }
+
     /// Reserve every group atomically. Expired blocks become reusable in this
     /// transition, but failed attempts leave both the lease and pool unchanged.
     pub(crate) fn allocate(
@@ -115,7 +128,6 @@ impl GroupedKvPool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::perfmodel::FpmCacheKind;
 
     #[test]
     fn mixed_groups_reserve_atomically_and_reuse_expired_pages() {
@@ -142,6 +154,7 @@ mod tests {
             ],
             42,
         );
+        assert_eq!(pool.fixed_request_bytes(), 0);
         let mut first = None;
         let mut second = None;
         assert!(pool.allocate(&mut first, 0, 4)); // 8 + 2 * 6 = 20
@@ -187,6 +200,8 @@ mod tests {
             ],
             100,
         );
+        // Only the state group counts: 2 blocks of 10 bytes.
+        assert_eq!(pool.fixed_request_bytes(), 20);
         let mut lease = None;
         assert!(pool.allocate(&mut lease, 0, 4)); // 8 + 2 * 10 = 28
         assert_eq!(lease.as_ref().unwrap().ranges, vec![0..1, 0..2]);

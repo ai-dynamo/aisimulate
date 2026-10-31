@@ -2185,6 +2185,18 @@ impl VllmCore {
                             .map(|request| request.sequence.num_input_tokens()),
                         max_model_len = self.args.max_model_len,
                         num_gpu_blocks = self.args.num_gpu_blocks,
+                        grouped_minimum_forward_bytes = self
+                            .kv_manager
+                            .grouped()
+                            .zip(self.state.requests.get(&uuid))
+                            .and_then(|(pool, request)| {
+                                let known_tokens = request.sequence.len();
+                                pool.required_bytes(known_tokens.saturating_sub(1), known_tokens)
+                            }),
+                        grouped_capacity_bytes = self
+                            .kv_manager
+                            .grouped()
+                            .map(GroupedKvPool::capacity_bytes),
                         "rejecting request that exceeds a worker admission limit"
                     );
                     rejected_uuids.push(uuid);
@@ -2793,8 +2805,14 @@ impl VllmCore {
                 .ok_or_else(|| anyhow::anyhow!("grouped KV forward byte calculation overflowed"))?;
             anyhow::ensure!(
                 required <= pool.capacity_bytes(),
-                "request {uuid} grouped KV forward needs {required} bytes for {desired_tokens} scheduled tokens after {effective_computed_before} computed tokens, exceeding the entire {}-byte cache pool; reduce max_num_batched_tokens or increase cache memory",
-                pool.capacity_bytes()
+                "request {uuid} grouped KV forward needs {required} bytes for {desired_tokens} scheduled tokens after {effective_computed_before} computed tokens, exceeding the entire {}-byte cache pool{}; reduce max_num_batched_tokens or increase cache memory",
+                pool.capacity_bytes(),
+                match pool.fixed_request_bytes() {
+                    0 => String::new(),
+                    fixed => format!(
+                        "; the fixed state blocks of one request take {fixed} bytes of this pool"
+                    ),
+                }
             );
         }
         let mut actual_computed_after = desired_computed_after;
