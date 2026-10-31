@@ -16,8 +16,8 @@ __compat__ = "sglang==0.5.21"
 from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from sglang>=0.5.21 images
 
 import torch
-from collector.case_generator import get_mla_bmm_case_specs
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 
 try:
     from sgl_kernel import bmm_fp8
@@ -36,28 +36,12 @@ except ModuleNotFoundError:  # sglang>=0.5.21: the Triton quant kernels moved to
     from sglang.kernels.ops.quantization.fp8_kernel import per_tensor_quant_mla_fp8
 
 
-def _supported_dtypes() -> set[str]:
-    dtype_list = ["bfloat16"]
-    if get_sm_version() >= 89:
-        dtype_list += ["fp8"]
-    return set(dtype_list)
-
-
-def _get_mla_bmm_test_cases(op_name: str):
-    supported_dtypes = _supported_dtypes()
-    return [
-        [case.num_tokens, case.num_heads, case.dtype, case.num_warmups, case.num_runs]
-        for case in get_mla_bmm_case_specs("sglang", op_name)
-        if case.dtype in supported_dtypes
-    ]
-
-
 def get_mla_gen_pre_test_cases():
-    return _get_mla_bmm_test_cases("mla_bmm_gen_pre")
+    return plan_cases("mla_bmm_gen_pre", "sglang", get_sm_version())
 
 
 def get_mla_gen_post_test_cases():
-    return _get_mla_bmm_test_cases("mla_bmm_gen_post")
+    return plan_cases("mla_bmm_gen_post", "sglang", get_sm_version())
 
 
 def run_mla_gen_pre(num_tokens, num_heads, dtype, num_warmups, num_runs, *, perf_filename, device="cuda:0"):

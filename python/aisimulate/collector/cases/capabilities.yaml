@@ -104,3 +104,13 @@ backend_gaps:
     dtype: w4a8_mxfp4_mxfp8
     sm: [120]
     note: G-vllm-moe-w4a8-mxfp4-sm120
+  - backend: vllm
+    op: mla_bmm_gen_pre
+    dtype: fp8
+    sm: [89, 90, 100, 103, 120]
+    note: G-vllm-mla-bmm-fp8-not-served
+  - backend: vllm
+    op: mla_bmm_gen_post
+    dtype: fp8
+    sm: [89, 90, 100, 103, 120]
+    note: G-vllm-mla-bmm-fp8-not-served
