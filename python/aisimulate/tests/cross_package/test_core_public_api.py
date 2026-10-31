@@ -100,6 +100,8 @@ def test_stable_function_signatures() -> None:
         "fpm_fmha_quant_mode: 'str | None' = None, "
         "comm_quant_mode: 'str | None' = None, attention_backend: 'str | None' = None, "
         "moe_kernel_source: 'str | None' = None, "
+        "mamba_backend: 'str | None' = None, mamba_ssm_cache_dtype: 'str' = 'float32', "
+        "mamba_stochastic_rounding: 'bool' = False, mamba_philox_rounds: 'int' = 10, "
         "moe_backend: 'str | None' = None, enable_eplb: 'bool' = False, wideep_num_slots: 'int | None' = None, "
         "nextn: 'int' = 0, "
         "speculation: 'dict | None' = None, "

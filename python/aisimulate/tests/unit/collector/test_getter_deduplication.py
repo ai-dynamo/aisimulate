@@ -466,6 +466,7 @@ def test_vllm_sm100_repository_moe_getter_expands_native_dsv4_w4a8_cases(monkeyp
     ("model_path", "moe_type", "expected_hidden_size"),
     [
         ("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8", "fp8", 1024),
+        ("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4", "nvfp4", 1024),
         ("nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16", "bfloat16", 2048),
         ("nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8", "fp8", 2048),
     ],
@@ -474,7 +475,7 @@ def test_vllm_nemotron_uses_latent_moe_width(monkeypatch, model_path, moe_type, 
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
     _install_vllm_stubs(monkeypatch)
     module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
-    monkeypatch.setattr(module, "get_sm_version", lambda: 90)
+    monkeypatch.setattr(module, "get_sm_version", lambda: 100 if moe_type == "nvfp4" else 90)
 
     cases = module.get_moe_test_cases()
 
@@ -487,7 +488,6 @@ def test_vllm_nemotron_uses_latent_moe_width(monkeypatch, model_path, moe_type, 
 @pytest.mark.parametrize(
     "model_path",
     [
-        "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
         "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4",
     ],
 )

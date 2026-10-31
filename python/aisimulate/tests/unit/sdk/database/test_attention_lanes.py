@@ -243,12 +243,11 @@ def _route_lane_density_through_the_stub(monkeypatch):
     monkeypatch.setattr(_etv, "fetch_attention_lane_density", _fetch)
 
 
-def test_engine_spec_schema_version_is_twenty_nine():
-    """The optional vision section closes the positional engine payload
-    (v29) on top of the schema-28 layout."""
+def test_engine_spec_schema_version_is_thirty_one():
+    """Mamba rounding identity extends the schema-30 Mamba2Op tail."""
     from aisimulate.sdk import engine
 
-    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 29
+    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 31
 
 
 def test_lanes_outside_the_known_vocabulary_stay_reachable():

@@ -1944,6 +1944,7 @@ class Mamba2CommonTestCase:
     batch_size_list: Optional[list[int]]  # For generation phase, or context static batching
     seq_len_list: Optional[list[int]]  # For context phase with static batching
     model_name: str
+    vllm_tensor_parallel_sizes: list[int]
 
 
 def get_common_mamba2_test_cases() -> list[Mamba2CommonTestCase]:
@@ -2014,6 +2015,9 @@ def get_common_mamba2_test_cases() -> list[Mamba2CommonTestCase]:
                 batch_size_list=context_batch_sizes,
                 seq_len_list=context_seq_lens,
                 model_name=model_name,
+                vllm_tensor_parallel_sizes=model_config.get(
+                    "vllm_tensor_parallel_sizes", mamba2_sweep["vllm_tensor_parallel_sizes"]
+                ),
             )
         )
 
@@ -2032,6 +2036,9 @@ def get_common_mamba2_test_cases() -> list[Mamba2CommonTestCase]:
                 batch_size_list=generation_batch_sizes,
                 seq_len_list=None,  # Not used for generation
                 model_name=model_name,
+                vllm_tensor_parallel_sizes=model_config.get(
+                    "vllm_tensor_parallel_sizes", mamba2_sweep["vllm_tensor_parallel_sizes"]
+                ),
             )
         )
 

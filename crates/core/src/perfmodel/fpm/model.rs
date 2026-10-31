@@ -822,6 +822,14 @@ impl ForwardPassPerfModel {
         let mut failures = Vec::new();
         let mut last_error = None;
         for mode in config.candidate_modes() {
+            if config.mamba_backend.is_some() && mode != EstimationMode::OpLevel {
+                let error = AicError::UnsupportedModel(
+                    "Explicit Mamba settings require op_level timing".into(),
+                );
+                failures.push(format!("{mode:?}: {error}"));
+                last_error = Some(error);
+                continue;
+            }
             if mode == EstimationMode::OpLevel && registered == Some(false) {
                 let error = AicError::UnsupportedModel(format!(
                     "op-level timing requires a registered architecture for {:?}",

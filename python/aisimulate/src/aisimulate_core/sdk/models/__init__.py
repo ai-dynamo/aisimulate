@@ -213,6 +213,15 @@ def get_model(
     raw_config = model_info.get("raw_config", {})
     architecture = model_info["architecture"]
     model_family = _architecture_to_model_family(architecture)
+    if model_config.mamba_backend is not None and (
+        model_family != "NEMOTRONH"
+        or backend_name != "vllm"
+        or forward_model != "op_level"
+        or (model_config.speculation is not None and model_config.speculation.kind != "mtp")
+    ):
+        raise InvalidEngineConfigurationError(
+            "Explicit Mamba settings require Nemotron-H, vllm, op_level, and MTP or no speculation"
+        )
 
     # Preserve caller intent before checkpoint defaults fill unset modes.
     # Model-specific mixed-precision splitters use this provenance rather than

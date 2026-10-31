@@ -1113,6 +1113,10 @@ struct EngineBuildRequest {
     enable_eplb: bool,
     wideep_num_slots: Option<u32>,
     moe_kernel_source: Option<String>,
+    mamba_backend: Option<String>,
+    mamba_ssm_cache_dtype: Option<String>,
+    mamba_stochastic_rounding: Option<bool>,
+    mamba_philox_rounds: Option<u32>,
     nextn: u32,
     speculation: Option<crate::ForwardPassSpeculationConfig>,
     kv_block_size: Option<u32>,
@@ -1173,6 +1177,10 @@ impl AicEngineBuilder {
                 enable_eplb: false,
                 wideep_num_slots: None,
                 moe_kernel_source: None,
+                mamba_backend: None,
+                mamba_ssm_cache_dtype: None,
+                mamba_stochastic_rounding: None,
+                mamba_philox_rounds: None,
                 nextn: 0,
                 speculation: None,
                 kv_block_size: None,
@@ -1581,6 +1589,18 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("enable_eplb", request.enable_eplb)?;
         kwargs.set_item("wideep_num_slots", request.wideep_num_slots)?;
         kwargs.set_item("moe_kernel_source", request.moe_kernel_source.as_deref())?;
+        if let Some(value) = &request.mamba_backend {
+            kwargs.set_item("mamba_backend", value.as_str())?;
+        }
+        if let Some(value) = &request.mamba_ssm_cache_dtype {
+            kwargs.set_item("mamba_ssm_cache_dtype", value.as_str())?;
+        }
+        if let Some(value) = &request.mamba_stochastic_rounding {
+            kwargs.set_item("mamba_stochastic_rounding", *value)?;
+        }
+        if let Some(value) = &request.mamba_philox_rounds {
+            kwargs.set_item("mamba_philox_rounds", *value)?;
+        }
         kwargs.set_item("forward_model", request.forward_model.as_deref())?;
         kwargs.set_item("fpm_profile", request.fpm_profile.as_deref())?;
         if let Some(worker_type) = request.worker_type.as_deref() {
@@ -1780,6 +1800,10 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         enable_eplb: config.enable_eplb,
         wideep_num_slots: config.wideep_num_slots,
         moe_kernel_source: config.moe_kernel_source.clone(),
+        mamba_backend: config.mamba_backend.clone(),
+        mamba_ssm_cache_dtype: config.mamba_ssm_cache_dtype.clone(),
+        mamba_stochastic_rounding: config.mamba_stochastic_rounding,
+        mamba_philox_rounds: config.mamba_philox_rounds,
         nextn: config.nextn,
         speculation: config.speculation.clone(),
         kv_block_size: config.kv_block_size,
@@ -1939,6 +1963,10 @@ fn engine_build_request(
         enable_eplb: false,
         wideep_num_slots: None,
         moe_kernel_source: config.moe_kernel_source.clone(),
+        mamba_backend: config.mamba_backend.clone(),
+        mamba_ssm_cache_dtype: config.mamba_ssm_cache_dtype.clone(),
+        mamba_stochastic_rounding: config.mamba_stochastic_rounding,
+        mamba_philox_rounds: config.mamba_philox_rounds,
         nextn,
         speculation: None,
         kv_block_size: config.kv_block_size,
@@ -2282,6 +2310,10 @@ impl PyForwardPassPerfModel {
             enable_eplb: request.enable_eplb,
             wideep_num_slots: request.wideep_num_slots,
             moe_kernel_source: request.moe_kernel_source,
+            mamba_backend: request.mamba_backend,
+            mamba_ssm_cache_dtype: request.mamba_ssm_cache_dtype,
+            mamba_stochastic_rounding: request.mamba_stochastic_rounding,
+            mamba_philox_rounds: request.mamba_philox_rounds,
             enable_shared_layer: request.shared_layer,
             strict_provenance: legacy.strict_provenance,
             encoder_parallel: None,
@@ -2824,6 +2856,10 @@ mod tests {
             fpm_parquet_path: None,
             decoder_replay: false,
             moe_kernel_source: None,
+            mamba_backend: None,
+            mamba_ssm_cache_dtype: None,
+            mamba_stochastic_rounding: None,
+            mamba_philox_rounds: None,
             kv_block_size: None,
             parallel: ParallelMapping {
                 dcp_size: None,

@@ -61,7 +61,7 @@ earlier parsing accepted numeric scalars for string fields, while canonical
 normalization now rejects them. Quote numeric, Boolean, or null-like values
 when they represent text. An actual `backend_version: null` still means unset.
 
-The canonical configuration also carries quantization overrides and `attention_backend`, `moe_backend`, `moe_kernel_source` (default absent), `enable_eplb` (default `false`), and `wideep_num_slots` (default absent). These controls reach model construction, KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend or kernel-source selection require an MoE model. Collected FPM interpolation cannot represent EPLB, slots, MoE backend, or kernel-source overrides; it rejects an explicit incompatible request and is skipped during automatic selection for those identities.
+The canonical configuration also carries quantization overrides, Mamba controls, and `attention_backend`, `moe_backend`, `moe_kernel_source` (default absent), `enable_eplb` (default `false`), and `wideep_num_slots` (default absent). These controls reach model construction, KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend or kernel-source selection require an MoE model. Collected FPM interpolation cannot represent EPLB, slots, MoE backend, or kernel-source overrides; it rejects an explicit incompatible request and is skipped during automatic selection for those identities.
 
 `encoder_parallel` (default absent) compiles a VL model's vision tower in the given layout, `tp` (sharded over the tensor-parallel group) or `dp` (replicated, images split across ranks), so the estimator can price encoder calls. It requires a model with a vision encoder, is omitted from the serialized payload when unset, and is part of the estimator identity, cache keys and provenance. Llama 4 rejects `dp`.
 
@@ -70,6 +70,29 @@ The canonical configuration also carries quantization overrides and `attention_b
 `moe_perf.parquet` may include Boolean selection metadata `default_eligible`. An absent column preserves legacy automatic selection; when present, every value must be a non-null Boolean. A `false` row requires a nonblank string `kernel_source`, preserved exactly, and is available only through that named source. It cannot enter automatic standard or low-latency grids, including empirical cross-shape and cross-quant reference selection. Among eligible rows, existing source priority and first-row precedence remain unchanged. Default table views, coverage, and readiness use those same eligible grids; raw Parquet enumeration retains all measured rows. Malformed eligibility metadata is an invalid-data error, never a missing-data fallback. The flag is not a measurement identity dimension. Collector finalization preserves it during merges, including existing annotations when a legacy recollection omits the column; genuinely new legacy keys remain eligible.
 
 An explicit source is rejected for dense graphs, MegaMoE modules, large-EP expert-compute graphs, and any constructed timing phase with no compatible fused MoE operator. It is also incompatible with whole-forward FPM, including the legacy Task `forward_model='fpm'` rewrite. Invalid graph/source combinations fail as invalid configuration rather than triggering estimator fallback. An untrained `fpm_regression` model remains not-ready; retaining a source in its configuration is not evidence of source-specific prediction support.
+
+For Nemotron-H on vLLM, an explicit `mamba_backend="flashinfer"` selects the
+collected Mamba implementation. Set `estimation_mode="op_level"` with this
+option. The other optional fields are `mamba_ssm_cache_dtype` (`float16`,
+`bfloat16`, or `float32`), `mamba_stochastic_rounding` (boolean), and
+`mamba_philox_rounds` (5 or 10). Defaults are float32, false, and 10.
+Stochastic rounding requires float16 state. These fields reach the canonical
+configuration, compiled engine, cache identity, and timing queries.
+Use the canonical SDK for these controls. CLI and Replay scheduler controls
+are outside this interface. Speculation supports MTP only.
+
+The FlashInfer collector currently targets vLLM 0.31.0 and remains unverified
+on hardware. It records TP-local dimensions and separate MTP token widths.
+Prefill still uses vLLM's Triton scan. A missing Mamba timing returns an
+analytical bandwidth lower bound with a `sol` source label. That bound includes
+recurrent-state traffic but does not estimate stochastic-rounding instructions.
+Do not interpret that label as measured FlashInfer coverage.
+
+Nemotron-H latent-MoE layouts resolve shared-expert and latent-projection precision
+from checkpoint metadata unless the caller supplies an explicit GEMM precision override.
+Conflicting precision across layers raises an error because the current graph
+aggregates those projections. Routed experts remain a separate precision choice.
+Non-latent layouts keep their existing calibration policy.
 
 AFD regular companions currently reject exact-source requests through their legacy estimator and fixed timing paths. The external-FPM companion forwards the source to canonical validation, which rejects the incompatible FPM request. These controls describe standalone AISimulate behavior, not downstream Dynamo planner integration.
 
@@ -636,6 +659,7 @@ These additional public YAML fields are concrete controls:
 | `engine.gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `comm_quant_mode` | Explicit precision overrides; omitted values follow model/profile normalization. |
 | `engine.kvcache_quant_mode` | KV storage precision: `bfloat16`, `fp8`, or `int8`. Omission follows model/profile normalization and can select FP8 for quantized checkpoints. |
 | `engine.attention_backend`, `moe_backend`, `moe_kernel_source` | Runtime graph/backend and exact collected source selectors, subject to canonical validation. |
+| Canonical API: `mamba_backend`, `mamba_ssm_cache_dtype`, `mamba_stochastic_rounding`, `mamba_philox_rounds` | Explicit Nemotron-H Mamba implementation and state controls. Requires vLLM op-level timing. |
 | `engine.enable_eplb`, `wideep_num_slots` | Expert load balancing and redundant expert slots; require compatible MoE execution. |
 | `engine.nextn`, `nextn_accepted` | Compute-side MTP identity and separate expected acceptance assumption; both are required for explicit MTP. |
 | `engine.enable_chunked_prefill` | Override chunked prefill; omission preserves the backend default. |

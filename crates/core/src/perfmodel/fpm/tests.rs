@@ -133,6 +133,10 @@ pub(crate) fn fixture_engine_config() -> EngineConfig {
         fpm_parquet_path: None,
         decoder_replay: false,
         moe_kernel_source: None,
+        mamba_backend: None,
+        mamba_ssm_cache_dtype: None,
+        mamba_stochastic_rounding: None,
+        mamba_philox_rounds: None,
         kv_block_size: None,
         parallel: ParallelMapping {
             tp_size: 8,

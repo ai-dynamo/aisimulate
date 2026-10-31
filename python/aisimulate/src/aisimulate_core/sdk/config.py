@@ -151,6 +151,10 @@ class ModelConfig:
     # than a single measured compute-kernel lane. ``None`` preserves the
     # existing framework/default lookup.
     moe_kernel_source: str | None = field(default=None, kw_only=True)
+    mamba_backend: str | None = field(default=None, kw_only=True)
+    mamba_ssm_cache_dtype: str = field(default="float32", kw_only=True)
+    mamba_stochastic_rounding: bool = field(default=False, kw_only=True)
+    mamba_philox_rounds: int = field(default=10, kw_only=True)
     # DEPRECATED and ignored (large-EP is selected per tuple via
     # moe_comm_backend); kept for a compatibility window because ModelConfig
     # is exported through the supported core SDK facade and removal breaks
@@ -181,6 +185,16 @@ class ModelConfig:
     fpm_fmha_quant_mode: common.FMHAQuantMode | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
+        if self.mamba_backend not in (None, "flashinfer"):
+            raise ValueError("mamba_backend must be None or flashinfer")
+        if self.mamba_ssm_cache_dtype not in ("float16", "bfloat16", "float32"):
+            raise ValueError("mamba_ssm_cache_dtype must be float16, bfloat16, or float32")
+        if type(self.mamba_philox_rounds) is not int or self.mamba_philox_rounds not in (5, 10):
+            raise ValueError("mamba_philox_rounds must be 5 or 10")
+        if self.mamba_stochastic_rounding and self.mamba_ssm_cache_dtype != "float16":
+            raise ValueError("Mamba stochastic rounding requires float16 state")
+        if self.mamba_backend is None and (self.mamba_ssm_cache_dtype != "float32" or self.mamba_stochastic_rounding):
+            raise ValueError("Set mamba_backend=flashinfer for explicit Mamba state precision")
         validate_parallel_size("cp_size", self.cp_size)
         if self.dcp_size is not None and (
             type(self.dcp_size) is not int or self.dcp_size <= 0 or self.tp_size % self.dcp_size

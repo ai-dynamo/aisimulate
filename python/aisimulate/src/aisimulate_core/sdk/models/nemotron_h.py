@@ -3,10 +3,70 @@
 
 from __future__ import annotations
 
+import re
+from fnmatch import fnmatchcase
+
 import aisimulate_core.sdk.operations as ops
 from aisimulate_core.sdk import common
 from aisimulate_core.sdk.models.base import BaseModel, register_model
-from aisimulate_core.sdk.models.helpers import mtp_scale_factor
+from aisimulate_core.sdk.models.helpers import (
+    _iter_mixed_precision_layer_algos,
+    mtp_scale_factor,
+    quant_exclude_patterns,
+)
+
+
+def _projection_matches(path: str, target: str) -> bool:
+    if target == "Linear":
+        return True
+    return bool(re.match(target[3:], path)) if target.startswith("re:") else fnmatchcase(path, target)
+
+
+def _projection_modes(raw: dict, pattern: str, default: common.GEMMQuantMode) -> dict:
+    """Resolve the shared and latent projections without collapsing mixed precision."""
+    declarations = []
+    exact = {}
+    has_layer_listing = False
+    exclusions = quant_exclude_patterns(raw)
+    for target, algo, listed in _iter_mixed_precision_layer_algos(raw):
+        has_layer_listing |= listed
+        if has_layer_listing and not listed:
+            continue
+        if target == "Linear" or target.startswith("re:") or any(char in target for char in "*?["):
+            declarations.append((target, algo))
+        else:
+            exact.setdefault(target, set()).add(algo)
+    modes = {
+        "fp8": common.GEMMQuantMode.fp8 if default == common.GEMMQuantMode.fp8 else common.GEMMQuantMode.fp8_static,
+        "mxfp8": common.GEMMQuantMode.fp8_block,
+        "nvfp4": common.GEMMQuantMode.nvfp4,
+        "w4a16_nvfp4": common.GEMMQuantMode.w4a16_nvfp4,
+    }
+    resolved = {}
+    for suffix in ("shared_experts.up_proj", "shared_experts.down_proj", "fc1_latent_proj", "fc2_latent_proj"):
+        values = set()
+        for layer, kind in enumerate(pattern):
+            if kind != "E":
+                continue
+            paths = (
+                f"model.layers.{layer}.mixer.{suffix}",
+                f"backbone.layers.{layer}.mixer.{suffix}",
+                f"language_model.model.layers.{layer}.mixer.{suffix}",
+                f"model.language_model.layers.{layer}.mixer.{suffix}",
+            )
+            if any(_projection_matches(path, target) for path in paths for target in exclusions):
+                values.add(common.GEMMQuantMode.bfloat16)
+                continue
+            algos = {algo for target, algo in declarations if any(_projection_matches(path, target) for path in paths)}
+            algos.update(algo for path in paths for algo in exact.get(path, ()))
+            if len(algos) > 1 or any(algo not in modes for algo in algos):
+                raise ValueError(f"Unsupported mixed precision for Nemotron-H projection {suffix}: {algos}")
+            unlisted = common.GEMMQuantMode.bfloat16 if has_layer_listing else default
+            values.add(modes[next(iter(algos))] if algos else unlisted)
+        if len(values) > 1:
+            raise ValueError(f"Nemotron-H projection {suffix} has different precision across layers")
+        resolved[suffix] = next(iter(values), default)
+    return resolved
 
 
 @register_model("NEMOTRONH")
@@ -44,6 +104,14 @@ class NemotronHModel(BaseModel):
             backend_name=backend_name,
         )
         # extra_params is NemotronHConfig with hybrid layer configuration.
+        explicit = model_info["gemm_quant_mode_is_explicit"]
+        # shortcut: qualify non-latent MoE calibration before enabling per-projection precision there.
+        if explicit is False and model_info["extra_params"].moe_latent_size:
+            model._projection_quant_modes = _projection_modes(
+                model_info.get("raw_config", {}),
+                model_info["extra_params"].hybrid_override_pattern,
+                model_config.gemm_quant_mode,
+            )
         model.set_hybrid_config(model_info["extra_params"])
         return model
 
@@ -56,6 +124,7 @@ class NemotronHModel(BaseModel):
         self._num_experts = num_experts
         self._moe_inter_size = moe_inter_size
         self._hybrid_config: common.NemotronHConfig | None = None
+        self._projection_quant_modes = {}
         self._power_law_alpha = 1.01  # follow DeepSeek MoE
         # MTP (num_nextn_predict_layers > 0): scale generation iteration cost by
         # the small extra-layer factor (nextn+L)/L. Accepted-token progress is
@@ -80,9 +149,32 @@ class NemotronHModel(BaseModel):
         Args:
             hybrid_config: NemotronHConfig containing hybrid_override_pattern and layer parameters
         """
+        if self.config.mamba_backend and (
+            hybrid_config.mamba_num_heads % self.config.tp_size
+            or (hybrid_config.n_groups % self.config.tp_size and hybrid_config.n_groups != 1)
+        ):
+            raise ValueError("The collected Mamba lane requires heads and groups divisible by TP")
         self._hybrid_config = hybrid_config
         self._build_context_ops()
         self._build_generation_ops()
+
+    def _mamba_kernel(self, name: str, phase: str) -> tuple[str, dict]:
+        if self.config.mamba_backend is None:
+            return name, {}
+        if self._backend_name != "vllm":
+            raise ValueError("mamba_backend=flashinfer currently requires vllm")
+        source = {
+            "causal_conv1d_fn": "vllm_causal_conv1d_fn",
+            "causal_conv1d_update": "vllm_causal_conv1d_update",
+            "mamba_chunk_scan_combined": "vllm_mamba_chunk_scan_combined_varlen",
+            "selective_state_update": "vllm_flashinfer_selective_state_update",
+        }[name]
+        return source, {
+            "state_dtype": self.config.mamba_ssm_cache_dtype,
+            "stochastic_rounding": self.config.mamba_stochastic_rounding,
+            "philox_rounds": self.config.mamba_philox_rounds,
+            "token_width": self._nextn + 1 if phase == "generation" else 1,
+        }
 
     def _count_layer_types(self) -> dict[str, int]:
         """Count occurrences of each layer type in the pattern."""
@@ -152,28 +244,30 @@ class NemotronHModel(BaseModel):
                     ops.Mamba2Kernel(
                         "context_mamba_conv1d",
                         count,
-                        "causal_conv1d_fn",
+                        self._mamba_kernel("causal_conv1d_fn", "context")[0],
                         "context",
                         hidden_size=h,
-                        nheads=cfg.mamba_num_heads,
+                        nheads=nheads_per_gpu if self.config.mamba_backend else cfg.mamba_num_heads,
                         head_dim=cfg.mamba_head_dim,
                         d_state=cfg.ssm_state_size,
                         d_conv=cfg.conv_kernel,
-                        n_groups=cfg.n_groups,
+                        n_groups=n_groups_per_gpu if self.config.mamba_backend else cfg.n_groups,
                         chunk_size=cfg.chunk_size,
+                        **self._mamba_kernel("causal_conv1d_fn", "context")[1],
                     ),
                     ops.Mamba2Kernel(
                         "context_mamba_ssm",
                         count,
-                        "mamba_chunk_scan_combined",
+                        self._mamba_kernel("mamba_chunk_scan_combined", "context")[0],
                         "context",
                         hidden_size=h,
-                        nheads=cfg.mamba_num_heads,
+                        nheads=nheads_per_gpu if self.config.mamba_backend else cfg.mamba_num_heads,
                         head_dim=cfg.mamba_head_dim,
                         d_state=cfg.ssm_state_size,
                         d_conv=cfg.conv_kernel,
-                        n_groups=cfg.n_groups,
+                        n_groups=n_groups_per_gpu if self.config.mamba_backend else cfg.n_groups,
                         chunk_size=cfg.chunk_size,
+                        **self._mamba_kernel("mamba_chunk_scan_combined", "context")[1],
                     ),
                     ops.GEMM(
                         "context_mamba_out_proj_gemm",
@@ -240,7 +334,7 @@ class NemotronHModel(BaseModel):
                         count,
                         cfg.moe_shared_expert_intermediate_size // tp_size,
                         h,
-                        gemm_quant_mode,
+                        self._projection_quant_modes.get("shared_experts.up_proj", gemm_quant_mode),
                     ),
                     ops.ElementWise(
                         "context_shared_relu2",
@@ -254,7 +348,7 @@ class NemotronHModel(BaseModel):
                         count,
                         h,
                         cfg.moe_shared_expert_intermediate_size // tp_size,
-                        gemm_quant_mode,
+                        self._projection_quant_modes.get("shared_experts.down_proj", gemm_quant_mode),
                         low_precision_input=True,
                     ),
                 ]
@@ -281,7 +375,7 @@ class NemotronHModel(BaseModel):
                         count,
                         cfg.moe_latent_size // tp_size,
                         h,
-                        gemm_quant_mode,
+                        self._projection_quant_modes.get("fc1_latent_proj", gemm_quant_mode),
                     )
                 )
             self.context_ops.extend(
@@ -339,7 +433,7 @@ class NemotronHModel(BaseModel):
                         count,
                         h,
                         cfg.moe_latent_size // tp_size,
-                        gemm_quant_mode,
+                        self._projection_quant_modes.get("fc2_latent_proj", gemm_quant_mode),
                         low_precision_input=True,
                     )
                 )
@@ -446,28 +540,30 @@ class NemotronHModel(BaseModel):
                     ops.Mamba2Kernel(
                         "generation_mamba_conv1d",
                         count,
-                        "causal_conv1d_update",
+                        self._mamba_kernel("causal_conv1d_update", "generation")[0],
                         "generation",
                         hidden_size=h,
-                        nheads=cfg.mamba_num_heads,
+                        nheads=nheads_per_gpu if self.config.mamba_backend else cfg.mamba_num_heads,
                         head_dim=cfg.mamba_head_dim,
                         d_state=cfg.ssm_state_size,
                         d_conv=cfg.conv_kernel,
-                        n_groups=cfg.n_groups,
+                        n_groups=n_groups_per_gpu if self.config.mamba_backend else cfg.n_groups,
                         chunk_size=cfg.chunk_size,
+                        **self._mamba_kernel("causal_conv1d_update", "generation")[1],
                     ),
                     ops.Mamba2Kernel(
                         "generation_mamba_ssm",
                         count,
-                        "selective_state_update",
+                        self._mamba_kernel("selective_state_update", "generation")[0],
                         "generation",
                         hidden_size=h,
-                        nheads=cfg.mamba_num_heads,
+                        nheads=nheads_per_gpu if self.config.mamba_backend else cfg.mamba_num_heads,
                         head_dim=cfg.mamba_head_dim,
                         d_state=cfg.ssm_state_size,
                         d_conv=cfg.conv_kernel,
-                        n_groups=cfg.n_groups,
+                        n_groups=n_groups_per_gpu if self.config.mamba_backend else cfg.n_groups,
                         chunk_size=cfg.chunk_size,
+                        **self._mamba_kernel("selective_state_update", "generation")[1],
                     ),
                     ops.GEMM(
                         "generation_mamba_out_proj_gemm",
@@ -533,7 +629,7 @@ class NemotronHModel(BaseModel):
                         count,
                         cfg.moe_shared_expert_intermediate_size // tp_size,
                         h,
-                        gemm_quant_mode,
+                        self._projection_quant_modes.get("shared_experts.up_proj", gemm_quant_mode),
                     ),
                     ops.ElementWise(
                         "generation_shared_relu2",
@@ -547,7 +643,7 @@ class NemotronHModel(BaseModel):
                         count,
                         h,
                         cfg.moe_shared_expert_intermediate_size // tp_size,
-                        gemm_quant_mode,
+                        self._projection_quant_modes.get("shared_experts.down_proj", gemm_quant_mode),
                         low_precision_input=True,
                     ),
                 ]
@@ -574,7 +670,7 @@ class NemotronHModel(BaseModel):
                         count,
                         cfg.moe_latent_size // tp_size,
                         h,
-                        gemm_quant_mode,
+                        self._projection_quant_modes.get("fc1_latent_proj", gemm_quant_mode),
                     )
                 )
             self.generation_ops.extend(
@@ -632,7 +728,7 @@ class NemotronHModel(BaseModel):
                         count,
                         h,
                         cfg.moe_latent_size // tp_size,
-                        gemm_quant_mode,
+                        self._projection_quant_modes.get("fc2_latent_proj", gemm_quant_mode),
                         low_precision_input=True,
                     )
                 )

@@ -336,6 +336,7 @@ def _engine_config_dict(
     fields to locate the perf database; the rest are carried for completeness.
     """
     cfg = model.config
+    mamba_backend = getattr(cfg, "mamba_backend", None)
     model_nextn = getattr(model, "_nextn", None)
     effective_nextn = int(model_nextn) if model_nextn is not None else int(nextn)
     speculative = None
@@ -355,6 +356,10 @@ def _engine_config_dict(
         "backend_version": _literal_backend_version(system, backend, backend_version, systems_path, database),
         "fpm_parquet_path": fpm_parquet_path,
         "moe_kernel_source": getattr(cfg, "moe_kernel_source", None),
+        "mamba_backend": mamba_backend,
+        "mamba_ssm_cache_dtype": getattr(cfg, "mamba_ssm_cache_dtype", None) if mamba_backend else None,
+        "mamba_stochastic_rounding": getattr(cfg, "mamba_stochastic_rounding", None) if mamba_backend else None,
+        "mamba_philox_rounds": getattr(cfg, "mamba_philox_rounds", None) if mamba_backend else None,
         "kv_block_size": kv_block_size,
         "forward_model": getattr(model, "forward_model", getattr(cfg, "forward_model", None)),
         "decoder_replay": bool(getattr(cfg, "decoder_replay", False)),
@@ -464,6 +469,10 @@ def compile_engine(
     comm_quant_mode: str | None = None,
     attention_backend: str | None = None,
     moe_kernel_source: str | None = None,
+    mamba_backend: str | None = None,
+    mamba_ssm_cache_dtype: str = "float32",
+    mamba_stochastic_rounding: bool = False,
+    mamba_philox_rounds: int = 10,
     moe_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
@@ -502,11 +511,8 @@ def compile_engine(
     identity; profiles support CP1/PP1, with explicitly identified speculative
     rounds confined to direct interpolation.
 
-    Engine schema 29 adds the optional vision section on top of the schema-28
-    layout, which carries the GLM-5.3-Flash measured ops (28), decode context
-    parallelism (26), the FPM interpolation selector (25) and typed DCP (24).
-    Older binary specs require recompilation; default representations are
-    therefore not byte-identical.
+    Engine schema 31 adds Mamba execution identity to operations and configuration.
+    Older binary specs require recompilation. Defaults cover JSON only.
     """
     if not isinstance(decoder_replay, bool):
         raise InvalidEngineConfigurationError("decoder_replay must be a boolean")
@@ -664,6 +670,10 @@ def compile_engine(
             forward_model=forward_model,
             attention_backend=attention_backend,
             moe_kernel_source=moe_kernel_source,
+            mamba_backend=mamba_backend,
+            mamba_ssm_cache_dtype=mamba_ssm_cache_dtype,
+            mamba_stochastic_rounding=mamba_stochastic_rounding,
+            mamba_philox_rounds=mamba_philox_rounds,
             moe_backend=moe_backend,
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,

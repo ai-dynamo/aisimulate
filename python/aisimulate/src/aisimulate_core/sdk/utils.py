@@ -1687,6 +1687,7 @@ def _normalize_quant_algo(value: object) -> str | None:
         "mixed_precision": "mixed_precision",
         "mixed-precision": "mixed_precision",
         "mixedprecision": "mixed_precision",
+        "modelopt_mixed": "mixed_precision",
         # compressed-tensors: pass through as-is so models.py can handle it with
         # the correct partial-quantization semantics (MoE experts only, not all Linear layers).
         "compressed-tensors": "compressed-tensors",

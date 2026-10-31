@@ -188,42 +188,79 @@ aic_debug = int(os.getenv("aic_moe_debug", "0"))  # noqa: SIM112
 _MODEL_CONFIG_ROOT = Path(__file__).resolve().parents[2] / "src/aisimulate_core/model_configs"
 
 
-def _load_model_moe_config(model_name: str) -> dict:
-    """Load the checked-in HF config used to derive vLLM's FusedMoE args."""
-    config_path = _MODEL_CONFIG_ROOT / f"{model_name.replace('/', '--')}_config.json"
-    if not config_path.exists():
-        raise FileNotFoundError(f"missing packaged model config for vLLM MoE case {model_name!r}: {config_path}")
+def _model_config_path(model_name: str, filename: str = "config.json") -> Path:
+    local = Path(model_name) / filename
+    if local.is_file():
+        return local
+    suffix = "config" if filename == "config.json" else "hf_quant_config"
+    return _MODEL_CONFIG_ROOT / f"{model_name.replace('/', '--')}_{suffix}.json"
 
-    with config_path.open() as config_file:
-        config = json.load(config_file)
-    return config.get("text_config", config)
+
+def _load_model_moe_config(model_name: str) -> dict:
+    """Read the language configuration from a packaged or local checkpoint."""
+    path = _model_config_path(model_name)
+    if not path.is_file():
+        raise FileNotFoundError(f"missing model config for vLLM MoE case {model_name!r}: {path}")
+    with path.open() as source:
+        config = json.load(source)
+    return config.get("llm_config") or config.get("text_config") or config
 
 
 def _load_checkpoint_quantization_config(model_name: str) -> dict:
-    """Return the checked-in checkpoint's top-level ``quantization_config``.
+    with _model_config_path(model_name).open() as source:
+        config = json.load(source)
+    quant = config.get("quantization_config") or {}
+    # Match vLLM weight_utils at db9527a46873: older mixed exports keep
+    # quantized_layers in the companion file, not config_groups.
+    if not quant or (quant.get("quant_method") == "modelopt_mixed" and "quantized_layers" not in quant):
+        companion = _model_config_path(model_name, "hf_quant_config.json")
+        if companion.is_file():
+            with companion.open() as source:
+                return json.load(source)
+    return quant
 
-    ``_load_model_moe_config`` returns the text sub-config, whose
-    ``quantization_config`` is null for multimodal wrappers such as
-    GLM-5.3-Flash; vLLM reads the top-level one (weight_utils.py:224 @v0.31.0).
-    """
-    config_path = _MODEL_CONFIG_ROOT / f"{model_name.replace('/', '--')}_config.json"
-    if not config_path.exists():
-        raise FileNotFoundError(f"missing packaged model config for vLLM MoE case {model_name!r}: {config_path}")
-    with config_path.open() as config_file:
-        return json.load(config_file).get("quantization_config") or {}
+
+def _modelopt_mixed_expert_prefix(quant: dict, model_type: str) -> str | None:
+    if model_type != "nemotron_h":
+        return None
+    section = quant.get("quantization", quant)
+    if (
+        str(section.get("quant_algo", "")).upper() != "MIXED_PRECISION"
+        and quant.get("quant_method") != "modelopt_mixed"
+    ):
+        return None
+    layers = section.get("quantized_layers")
+    if not isinstance(layers, dict) or not layers:
+        raise ValueError("Nemotron-H ModelOpt mixed collection requires complete quantized_layers metadata")
+    experts = [
+        (name.split(".experts.")[0] + ".experts", data.get("quant_algo"))
+        for name, data in layers.items()
+        if ".experts." in name
+    ]
+    if not experts or any(str(algo).upper() != "NVFP4" for _, algo in experts):
+        raise ValueError("The NVFP4 MoE collector requires uniformly NVFP4 routed experts")
+    return experts[0][0]
 
 
 def _uses_modelopt_nvfp4_checkpoint(model_name: str) -> bool:
     """True when serving loads this model's NVFP4 experts via ModelOptNvFp4Config.
 
-    Scoped to GLM-5.3-Flash so every other nvfp4 model keeps its existing
+    Scoped to GLM-5.3-Flash and Nemotron-H so other nvfp4 models keep their
     CompressedTensors construction (and kernel_source label). vLLM resolves
     quant_method "modelopt" + quant_algo "NVFP4" to modelopt_fp4
     (config/model.py:1349-1388, quantization/modelopt.py:756-763 @v0.31.0).
     """
-    if _load_model_moe_config(model_name).get("model_type") != "glm5_next_text":
+    model_type = _load_model_moe_config(model_name).get("model_type")
+    if model_type not in {"glm5_next_text", "nemotron_h"}:
         return False
     checkpoint_qc = _load_checkpoint_quantization_config(model_name)
+    if model_type == "nemotron_h":
+        section = checkpoint_qc.get("quantization", checkpoint_qc)
+        if str(section.get("quant_algo", "")).upper() == "NVFP4":
+            return True
+        if checkpoint_qc.get("quant_method") != "compressed-tensors":
+            raise ValueError("Nemotron-H NVFP4 collection requires complete checkpoint quantization metadata")
+        return False
     return (
         str(checkpoint_qc.get("quant_method", "")).lower() == "modelopt"
         and str(checkpoint_qc.get("quant_algo", "")).upper() == "NVFP4"
@@ -584,6 +621,10 @@ def run_moe_torch(
 
         custom_routing_function = gemma4_routing_function
 
+    checkpoint_quant = _load_checkpoint_quantization_config(model_name) if moe_type == "nvfp4" else {}
+    mixed_prefix = _modelopt_mixed_expert_prefix(
+        checkpoint_quant, _load_model_moe_config(model_name).get("model_type", "")
+    )
     if moe_type == "bfloat16":
         quant_config = None
     elif moe_type == "fp8":
@@ -655,6 +696,11 @@ def run_moe_torch(
             activation_scheme="dynamic",
             weight_block_size=[128, 128],
         )
+    elif moe_type == "nvfp4" and mixed_prefix:
+        # Native per-layer dispatch: modelopt.py:1588-1597,1768-1799 @v0.31.0.
+        from vllm.model_executor.layers.quantization.modelopt import ModelOptMixedPrecisionConfig
+
+        quant_config = ModelOptMixedPrecisionConfig.from_config(checkpoint_quant)
     elif moe_type == "nvfp4" and _uses_modelopt_nvfp4_checkpoint(model_name):
         # Serving loads this checkpoint with ModelOptNvFp4Config
         # (ModelOptNvFp4FusedMoE, modelopt.py:819-851 @v0.31.0). It shares the
@@ -803,7 +849,7 @@ def run_moe_torch(
             tp_size=logical_parallel_size,
             dp_size=1,
             pcp_size=1,
-            prefix="collector_moe",
+            prefix=mixed_prefix or "collector_moe",
             custom_routing_function=custom_routing_function,
             scoring_func=runtime_config["scoring_func"],
             routed_scaling_factor=runtime_config["routed_scaling_factor"],

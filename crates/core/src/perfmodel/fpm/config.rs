@@ -185,6 +185,14 @@ pub struct ForwardPassPerfModelConfig {
     /// `moe_backend`, which describes topology/runtime behavior.
     #[serde(default)]
     pub moe_kernel_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mamba_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mamba_ssm_cache_dtype: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mamba_stochastic_rounding: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mamba_philox_rounds: Option<u32>,
     #[serde(default)]
     pub moe_backend: Option<String>,
     #[serde(default)]
@@ -286,6 +294,10 @@ impl ForwardPassPerfModelConfig {
             enable_eplb: false,
             wideep_num_slots: None,
             moe_kernel_source: None,
+            mamba_backend: None,
+            mamba_ssm_cache_dtype: None,
+            mamba_stochastic_rounding: None,
+            mamba_philox_rounds: None,
             enable_shared_layer: None,
             strict_provenance: false,
             encoder_parallel: None,
@@ -558,6 +570,29 @@ impl ForwardPassPerfModelConfig {
             .is_some_and(|value| value.trim().is_empty())
         {
             return Err(invalid_config("backend_version cannot be empty"));
+        }
+        if self.mamba_backend.is_some()
+            || self.mamba_ssm_cache_dtype.is_some()
+            || self.mamba_stochastic_rounding.is_some()
+            || self.mamba_philox_rounds.is_some()
+        {
+            if self.backend != crate::BackendKind::Vllm
+                || self.mamba_backend.as_deref() != Some("flashinfer")
+                || self.estimation_mode != EstimationMode::OpLevel
+            {
+                return Err(invalid_config(
+                    "Explicit Mamba settings require vllm, flashinfer, and op_level",
+                ));
+            }
+            let dtype = self.mamba_ssm_cache_dtype.as_deref().unwrap_or("float32");
+            if !matches!(dtype, "float16" | "bfloat16" | "float32")
+                || !matches!(self.mamba_philox_rounds.unwrap_or(10), 5 | 10)
+                || (self.mamba_stochastic_rounding.unwrap_or(false) && dtype != "float16")
+            {
+                return Err(invalid_config(
+                    "Invalid Mamba state dtype or stochastic rounding settings",
+                ));
+            }
         }
         if self
             .moe_kernel_source

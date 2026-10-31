@@ -2808,7 +2808,7 @@ impl PyMamba2Kernel {
     const _ENGINE_QUERY_SHAPE: &'static str = "module";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, kernel_source, phase, hidden_size, nheads, head_dim, d_state, d_conv, n_groups, chunk_size, seq_split=1))]
+    #[pyo3(signature = (name, scale_factor, kernel_source, phase, hidden_size, nheads, head_dim, d_state, d_conv, n_groups, chunk_size, seq_split=1, *, state_dtype="unrecorded".to_string(), stochastic_rounding=false, philox_rounds=10, token_width=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -2823,8 +2823,25 @@ impl PyMamba2Kernel {
         n_groups: u32,
         chunk_size: u32,
         seq_split: u32,
+        state_dtype: String,
+        stochastic_rounding: bool,
+        philox_rounds: u32,
+        token_width: u32,
     ) -> PyResult<(Self, PyOperation)> {
         cp_audit_gate("Mamba2Kernel", false, seq_split)?;
+        if !matches!(
+            state_dtype.as_str(),
+            "unrecorded" | "float16" | "bfloat16" | "float32"
+        ) || !matches!(philox_rounds, 5 | 10)
+            || token_width == 0
+            || (state_dtype == "unrecorded"
+                && (kernel_source.starts_with("vllm_") || token_width != 1))
+            || (stochastic_rounding && state_dtype != "float16")
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Invalid Mamba state dtype, rounding, or token width",
+            ));
+        }
         let inner = Op::Mamba2(crate::operators::Mamba2Op {
             name,
             scale_factor,
@@ -2837,6 +2854,10 @@ impl PyMamba2Kernel {
             head_dim,
             n_groups,
             chunk_size,
+            state_dtype,
+            stochastic_rounding,
+            philox_rounds,
+            token_width,
         });
         Ok((PyMamba2Kernel, PyOperation { inner }))
     }
@@ -2860,7 +2881,12 @@ impl PyMamba2Kernel {
             o.chunk_size,
         )
             .into_pyobject(py)?;
-        Ok((args, PyDict::new(py)))
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("state_dtype", &o.state_dtype)?;
+        kwargs.set_item("stochastic_rounding", o.stochastic_rounding)?;
+        kwargs.set_item("philox_rounds", o.philox_rounds)?;
+        kwargs.set_item("token_width", o.token_width)?;
+        Ok((args, kwargs))
     }
 
     #[getter(_kernel_source)]
