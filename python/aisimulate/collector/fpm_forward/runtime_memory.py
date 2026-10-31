@@ -44,6 +44,8 @@ _PHASE_CACHE_SETTINGS = (
     "prefix_match_unit",
     "block_size",
 )
+# Decision 5: the Mamba "all" mode keeps a state per block, which no cache kind models.
+_MAMBA_ALL_UNMODELED = "mamba_cache_mode all is not modeled; run the probe with prefix caching off (none) or on (align)"
 
 
 def _layer_strided(cache: Any) -> bool:
@@ -630,6 +632,9 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
             blocks = state.get("blocks_per_request") if isinstance(state, dict) else None
             if type(blocks) is not int or blocks <= 0:
                 raise ValueError(f"runtime state cache group lacks blocks_per_request evidence: {names}")
+            # Ruling R-W: refused from the group itself, with or without prefix-caching evidence.
+            if state.get("mamba_cache_mode") == "all":
+                raise ValueError(_MAMBA_ALL_UNMODELED)
             checkpoint = state.get("num_prefill_checkpoint_blocks", 0)
             if type(checkpoint) is not int or checkpoint != 0:
                 raise ValueError(f"mamba prefill checkpoint blocks are not modeled: {names}")

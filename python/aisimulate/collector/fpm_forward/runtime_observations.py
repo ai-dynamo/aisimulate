@@ -24,6 +24,7 @@ from aisimulate_core.sdk.perf_database import load_system_spec
 from . import runtime_memory
 from .config import PrefillSamplingProfile, collection_phases
 from .planner import BackendPolicy, FPMCell
+from .runtime.fpm_memory_observer import _LEGACY_SPECS
 from .runtime_instrumentation import (
     OBSERVATION_SCHEMA,
     InstrumentationBundle,
@@ -441,6 +442,44 @@ def _validate_alias_ownership(views: list[tuple[dict[str, Any], int]], count: in
         span += (dimension - 1) * stride
 
 
+def _view_shape(view: dict[str, Any]) -> tuple[list[int], list[int], int]:
+    """Validate the shape, byte strides and element size of one physical view."""
+    shape, strides = view.get("shape"), view.get("stride_bytes")
+    item_size = _positive(view.get("element_size_bytes"), "tensor element bytes")
+    if not isinstance(shape, list) or not shape or not isinstance(strides, list) or len(shape) != len(strides):
+        raise ValueError("physical tensor shape and strides are incomplete")
+    for dimension in shape:
+        _positive(dimension, "tensor dimension")
+    for value in strides:
+        _nonnegative(value, "tensor byte stride")
+        if value % item_size:
+            raise ValueError("tensor byte strides must align to its element size")
+    return shape, strides, item_size
+
+
+def _view_extent(shape: list[int], strides: list[int], item_size: int, start: int, size: int) -> int:
+    """The byte span of a view that starts at byte ``start`` of a ``size``-byte backing storage.
+
+    Sufficient affine non-overlap check for the dense/permuted/strided views produced by the
+    audited runtime; no enumeration of blocks.
+    """
+    span = item_size
+    for byte_stride, dimension in sorted(zip(strides, shape, strict=True)):
+        if dimension > 1:
+            if byte_stride < span:
+                raise ValueError("physical tensor dimensions overlap")
+            span += (dimension - 1) * byte_stride
+    if start + span > size:
+        raise ValueError("physical tensor byte bounds exceed its backing storage")
+    return span
+
+
+def _check_element_size(item_size: int, precision: str) -> None:
+    expected_item_size = {"bfloat16": 2, "half": 2, "fp8": 1}.get(precision)
+    if expected_item_size is not None and item_size != expected_item_size:
+        raise ValueError("tensor element size contradicts cache dtype")
+
+
 def _indexer(spec: dict[str, Any]) -> bool:
     """The sparse MLA indexer, an MLAAttentionSpec with role INDEXER (vLLM 0.31.0 kv_cache_interface.py:668).
 
@@ -474,22 +513,12 @@ def _layer_views(
     if not isinstance(entries, list) or not entries:
         raise ValueError(f"physical layer views are missing: {name}")
     block = group["block_size_tokens"]
-    expected_item_size = {"bfloat16": 2, "half": 2, "fp8": 1}.get(precision)
     views, intervals, dense = [], [], 0
     for view in entries:
         if not isinstance(view, dict) or view.get("storage_id") != storage_id:
             raise ValueError("layer tensor aliases or offsets contradict the allocation plan")
         start = _nonnegative(view.get("storage_offset_bytes"), "tensor storage byte offset") - region
-        shape, strides = view.get("shape"), view.get("stride_bytes")
-        item_size = _positive(view.get("element_size_bytes"), "tensor element bytes")
-        if not isinstance(shape, list) or not shape or not isinstance(strides, list) or len(shape) != len(strides):
-            raise ValueError("physical tensor shape and strides are incomplete")
-        for dimension in shape:
-            _positive(dimension, "tensor dimension")
-        for value in strides:
-            _nonnegative(value, "tensor byte stride")
-            if value % item_size:
-                raise ValueError("tensor byte strides must align to its element size")
+        shape, strides, item_size = _view_shape(view)
         kernel = _positive(view.get("kernel_block_size_tokens"), "kernel block tokens")
         ratio = block // kernel
         if (
@@ -499,25 +528,13 @@ def _layer_views(
             or strides[0] * ratio != block_stride
         ):
             raise ValueError("kernel tensor block coverage contradicts pool block geometry")
-        span = item_size
-        for byte_stride, dimension in sorted(zip(strides, shape, strict=True)):
-            if dimension > 1:
-                if byte_stride < span:
-                    raise ValueError("physical tensor dimensions overlap")
-                span += (dimension - 1) * byte_stride
-        if region + start + span > size:
-            raise ValueError("physical tensor byte bounds exceed its backing storage")
+        _view_extent(shape, strides, item_size, region + start, size)
         within = item_size + (ratio - 1) * strides[0]
         within += sum((dimension - 1) * stride for dimension, stride in zip(shape[1:], strides[1:], strict=True))
         if not 0 <= start < spec["page_size_bytes"] or start + within > spec["page_size_bytes"]:
             raise ValueError(f"layer view lies outside the page of its layer: {name}")
-        if (
-            group["kind"] == "attention"
-            and not _indexer(spec)
-            and expected_item_size is not None
-            and item_size != expected_item_size
-        ):
-            raise ValueError("tensor element size contradicts cache dtype")
+        if group["kind"] == "attention" and not _indexer(spec):
+            _check_element_size(item_size, precision)
         intervals.append((start, start + within))
         dense += ratio * math.prod(shape[1:]) * item_size
         views.append((view, ratio))
@@ -634,6 +651,9 @@ def _physical_views(
     strided = runtime_memory._layer_strided(cache)
     layer_groups = {}
     for group_id, group in enumerate(cache["groups"]):
+        # Rulings R-G and R-W: vLLM 0.27.0 and 0.28.0 records hold only the legacy classes.
+        if not strided and group.get("spec_type") not in _LEGACY_SPECS:
+            raise ValueError(f"unsupported runtime cache spec: {group.get('spec_type')!r}")
         if group.get("pool_id") != pool:
             raise ValueError("cache group references another pool")
         if (
@@ -726,16 +746,7 @@ def _physical_views(
             observed_offset = _nonnegative(view.get("storage_offset_bytes"), "tensor storage byte offset")
             if view.get("storage_id") != storage_id or observed_offset != offset:
                 raise ValueError("layer tensor aliases or offsets contradict the allocation plan")
-            shape, strides = view.get("shape"), view.get("stride_bytes")
-            item_size = _positive(view.get("element_size_bytes"), "tensor element bytes")
-            if not isinstance(shape, list) or not shape or not isinstance(strides, list) or len(shape) != len(strides):
-                raise ValueError("physical tensor shape and strides are incomplete")
-            for dimension in shape:
-                _positive(dimension, "tensor dimension")
-            for value in strides:
-                _nonnegative(value, "tensor byte stride")
-                if value % item_size:
-                    raise ValueError("tensor byte strides must align to its element size")
+            shape, strides, item_size = _view_shape(view)
             axis = _nonnegative(view.get("block_axis"), "tensor block axis")
             kernel = _positive(view.get("kernel_block_size_tokens"), "kernel block tokens")
             if (
@@ -747,16 +758,7 @@ def _physical_views(
             ratio = group["block_size_tokens"] // kernel
             if stride and (ratio != 1 or strides[axis] != stride):
                 raise ValueError("packed kernel tensor block stride is unsupported")
-            # Sufficient affine non-overlap check for the dense/permuted/strided
-            # views produced by the audited runtime; no enumeration of blocks.
-            span = item_size
-            for byte_stride, dimension in sorted(zip(strides, shape, strict=True)):
-                if dimension > 1:
-                    if byte_stride < span:
-                        raise ValueError("physical tensor dimensions overlap")
-                    span += (dimension - 1) * byte_stride
-            if offset + span > storages[storage_id]["size_bytes"]:
-                raise ValueError("physical tensor byte bounds exceed its backing storage")
+            _view_extent(shape, strides, item_size, offset, storages[storage_id]["size_bytes"])
             logical = math.prod(shape) * item_size
             if logical > count * group["spec_page_size_bytes"]:
                 raise ValueError("tensor logical bytes exceed source cache spec page bytes")
@@ -766,9 +768,7 @@ def _physical_views(
                 )
                 if within_page > group["spec_page_size_bytes"]:
                     raise ValueError("packed tensor exceeds its declared per-slot page interval")
-            expected_item_size = {"bfloat16": 2, "half": 2, "fp8": 1}.get(precision)
-            if expected_item_size is not None and item_size != expected_item_size:
-                raise ValueError("tensor element size contradicts cache dtype")
+            _check_element_size(item_size, precision)
             views.append((view, ratio))
         _validate_alias_ownership(views, count)
         covered.update(names)
@@ -796,9 +796,7 @@ def _prefix_caching_settings(cache: dict[str, Any], *, scheduler: bool) -> dict[
     ):
         raise ValueError("runtime observation requires complete prefix-caching evidence")
     if value["mamba_cache_mode"] == "all":
-        raise ValueError(
-            "mamba_cache_mode all is not modeled; run the probe with prefix caching off (none) or on (align)"
-        )
+        raise ValueError(runtime_memory._MAMBA_ALL_UNMODELED)
     if value["mamba_cache_mode"] == "align" and not value["enable_prefix_caching"]:
         raise ValueError("mamba_cache_mode align requires enable_prefix_caching=true")
     if scheduler:
@@ -813,9 +811,14 @@ def _phase_prefix_caching(
     """The prefix-caching evidence of one phase, on which every rank of the phase agrees.
 
     The hash block size comes from the scheduler. Every MambaSpec takes the mode of its cache
-    config (mamba/abstract.py:76), so each Mamba state group reports the phase's mode.
+    config (mamba/abstract.py:76), so each Mamba state group reports the phase's mode. A vLLM
+    0.31.0 record always carries the evidence; only older records lack the key (ruling R-W).
     """
     label = f"{phase} prefix-caching settings across ranks"
+    if any(runtime_memory._layer_strided(record["cache"]) for record in workers.values()) and any(
+        "prefix_caching" not in record["cache"] for record in (*schedulers.values(), *workers.values())
+    ):
+        raise ValueError("runtime observation requires complete prefix-caching evidence")
     settings = [_prefix_caching_settings(record["cache"], scheduler=True) for _, record in sorted(schedulers.items())]
     for value in settings[1:]:
         _same(value, settings[0], label)
@@ -840,21 +843,18 @@ def _phase_prefix_caching(
 
 
 def _mode_free(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Cache groups without the parts of a state group that follow the prefix-caching mode (ruling R-H).
+    """Cache groups without the parts of a state group that follow the prefix-caching mode (rulings R-H, R-W).
 
     A Mamba block holds the hybrid block in align mode and max_model_len in none mode
     (models/config.py:663-675), and every MambaSpec records the mode (kv_cache_interface.py:1047).
+    No layer spec field follows the block size, so the layer specs stay compared.
     """
     result = copy.deepcopy(groups)
     for group in result:
-        if group.get("kind") != "state":
-            continue
-        block = group.pop("block_size_tokens", None)
-        if isinstance(group.get("state"), dict):
-            group["state"].pop("mamba_cache_mode", None)
-        for spec in (group.get("layer_specs") or {}).values():
-            for key in [key for key, value in spec.items() if type(value) is int and value == block]:
-                del spec[key]
+        if group.get("kind") == "state":
+            group.pop("block_size_tokens", None)
+            if isinstance(group.get("state"), dict):
+                group["state"].pop("mamba_cache_mode", None)
     return result
 
 

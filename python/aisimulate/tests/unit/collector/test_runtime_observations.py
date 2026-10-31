@@ -1508,6 +1508,140 @@ def test_v031_layout_rules_reject_region_overflow_and_same_group_aliasing(tmp_pa
     assert result["diagnostics"] == [f"tp2: {diagnostic}"]
 
 
+_MAMBA_ALL = "mamba_cache_mode all is not modeled; run the probe with prefix caching off (none) or on (align)"
+
+
+@pytest.mark.parametrize(
+    "case,diagnostic",
+    [
+        # Case A of the task review: no evidence key, Mamba groups in mode all.
+        ("no_evidence_mode_all", _MAMBA_ALL),
+        ("no_evidence", "runtime observation requires complete prefix-caching evidence"),
+        ("no_scheduler_evidence", "runtime observation requires complete prefix-caching evidence"),
+        ("mode_all_with_evidence", _MAMBA_ALL),
+    ],
+)
+def test_v031_records_require_prefix_caching_evidence_and_refuse_mamba_mode_all(tmp_path, case, diagnostic):
+    path, launches = observation_fixture(tmp_path, layout="mamba_hybrid")
+
+    def edit(record):
+        if case.startswith("no_evidence") or (case == "no_scheduler_evidence" and record["kind"] == "scheduler"):
+            record["cache"].pop("prefix_caching")
+        if case.endswith("mode_all") or case == "mode_all_with_evidence":
+            for group in record["cache"]["groups"]:
+                if "mamba_cache_mode" in group.get("state", {}):
+                    group["state"]["mamba_cache_mode"] = "all"
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == [f"tp2: {diagnostic}"]
+
+
+@pytest.mark.parametrize("spec", ["MLAAttentionSpec", "MambaSpec"])
+def test_legacy_records_refuse_classes_outside_the_legacy_allow_list(tmp_path, spec):
+    path, launches = observation_fixture(tmp_path)
+
+    def edit(record):
+        group = record["cache"]["groups"][0]
+        group["spec_type"] = f"vllm.v1.kv_cache_interface.{spec}"
+        if spec == "MambaSpec":
+            group["state"] = {"blocks_per_request": 1}
+            if record["kind"] == "worker":
+                group["kind"] = "state"
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == [f"tp2: unsupported runtime cache spec: 'vllm.v1.kv_cache_interface.{spec}'"]
+
+
+def _restride(cache, layers, field, value):
+    """Change an allocation's layer or block stride and move its layer views to match."""
+    allocation = next(item for item in cache["tensor_allocations"] if item["layers"] == layers)
+    shift = value - allocation[field]
+    allocation[field] = value
+    for position, name in enumerate(layers):
+        for view in cache["layer_tensors"][name]:
+            if field == "layer_stride":
+                view["storage_offset_bytes"] += position * shift
+            else:
+                view["stride_bytes"][0] = value
+
+
+@pytest.mark.parametrize(
+    "case,layout,diagnostic",
+    [
+        ("block_stride", "layer_outer_short", "aliased cache allocations must share one block stride"),
+        ("views_overlap", "mamba_hybrid", "views of one layer overlap inside the block: mamba.0"),
+        ("views_missing", "mamba_hybrid", "physical layer views are missing: attn.0"),
+        ("two_storages", "mamba_hybrid", "layer-strided cache allocations require one backing storage"),
+        (
+            "kind_contradicts",
+            "mamba_hybrid",
+            "runtime cache group kind contradicts its spec classes: "
+            "'attention' ['vllm.v1.kv_cache_interface.MambaSpec']",
+        ),
+        ("layer_specs", "mamba_hybrid", "runtime memory cache lacks complete layer spec evidence"),
+        ("state_window", "mamba_hybrid", "state cache groups cannot have a sliding_window"),
+        # Only the pairing of a tensor with itself sees two of its own layers overlap.
+        ("self_pair", "block_outer_short", "cache pages of one block overlap for layers of one group: attn.0, attn.1"),
+        ("phases_mismatch", "attention", "runtime observation prefix-caching evidence across phases mismatch"),
+    ],
+)
+def test_v031_importer_diagnostics_are_reachable(tmp_path, case, layout, diagnostic):
+    path, launches = observation_fixture(tmp_path, layout=layout)
+
+    def edit(record):
+        cache, worker = record["cache"], record["kind"] == "worker"
+        if case == "block_stride" and worker:
+            _restride(cache, ["mamba.1"], "block_stride", 16_384)
+        elif case == "views_overlap" and worker:
+            cache["layer_tensors"]["mamba.0"][1]["storage_offset_bytes"] = 400
+        elif case == "views_missing" and worker:
+            cache["layer_tensors"]["attn.0"] = []
+        elif case == "two_storages" and worker:
+            cache["storages"].append(
+                {"storage_id": "s1", "device": "cuda:0", "pointer": 999_999, "size_bytes": 163_840}
+            )
+            cache["allocated_cache_bytes"] += 163_840
+            cache["available_cache_bytes"] += 163_840
+        elif case == "kind_contradicts" and worker:
+            cache["groups"][1]["kind"] = "attention"
+        elif case == "layer_specs":
+            cache["groups"][1].pop("layer_specs")
+        elif case == "state_window":
+            cache["groups"][1]["sliding_window"] = 4
+        elif case == "self_pair" and worker:
+            _restride(cache, ["attn.0", "attn.1"], "layer_stride", 2048)
+        elif case == "phases_mismatch" and record["phase"] == "decode":
+            # Legacy-shaped records with evidence in one phase only.
+            cache["prefix_caching"] = {"enable_prefix_caching": True, "mamba_cache_mode": "none"}
+            if not worker:
+                cache["prefix_caching"].update(block_size=16, hash_block_size=16)
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == [f"tp2: {diagnostic}"]
+
+
+def test_v031_state_group_layer_specs_stay_compared_across_phases(tmp_path):
+    path, launches = observation_fixture(tmp_path, layout="mamba_hybrid", decode_prefix_caching=False)
+
+    def edit(record):
+        # A layer spec field that followed the Mamba block size would differ between the phases (ruling R-W).
+        for group in record["cache"]["groups"]:
+            if "mamba_cache_mode" in group.get("state", {}):
+                for spec in group["layer_specs"].values():
+                    spec["tokens_per_state"] = group["block_size_tokens"]
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == ["tp2: runtime observation cache geometry across phases/ranks mismatch"]
+
+
 @pytest.mark.parametrize("packed", [False, True])
 def test_legacy_bundle_imports_are_unchanged_by_the_state_mapping(tmp_path, packed):
     path, launch = observation_fixture(tmp_path, packed=packed)
