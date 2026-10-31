@@ -473,6 +473,9 @@ def _fake_campaign(
             kv_cache_size_tokens=None,
             kv_cache_max_concurrency=None,
         )
+        if layout == "glm_tp4":
+            # The probe launches GLM-5.3-Flash with an fp8_e4m3 cache, which its uint8 specs store (ruling R-V).
+            config.cache_config.cache_dtype = "fp8_e4m3"
         # The engine core sets the startup capacity in its own process, before it
         # builds the scheduler (engine/core.py:346-351); workers keep None.
         tokens = (blocks - 1) * block_size
@@ -609,7 +612,7 @@ def _fake_campaign(
             "gemm_quant_mode": "bfloat16",
             "moe_quant_mode": "bfloat16",
             "fmha_quant_mode": "bfloat16",
-            "kvcache_quant_mode": "bfloat16",
+            "kvcache_quant_mode": "fp8" if layout == "glm_tp4" else "bfloat16",
             "comm_quant_mode": "half",
             "moe_backend": "auto",
             "attention_backend": "auto",
@@ -1030,6 +1033,28 @@ def test_v031_glm_worker_record_is_complete(tmp_path, monkeypatch):
             15_232,
             3.71875,
         )
+
+
+def test_v031_glm_records_import_complete(tmp_path, monkeypatch):
+    from collector.fpm_forward.runtime_observations import validate_observations
+
+    from .test_runtime_observations import glm_tp4_cache_groups
+
+    # The records that the 0.31.0 adapter writes go through the importer unchanged (ruling R-V).
+    campaign = _glm_campaign(tmp_path, monkeypatch)
+    for phase in ("prefill", "decode"):
+        records = campaign.run(phase)
+        assert all(record["unresolved_fields"] == [] for record in records), [record.get("error") for record in records]
+    result = validate_observations(tmp_path / "observations.json", {"worker": campaign.launch})["worker"]
+    assert result["status"] == "complete", result["diagnostics"]
+    assert result["resources"]["cache_groups"] == glm_tp4_cache_groups()
+    memory = result["resources"]["runtime_memory"]
+    assert memory["kv_cache_bytes"] == 7 * 13_045_120
+    assert (memory["enable_prefix_caching"], memory["mamba_cache_mode"], memory["hash_block_size_tokens"]) == (
+        True,
+        "align",
+        2176,
+    )
 
 
 def test_v031_view_shape_mismatch_is_unresolved(tmp_path, monkeypatch):

@@ -239,10 +239,76 @@ def _v031_records(layout, *, prefix_caching, dp, max_model_len=4096):
             place([f"layers.{index}.tail"], offset, 574_464, 71_808)
             views[f"layers.{index}.tail"] = [view(offset, [8, 2, 4, 128], [71_808, 1024, 256, 2], 2, 4)]
         kernels = [64, 4, *[mamba_block] * 4]
+    elif layout == "block_outer_short":
+        # Generic block-outer layout: one tensor per (group, spec), every group from byte 0, the
+        # layer stride is the spec page and the block stride the largest group's bytes per block
+        # (kv_cache_utils.py:1606-1632, :1775-1819). G0 packs two specs; G2 is the short last group.
+        # A block-outer view cannot split kernel blocks (kv_cache_interface.py:373-387).
+        blocks, free, page, block, hash_block = 10, 9, 10_240, 64, 64
+        mamba_block = block if prefix_caching else max_model_len
+        wide = spec("FullAttentionSpec", 4096, "torch.bfloat16", 1)
+        narrow = spec("FullAttentionSpec", 1024, "torch.bfloat16", 1)
+        attention = ["attn.0", "small.0", "attn.1", "small.1"]
+        mamba = [["mamba.0", "mamba.2"], ["mamba.1"]]
+        groups = [
+            group(
+                attention,
+                "UniformTypeKVCacheSpecs",
+                block,
+                10_240,
+                {name: wide if name.startswith("attn.") else narrow for name in attention},
+                "attention",
+                "torch.bfloat16",
+                "vllm.model_executor.layers.attention.Attention",
+            ),
+            *(
+                group(
+                    names,
+                    "MambaSpec",
+                    mamba_block,
+                    5120,
+                    dict.fromkeys(names, spec("MambaSpec", 5120, None, -1)),
+                    "state",
+                    None,
+                    "vllm.model_executor.layers.mamba.mamba_mixer2.MambaMixer2",
+                    mamba_state([[4, 100], [2, 16, 32]], ["torch.bfloat16", "torch.float32"], 4896),
+                )
+                for names in mamba
+            ),
+        ]
+        scheduler_groups = [
+            scheduled(
+                groups[0],
+                spec_type=wide["spec_type"],
+                spec_page_size_bytes=4096,
+                dtype="torch.bfloat16",
+                layer_specs=dict.fromkeys(attention, wide),
+            ),
+            *(scheduled(item) for item in groups[1:]),
+        ]
+        for names, offset, layer_stride, shape, strides in (
+            (["attn.0", "attn.1"], 0, 4096, [10, 1, 64, 32], [10_240, 4096, 64, 2]),
+            (["small.0", "small.1"], 8192, 1024, [10, 1, 64, 8], [10_240, 1024, 16, 2]),
+            *((names, 0, 5120, None, None) for names in mamba),
+        ):
+            place(names, offset, layer_stride, 10_240)
+            for position, name in enumerate(names):
+                region = offset + position * layer_stride
+                views[name] = (
+                    [view(region, shape, strides, 2, block)]
+                    if shape is not None
+                    else [
+                        view(region, [10, 4, 100], [10_240, 200, 2], 2, mamba_block),
+                        view(region + 800, [10, 2, 16, 32], [10_240, 2048, 128, 4], 4, mamba_block),
+                    ]
+                )
+        kernels = [block, mamba_block, mamba_block]
     else:
         blocks, free, page, block, hash_block = 10, 9, 16_384, 64, 64
         mamba_block = block if prefix_caching else max_model_len
-        layers = [["attn.0", "attn.1"], ["mamba.0", "mamba.2"], ["mamba.1", "mamba.3"]]
+        # layer_outer_short ends with a short last group (kv_cache_utils.py:1546-1592).
+        short = layout == "layer_outer_short"
+        layers = [["attn.0", "attn.1"], ["mamba.0", "mamba.2"], ["mamba.1"] if short else ["mamba.1", "mamba.3"]]
         state_spec = spec("MambaSpec", 8192, None, -1)
         groups = [
             group(
@@ -365,9 +431,10 @@ def observation_fixture(
 ):
     """Synthetic source, rank and runtime records; no GPU or runtime qualification.
 
-    ``layout`` "attention" writes vLLM 0.28.0 records by default; "glm_tp4" and
-    "mamba_hybrid" write vLLM 0.31.0 records (see ``_v031_records``), and
-    ``decode_prefix_caching=False`` runs their decode phase without prefix caching.
+    ``layout`` "attention" writes vLLM 0.28.0 records by default; "glm_tp4", "mamba_hybrid",
+    "layer_outer_short" and "block_outer_short" write vLLM 0.31.0 records (see
+    ``_v031_records``), and ``decode_prefix_caching=False`` runs their decode phase without
+    prefix caching.
     """
     version = version or ("0.28.0" if layout == "attention" else "0.31.0")
     root.mkdir(parents=True, exist_ok=True)
@@ -1138,13 +1205,10 @@ def _evidence(result):
     return tuple(memory.get(name) for name in ("enable_prefix_caching", "mamba_cache_mode", "hash_block_size_tokens"))
 
 
-def test_glm_tp4_observations_import_state_groups(tmp_path):
-    path, launches = observation_fixture(tmp_path, layout="glm_tp4")
-    result = validate_observations(path, launches)["tp2"]
-    assert result["status"] == "complete", result["diagnostics"]
-    resources = result["resources"]
+def glm_tp4_cache_groups():
+    """The imported cache groups of GLM-5.3-Flash at TP 4: every page is one 13,045,120-byte pool block."""
     page = 13_045_120
-    assert resources["cache_groups"] == [
+    return [
         {
             "name": "runtime_group_0",
             "kind": "attention",
@@ -1175,6 +1239,14 @@ def test_glm_tp4_observations_import_state_groups(tmp_path):
             for index, layers in zip(range(2, 6), (9, 9, 8, 8), strict=True)
         ),
     ]
+
+
+def test_glm_tp4_observations_import_state_groups(tmp_path):
+    path, launches = observation_fixture(tmp_path, layout="glm_tp4")
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "complete", result["diagnostics"]
+    resources = result["resources"]
+    assert resources["cache_groups"] == glm_tp4_cache_groups()
     assert resources["runtime_memory"]["kv_cache_bytes"] == 7 * 13_045_120 == 91_315_840
     assert _evidence(result) == (True, "align", 2176)
     FpmResourceProfile.model_validate(resources)
@@ -1367,8 +1439,44 @@ def test_unknown_spec_class_is_incomplete_with_its_name(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "layout,groups",
+    [
+        ("layer_outer_short", [("attention", 2, 16_384), ("state", 2, 16_384), ("state", 1, 16_384)]),
+        ("block_outer_short", [("attention", 4, 10_240), ("state", 2, 10_240), ("state", 1, 10_240)]),
+    ],
+)
+def test_v031_generic_layouts_with_a_short_last_group_import_complete(tmp_path, layout, groups):
+    # Overlapping tensors of different groups differ in layer count, and block-outer ones in offset (ruling R-U).
+    path, launches = observation_fixture(tmp_path, layout=layout)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "complete", result["diagnostics"]
+    resources = result["resources"]
+    assert [(item["kind"], item["num_layers"], item["page_size_bytes"]) for item in resources["cache_groups"]] == groups
+    assert resources["runtime_memory"]["kv_cache_bytes"] == 9 * groups[0][2]
+
+
+def _move(cache, layers, shift):
+    """Move an allocation and its layer views by ``shift`` bytes."""
+    allocation = next(item for item in cache["tensor_allocations"] if item["layers"] == layers)
+    allocation["offset"] += shift
+    for name in layers:
+        for view in cache["layer_tensors"][name]:
+            view["storage_offset_bytes"] += shift
+
+
+@pytest.mark.parametrize(
     "case,layout,diagnostic",
-    [("region", "mamba_hybrid", "allocation"), ("alias", "glm_tp4", "alias"), ("view", "glm_tp4", "view")],
+    [
+        ("region", "mamba_hybrid", "allocation layers exceed their block stride or the backing storage"),
+        (
+            "same_group",
+            "glm_tp4",
+            "cache pages of one block overlap for layers of one group: layers.3.mla, layers.7.mla",
+        ),
+        ("cross_block", "layer_outer_short", "cache pages of different block IDs overlap: attn.0, mamba.1"),
+        ("view", "glm_tp4", "layer view lies outside the page of its layer: layers.0.kda"),
+        ("block_outer_view", "block_outer_short", "layer view lies outside the page of its layer: attn.0"),
+    ],
 )
 def test_v031_layout_rules_reject_region_overflow_and_same_group_aliasing(tmp_path, case, layout, diagnostic):
     path, launches = observation_fixture(tmp_path, layout=layout)
@@ -1381,20 +1489,23 @@ def test_v031_layout_rules_reject_region_overflow_and_same_group_aliasing(tmp_pa
             # Layer 1 of each two-layer tensor then ends past the 163,840-byte storage.
             for allocation in cache["tensor_allocations"]:
                 allocation["layer_stride"] = 90_112
-        elif case == "alias":
+        elif case == "same_group":
             # Two G0 layers on one region would hold the same pool block for one request.
-            allocation = next(item for item in cache["tensor_allocations"] if item["layers"] == ["layers.7.mla"])
-            allocation["offset"] = 0
-            for view in cache["layer_tensors"]["layers.7.mla"]:
-                view["storage_offset_bytes"] -= 8_912_896
-        else:
+            _move(cache, ["layers.7.mla"], -8_912_896)
+        elif case == "cross_block":
+            # Half a page off, block b of mamba.1 straddles blocks b and b + 1 of attn.0.
+            _move(cache, ["mamba.1"], 4096)
+        elif case == "view":
             cache["layer_tensors"]["layers.0.kda"][0]["storage_offset_bytes"] += 1_114_112
+        else:
+            # The block-outer block holds attn.1 right after attn.0, so this view enters the page of attn.1.
+            cache["layer_tensors"]["attn.0"][0]["storage_offset_bytes"] += 1024
 
     _mutate(path, edit)
     result = validate_observations(path, launches)["tp2"]
     assert result["status"] == "incomplete"
     assert result["resources"] is None
-    assert diagnostic in " ".join(result["diagnostics"])
+    assert result["diagnostics"] == [f"tp2: {diagnostic}"]
 
 
 @pytest.mark.parametrize("packed", [False, True])

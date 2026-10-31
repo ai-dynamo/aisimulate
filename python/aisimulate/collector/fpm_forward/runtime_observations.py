@@ -466,8 +466,9 @@ def _layer_views(
 
     A layer views its pages as one tensor, or as one tensor per state that a Mamba layer
     cuts from its page (kv_cache_interface.py:353-417, mamba/abstract.py:28-42). Each view
-    starts and ends inside the block of the layer's region, the views of one layer do not
-    overlap there, and together they hold at most the layer's page.
+    starts and ends inside the layer's page of a block, the views of one layer do not
+    overlap there, and together they hold at most that page (ruling R-U). A block-outer
+    block also holds the pages of the tensor's other layers.
     """
     spec = group["layer_specs"][name]
     if not isinstance(entries, list) or not entries:
@@ -508,8 +509,8 @@ def _layer_views(
             raise ValueError("physical tensor byte bounds exceed its backing storage")
         within = item_size + (ratio - 1) * strides[0]
         within += sum((dimension - 1) * stride for dimension, stride in zip(shape[1:], strides[1:], strict=True))
-        if not 0 <= start < block_stride or start + within > block_stride:
-            raise ValueError(f"layer view lies outside the block of its allocation region: {name}")
+        if not 0 <= start < spec["page_size_bytes"] or start + within > spec["page_size_bytes"]:
+            raise ValueError(f"layer view lies outside the page of its layer: {name}")
         if (
             group["kind"] == "attention"
             and not _indexer(spec)
@@ -540,15 +541,17 @@ def _layer_strided_views(
 
     Block ``b`` of layer ``layers[l]`` starts at ``offset + l * layer_stride + b * block_stride``
     (kv_cache_interface.py:1417-1438). The last page of the last layer bounds the region in
-    layer-outer and block-outer layouts (ruling R-L). Tensors whose bytes intersect overlay
-    cache groups, which is sound because one group owns a pool block at a time (:1428-1430).
+    layer-outer and block-outer layouts (ruling R-L). Tensors whose regions intersect overlay
+    cache groups, which is sound because a block ID belongs to one group at a time (:1428-1430).
+    The generic layouts start every group's tensors at byte 0 (kv_cache_utils.py:1775-1819), so
+    overlapping tensors may differ in offset and layer count. Ruling R-U therefore checks pages:
+    two pages may share bytes only when they hold one block ID for layers of different groups.
     """
     if len(storages) != 1:
         raise ValueError("layer-strided cache allocations require one backing storage")
     ((storage_id, storage),) = storages.items()
     size = storage["size_bytes"]
-    regions: list[tuple[tuple[int, int, int, int], int, int]] = []
-    aliases: dict[tuple[int, int, int, int], list[list[str]]] = {}
+    placements: list[tuple[list[str], int, int, int, int]] = []
     views: dict[str, list[tuple[dict[str, Any], int]]] = {}
     for allocation in allocations:
         if (
@@ -574,13 +577,7 @@ def _layer_strided_views(
         end = offset + (len(names) - 1) * layer_stride + (count - 1) * block_stride + page
         if page > block_stride or end > size:
             raise ValueError("allocation layers exceed their block stride or the backing storage")
-        key = (offset, layer_stride, block_stride, len(names))
-        if any(
-            offset < other_end and other_offset < end and other != key for other, other_offset, other_end in regions
-        ):
-            raise ValueError("aliased allocations must share offset, layer stride, block stride and layer count")
-        regions.append((key, offset, end))
-        aliases.setdefault(key, []).append(names)
+        placements.append((names, offset, layer_stride, block_stride, end))
         for position, name in enumerate(names):
             region = offset + position * layer_stride
             group = layer_groups[name][1]
@@ -589,13 +586,30 @@ def _layer_strided_views(
             )
     if views.keys() != layer_groups.keys():
         raise ValueError("allocation plan does not account for every layer and backing storage")
-    for aliased in aliases.values():
-        # The layers on one region overlay different cache groups, never two layers of one group.
-        for layers in zip(*aliased, strict=True):
-            owners = [layer_groups[name][0] for name in layers]
-            if len(set(owners)) != len(owners):
-                raise ValueError("layers in one cache group cannot alias the same allocation region")
-        _validate_alias_ownership([item for names in aliased for name in names for item in views[name]], count)
+    pages = {name: layer_groups[name][1]["layer_specs"][name]["page_size_bytes"] for name in views}
+    for first, second in itertools.combinations_with_replacement(range(len(placements)), 2):
+        names, offset, layer_stride, block_stride, end = placements[first]
+        others, other_offset, other_layer_stride, other_block_stride, other_end = placements[second]
+        if not (offset < other_end and other_offset < end):
+            continue
+        if block_stride != other_block_stride:
+            raise ValueError("aliased cache allocations must share one block stride")
+        for position, name in enumerate(names):
+            for other_position, other in enumerate(others):
+                if first == second and other_position <= position:
+                    continue
+                # Page b of name and page b + d of other share bytes iff
+                # -page(other) < delta + d * block_stride < page(name), for d in a contiguous range.
+                delta = other_offset + other_position * other_layer_stride - offset - position * layer_stride
+                low = max((-pages[other] - delta) // block_stride + 1, 1 - count)
+                high = min(-((delta - pages[name]) // block_stride) - 1, count - 1)
+                if low > high:
+                    continue
+                if (low, high) != (0, 0):
+                    raise ValueError(f"cache pages of different block IDs overlap: {name}, {other}")
+                if layer_groups[name][0] == layer_groups[other][0]:
+                    raise ValueError(f"cache pages of one block overlap for layers of one group: {name}, {other}")
+        _validate_alias_ownership([item for name in dict.fromkeys([*names, *others]) for item in views[name]], count)
 
 
 def _physical_views(
