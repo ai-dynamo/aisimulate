@@ -10,7 +10,7 @@ import math
 from pathlib import Path
 
 import pytest
-from collector.fpm_forward import runtime_memory
+from collector.fpm_forward import runtime_memory, runtime_observations
 from collector.fpm_forward.runtime import fpm_memory_observer as legacy
 from collector.fpm_forward.runtime_instrumentation import load_instrumentation
 from collector.fpm_forward.runtime_observations import validate_observations
@@ -1895,6 +1895,95 @@ def test_v031_records_must_hold_what_the_observer_guarantees(tmp_path, case, dia
         return
     assert result["status"] == "incomplete"
     assert result["diagnostics"] == [f"tp2: {diagnostic}"]
+
+
+_BLOCK_SIZES = "scheduler block sizes contradict its cache groups"
+_STATE_VIEWS = "layer views do not match the recorded state tensors: mamba.0"
+
+
+@pytest.mark.parametrize(
+    "case,layout,diagnostic",
+    [
+        ("scheduler_block_size", "mamba_hybrid", _BLOCK_SIZES),
+        ("hash_block_size", "glm_tp4", _BLOCK_SIZES),
+        ("prefix_match_unit", "mamba_hybrid", _BLOCK_SIZES),
+        ("prefix_match_unit_control", "mamba_hybrid", None),
+        ("mamba_state_order", "mamba_hybrid", _STATE_VIEWS),
+        ("mamba_state_strides", "mamba_hybrid", _STATE_VIEWS),
+    ],
+    ids=[
+        "scheduler_block_size",
+        "hash_block_size",
+        "prefix_match_unit",
+        "prefix_match_unit_control",
+        "mamba_state_order",
+        "mamba_state_strides",
+    ],
+)
+def test_v031_records_must_hold_what_vllm_derives_from_them(tmp_path, case, layout, diagnostic):
+    path, launches = observation_fixture(tmp_path, layout=layout)
+
+    def edit(record):
+        cache, worker = record["cache"], record["kind"] == "worker"
+        if case == "mamba_state_order" and worker:
+            # The SSM state first and the convolution state after it. The views still hold the 8,000 bytes of states
+            # in the 8,192-byte page of mamba.0, without overlap.
+            convolution, ssm = cache["layer_tensors"]["mamba.0"]
+            convolution["storage_offset_bytes"], ssm["storage_offset_bytes"] = 7200, 0
+        elif case == "mamba_state_strides" and worker:
+            # The [4, 100] convolution state viewed column by column holds the same 800 bytes.
+            cache["layer_tensors"]["mamba.0"][0]["stride_bytes"] = [8192, 2, 8]
+        if record["phase"] != "prefill":
+            return
+        if case.startswith("prefix_match_unit"):
+            # Every prefill process resolves a 32-token prefix-match unit, which sets the hash block size.
+            record["resolved_config"]["cache_config"]["prefix_match_unit"] = 32
+        if worker:
+            return
+        # Both copies of the block sizes of every prefill scheduler change, so they still agree with each other.
+        evidence = cache["prefix_caching"]
+        if case == "scheduler_block_size":
+            # The LCM of the 64-token group blocks is 64.
+            cache["block_size"] = evidence["block_size"] = 128
+        elif case == "hash_block_size":
+            # The GCD with the 4-token tail group, which takes no part in prefix caching, instead of the 2,176 tokens
+            # of the other groups.
+            cache["hash_block_size"] = evidence["hash_block_size"] = 4
+        elif case == "prefix_match_unit_control":
+            cache["hash_block_size"] = evidence["hash_block_size"] = 32
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    if diagnostic is None:
+        assert result["status"] == "complete", result["diagnostics"]
+        assert _evidence(result) == (True, "align", 32)
+        return
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == [f"tp2: {diagnostic}"]
+
+
+@pytest.mark.parametrize(
+    "specs,unit,expected",
+    [
+        (["FullAttentionSpec", "FullAttentionSpec"], None, 32),
+        # A SlidingWindowMLASpec group takes part in prefix caching unless it replays a bounded window
+        # (kv_cache_interface.py:949-951), which no record holds, so the hash block size is 32 or 64 tokens.
+        (["SlidingWindowMLASpec", "FullAttentionSpec"], None, None),
+        # One cache group hashes in its own block size, whatever the prefix-match unit (kv_cache_utils.py:761-765).
+        (["FullAttentionSpec"], 32, 96),
+    ],
+    ids=["two_groups", "bounded_replay_unknown", "one_group"],
+)
+def test_v031_scheduler_hash_block_size_follows_its_cache_groups(specs, unit, expected):
+    groups = [
+        {"spec_type": _V031_SPEC + spec, "block_size_tokens": block}
+        for spec, block in zip(specs, (96, 64), strict=False)
+    ]
+    record = {
+        "cache": {"groups": groups},
+        "resolved_config": {"cache_config": {"enable_prefix_caching": True, "prefix_match_unit": unit}},
+    }
+    assert runtime_observations._scheduler_hash_block_size(record) == expected
 
 
 @pytest.mark.parametrize("spec", ["MLAAttentionSpec", "MambaSpec"])

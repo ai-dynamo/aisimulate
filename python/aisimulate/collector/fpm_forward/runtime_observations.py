@@ -584,6 +584,16 @@ def _layer_views(
             or dense != state["real_page_size_bytes"]
         ):
             raise ValueError(f"layer views do not match the recorded state tensors: {name}")
+        # Each state starts where the one before it ends, from the start of the layer's page, and is viewed
+        # contiguously (mamba/abstract.py:34-41).
+        offset = region
+        for view, shape in zip(entries, shapes, strict=True):
+            item = view["element_size_bytes"]
+            if view["storage_offset_bytes"] != offset or view["stride_bytes"][1:] != [
+                item * math.prod(shape[axis + 1 :]) for axis in range(len(shape))
+            ]:
+                raise ValueError(f"layer views do not match the recorded state tensors: {name}")
+            offset += item * math.prod(shape)
     # The worker views a layer with the storage block of an MLA spec that has one (the indexer), a Mamba layer
     # with the group block, and every other layer with the runner's kernel block of the group
     # (worker/utils.py:449-450, :500-502; runtime/instrumentation/observer.py:277-289).
@@ -896,6 +906,39 @@ def _prefix_caching_settings(cache: dict[str, Any], *, scheduler: bool, strided:
     return value
 
 
+# The vLLM 0.31.0 spec classes whose groups take no part in prefix caching (kv_cache_interface.py:920-922,
+# :1032-1034). A SlidingWindowMLASpec group takes part unless it replays a bounded window (:949-951), which no record
+# holds.
+_NO_PREFIX_CACHING_SPECS = frozenset(_SPEC_MODULE + name for name in ("CircularBufferSpec", "KpoolTailSpec"))
+
+
+def _scheduler_hash_block_size(record: dict[str, Any]) -> Any:
+    """The hash block size that vLLM 0.31.0 derives for a scheduler from its cache groups and cache settings.
+
+    The engine core resolves it from the scheduler copies of the cache groups (engine/core.py:164-176,
+    v1/core/kv_cache_utils.py:739-798). One group hashes in its own block size. With prefix caching on and every Mamba
+    group in align mode, several groups hash in prefix_match_unit tokens or in the GCD of the block sizes of the groups
+    that take part in prefix caching. None stands for any other scheduler, and for one with a SlidingWindowMLASpec
+    group, which may or may not take part.
+    """
+    groups, settings = record["cache"]["groups"], record["resolved_config"]["cache_config"]
+    blocks = [_positive(group["block_size_tokens"], "cache block size") for group in groups]
+    if len(groups) == 1:
+        return blocks[0]
+    if not settings.get("enable_prefix_caching") or any(
+        group["spec_type"] == _MAMBA_SPEC and group["state"].get("mamba_cache_mode") != "align" for group in groups
+    ):
+        return None
+    if settings.get("prefix_match_unit") is not None:
+        return settings["prefix_match_unit"]
+    if any(group["spec_type"] == _SPEC_MODULE + "SlidingWindowMLASpec" for group in groups):
+        return None
+    caching = [
+        block for block, group in zip(blocks, groups, strict=True) if group["spec_type"] not in _NO_PREFIX_CACHING_SPECS
+    ]
+    return math.gcd(*(caching or blocks))
+
+
 def _phase_prefix_caching(
     phase: str, workers: dict[tuple[int, int], dict[str, Any]], schedulers: dict[int, dict[str, Any]]
 ) -> dict[str, Any] | None:
@@ -962,6 +1005,13 @@ def _phase_prefix_caching(
                 cache.get("mamba_cache_mode")
             ):
                 raise ValueError("runtime prefix-caching evidence contradicts the resolved cache settings")
+            # The scheduler block size is the LCM of the block sizes of the scheduler's cache groups, which a decode
+            # context parallel size of 1 leaves unscaled (v1/core/kv_cache_utils.py:761-770, engine/core.py:164-176).
+            hash_block = _scheduler_hash_block_size(record)
+            if cache["block_size"] != math.lcm(*(group["block_size_tokens"] for group in cache["groups"])) or (
+                hash_block is not None and canonical_json(cache["hash_block_size"]) != canonical_json(hash_block)
+            ):
+                raise ValueError("scheduler block sizes contradict its cache groups")
     return {
         "enable_prefix_caching": scheduled["enable_prefix_caching"],
         "mamba_cache_mode": scheduled["mamba_cache_mode"],
