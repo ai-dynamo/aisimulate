@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026 SGLang Team
 # SPDX-License-Identifier: Apache-2.0
+# NVIDIA modifications adapt native runtime APIs for isolated module collection.
 
 """
 MLA Module Collector for SGLang — unified MLA and DSA benchmarking.
@@ -22,7 +24,9 @@ Usage:
         python collect_mla_module.py --mode generation --attn-type mla
 """
 
-__compat__ = "sglang==0.5.14"
+# The resolver cannot express a union of exact releases. These exclusions reject
+# intermediate base releases; the manifest pins the qualified exact runtimes.
+__compat__ = "sglang>=0.5.14,<=0.5.20,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19"
 
 import argparse
 import gc
@@ -211,21 +215,54 @@ def _dsa_skip_indexer_enabled(attn_type: str, model_path: str) -> bool:
 
 
 def _generation_cuda_graph_enabled_for_tokens(model_runner, num_tokens: int) -> bool:
-    """Match SGLang decode CUDA graph coverage for the decode microbench.
-
-    SGLang captures decode CUDA graphs for batch sizes up to
-    server_args.cuda_graph_max_bs (or the resolved cuda_graph_bs list); mirror
-    that coverage using sglang's own settings -- no AIC env override -- so the
-    decode benchmark uses graph timing exactly where serve would.
-    """
-    decode_config = model_runner.server_args.cuda_graph_config.decode
+    """Use SGLang's graph eligibility for an exact-shape module capture."""
+    resolved_args = _resolved_server_args(model_runner.server_args)
+    decode_config = resolved_args.cuda_graph_config.decode
     if decode_config.backend == "disabled":
         return False
+    num_tokens = int(num_tokens)
+    if num_tokens <= 0:
+        return False
     capture_bs = decode_config.bs
-    if capture_bs:
-        return int(num_tokens) in set(capture_bs)
-    max_bs = decode_config.max_bs or 256
-    return 0 < int(num_tokens) <= int(max_bs)
+    if capture_bs and getattr(resolved_args, "disable_cuda_graph_padding", False):
+        return num_tokens in capture_bs
+    # SGLang v0.5.20 runner/decode_cuda_graph_runner.py:675-680 accepts
+    # every batch through max_bs when padding is enabled, not just captured
+    # bucket sizes. The module benchmark creates its own CUDA graph for the
+    # actual tensors; it does not replay a whole-model bucket or pad the shape.
+    # This matters at batch 52: the non-speculative defaults bracket it with
+    # 48/56 (arg_groups/cuda_graph_hook.py:587-593), but serving still uses a
+    # graph. Exact membership would incorrectly collect this row eagerly.
+    max_bs = max(capture_bs) if capture_bs else decode_config.max_bs or 256
+    return num_tokens <= int(max_bs)
+
+
+def _resolved_server_args(server_args):
+    """Read resolved settings without changing SGLang 0.5.20's raw input record."""
+    if hasattr(server_args, "resolve_once"):
+        from sglang.srt.arg_groups.overrides import resolving_view
+
+        return resolving_view(server_args)
+    return server_args
+
+
+def _set_request_extend_range(req, start: int, end: int) -> None:
+    # SGLang v0.5.20 managers/schedule_batch.py:1484-1488, 2639-2648:
+    # extend_range replaces fill_len/extend_input_len; start is cached prefix.
+    if hasattr(req, "set_extend_range"):
+        req.set_extend_range(start, end)
+    else:
+        req.fill_len = end
+        req.set_extend_input_len(end - start)
+
+
+def _init_module_forward_batch(batch, model_runner):
+    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+
+    if hasattr(model_runner.server_args, "resolve_once"):
+        # v0.5.20 tp_worker.py:608-613 requires this ordinary target-forward flag.
+        return ForwardBatch.init_new(batch, model_runner, return_hidden_states_before_norm=False)
+    return ForwardBatch.init_new(batch, model_runner)
 
 
 def _initialize_dsa_history(model_runner, attention_module, forward_batch, history_length: int) -> None:
@@ -248,7 +285,10 @@ def _initialize_dsa_history(model_runner, attention_module, forward_batch, histo
     if not history_length:
         return
 
-    from sglang.srt.layers.attention.dsa.triton_kernel import act_quant
+    if hasattr(model_runner.server_args, "resolve_once"):
+        from sglang.kernels.ops.attention.dsa.triton_kernel import act_quant
+    else:
+        from sglang.srt.layers.attention.dsa.triton_kernel import act_quant
 
     forward_context_type, forward_context = _import_sglang_forward_context()
     pool = model_runner.token_to_kv_pool
@@ -291,7 +331,7 @@ def _initialize_dsa_history(model_runner, attention_module, forward_batch, histo
 
 
 def _dsa_forward_input_relay(model_runner, batch):
-    """Own the native scheduler relay needed by SGLang 0.5.14 input staging.
+    """Own the native scheduler relay needed by SGLang input staging.
 
     At 49e384ce, managers/overlap_utils.py:65-97 materializes input IDs;
     scheduler.py:3269-3280 uses it and FutureMap.stash even without overlap.
@@ -301,11 +341,17 @@ def _dsa_forward_input_relay(model_runner, batch):
     from sglang.srt.managers.overlap_utils import FutureMap, decide_needs_cpu_seq_lens
 
     if not hasattr(model_runner, "_aic_dsa_input_relay"):
+        # v0.5.20 overlap_utils.py:23 reads ServerArgs from runtime_context.
+        needs_cpu_seq_lens = (
+            decide_needs_cpu_seq_lens([model_runner.attn_backend])
+            if hasattr(model_runner.server_args, "resolve_once")
+            else decide_needs_cpu_seq_lens(model_runner.server_args, [model_runner.attn_backend])
+        )
         model_runner._aic_dsa_input_relay = FutureMap(
             device=batch.device,
             spec_algo=batch.spec_algorithm,
             req_to_token_pool=model_runner.req_to_token_pool,
-            needs_cpu_seq_lens=decide_needs_cpu_seq_lens(model_runner.server_args, [model_runner.attn_backend]),
+            needs_cpu_seq_lens=needs_cpu_seq_lens,
         )
     return model_runner._aic_dsa_input_relay
 
@@ -841,9 +887,8 @@ def _build_module_test_cases(attn_type: str, mode: str):
                         # Mirrors SGLang 0.5.14
                         # server_args.py:_set_default_dsa_backends: FP8 KV uses
                         # flashmla_kv on Hopper and trtllm when major >= 10.
-                        # The bundled capability test rejects SM103 even though
-                        # the selector chooses trtllm there; registry maturity
-                        # markers park SM103/SM120 pending hardware validation.
+                        # v0.5.20 overrides.py:771-783 keeps this selection;
+                        # the pinned 0.5.20 image supports the B300 campaign.
                         default_backend = "trtllm" if get_sm_version() >= 100 else "flashmla_kv"
                         dsa_backends = (default_backend,)
                     else:
@@ -1093,7 +1138,7 @@ def _patch_nsa_rope_contiguity(model_runner):
                     positions.contiguous(),
                     query.contiguous(),
                     key.contiguous() if key is not None else key,
-                    fused_set_kv_buffer_arg,
+                    fused_set_kv_buffer_arg=fused_set_kv_buffer_arg,
                 )
 
             return _forward
@@ -1303,12 +1348,10 @@ def load_model_runner(
     # (run_mla_module, under `with autotune(True)`), so it is part of the module
     # init we actually measure -- not a global init phase.
     server_args.disable_flashinfer_autotune = True
-    # Match SGLang 0.5.14's configured FP8-KV dispatch. Hopper uses
-    # flashmla_kv; the exact image has a runnable TRTLLM-GEN path on SM100.
-    # SGLang's major-based selector also names TRT-LLM on SM103, but the
-    # bundled capability test rejects that target. Registry maturity markers
-    # park SM103/SM120 before this worker is queued. BF16 KV stays on the
-    # runtime default because flashmla_kv rejects BF16.
+    # Pinned serving dispatch: v0.5.14 server_args.py:_set_default_dsa_backends;
+    # v0.5.20 arg_groups/overrides.py:771-783. FP8 KV uses flashmla_kv on
+    # Hopper and trtllm on Blackwell (including hardware-validated SM103).
+    # BF16 KV stays on the runtime default because flashmla_kv rejects BF16.
     if attention_backend == "dsa" and sglang_kv_dtype == "fp8_e4m3":
         if dsa_prefill_backend is None:
             dsa_prefill_backend = "trtllm" if get_sm_version() >= 100 else "flashmla_kv"
@@ -1328,10 +1371,37 @@ def load_model_runner(
         }
         server_args.json_model_override_args = json.dumps(override_args)
 
-    _set_envs_and_config(server_args)
-    initialize_moe_config(server_args)
-    initialize_fp8_gemm_config(server_args)
-    initialize_fp4_gemm_config(server_args)
+    if hasattr(server_args, "resolve_once"):
+        from sglang.srt.distributed.parallel_state_wrapper import ParallelState
+        from sglang.srt.layers.quantization.unquant import initialize_bf16_gemm_config
+        from sglang.srt.runtime_context import publish
+
+        # SGLang v0.5.20 managers/scheduler.py:5808 publishes the scheduler
+        # role before setup; :996-1001 initializes quantization from that
+        # resolved context. ModelRunner no longer accepts individual ranks
+        # (model_executor/model_runner.py:318-348). This subprocess emulates
+        # one TP rank by local head geometry, so its actual process group is
+        # trivial (distributed/parallel_state_wrapper.py:31-60).
+        publish(server_args, role="scheduler")
+        _set_envs_and_config(server_args)
+        initialize_moe_config()
+        initialize_fp8_gemm_config()
+        initialize_fp4_gemm_config()
+        initialize_bf16_gemm_config()
+        parallel_kwargs = {"ps": ParallelState.trivial(gpu_id=gpu_id)}
+    else:
+        _set_envs_and_config(server_args)
+        initialize_moe_config(server_args)
+        initialize_fp8_gemm_config(server_args)
+        initialize_fp4_gemm_config(server_args)
+        parallel_kwargs = {
+            "tp_rank": gpu_id,
+            "tp_size": server_args.tp_size,
+            "pp_rank": 0,
+            "pp_size": 1,
+            "moe_ep_rank": 0,
+            "moe_ep_size": 1,
+        }
 
     nccl_port = 29500 + random.randint(0, 10000) + gpu_id * 100
 
@@ -1355,16 +1425,11 @@ def load_model_runner(
 
     model_runner = ModelRunner(
         model_config=model_config,
-        mem_fraction_static=server_args.mem_fraction_static,
+        mem_fraction_static=_resolved_server_args(server_args).mem_fraction_static,
         gpu_id=gpu_id,
-        tp_rank=gpu_id,
-        tp_size=server_args.tp_size,
-        pp_rank=0,
-        pp_size=1,
-        moe_ep_rank=0,
-        moe_ep_size=1,
         nccl_port=nccl_port,
         server_args=server_args,
+        **parallel_kwargs,
     )
 
     model_runner.alloc_memory_pool()
@@ -1427,9 +1492,10 @@ def run_attention_torch(
     """
     attention_module = model_runner.model.model.layers[test_layer].self_attn
     architecture = _module_model_architecture(model_path)
-    backend_name = model_runner.server_args.attention_backend
-    resolved_dsa_prefill_backend = getattr(model_runner.server_args, "dsa_prefill_backend", None) or dsa_prefill_backend
-    resolved_dsa_decode_backend = getattr(model_runner.server_args, "dsa_decode_backend", None) or dsa_prefill_backend
+    resolved_args = _resolved_server_args(model_runner.server_args)
+    backend_name = resolved_args.attention_backend
+    resolved_dsa_prefill_backend = getattr(resolved_args, "dsa_prefill_backend", None) or dsa_prefill_backend
+    resolved_dsa_decode_backend = getattr(resolved_args, "dsa_decode_backend", None) or dsa_prefill_backend
     version = get_version("sglang")
     device_name = torch.cuda.get_device_name(device)
 
@@ -1586,6 +1652,11 @@ def _run_prefill(
     ordinary_mla: bool = False,
 ):
     """Run prefill (context) benchmark for a single (batch_size, seq_length) point."""
+    if attn_type == "dsa" and hasattr(model_runner.server_args, "resolve_once"):
+        raise MeasurementBoundaryError(
+            "SGLang 0.5.20 DSA prefill requires a native graph-boundary adapter; "
+            "the current 0.5.20 module collector supports decode only"
+        )
     from array import array
 
     is_wideep_mla = attn_type == "mla" and not ordinary_mla
@@ -1593,7 +1664,6 @@ def _run_prefill(
     from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
     from sglang.srt.mem_cache.cache_init_params import CacheInitParams
     from sglang.srt.mem_cache.chunk_cache import ChunkCache
-    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
     from sglang.srt.sampling.sampling_params import SamplingParams
     from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
     from sglang.srt.utils import BumpAllocator
@@ -1620,8 +1690,7 @@ def _run_prefill(
             )
             req.prefix_indices = prefix_indices[i]
             req.full_untruncated_fill_ids = array("q", req.origin_input_ids)
-            req.fill_len = full_length
-            req.set_extend_input_len(seq_length if prefix_len else full_length)
+            _set_request_extend_range(req, prefix_len, full_length)
             req.logprob_start_len = 0
             reqs.append(req)
 
@@ -1644,11 +1713,11 @@ def _run_prefill(
         )
         with _temporarily_chunked_alloc_extend(model_runner, batch_size * seq_length):
             batch.prepare_for_extend()
-        if attn_type == "dsa":
+        if attn_type == "dsa" or hasattr(model_runner.server_args, "resolve_once"):
             from sglang.srt.managers.overlap_utils import resolve_forward_inputs
 
             resolve_forward_inputs(batch, _dsa_forward_input_relay(model_runner, batch))
-        forward_batch = ForwardBatch.init_new(batch, model_runner)
+        forward_batch = _init_module_forward_batch(batch, model_runner)
         if attn_type == "dsa":
             _validate_dsa_forward_tokens(forward_batch, batch_size * seq_length)
         model_runner.attn_backend.init_forward_metadata(forward_batch)
@@ -2352,7 +2421,6 @@ def _run_decode(
     from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
     from sglang.srt.mem_cache.cache_init_params import CacheInitParams
     from sglang.srt.mem_cache.chunk_cache import ChunkCache
-    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
     from sglang.srt.model_executor.runner import model_capture_mode
     from sglang.srt.sampling.sampling_params import SamplingParams
     from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
@@ -2376,8 +2444,7 @@ def _run_decode(
             )
             req.prefix_indices = torch.empty((0,), dtype=torch.int64)
             req.full_untruncated_fill_ids = array("q", req.origin_input_ids)
-            req.fill_len = len(req.origin_input_ids)
-            req.set_extend_input_len(req.fill_len)
+            _set_request_extend_range(req, 0, len(req.origin_input_ids))
             req.logprob_start_len = 0
             req.cached_tokens = 0
             req.already_computed = 0
@@ -2402,22 +2469,30 @@ def _run_decode(
         )
         # Allocate KV cache slots, then switch to decode
         batch.prepare_for_extend()
-        if attn_type == "dsa":
+        needs_input_relay = attn_type == "dsa" or hasattr(model_runner.server_args, "resolve_once")
+        if needs_input_relay:
             from sglang.srt.managers.overlap_utils import resolve_forward_inputs
 
             input_relay = _dsa_forward_input_relay(model_runner, batch)
             resolve_forward_inputs(batch, input_relay)
         for req in batch.reqs:
             req.output_ids.append(0)
-        if attn_type == "dsa":
+        if needs_input_relay:
             # Match the non-overlap scheduler's sampled-token handoff. The
             # synthetic next token is the same zero appended to each Req.
-            input_relay.stash(batch.req_pool_indices, torch.zeros(batch_size, dtype=torch.int64, device=batch.device))
+            sampled_tokens = torch.zeros(batch_size, dtype=torch.int64, device=batch.device)
+            if hasattr(model_runner.server_args, "resolve_once"):
+                # v0.5.20 scheduler.py:3534 relays the same sampled tokens using
+                # the typed payload; retain the native input-staging boundary.
+                from sglang.srt.managers.overlap_utils import RelayPayload
+
+                sampled_tokens = RelayPayload(bonus_tokens=sampled_tokens)
+            input_relay.stash(batch.req_pool_indices, sampled_tokens)
             batch.input_ids = None
         batch.prepare_for_decode()
-        if attn_type == "dsa":
+        if needs_input_relay:
             resolve_forward_inputs(batch, input_relay)
-        forward_batch_decode = ForwardBatch.init_new(batch, model_runner)
+        forward_batch_decode = _init_module_forward_batch(batch, model_runner)
         if attn_type == "dsa":
             _validate_dsa_forward_tokens(forward_batch_decode, batch_size)
         model_runner.attn_backend.init_forward_metadata(forward_batch_decode)
@@ -2674,6 +2749,14 @@ def run_mla_module(
     global _SKIP_INDEXER_PASS
     if chunked_prefill_size is not None and chunked_prefill_size <= 0:
         raise ValueError("chunked_prefill_size must be positive for one-shot module collection")
+    if is_prefill and attn_type == "dsa":
+        from sglang.srt.server_args import ServerArgs
+
+        if hasattr(ServerArgs, "resolve_once"):
+            raise MeasurementBoundaryError(
+                "SGLang 0.5.20 DSA prefill requires a native graph-boundary adapter; "
+                "the current 0.5.20 module collector supports decode only"
+            )
     _SKIP_INDEXER_PASS = skip_indexer
     device = f"cuda:{gpu_id}"
     torch.cuda.set_device(device)
@@ -2698,6 +2781,18 @@ def run_mla_module(
     ]
     if batch_size_filter:
         base_cases = [(bs, seq_len, ip) for bs, seq_len, ip in base_cases if bs == batch_size_filter]
+    if not is_prefill:
+        # Decode consumes the next position after past KV. Apply the same native
+        # RoPE bound as context and DSA ceiling anchors to every base-grid model.
+        max_position = _model_max_position_embeddings(model_path)
+        if max_position is not None:
+            before = len(base_cases)
+            base_cases = [case for case in base_cases if case[1] + 1 <= max_position]
+            if before != len(base_cases):
+                print(
+                    f"[{attn_type.upper()}] Excluded {before - len(base_cases)} generation cases "
+                    f"with past_kv + 1 > model max_position_embeddings={max_position}"
+                )
     if is_prefill and attn_type == "dsa":
         _sweep = get_mla_module_sweep_spec("sglang")
         prefix_lens = _sweep.context_prefix_lengths
@@ -2739,9 +2834,8 @@ def run_mla_module(
                         cases.append((bs, seq_len, ip, _ceil))
     elif attn_type == "dsa":
         # Generation (decode): the perf "step" is the past-KV length (logged as
-        # seq_length here, prefix stays 0). The base generation sweep stops at
-        # 131072, so high-context decode (e.g. GLM-5 up to 202752, GLM-5.2 up to
-        # 1M) would EXTRAPOLATE. Mirror ctx's prefix coverage: extend the KV-length
+        # seq_length here, prefix stays 0). Mirror ctx's prefix coverage beyond
+        # the declared generation anchors: extend the KV-length
         # grid with ctx's context_prefix_lengths plus the hardcoded DSA
         # max_position ceilings (_DSA_CEILING_MAX_POSITIONS) minus 1 (= last valid
         # KV position), capped below to < this model's max_position. High-context
@@ -2752,11 +2846,11 @@ def run_mla_module(
         _max_pos = _model_max_position_embeddings(model_path)
         cases = [(bs, seq_len, ip, 0) for bs, seq_len, ip in base_cases]
         _have = {(bs, sl) for bs, sl, _ in base_cases}
-        _extra_kv = set(_sweep.context_prefix_lengths)
+        _extra_kv = set(_sweep.context_prefix_lengths) if 1 in _sweep.generation_batch_sizes else set()
         # Only extend with the hardcoded DSA max_position ceilings when this
         # model's context limit is known; otherwise (unknown model) we would add
         # ~1M-KV shapes and risk OOM / wasted collection. Mirrors the context path.
-        if _max_pos is not None:
+        if _max_pos is not None and 1 in _sweep.generation_batch_sizes:
             for _cover_pos in _DSA_CEILING_MAX_POSITIONS:
                 _extra_kv.add(_cover_pos - 1)
         for _sl in sorted(_extra_kv):
@@ -3076,10 +3170,9 @@ def run_mla_module_worker(
 
     # The case builder records configured backend buckets, not every leaf
     # kernel selected by an individual shape: flashmla_kv on Hopper and
-    # trtllm on validated SM100. SM103 mirrors an upstream selector whose
-    # bundled TRTLLM-GEN kernel is unavailable; registry maturity markers park
-    # SM103/SM120. BF16 leaves the sub-backend unset so SGLang applies its
-    # serving default.
+    # trtllm on Blackwell. Runtime manifests and hardware evidence qualify
+    # each version/platform pair. BF16 leaves the sub-backend unset so SGLang
+    # applies its serving default.
     _run_mla_subprocess(
         attn_type=attn_type,
         head_num=num_heads,

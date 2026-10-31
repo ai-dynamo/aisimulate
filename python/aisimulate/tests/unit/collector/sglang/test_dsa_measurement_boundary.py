@@ -140,7 +140,16 @@ def runtime(monkeypatch):
         return True
 
     loaded = _load(
-        ["MeasurementBoundaryError", "PerfLogWriteError", "_run_prefill", "run_attention_torch"],
+        [
+            "MeasurementBoundaryError",
+            "PerfLogWriteError",
+            "_run_prefill",
+            "_run_decode",
+            "run_attention_torch",
+            "_resolved_server_args",
+            "_set_request_extend_range",
+            "_init_module_forward_batch",
+        ],
         {
             "torch": torch,
             "json": json,
@@ -278,3 +287,76 @@ def test_group_does_not_swallow_or_reclassify_unrelated_worker_exceptions(runtim
     assert exc.value is failure
     later.assert_not_called()
     assert not runtime.rows
+
+
+def test_modern_dsa_prefill_fails_before_timing_or_publication(runtime):
+    runtime.runner.server_args.resolve_once = lambda: None
+    with pytest.raises(runtime.loaded["MeasurementBoundaryError"], match="0.5.20 DSA prefill"):
+        runtime.loaded["_run_prefill"](**runtime.kwargs)
+    assert runtime.events == []
+    assert runtime.rows == []
+
+
+@pytest.mark.parametrize("modern", [False, True])
+def test_decode_preserves_native_sampled_token_relay(runtime, monkeypatch, modern):
+    schedule = sys.modules["sglang.srt.managers.schedule_batch"]
+    original_request = schedule.Req
+
+    def request(**kwargs):
+        return original_request(output_ids=[], **kwargs)
+
+    schedule.Req = request
+    batch = SimpleNamespace(
+        device="cuda",
+        req_pool_indices=object(),
+        input_ids="prefill",
+        prepare_for_extend=lambda: runtime.events.append("extend"),
+        prepare_for_decode=lambda: runtime.events.append("decode"),
+    )
+
+    def init_batch(*, reqs, **_):
+        batch.reqs = reqs
+        return batch
+
+    schedule.ScheduleBatch.init_new = init_batch
+    sampled = object()
+    torch = runtime.loaded["torch"]
+    torch.int64 = "int64"
+    torch.empty = lambda *_, **__: object()
+    torch.zeros = lambda *_, **__: sampled
+    relay_calls = []
+    relay = SimpleNamespace(stash=lambda indices, payload: relay_calls.append((indices, payload)))
+    runtime.loaded["_dsa_forward_input_relay"] = lambda *_: relay
+    overlap = sys.modules["sglang.srt.managers.overlap_utils"]
+    overlap.RelayPayload = SimpleNamespace
+
+    def resolve(actual, actual_relay):
+        assert actual is batch and actual_relay is relay
+        if runtime.events[-1] == "decode":
+            assert batch.input_ids is None
+            assert all(req.output_ids == [0] for req in batch.reqs)
+        runtime.events.append("resolve")
+
+    overlap.resolve_forward_inputs = resolve
+    capture = ModuleType("sglang.srt.model_executor.runner")
+    capture.model_capture_mode = nullcontext
+    monkeypatch.setitem(sys.modules, capture.__name__, capture)
+    if modern:
+        runtime.runner.server_args.resolve_once = lambda: None
+    forward_flags = []
+    sys.modules["sglang.srt.model_executor.forward_batch_info"].ForwardBatch.init_new = (
+        lambda *_, **kwargs: forward_flags.append(kwargs) or object()
+    )
+
+    def stop_at_metadata(_):
+        raise runtime.loaded["PerfLogWriteError"]("metadata reached")
+
+    runtime.runner.attn_backend.init_forward_metadata = stop_at_metadata
+    with pytest.raises(runtime.loaded["PerfLogWriteError"], match="metadata reached"):
+        runtime.loaded["_run_decode"](**runtime.kwargs)
+    assert runtime.events[2:6] == ["extend", "resolve", "decode", "resolve"]
+    assert len(relay_calls) == 1 and relay_calls[0][0] is batch.req_pool_indices
+    payload = relay_calls[0][1]
+    assert (payload.bonus_tokens if modern else payload) is sampled
+    assert forward_flags == ([{"return_hidden_states_before_norm": False}] if modern else [{}])
+    assert runtime.rows == []

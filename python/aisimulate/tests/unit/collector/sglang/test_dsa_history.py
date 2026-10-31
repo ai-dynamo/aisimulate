@@ -23,12 +23,15 @@ def load_initializer(torch, context_factory=None):
     return ns[node.name]
 
 
+@pytest.mark.parametrize("modern", [False, True])
 @pytest.mark.parametrize("length", [1, 63, 64, 65, 8193])
-def test_native_writers_cover_each_history_slot_and_no_new_token(monkeypatch, length):
+def test_native_writers_cover_each_history_slot_and_no_new_token(monkeypatch, length, modern):
     torch = pytest.importorskip("torch")
     if not isinstance(torch, ModuleType) or not isinstance(getattr(torch, "__version__", None), str):
         pytest.skip("requires real torch, not another collector test's import stub")
-    quant_module = ModuleType("sglang.srt.layers.attention.dsa.triton_kernel")
+    quant_module = ModuleType(
+        "sglang.kernels.ops.attention.dsa.triton_kernel" if modern else "sglang.srt.layers.attention.dsa.triton_kernel"
+    )
     quant_module.act_quant = object()
     monkeypatch.setitem(sys.modules, quant_module.__name__, quant_module)
     active_context = []
@@ -68,7 +71,10 @@ def test_native_writers_cover_each_history_slot_and_no_new_token(monkeypatch, le
 
     pool = SimpleNamespace(index_head_dim=128, set_mla_kv_buffer=mla_writer)
     runner = SimpleNamespace(
-        token_to_kv_pool=pool, req_to_token_pool=SimpleNamespace(req_to_token=table), attn_backend=object()
+        server_args=SimpleNamespace(resolve_once=lambda: None) if modern else SimpleNamespace(),
+        token_to_kv_pool=pool,
+        req_to_token_pool=SimpleNamespace(req_to_token=table),
+        attn_backend=object(),
     )
     attention = SimpleNamespace(
         attn_mqa=layer,
