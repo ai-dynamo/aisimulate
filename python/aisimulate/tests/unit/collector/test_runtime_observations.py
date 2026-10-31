@@ -2114,6 +2114,78 @@ def test_legacy_imports_do_not_read_a_prefix_caching_key_of_an_adapter(tmp_path,
     }
 
 
+def _make_layer_strided(record):
+    """Rewrite a vLLM 0.28.0 attention record as the vLLM 0.31.0 observer records it.
+
+    The worker allocation places its layers with a layer stride, the views of a layer form a list, and the
+    kernel blocks of the runner are recorded. A scheduler reserves only the null block. Every process records the
+    prefix-caching evidence of its resolved cache config, and the scheduler adds its block sizes.
+    """
+    cache, resolved = record["cache"], record["resolved_config"]["cache_config"]
+    resolved["mamba_cache_mode"] = "none"
+    evidence = {"enable_prefix_caching": True, "mamba_cache_mode": "none"}
+    if record["kind"] == "worker":
+        # The fixture holds 16-token blocks and views that stride 128 bytes per block. Its two layers belong to two
+        # groups, so they can overlay each other.
+        (allocation,) = cache["tensor_allocations"]
+        allocation.update(layers=allocation["shared_by"], layer_stride=0, block_stride=128)
+        cache["layer_tensors"] = {name: [view] for name, view in cache["layer_tensors"].items()}
+        cache["model_runner"] = {
+            "class": "vllm.v1.worker.gpu_model_runner.GPUModelRunner",
+            "kernel_block_sizes": [16] * len(cache["groups"]),
+        }
+    else:
+        sizes = {"block_size": 16, "hash_block_size": 16}
+        cache.update(
+            reserved_blocks=1,
+            initial_free_blocks=cache["num_blocks"] - 1,
+            permanent_reserved_block_ids=[0],
+            mamba_cache_mode="none",
+            **sizes,
+        )
+        evidence.update(sizes)
+    cache["prefix_caching"] = evidence
+
+
+@pytest.mark.parametrize(
+    "strided,complete",
+    [(("prefill",), False), (("decode",), False), (("prefill", "decode"), True)],
+    ids=["prefill_strided", "decode_strided", "both_strided_control"],
+)
+def test_v031_role_phases_cannot_mix_layer_strided_and_older_records(tmp_path, strided, complete):
+    path, launches = observation_fixture(tmp_path)
+
+    def edit(record):
+        # Every phase holds the layer specs of a vLLM 0.31.0 group, so that the cache geometry of the phases agrees
+        # and only the prefix-caching evidence differs.
+        for group in record["cache"]["groups"]:
+            group["layer_specs"] = {
+                name: {
+                    "spec_type": group["spec_type"],
+                    "page_size_bytes": group["spec_page_size_bytes"],
+                    "dtype": group["dtype"],
+                    "tokens_per_state": None,
+                    "cache_role": None,
+                    "storage_block_size": None,
+                }
+                for name in group["layer_names"]
+            }
+        if record["phase"] in strided:
+            _make_layer_strided(record)
+
+    # Only a layer-strided phase holds prefix-caching evidence, so phases that differ in that are refused. The role
+    # with both phases layer-strided shows that the edits build a valid layer-strided phase.
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    if complete:
+        assert result["status"] == "complete", result["diagnostics"]
+        evidence = {"enable_prefix_caching": True, "mamba_cache_mode": "none", "hash_block_size_tokens": 16}
+        assert result["provenance"]["prefix_caching"] == {"prefill": evidence, "decode": evidence}
+        return
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == ["tp2: runtime observation prefix-caching evidence across phases mismatch"]
+
+
 @pytest.mark.parametrize(
     "layout,field,value,complete",
     [
