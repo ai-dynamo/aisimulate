@@ -30,11 +30,14 @@ from collector.capabilities import region_reason
 from collector.case_generator import (
     BASE_OP_CASES_DIR,
     MoeCommonTestCase,
+    get_attention_encoder_head_configs,
     get_common_moe_test_cases,
+    get_compute_scale_case_specs,
     get_gemm_case_specs,
     get_gemm_type_specs,
     get_moe_quantization_module_config,
     get_sglang_moe_backend,
+    get_shared_base_op_case_specs,
     moe_model_layer,
     moe_planned_modes,
 )
@@ -338,6 +341,81 @@ def _trtllm_moe_rows(case: MoeCase, sm_version: int | None) -> list[list]:
     return [[*head, min_latency, *case[8:11]] for min_latency in min_latency_modes]
 
 
+# --- compute_scale ------------------------------------------------------------
+
+
+class ComputeScaleCase(NamedTuple):
+    """One dynamic FP8 scale computation over an [m, k] activation."""
+
+    m: int
+    k: int
+
+    def __str__(self) -> str:
+        return str(list(self))
+
+    __repr__ = __str__
+
+    @property
+    def dtype(self) -> str:
+        """The op quantizes activations to fp8."""
+        return "fp8"
+
+
+def _expand_compute_scale() -> list[ComputeScaleCase]:
+    """The compute_scale sweep of compute_scale.yaml: token counts times input widths, largest K last."""
+    return [ComputeScaleCase(spec.m, spec.k) for spec in get_compute_scale_case_specs()]
+
+
+# --- encoder attention --------------------------------------------------------
+
+
+class EncoderAttentionCase(NamedTuple):
+    """One non-causal (encoder) bf16 MHA case."""
+
+    batch_size: int
+    seq_len: int
+    num_heads: int
+    head_dim: int
+
+    def __str__(self) -> str:
+        return str(list(self))
+
+    __repr__ = __str__
+
+    @property
+    def dtype(self) -> str:
+        return "bfloat16"
+
+
+# Per-case budgets every backend shares: the workload's token budget, and the
+# q/k/v/o activations (4 tensors of bf16) stay inside 32-bit indexing.
+_ENCODER_ATTENTION_MAX_TOKENS = 131072
+_ENCODER_ATTENTION_MAX_ACTIVATION_BYTES = 2**31
+
+
+def _expand_encoder_attention() -> list[EncoderAttentionCase]:
+    """Each encoder head profile times the batch and sequence sweep, within the per-case budgets."""
+    cases = []
+    over_budget = 0
+    for shape_sweep in get_shared_base_op_case_specs("encoder_attention"):
+        batch_sizes = sorted(int(value) for value in shape_sweep["batch_sizes"])
+        sequence_lengths = sorted(int(value) for value in shape_sweep["sequence_lengths"])
+        for head_config in get_attention_encoder_head_configs(shape_sweep):
+            n, head_dim = head_config.num_heads, head_config.head_dim
+            for s in sequence_lengths:
+                for b in batch_sizes:
+                    tokens = b * s
+                    if (
+                        tokens > _ENCODER_ATTENTION_MAX_TOKENS
+                        or 4 * tokens * n * head_dim * 2 >= _ENCODER_ATTENTION_MAX_ACTIVATION_BYTES
+                    ):
+                        over_budget += 1
+                        continue
+                    cases.append(EncoderAttentionCase(b, s, n, head_dim))
+    print(f"encoder_attention: left out {over_budget} of {len(cases) + over_budget} cases over the per-case budgets")
+    return cases
+
+
 OP_PLANS: dict[str, OpPlan] = {
     "gemm": OpPlan(GemmCase, _expand_gemm, dtype_field="gemm_type", group_fields=("gemm_type", "n", "k")),
     "moe": OpPlan(
@@ -348,5 +426,9 @@ OP_PLANS: dict[str, OpPlan] = {
         group_fields=MoeCase._fields,
         region_fields=("parallel",),
         rows={"sglang": _sglang_moe_rows, "trtllm": _trtllm_moe_rows},
+    ),
+    "compute_scale": OpPlan(ComputeScaleCase, _expand_compute_scale, dtype_field="dtype", group_fields=("m", "k")),
+    "encoder_attention": OpPlan(
+        EncoderAttentionCase, _expand_encoder_attention, dtype_field="dtype", group_fields=EncoderAttentionCase._fields
     ),
 }
