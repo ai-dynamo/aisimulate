@@ -1908,7 +1908,6 @@ def _restride(cache, layers, field, value):
         ("state_window", "mamba_hybrid", "state cache groups cannot have a sliding_window"),
         # Only the pairing of a tensor with itself sees two of its own layers overlap.
         ("self_pair", "block_outer_short", "cache pages of one block overlap for layers of one group: attn.0, attn.1"),
-        ("phases_mismatch", "attention", "runtime observation prefix-caching evidence across phases mismatch"),
     ],
 )
 def test_v031_importer_diagnostics_are_reachable(tmp_path, case, layout, diagnostic):
@@ -1936,11 +1935,6 @@ def test_v031_importer_diagnostics_are_reachable(tmp_path, case, layout, diagnos
             cache["groups"][1]["sliding_window"] = 4
         elif case == "self_pair" and worker:
             _restride(cache, ["attn.0", "attn.1"], "layer_stride", 2048)
-        elif case == "phases_mismatch" and record["phase"] == "decode":
-            # Legacy-shaped records with evidence in one phase only.
-            cache["prefix_caching"] = {"enable_prefix_caching": True, "mamba_cache_mode": "none"}
-            if not worker:
-                cache["prefix_caching"].update(block_size=16, hash_block_size=16)
 
     _mutate(path, edit)
     result = validate_observations(path, launches)["tp2"]
@@ -2090,6 +2084,34 @@ def test_legacy_imports_compare_extra_cache_settings_across_phases(tmp_path, fie
     assert result["diagnostics"] == [
         "tp2: runtime observation effective runtime/graph settings across phases/ranks mismatch"
     ]
+
+
+@pytest.mark.parametrize("version", ["0.27.0", "0.28.0"])
+@pytest.mark.parametrize("evidence", ["complete", "workers_only", "decode_only", "malformed"])
+def test_legacy_imports_do_not_read_a_prefix_caching_key_of_an_adapter(tmp_path, version, evidence):
+    path, launches = observation_fixture(tmp_path, version=version)
+
+    def edit(record):
+        worker = record["kind"] == "worker"
+        value = {"enable_prefix_caching": True, "mamba_cache_mode": "none"}
+        if not worker:
+            value.update(block_size=16, hash_block_size=16)
+        if (evidence == "workers_only" and not worker) or (evidence == "decode_only" and record["phase"] != "decode"):
+            return
+        record["cache"]["prefix_caching"] = "yes" if evidence == "malformed" else value
+
+    # Only a vLLM 0.31.0 record holds this evidence. A campaign-local adapter can add a key of that name to its
+    # records, which import as they did before: finalized campaigns compare the provenance byte for byte.
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "complete", result["diagnostics"]
+    assert not {"prefix_caching", "phase_geometry_differences"} & set(result["provenance"])
+    assert set(result["resources"]["runtime_memory"]) == {
+        "kv_cache_bytes",
+        "gpu_memory_utilization",
+        "max_model_len",
+        "provenance",
+    }
 
 
 @pytest.mark.parametrize(

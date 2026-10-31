@@ -859,13 +859,14 @@ def _physical_views(
     return groups, accounting
 
 
-def _prefix_caching_settings(cache: dict[str, Any], *, scheduler: bool) -> dict[str, Any] | None:
-    """The prefix-caching settings that one vLLM 0.31.0 process recorded; None for older records.
+def _prefix_caching_settings(cache: dict[str, Any], *, scheduler: bool, strided: bool) -> dict[str, Any] | None:
+    """The prefix-caching settings that one vLLM 0.31.0 process recorded; None for other records.
 
-    vLLM 0.27.0 and 0.28.0 records have no ``prefix_caching`` key. The scheduler
+    vLLM 0.27.0 and 0.28.0 records have no ``prefix_caching`` key. A campaign-local adapter can add one;
+    the import reads it only when ``strided`` says that the phase holds vLLM 0.31.0 records. The scheduler
     adds its block size and hash block size (core/sched/scheduler.py:198, :310-312).
     """
-    if "prefix_caching" not in cache:
+    if not strided or "prefix_caching" not in cache:
         return None
     value = cache["prefix_caching"]
     keys = {"enable_prefix_caching", "mamba_cache_mode"} | ({"block_size", "hash_block_size"} if scheduler else set())
@@ -893,13 +894,16 @@ def _phase_prefix_caching(
 
     The hash block size comes from the scheduler. Every MambaSpec takes the mode of its cache
     config (mamba/abstract.py:76), so each Mamba state group reports the phase's mode. A vLLM
-    0.31.0 record always carries the evidence; only older records lack the key.
+    0.31.0 record always carries the evidence. Every other record gives None.
     """
     label = f"{phase} prefix-caching settings across ranks"
     strided = any(runtime_memory._layer_strided(record["cache"]) for record in workers.values())
     if strided and any("prefix_caching" not in record["cache"] for record in (*schedulers.values(), *workers.values())):
         raise ValueError("runtime observation requires complete prefix-caching evidence")
-    settings = [_prefix_caching_settings(record["cache"], scheduler=True) for _, record in sorted(schedulers.items())]
+    settings = [
+        _prefix_caching_settings(record["cache"], scheduler=True, strided=strided)
+        for _, record in sorted(schedulers.items())
+    ]
     for value in settings[1:]:
         _same(value, settings[0], label)
     scheduled = settings[0]
@@ -907,7 +911,7 @@ def _phase_prefix_caching(
         None if scheduled is None else {key: scheduled[key] for key in ("enable_prefix_caching", "mamba_cache_mode")}
     )
     for _, record in sorted(workers.items()):
-        _same(_prefix_caching_settings(record["cache"], scheduler=False), shared, label)
+        _same(_prefix_caching_settings(record["cache"], scheduler=False, strided=strided), shared, label)
     if scheduled is None:
         return None
     for record in workers.values():
