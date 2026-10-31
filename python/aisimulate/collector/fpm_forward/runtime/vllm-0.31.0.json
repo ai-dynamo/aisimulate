@@ -1,0 +1,53 @@
+{
+  "schema_version": "aisimulate-runtime-instrumentation/v1",
+  "runtime": {
+    "framework": "vllm",
+    "version": "0.31.0",
+    "source_revision": "db9527a46873454610df6dbedf79a36d6bf1a7f6",
+    "source_files": {
+      "vllm/v1/worker/gpu_worker.py": "43bd01925cd84f7d8a1d4a2ec30e289014a485fe4492a5343cbc893e8ed2f518",
+      "vllm/v1/worker/gpu_model_runner.py": "bb903dffcb5a6e5b8a477daf0854b3812e135349d61fc20c6133f91cd3c9752a",
+      "vllm/v1/worker/gpu/model_runner.py": "725c47114e148ade3a26b4cc9c5f7295588fdd387afc3cb5fdb2d16513a1bb5c",
+      "vllm/v1/worker/gpu/attn_utils.py": "0f9df8b0153bd0a2720ee957f6cd1600b9d865eb12b7bf432501ffaa12fb6a9c",
+      "vllm/v1/worker/utils.py": "df38390808195cf36ca6e1e85c4e10e8a8d858e349e310463471b56210976f26",
+      "vllm/v1/kv_cache_interface.py": "99ca1d725c949b216d6911fb846c6f3333873fe79852c579a8505fdfcd447e47",
+      "vllm/v1/kv_cache_layout.py": "7a32e95b61238e4e2fd8b0c420830565002af3275ca2eded6d78bc60dcaf7df0",
+      "vllm/v1/core/kv_cache_utils.py": "1b20c836aece4982dd87f7e06e14f5ae07a1fc2636101074cfad11584b1a0dcf",
+      "vllm/v1/core/kv_cache_manager.py": "bd9bf46a2101f9368d4941867415a239d18d95e0b956f82f885ce25e10e69f3b",
+      "vllm/v1/core/kv_cache_coordinator.py": "6a1e00227b981a7bb6108a42db0e446c716f789274f40c63eb9a6ce4d699ddcb",
+      "vllm/v1/core/block_pool.py": "05c73052934a9d4664ccd5df562ce71011278d9a511932da102ef2efff00e934",
+      "vllm/v1/core/single_type_kv_cache_manager.py": "3a3cb20bd6aa1e0ad46471fc9e5e01ee5797ab4bb759e00ef5fb309d2830db13",
+      "vllm/v1/core/sched/scheduler.py": "f820bee4f42b878b262a30f3728a97d7413477b2a277748e20f2528ac2ec2f2a",
+      "vllm/v1/attention/backend.py": "77ac35180c1e0f854c6307f5deb3c7c0ac4a9e8702578d406ce058981488a137",
+      "vllm/v1/attention/backends/flash_attn.py": "ea53fb41165323f13094604051c73d44a579994fe5a427243aa9faafc280b1c2",
+      "vllm/v1/attention/backends/flashinfer.py": "9e65e124edc2a8e36c7e29306159dc51d345978ed7987ac3164983a2c17cb94c",
+      "vllm/v1/attention/backends/gdn_attn.py": "496f383285de2fe92626091309a56a96a64b496f37d5585f8b7b55d0260e1a84",
+      "vllm/v1/attention/backends/mamba2_attn.py": "344af55fa566cdddd4f239150bd8744433cdd145b198ed310dcf1f7d72ca2521",
+      "vllm/v1/attention/backends/mla/flashinfer_mla_sparse.py": "b98a804816de88f11c4cf3c60eae205ad52d320ae83ca0732e4b59b0259b62b1",
+      "vllm/v1/attention/backends/mla/indexer.py": "3d336ff942efd77f1529d06a18a53b701570a3ab7ce1437b2d02b9b3a1c1c679",
+      "vllm/model_executor/layers/mamba/abstract.py": "3fb7face79dcb6a985c4b19c3b228c1bc1c1ea6104c5363066a2251758b7e463",
+      "vllm/model_executor/models/config.py": "03bec47631bfd2b70614bfec2b208d87cbcc3ee2a785656e3723574c51f96d03",
+      "vllm/models/glm5next/common/attention.py": "8f33a1d2d97b5aec93994e810229fddb2ca2f4841d3748c723a6ad4b98cc89a5",
+      "vllm/models/glm5next/common/kda.py": "37745b45892cb26d9193160c4f446191f6cc276031fe8f7de5dbb37784cf8e8b",
+      "vllm/config/cache.py": "a9b2a804c9c353e7bded64081bf920c79432d4e44ca180c05e275c69e642a280",
+      "vllm/config/model.py": "e33d28deab39c42b1c209116296dcb6e98c6da8b4e42ee0dbca0e8bf098c534c",
+      "vllm/transformers_utils/config.py": "bfa2d8ed9fc0971694e7873351a06dc9d5948775984f120148ad8a8e38a5acbc",
+      "vllm/platforms/interface.py": "6f5f0f7f304a3899c50a3a558eecd07f66675910befbfa251bc9779ee05a7775",
+      "vllm/version.py": "2b08ab3f9bd3412cc40ff0d239b18d18d101369c329460cd07d718f658b97fba",
+      "dynamo/vllm/instrumented_scheduler.py": "06fcb26ffcfeb4d58a01704d8d7842d9d838d4a34170a1086f09e5617442da8e"
+    }
+  },
+  "files": [
+    "fpm_memory_observer.py",
+    "instrumentation/__init__.py",
+    "instrumentation/observer.py",
+    "instrumentation/hooks.py",
+    "instrumentation/vllm_031.py",
+    "instrumentation/vllm-0.31.0.md",
+    "instrumentation/README.md"
+  ],
+  "worker_class": "instrumentation.vllm_031.ObservedWorker",
+  "scheduler_class": "instrumentation.vllm_031.ObservedInstrumentedScheduler",
+  "observation_schema": "aisimulate-runtime-observation/v1",
+  "source_notes": "instrumentation/vllm-0.31.0.md"
+}

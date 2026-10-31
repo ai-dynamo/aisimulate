@@ -20,14 +20,28 @@ def test_bundled_adapter_is_self_contained_and_unknown_version_needs_local_bundl
     assert bundled_instrumentation("0.28.0") is None
 
 
-@pytest.mark.parametrize("version", ["0.27.0", "0.28.0"])
+def test_bundled_0_31_0_adapter_is_self_contained(tmp_path):
+    from collector.fpm_forward.runtime_instrumentation import relative_path
+
+    bundle = bundled_instrumentation("0.31.0")
+    manifest = bundle.manifest
+    assert manifest["runtime"]["version"] == "0.31.0"
+    assert manifest["source_notes"] == "instrumentation/vllm-0.31.0.md"
+    assert manifest["source_notes"] in bundle.files
+    assert all(relative_path(name) == name for name in manifest["runtime"]["source_files"])
+    frozen = freeze_instrumentation(bundle, tmp_path / "bundle")
+    assert load_instrumentation(frozen.manifest_path).sha256 == bundle.sha256
+    assert bundled_instrumentation("0.28.0") is None
+
+
+@pytest.mark.parametrize("version", ["0.27.0", "0.28.0", "0.31.0"])
 def test_frozen_scheduler_export_preserves_native_benchmark_contract(tmp_path, monkeypatch, version):
     import importlib
 
     _fake_campaign(tmp_path, monkeypatch, version=version)
     frozen = load_instrumentation(tmp_path / "instrumentation/manifest.json")
     scheduler_name = frozen.manifest["scheduler_class"]
-    # Both pinned Dynamo args.py consumers require this substring before importing
+    # Every pinned Dynamo args.py consumer requires this substring before importing
     # the class. The immutable source mappings are in each bundle's source notes.
     assert "InstrumentedScheduler" in scheduler_name
     module, name = scheduler_name.rsplit(".", 1)
@@ -134,8 +148,243 @@ def isolated_runtime_imports():
     sys.modules.update(saved)
 
 
-def _fake_campaign(tmp_path, monkeypatch, *, packed=False, planar=False, version="0.28.0", runner_version=1):
-    """Synthetic vendor files and GPU objects; verifies mapping, never GPU support."""
+def _v031_runtime(storage, layout, blocks):
+    """vLLM 0.31.0 cache objects: one backing storage and block-first layer views.
+
+    ``glm_tp4`` holds the six GLM-5.3-Flash groups at TP 4 with an fp8 cache and no
+    speculation (kv_cache_utils.py:1213-1292): G0 the 11 MLA latent and 11 indexer
+    layers, G1 the 11 tail layers and G2 to G5 the 34 KDA layers. KDA layer i of each
+    Mamba group shares the region of MLA layer i, and tail layer i the region of
+    indexer layer i (:1725-1755). Returns the worker and scheduler cache configs,
+    the forward-context layers, the attention groups and the kernel block sizes.
+    """
+    from enum import Enum
+    from types import SimpleNamespace
+
+    from .test_fpm_runtime_memory import _typed
+
+    group_role = Enum("KVCacheGroupRole", {"DEFAULT": "default", "HISPARSE_SOURCE": "hisparse_source"}, type=str)
+    cache_role = Enum("SparseCacheRole", {"SPARSE": "sparse", "INDEXER": "indexer"}, type=str)
+
+    class View:
+        """A typed view of the one backing storage; offset and strides in bytes."""
+
+        def __init__(self, shape, stride_bytes, element, offset):
+            self.shape, self.stride_bytes, self.element, self.offset = list(shape), stride_bytes, element, offset
+
+        def untyped_storage(self):
+            return storage
+
+        def element_size(self):
+            return self.element
+
+        def storage_offset(self):
+            return self.offset // self.element
+
+        def stride(self):
+            return tuple(value // self.element for value in self.stride_bytes)
+
+    def spec(name, **fields):
+        value = _typed("vllm.v1.kv_cache_interface", name)
+        vars(value).update(fields)
+        return value
+
+    def group(names, kv_cache_spec):
+        return SimpleNamespace(
+            layer_names=names,
+            kv_cache_spec=kv_cache_spec,
+            is_eagle_group=False,
+            host_resident=False,
+            enable_kv_transfer=True,
+            role=group_role.DEFAULT,
+        )
+
+    def tensor(name, page, offset):
+        # Layer-outer: each layer region holds its pages of every block.
+        return SimpleNamespace(
+            size=storage.size,
+            layers=[name],
+            layer_stride=page * blocks,
+            block_stride=page,
+            offset=offset,
+            host_resident=False,
+        )
+
+    def layer(module, cls, kv_cache):
+        value = _typed(module, cls)
+        value.kv_cache = kv_cache
+        return value
+
+    def backend(module, cls, name):
+        # vLLM 0.31.0 backends have no get_kv_cache_block_dim.
+        return type(cls, (), {"__module__": module, "get_name": staticmethod(lambda: name)})
+
+    def attention(backend, names, kv_cache_spec, group_id):
+        return SimpleNamespace(
+            backend=backend, layer_names=names, kv_cache_spec=kv_cache_spec, kv_cache_group_id=group_id
+        )
+
+    if layout == "attention":
+        full = spec(
+            "FullAttentionSpec", block_size=16, page_size_bytes=4096, sliding_window=None, dtype="torch.bfloat16"
+        )
+        groups = [group(["layer0"], full)]
+        layers = {
+            "layer0": layer(
+                "vllm.model_executor.layers.attention",
+                "Attention",
+                View([blocks, 1, 16, 128], [4096, 4096, 256, 2], 2, 0),
+            )
+        }
+        cache = SimpleNamespace(
+            num_blocks=blocks,
+            kv_cache_groups=groups,
+            kv_cache_tensors=[tensor("layer0", 4096, 0)],
+            kv_cache_layout="LBHNC",
+        )
+        flashinfer = backend("vllm.v1.attention.backends.flashinfer", "FlashInferBackend", "FLASHINFER")
+        return cache, cache, layers, [[attention(flashinfer, ["layer0"], full, 0)]], [16]
+    mla = list(range(3, 45, 4))
+    kda = [index for index in range(45) if index % 4 != 3]
+    # Round robin into cdiv(34, 11) = 4 Mamba groups of 9, 9, 8 and 8 layers (kv_cache_utils.py:1276-1286).
+    mamba_groups = [[f"layers.{index}.kda" for index in kda[start::4]] for start in range(4)]
+    latent = spec(
+        "MLAAttentionSpec",
+        block_size=2176,
+        page_size_bytes=1_114_112,
+        sliding_window=None,
+        dtype="torch.uint8",
+        tokens_per_state=1,
+        cache_role=cache_role.SPARSE,
+        storage_block_size=None,
+    )
+    indexer = spec(
+        "MLAAttentionSpec",
+        block_size=2176,
+        page_size_bytes=71_808,
+        sliding_window=None,
+        dtype="torch.uint8",
+        tokens_per_state=4,
+        cache_role=cache_role.INDEXER,
+        storage_block_size=128,
+    )
+    tail = spec(
+        "KpoolTailSpec",
+        block_size=4,
+        page_size_bytes=71_808,
+        sliding_window=4,
+        extra_retained_tokens=0,
+        dtype="torch.bfloat16",
+    )
+    state = spec(
+        "MambaSpec",
+        block_size=2176,
+        page_size_bytes=1_114_112,
+        page_size_padded=1_114_112,
+        mamba_cache_mode="align",
+        num_speculative_blocks=0,
+        num_prefill_checkpoint_blocks=0,
+        shapes=((6144, 3), (16, 128, 128)),
+        dtypes=("torch.bfloat16", "torch.float32"),
+        real_page_size_bytes=1_085_440,
+        tokens_per_state=-1,
+    )
+    attention_names = [name for index in mla for name in (f"layers.{index}.mla", f"layers.{index}.indexer")]
+    tails = [f"layers.{index}.tail" for index in mla]
+    uniform = {name: latent if name.endswith(".mla") else indexer for name in attention_names}
+    groups = [
+        group(
+            attention_names,
+            spec("UniformTypeKVCacheSpecs", block_size=2176, page_size_bytes=13_045_120, kv_cache_specs=uniform),
+        ),
+        group(
+            tails,
+            spec(
+                "UniformTypeKVCacheSpecs",
+                block_size=4,
+                page_size_bytes=789_888,
+                kv_cache_specs=dict.fromkeys(tails, tail),
+            ),
+        ),
+        *(group(names, state) for names in mamba_groups),
+    ]
+    tensors, layers = [], {}
+    for position, index in enumerate(mla):
+        offset = position * 8_912_896
+        tensors.append(tensor(f"layers.{index}.mla", 1_114_112, offset))
+        layers[f"layers.{index}.mla"] = layer(
+            "vllm.model_executor.layers.attention.mla_attention",
+            "MLAAttention",
+            View([272, 1, 64, 512], [32_768, 32_768, 512, 1], 1, offset),
+        )
+        for names in mamba_groups:
+            if position < len(names):
+                tensors.append(tensor(names[position], 1_114_112, offset))
+                # Mamba bind_kv_cache cuts the conv and SSM states from each page (mamba/abstract.py:28-42).
+                layers[names[position]] = layer(
+                    "vllm.models.glm5next.common.kda",
+                    "Glm5NextLinearAttention",
+                    (
+                        View([8, 6144, 3], [1_114_112, 6, 2], 2, offset),
+                        View([8, 16, 128, 128], [1_114_112, 65_536, 512, 4], 4, offset + 36_864),
+                    ),
+                )
+    for position, index in enumerate(mla):
+        offset = 98_041_856 + position * 574_464
+        for name, cls, view in (
+            ("indexer", "Glm5NextIndexerCache", View([136, 1, 32, 132], [4224, 4224, 132, 1], 1, offset)),
+            ("tail", "Glm5NextTailCache", View([8, 2, 4, 128], [71_808, 1024, 256, 2], 2, offset)),
+        ):
+            tensors.append(tensor(f"layers.{index}.{name}", 71_808, offset))
+            layers[f"layers.{index}.{name}"] = layer("vllm.models.glm5next.common.attention", cls, view)
+    gdn = backend("vllm.v1.attention.backends.gdn_attn", "GDNAttentionBackend", "GDN_ATTN")
+    attn = [
+        [
+            attention(
+                backend(
+                    "vllm.v1.attention.backends.mla.flashinfer_mla_sparse",
+                    "FlashInferMLASparseTRTLLMBackend",
+                    "FLASHINFER_MLA_SPARSE",
+                ),
+                [f"layers.{index}.mla" for index in mla],
+                latent,
+                0,
+            ),
+            attention(
+                backend("vllm.v1.attention.backends.mla.indexer", "DeepseekV32IndexerBackend", "DEEPSEEK_V32_INDEXER"),
+                [f"layers.{index}.indexer" for index in mla],
+                indexer,
+                0,
+            ),
+        ],
+        [
+            attention(
+                backend("vllm.v1.attention.backends.mla.indexer", "KpoolTailBackend", "KPOOL_TAIL"), tails, tail, 1
+            )
+        ],
+        *([attention(gdn, names, state, group_id)] for group_id, names in enumerate(mamba_groups, start=2)),
+    ]
+    cache = SimpleNamespace(
+        num_blocks=blocks, kv_cache_groups=groups, kv_cache_tensors=tensors, kv_cache_layout="LBHNC"
+    )
+    # The scheduler copy keeps the first inner spec of each uniform group (kv_cache_utils.py:2434-2440).
+    scheduler_cache = SimpleNamespace(
+        num_blocks=blocks,
+        kv_cache_groups=[group(attention_names, latent), group(tails, tail), *groups[2:]],
+        kv_cache_tensors=tensors,
+        kv_cache_layout="LBHNC",
+    )
+    return cache, scheduler_cache, layers, attn, [64, 4, 2176, 2176, 2176, 2176]
+
+
+def _fake_campaign(
+    tmp_path, monkeypatch, *, packed=False, planar=False, version="0.28.0", runner_version=1, layout="attention"
+):
+    """Synthetic vendor files and GPU objects; verifies mapping, never GPU support.
+
+    vLLM 0.31.0 fakes place every layer in one backing storage and view it block
+    axis first; ``layout="glm_tp4"`` holds the GLM-5.3-Flash TP4 cache groups.
+    """
     import hashlib
     import importlib
     import importlib.metadata
@@ -171,7 +420,8 @@ def _fake_campaign(tmp_path, monkeypatch, *, packed=False, planar=False, version
     config.parallel_config.data_parallel_rank = 0
     config.parallel_config.enable_expert_parallel = False
     config.quant_config = None
-    blocks, page = 10, 4096
+    # GLM: 8 blocks of the 13,045,120-byte pool block, 11 * (1,114,112 + 71,808).
+    blocks, page = (8, 13_045_120) if layout == "glm_tp4" else (10, 4096)
     storage = _Storage(1024, blocks * page * (2 if packed else 1))
 
     class Tensor:
@@ -203,24 +453,52 @@ def _fake_campaign(tmp_path, monkeypatch, *, packed=False, planar=False, version
 
     Backend.__module__ = "vllm.v1.attention.backends.flashinfer"
     mode = Enum("KVQuantMode", ["NONE"])
-    groups, layers, allocations, attn = [], {}, [], []
-    for index in range(2 if packed else 1):
-        name = f"layer{index}"
-        spec = _typed("vllm.v1.kv_cache_interface", "FullAttentionSpec")
-        spec.block_size = spec.storage_block_size = 16
-        spec.page_size_bytes, spec.sliding_window, spec.dtype = page, None, "torch.bfloat16"
-        spec.kv_quant_mode, spec.num_kv_heads, spec.head_size = mode.NONE, 1, 64
-        layer = _typed("vllm.model_executor.layers.attention", "Attention")
-        layer.kv_cache = Tensor(page * index)
-        layers[name] = layer
-        groups.append(SimpleNamespace(layer_names=[name], kv_cache_spec=spec, is_eagle_group=False))
-        allocations.append(
-            SimpleNamespace(
-                size=storage.size, shared_by=[name], block_stride=page * 2 if packed else 0, offset=page * index
-            )
+    scheduler_config, scheduler_fields = config, {}
+    if version == "0.31.0":
+        cache, scheduler_cache, layers, attn, kernel_block_sizes = _v031_runtime(storage, layout, blocks)
+        block_size, mamba_cache_mode = (2176, "align") if layout == "glm_tp4" else (16, "none")
+        vars(config.cache_config).update(
+            block_size=block_size,
+            mamba_cache_mode=mamba_cache_mode,
+            mamba_block_size=block_size if mamba_cache_mode == "align" else None,
+            prefix_match_unit=None,
+            mamba_cache_dtype="auto",
+            mamba_ssm_cache_dtype="auto",
+            kv_cache_size_tokens=None,
+            kv_cache_max_concurrency=None,
         )
-        attn.append([SimpleNamespace(layer_names=[name], kv_cache_spec=spec, kv_cache_group_id=index, backend=Backend)])
-    cache = SimpleNamespace(num_blocks=blocks, kv_cache_groups=groups, kv_cache_tensors=allocations)
+        # The engine core sets the startup capacity in its own process, before it
+        # builds the scheduler (engine/core.py:346-351); workers keep None.
+        tokens = (blocks - 1) * block_size
+        scheduler_config = SimpleNamespace(**vars(config))
+        scheduler_config.cache_config = SimpleNamespace(
+            **{**vars(config.cache_config), "kv_cache_size_tokens": tokens, "kv_cache_max_concurrency": tokens / 4096}
+        )
+        scheduler_fields = {"block_size": block_size, "hash_block_size": block_size}
+    else:
+        groups, layers, allocations, attn = [], {}, [], []
+        for index in range(2 if packed else 1):
+            name = f"layer{index}"
+            spec = _typed("vllm.v1.kv_cache_interface", "FullAttentionSpec")
+            spec.block_size = spec.storage_block_size = 16
+            spec.page_size_bytes, spec.sliding_window, spec.dtype = page, None, "torch.bfloat16"
+            spec.kv_quant_mode, spec.num_kv_heads, spec.head_size = mode.NONE, 1, 64
+            layer = _typed("vllm.model_executor.layers.attention", "Attention")
+            layer.kv_cache = Tensor(page * index)
+            layers[name] = layer
+            groups.append(SimpleNamespace(layer_names=[name], kv_cache_spec=spec, is_eagle_group=False))
+            allocations.append(
+                SimpleNamespace(
+                    size=storage.size, shared_by=[name], block_stride=page * 2 if packed else 0, offset=page * index
+                )
+            )
+            attn.append(
+                [SimpleNamespace(layer_names=[name], kv_cache_spec=spec, kv_cache_group_id=index, backend=Backend)]
+            )
+        cache = scheduler_cache = SimpleNamespace(
+            num_blocks=blocks, kv_cache_groups=groups, kv_cache_tensors=allocations
+        )
+        kernel_block_sizes = [16] * len(groups)
     config.compilation_config.static_forward_context = layers
     runner = _typed(
         "vllm.v1.worker.gpu_model_runner" if runner_version == 1 else "vllm.v1.worker.gpu.model_runner",
@@ -232,7 +510,7 @@ def _fake_campaign(tmp_path, monkeypatch, *, packed=False, planar=False, version
     runner.attn_groups = attn
     # The native initialize_kv_cache methods bind different fields. V2 never
     # assigns the private V1 field, even though both classes have the same name.
-    setattr(runner, "_kernel_block_sizes" if runner_version == 1 else "kernel_block_sizes", [16] * len(groups))
+    setattr(runner, "_kernel_block_sizes" if runner_version == 1 else "kernel_block_sizes", kernel_block_sizes)
     block_objects = [SimpleNamespace(block_id=index, is_null=index == 0) for index in range(blocks)]
     pool = SimpleNamespace(
         blocks=block_objects,
@@ -240,11 +518,14 @@ def _fake_campaign(tmp_path, monkeypatch, *, packed=False, planar=False, version
         null_block=block_objects[0],
         get_num_free_blocks=lambda: blocks - 1,
         free_block_queue=SimpleNamespace(get_all_free_blocks=lambda: block_objects[1:]),
+        **({"hash_block_size": scheduler_fields["hash_block_size"]} if scheduler_fields else {}),
     )
     manager = SimpleNamespace(
         block_pool=pool,
         watermark_blocks=0,
-        coordinator=SimpleNamespace(single_type_managers=[SimpleNamespace(block_pool=pool) for group in groups]),
+        coordinator=SimpleNamespace(
+            single_type_managers=[SimpleNamespace(block_pool=pool) for group in cache.kv_cache_groups]
+        ),
     )
 
     class RuntimeWorker:
@@ -271,8 +552,9 @@ def _fake_campaign(tmp_path, monkeypatch, *, packed=False, planar=False, version
 
     class RuntimeScheduler:
         def __init__(self, supplied_config, supplied_cache):
-            assert supplied_config is config and supplied_cache is cache
-            self.vllm_config, self.kv_cache_manager, self._fpm_dp_rank = config, manager, 0
+            assert supplied_config is scheduler_config and supplied_cache is scheduler_cache
+            self.vllm_config, self.kv_cache_manager, self._fpm_dp_rank = scheduler_config, manager, 0
+            vars(self).update(scheduler_fields)
 
     for name in (
         "vllm",
@@ -374,7 +656,7 @@ def _fake_campaign(tmp_path, monkeypatch, *, packed=False, planar=False, version
         assert worker.determine_available_memory() == storage.size + page
         assert worker.initialize_from_config(cache) == "initialized"
         assert worker.compile_or_warm_up_model() == "warmed"
-        adapter.ObservedInstrumentedScheduler(config, cache)
+        adapter.ObservedInstrumentedScheduler(scheduler_config, scheduler_cache)
         paths = sorted(directory.glob("runtime-observation-*.json"))
         reference = lambda path: {
             "path": str(path.relative_to(tmp_path)),
@@ -416,6 +698,11 @@ def test_runtime_records_import_complete_for_source_audited_layouts(tmp_path, mo
         worker = next(record for record in records if record["kind"] == "worker")
         assert worker["cache"]["layer_tensors"]["layer0"]["block_axis"] == (1 if planar else 0)
         assert worker["model_config_sha256"] == campaign.launch["model_config"]["sha256"]
+        # Only vLLM 0.31.0 records carry the new cache evidence.
+        assert all("prefix_caching" not in record["cache"] for record in records)
+        assert all("kv_cache_layout" not in record["raw_cache_config"] for record in records)
+        allocation = worker["raw_cache_config"]["tensor_allocations"][0]
+        assert set(allocation) == {"size", "shared_by", "block_stride", "offset"}
     result = validate_observations(tmp_path / "observations.json", {"worker": campaign.launch})["worker"]
     assert result["status"] == "complete", result["diagnostics"]
 
@@ -525,6 +812,7 @@ def test_runner_mapping_never_guesses_a_compatible_field(tmp_path, monkeypatch, 
             worker,
             observer.legacy.worker_memory(worker),
             campaign.source["runtime"]["source_files"],
+            "0.28.0",
         )
 
 
@@ -680,3 +968,95 @@ def test_missing_model_sidecar_keeps_primary_config_evidence_unresolved(tmp_path
         assert record["unresolved_fields"]
         assert "hf_quant_config.json" in record["error"]
         assert record["model_config_sha256"] == campaign.launch["model_config"]["sha256"]
+
+
+def _glm_campaign(tmp_path, monkeypatch):
+    return _fake_campaign(tmp_path, monkeypatch, version="0.31.0", runner_version=2, layout="glm_tp4")
+
+
+def test_v031_glm_worker_record_is_complete(tmp_path, monkeypatch):
+    campaign = _glm_campaign(tmp_path, monkeypatch)
+    for phase in ("prefill", "decode"):
+        records = campaign.run(phase)
+        assert len(records) == 2
+        assert all(record["unresolved_fields"] == [] for record in records), [record.get("error") for record in records]
+        worker, scheduler = (
+            next(record for record in records if record["kind"] == kind) for kind in ("worker", "scheduler")
+        )
+        cache = worker["cache"]
+        assert [group["kind"] for group in cache["groups"]] == ["attention"] + ["state"] * 5
+        assert cache["prefix_caching"] == {"enable_prefix_caching": True, "mamba_cache_mode": "align"}
+        views = cache["layer_tensors"]
+        assert all(isinstance(layer, list) for layer in views.values())
+        assert [len(layer) for name, layer in views.items() if name.endswith(".kda")] == [2] * 34
+        kernels = {}
+        for name, layer in views.items():
+            kernels.setdefault(name.rsplit(".", 1)[1], set()).update(view["kernel_block_size_tokens"] for view in layer)
+        assert kernels == {"mla": {64}, "indexer": {128}, "tail": {4}, "kda": {2176}}
+        assert {view["block_axis"] for layer in views.values() for view in layer} == {0}
+        # The SSM state starts after the 36,864-byte convolution state of the page.
+        assert [view["storage_offset_bytes"] for view in views["layers.0.kda"]] == [0, 36_864]
+        allocation = cache["tensor_allocations"][0]
+        assert (allocation["layers"], allocation["layer_stride"]) == (["layers.3.mla"], 8_912_896)
+        assert worker["raw_cache_config"]["kv_cache_layout"] == "LBHNC"
+        assert worker["raw_cache_config"]["tensor_allocations"][0]["layer_stride"] == 8_912_896
+        assert scheduler["cache"]["prefix_caching"] == {
+            "enable_prefix_caching": True,
+            "mamba_cache_mode": "align",
+            "block_size": 2176,
+            "hash_block_size": 2176,
+        }
+        # The startup capacity is engine-core evidence of the scheduler record only.
+        assert (scheduler["cache"]["kv_cache_size_tokens"], scheduler["cache"]["kv_cache_max_concurrency"]) == (
+            15_232,
+            3.71875,
+        )
+
+
+def test_v031_view_shape_mismatch_is_unresolved(tmp_path, monkeypatch):
+    campaign = _glm_campaign(tmp_path, monkeypatch)
+    campaign.config.compilation_config.static_forward_context["layers.3.mla"].kv_cache.shape = [270, 1, 64, 512]
+    worker = next(record for record in campaign.run() if record["kind"] == "worker")
+    assert worker["unresolved_fields"] == ["cache.layer_tensors"]
+    assert "layers.3.mla" in worker["error"]
+
+
+def test_v031_indexer_storage_block_is_the_kernel_block(tmp_path, monkeypatch):
+    campaign = _glm_campaign(tmp_path, monkeypatch)
+    records = campaign.run("prefill")
+    assert all(record["unresolved_fields"] == [] for record in records)
+    worker = next(record for record in records if record["kind"] == "worker")
+    assert worker["cache"]["layer_tensors"]["layers.3.indexer"][0]["kernel_block_size_tokens"] == 128
+    # Only the sparse MLA indexer stores its tokens in blocks other than the cache block.
+    latent = campaign.cache.kv_cache_groups[0].kv_cache_spec.kv_cache_specs["layers.3.mla"]
+    latent.storage_block_size = 128
+    for record in campaign.run("decode"):
+        assert "cache.groups" in record["unresolved_fields"]
+        assert "compressed cache storage" in record["error"]
+
+
+def test_v031_backend_module_outside_the_manifest_is_unresolved(tmp_path, monkeypatch):
+    campaign = _glm_campaign(tmp_path, monkeypatch)
+    campaign.adapter.ObservedWorker().model_runner.attn_groups[2][0].backend.__module__ = "vendor.kda_backend"
+    worker = next(record for record in campaign.run() if record["kind"] == "worker")
+    assert "cache.layer_tensors" in worker["unresolved_fields"]
+    assert "backend source" in worker["error"]
+
+
+@pytest.mark.parametrize("change", ["host_resident", "role", "enable_kv_transfer", "tensor"])
+def test_v031_hisparse_placement_is_unresolved(tmp_path, monkeypatch, change):
+    campaign = _glm_campaign(tmp_path, monkeypatch)
+    # The worker and scheduler cache configs share the Mamba groups and the tensors.
+    group = campaign.cache.kv_cache_groups[2]
+    if change == "host_resident":
+        group.host_resident = True
+    elif change == "role":
+        group.role = type(group.role)["HISPARSE_SOURCE"]
+    elif change == "enable_kv_transfer":
+        group.enable_kv_transfer = False
+    else:
+        campaign.cache.kv_cache_tensors[0].host_resident = True
+    name = "tensor placement for ['layers.3.mla']" if change == "tensor" else "group placement for ['layers.0.kda',"
+    for record in campaign.run():
+        assert "cache.groups" in record["unresolved_fields"]
+        assert name in record["error"]
