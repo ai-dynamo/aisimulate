@@ -433,6 +433,54 @@ def test_parallel_batch_uses_worker_sized_timeout_waves(monkeypatch):
     assert pools[0].shutdown_wait is False
 
 
+def test_parallel_results_are_recorded_in_suggestion_order(monkeypatch):
+    branch = _branch(_pc())
+    _stub(monkeypatch, branch)
+    submitted = []
+    sampler_seen = {}
+
+    class ImmediateFuture:
+        def __init__(self, result):
+            self._result = result
+
+        def result(self):
+            return self._result
+
+    class FakeProcessPool:
+        def __init__(self, *, initializer, initargs, **kwargs):
+            self._processes = {}
+            initializer(*initargs)
+
+        def submit(self, function, *args):
+            submitted.append(ImmediateFuture(function(*args)))
+            return submitted[-1]
+
+        def shutdown(self, *, wait, cancel_futures):
+            pass
+
+    def last_submitted_first(pending, *, timeout, return_when):
+        latest = max(pending, key=submitted.index)
+        return {latest}, set(pending) - {latest}
+
+    def factory(branch, study_id, objectives=None):
+        sampler_seen["sampler"] = _FakeSampler(branch, study_id, objectives)
+        return sampler_seen["sampler"]
+
+    monkeypatch.setattr(search_mod, "ProcessPoolExecutor", FakeProcessPool)
+    monkeypatch.setattr(search_mod, "wait", last_submitted_first)
+
+    result = Sweeper(runner_factory=_FakeRunnerFactory(), sampler_factory=factory, show_progress=False).run(
+        _config(parallel_evals=3, max_eval_seconds=10), top_n=None
+    )
+
+    assert [(record.candidate_id, record.score) for record in result.candidates] == [
+        ("candidate-000001", 256.0),
+        ("candidate-000002", 512.0),
+        ("candidate-000003", 768.0),
+    ]
+    assert sampler_seen["sampler"].scored == [{"objective": 256.0}, {"objective": 512.0}, {"objective": 768.0}]
+
+
 def test_timed_out_wave_is_gated_and_pool_is_replaced(monkeypatch):
     branch = _branch(_pc())
     _stub(monkeypatch, branch)

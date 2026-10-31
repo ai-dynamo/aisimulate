@@ -1148,6 +1148,23 @@ def _worker_eval(spec: ReplaySpec) -> _ReplayEvaluation:
     return _run_replay_detailed(spec, _WORKER_CTX["runner"], _WORKER_CTX.get("output_requirements"))
 
 
+def _in_suggestion_order(todo, results):
+    """Yield a batch's ``(suggestion, result)`` pairs in ``todo`` order, each as soon as
+    every earlier suggestion has finished, so candidate ids, the ledger and optimizer
+    feedback do not depend on which worker finished first.
+    """
+    position = {id(suggestion): index for index, (suggestion, _) in enumerate(todo)}
+    finished: dict[int, Any] = {}
+    next_position = 0
+    for suggestion, result in results:
+        finished[position[id(suggestion)]] = (suggestion, result)
+        while next_position in finished:
+            yield finished.pop(next_position)
+            next_position += 1
+    for index in sorted(finished):
+        yield finished[index]
+
+
 class Sweeper:
     """Compose and execute isolated backend-neutral configuration sweeps.
 
@@ -1200,7 +1217,7 @@ class Sweeper:
         ``on_candidate``, when provided, is invoked once per recorded candidate
         outcome (feasible, infeasible, unsupported, resource-limited, timed-out, or
         failed) with a deep copy of the ``CandidateRecord`` appended to the run's
-        candidate ledger, in evaluation order. The copy is detached: mutating it
+        candidate ledger, in suggestion order. The copy is detached: mutating it
         has no effect on the ledger used to build ``SweepResult``. It complements
         ``on_round``, which only reports the cumulative feasible-candidate list at
         round boundaries.
@@ -1784,7 +1801,7 @@ class Sweeper:
                         todo.append((suggestion, prepared))
                         prepared_by_key[key] = prepared
 
-                    for suggestion, evaluation in _eval_batch(todo):
+                    for suggestion, evaluation in _in_suggestion_order(todo, _eval_batch(todo)):
                         candidate = evaluation.candidate
                         observe_metrics = evaluation.observe_metrics
                         outcome = evaluation.outcome
