@@ -286,6 +286,15 @@ def _validate_record(
     if config.get("speculative_config") is not None or config.get("kv_transfer_config") is not None:
         raise ValueError("speculative or transferred cache semantics are unsupported")
     model = config["model_config"]
+    # The observer hashes the loaded config.json only for the auto and hf formats
+    # (runtime/instrumentation/observer.py:78-80). Each scheduler's resolved model settings must equal the worker's
+    # (runtime_memory._validate_scheduler_config).
+    if (
+        kind == "worker"
+        and runtime_memory._layer_strided(record["cache"])
+        and model.get("config_format", "auto") not in ("auto", "hf")
+    ):
+        raise ValueError(f"loaded config format requires another source mapping: {model['config_format']}")
     if not _matches_model_path(model.get("model"), launch):
         raise ValueError("observed model path differs from the selected deployment")
     revision = launch["identity"]["model_revision"]
@@ -621,12 +630,14 @@ def _layer_strided_views(
         ):
             raise ValueError("allocation plan differs from actual backing storage")
         names = allocation.get("layers")
+        # The observer writes shared_by from the same list as layers (runtime/fpm_memory_observer.py:709-717).
         if (
             not isinstance(names, list)
             or not names
             or any(not isinstance(name, str) or name not in layer_groups for name in names)
             or len(set(names)) != len(names)
             or views.keys() & set(names)
+            or allocation.get("shared_by") != names
         ):
             raise ValueError("allocation plan has missing, duplicate or unknown layers")
         offset = _nonnegative(allocation.get("offset"), "allocation byte offset")
@@ -689,8 +700,11 @@ def _physical_views(
         or scheduled["null_block_id"] not in reserved
     ):
         raise ValueError("scheduler permanent reservation IDs do not account for usable blocks")
-    groups = runtime_memory._normalized_groups(cache, scheduled, page)
     strided = runtime_memory._layer_strided(cache)
+    # A vLLM 0.31.0 scheduler reserves only the null block (runtime/instrumentation/observer.py:429-435).
+    if strided and reserved != [scheduled["null_block_id"]]:
+        raise ValueError("additional initialized reservations lack an audited permanent-reservation mapping")
+    groups = runtime_memory._normalized_groups(cache, scheduled, page)
     layer_groups = {}
     for group_id, group in enumerate(cache["groups"]):
         # _normalized_groups accepts every table class, but vLLM 0.27.0 and 0.28.0 records hold only the legacy ones.
@@ -760,6 +774,13 @@ def _physical_views(
             raise ValueError("initialized kernel block sizes do not cover every cache group")
         for kernel in kernels:
             _positive(kernel, "kernel block size")
+        # The observer reads that list only from the two audited native runners
+        # (runtime/instrumentation/observer.py:329-334).
+        if runner.get("class") not in (
+            "vllm.v1.worker.gpu_model_runner.GPUModelRunner",
+            "vllm.v1.worker.gpu.model_runner.GPUModelRunner",
+        ):
+            raise ValueError(f"model runner has no audited cache mapping: {runner.get('class')}")
         _layer_strided_views(allocations, tensors, storages, layer_groups, count, precision, kernels)
         return groups, accounting
     covered, used_storage = set(), set()
@@ -923,6 +944,11 @@ def _phase_prefix_caching(
                 [cache.get(name) for name in sizes]
             ):
                 raise ValueError("runtime prefix-caching evidence contradicts the scheduler block sizes")
+            # The scheduler also records the mode of its resolved cache config (runtime/fpm_memory_observer.py:820).
+            if canonical_json(cache["prefix_caching"]["mamba_cache_mode"]) != canonical_json(
+                cache.get("mamba_cache_mode")
+            ):
+                raise ValueError("runtime prefix-caching evidence contradicts the resolved cache settings")
     return {
         "enable_prefix_caching": scheduled["enable_prefix_caching"],
         "mamba_cache_mode": scheduled["mamba_cache_mode"],

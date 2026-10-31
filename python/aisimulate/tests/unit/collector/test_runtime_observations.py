@@ -1785,6 +1785,81 @@ def test_v031_runner_kernel_blocks_must_cover_every_cache_group(tmp_path, change
     assert result["diagnostics"] == [f"tp2: {diagnostic}"]
 
 
+def _uniform(record, index, name, spec_type):
+    """Make group ``index`` of a worker record a uniform group and give layer ``name`` another spec class."""
+    group = record["cache"]["groups"][index]
+    # The page of a uniform group holds both layer pages. The scheduler copy keeps the first inner spec
+    # (kv_cache_utils.py:2434-2440), so it still matches.
+    group.update(spec_type=_V031_SPEC + "UniformTypeKVCacheSpecs", spec_page_size_bytes=16_384)
+    group["layer_specs"][name] = {**group["layer_specs"][name], "spec_type": _V031_SPEC + spec_type}
+
+
+@pytest.mark.parametrize(
+    "case,diagnostic",
+    [
+        ("config_format_hf", None),
+        ("allocation_shared_by", "allocation plan has missing, duplicate or unknown layers"),
+        ("scheduler_mamba_mode", "runtime prefix-caching evidence contradicts the resolved cache settings"),
+        ("extra_reservation", "additional initialized reservations lack an audited permanent-reservation mapping"),
+        ("config_format", "loaded config format requires another source mapping: mistral"),
+        (
+            "runner_class",
+            "model runner has no audited cache mapping: vllm.v1.worker.cpu_model_runner.CPUModelRunner",
+        ),
+        ("window_mix", "cache group layers disagree on sliding window"),
+        ("state_mix", "cache group layers disagree on state evidence"),
+    ],
+    ids=[
+        "config_format_hf",
+        "allocation_shared_by",
+        "scheduler_mamba_mode",
+        "extra_reservation",
+        "config_format",
+        "runner_class",
+        "window_mix",
+        "state_mix",
+    ],
+)
+def test_v031_records_must_hold_what_the_observer_guarantees(tmp_path, case, diagnostic):
+    path, launches = observation_fixture(tmp_path, layout="mamba_hybrid")
+
+    def edit(record):
+        cache, worker = record["cache"], record["kind"] == "worker"
+        if case.startswith("config_format"):
+            # Every process records the format. The observer hashes config.json only for auto and hf.
+            record["resolved_config"]["model_config"]["config_format"] = "hf" if case.endswith("_hf") else "mistral"
+        elif case == "allocation_shared_by" and worker:
+            # The observer writes shared_by and layers from one list.
+            allocation = next(item for item in cache["tensor_allocations"] if item["layers"] == ["attn.0", "attn.1"])
+            allocation["shared_by"] = ["attn.0"]
+        elif case == "scheduler_mamba_mode" and (record["phase"], record["kind"], record["dp_rank"]) == (
+            "prefill",
+            "scheduler",
+            0,
+        ):
+            # The scheduler records the mode of its cache config next to its evidence.
+            cache["mamba_cache_mode"] = "none"
+        elif case == "extra_reservation" and not worker:
+            # A second permanent reservation, counted consistently, which the observer never writes.
+            cache.update(permanent_reserved_block_ids=[0, 1], reserved_blocks=2, initial_free_blocks=8)
+        elif case == "runner_class" and worker:
+            cache["model_runner"]["class"] = "vllm.v1.worker.cpu_model_runner.CPUModelRunner"
+        elif case == "window_mix" and worker:
+            # A full-attention and a sliding-window layer in one uniform group without a window.
+            _uniform(record, 0, "attn.1", "SlidingWindowSpec")
+        elif case == "state_mix" and worker:
+            # A Mamba layer and a circular-buffer layer in one uniform state group with Mamba state evidence.
+            _uniform(record, 1, "mamba.2", "CircularBufferSpec")
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    if diagnostic is None:
+        assert result["status"] == "complete", result["diagnostics"]
+        return
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == [f"tp2: {diagnostic}"]
+
+
 @pytest.mark.parametrize("spec", ["MLAAttentionSpec", "MambaSpec"])
 def test_legacy_records_refuse_classes_outside_the_legacy_allow_list(tmp_path, spec):
     path, launches = observation_fixture(tmp_path)

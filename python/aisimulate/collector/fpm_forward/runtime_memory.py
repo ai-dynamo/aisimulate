@@ -609,6 +609,13 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
             raise ValueError("full-attention cache cannot declare sliding retention")
         if kind == "convolution" and window != 4:
             raise ValueError("runtime memory cache kind is unsupported")
+        # The observer refuses a vLLM 0.31.0 group whose layers disagree on the window or on the state evidence
+        # (runtime/fpm_memory_observer.py:545, :563). Only a window spec class has a window, and only a MambaSpec
+        # has Mamba state fields, so a group cannot mix such a class with another.
+        if strided and len({value.removeprefix(_SPEC_MODULE) in _WINDOW_SPECS for value in spec_classes}) > 1:
+            raise ValueError("cache group layers disagree on sliding window")
+        if strided and len({value == _MAMBA_SPEC for value in spec_classes}) > 1:
+            raise ValueError("cache group layers disagree on state evidence")
         classes = group.get("layer_classes")
         if (
             not isinstance(classes, dict)
