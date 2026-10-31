@@ -143,7 +143,11 @@ class TestCheckCompat:
 # ---------------------------------------------------------------------------
 @pytest.mark.unit
 class TestExactVersionSet:
-    """``_check_compat``'s grammar is AND-of-comparators only (see
+    """Grammar semantics only: collector modules no longer use this form (one
+    exact ``==`` pin per file, layer_permissions.md "Version contract"); the
+    tests below keep ``_check_compat``'s range/``!=`` behaviour documented.
+
+    ``_check_compat``'s grammar is AND-of-comparators only (see
     ``_parse_compat_specifier``): no OR, so a __compat__ string can never
     directly express a discrete set like "0.5.14 or 0.5.17". When a module's
     verified-compatible versions are non-contiguous -- e.g.
@@ -443,31 +447,20 @@ class TestBuildCollections:
             "get_func",
             "run_func",
             "perf_filename",
-            "worker_perf_filename",
+            "extra_perf_filenames",
+            "run_kwargs",
             "unverified",
             "unverified_sms",
         }
+        assert c["extra_perf_filenames"] == ()
+        assert c["run_kwargs"] == ()
         assert c["name"] == "vllm"
         assert c["unverified"] is False
         assert c["unverified_sms"] == ()
-        assert c["worker_perf_filename"] is None
 
     def test_perf_filename_propagated(self):
         colls = build_collections(self.SAMPLE_REGISTRY, "vllm", "0.17.0", ops=["gemm"])
         assert colls[0]["perf_filename"] == PerfFile.GEMM
-
-    def test_worker_filename_keeps_canonical_output_filename(self):
-        entry = OpEntry(
-            op="dsa_context_module_skip_indexer",
-            module="collector.sglang.collect_mla_module",
-            get_func="get_dsa_context_module_skip_indexer_test_cases",
-            run_func="run_mla_module_worker",
-            perf_filename=PerfFile.DSA_CONTEXT_MODULE,
-            worker_perf_filename=PerfFile.DSA_CONTEXT_MODULE_SKIP_INDEXER,
-        )
-        collection = build_collections([entry], "sglang", "0.5.14")[0]
-        assert collection["perf_filename"] == PerfFile.DSA_CONTEXT_MODULE
-        assert collection["worker_perf_filename"] == PerfFile.DSA_CONTEXT_MODULE_SKIP_INDEXER
 
 
 # ---------------------------------------------------------------------------

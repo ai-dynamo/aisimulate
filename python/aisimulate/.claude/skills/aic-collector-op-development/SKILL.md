@@ -54,8 +54,9 @@ If the task proceeds to GPU collection, also use `$aic-auto-collect`.
   plan selection required by the resolved case plan. Generic resume, retry,
   checkpoint, logging, and output-finalization behavior require separate
   explicit scope.
-- Anchor collector behavior to the requested framework version. Prefer one
-  verified `__compat__`/version route over speculative multi-version branches.
+- Anchor collector behavior to the requested framework version: pin exactly
+  one release (`__compat__ = "<fw>==<version>"`, see the "Version contract"
+  section of `.claude/rules/collector/layer_permissions.md`).
 
 ## Step 1: Establish the consumer contract
 

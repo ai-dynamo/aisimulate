@@ -65,7 +65,7 @@ deployment.json: |-
           "--max-batch-size",
           "8",
           "--max-num-tokens",
-          "32",
+          "64",
           "--extra-engine-args",
           "decode_config.yaml",
           "--gpus-per-node",
@@ -129,7 +129,7 @@ decode_config.yaml: |
   enable_attention_dp: false
   enable_chunked_prefill: false
   max_batch_size: 8
-  max_num_tokens: 32
+  max_num_tokens: 64
   kv_cache_config:
     free_gpu_memory_fraction: 0.8
     dtype: auto

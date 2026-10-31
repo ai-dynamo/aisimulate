@@ -16,6 +16,8 @@ model_paths:
   - nvidia/GLM-5.2-NVFP4
   # GLM-5.3: the plain zai-org repository is the FP8-block release and the
   # BF16 weights carry the -BF16 suffix (no zai-org/GLM-5.3-FP8 exists).
+  # Do not spell the non-existent name here: the roster derives the coverage
+  # floor from repo mentions in these files.
   - zai-org/GLM-5.3
   - zai-org/GLM-5.3-BF16
   - nvidia/GLM-5.3-NVFP4
@@ -207,11 +209,15 @@ model_case_values:
         - zai-org/GLM-5.2
         - zai-org/GLM-5.2-FP8
         - nvidia/GLM-5.2-NVFP4
-        - zai-org/GLM-5.3
         - zai-org/GLM-5.3-BF16
+        - zai-org/GLM-5.3
         - nvidia/GLM-5.3-NVFP4
       attention_type: dsa
       native_num_heads: 64
+      # Real tensor-parallel shards (model-correlated narrowing): per-rank
+      # heads = 64 // tp (64/32/16/8/4); the shared inner head grid's 128 and
+      # 96/48/24/12 entries are not GLM-5.x shards.
+      tensor_parallel_sizes: [1, 2, 4, 8, 16]
 
 framework_specific_model_case_values:
   vllm:
@@ -226,6 +232,7 @@ framework_specific_model_case_values:
         architecture: GlmMoeDsaForCausalLM
         attention_type: dsa
         native_num_heads: 64
+        tensor_parallel_sizes: [1, 2, 4, 8, 16]
 
 all_frameworks_op_cases:
   gemm:
@@ -238,8 +245,6 @@ framework_specific_op_cases:
     dsa_context_module:
       cases: all
     dsa_generation_module:
-      cases: all
-    moe_ep:
       cases: all
   vllm:
     dsa_context_module:

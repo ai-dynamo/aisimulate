@@ -87,6 +87,13 @@ model_case_values:
         - nvidia/MiniMax-M3-NVFP4
       attention_type: msa
       native_num_heads: 64
+      # Real shards only (owner decision 2026-09-29): the MSA collectors
+      # derive per-rank heads as 64 // tp -> 64/32/16/8/4 (kv/index heads
+      # 4/2/1/1/1). The shared 12-value head grid also produced 128/96/48/
+      # 24/12, which no M3 deployment reaches; 48 and 96 shard to 3/6 index
+      # heads and only ever failed the decode scorer's power-of-2 tile.
+      # TP 16 is the ceiling anyone runs this model at.
+      tensor_parallel_sizes: [1, 2, 4, 8, 16]
 
 all_frameworks_op_cases:
   gemm:
