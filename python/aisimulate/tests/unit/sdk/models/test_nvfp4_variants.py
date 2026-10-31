@@ -3,6 +3,7 @@
 
 """Coverage for the current NVIDIA NVFP4 support-matrix checkpoints."""
 
+import contextlib
 import dataclasses
 import hashlib
 from pathlib import Path
@@ -15,6 +16,7 @@ from aisimulate.sdk.models import get_model
 from aisimulate.sdk.operations import OverlapOp
 from aisimulate.sdk.task_v2 import Task
 from aisimulate.sdk.utils import get_model_config_from_model_path
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 pytestmark = pytest.mark.unit
 
@@ -337,8 +339,9 @@ def test_qwen35_nvfp4_v2_bundle_is_the_pinned_upstream_bytes(suffix):
     assert hashlib.sha256(data).hexdigest() == QWEN35_NVFP4_V2_SHA256[suffix]
 
 
-def _get_qwen35_nvfp4_v2(monkeypatch, backend, nextn=0):
-    """Build the V2 model from the bundled config with the hub download helpers patched out."""
+@contextlib.contextmanager
+def _offline_bundle(monkeypatch):
+    """Patch the hub download helpers out and clear the model-config caches around a bundled-config load."""
     import aisimulate.sdk.utils as sdk_utils
     from aisimulate_core.sdk.models.helpers import _get_model_info
 
@@ -347,16 +350,22 @@ def _get_qwen35_nvfp4_v2(monkeypatch, backend, nextn=0):
 
     monkeypatch.setattr(sdk_utils, "_download_hf_config", _no_network)
     monkeypatch.setattr(sdk_utils, "_download_hf_json", _no_network)
-    model_config = _model_config()
-    model_config.nextn = nextn
     caches = (sdk_utils.get_model_config_from_model_path, sdk_utils._load_model_config_from_model_path, _get_model_info)
     for cached in caches:
         cached.cache_clear()
     try:
-        return get_model(QWEN35_NVFP4_V2, model_config, backend_name=backend)
+        yield
     finally:
         for cached in caches:
             cached.cache_clear()
+
+
+def _get_qwen35_nvfp4_v2(monkeypatch, backend, nextn=0):
+    """Build the V2 model from the bundled config with the hub download helpers patched out."""
+    model_config = _model_config()
+    model_config.nextn = nextn
+    with _offline_bundle(monkeypatch):
+        return get_model(QWEN35_NVFP4_V2, model_config, backend_name=backend)
 
 
 def _flatten_ops(phase_ops):
@@ -443,6 +452,84 @@ def test_qwen35_nvfp4_v2_mtp_scales_only_generation_ops(backend, nextn, monkeypa
         assert mtp_by_name.keys() == base_by_name.keys()
         for name, op in mtp_by_name.items():
             assert op._scale_factor == pytest.approx(base_by_name[name]._scale_factor * expected), name
+
+
+def _qwen35_nvfp4_v2_static_phase(monkeypatch, *, prefill, batch_size, nextn=0):
+    """Per-op diagnostics of one static phase, from the V2 engine compiled on the b200_sxm SGLang 0.5.14 tables.
+
+    Those packaged tables hold NVFP4 MoE rows for 512 experts at top-10, per-tensor FP8 and BF16 GEMM rows, and
+    the FP8 compute-scale rows that the fp8_static path subtracts. The shared layer is off, so no row comes from
+    another version. In SILICON mode a missing row raises, and op_level with fallback denied permits no other
+    estimator.
+    """
+    with _offline_bundle(monkeypatch):
+        model = RustForwardPassPerfModel.best_available(
+            ForwardPassPerfModelConfig(
+                model=QWEN35_NVFP4_V2,
+                system="b200_sxm",
+                backend="sglang",
+                backend_version="0.5.14",
+                worker_type="aggregated",
+                tp=4,
+                moe_tp_size=4,
+                moe_ep_size=1,
+                nextn=nextn,
+                database_mode="SILICON",
+                estimation_mode="op_level",
+                fallback_policy="deny",
+                enable_shared_layer=False,
+            )
+        )
+        try:
+            ops = model.static_phase_diagnostics(prefill=prefill, batch_size=batch_size, context_length=1024)
+        finally:
+            model.close()
+    return {op["name"]: op for op in ops}
+
+
+def test_qwen35_nvfp4_v2_engine_prices_each_lane_from_the_packaged_tables(monkeypatch):
+    prefill = _qwen35_nvfp4_v2_static_phase(monkeypatch, prefill=True, batch_size=1)
+    decode = _qwen35_nvfp4_v2_static_phase(monkeypatch, prefill=False, batch_size=8)
+
+    # The GDN, full-attention and shared-expert projections take the fp8_static path: per-tensor FP8 GEMM rows
+    # minus the compute-scale rows. The engine labels every fp8_static result "estimated" by construction
+    # (GemmOp::query in crates/core/src/perfmodel/operators/gemm.rs).
+    projections = ("gdn_in_proj_gemm", "gdn_in_proj_ba_gemm", "gdn_out_proj_gemm", "qkv_gemm", "proj_gemm")
+    shared_experts = (
+        "gdn_shared_gate_up_gemm",
+        "gdn_shared_down_gemm",
+        "full_shared_gate_up_gemm",
+        "full_shared_down_gemm",
+    )
+    for name in projections + shared_experts:
+        assert prefill[f"context_{name}"]["source"] == "estimated", name
+    for name in projections:
+        assert decode[f"generation_{name}"]["source"] == "estimated", name
+    # The routed experts read measured NVFP4 MoE rows, and the router and lm_head GEMMs read measured BF16 GEMM
+    # rows; the graph test above pins their quant modes.
+    for name in ("gdn_moe", "full_moe", "gdn_router_gemm", "full_router_gemm", "logits_gemm"):
+        assert prefill[f"context_{name}"]["source"] == "silicon", name
+    assert decode["generation_logits_gemm"]["source"] == "silicon"
+    # SGLang decode nests the router, the routed experts and the shared experts in one overlap op per layer type.
+    # The engine reports that op under one label merged from its members, so prefill pins their lanes.
+    for name in ("generation_gdn_moe_overlap", "generation_full_moe_overlap"):
+        assert decode[name]["source"] == "mixed", name
+
+
+def test_qwen35_nvfp4_v2_engine_scales_each_decode_op_by_the_mtp_factor(monkeypatch):
+    # The engine multiplies the decode batch by (nextn + 1), so nextn=1 at batch 4 and nextn=0 at batch 8 query
+    # every decode op at the same shape. The nextn=1 estimate then differs only by the (nextn + L) / L decode
+    # scale for L = 60 decoder layers.
+    num_layers = 60
+    scale = (1 + num_layers) / num_layers
+    base = _qwen35_nvfp4_v2_static_phase(monkeypatch, prefill=False, batch_size=8)
+    mtp = _qwen35_nvfp4_v2_static_phase(monkeypatch, prefill=False, batch_size=4, nextn=1)
+
+    assert mtp.keys() == base.keys()
+    # With pp=1 only the P2P op prices at zero, so every other op's comparison below has a nonzero base.
+    assert {name for name, op in base.items() if op["latency_ms"] == 0} == {"generation_p2p"}
+    for name, op in mtp.items():
+        assert op["latency_ms"] == pytest.approx(base[name]["latency_ms"] * scale, rel=1e-9), name
 
 
 def test_gemma4_exclusions_keep_attention_and_mlp_bf16():
