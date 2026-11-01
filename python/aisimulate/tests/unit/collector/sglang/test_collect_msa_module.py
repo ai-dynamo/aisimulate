@@ -117,13 +117,18 @@ def test_the_run_takes_its_points_from_the_plan_row(monkeypatch):
         run([])
 
 
-def test_subprocess_keeps_the_kernel_limit_class_of_refused_points(monkeypatch):
+@pytest.mark.parametrize("rank", ["", "[rank0]: "])
+def test_subprocess_keeps_the_kernel_limit_class_of_refused_points(monkeypatch, rank):
     mod = _import_module(monkeypatch)
     refusal = "FIXME(kernel-limit): 1/2 point(s) refused: b=2 s=8192 prefix=0: does not fit"
 
     def child(argv, *, env, cwd, timeout):
-        output = f'Traceback (most recent call last):\n  File "<string>", line 3\nRuntimeError: {refusal}\n'
-        return 1, (output + "[W] destroy_process_group() was not called before exit\n").encode()
+        output = (
+            f"{rank}Traceback (most recent call last):\n"
+            f'{rank}  File "<string>", line 3\n'
+            f"{rank}RuntimeError: {refusal}\n"
+        )
+        return 1, (output + "[rank0]:[W1101] destroy_process_group() was not called before exit\n").encode()
 
     monkeypatch.setattr(mod, "run_measurement_subprocess", child)
     with pytest.raises(RuntimeError) as exc:

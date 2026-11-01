@@ -2838,9 +2838,11 @@ def _run_mla_subprocess(
         # Points the device refused end the subprocess on one classified exception
         # line, the first unindented line of its last traceback (output printed at
         # interpreter exit may follow it); keep its kernel-limit classification.
-        tracebacks = [index for index, line in enumerate(lines) if line.startswith("Traceback ")]
+        # torch.distributed prefixes each line of a rank's output with "[rankN]: ".
+        plain = [line.split("]: ", 1)[1] if line.startswith("[rank") and "]: " in line else line for line in lines]
+        tracebacks = [index for index, line in enumerate(plain) if line.startswith("Traceback ")]
         error = (
-            next((line for line in lines[tracebacks[-1] + 1 :] if not line.startswith(" ")), "") if tracebacks else ""
+            next((line for line in plain[tracebacks[-1] + 1 :] if not line.startswith(" ")), "") if tracebacks else ""
         )
         if error.startswith(f"RuntimeError: {_KERNEL_LIMIT}"):
             raise RuntimeError(error.removeprefix("RuntimeError: "))

@@ -707,16 +707,21 @@ class TestFailClosedOrchestration:
         with pytest.raises(RuntimeError, match=r"DSA module context has no points"):
             run([])
 
-    def test_subprocess_keeps_the_kernel_limit_class_of_refused_points(self, monkeypatch):
+    @pytest.mark.parametrize("rank", ["", "[rank0]: "])
+    def test_subprocess_keeps_the_kernel_limit_class_of_refused_points(self, monkeypatch, rank):
         mod = _import_module()
         refusal = "FIXME(kernel-limit): 1/2 point(s) refused: b=2 s=8192 prefix=0: does not fit"
         launched = {}
 
         def child(argv, *, env, cwd, timeout):
             launched["code"] = argv[-1]
-            output = f'Traceback (most recent call last):\n  File "<string>", line 3\nRuntimeError: {refusal}\n'
+            output = (
+                f"{rank}Traceback (most recent call last):\n"
+                f'{rank}  File "<string>", line 3\n'
+                f"{rank}RuntimeError: {refusal}\n"
+            )
             # Output printed at interpreter exit follows the traceback.
-            return 1, (output + "[W] destroy_process_group() was not called before exit\n").encode()
+            return 1, (output + "[rank0]:[W1101] destroy_process_group() was not called before exit\n").encode()
 
         monkeypatch.setattr(mod, "run_measurement_subprocess", child)
         with pytest.raises(RuntimeError) as exc:
