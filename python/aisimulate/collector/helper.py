@@ -114,15 +114,23 @@ def worker_heartbeat() -> None:
 
 def _die_with_worker_preexec():
     """A Popen preexec_fn that gives the child SIGKILL when the launching worker dies
-    (Linux PR_SET_PDEATHSIG), or None elsewhere. prctl is resolved here, in the parent,
-    so the forked child only makes the call."""
+    (Linux PR_SET_PDEATHSIG), or None elsewhere. prctl and the worker pid are resolved
+    here, in the parent, so the forked child only makes the calls.
+
+    A worker that dies between the fork and the prctl call has already reparented the
+    child, which then never gets the signal; so the child exits itself when its parent
+    is no longer the worker. PDEATHSIG follows the thread that forked the child, which
+    is the worker's main thread: run_measurement_subprocess is only called from there."""
     if not sys.platform.startswith("linux"):
         return None
     prctl = ctypes.CDLL(None, use_errno=True).prctl
     pr_set_pdeathsig = 1
+    worker_pid = os.getpid()
 
     def _preexec():
         prctl(pr_set_pdeathsig, signal.SIGKILL)
+        if os.getppid() != worker_pid:
+            os._exit(1)
 
     return _preexec
 
