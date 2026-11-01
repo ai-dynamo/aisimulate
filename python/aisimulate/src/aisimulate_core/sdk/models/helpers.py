@@ -967,7 +967,9 @@ def _infer_quant_modes_from_raw_config(raw_config: dict, architecture: str | Non
     elif kv_cache_algo is not None:
         raise ValueError(f"Unsupported kv cache algorithm: {kv_cache_algo}")
 
-    # DSV4 sparse attention requires FP8 KV cache across all backends.
+    # DSV4 is served with an FP8 KV cache: the packed fp8_ds_mla pool on Hopper and
+    # the plain FP8 pool elsewhere (TRT-LLM's recommended configuration, SGLang's
+    # default). A BF16 pool boots on Blackwell too; model it with an explicit kv=bf16.
     if architecture in {"DeepseekV4ForCausalLM", "DeepseekV41ForCausalLM"}:
         overrides["kvcache_quant_mode"] = common.KVCacheQuantMode.fp8
 

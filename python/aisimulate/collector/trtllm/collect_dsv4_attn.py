@@ -166,24 +166,20 @@ _KV_CACHE_DTYPE_LABELS = {"bf16": "bfloat16", "bfloat16": "bfloat16", "fp8": "fp
 
 
 def _serving_kv_cache_dtype() -> str:
-    """KV pool dtype the deployment actually serves DSV4 with on this SM.
+    """KV pool dtype serving uses for DSV4: FP8 on every SM.
 
-    Hopper (and the documented SM120/121 path) serve the packed fp8_ds_mla sparse-MLA pool.
-    On SM100 the generator's same facts (kv_cache_config.dtype fp8_ds_mla, page 128) are NOT
-    servable with 1.3.0rc29: the manager first demands tokens_per_block=256, then the fp8_ds_mla
-    sparse GENERATION step has no FMHA library ("No TRT-LLM attention FMHA library supports this
-    request"); the only configuration that boots is kv dtype auto -> bf16 (DeepseekV4CacheManager
-    BF16), which serves fmhaSm100f QkvBfloat16 ... DynamicTokenSparse cubins (B200 2026-10-04,
-    opharness finding sm100_trtllm_dsv4_facts_unservable_2026_10_04). Mirror that: the sm100
-    collector lane is bf16-KV; the perf row carries kv_cache_dtype accordingly, spelled as the
-    SDK's KVCacheQuantMode member name ("bfloat16" / "fp8": engine_table_view rehydrates the
-    column through that enum, and "bf16" raised KeyError on every SM100 DSV4 table, Full CI
-    2026-10-29). AIS_DSV4_KV_CACHE_DTYPE=fp8|bfloat16 (alias bf16) is the A/B hook.
+    Hopper requires the packed fp8_ds_mla pool (see the KvCacheConfig in the run function).
+    Blackwell serves the plain FP8 pool, which is TRT-LLM's recommended DeepSeek-V4
+    configuration there (examples/models/core/deepseek_v4/README.md) and what its B200 CI
+    runs. fp8_ds_mla itself is not servable off Hopper: it needs 256-token blocks and the
+    fallback attention refuses it. The perf row spells the dtype as the SDK's
+    KVCacheQuantMode member name. AIS_DSV4_KV_CACHE_DTYPE=fp8|bfloat16 (alias bf16)
+    overrides it.
     """
     override = os.environ.get("AIS_DSV4_KV_CACHE_DTYPE")
     if override:
         return _KV_CACHE_DTYPE_LABELS.get(override, override)
-    return "fp8" if get_sm_version() in (90, 120, 121) else "bfloat16"
+    return "fp8"
 
 
 def _build_dsv4_test_cases(mode: str, attn_kind: str) -> list[dict]:
@@ -411,10 +407,10 @@ def create_dsv4_attention_module(
             "The framework dispatch contract changed; re-audit against the runtime version."
         )
 
-    # The KV quant algo follows the lane: fp8 (Hopper fp8_ds_mla pool) sets kv_cache_quant_algo=FP8 and the
-    # module runs the E4m3 FMHA cubins; bf16 (the only servable SM100 pool, see _serving_kv_cache_dtype)
-    # leaves it unset so the module runs the QkvBfloat16 cubins serving runs — with FP8 pinned here the
-    # sm100 bf16 pool still produced E4m3 kernels (B200 capture 2026-10-04).
+    # The KV quant algo follows the lane: fp8 (the serving pool, see _serving_kv_cache_dtype) sets
+    # kv_cache_quant_algo=FP8 and the module runs the E4m3 FMHA cubins; a bf16 override leaves it unset
+    # so the module runs the QkvBfloat16 cubins — with FP8 pinned here a bf16 pool still produced E4m3
+    # kernels (B200 capture 2026-10-04).
     _apply_gemm_type_quant(model_config, "fp8_block", use_fp8_kv_cache=(kv_cache_dtype == "fp8"))
 
     # Provenance: print the RESOLVED kernel-selection knobs (same auto-build

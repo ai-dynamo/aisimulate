@@ -490,7 +490,7 @@ def test_kv_quota_is_capped_by_this_batch_s_tokens(monkeypatch, bs, sl, is_ctx, 
     assert floor > 1_572_864  # H20 calibration: 1,048,576 tokens -> i32, 1,572,864 -> i64
 
 
-@pytest.mark.parametrize(("sm", "expected"), [(100, "bfloat16"), (90, "fp8"), (120, "fp8")])
+@pytest.mark.parametrize(("sm", "expected"), [(100, "fp8"), (103, "fp8"), (90, "fp8"), (120, "fp8")])
 def test_serving_kv_cache_dtype_is_an_sdk_enum_member_name(monkeypatch, sm, expected):
     # engine_table_view rehydrates kv_cache_dtype through KVCacheQuantMode; "bf16" raised
     # KeyError on every SM100 DSV4 table in Full CI (2026-10-29).
