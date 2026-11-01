@@ -9,10 +9,13 @@ for the backend and SM. Every other case runs; if it fails, the failure is
 recorded.
 
 Where the plan picks the kernel or runner a backend measures a case on (the
-one serving selects, Rule 2), the op declares it in ``dispatch``. A backend
-whose run function takes more arguments than the case declares ``rows``: the
-run arguments for one case and its dispatch. Rows decide how a case runs,
-never whether it runs, so every case gives at least one row.
+one serving selects, Rule 2), the op declares it in ``dispatch``; a case that
+serving runs on several kernels (one per model that plans it) is measured on
+each. A ``collector/skips.py`` entry may name a ``dispatch`` to leave a case
+out on that kernel only. A backend whose run function takes more arguments
+than the case declares ``rows``: the run arguments for one case and its
+dispatch. Rows decide how a case runs, never whether it runs, so every case
+gives at least one row.
 
 Planning never imports a framework, so ``--plan-only`` runs on any CPU.
 
@@ -34,8 +37,10 @@ from typing import NamedTuple
 from collector import skips
 from collector.case_generator import (
     BASE_OP_CASES_DIR,
+    AttentionOwner,
     MoeCommonTestCase,
     get_attention_encoder_head_configs,
+    get_attention_shapes,
     get_common_gdn_test_cases,
     get_common_kda_test_cases,
     get_common_mamba2_test_cases,
@@ -71,8 +76,8 @@ class OpPlan:
     # The case fields whose values share one module build in a worker.
     group_fields: tuple[str, ...]
     # backend -> the kernel or runner the backend measures a case on, where the
-    # plan picks it.
-    dispatch: Mapping[str, Callable[[object, int | None], str]] = MappingProxyType({})
+    # plan picks it; a tuple when serving runs the case on several.
+    dispatch: Mapping[str, Callable[[object, int | None], str | tuple[str, ...]]] = MappingProxyType({})
     # backend -> the run arguments for one case and its dispatch (None without
     # one), for a run function that takes more than the case.
     rows: Mapping[str, Callable[[object, int | None, str | None], list]] = MappingProxyType({})
@@ -96,32 +101,48 @@ class Plan:
 
     cases: list
     removed: list[RemovedRegion]
-    # The dispatch of each case, for a backend whose plan picks it; else empty.
-    dispatches: list[str] = dataclasses.field(default_factory=list)
+    # The dispatches of each case, for a backend whose plan picks them; else empty.
+    dispatches: list[tuple[str, ...]] = dataclasses.field(default_factory=list)
+    # Dispatches a skips.py entry left out of a case that still runs on another.
+    removed_runs: list[RemovedRegion] = dataclasses.field(default_factory=list)
     # The backend's rows function and where it runs, applied on demand: rows may
     # build the backend's framework objects (a torch dtype), cases never do.
     to_rows: Callable[[object, int | None, str | None], list] | None = None
     sm_version: int | None = None
     where: str = ""
+    # The model rows the plan left out; rows read the model profiles without them.
+    skipped_models: frozenset[str] = frozenset()
 
     @property
     def by_dispatch(self) -> dict[str, int]:
         """How many cases run on each dispatch."""
-        return dict(Counter(self.dispatches))
+        return dict(Counter(runner for runners in self.dispatches for runner in runners))
 
     @property
     def rows(self) -> list:
         """What the getter queues: the cases, or the backend's rows for them."""
         if self.to_rows is None:
             return self.cases
-        runs_on = self.dispatches or [None] * len(self.cases)
+        runs_on = self.dispatches or [(None,)] * len(self.cases)
         rows = []
-        for case, runner in zip(self.cases, runs_on, strict=True):
-            case_rows = self.to_rows(case, self.sm_version, runner)
-            if not case_rows:
-                raise ValueError(f"{self.where} rows dropped case {case}; rows may only say how a case runs")
-            rows.extend(case_rows)
+        with without_models(self.skipped_models):
+            for case, runners in zip(self.cases, runs_on, strict=True):
+                for runner in runners:
+                    case_rows = self.to_rows(case, self.sm_version, runner)
+                    if not case_rows:
+                        raise ValueError(f"{self.where} rows dropped case {case}; rows may only say how a case runs")
+                    rows.extend(case_rows)
         return rows
+
+
+class _Run(NamedTuple):
+    """One case on one of its dispatches; a skips.py entry sees the case's fields and ``dispatch``."""
+
+    case: object
+    dispatch: str
+
+    def __getattr__(self, name: str):
+        return getattr(self.case, name)
 
 
 def plan(op: str, backend: str, sm_version: int | None) -> Plan:
@@ -143,20 +164,51 @@ def plan(op: str, backend: str, sm_version: int | None) -> Plan:
         if count:
             removed_models.append(RemovedRegion(f"model={','.join(sorted(architectures))}", count, repr(entry)))
 
-    kept, skipped = skips.split(expanded, backend, op, sm_version, lambda case: (getattr(case, spec.dtype_field),))
+    def dtypes_of(case) -> tuple[str]:
+        return (getattr(case, spec.dtype_field),)
+
+    kept, skipped = skips.split(expanded, backend, op, sm_version, dtypes_of, dispatch_entries=False)
     removed = Counter((region, repr(entry)) for _case, entry, region in skipped)
+    removed_runs = Counter()
+    dispatches = []
     dispatch = spec.dispatch.get(backend)
+    if dispatch is not None:
+        # Entries that name a dispatch leave a case out on that kernel only; a
+        # case left on no kernel counts as left out.
+        with without_models(skipped_models):
+            runs = [_Run(case, runner) for case in kept for runner in _runners(dispatch(case, sm_version))]
+        runs, skipped_runs = skips.split(
+            runs, backend, op, sm_version, lambda run: dtypes_of(run.case), dispatch_entries=True
+        )
+        runners_of: dict = {}
+        for run in runs:
+            runners_of.setdefault(run.case, []).append(run.dispatch)
+        left_out = set()
+        for run, entry, region in skipped_runs:
+            if run.case in runners_of:
+                removed_runs[(region, repr(entry))] += 1
+            elif run.case not in left_out:
+                left_out.add(run.case)
+                removed[(region, repr(entry))] += 1
+        kept = [case for case in kept if case in runners_of]
+        dispatches = [tuple(runners_of[case]) for case in kept]
     return Plan(
         cases=kept,
         removed=[
             *(RemovedRegion(region, count, reason) for (region, reason), count in removed.items()),
             *removed_models,
         ],
-        dispatches=[dispatch(case, sm_version) for case in kept] if dispatch is not None else [],
+        dispatches=dispatches,
+        removed_runs=[RemovedRegion(region, count, reason) for (region, reason), count in removed_runs.items()],
         to_rows=spec.rows.get(backend),
         sm_version=sm_version,
         where=f"{backend} {op}",
+        skipped_models=skipped_models,
     )
+
+
+def _runners(dispatched: str | tuple[str, ...]) -> tuple[str, ...]:
+    return dispatched if isinstance(dispatched, tuple) else (dispatched,)
 
 
 def plan_cases(op: str, backend: str, sm_version: int | None) -> list:
@@ -179,6 +231,8 @@ def summarize(op: str, op_plan: Plan, case_id: Callable[[object], str]) -> dict:
         "by_dtype": dict(Counter(getattr(case, spec.dtype_field) for case in op_plan.cases)),
         "removed": [dataclasses.asdict(region) for region in op_plan.removed],
     }
+    if op_plan.removed_runs:
+        summary["removed_runs"] = [dataclasses.asdict(region) for region in op_plan.removed_runs]
     try:
         rows = op_plan.rows
     except ImportError as exc:
@@ -808,8 +862,253 @@ def _sglang_mhc_rows(case: MhcCase, sm_version: int | None, runner: str | None) 
     ]
 
 
+# --- Attention ----------------------------------------------------------------
+
+
+class AttentionCase(NamedTuple):
+    """One dense-attention point: shape, batch, length and precision.
+
+    ``input_len`` is the prefill length in context and the KV length before
+    the decoded token in generation. ``attn_dtype`` is the compute dtype.
+    """
+
+    batch_size: int
+    input_len: int
+    num_heads: int
+    num_kv_heads: int
+    head_dim: int
+    window_size: int
+    kv_cache_dtype: str
+    attn_dtype: str
+
+    __str__ = __repr__ = _list_form
+
+    @property
+    def q_per_kv(self) -> int:
+        """Query heads per KV head."""
+        return self.num_heads // self.num_kv_heads
+
+
+def _attention_points(sweep: dict, phase: str, num_heads: int, num_kv_heads: int, head_dim: int) -> list:
+    """The (batch, length) points of one shape under the sweep's budgets, in run order."""
+    batch_sizes = [int(value) for value in sweep["batch_sizes"]]
+    sequence_lengths = [int(value) for value in sweep["sequence_lengths"]]
+    if phase == "context":
+        is_mha = num_kv_heads == num_heads
+        points = []
+        for seq in sorted(sequence_lengths, reverse=True):
+            for batch in sorted(batch_sizes, reverse=True):
+                if is_mha:
+                    if batch * seq > int(sweep["max_tokens_self_attention"]):
+                        continue
+                    if batch > int(sweep["max_batch_size_self_attention"]):
+                        continue
+                elif batch * seq > int(sweep["max_tokens_grouped_query_attention"]):
+                    continue
+                if batch * seq * num_kv_heads * head_dim * 2 >= int(sweep["max_kv_elements"]):
+                    continue
+                points.append((batch, seq))
+        return points
+
+    # Generation: per KV length, every batch within the per-step token budget,
+    # scaled up for head_dim below 128; keep a length only with enough batches.
+    max_tokens = int(sweep["max_mha_tokens_per_step" if num_kv_heads == num_heads else "max_xqa_tokens_per_step"])
+    batches_of: dict[int, set[int]] = {}
+    for seq in sequence_lengths:
+        max_batch = max_tokens * 128 // min(head_dim, 128) // seq // num_heads
+        for batch in sorted(batch_sizes):
+            if batch > max_batch:
+                break
+            batches_of.setdefault(seq, set()).add(batch)
+    lengths_of: dict[int, set[int]] = {}
+    for seq, batches in batches_of.items():
+        if len(batches) < int(sweep["min_batch_options_per_sequence"]):
+            continue
+        for batch in batches:
+            lengths_of.setdefault(batch, set()).add(seq - 1)
+    points = []
+    for batch, lengths in lengths_of.items():
+        kept = sorted(lengths)
+        if batch >= int(sweep["drop_largest_sequence_for_batch_at_least"]):
+            kept = kept[:-1]
+        points.extend((batch, length) for length in kept)
+    return points
+
+
+def _attention_expand(phase: str) -> Callable[[], list[AttentionCase]]:
+    def expand() -> list[AttentionCase]:
+        (sweep,) = get_shared_base_op_case_specs(f"attention_{phase}")
+        cases = []
+        for num_heads, num_kv_heads, head_dim, window_size in get_attention_shapes(phase):
+            for batch, length in _attention_points(sweep, phase, num_heads, num_kv_heads, head_dim):
+                for precision in sweep["precision_cases"]:
+                    cases.append(
+                        AttentionCase(
+                            batch,
+                            length,
+                            num_heads,
+                            num_kv_heads,
+                            head_dim,
+                            window_size,
+                            "fp8" if precision["fp8_kv_cache"] else "bfloat16",
+                            "fp8" if precision.get("fp8_context_fmha") else "bfloat16",
+                        )
+                    )
+        return cases
+
+    return expand
+
+
+def _attention_owners(phase: str, case: AttentionCase) -> tuple[AttentionOwner, ...]:
+    """The profiles that plan a case's shape, models first (a model's semantics win over the base grid's)."""
+    owners = get_attention_shapes(phase)[(case.num_heads, case.num_kv_heads, case.head_dim, case.window_size)]
+    return tuple(sorted(owners, key=lambda owner: not owner.from_model))
+
+
+def _sglang_attention_dispatch(phase: str) -> Callable[[AttentionCase, int | None], tuple[str, ...]]:
+    """The SGLang backends serving runs a case on: one per model that plans the shape.
+
+    A shape two models serve on different backends (Nemotron-H on flashinfer,
+    the generic grid on trtllm_mha) is measured on both.
+    """
+
+    def dispatch(case: AttentionCase, sm_version: int | None) -> tuple[str, ...]:
+        backends = []
+        for owner in _attention_owners(phase, case):
+            backend = owner.sglang_backend(sm_version)
+            if backend is None:
+                raise ValueError(f"No SGLang attention backend for SM{sm_version}")
+            if backend not in backends:
+                backends.append(backend)
+        return tuple(backends)
+
+    return dispatch
+
+
+def _sglang_owner(phase: str, case: AttentionCase, sm_version: int | None, backend: str) -> AttentionOwner:
+    """The profile whose runtime semantics SGLang's row on this backend takes; profiles must agree."""
+    owners = [owner for owner in _attention_owners(phase, case) if owner.sglang_backend(sm_version) == backend]
+    signatures = {_sglang_signature(case, owner) for owner in owners if owner.from_model}
+    if len(signatures) > 1:
+        raise ValueError(
+            f"SGLang attention profiles plan {case} on {backend} with different runtime semantics: "
+            f"{sorted(map(str, signatures))}"
+        )
+    return owners[0]
+
+
+def _sglang_signature(case: AttentionCase, owner: AttentionOwner) -> tuple:
+    return (
+        owner.v_head_dim or case.head_dim,
+        _sglang_runtime_window(case, owner),
+        owner.sglang_attention_chunk_size if case.window_size > 0 else None,
+        owner.has_attention_sink,
+        owner.sglang_scaling,
+    )
+
+
+def _sglang_runtime_window(case: AttentionCase, owner: AttentionOwner) -> int:
+    if owner.sglang_runtime_window_size is not None:
+        return owner.sglang_runtime_window_size
+    return case.window_size or -1
+
+
+def _sglang_attention_rows(phase: str):
+    is_context = phase == "context"
+
+    def rows(case: AttentionCase, sm_version: int | None, backend: str | None) -> list[list]:
+        owner = _sglang_owner(phase, case, sm_version, backend)
+        return [
+            [
+                case.batch_size,
+                case.input_len,
+                case.num_heads,
+                case.num_kv_heads,
+                case.head_dim,
+                case.kv_cache_dtype == "fp8",
+                case.attn_dtype == "fp8",
+                is_context,
+                case.window_size,
+                owner.v_head_dim or case.head_dim,
+                _sglang_runtime_window(case, owner),
+                owner.sglang_attention_chunk_size,
+                owner.has_attention_sink,
+                owner.sglang_scaling,
+                backend,
+                owner.architecture,
+            ]
+        ]
+
+    return rows
+
+
+def _trtllm_attention_rows(phase: str):
+    is_context = phase == "context"
+
+    # TRT-LLM serves every collected model on its default TRTLLM attention
+    # backend. Its run function adds attention sinks to every head_dim 64 row:
+    # GPT-OSS has them, Kimi-K3's draft attention does not.
+    def rows(case: AttentionCase, sm_version: int | None, runner: str | None) -> list[list]:
+        return [
+            [
+                case.batch_size,
+                case.input_len,
+                case.num_heads,
+                case.num_kv_heads,
+                case.head_dim,
+                case.window_size,
+                case.kv_cache_dtype == "fp8",
+                case.attn_dtype == "fp8",
+                is_context,
+                "TRTLLM",
+            ]
+        ]
+
+    return rows
+
+
+def _vllm_attention_rows(phase: str):
+    is_context = phase == "context"
+
+    # vLLM's attention collector takes one head_dim and no sinks: it times
+    # MiMo-V2-Flash's head_dim 192 rows with V=192 (serving's V head is 128)
+    # and GPT-OSS's rows without attention sinks.
+    def rows(case: AttentionCase, sm_version: int | None, runner: str | None) -> list[list]:
+        return [
+            [
+                case.batch_size,
+                case.input_len,
+                case.num_heads,
+                case.num_kv_heads,
+                case.head_dim,
+                case.kv_cache_dtype == "fp8",
+                is_context,
+                case.window_size,
+            ]
+        ]
+
+    return rows
+
+
+def _attention_plan(phase: str) -> OpPlan:
+    return OpPlan(
+        AttentionCase,
+        _attention_expand(phase),
+        dtype_field="kv_cache_dtype",
+        group_fields=("num_heads", "num_kv_heads", "head_dim", "window_size"),
+        dispatch={"sglang": _sglang_attention_dispatch(phase)},
+        rows={
+            "sglang": _sglang_attention_rows(phase),
+            "trtllm": _trtllm_attention_rows(phase),
+            "vllm": _vllm_attention_rows(phase),
+        },
+    )
+
+
 OP_PLANS: dict[str, OpPlan] = {
     "gemm": OpPlan(GemmCase, _expand_gemm, dtype_field="gemm_type", group_fields=("gemm_type", "n", "k")),
+    "attention_context": _attention_plan("context"),
+    "attention_generation": _attention_plan("generation"),
     "moe": OpPlan(
         MoeCase,
         _expand_moe,

@@ -127,33 +127,6 @@ def test_targeted_attention_profile_uses_model_topology(monkeypatch):
     }
 
 
-def test_retired_kimi_generic_attention_profile_was_redundant_for_legacy_full_grids(monkeypatch):
-    from collector.case_generator import get_attention_context_shape_sweeps, get_attention_generation_shape_sweeps
-
-    monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
-    retired_kimi_configs = {
-        (64, 64, 128, 0),
-        (32, 32, 128, 0),
-        (16, 16, 128, 0),
-        (8, 8, 128, 0),
-        (4, 4, 128, 0),
-        (2, 2, 128, 0),
-        (1, 1, 128, 0),
-    }
-
-    for backend in ("sglang", "trtllm"):
-        for phase, get_shape_sweeps in (
-            ("context", get_attention_context_shape_sweeps),
-            ("generation", get_attention_generation_shape_sweeps),
-        ):
-            configs = {
-                (config.num_heads, config.num_kv_heads, config.head_dim, config.window_size)
-                for sweep in get_shape_sweeps(backend)
-                for config in get_attention_head_configs(sweep, phase=phase)
-            }
-            assert retired_kimi_configs <= configs
-
-
 def test_added_model_attention_profiles_resolve_targeted_topology(monkeypatch):
     from collector.case_generator import get_attention_context_shape_sweeps
 
@@ -458,7 +431,7 @@ def test_base_gemm_cases_are_readable_shape_specs():
     assert context_spec["kv_head_options"] == ["self", 1, 2, 4, 8]
     generation_spec = base_specs("attention_generation")[0]
     assert generation_spec["id"] == "base_attention_generation_shape_sweep"
-    assert generation_spec["xqa_query_head_counts"][-1] == 128
+    assert generation_spec["xqa_query_head_counts"][-1] == 64
 
 
 def test_moe_model_quantization_policy_is_yaml_backed():
@@ -738,31 +711,30 @@ def test_sglang_mxfp4_quant_labels_select_explicit_activation_precision():
     assert namespace["_mxfp4_activation_precision"]("w4a8_mxfp4_mxfp8") == "default"
 
 
-def test_attention_shape_specs_are_yaml_backed_with_backend_overrides():
-    from collector.case_generator import get_attention_context_shape_sweeps, get_attention_generation_shape_sweeps
+def test_attention_shape_specs_are_shared_with_an_xpu_override():
+    from collector.case_generator import (
+        get_attention_context_shape_sweeps,
+        get_attention_generation_shape_sweeps,
+        get_shared_base_op_case_specs,
+    )
 
-    def by_id(sweeps, sweep_id):
-        return next(sweep for sweep in sweeps if sweep["id"] == sweep_id)
+    # One grid for every CUDA backend: generic full attention at head_dim 128;
+    # model profiles add every other head_dim and window.
+    (context,) = get_shared_base_op_case_specs("attention_context")
+    (generation,) = get_shared_base_op_case_specs("attention_generation")
+    assert context["head_dims"] == [128] and context["window_sizes"] == [0]
+    assert context["query_head_counts"][-1] == 64
+    assert generation["head_dims"] == [128] and generation["window_sizes"] == [0]
+    assert generation["mha_query_head_counts"] == [1, 2, 4, 8]
+    for backend in ("sglang", "trtllm", "vllm"):
+        assert get_attention_context_shape_sweeps(backend) == [context]
+        assert get_attention_generation_shape_sweeps(backend) == [generation]
 
-    context_id = "base_attention_context_shape_sweep"
-    generation_id = "base_attention_generation_shape_sweep"
-    sglang_context = by_id(get_attention_context_shape_sweeps("sglang"), context_id)
-    trtllm_context = by_id(get_attention_context_shape_sweeps("trtllm"), context_id)
-    vllm_context = by_id(get_attention_context_shape_sweeps("vllm"), context_id)
-    vllm_xpu_context = by_id(get_attention_context_shape_sweeps("vllm_xpu"), context_id)
-    vllm_generation = by_id(get_attention_generation_shape_sweeps("vllm"), generation_id)
-
-    assert sglang_context["head_dims"] == [64, 128, 192, 256]
-    assert trtllm_context["head_dims"] == [64, 128, 192, 256]
-    assert trtllm_context["query_head_counts"][:6] == [1, 2, 3, 4, 5, 6]
-    assert vllm_context["head_dims"] == [64, 128, 192, 256]
-    assert vllm_context["query_head_counts"][-1] == 64
-    assert trtllm_context["window_sizes"] == [0, 128, 1024]
-    assert vllm_context["window_sizes"] == [0, 128, 1024, 8192]
-    assert vllm_xpu_context["batch_sizes"] == [1, 2, 4, 8, 16, 32]
-    assert vllm_xpu_context["kv_head_options"] == [1, 2, 4, 8]
-    assert vllm_generation["mha_query_head_counts"][-1] == 64
-    assert vllm_generation["xqa_query_head_counts"][-1] == 64
+    # The vLLM XPU collector keeps its own grid.
+    (xpu_context,) = get_attention_context_shape_sweeps("vllm_xpu")
+    assert xpu_context["batch_sizes"] == [1, 2, 4, 8, 16, 32]
+    assert xpu_context["kv_head_options"] == [1, 2, 4, 8]
+    assert xpu_context["head_dims"] == [128, 64]
 
 
 def test_gemm_common_cases_expand_from_base_op_yaml_shape_specs():

@@ -32,6 +32,7 @@
 collector.sglang.collect_attn:
   - collector/cases/base_ops/attention_context.yaml
   - collector/cases/base_ops/attention_generation.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.sglang.collect_attn_encoder:
   - collector/cases/base_ops/attention_encoder.yaml
@@ -173,6 +174,7 @@ collector.sglang.glm5_dsa_sparse_modules:
 collector.trtllm.collect_attn:
   - collector/cases/base_ops/attention_context.yaml
   - collector/cases/base_ops/attention_generation.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.trtllm.collect_attn_encoder:
   - collector/cases/base_ops/attention_encoder.yaml
@@ -239,6 +241,7 @@ collector.vllm.collect_attn:
   - collector/vllm/utils.py
   - collector/cases/base_ops/attention_context.yaml
   - collector/cases/base_ops/attention_generation.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.vllm.collect_attn_xpu:
   - collector/cases/base_ops/attention_context.yaml

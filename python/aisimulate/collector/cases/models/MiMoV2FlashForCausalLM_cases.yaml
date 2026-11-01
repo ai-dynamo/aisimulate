@@ -10,8 +10,11 @@ include_base: true
 base_ops:
   - gemm
 framework_specific_base_ops:
-  # vLLM 0.24 uses DiffKV (QK=192, V=128, plus sinks). The persisted generic
-  # attention schema cannot represent that path, so vLLM intentionally omits it.
+  # Model runs leave vLLM's attention out: serving runs DiffKV (QK=192, V=128,
+  # plus sinks on the SWA layers), while vLLM's attention collector takes one
+  # head_dim and no sinks, so its rows time QK=V=192 without sinks. Full
+  # collections still time these shapes on vLLM. TRT-LLM cannot serve
+  # MiMo-V2-Flash (collector/skips.py).
   sglang:
     - attention_context
     - attention_generation
@@ -49,7 +52,7 @@ model_case_values:
       head_dim: 192
       v_head_dim: 128
       window_size: 128
-      sglang_has_attention_sink: true
+      has_attention_sink: true
       sglang_backends: {89: triton, 90: fa3, 100: triton, 103: triton, 120: triton}
       tensor_parallel_sizes: [1, 2, 4, 8, 16, 32, 64]
   moe:

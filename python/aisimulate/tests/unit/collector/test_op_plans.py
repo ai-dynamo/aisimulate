@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 from collector import skips
 from collector.case_generator import without_models
-from collector.op_plans import OP_PLANS, GemmCase, OpPlan, plan, summarize
+from collector.op_plans import OP_PLANS, GemmCase, OpPlan, _Run, _runners, plan, summarize
 from collector.provenance import case_plan_hash
 
 pytestmark = pytest.mark.unit
@@ -84,12 +84,23 @@ def test_backends_differ_only_by_entries_that_name_them(op, sm):
         # A model entry leaves the case out before cases merge ...
         if missing - expanded:
             assert skips.model_entries(backend, op, sm), (backend, sorted(missing - expanded, key=str)[:3])
-        # ... and a case entry leaves out the rest.
-        _kept, skipped = skips.split(
-            missing & expanded, backend, op, sm, lambda case: (getattr(case, spec.dtype_field),)
-        )
-        assert {case for case, _entry, _region in skipped} == missing & expanded, backend
+
+        # ... a case entry leaves out more ...
+        def dtypes_of(case):
+            return (getattr(case, spec.dtype_field),)
+
+        _kept, skipped = skips.split(missing & expanded, backend, op, sm, dtypes_of, dispatch_entries=False)
         assert all("backend" in entry for _case, entry, _region in skipped), backend
+        # ... and entries that name a dispatch leave out the rest on every kernel it runs on.
+        left = (missing & expanded) - {case for case, _entry, _region in skipped}
+        if left:
+            dispatch = spec.dispatch[backend]
+            runs = [_Run(case, runner) for case in left for runner in _runners(dispatch(case, sm))]
+            kept_runs, skipped_runs = skips.split(
+                runs, backend, op, sm, lambda run: dtypes_of(run.case), dispatch_entries=True
+            )
+            assert not kept_runs, (backend, kept_runs[:3])
+            assert all("backend" in entry for _run, entry, _region in skipped_runs), backend
 
 
 @pytest.mark.parametrize("op", sorted(OP_PLANS))
@@ -100,7 +111,7 @@ def test_every_left_out_case_is_counted_under_its_entry(op, backend):
     for sm in SMS:
         op_plan = plan(op, backend, sm)
         assert len(op_plan.cases) + sum(region.cases for region in op_plan.removed) == len(expanded)
-        for region in op_plan.removed:
+        for region in [*op_plan.removed, *op_plan.removed_runs]:
             assert region.reason in entries, region
 
 

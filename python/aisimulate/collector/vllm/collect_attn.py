@@ -10,12 +10,8 @@ __compat__ = "vllm==0.30.0"
 import os
 
 import torch
-from collector.case_generator import (
-    get_attention_context_shape_sweeps,
-    get_attention_generation_shape_sweeps,
-    get_attention_head_configs,
-)
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 from collector.vllm.utils import (
     BatchSpec,
     create_common_attn_metadata,
@@ -438,138 +434,12 @@ def run_attention_torch(
     )
 
 
-def get_context_attention_test_cases(if_unit_test=False):
-    test_cases = []
-
-    if if_unit_test:
-        shape_sweeps = [
-            {
-                "batch_sizes": [1],
-                "sequence_lengths": [64],
-                "query_head_counts": [4],
-                "kv_head_options": [0],
-                "head_dims": [128],
-                "window_sizes": [0, 128],
-                "max_tokens_self_attention": 65536,
-                "max_tokens_grouped_query_attention": 131072,
-                "max_kv_elements": 2147483647,
-            }
-        ]
-    else:
-        shape_sweeps = get_attention_context_shape_sweeps("vllm")
-
-    kv_cache_dtype_list = [False]
-    if get_sm_version() > 86:
-        kv_cache_dtype_list.append(True)
-
-    for shape_sweep in shape_sweeps:
-        batch_sizes = [int(value) for value in shape_sweep["batch_sizes"]]
-        sequence_lengths = [int(value) for value in shape_sweep["sequence_lengths"]]
-        max_tokens_self_attention = int(shape_sweep["max_tokens_self_attention"])
-        max_tokens_grouped_query_attention = int(shape_sweep["max_tokens_grouped_query_attention"])
-        max_kv_elements = int(shape_sweep["max_kv_elements"])
-
-        for head_config in get_attention_head_configs(shape_sweep, phase="context"):
-            n = head_config.num_heads
-            num_kv_heads = head_config.num_kv_heads
-            head_dim = head_config.head_dim
-            window_size = head_config.window_size
-            for s in sorted(sequence_lengths, reverse=True):
-                for b in sorted(batch_sizes, reverse=True):
-                    if num_kv_heads == n:
-                        if b * s > max_tokens_self_attention or b > 128:
-                            continue
-                    elif b * s > max_tokens_grouped_query_attention:
-                        continue
-                    if b * s * num_kv_heads * head_dim * 2 >= max_kv_elements:
-                        continue
-                    for is_fp8_kv_cache in kv_cache_dtype_list:
-                        test_cases.append(
-                            [
-                                b,
-                                s,
-                                n,
-                                num_kv_heads,
-                                head_dim,
-                                is_fp8_kv_cache,
-                                True,
-                                window_size,
-                            ]
-                        )
-
-    return test_cases
-
-
-def _generation_target_sequence_lengths(batch_sizes, sequence_lengths, num_heads, head_dim, max_tokens, shape_sweep):
-    b_s_dict = {}
-    s_b_dict = {}
-    for s in sequence_lengths:
-        max_b = max_tokens * 128 // head_dim // s // num_heads
-        for b in batch_sizes:
-            if b > max_b:
-                break
-            if s not in s_b_dict:
-                s_b_dict[s] = {b}
-            else:
-                s_b_dict[s].add(b)
-    for s, b_set in s_b_dict.items():
-        if len(b_set) < int(shape_sweep["min_batch_options_per_sequence"]):
-            continue
-        for b in b_set:
-            if b not in b_s_dict:
-                b_s_dict[b] = {s - 1}
-            b_s_dict[b].add(s - 1)
-    return b_s_dict
+def get_context_attention_test_cases():
+    return plan_cases("attention_context", "vllm", get_sm_version())
 
 
 def get_generation_attention_test_cases():
-    test_cases = []
-
-    kv_cache_dtype_list = [False]
-    if get_sm_version() > 86:
-        kv_cache_dtype_list.append(True)
-
-    for shape_sweep in get_attention_generation_shape_sweeps("vllm"):
-        batch_sizes = [int(value) for value in shape_sweep["batch_sizes"]]
-        sequence_lengths = [int(value) for value in shape_sweep["sequence_lengths"]]
-        min_drop_batch = int(shape_sweep["drop_largest_sequence_for_batch_at_least"])
-
-        for head_config in get_attention_head_configs(shape_sweep, phase="generation"):
-            n = head_config.num_heads
-            n_kv = head_config.num_kv_heads
-            head_dim = head_config.head_dim
-            window_size = head_config.window_size
-            # The generation schema has separate caps because MHA and GQA have
-            # different memory/throughput limits. The old loop used the MHA cap
-            # for every case even though it enumerated GQA shapes as well.
-            max_tokens_key = "max_mha_tokens_per_step" if n == n_kv else "max_xqa_tokens_per_step"
-            b_s_dict = _generation_target_sequence_lengths(
-                batch_sizes,
-                sequence_lengths,
-                n,
-                head_dim,
-                int(shape_sweep[max_tokens_key]),
-                shape_sweep,
-            )
-            for b, s_list_limited in b_s_dict.items():
-                target_s_list = sorted(s_list_limited)
-                if b >= min_drop_batch:
-                    target_s_list = target_s_list[:-1]
-                for s in target_s_list:
-                    for is_fp8_kv_cache in kv_cache_dtype_list:
-                        test_cases.append(
-                            [
-                                b,
-                                s,
-                                n,
-                                n_kv,
-                                head_dim,
-                                is_fp8_kv_cache,
-                                False,
-                                window_size,
-                            ]
-                        )
-    return test_cases
+    return plan_cases("attention_generation", "vllm", get_sm_version())
 
 
 if __name__ == "__main__":

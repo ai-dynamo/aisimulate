@@ -143,11 +143,14 @@ def test_entries_name_known_backends_ops_and_case_files():
 
 def test_case_keys_exist_on_the_op_plans_they_name():
     for entry in SKIPS:
-        keys = set(entry) - {"backend", "op", "sm", "model", "dtype"}
+        keys = set(entry) - {"backend", "op", "sm", "model", "dtype", "dispatch"}
         for op in _listed(entry.get("op", [])):
             case_type = OP_PLANS[op].case_type if op in OP_PLANS else None
             for key in keys if case_type is not None else ():
                 assert key in case_type._fields or isinstance(getattr(case_type, key, None), property), (entry, key)
+            if "dispatch" in entry:
+                # A dispatch entry names a backend whose plan picks the kernel.
+                assert op in OP_PLANS and entry["backend"] in OP_PLANS[op].dispatch, entry
 
 
 def test_a_model_entry_keeps_a_shape_another_model_needs(monkeypatch):
@@ -172,7 +175,7 @@ def test_a_model_entry_keeps_a_shape_another_model_needs(monkeypatch):
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
 
     def shapes():
-        configs = case_generator.get_attention_head_configs({"head_profiles": []}, phase="context", backend="trtllm")
+        configs = case_generator.get_attention_head_configs({"head_profiles": []}, phase="context")
         return {(config.num_heads, config.num_kv_heads, config.head_dim) for config in configs}
 
     assert shapes() == {(8, 2, 128), (16, 2, 64)}

@@ -2941,7 +2941,9 @@ def _op_plan_report(backend: str, ops: list[str], sm_version: int, table_dir: st
                 if op_plan.dispatches:
                     writer.writerow((*header, "dispatch"))
                     writer.writerows(
-                        (*case, runner) for case, runner in zip(op_plan.cases, op_plan.dispatches, strict=True)
+                        (*case, runner)
+                        for case, runners in zip(op_plan.cases, op_plan.dispatches, strict=True)
+                        for runner in runners
                     )
                 else:
                     writer.writerow(header)

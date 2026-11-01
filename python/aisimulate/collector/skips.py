@@ -8,6 +8,8 @@ An entry in ``SKIPS`` skips a case when every key matches:
 - ``backend``, ``op`` and ``sm``: the run;
 - ``model``: the ``architecture`` of the case file a model row comes from;
 - ``dtype``: the case's dtype or quant mode;
+- ``dispatch``: a kernel the op plan picks for the backend; the entry leaves
+  the case out on that kernel only, and it still runs on any other;
 - any other key: the case field (or property) of that name.
 
 A list matches any of its values; a callable is a predicate on the value. An
@@ -48,6 +50,7 @@ _DSV4_ATTENTION_OPS = [
     "dsv4_hca_context_module",
     "dsv4_hca_generation_module",
 ]
+_ATTENTION_OPS = ["attention_context", "attention_generation"]
 
 SKIPS: list[dict] = [
     # The sparse-attention (DSA) modules and the DeepSeek-V4 and GLM-5 sparse
@@ -101,6 +104,60 @@ SKIPS: list[dict] = [
     # SGLang: the MLA collector builds each case on the attention backend
     # serving picks, which it maps for SM89 and newer only.
     {"backend": "sglang", "op": ["mla_context", "mla_generation"], "dtype": "bfloat16", "sm": [80, 86]},
+    # SGLang: the attention collector maps a serving backend for SM89 and newer
+    # only (SGLang's default attention backend table), so every SM80/86 case
+    # would fail.
+    {"backend": "sglang", "op": _ATTENTION_OPS, "sm": [80, 86]},
+    # SGLang: fa3 (head_dim <= 256) and trtllm_mha quantize Q to FP8 themselves
+    # when the KV cache is FP8 (flashattention_backend.py, trtllm_mha_backend.py),
+    # so a BF16-compute prefill on an FP8 KV cache does not exist there: the row
+    # would time FP8 compute under a bfloat16 label. It is the FP8-compute case.
+    {
+        "backend": "sglang",
+        "op": "attention_context",
+        "dispatch": "trtllm_mha",
+        "kv_cache_dtype": "fp8",
+        "attn_dtype": "bfloat16",
+    },
+    {
+        "backend": "sglang",
+        "op": "attention_context",
+        "dispatch": "fa3",
+        "head_dim": lambda head_dim: head_dim <= 256,
+        "kv_cache_dtype": "fp8",
+        "attn_dtype": "bfloat16",
+    },
+    # SGLang: the flashinfer prefill plans BF16 Q against the FP8 KV cache
+    # (flashinfer_backend.py) and has no FP8-compute path, so an FP8-compute row
+    # would time BF16 compute under an fp8 label.
+    {"backend": "sglang", "op": "attention_context", "dispatch": "flashinfer", "attn_dtype": "fp8"},
+    # vLLM: the attention collector has no FP8-compute (FP8 FMHA) input, so an
+    # FP8-compute row would re-time the FP8-KV case under an fp8 label.
+    {"backend": "vllm", "op": "attention_context", "attn_dtype": "fp8"},
+    # TRT-LLM on SM90: FP8-KV decode with 96 query heads over 4 KV heads aborts
+    # the worker (launch failure, then SIGABRT) at every head_dim, batch and KV
+    # length (h200 attention_generation shard, 2026-10-07: 512 cases, none passing).
+    {
+        "backend": "trtllm",
+        "op": "attention_generation",
+        "sm": [90],
+        "kv_cache_dtype": "fp8",
+        "num_heads": 96,
+        "num_kv_heads": 4,
+    },
+    # TRT-LLM on SM90: FP8-KV full-attention decode at head_dim 256 with 32 query
+    # heads per KV head aborts the worker once the KV length reaches 255 (same
+    # shard: 169 cases); shorter KV lengths pass at every batch.
+    {
+        "backend": "trtllm",
+        "op": "attention_generation",
+        "sm": [90],
+        "kv_cache_dtype": "fp8",
+        "head_dim": 256,
+        "window_size": 0,
+        "q_per_kv": 32,
+        "input_len": lambda input_len: input_len >= 255,
+    },
     # SGLang: the mHC collector has no GLM-5.3-Flash route (the GLM call sites
     # were never ported to SGLang's current mHC module), so every case would fail.
     {"backend": "sglang", "op": "mhc_module", "model": "Glm5NextForConditionalGeneration"},
@@ -188,13 +245,23 @@ def split(
     op: str,
     sm: int | None,
     dtypes_of: Callable[[object], Iterable[str]],
+    *,
+    dispatch_entries: bool | None = None,
 ) -> tuple[list, list[tuple[object, dict, str]]]:
     """Split cases into the kept ones and ``(case, entry, region)`` for each skipped one.
 
     ``dtypes_of`` gives a case's dtypes for the ``dtype`` key; ``region`` names
     what the entry matched, such as ``dtype=fp8_block`` or ``op=compute_scale``.
+    ``dispatch_entries`` applies only the entries that name a ``dispatch``
+    (True), only the others (False), or all of them (None).
     """
-    entries = [entry for entry in SKIPS if "model" not in entry and _applies(entry, backend, op, sm)]
+    entries = [
+        entry
+        for entry in SKIPS
+        if "model" not in entry
+        and _applies(entry, backend, op, sm)
+        and (dispatch_entries is None or ("dispatch" in entry) == dispatch_entries)
+    ]
     cases = list(cases)
     if not entries:
         return cases, []
@@ -255,7 +322,7 @@ def filter_cases(test_cases, backend: str, op: str, sm_version: int | None):
     Cases are matched on their typed attributes, so a positional (list) case is
     skipped only by an entry that names no case field.
     """
-    kept, skipped = split(test_cases, backend, op, sm_version, case_dtypes)
+    kept, skipped = split(test_cases, backend, op, sm_version, case_dtypes, dispatch_entries=False)
     if skipped:
         counts = Counter(repr(entry) for _case, entry, _region in skipped)
         summary = "; ".join(f"{count}x {entry}" for entry, count in sorted(counts.items()))
