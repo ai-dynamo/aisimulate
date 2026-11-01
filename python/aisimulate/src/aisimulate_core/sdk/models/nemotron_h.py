@@ -11,6 +11,7 @@ from aisimulate_core.sdk import common
 from aisimulate_core.sdk.models.base import BaseModel, register_model
 from aisimulate_core.sdk.models.helpers import (
     _iter_mixed_precision_layer_algos,
+    _modelopt_key_excluded,
     mtp_scale_factor,
     quant_exclude_patterns,
 )
@@ -27,7 +28,7 @@ def _projection_modes(raw: dict, pattern: str, default: common.GEMMQuantMode) ->
     declarations = []
     exact = {}
     has_layer_listing = False
-    exclusions = quant_exclude_patterns(raw)
+    exclusions = [str(pattern) for pattern in quant_exclude_patterns(raw)]
     for target, algo, listed in _iter_mixed_precision_layer_algos(raw):
         has_layer_listing |= listed
         if has_layer_listing and not listed:
@@ -54,7 +55,8 @@ def _projection_modes(raw: dict, pattern: str, default: common.GEMMQuantMode) ->
                 f"language_model.model.layers.{layer}.mixer.{suffix}",
                 f"model.language_model.layers.{layer}.mixer.{suffix}",
             )
-            if any(_projection_matches(path, target) for path in paths for target in exclusions):
+            # Exclusions also cover descendants of an excluded parent module.
+            if any(_modelopt_key_excluded(path, exclusions) for path in paths):
                 values.add(common.GEMMQuantMode.bfloat16)
                 continue
             algos = {algo for target, algo in declarations if any(_projection_matches(path, target) for path in paths)}

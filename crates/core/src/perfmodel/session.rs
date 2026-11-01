@@ -180,6 +180,7 @@ pub(crate) enum ContextOpFilter {
     All,
     SkipContextAttention,
     OnlyContextAttention,
+    SkipQualifiedMamba,
 }
 
 /// Python `_run_context_phase` (`base_backend.py:144`) — one pass over the
@@ -264,6 +265,7 @@ pub(crate) fn run_context_ops_planned<'a>(
             ContextOpFilter::All => {}
             ContextOpFilter::SkipContextAttention if op.is_context_attention() => continue,
             ContextOpFilter::OnlyContextAttention if !op.is_context_attention() => continue,
+            ContextOpFilter::SkipQualifiedMamba if op.is_qualified_mamba() => continue,
             _ => {}
         }
         let result = memo.query(index, || {
@@ -494,6 +496,38 @@ pub(crate) fn run_telemetry_decode_ops(
     Ok(total)
 }
 
+/// Qualified Mamba prefill from telemetry totals. Each request owns one
+/// recurrent state, so spread the token sum over exactly the observed request
+/// count: `r` requests carry one extra token. Never invent extra states.
+pub(crate) fn query_qualified_mamba_prefill(
+    op: &Op,
+    db: &PerfDatabase,
+    ctx_tokens: u32,
+    num_prefill_requests: u32,
+    prefix_per_req: u32,
+) -> Result<f64, AicError> {
+    let n = num_prefill_requests.max(1);
+    let (q, r) = (ctx_tokens / n, ctx_tokens % n);
+    let mut total = 0.0;
+    for (batch, tokens) in [(n - r, q), (r, q + 1)] {
+        if batch == 0 || tokens == 0 {
+            continue;
+        }
+        let ctx = RuntimeContext {
+            batch_size: batch,
+            beam_width: 1,
+            s: tokens,
+            prefix: prefix_per_req,
+            num_tokens: batch * tokens,
+            seq_imbalance_correction_scale: 1.0,
+            gen_seq_imbalance_correction_scale: 1.0,
+            num_image_tokens: 0,
+        };
+        total += op.query(db, &ctx)?.latency_ms;
+    }
+    Ok(total)
+}
+
 /// FPM-telemetry mix-step composition (the Dynamo mocker contract). Consumed
 /// ONLY by `Engine::rank_latency_ms` (observed `ForwardPassMetrics`
 /// dispatch); the live SDK engine-step path (`Engine::mixed_step_latency`)
@@ -544,26 +578,13 @@ pub(crate) fn get_mix_step_ops(
     let mut total = 0.0_f64;
     for op in context_ops {
         if op.is_qualified_mamba() {
-            // Spread the token sum over exactly the observed request count:
-            // `r` requests carry one extra token. Never invent extra states.
-            let n = num_prefill_requests.max(1);
-            let (q, r) = (ctx_tokens / n, ctx_tokens % n);
-            for (batch, tokens) in [(n - r, q), (r, q + 1)] {
-                if batch == 0 || tokens == 0 {
-                    continue;
-                }
-                let ctx = RuntimeContext {
-                    batch_size: batch,
-                    beam_width: 1,
-                    s: tokens,
-                    prefix: prefix_per_req,
-                    num_tokens: batch * tokens,
-                    seq_imbalance_correction_scale: 1.0,
-                    gen_seq_imbalance_correction_scale: 1.0,
-                    num_image_tokens: 0,
-                };
-                total += op.query(db, &ctx)?.latency_ms;
-            }
+            total += query_qualified_mamba_prefill(
+                op,
+                db,
+                ctx_tokens,
+                num_prefill_requests,
+                prefix_per_req,
+            )?;
             continue;
         }
         if op.is_context_attention() {

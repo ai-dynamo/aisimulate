@@ -32,9 +32,9 @@ use crate::perf_database::PerfDatabase;
 use crate::perfmodel::engine::spec::{EncoderImageShape, EngineSpec, VisionSpec};
 use crate::session::{
     ContextOpFilter, OpListPlan, QueryMemo, get_mix_step_ops, query_context_op,
-    query_generation_op, run_context_ops, run_context_ops_planned, run_context_ops_with,
-    run_generation_ops_step, run_generation_ops_step_beamed_with, run_generation_ops_step_planned,
-    run_telemetry_decode_ops,
+    query_generation_op, query_qualified_mamba_prefill, run_context_ops, run_context_ops_planned,
+    run_context_ops_with, run_generation_ops_step, run_generation_ops_step_beamed_with,
+    run_generation_ops_step_planned, run_telemetry_decode_ops,
 };
 use crate::{ForwardPassMetrics, ForwardPassWorkerType, validate_forward_pass_metrics};
 
@@ -3129,6 +3129,7 @@ impl Engine {
             let n_prefill = sched.num_prefill_requests.max(1);
             let new_tokens_per_req = sched.sum_prefill_tokens / n_prefill;
             let prefix_per_req = sched.sum_prefill_kv_tokens / n_prefill;
+            // Qualified Mamba keeps every scheduled token and request state.
             total += run_context_ops(
                 &self.context_ops,
                 &self.db,
@@ -3136,8 +3137,17 @@ impl Engine {
                 new_tokens_per_req,
                 prefix_per_req,
                 1.0,
-                ContextOpFilter::All,
+                ContextOpFilter::SkipQualifiedMamba,
             )?;
+            for op in self.context_ops.iter().filter(|op| op.is_qualified_mamba()) {
+                total += query_qualified_mamba_prefill(
+                    op,
+                    &self.db,
+                    sched.sum_prefill_tokens,
+                    n_prefill,
+                    prefix_per_req,
+                )?;
+            }
         }
 
         if has_decode {
@@ -3655,6 +3665,8 @@ pub(crate) mod tests {
         };
         // Telemetry: three prefills of 4, 3 and 3 tokens query (2, 3) and (1, 4).
         assert!(close(packed(10, 3, 2), 100.0 + 10.0 + packed(0, 0, 2)));
+        // Prefill-only telemetry keeps the same request shapes, all 10 tokens and 3 states.
+        assert!(close(packed(10, 3, 0), 100.0 + 10.0));
         // Live: ctx 7 at isl 4 and prefix 1 packs one complete request (3 new
         // tokens) and a 3-token partial extend, so (1, 3) twice, not (2, 3).
         let decode_only = engine.mixed_step_latency(0, 2, 4, 1, 1, 1.0, 1.0).unwrap();

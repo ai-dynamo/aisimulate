@@ -39,6 +39,14 @@ def test_resolves_shared_and_excluded_latent_projections():
     assert modes["fc2_latent_proj"] == common.GEMMQuantMode.bfloat16
 
 
+def test_parent_module_exclusion_covers_its_projections():
+    raw = {"quantization_config": {"quant_algo": "NVFP4", "ignore": ["backbone.layers.0.mixer.shared_experts"]}}
+    modes = _projection_modes(raw, "E", common.GEMMQuantMode.nvfp4)
+    assert modes["shared_experts.up_proj"] == common.GEMMQuantMode.bfloat16
+    assert modes["shared_experts.down_proj"] == common.GEMMQuantMode.bfloat16
+    assert modes["fc1_latent_proj"] == common.GEMMQuantMode.nvfp4
+
+
 def test_linear_class_target_respects_ignored_projections():
     raw = {
         "quantization_config": {
