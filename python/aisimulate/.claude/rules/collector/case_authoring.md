@@ -44,6 +44,7 @@ runnable   = plan cases − what collector/skips.py skips
 | New op collector | only when no existing op can produce the data points |
 | Op needs newer SM than some GPUs | axis `min_sm` (quant modes) or an entry in `collector/skips.py` |
 | One backend cannot run a whole block (an op, dtype or model) on some SMs | an entry in `collector/skips.py`, its reason as the comment above it |
+| A case one backend runs on two kernels, and only one kernel cannot run it | a `collector/skips.py` entry naming that `dispatch`: the case still runs on the other kernel |
 | New GEMM dtype | add it to `gemm_types` in `cases/base_ops/gemm.yaml`, plus a `collector/skips.py` entry for SMs without it |
 | Quant mode exists on an SM interval, not a floor (framework routes the platform elsewhere) | quant-mode `max_sm_exclusive` with a mandatory serving-dispatch citation (owner decision 2026-07-13: negative gates are sanctioned only on the quant-mode axis, only with a file:line@version citation, and every citation is re-verified on version bumps — the default-open behavior lets NEW SMs be probed and fail loudly instead of being silently whitelisted out) For an op on an op plan, the same fact is a `collector/skips.py` entry with the citation in its comment |
 
