@@ -2086,24 +2086,62 @@ def test_v031_scheduler_hash_block_size_follows_its_cache_groups(specs, prefix_c
     assert runtime_observations._scheduler_hash_block_sizes(record) == expected
 
 
-@pytest.mark.parametrize("hash_block,refused", [(7, True), (32, False), (64, False)], ids=["7", "32", "64"])
-def test_v031_scheduler_hash_block_size_must_be_one_that_vllm_can_derive(hash_block, refused):
-    # One worker and one scheduler of a prefix-caching phase without a prefix-match unit. Their 96-token
-    # SlidingWindowMLASpec group and 64-token full-attention group give a 192-token scheduler block. vLLM hashes in 32
-    # tokens when the first group takes part in prefix caching, and in 64 tokens when it replays a bounded window
-    # (kv_cache_utils.py:792-798, kv_cache_interface.py:949-951). No hash block size of 7 tokens can follow.
+_SLIDING_AND_FULL = [("SlidingWindowMLASpec", 96, 1), ("FullAttentionSpec", 64, 1)]
+_SLIDING_WITH_MAMBA = [("FullAttentionSpec", 64, 1), ("MambaSpec", 64, -1), ("SlidingWindowMLASpec", 96, 3)]
+
+
+@pytest.mark.parametrize(
+    "specs,unit,hash_block,refused",
+    [
+        # vLLM hashes these groups in 32 tokens when the 96-token SlidingWindowMLASpec group takes part in prefix
+        # caching, and in 64 tokens when it replays a bounded window (kv_cache_utils.py:792-798,
+        # kv_cache_interface.py:949-951). No hash block size of 7 tokens can follow.
+        (_SLIDING_AND_FULL, None, 7, True),
+        (_SLIDING_AND_FULL, None, 32, False),
+        (_SLIDING_AND_FULL, None, 64, False),
+        # 32 tokens need the 96-token group in prefix caching. The 64-token Mamba block is then larger than the hash
+        # block, so the cache-hit alignment is 32 tokens, which is not a multiple of that group's 3 tokens per state
+        # (kv_cache_utils.py:806-832). Without that group, vLLM hashes in 64 tokens.
+        (_SLIDING_WITH_MAMBA, None, 32, True),
+        (_SLIDING_WITH_MAMBA, None, 64, False),
+        # With a 32-token unit, the 96-token group meets the divisibility rule, but its 5 tokens per state do not divide
+        # the 96-token scheduler block. When it takes no part, no group does, and the unit must divide every block,
+        # also the 4-token tail block (kv_cache_utils.py:792-805). So each rule holds only under the other choice.
+        ([("SlidingWindowMLASpec", 96, 5), ("KpoolTailSpec", 4, 1)], 32, 32, True),
+        # With 3 tokens per state, both rules hold when the 96-token group takes part.
+        ([("SlidingWindowMLASpec", 96, 3), ("KpoolTailSpec", 4, 1)], 32, 32, False),
+    ],
+    ids=[
+        "7",
+        "32",
+        "64",
+        "alignment_only_without_the_hash",
+        "alignment_control",
+        "unit_rules_under_different_choices",
+        "unit_rules_under_one_choice",
+    ],
+)
+def test_v031_scheduler_hash_block_size_must_be_one_that_vllm_can_derive(specs, unit, hash_block, refused):
+    # One worker and one scheduler of a prefix-caching phase, with one layer for each (class, block, tokens per state)
+    # and the LCM of the blocks as the scheduler block.
     groups = [
         {
-            "layer_names": [name],
+            "layer_names": [f"layer.{index}"],
             "spec_type": _V031_SPEC + spec,
             "block_size_tokens": block,
-            "layer_specs": {name: {"spec_type": _V031_SPEC + spec, "page_size_bytes": 4096, "tokens_per_state": 1}},
+            "layer_specs": {
+                f"layer.{index}": {"spec_type": _V031_SPEC + spec, "page_size_bytes": 4096, "tokens_per_state": tokens}
+            },
         }
-        for name, spec, block in (("swa.0", "SlidingWindowMLASpec", 96), ("attn.0", "FullAttentionSpec", 64))
+        | ({"kind": "state", "state": {"mamba_cache_mode": "align"}} if spec == "MambaSpec" else {})
+        for index, (spec, block, tokens) in enumerate(specs)
     ]
-    settings = {"enable_prefix_caching": True, "mamba_cache_mode": "none"}
-    resolved = {"cache_config": {**settings, "prefix_match_unit": None}}
-    sizes = {"block_size": 192, "hash_block_size": hash_block}
+    mamba = [block for spec, block, _ in specs if spec == "MambaSpec"]
+    settings = {"enable_prefix_caching": True, "mamba_cache_mode": "align" if mamba else "none"}
+    resolved = {
+        "cache_config": {**settings, "prefix_match_unit": unit, "mamba_block_size": mamba[0] if mamba else None}
+    }
+    sizes = {"block_size": math.lcm(*(block for _, block, _ in specs)), "hash_block_size": hash_block}
     workers = {
         (0, 0): {
             "cache": {"tensor_allocations": [{"layer_stride": 4096}], "groups": groups, "prefix_caching": settings},
@@ -2112,7 +2150,12 @@ def test_v031_scheduler_hash_block_size_must_be_one_that_vllm_can_derive(hash_bl
     }
     schedulers = {
         0: {
-            "cache": {"groups": groups, "mamba_cache_mode": "none", "prefix_caching": {**settings, **sizes}, **sizes},
+            "cache": {
+                "groups": groups,
+                "mamba_cache_mode": settings["mamba_cache_mode"],
+                "prefix_caching": {**settings, **sizes},
+                **sizes,
+            },
             "resolved_config": resolved,
         }
     }

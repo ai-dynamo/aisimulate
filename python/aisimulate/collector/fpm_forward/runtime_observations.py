@@ -968,8 +968,14 @@ def _scheduler_hash_block_size_fits(record: dict[str, Any]) -> bool:
     The cache-hit alignment is a multiple of every int tokens_per_state above 1 of a spec in prefix caching
     (:806-832). At the decode context parallel size of 1 that every accepted record has, the alignment is the hash
     block size when a Mamba group has a larger block, else the scheduler block size. The scheduler record holds the
-    groups that vLLM reads, in which a uniform group keeps only its first inner spec (:2434-2440). A
-    SlidingWindowMLASpec group may or may not take part, so a rule fails here only when it fails either way.
+    groups that vLLM reads, in which a uniform group keeps only its first inner spec (:2434-2440).
+
+    A SlidingWindowMLASpec group may or may not take part, so one choice of the groups that take part must give the
+    recorded hash block size and meet both rules. With that hash block size, the alignment no longer depends on the
+    choice. So every group that takes part must pass the same test: the hash block size divides its block, and the
+    alignment is a multiple of its tokens per state. A SlidingWindowMLASpec group that passes it may take part whatever
+    the other groups do. Every such group keeps the GCD a multiple of the hash block size, so the choice with all of
+    them gives the smallest GCD.
     """
     cache, settings = record["cache"], record["resolved_config"]["cache_config"]
     groups, hash_block = cache["groups"], cache["hash_block_size"]
@@ -981,26 +987,30 @@ def _scheduler_hash_block_size_fits(record: dict[str, Any]) -> bool:
         )
     ):
         return True
-    unknown = _SPEC_MODULE + "SlidingWindowMLASpec"
-    caching = [group for group in groups if group["spec_type"] not in {*_NO_PREFIX_CACHING_SPECS, unknown}]
-    if settings.get("prefix_match_unit") is not None:
-        if caching:
-            fits = all(group["block_size_tokens"] % hash_block == 0 for group in caching)
-        else:
-            # Without a group that surely takes part, the unit fits when it divides the block of a SlidingWindowMLASpec
-            # group that takes part alone, or every block when no group takes part.
-            fits = any(
-                group["block_size_tokens"] % hash_block == 0 for group in groups if group["spec_type"] == unknown
-            ) or all(group["block_size_tokens"] % hash_block == 0 for group in groups)
-        if not fits:
-            return False
     partial = any(group["spec_type"] == _MAMBA_SPEC and group["block_size_tokens"] > hash_block for group in groups)
     alignment = hash_block if partial else cache["block_size"]
-    return all(
-        not isinstance(tokens, int) or tokens <= 1 or alignment % tokens == 0
-        for group in caching
-        for tokens in (spec.get("tokens_per_state") for spec in group["layer_specs"].values())
-    )
+
+    def can_take_part(group: dict[str, Any]) -> bool:
+        return group["block_size_tokens"] % hash_block == 0 and all(
+            not isinstance(tokens, int) or tokens <= 1 or alignment % tokens == 0
+            for tokens in (spec.get("tokens_per_state") for spec in group["layer_specs"].values())
+        )
+
+    unknown = _SPEC_MODULE + "SlidingWindowMLASpec"
+    caching = [group for group in groups if group["spec_type"] not in {*_NO_PREFIX_CACHING_SPECS, unknown}]
+    sliding = [group["block_size_tokens"] for group in groups if group["spec_type"] == unknown and can_take_part(group)]
+    unit = settings.get("prefix_match_unit") is not None
+    if caching:
+        # The groups that surely take part meet both rules under every choice or under none. A unit is the hash block
+        # size of every choice. Without one, the smallest GCD must be the hash block size.
+        return all(can_take_part(group) for group in caching) and (
+            unit or math.gcd(*(group["block_size_tokens"] for group in caching), *sliding) == hash_block
+        )
+    # Otherwise some of those SlidingWindowMLASpec groups take part, or no group does and vLLM hashes every block.
+    blocks = [group["block_size_tokens"] for group in groups]
+    if unit:
+        return bool(sliding) or all(block % hash_block == 0 for block in blocks)
+    return math.gcd(*sliding) == hash_block or math.gcd(*blocks) == hash_block
 
 
 def _phase_prefix_caching(
