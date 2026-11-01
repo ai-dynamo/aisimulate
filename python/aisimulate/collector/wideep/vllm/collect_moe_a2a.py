@@ -1240,10 +1240,9 @@ def _write_sidecar(
 
     if not case_ids:
         raise VllmMoeA2ADeclarationError("refusing to attest an empty case plan")
-    closures = provenance.load_closures(_REPO_ROOT / "collector" / "hash_closures.yaml")
     table = {
         "collector_ref": collector_ref or _git_collector_ref(_REPO_ROOT),
-        "collector_hash": provenance.collector_hash(MODULE_NAME, _REPO_ROOT, closures),
+        "collector_hash": provenance.collector_hash(_REPO_ROOT),
         "case_plan_hash": provenance.case_plan_hash(case_ids),
         "collected_at": date.today().isoformat(),
         "rows": pq.read_metadata(parquet_path).num_rows,

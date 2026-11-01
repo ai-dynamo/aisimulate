@@ -241,7 +241,7 @@ marked it N/A.
 | Python compatibility | Cross-package contracts and dependency checks on Python 3.11 and 3.13; application shards use Python 3.12 |
 | Engine Golden Regression | Engine-step and compiled-engine parity suites, plus frozen native numerical checks |
 | Platform Wheels | Build, repair, install, and exercise Linux x86-64/ARM64 and macOS ARM64 wheels |
-| Collector Data | Data-tree invariants and collector notes (`check_collector_data.py` R1-R8) and the backend-facts registry; the changed-operation report and the cross-backend sanity scan are informational |
+| Collector Data | Data-tree invariants and collector notes (`check_collector_data.py` R1-R8) and the backend-facts registry; the cross-backend sanity scan is informational |
 | Prediction Regression | Collect old/new static, scheduling, and silicon-reference snapshots; fail when a previously working case stops working |
 | Release Artifact Contract | Build the wheel and crate; verify installed versions, allowed distributions, compatibility imports, dependencies, and CLI entry points on both architectures |
 
@@ -387,7 +387,7 @@ timeout behavior. Local editable installs do not replace installed-wheel CI.
 
 Useful retained evidence includes `application-test-inventory-<arch>`,
 `native-prediction-numerics`, `installed-cli-*`,
-`prediction-regression-gate-report`, `changed-ops`, and the
+`prediction-regression-gate-report`, and the
 `fpe-support-matrix-web` artifact containing `fpe-qualification.json`.
 
 

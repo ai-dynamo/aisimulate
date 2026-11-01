@@ -1130,7 +1130,6 @@ def _run_collection_body(
                 case_ids=case_plan_ids(cases),
                 parquet_path=parquet_path,
                 failure_count=failures,
-                module_name=MODULE_NAME,
             )
         except BaseException as error:
             sidecar_error = error

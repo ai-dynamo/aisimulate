@@ -85,7 +85,7 @@ from packaging.version import InvalidVersion, Version
 # repo root is on sys.path. Running this file directly (`python3
 # tools/perf_database/check_collector_data.py`) puts the script's own
 # directory on sys.path[0], not the repo root, so the insert below is
-# required (mirrors collect.py:1808 / changed_ops.py's REPO_ROOT). Harmless
+# required (mirrors collect.py:1808). Harmless
 # under pytest, where pytest.ini's `pythonpath = .` already covers it.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:

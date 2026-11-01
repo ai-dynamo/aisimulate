@@ -94,10 +94,7 @@ remain valid observed outcomes. Never infer complete model coverage from a
 `complete` table status. A table without corresponding provenance is a coverage
 failure. Legacy provenance remains explicitly legacy, not newly measured.
 
-Full CI reports which (framework, family) pairs a collector or runtime change
-touches: the `tools/perf_database/changed_ops.py` output, uploaded as the
-`changed-ops` artifact for reviewers. The report does not gate the change. See
-[CI](../../ci/README.md) for the repository gates.
+See [CI](../../ci/README.md) for the repository gates.
 
 ## Reuse and source priority
 

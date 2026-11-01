@@ -365,15 +365,6 @@ def test_registry_exposes_moe_ep_and_retires_wideep_moe():
     assert entry.perf_filename is PerfFile.MOE_EXPERT_COMPUTE
 
 
-def test_hash_closures_declare_the_case_yaml_the_module_now_reads():
-    from collector.provenance import load_closures
-
-    closures = load_closures(REPO_ROOT / "collector" / "hash_closures.yaml")
-    entry = closures["collector.wideep.sglang.collect_deepep_moe"]
-    assert "collector/cases/base_ops/moe.yaml" in entry
-    assert "__model_cases__" in entry
-
-
 def test_no_silent_case_skipping_in_the_benchmark_loops():
     # failure_handling.md: a queued case is executed or raises a classified
     # error. The retired `except Exception: ... skipping` handlers must not

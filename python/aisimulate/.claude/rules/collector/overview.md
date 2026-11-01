@@ -83,7 +83,7 @@ that settles it:
 | When | What | Who |
 |---|---|---|
 | Every collection run | Runtime identity, plan hash, result counts and the failed cases, execution mode (graph or eager, autotuned or not), run scope (full plan or the CLI subset) | The collector, automatically (counts and execution mode by hand until the Record migrates) |
-| Every collector change | Affected ops (Full CI `changed-ops` report); one line saying whether measured values change, with a before/after diff of the affected ops on one system per SM generation when they do; the notes diff | The author, in the PR |
+| Every collector change | Affected ops; one line saying whether measured values change, with a before/after diff of the affected ops on one system per SM generation when they do; the notes diff | The author, in the PR |
 | Every pin bump | Recollect the families whose kernels changed and declare reuse (`reuse.yaml` with `approved_by`) for the rest; re-check every note in scope by a source check or a targeted run, then move `verified_on` or delete the note; compare the failure set with the previous run | The upgrader |
 
 ## Migration status

@@ -358,14 +358,6 @@ def test_manifest_pin_is_for_the_verified_a2a_runtime():
     assert runtime["source_commit"] == "ee0da84ab9e04ac7610e28580af62c365e898389"
 
 
-def test_hash_closures_has_no_entry_for_the_unregistered_module():
-    # Task-1 sequencing rule: a closures entry may not precede registration.
-    from collector.provenance import load_closures
-
-    closures = load_closures(REPO_ROOT / "collector" / "hash_closures.yaml")
-    assert "collector.wideep.vllm.collect_moe_ep" not in closures
-
-
 def test_registry_module_maps_the_standalone_a2a_runtime_to_an_empty_registry():
     from collector.framework_manifest import _REGISTRY_MODULES
 

@@ -58,9 +58,9 @@ pytestmark = pytest.mark.unit
 
 collect_mod.logger = logging.getLogger("test_collect_provenance_writer")
 
-# A real, already-hash_closures.yaml-covered module — using it lets the writer's
-# real load_closures()/collector_hash() calls run unmocked against the real repo
-# tree, instead of needing to fabricate a fake repo layout.
+# A real registered module — using it lets the writer's real collector_hash()
+# call run unmocked against the real repo tree, instead of needing to fabricate
+# a fake repo layout.
 REAL_MODULE = "collector.sglang.collect_gemm"
 MLA_MODULE = "collector.sglang.collect_mla_bmm"
 BACKEND = "sglang"

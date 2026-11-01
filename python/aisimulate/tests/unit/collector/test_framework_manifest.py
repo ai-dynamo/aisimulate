@@ -487,9 +487,6 @@ def test_retired_wideep_mla_shim_stays_gone():
             assert entry.module != retired_module
             assert all(route.module != retired_module for route in entry.versions)
 
-    closures = yaml.safe_load((COLLECTOR_ROOT / "hash_closures.yaml").read_text(encoding="utf-8"))
-    assert retired_module not in closures
-
 
 def test_family_overrides_split_ops_across_runtimes(tmp_path):
     digest = "@sha256:" + "0" * 64

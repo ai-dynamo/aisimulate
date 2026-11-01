@@ -5964,7 +5964,7 @@ def _write_collector_provenance(
 
     module_failure_names = {e["module"] for e in run_errors if e.get("error_type") == "ModuleCollectionFailure"}
     checkpoint_root = _checkpoint_backend_root(checkpoint_dir, backend)
-    closures = provenance.load_closures(_REPO_ROOT / "collector" / "hash_closures.yaml")
+    collector_hash = provenance.collector_hash(_REPO_ROOT)
     collector_ref = _git_collector_ref(_REPO_ROOT)
 
     runtime_meta = _runtime_metadata(provenance_ctx)
@@ -6076,7 +6076,7 @@ def _write_collector_provenance(
             parquet_rows = pq.read_metadata(parquet_file).num_rows
         tables[table] = {
             "collector_ref": collector_ref,
-            "collector_hash": provenance.collector_hash(module, _REPO_ROOT, closures),
+            "collector_hash": collector_hash,
             "case_plan_hash": provenance.case_plan_hash(sorted(case_ids)),
             "collected_at": collected_at,
             "rows": parquet_rows,

@@ -431,15 +431,6 @@ def test_moe_ep_is_requested_independently_of_the_default_trtllm_plan():
     assert "moe_ep" not in sglang_plan.selected_ops
 
 
-def test_hash_closures_declare_the_case_yaml_the_module_reads():
-    from collector.provenance import load_closures
-
-    closures = load_closures(REPO_ROOT / "collector" / "hash_closures.yaml")
-    entry = closures["collector.wideep.trtllm.collect_moe_compute"]
-    assert "collector/cases/base_ops/moe.yaml" in entry
-    assert "__model_cases__" in entry
-
-
 def test_retired_extras_are_not_persisted_columns():
     # dp_num_tokens / rank0_num_tokens / simulation_mode / moe_kernel stay in
     # the log line; they are NOT payload dict keys (the loader reads none of

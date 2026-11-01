@@ -12,8 +12,7 @@ shard, and emits the same unified ``moe_expert_compute_perf`` rows (one table,
 
 DORMANT per plan decision D3: the pinned ``wideep_vllm`` runtime and empty
 registry serve standalone ``moe_a2a`` collection only. This module has no
-``OpEntry`` and no ``hash_closures.yaml`` entry; a closure may not precede
-registration. Activation is documented in ``collector/wideep/README.md``.
+``OpEntry``. Activation is documented in ``collector/wideep/README.md``.
 Enrollment MUST verify on the pinned image that the kernel invoked here is
 the one vLLM serving dispatch selects for the large-EP DeepEP compute path
 (layer_permissions.md: kernel_source records ground truth, manual pins need

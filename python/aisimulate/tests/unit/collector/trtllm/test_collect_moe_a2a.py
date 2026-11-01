@@ -590,7 +590,6 @@ def test_partial_collection_writes_partial_attestation_then_raises(tmp_path, mon
             finalize=lambda paths, **kwargs: [tmp_path / "moe_a2a_perf.parquet"],
         )
     assert observed["failure_count"] == 1
-    assert observed["module_name"] == a2a.MODULE_NAME
     assert len(observed["case_ids"]) == 2
 
 

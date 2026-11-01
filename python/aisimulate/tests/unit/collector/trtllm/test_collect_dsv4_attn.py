@@ -346,36 +346,24 @@ def test_generation_metadata_constructor_args_match_serving(monkeypatch):
     assert metadata.prepared
 
 
-def test_budget_file_is_in_the_hash_closure_and_moves_both_hashes(tmp_path, monkeypatch):
-    """S3 (PR #1486 review): an edit to the base-op budget declaration must
-    change (a) the module's collector_hash — the file is in its hash closure —
-    and (b) the generated case plan itself (a cap change re-shapes the
-    population, so the checkpoint-derived case_plan_hash re-attests)."""
+def test_budget_file_moves_both_hashes(tmp_path, monkeypatch):
+    """An edit to the base-op budget declaration changes (a) the collector_hash and (b) the
+    generated case plan itself: a cap change re-shapes the population, so the checkpoint-derived
+    case_plan_hash re-attests."""
     import shutil
 
     from collector import provenance
 
-    closures = provenance.load_closures(REPO_ROOT / "collector" / "hash_closures.yaml")
-    entry = closures["collector.trtllm.collect_dsv4_attn"]
-    assert {"collector/cases/base_ops/dsv4_attention.yaml", "collector/op_plans.py"} <= set(entry)
-
-    # (a) content change -> collector_hash change (copy the repo surface the
-    # hash walks, mutate only the budget file)
-    needed = {"collector/trtllm/collect_dsv4_attn.py", "collector/cases/base_ops/dsv4_attention.yaml"}
-    needed |= set(provenance.SHARED_CORE)
-    needed |= {f for f in entry if f != "__model_cases__"}
-    needed |= {str(pth.relative_to(REPO_ROOT)) for pth in (REPO_ROOT / "collector" / "cases" / "models").glob("*.yaml")}
-    for rel in needed:
-        src = REPO_ROOT / rel
-        if not src.is_file():
-            continue
+    # (a) content change -> collector_hash change (copy the module and the budget
+    # file, mutate only the budget file)
+    for rel in ("collector/trtllm/collect_dsv4_attn.py", "collector/cases/base_ops/dsv4_attention.yaml"):
         dst = tmp_path / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(src, dst)
-    h_before = provenance.collector_hash("collector.trtllm.collect_dsv4_attn", tmp_path, closures)
+        shutil.copy(REPO_ROOT / rel, dst)
+    h_before = provenance.collector_hash(tmp_path)
     budget = tmp_path / "collector/cases/base_ops/dsv4_attention.yaml"
     budget.write_text(budget.read_text().replace("max_generation_kv_tokens: 1048576", "max_generation_kv_tokens: 1"))
-    h_after = provenance.collector_hash("collector.trtllm.collect_dsv4_attn", tmp_path, closures)
+    h_after = provenance.collector_hash(tmp_path)
     assert h_before != h_after
 
     # (b) budget change -> different generated population (plan re-attests)
