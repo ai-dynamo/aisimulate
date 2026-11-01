@@ -74,10 +74,10 @@ impl SchedulerRank {
         self.core.set_host_offload_observer(observer);
     }
 
-    /// Private G2 only. Shared G2 is observed through its deployment registry.
-    pub(crate) fn private_host_cache_metrics(&self) -> Option<crate::engine::HostCacheMetrics> {
+    /// Per-rank G2 only. Shared G2 is observed through its deployment registry.
+    pub(crate) fn per_rank_host_cache_metrics(&self) -> Option<crate::engine::HostCacheMetrics> {
         match &self.core {
-            EngineCore::Vllm(core) => core.private_host_cache_metrics(),
+            EngineCore::Vllm(core) => core.per_rank_host_cache_metrics(),
             EngineCore::Sglang(_) => None,
         }
     }

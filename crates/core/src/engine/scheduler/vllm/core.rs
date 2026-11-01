@@ -723,8 +723,11 @@ impl ReservedVllmDecode {
 }
 
 impl VllmCore {
-    pub(crate) fn private_host_cache_metrics(&self) -> Option<crate::engine::HostCacheMetrics> {
-        let mut metrics = self.native_host_offload.as_ref()?.private_cache_metrics()?;
+    pub(crate) fn per_rank_host_cache_metrics(&self) -> Option<crate::engine::HostCacheMetrics> {
+        let mut metrics = self
+            .native_host_offload
+            .as_ref()?
+            .per_rank_cache_metrics()?;
         metrics.dp_rank = Some(self.dp_rank);
         Some(metrics)
     }

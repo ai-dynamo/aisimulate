@@ -170,7 +170,7 @@ The exports provide the following inputs for warmup and profiling views:
 | Prefill/decode throughput | `traffic.committed_prefill_tokens` / `traffic.delivered_output_tokens`, divided by `traffic.duration_s` |
 | Prefix lookup reuse | Role interval `native_prefix_cache_lookup`: `matched_tokens`, `queried_tokens`, `query_count`; actual retries count, even if admission later blocks |
 | Prompt token sources | `traffic.first_admission`: `hbm_reused_tokens`, `host_reused_tokens`, `uncached_tokens`; distinct from executed work and readmission recomputation |
-| Host KV use | `host_caches`: block/byte occupancy and capacity; shared pools appear once per ownership domain |
+| Host KV use | `host_caches`: block/byte occupancy and capacity; `dp_rank_local` caches are sampled per attention-DP rank, while shared pools appear once per ownership domain |
 | Speculative acceptance | `traffic.avg_accept_length`, weighted by `accept_length_forward_count`; measured before output-limit truncation |
 
 SGLang's pass-local cache-hit/total counters and native lookup counters describe

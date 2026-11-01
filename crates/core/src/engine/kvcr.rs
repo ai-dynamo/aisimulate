@@ -440,9 +440,9 @@ impl KvcrRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::host_offload::{HostTierHandle, private};
+    use crate::engine::host_offload::{HostTierHandle, per_rank};
 
-    const BLOCK: usize = 1_000_000; // `private()` tiers; 1 ms per block at 1 GB/s
+    const BLOCK: usize = 1_000_000; // `per_rank()` tiers; 1 ms per block at 1 GB/s
 
     fn registry(latency: f64, gbps: f64) -> SharedKvcrRegistry {
         KvcrRegistry::new(KvcrConfig {
@@ -457,7 +457,7 @@ mod tests {
 
     fn join(registry: &mut KvcrRegistry, worker_id: u64, ranks: usize) {
         let handles = (0..ranks)
-            .map(|_| HostTierHandle::new(private(8, 0.0, 0.0)))
+            .map(|_| HostTierHandle::new(per_rank(8, 0.0, 0.0)))
             .collect();
         registry.register_worker(worker_id, handles, 1).unwrap();
     }
@@ -490,7 +490,7 @@ mod tests {
         let shared = registry(1.0, 1.0);
         let mut r = shared.lock().unwrap();
         for worker in 0..2 {
-            let handles = vec![HostTierHandle::new(private(8, 0.0, 0.0))];
+            let handles = vec![HostTierHandle::new(per_rank(8, 0.0, 0.0))];
             r.register_worker(worker, handles, 4).unwrap();
         }
         let id = r.submit(rank(1, 0), rank(0, 0), 2, false, 0.0);
@@ -542,7 +542,7 @@ mod tests {
         let mut r = shared.lock().unwrap();
         join(&mut r, 0, 1);
         assert!(
-            r.register_worker(0, vec![HostTierHandle::new(private(8, 0.0, 0.0))], 1)
+            r.register_worker(0, vec![HostTierHandle::new(per_rank(8, 0.0, 0.0))], 1)
                 .is_err()
         );
         assert_eq!(r.next_deadline(rank(0, 0)), None);
@@ -634,7 +634,7 @@ mod tests {
         // At 1e-302 bytes per ms, one 1 MB block takes a finite 1e308 ms; eight overflow.
         let shared = registry(1.0, 1e-308);
         let mut r = shared.lock().unwrap();
-        let g2 = [1, 8].map(|blocks| HostTierHandle::new(private(blocks, 0.0, 0.0)));
+        let g2 = [1, 8].map(|blocks| HostTierHandle::new(per_rank(blocks, 0.0, 0.0)));
         let error = r.register_worker(0, g2.into(), 1).unwrap_err().to_string();
         assert!(error.contains("kvcr transfer duration overflow"), "{error}");
         assert!(r.source(rank(0, 0)).is_none());

@@ -1473,7 +1473,7 @@ pub(crate) mod tests {
 
     pub(crate) const C: u64 = 0;
 
-    pub(crate) fn private(capacity_blocks: usize, d2h: f64, h2d: f64) -> HostTier {
+    pub(crate) fn per_rank(capacity_blocks: usize, d2h: f64, h2d: f64) -> HostTier {
         let mut tier = HostTier::new(HostTierConfig {
             capacity_blocks,
             block_bytes: 1_000_000,
@@ -1599,7 +1599,7 @@ pub(crate) mod tests {
 
     #[test]
     fn occupancy_tracks_native_and_external_residency_without_counting_pins() {
-        for (mut tier, client) in [(private(2, 1.0, 1.0), C), (shared(2, 1.0), A)] {
+        for (mut tier, client) in [(per_rank(2, 1.0, 1.0), C), (shared(2, 1.0), A)] {
             assert_occupancy(&tier, 0, 0);
             assert!(matches!(
                 tier.prepare_store(client, request_id(), &[key(1), key(1), key(2)], None, 0.0),
@@ -1750,7 +1750,7 @@ pub(crate) mod tests {
 
     #[test]
     fn kvcr_origin_counts_each_pulled_block_once() {
-        let mut tier = private(2, 0.0, 0.0);
+        let mut tier = per_rank(2, 0.0, 0.0);
         let owner = Uuid::from_u128(1);
         let (a, b, c) = (key(1), key(2), key(3));
         let StoreOutcome::Prepared { transfer_id, .. } =
@@ -1776,7 +1776,7 @@ pub(crate) mod tests {
 
     #[test]
     fn pinned_resident_block_survives_eviction_and_unpins_to_mru() {
-        let mut tier = private(2, 0.0, 0.0);
+        let mut tier = per_rank(2, 0.0, 0.0);
         let owner = Uuid::from_u128(1);
         let (a, b, c) = (key(1), key(2), key(3));
         for (k, t) in [(a, 0.0), (b, 1.0)] {
@@ -1805,7 +1805,7 @@ pub(crate) mod tests {
     }
 
     fn tier(capacity_blocks: usize) -> HostTier {
-        private(capacity_blocks, 1.0, 1.0)
+        per_rank(capacity_blocks, 1.0, 1.0)
     }
 
     fn make_resident(tier: &mut HostTier, blocks: &[HostBlockKey], at_ms: f64) -> f64 {
@@ -1857,7 +1857,7 @@ pub(crate) mod tests {
     fn load_input_order_preserves_pins_and_terminal_lru() {
         for cancel in [false, true] {
             let make = || {
-                let mut tier = private(4, 0.0, 1.0);
+                let mut tier = per_rank(4, 0.0, 1.0);
                 assert!(matches!(
                     tier.prepare_store(
                         C,
@@ -2340,7 +2340,7 @@ pub(crate) mod tests {
 
     #[test]
     fn cancelling_a_load_does_not_wake_its_owner() {
-        for mut tier in [private(2, 1.0, 1.0), shared(2, 0.0)] {
+        for mut tier in [per_rank(2, 1.0, 1.0), shared(2, 0.0)] {
             let client = if tier.is_shared() { A } else { C };
             store(&mut tier, client, &[1], 0.0);
             tier.tick(client, 1.0);

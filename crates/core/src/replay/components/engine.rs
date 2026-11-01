@@ -317,7 +317,7 @@ where
         for (worker_id, worker) in self.workers.iter().enumerate() {
             let Some(worker) = worker else { continue };
             for rank in worker.engine.ranks() {
-                if let Some(mut metrics) = rank.private_host_cache_metrics() {
+                if let Some(mut metrics) = rank.per_rank_host_cache_metrics() {
                     metrics.worker_id = Some(worker_id);
                     snapshots.push(metrics);
                 }

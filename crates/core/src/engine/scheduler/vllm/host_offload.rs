@@ -223,7 +223,7 @@ pub(super) struct VllmHostOffloadAdapter {
 
 impl VllmHostOffloadAdapter {
     /// Shared pools are sampled by the deployment registry, not once per rank.
-    pub(super) fn private_cache_metrics(&self) -> Option<crate::engine::HostCacheMetrics> {
+    pub(super) fn per_rank_cache_metrics(&self) -> Option<crate::engine::HostCacheMetrics> {
         (!self.shared).then(|| {
             self.host
                 .lock()
@@ -1452,10 +1452,10 @@ mod tests {
     }
 
     #[test]
-    fn private_g2_publishes_host_evictions() {
+    fn per_rank_g2_publishes_host_evictions() {
         use crate::engine::{KvEventData, KvEventTier};
         let (a, x, y) = ([1, 2, 3, 4, 5], [11, 12, 13, 14, 15], [21, 22, 23, 24, 25]);
-        // A two-block private G2 holds A and X; storing Y evicts A, the LRU block.
+        // A two-block per-rank G2 holds A and X; storing Y evicts A, the LRU block.
         let waves: [&[&[u32]]; 3] = [&[&a], &[&x], &[&y]];
         let (events, _) = served_kv_events(
             Some(NativeHostOffloadConfig::new(2).with_bandwidths(1.0, 1.0)),
@@ -1490,7 +1490,7 @@ mod tests {
     }
 
     #[test]
-    fn private_g2_publishes_host_residency_without_changing_device_residency() {
+    fn per_rank_g2_publishes_host_residency_without_changing_device_residency() {
         use crate::engine::{KvEvent, KvEventData, KvEventTier};
         let (a, x, y) = ([1, 2, 3, 4, 5], [11, 12, 13, 14, 15], [21, 22, 23, 24, 25]);
         // X and Y together evict A's only full block from the four-block G1
@@ -1498,14 +1498,14 @@ mod tests {
         // or restores that block into free capacity without another eviction.
         let waves: [&[&[u32]]; 3] = [&[&a], &[&x, &y], &[&a]];
         let (without_g2, g1_host_reused) = served_kv_events(None, &waves);
-        let (private_g2, host_reused) = served_kv_events(
+        let (per_rank_g2, host_reused) = served_kv_events(
             Some(NativeHostOffloadConfig::new(4).with_bandwidths(1.0, 1.0)),
             &waves,
         );
         assert_eq!(
             (g1_host_reused, host_reused),
             (vec![0; 4], vec![0, 0, 0, 4]),
-            "only the private-G2 run restores A's block by H2D"
+            "only the per-rank-G2 run restores A's block by H2D"
         );
 
         let block = |tokens: &[u32]| {
@@ -1541,21 +1541,21 @@ mod tests {
             device_residency
         );
         assert_eq!(
-            residency(&private_g2, KvEventTier::Device),
+            residency(&per_rank_g2, KvEventTier::Device),
             device_residency
         );
         assert!(residency(&without_g2, KvEventTier::HostPinned).is_empty());
-        // Native vLLM's OffloadingConnector reports its private CPU cache the
+        // Native vLLM's OffloadingConnector reports its per-rank CPU cache the
         // same way, so a KV router can credit A while it is host-only.
         assert_eq!(
-            residency(&private_g2, KvEventTier::HostPinned),
+            residency(&per_rank_g2, KvEventTier::HostPinned),
             vec![
                 ("stored", vec![a0]),
                 ("stored", vec![x0]),
                 ("stored", vec![y0])
             ]
         );
-        let ids = private_g2
+        let ids = per_rank_g2
             .iter()
             .flatten()
             .map(|event| event.event_id)
@@ -1686,11 +1686,11 @@ mod tests {
     }
 
     #[test]
-    fn g3_promotion_into_private_g2_publishes_host_residency_in_the_same_advance() {
+    fn g3_promotion_into_per_rank_g2_publishes_host_residency_in_the_same_advance() {
         use crate::engine::g3_offload::{Direction, G3Tier};
         use crate::engine::scheduler::capture_kv_event_sink;
         use crate::engine::{G3OffloadConfig, G3Scope, KvEventData, KvEventTier};
-        // A rank that publishes KV events subscribes to its private G2.
+        // A rank that publishes KV events subscribes to its per-rank G2.
         let mut adapter = VllmHostOffloadAdapter::new(
             &NativeHostOffloadConfig::new(2).with_bandwidths(1.0, 1.0),
             4,
