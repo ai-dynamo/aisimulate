@@ -101,8 +101,11 @@ and limitations rather than substituting zero for unavailable measurements.
 
 `ReplayOutputRequirements` defaults to summary output and can request raw,
 per-request, telemetry, memory or timing diagnostics. A runner must reject
-unsupported capture combinations. The Engine JSON runner rejects telemetry
-capture even though native Rust observers support it.
+unsupported capture combinations. The Engine JSON runner supports telemetry for
+offline vLLM/SGLang aggregated and separate prefill/decode replay without encoder
+pools. `capture_telemetry` retains all-phase detail under
+`metadata["native_report"]["telemetry"]`; it does not change scoring metrics.
+See the [telemetry contract](../getting-started/understand-results.md#replay-telemetry).
 
 A factory that sets `supports_deferred_encoder_overlay` accepts
 `defer_encoder_overlay=True`. For an analytical EPD spec, the runner then

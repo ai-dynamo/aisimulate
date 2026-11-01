@@ -1108,6 +1108,7 @@ pub fn rebuild_replay_report_literals(
     use aisimulate_core::{ReplayReport, replay::PerRequestRecord};
     (
         ReplayReport {
+            telemetry: report.telemetry,
             kv_eviction_policy: report.kv_eviction_policy,
             kv_eviction_assumption: report.kv_eviction_assumption,
             committed_prefill_tokens: report.committed_prefill_tokens,

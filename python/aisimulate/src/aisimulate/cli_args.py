@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import math
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,13 @@ def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
         raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
+def _positive_finite_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be finite and positive")
     return parsed
 
 
@@ -48,6 +56,18 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--overwrite", action="store_true")
         child.add_argument("--format", choices=("table", "json"), default="table")
     subparsers.choices["predict"].add_argument("--capture-per-request", action="store_true")
+    subparsers.choices["predict"].add_argument(
+        "--capture-telemetry",
+        action="store_true",
+        help="capture all-phase request, scheduler/cache/traffic sample, and lifecycle JSONL artifacts",
+    )
+    subparsers.choices["predict"].add_argument(
+        "--telemetry-sample-interval-ms",
+        type=_positive_finite_float,
+        default=1000.0,
+        metavar="MS",
+        help="virtual-time telemetry sampling interval, finite and positive (default: 1000)",
+    )
     subparsers.choices["predict"].epilog = (
         "AgentX replay: use weka, agentic_mooncake, or agentic Dynamo traces with "
         "trace_timestamps and positive agentic_lanes. The offline engine stack supports "

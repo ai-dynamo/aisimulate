@@ -229,6 +229,60 @@ def _cli_arguments(tmp_path):
     return ["predict", "--config", str(config), "--output-dir", str(tmp_path / "output")]
 
 
+@pytest.mark.parametrize(
+    "extra,backend,message",
+    [
+        (["--telemetry-sample-interval-ms", "0"], "vllm", "finite and positive"),
+        (["--telemetry-sample-interval-ms", "-1"], "vllm", "finite and positive"),
+        (["--telemetry-sample-interval-ms", "nan"], "vllm", "finite and positive"),
+        (["--telemetry-sample-interval-ms", "inf"], "vllm", "finite and positive"),
+        (["--online"], "vllm", "telemetry capture requires offline --stack engine"),
+        (["--stack", "legacy"], "vllm", "telemetry capture requires offline --stack engine"),
+        ([], "trtllm", "telemetry capture requires offline native vLLM/SGLang"),
+    ],
+)
+def test_supervisor_rejects_invalid_telemetry_before_overwrite(tmp_path, monkeypatch, capsys, extra, backend, message):
+    from aisimulate import cli_args, supervision
+
+    prior = {
+        name: f"prior {name}\n"
+        for name in ("prediction.json", "telemetry-requests.jsonl", "telemetry-samples.jsonl", "keep.txt")
+    }
+    for name, contents in prior.items():
+        (tmp_path / name).write_text(contents)
+    raw = {
+        "engine": {
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "backend": backend,
+            "workers": {"aggregated": {}},
+        }
+    }
+    monkeypatch.setattr(cli_args, "_load_mapping", lambda _: raw)
+    monkeypatch.setattr(supervision, "_installed_names", lambda _: ["legacy"])
+
+    def forbidden_run(*args, **kwargs):
+        pytest.fail("invalid telemetry options reached execution")
+
+    monkeypatch.setattr(supervision, "run_process", forbidden_run)
+    with pytest.raises(SystemExit) as exc:
+        supervision.main(
+            [
+                "predict",
+                "-c",
+                "unused.yaml",
+                "--capture-telemetry",
+                "--output-dir",
+                str(tmp_path),
+                "--overwrite",
+                *extra,
+            ]
+        )
+    assert exc.value.code == 2
+    assert message in capsys.readouterr().err
+    assert {path.name: path.read_text() for path in tmp_path.iterdir()} == prior
+
+
 @pytest.mark.parametrize("probe", ["discover_host", "resolve_budget"])
 @pytest.mark.parametrize("detailed_plan", [False, True])
 def test_early_resource_failure_keeps_a_complete_runtime_envelope(tmp_path, monkeypatch, probe, detailed_plan):

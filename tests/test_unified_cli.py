@@ -20,6 +20,7 @@ from aisimulate.output import (
     prepare_output_directory,
     write_prediction_report,
     write_prediction_stdout,
+    write_telemetry,
 )
 from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, resolve_output_adapters
 from aisimulate.predict import PredictionExecutionError, PredictionResult, run_prediction
@@ -292,6 +293,9 @@ def test_predict_is_the_single_concrete_cli(tmp_path, monkeypatch, capsys) -> No
     assert runner.closed is True
     assert json.loads((output / "prediction.json").read_text())["summary"]["completed_requests"] == 1
     assert json.loads((output / "requests.jsonl").read_text())["request_id"] == "synthetic-0"
+    assert not runner.output_requirements.capture_telemetry
+    assert not list(output.glob("telemetry-*.jsonl"))
+    assert "telemetry" not in json.loads((output / "prediction.json").read_text())
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
 
 
@@ -324,6 +328,159 @@ def test_run_prediction_returns_structured_result() -> None:
     assert runner.output_requirements.include_raw_report is True
     assert runner.output_requirements.capture_per_request is False
     assert runner.closed is True
+
+
+def _telemetry_payload():
+    return {
+        "schema": "aisimulate.replay.telemetry.v1",
+        "clock": "absolute_virtual_ms",
+        "sample_interval_ms": 1000.0,
+        "profile_start_ms": 20.0,
+        "units": {"time": "ms", "cache_bytes": "bytes"},
+        "requests": [
+            {"request_id": "primer-0", "phase": "primer", "arrival_time_ms": 0.0, "tpot_ms": None},
+            {"request_id": "warmup-0", "phase": "warmup", "arrival_time_ms": 10.0, "tpot_ms": None},
+            {"request_id": "profile-0", "phase": "profile", "arrival_time_ms": 20.0, "tpot_ms": 1.0},
+        ],
+        "samples": [{"phase": "preparation", "timestamp_ms": 20.0}],
+        "lifecycle": [{"phase": "warmup", "timestamp_ms": 10.0, "event": "dispatch"}],
+    }
+
+
+@pytest.mark.parametrize("capture_per_request", [False, True])
+@pytest.mark.parametrize("aborted", [False, True])
+def test_predict_writes_separate_all_phase_telemetry(tmp_path, monkeypatch, capsys, capture_per_request, aborted):
+    payload = _telemetry_payload()
+
+    class TelemetryRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            report.metadata["native_report"]["telemetry"] = payload
+            if aborted:
+                report.metadata["agentic_phases"] = {"phase": "aborted", "failure_reason": "warmup deadline"}
+            return report
+
+    runner = TelemetryRunner()
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(runner))
+    path = tmp_path / "prediction.yaml"
+    path.write_text(yaml.safe_dump(_prediction_config().model_dump(mode="json", exclude_none=True)))
+    output = tmp_path / "out"
+    argv = ["predict", "-c", str(path), "--output-dir", str(output), "--capture-telemetry", "--format", "json"]
+    if capture_per_request:
+        argv.append("--capture-per-request")
+    assert cli.main(argv) == int(aborted)
+    assert runner.output_requirements.capture_telemetry
+    assert runner.output_requirements.telemetry_sample_interval_ms == 1000.0
+    assert runner.output_requirements.capture_per_request is capture_per_request
+    saved = json.loads((output / "prediction.json").read_text())
+    for stream in ("requests", "samples", "lifecycle"):
+        assert stream not in saved["telemetry"]
+        artifact = output / saved["telemetry"]["artifacts"][stream]
+        records = [json.loads(line) for line in artifact.read_text().splitlines()]
+        assert records == payload[stream]
+        assert saved["telemetry"]["record_counts"][stream] == len(records)
+    assert saved["telemetry"]["profile_start_ms"] == 20.0
+    assert saved["telemetry"]["units"] == payload["units"]
+    assert "telemetry" not in saved["summary"]
+    assert (output / "requests.jsonl").exists() is capture_per_request
+    if capture_per_request:
+        assert json.loads((output / "requests.jsonl").read_text()) == {"request_id": "synthetic-0"}
+    # Writing the CLI manifest must not consume the SDK's native arrays.
+    assert len(payload["requests"]) == 3
+    if aborted:
+        assert "warmup deadline" in capsys.readouterr().err
+
+
+def test_predict_telemetry_custom_interval_and_sdk_retention():
+    class TelemetryRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            report.metadata["native_report"]["telemetry"] = _telemetry_payload()
+            return report
+
+    runner = TelemetryRunner()
+    args = cli.build_parser().parse_args(
+        ["predict", "-c", "unused.yaml", "--capture-telemetry", "--telemetry-sample-interval-ms", "125.5"]
+    )
+    result = run_prediction(
+        _prediction_config(),
+        stack="engine",
+        runner_factory=_Factory(runner),
+        output_requirements=ReplayOutputRequirements(
+            capture_telemetry=args.capture_telemetry,
+            telemetry_sample_interval_ms=args.telemetry_sample_interval_ms,
+        ),
+    )
+    assert runner.output_requirements.telemetry_sample_interval_ms == 125.5
+    assert result.native["telemetry"] == _telemetry_payload()
+
+
+def test_flat_native_telemetry_stays_out_of_summary_and_stdout():
+    class FlatTelemetryRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            report.metadata["native_report"] = {**report.metrics, "telemetry": _telemetry_payload()}
+            return report
+
+    result = run_prediction(
+        _prediction_config(),
+        stack="engine",
+        runner_factory=_Factory(FlatTelemetryRunner()),
+        output_requirements=ReplayOutputRequirements(capture_telemetry=True),
+    )
+    assert result.native["telemetry"] == _telemetry_payload()
+    assert "telemetry" not in result.summary
+    assert "summary" not in result.native  # Flat native reports remain flat.
+    assert "telemetry" not in json.loads(format_prediction_stdout(result.summary, "json"))
+
+
+@pytest.mark.parametrize("interval", ["0", "-1", "nan", "inf"])
+def test_predict_rejects_invalid_telemetry_interval_before_running(tmp_path, monkeypatch, capsys, interval):
+    runner = _Runner()
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(runner))
+    path = tmp_path / "prediction.yaml"
+    path.write_text(yaml.safe_dump(_prediction_config().model_dump(mode="json", exclude_none=True)))
+    output = tmp_path / "out"
+    with pytest.raises(SystemExit) as exc:
+        cli.main(
+            [
+                "predict",
+                "-c",
+                str(path),
+                "--output-dir",
+                str(output),
+                "--capture-telemetry",
+                "--telemetry-sample-interval-ms",
+                interval,
+            ]
+        )
+    assert exc.value.code == 2
+    assert "finite and positive" in capsys.readouterr().err
+    assert runner.spec is None
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("extra", [["--stack", "dynamo"], ["--online"]])
+def test_predict_rejects_telemetry_outside_offline_engine(tmp_path, monkeypatch, capsys, extra):
+    runner = _Runner()
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(runner))
+    path = tmp_path / "prediction.yaml"
+    path.write_text(yaml.safe_dump(_prediction_config().model_dump(mode="json", exclude_none=True)))
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["predict", "-c", str(path), "--capture-telemetry", *extra])
+    assert exc.value.code == 2
+    assert "telemetry capture requires offline --stack engine" in capsys.readouterr().err
+    assert runner.spec is None
+
+
+def test_predict_requires_telemetry_from_selected_runner(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(_Runner()))
+    path = tmp_path / "prediction.yaml"
+    path.write_text(yaml.safe_dump(_prediction_config().model_dump(mode="json", exclude_none=True)))
+    output = tmp_path / "out"
+    assert cli.main(["predict", "-c", str(path), "--output-dir", str(output), "--capture-telemetry"]) == 1
+    assert "did not provide replay telemetry" in capsys.readouterr().err
+    assert not (output / "prediction.json").exists()
 
 
 @pytest.mark.parametrize("output_format", ["table", "json"])
@@ -415,6 +572,7 @@ def test_predict_discloses_kv_precision_without_detail(
         (ReplayOutputRequirements(include_raw_report=True), True, False),
         (ReplayOutputRequirements(capture_memory_diagnostics=True), True, True),
         (ReplayOutputRequirements(capture_per_request=True), True, False),
+        (ReplayOutputRequirements(capture_telemetry=True), True, False),
         (ReplayOutputRequirements(capture_performance_diagnostics=True), True, False),
     ],
 )
@@ -424,6 +582,8 @@ def test_run_prediction_retains_only_requested_diagnostics(requirements, retain_
             report = super().run(*args, **kwargs)
             native = report.metadata["native_report"]
             native["raw_only_field"] = "native data"
+            if self.output_requirements.capture_telemetry:
+                native["telemetry"] = _telemetry_payload()
             if self.output_requirements.capture_memory_diagnostics:
                 native["memory_diagnostics"] = {"aggregated": {"source": "profile", "kvcache_quant_mode": "fp8"}}
             return report
@@ -1659,6 +1819,9 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     (root / "recommendation.csv").write_text("old")
     (root / "afd-replay-spec.json").write_text("old")
     (root / "afd-qualification.json").write_text("old")
+    for stream in ("requests", "samples", "lifecycle"):
+        (root / f"telemetry-{stream}.jsonl").write_text("old")
+    (root / "telemetry-notes.txt").write_text("keep")
     (recommendations / "0001.yaml").write_text("old")
     (recommendations / "notes.txt").write_text("keep")
 
@@ -1674,6 +1837,8 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     assert not (root / "recommendation.csv").exists()
     assert not (root / "afd-replay-spec.json").exists()
     assert not (root / "afd-qualification.json").exists()
+    assert not list(root.glob("telemetry-*.jsonl"))
+    assert (root / "telemetry-notes.txt").read_text() == "keep"
     assert not (recommendations / "0001.yaml").exists()
 
 
@@ -2541,4 +2706,26 @@ def test_streamed_prediction_outputs_match_one_shot_json(tmp_path, with_details)
 def test_failed_prediction_report_leaves_no_file(tmp_path):
     with pytest.raises(TypeError):
         write_prediction_report(tmp_path, {"bad": object()})
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_empty_telemetry_streams_are_written_with_zero_counts(tmp_path):
+    payload = {**_telemetry_payload(), "requests": [], "samples": [], "lifecycle": []}
+    manifest = write_telemetry(tmp_path, payload)
+    assert manifest["record_counts"] == {"requests": 0, "samples": 0, "lifecycle": 0}
+    assert all((tmp_path / name).read_text() == "" for name in manifest["artifacts"].values())
+
+
+@pytest.mark.parametrize("invalid", [None, {}, [1], ["bad"]])
+def test_telemetry_validates_all_streams_before_writing(tmp_path, invalid):
+    payload = {**_telemetry_payload(), "lifecycle": invalid}
+    with pytest.raises(ValueError, match="telemetry.lifecycle must be a list of JSON mappings"):
+        write_telemetry(tmp_path, payload)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_failed_telemetry_serialization_removes_partial_artifacts(tmp_path):
+    payload = {**_telemetry_payload(), "lifecycle": [{"timestamp_ms": math.nan}]}
+    with pytest.raises(ValueError):
+        write_telemetry(tmp_path, payload)
     assert list(tmp_path.iterdir()) == []

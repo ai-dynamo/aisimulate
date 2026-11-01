@@ -1808,3 +1808,88 @@ fn disaggregated_session_affinity_routes_turns_and_preserves_cache_reuse() {
         }
     }
 }
+
+#[test]
+fn all_phase_telemetry_captures_dp_ranks_without_enabling_legacy_request_output() {
+    for backend in [Backend::Vllm, Backend::Sglang] {
+        for dp in [2, 4] {
+            let mut spec = aggregated_spec(
+                backend,
+                1,
+                0.0,
+                (0..dp)
+                    .map(|rank| request(&format!("dp-{rank}"), 0.0, 8, 3))
+                    .collect(),
+            );
+            spec.engine["dp_size"] = serde_json::json!(dp);
+            spec.record_per_request = false;
+            let baseline = Replayer::new(spec.clone(), ReplayEngineFactory::new())
+                .unwrap()
+                .run()
+                .unwrap();
+            let mut report = Replayer::new(spec, ReplayEngineFactory::new())
+                .unwrap()
+                .with_telemetry_capture(3.0)
+                .unwrap()
+                .run()
+                .unwrap();
+            let capture = report.telemetry.take().unwrap();
+            assert!(report.per_request.is_empty());
+            assert_eq!(capture.requests.len(), dp);
+            assert_eq!(
+                capture
+                    .samples
+                    .iter()
+                    .map(|s| s.sample.traffic.delivered_output_tokens)
+                    .sum::<u64>(),
+                (dp * 3) as u64
+            );
+            assert_eq!(
+                capture
+                    .samples
+                    .iter()
+                    .map(|s| s.sample.traffic.committed_prefill_tokens)
+                    .sum::<u64>(),
+                report.committed_prefill_tokens
+            );
+            assert!(
+                capture
+                    .samples
+                    .iter()
+                    .any(|s| s.sample.decode_scheduler_metrics.len() == dp)
+            );
+            assert_eq!(
+                report.request_counts.completed_requests,
+                baseline.request_counts.completed_requests
+            );
+            assert_eq!(
+                report.throughput.duration_ms,
+                baseline.throughput.duration_ms
+            );
+        }
+    }
+}
+
+#[test]
+fn telemetry_capture_reports_a_time_limited_run_without_claiming_completion() {
+    for backend in [Backend::Vllm, Backend::Sglang] {
+        let mut spec = aggregated_spec(backend, 1, 0.0, vec![request("unfinished", 0.0, 8, 100)]);
+        spec.max_sim_time_ms = Some(0.0);
+        let report = Replayer::new(spec, ReplayEngineFactory::new())
+            .unwrap()
+            .with_telemetry_capture(3.0)
+            .unwrap()
+            .run()
+            .unwrap();
+        let capture = report.telemetry.unwrap();
+        assert_eq!(capture.completion_status, "time_limited");
+        assert_eq!(capture.phase_boundaries.len(), 1);
+        assert_eq!(
+            capture.phase_boundaries[0].completion_status,
+            "time_limited"
+        );
+        assert_eq!(capture.units.timestamps, "ms");
+        assert_eq!(capture.units.traffic_duration, "s");
+        assert_eq!(capture.profile_start_ms, Some(0.0));
+    }
+}

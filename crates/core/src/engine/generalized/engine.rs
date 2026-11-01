@@ -63,6 +63,10 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
         self.ranks.iter_mut()
     }
 
+    pub(crate) fn ranks(&self) -> impl ExactSizeIterator<Item = &C> + '_ {
+        self.ranks.iter()
+    }
+
     /// Construct every rank in a logical engine.
     pub fn new(
         identity: EngineIdentity,
