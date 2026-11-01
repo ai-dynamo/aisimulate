@@ -17,32 +17,11 @@
 # SM89 on. SM121 remains hardware-unvalidated.
 # Never move this back into YAML.
 
-# FIXME(kernel-limit): SM100 DSA with reduced local heads (h in {1,2,4},
-# i.e. high-TP shards) fails in the framework's own dispatch with the C++
-# assert "Num. rows must be a multiple of 8 <h>" (forward_dsa_attn →
-# fmha/fallback.py:75 thop.attention @1.3.0rc20). Hardware-observed on B200
-# 2026-07-18: generation gate 38/38 failures were exactly this cluster while
-# every h>=8 case passed; context shows the same signature (2026-07-19
-# post-prompt_lens-fix gates: ctx 42/44 and gen 38/38 residual errors are
-# all this cluster). Root cause located 2026-07-19: the message comes from
-# the trtllm-gen JIT kernel generator inside libtensorrt_llm.so
-# (trtllm::gen::SmemTile layout codegen; the STSM.MT88.x4 store path
-# requires NumRows % 8 == 0, cf. the exported static_assert in
-# trtllmGenKernels/fmha/trtllmGen_fmha_export/trtllm/dev/StoreSmemP.h) —
-# the generator refuses to emit the sparse-MLA kernel when the row dim,
-# equal to the LOCAL q-head count, is not a multiple of 8. Serving-parity
-# audited (layer_permissions.md "Metadata/input parity"): serving TP
-# sharding passes the identical local head count (num_heads_tp =
-# native/TP) into the same op — GLM-5 (64 heads) hits it from TP16
-# (h=4), DeepSeek-V3.2 (128 heads) from TP32 — so this is a genuine,
-# serving-reachable framework limit on SM100, not a collector dummy-setup
-# artifact; SM90 is immune via FlashMLA. Upstream-reportable. Also
-# hardware-observed on SM103 (2026-07-19, B300): identical signature
-# (SmemTile.cpp:53 "Num. rows must be a multiple of 8 <h>") for h in
-# {1,2,4} while h=8 ctx+gen pass — the limit covers the trtllm-gen path on
-# both SM100 and SM103 (StoreSmemP.h:125 @1.3.0rc29: NumRows >= 8).
-# run_mla_module_worker raises for them before the module is built.
-# Re-verify on the next version bump.
+# SM100/103 DSA with fewer than 8 local heads (high-TP shards) has no
+# trtllm-gen sparse-MLA kernel: the generator requires the row dim, the local
+# q-head count, to be a multiple of 8 (StoreSmemP.h), and serving passes the
+# same local count, so it fails identically. collector/skips.py leaves those
+# cases out; SM90 runs FlashMLA and is not affected.
 
 # 1.3.0rc20 renamed the cache-manager sparse kwargs and moved attention
 # metadata to lowered SparseMetadataParams; this module follows those APIs.
@@ -754,21 +733,10 @@ def run_mla_module(
             f"modules are unsupported on SM{get_sm_version()} "
             f"(deepgemm attention.hpp:203/:259 'Unsupported architecture' @1.3.0rc20)"
         )
-    # FIXME(kernel-limit): no MLA FMHA below Hopper — AttentionOp::initialize()
-    # hard-asserts "Deepseek should be supported by fmha in context part"
-    # (attentionOp.cpp:3097) / generation (:3091). Hardware-observed on L40
-    # (SM89) 2026-07-26: module smoke 0/8, C++ SIGABRT per case; serving hits
-    # the identical assert. Same fail-closed treatment as the stock MLA
-    # collector (collect_mla.py). Re-verified on 1.3.0rc29 / L40 (SM89) 2026-10-04: with only this SM guard
-    # patched out, a bf16 DeepSeek-V3 MLA module cell still aborts in AttentionOp with "Deepseek should be
-    # supported by fmha in generation part" (attentionOp.cpp:3234 @1.3.0rc29; the assert moved from :3091), SIGSEGV
-    # in the worker (facts/mla_bypass_*.log). The wall is unchanged across rc20 -> rc29: keep failing closed.
-    if attn_type == "mla" and get_sm_version() < 90:
-        raise ValueError(
-            f"FIXME(kernel-limit): TRT-LLM MLA has no pre-Hopper FMHA kernel; MLA modules are "
-            f"unsupported on SM{get_sm_version()} "
-            f"(attentionOp.cpp:3234 assert @1.3.0rc29, :3091/:3097 @1.3.0rc20)"
-        )
+    # collector/skips.py leaves SM80-89 out: AttentionOp aborts there on every case.
+    assert attn_type != "mla" or get_sm_version() >= 90, (
+        "TRT-LLM MLA has no pre-Hopper FMHA kernel (collector/skips.py)"
+    )
     # FIXME(kernel-limit): SM120 MLA context takes serving's dense-expand path
     # (forward_context_default, attention.py:2015-2040@1.3.0rc20 — SM100/103
     # route to the absorbed/trtllm-gen path instead), whose
@@ -983,7 +951,6 @@ def run_mla_module_worker(
     device: str = "cuda:0",
 ):
     """Worker-compatible positional wrapper used by collector/collect.py."""
-    _raise_if_dsa_heads_unsupported(attn_type, num_heads)
     return run_mla_module(
         seq_len=seq_len,
         batch_size=batch_size,
@@ -997,16 +964,6 @@ def run_mla_module_worker(
         attn_type=attn_type,
         device=device,
     )
-
-
-def _raise_if_dsa_heads_unsupported(attn_type: str, num_heads: int) -> None:
-    # FIXME(kernel-limit): the SM100 DSA note at the top of this file — per-rank heads 1/2/4 failed
-    # 15,408 b200 rc29 cases after a full module load each (job 469988228). Raise before the build.
-    if attn_type == "dsa" and get_sm_version() in (100, 103) and num_heads < 8:
-        raise RuntimeError(
-            "FIXME(kernel-limit): TRT-LLM trtllm-gen sparse-MLA FMHA on SM100/103 needs per-rank heads >= 8 "
-            f"(num_heads={num_heads}; StoreSmemP.h:125 @1.3.0rc29)"
-        )
 
 
 def run_mla_module_series(
@@ -1068,7 +1025,6 @@ def run_mla_module_series_worker(
 ):
     """Worker entry for one series task: run_mla_module_worker's positional fields, with
     the list of (seq_len, prefix_len) points in place of seq_len and prefix_len."""
-    _raise_if_dsa_heads_unsupported(attn_type, num_heads)
     return run_mla_module_series(
         points,
         batch_size,

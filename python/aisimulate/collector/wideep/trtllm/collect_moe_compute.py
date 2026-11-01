@@ -723,20 +723,6 @@ def run_moe_ep(
             - Router and MoE both use full num_tokens
             This is simpler but less accurate for WideEP simulation.
     """
-    # FIXME(kernel-limit): this runner's fp8_block grouped GEMM is
-    # DeepGEMM-JIT-backed even under the CUTLASS runner
-    # (CutlassFp8BlockScaleGemmRunner::moeGemm -> grouped_gemm_dispatch ->
-    # deep_gemm::jit::Compiler), and the rc20 compiler accepts exactly SM90
-    # ("DeepGEMM only supports Hopper (SM90) architectures",
-    # deep_gemm/compiler.cuh:330@1.3.0rc20). Cases stay queued on other SMs
-    # and fail here classified (layer_permissions.md: execute or raise).
-    # Re-verify on the next framework version bump.
-    if moe_type == "fp8_block" and get_sm_version() != 90:
-        raise ValueError(
-            f"FIXME(kernel-limit): WideEP fp8_block grouped GEMM is DeepGEMM-backed and SM90-only "
-            f"(deep_gemm/compiler.cuh:330 @1.3.0rc20, unchanged @1.3.0rc29); got SM{get_sm_version()}"
-        )
-
     _install_slot_lora_pad_patch()
     # Default num_slots to num_experts (no redundancy)
     if num_slots is None:

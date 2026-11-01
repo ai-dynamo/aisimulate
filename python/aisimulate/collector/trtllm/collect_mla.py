@@ -144,34 +144,8 @@ def run_mla(
     perf_filename,
     device="cuda:0",
 ):
-    # FIXME(kernel-limit): TRT-LLM 1.3.0rc20 has no MLA FMHA kernel below
-    # Hopper — AttentionOp::initialize() hard-asserts "Deepseek should be
-    # supported by fmha in context part" (attentionOp.cpp:3097) / "... in
-    # generation part" (:3091) when the FMHA dispatcher reports the Deepseek
-    # head layout unsupported. Hardware-observed on L40 (SM89) 2026-07-26:
-    # smoke 0/8 across both phases, every case a C++ SIGABRT Python cannot
-    # catch (worker reset per case). Serving hits the identical assert on its
-    # default path (attn_backend='TRTLLM', llm_args.py:4544; no SM-conditional
-    # switch in modeling_deepseekv3.py). This is a REGRESSION, not a permanent
-    # architectural wall: trtllm 1.0.0 collected full SM89 MLA data
-    # (l40s/mla/trtllm/1.0.0: 2436 ctx + 5068 gen rows, bf16 AND fp8 KV), and
-    # since 1.3.0rc15 the tree only carries an approved reuse of that 1.0.0
-    # data. Root cause (source diff v1.0.0 vs v1.3.0rc20): MLA context moved
-    # from the PACKED_QKV/Q_PAGED_KV layouts (whose hd192 kernels SM89 had)
-    # to SEPARATE_Q_K_V, and the new layout's kernel-generation whitelist is
-    # `kspec.sm in [90, 100, 120]` — SM89 absent
-    # (cpp/kernels/fmha_v2/setup.py:6926-6931@v1.3.0rc20); the hand-added
-    # sm89 576x512 generation cubin entry from 1.0.0 was dropped in the same
-    # window. Layout-level, so it kills every dtype at once. Fail closed with
-    # a cited, classified raise (Gemma4/DSA precedent). Re-verified on 1.3.0rc29 / L40 2026-10-04 (the module
-    # collector's twin guard, collect_mla_module.py): same assert, now attentionOp.cpp:3234 — still SM89-less.
-    if get_sm_version() < 90:
-        phase = "context" if is_context_phase else "generation"
-        raise ValueError(
-            f"FIXME(kernel-limit): TRT-LLM MLA has no pre-Hopper FMHA kernel; DeepSeek MLA {phase} "
-            f"is unsupported on SM{get_sm_version()} (attentionOp.cpp:"
-            f"{'3240' if is_context_phase else '3234'} assert @1.3.0rc29)"
-        )
+    # collector/skips.py leaves SM80-89 out: AttentionOp aborts there on every case.
+    assert get_sm_version() >= 90, "TRT-LLM MLA has no pre-Hopper FMHA kernel (collector/skips.py)"
     scenario = Scenario()
     q_lora_rank = scenario.q_lora_rank
     kv_lora_rank = scenario.kv_lora_rank
@@ -202,16 +176,6 @@ def run_mla(
     assert num_heads % tp_size == 0, "num_heads != N * tp_size"
     num_heads = num_heads // tp_size
     num_kv_heads = num_heads
-    # FIXME(kernel-limit): TRT-LLM's MLA decode FMHA on SM100/103 tiles 16 q-heads per CTA and
-    # rejects head counts above 16 that are not a multiple of 16 ("Internal error numHeadsQ=24,
-    # numHeadsPerCta=16", 724 cases = every heads-24 decode cell of the 96-head model at tp4,
-    # b200 rc29 job 469988228). Classified before the layer is built.
-    if not is_context_phase and get_sm_version() in (100, 103) and num_heads > 16 and num_heads % 16:
-        raise RuntimeError(
-            "FIXME(kernel-limit): TRT-LLM MLA decode on SM100/103 needs per-rank heads <= 16 or a multiple "
-            f"of 16 (numHeadsPerCta=16); got {num_heads}"
-        )
-
     context_sequence_lengths = [input_len for _ in range(batch_size)]
 
     num_generation_steps = 0 if is_context_phase else 1

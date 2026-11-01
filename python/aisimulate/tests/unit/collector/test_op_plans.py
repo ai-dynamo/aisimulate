@@ -400,10 +400,10 @@ def test_module_skips_remove_points_per_backend():
     assert {row[4] for row in rows("mla_context_module", "vllm", 100)} == {"bfloat16", "fp8"}
     assert {row[4] for row in rows("mla_context_module", "vllm", 90)} == {"bfloat16"}
     assert {row[4] for row in rows("mla_context_module", "trtllm", 100)} == {"bfloat16"}
-    # FP8 KV on SM89: TRT-LLM only.
+    # SM89: vLLM keeps BF16 KV only, and TRT-LLM has no MLA kernel below Hopper.
     for op in ("mla_context_module", "mla_generation_module"):
         assert {row[3] for row in rows(op, "vllm", 89)} == {"bfloat16"}
-        assert {row[3] for row in rows(op, "trtllm", 89)} == {"bfloat16", "fp8"}
+        assert rows(op, "trtllm", 89) == []
     # Where neither backend leaves anything out, both time the same points.
     assert plan("mla_generation_module", "vllm", 100).cases == plan("mla_generation_module", "trtllm", 100).cases
 
@@ -521,9 +521,9 @@ def test_moe_ep_skips_keep_each_backends_builds(sm):
     assert all(case.moe_type == "fp8_block" and case.own_quant for case in sglang.cases)
     assert all(not case.use_eplb and case.num_slots == case.num_experts for case in sglang.cases)
     assert bool(sglang.cases) == (sm >= 89)
-    # TRT-LLM times fp8_block from SM90 and nvfp4 from SM100.
+    # TRT-LLM times fp8_block on Hopper (DeepGEMM's JIT) and nvfp4 from SM100.
     modes = {case.moe_type for case in trtllm.cases}
-    assert modes == ({"fp8_block", "nvfp4"} if sm >= 100 else {"fp8_block"} if sm == 90 else set())
+    assert modes == ({"nvfp4"} if sm >= 100 else {"fp8_block"} if sm == 90 else set())
 
 
 def test_moe_ep_keeps_one_case_per_table_key_owned_by_a_checkpoint_that_plans_it():

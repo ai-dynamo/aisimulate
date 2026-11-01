@@ -925,6 +925,11 @@ class MlaCase(NamedTuple):
 
     __str__ = __repr__ = _list_form
 
+    @property
+    def local_heads(self) -> int:
+        """The heads one TP rank runs."""
+        return self.num_heads // self.tp_size
+
 
 def _mla_expand(is_context: bool) -> Callable[[], list[MlaCase]]:
     def expand() -> list[MlaCase]:

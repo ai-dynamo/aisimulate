@@ -1529,47 +1529,17 @@ def test_mla_module_metadata_canonicalizes_consumer_keyed_backends():
 
 
 @pytest.mark.parametrize("backend", ["vllm", "trtllm"])
-def test_dsa_sub_8_head_cells_stay_queued_and_raise_before_the_module_build(backend):
+def test_dsa_sub_8_head_cells_leave_the_plan_on_sm100_and_sm103(backend):
     """b200 2026-10-06 (jobs 471043976 / 469988228): per-rank heads 1/2/4 have no sparse-MLA
-    kernel on SM100/103 and failed 68,435 + 15,408 cases after a full module load each. The
-    plan keeps them (a kernel limit is never a plan-time drop); the worker raises a
-    kernel_limit failure before building anything, on SM100/103 and for DSA only."""
-    from contextlib import nullcontext
-    from types import SimpleNamespace
-
+    kernel on SM100/103 and failed 68,435 + 15,408 cases after a full module load each.
+    A skips.py entry leaves them out there; SM90 runs FlashMLA and keeps them."""
     from collector.op_plans import plan
 
-    # GLM-5.x at TP16 runs 4 heads per rank.
-    assert 4 in {case.num_heads for case in plan("dsa_context_module", backend, 100).cases}
-
-    source_path = REPO_ROOT / "collector" / backend / "collect_mla_module.py"
-    tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
-    # the worker and the guard it calls (TRT-LLM shares the guard with its series worker)
-    names = ("run_mla_module_worker", "_raise_if_dsa_heads_unsupported")
-    worker = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
-    built = []
-    for sm, attn_type, num_heads, raises in (
-        (100, "dsa", 4, True),
-        (103, "dsa", 1, True),
-        (100, "dsa", 8, False),
-        (100, "mla", 4, False),
-        (90, "dsa", 4, False),
-    ):
-        namespace = {
-            "get_sm_version": lambda sm=sm: sm,
-            "run_mla_module": lambda **kwargs: built.append(kwargs),
-            "torch": SimpleNamespace(inference_mode=nullcontext),
-        }
-        exec(compile(ast.Module(body=worker, type_ignores=[]), str(source_path), "exec"), namespace)
-        args = (16, 1, num_heads, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", attn_type)
-        before = len(built)
-        if raises:
-            with pytest.raises(RuntimeError, match=r"^FIXME\(kernel-limit\): "):
-                namespace["run_mla_module_worker"](*args, perf_filename="x")
-            assert len(built) == before, (backend, sm, attn_type, num_heads)
-        else:
-            namespace["run_mla_module_worker"](*args, perf_filename="x")
-            assert len(built) == before + 1, (backend, sm, attn_type, num_heads)
+    for op in ("dsa_context_module", "dsa_generation_module"):
+        # GLM-5.x at TP16 runs 4 heads per rank.
+        assert 4 in {case.num_heads for case in plan(op, backend, 90).cases}
+        for sm in (100, 103):
+            assert min(case.num_heads for case in plan(op, backend, sm).cases) >= 8
 
 
 @pytest.mark.parametrize("backend", ["vllm", "trtllm"])
@@ -1581,7 +1551,7 @@ def test_module_plan_keeps_only_the_heads_of_declared_tensor_parallel_shards(bac
     from collector.op_plans import plan
 
     by_model = {}
-    for case in plan("dsa_context_module", backend, 100).cases:
+    for case in plan("dsa_context_module", backend, 90).cases:
         by_model.setdefault(case.model_path, set()).add(case.num_heads)
     assert by_model["zai-org/GLM-5.2"] == {64, 32, 16, 8, 4}
     assert by_model["deepseek-ai/DeepSeek-V3.2"] == {128, 64, 32, 16, 8}

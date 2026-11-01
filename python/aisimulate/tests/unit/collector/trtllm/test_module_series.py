@@ -180,7 +180,7 @@ def test_mla_series_worker_runs_each_point_on_the_one_point_path():
     calls = []
     namespace = _load_series(
         "collect_mla_module.py",
-        ["_raise_if_dsa_heads_unsupported", "run_mla_module_series", "run_mla_module_series_worker"],
+        ["run_mla_module_series", "run_mla_module_series_worker"],
         {
             "run_points": run_points,
             "get_sm_version": lambda: 90,
@@ -207,20 +207,6 @@ def test_mla_series_worker_runs_each_point_on_the_one_point_path():
     assert {(c["batch_size"], c["num_heads"], c["gemm_type"], c["attn_type"]) for c in calls} == {
         (4, 64, "fp8_block", "dsa")
     }
-
-
-def test_mla_series_worker_keeps_the_dsa_heads_guard():
-    calls = []
-    namespace = _load_series(
-        "collect_mla_module.py",
-        ["_raise_if_dsa_heads_unsupported", "run_mla_module_series", "run_mla_module_series_worker"],
-        {"run_points": run_points, "get_sm_version": lambda: 100, "run_mla_module": lambda **kw: calls.append(kw)},
-    )
-    with pytest.raises(RuntimeError, match="FIXME\\(kernel-limit\\)"):
-        namespace["run_mla_module_series_worker"](
-            [(64, 0)], 1, 4, "fp8", "bfloat16", "fp8_block", "m", "dsa", perf_filename="/out/x_perf.txt"
-        )
-    assert calls == [], "the guard raises before any point is built"
 
 
 def test_msa_series_worker_runs_each_point_on_the_one_point_path():

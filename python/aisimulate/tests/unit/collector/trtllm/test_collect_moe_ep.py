@@ -156,12 +156,11 @@ def test_deepseek_v3_population_counts_per_stage(monkeypatch):
     assert {case[0] for case in cases} == {"fp8_block"}
     # EPLB axis preserved exactly: baseline and redundant slot counts.
     assert {(case[13], case[14]) for case in cases} == {(False, 256), (True, 256), (True, 288)}
-    # Blackwell collects BOTH quant modes since rc20 (#1356 moved the
-    # fp8_block floor to min_sm 90, so SM100 gains it alongside nvfp4):
-    # 16 recipes x 2 modes x 3 EPLB configs = 96, minus 2x6 slot drops.
+    # Blackwell times nvfp4 only: the fp8_block grouped GEMM is DeepGEMM-backed,
+    # which compiles for SM90 only (skips.py).
     sm100_cases = _getter(100)()
-    assert len(sm100_cases) == 84
-    assert {case[0] for case in sm100_cases} == {"fp8_block", "nvfp4"}
+    assert len(sm100_cases) == 42
+    assert {case[0] for case in sm100_cases} == {"nvfp4"}
 
 
 def test_population_is_identical_to_the_retired_getter(monkeypatch):
@@ -171,7 +170,9 @@ def test_population_is_identical_to_the_retired_getter(monkeypatch):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "deepseek-ai/DeepSeek-V3")
     for sm_version in (80, 90, 100, 120):
         new = {(case[0], case[10], case[8], case[12], case[13], case[14]) for case in _getter(sm_version)()}
-        assert new == _retired_case_set(sm_version), f"coverage drift at SM{sm_version}"
+        # skips.py leaves fp8_block out off Hopper, where every case failed in DeepGEMM's JIT.
+        retired = {case for case in _retired_case_set(sm_version) if case[0] != "fp8_block" or sm_version == 90}
+        assert new == retired, f"coverage drift at SM{sm_version}"
 
 
 def test_pre_hopper_sm_plans_nothing_under_the_quant_floors(monkeypatch):
@@ -196,11 +197,11 @@ def test_sm90_plans_21_fp8_block_builds_timed_as_42_tasks(monkeypatch):
     assert {(region.region, region.cases) for region in op_plan.removed} == {("dtype=nvfp4", 21)}
 
 
-def test_sm120_collects_both_quants_and_every_eplb_layout(monkeypatch):
+def test_sm120_collects_nvfp4_and_every_eplb_layout(monkeypatch):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "deepseek-ai/DeepSeek-V3")
     rows = _getter(120)()
-    assert len(rows) == 84
-    assert {row[0] for row in rows} == {"fp8_block", "nvfp4"}
+    assert len(rows) == 42
+    assert {row[0] for row in rows} == {"nvfp4"}
     assert {(row[13], row[14]) for row in rows} == {(False, 256), (True, 256), (True, 288)}
 
 
@@ -456,10 +457,13 @@ def test_no_silent_case_skipping_and_the_dry_run_raises():
     assert "largest declared token count" in SOURCE_TEXT
 
 
-def test_sm120_drops_are_parked_as_a_kernel_limit():
-    # layer_permissions.md: an unverified framework kernel limit lives as a
-    # FIXME(kernel-limit) note at its site, re-audited on every version bump.
-    assert "FIXME(kernel-limit)" in SOURCE_TEXT
+def test_fp8_block_off_hopper_is_a_commented_skip(monkeypatch):
+    # DeepGEMM's JIT compiles the fp8_block grouped GEMM for SM90 only; skips.py
+    # leaves those cases out instead of the runner raising on every one.
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "deepseek-ai/DeepSeek-V3")
+    for sm_version in (100, 103, 120):
+        assert "dtype=fp8_block" in {region.region for region in _plan(sm_version).removed}
+    assert "get_sm_version() != 90" not in SOURCE_TEXT
 
 
 def test_power_is_measured_or_absent_never_zero():

@@ -1630,27 +1630,6 @@ def run_mla_module_worker(
     ``seq_len`` is one point (the CLI's --quick) or the case's list of points
     measured on one module (the registry plan, see _series_points).
     """
-    # FIXME(kernel-limit): on SM100/103 FlashInfer's trtllm-gen sparse-MLA kernels start at tileSizeQ 8
-    # (= per-rank heads at q_len 1): DSA heads 1/2/4 (TP 32/64/128 of a 128-head model) raise "Missing
-    # TRTLLM-GEN kernel" (csrc/trtllm_fmha_kernel_launcher.cu:318 @flashinfer 0.6.18, vLLM 0.30.0's pin),
-    # 68,435 b200 cases after a full module load each (job 471043976). Serving fails identically.
-    if attn_type == "dsa" and get_sm_version() in (100, 103) and num_heads < 8:
-        raise RuntimeError(
-            "FIXME(kernel-limit): FlashInfer trtllm-gen sparse-MLA on SM100/103 has no kernel for per-rank "
-            f"heads < 8 (num_heads={num_heads}; trtllm_fmha_kernel_launcher.cu:318 @flashinfer 0.6.18)"
-        )
-    # FIXME(kernel-limit): on SM100/103 with FP8 KV, vLLM selects FLASHINFER_MLA_SPARSE for DSA and
-    # FlashInfer's auto backend has nothing for 64 < per-rank heads < 128: trtllm-gen refuses the head
-    # range, cute-dsl refuses sparse_mla_top_k ("auto: no backend supports this configuration", 11,442
-    # cases = every heads-96 fp8 cell, both phases, job 471043976). Serving fails identically (the same
-    # gap closes Kimi-K3 tp1 on sglang: finding sm100_probe_failures_recheck_2026_10_04 (i)). Raise
-    # before the module is built so the cell is a classified failure, not a 20 s load + crash.
-    if attn_type == "dsa" and "fp8" in str(kv_cache_dtype) and get_sm_version() in (100, 103) and 64 < num_heads < 128:
-        raise RuntimeError(
-            "FIXME(kernel-limit): vLLM FLASHINFER_MLA_SPARSE on SM100/103 has no decode backend for "
-            f"64 < per-rank heads < 128 with FP8 KV (num_heads={num_heads}); trtllm-gen rejects the head "
-            "range and cute-dsl rejects sparse_mla_top_k (flashinfer mla/_core.py:4271); serving fails identically"
-        )
     # Serving executes model forward under inference mode (vLLM dd10e03f9,
     # v1/worker/gpu_model_runner.py:4069-4070). Keep module initialization,
     # dry runs, graph warmup and timing in the SAME mode: FlashInfer 0.6.13

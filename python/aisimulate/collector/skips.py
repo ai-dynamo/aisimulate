@@ -113,8 +113,25 @@ SKIPS: list[dict] = [
     # the checkpoint's own MoE under another label.
     {"backend": "sglang", "op": "moe_ep", "own_quant": False},
     # TRT-LLM: the wide-EP fp8_block grouped GEMM is DeepGEMM-backed even under the
-    # CUTLASS runner, and on SM89 every case fails in the DeepGEMM compiler (L40S).
-    {"backend": "trtllm", "op": "moe_ep", "dtype": "fp8_block", "sm": [89]},
+    # CUTLASS runner (CutlassFp8BlockScaleGemmRunner::moeGemm), and DeepGEMM's JIT
+    # compiles for Hopper only (deep_gemm/compiler.cuh), so every case fails off SM90.
+    {"backend": "trtllm", "op": "moe_ep", "dtype": "fp8_block", "sm": [89, 100, 103, 120]},
+    # TRT-LLM has no MLA FMHA kernel below Hopper: AttentionOp asserts "Deepseek
+    # should be supported by fmha" (attentionOp.cpp) and the worker aborts on every
+    # case, as serving does.
+    {
+        "backend": "trtllm",
+        "op": ["mla_context", "mla_generation", "mla_context_module", "mla_generation_module"],
+        "sm": [80, 86, 89],
+    },
+    # TRT-LLM's MLA decode FMHA on SM100/103 tiles 16 query heads per CTA and rejects
+    # more than 16 heads per rank unless they are a multiple of 16 ("numHeadsPerCta=16").
+    {
+        "backend": "trtllm",
+        "op": "mla_generation",
+        "sm": [100, 103],
+        "local_heads": lambda heads: heads > 16 and heads % 16 != 0,
+    },
     # vLLM runs both MLA generation BMMs as bf16 torch.bmm on NVIDIA GPUs (its
     # fp8 BMMs are ROCm only), so an fp8 row would label a kernel vLLM never runs.
     {"backend": "vllm", "op": ["mla_bmm_gen_pre", "mla_bmm_gen_post"], "dtype": "fp8", "sm": [89, 90, 100, 103, 120]},
@@ -139,6 +156,26 @@ SKIPS: list[dict] = [
     # kernels of the SM100 family, and FP8-KV cases were not collected on SM90
     # before. SM120 keeps the FP8-KV cases collected before.
     {"backend": "trtllm", "op": ["dsa_context_module", "dsa_generation_module"], "kv_cache_dtype": "fp8", "sm": [90]},
+    # DSA modules on SM100/103 run trtllm-gen sparse-MLA kernels, which start at 8
+    # query heads per rank (TRT-LLM's StoreSmemP.h tile, FlashInfer's
+    # trtllm_fmha_kernel_launcher.cu), so fewer heads per rank fail on every case,
+    # as serving does.
+    {
+        "backend": ["trtllm", "vllm"],
+        "op": ["dsa_context_module", "dsa_generation_module"],
+        "sm": [100, 103],
+        "num_heads": lambda heads: heads < 8,
+    },
+    # vLLM serves DSA on an FP8 KV cache on SM100/103 through FLASHINFER_MLA_SPARSE,
+    # whose auto backend has no kernel for 64 < heads per rank < 128: trtllm-gen
+    # rejects the head range and cute-dsl the sparse top-k (flashinfer mla/_core.py).
+    {
+        "backend": "vllm",
+        "op": ["dsa_context_module", "dsa_generation_module"],
+        "sm": [100, 103],
+        "kv_cache_dtype": "fp8",
+        "num_heads": lambda heads: 64 < heads < 128,
+    },
     # SGLang loads a checkpoint with its own quantization (load_model_runner), so a
     # DSA module on another projection GEMM would time the checkpoint's GEMM under
     # the case's gemm_type.
