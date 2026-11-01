@@ -45,8 +45,10 @@ from collector.case_generator import (
     AttentionOwner,
     Dsv4Sweep,
     MoeCommonTestCase,
+    _framework_specific_model_case_values,
     get_attention_encoder_head_configs,
     get_attention_shapes,
+    get_base_common_case_values,
     get_common_gdn_test_cases,
     get_common_kda_test_cases,
     get_common_mamba2_test_cases,
@@ -1698,6 +1700,47 @@ def _glm5_sparse_plan(kernel: str) -> OpPlan:
     )
 
 
+# --- DeepSeek-V4.1 native components: dsv41_module (SGLang) --------------------------
+
+
+class Dsv41Case(NamedTuple):
+    """One native DeepSeek-V4.1 collection: a checkpoint at one TP with one execution profile.
+
+    The profiles write separate tables, so a run collects one of them
+    (``--case-filter dsv41_<profile>_``).
+    """
+
+    model_path: str
+    tp_size: int
+    execution_profile: str
+
+    __str__ = __repr__ = _list_form
+
+
+def _expand_dsv41() -> list[Dsv41Case]:
+    """Every TP and execution profile each declared checkpoint lists."""
+    return [
+        Dsv41Case(value["model_path"], tp_size, profile)
+        for value in _framework_specific_model_case_values("dsv41_module", "sglang")
+        for tp_size in value["tensor_parallel_sizes"]
+        for profile in value["execution_profiles"]
+    ]
+
+
+def _sglang_dsv41_rows(case: Dsv41Case, sm_version: int | None, runner: str | None) -> list[dict]:
+    """The native runner's {id, params} row: checkpoint, TP, profile and the workload sweep."""
+    sweep = get_base_common_case_values("dsv41_module")
+    if not sweep:
+        raise ValueError("missing V4.1 workload sweep")
+    model = case.model_path.replace("/", "_")
+    return [
+        {
+            "id": f"dsv41_{case.execution_profile}_tp{case.tp_size}_{model}",
+            "params": [case.model_path, case.tp_size, case.execution_profile, sweep],
+        }
+    ]
+
+
 # --- mHC: mhc_module ---------------------------------------------------------------
 
 _DSV4_ARCHITECTURE = "DeepseekV4ForCausalLM"
@@ -2096,6 +2139,13 @@ OP_PLANS: dict[str, OpPlan] = {
         dtype_field="variant",
         group_fields=("model_path", "batch_size"),
         batch_rows={"sglang": _sglang_dsv4_kernel_rows("topk")},
+    ),
+    "dsv41_module": OpPlan(
+        Dsv41Case,
+        _expand_dsv41,
+        dtype_field="execution_profile",
+        group_fields=Dsv41Case._fields,
+        rows={"sglang": _sglang_dsv41_rows},
     ),
     "glm5_mqa_logits_module": _glm5_sparse_plan("mqa"),
     "glm5_topk_module": _glm5_sparse_plan("topk"),

@@ -145,7 +145,7 @@ def row():
 
 
 def test_manifest_matches_native_graph_and_profiles(monkeypatch):
-    monkeypatch.delenv("DSV41_EXECUTION_PROFILE", raising=False)
+    monkeypatch.setenv("AIS_SM", "100")
     full, replay = build_manifest(4, False), build_manifest(4, True)
     assert full["config_sha256"] == replay["config_sha256"]
     assert full["config_sha256"] == "d7637228d27528f6bd259781b5a27258068f50bf637c9c83aab784d81579669d"
@@ -165,17 +165,11 @@ def test_manifest_matches_native_graph_and_profiles(monkeypatch):
 
 
 @pytest.mark.parametrize("profile", ["full", "decoder_bounded"])
-def test_case_selection_includes_only_requested_execution_profile(monkeypatch, profile):
-    monkeypatch.setenv("DSV41_EXECUTION_PROFILE", profile)
-    cases = get_dsv41_module_test_cases()
+def test_a_case_filter_on_the_id_selects_one_execution_profile(monkeypatch, profile):
+    monkeypatch.setenv("AIS_SM", "100")
+    cases = [case for case in get_dsv41_module_test_cases() if f"dsv41_{profile}_" in str(case)]
     assert len(cases) == 4
     assert {case["params"][2] for case in cases} == {profile}
-
-
-def test_case_selection_rejects_unknown_execution_profile(monkeypatch):
-    monkeypatch.setenv("DSV41_EXECUTION_PROFILE", "unqualified")
-    with pytest.raises(ValueError, match="DSV41_EXECUTION_PROFILE"):
-        get_dsv41_module_test_cases()
 
 
 @pytest.mark.parametrize(
