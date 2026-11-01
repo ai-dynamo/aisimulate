@@ -145,6 +145,7 @@ from collector.helper import (
     get_sm_version,
     log_perf,
 )
+from collector.op_plans import plan_cases
 from collector.registry_types import PerfFile
 from collector.trtllm.module_series import run_points
 
@@ -309,13 +310,11 @@ def _build_module_test_cases(attn_type: str, mode: str):
 
 
 def get_mla_context_module_test_cases():
-    """collect.py entrypoint for MLA context module collection."""
-    return _build_module_test_cases(attn_type="mla", mode="context")
+    return plan_cases("mla_context_module", "trtllm", get_sm_version())
 
 
 def get_mla_generation_module_test_cases():
-    """collect.py entrypoint for MLA generation module collection."""
-    return _build_module_test_cases(attn_type="mla", mode="generation")
+    return plan_cases("mla_generation_module", "trtllm", get_sm_version())
 
 
 def get_dsa_context_module_test_cases():

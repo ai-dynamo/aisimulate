@@ -102,7 +102,7 @@ REGISTRY: list[OpEntry] = [
         op="mla_context_module",
         module="collector.trtllm.collect_mla_module",
         get_func="get_mla_context_module_test_cases",
-        run_func="run_mla_module_worker",
+        run_func="run_mla_module_series_worker",
         perf_filename=PerfFile.MLA_CONTEXT_MODULE,
         # fp8-KV MLA module combos are hardware-validated on SM90/100/103/120
         # (see collect_mla_module._get_precision_combos); SM121 has never run
@@ -114,7 +114,7 @@ REGISTRY: list[OpEntry] = [
         op="mla_generation_module",
         module="collector.trtllm.collect_mla_module",
         get_func="get_mla_generation_module_test_cases",
-        run_func="run_mla_module_worker",
+        run_func="run_mla_module_series_worker",
         perf_filename=PerfFile.MLA_GENERATION_MODULE,
         # fp8-KV MLA module combos are hardware-validated on SM90/100/103/120
         # (see collect_mla_module._get_precision_combos); SM121 has never run

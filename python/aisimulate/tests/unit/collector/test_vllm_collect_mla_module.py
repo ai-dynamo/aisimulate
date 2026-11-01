@@ -13,6 +13,9 @@ and pin the two properties that matter:
   the drop is logged in the canonical format;
 - on >= 90 GB devices (H20/B200/RTX PRO 6000) the filter keeps the full
   declared sweep, i.e. it cannot change SM90/SM100/SM120 behavior.
+
+The MLA module ops plan without the device (collector/op_plans.py), so their
+run refuses exactly the points this filter drops, before allocating them.
 """
 
 from __future__ import annotations
@@ -129,3 +132,27 @@ def test_memory_filter_fp8_kv_halves_the_bound(capsys):
     # 2 x 33.5M x 576 x 1B = 38.7 GB fits the 42.9 GB budget.
     assert (32768, 1024) in {(s, b) for s, b, *_ in cases}
     assert "dropped" not in capsys.readouterr().out
+
+
+def _build_kv_does_not_fit():
+    namespace = {
+        "_MLA_KV_ENTRY_ELEMS": _load_assignment(MLA_MODULE_SOURCE, "_MLA_KV_ENTRY_ELEMS"),
+        "_MEMORY_BUDGET_SAFETY_FACTOR": _load_assignment(MLA_MODULE_SOURCE, "_MEMORY_BUDGET_SAFETY_FACTOR"),
+    }
+    _load_function(MLA_MODULE_SOURCE, "_generation_kv_footprint_bytes", namespace)
+    return _load_function(MLA_MODULE_SOURCE, "_kv_does_not_fit", namespace)
+
+
+@pytest.mark.parametrize("kv_cache_dtype", ["bfloat16", "fp8"])
+def test_mla_run_refuses_exactly_the_points_the_filter_drops(kv_cache_dtype):
+    combo = [("bfloat16", kv_cache_dtype, "bfloat16")]
+    queued = {(s, b) for s, b, *_ in _build_get_generation_test_cases(L40S_TOTAL_MEMORY, combo)("mla")}
+    does_not_fit = _build_kv_does_not_fit()
+    for b in SWEEP.generation_batch_sizes:
+        for s in SWEEP.generation_sequence_lengths:
+            if b * s > SWEEP.generation_max_tokens:
+                continue
+            reason = does_not_fit(b * s, kv_cache_dtype, L40S_TOTAL_MEMORY)
+            assert (reason is None) == ((s, b) in queued), (s, b)
+            if reason is not None:
+                assert reason.startswith("FIXME(kernel-limit): does not fit: the KV cache needs 72.0 GiB")

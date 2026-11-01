@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 from collector import skips
 from collector.case_generator import without_models
-from collector.op_plans import OP_PLANS, GemmCase, OpPlan, _Run, _runners, plan, summarize
+from collector.op_plans import OP_PLANS, GemmCase, ModuleCase, OpPlan, _Run, _runners, plan, summarize
 from collector.provenance import case_plan_hash
 
 pytestmark = pytest.mark.unit
@@ -183,6 +183,37 @@ def test_a_backend_declares_batch_rows_or_rows_not_both():
             rows={"vllm": lambda case, sm, runner: [case]},
             batch_rows={"vllm": lambda cases, sm: []},
         )
+
+
+@pytest.mark.parametrize("op", ["mla_context_module", "mla_generation_module"])
+@pytest.mark.parametrize("backend", ["trtllm", "vllm"])
+def test_module_rows_list_the_points_of_their_cases(op, backend):
+    op_plan = plan(op, backend, 100)
+    points = []
+    for series, *key, attn_type in op_plan.rows:
+        assert attn_type == "mla"
+        # TRT-LLM rows list (seq_len, prefix_len) points; vLLM rows list lengths.
+        pairs = series if backend == "trtllm" else [[length, 0] for length in series]
+        assert pairs == sorted(pairs, reverse=True)
+        points += [ModuleCase(length, *key, prefix_len) for length, prefix_len in pairs]
+    assert len(points) == len(set(points)) == len(op_plan.cases)
+    assert set(points) == set(op_plan.cases)
+
+
+def test_module_skips_remove_points_per_backend():
+    def rows(op, backend, sm):
+        return plan(op, backend, sm).rows
+
+    # FP8 prefill queries: vLLM on the SM100 family only, never TRT-LLM.
+    assert {row[4] for row in rows("mla_context_module", "vllm", 100)} == {"bfloat16", "fp8"}
+    assert {row[4] for row in rows("mla_context_module", "vllm", 90)} == {"bfloat16"}
+    assert {row[4] for row in rows("mla_context_module", "trtllm", 100)} == {"bfloat16"}
+    # FP8 KV on SM89: TRT-LLM only.
+    for op in ("mla_context_module", "mla_generation_module"):
+        assert {row[3] for row in rows(op, "vllm", 89)} == {"bfloat16"}
+        assert {row[3] for row in rows(op, "trtllm", 89)} == {"bfloat16", "fp8"}
+    # Where neither backend leaves anything out, both time the same points.
+    assert plan("mla_generation_module", "vllm", 100).cases == plan("mla_generation_module", "trtllm", 100).cases
 
 
 @pytest.mark.parametrize(

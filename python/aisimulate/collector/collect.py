@@ -2915,6 +2915,7 @@ def _op_plan_report(backend: str, ops: list[str], sm_version: int, table_dir: st
     With ``table_dir``, each op's cases are also written there as CSV.
     """
     import csv
+    import sys
 
     from collector.op_plans import OP_PLANS, plan, summarize
 
@@ -2924,12 +2925,15 @@ def _op_plan_report(backend: str, ops: list[str], sm_version: int, table_dir: st
     for op in ops:
         if op not in OP_PLANS or op not in run_funcs:
             continue
-        op_plan = plan(op, backend, sm_version)
-        report[op] = summarize(
-            op,
-            op_plan,
-            case_id=lambda row, op=op: _run_case_id(row, run_funcs[op], f"{backend}.{op}"),
-        )
+        # The report owns stdout: what planning prints (the MLA module loader's model
+        # notes) goes to stderr.
+        with contextlib.redirect_stdout(sys.stderr):
+            op_plan = plan(op, backend, sm_version)
+            report[op] = summarize(
+                op,
+                op_plan,
+                case_id=lambda row, op=op: _run_case_id(row, run_funcs[op], f"{backend}.{op}"),
+            )
         if table_dir:
             path = Path(table_dir) / f"{backend}_sm{sm_version}_{op}.csv"
             path.parent.mkdir(parents=True, exist_ok=True)

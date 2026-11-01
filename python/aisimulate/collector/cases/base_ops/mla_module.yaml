@@ -59,6 +59,33 @@ common_case_values:
       - 'generation: batch_size * sequence_length <= 262144'
       - 'generation: sequence_length >= 8192 requires batch_size <= 16'
     # top_level_head_counts keep ModelRunner-loading subprocess counts manageable.
+  # The sweep the module op plans (collector/op_plans.py) share across backends:
+  # mla_context_module and mla_generation_module. collector/skips.py leaves out
+  # what a backend or SM does not run. The per-backend sections below serve the
+  # module ops still on their own getters.
+  mla_module_plan:
+    description: Shared MLA module sweep of the op plans.
+    context_batch_sizes: [1, 2, 4, 8, 16, 32, 64, 128, 256]
+    context_sequence_lengths: [1, 16, 32, 64, 128, 256, 512, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 10240, 12288, 16384, 32768]
+    generation_batch_sizes: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+    generation_sequence_lengths: [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
+    # Per-rank heads of the canonical DeepSeek-V3 module: its TP shards (128 to
+    # 1) and Kimi-K3's (96, 48, 24, 12).
+    head_counts: [128, 96, 64, 48, 32, 24, 16, 12, 8, 4, 2, 1]
+    module_precision_combos:
+      - {compute_dtype: bfloat16, kv_cache_dtype: bfloat16, gemm_type: bfloat16, attention_types: [mla]}
+      - {compute_dtype: bfloat16, kv_cache_dtype: fp8, gemm_type: bfloat16, attention_types: [mla]}
+      - {compute_dtype: fp8, kv_cache_dtype: fp8, gemm_type: bfloat16, phases: [context], attention_types: [mla]}
+      - {compute_dtype: bfloat16, kv_cache_dtype: bfloat16, gemm_type: fp8_block, attention_types: [mla]}
+      - {compute_dtype: bfloat16, kv_cache_dtype: fp8, gemm_type: fp8_block, attention_types: [mla]}
+      - {compute_dtype: fp8, kv_cache_dtype: fp8, gemm_type: fp8_block, phases: [context], attention_types: [mla]}
+      - {compute_dtype: bfloat16, kv_cache_dtype: bfloat16, gemm_type: nvfp4, attention_types: [mla]}
+      - {compute_dtype: bfloat16, kv_cache_dtype: fp8, gemm_type: nvfp4, attention_types: [mla]}
+      - {compute_dtype: fp8, kv_cache_dtype: fp8, gemm_type: nvfp4, phases: [context], attention_types: [mla]}
+    context:
+      max_tokens: 131072
+    generation:
+      max_tokens: 33554432
   mla_module_sglang:
     description: SGLang full MLA/DSA module sweep. Quantized DSA checkpoints keep DSA projections in bf16 but may use fp8 KV cache.
     module_tp_sizes:

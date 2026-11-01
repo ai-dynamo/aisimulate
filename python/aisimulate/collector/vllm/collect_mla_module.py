@@ -70,6 +70,7 @@ from collector.case_generator import (
 )
 from collector.helper import benchmark_with_power as _benchmark_with_power
 from collector.helper import get_sm_version, log_perf
+from collector.op_plans import plan_cases
 from collector.registry_types import PerfFile
 from collector.vllm.utils import (
     BatchSpec,
@@ -207,6 +208,23 @@ def _generation_kv_footprint_bytes(total_tokens: int, kv_cache_dtype: str) -> in
     """
     bytes_per_elem = 1 if "fp8" in kv_cache_dtype else 2
     return 2 * total_tokens * _MLA_KV_ENTRY_ELEMS * bytes_per_elem
+
+
+def _kv_does_not_fit(total_tokens: int, kv_cache_dtype: str, total_memory: int) -> str | None:
+    """Why a generation point's KV cache cannot fit the device, or None when it can.
+
+    The MLA module plan does not depend on the device, so the run refuses such a
+    point before allocating it. The footprint is a lower bound, so a refused point
+    could not have run.
+    """
+    needed = _generation_kv_footprint_bytes(total_tokens, kv_cache_dtype)
+    allowed = int(total_memory * _MEMORY_BUDGET_SAFETY_FACTOR)
+    if needed <= allowed:
+        return None
+    return (
+        f"FIXME(kernel-limit): does not fit: the KV cache needs {needed / 2**30:.1f} GiB, "
+        f"the device allows {allowed / 2**30:.1f} GiB ({_MEMORY_BUDGET_SAFETY_FACTOR:g} of its memory)"
+    )
 
 
 def _dsa_context_point_allowed(
@@ -526,13 +544,11 @@ def _build_module_test_cases(attn_type: str, mode: str):
 
 
 def get_mla_context_module_test_cases():
-    """collect.py entrypoint for MLA context module collection."""
-    return _build_module_test_cases(attn_type="mla", mode="context")
+    return plan_cases("mla_context_module", "vllm", get_sm_version())
 
 
 def get_mla_generation_module_test_cases():
-    """collect.py entrypoint for MLA generation module collection."""
-    return _build_module_test_cases(attn_type="mla", mode="generation")
+    return plan_cases("mla_generation_module", "vllm", get_sm_version())
 
 
 def get_dsa_context_module_test_cases():
@@ -1478,8 +1494,21 @@ def run_mla_module(
     prefix_desc = prefix_lens[0] if len(prefix_lens) == 1 else prefix_lens
     phase = "context" if is_context else "generation"
     variant = attn_type.upper()
-    max_seq_len = max(s for s, _ in points)
-    max_total_len = max(s + p for s, p in points)
+    # Generation points whose KV cache cannot fit the device are refused below, before
+    # anything is allocated for them; the module is sized for the points that fit.
+    does_not_fit: dict[tuple[int, int], str] = {}
+    if not is_context:
+        total_memory = torch.cuda.get_device_properties(device).total_memory
+        for point in points:
+            reason = _kv_does_not_fit(batch_size * point[0], kv_cache_dtype, total_memory)
+            if reason is not None:
+                does_not_fit[point] = reason
+        if len(does_not_fit) == len(points):
+            # Not even the smallest point fits: refuse the case with its reason.
+            raise RuntimeError(does_not_fit[points[-1]])
+    fitting = [point for point in points if point not in does_not_fit]
+    max_seq_len = max(s for s, _ in fitting)
+    max_total_len = max(s + p for s, p in fitting)
     print(
         f"\n[{variant} module] {phase} b={batch_size}, s={seq_lens if len(seq_lens) > 1 else seq_lens[0]}, "
         f"prefix={prefix_desc}, heads={num_heads}, gemm={gemm_type}, "
@@ -1811,6 +1840,8 @@ def run_mla_module(
         _t_point = _t_last = time.perf_counter()
         point_phase: dict[str, float] = dict(_setup_phase) if index == 0 else {}
         try:
+            if (point_seq_len, point_prefix) in does_not_fit:
+                raise RuntimeError(does_not_fit[(point_seq_len, point_prefix)])
             with ExitStack() as point_stack:
                 latencies.append(_run_point(point_stack, point_seq_len, point_prefix, point_phase))
         except Exception as exc:
@@ -1845,7 +1876,10 @@ def run_mla_module(
         if len(failures) == 1:
             raise failures[0][1]
         summary = "; ".join(f"s={s} prefix={p}: {type(exc).__name__}: {str(exc)[:200]}" for (s, p), exc in failures)
-        raise RuntimeError(f"{len(failures)}/{len(points)} point(s) of the module series failed: {summary}")
+        # Keep the kernel-limit classification when every point was refused on a limit.
+        kernel_limit = "FIXME(kernel-limit)"
+        prefix = f"{kernel_limit}: " if all(str(exc).startswith(kernel_limit) for _, exc in failures) else ""
+        raise RuntimeError(f"{prefix}{len(failures)}/{len(points)} point(s) of the module series failed: {summary}")
     return latencies
 
 

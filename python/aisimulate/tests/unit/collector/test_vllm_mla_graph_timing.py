@@ -26,7 +26,22 @@ def _load_function(path, name, namespace):
     return namespace[name]
 
 
-def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pattern=None, point_failures=None):
+def _load_constant(path, name, namespace):
+    tree = ast.parse(path.read_text())
+    node = next(n for n in tree.body if isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == name)
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), namespace)
+
+
+def _module_runner(
+    *,
+    graph_flag=True,
+    failure=None,
+    reuse_frequency=1,
+    reuse_pattern=None,
+    point_failures=None,
+    total_memory=2**40,
+    module_query_len=16,
+):
     events, published, benchmark_calls = [], [], []
     point_failures = dict(point_failures or {})
     error = RuntimeError(f"{failure} failed")
@@ -89,8 +104,9 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
     def create_module(**kwargs):
         if failure == "construction":
             raise error
-        assert kwargs["max_query_len"] == 16
-        assert kwargs["max_seq_len"] in {16, 144}
+        events.append("module")
+        assert kwargs["max_query_len"] == module_query_len
+        assert kwargs["max_seq_len"] in {module_query_len, module_query_len + 128}
         return module, config
 
     @contextmanager
@@ -135,6 +151,7 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
             cuda=SimpleNamespace(
                 set_device=lambda value: None,
                 get_device_name=lambda value: "B200",
+                get_device_properties=lambda value: SimpleNamespace(total_memory=total_memory),
                 OutOfMemoryError=MemoryError,
                 empty_cache=lambda: events.append("empty_cache"),
             ),
@@ -164,12 +181,16 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
         context_dsa_chunk_prefill_size=16384, context_max_tokens=131072, context_dsa_max_full_sequence_length=1048576
     )
     namespace["_model_max_position_embeddings"] = lambda _model: None
+    for constant in ("_MLA_KV_ENTRY_ELEMS", "_MEMORY_BUDGET_SAFETY_FACTOR"):
+        _load_constant(COLLECTOR / "vllm/collect_mla_module.py", constant, namespace)
     for helper in (
         "_series_seq_lens",
         "_dsa_context_point_allowed",
         "_dsa_context_budgets",
         "_series_points",
         "_is_fatal_cuda_error",
+        "_generation_kv_footprint_bytes",
+        "_kv_does_not_fit",
     ):
         _load_function(COLLECTOR / "vllm/collect_mla_module.py", helper, namespace)
     run = _load_function(COLLECTOR / "vllm/collect_mla_module.py", "run_mla_module", namespace)
@@ -317,6 +338,22 @@ def test_single_point_failures_keep_their_original_exception_and_timing():
     with pytest.raises(MemoryError) as caught:
         execute(seq_len=16)
     assert caught.value is oom and published == [] and events[-1] == "cleanup"
+
+
+def test_generation_points_the_device_cannot_hold_are_refused_before_allocation():
+    # 30,000 B of device memory holds the FP8 KV cache of b=2, s=8 (18,432 B), not of s=16.
+    execute, events, published, _, _ = _module_runner(total_memory=30_000, module_query_len=8)
+    with pytest.raises(RuntimeError, match=r"^FIXME\(kernel-limit\): does not fit"):
+        execute("mla", "generation", seq_len=[16, 8])
+    assert [e for e in events if isinstance(e, tuple) and e[0] == "kv"] == [("kv", 8)]
+    assert [row["item_list"][0]["step"] for row in published] == [7]
+
+
+def test_a_series_the_device_cannot_hold_builds_no_module():
+    execute, events, published, _, _ = _module_runner(total_memory=10_000)
+    with pytest.raises(RuntimeError, match=r"^FIXME\(kernel-limit\): does not fit"):
+        execute("mla", "generation", seq_len=[16, 8])
+    assert "module" not in events and published == [] and events[-1] == "cleanup"
 
 
 def test_explicit_full_pattern_overrides_reuse_frequency():

@@ -104,6 +104,20 @@ SKIPS: list[dict] = [
     # SGLang: the MLA collector builds each case on the attention backend
     # serving picks, which it maps for SM89 and newer only.
     {"backend": "sglang", "op": ["mla_context", "mla_generation"], "dtype": "bfloat16", "sm": [80, 86]},
+    # MLA modules: of the two backends that time them, only vLLM takes FP8 prefill
+    # queries. It needs device capability family 100 for them
+    # (backend_supports_prefill_query_quantization in
+    # vllm/model_executor/layers/attention/mla_attention.py); SM120 keeps the
+    # FP8-compute cases collected before.
+    {"op": "mla_context_module", "compute_dtype": "fp8", "sm": [89, 90]},
+    # TRT-LLM's MLA attention takes BF16 inputs and computes in FP8 by itself when
+    # the KV cache is FP8 (mFP8ContextMLA in thop/attentionOp.cpp); its FP8-KV rows
+    # record that, so an FP8-compute case has no kernel of its own to time.
+    {"backend": "trtllm", "op": "mla_context_module", "compute_dtype": "fp8"},
+    # vLLM: FP8-KV MLA modules on SM89 were not collected before, and this keeps
+    # that coverage. Triton MLA would serve them there (its FP8 KV cache needs
+    # SM89+, vllm/v1/attention/backends/mla/triton_mla.py).
+    {"backend": "vllm", "op": ["mla_context_module", "mla_generation_module"], "kv_cache_dtype": "fp8", "sm": [89]},
     # SGLang: the attention collector maps a serving backend for SM89 and newer
     # only (SGLang's default attention backend table), so every SM80/86 case
     # would fail.

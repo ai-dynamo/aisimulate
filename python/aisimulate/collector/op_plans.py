@@ -54,6 +54,9 @@ from collector.case_generator import (
     get_gemm_type_specs,
     get_generation_mla_case_specs,
     get_mla_bmm_case_specs,
+    get_mla_module_model_specs,
+    get_mla_module_precision_specs,
+    get_mla_module_sweep_spec,
     get_moe_quantization_module_config,
     get_sglang_moe_backend,
     get_shared_base_op_case_specs,
@@ -811,6 +814,132 @@ def _trtllm_mla_rows(case: MlaCase, sm_version: int | None, runner: str | None) 
     return [_mla_run_args(case, dtype, _mla_tokens_per_block())]
 
 
+# --- Attention modules: mla_context_module, mla_generation_module ----------------------
+
+# The section of cases/base_ops/mla_module.yaml (mla_module_plan) the module op plans
+# share; the per-backend sections serve the module ops still on their own getters.
+_MODULE_SWEEP = "plan"
+
+
+class ModuleCase(NamedTuple):
+    """One timed point of an attention module.
+
+    ``seq_len`` is the query length (context) or the KV length (generation);
+    ``prefix_len`` is the cached context behind a context point.
+    """
+
+    seq_len: int
+    batch_size: int
+    num_heads: int
+    kv_cache_dtype: str
+    compute_dtype: str
+    gemm_type: str
+    model_path: str
+    prefix_len: int = 0
+
+    __str__ = __repr__ = _list_form
+
+
+def _mla_module_models() -> list:
+    """The MLA module's model rows: the canonical declared model, or a targeted run's own.
+
+    The MLA module table has no model key, so a full plan builds every module from
+    the one canonical model (the loader collapses the declared aliases), and a
+    targeted run (COLLECTOR_MODEL_PATH) measures its own model. Rows that either
+    collecting backend declares count, so both plan the same models.
+    """
+    models: dict[str, object] = {}
+    for backend in ("trtllm", "vllm"):
+        for spec in get_mla_module_model_specs(attention_type="mla", backend=backend):
+            models.setdefault(spec.model_path, spec)
+    return list(models.values())
+
+
+def _mla_module_expand(phase: str) -> Callable[[], list[ModuleCase]]:
+    def expand() -> list[ModuleCase]:
+        """Every (precision, heads, batch, length) point of each model, within the phase's token budget."""
+        sweep = get_mla_module_sweep_spec(_MODULE_SWEEP)
+        if phase == "context":
+            batches, lengths = sweep.context_batch_sizes, sweep.context_sequence_lengths
+            budget = sweep.context_max_tokens
+        else:
+            batches, lengths = sweep.generation_batch_sizes, sweep.generation_sequence_lengths
+            budget = sweep.generation_max_tokens
+        precisions = get_mla_module_precision_specs(_MODULE_SWEEP, phase=phase, attention_type="mla")
+        cases = []
+        for model in _mla_module_models():
+            # A row that declares its tensor_parallel_sizes measures only the heads those shards run.
+            shards = model.tensor_parallel_sizes
+            shard_heads = {model.native_num_heads // tp for tp in shards} if shards else None
+            for precision in precisions:
+                for num_heads in sweep.inner_sweep_head_counts:
+                    if shard_heads is not None and num_heads not in shard_heads:
+                        continue
+                    for batch_size in batches:
+                        for length in lengths:
+                            if batch_size * length > budget:
+                                continue
+                            cases.append(
+                                ModuleCase(
+                                    length,
+                                    batch_size,
+                                    num_heads,
+                                    precision.kv_cache_dtype,
+                                    precision.compute_dtype,
+                                    precision.gemm_type,
+                                    model.model_path,
+                                )
+                            )
+        return cases
+
+    return expand
+
+
+def _module_series(cases: list[ModuleCase]) -> list[tuple[tuple, list[ModuleCase]]]:
+    """The cases grouped by the module build they share (batch, heads, precision, model), in plan order."""
+    series: dict[tuple, list[ModuleCase]] = {}
+    for case in cases:
+        precision = (case.kv_cache_dtype, case.compute_dtype, case.gemm_type)
+        series.setdefault((case.batch_size, case.num_heads, *precision, case.model_path), []).append(case)
+    return list(series.items())
+
+
+def _trtllm_module_rows(attn_type: str) -> Callable[[list, int | None], list[tuple[list, tuple]]]:
+    def rows(cases: list[ModuleCase], sm_version: int | None) -> list[tuple[list, tuple]]:
+        """One run_mla_module_series_worker task per module: its (seq_len, prefix_len) points, then the key."""
+        tasks = []
+        for key, members in _module_series(cases):
+            points = sorted(([case.seq_len, case.prefix_len] for case in members), reverse=True)
+            tasks.append(([points, *key, attn_type], tuple(members)))
+        return tasks
+
+    return rows
+
+
+def _vllm_module_rows(attn_type: str) -> Callable[[list, int | None], list[tuple[list, tuple]]]:
+    def rows(cases: list[ModuleCase], sm_version: int | None) -> list[tuple[list, tuple]]:
+        """One run_mla_module_worker task per module: its lengths, largest first, then the key."""
+        tasks = []
+        for key, members in _module_series(cases):
+            if any(case.prefix_len for case in members):
+                raise ValueError(f"vLLM module rows carry no prefix: {members[0]}")
+            lengths = sorted((case.seq_len for case in members), reverse=True)
+            tasks.append(([lengths, *key, attn_type], tuple(members)))
+        return tasks
+
+    return rows
+
+
+def _mla_module_plan(phase: str) -> OpPlan:
+    return OpPlan(
+        ModuleCase,
+        _mla_module_expand(phase),
+        dtype_field=("kv_cache_dtype", "compute_dtype", "gemm_type"),
+        group_fields=("model_path", "num_heads", "kv_cache_dtype", "compute_dtype", "gemm_type", "batch_size"),
+        batch_rows={"trtllm": _trtllm_module_rows("mla"), "vllm": _vllm_module_rows("mla")},
+    )
+
+
 # --- mHC: mhc_module ---------------------------------------------------------------
 
 _DSV4_ARCHITECTURE = "DeepseekV4ForCausalLM"
@@ -1170,6 +1299,8 @@ OP_PLANS: dict[str, OpPlan] = {
         group_fields=MlaCase._fields,
         rows={"sglang": _sglang_mla_rows, "trtllm": _trtllm_mla_rows},
     ),
+    "mla_context_module": _mla_module_plan("context"),
+    "mla_generation_module": _mla_module_plan("generation"),
     "mla_bmm_gen_pre": OpPlan(
         MlaBmmCase, _mla_bmm_expand("mla_bmm_gen_pre"), dtype_field="dtype", group_fields=MlaBmmCase._fields
     ),
