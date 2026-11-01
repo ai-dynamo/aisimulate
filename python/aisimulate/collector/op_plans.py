@@ -66,6 +66,7 @@ from collector.case_generator import (
     get_moe_quantization_module_config,
     get_sglang_moe_backend,
     get_shared_base_op_case_specs,
+    is_wideep_moe_model,
     moe_model_layer,
     moe_planned_modes,
     without_models,
@@ -507,6 +508,167 @@ def _trtllm_moe_rows(case: MoeCase, sm_version: int | None, runner: str | None) 
         min_latency_modes.append(True)
     head = [case.moe_type, list(case.num_tokens), *case[2:8]]
     return [[*head, min_latency, *case[8:11]] for min_latency in min_latency_modes]
+
+
+# --- Wide EP: moe_ep, deepep_ll, deepep_normal -----------------------------------
+
+
+class MoeEpCase(NamedTuple):
+    """One large-EP MoE expert-compute build: a quant mode, one routed-expert layer at one EP size, its EPLB layout.
+
+    A task times the build over a token sweep. TRT-LLM runs one task per
+    power-law draw of the shared MoE grid (``power_law_alphas``) over its
+    ``num_tokens``; SGLang loads the model's checkpoint and sweeps its own
+    prefill and decode grid in one task.
+    """
+
+    moe_type: str
+    hidden_size: int
+    inter_size: int
+    topk: int
+    num_experts: int
+    ep: int
+    model_name: str
+    use_eplb: bool
+    num_slots: int
+    num_tokens: tuple[int, ...]
+    power_law_alphas: tuple[float, ...]
+    # moe_type is a quant mode the model's checkpoint plans.
+    own_quant: bool
+    # An earlier model plans the same build over the same draws.
+    repeated_build: bool
+
+    __str__ = __repr__ = _list_form
+
+
+_MOE_EP_MODES = ("fp8_block", "nvfp4")
+# The redundant-expert layout EPLB serves: 288 slots.
+_MOE_EP_REDUNDANT_SLOTS = 288
+
+
+def _expand_moe_ep() -> list[MoeEpCase]:
+    """The ``wideep: true`` MoE rows at every EP size of the shared grid (TP 1), per quant mode and EPLB layout.
+
+    EPLB runs off (``num_slots == num_experts``), on with the same slots, and on
+    with the 288-slot redundant layout where it holds every expert. Slots shard
+    evenly over the EP ranks. Ordered by model, quant mode, EP size and layout.
+    """
+    sweeps: dict[str, dict[int, dict]] = {}
+    for layer in get_common_moe_test_cases():
+        if not is_wideep_moe_model(layer.model_name) or layer.tp != 1 or layer.ep <= 1:
+            continue
+        sweep = sweeps.setdefault(layer.model_name, {}).setdefault(
+            layer.ep, {"layer": layer, "num_tokens": set(), "alphas": set()}
+        )
+        if layer.token_expert_distribution == "power_law":
+            sweep["num_tokens"].add(tuple(layer.num_tokens_list))
+            sweep["alphas"].add(layer.power_law_alpha)
+    cases = []
+    owners: dict[tuple, str] = {}
+    for model_name in sorted(sweeps):
+        first = next(iter(sweeps[model_name].values()))["layer"]
+        planned = moe_planned_modes(model_name, first.quantization_modes)
+        for moe_type in _MOE_EP_MODES:
+            for ep, sweep in sorted(sweeps[model_name].items()):
+                layer = sweep["layer"]
+                if len(sweep["num_tokens"]) > 1:
+                    raise ValueError(f"moe_ep: {model_name} at EP {ep} declares more than one token sweep")
+                num_tokens = next(iter(sweep["num_tokens"]), ())
+                layouts = [(False, layer.num_experts), (True, layer.num_experts)]
+                if layer.num_experts <= _MOE_EP_REDUNDANT_SLOTS:
+                    layouts.append((True, _MOE_EP_REDUNDANT_SLOTS))
+                for use_eplb, num_slots in layouts:
+                    if num_slots % ep:
+                        continue
+                    build = (moe_type, layer.hidden_size, layer.inter_size, layer.topk, layer.num_experts, ep)
+                    build += (use_eplb, num_slots, num_tokens, tuple(sorted(sweep["alphas"])))
+                    owner = owners.setdefault(build, model_name)
+                    cases.append(
+                        MoeEpCase(
+                            *build[:6],
+                            model_name,
+                            *build[6:],
+                            own_quant=moe_type in planned,
+                            repeated_build=owner != model_name,
+                        )
+                    )
+    return cases
+
+
+def _sglang_moe_ep_rows(case: MoeEpCase, sm_version: int | None, runner: str | None) -> list[list]:
+    """SGLang's run_moe_ep loads the rank-local expert shard of the model's checkpoint."""
+    return [
+        [
+            case.num_experts // case.ep,
+            case.ep,
+            case.hidden_size,
+            case.inter_size,
+            case.topk,
+            case.num_experts,
+            case.num_slots,
+            case.moe_type,
+            case.model_name,
+        ]
+    ]
+
+
+def _trtllm_moe_ep_rows(case: MoeEpCase, sm_version: int | None, runner: str | None) -> list[list]:
+    """TRT-LLM's run_moe_ep times one power-law draw per task on the CUTLASS runner, without min-latency mode.
+
+    The last argument keeps its accurate wide-EP simulation: the router sees one
+    DP rank's tokens and the experts only the tokens routed to rank 0.
+    """
+    head = [case.moe_type, "cutlass", list(case.num_tokens), *case[1:5], 1, case.ep, False, case.model_name]
+    return [[*head, "power_law", alpha, case.use_eplb, case.num_slots, True] for alpha in case.power_law_alphas]
+
+
+class DeepepCase(NamedTuple):
+    """One DeepEP dispatch/combine shape; a task sweeps its token counts (and, in normal mode, SM budgets) inside."""
+
+    hidden_size: int
+    num_experts: int
+    topk: int
+
+    __str__ = __repr__ = _list_form
+
+
+def _expand_deepep() -> list[DeepepCase]:
+    """Every distinct ``(hidden_size, num_experts, topk)`` among the packaged MoE model configs, in order.
+
+    Field names differ across DeepSeek, Qwen, Llama, MiniMax and gpt-oss
+    configs; VL models nest the language config under ``text_config``.
+    """
+    shapes = set()
+    for path in Path(_AIC_MODEL_CONFIG_DIR).glob("*_config.json"):
+        try:
+            config = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        text = config.get("text_config") or {}
+        num_experts = (
+            config.get("n_routed_experts")
+            or config.get("num_experts")
+            or config.get("num_local_experts")
+            or text.get("n_routed_experts")
+            or text.get("num_experts")
+            or text.get("num_local_experts")
+        )
+        topk = (
+            config.get("num_experts_per_tok")
+            or config.get("moe_topk")
+            or config.get("num_experts_per_token")
+            or config.get("topk")
+            or text.get("num_experts_per_tok")
+        )
+        hidden_size = config.get("hidden_size") or text.get("hidden_size")
+        if num_experts and topk and hidden_size:
+            shapes.add(DeepepCase(int(hidden_size), int(num_experts), int(topk)))
+    return sorted(shapes)
+
+
+def _deepep_rows(case: DeepepCase, sm_version: int | None, runner: str | None) -> list[dict]:
+    """The full-node DeepEP runners take each shape as a dict."""
+    return [case._asdict()]
 
 
 # --- compute_scale ------------------------------------------------------------
@@ -1792,6 +1954,20 @@ OP_PLANS: dict[str, OpPlan] = {
         group_fields=MoeCase._fields,
         dispatch={"sglang": _sglang_moe_runner},
         rows={"sglang": _sglang_moe_rows, "trtllm": _trtllm_moe_rows},
+    ),
+    "moe_ep": OpPlan(
+        MoeEpCase,
+        _expand_moe_ep,
+        dtype_field="moe_type",
+        # Every case builds its own layer.
+        group_fields=MoeEpCase._fields,
+        rows={"sglang": _sglang_moe_ep_rows, "trtllm": _trtllm_moe_ep_rows},
+    ),
+    "deepep_ll": OpPlan(
+        DeepepCase, _expand_deepep, dtype_field=(), group_fields=DeepepCase._fields, rows={"sglang": _deepep_rows}
+    ),
+    "deepep_normal": OpPlan(
+        DeepepCase, _expand_deepep, dtype_field=(), group_fields=DeepepCase._fields, rows={"sglang": _deepep_rows}
     ),
     "compute_scale": OpPlan(ComputeScaleCase, _expand_compute_scale, dtype_field="dtype", group_fields=("m", "k")),
     "encoder_attention": OpPlan(

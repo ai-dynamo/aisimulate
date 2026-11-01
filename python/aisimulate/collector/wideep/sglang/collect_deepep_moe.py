@@ -47,19 +47,26 @@ if COLLECTOR_ROOT not in sys.path:
     sys.path.append(COLLECTOR_ROOT)
 
 try:
-    from helper import _resolve_local_model_path, log_perf, power_law_deepep_decode, power_law_deepep_prefill
+    from helper import (
+        _resolve_local_model_path,
+        get_sm_version,
+        log_perf,
+        power_law_deepep_decode,
+        power_law_deepep_prefill,
+    )
 except ModuleNotFoundError:
     sys.path.append(COLLECTOR_ROOT)
-    from helper import _resolve_local_model_path, log_perf, power_law_deepep_decode, power_law_deepep_prefill
+    from helper import (
+        _resolve_local_model_path,
+        get_sm_version,
+        log_perf,
+        power_law_deepep_decode,
+        power_law_deepep_prefill,
+    )
 from importlib.metadata import version as get_version
 from math import ceil as _ceil
 
-#: The only quantization this collector benchmarks: the DeepEP MoE path is
-#: driven with fp8 activations and ``moe_runner_backend="deep_gemm"`` (see
-#: ``run_moe_benchmark``), i.e. block-scaled FP8. Cases for models whose
-#: declared sglang ``allowed_modes`` exclude it are not generated — a
-#: declaration-layer decision, never a relabelled invocation.
-MOE_EP_QUANT_MODE = "fp8_block"
+from collector.op_plans import plan_cases
 
 #: ``kernel_source`` ground truth: the benchmark invokes
 #: ``moe_layer.experts.run_moe_core`` on sglang's ``DeepEPMoE`` module, which
@@ -1185,90 +1192,7 @@ def run_moe(
 
 
 def get_moe_ep_test_cases():
-    """Declared large-EP MoE compute cases.
-
-    Expands the ``model_case_values.moe`` rows marked ``wideep: true`` against
-    the shared ``cases/base_ops/moe.yaml`` expert-parallel grid — the same
-    recipe source the trtllm wideep compute collector uses — instead of
-    deriving the sweep from a live HF ``n_routed_experts`` read.
-
-    Filters, all in declared homes:
-
-    * ``wideep: true`` on the model's moe row — the op is declared for the model.
-    * ``tp == 1 and ep > 1`` — the large-EP identity of this table; TP-sharded
-      MoE is the stock ``moe`` op's business.
-    * declared sglang quantization policy must allow :data:`MOE_EP_QUANT_MODE`,
-      the only precision this benchmark actually runs.
-
-    One benchmark invocation per ``(model, ep)``: this collector simulates the
-    EP world on a single GPU and sweeps token counts and expert distributions
-    internally, so the base grid's ``gpu_counts`` and
-    ``token_expert_distributions`` axes collapse here. Emitted sorted (D5).
-
-    Returns:
-        list[list]: ``[num_local_experts, moe_ep_size, hidden_size, inter_size,
-        topk, num_experts, num_slots, moe_dtype, model_name]`` per case — the
-        positional argument list ``collect.py`` hands to :func:`run_moe_ep`.
-        ``model_name`` keeps the case's model identity: the subprocess loads
-        THAT checkpoint (:func:`_case_model_path`), and two models that happen
-        to share every shape argument stay distinct tasks.
-    """
-    try:
-        # collect.py puts COLLECTOR_ROOT on sys.path (see the module header).
-        from case_generator import (
-            get_common_moe_test_cases,
-            is_wideep_moe_model,
-            moe_model_allows_quantization,
-        )
-    except ModuleNotFoundError:
-        from collector.case_generator import (
-            get_common_moe_test_cases,
-            is_wideep_moe_model,
-            moe_model_allows_quantization,
-        )
-
-    recipes = get_common_moe_test_cases()
-    dropped_not_declared = 0
-    dropped_not_ep = 0
-    dropped_quant = 0
-    cases: dict[tuple[str, int], list] = {}
-
-    for recipe in recipes:
-        if not is_wideep_moe_model(recipe.model_name):
-            dropped_not_declared += 1
-            continue
-        if recipe.tp != 1 or recipe.ep <= 1:
-            dropped_not_ep += 1
-            continue
-        if not moe_model_allows_quantization("sglang", recipe.model_name, MOE_EP_QUANT_MODE):
-            dropped_quant += 1
-            continue
-        num_experts = int(recipe.num_experts)
-        ep_size = int(recipe.ep)
-        # get_common_moe_test_cases already enforces num_experts % ep == 0.
-        cases.setdefault(
-            (recipe.model_name, ep_size),
-            [
-                num_experts // ep_size,
-                ep_size,
-                int(recipe.hidden_size),
-                int(recipe.inter_size),
-                int(recipe.topk),
-                num_experts,
-                num_experts,  # num_slots: no EPLB redundancy axis on sglang
-                MOE_EP_QUANT_MODE,
-                recipe.model_name,
-            ],
-        )
-
-    print(
-        f"moe_ep: {len(cases)} cases from {len(recipes)} moe recipes "
-        f"(dropped: {dropped_not_declared} not declared wideep, "
-        f"{dropped_not_ep} not tp=1/ep>1, {dropped_quant} quant not allowed; "
-        f"{len(recipes) - dropped_not_declared - dropped_not_ep - dropped_quant - len(cases)} "
-        f"deduplicated onto (model, ep))"
-    )
-    return [cases[key] for key in sorted(cases)]
+    return plan_cases("moe_ep", "sglang", get_sm_version())
 
 
 def run_moe_benchmark(

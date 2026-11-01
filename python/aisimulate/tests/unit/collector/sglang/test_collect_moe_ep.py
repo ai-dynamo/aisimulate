@@ -4,8 +4,9 @@
 """GPU-free contract tests for the sglang unified ``moe_ep`` collector.
 
 ``collector/wideep/sglang/collect_deepep_moe.py`` imports torch and sglang at
-module scope, so it cannot be imported here. The population/writer helpers are
-pure and are AST-extracted from the source (same pattern as
+module scope, so it cannot be imported here. Its getter queues the ``moe_ep``
+op plan's rows (``collector/op_plans.py``); the writer helpers are pure and are
+AST-extracted from the source (same pattern as
 ``test_collect_moe_population.py``); the remaining guarantees are asserted
 against the module text and the registry.
 """
@@ -54,12 +55,7 @@ def _load_symbols(*names: str) -> dict:
 
 @pytest.fixture
 def moe_ep_symbols():
-    return _load_symbols(
-        "MOE_EP_QUANT_MODE",
-        "MOE_EP_KERNEL_SOURCE",
-        "get_moe_ep_test_cases",
-        "_build_moe_ep_row",
-    )
+    return _load_symbols("MOE_EP_KERNEL_SOURCE", "_build_moe_ep_row")
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +85,14 @@ def _stage_counts(backend: str = "sglang") -> dict[str, int]:
     }
 
 
-def test_deepseek_v3_population_counts_per_stage(monkeypatch, moe_ep_symbols):
+def _rows(sm_version: int = 90) -> list[list]:
+    """What the SGLang getter queues on an SM: the moe_ep op plan's rows."""
+    from collector.op_plans import plan
+
+    return plan("moe_ep", "sglang", sm_version).rows
+
+
+def test_deepseek_v3_population_counts_per_stage(monkeypatch):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "deepseek-ai/DeepSeek-V3")
 
     assert _stage_counts() == {
@@ -103,7 +106,7 @@ def test_deepseek_v3_population_counts_per_stage(monkeypatch, moe_ep_symbols):
         "unique_invocations": 8,
     }
 
-    cases = moe_ep_symbols["get_moe_ep_test_cases"]()
+    cases = _rows()
     assert len(cases) == 8
     # Sorted emission on the non-token key axis (moe_ep_size), and every case
     # carries the DECLARED DeepSeek-V3 geometry, not a live HF read — plus the
@@ -121,16 +124,16 @@ def test_deepseek_v3_population_counts_per_stage(monkeypatch, moe_ep_symbols):
     ]
 
 
-def test_local_expert_counts_match_the_retired_hardcoded_sweep(monkeypatch, moe_ep_symbols):
+def test_local_expert_counts_match_the_retired_hardcoded_sweep(monkeypatch):
     # The retired get_wideep_moe_test_cases(total_experts) halved the expert
     # count from EP=2 down to 1 local expert. Declared expansion must reproduce
     # exactly that coverage — no rows gained, none lost.
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "deepseek-ai/DeepSeek-V3")
-    local_experts = [case[0] for case in moe_ep_symbols["get_moe_ep_test_cases"]()]
+    local_experts = [case[0] for case in _rows()]
     assert local_experts == [128, 64, 32, 16, 8, 4, 2, 1]
 
 
-def test_cases_resolve_their_own_declared_model(moe_ep_symbols):
+def test_cases_resolve_their_own_declared_model():
     # F14: the executor sets COLLECTOR_MODEL_PATH only for single-model plans;
     # a full plan runs cases from several model families, so each subprocess
     # loads the case's OWN declared model — never a defaulted checkpoint that
@@ -181,25 +184,25 @@ def test_prefill_manifest_excludes_empty_uniform_workloads_at_generation(capsys)
     assert "dropped 1 token points [16384] above the per-rank token budget" in output
 
 
-def test_models_without_a_declared_wideep_row_expand_to_zero(monkeypatch, moe_ep_symbols):
+def test_models_without_a_declared_wideep_row_expand_to_zero(monkeypatch):
     # Qwen3-235B has moe model_case_values but no `wideep: true` — the op is
     # simply not declared for it. Zero cases, explainable from the declaration.
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "Qwen/Qwen3-235B-A22B")
-    assert moe_ep_symbols["get_moe_ep_test_cases"]() == []
+    assert _rows() == []
 
 
-def test_artifact_without_the_collected_quant_mode_expands_to_zero(monkeypatch, moe_ep_symbols):
+def test_artifact_without_the_collected_quant_mode_expands_to_zero(monkeypatch):
     # The NVFP4 DeepSeek artifact declares allowed_modes [nvfp4]; this collector
     # benchmarks the fp8_block DeepEP path only, so its cases are dropped by the
     # declared quant policy rather than mislabeled as fp8_block.
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "nvidia/DeepSeek-V3.1-NVFP4")
-    assert moe_ep_symbols["get_moe_ep_test_cases"]() == []
+    assert _rows() == []
 
 
-def test_full_population_covers_every_declared_wideep_model(monkeypatch, moe_ep_symbols):
+def test_full_population_covers_every_declared_wideep_model(monkeypatch):
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
     counts = _stage_counts()
-    cases = moe_ep_symbols["get_moe_ep_test_cases"]()
+    cases = _rows()
     assert counts["unique_invocations"] == len(cases) == 62
     # Dedup is not a no-op: the raw stage carries 186 recipes for 62 invocations.
     assert counts["quant_allowed"] == 186

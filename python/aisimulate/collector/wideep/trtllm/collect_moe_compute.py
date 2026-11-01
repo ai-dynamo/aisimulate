@@ -45,14 +45,14 @@ from tensorrt_llm._torch.modules.fused_moe.quantization import (
 )
 from tensorrt_llm.models.modeling_utils import QuantAlgo, QuantConfig
 
+from collector.op_plans import plan_cases
+
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 COLLECTOR_ROOT = os.path.dirname(os.path.dirname(THIS_DIR))
 if COLLECTOR_ROOT not in sys.path:
     sys.path.append(COLLECTOR_ROOT)
 
 try:
-    from case_generator import get_common_moe_test_cases, is_wideep_moe_model
-
     from helper import (
         EXIT_CODE_RESTART,
         balanced_logits,
@@ -63,8 +63,6 @@ try:
     )
 except ModuleNotFoundError:
     sys.path.append(COLLECTOR_ROOT)
-    from case_generator import get_common_moe_test_cases, is_wideep_moe_model
-
     from helper import (
         EXIT_CODE_RESTART,
         balanced_logits,
@@ -76,11 +74,6 @@ except ModuleNotFoundError:
 
 
 aic_debug = int(os.getenv("AIC_MOE_DEBUG", "0"))
-
-# Control simulation mode via environment variable:
-# AIC_ACCURATE_WIDEEP_SIM=1 (default): Accurate mode - DP split + rank0 filter
-# AIC_ACCURATE_WIDEEP_SIM=0: Simple mode - all tokens directly
-aic_accurate_wideep_sim = os.getenv("AIC_ACCURATE_WIDEEP_SIM", "1") == "1"
 
 
 class _SlotLoraPaddedRunner:
@@ -690,164 +683,7 @@ class WideEPMoEComputeSimulator(nn.Module):
 # Test Cases Generation
 # =============================================================================
 def get_moe_ep_test_cases():
-    """Declared large-EP MoE compute cases with three EPLB modes.
-
-    Expands the ``model_case_values.moe`` rows marked ``wideep: true`` against
-    the shared ``cases/base_ops/moe.yaml`` grid — the same recipe source as
-    the sglang moe_ep getter. Filters, all counted and logged:
-
-    * ``wideep: true`` on the model's moe row — the op is declared for the model.
-    * ``power_law`` distribution only — the retired writer's scope, kept as-is
-      (the accurate WideEP simulation is built around per-rank power-law
-      routing draws).
-    * ``tp == 1 and ep > 1`` — the large-EP identity of this table.
-    * ``num_slots % ep == 0`` — universal math: slots shard evenly over ranks.
-
-    Three EPLB configurations per (recipe, quant mode):
-    1. EPLB OFF: use_eplb=False, num_slots=num_experts
-    2. EPLB ON (baseline): use_eplb=True, num_slots=num_experts
-    3. EPLB ON (redundant): use_eplb=True, num_slots=288
-
-    The quant mode is an SM-gated invocation axis (fp8_block on Hopper, nvfp4
-    on Blackwell), same as the stock trtllm ``get_moe_test_cases``. There is
-    deliberately NO per-model quant-policy filter here: this benchmark drives
-    synthetic weights through the WideEPMoE compute path and the persisted key
-    carries no model column, so every (shape, dtype) point is honest
-    interpolation support — unlike the sglang moe_ep collector, which loads a
-    real checkpoint and therefore obeys the declared artifact policy.
-
-    Notes:
-    - Only uses cutlass kernel (no deepgemm)
-    - Only uses min_latency_mode=False
-
-    Emitted sorted (D5): (model, quant, ep, alpha, eplb, slots).
-    """
-    moe_list = []
-    if get_sm_version() >= 90:
-        # min_sm 90 mirrors the moe_trtllm fp8_block axis floor
-        # (base_ops/moe.yaml min_sm: 90; hardware-observed on L40S 2026-07-21:
-        # SM89 gate100 failed 100/100 in the DeepGEMM compiler). SM100+ stays
-        # QUEUED even though this WideEP runner's grouped GEMM is
-        # DeepGEMM-JIT-backed and the rc20 compiler accepts exactly SM90 —
-        # that is a framework gap, so the case must fail classified at the
-        # cited runtime raise in run_wideep_moe_compute, not vanish here
-        # (layer_permissions.md: execute or raise).
-        moe_list += ["fp8_block"]
-    if get_sm_version() >= 100:
-        moe_list += ["nvfp4"]  # SM100+ uses nvfp4
-
-    recipes = get_common_moe_test_cases()
-    dropped_not_declared = 0
-    dropped_not_power_law = 0
-    dropped_not_ep = 0
-    dropped_slot_alignment = 0
-    expanded = 0
-    test_cases = []
-
-    for common_moe_testcase in recipes:
-        model_name = common_moe_testcase.model_name
-        if not is_wideep_moe_model(model_name):
-            dropped_not_declared += 1
-            continue
-
-        # Only power_law distribution (skip balanced)
-        if common_moe_testcase.token_expert_distribution != "power_law":
-            dropped_not_power_law += 1
-            continue
-
-        # WideEP requires: tp=1, ep>1, num_gpu>1
-        if common_moe_testcase.tp != 1 or common_moe_testcase.ep <= 1:
-            dropped_not_ep += 1
-            continue
-
-        num_experts = common_moe_testcase.num_experts
-        ep_size = common_moe_testcase.ep
-
-        # Three EPLB configurations: (use_eplb, num_slots)
-        eplb_configs = [
-            (False, num_experts),  # EPLB OFF
-            (True, num_experts),  # EPLB ON, baseline slots
-        ]
-        # EPLB ON with the fixed 288-slot production layout. Expert
-        # replication requires num_slots >= num_experts (helper.py
-        # compute_expert_replication identity), so this configuration only
-        # exists for models with <= 288 experts — e.g. Kimi-K2.5's 384
-        # experts cannot be laid out on 288 slots.
-        if num_experts <= 288:
-            eplb_configs.append((True, 288))
-
-        expanded += len(moe_list) * len(eplb_configs)
-        for moe_type in moe_list:
-            for use_eplb, num_slots in eplb_configs:
-                # Skip if num_slots is not divisible by ep_size
-                if num_slots % ep_size != 0:
-                    dropped_slot_alignment += 1
-                    continue
-                # The two rc5-era SM120 nvfp4 skips that lived here (nvfp4+eplb,
-                # and rank-owns-fewer-slots-than-topk) no longer reproduce:
-                # hardware-verified on RTX PRO 6000 (SM120) 1.3.0rc20 2026-07-26,
-                # both combos run clean and emit finite perf rows through
-                # wideep_compute_cutlass. They were also silent generation-time
-                # filters, which layer_permissions.md forbids — future
-                # regressions should fail at runtime and be recorded instead.
-
-                test_cases.append(
-                    [
-                        moe_type,
-                        "cutlass",  # Only use cutlass kernel (no deepgemm)
-                        common_moe_testcase.num_tokens_list,
-                        common_moe_testcase.hidden_size,
-                        common_moe_testcase.inter_size,
-                        common_moe_testcase.topk,
-                        num_experts,
-                        common_moe_testcase.tp,
-                        ep_size,
-                        False,  # min_latency_mode = False (no min_latency_mode)
-                        common_moe_testcase.model_name,
-                        common_moe_testcase.token_expert_distribution,
-                        common_moe_testcase.power_law_alpha,
-                        use_eplb,
-                        num_slots,
-                        aic_accurate_wideep_sim,  # accurate_wideep_simulation (from env)
-                    ]
-                )
-
-    # D5 sorted emission: non-token key axes first, deterministic regardless
-    # of the recipe product order.
-    test_cases.sort(key=lambda case: (case[10], case[0], case[8], case[12], case[13], case[14]))
-
-    # Dedup on the runtime identity (the architecture's `dedup(expand(...))`
-    # step): `model_name` (index 10) is provenance-only for this synthetic
-    # runner — run_moe_ep builds the simulator from the shape arguments and
-    # the persisted row key carries no model column — so tasks differing only
-    # in model would rerun identical kernels and stack duplicate rows whose
-    # loaded value depends on row order. The sort above makes the kept
-    # representative deterministic (alphabetically first model); every
-    # contributing model is retained in the log line below.
-    deduped: list[list] = []
-    contributors: dict[tuple, list[str]] = {}
-    for case in test_cases:
-        runtime_key = tuple(
-            tuple(value) if isinstance(value, list) else value for i, value in enumerate(case) if i != 10
-        )
-        contributors.setdefault(runtime_key, []).append(case[10])
-        if len(contributors[runtime_key]) == 1:
-            deduped.append(case)
-    duplicate_count = len(test_cases) - len(deduped)
-    contributing_models = sorted({model for models in contributors.values() for model in models})
-
-    kept_recipes = len(recipes) - dropped_not_declared - dropped_not_power_law - dropped_not_ep
-    print(
-        f"moe_ep: {len(deduped)} cases from {len(recipes)} moe recipes "
-        f"(dropped: {dropped_not_declared} not declared wideep, "
-        f"{dropped_not_power_law} not power_law, {dropped_not_ep} not tp=1/ep>1 "
-        f"-> {kept_recipes} recipes kept) x {len(moe_list)} quant mode(s) x 2-3 EPLB configs "
-        f"(the 288-slot layout only exists when num_experts <= 288) "
-        f"= {expanded} expanded - {dropped_slot_alignment} num_slots%ep!=0 "
-        f"- {duplicate_count} deduplicated onto the runtime identity "
-        f"(contributing models: {', '.join(contributing_models)})"
-    )
-    return deduped
+    return plan_cases("moe_ep", "trtllm", get_sm_version())
 
 
 # =============================================================================

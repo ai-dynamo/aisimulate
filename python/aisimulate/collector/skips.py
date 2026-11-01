@@ -102,6 +102,25 @@ SKIPS: list[dict] = [
     # runs only on explicit request), so these cases would time a path serving
     # does not take.
     {"backend": "vllm", "op": "moe", "dtype": "w4a8_mxfp4_mxfp8", "sm": [120]},
+    # Large-EP MoE (moe_ep): SGLang's collector drives DeepEPMoE with FP8
+    # activations on the DeepGEMM runner, so block-scaled FP8 is the one quant
+    # mode it times. This keeps the coverage collected before.
+    {"backend": "sglang", "op": "moe_ep", "dtype": "nvfp4"},
+    # SGLang's moe_ep gives every routed expert one slot (no EPLB redundant-expert
+    # layout), so an EPLB case would time that layout under the case's num_slots.
+    {"backend": "sglang", "op": "moe_ep", "use_eplb": True},
+    # SGLang's moe_ep loads the model's checkpoint (dummy weights keep its
+    # quantization config), so a quant mode the checkpoint does not plan would time
+    # the checkpoint's own MoE under another label.
+    {"backend": "sglang", "op": "moe_ep", "own_quant": False},
+    # TRT-LLM's wide-EP runner builds synthetic weights from the shape alone, and
+    # moe_expert_compute_perf has no model column, so a build that an earlier model
+    # plans would time the same kernels again and stack a second row under the same
+    # key, whose loaded value then depends on row order.
+    {"backend": "trtllm", "op": "moe_ep", "repeated_build": True},
+    # TRT-LLM: the wide-EP fp8_block grouped GEMM is DeepGEMM-backed even under the
+    # CUTLASS runner, and on SM89 every case fails in the DeepGEMM compiler (L40S).
+    {"backend": "trtllm", "op": "moe_ep", "dtype": "fp8_block", "sm": [89]},
     # vLLM runs both MLA generation BMMs as bf16 torch.bmm on NVIDIA GPUs (its
     # fp8 BMMs are ROCm only), so an fp8 row would label a kernel vLLM never runs.
     {"backend": "vllm", "op": ["mla_bmm_gen_pre", "mla_bmm_gen_post"], "dtype": "fp8", "sm": [89, 90, 100, 103, 120]},

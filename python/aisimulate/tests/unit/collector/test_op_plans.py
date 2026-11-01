@@ -46,15 +46,22 @@ def _entry(**keys) -> dict:
     return next(entry for entry in skips.SKIPS if all(entry.get(key) == value for key, value in keys.items()))
 
 
+def _registry(backend: str) -> list:
+    """The backend's registry entries, with those of its wide-EP registry."""
+    return [
+        *importlib.import_module(f"collector.{backend}.registry").REGISTRY,
+        *importlib.import_module(f"collector.wideep.{backend}.registry").REGISTRY,
+    ]
+
+
 def _registered_ops(backend: str) -> list[str]:
-    """The ops with an op plan that this backend's registry collects."""
-    registry = importlib.import_module(f"collector.{backend}.registry").REGISTRY
-    return sorted({entry.op for entry in registry} & set(OP_PLANS))
+    """The ops with an op plan that this backend's registries collect."""
+    return sorted({entry.op for entry in _registry(backend)} & set(OP_PLANS))
 
 
 def _getters():
     for backend in BACKENDS:
-        for entry in importlib.import_module(f"collector.{backend}.registry").REGISTRY:
+        for entry in _registry(backend):
             if entry.op in OP_PLANS:
                 yield pytest.param(backend, entry, id=f"{entry.op}-{backend}")
 
@@ -505,6 +512,56 @@ def test_moe_plan_reports_the_runner_sglang_picks_on_each_sm():
     assert {"triton", "flashinfer_trtllm", "flashinfer_mxfp4"} <= set(sm100.by_dispatch)
     assert "marlin" in plan("moe", "sglang", 90).by_dispatch
     assert plan("moe", "vllm", 100).by_dispatch == {}
+
+
+@pytest.mark.parametrize("sm", SMS)
+def test_moe_ep_skips_keep_each_backends_builds(sm):
+    sglang, trtllm = plan("moe_ep", "sglang", sm), plan("moe_ep", "trtllm", sm)
+    # SGLang times its checkpoint's fp8_block MoE without an EPLB layout.
+    assert all(case.moe_type == "fp8_block" and case.own_quant for case in sglang.cases)
+    assert all(not case.use_eplb and case.num_slots == case.num_experts for case in sglang.cases)
+    assert bool(sglang.cases) == (sm >= 89)
+    # TRT-LLM times each build once, fp8_block from SM90 and nvfp4 from SM100.
+    assert not any(case.repeated_build for case in trtllm.cases)
+    builds = [case._replace(model_name="", own_quant=False) for case in trtllm.cases]
+    assert len(builds) == len(set(builds))
+    modes = {case.moe_type for case in trtllm.cases}
+    assert modes == ({"fp8_block", "nvfp4"} if sm >= 100 else {"fp8_block"} if sm == 90 else set())
+
+
+def test_moe_ep_rows_keep_each_backends_run_arguments():
+    sglang = plan("moe_ep", "sglang", 90)
+    case = sglang.cases[0]
+    assert sglang.rows[0] == [
+        case.num_experts // case.ep,
+        case.ep,
+        case.hidden_size,
+        case.inter_size,
+        case.topk,
+        case.num_experts,
+        case.num_experts,
+        "fp8_block",
+        case.model_name,
+    ]
+    trtllm = plan("moe_ep", "trtllm", 100)
+    case = trtllm.cases[0]
+    assert len(case.power_law_alphas) > 1
+    assert trtllm.rows[: len(case.power_law_alphas)] == [
+        [case.moe_type, "cutlass", list(case.num_tokens), *case[1:5], 1, case.ep, False, case.model_name]
+        + ["power_law", alpha, case.use_eplb, case.num_slots, True]
+        for alpha in case.power_law_alphas
+    ]
+
+
+def test_deepep_plans_every_packaged_moe_shape_once():
+    for op in ("deepep_ll", "deepep_normal"):
+        op_plan = plan(op, "sglang", 100)
+        assert op_plan.cases == sorted(set(op_plan.cases))
+        assert len(op_plan.cases) == 25
+        assert op_plan.rows == [case._asdict() for case in op_plan.cases]
+        assert all(list(row) == ["hidden_size", "num_experts", "topk"] for row in op_plan.rows)
+        # The shapes run on every SM: a kernel limit fails its shape at run time.
+        assert plan(op, "sglang", 80).cases == op_plan.cases
 
 
 def test_plan_table_carries_the_dispatch_of_each_case(tmp_path):
