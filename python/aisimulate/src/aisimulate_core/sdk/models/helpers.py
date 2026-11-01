@@ -1302,6 +1302,61 @@ def resolve_sglang_mla_compute(
     logger.info("Resolved SGLang 0.5.14 SM90 MLA attention compute to bfloat16 (FA3 execution dtype)")
 
 
+# SMs on which TRT-LLM's attention op runs FP8 context MLA for an FP8 KV cache
+# (mFP8ContextMLA in thop/attentionOp.cpp). Generation MLA runs FP8 for an FP8
+# KV cache on every SM (mFP8GenerationMLA), and no generation table keys on fmha.
+_TRTLLM_FP8_CONTEXT_MLA_SMS = (90, 100, 103, 107, 120)
+_TRTLLM_MLA_FAMILIES = ("DEEPSEEK", "KIMIK25", "KIMIK3")
+
+
+def trtllm_mla_runs_fp8(backend_name: str, sm_version: int | None, model_path: str, kv_mode) -> bool:
+    """Whether TRT-LLM runs this model's MLA context attention in FP8.
+
+    TRT-LLM has no separate precision for MLA attention: on SM90/100/103/107/120
+    an FP8 KV cache makes context MLA run FP8 FMHA, so BF16 compute on an FP8
+    KV cache is not a configuration it can run there.
+    """
+    return (
+        backend_name == "trtllm"
+        and sm_version in _TRTLLM_FP8_CONTEXT_MLA_SMS
+        and kv_mode == common.KVCacheQuantMode.fp8
+        and get_model_family(model_path) in _TRTLLM_MLA_FAMILIES
+    )
+
+
+def resolve_trtllm_mla_compute(
+    model_config: config.ModelConfig,
+    model_path: str,
+    backend_name: str,
+    system_spec: dict,
+) -> None:
+    """Resolve a bfloat16 MLA FMHA request on an FP8 KV cache to FP8 on TRT-LLM.
+
+    See ``trtllm_mla_runs_fp8``: TRT-LLM runs FP8 there whatever is requested,
+    so an explicit bfloat16 is resolved to the precision it runs. An unset FMHA
+    is left to the checkpoint inference, which already picks FP8 for an FP8 KV
+    cache. Whole-model FPM identities remain caller-owned.
+    """
+    if model_config.forward_model == "fpm" or model_config.fmha_quant_mode != common.FMHAQuantMode.bfloat16:
+        return
+    if backend_name != "trtllm":
+        return
+    kv_mode = model_config.kvcache_quant_mode
+    if kv_mode is None:
+        info = _get_model_info(model_path)
+        kv_mode = _infer_quant_modes_from_raw_config(info.get("raw_config", {}), info.get("architecture")).get(
+            "kvcache_quant_mode"
+        )
+    sm_version = system_spec.get("gpu", {}).get("sm_version")
+    if not trtllm_mla_runs_fp8(backend_name, sm_version, model_path, kv_mode):
+        return
+    model_config.fmha_quant_mode = common.FMHAQuantMode.fp8
+    logger.warning(
+        "TRT-LLM runs MLA attention in FP8 on an FP8 KV cache (SM%s); using fmha_quant_mode fp8 instead of bfloat16",
+        sm_version,
+    )
+
+
 def resolve_context_fmha_by_data(
     model_config: config.ModelConfig,
     model_path: str,
@@ -1357,6 +1412,7 @@ def resolve_context_fmha_by_data(
         getattr(database, "version", None),
         getattr(database, "system_spec", {}),
     )
+    resolve_trtllm_mla_compute(model_config, model_path, backend_name, getattr(database, "system_spec", {}))
 
     from aisimulate_core.sdk.perf_database import context_fmha_supported_modes
 

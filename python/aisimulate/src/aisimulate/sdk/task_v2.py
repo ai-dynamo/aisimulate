@@ -51,7 +51,7 @@ from aisimulate.sdk.models import (
     resolve_vllm_moe_execution_mode,
 )
 from aisimulate.sdk.models.blocks.moe import LARGE_EP_READY_FAMILIES, MoEBlockShape
-from aisimulate.sdk.models.helpers import resolve_sglang_mla_compute
+from aisimulate.sdk.models.helpers import resolve_sglang_mla_compute, trtllm_mla_runs_fp8
 from aisimulate.sdk.moe_comm_resolver import (
     a2a_covers_parallel,
     moe_compute_coverage,
@@ -1217,6 +1217,27 @@ class Task:
                     self._set_role_attr(role, "gemm_quant_mode", common.GEMMQuantMode.nvfp4_wo)
                 if self._role_attr(role, "moe_quant_mode") == common.MoEQuantMode.nvfp4:
                     self._set_role_attr(role, "moe_quant_mode", common.MoEQuantMode.nvfp4_wo)
+
+        # TRT-LLM runs MLA attention in FP8 on an FP8 KV cache on SM90/100/103/107/120
+        # (helpers.trtllm_mla_runs_fp8), so a bfloat16 FMHA there, explicit or not,
+        # means the FP8 it runs.
+        for role in roles:
+            if role == "decode" or self._role_attr(role, "fmha_quant_mode") != common.FMHAQuantMode.bfloat16:
+                continue
+            sm_version = load_system_spec(self._role_attr(role, "system_name")).get("gpu", {}).get("sm_version")
+            if trtllm_mla_runs_fp8(
+                self._role_attr(role, "backend_name"),
+                sm_version,
+                self._role_attr(role, "model_path"),
+                self._role_attr(role, "kvcache_quant_mode"),
+            ):
+                self._set_role_attr(role, "fmha_quant_mode", common.FMHAQuantMode.fp8)
+                logger.warning(
+                    "%s: TRT-LLM runs MLA attention in FP8 on an FP8 KV cache (SM%s); "
+                    "using fmha_quant_mode fp8 instead of bfloat16",
+                    role,
+                    sm_version,
+                )
 
         # Data-driven FMHA resolution: if an inferred fp8 has no fp8 slice in
         # the role's fmha-keyed context-attention table, fall back to bfloat16

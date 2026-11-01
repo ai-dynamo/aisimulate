@@ -226,6 +226,64 @@ def test_hopper_mla_mapping_preserves_explicit_modes_and_unaudited_paths(fake_mo
     assert mc.fmha_quant_mode == override.get("fmha")
 
 
+@pytest.mark.parametrize("sm", [90, 100, 103, 120])
+@pytest.mark.parametrize("architecture", ["DeepseekV3ForCausalLM", "KimiK25ForConditionalGeneration"])
+def test_trtllm_mla_bf16_fmha_on_fp8_kv_resolves_to_fp8(fake_model_info, sm, architecture, caplog):
+    """TRT-LLM runs FP8 context MLA on an FP8 KV cache there, so even an explicit bf16 means fp8."""
+    fake_model_info(architecture, _V3_FP8_RAW)
+    mc = _mc(common.FMHAQuantMode.bfloat16)
+    mc.kvcache_quant_mode = common.KVCacheQuantMode.fp8
+    with caplog.at_level("WARNING"):
+        helpers.resolve_trtllm_mla_compute(mc, "local-mla", "trtllm", {"gpu": {"sm_version": sm}})
+    assert mc.fmha_quant_mode == common.FMHAQuantMode.fp8
+    assert "TRT-LLM runs MLA attention in FP8" in caplog.text
+
+
+def test_trtllm_mla_uses_the_checkpoint_kv_when_unset(fake_model_info):
+    fake_model_info("DeepseekV3ForCausalLM", _V3_FP8_RAW)  # fp8_block checkpoint: FP8 KV
+    mc = _mc(common.FMHAQuantMode.bfloat16)
+    helpers.resolve_trtllm_mla_compute(mc, "local-mla", "trtllm", {"gpu": {"sm_version": 100}})
+    assert mc.fmha_quant_mode == common.FMHAQuantMode.fp8
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"backend": "sglang"},
+        {"backend": "vllm"},
+        {"sm": 80},
+        {"sm": 89},
+        {"kv": common.KVCacheQuantMode.bfloat16},
+        {"fmha": None},
+        {"fmha": common.FMHAQuantMode.fp8},
+        {"forward_model": "fpm"},
+        {"architecture": "Qwen3ForCausalLM"},
+        {"architecture": "DeepseekV32ForCausalLM"},
+    ],
+)
+def test_trtllm_mla_mapping_leaves_other_paths(fake_model_info, override):
+    fake_model_info(override.get("architecture", "DeepseekV3ForCausalLM"), _V3_FP8_RAW)
+    fmha = override.get("fmha", common.FMHAQuantMode.bfloat16)
+    mc = _mc(fmha, forward_model=override.get("forward_model", "op_level"))
+    mc.kvcache_quant_mode = override.get("kv", common.KVCacheQuantMode.fp8)
+    helpers.resolve_trtllm_mla_compute(
+        mc, "local-mla", override.get("backend", "trtllm"), {"gpu": {"sm_version": override.get("sm", 100)}}
+    )
+    assert mc.fmha_quant_mode == fmha
+
+
+def test_trtllm_explicit_bf16_fmha_on_fp8_kv_reads_the_fp8_slice(fake_model_info):
+    """The estimate-path guard resolves before consulting the table, so an fp8-only table serves it."""
+    fake_model_info("DeepseekV3ForCausalLM", _V3_FP8_RAW)
+    mc = _mc(common.FMHAQuantMode.bfloat16)
+    mc.kvcache_quant_mode = common.KVCacheQuantMode.fp8
+    db = _db(context_mla=["fp8"])
+    db.version = "1.3.0rc29"
+    db.system_spec = {"gpu": {"sm_version": 90}}
+    resolve_context_fmha_by_data(mc, "local-mla", db, "trtllm", is_context_role=True)
+    assert mc.fmha_quant_mode == common.FMHAQuantMode.fp8
+
+
 def test_context_role_inferred_fp8_downgrades_to_bf16(fake_model_info, caplog):
     """Auto-inferred fp8 FMHA with a bf16-only context table falls back to bf16."""
     fake_model_info("DeepseekV3ForCausalLM", _V3_FP8_RAW)

@@ -1402,8 +1402,10 @@ def test_large_ep_replica_size_is_bounded():
     assert max(kw["num_gpu_list"]) <= t.total_gpus
 
 
-def test_explicit_fmha_precision_preserved_with_trtllm_fp8_profiles():
-    """Audited rc20 FP8 profiles retain inferred FP8 and both explicit overrides."""
+def test_explicit_fmha_precision_with_trtllm_fp8_profiles():
+    """Audited rc20 FP8 profiles retain inferred and explicit FP8. On an FP8 KV cache
+    TRT-LLM runs MLA attention in FP8, so an explicit bfloat16 resolves to FP8; on a
+    bfloat16 KV cache it stays bfloat16."""
     from aisimulate.sdk import common
 
     base = dict(
@@ -1414,8 +1416,14 @@ def test_explicit_fmha_precision_preserved_with_trtllm_fp8_profiles():
         backend_version="1.3.0rc20",
     )
     assert Task(**base).fmha_quant_mode == common.FMHAQuantMode.fp8
-    for precision in (common.FMHAQuantMode.fp8, common.FMHAQuantMode.bfloat16):
-        assert Task(**base, fmha_quant_mode=precision).fmha_quant_mode == precision
+    assert Task(**base, fmha_quant_mode=common.FMHAQuantMode.fp8).fmha_quant_mode == common.FMHAQuantMode.fp8
+    assert Task(**base, fmha_quant_mode=common.FMHAQuantMode.bfloat16).fmha_quant_mode == common.FMHAQuantMode.fp8
+    bf16_kv = Task(
+        **base,
+        fmha_quant_mode=common.FMHAQuantMode.bfloat16,
+        kvcache_quant_mode=common.KVCacheQuantMode.bfloat16,
+    )
+    assert bf16_kv.fmha_quant_mode == common.FMHAQuantMode.bfloat16
 
 
 def test_database_mode_is_forwarded_to_view_loader(monkeypatch):
