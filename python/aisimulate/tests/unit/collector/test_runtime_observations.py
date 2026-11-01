@@ -2110,6 +2110,15 @@ _SLIDING_WITH_MAMBA = [("FullAttentionSpec", 64, 1), ("MambaSpec", 64, -1), ("Sl
         ([("SlidingWindowMLASpec", 96, 5), ("KpoolTailSpec", 4, 1)], 32, 32, True),
         # With 3 tokens per state, both rules hold when the 96-token group takes part.
         ([("SlidingWindowMLASpec", 96, 3), ("KpoolTailSpec", 4, 1)], 32, 32, False),
+        # Without a unit, no group takes part when the 96-token group replays a bounded window, and vLLM hashes in the
+        # GCD of every block, 4 tokens (kv_cache_utils.py:792-798). With that group alone, it hashes in 96 tokens, and
+        # the 96-token scheduler block is a multiple of the group's 3 tokens per state (kv_cache_utils.py:806-832).
+        ([("SlidingWindowMLASpec", 96, 3), ("KpoolTailSpec", 4, 1)], None, 4, False),
+        ([("SlidingWindowMLASpec", 96, 3), ("KpoolTailSpec", 4, 1)], None, 96, False),
+        # The 192-token scheduler block is not a multiple of the 5 tokens per state, so vLLM starts only when the
+        # 96-token group takes no part. Then no group does, and the 32-token unit divides every block
+        # (kv_cache_utils.py:792-832).
+        ([("SlidingWindowMLASpec", 96, 5), ("KpoolTailSpec", 64, 1)], 32, 32, False),
     ],
     ids=[
         "7",
@@ -2119,6 +2128,9 @@ _SLIDING_WITH_MAMBA = [("FullAttentionSpec", 64, 1), ("MambaSpec", 64, -1), ("Sl
         "alignment_control",
         "unit_rules_under_different_choices",
         "unit_rules_under_one_choice",
+        "every_block_without_a_unit",
+        "sliding_group_alone_without_a_unit",
+        "every_block_with_a_unit",
     ],
 )
 def test_v031_scheduler_hash_block_size_must_be_one_that_vllm_can_derive(specs, unit, hash_block, refused):
