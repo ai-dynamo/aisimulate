@@ -193,8 +193,8 @@ def _v031_runtime(storage, layout, blocks):
         return value
 
     def uniform_spec(**fields):
-        # UniformTypeKVCacheSpecs overrides none of the abstract KVCacheSpec properties, which
-        # raise NotImplementedError (kv_cache_interface.py:181-191, :1233-1333).
+        # UniformTypeKVCacheSpecs (kv_cache_interface.py:1233-1333) overrides none of the three
+        # abstract KVCacheSpec properties at :181-191, which raise NotImplementedError.
         def abstract(_self):
             raise NotImplementedError
 
