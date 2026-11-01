@@ -917,16 +917,17 @@ def _prefix_caching_settings(cache: dict[str, Any], *, scheduler: bool, strided:
 _NO_PREFIX_CACHING_SPECS = frozenset(_SPEC_MODULE + name for name in ("CircularBufferSpec", "KpoolTailSpec"))
 
 
-def _scheduler_hash_block_size(record: dict[str, Any]) -> Any:
-    """The hash block size that vLLM 0.31.0 derives for a scheduler from its cache groups and cache settings.
+def _scheduler_hash_block_sizes(record: dict[str, Any]) -> list[Any]:
+    """The hash block sizes that vLLM 0.31.0 can derive for a scheduler from its cache groups and cache settings.
 
-    The engine core resolves it from the scheduler copies of the cache groups (engine/core.py:164-176,
+    The engine core resolves the hash block size from the scheduler copies of the cache groups (engine/core.py:164-176,
     v1/core/kv_cache_utils.py:739-798). One group hashes in its own block size. Several groups hash in the scheduler
     block size, the LCM of their block sizes, when prefix caching is off or a Mamba group is outside align mode. A KV
     connector would give them finer hashes without prefix caching, but every accepted record has no
-    kv_transfer_config. Otherwise several groups hash in prefix_match_unit tokens or in the GCD of the block sizes of
-    the groups that take part in prefix caching. None stands for that GCD when a SlidingWindowMLASpec group may or may
-    not take part.
+    kv_transfer_config. Otherwise several groups hash in prefix_match_unit tokens, or in the GCD of the block sizes of
+    the groups that take part in prefix caching, or of every group when none does. Each of these cases gives one size.
+    Each SlidingWindowMLASpec group takes part unless its spec replays a bounded window (kv_cache_interface.py:937,
+    :949-951), which no record holds. With such groups, each choice of the groups that take part gives one size.
     """
     groups, settings = record["cache"]["groups"], record["resolved_config"]["cache_config"]
     blocks = [_positive(group["block_size_tokens"], "cache block size") for group in groups]
@@ -937,15 +938,24 @@ def _scheduler_hash_block_size(record: dict[str, Any]) -> Any:
             group["spec_type"] == _MAMBA_SPEC and group["state"].get("mamba_cache_mode") != "align" for group in groups
         )
     ):
-        return math.lcm(*blocks)
+        return [math.lcm(*blocks)]
     if settings.get("prefix_match_unit") is not None:
-        return settings["prefix_match_unit"]
-    if any(group["spec_type"] == _SPEC_MODULE + "SlidingWindowMLASpec" for group in groups):
-        return None
+        return [settings["prefix_match_unit"]]
+    unknown = _SPEC_MODULE + "SlidingWindowMLASpec"
     caching = [
-        block for block, group in zip(blocks, groups, strict=True) if group["spec_type"] not in _NO_PREFIX_CACHING_SPECS
+        block
+        for block, group in zip(blocks, groups, strict=True)
+        if group["spec_type"] not in {*_NO_PREFIX_CACHING_SPECS, unknown}
     ]
-    return math.gcd(*(caching or blocks))
+    # Start from the GCD of the blocks of the groups that surely take part, which is 0 without such a group. Each
+    # SlidingWindowMLASpec group may add its block to every GCD so far, so the set holds the GCD of every choice of
+    # those groups, and it never holds more values than there are distinct GCDs.
+    hashes = {math.gcd(*caching)}
+    for block, group in zip(blocks, groups, strict=True):
+        if group["spec_type"] == unknown:
+            hashes |= {math.gcd(value, block) for value in hashes}
+    # Without a group in prefix caching, vLLM hashes in the GCD of every block.
+    return sorted({math.gcd(*blocks) if value == 0 else value for value in hashes})
 
 
 def _scheduler_hash_block_size_fits(record: dict[str, Any]) -> bool:
@@ -1074,12 +1084,12 @@ def _phase_prefix_caching(
                 raise ValueError("runtime prefix-caching evidence contradicts the resolved cache settings")
             # The scheduler block size is the LCM of the block sizes of the scheduler's cache groups, which a decode
             # context parallel size of 1 leaves unscaled (v1/core/kv_cache_utils.py:761-770, engine/core.py:164-176).
-            # vLLM also refuses to start unless the hash block size fits those groups
-            # (v1/core/kv_cache_utils.py:792-832).
-            hash_block = _scheduler_hash_block_size(record)
+            # The hash block size is one that vLLM can derive from those groups, and vLLM also refuses to start unless
+            # it fits them (v1/core/kv_cache_utils.py:792-832).
+            hash_blocks = {canonical_json(value) for value in _scheduler_hash_block_sizes(record)}
             if (
                 cache["block_size"] != math.lcm(*(group["block_size_tokens"] for group in cache["groups"]))
-                or (hash_block is not None and canonical_json(cache["hash_block_size"]) != canonical_json(hash_block))
+                or canonical_json(cache["hash_block_size"]) not in hash_blocks
                 or not _scheduler_hash_block_size_fits(record)
             ):
                 raise ValueError("scheduler block sizes contradict its cache groups")

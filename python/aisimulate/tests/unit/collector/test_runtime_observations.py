@@ -2045,30 +2045,85 @@ def test_v031_prefix_match_unit_must_fit_the_scheduler_cache_groups(tmp_path, la
 @pytest.mark.parametrize(
     "specs,prefix_caching,unit,expected",
     [
-        (["FullAttentionSpec", "FullAttentionSpec"], True, None, 32),
+        (["FullAttentionSpec", "FullAttentionSpec"], True, None, [32]),
         # A SlidingWindowMLASpec group takes part in prefix caching unless it replays a bounded window
         # (kv_cache_interface.py:949-951), which no record holds, so the hash block size is 32 or 64 tokens.
-        (["SlidingWindowMLASpec", "FullAttentionSpec"], True, None, None),
+        (["SlidingWindowMLASpec", "FullAttentionSpec"], True, None, [32, 64]),
+        # Each of two such groups may take part: 64 tokens with neither, 32 with the 96-token group alone, and 16 with
+        # the 80-token group, alone or with the other.
+        (["SlidingWindowMLASpec", "FullAttentionSpec", "SlidingWindowMLASpec"], True, None, [16, 32, 64]),
+        # A KpoolTailSpec group takes no part (kv_cache_interface.py:1032-1034). Without the 96-token group no group
+        # takes part, and vLLM hashes in the GCD of every block, 32 tokens (kv_cache_utils.py:792-798). With that group
+        # alone, it hashes in 96 tokens.
+        (["SlidingWindowMLASpec", "KpoolTailSpec"], True, None, [32, 96]),
         # One cache group hashes in its own block size, whatever the prefix-match unit (kv_cache_utils.py:761-765).
-        (["FullAttentionSpec"], True, 32, 96),
+        (["FullAttentionSpec"], True, 32, [96]),
         # Several groups hash in the scheduler block size, the LCM of their block sizes, without prefix caching or
         # with a Mamba group outside align mode, whatever the prefix-match unit (kv_cache_utils.py:767-790).
-        (["FullAttentionSpec", "FullAttentionSpec"], False, 32, 192),
-        (["FullAttentionSpec", "MambaSpec"], True, 32, 192),
+        (["FullAttentionSpec", "FullAttentionSpec"], False, 32, [192]),
+        (["FullAttentionSpec", "MambaSpec"], True, 32, [192]),
     ],
-    ids=["two_groups", "bounded_replay_unknown", "one_group", "prefix_caching_off", "mamba_none_mode"],
+    ids=[
+        "two_groups",
+        "bounded_replay_unknown",
+        "two_bounded_replay_unknown",
+        "no_group_in_prefix_caching",
+        "one_group",
+        "prefix_caching_off",
+        "mamba_none_mode",
+    ],
 )
 def test_v031_scheduler_hash_block_size_follows_its_cache_groups(specs, prefix_caching, unit, expected):
     groups = [
         {"spec_type": _V031_SPEC + spec, "block_size_tokens": block}
         | ({"state": {"mamba_cache_mode": "none"}} if spec == "MambaSpec" else {})
-        for spec, block in zip(specs, (96, 64), strict=False)
+        for spec, block in zip(specs, (96, 64, 80), strict=False)
     ]
     record = {
         "cache": {"groups": groups},
         "resolved_config": {"cache_config": {"enable_prefix_caching": prefix_caching, "prefix_match_unit": unit}},
     }
-    assert runtime_observations._scheduler_hash_block_size(record) == expected
+    assert runtime_observations._scheduler_hash_block_sizes(record) == expected
+
+
+@pytest.mark.parametrize("hash_block,refused", [(7, True), (32, False), (64, False)], ids=["7", "32", "64"])
+def test_v031_scheduler_hash_block_size_must_be_one_that_vllm_can_derive(hash_block, refused):
+    # One worker and one scheduler of a prefix-caching phase without a prefix-match unit. Their 96-token
+    # SlidingWindowMLASpec group and 64-token full-attention group give a 192-token scheduler block. vLLM hashes in 32
+    # tokens when the first group takes part in prefix caching, and in 64 tokens when it replays a bounded window
+    # (kv_cache_utils.py:792-798, kv_cache_interface.py:949-951). No hash block size of 7 tokens can follow.
+    groups = [
+        {
+            "layer_names": [name],
+            "spec_type": _V031_SPEC + spec,
+            "block_size_tokens": block,
+            "layer_specs": {name: {"spec_type": _V031_SPEC + spec, "page_size_bytes": 4096, "tokens_per_state": 1}},
+        }
+        for name, spec, block in (("swa.0", "SlidingWindowMLASpec", 96), ("attn.0", "FullAttentionSpec", 64))
+    ]
+    settings = {"enable_prefix_caching": True, "mamba_cache_mode": "none"}
+    resolved = {"cache_config": {**settings, "prefix_match_unit": None}}
+    sizes = {"block_size": 192, "hash_block_size": hash_block}
+    workers = {
+        (0, 0): {
+            "cache": {"tensor_allocations": [{"layer_stride": 4096}], "groups": groups, "prefix_caching": settings},
+            "resolved_config": resolved,
+        }
+    }
+    schedulers = {
+        0: {
+            "cache": {"groups": groups, "mamba_cache_mode": "none", "prefix_caching": {**settings, **sizes}, **sizes},
+            "resolved_config": resolved,
+        }
+    }
+    if refused:
+        with pytest.raises(ValueError, match=f"^{_BLOCK_SIZES}$"):
+            runtime_observations._phase_prefix_caching("prefill", workers, schedulers)
+        return
+    assert runtime_observations._phase_prefix_caching("prefill", workers, schedulers) == {
+        **settings,
+        "hash_block_size_tokens": hash_block,
+    }
 
 
 @pytest.mark.parametrize(
