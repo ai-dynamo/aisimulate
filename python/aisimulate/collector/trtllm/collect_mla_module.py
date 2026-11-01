@@ -174,10 +174,11 @@ def _get_precision_combos(phase: str, attn_type: str):
         fp8_block: SM >= 89 (Ada / Hopper / Blackwell)
         nvfp4:     SM >= 100 (Blackwell)
 
-      (compute_dtype, kv_cache_dtype) — attention compute + KV cache
-        TRT-LLM currently only supports bfloat16 attention compute.
+      (compute_dtype, kv_cache_dtype) — attention inputs + KV cache
+        The inputs are bfloat16. With an FP8 KV cache, MLA context attention
+        computes in FP8 on SM90/100/103/120, and its perf rows say so.
         FP8 KV cache availability depends on attn_type and SM:
-          MLA:  Hopper only (86 < SM < 100) — old FMHA FP8 MLA variants.
+          MLA:  SM > 86.
           DSA:  Blackwell (SM >= 100) — trtllm-gen sparseMla=1 FP8 kernels.
     """
     sm = get_sm_version()
@@ -1072,12 +1073,19 @@ def run_mla_module(
 
         architecture = original_architecture
 
+        # TRT-LLM's MLA context attention quantizes Q/K/V to FP8 itself when the
+        # KV cache is FP8 on SM90/100/103/120 (thop/attentionOp.cpp), so those rows
+        # time FP8 compute although the inputs are BF16. Same label as collect_mla.py.
+        mla_dtype = compute_dtype
+        if attn_type == "mla" and is_context and kv_cache_dtype == "fp8" and get_sm_version() in (90, 100, 103, 120):
+            mla_dtype = "fp8"
+
         log_perf(
             item_list=[
                 {
                     "model": model_path,
                     "architecture": architecture,
-                    "mla_dtype": "bfloat16" if compute_dtype == "bfloat16" else compute_dtype,
+                    "mla_dtype": mla_dtype,
                     "kv_cache_dtype": "bfloat16" if kv_cache_dtype == "bfloat16" else kv_cache_dtype,
                     "gemm_type": "bfloat16" if gemm_type == "bfloat16" else gemm_type,
                     "num_heads": num_heads,

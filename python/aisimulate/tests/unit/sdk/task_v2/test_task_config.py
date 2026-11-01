@@ -865,9 +865,9 @@ def test_large_ep_trtllm_context_fmha_capability_uses_granular_table(caplog):
     via the shared layer (gb200: vllm module data), which the large-EP path can
     never hit.  Regression for the deepseek_wideep_trtllm.yaml e2e failure.
 
-    Large EP is coverage-driven now (nvfp4 is the MoE quant the gb200 EP tables
-    carry), and the task's ladders mix both regimes, so bfloat16 is picked as
-    the mode that serves the granular AND the module table.
+    TRT-LLM's MLA context runs FP8 FMHA on an FP8 KV cache, and both the granular
+    and the module tables label those rows fp8, so fp8 serves both and is kept
+    without a fallback.
     """
     import logging
 
@@ -882,8 +882,9 @@ def test_large_ep_trtllm_context_fmha_capability_uses_granular_table(caplog):
             gemm_quant_mode=common.GEMMQuantMode.nvfp4,
             moe_quant_mode=common.MoEQuantMode.nvfp4,
         )
-    assert t.fmha_quant_mode == common.FMHAQuantMode.bfloat16
-    assert any("context_mla_granular" in r.message for r in caplog.records)
+    assert t.fmha_quant_mode == common.FMHAQuantMode.fp8
+    assert t.kvcache_quant_mode == common.KVCacheQuantMode.fp8
+    assert not any("context_mla_granular" in r.message for r in caplog.records)
 
 
 def test_nextn_never_auto_enabled(caplog):
