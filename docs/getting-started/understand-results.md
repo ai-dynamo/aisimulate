@@ -170,8 +170,14 @@ The exports provide the following inputs for warmup and profiling views:
 | Prefill/decode throughput | `traffic.committed_prefill_tokens` / `traffic.delivered_output_tokens`, divided by `traffic.duration_s` |
 | Prefix lookup reuse | Role interval `g1_prefix_cache_lookup`: `matched_tokens`, `queried_tokens`, `query_count`; actual retries count, even if admission later blocks |
 | Prompt token sources | `traffic.first_admission`: `hbm_reused_tokens`, `host_reused_tokens`, `uncached_tokens`; distinct from executed work and readmission recomputation |
-| Host KV use | `host_caches`: block/byte occupancy and capacity; `dp_rank_local` caches are sampled per attention-DP rank, while shared pools appear once per ownership domain |
+| Host KV use | `host_caches`: resident, used, and capacity counters in blocks and bytes; `dp_rank_local` caches are sampled per attention-DP rank, while shared pools appear once per ownership domain |
 | Speculative acceptance | `traffic.avg_accept_length`, weighted by `accept_length_forward_count`; measured before output-limit truncation |
+
+For host caches, `resident_blocks` and `resident_bytes` count data already
+resident in host memory. `used_blocks` and `used_bytes` include both resident
+data and reserved transfer destinations. Use the resident fields to report
+physical residency during transfers. `capacity_blocks` and `capacity_bytes`
+report the pool's configured capacity.
 
 G1 denotes the device cache. Its lookup counters are summed across workers and
 ranks within each role and sampling interval.
