@@ -1712,7 +1712,9 @@ def test_dsa_sub_8_head_cells_stay_queued_and_raise_before_the_module_build(back
 
     source_path = REPO_ROOT / "collector" / backend / "collect_mla_module.py"
     tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
-    worker = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "run_mla_module_worker"]
+    # the worker and the guard it calls (TRT-LLM shares the guard with its series worker)
+    names = ("run_mla_module_worker", "_raise_if_dsa_heads_unsupported")
+    worker = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
     built = []
     for sm, attn_type, num_heads, raises in (
         (100, "dsa", 4, True),

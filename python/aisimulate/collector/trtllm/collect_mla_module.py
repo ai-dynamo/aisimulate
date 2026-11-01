@@ -146,6 +146,7 @@ from collector.helper import (
     log_perf,
 )
 from collector.registry_types import PerfFile
+from collector.trtllm.module_series import run_points
 
 if "glm_moe_dsa" not in _CONFIG_REGISTRY:
     _CONFIG_REGISTRY["glm_moe_dsa"] = "DeepseekV3Config"
@@ -874,8 +875,13 @@ def run_mla_module(
     device: str = "cuda:0",
     warming_up: int = 10,
     test_ite: int = 6,
+    dry_run: bool = True,
 ):
-    """Run a single MLA / DSA module-level benchmark point."""
+    """Run a single MLA / DSA module-level benchmark point.
+
+    ``dry_run`` False skips the checking forward before timing: a series has
+    already run it for an earlier point of this seq_len (module_series).
+    """
     # FIXME(kernel-limit): DeepGEMM's sparse-attention API (the DSA fp8
     # lightning indexer both DSA phases route through) hard-asserts
     # "Unsupported architecture" off the datacenter SMs — RTX Blackwell is
@@ -958,142 +964,146 @@ def run_mla_module(
     )
     _mark("layer")
 
-    # 2. Create KV cache + metadata
-    kv_cache_manager, attn_metadata = create_kv_cache_and_metadata(
-        model_config=model_config,
-        attn_module=attn_module,
-        batch_size=batch_size,
-        seq_len=seq_len,
-        is_context=is_context,
-        prefix_len=prefix_len,
-        use_fp8_kv_cache=use_fp8_kv_cache,
-        device=device,
-    )
-
-    _mark("kv_meta")
-
-    # 3. Input tensors
-    hidden_size = model_config.pretrained_config.hidden_size
-    if is_context:
-        num_tokens = seq_len * batch_size
-        position_ids = (
-            torch.arange(prefix_len, prefix_len + seq_len, device=torch_device, dtype=torch.long)
-            .unsqueeze(0)
-            .expand(batch_size, -1)
-            .reshape(-1)
-            .contiguous()
+    # The KV pool is released on every exit path: a series keeps running after a
+    # failed point, and a leaked pool would make the next points fail too.
+    kv_cache_manager = None
+    try:
+        # 2. Create KV cache + metadata
+        kv_cache_manager, attn_metadata = create_kv_cache_and_metadata(
+            model_config=model_config,
+            attn_module=attn_module,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            is_context=is_context,
+            prefix_len=prefix_len,
+            use_fp8_kv_cache=use_fp8_kv_cache,
+            device=device,
         )
-    else:
-        num_tokens = batch_size
-        position_ids = torch.full(
-            (batch_size,),
-            seq_len - 1,
+
+        _mark("kv_meta")
+
+        # 3. Input tensors
+        hidden_size = model_config.pretrained_config.hidden_size
+        if is_context:
+            num_tokens = seq_len * batch_size
+            position_ids = (
+                torch.arange(prefix_len, prefix_len + seq_len, device=torch_device, dtype=torch.long)
+                .unsqueeze(0)
+                .expand(batch_size, -1)
+                .reshape(-1)
+                .contiguous()
+            )
+        else:
+            num_tokens = batch_size
+            position_ids = torch.full(
+                (batch_size,),
+                seq_len - 1,
+                device=torch_device,
+                dtype=torch.long,
+            )
+
+        hidden_states = torch.randn(
+            num_tokens,
+            hidden_size,
+            dtype=torch.bfloat16,
             device=torch_device,
-            dtype=torch.long,
         )
 
-    hidden_states = torch.randn(
-        num_tokens,
-        hidden_size,
-        dtype=torch.bfloat16,
-        device=torch_device,
-    )
+        _mark("inputs")
 
-    _mark("inputs")
+        # 4. Dry run (once per seq_len in a series)
+        if dry_run:
+            with model_extra_attrs(model_config.extra_attrs):
+                get_model_extra_attrs()["attention_metadata"] = weakref.ref(attn_metadata)
+                try:
+                    with torch.inference_mode():
+                        attn_module.forward(position_ids, hidden_states, attn_metadata)
+                except Exception:
+                    # Never swallow a failed case: raising lets the executor record a
+                    # classified failure. A silent return here left green runs with
+                    # missing perf rows (e.g. FlashMLA sparse rejecting FP8 KV probes
+                    # surfaced as "passed" with no output).
+                    print("  Dry run failed:")
+                    traceback.print_exc()
+                    raise
 
-    # 4. Dry run
-    with model_extra_attrs(model_config.extra_attrs):
-        get_model_extra_attrs()["attention_metadata"] = weakref.ref(attn_metadata)
-        try:
-            with torch.inference_mode():
-                attn_module.forward(position_ids, hidden_states, attn_metadata)
-        except Exception:
-            # Never swallow a failed case: raising lets the executor record a
-            # classified failure. A silent return here left green runs with
-            # missing perf rows (e.g. FlashMLA sparse rejecting FP8 KV probes
-            # surfaced as "passed" with no output).
-            print("  Dry run failed:")
-            traceback.print_exc()
-            _cleanup(kv_cache_manager)
-            raise
+            _mark("dry_run")
 
-    _mark("dry_run")
+        # 5. Benchmark
+        import tensorrt_llm._torch.utils as _trtllm_utils
 
-    # 5. Benchmark
-    import tensorrt_llm._torch.utils as _trtllm_utils
+        _trtllm_utils._model_extra_attrs.attrs = model_config.extra_attrs
+        _trtllm_utils._model_extra_attrs.attrs["attention_metadata"] = weakref.ref(attn_metadata)
 
-    _trtllm_utils._model_extra_attrs.attrs = model_config.extra_attrs
-    _trtllm_utils._model_extra_attrs.attrs["attention_metadata"] = weakref.ref(attn_metadata)
+        # FIXME(kernel-limit): same 32-bit per-sequence offset boundary as
+        # collect_attn.py (H20 campaign 2026-10-02, rc29): DeepSeek-V3 context cells
+        # with (batch-1) * input_len * local_heads * 192 * 2 >= 2**31 (tp1: 81920+
+        # total tokens) fault with cudaErrorIllegalAddress while the TP-sharded rows
+        # of the same (batch, seq) pass. Unverified against the kernel source; left
+        # failing into the classified log.
+        def kernel_func():
+            attn_module.forward(position_ids, hidden_states, attn_metadata)
 
-    # FIXME(kernel-limit): same 32-bit per-sequence offset boundary as
-    # collect_attn.py (H20 campaign 2026-10-02, rc29): DeepSeek-V3 context cells
-    # with (batch-1) * input_len * local_heads * 192 * 2 >= 2**31 (tp1: 81920+
-    # total tokens) fault with cudaErrorIllegalAddress while the TP-sharded rows
-    # of the same (batch, seq) pass. Unverified against the kernel source; left
-    # failing into the classified log.
-    def kernel_func():
-        attn_module.forward(position_ids, hidden_states, attn_metadata)
+        with benchmark_with_power(
+            device=torch_device,
+            kernel_func=kernel_func,
+            num_warmups=warming_up,
+            # A dry run of this seq_len already executed this forward; three eager
+            # passes cover lazily initialised paths before capture.
+            num_eager_warmups=3,
+            num_runs=test_ite,
+            repeat_n=1,
+            allow_graph_fail=False,
+        ) as results:
+            pass
 
-    with benchmark_with_power(
-        device=torch_device,
-        kernel_func=kernel_func,
-        num_warmups=warming_up,
-        # The case's dry run already executed this forward; three eager passes
-        # cover lazily initialised paths before capture.
-        num_eager_warmups=3,
-        num_runs=test_ite,
-        repeat_n=1,
-        allow_graph_fail=False,
-    ) as results:
-        pass
+        latency = results["latency_ms"]
+        _mark("bench")
 
-    latency = results["latency_ms"]
-    _mark("bench")
+        # 6. Log results
+        if is_context:
+            isl = seq_len
+            step = prefix_len
+        else:
+            isl = 1
+            step = seq_len
 
-    # 6. Log results
-    if is_context:
-        isl = seq_len
-        step = prefix_len
-    else:
-        isl = 1
-        step = seq_len
+        op_name = f"{attn_type}_{phase}_module"
 
-    op_name = f"{attn_type}_{phase}_module"
+        architecture = original_architecture
 
-    architecture = original_architecture
+        log_perf(
+            item_list=[
+                {
+                    "model": model_path,
+                    "architecture": architecture,
+                    "mla_dtype": "bfloat16" if compute_dtype == "bfloat16" else compute_dtype,
+                    "kv_cache_dtype": "bfloat16" if kv_cache_dtype == "bfloat16" else kv_cache_dtype,
+                    "gemm_type": "bfloat16" if gemm_type == "bfloat16" else gemm_type,
+                    "num_heads": num_heads,
+                    "batch_size": batch_size,
+                    "isl": isl,
+                    "tp_size": 1,
+                    "step": step,
+                    "latency": f"{latency:.4f}",
+                }
+            ],
+            framework="TRTLLM",
+            version=tensorrt_llm.__version__,
+            device_name=torch.cuda.get_device_name(device),
+            op_name=op_name,
+            kernel_source="default",
+            perf_filename=perf_filename,
+            power_stats=results["power_stats"],
+        )
 
-    log_perf(
-        item_list=[
-            {
-                "model": model_path,
-                "architecture": architecture,
-                "mla_dtype": "bfloat16" if compute_dtype == "bfloat16" else compute_dtype,
-                "kv_cache_dtype": "bfloat16" if kv_cache_dtype == "bfloat16" else kv_cache_dtype,
-                "gemm_type": "bfloat16" if gemm_type == "bfloat16" else gemm_type,
-                "num_heads": num_heads,
-                "batch_size": batch_size,
-                "isl": isl,
-                "tp_size": 1,
-                "step": step,
-                "latency": f"{latency:.4f}",
-            }
-        ],
-        framework="TRTLLM",
-        version=tensorrt_llm.__version__,
-        device_name=torch.cuda.get_device_name(device),
-        op_name=op_name,
-        kernel_source="default",
-        perf_filename=perf_filename,
-        power_stats=results["power_stats"],
-    )
-
-    print(
-        f"  [{phase}] b={batch_size}, s={seq_len}, heads={num_heads}, "
-        f"prefix={prefix_len}, gemm={gemm_type}, compute={compute_dtype}, "
-        f"kv={kv_cache_dtype}: {latency:.4f} ms"
-    )
-
-    _cleanup(kv_cache_manager)
+        print(
+            f"  [{phase}] b={batch_size}, s={seq_len}, heads={num_heads}, "
+            f"prefix={prefix_len}, gemm={gemm_type}, compute={compute_dtype}, "
+            f"kv={kv_cache_dtype}: {latency:.4f} ms"
+        )
+    finally:
+        _cleanup(kv_cache_manager)
     _mark("cleanup")
     print(
         f"  [{variant} module timing] {phase} b={batch_size}, s={seq_len}, prefix={prefix_len}, "
@@ -1119,13 +1129,7 @@ def run_mla_module_worker(
     device: str = "cuda:0",
 ):
     """Worker-compatible positional wrapper used by collector/collect.py."""
-    # FIXME(kernel-limit): the SM100 DSA note at the top of this file — per-rank heads 1/2/4 failed
-    # 15,408 b200 rc29 cases after a full module load each (job 469988228). Raise before the build.
-    if attn_type == "dsa" and get_sm_version() in (100, 103) and num_heads < 8:
-        raise RuntimeError(
-            "FIXME(kernel-limit): TRT-LLM trtllm-gen sparse-MLA FMHA on SM100/103 needs per-rank heads >= 8 "
-            f"(num_heads={num_heads}; StoreSmemP.h:125 @1.3.0rc29)"
-        )
+    _raise_if_dsa_heads_unsupported(attn_type, num_heads)
     return run_mla_module(
         seq_len=seq_len,
         batch_size=batch_size,
@@ -1135,6 +1139,90 @@ def run_mla_module_worker(
         gemm_type=gemm_type,
         prefix_len=prefix_len,
         perf_filename=perf_filename,
+        model_path=model_path,
+        attn_type=attn_type,
+        device=device,
+    )
+
+
+def _raise_if_dsa_heads_unsupported(attn_type: str, num_heads: int) -> None:
+    # FIXME(kernel-limit): the SM100 DSA note at the top of this file — per-rank heads 1/2/4 failed
+    # 15,408 b200 rc29 cases after a full module load each (job 469988228). Raise before the build.
+    if attn_type == "dsa" and get_sm_version() in (100, 103) and num_heads < 8:
+        raise RuntimeError(
+            "FIXME(kernel-limit): TRT-LLM trtllm-gen sparse-MLA FMHA on SM100/103 needs per-rank heads >= 8 "
+            f"(num_heads={num_heads}; StoreSmemP.h:125 @1.3.0rc29)"
+        )
+
+
+def run_mla_module_series(
+    points,
+    batch_size: int,
+    num_heads: int,
+    kv_cache_dtype: str,
+    compute_dtype: str,
+    gemm_type: str,
+    perf_filename: str,
+    *,
+    model_path: str,
+    attn_type: str,
+    device: str = "cuda:0",
+    warming_up: int = 10,
+    test_ite: int = 6,
+) -> list[float]:
+    """Measure the (seq_len, prefix_len) points of one MLA / DSA module key in one task.
+
+    Every point runs through run_mla_module, so its rows are those of a one-point
+    case: the layer comes from the layer cache, and the KV cache manager and
+    metadata are built per point (module_series explains why).
+    """
+
+    def run_point(seq_len: int, prefix_len: int, dry_run: bool) -> float:
+        return run_mla_module(
+            seq_len=seq_len,
+            batch_size=batch_size,
+            num_heads=num_heads,
+            kv_cache_dtype=kv_cache_dtype,
+            compute_dtype=compute_dtype,
+            gemm_type=gemm_type,
+            perf_filename=perf_filename,
+            prefix_len=prefix_len,
+            model_path=model_path,
+            attn_type=attn_type,
+            device=device,
+            warming_up=warming_up,
+            test_ite=test_ite,
+            dry_run=dry_run,
+        )
+
+    label = f"{attn_type.upper()} module series b={batch_size} heads={num_heads} gemm={gemm_type} kv={kv_cache_dtype}"
+    return run_points(points, run_point, label=label)
+
+
+def run_mla_module_series_worker(
+    points,
+    batch_size: int,
+    num_heads: int,
+    kv_cache_dtype: str,
+    compute_dtype: str,
+    gemm_type: str,
+    model_path: str,
+    attn_type: str,
+    *,
+    perf_filename: str,
+    device: str = "cuda:0",
+):
+    """Worker entry for one series task: run_mla_module_worker's positional fields, with
+    the list of (seq_len, prefix_len) points in place of seq_len and prefix_len."""
+    _raise_if_dsa_heads_unsupported(attn_type, num_heads)
+    return run_mla_module_series(
+        points,
+        batch_size,
+        num_heads,
+        kv_cache_dtype,
+        compute_dtype,
+        gemm_type,
+        perf_filename,
         model_path=model_path,
         attn_type=attn_type,
         device=device,

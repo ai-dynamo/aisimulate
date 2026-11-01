@@ -192,6 +192,7 @@ collector.trtllm.collect_dsv4_attn:
   # closure so a budget edit changes collector_hash and the generated plan
   # is re-attested (PR #1486 review S3).
   - collector/cases/base_ops/dsv4_attention.yaml
+  - collector/trtllm/module_series.py
   - __model_cases__
 collector.trtllm.collect_gdn:
   - collector/cases/base_ops/gdn.yaml
@@ -220,9 +221,11 @@ collector.trtllm.collect_mhc_module:
   - __model_cases__
 collector.trtllm.collect_mla_module:
   - collector/cases/base_ops/mla_module.yaml
+  - collector/trtllm/module_series.py
   - __model_cases__
 collector.trtllm.collect_msa_module:
   - collector/cases/base_ops/mla_module.yaml
+  - collector/trtllm/module_series.py
   - __model_cases__
 collector.vllm.collect_msa_module:
   - collector/vllm/utils.py

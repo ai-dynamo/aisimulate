@@ -823,7 +823,13 @@ def run_dsv4_attn(
     device: str = "cuda:0",
     warming_up: int = 10,
     test_ite: int = 6,
+    dry_run: bool = True,
 ):
+    """Run one DeepSeek-V4 attention-module point.
+
+    ``dry_run`` False skips the checking forward before timing: a series has
+    already run it for an earlier point of this seq_len (module_series).
+    """
     import tensorrt_llm
     import tensorrt_llm._torch.utils as _trtllm_utils
     from tensorrt_llm._torch.utils import get_model_extra_attrs, model_extra_attrs
@@ -903,15 +909,16 @@ def run_dsv4_attn(
         # B200/1.3.0rc23 — serving chunks prefill at max_num_tokens (<<262144),
         # so these sweep extremes exceed the serving envelope; unverified which
         # kernel hits the limit. Cases fail into the classified log.
-        with model_extra_attrs(model_config.extra_attrs):
-            get_model_extra_attrs()["attention_metadata"] = weakref.ref(attn_metadata)
-            try:
-                with torch.inference_mode():
-                    attn_module.forward(position_ids, hidden_states, attn_metadata)
-            except Exception:
-                print("  Dry run failed:")
-                traceback.print_exc()
-                raise  # the finally below releases the KV pool
+        if dry_run:
+            with model_extra_attrs(model_config.extra_attrs):
+                get_model_extra_attrs()["attention_metadata"] = weakref.ref(attn_metadata)
+                try:
+                    with torch.inference_mode():
+                        attn_module.forward(position_ids, hidden_states, attn_metadata)
+                except Exception:
+                    print("  Dry run failed:")
+                    traceback.print_exc()
+                    raise  # the finally below releases the KV pool
 
         _trtllm_utils._model_extra_attrs.attrs = model_config.extra_attrs
         _trtllm_utils._model_extra_attrs.attrs["attention_metadata"] = weakref.ref(attn_metadata)
@@ -1001,8 +1008,7 @@ def run_dsv4_attn_worker(
     Mode is derived from the target perf filename (same convention as the
     vllm collector, collect_dsv4_attn.py:968 @0.24.0).
     """
-    mode = "context" if "context" in os.path.basename(perf_filename) else "generation"
-    smoke = "--smoke" in sys.argv
+    warming_up, test_ite = _worker_iterations()
     run_dsv4_attn(
         seq_len=seq_len,
         batch_size=batch_size,
@@ -1013,11 +1019,106 @@ def run_dsv4_attn_worker(
         model_path=model_path,
         attn_kind=attn_kind,
         prefix_len=prefix_len,
-        mode=mode,
+        mode=_worker_mode(perf_filename),
         perf_filename=perf_filename,
         device=device,
-        warming_up=3 if smoke else 10,
-        test_ite=3 if smoke else 6,
+        warming_up=warming_up,
+        test_ite=test_ite,
+    )
+
+
+def _worker_mode(perf_filename: str) -> str:
+    return "context" if "context" in os.path.basename(perf_filename) else "generation"
+
+
+def _worker_iterations() -> tuple[int, int]:
+    """(warming_up, test_ite) of a worker run: fewer under --smoke."""
+    smoke = "--smoke" in sys.argv
+    return (3, 3) if smoke else (10, 6)
+
+
+def run_dsv4_attn_series(
+    points,
+    batch_size: int,
+    tp_size: int,
+    kv_cache_dtype: str,
+    compute_dtype: str,
+    gemm_type: str,
+    model_path: str,
+    attn_kind: str,
+    *,
+    mode: str,
+    perf_filename: str,
+    device: str = "cuda:0",
+    warming_up: int = 10,
+    test_ite: int = 6,
+) -> list[float]:
+    """Measure the (seq_len, prefix_len) points of one DeepSeek-V4 module key in one task.
+
+    Every point runs through run_dsv4_attn, so its rows are those of a one-point
+    case: the module comes from the module cache, and the KV cache manager and
+    metadata are built per point. The manager's max_seq_len sizes the
+    compressed-index buffers of the HCA path, so a manager sized for the largest
+    point would change what the smaller points measure (module_series).
+    """
+    try:
+        from collector.trtllm.module_series import run_points
+    except ModuleNotFoundError:  # run as a script from collector/trtllm
+        from module_series import run_points
+
+    def run_point(seq_len: int, prefix_len: int, dry_run: bool) -> float:
+        return run_dsv4_attn(
+            seq_len=seq_len,
+            batch_size=batch_size,
+            tp_size=tp_size,
+            kv_cache_dtype=kv_cache_dtype,
+            compute_dtype=compute_dtype,
+            gemm_type=gemm_type,
+            model_path=model_path,
+            attn_kind=attn_kind,
+            prefix_len=prefix_len,
+            mode=mode,
+            perf_filename=perf_filename,
+            device=device,
+            warming_up=warming_up,
+            test_ite=test_ite,
+            dry_run=dry_run,
+        )
+
+    label = f"dsv4_{attn_kind}_{mode} series b={batch_size} tp={tp_size} kv={kv_cache_dtype}"
+    return run_points(points, run_point, label=label)
+
+
+def run_dsv4_attn_series_worker(
+    points,
+    batch_size: int,
+    tp_size: int,
+    kv_cache_dtype: str,
+    compute_dtype: str,
+    gemm_type: str,
+    model_path: str,
+    attn_kind: str,
+    *,
+    perf_filename: str,
+    device: str = "cuda:0",
+) -> None:
+    """Worker entry for one series task: run_dsv4_attn_worker's positional fields, with
+    the list of (seq_len, prefix_len) points in place of seq_len and prefix_len."""
+    warming_up, test_ite = _worker_iterations()
+    run_dsv4_attn_series(
+        points,
+        batch_size,
+        tp_size,
+        kv_cache_dtype,
+        compute_dtype,
+        gemm_type,
+        model_path,
+        attn_kind,
+        mode=_worker_mode(perf_filename),
+        perf_filename=perf_filename,
+        device=device,
+        warming_up=warming_up,
+        test_ite=test_ite,
     )
 
 

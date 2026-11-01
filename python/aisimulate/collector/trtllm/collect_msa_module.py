@@ -125,6 +125,7 @@ from collector.helper import (
     log_perf,
 )
 from collector.registry_types import PerfFile
+from collector.trtllm.module_series import run_points
 
 if not hasattr(_trtllm_configs, "PretrainedConfig"):
     _trtllm_configs.PretrainedConfig = transformers.PretrainedConfig
@@ -884,8 +885,13 @@ def run_msa_module(
     device: str = "cuda:0",
     warming_up: int = 10,
     test_ite: int = 6,
+    dry_run: bool = True,
 ):
-    """Run a single MiniMax-M3 MSA module-level benchmark point."""
+    """Run a single MiniMax-M3 MSA module-level benchmark point.
+
+    ``dry_run`` False skips the checking forward before timing: a series has
+    already run it for an earlier point of this seq_len (module_series).
+    """
     torch.cuda.set_device(device)
     torch_device = torch.device(device)
 
@@ -960,15 +966,16 @@ def run_msa_module(
 
     _prev_extra_attrs = getattr(_trtllm_utils._model_extra_attrs, "attrs", None)
     try:
-        with model_extra_attrs(model_config.extra_attrs):
-            get_model_extra_attrs()["attention_metadata"] = weakref.ref(attn_metadata)
-            try:
-                with torch.inference_mode():
-                    attn_module.forward(position_ids, hidden_states, attn_metadata)
-            except Exception:
-                print("  Dry run failed:")
-                traceback.print_exc()
-                raise
+        if dry_run:
+            with model_extra_attrs(model_config.extra_attrs):
+                get_model_extra_attrs()["attention_metadata"] = weakref.ref(attn_metadata)
+                try:
+                    with torch.inference_mode():
+                        attn_module.forward(position_ids, hidden_states, attn_metadata)
+                except Exception:
+                    print("  Dry run failed:")
+                    traceback.print_exc()
+                    raise
 
         _trtllm_utils._model_extra_attrs.attrs = model_config.extra_attrs
         _trtllm_utils._model_extra_attrs.attrs["attention_metadata"] = weakref.ref(attn_metadata)
@@ -991,9 +998,9 @@ def run_msa_module(
             device=torch_device,
             kernel_func=kernel_func,
             num_warmups=warming_up,
-            # Graph-timed cases: the dry run already executed this forward, three
-            # eager passes suffice before capture. Eager-timed MSA prefill keeps
-            # the full warmup since it IS the measurement's warmup.
+            # Graph-timed cases: a dry run of this seq_len already executed this
+            # forward, three eager passes suffice before capture. Eager-timed MSA
+            # prefill keeps the full warmup since it IS the measurement's warmup.
             num_eager_warmups=3 if use_cuda_graph else warming_up,
             num_runs=test_ite,
             repeat_n=1,
@@ -1083,6 +1090,76 @@ def run_msa_module_worker(
         gemm_type=gemm_type,
         prefix_len=prefix_len,
         perf_filename=perf_filename,
+        model_path=model_path,
+        device=device,
+    )
+
+
+def run_msa_module_series(
+    points,
+    batch_size: int,
+    num_heads: int,
+    kv_cache_dtype: str,
+    compute_dtype: str,
+    gemm_type: str,
+    perf_filename: str,
+    *,
+    model_path: str,
+    device: str = "cuda:0",
+    warming_up: int = 10,
+    test_ite: int = 6,
+) -> list[float]:
+    """Measure the (seq_len, prefix_len) points of one MSA module key in one task.
+
+    Every point runs through run_msa_module, so its rows are those of a one-point
+    case. The KV cache manager stays per point: the MSA indexer copies the whole
+    index-K pool on every forward (create_kv_cache_and_metadata), so a pool sized
+    for the largest point would add latency to the smaller ones.
+    """
+
+    def run_point(seq_len: int, prefix_len: int, dry_run: bool) -> float:
+        return run_msa_module(
+            seq_len=seq_len,
+            batch_size=batch_size,
+            num_heads=num_heads,
+            kv_cache_dtype=kv_cache_dtype,
+            compute_dtype=compute_dtype,
+            gemm_type=gemm_type,
+            perf_filename=perf_filename,
+            prefix_len=prefix_len,
+            model_path=model_path,
+            device=device,
+            warming_up=warming_up,
+            test_ite=test_ite,
+            dry_run=dry_run,
+        )
+
+    label = f"MSA module series b={batch_size} heads={num_heads} gemm={gemm_type} kv={kv_cache_dtype}"
+    return run_points(points, run_point, label=label)
+
+
+def run_msa_module_series_worker(
+    points,
+    batch_size: int,
+    num_heads: int,
+    kv_cache_dtype: str,
+    compute_dtype: str,
+    gemm_type: str,
+    model_path: str,
+    *,
+    perf_filename: str,
+    device: str = "cuda:0",
+):
+    """Worker entry for one series task: run_msa_module_worker's positional fields, with
+    the list of (seq_len, prefix_len) points in place of seq_len and prefix_len."""
+    return run_msa_module_series(
+        points,
+        batch_size,
+        num_heads,
+        kv_cache_dtype,
+        compute_dtype,
+        gemm_type,
+        perf_filename,
         model_path=model_path,
         device=device,
     )
