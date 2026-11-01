@@ -596,12 +596,17 @@ def _layer_views(
             offset += item * math.prod(shape)
     # The worker views a layer with the storage block of an MLA spec that has one (the indexer), a Mamba layer
     # with the group block, and every other layer with the runner's kernel block of the group
-    # (worker/utils.py:449-450, :500-502; runtime/instrumentation/observer.py:277-289).
+    # (worker/utils.py:449-450, :500-502; runtime/instrumentation/observer.py:277-289). Both native runners give a
+    # Mamba group its block as its kernel block (worker/utils.py:483-487, :500-502).
     if spec.get("spec_type") in _MLA_SPECS and spec.get("storage_block_size") is not None:
         kernel = spec["storage_block_size"]
     else:
         kernel = block if spec.get("spec_type") == _MAMBA_SPEC else group_kernel
-    if type(kernel) is not int or any(view["kernel_block_size_tokens"] != kernel for view in entries):
+    if (
+        type(kernel) is not int
+        or any(view["kernel_block_size_tokens"] != kernel for view in entries)
+        or (spec.get("spec_type") == _MAMBA_SPEC and group_kernel != block)
+    ):
         raise ValueError(f"layer view kernel block contradicts its cache spec: {name}")
     return views
 
@@ -984,6 +989,19 @@ def _phase_prefix_caching(
                 raise ValueError(f"runtime state cache group lacks Mamba cache mode evidence: {group['layer_names']}")
             if group.get("kind") == "state" and isinstance(state, dict) and "mamba_cache_mode" in state:
                 _same(state["mamba_cache_mode"], scheduled["mamba_cache_mode"], f"{phase} Mamba cache mode")
+            # A MambaSpec takes the Mamba block size of its worker's cache config, which the worker resolves before it
+            # builds the specs (mamba/abstract.py:66-73). Grouping keeps that block: it pads a Mamba page rather than
+            # scale its block (v1/core/kv_cache_utils.py:1417-1426), and only the HiddenStateCacheSpec layers of a
+            # speculative run scale every group block (:2268-2297, :2369-2372). The import refuses speculative runs.
+            if (
+                strided
+                and _MAMBA_SPEC in runtime_memory._spec_classes(group, group["layer_names"], strided)
+                and canonical_json(group["block_size_tokens"])
+                != canonical_json(record["resolved_config"]["cache_config"].get("mamba_block_size"))
+            ):
+                raise ValueError(
+                    f"cache group block size contradicts the resolved Mamba block size: {group['layer_names']}"
+                )
     # Each process reads this evidence from the cache config that it resolved
     # (runtime/instrumentation/observer.py:476-485). The launch-setting comparisons leave those resolved settings
     # out, so the evidence must equal them.

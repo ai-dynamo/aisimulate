@@ -1912,6 +1912,12 @@ _STATE_VIEWS = "layer views do not match the recorded state tensors: mamba.0"
         ("mamba_state_strides", "mamba_hybrid", _STATE_VIEWS),
         ("no_prefix_caching_hash_block_size", "mamba_hybrid", _BLOCK_SIZES),
         ("no_prefix_caching_control", "glm_tp4", None),
+        (
+            "mamba_block_size",
+            "mamba_hybrid",
+            "cache group block size contradicts the resolved Mamba block size: ['mamba.0', 'mamba.2']",
+        ),
+        ("mamba_runner_kernel", "mamba_hybrid", "layer view kernel block contradicts its cache spec: mamba.0"),
     ],
     ids=[
         "scheduler_block_size",
@@ -1922,6 +1928,8 @@ _STATE_VIEWS = "layer views do not match the recorded state tensors: mamba.0"
         "mamba_state_strides",
         "no_prefix_caching_hash_block_size",
         "no_prefix_caching_control",
+        "mamba_block_size",
+        "mamba_runner_kernel",
     ],
 )
 def test_v031_records_must_hold_what_vllm_derives_from_them(tmp_path, case, layout, diagnostic):
@@ -1944,6 +1952,22 @@ def test_v031_records_must_hold_what_vllm_derives_from_them(tmp_path, case, layo
         elif case == "mamba_state_strides" and worker:
             # The [4, 100] convolution state viewed column by column holds the same 800 bytes.
             cache["layer_tensors"]["mamba.0"][0]["stride_bytes"] = [8192, 2, 8]
+        elif case == "mamba_block_size":
+            # The two Mamba groups of every record hold 128-token blocks, with view and runner kernels of 128, the
+            # scheduler block 128 (the LCM with the 64-token attention block) and the hash block 64 (the GCD). The
+            # resolved Mamba block size and block size stay 64.
+            for group in cache["groups"][1:]:
+                group["block_size_tokens"] = 128
+                for name in group["layer_names"] if worker else []:
+                    for view in cache["layer_tensors"][name]:
+                        view["kernel_block_size_tokens"] = 128
+            if worker:
+                cache["model_runner"]["kernel_block_sizes"][1:] = [128, 128]
+            else:
+                cache["block_size"] = cache["prefix_caching"]["block_size"] = 128
+        elif case == "mamba_runner_kernel" and worker:
+            # The runner gives the Mamba group G1 a 32-token kernel block, while its views keep its 64-token block.
+            cache["model_runner"]["kernel_block_sizes"][1] = 32
         if record["phase"] != "prefill":
             return
         if case.startswith("prefix_match_unit"):

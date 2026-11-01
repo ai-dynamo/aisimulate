@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -1848,23 +1849,41 @@ def test_reversed_phase_bindings_merge_into_the_record_of_the_first_collection_p
 
 
 def _record_decode_state_block_size(index, tokens):
-    """Rewrite the block size of the first state group in every decode record of an observation index.
+    """Give every Mamba group in the decode records of an observation index a block of ``tokens`` tokens.
 
-    Every record of the phase changes together, and each Mamba view keeps one kernel block per pool block, so
-    the phase still validates on its own.
+    The decode phase must run with prefix caching on. Every record of the phase changes together, with the values
+    that vLLM derives from that Mamba block size in the records: the block of each Mamba group, the kernel block of
+    its views and of the runner (v1/worker/utils.py:445-450, :500-502), the resolved mamba_block_size
+    (mamba/abstract.py:66-73), and the scheduler's block and hash block sizes (v1/core/kv_cache_utils.py:761-798).
+    Each Mamba view keeps one kernel block per pool block, so the phase still validates on its own.
     """
     document = json.loads(index.read_text())
     phase = document["configurations"]["tp2"]["attempts"][0]["phases"]["decode"]
     for reference in phase["artifacts"]:
         path = index.parent / reference["path"]
         record = json.loads(path.read_text())
-        group = record["cache"]["groups"][1]
-        assert "state" in group
-        group["block_size_tokens"] = tokens
-        if record["kind"] == "worker":
-            for name in group["layer_names"]:
-                for view in record["cache"]["layer_tensors"][name]:
-                    view["kernel_block_size_tokens"] = tokens
+        cache = record["cache"]
+        groups = cache["groups"]
+        mamba = [position for position, group in enumerate(groups) if group["spec_type"].endswith(".MambaSpec")]
+        assert mamba
+        for position in mamba:
+            groups[position]["block_size_tokens"] = tokens
+            if record["kind"] == "worker":
+                cache["model_runner"]["kernel_block_sizes"][position] = tokens
+                for name in groups[position]["layer_names"]:
+                    for view in cache["layer_tensors"][name]:
+                        view["kernel_block_size_tokens"] = tokens
+        record["resolved_config"]["cache_config"]["mamba_block_size"] = tokens
+        if record["kind"] == "scheduler":
+            # The fixture sets no prefix-match unit, and every one of its groups takes part in prefix caching. With
+            # prefix caching on in align mode, the scheduler block is the LCM of the group blocks and the hash block
+            # is their GCD.
+            evidence = cache["prefix_caching"]
+            assert evidence["enable_prefix_caching"] and evidence["mamba_cache_mode"] == "align"
+            assert record["resolved_config"]["cache_config"]["prefix_match_unit"] is None
+            blocks = [group["block_size_tokens"] for group in groups]
+            cache["block_size"] = evidence["block_size"] = math.lcm(*blocks)
+            cache["hash_block_size"] = evidence["hash_block_size"] = math.gcd(*blocks)
         _write(path, record)
         reference["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
     _write(index, document)
@@ -1873,9 +1892,12 @@ def _record_decode_state_block_size(index, tokens):
 def test_formal_phase_binding_compares_the_raw_block_size_of_a_state_group(tmp_path, capsys):
     from aisimulate.support.runtime import verify_collection_runtime_bindings
 
-    request, index, bindings = _formal_phase_bindings(tmp_path, capsys)
+    # Decode runs with prefix caching on, so the accepted probe's decode Mamba groups hold the 64-token block of align
+    # mode. The formal decode Mamba groups hold 2048-token blocks, which breaks only vLLM's align rule that the Mamba
+    # block size equals the block size (platforms/interface.py:995-996). The import does not check that rule.
+    request, index, bindings = _formal_phase_bindings(tmp_path, capsys, decode_prefix_caching=True)
     # The whole-record comparison leaves out the block sizes of state groups, so the raw groups of the bound phase
-    # are the only check of the decode Mamba block, 4096 tokens in the accepted probe.
+    # are the only check of the decode Mamba block.
     _record_decode_state_block_size(index, 2048)
     with pytest.raises(ValueError, match="decode: runtime cache group geometry differs from the accepted probe"):
         verify_collection_runtime_bindings(request, bindings())
@@ -1884,12 +1906,13 @@ def test_formal_phase_binding_compares_the_raw_block_size_of_a_state_group(tmp_p
 def test_formal_collection_compares_the_cache_geometry_of_every_phase(tmp_path, capsys):
     from aisimulate.support.runtime import verify_collection_runtime
 
-    # Decode runs without prefix caching, so the accepted probe's decode Mamba groups hold 4096-token blocks. The
-    # first worker records and the resource records belong to prefill, so only a per-phase comparison sees the
-    # decode block.
-    _, request, _, root = _completed_runtime_collection(
-        tmp_path, capsys, layout="mamba_hybrid", decode_prefix_caching=False
-    )
+    # Decode runs with prefix caching on, so the accepted probe's decode Mamba groups hold 64-token blocks. The first
+    # worker records and the resource records belong to prefill, so only a per-phase comparison sees the decode block.
+    # The formal decode Mamba groups hold 2048-token blocks: the scheduler still hashes in their GCD with the
+    # attention block, 64 tokens, so the prefix-caching settings of the phase stay equal. The records break only
+    # vLLM's align rule that the Mamba block size equals the block size (platforms/interface.py:995-996), which the
+    # import does not check.
+    _, request, _, root = _completed_runtime_collection(tmp_path, capsys, layout="mamba_hybrid")
     checkpoint = json.loads((root / "fpm-checkpoint/fpm_forward.json").read_text())
     index = Path(checkpoint["runtime_observations"])
     _record_decode_state_block_size(index, 2048)
@@ -1902,8 +1925,12 @@ def test_finalization_compares_the_cache_geometry_of_every_formal_phase(tmp_path
     from aisimulate.support.finalization import finalization_manifest, finalize
     from aisimulate.support.runtime import verify_runtime_profile
 
+    # Without an edit, decode runs without prefix caching, so its Mamba blocks differ from those of prefill in the
+    # probe and in the formal run alike, and finalization accepts the role. The edited case runs decode with prefix
+    # caching on, where 2048-token Mamba blocks keep the scheduler's 64-token hash block and break only vLLM's align
+    # rule (platforms/interface.py:995-996), which the import does not check.
     _, request, _, root = _completed_runtime_collection(
-        tmp_path, capsys, layout="mamba_hybrid", decode_prefix_caching=False
+        tmp_path, capsys, layout="mamba_hybrid", decode_prefix_caching=decode_block is not None
     )
     target = tmp_path / "finalized"
     if decode_block is None:
