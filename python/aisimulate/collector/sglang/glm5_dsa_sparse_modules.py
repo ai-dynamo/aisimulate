@@ -551,19 +551,17 @@ def _dsa_context_derived_shapes(model_path):
         from collector.sglang.collect_mla_module import (
             _DSA_CEILING_MAX_POSITIONS,
             _dsa_context_prefix_shape_is_valid,
-            _filter_cases_from_env,
             _model_max_position_embeddings,
-            dsa_indexer_total_kv_tokens_supported,
         )
+        from collector.sglang.runtime_limits import dsa_indexer_total_kv_tokens_supported
     except ModuleNotFoundError:
         from case_generator import get_mla_module_sweep_spec
         from collect_mla_module import (
             _DSA_CEILING_MAX_POSITIONS,
             _dsa_context_prefix_shape_is_valid,
-            _filter_cases_from_env,
             _model_max_position_embeddings,
-            dsa_indexer_total_kv_tokens_supported,
         )
+        from runtime_limits import dsa_indexer_total_kv_tokens_supported
     sweep = get_mla_module_sweep_spec("sglang")
     max_pos = _model_max_position_embeddings(model_path)
 
@@ -581,18 +579,11 @@ def _dsa_context_derived_shapes(model_path):
             bs, isl, prefix, max_position_embeddings=max_pos
         ) and dsa_indexer_total_kv_tokens_supported(bs, isl, prefix, is_prefill=True)
 
-    # AIC_DSA_CONTEXT_* env pin: _filter_cases_from_env wants (bs, seq, ip, prefix).
-    def _env(cases):
-        tagged = [(bs, isl, True, prefix) for (bs, isl, prefix) in cases]
-        kept = _filter_cases_from_env(tagged, is_prefill=True, attn_type="dsa")
-        return [(bs, isl, prefix) for (bs, isl, _ip, prefix) in kept]
-
     shapes = _derive_context_shapes(
         sweep.context_batch_sizes,
         sweep.context_sequence_lengths,
         sweep.context_prefix_lengths,
         _valid,
-        env_filter=_env,
     )
     # Ceiling: put a real (prefix, isl) point at prefix + isl == each hardcoded
     # DSA max_position (_DSA_CEILING_MAX_POSITIONS); _valid below drops any above
@@ -608,9 +599,7 @@ def _dsa_context_derived_shapes(model_path):
                 key = (ceil_prefix, isl, bs)
                 if ceil_prefix > 0 and key not in have and _valid(bs, isl, ceil_prefix):
                     ceiling_candidates.append((bs, isl, ceil_prefix))
-    # Subject the injected ceiling points to the same AIC_DSA_CONTEXT_* env pin
-    # as the base shapes, so a targeted collector run can't pick up extra shapes.
-    for bs, isl, ceil_prefix in _env(ceiling_candidates):
+    for bs, isl, ceil_prefix in ceiling_candidates:
         key = (ceil_prefix, isl, bs)
         if key not in have:
             shapes.append(key)

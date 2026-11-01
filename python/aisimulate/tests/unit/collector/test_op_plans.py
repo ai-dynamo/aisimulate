@@ -20,7 +20,7 @@ import json
 import os
 import subprocess
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import pytest
@@ -185,19 +185,124 @@ def test_a_backend_declares_batch_rows_or_rows_not_both():
         )
 
 
-@pytest.mark.parametrize("op", ["mla_context_module", "mla_generation_module"])
+@pytest.mark.parametrize(
+    "op", ["mla_context_module", "mla_generation_module", "dsa_context_module", "dsa_generation_module"]
+)
 @pytest.mark.parametrize("backend", ["trtllm", "vllm"])
 def test_module_rows_list_the_points_of_their_cases(op, backend):
     op_plan = plan(op, backend, 100)
     points = []
     for series, *key, attn_type in op_plan.rows:
-        assert attn_type == "mla"
-        # TRT-LLM rows list (seq_len, prefix_len) points; vLLM rows list lengths.
-        pairs = series if backend == "trtllm" else [[length, 0] for length in series]
+        assert attn_type == op.split("_")[0]
+        # TRT-LLM rows list (seq_len, prefix_len) points; vLLM rows list lengths, or the
+        # (seq_len, prefix_len) points of a DSA context module.
+        pairs = series if backend == "trtllm" or op == "dsa_context_module" else [[length, 0] for length in series]
         assert pairs == sorted(pairs, reverse=True)
         points += [ModuleCase(length, *key, prefix_len) for length, prefix_len in pairs]
     assert len(points) == len(set(points)) == len(op_plan.cases)
     assert set(points) == set(op_plan.cases)
+
+
+# The checkpoint each (architecture, projection GEMM) is timed on.
+DSA_MODELS = {
+    "deepseek-ai/DeepSeek-V3.2": ("bfloat16", "fp8_block"),
+    "nvidia/DeepSeek-V3.2-NVFP4": ("nvfp4",),
+    "zai-org/GLM-5.2": ("bfloat16", "nvfp4"),
+    "zai-org/GLM-5.2-FP8": ("fp8_block",),
+}
+
+
+def test_dsa_plan_times_the_longest_context_checkpoint_of_each_projection_gemm():
+    from collector.op_plans import _dsa_module_models
+
+    assert {spec.model_path: gemms for spec, gemms in _dsa_module_models()} == DSA_MODELS
+    by_model = defaultdict(set)
+    for case in OP_PLANS["dsa_context_module"].expand():
+        by_model[case.model_path].add(case.gemm_type)
+    assert {model: tuple(sorted(gemms)) for model, gemms in by_model.items()} == DSA_MODELS
+
+
+def test_dsa_context_points_follow_chunked_prefill():
+    from collector.case_generator import get_mla_module_sweep_spec
+
+    sweep = get_mla_module_sweep_spec("plan")
+    anchors = [0, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048575]
+    assert sweep.context_dsa_prefix_lengths == anchors
+    max_position = {"deepseek-ai/DeepSeek-V3.2": 163840, "zai-org/GLM-5.2": 1048576}
+    points = defaultdict(set)
+    for case in OP_PLANS["dsa_context_module"].expand():
+        if case.model_path in max_position and case.num_heads == 8:
+            points[case.model_path].add((case.batch_size, case.seq_len, case.prefix_len))
+    for model, ceiling in max_position.items():
+        expected = {
+            (b, s, p)
+            for b in (1, 2, 4, 8, 16, 32, 64, 128, 256)
+            for s in (1, 16, 32, 64, 128, 256, 512, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 10240, 12288, 16384)
+            for p in anchors
+            # new tokens per forward, KV tokens per forward, the model's context
+            if b * s <= 16384
+            and b * (s + p) <= 1048576
+            and p + s <= ceiling
+            # at long prefixes, the chunk sizes serving's chunked prefill issues there
+            and (p < 16384 or s in (1, 512, 2048, 8192, 16384))
+        }
+        assert points[model] == expected, model
+    assert (1, 1, 1048575) in points["zai-org/GLM-5.2"]
+    assert max(p + s for _b, s, p in points["deepseek-ai/DeepSeek-V3.2"]) <= 163840
+
+
+def test_dsa_decode_reaches_the_long_context_at_small_batch():
+    lengths = defaultdict(set)
+    for case in OP_PLANS["dsa_generation_module"].expand():
+        lengths[case.model_path].add((case.batch_size, case.seq_len))
+    long_kv = {(b, s) for b in (1, 2, 4) for s in (262144, 524288, 1048575)}
+    assert long_kv <= lengths["zai-org/GLM-5.2"]
+    # A KV length leaves room for the decoded token within the model's context.
+    assert max(s for _b, s in lengths["deepseek-ai/DeepSeek-V3.2"]) == 131072
+    assert lengths["zai-org/GLM-5.2"] - long_kv == lengths["deepseek-ai/DeepSeek-V3.2"]
+
+
+@pytest.mark.parametrize("op", ["dsa_context_module", "dsa_generation_module"])
+def test_dsa_skips_keep_each_backends_precisions(op):
+    def combos(backend, sm):
+        return {(case.kv_cache_dtype, case.gemm_type) for case in plan(op, backend, sm).cases}
+
+    gemms = {"bfloat16", "fp8_block", "nvfp4"}
+    both_kv = {(kv, gemm) for kv in ("bfloat16", "fp8") for gemm in gemms}
+    # TRT-LLM: FP8 KV from the SM100 family on; vLLM: both KV dtypes; NVFP4 from SM100.
+    assert combos("trtllm", 90) == {("bfloat16", "bfloat16"), ("bfloat16", "fp8_block")}
+    assert combos("vllm", 90) == {pair for pair in both_kv if pair[1] != "nvfp4"}
+    for sm in (100, 103, 120):
+        assert combos("trtllm", sm) == combos("vllm", sm) == both_kv
+    # SGLang times each checkpoint on its own projection GEMM, with no NVFP4 projections.
+    for sm in (90, 100):
+        assert {(case.model_path, case.gemm_type) for case in plan(op, "sglang", sm).cases} == {
+            ("deepseek-ai/DeepSeek-V3.2", "fp8_block"),
+            ("zai-org/GLM-5.2", "bfloat16"),
+            ("zai-org/GLM-5.2-FP8", "fp8_block"),
+        }
+        assert {case.kv_cache_dtype for case in plan(op, "sglang", sm).cases} == {"bfloat16", "fp8"}
+
+
+def test_sglang_dsa_dispatch_is_the_backend_serving_picks():
+    assert plan("dsa_context_module", "sglang", 90).by_dispatch.keys() == {"flashmla_kv", "flashmla_sparse"}
+    assert plan("dsa_context_module", "sglang", 100).by_dispatch.keys() == {"trtllm", "flashmla_sparse"}
+    assert plan("dsa_generation_module", "sglang", 90).by_dispatch.keys() == {"flashmla_kv", "fa3"}
+    assert plan("dsa_generation_module", "sglang", 100).by_dispatch.keys() == {"trtllm"}
+
+
+def test_batch_rows_time_every_dispatch_of_a_case_once(monkeypatch):
+    cases = [GemmCase("bfloat16", 1, 128, 128), GemmCase("bfloat16", 2, 128, 128)]
+    op_plan = OpPlan(
+        GemmCase,
+        lambda: cases,
+        dtype_field="gemm_type",
+        group_fields=("n", "k"),
+        dispatch={"sglang": lambda case, sm: ("a", "b") if case.m == 1 else "a"},
+        batch_rows={"sglang": lambda runs, sm: [([run.dispatch, run.m], (run,)) for run in runs]},
+    )
+    monkeypatch.setitem(OP_PLANS, "probe", op_plan)
+    assert plan("probe", "sglang", 100).rows == [["a", 1], ["b", 1], ["a", 2]]
 
 
 def test_module_skips_remove_points_per_backend():

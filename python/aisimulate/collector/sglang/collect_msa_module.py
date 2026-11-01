@@ -206,8 +206,8 @@ def _parse_int_list_env(name: str) -> set[int] | None:
 
 
 def _filter_shapes_from_env(shapes, *, is_prefill: bool):
-    """Targeted-run env pins (dev/healing tool, mirrors the DSA collector's
-    AIC_DSA_CONTEXT_* filters — runtime subset selection, never persisted).
+    """Targeted-run env pins (dev/healing tool — runtime subset selection,
+    never persisted).
 
     Context: AIC_MSA_CONTEXT_SEQ_LENS / AIC_MSA_CONTEXT_PREFIX_LENS over
     (batch, seq, prefix). Generation: AIC_MSA_GENERATION_BATCH_SIZES /

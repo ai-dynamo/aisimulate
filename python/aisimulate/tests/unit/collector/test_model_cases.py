@@ -981,9 +981,12 @@ def test_kimi_k3_scoped_run_activates_moe_for_sglang_and_vllm_only():
         assert moe_model_allows_quantization(backend, "moonshotai/Kimi-K3", "w4a8_mxfp4_mxfp8"), backend
 
 
-def test_dsa_module_prefix_context_sweeps_are_yaml_backed():
+def test_module_prefix_context_sweeps_are_yaml_backed():
     from collector.case_generator import get_mla_module_sweep_spec
 
+    assert get_mla_module_sweep_spec("plan").context_dsa_prefix_lengths == [
+        0, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048575
+    ]  # fmt: skip
     assert 128 in get_mla_module_sweep_spec("sglang").context_prefix_lengths
     assert get_mla_module_sweep_spec("trtllm").context_prefix_lengths == [0, 128]
     assert get_mla_module_sweep_spec("vllm").context_prefix_lengths == [0, 128]
@@ -1122,7 +1125,6 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
     assert trtllm_sweep.context_batch_sizes == [1, 2, 4, 8, 16, 32, 64, 128, 256]
     assert trtllm_sweep.context_sequence_lengths[-1] == 32768
     assert trtllm_sweep.generation_sequence_lengths[-1] == 131072
-    assert trtllm_sweep.inner_sweep_head_counts == [128, 64, 32, 16, 8, 4, 2, 1]
     assert trtllm_sweep.generation_max_tokens == 33554432
 
     assert [
@@ -1134,36 +1136,8 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
         ("bfloat16", "bfloat16", "fp8_block"),
         ("bfloat16", "fp8", "fp8_block"),
     ]
-    assert [
-        (spec.compute_dtype, spec.kv_cache_dtype, spec.gemm_type)
-        for spec in get_mla_module_precision_specs("vllm", phase="context", sm_version=100)
-    ] == [
-        ("bfloat16", "bfloat16", "bfloat16"),
-        ("bfloat16", "fp8", "bfloat16"),
-        ("fp8", "fp8", "bfloat16"),
-        ("bfloat16", "bfloat16", "fp8_block"),
-        ("bfloat16", "fp8", "fp8_block"),
-        ("fp8", "fp8", "fp8_block"),
-        ("bfloat16", "bfloat16", "nvfp4"),
-        ("bfloat16", "fp8", "nvfp4"),
-        # MSA-scoped combos (attention_types [msa]; declared after the
-        # bf16/fp8 nvfp4 pair): unfiltered enumeration includes them.
-        ("bfloat16", "bfloat16", "bfloat16"),
-        ("bfloat16", "fp8", "bfloat16"),
-        ("bfloat16", "bfloat16", "fp8_block"),
-        ("bfloat16", "fp8", "fp8_block"),
-        ("bfloat16", "bfloat16", "nvfp4"),
-        ("bfloat16", "fp8", "nvfp4"),
-        ("fp8", "fp8", "nvfp4"),
-    ]
-    assert get_mla_module_sweep_spec("sglang").context_sequence_lengths[-2:] == [8192, 16384]
-
-    vllm_sweep = get_mla_module_sweep_spec("vllm")
-    assert vllm_sweep.context_sequence_lengths[-1] == 32768
-    assert vllm_sweep.generation_sequence_lengths[-1] == 131072
-    assert vllm_sweep.inner_sweep_head_counts == [128, 96, 64, 48, 32, 24, 16, 12, 8, 4, 2, 1]
-    assert vllm_sweep.generation_max_tokens == 33554432
-    assert vllm_sweep.generation_large_cache_tokens == 16777216
+    # The vLLM section declares only the MSA module's combos; the MLA and DSA
+    # module plans read the shared plan section.
     assert [
         (spec.compute_dtype, spec.kv_cache_dtype, spec.gemm_type)
         for spec in get_mla_module_precision_specs("vllm", phase="generation", sm_version=90)
@@ -1172,22 +1146,21 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
         ("bfloat16", "fp8", "bfloat16"),
         ("bfloat16", "bfloat16", "fp8_block"),
         ("bfloat16", "fp8", "fp8_block"),
-        # MSA-scoped combos (attention_types [msa]) at SM90: both KV dtypes
-        # for the bf16 and fp8_block gemm tiers (fp8-KV has no SM floor for
-        # MSA — see the mla_module.yaml combo note).
-        ("bfloat16", "bfloat16", "bfloat16"),
-        ("bfloat16", "fp8", "bfloat16"),
-        ("bfloat16", "bfloat16", "fp8_block"),
-        ("bfloat16", "fp8", "fp8_block"),
     ]
+    assert get_mla_module_sweep_spec("sglang").context_sequence_lengths[-2:] == [8192, 16384]
 
-    # vLLM 0.24.0 FP8 prefill-query compute is declared for the dense-MLA
-    # prefill path only: the sparse DSA builders have no prefill-query
-    # quantization concept, so the fp8 compute combos are scoped
-    # attention_types: [mla] and a DSA plan must not expand them.
+    vllm_sweep = get_mla_module_sweep_spec("vllm")
+    assert vllm_sweep.context_sequence_lengths[-1] == 32768
+    assert vllm_sweep.generation_sequence_lengths[-1] == 131072
+    assert vllm_sweep.generation_max_tokens == 33554432
+
+    # FP8 prefill-query compute exists for the dense-MLA prefill path only: the
+    # sparse DSA builders have no prefill-query quantization concept, so the fp8
+    # compute combos are scoped attention_types: [mla] and the DSA plan does not
+    # expand them.
     assert [
         (spec.compute_dtype, spec.kv_cache_dtype, spec.gemm_type)
-        for spec in get_mla_module_precision_specs("vllm", phase="context", sm_version=100, attention_type="dsa")
+        for spec in get_mla_module_precision_specs("plan", phase="context", attention_type="dsa")
     ] == [
         ("bfloat16", "bfloat16", "bfloat16"),
         ("bfloat16", "fp8", "bfloat16"),
@@ -1196,12 +1169,9 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
         ("bfloat16", "bfloat16", "nvfp4"),
         ("bfloat16", "fp8", "nvfp4"),
     ]
-    # The mla scope adds the fp8 prefill-query compute combos on top of the
-    # dsa set; it no longer equals the unfiltered enumeration, which now also
-    # carries the msa-scoped combos.
     assert [
         (spec.compute_dtype, spec.kv_cache_dtype, spec.gemm_type)
-        for spec in get_mla_module_precision_specs("vllm", phase="context", sm_version=100, attention_type="mla")
+        for spec in get_mla_module_precision_specs("plan", phase="context", attention_type="mla")
     ] == [
         ("bfloat16", "bfloat16", "bfloat16"),
         ("bfloat16", "fp8", "bfloat16"),
@@ -1219,6 +1189,7 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
 
     assert {spec.model_path for spec in dsa_specs} == {
         "deepseek-ai/DeepSeek-V3.2",
+        "nvidia/DeepSeek-V3.2-NVFP4",
         "zai-org/GLM-5",
         "zai-org/GLM-5-FP8",
         "nvidia/GLM-5-NVFP4",
@@ -1639,56 +1610,6 @@ def test_mla_module_metadata_canonicalizes_consumer_keyed_backends():
     assert paths("trtllm") == {"deepseek-ai/DeepSeek-V3"}
 
 
-def test_trtllm_mla_module_getter_requests_backend_canonicalization():
-    from types import SimpleNamespace
-
-    source_path = REPO_ROOT / "collector/trtllm/collect_mla_module.py"
-    tree = ast.parse(source_path.read_text(), filename=str(source_path))
-    function = next(
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_build_module_test_cases"
-    )
-    calls = []
-
-    def get_model_specs(**kwargs):
-        calls.append(kwargs)
-        return [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3")]
-
-    namespace = {
-        "get_context_test_cases": lambda _attention_type: [[128, 1, 8, "bfloat16", "bfloat16", "bfloat16"]],
-        "get_generation_test_cases": lambda _attention_type: [],
-        "get_mla_module_model_specs": get_model_specs,
-        "get_sm_version": lambda: 90,
-    }
-    exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)
-
-    cases = namespace["_build_module_test_cases"]("mla", "context")
-
-    assert calls == [{"attention_type": "mla", "backend": "trtllm"}]
-    assert cases == [[128, 1, 8, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3", "mla"]]
-
-
-def _load_module_case_builder(backend: str, namespace: dict):
-    from types import SimpleNamespace
-
-    source_path = REPO_ROOT / f"collector/{backend}/collect_mla_module.py"
-    tree = ast.parse(source_path.read_text(), filename=str(source_path))
-    wanted = {"_build_module_test_cases"}
-    if backend == "vllm":
-        # the DSA context grouping expands each series through the plan predicate
-        wanted |= {"_dsa_context_point_allowed", "_dsa_context_budgets"}
-        namespace.setdefault(
-            "get_mla_module_sweep_spec",
-            lambda _backend=None: SimpleNamespace(
-                context_dsa_chunk_prefill_size=16384,
-                context_max_tokens=131072,
-                context_dsa_max_full_sequence_length=1048576,
-            ),
-        )
-    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
-    exec(compile(ast.Module(body=functions, type_ignores=[]), str(source_path), "exec"), namespace)
-    return namespace["_build_module_test_cases"]
-
-
 @pytest.mark.parametrize("backend", ["vllm", "trtllm"])
 def test_dsa_sub_8_head_cells_stay_queued_and_raise_before_the_module_build(backend):
     """b200 2026-10-06 (jobs 471043976 / 469988228): per-rank heads 1/2/4 have no sparse-MLA
@@ -1698,17 +1619,10 @@ def test_dsa_sub_8_head_cells_stay_queued_and_raise_before_the_module_build(back
     from contextlib import nullcontext
     from types import SimpleNamespace
 
-    heads = [128, 64, 8, 4, 2, 1]
-    base = [[1, 1, h, "bfloat16", "bfloat16", "bfloat16", 0] for h in heads]
-    ns = {
-        "get_context_test_cases": lambda _t: base,
-        "get_generation_test_cases": lambda _t: [],
-        "get_mla_module_model_specs": lambda **_k: [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3.2")],
-        "get_sm_version": lambda: 100,
-        "_model_max_position_embeddings": lambda _m: None,
-    }
-    build = _load_module_case_builder(backend, ns)
-    assert sorted({c[2] for c in build("dsa", "context")}) == sorted(heads)
+    from collector.op_plans import plan
+
+    # GLM-5.x at TP16 runs 4 heads per rank.
+    assert 4 in {case.num_heads for case in plan("dsa_context_module", backend, 100).cases}
 
     source_path = REPO_ROOT / "collector" / backend / "collect_mla_module.py"
     tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
@@ -1745,105 +1659,14 @@ def test_module_plan_keeps_only_the_heads_of_declared_tensor_parallel_shards(bac
     """A model row that declares tensor_parallel_sizes (case_authoring model-correlated
     narrowing, as the MSA rows do) measures only native_num_heads // tp; the shared head
     grid's other entries (96/48/24/12 for the 96-head Kimi-K3 MLA module, 128 for a 64-head
-    model) were 40-50% of the b200 vllm dsa_context rows (2026-10-29). Rows without the
-    declaration keep the full grid."""
-    from types import SimpleNamespace
+    model) were 40-50% of the b200 vllm dsa_context rows (2026-10-29)."""
+    from collector.op_plans import plan
 
-    heads = [128, 96, 64, 48, 32, 24, 16, 12, 8]
-    base = [[1, 1, h, "bfloat16", "bfloat16", "bfloat16", 0] for h in heads]
-    glm = SimpleNamespace(model_path="zai-org/GLM-5.2", native_num_heads=64, tensor_parallel_sizes=(1, 2, 4, 8))
-    kimi = SimpleNamespace(model_path="moonshotai/Kimi-K3", native_num_heads=96, tensor_parallel_sizes=None)
-    ns = {
-        "get_context_test_cases": lambda _t: base,
-        "get_generation_test_cases": lambda _t: [],
-        "get_mla_module_model_specs": lambda **_k: [glm, kimi],
-        "get_sm_version": lambda: 100,
-        "_model_max_position_embeddings": lambda _m: None,
-    }
-    build = _load_module_case_builder(backend, ns)
     by_model = {}
-    for case in build("dsa", "context"):
-        by_model.setdefault(case[6], []).append(case[2])
-    assert by_model["zai-org/GLM-5.2"] == [64, 32, 16, 8]
-    assert by_model["moonshotai/Kimi-K3"] == heads
-
-
-def test_vllm_module_plan_groups_the_seq_len_points_of_one_module_into_one_case():
-    """One case per (batch, heads, dtypes, gemm, model, attn, prefix) with its seq_len points
-    in slot 0, largest first: run_mla_module builds the module once per case (the module
-    build dominated vllm dsa_context_module in the 2026-10 campaign)."""
-    from types import SimpleNamespace
-
-    base = [
-        [128, 1, 64, "bfloat16", "bfloat16", "bfloat16", 0],
-        [16, 1, 64, "bfloat16", "bfloat16", "bfloat16", 0],
-        [1024, 1, 64, "bfloat16", "bfloat16", "bfloat16", 0],
-        [128, 1, 64, "bfloat16", "bfloat16", "bfloat16", 4096],  # other prefix -> same module series
-        [16, 1, 64, "bfloat16", "bfloat16", "bfloat16", 4096],
-        [1024, 1, 64, "bfloat16", "bfloat16", "bfloat16", 4096],
-        [16, 8, 64, "bfloat16", "bfloat16", "bfloat16", 0],  # other batch -> other case
-        [16, 1, 64, "fp8", "bfloat16", "bfloat16", 0],  # other kv dtype -> other case
-    ]
-    ns = {
-        "get_context_test_cases": lambda _t: base,
-        "get_generation_test_cases": lambda _t: [],
-        "get_mla_module_model_specs": lambda **_k: [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3.2")],
-        "get_sm_version": lambda: 100,
-        "_model_max_position_embeddings": lambda _m: None,
-    }
-    build = _load_module_case_builder("vllm", ns)
-    cases = build("dsa", "context")
-    # DSA context: the module series carries its isl list AND its prefix list (the plan's
-    # isl x prefix grid); the runner expands the grid through the same predicate.
-    assert cases == [
-        [[1024, 128, 16], 1, 64, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", "dsa", [4096, 0]],
-        [[16], 8, 64, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", "dsa", [0]],
-        [[16], 1, 64, "fp8", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2", "dsa", [0]],
-    ]
-    # the trtllm planner keeps one case per point
-    trt = _load_module_case_builder("trtllm", dict(ns))
-    assert [c[0] for c in trt("dsa", "context")] == [128, 16, 1024, 128, 16, 1024, 16, 16]
-
-
-def test_vllm_dsa_module_plan_refuses_a_grid_the_runner_would_not_reproduce():
-    """The plan generator and run_mla_module share _dsa_context_point_allowed; a base list whose
-    (isl, prefix) points are not that predicate's product cannot be expressed as a series."""
-    from types import SimpleNamespace
-
-    base = [
-        [1024, 1, 64, "bfloat16", "bfloat16", "bfloat16", 0],
-        [16, 1, 64, "bfloat16", "bfloat16", "bfloat16", 4096],  # (1024, 4096) and (16, 0) missing
-    ]
-    ns = {
-        "get_context_test_cases": lambda _t: base,
-        "get_generation_test_cases": lambda _t: [],
-        "get_mla_module_model_specs": lambda **_k: [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3.2")],
-        "get_sm_version": lambda: 100,
-        "_model_max_position_embeddings": lambda _m: None,
-    }
-    build = _load_module_case_builder("vllm", ns)
-    with pytest.raises(RuntimeError, match="expands to 4 points but the plan holds 2"):
-        build("dsa", "context")
-
-
-def test_vllm_dsa_module_plan_caps_prefix_at_the_model_max_position():
-    """7,050 b200 vllm DSA cases (job 471043976) asked vLLM for max_model_len > the model's
-    max_position_embeddings (prefix 262144+ on DeepSeek-V3.2 / GLM-5): the planner now
-    applies the same per-model cap the sglang module collector applies."""
-    from types import SimpleNamespace
-
-    base = [[16, 1, 64, "bfloat16", "bfloat16", "bfloat16", p] for p in (0, 4096, 163824, 163825, 262144)]
-    ns = {
-        "get_context_test_cases": lambda _t: base,
-        "get_generation_test_cases": lambda _t: [],
-        "get_mla_module_model_specs": lambda **_k: [SimpleNamespace(model_path="deepseek-ai/DeepSeek-V3.2")],
-        "get_sm_version": lambda: 100,
-        "_model_max_position_embeddings": lambda _m: 163840,
-    }
-    build = _load_module_case_builder("vllm", ns)
-    assert [c[-1] for c in build("dsa", "context")] == [[163824, 4096, 0]]
-    ns["_model_max_position_embeddings"] = lambda _m: None  # unknown ceiling -> no cap
-    assert [c[-1] for c in build("dsa", "context")] == [[262144, 163825, 163824, 4096, 0]]
+    for case in plan("dsa_context_module", backend, 100).cases:
+        by_model.setdefault(case.model_path, set()).add(case.num_heads)
+    assert by_model["zai-org/GLM-5.2"] == {64, 32, 16, 8, 4}
+    assert by_model["deepseek-ai/DeepSeek-V3.2"] == {128, 64, 32, 16, 8}
 
 
 def test_support_matrix_models_have_model_case_aliases():

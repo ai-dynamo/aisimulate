@@ -17,7 +17,8 @@ than the case declares ``rows``: the run arguments for one case and its
 dispatch. Rows decide how a case runs, never whether it runs, so every case
 gives at least one row. Where one task times several cases on one module
 build, the backend declares ``batch_rows`` instead: each row carries the cases
-it times as explicit points, and every kept case is timed by exactly one row.
+it times as explicit points, and every kept case is timed by exactly one row
+(on each of its dispatches, where the plan picks them).
 
 Planning never imports a framework, so ``--plan-only`` runs on any CPU.
 
@@ -29,10 +30,12 @@ function and an :class:`OpPlan` entry in ``OP_PLANS``.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
 import logging
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from types import MappingProxyType
 from typing import NamedTuple
 
@@ -64,6 +67,7 @@ from collector.case_generator import (
     moe_planned_modes,
     without_models,
 )
+from collector.helper import _AIC_MODEL_CONFIG_DIR
 
 # Plan logs go to the collector log, never stdout: --plan-only prints JSON there.
 logger = logging.getLogger(__name__)
@@ -88,13 +92,15 @@ class OpPlan:
     rows: Mapping[str, Callable[[object, int | None, str | None], list]] = MappingProxyType({})
     # backend -> the tasks for its kept cases where one task times several of
     # them on one module build: (row, the cases it times) pairs. A row carries
-    # its points explicitly; every kept case is timed by exactly one row.
+    # its points explicitly; every kept case is timed by exactly one row. With a
+    # dispatch, the function is given the (case, dispatch) runs instead, and
+    # every run is timed by exactly one row.
     batch_rows: Mapping[str, Callable[[list, int | None], list[tuple[object, tuple]]]] = MappingProxyType({})
 
     def __post_init__(self) -> None:
-        both = sorted(set(self.batch_rows) & (set(self.rows) | set(self.dispatch)))
+        both = sorted(set(self.batch_rows) & set(self.rows))
         if both:
-            raise ValueError(f"a backend declares batch_rows or rows/dispatch, not both: {both}")
+            raise ValueError(f"a backend declares batch_rows or rows, not both: {both}")
 
     def dtypes(self, case) -> tuple[str, ...]:
         """The case's dtypes, which skips.py ``dtype`` entries and the per-dtype counts read."""
@@ -143,13 +149,20 @@ class Plan:
     def rows(self) -> list:
         """What the getter queues: the cases, or the backend's rows for them."""
         if self.to_batch_rows is not None:
+            units = self.cases
+            if self.dispatches:
+                units = [
+                    _Run(case, runner)
+                    for case, runners in zip(self.cases, self.dispatches, strict=True)
+                    for runner in runners
+                ]
             with without_models(self.skipped_models):
-                pairs = self.to_batch_rows(self.cases, self.sm_version)
-            timed = Counter(case for _row, cases in pairs for case in cases)
-            wrong = [case for case in self.cases if timed[case] != 1] + list(set(timed) - set(self.cases))
+                pairs = self.to_batch_rows(units, self.sm_version)
+            timed = Counter(unit for _row, timed_units in pairs for unit in timed_units)
+            wrong = [unit for unit in units if timed[unit] != 1] + list(set(timed) - set(units))
             if wrong:
                 raise ValueError(f"{self.where} batch rows must time every kept case exactly once: {wrong[:3]}")
-            return [row for row, _cases in pairs]
+            return [row for row, _units in pairs]
         if self.to_rows is None:
             return self.cases
         runs_on = self.dispatches or [(None,)] * len(self.cases)
@@ -814,7 +827,7 @@ def _trtllm_mla_rows(case: MlaCase, sm_version: int | None, runner: str | None) 
     return [_mla_run_args(case, dtype, _mla_tokens_per_block())]
 
 
-# --- Attention modules: mla_context_module, mla_generation_module ----------------------
+# --- Attention modules: the MLA and DSA context and generation modules -----------------
 
 # The section of cases/base_ops/mla_module.yaml (mla_module_plan) the module op plans
 # share; the per-backend sections serve the module ops still on their own getters.
@@ -838,6 +851,16 @@ class ModuleCase(NamedTuple):
     prefix_len: int = 0
 
     __str__ = __repr__ = _list_form
+
+    @property
+    def checkpoint_quant(self) -> str:
+        """The checkpoint's weight quantization: fp8_block, nvfp4 or bfloat16 (none)."""
+        return _checkpoint_quant(self.model_path)
+
+    @property
+    def own_gemm(self) -> bool:
+        """Whether gemm_type is the GEMM the checkpoint's own attention projections run."""
+        return self.gemm_type == _projection_gemm(self.model_path)
 
 
 def _mla_module_models() -> list:
@@ -918,16 +941,23 @@ def _trtllm_module_rows(attn_type: str) -> Callable[[list, int | None], list[tup
 
 def _vllm_module_rows(attn_type: str) -> Callable[[list, int | None], list[tuple[list, tuple]]]:
     def rows(cases: list[ModuleCase], sm_version: int | None) -> list[tuple[list, tuple]]:
-        """One run_mla_module_worker task per module: its lengths, largest first, then the key."""
+        """One run_mla_module_worker task per module: its lengths, largest first, then the key.
+
+        A module with cached prefixes lists its (seq_len, prefix_len) points instead.
+        """
         tasks = []
         for key, members in _module_series(cases):
             if any(case.prefix_len for case in members):
-                raise ValueError(f"vLLM module rows carry no prefix: {members[0]}")
-            lengths = sorted((case.seq_len for case in members), reverse=True)
-            tasks.append(([lengths, *key, attn_type], tuple(members)))
+                points = sorted(([case.seq_len, case.prefix_len] for case in members), reverse=True)
+            else:
+                points = sorted((case.seq_len for case in members), reverse=True)
+            tasks.append(([points, *key, attn_type], tuple(members)))
         return tasks
 
     return rows
+
+
+_MODULE_GROUP = ("model_path", "num_heads", "kv_cache_dtype", "compute_dtype", "gemm_type", "batch_size")
 
 
 def _mla_module_plan(phase: str) -> OpPlan:
@@ -935,8 +965,224 @@ def _mla_module_plan(phase: str) -> OpPlan:
         ModuleCase,
         _mla_module_expand(phase),
         dtype_field=("kv_cache_dtype", "compute_dtype", "gemm_type"),
-        group_fields=("model_path", "num_heads", "kv_cache_dtype", "compute_dtype", "gemm_type", "batch_size"),
+        group_fields=_MODULE_GROUP,
         batch_rows={"trtllm": _trtllm_module_rows("mla"), "vllm": _vllm_module_rows("mla")},
+    )
+
+
+@functools.cache
+def _packaged_config(model_path: str, kind: str = "config") -> dict:
+    """A checkpoint's packaged config.json (kind "config") or hf_quant_config.json, or {} when none ships."""
+    path = Path(_AIC_MODEL_CONFIG_DIR) / f"{model_path.replace('/', '--')}_{kind}.json"
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def _max_position(model_path: str) -> int | None:
+    value = _packaged_config(model_path).get("max_position_embeddings")
+    return int(value) if value else None
+
+
+def _modelopt_quant(model_path: str) -> dict:
+    """The checkpoint's ModelOpt quantization section (hf_quant_config.json first), or its quantization_config."""
+    quant = _packaged_config(model_path).get("quantization_config") or {}
+    return _packaged_config(model_path, "hf_quant_config").get("quantization") or quant
+
+
+def _fp4_lane(lane: object) -> bool:
+    return isinstance(lane, dict) and "FP4" in str(lane.get("quant_algo", "")).upper()
+
+
+def _checkpoint_quant(model_path: str) -> str:
+    """The checkpoint's weight quantization, read from its packaged config: fp8_block, nvfp4 or bfloat16."""
+    quant = _packaged_config(model_path).get("quantization_config") or {}
+    if quant.get("quant_method") == "fp8" and quant.get("weight_block_size"):
+        return "fp8_block"
+    modelopt = _modelopt_quant(model_path)
+    algo = str(modelopt.get("quant_algo", "")).upper()
+    if algo == "NVFP4" or (
+        algo == "MIXED_PRECISION" and any(_fp4_lane(lane) for lane in (modelopt.get("quantized_layers") or {}).values())
+    ):
+        return "nvfp4"
+    return "bfloat16"
+
+
+def _projection_gemm(model_path: str) -> str:
+    """The GEMM a checkpoint's attention projections run, read from its packaged config.
+
+    An NVFP4 checkpoint runs nvfp4 there when it quantizes o_proj, since the SDK keys the
+    DSA module by o_proj (_dsa_attention_quant_modes in sdk/models/deepseek_v32.py):
+    DeepSeek-V3.2-NVFP4 quantizes it, while the GLM-5.x NVFP4 checkpoints keep self_attn
+    in BF16. A ModelOpt MIXED_PRECISION export quantizes only the modules its
+    quantized_layers name.
+    """
+    quant = _checkpoint_quant(model_path)
+    if quant != "nvfp4":
+        return quant
+    modelopt = _modelopt_quant(model_path)
+    if str(modelopt.get("quant_algo", "")).upper() == "MIXED_PRECISION":
+        lanes = modelopt.get("quantized_layers") or {}
+        return "nvfp4" if any(_fp4_lane(lane) for key, lane in lanes.items() if key.endswith("o_proj")) else "bfloat16"
+    patterns = [str(pattern) for pattern in modelopt.get("exclude_modules") or []]
+    keeps_o_proj = any(
+        "o_proj" in pattern or ("self_attn" in pattern and pattern.rsplit("self_attn", 1)[1] in ("", "*", ".*"))
+        for pattern in patterns
+    )
+    return "bfloat16" if keeps_o_proj else "nvfp4"
+
+
+def _dsa_module_models() -> list[tuple[object, tuple[str, ...]]]:
+    """The DSA checkpoints the plan times, each with the projection GEMMs it stands for.
+
+    One checkpoint stands for each (architecture, projection GEMM): the longest-context
+    one whose projections run that GEMM, the first declared on a tie. A GEMM no
+    checkpoint of the architecture runs is timed on its longest-context checkpoint. A
+    targeted run (COLLECTOR_MODEL_PATH) declares only its own checkpoint, which then
+    stands for every GEMM.
+    """
+    precisions = get_mla_module_precision_specs(_MODULE_SWEEP, attention_type="dsa")
+    gemms = list(dict.fromkeys(precision.gemm_type for precision in precisions))
+    by_architecture: dict[str, list] = {}
+    for spec in get_mla_module_model_specs(attention_type="dsa"):
+        by_architecture.setdefault(spec.architecture, []).append(spec)
+    stands_for: dict[object, list[str]] = {}
+    for specs in by_architecture.values():
+        for gemm in gemms:
+            own = [spec for spec in specs if _projection_gemm(spec.model_path) == gemm]
+            longest = max(own or specs, key=lambda spec: _max_position(spec.model_path) or 0)
+            stands_for.setdefault(longest, []).append(gemm)
+    return [(spec, tuple(gemms)) for spec, gemms in stands_for.items()]
+
+
+def _dsa_points(phase: str, sweep, max_position: int | None) -> list[tuple[int, int, int]]:
+    """The (batch, seq_len, prefix_len) points of one DSA module, batch by batch.
+
+    Context follows serving's chunked prefill (the mla_module_plan comments): at most
+    dsa_chunk_prefill_size new tokens and dsa_max_full_sequence_length KV tokens per
+    forward, prefix + seq_len within the model's context, and from dsa_long_prefix_min on
+    only the long-prefix sequence lengths. Generation is the decode grid plus the long KV
+    lengths at small batch; a KV length leaves room for the decoded token.
+    """
+    if phase == "context":
+        return [
+            (batch, length, prefix)
+            for batch in sweep.context_batch_sizes
+            for length in sweep.context_sequence_lengths
+            for prefix in sweep.context_dsa_prefix_lengths
+            if batch * length <= sweep.context_dsa_chunk_prefill_size
+            and batch * (length + prefix) <= sweep.context_dsa_max_full_sequence_length
+            and (max_position is None or prefix + length <= max_position)
+            and (prefix < sweep.context_dsa_long_prefix_min or length in sweep.context_dsa_long_prefix_sequence_lengths)
+        ]
+    grid = {
+        (batch, length)
+        for batch in sweep.generation_batch_sizes
+        for length in sweep.generation_sequence_lengths
+        if batch * length <= sweep.generation_max_tokens
+    }
+    grid |= {
+        (batch, length)
+        for batch in sweep.generation_dsa_long_kv_batch_sizes
+        for length in sweep.generation_dsa_long_kv_lengths
+    }
+    return [(batch, length, 0) for batch, length in sorted(grid) if max_position is None or length < max_position]
+
+
+def _dsa_module_expand(phase: str) -> Callable[[], list[ModuleCase]]:
+    def expand() -> list[ModuleCase]:
+        """Every (precision, heads, point) of each DSA checkpoint, at the projection GEMMs it stands for."""
+        sweep = get_mla_module_sweep_spec(_MODULE_SWEEP)
+        precisions = get_mla_module_precision_specs(_MODULE_SWEEP, phase=phase, attention_type="dsa")
+        cases = []
+        for model, gemms in _dsa_module_models():
+            # A row that declares its tensor_parallel_sizes measures only the heads those shards run.
+            shards = model.tensor_parallel_sizes
+            shard_heads = {model.native_num_heads // tp for tp in shards} if shards else None
+            points = _dsa_points(phase, sweep, _max_position(model.model_path))
+            for precision in precisions:
+                if precision.gemm_type not in gemms:
+                    continue
+                for num_heads in sweep.inner_sweep_head_counts:
+                    if shard_heads is not None and num_heads not in shard_heads:
+                        continue
+                    cases += [
+                        ModuleCase(
+                            length,
+                            batch,
+                            num_heads,
+                            precision.kv_cache_dtype,
+                            precision.compute_dtype,
+                            precision.gemm_type,
+                            model.model_path,
+                            prefix,
+                        )
+                        for batch, length, prefix in points
+                    ]
+        return cases
+
+    return expand
+
+
+def _sglang_dsa_backend(phase: str) -> Callable[[ModuleCase, int | None], str]:
+    def dispatch(case: ModuleCase, sm_version: int | None) -> str:
+        """The DSA attention backend SGLang serves the case on.
+
+        FP8 KV runs trtllm on Blackwell and flashmla_kv on Hopper, which the collector
+        pins (collect_mla_module.load_model_runner). BF16 KV stays on SGLang's own
+        default: flashmla_sparse for prefill, trtllm or fa3 for decode.
+        """
+        blackwell = sm_version is not None and sm_version >= 100
+        if case.kv_cache_dtype == "fp8":
+            return "trtllm" if blackwell else "flashmla_kv"
+        if phase == "context":
+            return "flashmla_sparse"
+        return "trtllm" if blackwell else "fa3"
+
+    return dispatch
+
+
+def _sglang_dsa_rows(phase: str) -> Callable[[list, int | None], list[tuple[list, tuple]]]:
+    def rows(runs: list[_Run], sm_version: int | None) -> list[tuple[list, tuple]]:
+        """One run_mla_module_worker task per ModelRunner: one context batch, or every decode batch.
+
+        A row keeps the worker's positional fields (batch 0 for decode), then the target
+        TP of the heads, the FP8-KV backend the collector pins (None keeps SGLang's
+        default) and the [batch, seq_len, prefix_len] points, shortest prefix first, so a
+        fault at a long prefix leaves the shorter points measured.
+        """
+        native_heads = {
+            spec.model_path: spec.native_num_heads
+            for spec in get_mla_module_model_specs(attention_type="dsa", apply_model_filter=False)
+        }
+        tasks: dict[tuple, list[_Run]] = {}
+        for run in runs:
+            batch = run.batch_size if phase == "context" else 0
+            precision = (run.kv_cache_dtype, run.compute_dtype, run.gemm_type)
+            tasks.setdefault((batch, run.num_heads, *precision, run.model_path, run.dispatch), []).append(run)
+        rows = []
+        for (batch, heads, kv, compute, gemm, model, backend), members in tasks.items():
+            points = sorted(
+                ([run.batch_size, run.seq_len, run.prefix_len] for run in members), key=lambda p: (p[2], p[0], p[1])
+            )
+            pinned = backend if kv == "fp8" else None
+            row = [0, batch, heads, kv, compute, gemm, model, "dsa", None, native_heads[model] // heads, pinned, points]
+            rows.append((row, tuple(members)))
+        return rows
+
+    return rows
+
+
+def _dsa_module_plan(phase: str) -> OpPlan:
+    return OpPlan(
+        ModuleCase,
+        _dsa_module_expand(phase),
+        dtype_field=("kv_cache_dtype", "compute_dtype", "gemm_type"),
+        group_fields=_MODULE_GROUP,
+        dispatch={"sglang": _sglang_dsa_backend(phase)},
+        batch_rows={
+            "sglang": _sglang_dsa_rows(phase),
+            "trtllm": _trtllm_module_rows("dsa"),
+            "vllm": _vllm_module_rows("dsa"),
+        },
     )
 
 
@@ -1301,6 +1547,8 @@ OP_PLANS: dict[str, OpPlan] = {
     ),
     "mla_context_module": _mla_module_plan("context"),
     "mla_generation_module": _mla_module_plan("generation"),
+    "dsa_context_module": _dsa_module_plan("context"),
+    "dsa_generation_module": _dsa_module_plan("generation"),
     "mla_bmm_gen_pre": OpPlan(
         MlaBmmCase, _mla_bmm_expand("mla_bmm_gen_pre"), dtype_field="dtype", group_fields=MlaBmmCase._fields
     ),

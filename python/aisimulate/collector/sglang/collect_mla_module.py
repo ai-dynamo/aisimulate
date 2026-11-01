@@ -47,6 +47,7 @@ import types
 from importlib.metadata import version as get_version
 
 import torch
+from collector.op_plans import plan, plan_cases
 from collector.sglang.runtime_compat import resolved_arg  # 0.5.21: derived server args live behind the resolving view
 
 try:
@@ -85,7 +86,6 @@ try:
     )
     from collector.sglang.runtime_limits import (
         dsa_indexer_prefill_shape_is_supported,
-        dsa_indexer_total_kv_tokens_supported,
         kv_pool_page_size,
         required_kv_alloc_tokens,
         required_kv_tokens,
@@ -107,7 +107,6 @@ except ModuleNotFoundError:
     )
     from runtime_limits import (
         dsa_indexer_prefill_shape_is_supported,
-        dsa_indexer_total_kv_tokens_supported,
         kv_pool_page_size,
         required_kv_alloc_tokens,
         required_kv_tokens,
@@ -157,50 +156,6 @@ def _env_flag(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.lower() in {"1", "true", "yes", "on"}
-
-
-def _parse_int_list(value: str | None) -> list[int] | None:
-    if not value:
-        return None
-    return [int(item) for item in value.split(",") if item]
-
-
-def _filter_cases_from_env(test_cases, *, is_prefill: bool, attn_type: str):
-    if not (is_prefill and attn_type == "dsa"):
-        return test_cases
-
-    seq_filter = _parse_int_list(os.environ.get("AIC_DSA_CONTEXT_SEQ_LENS"))
-    prefix_filter = _parse_int_list(os.environ.get("AIC_DSA_CONTEXT_PREFIX_LENS"))
-    batch_filter = _parse_int_list(os.environ.get("AIC_DSA_CONTEXT_BATCH_SIZES"))
-
-    if seq_filter is None and prefix_filter is None and batch_filter is None:
-        return test_cases
-
-    seq_set = set(seq_filter) if seq_filter is not None else None
-    prefix_set = set(prefix_filter) if prefix_filter is not None else None
-    batch_set = set(batch_filter) if batch_filter is not None else None
-
-    filtered = []
-    for bs, seq_len, ip, prefix_len in test_cases:
-        if batch_set is not None and bs not in batch_set:
-            continue
-        if seq_set is not None and seq_len not in seq_set:
-            continue
-        if prefix_set is not None and prefix_len not in prefix_set:
-            continue
-        filtered.append((bs, seq_len, ip, prefix_len))
-    # Inject explicit off-grid (seq, prefix) combos when both filters are set
-    if seq_set and prefix_set:
-        have = {(s, p) for (_b, s, _ip, p) in filtered}
-        bss = sorted(batch_set) if batch_set else [1]
-        ipv = test_cases[0][2] if test_cases else True
-        for s in sorted(seq_set):
-            for p in sorted(prefix_set):
-                for bs in bss:
-                    if (s, p) not in have:
-                        filtered.append((bs, s, ipv, p))
-    print(f"[DSA] Env-filtered context cases: {len(filtered)}/{len(test_cases)}")
-    return filtered
 
 
 def _is_glm5_dsa_model(model_id: str) -> bool:
@@ -756,144 +711,12 @@ def _dsa_context_prefix_shape_is_valid(
     return not (max_position_embeddings is not None and prefix_len + seq_len > max_position_embeddings)
 
 
-def _model_dsa_operator_gemm_type(model_id: str) -> str:
-    """Return the persisted GEMM type of the model's DSA attention module."""
-    return "fp8_block" if _model_native_gemm_quant(model_id) == "fp8_block" else "bfloat16"
-
-
-def _dedup_dsa_consumer_models(model_specs):
-    """Keep one longest-context model per DSA consumer identity.
-
-    The persisted DSA key contains architecture and attention-module GEMM type,
-    but not checkpoint path or top-level MoE quantization. GLM BF16 and NVFP4
-    checkpoints therefore share the BF16 DSA key. The caller first removes
-    checkpoints whose native quantization has no valid backend on the target
-    SM, then this function chooses the longest-context remaining candidate.
-    The block-FP8 checkpoint remains separate because its DSA projections
-    execute and persist as ``fp8_block``. A targeted model filter still contains
-    one checkpoint and is never replaced.
-    """
-    groups: dict = {}
-    order: list = []
-    for spec in model_specs:
-        key = (spec.architecture, _model_dsa_operator_gemm_type(spec.model_path))
-        if key not in groups:
-            groups[key] = []
-            order.append(key)
-        groups[key].append(spec)
-    out = []
-    for key in order:
-        specs = groups[key]
-        if len(specs) == 1:
-            out.append(specs[0])
-            continue
-        best = max(specs, key=lambda s: _model_max_position_embeddings(s.model_path) or 0)
-        out.append(best)
-        dropped = [s.model_path for s in specs if s is not best]
-        print(
-            f"[DSA dedup] {key[0]}/{key[1]}: collecting DSA module on {best.model_path}; "
-            f"reusing for consumer-equivalent {dropped}"
-        )
-    return out
-
-
-# DSA max_position ceilings to sample (one ``max_pos - seq_len`` point per
-# value), HARDCODED for every DSA model that needs the dsa_module: DeepSeek-V3.2
-# (163840), GLM-5 family (202752), GLM-5.2 (1048576). Callers loop this directly;
-# each model's shape-validity filter drops the ceilings above its own
-# max_position (i.e. only sweeps <= max_position), so collecting GLM-5.2 covers
-# GLM-5 while shorter-context models keep only their own.
+# DSA max_position ceilings the GLM-5 sparse kernels sample (one
+# ``max_pos - seq_len`` point per value): DeepSeek-V3.2 (163840), GLM-5 family
+# (202752), GLM-5.2 (1048576). Each model's shape-validity filter drops the
+# ceilings above its own max_position, so collecting GLM-5.2 covers GLM-5 while
+# shorter-context models keep only their own.
 _DSA_CEILING_MAX_POSITIONS = (163840, 202752, 1048576)  # DeepSeek-V3.2, GLM-5, GLM-5.2
-
-
-def _build_module_test_cases(attn_type: str, mode: str):
-    """Build one test case per unique (local heads, target TP, precision, model) group.
-
-    Output format: [seq_len, batch_size, num_heads, kv_cache_dtype,
-                    compute_dtype, gemm_type, model_path,
-                    attn_type, attention_backend, target_tp_size]
-
-    Each test case triggers a subprocess that sweeps all (batch_size, seq_len)
-    combinations internally, so we only need one entry per group — not one per
-    individual point. seq_len and batch_size are set to 0 as placeholders.
-
-    Uses the YAML ``module_precision_combos`` and ``top_level_head_counts``
-    instead of the full inner sweep to keep
-    the subprocess count low — each subprocess loads a full ModelRunner which
-    takes ~15-20 s.  With 4 precision combos x 5 head counts = 20 subprocesses,
-    the collection exceeds typical container timeouts.  1 combo x 2 heads per
-    model ≈ 3 subprocesses fits comfortably within the 120 s sample timeout.
-
-    attention_backend is None for DSA (resolved at runtime by _get_backends()).
-    perf_filename is supplied by collect.py via functools.partial as a keyword
-    argument, so it is not included in the test case tuple.
-    """
-    model_specs = get_mla_module_model_specs(attention_type=attn_type)
-    if get_sm_version() not in _NATIVE_NVFP4_SMS:
-        model_specs = [spec for spec in model_specs if _model_native_gemm_quant(spec.model_path) != "nvfp4"]
-    # Canonicalize model paths that map to the same persisted DSA consumer key.
-    # This happens after the native-quantization capability filter so an
-    # unsupported checkpoint cannot replace a valid BF16 representative.
-    if attn_type == "dsa":
-        model_specs = _dedup_dsa_consumer_models(model_specs)
-    sweep = get_mla_module_sweep_spec("sglang")
-    precision_combos = _get_precision_combos(mode)
-    cases = []
-    for model_spec in model_specs:
-        # Checkpoint load precision and the timed DSA projection label are
-        # separate. Native block-FP8 checkpoints execute FP8 projections;
-        # BF16 and NVFP4 checkpoints keep these DSA projections in BF16.
-        # NOTE: do NOT force the checkpoint's top-level gemm (e.g. nvfp4) onto the
-        # DSA/MLA attention module. GLM-5 / GLM-5.2 NVFP4 quantize ONLY the MoE
-        # expert linears; self_attn (q_a/kv_a/q_b/o_proj + indexer wq_b/wk) is in
-        # hf_quant_config.exclude_modules -> runs bf16. The attention module
-        # therefore has NO nvfp4 gemm, and AIC models it at gemm=bfloat16
-        # (sdk: _dsa_attention_modules_excluded_from_quant -> dsa_gemm_quant_mode
-        # = bfloat16). So the bf16-gemm combo from module_precision_combos is the
-        # CORRECT precision here (fp8_block is filtered out by
-        # _gemm_type_supported_by_model for an nvfp4 checkpoint). KV is fp8,
-        # carried by kv_dtype independently of gemm_type.
-        operator_gemm_type = _model_dsa_operator_gemm_type(model_spec.model_path)
-        for compute_dtype, kv_dtype, gemm_type in precision_combos:
-            if gemm_type != operator_gemm_type:
-                continue
-            target_tps = sweep.module_tp_sizes if attn_type == "dsa" else [1]
-            for target_tp_size in target_tps:
-                if model_spec.native_num_heads % target_tp_size != 0:
-                    continue
-                num_heads = model_spec.native_num_heads // target_tp_size
-                if num_heads not in sweep.inner_sweep_head_counts:
-                    continue
-                batch_sizes = sweep.context_batch_sizes if attn_type == "dsa" and mode == "context" else [0]
-                for batch_size in batch_sizes:
-                    if attn_type == "dsa" and kv_dtype == "fp8":
-                        # Mirrors SGLang 0.5.14
-                        # server_args.py:_set_default_dsa_backends: FP8 KV uses
-                        # flashmla_kv on Hopper and trtllm when major >= 10.
-                        # The bundled capability test rejects SM103 even though
-                        # the selector chooses trtllm there; registry maturity
-                        # markers park SM103/SM120 pending hardware validation.
-                        default_backend = "trtllm" if get_sm_version() >= 100 else "flashmla_kv"
-                        dsa_backends = (default_backend,)
-                    else:
-                        dsa_backends = (None,)
-                    for dsa_backend in dsa_backends:
-                        cases.append(
-                            [
-                                0,
-                                batch_size,
-                                num_heads,
-                                kv_dtype,
-                                compute_dtype,
-                                gemm_type,
-                                model_spec.model_path,
-                                attn_type,
-                                None,
-                                target_tp_size,
-                                dsa_backend,
-                            ]
-                        )
-    return cases
 
 
 def _build_wideep_mla_test_cases(mode: str):
@@ -980,45 +803,29 @@ def get_wideep_mla_generation_test_cases():
 
 
 def get_dsa_context_module_test_cases():
-    """collect.py entrypoint for DSA context module collection.
-
-    The SM90+ requirement lives in collector/skips.py so
-    sub-SM90 platforms drop these cases with a logged reason instead of a
-    silent empty enumeration.
-    """
-    return _build_module_test_cases(attn_type="dsa", mode="context")
+    return plan_cases("dsa_context_module", "sglang", get_sm_version())
 
 
 def get_dsa_generation_module_test_cases():
-    """collect.py entrypoint for DSA generation module collection.
-
-    SM90+ floor: collector/skips.py (see context getter).
-    """
-    return _build_module_test_cases(attn_type="dsa", mode="generation")
+    return plan_cases("dsa_generation_module", "sglang", get_sm_version())
 
 
 def get_dsa_context_module_skip_indexer_test_cases():
     """collect.py entrypoint for DSA context module collection with the indexer
     patched out (GLM-5.2 index_topk_freq>1 reuse layers).
 
-    Same shapes as the full context module — the skip behaviour is applied in
-    the subprocess (the registry binds skip_indexer=True via run_kwargs). Only emit
-    cases for models that actually share the index across layers
-    (index_topk_freq > 1); for freq==1 models the skip layer == full layer, so
-    a separate file would just duplicate dsa_context_module.
-
-    SM90+ floor: collector/skips.py (see full-module getter).
+    The rows of the full context module — the skip behaviour is applied in
+    the subprocess (the registry binds skip_indexer=True via run_kwargs) —
+    for the models that share the index across layers (index_topk_freq > 1);
+    for freq==1 models the skip layer == full layer.
     """
-    return [c for c in _build_module_test_cases(attn_type="dsa", mode="context") if _model_shares_dsa_index(c[6])]
+    return [row for row in get_dsa_context_module_test_cases() if _model_shares_dsa_index(row[6])]
 
 
 def get_dsa_generation_module_skip_indexer_test_cases():
     """collect.py entrypoint for DSA generation module collection with the
-    indexer patched out (see context variant).
-
-    SM90+ floor: collector/skips.py (see full-module getter).
-    """
-    return [c for c in _build_module_test_cases(attn_type="dsa", mode="generation") if _model_shares_dsa_index(c[6])]
+    indexer patched out (see context variant)."""
+    return [row for row in get_dsa_generation_module_test_cases() if _model_shares_dsa_index(row[6])]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -2738,6 +2545,48 @@ def _resolve_perf_path(output_path: str | None, filename: str) -> str:
 # Orchestration
 # ═══════════════════════════════════════════════════════════════════════
 
+_KERNEL_LIMIT = "FIXME(kernel-limit)"
+
+
+def _over_chunk(case: tuple, chunk: int) -> str | None:
+    """Why serving would not run this prefill point as one forward on this device, or None."""
+    batch_size, seq_len, _is_prefill, _prefix_len = case
+    tokens = required_prefill_extend_tokens(batch_size, seq_len)
+    if tokens <= chunk:
+        return None
+    return (
+        f"{_KERNEL_LIMIT}: does not fit: {tokens} new tokens exceed the chunked_prefill_size={chunk} "
+        "SGLang uses on this device, and serving chunks this prefill"
+    )
+
+
+def _over_kv_pool(case: tuple, page_size: int, capacity: int) -> str | None:
+    """Why this point's KV cache cannot fit SGLang's KV pool on this device, or None."""
+    batch_size, seq_len, is_prefill, prefix_len = case
+    needed = required_kv_alloc_tokens(batch_size, seq_len, prefix_len, page_size, is_prefill=is_prefill)
+    if needed <= capacity:
+        return None
+    return f"{_KERNEL_LIMIT}: does not fit: the point needs {needed} KV tokens, the KV pool holds {capacity}"
+
+
+def _refuse(cases: list, refused: dict, reason_for) -> None:
+    """Record the reason of every case not yet refused that ``reason_for`` refuses."""
+    for case in cases:
+        if case not in refused:
+            reason = reason_for(case)
+            if reason is not None:
+                refused[case] = reason
+
+
+def _refusal_summary(refused: dict, total: int) -> str:
+    """One classified line for the points this device refused (the subprocess's last error line)."""
+    shown = "; ".join(
+        f"b={b} s={s} prefix={p}: {reason.removeprefix(f'{_KERNEL_LIMIT}: ')}"
+        for (b, s, _ip, p), reason in list(refused.items())[:3]
+    )
+    more = f"; and {len(refused) - 3} more" if len(refused) > 3 else ""
+    return f"{_KERNEL_LIMIT}: {len(refused)}/{total} point(s) refused: {shown}{more}"
+
 
 def run_mla_module(
     attn_type: str,
@@ -2750,17 +2599,18 @@ def run_mla_module(
     gpu_id: int,
     output_path: str | None = None,
     attention_backend: str | None = None,
-    batch_size_filter: int | None = None,
     target_tp_size: int = 1,
     dsa_prefill_backend: str | None = None,
     skip_indexer: bool = False,
     ordinary_mla: bool = False,
     chunked_prefill_size: int | None = None,
+    points=(),
 ):
     """Run MLA/DSA module benchmark — called inside a subprocess.
 
-    Sets up the model runner for the given configuration and runs all
-    (batch_size, seq_length) combos for the specified phase.
+    Sets up the model runner for the given configuration and runs every point
+    for the specified phase: a DSA case's (batch_size, seq_length, prefix_len)
+    ``points`` from its plan row, or the MLA sweep of the precision combo.
 
     ``skip_indexer`` selects the GLM-5.2 reuse-layer variant (the per-layer
     indexer is patched out and rows are tagged ``_skip_indexer``). The worker
@@ -2777,95 +2627,24 @@ def run_mla_module(
 
     if attention_backend is None:
         attention_backend = _get_backends(attn_type)
+    phase_name = "Context" if is_prefill else "Generation"
 
-    if is_prefill:
-        all_cases = get_context_test_cases(attn_type)
-        phase_name = "Context"
-    else:
-        all_cases = get_generation_test_cases(attn_type)
-        phase_name = "Generation"
-
-    # Filter to matching precision combo.
-    # Test case format: [seq_len, batch_size, num_heads, kv_dtype, compute_dtype, gemm_type]
-    # run_attention_torch expects: (batch_size, seq_length, is_prefill, prefix_len)
-    base_cases = [
-        (tc[1], tc[0], is_prefill)
-        for tc in all_cases
-        if tc[3] == kv_cache_dtype and tc[4] == compute_dtype and tc[5] == gemm_type and tc[2] == head_num
-    ]
-    if batch_size_filter:
-        base_cases = [(bs, seq_len, ip) for bs, seq_len, ip in base_cases if bs == batch_size_filter]
-    if is_prefill and attn_type == "dsa":
-        _sweep = get_mla_module_sweep_spec("sglang")
-        prefix_lens = _sweep.context_prefix_lengths
-        # Per-request context cap = the model's max_position_embeddings (the RoPE
-        # table size the DSA indexer uses); contexts beyond it index past the
-        # RoPE cache and illegal-access. Driven by the model config, not a
-        # hardcoded constant.
-        _max_pos = _model_max_position_embeddings(model_path)
-        # Run prefix as the outer loop so a late long-prefix illegal access does
-        # not discard all larger-ISL rows for the current batch-size subprocess.
-        cases = [
-            (bs, seq_len, ip, prefix_len)
-            for prefix_len in prefix_lens
-            for bs, seq_len, ip in base_cases
-            if _dsa_context_prefix_shape_is_valid(
-                bs,
-                seq_len,
-                prefix_len,
-                max_position_embeddings=_max_pos,
+    # run_attention_torch takes (batch_size, seq_length, is_prefill, prefix_len) cases.
+    if attn_type == "dsa":
+        if not points:
+            raise RuntimeError(
+                f"DSA module {phase_name.lower()} has no points: its plan row lists them; "
+                f"model={model_path}, heads={head_num}, kv={kv_cache_dtype}, gemm={gemm_type}"
             )
-        ]
-        # Collect the per-seq_len CEILING prefix (max_position - seq_len) so the
-        # top of the valid prefix range is a real data point, never extrapolated.
-        # The shape filter admits prefix + seq_len == max_position (last position
-        # = max_pos - 1, still in the RoPE table), so max_position - seq_len is
-        # the largest valid prefix. Ceilings are sampled for every hardcoded DSA
-        # max_position (_DSA_CEILING_MAX_POSITIONS); the validity filter below
-        # drops any above this model's own max — so collecting GLM-5.2 lands a
-        # real point at GLM-5's 202752 too. Skipped if already a grid point.
-        if _max_pos is not None:
-            for _cover_pos in _DSA_CEILING_MAX_POSITIONS:
-                for bs, seq_len, ip in base_cases:
-                    _ceil = _cover_pos - seq_len
-                    if (
-                        _ceil >= 0
-                        and _ceil not in prefix_lens
-                        and _dsa_context_prefix_shape_is_valid(bs, seq_len, _ceil, max_position_embeddings=_max_pos)
-                    ):
-                        cases.append((bs, seq_len, ip, _ceil))
-    elif attn_type == "dsa":
-        # Generation (decode): the perf "step" is the past-KV length (logged as
-        # seq_length here, prefix stays 0). The base generation sweep stops at
-        # 131072, so high-context decode (e.g. GLM-5 up to 202752, GLM-5.2 up to
-        # 1M) would EXTRAPOLATE. Mirror ctx's prefix coverage: extend the KV-length
-        # grid with ctx's context_prefix_lengths plus the hardcoded DSA
-        # max_position ceilings (_DSA_CEILING_MAX_POSITIONS) minus 1 (= last valid
-        # KV position), capped below to < this model's max_position. High-context
-        # decode is small-batch, so the extension runs at bs=1 (keeps bs*seq
-        # within the decode budget) — GLM-5.2 thus also lands a KV point at
-        # GLM-5's 202752 max.
-        _sweep = get_mla_module_sweep_spec("sglang")
-        _max_pos = _model_max_position_embeddings(model_path)
-        cases = [(bs, seq_len, ip, 0) for bs, seq_len, ip in base_cases]
-        _have = {(bs, sl) for bs, sl, _ in base_cases}
-        _extra_kv = set(_sweep.context_prefix_lengths)
-        # Only extend with the hardcoded DSA max_position ceilings when this
-        # model's context limit is known; otherwise (unknown model) we would add
-        # ~1M-KV shapes and risk OOM / wasted collection. Mirrors the context path.
-        if _max_pos is not None:
-            for _cover_pos in _DSA_CEILING_MAX_POSITIONS:
-                _extra_kv.add(_cover_pos - 1)
-        for _sl in sorted(_extra_kv):
-            if _sl <= 0 or (_max_pos is not None and _sl > _max_pos - 1):
-                continue
-            if (1, _sl) not in _have:
-                cases.append((1, _sl, False, 0))
-                _have.add((1, _sl))
+        cases = [(int(b), int(s), is_prefill, int(p)) for b, s, p in points]
     else:
-        cases = [(bs, seq_len, ip, 0) for bs, seq_len, ip in base_cases]
-    cases = _filter_cases_from_env(cases, is_prefill=is_prefill, attn_type=attn_type)
-
+        all_cases = get_context_test_cases(attn_type) if is_prefill else get_generation_test_cases(attn_type)
+        # Test case format: [seq_len, batch_size, num_heads, kv_dtype, compute_dtype, gemm_type]
+        cases = [
+            (tc[1], tc[0], is_prefill, 0)
+            for tc in all_cases
+            if tc[3] == kv_cache_dtype and tc[4] == compute_dtype and tc[5] == gemm_type and tc[2] == head_num
+        ]
     print(f"\n{'=' * 60}")
     print(
         f"{attn_type.upper()} Module {phase_name}: model={model_path}, backend={attention_backend}, "
@@ -2878,67 +2657,44 @@ def run_mla_module(
     use_module_cuda_graph = False
     enable_runner_piecewise_cuda_graph = False
 
-    if is_prefill and attn_type == "dsa":
-        before = len(cases)
-        cases = [
-            (bs, seq_len, ip, prefix_len)
-            for (bs, seq_len, ip, prefix_len) in cases
-            if dsa_indexer_total_kv_tokens_supported(bs, seq_len, prefix_len, is_prefill=True)
-        ]
-        skipped = before - len(cases)
-        if skipped:
-            print(f"[DSA] Dropped {skipped} context cases beyond DSA indexer total KV token limit")
-
-        # PRE-INIT cap: cuda graph capture tokens are computed from `cases` and the
-        # model is built (init_piecewise capture) BEFORE the old post-model chunk
-        # filter ran -> a bs*seq > chunked_prefill_size case got captured one-shot,
-        # exceeding GPU shared memory (low-smem fallback FlashMLA kernel illegal-
-        # accesses). Serve chunks prefill to chunked_prefill_size, so >chunk shapes
-        # are multi-chunk (the <=chunk shape is collected). Drop them BEFORE capture.
-        # Follow sglang: prefill is bounded by chunked_prefill_size (sglang chunks
-        # anything longer; >chunk shapes are multi-chunk in serve). FlashMLA
-        # metadata is sized by num_sm_parts (flashmla_backend.py), NOT a bs*seq
-        # shared-memory cap. Read chunked_prefill_size model-free (same GPU-mem
-        # tiering sglang's _handle_gpu_memory_settings uses).
-        try:
-            from collector.sglang.deepseekv4_sparse_modules import _sglang_chunked_prefill_size
-        except ModuleNotFoundError:
-            from deepseekv4_sparse_modules import _sglang_chunked_prefill_size
-        _chunk_cap = _sglang_chunked_prefill_size() if chunked_prefill_size is None else chunked_prefill_size
-        _before_chunk = len(cases)
-        cases = [c for c in cases if c[0] * c[1] <= _chunk_cap]
-        _dropped_chunk = _before_chunk - len(cases)
-        if _dropped_chunk:
-            print(
-                f"[DSA] pre-init dropped {_dropped_chunk} cases with bs*seq > "
-                f"chunked_prefill_size={_chunk_cap} (oversized one-shot forward crashes FlashMLA)"
-            )
-
     if not cases:
         raise RuntimeError(
             f"{attn_type.upper()} module {phase_name.lower()} has no runnable cases; "
             f"model={model_path}, heads={head_num}, kv={kv_cache_dtype}, gemm={gemm_type}"
         )
 
-    max_total_tokens = None
-    if cases:
-        max_total_tokens = max(
-            (
-                required_kv_alloc_tokens(bs, seq_len, prefix_len, SGLANG_DSA_PAGE_SIZE, is_prefill=ip)
-                if attn_type == "dsa"
-                else required_kv_tokens(bs, seq_len, prefix_len, is_prefill=ip)
-            )
-            for (bs, seq_len, ip, prefix_len) in cases
+    # A DSA point this device cannot run is refused with its reason before anything is
+    # allocated for it, and the ModelRunner is sized for the points that remain.
+    refused: dict[tuple, str] = {}
+    if attn_type == "dsa" and is_prefill:
+        # SGLang derives its prefill chunk from device memory (the same tiering as
+        # ServerArgs._handle_gpu_memory_settings); serving chunks a longer prefill.
+        try:
+            from collector.sglang.deepseekv4_sparse_modules import _sglang_chunked_prefill_size
+        except ModuleNotFoundError:
+            from deepseekv4_sparse_modules import _sglang_chunked_prefill_size
+        chunk = _sglang_chunked_prefill_size() if chunked_prefill_size is None else chunked_prefill_size
+        _refuse(cases, refused, lambda case: _over_chunk(case, chunk))
+    runnable = [case for case in cases if case not in refused]
+    if not runnable:
+        raise RuntimeError(_refusal_summary(refused, len(cases)))
+
+    max_total_tokens = max(
+        (
+            required_kv_alloc_tokens(bs, seq_len, prefix_len, SGLANG_DSA_PAGE_SIZE, is_prefill=ip)
+            if attn_type == "dsa"
+            else required_kv_tokens(bs, seq_len, prefix_len, is_prefill=ip)
         )
-        if max_total_tokens > 0:
-            max_total_tokens += max(1024, max_total_tokens // 20)
+        for (bs, seq_len, ip, prefix_len) in runnable
+    )
+    if max_total_tokens > 0:
+        max_total_tokens += max(1024, max_total_tokens // 20)
 
     if use_module_cuda_graph:
         print("[DSA] Module CUDA graph capture enabled for GLM-5 DSA piecewise parity")
     if enable_runner_piecewise_cuda_graph:
         print("[DSA] SGLang piecewise CUDA graph enabled (tokens=SGLang default)")
-    if max_total_tokens is not None:
-        print(f"[DSA] SGLang max_total_tokens capped for collector at {max_total_tokens}")
+    print(f"[DSA] SGLang max_total_tokens capped for collector at {max_total_tokens}")
 
     cleanup_distributed()
     torch.cuda.empty_cache()
@@ -2958,45 +2714,25 @@ def run_mla_module(
             chunked_prefill_size=chunked_prefill_size,
         )
 
-        if is_prefill and attn_type == "dsa":
-            chunk_size = _runtime_chunk_size(model_runner)
-            before = len(cases)
-            cases = [
-                (bs, seq_len, ip, prefix_len)
-                for (bs, seq_len, ip, prefix_len) in cases
-                if required_prefill_extend_tokens(bs, seq_len) <= chunk_size
-            ]
-            skipped = before - len(cases)
-            print(
-                f"[DSA] SGLang runtime chunked_prefill_size={chunk_size}; "
-                f"dropped {skipped} context cases with fresh_tokens > chunked_prefill_size"
-            )
-
+        if attn_type == "dsa":
+            if is_prefill:
+                runtime_chunk = _runtime_chunk_size(model_runner)
+                print(f"[DSA] SGLang runtime chunked_prefill_size={runtime_chunk}")
+                _refuse(cases, refused, lambda case: _over_chunk(case, runtime_chunk))
             kv_capacity = _kv_pool_capacity_tokens(model_runner)
             if kv_capacity is not None:
                 page_size = kv_pool_page_size(model_runner)
-                before = len(cases)
-                cases = [
-                    (bs, seq_len, ip, prefix_len)
-                    for (bs, seq_len, ip, prefix_len) in cases
-                    if required_kv_alloc_tokens(bs, seq_len, prefix_len, page_size, is_prefill=True) <= kv_capacity
-                ]
-                skipped = before - len(cases)
-                if skipped:
-                    print(f"[DSA] Dropped {skipped} context cases beyond actual KV pool capacity={kv_capacity} tokens")
-
-            sglang_dsa_mqa_logits_chunking_supported()
-            print("[DSA] SGLang MQA logits chunk path detected; no heuristic workspace pre-filter")
-
-        if not cases:
-            raise RuntimeError(
-                f"{attn_type.upper()} module {phase_name.lower()} has no runnable cases after runtime checks; "
-                f"model={model_path}, heads={head_num}, kv={kv_cache_dtype}, gemm={gemm_type}"
-            )
+                _refuse(cases, refused, lambda case: _over_kv_pool(case, page_size, kv_capacity))
+            if is_prefill:
+                sglang_dsa_mqa_logits_chunking_supported()
+                print("[DSA] SGLang MQA logits chunk path detected; no heuristic workspace pre-filter")
+            runnable = [case for case in cases if case not in refused]
+            if not runnable:
+                raise RuntimeError(_refusal_summary(refused, len(cases)))
 
         logged_count = run_attention_torch(
             model_runner=model_runner,
-            test_cases=cases,
+            test_cases=runnable,
             head_num=head_num,
             test_layer=0,
             num_warmup=8,
@@ -3018,8 +2754,8 @@ def run_mla_module(
                 f"{attn_type.upper()} module {phase_name.lower()} persisted no rows; "
                 f"model={model_path}, heads={head_num}, kv={kv_cache_dtype}, gemm={gemm_type}"
             )
-        error_count = len(cases) - logged_count
-        summary = f"ok={logged_count} error={error_count} skip=0 total={len(cases)}"
+        error_count = len(runnable) - logged_count
+        summary = f"ok={logged_count} error={error_count} refused={len(refused)} total={len(cases)}"
         print(f"[{attn_type.upper()}] {phase_name.lower()} {summary}")
         print(f"[{attn_type.upper()} timing] {phase_name.lower()}: {render_phase_totals(_POINT_PHASE_TOTALS)}")
         if error_count > 0:
@@ -3027,6 +2763,8 @@ def run_mla_module(
                 f"{attn_type.upper()} module {phase_name.lower()} failed strict completeness: {summary}; "
                 f"model={model_path}, heads={head_num}, kv={kv_cache_dtype}, gemm={gemm_type}"
             )
+        if refused:
+            raise RuntimeError(_refusal_summary(refused, len(cases)))
     finally:
         cleanup_distributed()
         torch.cuda.empty_cache()
@@ -3044,12 +2782,12 @@ def _run_mla_subprocess(
     gpu_id: int,
     output_path: str | None = None,
     attention_backend: str | None = None,
-    batch_size_filter: int | None = None,
     target_tp_size: int = 1,
     dsa_prefill_backend: str | None = None,
     skip_indexer: bool = False,
     ordinary_mla: bool = False,
     chunked_prefill_size: int | None = None,
+    points=(),
 ):
     """Run MLA/DSA benchmark in a subprocess with CUDA_VISIBLE_DEVICES isolation."""
     env = os.environ.copy()
@@ -3059,20 +2797,19 @@ def _run_mla_subprocess(
     output_repr = f'"{output_path}"' if output_path else "None"
     backend_repr = f'"{attention_backend}"' if attention_backend else "None"
     dsa_backend_repr = f'"{dsa_prefill_backend}"' if dsa_prefill_backend else "None"
-    batch_filter_repr = "None" if batch_size_filter is None else str(batch_size_filter)
     code = (
         f'import sys; sys.path.insert(0, "{os.path.dirname(os.path.abspath(__file__))}")\n'
         f"from collect_mla_module import run_mla_module\n"
         f'run_mla_module("{attn_type}", {head_num}, "{model_path}", '
         f'"{kv_cache_dtype}", "{compute_dtype}", "{gemm_type}", {is_prefill}, '
-        f"0, {output_repr}, {backend_repr}, {batch_filter_repr}, {target_tp_size}, "
+        f"0, {output_repr}, {backend_repr}, {target_tp_size}, "
         f"{dsa_backend_repr}, skip_indexer={skip_indexer}, ordinary_mla={ordinary_mla}, "
-        f"chunked_prefill_size={chunked_prefill_size!r})\n"
+        f"chunked_prefill_size={chunked_prefill_size!r}, points={[list(point) for point in points]!r})\n"
     )
 
-    # Per-subprocess timeout is OFF by default. A DSA context subprocess sweeps
-    # the full isl x prefix grid for one batch_size and can legitimately run for
-    # many minutes; a wall-clock cap silently truncated the sweep (killed mid-grid,
+    # Per-subprocess timeout is OFF by default. A DSA context subprocess times
+    # every (isl, prefix) point of its row for one batch_size and can legitimately
+    # run for many minutes; a wall-clock cap silently truncated the sweep (killed mid-grid,
     # kept the partial rows, logged a WARNING not an error) and left the perf DB
     # with short prefix coverage, forcing AIC to extrapolate. Unset = block until
     # the subprocess finishes on its own; the executor's stall watchdog still sees
@@ -3104,9 +2841,19 @@ def _run_mla_subprocess(
         # Include last lines of subprocess output in the error so the cause
         # is visible in the error group (subprocess stderr is merged into stdout).
         tail = ""
+        lines = []
         if stdout:
             lines = stdout.decode("utf-8", errors="replace").strip().splitlines()
             tail = "\n".join(lines[-30:])  # last 30 lines should include traceback
+        # Points the device refused end the subprocess on one classified exception
+        # line, the first unindented line of its last traceback (output printed at
+        # interpreter exit may follow it); keep its kernel-limit classification.
+        tracebacks = [index for index, line in enumerate(lines) if line.startswith("Traceback ")]
+        error = (
+            next((line for line in lines[tracebacks[-1] + 1 :] if not line.startswith(" ")), "") if tracebacks else ""
+        )
+        if error.startswith(f"RuntimeError: {_KERNEL_LIMIT}"):
+            raise RuntimeError(error.removeprefix("RuntimeError: "))
         raise RuntimeError(
             f"{attn_type.upper()} module {phase} subprocess failed (exit code {returncode})\n"
             f"--- subprocess output (last 30 lines) ---\n{tail}"
@@ -3125,6 +2872,7 @@ def run_mla_module_worker(
     attention_backend: str | None = None,
     target_tp_size: int = 1,
     dsa_prefill_backend: str | None = None,
+    points=(),
     *,
     perf_filename: str,
     device: str = "cuda:0",
@@ -3133,10 +2881,11 @@ def run_mla_module_worker(
 ):
     """Worker-compatible wrapper used by collector/collect.py.
 
-    Each call runs ALL (batch_size, seq_len) combos for the given
-    (attn_type, num_heads, precision, model) combo in a subprocess.
-    DSA context uses batch_size to shard the prefix sweep across subprocesses;
-    other module cases keep batch_size as a placeholder.
+    Each call runs every point of one (attn_type, num_heads, precision, model)
+    combo in one subprocess (one ModelRunner). A DSA case lists its
+    [batch_size, seq_len, prefix_len] ``points`` (the op plan's row; a context
+    row holds one batch_size). A wideep MLA case sweeps its own grid, and
+    batch_size and seq_len are placeholders.
 
     For wideep MLA test cases, attention_backend is the 9th positional
     element specifying which backend to benchmark (e.g. "flashinfer", "fa3").
@@ -3151,7 +2900,6 @@ def run_mla_module_worker(
     device_str = str(device) if not isinstance(device, str) else device
     gpu_id = int(device_str.split(":")[-1]) if ":" in device_str else 0
     is_prefill = "context" in perf_filename
-    batch_size_filter = batch_size if is_prefill and attn_type == "dsa" and batch_size > 0 else None
 
     # skip_indexer ops route through the SAME worker/run path as the full DSA
     # module; the only difference is (1) the per-layer indexer (mqa+topk) is
@@ -3166,7 +2914,7 @@ def run_mla_module_worker(
         f"{attn_type.upper()} Module {'Context' if is_prefill else 'Generation'}: "
         f"model={model_path}, heads={num_heads}, target_tp={target_tp_size}, kv={kv_cache_dtype}, "
         f"compute={compute_dtype}, gemm={gemm_type}, "
-        f"backend={attention_backend or 'auto'}, batch_filter={batch_size_filter or 'all'}, GPU={gpu_id}"
+        f"backend={attention_backend or 'auto'}, batch={batch_size or 'all'}, points={len(points)}, GPU={gpu_id}"
     )
     print(f"{'=' * 60}")
 
@@ -3192,12 +2940,12 @@ def run_mla_module_worker(
         gpu_id=gpu_id,
         output_path=output_path,
         attention_backend=attention_backend,
-        batch_size_filter=batch_size_filter,
         target_tp_size=target_tp_size,
         dsa_prefill_backend=dsa_prefill_backend,
         skip_indexer=skip_indexer,
         ordinary_mla=os.path.basename(perf_filename) == "mla_context_module_perf.txt",
         chunked_prefill_size=chunked_prefill_size,
+        points=points,
     )
 
 
@@ -3209,6 +2957,43 @@ def _cleanup():
 # ═══════════════════════════════════════════════════════════════════════
 # CLI
 # ═══════════════════════════════════════════════════════════════════════
+
+
+def _run_dsa_plan_rows(args, gpu_id: int) -> int:
+    """Run the DSA op plan's rows on this SM (--model targets that checkpoint, as
+    collect.py --model-path does); return how many failed."""
+    if args.model:
+        os.environ["COLLECTOR_MODEL_PATH"] = args.model
+    failed = 0
+    for row in plan(f"dsa_{args.mode}_module", "sglang", get_sm_version()).rows:
+        _seq, _batch, heads, kv_dtype, compute, gemm, model_path, _attn, _backend, target_tp, pinned, points = row
+        if args.num_heads is not None and heads != args.num_heads:
+            continue
+        if args.target_tp_size is not None and target_tp != args.target_tp_size:
+            continue
+        if args.kv_cache_dtype and kv_dtype != args.kv_cache_dtype:
+            continue
+        try:
+            run_mla_module(
+                attn_type="dsa",
+                head_num=heads,
+                model_path=model_path,
+                kv_cache_dtype=kv_dtype,
+                compute_dtype=compute,
+                gemm_type=gemm,
+                is_prefill=args.mode == "context",
+                gpu_id=gpu_id,
+                output_path=args.output_path,
+                target_tp_size=target_tp,
+                dsa_prefill_backend=pinned,
+                chunked_prefill_size=args.chunked_prefill_size,
+                points=points,
+            )
+        except Exception as e:
+            failed += 1
+            print(f"  FAILED: {e}")
+            traceback.print_exc()
+    return failed
 
 
 def main():
@@ -3242,7 +3027,11 @@ def main():
         attn_types = sorted({spec.attention_type for spec in get_mla_module_model_specs(apply_model_filter=False)})
 
     failed_dispatches = 0
+    gpu_id = int(args.device.split(":")[-1]) if ":" in args.device else 0
     for attn_type in attn_types:
+        if attn_type == "dsa":
+            failed_dispatches += _run_dsa_plan_rows(args, gpu_id)
+            continue
         # Determine models
         if args.model:
             models = [args.model]
@@ -3280,7 +3069,6 @@ def main():
                 for head_num in head_nums:
                     target_tp_size = args.target_tp_size or (native_heads // head_num if args.ordinary_mla else 1)
                     is_prefill = args.mode == "context"
-                    gpu_id = int(args.device.split(":")[-1]) if ":" in args.device else 0
                     try:
                         run_mla_module(
                             attn_type=attn_type,

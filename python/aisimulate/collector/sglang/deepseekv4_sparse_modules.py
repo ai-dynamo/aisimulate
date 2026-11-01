@@ -509,7 +509,7 @@ def _bench_sparse_kernel_shape(kernel, prefix, isl, bs, sc, device, *, topk_vari
     return [(None, lat)]
 
 
-def _derive_context_shapes(bs_list, seq_list, prefix_list, is_valid, env_filter=None):
+def _derive_context_shapes(bs_list, seq_list, prefix_list, is_valid):
     """Build unique ``(prefix, isl, bs)`` context shapes from a STATIC sweep grid
     (the owning attention module's INPUT grid), deduped + order-preserving.
 
@@ -520,16 +520,12 @@ def _derive_context_shapes(bs_list, seq_list, prefix_list, is_valid, env_filter=
     1:1 read of the module CSV under-samples them.
 
     ``is_valid(bs, isl, prefix) -> bool`` encodes the module's context limits.
-    ``env_filter`` (optional) takes the list of ``(bs, isl, prefix)`` tuples and
-    returns a filtered list (e.g. an ``AIC_*_CONTEXT_*`` env pin); applied
-    before dedup. Iteration is prefix-outer so a late long-prefix shape does not
-    reorder the smaller-isl rows.
+    Iteration is prefix-outer so a late long-prefix shape does not reorder the
+    smaller-isl rows.
     """
     cases = [
         (bs, isl, prefix) for prefix in prefix_list for bs in bs_list for isl in seq_list if is_valid(bs, isl, prefix)
     ]
-    if env_filter is not None:
-        cases = env_filter(cases)
     shapes, seen = [], set()
     for bs, isl, prefix in cases:
         key = (int(prefix), int(isl), int(bs))

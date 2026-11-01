@@ -667,13 +667,17 @@ class MLAModuleSweepSpec:
     # implementation="triton" (off SM100/103); fmha_sm100 systems keep
     # context_max_tokens. None -> no extra cap.
     context_msa_triton_max_tokens: int | None = None
-    # Optional DSA-specific context budget: DSA context follows serving's
-    # chunked-prefill shape (new-token budget = chunk size, long context via
-    # prefix). None on all three -> the DSA branch falls back to the shared
-    # context axes (context_max_tokens / context_prefix_lengths).
+    # DSA context follows serving's chunked prefill: the new-token budget is the
+    # chunk size, and the long context enters through the prefix. From
+    # context_dsa_long_prefix_min on, only the long-prefix sequence lengths run.
     context_dsa_chunk_prefill_size: int | None = None
     context_dsa_max_full_sequence_length: int | None = None
     context_dsa_prefix_lengths: list[int] | None = None
+    context_dsa_long_prefix_min: int | None = None
+    context_dsa_long_prefix_sequence_lengths: list[int] | None = None
+    # DSA decode beyond the generation grid: these KV lengths at these batches.
+    generation_dsa_long_kv_lengths: list[int] | None = None
+    generation_dsa_long_kv_batch_sizes: list[int] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -992,15 +996,18 @@ def get_mla_module_sweep_spec(backend: str | None = None) -> MLAModuleSweepSpec:
         ),
         context_dsa_chunk_prefill_size=_optional_int(context.get("dsa_chunk_prefill_size")),
         context_dsa_max_full_sequence_length=_optional_int(context.get("dsa_max_full_sequence_length")),
-        context_dsa_prefix_lengths=(
-            _optional_int_list(
-                context.get("dsa_prefix_lengths"),
-                field_name="mla_module.context.dsa_prefix_lengths",
-                default=[],
-            )
-            or None
+        context_dsa_prefix_lengths=_optional_dsa_list(context, "context", "dsa_prefix_lengths"),
+        context_dsa_long_prefix_min=_optional_int(context.get("dsa_long_prefix_min")),
+        context_dsa_long_prefix_sequence_lengths=_optional_dsa_list(
+            context, "context", "dsa_long_prefix_sequence_lengths"
         ),
+        generation_dsa_long_kv_lengths=_optional_dsa_list(generation, "generation", "dsa_long_kv_lengths"),
+        generation_dsa_long_kv_batch_sizes=_optional_dsa_list(generation, "generation", "dsa_long_kv_batch_sizes"),
     )
+
+
+def _optional_dsa_list(values: dict[str, object], section: str, key: str) -> list[int] | None:
+    return _optional_int_list(values.get(key), field_name=f"mla_module.{section}.{key}", default=[]) or None
 
 
 def is_wideep_moe_model(model_name: str) -> bool:

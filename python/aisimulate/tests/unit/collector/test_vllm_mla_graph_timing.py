@@ -175,18 +175,10 @@ def _module_runner(
         "time": time,
     }
     _load_function(COLLECTOR / "vllm/utils.py", "with_exit_stack", namespace)
-    # A prefix list expands through the plan predicate: budgets from the sweep spec,
-    # ceiling from the model config (both faked here).
-    namespace["get_mla_module_sweep_spec"] = lambda _backend=None: SimpleNamespace(
-        context_dsa_chunk_prefill_size=16384, context_max_tokens=131072, context_dsa_max_full_sequence_length=1048576
-    )
     namespace["_model_max_position_embeddings"] = lambda _model: None
     for constant in ("_MLA_KV_ENTRY_ELEMS", "_MEMORY_BUDGET_SAFETY_FACTOR"):
         _load_constant(COLLECTOR / "vllm/collect_mla_module.py", constant, namespace)
     for helper in (
-        "_series_seq_lens",
-        "_dsa_context_point_allowed",
-        "_dsa_context_budgets",
         "_series_points",
         "_is_fatal_cuda_error",
         "_generation_kv_footprint_bytes",
@@ -280,12 +272,12 @@ def test_series_builds_the_module_once_and_measures_every_point_largest_first():
     assert len(calls) == 4 and events[-1] == "cleanup" and events.count("cleanup") == 1
 
 
-def test_series_sweeps_the_isl_x_prefix_grid_of_one_module_largest_total_context_first():
-    """A DSA context case carries its prefix list: one module, every (isl, prefix) point of the
-    plan grid measured on it, largest total context first (module build was 0.9-1.2 s/pt under
-    the campaign's 8 workers when it was amortised over one prefix only, 2026-10-29)."""
+def test_series_measures_the_isl_prefix_points_of_one_module_largest_total_context_first():
+    """A DSA context case lists its (isl, prefix) points: one module, every point of the plan
+    row measured on it, largest total context first (module build was 0.9-1.2 s/pt under the
+    campaign's 8 workers when it was amortised over one prefix only, 2026-10-29)."""
     execute, events, published, calls, _ = _module_runner(reuse_frequency=4)
-    assert execute(seq_len=[8, 16], prefix_len=[0, 128]) == [0.015] * 4
+    assert execute(seq_len=[[8, 0], [16, 128], [16, 0], [8, 128]], prefix_len=0) == [0.015] * 4
     assert events.count("workspace init") == 1
     kv_events = [e for e in events if isinstance(e, tuple) and e[0] == "kv"]
     assert kv_events == [("kv", 16), ("kv", 8), ("kv", 16), ("kv", 8)]

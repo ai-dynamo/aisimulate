@@ -33,11 +33,14 @@ from collections.abc import Callable, Iterable
 
 logger = logging.getLogger(__name__)
 
-_DSA_AND_SPARSE_OPS = [
+_DSA_MODULE_OPS = [
     "dsa_context_module",
     "dsa_generation_module",
     "dsa_context_module_skip_indexer",
     "dsa_generation_module_skip_indexer",
+]
+_DSA_AND_SPARSE_OPS = [
+    *_DSA_MODULE_OPS,
     "dsv4_paged_mqa_logits_module",
     "dsv4_csa_topk_calib",
     "glm5_mqa_logits_module",
@@ -118,6 +121,24 @@ SKIPS: list[dict] = [
     # that coverage. Triton MLA would serve them there (its FP8 KV cache needs
     # SM89+, vllm/v1/attention/backends/mla/triton_mla.py).
     {"backend": "vllm", "op": ["mla_context_module", "mla_generation_module"], "kv_cache_dtype": "fp8", "sm": [89]},
+    # TRT-LLM's DSA attention reads an FP8 KV cache in the trtllm-gen sparse MLA
+    # kernels of the SM100 family, and FP8-KV cases were not collected on SM90
+    # before. SM120 keeps the FP8-KV cases collected before.
+    {"backend": "trtllm", "op": ["dsa_context_module", "dsa_generation_module"], "kv_cache_dtype": "fp8", "sm": [90]},
+    # SGLang loads a checkpoint with its own quantization (load_model_runner), so a
+    # DSA module on another projection GEMM would time the checkpoint's GEMM under
+    # the case's gemm_type.
+    {"backend": "sglang", "op": _DSA_MODULE_OPS, "own_gemm": False},
+    # SGLang did not collect DSA modules with NVFP4 projections (DeepSeek-V3.2-NVFP4)
+    # before; this keeps that coverage.
+    {"backend": "sglang", "op": _DSA_MODULE_OPS, "gemm_type": "nvfp4"},
+    # SGLang loads NVFP4 checkpoints on Blackwell only (load_model_runner has no
+    # NVFP4 loader below SM100).
+    {"backend": "sglang", "op": _DSA_MODULE_OPS, "checkpoint_quant": "nvfp4", "sm": [80, 86, 89, 90]},
+    # SGLang: a one-token DSA prefill, timed eagerly, illegal-accesses in the indexer
+    # (runtime_limits.dsa_indexer_prefill_shape_is_supported), and the sticky CUDA
+    # error fails the rest of the task.
+    {"backend": "sglang", "op": ["dsa_context_module", "dsa_context_module_skip_indexer"], "seq_len": 1},
     # SGLang: the attention collector maps a serving backend for SM89 and newer
     # only (SGLang's default attention backend table), so every SM80/86 case
     # would fail.

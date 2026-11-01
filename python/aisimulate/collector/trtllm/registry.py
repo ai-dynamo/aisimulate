@@ -105,7 +105,7 @@ REGISTRY: list[OpEntry] = [
         run_func="run_mla_module_series_worker",
         perf_filename=PerfFile.MLA_CONTEXT_MODULE,
         # fp8-KV MLA module combos are hardware-validated on SM90/100/103/120
-        # (see collect_mla_module._get_precision_combos); SM121 has never run
+        # (see the header of collect_mla_module); SM121 has never run
         # them on hardware — cases are queued there and this marker records
         # the maturity gap (layer_permissions.md registry markers).
         unverified_sms=(121,),
@@ -117,7 +117,7 @@ REGISTRY: list[OpEntry] = [
         run_func="run_mla_module_series_worker",
         perf_filename=PerfFile.MLA_GENERATION_MODULE,
         # fp8-KV MLA module combos are hardware-validated on SM90/100/103/120
-        # (see collect_mla_module._get_precision_combos); SM121 has never run
+        # (see the header of collect_mla_module); SM121 has never run
         # them on hardware — cases are queued there and this marker records
         # the maturity gap (layer_permissions.md registry markers).
         unverified_sms=(121,),
@@ -126,14 +126,14 @@ REGISTRY: list[OpEntry] = [
         op="dsa_context_module",
         module="collector.trtllm.collect_mla_module",
         get_func="get_dsa_context_module_test_cases",
-        run_func="run_mla_module_worker",
+        run_func="run_mla_module_series_worker",
         perf_filename=PerfFile.DSA_CONTEXT_MODULE,
     ),
     OpEntry(
         op="dsa_generation_module",
         module="collector.trtllm.collect_mla_module",
         get_func="get_dsa_generation_module_test_cases",
-        run_func="run_mla_module_worker",
+        run_func="run_mla_module_series_worker",
         perf_filename=PerfFile.DSA_GENERATION_MODULE,
     ),
     OpEntry(

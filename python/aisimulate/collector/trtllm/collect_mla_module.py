@@ -5,16 +5,16 @@
 # DSA half VERIFIED on 1.3.0rc20/SM90 (2026-07-14): the SM90 DSA core runs
 # FlashMLA sparse kernels, whose sparse_prefill_fwd asserts
 # kv.dtype()==kBFloat16 (flashmla-src/csrc/pybind.cpp:404) — FP8-KV DSA is
-# genuinely Blackwell-only (trtllm-gen sparseMla), matching the SM>=100 combo
-# floor in _get_precision_combos; floor VALIDATED on SM103 (2026-07-19, B300):
+# genuinely Blackwell-only (trtllm-gen sparseMla), matching the SM90 FP8-KV
+# skip in collector/skips.py; floor VALIDATED on SM103 (2026-07-19, B300):
 # fp8-KV DSA probes pass 9/9 (DSv3.2 + GLM-5, ctx+gen, prefix 0/128). MLA half
 # RESOLVED on 1.3.0rc20/SM100 (2026-07-18, B200): FP8-KV MLA modules pass on
 # SM90 AND SM100 (trtllm-gen MLA, tokens_per_block=32) — the "fails on
 # SM100/103/120" claim is refuted for SM100, for SM103 on B300 (2026-07-19:
 # fp8-KV MLA probes 5/5, ctx+gen, prefix 0/128), and for SM120 on RTX PRO
 # 6000 (2026-07-19: fp8-KV MLA probes 4/4, ctx+gen, prefix 0/128, via the
-# framework's non-trtllm-gen dispatch); the combo is open for sm>86 except
-# 121 (see _get_precision_combos). SM121 remains hardware-unvalidated.
+# framework's non-trtllm-gen dispatch); the MLA module plan times it from
+# SM89 on. SM121 remains hardware-unvalidated.
 # Never move this back into YAML.
 
 # FIXME(kernel-limit): SM100 DSA with reduced local heads (h in {1,2,4},
@@ -137,7 +137,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from collector.case_generator import get_mla_module_model_specs, get_mla_module_sweep_spec
+from collector.case_generator import get_mla_module_model_specs
 from collector.helper import (
     PeriodicGarbageCollector,
     _resolve_local_model_path,
@@ -145,7 +145,7 @@ from collector.helper import (
     get_sm_version,
     log_perf,
 )
-from collector.op_plans import plan_cases
+from collector.op_plans import plan, plan_cases
 from collector.registry_types import PerfFile
 from collector.trtllm.module_series import run_points
 
@@ -153,160 +153,9 @@ if "glm_moe_dsa" not in _CONFIG_REGISTRY:
     _CONFIG_REGISTRY["glm_moe_dsa"] = "DeepseekV3Config"
 
 
-def _is_sm120_or_newer() -> bool:
-    return get_sm_version() >= 120
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # Test Cases
 # ═══════════════════════════════════════════════════════════════════════
-
-
-def _get_precision_combos(phase: str, attn_type: str):
-    """Return (compute_dtype, kv_cache_dtype, gemm_type) triples for a phase.
-
-    Each triple describes the full quantisation configuration for one
-    benchmark sweep.  GPU capability (SM version) determines which
-    combos are available.
-
-    Precision axes:
-      gemm_type    — linear-layer GEMMs (projections inside the module)
-        bfloat16:  always
-        fp8_block: SM >= 89 (Ada / Hopper / Blackwell)
-        nvfp4:     SM >= 100 (Blackwell)
-
-      (compute_dtype, kv_cache_dtype) — attention inputs + KV cache
-        The inputs are bfloat16. With an FP8 KV cache, MLA context attention
-        computes in FP8 on SM90/100/103/120, and its perf rows say so.
-        FP8 KV cache availability depends on attn_type and SM:
-          MLA:  SM > 86.
-          DSA:  Blackwell (SM >= 100) — trtllm-gen sparseMla=1 FP8 kernels.
-    """
-    sm = get_sm_version()
-    is_dsa = attn_type == "dsa"
-
-    gemm_types = ["bfloat16"]
-    # Some SM120 TRT-LLM builds allocate bf16 dummy weights for MLA projection
-    # paths while attaching FP8-block scales, then assert in post_load_weights()
-    # when resmoothing expects float8 weights.
-    if sm >= 89:
-        gemm_types.append("fp8_block")
-    if sm >= 100:
-        gemm_types.append("nvfp4")
-
-    attn_combos = [("bfloat16", "bfloat16")]
-    if is_dsa:
-        if sm >= 100:
-            attn_combos.append(("bfloat16", "fp8"))
-    else:
-        # FP8-KV MLA: Hopper FMHA variants (86 < sm < 100), Blackwell
-        # datacenter trtllm-gen MLA — hardware-validated on B200/SM100
-        # 2026-07-18 (rc20, gen+ctx probes b=4/s=2048/h=128 via --quick),
-        # refuting the retired "fails on SM100" sm_exceptions claim — and
-        # SM120 via the framework's non-trtllm-gen dispatch
-        # (`is_sm_version_trtllm_gen_kernel` excludes 120/121,
-        # attention_backend/trtllm.py:1105@1.3.0rc20): hardware-validated on
-        # RTX PRO 6000 2026-07-19 (rc20, DeepSeek-V3 ctx+gen, prefix 0/128,
-        # b=4/s=2048/h=128, finite latencies through the module collector's
-        # framework-dispatch path). SM121 is hardware-unvalidated but stays
-        # QUEUED: generation-time exclusion of an SM is not a sanctioned
-        # filter (layer_permissions.md — execute or raise); if the framework
-        # lacks the path there the cases fail classified, and maturity is
-        # expressed via the registry unverified_sms marker, not here.
-        if sm > 86:
-            attn_combos.append(("bfloat16", "fp8"))
-
-    return [(c, kv, g) for g in gemm_types for c, kv in attn_combos]
-
-
-def get_context_test_cases(attn_type: str):
-    """Context-phase test cases.
-
-    Returns list of [seq_len, batch_size, num_heads, kv_cache_dtype,
-                     compute_dtype, gemm_type, prefix_len].
-    """
-    cases = []
-    sweep = get_mla_module_sweep_spec("trtllm")
-    for compute_dtype, kv_dtype, gemm_type in _get_precision_combos("context", attn_type):
-        for num_heads in sweep.inner_sweep_head_counts:
-            for b in sweep.context_batch_sizes:
-                for s in sweep.context_sequence_lengths:
-                    if b * s > sweep.context_max_tokens:
-                        continue
-                    if (
-                        sweep.context_large_sequence_min
-                        and s >= sweep.context_large_sequence_min
-                        and b > sweep.context_large_sequence_max_batch_size
-                    ):
-                        continue
-                    if attn_type == "dsa":
-                        for prefix_len in sweep.context_prefix_lengths:
-                            cases.append([s, b, num_heads, kv_dtype, compute_dtype, gemm_type, prefix_len])
-                    else:
-                        cases.append([s, b, num_heads, kv_dtype, compute_dtype, gemm_type])
-    return cases
-
-
-def get_generation_test_cases(attn_type: str):
-    """Generation-phase test cases.
-
-    Returns list of [kv_cache_len, batch_size, num_heads, kv_cache_dtype,
-                     compute_dtype, gemm_type].
-    """
-    cases = []
-    sweep = get_mla_module_sweep_spec("trtllm")
-    for compute_dtype, kv_dtype, gemm_type in _get_precision_combos("generation", attn_type):
-        for num_heads in sweep.inner_sweep_head_counts:
-            for b in sweep.generation_batch_sizes:
-                for s in sweep.generation_sequence_lengths:
-                    if b * s > sweep.generation_max_tokens:
-                        continue
-                    if (
-                        sweep.generation_large_sequence_min
-                        and s >= sweep.generation_large_sequence_min
-                        and b > sweep.generation_large_sequence_max_batch_size
-                    ):
-                        continue
-                    cases.append([s, b, num_heads, kv_dtype, compute_dtype, gemm_type])
-    return cases
-
-
-def _build_module_test_cases(attn_type: str, mode: str):
-    """Build module-level test cases for a specific attention type and phase.
-
-    Output test case format is positional args for run_mla_module_worker:
-    [seq_len, batch_size, num_heads, kv_cache_dtype, compute_dtype, gemm_type,
-     model_path, attn_type]
-    """
-    base_cases = get_context_test_cases(attn_type) if mode == "context" else get_generation_test_cases(attn_type)
-    model_specs = get_mla_module_model_specs(attention_type=attn_type, backend="trtllm")
-    cases = []
-    dropped_non_shard_heads = 0
-    for model_spec in model_specs:
-        # Model-correlated narrowing (case_authoring.md; get_msa_head_counts
-        # precedent): a row declaring its real tensor_parallel_sizes measures
-        # only the per-rank head counts those shards produce; the shared head
-        # grid otherwise sweeps 128..1 for the 64-head GLM-5.x too. Rows without
-        # the declaration keep the full grid.
-        shard_heads = None
-        declared_tp_sizes = getattr(model_spec, "tensor_parallel_sizes", None)
-        if declared_tp_sizes:
-            shard_heads = {model_spec.native_num_heads // tp for tp in declared_tp_sizes}
-        for base_case in base_cases:
-            s, b, h, kv_dtype, compute_dtype, gemm_type, *rest = base_case
-            if shard_heads is not None and h not in shard_heads:
-                dropped_non_shard_heads += 1
-                continue
-            case = [s, b, h, kv_dtype, compute_dtype, gemm_type, model_spec.model_path, attn_type]
-            if rest:
-                case.append(rest[0])
-            cases.append(case)
-    if dropped_non_shard_heads:
-        print(
-            f"[trtllm-mla-module-cases] {attn_type}/{mode}: dropped {dropped_non_shard_heads} cases whose "
-            "per-rank heads no declared tensor_parallel_sizes shard produces"
-        )
-    return cases
 
 
 def get_mla_context_module_test_cases():
@@ -318,13 +167,11 @@ def get_mla_generation_module_test_cases():
 
 
 def get_dsa_context_module_test_cases():
-    """collect.py entrypoint for DSA context module collection."""
-    return _build_module_test_cases(attn_type="dsa", mode="context")
+    return plan_cases("dsa_context_module", "trtllm", get_sm_version())
 
 
 def get_dsa_generation_module_test_cases():
-    """collect.py entrypoint for DSA generation module collection."""
-    return _build_module_test_cases(attn_type="dsa", mode="generation")
+    return plan_cases("dsa_generation_module", "trtllm", get_sm_version())
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1312,6 +1159,43 @@ def main():
     else:
         model_specs_to_run = all_model_specs
 
+    if not args.quick:
+        # The full sweep is the op plan's rows; --model targets that checkpoint, as collect.py --model-path does.
+        if args.model:
+            os.environ["COLLECTOR_MODEL_PATH"] = args.model
+        for attn_type in sorted({spec.attention_type for spec in model_specs_to_run} & {"mla", "dsa"}):
+            perf_filename = _perf_file_for(attn_type, args.mode)
+            rows = plan(f"{attn_type}_{args.mode}_module", "trtllm", get_sm_version()).rows
+            for points, b, h, kv_dtype, compute, gemm, model_path, _attn in rows:
+                if args.num_heads is not None and h != args.num_heads:
+                    continue
+                if args.kv_cache_dtype is not None and kv_dtype != args.kv_cache_dtype:
+                    continue
+                if args.compute_dtype is not None and compute != args.compute_dtype:
+                    continue
+                if args.gemm_type is not None and gemm != args.gemm_type:
+                    continue
+                print(f"\n[{attn_type.upper()}] {model_path} b={b} heads={h} gemm={gemm} kv={kv_dtype}: {len(points)}p")
+                try:
+                    run_mla_module_series(
+                        points,
+                        b,
+                        h,
+                        kv_dtype,
+                        compute,
+                        gemm,
+                        perf_filename,
+                        model_path=model_path,
+                        attn_type=attn_type,
+                        device=args.device,
+                    )
+                except Exception as e:
+                    print(f"  FAILED: b={b}, heads={h}, gemm={gemm}, compute={compute}, kv={kv_dtype}: {e}")
+                    traceback.print_exc()
+                    torch.cuda.empty_cache()
+                    gc.collect()
+        return
+
     for model_spec in model_specs_to_run:
         model_path = model_spec.model_path
         attn_type = model_spec.attention_type
@@ -1319,72 +1203,21 @@ def main():
         print(f"Model: {model_path}  |  Attention: {attn_type.upper()}")
         print(f"{'=' * 60}")
 
-        perf_filename = _perf_file_for(attn_type, args.mode)
-
-        if args.quick:
-            b = args.batch_size or 4
-            s = args.seq_len or 2048
-            h = args.num_heads or 128
-            kv_dtype = args.kv_cache_dtype or "bfloat16"
-            compute = args.compute_dtype or "bfloat16"
-            gemm = args.gemm_type or "bfloat16"
-            run_mla_module(
-                seq_len=s,
-                batch_size=b,
-                num_heads=h,
-                kv_cache_dtype=kv_dtype,
-                compute_dtype=compute,
-                gemm_type=gemm,
-                perf_filename=perf_filename,
-                model_path=model_path,
-                attn_type=attn_type,
-                device=args.device,
-            )
-            continue
-
-        if args.mode == "context":
-            test_cases = get_context_test_cases(attn_type=attn_type)
-        else:
-            test_cases = get_generation_test_cases(attn_type=attn_type)
-
-        if args.num_heads is not None:
-            test_cases = [tc for tc in test_cases if tc[2] == args.num_heads]
-
-        if args.kv_cache_dtype is not None:
-            test_cases = [tc for tc in test_cases if tc[3] == args.kv_cache_dtype]
-
-        if args.compute_dtype is not None:
-            test_cases = [tc for tc in test_cases if tc[4] == args.compute_dtype]
-
-        if args.gemm_type is not None:
-            test_cases = [tc for tc in test_cases if tc[5] == args.gemm_type]
-
-        print(f"Running {len(test_cases)} {args.mode} {attn_type.upper()} module test cases...")
-
-        for i, (s, b, h, kv_dtype, compute, gemm) in enumerate(test_cases):
-            print(f"[{i + 1}/{len(test_cases)}]", end="")
-            try:
-                run_mla_module(
-                    seq_len=s,
-                    batch_size=b,
-                    num_heads=h,
-                    kv_cache_dtype=kv_dtype,
-                    compute_dtype=compute,
-                    gemm_type=gemm,
-                    perf_filename=perf_filename,
-                    model_path=model_path,
-                    attn_type=attn_type,
-                    device=args.device,
-                )
-            except torch.cuda.OutOfMemoryError:
-                print(f"  OOM: b={b}, s={s}, heads={h}, gemm={gemm}, compute={compute}, kv={kv_dtype}")
-                torch.cuda.empty_cache()
-                gc.collect()
-            except Exception as e:
-                print(f"  FAILED: b={b}, s={s}, heads={h}, gemm={gemm}, compute={compute}, kv={kv_dtype}: {e}")
-                traceback.print_exc()
-                torch.cuda.empty_cache()
-                gc.collect()
+        b = args.batch_size or 4
+        s = args.seq_len or 2048
+        h = args.num_heads or 128
+        run_mla_module(
+            seq_len=s,
+            batch_size=b,
+            num_heads=h,
+            kv_cache_dtype=args.kv_cache_dtype or "bfloat16",
+            compute_dtype=args.compute_dtype or "bfloat16",
+            gemm_type=args.gemm_type or "bfloat16",
+            perf_filename=_perf_file_for(attn_type, args.mode),
+            model_path=model_path,
+            attn_type=attn_type,
+            device=args.device,
+        )
 
 
 if __name__ == "__main__":
