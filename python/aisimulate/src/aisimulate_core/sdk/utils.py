@@ -1018,7 +1018,9 @@ def _parse_hf_config_json(config: dict) -> dict:
         moe_layer_freq = (
             tuple(moe_layer_freq_raw) if isinstance(moe_layer_freq_raw, list) else tuple([moe_layer_freq_raw] * layers)
         )
-        attn_pattern = tuple(config.get("hybrid_layer_pattern", []))
+        # hybrid_layer_pattern marks sliding-window layers with 1 (vLLM and SGLang build SWA
+        # attention where it is 1); attn_layer_pattern marks global layers with 1.
+        attn_pattern = tuple(1 - v for v in config.get("hybrid_layer_pattern", []))
         if len(attn_pattern) != layers or len(moe_layer_freq) != layers:
             raise ValueError(
                 f"Hybrid pattern length mismatch for {architecture}: "
@@ -1045,12 +1047,18 @@ def _parse_hf_config_json(config: dict) -> dict:
         )
     elif architecture == "Llama4ForConditionalGeneration":
         # Llama 4: step-based patterns — generate normalized per-layer tuples.
-        # Attention: even layers → local (0), odd layers → global (1).
+        # Attention: a layer without RoPE (no_rope_layers 0) attends globally (1); the others use
+        # chunked local attention (0). An empty no_rope_layers means every
+        # no_rope_layer_interval-th layer (default 4) has no RoPE, as in transformers.
         # FFN: layer i is MoE (1) if (i+1) % interleave_moe_layer_step == 0, else dense (0).
         step = config.get("interleave_moe_layer_step", 1)
         if not isinstance(step, int) or step <= 0:
             raise ValueError(f"interleave_moe_layer_step must be a positive integer, got {step}")
-        attn_pattern = tuple(i % 2 for i in range(layers))
+        interval = config.get("no_rope_layer_interval", 4)
+        no_rope_layers = config.get("no_rope_layers") or [int((i + 1) % interval != 0) for i in range(layers)]
+        if len(no_rope_layers) != layers or any(v not in (0, 1) for v in no_rope_layers):
+            raise ValueError(f"no_rope_layers must hold {layers} values of 0 or 1, got {no_rope_layers}")
+        attn_pattern = tuple(1 - v for v in no_rope_layers)
         moe_freq = tuple(1 if (i + 1) % step == 0 else 0 for i in range(layers))
         if not isinstance(vision_cfg, dict):
             raise TypeError("Llama 4 config must preserve vision_config metadata")
