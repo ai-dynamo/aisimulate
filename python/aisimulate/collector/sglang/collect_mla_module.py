@@ -811,21 +811,11 @@ def get_dsa_generation_module_test_cases():
 
 
 def get_dsa_context_module_skip_indexer_test_cases():
-    """collect.py entrypoint for DSA context module collection with the indexer
-    patched out (GLM-5.2 index_topk_freq>1 reuse layers).
-
-    The rows of the full context module — the skip behaviour is applied in
-    the subprocess (the registry binds skip_indexer=True via run_kwargs) —
-    for the models that share the index across layers (index_topk_freq > 1);
-    for freq==1 models the skip layer == full layer.
-    """
-    return [row for row in get_dsa_context_module_test_cases() if _model_shares_dsa_index(row[6])]
+    return plan_cases("dsa_context_module_skip_indexer", "sglang", get_sm_version())
 
 
 def get_dsa_generation_module_skip_indexer_test_cases():
-    """collect.py entrypoint for DSA generation module collection with the
-    indexer patched out (see context variant)."""
-    return [row for row in get_dsa_generation_module_test_cases() if _model_shares_dsa_index(row[6])]
+    return plan_cases("dsa_generation_module_skip_indexer", "sglang", get_sm_version())
 
 
 # ═══════════════════════════════════════════════════════════════════════

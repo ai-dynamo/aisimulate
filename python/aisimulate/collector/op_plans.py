@@ -1030,6 +1030,12 @@ def _projection_gemm(model_path: str) -> str:
     return "bfloat16" if keeps_o_proj else "nvfp4"
 
 
+def _shares_dsa_index(model_path: str) -> bool:
+    """Whether the checkpoint's layers share one DSA top-k index (index_topk_freq > 1), so most
+    of them skip the indexer."""
+    return int(_packaged_config(model_path).get("index_topk_freq") or 1) > 1
+
+
 def _dsa_module_models() -> list[tuple[object, tuple[str, ...]]]:
     """The DSA checkpoints the plan times, each with the projection GEMMs it stands for.
 
@@ -1087,13 +1093,15 @@ def _dsa_points(phase: str, sweep, max_position: int | None) -> list[tuple[int, 
     return [(batch, length, 0) for batch, length in sorted(grid) if max_position is None or length < max_position]
 
 
-def _dsa_module_expand(phase: str) -> Callable[[], list[ModuleCase]]:
+def _dsa_module_expand(phase: str, *, shared_index_only: bool) -> Callable[[], list[ModuleCase]]:
     def expand() -> list[ModuleCase]:
         """Every (precision, heads, point) of each DSA checkpoint, at the projection GEMMs it stands for."""
         sweep = get_mla_module_sweep_spec(_MODULE_SWEEP)
         precisions = get_mla_module_precision_specs(_MODULE_SWEEP, phase=phase, attention_type="dsa")
         cases = []
         for model, gemms in _dsa_module_models():
+            if shared_index_only and not _shares_dsa_index(model.model_path):
+                continue
             # A row that declares its tensor_parallel_sizes measures only the heads those shards run.
             shards = model.tensor_parallel_sizes
             shard_heads = {model.native_num_heads // tp for tp in shards} if shards else None
@@ -1171,18 +1179,19 @@ def _sglang_dsa_rows(phase: str) -> Callable[[list, int | None], list[tuple[list
     return rows
 
 
-def _dsa_module_plan(phase: str) -> OpPlan:
+def _dsa_module_plan(phase: str, *, skip_indexer: bool = False) -> OpPlan:
+    """A DSA module op. The skip_indexer ops (SGLang only) time the checkpoints whose layers
+    share one top-k index, with the indexer left out."""
+    batch_rows = {"sglang": _sglang_dsa_rows(phase)}
+    if not skip_indexer:
+        batch_rows.update(trtllm=_trtllm_module_rows("dsa"), vllm=_vllm_module_rows("dsa"))
     return OpPlan(
         ModuleCase,
-        _dsa_module_expand(phase),
+        _dsa_module_expand(phase, shared_index_only=skip_indexer),
         dtype_field=("kv_cache_dtype", "compute_dtype", "gemm_type"),
         group_fields=_MODULE_GROUP,
         dispatch={"sglang": _sglang_dsa_backend(phase)},
-        batch_rows={
-            "sglang": _sglang_dsa_rows(phase),
-            "trtllm": _trtllm_module_rows("dsa"),
-            "vllm": _vllm_module_rows("dsa"),
-        },
+        batch_rows=batch_rows,
     )
 
 
@@ -1549,6 +1558,8 @@ OP_PLANS: dict[str, OpPlan] = {
     "mla_generation_module": _mla_module_plan("generation"),
     "dsa_context_module": _dsa_module_plan("context"),
     "dsa_generation_module": _dsa_module_plan("generation"),
+    "dsa_context_module_skip_indexer": _dsa_module_plan("context", skip_indexer=True),
+    "dsa_generation_module_skip_indexer": _dsa_module_plan("generation", skip_indexer=True),
     "mla_bmm_gen_pre": OpPlan(
         MlaBmmCase, _mla_bmm_expand("mla_bmm_gen_pre"), dtype_field="dtype", group_fields=MlaBmmCase._fields
     ),

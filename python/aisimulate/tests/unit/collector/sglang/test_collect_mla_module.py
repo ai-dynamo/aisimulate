@@ -375,6 +375,12 @@ class TestBuildModuleTestCases:
         assert 1 not in {case.seq_len for case in plan("dsa_context_module", "sglang", 100).cases}
         assert 1 in {case.seq_len for case in plan("dsa_context_module", "vllm", 100).cases}
 
+    @pytest.mark.parametrize("phase", ["context", "generation"])
+    def test_skip_indexer_rows_are_the_full_rows_of_index_sharing_checkpoints(self, phase):
+        full = plan(f"dsa_{phase}_module", "sglang", 100).rows
+        skip = plan(f"dsa_{phase}_module_skip_indexer", "sglang", 100).rows
+        assert skip == [row for row in full if row[6] in {"zai-org/GLM-5.2", "zai-org/GLM-5.2-FP8"}]
+
     def test_skip_indexer_cases_use_glm52_canonical_model(self):
         mod = _import_module()
         with patch.object(mod, "get_sm_version", return_value=100):
