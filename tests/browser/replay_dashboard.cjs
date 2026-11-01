@@ -542,10 +542,11 @@ async function main() {
           );
         const hits = await traces("hits");
         for (const [name, numerator, denominator] of [
-          ["Native lookup hit rate", "lookup_hits", "lookup_queries"],
+          ["G1 prefix-cache lookup hit rate", "lookup_hits", "lookup_queries"],
           ["Scheduler prefix reuse", "scheduler_hits", "scheduler_queries"],
         ]) {
           const trace = hits.find((row) => row.name === name);
+          assert.ok(!hits.length || trace, `Missing hit-rate trace: ${name}`);
           if (trace)
             samples.forEach((sample, index) =>
               close(

@@ -106,7 +106,7 @@ def capture():
                 ],
                 "prefill_interval_metrics": {},
                 "decode_interval_metrics": {
-                    "native_prefix_cache_lookup": {"query_count": 2, "queried_tokens": 32, "matched_tokens": 0},
+                    "g1_prefix_cache_lookup": {"query_count": 2, "queried_tokens": 32, "matched_tokens": 0},
                     "cache_hit_tokens": None,
                     "cache_total_tokens": None,
                     "preemptions": 0,
@@ -159,6 +159,7 @@ def test_preserves_absolute_phases_native_cutoff_and_interval_semantics(capture)
     assert (sample["t"], sample["start"], sample["duration"]) == (2.6, 2.25, 0.35)
     assert sample["lookup_hits"] == 0
     assert sample["lookup_queries"] == 32
+    assert sample["lookup_count"] == 2
     assert sample["scheduler_hits"] is None
     assert sample["accept"] is None
     assert sample["host"] == 0
@@ -184,11 +185,16 @@ def test_byte_capacities_and_unknown_metrics_are_preserved(capture):
     )
     assert build_replay_dashboard_data({}, capture)["samples"][0]["cache_pct"] is None
     row["decode_scheduler_metrics"] = []
+    row["decode_interval_metrics"]["g1_prefix_cache_lookup"] = None
     row.pop("router_pending_prefill_requests")
     row.pop("router_pending_decode_requests")
     sample = build_replay_dashboard_data({}, capture)["samples"][0]
     assert sample["running"] is None
     assert sample["router_pending"] is None
+    assert sample["lookup_hits"] is sample["lookup_queries"] is sample["lookup_count"] is None
+    row["decode_interval_metrics"].pop("g1_prefix_cache_lookup")
+    sample = build_replay_dashboard_data({}, capture)["samples"][0]
+    assert sample["lookup_hits"] is sample["lookup_queries"] is sample["lookup_count"] is None
 
 
 @pytest.mark.parametrize("missing", [None, 0])
@@ -375,6 +381,16 @@ def test_native_source_fixture_all_phase_dashboard(backend, mode, warmup):
     assert sum(sample["output_tokens"] for sample in data["samples"]) == sum(
         sample["traffic"]["delivered_output_tokens"] for sample in report["telemetry"]["samples"]
     )
+    for source, sample in zip(report["telemetry"]["samples"], data["samples"], strict=True):
+        lookups = [source[f"{role}_interval_metrics"]["g1_prefix_cache_lookup"] for role in ("prefill", "decode")]
+        observed = [lookup for lookup in lookups if lookup is not None]
+        for normalized, native in (
+            ("lookup_hits", "matched_tokens"),
+            ("lookup_queries", "queried_tokens"),
+            ("lookup_count", "query_count"),
+        ):
+            assert sample[normalized] == (sum(lookup[native] for lookup in observed) if observed else None)
+    assert (sum(sample["lookup_count"] or 0 for sample in data["samples"]) > 0) is (backend == "vllm")
     assert all(request["itl_ms"] is None for request in data["requests"] if request["output_length"] < 2)
     json.dumps(data, allow_nan=False)
 
