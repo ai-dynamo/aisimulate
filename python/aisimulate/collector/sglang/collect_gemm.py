@@ -44,8 +44,28 @@ selection, quantization helpers, and perf logging.
 # One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
 # The SGLang 0.5.20 fork (collect_gemm_0520.py, serving-built linear layers)
 # retired with the 0.5.20 lane 2026-10-30; it is git history (main at c540ff90a (before #649)).
-# Serving gaps: notes D-sglang-gemm-bf16-cutedsl, D-sglang-gemm-nvfp4-act-quant and
-# D-sglang-gemm-fp8-block-triton-fallback in collector/notes/sglang.yaml.
+# Where this table times a different path than SGLang serving (the direction of
+# each error is unknown):
+# - bf16 on SM100/103: serving resolves the auto bf16 GEMM backend to CuTe DSL.
+#   That backend sends the 68 shapes in _BF16_SPLITK_TUNED_TACTICS (m <= 32) to
+#   FlashInfer split-K or direct, and runs the TGV kernel where
+#   use_cutedsl_bf16_gemm(m, n, k) picks it (small m, 2048 <= k <= 6144,
+#   n >= 1024). The table times F.linear for every shape, which matches serving
+#   everywhere else (srt/layers/quantization/unquant.py; SGLANG_ENABLE_BF16_SPLITK_GEMM
+#   defaults on in srt/environ.py; kernels/ops/gemm/cutedsl_bf16_gemm.py).
+#   Retire it by timing bf16 GEMMs through the backend serving selects.
+# - nvfp4 on SM100/103: serving quantizes activations with FlashInfer's cute-dsl
+#   backend (srt/layers/quantization/fp4_utils.py); the table uses the default
+#   cuda backend. The mm_fp4 GEMM itself matches serving. Retire it by quantizing
+#   activations with the backend serving selects.
+# - fp8_block on SM90 and SM100/103: serving runs DeepGEMM only when the weight
+#   has N % 64 == 0 and K % 128 == 0, and falls back to Triton otherwise, for
+#   example at the GLM-5.3-Flash widths 288, 3336, 6416, 12576 and 19360
+#   (deepgemm_w8a8_block_fp8_linear_with_fallback in
+#   srt/layers/quantization/fp8_utils.py). The table times DeepGEMM for every
+#   shape. Retire it by timing fp8_block through dispatch_w8a8_block_fp8_linear, as
+#   serving does; that also lets SM89/120 run fp8_block (drop its entry in
+#   collector/skips.py).
 __compat__ = "sglang==0.5.21"
 
 import os

@@ -148,11 +148,10 @@ itself has a BF16 key.
 ## 5. Progress from smoke to full collection
 
 Collect only the families whose kernels changed under the new pin, and declare
-reuse (`reuse.yaml` with `approved_by`) for the rest. Re-check every note in
-`collector/notes/<backend>.yaml` that covers a bumped family, by a source check
-or a targeted run of its cases: move `verified_on` when it still holds, delete
-the note when it does not. `check_collector_data.py` R8 fails a note left
-behind the pin.
+reuse (`reuse.yaml` with `approved_by`) for the rest. Re-check every deviation note (a comment at the
+collector code that deviates) that covers a bumped family, by a source check or
+a targeted run of its cases: keep it when it still holds, delete it when it
+does not.
 
 For each operation, use deterministic smoke coverage rather than relying only
 on a few random cases. Cover representative and boundary combinations of:

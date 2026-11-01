@@ -38,9 +38,12 @@ switch variants unilaterally.
 The shipped mhc_module_perf tables measure the unfused pre+post path on
 every SM (owner decision, 2026-08-19, PR #1486), and the rows'
 kernel_source labels (trtllm_mhc_pre_* / trtllm_mhc_post_mapping) name the
-measured variant. On SM100/103 that is a recorded deviation: note
-D-trtllm-mhc-unfused in collector/notes/trtllm.yaml holds its direction,
-error bound, verified version and retirement plan.
+measured variant. On SM100/103 that is a deviation: serving defaults to
+fused_hc there (models/modeling_deepseekv4.py), so the table over-charges the
+mHC boundary. mHC is 9-14% of the DSV4 per-layer cost on b200, an upper bound
+on the error; the actual fused/unfused delta is unmeasured. Retire it by
+collecting fused_hc on SM100/103 and switching the SDK consumer
+(https://github.com/ai-dynamo/aiconfigurator/issues/1580).
 """
 
 from __future__ import annotations

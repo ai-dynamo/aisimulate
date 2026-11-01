@@ -112,36 +112,18 @@ not relabel the donor's runtime as a new measurement. Some operation loaders
 have pinned overwrite semantics; preserve their source order and parity tests
 instead of assuming every raw loader uses the same merge algorithm.
 
-## Collector notes
+## Deviations
 
-A collector note records a **deviation** the rows cannot express: the table
-measures a different path than serving runs, for example an unfused kernel
-where serving fuses. Code, data and docs cite the note by its id instead of
-restating it. Notes live in `python/aisimulate/collector/notes/<backend>.yaml`,
-one file per framework in the collector manifest, as a `schema_version: 1`
-mapping with a `notes` list. Cases a collection leaves out are not notes: they
-are entries in `python/aisimulate/collector/skips.py`, with the reason as a
-comment.
-
-| Field | Required | Meaning |
-|---|---|---|
-| `id` | yes | `D-<backend>-<slug>`, unique across all notes |
-| `kind` | yes | `deviation` |
-| `summary` | yes | What differs, in plain words |
-| `direction` | yes | Effect on predicted latency: `over`, `under` or `unknown` |
-| `scope.tables` | yes | Table names from the op catalog |
-| `scope.systems` | yes | `all`, or a list of system names |
-| `scope.versions` | no | `all` (the default), or a list of framework versions |
-| `verified_on` | yes | Last framework version on which the note was re-checked |
-| `sources` | yes | Framework source lines (`file:line @version`) or evidence paths |
-| `retire_via` | no | Issue link or one-line plan that would remove the note |
-| `approved_by` | no | Owner who accepted the deviation |
-
-Rule R8 of `tools/perf_database/check_collector_data.py` rejects unknown
-fields, tables and systems. It also fails a note that covers the collected
-version when its `verified_on` is behind the pinned framework version of any
-table in its scope. Moving a pin therefore means re-checking each affected
-note: move `verified_on` when the note still holds, or delete it.
+When a table measures a different path than serving runs, for example an
+unfused kernel where serving fuses, the collector code that measures it says
+so in a comment, the deviation note. The note gives what differs and on which
+systems, the effect on predicted latency (over, under or unknown), the
+framework source or evidence behind it, and, when known, how the deviation
+could be retired. Data comments and docs point to that code instead of
+restating it. Cases a collection leaves out are not deviations: they are
+entries in `python/aisimulate/collector/skips.py`, with the reason as a
+comment. Moving a pin means re-checking the notes of the bumped families,
+keeping each that still holds and deleting the rest.
 
 The authoritative implementations are
 [`collector`](../../../python/aisimulate/collector/),

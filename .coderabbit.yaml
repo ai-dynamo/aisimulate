@@ -149,7 +149,7 @@ reviews:
         finer boundaries run and fail. A worker guard is legal only for a case
         that would mismeasure, hang or waste significant time. Reject
         invented geometry or kernel fallbacks, selector exception machinery,
-        deviations described outside collector/notes/, untraceable results,
+        deviations without a note at the deviating code, untraceable results,
         and undocumented producer to consumer schema changes. Verify runtime
         versions, commands, GPU assumptions, and failure evidence.
 

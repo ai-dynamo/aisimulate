@@ -68,7 +68,7 @@ wrong data, which is worse than a crash.
    never the intended one.
 4. **Re-verify on every version bump.** Dispatch logic is precisely what
    framework upgrades change. The upgrade audit re-checks every pinned
-   backend and every note in `collector/notes/` against the new source before
+   backend and every deviation note against the new source before
    collected data is trusted.
 5. **No invented fallbacks.** If the framework-selected path cannot be
    constructed or invoked, raise a classified error — never substitute
@@ -217,14 +217,13 @@ Rules:
 
 When a table cannot follow the serving-parity rules above (it times an
 unfused path where serving fuses, or a row is derived from another kernel),
-record a deviation note in `collector/notes/<backend>.yaml`: a
-machine-readable scope (tables, systems, versions), the direction of the
-error, its sources, `verified_on`, and optionally the plan that would retire
-it. The owner accepts it in review (`approved_by`). The note is the one home
-for that fact: code, data comments and docs cite its id instead of restating
-it. Every pin bump re-checks it, moving `verified_on` when it still holds and
-deleting it when it does not; R8 fails a note left behind the pin. Field
-reference: `docs/perf-model/collector/data-format.md` ("Collector notes").
+write a deviation note: a comment at the code that measures the deviating
+path, giving what differs and on which systems, the direction of the error when
+known, its sources, and optionally the plan that would retire it. The owner
+accepts it in review. The comment is the one home for that fact: data comments
+and docs point to that code instead of restating it. Every pin bump re-checks
+it, keeping it when it still holds and deleting it when it does not. Field
+reference: `docs/perf-model/collector/data-format.md` ("Deviations").
 
 A deviation note documents and bounds a deviation; it does not weaken the
 rule. Anything outside a note's scope is an ordinary violation.

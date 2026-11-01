@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fail-closed check of the collected perf-database tree and the collector notes.
+"""Fail-closed check of the collected perf-database tree.
 
 Full CI runs it in the `collector-data` job when a change touches the
 collector, the perf-database tools or the data tree, and
@@ -9,7 +9,7 @@ collector, the perf-database tools or the data tree, and
 tree with the unit tests. Exits non-zero on ANY failure and prints every
 failure it finds — never stops at the first one.
 
-Eight rules:
+Seven rules:
 
 - **R1 sidecar coverage**: every family version dir
   (`<system>/<family>/<backend>/<version>/`) holding >=1 parquet table must
@@ -42,12 +42,6 @@ Eight rules:
 - **R7 attested collection events**: every schema-v2 collection event records
   a valid status and a non-empty attempted-case plan; schema-v1 tables retain
   the original single-event empty-plan guard.
-- **R8 notes**: every `collector/notes/<backend>.yaml` matches the closed note
-  schema (unique `D-` deviation ids, catalog tables, known systems and a
-  `direction`), and no note that covers the
-  pinned version has a `verified_on` behind the pin of a table it covers. R8
-  reads the notes, the catalog and the manifest, not the data tree under
-  check, so it runs even when the data root is missing.
 
 Reuses (imports, does not duplicate): `collector.op_catalog.load_family_map`,
 `collector.framework_manifest.validate_resolution`, and the loader's real
@@ -72,13 +66,9 @@ rule).
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from collections import defaultdict
 from pathlib import Path
-
-import yaml
-from packaging.version import InvalidVersion, Version
 
 # `collector/` is a standalone top-level package (not part of the installed
 # wheel — see .claude/rules/repo-guide.md), so it is only importable when the
@@ -97,7 +87,7 @@ if str(REPO_ROOT) not in sys.path:
 # (e.g. tests/unit/sdk/database/test_dual_layout_discovery.py) — it is the
 # same module object as aisimulate_core.sdk.perf_database
 # (src/aisimulate/sdk/_compat.py:alias_module).
-from collector.framework_manifest import MANIFEST_PATH, load_manifest, validate_resolution
+from collector.framework_manifest import validate_resolution
 from collector.op_catalog import (
     CATALOG_PATH,
     load_family_map,
@@ -115,7 +105,7 @@ COLLECTION_META_YAML = "collection_meta.yaml"
 LEGACY_MARKERS = ("SHARED_LAYER_REUSE.txt", "INCOMPLETE.txt")
 COMM_FAMILY = "comm"
 
-RULES = ("R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8")
+RULES = ("R1", "R2", "R3", "R4", "R5", "R6", "R7")
 RULE_TITLES = {
     "R1": "sidecar coverage",
     "R2": "reuse validity",
@@ -124,7 +114,6 @@ RULE_TITLES = {
     "R5": "identity (manifest v2 resolution)",
     "R6": "no legacy markers",
     "R7": "attested collection events",
-    "R8": "notes",
 }
 
 
@@ -382,187 +371,16 @@ def check_r7_attested_case_plan(data_root: Path, version_dirs: list[tuple[str, s
     return failures
 
 
-# --------------------------------------------------------------------------
-# R8: notes (collector/notes/<backend>.yaml)
-# --------------------------------------------------------------------------
-
-NOTES_DIR_DEFAULT = REPO_ROOT / "collector" / "notes"
-NOTES_SCHEMA_VERSION = 1
-NOTE_DIRECTIONS = ("over", "under", "unknown")
-_NOTE_KEYS = frozenset(
-    ("id", "kind", "summary", "direction", "scope", "verified_on", "sources", "retire_via", "approved_by")
-)
-_NOTE_REQUIRED = ("id", "kind", "summary", "scope", "verified_on", "sources")
-_NOTE_SCOPE_KEYS = {"tables", "systems", "versions"}
-_NOTE_ID_RE = re.compile(r"D-[a-z0-9][a-z0-9-]*")
-
-
-def _version(value: object) -> Version | None:
-    try:
-        return Version(str(value))
-    except InvalidVersion:
-        return None
-
-
-def _family_pin(framework_spec: dict, family: str) -> str:
-    """The version a family is collected on: its family pin, else the framework default."""
-    return ((framework_spec.get("families") or {}).get(family) or framework_spec["default"])["version"]
-
-
-def _check_note(
-    note: object,
-    where: str,
-    framework_spec: dict,
-    family_map: dict[str, str],
-    known_systems: set[str],
-    seen_ids: dict[str, str],
-) -> list[str]:
-    if not isinstance(note, dict):
-        return [f"{where}: a note must be a mapping"]
-    failures: list[str] = []
-    unknown = sorted(str(key) for key in set(note) - _NOTE_KEYS)
-    if unknown:
-        failures.append(f"{where}: unsupported key(s) {', '.join(unknown)}")
-    missing = [key for key in _NOTE_REQUIRED if note.get(key) in (None, "", [], {})]
-    if missing:
-        failures.append(f"{where}: missing {', '.join(missing)}")
-        return failures
-
-    note_id, kind = note["id"], note["kind"]
-    label = f"{where} {note_id}"
-    if kind != "deviation":
-        failures.append(f"{label}: kind must be deviation, got {kind!r}")
-    if not (isinstance(note_id, str) and _NOTE_ID_RE.fullmatch(note_id)):
-        failures.append(f"{label}: a deviation id is D-<backend>-<slug> in lowercase, digits, hyphens")
-    if isinstance(note_id, str):
-        if note_id in seen_ids:
-            failures.append(f"{label}: duplicate id, first defined at {seen_ids[note_id]}")
-        else:
-            seen_ids[note_id] = where
-    if note.get("direction") not in NOTE_DIRECTIONS:
-        failures.append(f"{label}: a deviation needs direction: {' | '.join(NOTE_DIRECTIONS)}")
-    for key in ("summary", "retire_via", "approved_by"):
-        if key in note and not (isinstance(note[key], str) and note[key].strip()):
-            failures.append(f"{label}: {key} must be a non-empty string")
-    sources = note["sources"]
-    if not (isinstance(sources, list) and all(isinstance(source, str) and source.strip() for source in sources)):
-        failures.append(f"{label}: sources must be a list of non-empty strings")
-
-    scope = note["scope"]
-    if not isinstance(scope, dict):
-        failures.append(f"{label}: scope must be a mapping")
-        return failures
-    unknown_scope = sorted(str(key) for key in set(scope) - _NOTE_SCOPE_KEYS)
-    if unknown_scope:
-        failures.append(f"{label}: unsupported scope key(s) {', '.join(unknown_scope)}")
-    tables = scope.get("tables")
-    if not (isinstance(tables, list) and tables and all(isinstance(table, str) for table in tables)):
-        failures.append(f"{label}: scope.tables must be a non-empty list of table names")
-        tables = []
-    systems = scope.get("systems")
-    if systems != "all":
-        if not (isinstance(systems, list) and systems):
-            failures.append(f"{label}: scope.systems must be 'all' or a non-empty list")
-        else:
-            unknown_systems = sorted(str(s) for s in systems if not isinstance(s, str) or s not in known_systems)
-            if unknown_systems:
-                failures.append(f"{label}: unknown system(s) {', '.join(unknown_systems)}")
-    versions = scope.get("versions", "all")
-    if versions != "all" and not (isinstance(versions, list) and versions):
-        failures.append(f"{label}: scope.versions must be 'all' or a non-empty list")
-        return failures
-
-    verified_on = _version(note["verified_on"])
-    if verified_on is None:
-        failures.append(f"{label}: verified_on {note['verified_on']!r} is not a version")
-        return failures
-    for table in tables:
-        family = family_map.get(table)
-        if family is None:
-            failures.append(f"{label}: unknown table {table} (not in the op catalog)")
-            continue
-        pin = _family_pin(framework_spec, family)
-        if versions != "all" and pin not in {str(version) for version in versions}:
-            continue  # the note says nothing about the version collected now
-        pinned = _version(pin)
-        if pinned is not None and verified_on < pinned:
-            failures.append(
-                f"{label}: verified_on {note['verified_on']} is behind the {family} pin {pin} ({table}); "
-                "re-check the note on the pinned version and move verified_on, or delete the note"
-            )
-    return failures
-
-
-def check_r8_notes(
-    notes_dir: Path,
-    family_map: dict[str, str],
-    frameworks: dict[str, dict],
-    known_systems: set[str],
-) -> list[str]:
-    if not notes_dir.is_dir():
-        return []
-    failures: list[str] = []
-    seen_ids: dict[str, str] = {}
-    for path in sorted(notes_dir.glob("*.yaml")):
-        name = f"notes/{path.name}"
-        framework_spec = frameworks.get(path.stem)
-        if framework_spec is None:
-            failures.append(f"{name}: {path.stem!r} is not a framework in framework_manifest.yaml")
-            continue
-        try:
-            doc = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except yaml.YAMLError as exc:
-            failures.append(f"{name}: invalid YAML ({exc})")
-            continue
-        if not (
-            isinstance(doc, dict)
-            and doc.get("schema_version") == NOTES_SCHEMA_VERSION
-            and isinstance(doc.get("notes"), list)
-        ):
-            failures.append(f"{name}: expected schema_version: {NOTES_SCHEMA_VERSION} and a notes list")
-            continue
-        extra = sorted(str(key) for key in set(doc) - {"schema_version", "notes"})
-        if extra:
-            failures.append(f"{name}: unsupported top-level key(s) {', '.join(extra)}")
-        for index, note in enumerate(doc["notes"]):
-            failures.extend(_check_note(note, f"{name}[{index}]", framework_spec, family_map, known_systems, seen_ids))
-    return failures
-
-
-def run_r8_notes(notes_dir: Path, catalog_path: Path, manifest_path: Path) -> list[str]:
-    """R8 with its inputs loaded; a load error becomes a failure, never an exception."""
-    if not notes_dir.is_dir():
-        return []
-    try:
-        family_map = load_family_map(catalog_path)
-        frameworks = load_manifest(manifest_path)["frameworks"]
-    except (OSError, TypeError, ValueError, yaml.YAMLError) as exc:
-        return [f"cannot check notes: {exc}"]
-    if family_map is None:
-        return [f"cannot check notes: op catalog {catalog_path} does not exist"]
-    known_systems = {path.name for path in _subdirs(DATA_ROOT_DEFAULT)}
-    return check_r8_notes(notes_dir, family_map, frameworks, known_systems)
-
-
-def run_checks(
-    data_root: Path,
-    catalog_path: Path,
-    notes_dir: Path = NOTES_DIR_DEFAULT,
-    manifest_path: Path = MANIFEST_PATH,
-) -> dict[str, list[str]]:
+def run_checks(data_root: Path, catalog_path: Path) -> dict[str, list[str]]:
     """Run all rules and return {rule: [failure messages]} (empty list = pass).
 
-    Pure function of its arguments; never raises on data problems -- every
-    problem becomes a failure message so the caller can print all of them,
-    never stopping at the first.
+    Pure function of (data_root, catalog_path); never raises on data
+    problems -- every problem becomes a failure message so the caller can
+    print all of them, never stopping at the first.
     """
-    notes = run_r8_notes(notes_dir, catalog_path, manifest_path)
     if not data_root.is_dir():
         no_root = [f"data root {data_root} does not exist"]
-        results = dict.fromkeys(RULES, no_root)
-        results["R5"] = check_r5_identity(catalog_path)
-        results["R8"] = notes
-        return results
+        return {rule: (no_root if rule != "R5" else check_r5_identity(catalog_path)) for rule in RULES}
 
     version_dirs = iter_version_dirs(data_root)
     family_map = load_family_map(catalog_path)
@@ -575,7 +393,6 @@ def run_checks(
         "R5": check_r5_identity(catalog_path),
         "R6": check_r6_no_legacy_markers(data_root),
         "R7": check_r7_attested_case_plan(data_root, version_dirs),
-        "R8": notes,
     }
 
 
@@ -605,10 +422,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data-root", type=Path, default=DATA_ROOT_DEFAULT, help="Root of the systems/data tree.")
     parser.add_argument("--catalog", type=Path, default=CATALOG_PATH, help="Path to the op backend catalog yaml.")
-    parser.add_argument("--notes-dir", type=Path, default=NOTES_DIR_DEFAULT, help="Directory of collector notes.")
     args = parser.parse_args(argv)
 
-    results = run_checks(args.data_root, args.catalog, notes_dir=args.notes_dir)
+    results = run_checks(args.data_root, args.catalog)
     report, failed = render_report(results)
     print(report)
     return 1 if failed else 0

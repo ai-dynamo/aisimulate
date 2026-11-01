@@ -12,5 +12,6 @@ reuse:
     measured pre_mapping/post_mapping paths are source-identical between rc20
     and rc23 (verified diff of _torch/modules/mhc: every change sits in the
     fused_hc tactic space, which these rows do not measure).
-  # Serving gap: note D-trtllm-mhc-unfused in collector/notes/trtllm.yaml.
+  # Serving gap: these rows time the standalone pre/post mHC path, while serving
+  # on SM100/103 defaults to fused_hc; see collector/trtllm/collect_mhc_module.py.
   approved_by: tianhaox

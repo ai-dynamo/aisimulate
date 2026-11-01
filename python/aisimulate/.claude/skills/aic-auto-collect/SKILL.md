@@ -583,7 +583,7 @@ PR body checklist:
 - Row counts by backend/version and perf file count.
 - Collector errors fixed.
 - Failure counts per consumer key, the unavailable keys, and the comparison with the previous run of the same backend/version.
-- `collector/skips.py` entries added, changed or deleted, and deviation notes (`collector/notes/`) with `verified_on` moved for the new pin.
+- `collector/skips.py` entries added, changed or deleted, and the deviation notes re-checked, kept or deleted for the new pin.
 - Whether measured values change; when they do, a before/after diff of the affected ops on one system per SM generation.
 - Validation commands and results.
 - Remaining risks.

@@ -8,6 +8,16 @@ One measurement, two tables — the registry entry declares the second one as
 binds both to this producer's checkpoint:
   perf_filename            -> computescale_perf.txt  (dynamic per-token quant minus static quant)
   extra_perf_filenames[0]  -> scale_matrix_perf.txt  (the static per-tensor quant alone)
+
+Under torch.compile, vLLM serving folds the per-tensor FP8 activation quant
+into Inductor kernels, but these tables time it as a standalone kernel, so
+predictions bill a launch and an extra pass over the activation that serving
+does not have (observed on l40s, h100 and h200:
+benchmarks/evidence/collector/op-probe-2026-10/findings.yaml, entries
+full_reprobe_framework_mode_2026_09_24 and sm89_vllm_0300_probe_2026_10_04).
+Retire it by modelling the fused quant (fold compute_scale into the gemm row
+when the deployment compiles), or by dropping the standalone row for compiled
+deployments.
 """
 
 # B200 0.25.0 qualification (installed vLLM dd10e03f9), job 1968047:

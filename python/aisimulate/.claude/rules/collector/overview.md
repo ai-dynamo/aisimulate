@@ -21,7 +21,7 @@ that file is out of date.
 | **Pin** | The framework version and image each (backend, op family) is collected with | `collector/framework_manifest.yaml` | Owner, at an upgrade | Collector (refuses any other installed version), CI |
 | **Plan** | Every case an op collects | `collector/cases/`: base grids and model shapes, minus what `collector/skips.py` skips (see `case_authoring.md`). `collector/op_plans.py` expands each migrated op (`OP_PLANS`) once for every backend, and `collect.py --plan-only --sm N` counts it | Owner or agent | Collector, reviewers, CI |
 | **Record** | How a data table came to be: collected or reused, with which runtime, code and plan, and how the run went | `collection_meta.yaml` and `reuse.yaml` next to the parquet | Collector writes `collection_meta.yaml`; a person writes `reuse.yaml` | SDK loader, CI (R1-R7) |
-| **Note** | A **deviation** (`D-` id) the rows cannot show: the table measures a different path than serving runs. Cases a collection leaves out are not notes; they are `collector/skips.py` entries with the reason as a comment | `collector/notes/<backend>.yaml`; fields in `docs/perf-model/collector/data-format.md` | Owner or agent, accepted in review | Reviewers and consumers; CI (R8) |
+| **Note** | A **deviation** the rows cannot show: the table measures a different path than serving runs. Cases a collection leaves out are not notes; they are `collector/skips.py` entries with the reason as a comment | A comment at the code that measures the deviating path; what it says in `docs/perf-model/collector/data-format.md` ("Deviations") | Owner or agent, accepted in review | Reviewers and consumers |
 | **Rule** | What every collector change must satisfy | The seven rules below | Owner | Agents, reviewers, CI |
 
 Each word has one meaning:
@@ -31,8 +31,8 @@ Each word has one meaning:
 - A conclusion drawn from evidence is a **Note**. Do not create findings
   files, waivers, exception registries or evidence policies; those mechanisms
   were removed.
-- A fact has one home. Code, data comments and docs cite a note id instead of
-  restating the note.
+- A fact has one home. Data comments and docs point to the code that holds a
+  note instead of restating it.
 
 ## The failure principle
 
@@ -76,21 +76,21 @@ that settles it:
 | 4 | Leave cases out only through `collector/skips.py`: mismeasure, hang, a block that fails as a whole, or a model the backend cannot serve, each with its reason as a comment | Review; `test_skips.py` | In force for new code; existing worker guards migrate |
 | 5 | Rows depend only on the pin and the plan, never on environment variables | Collector refuses known switches | Partly in force |
 | 6 | Every table has a record; failures stay within budget and unavailable keys are reported | R1-R7; budget counts by hand until the Record migrates | Partly in force |
-| 7 | Notes are re-checked at every pin bump: `verified_on` is never behind the pin | R8 | In force |
+| 7 | Notes are re-checked at every pin bump | Review, by the upgrader | In force, by review |
 
 ## What to record, and when
 
 | When | What | Who |
 |---|---|---|
 | Every collection run | Runtime identity, plan hash, result counts and the failed cases, execution mode (graph or eager, autotuned or not), run scope (full plan or the CLI subset) | The collector, automatically (counts and execution mode by hand until the Record migrates) |
-| Every collector change | Affected ops; one line saying whether measured values change, with a before/after diff of the affected ops on one system per SM generation when they do; the notes diff | The author, in the PR |
-| Every pin bump | Recollect the families whose kernels changed and declare reuse (`reuse.yaml` with `approved_by`) for the rest; re-check every note in scope by a source check or a targeted run, then move `verified_on` or delete the note; compare the failure set with the previous run | The upgrader |
+| Every collector change | Affected ops; one line saying whether measured values change, with a before/after diff of the affected ops on one system per SM generation when they do; the notes added or changed | The author, in the PR |
+| Every pin bump | Recollect the families whose kernels changed and declare reuse (`reuse.yaml` with `approved_by`) for the rest; re-check every note in scope by a source check or a targeted run, then keep or delete it; compare the failure set with the previous run | The upgrader |
 
 ## Migration status
 
 | Piece | Today | Target |
 |---|---|---|
-| Notes | In force (R8) | Done |
+| Notes | Comments at the deviating code | Done |
 | Evidence policy, resolver, waivers | Removed | Done |
 | Plan | Ops in `OP_PLANS` (`collector/op_plans.py`): one case list for every backend, `collector/skips.py` applied at expansion, `--plan-only --sm N` counts and `--plan-table` rows. Other ops: YAML inputs plus Python getters, with `collector/skips.py` applied by `collect.py` | Every op on an op plan; model dimensions read from bundled HF configs |
 | Record | Provenance and reuse; failures only in `errors_*.json` | Result counts, unavailable keys, execution mode |

@@ -191,6 +191,17 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
     x = torch.randn((m, k), dtype=dtype, device=torch.device(device))
 
     if gemm_type == "fp8":
+        # This row times dynamic per-tensor activations, and the perf model derives
+        # fp8_static from it plus compute_scale, assuming both schemes run one
+        # kernel. On compute capability 10.0 and newer, vLLM serves static
+        # per-tensor checkpoints with FlashInferFP8ScaledMMLinearKernel while this
+        # row runs Cutlass (kernel priority in model_executor/kernels/linear/__init__.py;
+        # scaled_mm/flashinfer.py), so fp8_static predictions there are approximate,
+        # in an unknown direction (seen on SM120:
+        # benchmarks/evidence/collector/op-probe-2026-10/findings.yaml,
+        # sm120_collector_gemm_fp8_static_row). Retire it by also timing
+        # activation_scheme="static" on those systems and preferring that row, or
+        # by dropping fp8_static for ModelOpt FP8 checkpoints there.
         qc = Fp8Config(
             is_checkpoint_fp8_serialized=True,
             activation_scheme="dynamic",

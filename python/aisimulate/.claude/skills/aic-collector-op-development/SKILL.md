@@ -20,7 +20,7 @@ Before editing, read:
 2. `collector/README.md`
 3. `collector/cases/README.md`
 4. `docs/perf-model/collector/data-format.md`, especially **Identity layers**
-   and **Collector notes**
+   and **Deviations**
 5. The relevant `collector/<backend>/registry.py`, collector module, and model/base
    case YAML
 6. Every Python and Rust loader/query that consumes the op's perf file
@@ -268,8 +268,8 @@ Do not call the op complete until the handoff states:
 - Exact framework version, GPU/SM, backend, and `__compat__` route
 - Consumer lookup contract and fallback behavior
 - Case counts by backend/op: kept, added, removed, deduplicated, skipped
-- The floor or note id behind every filter and guard; failure counts per
-  consumer key, with unavailable keys named
+- The `collector/skips.py` entry behind every filter and the reason behind
+  every guard; failure counts per consumer key, with unavailable keys named
 - Unit/lint/runtime-smoke results
 - A real consumer query or support-matrix sanity check
 - Remaining gaps, especially required EP/TP/quant/window buckets
