@@ -2427,24 +2427,9 @@ def _dsv4_config() -> dict:
     if not default_model_paths:
         raise RuntimeError("model_case_values.dsv4 needs at least one default model path")
 
-    # Module tables key [native][local] since #1423/#1431, so several default
-    # models are legal as long as their geometries differ. The topk-calib
-    # table keys still carry no model geometry, so calibration is pinned to
-    # exactly one canonical artifact.
-    calib_model_paths = config.get("calib_model_paths")
-    if calib_model_paths is None:
-        calib_model_paths = [default_model_paths[0]]
-    calib_model_paths = _dedupe_strs(calib_model_paths)
-    if len(calib_model_paths) != 1:
-        raise ValueError(
-            "DeepSeek-V4 topk-calib keys carry no model geometry; "
-            "dsv4.calib_model_paths must contain exactly one canonical path"
-        )
-
     config["architecture"] = model_data.get("architecture")
     config["default_model_paths"] = default_model_paths
-    config["calib_model_paths"] = calib_model_paths
-    config["supported_model_paths"] = _dedupe_strs([*supported_model_paths, *default_model_paths, *calib_model_paths])
+    config["supported_model_paths"] = _dedupe_strs([*supported_model_paths, *default_model_paths])
     return config
 
 
@@ -2454,7 +2439,6 @@ def _dsv4_attention_kinds() -> tuple[str, ...]:
 
 _DSV4_CONFIG = _dsv4_config()
 _DSV4_DEFAULT_MODELS = tuple(_as_str_list(_DSV4_CONFIG["default_model_paths"], field_name="dsv4.default_model_paths"))
-_DSV4_CALIB_MODELS = tuple(_as_str_list(_DSV4_CONFIG["calib_model_paths"], field_name="dsv4.calib_model_paths"))
 _DSV4_SUPPORTED_MODELS = tuple(
     _as_str_list(_DSV4_CONFIG["supported_model_paths"], field_name="dsv4.supported_model_paths")
 )
@@ -2534,41 +2518,12 @@ def _selected_dsv4_models() -> tuple[str, ...]:
     return ()
 
 
-def _selected_dsv4_calib_models() -> tuple[str, ...]:
-    """Models the topk-calib op may run for.
-
-    Since #1460 the consumers key the calib DELTA by the row's native
-    ``num_heads``, so a second model's rows can no longer silently overwrite
-    the first's (the pre-#1460 keys carried no model geometry — the original
-    reason this gate existed). The topk DELTA is selector-geometry-specific
-    (Flash index_topk 512 vs Pro 1024), so a TARGETED run may — and should —
-    collect its own model's calibration. Default (unfiltered) plans still
-    collect only the canonical artifact declared in ``dsv4.calib_model_paths``:
-    that is a collection-cost policy now, logged when it drops a
-    default-expanded model."""
-    selected = _selected_dsv4_models()
-    if _get_model_path_filter() is not None:
-        # Targeted run: _selected_dsv4_models already vetted the model against
-        # supported_model_paths; its calibration lands in its own native bucket.
-        return selected
-    calib = tuple(m for m in selected if m in _DSV4_CALIB_MODELS)
-    dropped = [m for m in selected if m not in _DSV4_CALIB_MODELS]
-    if dropped:
-        print(
-            f"[dsv4-test-cases] dsv4_csa_topk_calib: default plan drops {len(dropped)} model(s) {dropped} "
-            f"(default calibration stays on {_DSV4_CALIB_MODELS[0]}; run targeted with "
-            f"COLLECTOR_MODEL_PATH to collect another model's calibration — consumers key "
-            f"calib per native geometry since #1460)"
-        )
-    return calib
-
-
-def get_dsv4_models(*, calib: bool = False) -> tuple[str, ...]:
-    """The DeepSeek-V4 checkpoints a plan times, or with ``calib`` those whose top-k it calibrates.
+def get_dsv4_models() -> tuple[str, ...]:
+    """The DeepSeek-V4 checkpoints a plan times.
 
     COLLECTOR_MODEL_PATH selects one; a skips.py ``model`` entry for the case
     file's architecture leaves them all out.
     """
     if _DSV4_CONFIG.get("architecture") in _SKIPPED_MODELS.get():
         return ()
-    return _selected_dsv4_calib_models() if calib else _selected_dsv4_models()
+    return _selected_dsv4_models()

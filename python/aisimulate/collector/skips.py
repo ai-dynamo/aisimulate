@@ -164,6 +164,11 @@ SKIPS: list[dict] = [
         "sm": [80, 86, 89, 90],
         "model_path": ["nvidia/GLM-5.2-NVFP4", "nvidia/GLM-5-NVFP4"],
     },
+    # The DeepSeek-V4 top-k calibration runs on DeepSeek-V4-Flash only, as collected
+    # before. Consumers apply a calibration only to its own head geometry, so
+    # DeepSeek-V4-Pro predictions run without the top-k correction, and its CSA
+    # context-parallel delta has no top-k table.
+    {"op": "dsv4_csa_topk_calib", "model_path": "sgl-project/DeepSeek-V4-Pro-FP8"},
     # TRT-LLM's MiniMax-M3 sparse attention takes a BF16 KV cache only
     # (run_msa_module), so every FP8-KV case would fail.
     {"backend": "trtllm", "op": _MSA_MODULE_OPS, "kv_cache_dtype": "fp8"},

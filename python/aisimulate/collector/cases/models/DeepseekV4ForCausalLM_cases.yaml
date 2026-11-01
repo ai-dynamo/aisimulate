@@ -171,9 +171,7 @@ model_case_values:
     # artifact dimension — one artifact per geometry per plan; Blackwell
     # platform-native collection uses targeted deepseek-ai/* runs. The first
     # entry is the canonical artifact (manual-CLI default model).
-    # Default calib collection stays on the canonical artifact via
-    # calib_model_paths (cost policy); targeted runs may collect any supported
-    # model's calibration — consumers key the DELTA per native geometry (#1460).
+    # collector/skips.py keeps the top-k calibration on the Flash artifact.
     # nvidia/DeepSeek-V4-{Flash,Pro}-NVFP4 (AIC-1749) are deliberately NOT
     # listed for module collection at all: the module gemm_type sweep is
     # bfloat16/fp8_block only (module_gemm_types below), and the persisted
@@ -186,8 +184,6 @@ model_case_values:
     default_model_paths:
       - sgl-project/DeepSeek-V4-Flash-FP8
       - sgl-project/DeepSeek-V4-Pro-FP8
-    calib_model_paths:
-      - sgl-project/DeepSeek-V4-Flash-FP8
     supported_model_paths:
       - deepseek-ai/DeepSeek-V4-Flash
       - deepseek-ai/DeepSeek-V4-Pro
@@ -329,8 +325,8 @@ framework_specific_op_cases:
     dsv4_hca_generation_module:
       cases: all
     # topK DELTA calibration on the CSA module plan's points (v1 top-k on the
-    # context points, v2 on the decode points) of the calib_model_paths
-    # checkpoint, or a targeted run's own.
+    # context points, v2 on the decode points) of each planned checkpoint;
+    # collector/skips.py leaves DeepSeek-V4-Pro out.
     dsv4_csa_topk_calib:
       cases: all
     # paged_mqa_logits IS consumed: it is the only sparse-kernel sidecar with a

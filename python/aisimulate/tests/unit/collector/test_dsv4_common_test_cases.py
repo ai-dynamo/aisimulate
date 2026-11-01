@@ -19,13 +19,10 @@ _PRO_FP8 = "sgl-project/DeepSeek-V4-Pro-FP8"
 _SUPPORTED_MODELS = (_FLASH, _PRO, _FLASH_FP8, _PRO_FP8)
 
 
-def test_dsv4_no_filter_expands_flash_and_pro_modules_calib_stays_canonical(monkeypatch, capsys):
-    """Full/raw plans expand BOTH default artifacts for module/sparse ops —
-    their tables key model geometry ([native][local] / native heads) since
-    #1423/#1431 — while topk calib stays on the single canonical model as a
-    collection-cost policy (since #1460 the consumers key the DELTA per
-    native geometry, so this is no longer a correctness gate), with the
-    default-plan drop logged."""
+def test_dsv4_no_filter_expands_flash_and_pro_modules_calib_stays_on_flash(monkeypatch):
+    """Full plans expand both default artifacts for the module and sparse ops, whose
+    tables key the model geometry, while a commented skips.py entry keeps the top-k
+    calibration on the Flash artifact."""
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
     monkeypatch.setattr(sys, "argv", ["pytest"])
 
@@ -34,9 +31,9 @@ def test_dsv4_no_filter_expands_flash_and_pro_modules_calib_stays_canonical(monk
     assert {case.model_path for case in module_cases} == {_FLASH_FP8, _PRO_FP8}
     paged = plan("dsv4_paged_mqa_logits_module", "sglang", 100).cases
     assert {case.model_path for case in paged} == {_FLASH_FP8, _PRO_FP8}
-    capsys.readouterr()
-    assert {case.model_path for case in plan("dsv4_csa_topk_calib", "sglang", 100).cases} == {_FLASH_FP8}
-    assert "default calibration stays on" in capsys.readouterr().out
+    calib = plan("dsv4_csa_topk_calib", "sglang", 100)
+    assert {case.model_path for case in calib.cases} == {_FLASH_FP8}
+    assert [region.region for region in calib.removed] == [f"model_path={_PRO_FP8}"]
 
 
 def test_dsv4_unrelated_model_filter_logs_the_skip(monkeypatch, capsys):
@@ -127,7 +124,7 @@ def test_dsv4_paged_mqa_logits_plan_is_the_sparse_grid(monkeypatch):
 
 
 def test_dsv4_topk_calib_times_the_csa_module_points(monkeypatch):
-    monkeypatch.setenv("COLLECTOR_MODEL_PATH", _PRO_FP8)
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", _FLASH_FP8)
 
     calib = {
         (c.batch_size, c.seq_len, c.prefix_len, c.variant) for c in plan("dsv4_csa_topk_calib", "sglang", 100).cases

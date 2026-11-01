@@ -1597,11 +1597,11 @@ def _expand_dsv4_topk_calib() -> list[Dsv4TopkCase]:
     """The CSA module plan's points of each calibrated checkpoint, batch by batch: v1 on the
     context points, v2 on the decode points, where one new token follows the KV length.
 
-    The calibration model is the one dsv4.calib_model_paths names (a cost policy), or a
-    targeted run's own; consumers key the DELTA per native head geometry.
+    Consumers key the DELTA per native head geometry; collector/skips.py names the
+    checkpoints left out.
     """
     cases = []
-    for model_path in get_dsv4_models(calib=True):
+    for model_path in get_dsv4_models():
         context = [Dsv4TopkCase(b, s, p, "v1", model_path) for b, s, p in _dsv4_points("context", model_path)]
         decode = [Dsv4TopkCase(b, 1, kv, "v2", model_path) for b, kv, _p in _dsv4_points("generation", model_path)]
         cases += sorted(context + decode, key=lambda case: case.batch_size)
