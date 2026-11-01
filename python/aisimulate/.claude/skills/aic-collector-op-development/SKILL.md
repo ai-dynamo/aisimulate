@@ -13,7 +13,7 @@ whose persisted rows satisfy the existing AIC consumer contract.
 Before editing, read:
 
 1. `.claude/rules/collector/overview.md` (the five things, the failure
-   principle, the seven rules), then `layer_permissions.md`,
+   principle, the rules), then `layer_permissions.md`,
    `failure_handling.md` and `case_authoring.md` in the same directory — the
    repository-owned policy. It is authoritative over anything restated in
    this skill.
@@ -153,32 +153,27 @@ population path. If a later design decision removes either side, delete the
 orphan. Do not retain speculative aliases, phase selectors, compatibility
 modes, or one-time audit scaffolding.
 
-## Step 5: Skip only through collector/skips.py; let the rest run
+## Step 5: Plan the op; skip only through collector/skips.py
 
-A queued case has two legal collector outcomes: execute it, or raise
-(`layer_permissions.md`). Follow the failure principle in `overview.md`:
+Every op is on an op plan (`case_authoring.md`, "Op plans"): its getters are
+the one-line `plan_cases` call, a backend whose run function needs more than
+the case declares `rows` or `batch_rows`, and the kernel or runner serving
+selects goes in `dispatch`. A queued case has two legal collector outcomes:
+execute it, or raise (`layer_permissions.md`).
 
-- **Cases that cannot or should not run** (an SM without a dtype, a block
-  this backend cannot run, a model it cannot serve) get an entry in
-  `collector/skips.py` with the reason as the comment above it, or a
-  quant-axis `min_sm` / cited `max_sm_exclusive`. Never filter them in a
-  getter or with a hard-coded SM check. GEMM and MoE are the reference: their
-  getters are one line that
-  calls the shared op plan (`case_authoring.md`, "Op plans"); a backend
-  whose run function needs more arguments declares `rows` there, and the
-  kernel or runner the plan picks goes in `dispatch` (MoE: SGLang's runner
-  pin is its dispatch; its routing arguments and TRT-LLM's min-latency row
-  are rows).
-- **Everything finer runs.** A shape boundary, a head count or one
-  framework's own limit fails and is recorded. Do not prune it and do not
-  narrow a shared grid for one framework. Count the failures per consumer key
-  and name the unavailable keys.
-- **A worker guard** is legal only when the case would mismeasure, hang, or
-  waste significant time and the check needs the running kernel. It raises
-  with a `FIXME(kernel-limit):` message and a comment that says why.
-- The other auditable homes stay: registry `unverified`/`unverified_sms`
-  markers, declared model correlations, the run-time capacity refusal, and
-  deduplication backed by a proven invocation or key duplicate (Step 2).
+- **Cases that cannot or should not run** get a `collector/skips.py` entry
+  with the reason and source as the comment above it
+  (`layer_permissions.md`, "Leaving cases out"). Never filter in a getter or
+  with a hard-coded SM check.
+- **Everything finer runs.** A shape boundary, a head count or one framework's
+  own limit fails and is recorded. Do not prune it and do not narrow a shared
+  grid for one framework. Count failures per consumer key and name the
+  unavailable keys.
+- **Capacity** is refused in the worker before allocation
+  (`layer_permissions.md`, "Capacity").
+- The other auditable homes stay: registry `unverified` / `unverified_sms`
+  markers, declared model correlations, and deduplication backed by a proven
+  invocation or key duplicate (Step 2).
 
 An op with no production consumer stays registry-only or explicitly
 experimental instead of joining default model plans. Keep shared generators

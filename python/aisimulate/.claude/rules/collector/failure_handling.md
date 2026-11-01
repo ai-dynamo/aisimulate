@@ -1,6 +1,6 @@
 ---
 description: >
-  Collector failure doctrine: observe don't predict; escalation decision tree.
+  Collector failure doctrine: observe, don't predict; the escalation decision tree.
 paths:
   - "collector/**"
   - "tests/unit/collector/**"
@@ -8,88 +8,73 @@ paths:
 
 # Collector Failure Handling
 
-Core doctrine: **observe, don't predict.** A failing case costs seconds and is
-recorded automatically with a classification. A prediction rule costs
-maintenance forever, rots when the framework fixes the bug, and depends on
-fragile matching contracts. The system therefore has NO declarative
-expected-failure layer — and deliberately no auto-skip either: if a whole
-group is failing, it should be FIXED, not silently tolerated. `overview.md`
-defines the failure principle and the per-consumer-key accounting; this page
-is the operating procedure.
+**Observe, don't predict.** A failing case costs seconds and is recorded
+automatically with a classification. A prediction rule costs maintenance
+forever and rots when the framework fixes the bug. There is no expected-failure
+layer and no auto-skip: a group that fails as a whole is fixed, or left out in
+`collector/skips.py` with its reason, never silently tolerated. `overview.md`
+defines the failure principle and the per-consumer-key accounting; this page is
+the procedure.
 
-## What happens automatically (no action needed)
+## What happens automatically
 
 - Every worker failure is recorded in `errors_<module>.json` and
   `collection_summary_<backend>.json` with a classification: `kernel_limit`
-  when the message starts with `FIXME(kernel-limit)` (a guard, see
-  layer_permissions.md), otherwise `unexpected`. Each record carries the
-  case parameters, exception type/message, and a `(model, dtype)` group
-  label. The summary aggregates `errors_by_group`; a group with many failures
-  is logged as a fix-me warning.
-- CUDA-fatal errors reset the worker process; the task is already recorded
-  before the reset.
-- Missing data points are tolerated downstream: the SDK interpolates,
-  extrapolates, reuses sibling-version rows, and can fall back to HYBRID
-  empirical estimates. A handful of failed cases does NOT invalidate a
-  (system, backend, version) dataset.
+  when the message starts with `FIXME(kernel-limit)`, otherwise `unexpected`.
+  Each record carries the case parameters, the exception and a `(model, dtype)`
+  group; the summary aggregates `errors_by_group`.
+- A CUDA-fatal error resets the worker after its task is recorded.
+- The SDK tolerates missing points: it interpolates, extrapolates, reuses
+  sibling-version rows, or falls back to empirical estimates. A handful of
+  failed cases does not invalidate a (system, backend, version) dataset.
 
 ## Decision tree for a failing case
 
 ```text
 case failed
-├─ Is it recorded & classified in the failure log?  → yes → DONE (default path)
-├─ Would it SUCCEED on the wrong kernel?            → collector/skips.py entry, reason as
-│    a comment (layer_permissions.md "Framework kernel limits")
-├─ Does it HANG or kill the node?                   → collector/skips.py entry, reason as a comment
-├─ Whole (op × backend) never debugged?             → registry OpEntry unverified=True
-├─ Not validated on THIS SM only?                   → registry OpEntry unverified_sms=(sm,)
-├─ Physically impossible on this hardware?          → collector/skips.py entry with the SMs
-├─ A whole block fails for one backend, or the       → collector/skips.py entry, reason as
-│    backend cannot serve the model?                   a comment
-├─ Out of memory?                                   → treat as unclassified until it
-│    reproduces on a clean GPU; if real, the worker refuses it before
-│    allocating (see layer_permissions.md — Capacity)
-├─ Crash inside framework code, framework suspected? → serving-parity audit FIRST
-│    (diff every collector-built metadata/input field against the serving
-│    population site for the failing shape — layer_permissions.md
-│    "Metadata/input parity"); a guard or a framework-bug report is only
-│    legitimate after the audit finds no collector-side divergence
-└─ Proven collector-code bug?                       → fix the code; never fix via skip;
-                                                      re-check the dispatch/skip rule
+├─ Recorded and classified in the failure log?          → yes: DONE (the default)
+├─ Would it succeed on the wrong kernel?                 → collector/skips.py entry
+├─ Does it hang or kill the node?                        → collector/skips.py entry
+├─ Does a whole block fail, or can the backend not       → collector/skips.py entry
+│    serve the model?
+├─ (op × backend) never debugged?                        → registry unverified=True
+├─ Not validated on this SM only?                        → registry unverified_sms=(sm,)
+├─ Out of memory?                                        → unclassified until it reproduces on
+│                                                          a clean GPU; if real, the worker
+│                                                          refuses it before allocating
+├─ Crash inside framework code?                          → serving-parity audit first; a guard
+│                                                          or a framework bug report only after
+│                                                          the audit finds no collector-side
+│                                                          divergence
+└─ Proven collector bug?                                 → fix the code, never via a skip
 ```
 
-Scattered framework gaps (an rc that crashes on some shape) deliberately
-have NO home in `collector/skips.py`. They fail, the log
-explains them grouped by (model, dtype), and the next version bump re-tests
-them for free. A fully-failing group burns some GPU time — that cost is the
-intended pressure to actually fix it (mark unverified, fix the collector, or
-accept the gap knowingly).
+`layer_permissions.md` holds the rules behind each branch: "Leaving cases
+out", "Capacity" and "Metadata and input parity". Scattered framework gaps
+have no home in `collector/skips.py`: they fail, the log groups them by
+(model, dtype), and the next pin bump re-tests them for free.
 
-## Triage thresholds (from collection-campaign experience)
+## Triage thresholds
 
-- Scattered failures, up to about 5% of a table, are acceptable when explained
+- Scattered failures up to about 5% of a table are acceptable when explained
   and unclustered.
-- Count failures per consumer key bucket: the dimensions the SDK matches
-  exactly (dtype or quant, head count, head_dim, window, experts, top-k, TP,
-  EP). A bucket below about 20% success is an unavailable key. Report it in
-  the run summary and the PR; it needs action only when a supported model
-  queries that key or the bucket was available in the previous run.
+- Count failures per consumer key bucket (`overview.md`). A bucket below about
+  20% success is an unavailable key: report it in the run summary and the PR.
+  It needs action only when a supported model queries that key or the bucket
+  was available in the previous run.
 - Investigate when scattered failures pass about 5% of a table, or cluster by
   op, backend, model, shape family or SM.
-- Roughly one third failing, or an entire family failing, is a systemic
-  collector problem — stop collecting, fix the collector.
-- Treat an OOM as unclassified until the same case fails on a clean GPU.
+- About a third failing, or a whole family, is a systemic collector problem:
+  stop collecting and fix the collector.
 
 Never hide failures with broad skips, retries, generic OOM labels, reduced
-coverage, synthetic rows, or weakened benchmarks. Record a failed result
-before resetting a worker after a fatal CUDA error.
+coverage, synthetic rows or weakened benchmarks.
 
 ## Consuming failure records
 
-- Compare against the previous run of the same (backend, version): only NEW
+- Compare with the previous run of the same (backend, version); only new
   failure groups deserve attention.
-- Re-check a failure with a targeted run of the affected cases (`--ops`,
-  `--model-path`, `--case-filter`), never a full collection.
+- Re-check a failure with a targeted run (`--ops`, `--model-path`,
+  `--case-filter`), never a full collection.
 - Failure records are observations. Do not machine-translate them into
-  `collector/skips.py` entries — each escalation above requires the specific
-  evidence named in the tree.
+  `collector/skips.py` entries; each escalation above needs its evidence.

@@ -142,15 +142,17 @@ reviews:
 
     - path: "python/aisimulate/collector/**"
       instructions: |
-        Enforce the mapped collector guidelines (start from overview.md). A
-        queued case must execute or raise. Only collector/skips.py entries
-        (each with its reason as a comment), quant-axis min_sm and memory
-        feasibility may filter cases at generation time, with counted drops;
-        finer boundaries run and fail. A worker guard is legal only for a case
-        that would mismeasure, hang or waste significant time. Reject
-        invented geometry or kernel fallbacks, selector exception machinery,
-        deviations without a note at the deviating code, untraceable results,
-        and undocumented producer to consumer schema changes. Verify runtime
+        Enforce the mapped collector guidelines (start from overview.md). Each
+        op has one plan for every backend (collector/op_plans.py), and its
+        getters are the one-line plan_cases call. A queued case must execute
+        or raise. Only collector/skips.py entries, each with its reason as a
+        comment, leave cases out; finer boundaries run and fail. Capacity is
+        refused at run time, before allocation, with a FIXME(kernel-limit):
+        does not fit reason. A worker guard is legal only for a case that would
+        mismeasure, hang or waste significant time. Reject invented geometry
+        or kernel fallbacks, environment switches that change rows, deviations
+        without a note at the deviating code, untraceable results, and
+        undocumented producer to consumer schema changes. Verify runtime
         versions, commands, GPU assumptions, and failure evidence.
 
     - path: "crates/core/src/engine/**"

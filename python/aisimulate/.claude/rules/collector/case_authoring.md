@@ -1,6 +1,7 @@
 ---
 description: >
-  Adding/changing collector case coverage: base grids, model shapes, capability floors.
+  Adding or changing collector case coverage: case YAML, op plans, skips,
+  running subsets.
 paths:
   - "collector/**"
   - "tests/unit/collector/**"
@@ -8,180 +9,159 @@ paths:
 
 # Collector Case Authoring
 
-How to add or change collection coverage. The declaration surface is exactly
-two kinds of YAML plus the skip list in `collector/skips.py` — if you feel the
-need for a new kind of rule, re-read `layer_permissions.md` first.
-
-Read `overview.md` first. Two of its principles govern every change below:
-generate the same cases for all three frameworks (a framework that cannot run
-part of a grid fails those cases and the failures are recorded), and leave
-cases out only through `collector/skips.py`.
+How to add or change collection coverage. The declaration surface is the case
+YAML under `collector/cases/`, the op plans in `collector/op_plans.py` and the
+skip list in `collector/skips.py`. If you need a new kind of rule, re-read
+`layer_permissions.md` first. Two principles from `overview.md` govern every
+change: generate the same cases for all three frameworks, and leave cases out
+only through `collector/skips.py`.
 
 ## The equation
 
 ```text
-plan cases = dedup( expand(base sweep grid) ∪ expand(model shapes) )
+plan cases = expand(base sweep grid ∪ model shapes), one case per persisted key
 runnable   = plan cases − what collector/skips.py skips
 ```
 
 - **Base grids** (`cases/base_ops/<op>.yaml`) give interpolation its uniform
-  support: token/batch/seq sweeps, parallelism sizes, routing distributions.
-  One file per op. Density here is the only knob for collection cost.
+  support: token, batch and sequence sweeps, parallelism sizes, routing
+  distributions. Density here is the knob for collection cost.
 - **Model shapes** (`cases/models/<architecture>_cases.yaml`,
   `model_case_values`) guarantee exact hits for real models and keep
-  correlated dimensions together (query heads / KV heads / head_dim / window
-  are ONE tuple — never crossed with another model's values).
-- **Dedup** happens on physical tuples when base and model expansions overlap.
+  correlated dimensions together: query heads, KV heads, head_dim and window
+  are one tuple, never crossed with another model's values.
+- **Deduplication** keeps one case per persisted key. When several models
+  write the same key, the plan keeps one owning model.
 
 ## Adding coverage
 
 | Goal | Action |
 |---|---|
-| New architecture | one new `cases/models/<architecture>_cases.yaml` |
-| New model, same architecture | add path to `model_paths` in the existing file |
-| New checkpoint quant artifact | new `model_case_values` row with its `quantization_modes` (MoE) — never merge quant-distinct artifacts into one row |
+| New architecture | a new `cases/models/<architecture>_cases.yaml` |
+| New model, same architecture | add its path to `model_paths` in the existing file |
+| New checkpoint quant artifact | a new `model_case_values` row with its `quantization_modes` (MoE); never merge quant-distinct artifacts into one row |
 | Change a shared sweep | edit the op's `cases/base_ops/<op>.yaml` |
-| New op collector | only when no existing op can produce the data points |
-| Op needs newer SM than some GPUs | axis `min_sm` (quant modes) or an entry in `collector/skips.py` |
-| One backend cannot run a whole block (an op, dtype or model) on some SMs | an entry in `collector/skips.py`, its reason as the comment above it |
-| A case one backend runs on two kernels, and only one kernel cannot run it | a `collector/skips.py` entry naming that `dispatch`: the case still runs on the other kernel |
-| New GEMM dtype | add it to `gemm_types` in `cases/base_ops/gemm.yaml`, plus a `collector/skips.py` entry for SMs without it |
-| Quant mode exists on an SM interval, not a floor (framework routes the platform elsewhere) | quant-mode `max_sm_exclusive` with a mandatory serving-dispatch citation (owner decision 2026-07-13: negative gates are sanctioned only on the quant-mode axis, only with a file:line@version citation, and every citation is re-verified on version bumps — the default-open behavior lets NEW SMs be probed and fail loudly instead of being silently whitelisted out) For an op on an op plan, the same fact is a `collector/skips.py` entry with the citation in its comment |
+| New op collector | only when no existing op can produce the points; give it an `OP_PLANS` entry ("Op plans" below) |
+| A dtype, op or model one backend cannot run on some SMs, or a quant mode serving routes elsewhere on some SMs | a `collector/skips.py` entry, its reason and source as the comment above it |
+| A case one backend runs on two kernels, and only one kernel cannot run it | a `collector/skips.py` entry naming that `dispatch`; the case still runs on the other kernel |
 
-## Model file structure (unchanged from v2 core)
+## Model file structure
 
 - `architecture`, `model_path`, `model_paths` (aliases), `include_base`,
   `base_ops`, `model_ops`, `framework_specific_base_ops`,
-  `model_specific_base_ops` — op activation.
-- `all_frameworks_op_cases` / `framework_specific_op_cases` — op sections;
-  the only meaningful value is `cases: all` (activation). There are no
-  selectors: `case_ids` / `contains` / `indices` / `ranges` / `limit` /
-  `rules` no longer exist.
-- `model_case_values` / `framework_specific_model_case_values` — shapes.
-  `model_aliases` = one physical case, many artifact names (shape-only ops).
-  `model_paths` inside a row = one case per path (runtime-sensitive).
+  `model_specific_base_ops`: op activation.
+- `all_frameworks_op_cases` / `framework_specific_op_cases`: op sections. The
+  only meaningful value is `cases: all`; there are no selectors.
+- `model_case_values` / `framework_specific_model_case_values`: shapes.
+  `model_aliases` means one physical case under many artifact names
+  (shape-only ops); `model_paths` inside a row means one case per path
+  (runtime-sensitive).
 
-## Legitimate shape narrowing: declare, never filter
+## Narrowing shapes: declare, never filter
 
-There are no selectors, so "I need fewer shapes for this model" has exactly
-one legal form: **declare the correlation and let the generator expand only
-valid combinations**. Route by who owns the fact:
+There are no selectors, so "fewer shapes for this model" has one legal form:
+declare the correlation and let the generator expand only valid combinations.
 
-| The constraint belongs to | Where it goes | Existing example |
+| The constraint belongs to | Where it goes | Example |
 |---|---|---|
-| the model (head count, valid TP shards, windows) | a field on its `model_case_values.<op>` row | `attention` profiles: `tensor_parallel_sizes` — the generator expands only valid shards of that tuple |
-| the op's universal math (identities, budgets) | generator constraint / base-op budget field | `tp*ep == num_gpu`; `batch*seq <= max_context_tokens` |
-| the platform (dtype floor, memory) | `collector/skips.py` / the worker's capacity refusal | see `layer_permissions.md` |
-| the framework (kernel limits) | nothing: the cases fail and are recorded. A block that fails as a whole, or a case that would mismeasure or hang, goes in `collector/skips.py` | see `layer_permissions.md` |
+| the model (head count, valid TP shards, windows) | a field on its `model_case_values.<op>` row | attention `tensor_parallel_sizes` |
+| the op's universal math (identities, budgets) | a generator constraint or base-op budget field | `tp*ep == num_gpu`; `batch*seq <= max_context_tokens` |
+| the platform (dtype floor) | `collector/skips.py` | `layer_permissions.md`, "Leaving cases out" |
+| device memory | the worker's run-time refusal | `layer_permissions.md`, "Capacity" |
+| the framework (kernel limits) | nothing: the cases fail and are recorded, unless "Leaving cases out" applies | |
 
-If the op's generator does not yet support the model-correlated field you
-need (e.g. `mla_bmm` sweeps a global head grid with no model axis), the fix
-is to extend that generator to honor a declared field — a mechanism change,
-so propose it to the human. Do NOT approximate it with any post-generation
-filtering; that is how the selector engine was born. Over-collection in the
-meantime is acceptable: extra valid points are interpolation support, and
-invalid ones fail into the classified log.
+If an op's generator cannot honor a model-correlated field you need, extending
+it is a mechanism change: propose it. Do not approximate it with
+post-generation filtering. Over-collection in the meantime is acceptable:
+extra valid points are interpolation support, and invalid ones fail into the
+classified log.
 
-## Unresolvable declarations fail loudly (no generation-side fallbacks)
+## Unresolvable declarations fail loudly
 
-Fallback deception has a generation-side twin: cases that carry the wrong
-identity are worse than no cases, because they benchmark successfully and
-poison the database with mislabeled rows.
+Cases with the wrong identity are worse than no cases: they benchmark
+successfully and poison the database with mislabeled rows.
 
-1. When a declared input cannot be resolved — a model row, a quant mode, an
-   attention/MLA profile, an artifact's config — the generator RAISES. It
-   never substitutes defaults, another model's geometry, or a "close enough"
+1. When a declared input cannot be resolved (a model row, a quant mode, an
+   attention or MLA profile, an artifact's config), the generator raises. It
+   never substitutes defaults, another model's geometry or a "close enough"
    quant mode.
-2. `model_aliases` is the only sanctioned aliasing, and only for declared
-   shape-only ops where the artifact provably cannot change the invoked
-   kernel or the persisted key. Everything else uses `model_paths` (one
-   physical case per artifact) or fails.
-3. A planned op that expands to zero cases must be explainable from logged
-   drops (`collector/skips.py` entries). Zero cases with no logged
-   reason is a population bug to fix — not a clean completion.
+2. `model_aliases` is the only sanctioned aliasing, and only for shape-only
+   ops where the artifact provably cannot change the invoked kernel or the
+   persisted key. Everything else uses `model_paths` or fails.
+3. An op that plans zero cases must be explained by `collector/skips.py`
+   entries; zero cases with no logged reason is a population bug.
 
 ## Op plans
 
-An op plan expands one case list for every CUDA backend and leaves out only
-whole regions. `collector/op_plans.py` holds one `OpPlan` entry per migrated
-op (`OP_PLANS` lists them): its case type (a named tuple whose string form is still the list form,
-`['fp8', 64, 4096, 7168]`, so case IDs, checkpoints and `--case-filter`
-strings do not change), its expand function (every case, in run order, from
-the YAML above), its dtype field and the fields that share one module build.
+Every registered op except moe_a2a has one `OpPlan` in `collector/op_plans.py`
+(`OP_PLANS`). The moe_a2a collectors keep their own population: each backend
+measures a different all-to-all library for one launched world.
+
+An op plan declares:
+
+- **Case type**: a named tuple whose string form is the list form
+  (`['fp8', 64, 4096, 7168]`), so case IDs, checkpoints and `--case-filter`
+  strings keep working.
+- **Expand function**: every case, in run order, from the YAML above.
+- **`dispatch`**: the kernel or runner a backend measures a case on, the one
+  serving selects. `--plan-only` counts cases per dispatch, and a skip entry
+  may name one.
+- **`rows`**, for a backend whose run function takes more than the case: the
+  run arguments for one case. Rows say how a case runs, never whether; a case
+  with no row is an error. A field that enters the persisted key or changes
+  the kernel belongs in the case or the dispatch. A row may be an
+  `{id, params}` mapping; a run records it under its `id`.
+- **`batch_rows`**, for a backend that times several cases on one module
+  build: tasks of (row, the cases it times). A row lists its points, so the
+  worker never derives them, and every kept case is timed by exactly one row.
+
 `plan(op, backend, sm)` removes what `collector/skips.py` skips for that
-backend and SM; each backend's getter is one line,
-`return plan_cases("<op>", "<backend>", get_sm_version())`.
+backend and SM; each getter is one line,
+`return plan_cases("<op>", "<backend>", get_sm_version())`. A plan does not
+depend on the device: the worker refuses what the device cannot hold
+(`layer_permissions.md`, "Capacity").
 
-Where the plan picks the kernel or runner a backend measures a case on (the
-one serving selects), the op declares it in `dispatch`, and `--plan-only`
-counts the cases per dispatch. A backend whose run function takes more
-arguments than the shared case may declare `rows`: the run arguments for one
-case and its dispatch. Rows say how a case runs, never whether; a case with
-no row is an error. A field that enters the persisted key or changes the
-kernel belongs in the case or the dispatch, not in rows. A row may be an
-`{id, params}` mapping (mHC): a run records it under its `id`, and
-`--plan-only` hashes that `id`.
+Planning imports no framework, so `--plan-only` runs on any CPU. Rows that
+build framework objects are built only when the getter runs; on a CPU,
+`--plan-only` still counts those cases but reports `plan_hash: null`.
 
-A backend that times several cases on one module build declares
-`batch_rows` instead: tasks of (row, the cases it times). A row lists its
-points, so the worker never derives them again, and every kept case is timed
-by exactly one row. A plan does not depend on the device: the worker refuses
-a point the device cannot run, such as a prefill longer than the chunk
-serving uses there or a KV cache larger than its memory, before allocating
-it, and raises its `FIXME(kernel-limit)` reason. Ops on a plan therefore use
-no generation-time memory filter (`layer_permissions.md`, Capacity).
+`tests/unit/collector/test_op_plans.py` runs over every entry: the one-line
+getters, that the backends differ only by `collector/skips.py` entries naming
+them, that every left-out case is counted under its entry, that every kept
+case is timed exactly once, and the case string form.
 
-Planning imports no framework, so `--plan-only` runs on any CPU;
-`test_op_plans.py` checks that. Rows may build framework objects (MLA's
-torch or TensorRT-LLM dtypes); they are built only when the getter runs, so
-on a CPU `--plan-only` still counts those cases but reports `plan_hash: null`
-with the missing module.
-
-`tests/unit/collector/test_op_plans.py` runs over every entry, so moving an
-op onto a plan needs no new test: it checks the one-line getters, that the
-backends differ only by `collector/skips.py` entries naming them, that every
-left-out case is counted under its entry, and the case string form.
-
-To move an op: write its case type and expand function from the existing
-shared YAML, add the `OP_PLANS` entry, make each getter the one-line call and
-delete what the getters filtered. Decide each deleted filter by
-`overview.md`: it either goes (the cases run and failures are recorded) or
-becomes a `collector/skips.py` entry (mismeasure, hang, a block that fails as
-a whole, a model the backend cannot serve), with its reason as a comment.
-
-Inspect a plan without a GPU:
+To add an op, write its case type and expand function from shared YAML, add
+the `OP_PLANS` entry with `dispatch` and `rows` or `batch_rows` as needed, and
+make each getter the one-line call. Inspect a plan without a GPU:
 
 ```bash
 python3 collect.py --backend sglang --model-cases-full --sm 120 --ops gemm \
   --plan-only --plan-table /tmp/plan
 ```
 
-The `plans` block gives cases per dtype, what was left out under which
-`collector/skips.py` entry, and `plan_hash`, the case_plan_hash of a run that
+The `plans` block gives the cases per dtype, what was left out under which
+`collector/skips.py` entry, and `plan_hash`, the `case_plan_hash` of a run that
 attempts every case. `--plan-table` writes one CSV row per case for diffing.
 
-## Running subsets (healing)
+## Running subsets
 
-Subset selection is a RUNTIME concern, never persisted to YAML:
+Subset selection is a run-time concern, never persisted to YAML:
 
 ```bash
-python3 collect.py --backend sglang --model-path <model> --gpu b200_sxm   # one model
-python3 collect.py --backend trtllm --ops moe --case-filter "tp=4"        # substring filter
+python3 collect.py --backend sglang --model-path <model> --gpu b200_sxm        # one model
 python3 collect.py --backend sglang --ops gemm --case-filter "['fp8_block', "  # one GEMM dtype
-python3 collect.py --backend trtllm --resume                              # finish an interrupted run
+python3 collect.py --backend trtllm --resume                                   # finish an interrupted run
 ```
 
-## What NOT to do
+A case filter matches a substring of the case or row string; with
+`batch_rows`, it selects whole rows.
 
-1. No generation recipes inside model op sections — shapes go in
+## What not to do
+
+1. No generation recipes inside model op sections: shapes go in
    `model_case_values`, recipes in `base_ops/`.
-2. No per-model narrowing of another op's grid "to save time" — extra points
-   are cheap; missing interpolation support is not. Tune the base grid instead.
-3. No new YAML keys that condition on batch/seq/token/feature values.
-4. Do not skip scattered failures. A `collector/skips.py` entry is for a
-   block that fails as a whole, or for cases that would mismeasure, hang or
-   come from a model the backend cannot serve; anything finer fails and is
-   recorded.
-5. No per-framework narrowing of a shared grid beyond `collector/skips.py`
-   entries. If one framework cannot run scattered parts of it, those cases
-   fail and are recorded.
+2. No per-model narrowing of another op's grid "to save time"; tune the base
+   grid instead.
+3. No YAML keys that condition on batch, sequence, token or feature values.
+4. No skip entries for scattered failures, and no per-framework narrowing of a
+   shared grid beyond `collector/skips.py` entries.

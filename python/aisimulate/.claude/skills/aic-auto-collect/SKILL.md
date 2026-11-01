@@ -29,7 +29,7 @@ Assume the user wants the complete bring-up unless they explicitly ask for a smo
 - The unit of work is one draft PR per `(system, backend, backend_version)`. Use that PR as the checkpoint, not a private local branch.
 - Make small sign-off commits as progress checkpoints after each `collect_xx.py`/op-family collection finishes. If a single collection runs longer than about one hour, checkpoint safe collector fixes, current perf outputs, and the failure/status summary before continuing.
 - If multiple frameworks are requested, finish and checkpoint one framework/version PR first, then create a new draft PR for the next framework/version.
-- Do not synthesize missing rows. Unsupported runtime/kernel paths should be filtered or documented, not filled with fake numbers.
+- Do not synthesize missing rows. An unsupported runtime or kernel path gets a `collector/skips.py` entry or fails and is recorded; it is never filled with fake numbers.
 - If the PR body says customer support is ready, verify the default AIC workflow can actually choose a valid configuration for at least the expected representative model/backend/system path.
 
 ## Required Inputs
@@ -184,13 +184,13 @@ Before collecting a new framework version or a new GPU SM target, check whether 
 
 1. Record the exact runtime package version from inside the container. Do not trust only the image tag.
 2. Inspect `collector/<backend>/registry.py` for version routes and the concrete `collect_xx.py` files registered for this version.
-3. Read the top of each relevant `collect_xx.py` file: docstring, `__compat__`, version notes, SM gates, and known unsupported filters.
+3. Read the op's `collector/skips.py` entries and the top of each relevant `collect_xx.py` file: docstring, `__compat__` and deviation notes.
 4. Compare against the framework source for the exact version/tag when there is any sign of API or kernel churn:
    - SGLang: attention backends, DeepGEMM, FlashInfer, DeepSeek/DSV module code, MoE runner paths.
    - vLLM: attention/MLA modules, quantized GEMM paths, GDN/Mamba modules, custom all-reduce.
    - TRT-LLM: attention plugins, MLA/DSA modules, MoE, compute-scale, GDN/Mamba modules.
 5. For a new SM such as SM120, check kernel architecture support before full collection: tiny smoke cases, import probes, and direct framework source guards.
-6. Patch collector routing or test-case generation before full collection when the runtime cannot support a case. Use version routing and explicit SM filters rather than discovering the same failure across thousands of tasks.
+6. When the runtime cannot run a whole block (an op, dtype or model on this SM), add a `collector/skips.py` entry with the reason before full collection, rather than discovering the same failure across thousands of tasks. Scattered failures still run and are recorded.
 7. If a special framework image exists for a model family or kernel family, try that image before declaring the op unsupported. Record its exact package version and image digest.
 
 Commit and push preflight collector fixes before starting long full runs.
@@ -223,7 +223,7 @@ system per SM generation. A full plan is for bringing up a new system, or for
 a family whose kernels changed at a pin bump; the other families declare
 reuse. To run exact cases, pass each case's full string as its own
 `--case-filter`, for example `--case-filter "['fp8_block', 64, 32, 4096]"`.
-For GEMM, `--plan-only --sm <sm> --plan-table DIR` lists every planned case.
+`--plan-only --sm <sm> --plan-table DIR` lists every planned case of an op.
 
 For new GPUs, prioritize ops used by the target models and backend first, but do not claim full support until all expected ops for that backend/version are collected or explicitly marked unsupported.
 
@@ -296,7 +296,7 @@ If the process times out or crashes after partial progress, rerun with the same 
 
 Full-collection acceptance for an op:
 
-- The final collector run has zero unclassified errors, or every remaining skipped case is intentionally filtered before execution.
+- The final collector run has zero unclassified errors, or every remaining failure group is explained, and every case left out is under a `collector/skips.py` entry.
 - The output perf file was copied from the full output directory, not from an earlier smoke/limited run.
 - Row counts are plausible compared with nearby systems or the generated case count.
 - Duplicate shape keys are removed only when they are true repeated measurements for the same key; keep the latest or best-defined row consistently and document the policy.
@@ -346,7 +346,7 @@ Fix policy:
   4. Verify the real API in source. Do not trust Python's "Did you mean" suggestions blindly.
   5. Patch the collector in place for the target release (one release per file: `.claude/rules/collector/layer_permissions.md`, "Version contract").
 - For API changes, upgrade the collector in place and pin `__compat__` to exactly the target release.
-- For a dtype or op the GPU cannot run at all (FP4/NVFP4 below SM100, FP8 below SM89), or a whole block this backend cannot run or a model it cannot serve, add an entry to `collector/skips.py` with the reason as a comment (or a quant-axis `min_sm`). Never filter in collector code with `get_sm_version()`.
+- For a dtype or op the GPU cannot run at all (FP4/NVFP4 below SM100, FP8 below SM89), or a whole block this backend cannot run or a model it cannot serve, add an entry to `collector/skips.py` with the reason as a comment. Never filter in collector code with `get_sm_version()`.
 - For a shape or dimension boundary that one framework rejects, per-rank sizes such as `inter_size // tp` included, change nothing: the cases fail and are recorded. Count failures per consumer key and name the unavailable keys in the PR.
 - Add a worker guard only when a case would mismeasure, hang or kill the worker, or waste significant time, and the check needs the running kernel. It raises with a `FIXME(kernel-limit):` message and a comment that says why (`.claude/rules/collector/layer_permissions.md`).
 - For CUDA-fatal errors, the worker restarts and the failure is already recorded; do not add skips.
@@ -356,7 +356,7 @@ Fix policy:
 - Do not add side-by-side version fork modules; prior-version code is `git log -- <file>` away.
 - If a collector helper silently returns `None` after a dry-run or subprocess failure, make it raise or record the skip explicitly so failed coverage is visible.
 - If a valid production-like case fails in the framework kernel, file or prepare an upstream bug for SGLang, vLLM, or TRT-LLM with exact image/version, SM, minimal repro, and traceback. Link it in the PR or failure ledger.
-- If the case is not production-like or the runtime explicitly does not support that SM/path, skip it in `collect_xx.py` before execution with a clear comment and a narrow predicate.
+- If the runtime does not support that SM or path at all, add a `collector/skips.py` entry with the reason as its comment; never skip a queued case inside `collect_xx.py`.
 
 After a fix:
 
@@ -418,11 +418,12 @@ signatures (2026-07-11, sglang 0.5.14 wave-2 recollection):
 Therefore ALWAYS verify results by content, never by status:
 
 1. Unpack the artifact and count rows per expected op family; an op with zero
-   rows and no capability-floor explanation is a failure regardless of status.
+   rows and no `collector/skips.py` entry explaining it is a failure
+   regardless of status.
 2. Read `errors_*.json` / `collection_summary_*.json`; any
    `ModuleCollectionFailure` means that op collected nothing.
 3. Compare collected vs planned counts (`--plan-only --sm <sm>` prints the
-   plan size per dtype for ops with an op plan, listed in `OP_PLANS`);
+   plan size per dtype of every op except moe_a2a);
    large shortfalls mean the run died early — check the tail of the log for
    container/cluster death, not just collector errors.
 
@@ -439,7 +440,7 @@ The canonical destination family comes from
 - Power values, when collected, are positive and below/near the configured power limit.
 - There are no unexplained duplicate rows for identical keys.
 - Coverage is comparable to the nearest existing system/backend/version.
-- Missing cases are explained by documented unsupported config filters.
+- Missing cases are explained by `collector/skips.py` entries or recorded failures.
 - Re-running sample does not produce large unexplained variance.
 
 Useful checks:
@@ -551,7 +552,7 @@ If the new GPU should become user-visible:
 
 1. Update system support metadata.
 2. Update support matrix outputs if required by the repo workflow.
-3. Add or update tests for new SM filters or version routes.
+3. Add or update tests for new `collector/skips.py` entries or version routes.
 4. Document known gaps in the PR body.
 
 ## Phase 10: PR Preparation

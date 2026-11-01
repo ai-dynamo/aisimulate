@@ -76,10 +76,11 @@ Before making any change under `python/aisimulate/collector/**` MUST read:
   Pin, Plan, Record, Note, Rule — the failure principle, collection cost, and
   what to record when)
 - `python/aisimulate/.claude/rules/collector/layer_permissions.md` (layer
-  permission table, module boundary, dispatch-vs-skip rule)
+  permission table, leaving cases out, capacity, serving parity, module
+  boundary)
 - `python/aisimulate/.claude/rules/collector/failure_handling.md`
   (observe-don't-predict doctrine, escalation decision tree)
-- For case YAML work:
+- For case YAML and op-plan work:
   `python/aisimulate/.claude/rules/collector/case_authoring.md`
 
 For adding a new Collector operation, additionally follow
