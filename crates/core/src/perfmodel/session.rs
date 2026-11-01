@@ -469,6 +469,31 @@ pub(crate) fn query_generation_op(
     op.query(db, &ctx)
 }
 
+/// Telemetry carries decode request counts. A qualified Mamba op queries in
+/// flattened verification tokens (`requests * token_width`) and divides back.
+fn telemetry_decode_batch(op: &Op, requests: u32) -> u32 {
+    match op {
+        Op::Mamba2(m) if op.is_qualified_mamba() => requests.saturating_mul(m.token_width.max(1)),
+        _ => requests,
+    }
+}
+
+/// Decode-only telemetry walk: every generation op at the observed request
+/// count, with [`telemetry_decode_batch`] applied per op.
+pub(crate) fn run_telemetry_decode_ops(
+    ops: &[Op],
+    db: &PerfDatabase,
+    requests: u32,
+    kv_per_request: u32,
+) -> Result<f64, AicError> {
+    let mut total = 0.0;
+    for op in ops {
+        let batch = telemetry_decode_batch(op, requests);
+        total += query_generation_op(op, db, batch, 1, kv_per_request, 1.0, 0, None)?.latency_ms;
+    }
+    Ok(total)
+}
+
 /// FPM-telemetry mix-step composition (the Dynamo mocker contract). Consumed
 /// ONLY by `Engine::rank_latency_ms` (observed `ForwardPassMetrics`
 /// dispatch); the live SDK engine-step path (`Engine::mixed_step_latency`)
@@ -496,6 +521,7 @@ pub(crate) fn get_mix_step_ops(
     combined_prefix: u32,
     kv_per_decode_req: u32,
     decode_batch: u32,
+    num_prefill_requests: u32,
 ) -> Result<f64, AicError> {
     // ---- Pass 1: combined non-attention work (batch=1, isl=ctx+gen) ----
     // Python: `run_static` is called with `isl = num_tokens_combined`
@@ -517,6 +543,29 @@ pub(crate) fn get_mix_step_ops(
     let effective_isl_combined = (ctx_tokens + gen_tokens).max(1);
     let mut total = 0.0_f64;
     for op in context_ops {
+        if op.is_qualified_mamba() {
+            // Spread the token sum over exactly the observed request count:
+            // `r` requests carry one extra token. Never invent extra states.
+            let n = num_prefill_requests.max(1);
+            let (q, r) = (ctx_tokens / n, ctx_tokens % n);
+            for (batch, tokens) in [(n - r, q), (r, q + 1)] {
+                if batch == 0 || tokens == 0 {
+                    continue;
+                }
+                let ctx = RuntimeContext {
+                    batch_size: batch,
+                    beam_width: 1,
+                    s: tokens,
+                    prefix: prefix_per_req,
+                    num_tokens: batch * tokens,
+                    seq_imbalance_correction_scale: 1.0,
+                    gen_seq_imbalance_correction_scale: 1.0,
+                    num_image_tokens: 0,
+                };
+                total += op.query(db, &ctx)?.latency_ms;
+            }
+            continue;
+        }
         if op.is_context_attention() {
             continue;
         }
@@ -579,15 +628,16 @@ pub(crate) fn get_mix_step_ops(
     // batch-1 generation_attention and inflate the step latency.
     if decode_batch > 0 {
         for op in generation_ops {
-            if !op.is_generation_attention() {
+            if !op.is_generation_attention() && !op.is_qualified_mamba() {
                 continue;
             }
+            let batch = telemetry_decode_batch(op, decode_batch);
             let ctx = RuntimeContext {
-                batch_size: decode_batch,
+                batch_size: batch,
                 beam_width: 1,
                 s: kv_per_decode_req.max(1),
                 prefix: 0,
-                num_tokens: decode_batch,
+                num_tokens: batch,
                 seq_imbalance_correction_scale: 1.0,
                 gen_seq_imbalance_correction_scale: 1.0,
                 num_image_tokens: 0,

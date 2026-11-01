@@ -130,7 +130,13 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 //   price encoder calls through the canonical model. Claimed 21, 27 and 28 on
 //   its own branch while 21 through 28 landed; renumbered at merge (precedent:
 //   15, 18, 26).
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 29;
+// - 30 (Mamba mixed-step accounting, PR #619): Mamba2Op gained tail-appended
+//   `state_dtype` and `token_width`. The serde defaults cover JSON only.
+// - 31 (Mamba timing identity): Mamba2Op appends `stochastic_rounding` and
+//   `philox_rounds` after the schema-30 tail, and EngineConfig gains four
+//   optional Mamba controls. Claimed 30 on its own branch while #619 held 30
+//   with a different layout. Schema-30 bincode payloads are rejected.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 31;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
@@ -178,6 +184,14 @@ pub struct EngineConfig {
     /// `moe_backend`, this selects one measured MoE table lane.
     #[serde(default)]
     pub moe_kernel_source: Option<String>,
+    #[serde(default)]
+    pub mamba_backend: Option<String>,
+    #[serde(default)]
+    pub mamba_ssm_cache_dtype: Option<String>,
+    #[serde(default)]
+    pub mamba_stochastic_rounding: Option<bool>,
+    #[serde(default)]
+    pub mamba_philox_rounds: Option<u32>,
 
     // KV
     pub kv_block_size: Option<u32>,

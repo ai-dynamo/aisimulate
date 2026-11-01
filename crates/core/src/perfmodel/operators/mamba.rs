@@ -27,6 +27,26 @@ pub struct Mamba2Op {
     pub head_dim: u32,
     pub n_groups: u32,
     pub chunk_size: u32,
+    #[serde(default = "default_mamba_state_dtype")]
+    pub state_dtype: String,
+    #[serde(default = "default_token_width")]
+    pub token_width: u32,
+    // Appended after the schema-30 (#619) tail so that layout stays a prefix.
+    #[serde(default)]
+    pub stochastic_rounding: bool,
+    #[serde(default = "default_philox_rounds")]
+    pub philox_rounds: u32,
+}
+
+fn default_mamba_state_dtype() -> String {
+    "unrecorded".to_string()
+}
+
+fn default_philox_rounds() -> u32 {
+    10
+}
+fn default_token_width() -> u32 {
+    1
 }
 
 impl Mamba2Op {
@@ -36,6 +56,12 @@ impl Mamba2Op {
         batch_size: u32,
         seq_len: u32,
     ) -> Result<PerformanceResult, AicError> {
+        // Decode coordinates count flattened tokens; the measured axis counts requests.
+        let requests = if self.phase == "generation" {
+            batch_size.div_ceil(self.token_width.max(1))
+        } else {
+            batch_size
+        };
         // Mirrors Python `Mamba2Kernel.query`: silicon-first, SOL fallback
         // on perf-DB miss. The op's arg-style SOL is threaded into the table
         // query so the perf_interp engine can util-hold beyond-range queries
@@ -43,7 +69,7 @@ impl Mamba2Op {
         match db.state_space.query_mamba2(
             &self.kernel_source,
             &self.phase,
-            batch_size,
+            requests,
             seq_len,
             self.d_model,
             self.d_state,
@@ -52,6 +78,10 @@ impl Mamba2Op {
             self.head_dim,
             self.n_groups,
             self.chunk_size,
+            &self.state_dtype,
+            self.stochastic_rounding,
+            self.philox_rounds,
+            self.token_width,
             &|b, s| self.sol_latency_ms(db, b, s),
         ) {
             Ok(value) => {
@@ -62,7 +92,7 @@ impl Mamba2Op {
                 )
             }
             Err(AicError::PerfDatabase(_)) => {
-                let latency = self.sol_latency_ms(db, batch_size as f64, seq_len as f64);
+                let latency = self.sol_latency_ms(db, requests as f64, seq_len as f64);
                 Ok(PerformanceResult::new(latency, Source::Sol)
                     .clamp_non_negative()
                     .scaled(self.scale_factor))
@@ -71,9 +101,8 @@ impl Mamba2Op {
         }
     }
 
-    /// Mirrors Python `Mamba2Kernel.get_sol()`. `f64` coordinates because the
-    /// perf_interp engine evaluates SOL at blended/snapped anchor points.
-    fn sol_latency_ms(&self, db: &PerfDatabase, batch_size: f64, seq_len: f64) -> f64 {
+    /// Input/output traffic plus recurrent-state reads and checkpoint writes.
+    fn sol_total_bytes(&self, batch_size: f64, seq_len: f64) -> f64 {
         let nheads = self.nheads as f64;
         let head_dim = self.head_dim as f64;
         let n_groups = self.n_groups as f64;
@@ -84,19 +113,43 @@ impl Mamba2Op {
         let x = if self.phase == "context" && seq_len > 0.0 {
             batch_size * seq_len
         } else {
-            batch_size
+            batch_size * self.token_width as f64
         };
-        let total_bytes = match self.kernel_source.as_str() {
-            "causal_conv1d_fn" | "causal_conv1d_update" => {
+        match self.kernel_source.as_str() {
+            "causal_conv1d_fn"
+            | "causal_conv1d_update"
+            | "vllm_causal_conv1d_fn"
+            | "vllm_causal_conv1d_update" => {
                 x * conv_dim * (d_conv + 1.0) * 2.0 + x * conv_dim * 2.0
             }
             _ => {
                 // SSM kernels (`mamba_chunk_scan_combined` etc.).
-                x * (d_inner + n_groups * d_state * 2.0 + nheads) * 2.0 + x * d_inner * 2.0
+                let state_bytes = if matches!(self.state_dtype.as_str(), "float16" | "bfloat16") {
+                    2.0
+                } else {
+                    4.0
+                };
+                // Read initial state once and write each speculative checkpoint.
+                let writes = if self.phase == "generation" {
+                    self.token_width as f64
+                } else {
+                    1.0
+                };
+                // Legacy ops use unsharded shapes and unknown state precision.
+                let recurrent = if self.state_dtype == "unrecorded" {
+                    0.0
+                } else {
+                    batch_size * d_inner * d_state * state_bytes * (1.0 + writes)
+                };
+                x * (d_inner + n_groups * d_state * 2.0 + nheads) * 2.0
+                    + x * d_inner * 2.0
+                    + recurrent
             }
-        };
-        let mem_bw = db.system_spec.gpu.mem_bw.max(1.0);
-        total_bytes / mem_bw * 1000.0
+        }
+    }
+
+    fn sol_latency_ms(&self, db: &PerfDatabase, batch_size: f64, seq_len: f64) -> f64 {
+        self.sol_total_bytes(batch_size, seq_len) / db.system_spec.gpu.mem_bw.max(1.0) * 1000.0
     }
 }
 
@@ -518,6 +571,34 @@ impl KdaOp {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mamba_recurrent_traffic_accounts_for_state_precision_and_verify_writes() {
+        let mut op = super::Mamba2Op {
+            name: "ssu".into(),
+            scale_factor: 1.0,
+            kernel_source: "vllm_flashinfer_selective_state_update".into(),
+            phase: "generation".into(),
+            d_model: 4096,
+            d_state: 128,
+            d_conv: 4,
+            nheads: 64,
+            head_dim: 64,
+            n_groups: 4,
+            chunk_size: 128,
+            state_dtype: "float16".into(),
+            stochastic_rounding: true,
+            philox_rounds: 5,
+            token_width: 1,
+        };
+        // Per request: 18,560 activation bytes and a 1 MiB FP16 state.
+        // Width one reads/writes the state once. Width four writes four checkpoints.
+        assert_eq!(op.sol_total_bytes(2.0, 0.0), 4_231_424.0);
+        op.token_width = 4;
+        assert_eq!(op.sol_total_bytes(2.0, 0.0), 10_634_240.0);
+        op.state_dtype = "float32".into();
+        assert_eq!(op.sol_total_bytes(2.0, 0.0), 21_120_000.0);
+    }
+
     use super::*;
     use std::path::PathBuf;
 

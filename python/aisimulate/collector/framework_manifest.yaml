@@ -158,6 +158,7 @@ frameworks:
     # the normal framework/family runtime; run these campaigns separately at
     # their declared runtime.
     models:
+      "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4": *vllm_0310_runtime
       # GLM-5.3-Flash (Glm5NextForConditionalGeneration) standalone per-op
       # collection runs on the stock official v0.31.0 release (no overlay),
       # tag commit db9527a46873454610df6dbedf79a36d6bf1a7f6. v0.31.0 moves

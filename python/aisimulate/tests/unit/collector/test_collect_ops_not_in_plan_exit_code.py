@@ -38,9 +38,9 @@ def _run_collect(*args: str) -> subprocess.CompletedProcess:
 def test_op_outside_the_backend_plan_exits_with_the_dedicated_code():
     from collector.helper import EXIT_CODE_OPS_NOT_IN_PLAN
 
-    # mamba2 is a trtllm registry op: accepted by --ops, never in vLLM's case plan.
-    result = _run_collect("--backend", "vllm", "--model-cases-full", "--plan-only", "--ops", "mamba2")
+    # mla_context is a trtllm registry op: accepted by --ops, never in vLLM's case plan.
+    result = _run_collect("--backend", "vllm", "--model-cases-full", "--plan-only", "--ops", "mla_context")
 
     assert result.returncode == EXIT_CODE_OPS_NOT_IN_PLAN, result.stderr[-2000:]
     assert EXIT_CODE_OPS_NOT_IN_PLAN not in (0, 1, 2)
-    assert "Requested ops are not present in the collector v2 case plan: mamba2" in result.stderr
+    assert "Requested ops are not present in the collector v2 case plan: mla_context" in result.stderr

@@ -602,6 +602,10 @@ mod tests {
             head_dim: 64,
             n_groups: 8,
             chunk_size: 256,
+            state_dtype: "float32".into(),
+            stochastic_rounding: false,
+            philox_rounds: 10,
+            token_width: 1,
         }
     }
 
@@ -994,6 +998,63 @@ mod tests {
         ops
     }
 
+    #[test]
+    fn mamba_identity_round_trips_and_pr619_schema_30_layout_is_rejected() {
+        // Non-default values, so a round trip cannot pass on serde defaults.
+        let op = Mamba2Op {
+            state_dtype: "float16".into(),
+            token_width: 4,
+            stochastic_rounding: true,
+            philox_rounds: 5,
+            ..mamba2()
+        };
+        let spec = EngineSpec::new(sample_engine_config(), vec![], vec![OpSpec::Mamba2(op)]);
+        let bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+        // The op ends in token_width (4), stochastic_rounding (1) and
+        // philox_rounds (4); the absent vision section (1) follows it.
+        let tail = bytes.len() - 1 - 5;
+        assert_eq!(&bytes[tail - 4..tail], &4u32.to_le_bytes());
+        assert_eq!(&bytes[tail..tail + 5], &[1, 5, 0, 0, 0]);
+        // PR #619's schema-30 wire: no Mamba engine controls in the engine
+        // JSON, and the op stops after token_width.
+        let mut engine = serde_json::to_value(&spec.engine).unwrap();
+        for key in [
+            "mamba_backend",
+            "mamba_ssm_cache_dtype",
+            "mamba_stochastic_rounding",
+            "mamba_philox_rounds",
+        ] {
+            assert!(engine.as_object_mut().unwrap().remove(key).is_some());
+        }
+        let mut pr619 = bincode::serialize(&BincodeWire {
+            schema_version: 30,
+            engine_json: engine.to_string(),
+            context_ops: vec![],
+            generation_ops: spec.generation_ops.clone(),
+            vision: None,
+        })
+        .unwrap();
+        let end = pr619.len() - 1;
+        pr619.drain(end - 5..end);
+        assert_eq!(&pr619[end - 9..end - 5], &4u32.to_le_bytes());
+        assert!(matches!(
+            EngineSpec::from_bincode(&pr619),
+            Err(AicError::UnsupportedSchemaVersion {
+                kind: "EngineSpec",
+                got: 30,
+                expected: 31,
+            })
+        ));
+        // The same payload under the current version fails op decoding, so the
+        // rejection above comes from the version check, before any op is read.
+        pr619[..4].copy_from_slice(&ENGINE_SPEC_SCHEMA_VERSION.to_le_bytes());
+        assert!(!matches!(
+            EngineSpec::from_bincode(&pr619),
+            Ok(_) | Err(AicError::UnsupportedSchemaVersion { .. })
+        ));
+    }
+
     fn sample_engine_config() -> EngineConfig {
         EngineConfig {
             schema_version: ENGINE_CONFIG_SCHEMA_VERSION,
@@ -1006,6 +1067,10 @@ mod tests {
             fpm_parquet_path: None,
             decoder_replay: false,
             moe_kernel_source: None,
+            mamba_backend: None,
+            mamba_ssm_cache_dtype: None,
+            mamba_stochastic_rounding: None,
+            mamba_philox_rounds: None,
             kv_block_size: Some(64),
             parallel: ParallelMapping {
                 tp_size: 8,
