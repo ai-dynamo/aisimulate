@@ -79,26 +79,27 @@ def test_glm5_mqa_matches_sglang_query_row_chunking_contract():
     assert "ke[start:end]" in source
 
 
-def test_glm5_sparse_case_plan_shards_real_context_and_decode_batches():
-    helpers = _load_pure_helpers("_glm5_sparse_kernel_cases")
-    helpers["_selected_glm5_models"] = lambda: ["nvidia/GLM-5-NVFP4"]
-    helpers["get_sm_version"] = lambda: 90
-    helpers["_dsa_context_derived_shapes"] = lambda _model: [(0, 128, 1), (64, 128, 2)]
-    helpers["_dsa_generation_derived_shapes"] = lambda _model: [(128, 1, 4), (256, 1, 2)]
+def test_glm5_sparse_rows_carry_the_dsa_module_points_of_their_batch(monkeypatch):
+    from collector.op_plans import _long_context_points, _max_position, get_mla_module_sweep_spec, plan
 
-    for kernel in ("mqa", "topk", "dsa_attn"):
-        assert helpers["_glm5_sparse_kernel_cases"](kernel) == [
-            ["nvidia/GLM-5-NVFP4", kernel, 1],
-            ["nvidia/GLM-5-NVFP4", kernel, 2],
-            ["nvidia/GLM-5-NVFP4", kernel, 4],
-        ]
-
-
-def test_glm5_sparse_smoke_samples_each_batch_across_its_full_shape_range():
-    source = SOURCE_PATH.read_text(encoding="utf-8")
-
-    assert 'if "--smoke" in sys.argv and len(shapes) > 8:' in source
-    assert "round(i * (len(shapes) - 1) / 7)" in source
+    monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
+    sweep = get_mla_module_sweep_spec("plan")
+    max_position = _max_position("zai-org/GLM-5")
+    expected = {(b, s, p) for b, s, p in _long_context_points("context", sweep, max_position)}
+    expected |= {(b, 1, kv) for b, kv, _p in _long_context_points("generation", sweep, max_position)}
+    for kernel, op in (
+        ("mqa", "glm5_mqa_logits_module"),
+        ("topk", "glm5_topk_module"),
+        ("dsa_attn", "glm5_dsa_attn_module"),
+    ):
+        rows = plan(op, "sglang", 90).rows
+        assert len({row[2] for row in rows}) == len(rows)  # one task per batch
+        got = set()
+        for model, row_kernel, batch, points in rows:
+            assert (model, row_kernel) == ("zai-org/GLM-5", kernel)
+            assert points == sorted(points)  # shortest prefix first
+            got |= {(batch, seq_len, prefix) for prefix, seq_len in points}
+        assert got == expected
 
 
 def test_glm5_sparse_platform_gating_lives_outside_the_getter():

@@ -85,15 +85,14 @@ try:
         alloc_prefix_indices as _alloc_prefix_indices,
     )
     from collector.sglang.runtime_limits import (
-        dsa_indexer_prefill_shape_is_supported,
+        kv_pool_capacity_tokens as _kv_pool_capacity_tokens,
+    )
+    from collector.sglang.runtime_limits import (
         kv_pool_page_size,
         required_kv_alloc_tokens,
         required_kv_tokens,
         required_prefill_extend_tokens,
         sglang_dsa_mqa_logits_chunking_supported,
-    )
-    from collector.sglang.runtime_limits import (
-        kv_pool_capacity_tokens as _kv_pool_capacity_tokens,
     )
     from collector.sglang.runtime_limits import (
         runtime_chunk_size as _runtime_chunk_size,
@@ -106,15 +105,14 @@ except ModuleNotFoundError:
         alloc_prefix_indices as _alloc_prefix_indices,
     )
     from runtime_limits import (
-        dsa_indexer_prefill_shape_is_supported,
+        kv_pool_capacity_tokens as _kv_pool_capacity_tokens,
+    )
+    from runtime_limits import (
         kv_pool_page_size,
         required_kv_alloc_tokens,
         required_kv_tokens,
         required_prefill_extend_tokens,
         sglang_dsa_mqa_logits_chunking_supported,
-    )
-    from runtime_limits import (
-        kv_pool_capacity_tokens as _kv_pool_capacity_tokens,
     )
     from runtime_limits import (
         runtime_chunk_size as _runtime_chunk_size,
@@ -678,45 +676,6 @@ def _model_native_gemm_quant(model_id: str) -> str | None:
             "SGLang resolves such an export to w4afp8, which this collector has no path for"
         )
     return None
-
-
-def _dsa_context_prefix_shape_is_valid(
-    batch_size: int,
-    seq_len: int,
-    prefix_len: int,
-    max_position_embeddings: int | None = None,
-) -> bool:
-    """Return whether a DSA prefix-context sample is structurally valid.
-
-    A one-token extension stays out at 0.5.21: the collector times DSA prefill
-    eagerly, where it illegal-accessed (runtime_limits.dsa_indexer_prefill_shape_is_supported).
-
-    **Per-request context ceiling (SGLang mechanism, not an empirical constant).**
-    The DSA/NSA indexer builds its rotary cos/sin cache for
-    ``max_position_embeddings`` positions, which is also what SGLang's scheduler
-    uses to admit a request (``ServerArgs.context_length`` defaults to it).  A
-    per-request context ``prefix_len + seq_len`` longer than that indexes past
-    the RoPE table, so the indexer illegal-accesses on Blackwell — independent
-    of batch size and of KV-pool headroom, hence uncatchable by the
-    post-ModelRunner capacity filters.  Skip it before launch.  The cap is
-    per-request: ``batch_size`` does not enter here.
-
-    The complementary **memory bound** — ``batch_size * (prefix + seq) <= KV
-    pool capacity`` — is what makes large-batch x long-context infeasible (e.g.
-    bs=1024 cannot also be long-context); it is already enforced after
-    ModelRunner construction via ``required_kv_tokens`` / ``kv_pool_capacity_tokens``.
-    """
-    if not (prefix_len >= 0 and dsa_indexer_prefill_shape_is_supported(batch_size, seq_len)):
-        return False
-    return not (max_position_embeddings is not None and prefix_len + seq_len > max_position_embeddings)
-
-
-# DSA max_position ceilings the GLM-5 sparse kernels sample (one
-# ``max_pos - seq_len`` point per value): DeepSeek-V3.2 (163840), GLM-5 family
-# (202752), GLM-5.2 (1048576). Each model's shape-validity filter drops the
-# ceilings above its own max_position, so collecting GLM-5.2 covers GLM-5 while
-# shorter-context models keep only their own.
-_DSA_CEILING_MAX_POSITIONS = (163840, 202752, 1048576)  # DeepSeek-V3.2, GLM-5, GLM-5.2
 
 
 def _build_wideep_mla_test_cases(mode: str):

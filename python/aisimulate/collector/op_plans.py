@@ -1621,6 +1621,83 @@ def _sglang_dsv4_kernel_rows(kernel: str) -> Callable[[list, int | None], list[t
     return rows
 
 
+# --- GLM-5 sparse kernels: MQA logits, top-k and sparse attention (SGLang) -----------
+
+# The checkpoints whose geometry the kernels read: the BF16 GLM-5, and the first declared
+# NVFP4 one (GLM-5.2-NVFP4 reaches 1M tokens). collector/skips.py picks one per SM.
+_GLM5_SPARSE_MODELS = ("zai-org/GLM-5", ("nvidia/GLM-5.2-NVFP4", "nvidia/GLM-5-NVFP4"))
+
+
+class Glm5SparseCase(NamedTuple):
+    """One shape of a GLM-5 DSA sparse kernel: batch, new tokens and cached tokens.
+
+    The shapes are the DSA module plan's points of the checkpoint; a decode step is
+    one new token over its KV length.
+    """
+
+    batch_size: int
+    seq_len: int
+    prefix_len: int
+    kernel: str
+    model_path: str
+
+    __str__ = __repr__ = _list_form
+
+    @property
+    def dtype(self) -> str:
+        """The sparse attention reads BF16 queries and KV; the indexer kernels FP8 keys."""
+        return "bfloat16" if self.kernel == "dsa_attn" else "fp8"
+
+
+def _glm5_sparse_models() -> list[str]:
+    declared = {spec.model_path for spec in get_mla_module_model_specs(attention_type="dsa")}
+    models = []
+    for choice in _GLM5_SPARSE_MODELS:
+        options = choice if isinstance(choice, tuple) else (choice,)
+        models += [model for model in options if model in declared][:1]
+    return models
+
+
+def _glm5_sparse_expand(kernel: str) -> Callable[[], list[Glm5SparseCase]]:
+    def expand() -> list[Glm5SparseCase]:
+        """The DSA module plan's context and decode points of each checkpoint, batch by batch."""
+        sweep = get_mla_module_sweep_spec(_MODULE_SWEEP)
+        cases = []
+        for model_path in _glm5_sparse_models():
+            max_position = _max_position(model_path)
+            shapes = {(b, s, p) for b, s, p in _long_context_points("context", sweep, max_position)}
+            shapes |= {(b, 1, kv) for b, kv, _p in _long_context_points("generation", sweep, max_position)}
+            cases += [
+                Glm5SparseCase(batch, length, prefix, kernel, model_path)
+                for batch, length, prefix in sorted(shapes, key=lambda shape: (shape[0], shape[2], shape[1]))
+            ]
+        return cases
+
+    return expand
+
+
+def _sglang_glm5_sparse_rows(cases: list, sm_version: int | None) -> list[tuple[list, tuple]]:
+    """One run_glm5_dsa_sparse_kernel_worker task per (model, batch): the checkpoint, the kernel,
+    the batch, then its [prefix_len, seq_len] points, shortest prefix first."""
+    tasks: dict[tuple, list] = {}
+    for case in cases:
+        tasks.setdefault((case.model_path, case.kernel, case.batch_size), []).append(case)
+    return [
+        ([model, kernel, batch, [[c.prefix_len, c.seq_len] for c in members]], tuple(members))
+        for (model, kernel, batch), members in tasks.items()
+    ]
+
+
+def _glm5_sparse_plan(kernel: str) -> OpPlan:
+    return OpPlan(
+        Glm5SparseCase,
+        _glm5_sparse_expand(kernel),
+        dtype_field="dtype",
+        group_fields=("model_path", "batch_size"),
+        batch_rows={"sglang": _sglang_glm5_sparse_rows},
+    )
+
+
 # --- mHC: mhc_module ---------------------------------------------------------------
 
 _DSV4_ARCHITECTURE = "DeepseekV4ForCausalLM"
@@ -2020,6 +2097,9 @@ OP_PLANS: dict[str, OpPlan] = {
         group_fields=("model_path", "batch_size"),
         batch_rows={"sglang": _sglang_dsv4_kernel_rows("topk")},
     ),
+    "glm5_mqa_logits_module": _glm5_sparse_plan("mqa"),
+    "glm5_topk_module": _glm5_sparse_plan("topk"),
+    "glm5_dsa_attn_module": _glm5_sparse_plan("dsa_attn"),
     "mla_bmm_gen_pre": OpPlan(
         MlaBmmCase, _mla_bmm_expand("mla_bmm_gen_pre"), dtype_field="dtype", group_fields=MlaBmmCase._fields
     ),

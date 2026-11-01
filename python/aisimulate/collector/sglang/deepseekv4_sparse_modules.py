@@ -481,35 +481,6 @@ def _bench_sparse_kernel_shape(kernel, prefix, isl, bs, sc, device, *, topk_vari
     return [(None, lat)]
 
 
-def _derive_context_shapes(bs_list, seq_list, prefix_list, is_valid):
-    """Build unique ``(prefix, isl, bs)`` context shapes from a STATIC sweep grid
-    (the owning attention module's INPUT grid), deduped + order-preserving.
-
-    Shared by GLM5 (dsa) and DSV4 (csa/hca): the sparse sub-kernels reconstruct
-    the module's intended input grid instead of reading back the rows the full
-    module actually survived. The full module drops large isl at runtime (smem /
-    KV-pool caps) that the cheap sparse indexer/topk kernels do not hit, so a
-    1:1 read of the module CSV under-samples them.
-
-    ``is_valid(bs, isl, prefix) -> bool`` encodes the module's context limits.
-    Iteration is prefix-outer so a late long-prefix shape does not reorder the
-    smaller-isl rows.
-    """
-    cases = [
-        (bs, isl, prefix) for prefix in prefix_list for bs in bs_list for isl in seq_list if is_valid(bs, isl, prefix)
-    ]
-    shapes, seen = [], set()
-    for bs, isl, prefix in cases:
-        key = (int(prefix), int(isl), int(bs))
-        if key not in seen:
-            seen.add(key)
-            shapes.append(key)
-    return shapes
-
-
-_CHUNKED_PREFILL = None
-
-
 def _chunked_prefill_size_from_gpu_mem(gpu_mem):
     """Replicate ``ServerArgs._handle_gpu_memory_settings`` chunked_prefill_size
     tiering directly from device memory (MB). Thresholds are identical across the

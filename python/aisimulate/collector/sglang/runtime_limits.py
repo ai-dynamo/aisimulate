@@ -8,8 +8,6 @@ import inspect
 from collections.abc import Callable
 from contextlib import contextmanager
 
-DSA_INDEXER_TOTAL_KV_TOKEN_LIMIT = 1 << 25
-
 
 def kv_pool_capacity_tokens(model_runner) -> int | None:
     """Best-effort token capacity from the actual SGLang KV allocator."""
@@ -181,18 +179,6 @@ def dsa_indexer_prefill_shape_is_supported(batch_size: int, seq_len: int) -> boo
     once a 0.5.21 run shows the eager one-token extend no longer faults.
     """
     return batch_size > 0 and seq_len > 1
-
-
-def dsa_indexer_total_kv_tokens_supported(
-    batch_size: int,
-    seq_len: int,
-    prefix_len: int,
-    *,
-    is_prefill: bool,
-) -> bool:
-    """Return whether the DSA indexer offset path supports this KV span."""
-    total_kv_tokens = required_kv_tokens(batch_size, seq_len, prefix_len, is_prefill=is_prefill)
-    return total_kv_tokens <= DSA_INDEXER_TOTAL_KV_TOKEN_LIMIT
 
 
 def required_prefill_extend_tokens(batch_size: int, seq_len: int) -> int:

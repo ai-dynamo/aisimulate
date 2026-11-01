@@ -252,7 +252,7 @@ REGISTRY: list[OpEntry] = [
         unverified_sms=(120,),
     ),
     # GLM-5 DSA sparse sub-kernels (mqa / topk / dsa_attn) — GLM-5 analogue of
-    # the DSV4 sparse family; shapes 1:1 from the GLM-5 DSA module CSV.
+    # the DSV4 sparse family; shapes are the DSA module plan's points.
     # GLM-5 sparse sub-kernels share the DeepGEMM fp8_mqa_logits / FlashMLA
     # sparse family: pre-Hopper is excluded by the op_min_sm=90 capability
     # floors. SM120 stays parked after the RTX 6000 Pro probe (2026-07-06):

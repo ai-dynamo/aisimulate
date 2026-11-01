@@ -153,31 +153,7 @@ class TestGetGenerationTestCases:
                 assert case[0] * case[1] <= 256 * 1024
 
 
-class TestDsaContextPrefixShape:
-    def test_single_token_extend_stays_out_while_prefill_is_timed_eagerly(self):
-        # 0.5.21: prefill graphs off, and the eager DSA indexer faulted on a one-token extend
-        mod = _import_module()
-        assert not mod._dsa_context_prefix_shape_is_valid(1, 1, 0)
-        assert not mod._dsa_context_prefix_shape_is_valid(32, 1, 1024)
-
-    def test_accepts_multi_token_prefill_with_prefix(self):
-        mod = _import_module()
-        assert mod._dsa_context_prefix_shape_is_valid(1, 2, 0)
-        assert mod._dsa_context_prefix_shape_is_valid(32, 4, 1024)
-
-    def test_rejects_negative_prefix(self):
-        mod = _import_module()
-        assert not mod._dsa_context_prefix_shape_is_valid(1, 2, -1)
-
-
 class TestDsaRuntimeLimits:
-    def test_total_kv_token_limit_matches_indexer_offset_capacity(self):
-        from collector.sglang.runtime_limits import dsa_indexer_total_kv_tokens_supported
-
-        assert dsa_indexer_total_kv_tokens_supported(32, 4, 1_000_000, is_prefill=True)
-        assert not dsa_indexer_total_kv_tokens_supported(32, 4, 1_048_575, is_prefill=True)
-        assert not dsa_indexer_total_kv_tokens_supported(64, 4, 524_288, is_prefill=True)
-
     def test_decode_allocation_counts_fresh_token_before_page_rounding(self):
         from collector.sglang.runtime_limits import required_kv_alloc_tokens
 
@@ -398,32 +374,20 @@ class TestBuildModuleTestCases:
         assert cases
         assert {(case.model_path, case.gemm_type) for case in cases} == {("nvidia/GLM-5-NVFP4", "bfloat16")}
 
-    def test_glm_sparse_selector_preserves_targeted_artifact(self, monkeypatch):
-        _import_module()
-        source_path = Path("collector/sglang/glm5_dsa_sparse_modules.py")
-        tree = ast.parse(source_path.read_text(), filename=str(source_path))
-        selector_node = next(
-            node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_selected_glm5_models"
-        )
-        namespace = {"get_sm_version": lambda: 90}
-        exec(compile(ast.Module(body=[selector_node], type_ignores=[]), str(source_path), "exec"), namespace)
-        selector = namespace["_selected_glm5_models"]
+    def test_glm_sparse_plan_keeps_one_checkpoint_per_sm_and_targeted_artifacts(self, monkeypatch):
+        def models(sm):
+            return {case.model_path for case in plan("glm5_mqa_logits_module", "sglang", sm).cases}
 
         monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
-        assert selector() == ["zai-org/GLM-5"]
+        assert models(90) == {"zai-org/GLM-5"}
+        assert models(100) == {"nvidia/GLM-5.2-NVFP4"}
         for model_path in ("nvidia/GLM-5-NVFP4", "nvidia/GLM-5.2-NVFP4"):
             monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
-            assert selector() == []
-
-        namespace["get_sm_version"] = lambda: 100
-        monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
-        assert selector() == ["nvidia/GLM-5.2-NVFP4"]
+            assert models(90) == set()
         monkeypatch.setenv("COLLECTOR_MODEL_PATH", "nvidia/GLM-5-NVFP4")
-        assert selector() == ["nvidia/GLM-5-NVFP4"]
-
-        namespace["get_sm_version"] = lambda: 90
+        assert models(100) == {"nvidia/GLM-5-NVFP4"}
         monkeypatch.setenv("COLLECTOR_MODEL_PATH", "deepseek-ai/DeepSeek-V3.2")
-        assert selector() == []
+        assert models(90) == set()
 
     # Reads the bundled export files, whatever shape they hold. The MIXED_PRECISION shape is pinned in
     # test_collect_mla_module_native_quant.py with export files written to tmp_path.

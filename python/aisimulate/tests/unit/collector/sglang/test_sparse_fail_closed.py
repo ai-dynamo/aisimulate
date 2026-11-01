@@ -129,8 +129,6 @@ def test_glm5_grouped_worker_reports_every_inner_exception():
             "GLM5_ARCHITECTURE": "GlmMoeDsaForCausalLM",
             "KERNEL_TO_OP_NAME": {"mqa": "test_op"},
             "_bench_glm5_sparse_kernel_shape": fail_shape,
-            "_dsa_context_derived_shapes": lambda _model: [(13, 2, 3), (29, 4, 3)],
-            "_dsa_generation_derived_shapes": lambda _model: [],
             "_glm5_sparse_config": lambda _model: object(),
             "_guarded_bench": _load_functions(
                 DSV4_SOURCE,
@@ -141,16 +139,15 @@ def test_glm5_grouped_worker_reports_every_inner_exception():
                     "traceback": SimpleNamespace(print_exc=lambda: None),
                 },
             )["_guarded_bench"],
-            "_make_perf_filename": lambda _kernel, output_dir, _op_name_map: os.path.join(output_dir, "test.txt"),
+            "_make_perf_filename": lambda _kernel, output_dir: os.path.join(output_dir, "test.txt"),
             "_write_row": lambda *_args, **_kwargs: pytest.fail("failed inner shapes must not be persisted"),
             "os": os,
-            "sys": SimpleNamespace(argv=[]),
             "torch": fake_torch,
         },
     )["run_glm5_dsa_sparse_kernel_worker"]
 
     with pytest.raises(RuntimeError) as exc_info:
-        worker("test-model", "mqa", 3, perf_filename="out.txt")
+        worker("test-model", "mqa", 3, [[13, 2], [29, 4]], perf_filename="out.txt")
 
     message = str(exc_info.value)
     assert "bs=3 isl=2 past_kv=13: KeyError: 'missing first'" in message

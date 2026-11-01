@@ -39,13 +39,12 @@ _DSA_MODULE_OPS = [
     "dsa_context_module_skip_indexer",
     "dsa_generation_module_skip_indexer",
 ]
+_GLM5_SPARSE_OPS = ["glm5_mqa_logits_module", "glm5_topk_module", "glm5_dsa_attn_module"]
 _DSA_AND_SPARSE_OPS = [
     *_DSA_MODULE_OPS,
     "dsv4_paged_mqa_logits_module",
     "dsv4_csa_topk_calib",
-    "glm5_mqa_logits_module",
-    "glm5_topk_module",
-    "glm5_dsa_attn_module",
+    *_GLM5_SPARSE_OPS,
 ]
 _DSV4_ATTENTION_OPS = [
     "dsv4_csa_context_module",
@@ -154,6 +153,17 @@ SKIPS: list[dict] = [
     # (runtime_limits.dsa_indexer_prefill_shape_is_supported), and the sticky CUDA
     # error fails the rest of the task.
     {"backend": "sglang", "op": ["dsa_context_module", "dsa_context_module_skip_indexer"], "seq_len": 1},
+    # SGLang's GLM-5 sparse kernels read only the checkpoint's geometry, which GLM-5
+    # and its NVFP4 checkpoints share. Hopper rows are recorded under the BF16 GLM-5
+    # checkpoint and Blackwell rows under the NVFP4 one, whose longer context covers
+    # GLM-5's range. This keeps the coverage collected before.
+    {"backend": "sglang", "op": _GLM5_SPARSE_OPS, "sm": [100, 103, 120], "model_path": "zai-org/GLM-5"},
+    {
+        "backend": "sglang",
+        "op": _GLM5_SPARSE_OPS,
+        "sm": [80, 86, 89, 90],
+        "model_path": ["nvidia/GLM-5.2-NVFP4", "nvidia/GLM-5-NVFP4"],
+    },
     # TRT-LLM's MiniMax-M3 sparse attention takes a BF16 KV cache only
     # (run_msa_module), so every FP8-KV case would fail.
     {"backend": "trtllm", "op": _MSA_MODULE_OPS, "kv_cache_dtype": "fp8"},

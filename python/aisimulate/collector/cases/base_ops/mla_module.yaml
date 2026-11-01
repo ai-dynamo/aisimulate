@@ -62,7 +62,7 @@ common_case_values:
   # The sweep the module op plans (collector/op_plans.py) share across backends:
   # the MLA, DSA and MSA context and generation modules. collector/skips.py
   # leaves out what a backend or SM does not run. The SGLang section below
-  # serves the module ops still on their own getters.
+  # serves the SGLang MLA module collector's direct runs.
   mla_module_plan:
     description: Shared MLA, DSA and MSA module sweep of the op plans.
     context_batch_sizes: [1, 2, 4, 8, 16, 32, 64, 128, 256]
@@ -105,7 +105,7 @@ common_case_values:
       long_kv_lengths: [262144, 524288, 1048575]
       long_kv_batch_sizes: [1, 2, 4]
   mla_module_sglang:
-    description: SGLang wideep MLA and GLM-5 sparse-kernel module sweep.
+    description: SGLang MLA module sweep of the collector's direct runs.
     module_tp_sizes:
       - 1
       - 2
