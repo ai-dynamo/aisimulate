@@ -177,7 +177,7 @@ A queued case has two legal collector outcomes: execute it, or raise
   waste significant time and the check needs the running kernel. It raises
   with a `FIXME(kernel-limit):` message and a comment that says why.
 - The other auditable homes stay: registry `unverified`/`unverified_sms`
-  markers, declared model correlations, the memory-feasibility filter, and
+  markers, declared model correlations, the run-time capacity refusal, and
   deduplication backed by a proven invocation or key duplicate (Step 2).
 
 An op with no production consumer stays registry-only or explicitly

@@ -70,7 +70,7 @@ reviews:
     - path: "collector/**"
       instructions: |
         - Enforce the collector rules from `.claude/rules/collector/layer_permissions.md`, `failure_handling.md`, and `case_authoring.md`.
-        - Flag any silent case skip in collector code (a queued case may only execute or raise); the sole sanctioned filter is generation-time memory feasibility with counted drops.
+        - Flag any silent case skip in collector code (a queued case may only execute or raise); capacity is refused at run time, before allocation, with a `FIXME(kernel-limit): does not fit` reason; getters drop no case on memory.
         - Flag invented fallbacks on both ends: generation must raise on unresolvable declarations (never substitute defaults or another model's geometry); collectors must never swap in a different backend/kernel than the framework's own dispatch selects — manual pins require framework source citations.
         - Flag any reintroduction of selector/exception machinery (case_ids/contains/indices/ranges/limit/rules, sm_exceptions-style shape or version predicates) in YAML or code.
         - `collector/skips.py` is the one place that leaves cases out: each entry needs its reason as a comment and may only cover cases that would mismeasure, hang, fail as a whole block, or come from a model the backend cannot serve.

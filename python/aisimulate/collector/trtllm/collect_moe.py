@@ -370,8 +370,8 @@ def _run_moe_case(
     # DeepGEMM-JIT-backed for fp8_block grouped GEMM and shares the same
     # 1x128/128x128 scale layout; SM120's Triton block-scale path uses the
     # same 128 granularity. Raise a cited, classified error instead of
-    # filtering the shapes at generation time (layer_permissions.md sanctions
-    # only memory-feasibility drops there). Re-verify the per-SM paths on the
+    # filtering the shapes at generation time (layer_permissions.md: getters
+    # drop no case). Re-verify the per-SM paths on the
     # next framework version bump.
     if moe_type == "fp8_block" and (hidden_size % 128 != 0 or (inter_size // moe_tp_size) % 128 != 0):
         raise ValueError(

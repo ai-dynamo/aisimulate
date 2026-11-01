@@ -71,7 +71,7 @@ valid combinations**. Route by who owns the fact:
 |---|---|---|
 | the model (head count, valid TP shards, windows) | a field on its `model_case_values.<op>` row | `attention` profiles: `tensor_parallel_sizes` — the generator expands only valid shards of that tuple |
 | the op's universal math (identities, budgets) | generator constraint / base-op budget field | `tp*ep == num_gpu`; `batch*seq <= max_context_tokens` |
-| the platform (dtype floor, memory) | `collector/skips.py` / the collector memory filter | see `layer_permissions.md` |
+| the platform (dtype floor, memory) | `collector/skips.py` / the worker's capacity refusal | see `layer_permissions.md` |
 | the framework (kernel limits) | nothing: the cases fail and are recorded. A block that fails as a whole, or a case that would mismeasure or hang, goes in `collector/skips.py` | see `layer_permissions.md` |
 
 If the op's generator does not yet support the model-correlated field you
@@ -97,7 +97,7 @@ poison the database with mislabeled rows.
    kernel or the persisted key. Everything else uses `model_paths` (one
    physical case per artifact) or fails.
 3. A planned op that expands to zero cases must be explainable from logged
-   drops (`collector/skips.py` entries, memory filter). Zero cases with no logged
+   drops (`collector/skips.py` entries). Zero cases with no logged
    reason is a population bug to fix — not a clean completion.
 
 ## Op plans
@@ -129,7 +129,7 @@ by exactly one row. A plan does not depend on the device: the worker refuses
 a point the device cannot run, such as a prefill longer than the chunk
 serving uses there or a KV cache larger than its memory, before allocating
 it, and raises its `FIXME(kernel-limit)` reason. Ops on a plan therefore use
-no generation-time memory filter (`layer_permissions.md`).
+no generation-time memory filter (`layer_permissions.md`, Capacity).
 
 Planning imports no framework, so `--plan-only` runs on any CPU;
 `test_op_plans.py` checks that. Rows may build framework objects (MLA's

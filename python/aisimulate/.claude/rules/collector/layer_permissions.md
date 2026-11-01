@@ -30,7 +30,7 @@ result     = perf rows  +  classified failure records   (failure is DATA, not a 
 | `cases/models/*_cases.yaml` | model structural shapes, correlated tuples, artifact/quant policy, op activation (`cases: all`) | selectors, match rules, a second generator recipe |
 | `collector/skips.py` | one entry per reason, naming what it skips (`backend`, `op`, `sm`, `model`, `dtype`, a case field, or a `dispatch` kernel when only that kernel cannot run the case), with the reason as the comment above it: cases that would mismeasure, hang, fail as a whole block, or come from a model the backend cannot serve | an entry without a reason; skipping scattered failures |
 | `<backend>/registry.py` | version routing (`VersionRoute`); maturity markers `unverified=True` (op × backend) and `unverified_sms=(...)` (op × backend × SM) | any shape-level information |
-| `collect_*.py` collector code | **dispatch**: pick kernel path by SM/version, record `kernel_source`; runtime probe → **raise a classified exception**; **memory-feasibility filter** (see below) | silent `continue`/skip of a queued case; any other case filtering; patching code so one shape passes |
+| `collect_*.py` collector code | **dispatch**: pick kernel path by SM/version, record `kernel_source`; runtime probe → **raise a classified exception**; **capacity refusal** before allocation (see below) | silent `continue`/skip of a queued case; any other case filtering; patching code so one shape passes |
 | executor (`collect.py`) | — mechanism is off-limits during case-fixing tasks | changing checkpoint/case-ID/failure-classification logic to make a case pass |
 | failure records (`errors_*.json`, summary) | append-only observation | feeding failures back into ANY declaration layer as new rules |
 
@@ -113,26 +113,26 @@ path consumes that field for dense-input walking.
    dispatch: the upgrade audit re-checks every serving citation on
    metadata/input construction against the new framework source.
 
-## The one sanctioned in-collector filter: memory feasibility
+## Capacity: refuse at run time, before allocation
 
 Device memory is a permanent hardware fact, but its expression needs
 op-specific arithmetic (KV cache, weights, activation peaks) that only the
-collector knows. Therefore a collector MAY filter cases on memory
-feasibility, under exactly these conditions:
+collector knows. Plans do not depend on the device, so no getter drops a case
+on memory. The worker refuses a case or point the device cannot hold, under
+exactly these conditions:
 
-1. **Generation time only** — inside `get_*_test_cases()`, so the case is
-   never queued. Never a runtime `continue`.
+1. **Before allocating it** — the check runs in the worker, ahead of the
+   allocation it guards. Never a runtime `continue`.
 2. **Predicate = size vs capacity, nothing else** — preferred:
    `estimated_footprint(shape) > device_total_memory * safety_factor` with
-   memory queried live (`torch.cuda.get_device_properties`); acceptable
-   fallback: a shape metric against a per-SM/per-capacity constant. NEVER
-   framework-version or model-name conditions — that is exception smuggling.
-3. **Drops are counted, never silent** — log one line:
-   `<op>: dropped N/M cases (memory budget, device=<GB>)`.
+   memory queried live; acceptable fallback: a shape metric against the
+   device's prefill chunk or KV pool. NEVER framework-version or model-name
+   conditions — that is exception smuggling.
+3. **Classified, never silent** — raise a reason that starts with
+   `FIXME(kernel-limit): does not fit`, so the failure log records a kernel
+   limit.
 
 Anything beyond this pattern goes back to the normal rule: run it or raise.
-Ops on an op plan do not use this filter: their workers refuse such a point
-at run time (`case_authoring.md`, Op plans).
 
 ## Framework kernel limits: let them fail, skip only four cases
 
