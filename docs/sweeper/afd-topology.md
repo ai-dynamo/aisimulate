@@ -90,6 +90,10 @@ scheduler, including mid-flight admission and retraction. There is no separate
 AFD scheduler or compile-time measurement step. Each pool is built through
 `ForwardPassPerfModel::best_available`, preserving `estimator_config`, explicit
 `enable_shared_layer`/`strict_provenance` choices and its selected data roots.
+AFD source metadata and precision resolution leave ordinary model and legacy CLI
+policies unchanged. Gemma4 MoE shared-branch metadata is derived on a copy for AFD
+consumers.
+
 Each pool resolves the caller's precision request independently against its own
 selected system. Requests remain unchanged in saved configurations. The supported
 `nvfp4` execution mapping uses `nvfp4_wo` (FP4 weights, BF16 compute) below
@@ -195,7 +199,9 @@ uses the actual batch, current mean KV position and MTP verification width.
 Static forward queries retain their configuration-sized, stride-averaged estimate.
 A pool-wide batch is balanced across replicas, with
 larger populations assigned first, then each replica is balanced across effective
-`m = min(num_microbatches, ceil(pool_batch / a_replica_count))` microbatches.
+`m = min(num_microbatches, ceil(pool_batch / a_replica_count))` microbatches. The configured
+count must not exceed `batch_size_per_a_replica`. Sweeper filters such combinations
+before counting candidates; direct and pinned topologies reject them at construction.
 Idle replicas and short tails contribute no invented tokens. Eight sequences
 on one replica and three microbatches split as 3 + 3 + 2; one sequence across
 eight replicas still prices F compute for one sequence. A latency follows the
@@ -242,5 +248,3 @@ Historical comparisons and host-cost measurements belong under
 <!-- Heterogeneous AFD/fabric behavior adapted and modified from
 https://github.com/LPhgh/aisimulate/tree/af56328c4ba7ffa1b8c42c8375244568c2e7bb8c
 Original paths and Apache-2.0 attribution: root THIRD_PARTY_NOTICES.md. -->
-
-AFD-only source metadata and precision resolution leave ordinary model and legacy CLI policies unchanged. Gemma4 MoE shared-branch metadata is derived on a copy for AFD consumers. AFD compilation and memory checks share the Rust capability policy using each pool’s selected hardware spec.

@@ -1,0 +1,200 @@
+{
+  "configuration": {
+    "traffic": {
+      "source": {
+        "type": "synthetic",
+        "input_tokens": 4096,
+        "output_tokens": 128
+      },
+      "load": {
+        "type": "concurrency",
+        "concurrency": 8
+      },
+      "stop": {
+        "requests": 1
+      }
+    },
+    "engine": {
+      "mode": "aggregated",
+      "model": "Qwen/Qwen3-30B-A3B",
+      "hardware": "h200_sxm",
+      "backend": "sglang",
+      "backend_version": "0.5.14",
+      "context_length": 4352,
+      "workers": {
+        "aggregated": {
+          "type": "afd",
+          "afd": {
+            "n_a_nodes": 2,
+            "n_f_nodes": 4,
+            "tp_a": 1,
+            "a_batch_size": 64,
+            "num_microbatches": 3
+          }
+        }
+      }
+    },
+    "evaluation": {
+      "sla": {
+        "ttft_ms": 800,
+        "itl_ms": 30
+      }
+    }
+  },
+  "baseline": {
+    "error": "AISimulate replay failed: AFD memory-feasibility check failed: AFDMemoryInfeasible: out_of_memory: the model 'Qwen/Qwen3-30B-A3B' does not fit in GPU memory on 'h200_sxm' with this AFD topology (F pool, phase=prefill): total 172.59 GB >= capacity 141.00 GB; lower batch_size_per_a_replica or use a system with more VRAM per GPU"
+  },
+  "candidate": {
+    "metrics": {
+      "committed_prefill_tokens": 4096.0,
+      "completed_requests": 1.0,
+      "decode_gpus_per_worker": 48.0,
+      "decode_worker_seconds": 1.0329175520000002,
+      "duration_ms": 1032.9175520000001,
+      "first_admission_prefix_cache_reused_ratio": 0.0,
+      "goodput_completed_requests": 1.0,
+      "goodput_output_throughput_tok_s": 123.92082964623685,
+      "goodput_request_throughput_rps": 0.9681314816112254,
+      "gpu_hours": 0.01377223402666667,
+      "input_throughput_tok_s": 3965.4665486795793,
+      "max_e2e_latency_ms": 1032.9175520000001,
+      "max_itl_ms": 6.805458000000044,
+      "max_output_token_throughput_per_user": 146.99501040136684,
+      "max_tpot_ms": 6.804206275590552,
+      "max_ttft_ms": 168.783355,
+      "max_ttst_ms": 6.802952000000005,
+      "mean_e2e_latency_ms": 1032.9175520000001,
+      "mean_itl_ms": 6.804206275590553,
+      "mean_output_token_throughput_per_user": 146.96791528352477,
+      "mean_tpot_ms": 6.804206275590552,
+      "mean_ttft_ms": 168.783355,
+      "mean_ttst_ms": 6.802952000000005,
+      "median_e2e_latency_ms": 1032.9175520000001,
+      "median_itl_ms": 6.800527202798806,
+      "median_output_token_throughput_per_user": 147.08360456819605,
+      "median_tpot_ms": 6.804206275590552,
+      "median_ttft_ms": 168.783355,
+      "median_ttst_ms": 6.802952000000005,
+      "min_e2e_latency_ms": 1032.9175520000001,
+      "min_itl_ms": 6.802952000000005,
+      "min_output_token_throughput_per_user": 146.94088186276272,
+      "min_tpot_ms": 6.804206275590552,
+      "min_ttft_ms": 168.783355,
+      "min_ttst_ms": 6.802952000000005,
+      "num_e2e_latency_samples": 1.0,
+      "num_requests": 1.0,
+      "num_tpot_samples": 1.0,
+      "num_ttft_samples": 1.0,
+      "output_throughput_tok_s": 123.92082964623685,
+      "p75_e2e_latency_ms": 1032.9175520000001,
+      "p75_itl_ms": 6.800527202798806,
+      "p75_output_token_throughput_per_user": 147.08360456819605,
+      "p75_tpot_ms": 6.804206275590552,
+      "p75_ttft_ms": 168.783355,
+      "p75_ttst_ms": 6.802952000000005,
+      "p90_e2e_latency_ms": 1032.9175520000001,
+      "p90_itl_ms": 6.800527202798806,
+      "p90_output_token_throughput_per_user": 147.08360456819605,
+      "p90_tpot_ms": 6.804206275590552,
+      "p90_ttft_ms": 168.783355,
+      "p90_ttst_ms": 6.802952000000005,
+      "p95_e2e_latency_ms": 1032.9175520000001,
+      "p95_itl_ms": 6.800527202798806,
+      "p95_output_token_throughput_per_user": 147.08360456819605,
+      "p95_tpot_ms": 6.804206275590552,
+      "p95_ttft_ms": 168.783355,
+      "p95_ttst_ms": 6.802952000000005,
+      "p99_e2e_latency_ms": 1032.9175520000001,
+      "p99_itl_ms": 6.800527202798806,
+      "p99_output_token_throughput_per_user": 147.08360456819605,
+      "p99_tpot_ms": 6.804206275590552,
+      "p99_ttft_ms": 168.783355,
+      "p99_ttst_ms": 6.802952000000005,
+      "power_coverage": 0.0,
+      "prefill_gpus_per_worker": 0.0,
+      "prefill_worker_seconds": 0.0,
+      "prefix_cache_reused_ratio": 0.0,
+      "processed_output_tokens_per_s": 378.7271717093312,
+      "processed_tokens": 4224.0,
+      "processed_tokens_per_s": 12497.99666640793,
+      "request_throughput_rps": 0.9681314816112254,
+      "std_e2e_latency_ms": 0.0,
+      "std_itl_ms": 0.0007291182537748273,
+      "std_output_token_throughput_per_user": 0.015748638793031882,
+      "std_tpot_ms": 0.0,
+      "std_ttft_ms": 0.0,
+      "std_ttst_ms": 0.0,
+      "total_input_tokens": 4096.0,
+      "total_output_tokens": 128.0,
+      "total_throughput_tok_s": 4089.3873783258164,
+      "wall_time_ms": 337.974166,
+      "power_w": null
+    },
+    "memory": {
+      "aggregated": {
+        "kv_budget_bytes_per_a_gpu": 121754523113.88159,
+        "kv_bytes_per_token_per_a_gpu": 98304.0,
+        "phase": "both",
+        "pools": {
+          "decode": {
+            "attention": {
+              "capacity_gib_per_gpu": 141.0,
+              "components_gib_per_gpu": {
+                "activations": 0.10107421874999999,
+                "afd_workspace": 0.00049591064453125,
+                "kvcache": 25.5,
+                "nccl": 0.0,
+                "others": 4.2,
+                "total": 32.671687316894534,
+                "weights": 2.8701171875
+              },
+              "system": "h200_sxm"
+            },
+            "ffn": {
+              "capacity_gib_per_gpu": 141.0,
+              "components_gib_per_gpu": {
+                "activations": 0.10107421874999999,
+                "afd_workspace": 0.000453948974609375,
+                "kvcache": 0.0,
+                "nccl": 0.3828125,
+                "others": 4.2,
+                "total": 6.3718406677246096,
+                "weights": 1.6875
+              },
+              "system": "h200_sxm"
+            }
+          },
+          "prefill": {
+            "attention": {
+              "capacity_gib_per_gpu": 141.0,
+              "components_gib_per_gpu": {
+                "activations": 1.069140625,
+                "afd_workspace": 0.06640625,
+                "kvcache": 25.5,
+                "nccl": 0.0,
+                "others": 4.2,
+                "total": 33.7056640625,
+                "weights": 2.8701171875
+              },
+              "system": "h200_sxm"
+            },
+            "ffn": {
+              "capacity_gib_per_gpu": 141.0,
+              "components_gib_per_gpu": {
+                "activations": 0.49638671874999996,
+                "afd_workspace": 0.015071868896484375,
+                "kvcache": 0.0,
+                "nccl": 0.3828125,
+                "others": 4.2,
+                "total": 6.781771087646485,
+                "weights": 1.6875
+              },
+              "system": "h200_sxm"
+            }
+          }
+        },
+        "status": "fits"
+      }
+    }
+  }
+}
