@@ -9,9 +9,9 @@ this file owns SGLang MLA backend choice, paged KV-cache setup, DP-attention
 mocking, runtime dispatch, and perf logging.
 """
 
-# 0.5.21 since 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
 # findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
-# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+# One release per file; earlier code is `git log -- <this file>` away.
 __compat__ = "sglang==0.5.21"
 
 import contextlib
@@ -94,7 +94,7 @@ def _mla_compute_dtype(backend: str, kv_cache_dtype: torch.dtype) -> str:
 
 
 class MockModelConfig:
-    def get_max_num_attention_heads(self) -> int:  # model_config.py:1504 @0.5.21 (triton_backend.py:255)
+    def get_max_num_attention_heads(self) -> int:  # model_config.py:1504 (triton_backend.py:255)
         return int(self.num_attention_heads)
 
     def __init__(
@@ -143,7 +143,7 @@ class MockModelConfig:
         self.scaling = scaling
         self.is_local_attention_model = False
 
-    def get_num_kv_heads(self, tp_size: int, dcp_size: int = 1):  # model_config.py:1512 @0.5.21
+    def get_num_kv_heads(self, tp_size: int, dcp_size: int = 1):  # model_config.py:1512
         return 1
 
 
@@ -220,7 +220,7 @@ class MockModelRunner:
         # sglang 0.5.21 TRTLLMMLABackend (the MLA backend sglang picks on SM100, _get_backends) reads
         # model_runner.max_running_requests (workspace sizing) and model_runner.is_draft_worker;
         # on Hopper fa3/flashinfer never asked, so the attributes were missing until the first
-        # Blackwell smoke (B200 2026-10-04: AttributeError 'MockModelRunner' has no attribute
+        # Blackwell smoke (B200 AttributeError 'MockModelRunner' has no attribute
         # 'max_running_requests'). 512 = the generator's --max-running-requests default.
         self.max_running_requests = 512
         self.is_draft_worker = False
@@ -286,8 +286,8 @@ def _extend_seq_lens_cpu(forward_batch):
     """CPU int32 mirror of the per-request extend lengths of a plain EXTEND batch, else None.
 
     The values are sglang's own ``forward_batch.extend_seq_lens_cpu`` — the list its
-    trtllm_mla backend already reads for ``max_seq_len`` (trtllm_mla_backend.py:850
-    @v0.5.21) — so nothing is reconstructed, only mirrored into a CPU tensor.
+    trtllm_mla backend already reads for ``max_seq_len`` (trtllm_mla_backend.py:850)
+    — so nothing is reconstructed, only mirrored into a CPU tensor.
     """
     if forward_batch.forward_mode != ForwardMode.EXTEND:
         return None
@@ -340,7 +340,7 @@ class _GraphCapturableTRTLLMMLABackend(TRTLLMMLABackend):
     ``_ragged_prefill_with_cpu_seq_lens``). The collector times the kernel under
     graph replay — eager timing of this lane floors at the Python launch loop
     (0.13 ms on B200, 0.29 ms on GB200 for every isl <= 1024 cell; data
-    validation 2026-10-11) — so the no-prefix prefill call gets the mirrors
+    validation) — so the no-prefix prefill call gets the mirrors
     here. This changes how the kernel is invoked, never which kernel runs: the
     chunked-prefix calls (their own ``cum_seq_lens_kv``) and every other
     backend path go through sglang unchanged.
@@ -366,7 +366,7 @@ def benchmark_layer(layer, forward_batch, q, k, v, q_rope, k_rope, **kwargs):
     # CUDA-graph replay for every lane: a capture failure raises (helper default
     # allow_graph_fail=False) and an eager result is refused below, so a kernel
     # that stops being capturable fails the case instead of shipping its launch
-    # floor (sglang mla_context on B200/GB200, data validation 2026-10-11).
+    # floor (sglang mla_context on B200/GB200, data validation).
     device = q.device
 
     def kernel_func():

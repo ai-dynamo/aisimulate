@@ -474,8 +474,8 @@ def test_dsv4_moe_quantization_policy_prunes_unrelated_modes():
             "sgl-project/DeepSeek-V4-Flash-FP8": {"fp8_block"},
             "sgl-project/DeepSeek-V4-Pro-FP8": {"fp8_block"},
             # One true mode everywhere: the NVFP4 artifacts declare nvfp4 on
-            # every backend that serves NVFP4 MoE (review follow-up on
-            # PR #1548 — positive declarations, nothing excluded).
+            # every backend that serves NVFP4 MoE (positive declarations,
+            # nothing excluded).
             "nvidia/DeepSeek-V4-Flash-NVFP4": {"nvfp4"},
             "nvidia/DeepSeek-V4-Pro-NVFP4": {"nvfp4"},
         },
@@ -599,12 +599,12 @@ def test_sglang_registry_marks_unvalidated_dsa_and_moe_platforms_explicitly():
     for op in ("dsa_context_module", "dsa_generation_module"):
         assert entries[op].unverified_sms == (120,)
 
-    # The SM120 MoE bring-up audit (RTX 6000 Pro, 2026-07-05) cleared the moe
+    # The SM120 MoE bring-up audit (RTX 6000 Pro) cleared the moe
     # maturity marker: every planned (quant mode x backend) family was probed
     # on hardware with verified constructed-method provenance.
     assert entries["moe"].unverified_sms == ()
 
-    # SM120 sparse-round audit (RTX 6000 Pro, 2026-07-06): the framework
+    # SM120 sparse-round audit (RTX 6000 Pro): the framework
     # itself rejects the DSA/GLM-5 sparse family on SM120 (TRTLLM-GEN
     # fmhaRunner "Unsupported architecture"; DeepGEMM attention.hpp:184;
     # sgl-kernel sparse attention SM90a/SM100f-only), the CSA context pool
@@ -619,7 +619,7 @@ def test_sglang_registry_marks_unvalidated_dsa_and_moe_platforms_explicitly():
     ):
         assert entries[op].unverified_sms == (120,)
 
-    # SM89 bring-up round 2 (L40S, 2026-07-07): stock 0.5.14 cannot run
+    # SM89 bring-up round 2 (L40S): stock 0.5.14 cannot run
     # DSV4 on SM89 at all — the server_args DeepseekV4 hook leaves
     # SGLANG_OPT_DEEPGEMM_HC_PRENORM default-True on non-SM120/non-HIP
     # platforms while deep_gemm is unimported (NameError in both mHC
@@ -967,7 +967,7 @@ def test_kimi_k3_scoped_run_activates_moe_for_sglang_and_vllm_only():
     # K3 has no trtllm serving lane. moe activation is framework-specific
     # (sglang/vllm), so a K3-scoped trtllm run plans NO moe at all — a
     # planned-op zero-case expansion with no logged drop is structurally
-    # impossible (case_authoring.md; review 2026-08-04).
+    # impossible (case_authoring.md; review).
     for backend in ("sglang", "vllm"):
         plan = build_collection_case_plan(backend=backend, model_path="moonshotai/Kimi-K3")
         assert "moe" in plan.selected_ops, backend
@@ -1068,7 +1068,7 @@ def test_mla_bmm_cases_expand_from_base_op_yaml():
     post_cases = get_mla_bmm_case_specs("sglang", "mla_bmm_gen_post")
 
     # 600/672 since the Kimi-K3 96-head family (96/48/24/12) joined the
-    # base head_counts grid alongside the DeepSeek 128-family (2026-08-02).
+    # base head_counts grid alongside the DeepSeek 128-family.
     assert len(pre_cases) == 600
     assert len(post_cases) == 672
     assert pre_cases[0] == MLABMMCommonTestCase(
@@ -1281,7 +1281,7 @@ def test_model_cases_path_can_infer_model_path():
     assert "dsv4_csa_topk_calib" in plan.selected_ops
     assert "mhc_module" in plan.selected_ops
     # the SDK's only live sparse sidecar (CP chunk walk) is planned; the FMLA sidecars
-    # (hca_attn / csa_attn) were removed from the registry on 2026-10-15
+    # (hca_attn / csa_attn) were removed from the registry
     assert "dsv4_paged_mqa_logits_module" in plan.selected_ops
     assert {"dsv4_hca_attn_module", "dsv4_csa_attn_module"}.isdisjoint(plan.selected_ops)
 
@@ -1424,7 +1424,7 @@ def test_vllm_024_model_plans_only_schedule_representable_attention_paths():
         "mla_context",
         "mla_generation",
         "moe",
-    ]  # moe_ep left the default trtllm plan with the separate WideEP pin (2026-10-04)
+    ]  # moe_ep left the default trtllm plan with the separate WideEP pin
     assert build_collection_case_plan(backend="vllm_xpu", model_path=kimi_path).ops == ["gemm", "moe"]
 
     models_with_unrepresentable_vllm_attention = (
@@ -1547,7 +1547,7 @@ def test_module_plan_keeps_only_the_heads_of_declared_tensor_parallel_shards(bac
     """A model row that declares tensor_parallel_sizes (case_authoring model-correlated
     narrowing, as the MSA rows do) measures only native_num_heads // tp; the shared head
     grid's other entries (96/48/24/12 for the 96-head Kimi-K3 MLA module, 128 for a 64-head
-    model) were 40-50% of the b200 vllm dsa_context rows (2026-10-29)."""
+    model) were 40-50% of the b200 vllm dsa_context rows."""
     from collector.op_plans import plan
 
     by_model = {}

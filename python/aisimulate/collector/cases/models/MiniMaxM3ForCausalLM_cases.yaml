@@ -22,7 +22,7 @@ model_case_values:
   moe:
     # BF16 checkpoint. DeepSeekV3-style routing: fp32 sigmoid scoring +
     # e_score_correction_bias + routed_scaling_factor 2.0, no expert
-    # groups (TRT-LLM modeling_minimaxm3.py MiniMaxM3Gate@1.3.0rc20;
+    # groups (TRT-LLM modeling_minimaxm3.py MiniMaxM3Gate;
     # HF config scoring_func=sigmoid, use_routing_bias=true,
     # routed_scaling_factor=2.0). The shared expert
     # (shared_intermediate_size 3072) is modeled by the SDK as separate
@@ -75,7 +75,7 @@ model_case_values:
         - nvidia/MiniMax-M3-NVFP4
       attention_type: msa
       native_num_heads: 64
-      # Real shards only (owner decision 2026-09-29): the MSA collectors
+      # Real shards only: the MSA collectors
       # derive per-rank heads as 64 // tp -> 64/32/16/8/4 (kv/index heads
       # 4/2/1/1/1). The shared 12-value head grid also produced 128/96/48/
       # 24/12, which no M3 deployment reaches; 48 and 96 shard to 3/6 index

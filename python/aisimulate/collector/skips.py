@@ -275,7 +275,7 @@ SKIPS: list[dict] = [
     {"backend": "vllm", "op": "attention_context", "attn_dtype": "fp8"},
     # TRT-LLM on SM90: FP8-KV decode with 96 query heads over 4 KV heads aborts
     # the worker (launch failure, then SIGABRT) at every head_dim, batch and KV
-    # length (h200 attention_generation shard, 2026-10-07: 512 cases, none passing).
+    # length (h200 attention_generation shard: 512 cases, none passing).
     {
         "backend": "trtllm",
         "op": "attention_generation",

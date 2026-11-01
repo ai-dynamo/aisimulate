@@ -706,7 +706,7 @@ class FlashInferTuneBudget:
     timed launches and a ``stream_delay_us`` delay kernel in front of the timed block (its
     defaults: 3 / 10 / 5000, enough to rank tactics for a server that tunes once per
     process). The collector tunes once per (shape, EP, num_tokens), so that budget is the
-    dominant cost of a FlashInfer-backed sweep (the 2026-10-27 b200 probe: +3.6 s per
+    dominant cost of a FlashInfer-backed sweep (the b200 probe: +3.6 s per
     row, 28x the untuned collection time). The collector only needs the *ranking* -- the
     final measurement is still ``benchmark_with_power``'s own warm-ups and runs -- and the
     tactics that matter differ by 2x, so a smaller budget ranks them just as well while
@@ -981,13 +981,13 @@ def flashinfer_autotuned(num_tokens: int, tune_fn: Callable[[], None], *, label:
     """Time FlashInfer-backed kernels on the tactic FlashInfer's autotuner picks, as serving does.
 
     vLLM (``enable_flashinfer_autotune``, default on for Blackwell) and SGLang (warm-up
-    autotune, plus the extend bucket since sglang #32556) both run FlashInfer kernels on
+    autotune, plus the extend bucket) both run FlashInfer kernels on
     autotuned tactics. Without this context the collector times FlashInfer's *untuned*
     fallback: tile = clamp(next_pow2(num_tokens * top_k / local_num_experts), 8, 128) and
     the first config of an unstable ``std::sort`` over the kernel manifest -- a value that
-    moved between FlashInfer 0.6.12 and 0.6.18 (flashinfer #6838) and broke every SM100
+    moved between FlashInfer 0.6.12 and 0.6.18 and broke every SM100
     nvfp4 MoE EP sweep whose average tokens per local expert exceeded 128 (vLLM 0.30.0 /
-    SGLang 0.5.21 campaign tables, 2026-10-27).
+    SGLang 0.5.21 campaign tables).
 
     ``tune_fn()`` runs once inside ``autotune(True, tuning_buckets=(num_tokens,))`` so
     every FlashInfer op it reaches is profiled at exactly this token count (with the
@@ -1058,7 +1058,7 @@ def flashinfer_autotuned(num_tokens: int, tune_fn: Callable[[], None], *, label:
     )
     # An op the tuner could not enumerate tactics for is timed on the untuned fallback
     # with no visible trace (b300 sglang 0.5.21 Nemotron-3-Nano nvfp4 relu2 shape,
-    # 2026-10-28: unchanged against the untuned table while every other shape moved).
+    # unchanged against the untuned table while every other shape moved).
     # Surface FlashInfer's own DEBUG explanation next to the case.
     # What the tuner chose: every cache entry this pass added, with its tactic. Two worker
     # processes tune the same key independently (per-process cache), so a slow cell whose
@@ -1124,7 +1124,7 @@ def setup_signal_handlers(worker_id):
     # SIGUSR1 = "dump every thread's stack to stderr and keep running". The
     # executor's stall watchdog sends it before killing a wedged worker, so a
     # hang leaves the exact frame in the log (sglang 0.5.21 moe/bf16 on l40s
-    # and b300, 2026-10-06: 8 workers took their first task and never returned,
+    # and b300: 8 workers took their first task and never returned,
     # 76 min of silence, nothing to diagnose from).
     try:
         import faulthandler
@@ -1383,7 +1383,7 @@ def log_perf(
 
     # Try for 30s (300 * 0.1s). The old 1s window lost measured rows whenever
     # a sibling worker was wedged in a CUDA crash storm while other workers
-    # queued behind the lock (H200 K3 moe 2026-08-01: 47 rows measured but
+    # queued behind the lock (H200 K3 moe 47 rows measured but
     # dropped). A worker SIGKILLed inside its critical section (host OOM
     # killer) skips `finally` and leaves the lock behind forever, so a lock
     # older than the stale threshold is broken instead of waited on.
@@ -3221,7 +3221,7 @@ def _dedupe_staged_perf_rows(table, parquet_path: Path, *, pa, pc):
     The staging ``*_perf.txt`` is opened in append mode and kept across resumed
     windows, and ``--resume --resume-retry-failed`` re-runs a task that failed
     after logging some of its rows, so those rows are appended a second time
-    (2026-10-11: rtxpro msa_context 10,342 of 13,972 rows, gb200 moe/fp8_block
+    (rtxpro msa_context 10,342 of 13,972 rows, gb200 moe/fp8_block
     2,590 pairs). The merge-with-existing path already dedupes on the identity
     key; this applies the same rule to the rows of the staging file itself,
     keeping the newest measurement and the original row order. Identity = every
@@ -3247,7 +3247,7 @@ def _keep_last_row_per_identity(table, identity: list[str], *, pa, pc):
     pyarrow only: the collector images ship pyarrow (the harness installs it
     into ``pyarrow-site``) but not pandas, and the merge path used to need
     pandas — the second finalize of a shard (resume / retry-failed) died with
-    ``No module named 'pandas'`` (b200 vllm dsa_context_module, 2026-10-12).
+    ``No module named 'pandas'`` (b200 vllm dsa_context_module).
     Returns ``(deduped_table, dropped_rows)``.
     """
     if table.num_rows < 2 or not identity:
@@ -3317,7 +3317,7 @@ def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa, pc):
     # `string`, but a parquet that went through one of those pandas merges
     # comes back as `large_string`, so the THIRD finalize of a table (run ->
     # resume -> retry-failed) used to read as a schema mismatch and OVERWRITE
-    # the accumulated rows (sm120 attention_generation fp8kv, 2026-10-01:
+    # the accumulated rows (sm120 attention_generation fp8kv:
     # 27,303 rows replaced by 5,067). Compare the logical string type.
     def _logical(type_str: str) -> str:
         return {"large_string": "string", "large_binary": "binary"}.get(type_str, type_str)
@@ -4290,8 +4290,8 @@ def _materialize_aic_cached_config(model_id: str, slug: str, cached_config: str)
     therefore never observe a torn pair — new config with an old or removed
     side-car — no matter how materialization interleaves with their reads;
     a bundled update under the same slug publishes a NEW snapshot at a new
-    path while in-flight readers keep their consistent old one (#1487
-    review: write-once staleness, then torn-pair publication). The path is
+    path while in-flight readers keep their consistent old one (no write-once
+    staleness, no torn-pair publication). The path is
     deterministic per (slug, content), so parallel subprocesses /
     pytest-xdist workers converge on one directory, and losing the
     publication race is tolerated (same protocol as the normalized-config

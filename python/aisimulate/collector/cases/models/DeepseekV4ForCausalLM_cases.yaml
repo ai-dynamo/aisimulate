@@ -72,7 +72,7 @@ model_case_values:
       # FP4, but vLLM 0.24's DeepSeek-V4 quant config has a native
       # fp8-expert branch — serving works with the documented override
       # `--hf-overrides '{"expert_dtype": "fp8"}'` (models/deepseek_v4/
-      # quant_config.py @0.24.0). The benchmark constructs Fp8Config from
+      # quant_config.py). The benchmark constructs Fp8Config from
       # the label with synthetic weights, matching that serving path.
       quantization_modes: [fp8_block]
     - model_path: deepseek-ai/DeepSeek-V4-Pro
@@ -89,7 +89,7 @@ model_case_values:
       sglang_moe_backends:
         w4a8_mxfp4_mxfp8: {100: flashinfer_mxfp4, 103: flashinfer_mxfp4}
       wideep: true
-      # Owner decision (2026-07-05): do not collect the native-FP4 Pro
+      # Owner decision: do not collect the native-FP4 Pro
       # artifact as w4a16_mxfp4. The shared SM90 w4a16 backend map is
       # triton (GPT-OSS truth), under which SGLang 0.5.14 constructs plain
       # Fp8MoEMethod for is_fp4_experts and every case fails closed;
@@ -164,7 +164,7 @@ model_case_values:
       hidden_size: 7168
       hc_mult: 4
   dsv4:
-    # Module tables key [native][local] since #1423/#1431, so full/raw plans
+    # Module tables key [native][local], so full/raw plans
     # collect Flash and Pro together (distinct native head counts cannot
     # collide). Artifacts stay uniform (sgl-project FP8 builds, matching every
     # shipped module table) because the persisted module key carries no
@@ -331,21 +331,21 @@ framework_specific_op_cases:
     # paged_mqa_logits IS consumed: it is the only sparse-kernel sidecar with a
     # live SDK query path (sdk/operations/dsv4.py: the CP chunk walk loads
     # PerfDataFilename.dsv4_paged_mqa_logits_module) and every shipped platform
-    # carries the table. The 2026-10-05 b200 shard run lost it because this
+    # carries the table. The b200 shard run lost it because this
     # file still called it experimental (job 469988017). The hca_attn /
-    # csa_attn sidecars were removed from the collector and SDK on 2026-10-15:
+    # csa_attn sidecars were removed from the collector and SDK:
     # their SDK readers had been retired (csa_attn never shipped data) and the
     # registry-only ops failed every sm100 shard plan generated from the
-    # registry since 2026-10-05.
+    # registry.
     dsv4_paged_mqa_logits_module:
       cases: all
     mhc_module:
       cases: all
   vllm:
     # These four full-module paths are consumed by the production DSV4 model.
-    # hca_attn / csa_attn were removed 2026-10-15 (see the sglang note above);
+    # hca_attn / csa_attn were removed (see the sglang note above);
     # paged_mqa_logits is consumed (see the sglang note above) and shipped for
-    # vllm 0.24/0.25. mHC is scheduled again (2026-10-11): the SDK queries
+    # vllm 0.24/0.25. mHC is scheduled again: the SDK queries
     # mhc pre/post rows on every backend, collector/vllm/collect_mhc_module.py
     # measures vLLM's own mhc_pre_tilelang / mhc_post_tilelang (qualified on
     # B200 0.25, shipped 0.22/0.24/0.25) and documents why pre(no-norm)+post
@@ -372,11 +372,11 @@ framework_specific_op_cases:
     # queries mhc pre/post rows on every backend
     # (aic-core .../sdk/models/deepseek_v4.py DeepSeekV4MHCModule), which is
     # exactly what collector/trtllm/collect_mhc_module.py produces — schedule
-    # it (issue #1480).
+    # it.
     mhc_module:
       cases: all
-    # The four DSV4 attention module tables the SDK queries on every backend
-    # (issue #1480 revised scope). collector/trtllm/collect_dsv4_attn.py
+    # The four DSV4 attention module tables the SDK queries on every backend.
+    # collector/trtllm/collect_dsv4_attn.py
     # requires trtllm>=1.3.0rc21 (__compat__); TRT-LLM rejects pre-Blackwell
     # GPUs inside the module forward, which surfaces as classified failures
     # on SM<100 systems rather than being pre-gated here.

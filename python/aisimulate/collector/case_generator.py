@@ -2085,7 +2085,7 @@ class GdnCommonTestCase:
     seq_len_list: Optional[list[int]]  # For context phase; None for generation
     model_name: str
     # SSM state dtype from the model config (`mamba_ssm_dtype`; serving
-    # default "float32" — sglang configs/mamba_utils.py @0.5.14). Consumers
+    # default "float32" — sglang configs/mamba_utils.py). Consumers
     # use it to model the hypothetical bfloat16 FlashInfer serving lane on
     # capability major 10. Official repository collection remains FP32-only
     # until a state-dtype-keyed persisted identity/schema is separately approved.
@@ -2509,8 +2509,8 @@ def _selected_dsv4_models() -> tuple[str, ...]:
     # Other-family filter: a legitimate no-op for DSV4 getters (pinned by
     # test_dsv4_cases_skip_unrelated_model_filter — legacy all-ops flows rely
     # on it), but SAY so: a green run with an empty artifact must be
-    # explainable from the log (#1460 review; the empty-plan-is-success
-    # executor behavior is out of this layer's hands).
+    # explainable from the log (the empty-plan-is-success executor behavior
+    # is out of this layer's hands).
     print(
         f"[dsv4-test-cases] model filter {filt!r} is not a DSV4 model; generating no DSV4 "
         f"cases (supported: {list(_DSV4_SUPPORTED_MODELS)})"

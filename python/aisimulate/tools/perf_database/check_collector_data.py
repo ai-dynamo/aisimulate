@@ -314,8 +314,7 @@ def check_r6_no_legacy_markers(data_root: Path) -> list[str]:
 # carrying this hash while its parquet holds rows attests a plan that was
 # never observed -- collect.py refuses to finalize such a table
 # (zero-checkpoint-evidence guard), so an entry like this can only come from
-# out-of-band sidecar authoring that skipped the checkpoint (the rc23 moe
-# sidecars shipped this way once; review finding on PR #1486).
+# out-of-band sidecar authoring that skipped the checkpoint.
 EMPTY_CASE_PLAN_HASH = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 

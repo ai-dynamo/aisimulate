@@ -29,7 +29,7 @@ selection, quantization helpers, and perf logging.
 # (holding sglang_per_token_group_quant_fp8) was relocated wholesale to
 # sglang.kernels.ops.quantization.fp8_kernel at 0.5.17 as part of a
 # kernel-reorg (no compat shim at the old path) -- fixed with the
-# version-conditional import below. CORRECTION (code review, 2026-08-18):
+# version-conditional import below. CORRECTION (code review):
 # the SIGNATURE is unchanged (drops only an unused `enable_v2` kwarg), but
 # the INTERNALLY DISPATCHED KERNEL for this collector's exact call is NOT --
 # see the dated comment at the import site below for the precise, cited
@@ -39,11 +39,11 @@ selection, quantization helpers, and perf logging.
 # gemm rows collected at 0.5.14 and at 0.5.17 are NOT cross-version
 # comparable, because they time different kernels for the identical
 # (m, n, k) inputs.
-# 0.5.21 since 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
 # findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
-# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+# One release per file; earlier code is `git log -- <this file>` away.
 # The SGLang 0.5.20 fork (collect_gemm_0520.py, serving-built linear layers)
-# retired with the 0.5.20 lane 2026-10-30; it is git history (main at c540ff90a (before #649)).
+# retired with the 0.5.20 lane 2026-10-30; it is git history (main at c540ff90a).
 # Where this table times a different path than SGLang serving (the direction of
 # each error is unknown):
 # - bf16 on SM100/103: serving resolves the auto bf16 GEMM backend to CuTe DSL.
@@ -241,7 +241,7 @@ def run_gemm(gemm_type, batch_size, N, K, *, perf_filename, device="cuda:0"):  #
             # The 0.5.14 FlashInfer path consumes the modelopt 128x4
             # block-scale layout without synthetic padding; misaligned weights
             # cannot be quantized into that layout. The current shared sweep
-            # contains no such shape (B200 audit 2026-07-05: 0/483 unique
+            # contains no such shape (B200 audit 0/483 unique
             # (n,k) misaligned), so this guard exists to classify rather than
             # silently drop any future misaligned case.
             raise ValueError(

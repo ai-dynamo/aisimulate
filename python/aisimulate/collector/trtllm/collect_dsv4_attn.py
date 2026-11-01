@@ -16,13 +16,13 @@ TRT-LLM ships full DeepSeek-V4 support from 1.3.0rc21: the model class
 (``_torch/attention_backend/sparse/deepseek_v4/``: DeepseekV4TrtllmAttention,
 DeepseekV4Indexer, DeepseekV4CacheManager, Compressor).
 ``ModelConfig.from_pretrained`` auto-builds ``DeepSeekV4SparseAttentionConfig``
-for architecture ``DeepseekV4ForCausalLM`` (model_config.py:948-990
-@1.3.0rc23), so this collector constructs ``DeepseekV4Attention`` through the
+for architecture ``DeepseekV4ForCausalLM`` (model_config.py:948-990),
+so this collector constructs ``DeepseekV4Attention`` through the
 framework's own config/dispatch path — CSA vs HCA is expressed exclusively by
 the checkpoint config's per-layer ``compress_ratios`` value (4 = CSA c4 +
 indexer top-k; 128 = HCA c128), mirroring the sglang/vllm module collectors.
 
-Row semantics follow the unified #1429 convention (same as sglang/vllm):
+Row semantics follow the unified convention (same as sglang/vllm):
 ``num_heads`` is the RANK-LOCAL head count with a mandatory ``tp_size``
 column (the loader derives native = num_heads * tp_size and validates the
 local semantics, aic-core .../operations/dsv4.py); context rows carry
@@ -141,7 +141,7 @@ def generation_request_geometry(seq_len: int) -> dict[str, int]:
     """Decode-request state triple, single-sourced so the serving invariant
     cannot drift between construction sites.
 
-    Serving population (model_engine.py ORDINARY decode branch @1.3.0rc23):
+    Serving population (model_engine.py ORDINARY decode branch):
     ``past_seen_token_num = request.max_beam_num_tokens - 1`` (:4308),
     ``position_id = past_seen_token_num`` (:4315),
     ``request.cached_tokens = past_seen_token_num`` (:4332) and
@@ -152,7 +152,7 @@ def generation_request_geometry(seq_len: int) -> dict[str, int]:
     The collector's decode dummy request registers ``seq_len + 1`` beam tokens
     (``request_tokens = max_seq = seq_len + 1``), so past-seen == cached ==
     position == ``seq_len``, and the persisted row ``step`` (past-KV length,
-    #1429 row semantics) is the same value.
+    the unified row semantics) is the same value.
     """
     return {"num_cached_tokens": seq_len, "position": seq_len, "persisted_step": seq_len}
 
@@ -164,9 +164,9 @@ def _patched_config_dir(model_path: str, compress_ratio: int, tp_size: int) -> t
     Uses the AIC-packaged config (no HF download / trust_remote_code lock —
     same rationale as collect_mla_module._resolve_local_model_path).
     ``compress_ratios=[compress_ratio]`` expresses CSA (4) vs HCA (128)
-    exactly like the vllm collector (collect_dsv4_attn.py:133 @0.24.0);
+    exactly like the vllm collector (collect_dsv4_attn.py:133);
     ModelConfig.from_pretrained reads it into
-    DeepSeekV4SparseAttentionConfig (model_config.py:956-990 @1.3.0rc23).
+    DeepSeekV4SparseAttentionConfig (model_config.py:956-990).
     """
     cfg_fname = model_path.replace("/", "--") + "_config.json"
     config_file = os.path.join(_MODEL_CONFIG_DIR, cfg_fname)
@@ -197,10 +197,10 @@ def _patched_config_dir(model_path: str, compress_ratio: int, tp_size: int) -> t
     config["architectures"] = [ARCHITECTURE]
     # The DSV4 release artifacts tag model_type "deepseek_ref" (remote-code
     # config class). TRT-LLM's native config class registers as
-    # "deepseek_v4" (configs/__init__.py:38 @1.3.0rc23,
+    # "deepseek_v4" (configs/__init__.py:38,
     # CONFIG_MAPPING.register) and its defaults supply the DSV4 dims the
     # artifact json omits (kv_lora_rank=448, v_head_dim=512,
-    # qk_nope_head_dim=448 — configs/deepseekv4.py:35-39 @1.3.0rc23), so
+    # qk_nope_head_dim=448 — configs/deepseekv4.py:35-39), so
     # rewrite the type instead of pulling remote code.
     config["model_type"] = "deepseek_v4"
     config["num_hidden_layers"] = 1
@@ -229,7 +229,7 @@ def create_dsv4_attention_module(
     unit the SDK module tables bill.
     """
     # Registers model_type "deepseek_v4" -> DeepseekV4Config into transformers
-    # CONFIG_MAPPING at import (configs/__init__.py @1.3.0rc23); required
+    # CONFIG_MAPPING at import (configs/__init__.py); required
     # before ModelConfig.from_pretrained resolves the patched config.
     import tensorrt_llm._torch.configs  # noqa: F401
     from tensorrt_llm._torch.model_config import ModelConfig
@@ -285,10 +285,10 @@ def create_dsv4_attention_module(
 
     # Provenance: print the RESOLVED kernel-selection knobs (same auto-build
     # code path default serving takes when the user sets no
-    # sparse_attention_config; model_config.py:948-990 @1.3.0rc23). Audits
+    # sparse_attention_config; model_config.py:948-990). Audits
     # compare these against serving defaults — e.g. the 12.7x CSA
     # long-prefix gap vs vllm traces to cute-dsl topk/paged-mqa being
-    # default-OFF here (2026-08-06 audit).
+    # default-OFF here.
     _sc = model_config.sparse_attention_config
     print(
         "[dsv4-collector] resolved sparse config: "
@@ -390,7 +390,7 @@ def create_dsv4_kv_cache_and_metadata(
     """DSV4 cache manager + attention metadata, following the serving
     construction path with a DIRECT pinned citation on every hand-set field
     (layer_permissions.md metadata-parity rule; audited against TensorRT-LLM
-    1.3.0rc23 sources, 2026-08-19):
+    1.3.0rc23 sources):
 
     - manager construction  -> pyexecutor/_util.py:1843-1867 (is_mla branch)
     - Metadata construction -> pyexecutor/model_engine.py:2475-2489
@@ -445,7 +445,7 @@ def create_dsv4_kv_cache_and_metadata(
 
     # DeepSeek-V4 serving default page size ("TensorRT LLM defaults
     # DeepSeek-V4 to tokens_per_block=128",
-    # examples/models/core/deepseek_v4/README.md:66-67 @v1.3.0rc23;
+    # examples/models/core/deepseek_v4/README.md:66-67;
     # DeepseekV4CacheManager asserts 128/256).
     tokens_per_block = 128
 
@@ -462,8 +462,8 @@ def create_dsv4_kv_cache_and_metadata(
         kv_cache_len = generation_request_geometry(seq_len)["num_cached_tokens"]
     # Serving's max_seq_len is the ENGINE envelope, not the request length:
     # the DSV4 metadata derives num_sparse_topk = window(128) +
-    # next_pow2(ceil(max_seq_len/128)) (sparse_deepseek_v4.py:435-444
-    # @1.3.0rc23) and the trtllmGen fmha kernel asserts it is a multiple of 4
+    # next_pow2(ceil(max_seq_len/128)) (sparse_deepseek_v4.py:435-444)
+    # and the trtllmGen fmha kernel asserts it is a multiple of 4
     # — request-sized envelopes (< 257) yield pow2 1/2 -> 129/130 and crashed
     # every tiny-KV HCA decode case on B200 (smoke round 3). Floor ONLY the
     # envelope; per-request state (add_dummy_requests token_nums, metadata
@@ -474,12 +474,12 @@ def create_dsv4_kv_cache_and_metadata(
     max_seq = max(max_seq, 512)
 
     # KVCacheManagerV2 requires an explicit quota (max_tokens or
-    # max_gpu_total_bytes; kv_cache_manager_v2.py "Quota not set" @1.3.0rc23)
+    # max_gpu_total_bytes; kv_cache_manager_v2.py "Quota not set")
     # — in serving, free_gpu_memory_fraction is converted to a byte quota by
     # the executor's KV estimation before the manager is built, so pass the
     # equivalent byte quota directly (half of currently-free device memory,
     # matching the DSV4 example's free_gpu_memory_fraction=0.5,
-    # examples/models/core/deepseek_v4/README.md:148-151 @v1.3.0rc23). A
+    # examples/models/core/deepseek_v4/README.md:148-151). A
     # collector-computed main-KV-shaped byte cap under-counted on V2 (the
     # byte quota spans main KV + SWA + compressor/indexer caches) and made
     # large-KV shapes fail dummy-request allocation ("Request ID not found in
@@ -489,11 +489,11 @@ def create_dsv4_kv_cache_and_metadata(
     # Pool size is a per-case cost, not a measurement input: the manager
     # physically backs the whole quota at construction (runtime/
     # kv_cache_manager_v2/_storage_manager.py:248-249 slot counts from the
-    # GPU-tier quota, expand_pool_group :826 @1.3.0rc29) and this collector
+    # GPU-tier quota, expand_pool_group :826) and this collector
     # builds and tears one down per case. Cap the quota at what this batch
     # can touch via kv_cache_config.max_tokens — the manager converts it with
     # its own DSV4 arithmetic (DeepseekV4CacheManager._get_quota_from_max_tokens,
-    # sparse/deepseek_v4/cache_manager.py:926-981 @1.3.0rc29: non-sliding KV +
+    # sparse/deepseek_v4/cache_manager.py:926-981: non-sliding KV +
     # SWA per token/request + indexer/compress pools + per-type padding) and
     # takes min(max_gpu_total_bytes, quota_from_max_tokens) (pyexecutor/kv_cache/
     # kv_cache_manager_v2.py:1384-1398). The envelope is doubled and rounded
@@ -509,7 +509,7 @@ def create_dsv4_kv_cache_and_metadata(
     # that pool extent is < 2**31 bytes inductor generates int32-indexed
     # triton kernels (xnumel i32), above it int64 — serving pools are tens of
     # GiB, so serving always runs the int64 variant. H20 calibration
-    # (2026-10-03, DeepSeek-V4-Flash, b64 s128 p2048): quota from 1,048,576
+    # quota from 1,048,576
     # tokens = 11.4 GiB -> i32 (53.9 ms), 1,572,864 tokens = 17.1 GiB -> i64
     # (45.8 ms); 2M tokens (22.7 GiB on Flash, i64 verified in the same sweep)
     # sits 1.33x past the threshold, and every other DSV4 geometry carries more
@@ -544,7 +544,7 @@ def create_dsv4_kv_cache_and_metadata(
     # resolution from kv_cache_quant_algo (set by _apply_gemm_type_quant).
     kv_cache_dtype = DataType.BF16 if kv_cache_dtype_str == "bfloat16" else DataType.FP8
 
-    # Serving construction site: pyexecutor/_util.py:1843-1867 @1.3.0rc23
+    # Serving construction site: pyexecutor/_util.py:1843-1867
     # (is_mla branch): CacheType.SELFKONLY :1846, num_kv_heads=1 :1848,
     # head_dim=kv_lora_rank+qk_rope_head_dim :1849, dtype=kv_cache_dtype,
     # vocab_size=config.vocab_size :1856, sparse_attention_config :1862,
@@ -575,7 +575,7 @@ def create_dsv4_kv_cache_and_metadata(
         request_ids = list(range(batch_size))
         token_nums = [request_tokens] * batch_size
         # add_dummy_requests is serving's own warmup-request mechanism
-        # (model_engine.py:2141-2160, :2277, :2300 @1.3.0rc23 register dummy
+        # (model_engine.py:2141-2160, :2277, :2300 register dummy
         # requests the same way before capture/warmup); is_gen mirrors the
         # request phase (generation metadata below declares num_contexts=0
         # with cached KV).
@@ -591,7 +591,7 @@ def create_dsv4_kv_cache_and_metadata(
         )
 
         # Constructor kwargs mirror _set_up_attn_metadata
-        # (model_engine.py:2475-2489 @1.3.0rc23); per-batch fields mirror the
+        # (model_engine.py:2475-2489); per-batch fields mirror the
         # _prepare_tp_inputs population sites cited per field below.
         attn_metadata = attention_cls.Metadata(
             # max_num_requests/max_num_tokens are CAPACITY BOUNDS
@@ -744,7 +744,7 @@ def run_dsv4_attn(
         hidden_size = model_config.pretrained_config.hidden_size
         # int32 position_ids: serving populates them int32 and the DSV4 indexer
         # rope op asserts it (sparse/deepseek_v4/deepseek_v4.py mla_rope_inplace
-        # "position_ids must be int32" @1.3.0rc23).
+        # "position_ids must be int32").
         if is_context:
             num_tokens = seq_len * batch_size
             position_ids = (
@@ -758,7 +758,7 @@ def run_dsv4_attn(
             num_tokens = batch_size
             # position == past-seen/cached count, NOT seq_len - 1: see
             # generation_request_geometry (ordinary decode,
-            # model_engine.py:4308,4315,4332-4335 @1.3.0rc23). Off-by-one
+            # model_engine.py:4308,4315,4332-4335). Off-by-one
             # here rotates rope one step early; it does not change kernel
             # shapes or measured cost.
             position_ids = torch.full(
@@ -817,7 +817,7 @@ def run_dsv4_attn(
                     "mla_dtype": compute_dtype,
                     "kv_cache_dtype": kv_cache_dtype,
                     "gemm_type": gemm_type,
-                    # Rank-LOCAL heads + mandatory tp_size (unified #1429; the
+                    # Rank-LOCAL heads + mandatory tp_size (unified convention; the
                     # SDK loader derives native = num_heads * tp_size and
                     # validates local semantics).
                     "num_heads": head_info["local_heads"],
@@ -872,7 +872,7 @@ def run_dsv4_attn_worker(
     """collect.py worker: one task = one shape = one row.
 
     Mode is derived from the target perf filename (same convention as the
-    vllm collector, collect_dsv4_attn.py:968 @0.24.0).
+    vllm collector, collect_dsv4_attn.py:968).
     """
     run_dsv4_attn(
         seq_len=seq_len,

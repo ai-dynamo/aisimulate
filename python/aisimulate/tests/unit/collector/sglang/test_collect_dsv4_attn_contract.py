@@ -221,7 +221,7 @@ def test_subprocess_keeps_the_kernel_limit_class_of_refused_points(monkeypatch, 
 
 
 def test_dsv4_persisted_num_heads_is_rank_local_with_geometry_guard():
-    """Persisted ``num_heads`` follows the unified #1429 convention: rank-local
+    """Persisted ``num_heads`` follows the unified convention: rank-local
     heads derived from the config-native count (never from module attributes,
     which flip between native and rank-local across sglang versions). A module
     head count matching neither reading fails the case instead of mislabeling

@@ -52,10 +52,10 @@ from tensorrt_llm.quantization.mode import QuantAlgo
 def _mla_tokens_per_block() -> int:
     # SM90 serving runs DeepSeek-dim MLA (headDimQk=576) through FlashMLA and
     # forces tokens_per_block=64: model_config.enable_flash_mla requires
-    # head_dim==576 on SM90 (tensorrt_llm/_torch/model_config.py@v1.3.0rc20),
+    # head_dim==576 on SM90 (tensorrt_llm/_torch/model_config.py),
     # py_executor_creator.py then overrides tokens_per_block to 64, and the
     # attention op enables FlashMLA only for SM90 && tokens_per_block==64
-    # (cpp/tensorrt_llm/thop/attentionOp.cpp:1235@v1.3.0rc20). With 32 the op
+    # (cpp/tensorrt_llm/thop/attentionOp.cpp:1235). With 32 the op
     # falls back to the generation FMHA runner, which 1.3.0rc20 no longer
     # supports for FP8 KV cache on SM90 ("Deepseek should be supported by fmha
     # in generation part", cpp/tensorrt_llm/common/attentionOp.cpp:3091).

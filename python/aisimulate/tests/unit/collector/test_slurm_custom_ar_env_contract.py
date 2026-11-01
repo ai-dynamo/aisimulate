@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Guard the Slurm launcher <-> worker rank-env contract (issue #1416).
+"""Guard the Slurm launcher <-> worker rank-env contract.
 
 `srun` exports the per-task global rank as ``SLURM_PROCID`` (and the
 node-local id as ``SLURM_LOCALID``); it does not define a per-task ``RANK``.

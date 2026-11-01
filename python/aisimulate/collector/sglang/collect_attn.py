@@ -39,7 +39,7 @@ class Timing(NamedTuple):
 
 # Mock objects to satisfy RadixAttention dependencies
 class MockModelConfig:
-    def get_max_num_attention_heads(self) -> int:  # model_config.py:1504 @0.5.21 (triton_backend.py:255)
+    def get_max_num_attention_heads(self) -> int:  # model_config.py:1504 (triton_backend.py:255)
         return int(self.num_attention_heads)
 
     def __init__(
@@ -104,7 +104,7 @@ class MockModelConfig:
         self.hf_text_config = self.hf_config
         self.dtype = torch.bfloat16
 
-    def get_num_kv_heads(self, tp_size, dcp_size=1):  # model_config.py:1512 @0.5.21 adds dcp_size (DCP replicates KV)
+    def get_num_kv_heads(self, tp_size, dcp_size=1):  # model_config.py:1512 adds dcp_size (DCP replicates KV)
         return self.num_key_value_heads // tp_size
 
 
@@ -165,11 +165,11 @@ class MockModelRunner:
         self.attn_cp_size = 1  # Context parallelism size; required by FlashAttentionBackend in sglang >=0.5.10
         # sglang 0.5.21 TRTLLMHAAttnBackend (the dense backend sglang picks on SM100/103) reads
         # model_runner.prefill_attention_backend_str / decode_attention_backend_str to decide its
-        # prefill/decode split; fa3/flashinfer on Hopper never asked (B200 smoke 2026-10-04:
+        # prefill/decode split; fa3/flashinfer on Hopper never asked (B200 smoke
         # AttributeError 'MockModelRunner' object has no attribute 'prefill_attention_backend_str').
         self.prefill_attention_backend_str = attn_backend_name
         self.decode_attention_backend_str = attn_backend_name
-        # trtllm_mha_backend.py:310@0.5.21 scans model_runner.model.modules() for ENCODER_ONLY attention
+        # trtllm_mha_backend.py:310 scans model_runner.model.modules for ENCODER_ONLY attention
         # layers (expanded TARGET_VERIFY metadata); the collector has no model — an empty Module
         # declares none, which is the dense-decoder answer.
         self.model = torch.nn.Module()

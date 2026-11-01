@@ -252,7 +252,7 @@ def test_bench_uses_total_cache_length_and_fresh_query_length(
                 architectures=["DeepseekV4ForCausalLM"],
                 hidden_size=8,
                 # Native head count; must equal FakeAttention.n_local_heads * tp_size
-                # to satisfy the #1429 geometry cross-check at the write site.
+                # to satisfy the unified geometry cross-check at the write site.
                 num_attention_heads=8,
             )
         ),

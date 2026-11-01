@@ -386,7 +386,7 @@ def _bench_serving_decode_entry(
 ) -> None:
     """Measure the entry serving actually calls for pure decode.
 
-    gdn_mixer.forward_decode (_torch/modules/mamba/gdn_mixer.py:670 @1.3.0rc23)
+    gdn_mixer.forward_decode (_torch/modules/mamba/gdn_mixer.py:670)
     calls fused_sigmoid_gating_delta_rule_update with the raw gating inputs
     (A_log, dt_bias, a, b), the SSM state pool + slot indices and
     cu_seqlens; that function dispatches to FlashInfer's bf16-state GDN decode
@@ -796,7 +796,7 @@ def run_gdn_torch(
         # resolves chunk_gated_delta_rule to FlashInfer's cute-DSL chunk kernel on
         # SM90/SM100 (TLLM_USE_FLASHINFER_GDN_PREFILL=1 default) and to the FLA
         # Triton kernel elsewhere (_torch/modules/mamba/gdn_mixer.py:57-70
-        # @1.3.0rc23; arch gate _utils.is_flashinfer_gdn_supported_arch). Older
+        # arch gate _utils.is_flashinfer_gdn_supported_arch). Older
         # builds have no resolver and only the Triton kernel — import that.
         chunk_label = "chunk_gated_delta_rule"
         try:
@@ -812,7 +812,7 @@ def run_gdn_torch(
         # Pure-decode serving entry (gdn_mixer.py:670): fused sigmoid gating +
         # recurrent update, itself dispatching to FlashInfer's bf16-state GDN
         # decode kernel when _can_use_flashinfer_gdn_decode holds
-        # (fla/fused_sigmoid_gating_recurrent.py:205-238,452-458 @1.3.0rc23).
+        # (fla/fused_sigmoid_gating_recurrent.py:205-238,452-458).
         try:
             from tensorrt_llm._torch.modules.fla.fused_sigmoid_gating_recurrent import (
                 _can_use_flashinfer_gdn_decode,

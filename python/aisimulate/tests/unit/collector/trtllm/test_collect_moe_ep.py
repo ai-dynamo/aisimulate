@@ -95,7 +95,7 @@ def _retired_case_set(sm_version: int) -> set[tuple]:
         if recipe.tp != 1 or recipe.ep <= 1:
             continue
         moe_list = []
-        # rc20 chain (#1356): fp8_block floor moved to min_sm 90 (SM87-89 lost
+        # rc20 chain: fp8_block floor moved to min_sm 90 (SM87-89 lost
         # it, SM100+ gained it alongside nvfp4) and the two rc5-era SM120
         # nvfp4 kernel-limit skips were removed (hardware-verified clean).
         if sm_version >= 90:
@@ -408,7 +408,7 @@ def test_moe_ep_alone_resolves_to_the_wideep_trtllm_pin():
 
 def test_mixing_stock_and_wideep_trtllm_ops_fail_closes_on_different_pins():
     # Stock trtllm (1.3.0rc29 default) and wideep_trtllm (1.3.0rc20) no longer
-    # share a pin (framework_manifest.yaml, 2026-10-04): a mixed stock+wideep
+    # share a pin (framework_manifest.yaml): a mixed stock+wideep
     # request is a multi-runtime request and must be split, exactly like
     # wideep_sglang (0.5.10) vs stock sglang. moe_ep alone still resolves to
     # the WideEP pin (test above); the stock op alone resolves to rc29.

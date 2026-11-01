@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """collect_attn.kv_cache_in_resolved_layout: the collector's paged KV cache must be laid out
-in the layout the framework RESOLVED for the backend under test (RFC #42082), not a fixed HND.
+in the layout the framework RESOLVED for the backend under test, not a fixed HND.
 
 Origin: SM120 collection 2026-10-01 — FlashInfer resolves NHD outside SM100 and its XQA
 decode asserted on the collector's contiguous [B, H, N, 2D] memory for every fp8-KV GQA
@@ -33,7 +33,7 @@ def _helper():
     return ns["kv_cache_in_resolved_layout"]
 
 
-# KVCacheLayout.layer_view_order values (vllm/v1/kv_cache_layout.py @v0.30.0): logical [B, H, N, C]
+# KVCacheLayout.layer_view_order values (vllm/v1/kv_cache_layout.py): logical [B, H, N, C]
 LBHNC = (0, 1, 2, 3)  # HND, identity
 LBNHC = (0, 2, 1, 3)  # NHD
 

@@ -138,7 +138,7 @@ STALL_THRESHOLD = 30  # iterations (x 0.5 s sleep = 15 s) before logging a stall
 # dump every worker's thread stacks (SIGUSR1 -> faulthandler), kill the workers,
 # record their in-flight tasks as WorkerStallTimeout and restart the workers so
 # the queue keeps draining. 0 disables. sglang 0.5.21 moe/bf16 on l40s/b300
-# (2026-10-06) sat 76 min at 0/58482 with no error until the pipeline watchdog
+# sat 76 min at 0/58482 with no error until the pipeline watchdog
 # cancelled the whole job; a finite, diagnosable failure is worth more than an
 # open-ended wait.
 STALL_TIMEOUT_SEC = int(os.environ.get("AISIM_STALL_TIMEOUT_SEC") or os.environ.get("AIC_STALL_TIMEOUT_SEC") or 1800)
@@ -146,7 +146,7 @@ STALL_TIMEOUT_SEC = int(os.environ.get("AISIM_STALL_TIMEOUT_SEC") or os.environ.
 # between before the executor closes the op (abandons the worker slots; the
 # never-dispatched tasks are recorded as WorkerOrphanedTask, not as failed).
 # 1 = close on the first stall. b200 vllm dsa_context_module s256 (job
-# 481670367, 2026-10-11): the first stall at 13,002/21,960 — eight workers each
+# 481670367): the first stall at 13,002/21,960 — eight workers each
 # wedged on a poison shape — closed the op and wrote the 8,950 undispatched
 # tasks into the failed ledger, so the retry-failed resume re-ran all of them
 # behind the same poison shapes and stalled again; two full loops were burnt.
@@ -1853,7 +1853,7 @@ def worker(
             # Message matching alone misses launcher wrappers that hide the CUDA
             # error text (FlashInfer's "Got CUDA error. See above for details."):
             # the worker then runs the next case on a dead context and books an
-            # unrelated failure for it (gb200 job 512476645, 2026-10-27: one
+            # unrelated failure for it (gb200 job 512476645: one
             # healthy case lost per Llama-4 autotune crash). Probe the context
             # after every failure and recycle the worker when it is gone.
             context_error = None if _is_cuda_fatal_exception(e, torch_mod) else cuda_context_error(device)
@@ -2037,7 +2037,7 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
     # loop's exit condition MUST NOT depend on worker-side progress_value
     # ticks: a worker records done_tasks/failed_tasks and bumps
     # progress_value as separate manager RPCs, so a hard kill between them
-    # (hardware-observed on H20 2026-07-19: TRT-LLM C++ teardown SIGABRT
+    # (hardware-observed on H20 TRT-LLM C++ teardown SIGABRT
     # right after the task completed) loses the tick forever — the run then
     # sat at 99/100 with a complete checkpoint and every GPU idle. Every
     # task that reaches done_tasks or failed_tasks lands here exactly once
@@ -2416,7 +2416,7 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
             if p.is_alive():
                 # a worker wedged in a CUDA call ignores SIGTERM; without SIGKILL the
                 # interpreter's multiprocessing atexit join waits forever (pipeline
-                # watchdogs had to reap collect.py itself, 2026-10-05 campaign)
+                # watchdogs had to reap collect.py itself)
                 logger.warning(f"Process {p.pid} survived SIGTERM, killing")
                 p.kill()
                 p.join(timeout=10)
@@ -3174,7 +3174,7 @@ def _registered_checkpoint_tables(identity: dict, *, backend: str) -> frozenset[
 
     One producer (module + run_func) owns one or more tables — the primary
     ``perf_filename`` plus any ``extra_perf_filenames`` its OpEntry declares
-    (owner decision 2026-09-28: compute_scale writes computescale_perf and
+    (owner decision compute_scale writes computescale_perf and
     scale_matrix_perf from one measurement, so the executor binds both to the
     same checkpoint instead of splitting the op).
     """
@@ -6360,14 +6360,14 @@ def main():
         "--gpu",
         type=str,
         default=None,
-        help="GPU type for resolving hardware capability floors, for example b200_sxm. "
+        help="GPU type whose SM collector/skips.py applies, for example b200_sxm. "
         "The SM version is read from src/aisimulate_core/systems/<gpu>.yaml unless --sm is provided.",
     )
     parser.add_argument(
         "--sm",
         type=int,
         default=None,
-        help="Explicit SM version for hardware capability floors, for example 100. "
+        help="Explicit SM version collector/skips.py applies, for example 100. "
         "Overrides --gpu SM resolution; defaults to the local device capability.",
     )
     parser.add_argument(
@@ -6482,7 +6482,7 @@ def main():
                 # Not a usage error: the op is registered but the model plan keeps it
                 # registry-only (or the caller's shard plan is stale). A dedicated exit
                 # code lets a scheduler mark the shard terminal instead of retrying an
-                # argparse 2 until max_attempts (2026-10-11, sm100 shard plans).
+                # argparse 2 until max_attempts.
                 print(
                     f"{parser.prog}: error: Requested ops are not present in the collector v2 case plan: "
                     + ", ".join(sorted(missing_ops)),

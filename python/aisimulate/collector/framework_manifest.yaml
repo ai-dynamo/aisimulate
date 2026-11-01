@@ -56,7 +56,7 @@ frameworks:
     # GLM-5.3-Flash SGLang 0.5.20 model pin retired 2026-10-30 (owner decision:
     # one release per collector file; 0.5.20 is below the 0.5.21 target). The
     # 0.5.20 tables stay under their version key; re-collect them from
-    # main at c540ff90a (before #649). Moving the lane to 0.5.21 needs the GLM
+    # main at c540ff90a. Moving the lane to 0.5.21 needs the GLM
     # attention runner, KDA, mHC and GEMM ports listed in the 2026-10-30
     # source audit, then a re-collection.
     models: {}
@@ -69,7 +69,7 @@ frameworks:
     # smokes on rc29 (21/23 clean; moe's first plan case and mamba2's largest
     # cells fail by their own classified raises) and all 17 path gates align on
     # it, DSV4 included. Retired-pin history, kept for the data it explains:
-    #   * rc23 moe (2026-08-08): FP4 w4a8_mxfp4_mxfp8 rows show reproducible
+    #   * rc23 moe: FP4 w4a8_mxfp4_mxfp8 rows show reproducible
     #     non-monotonic num_tokens segments on Blackwell (median ratio vs rc20
     #     1.003-1.013; per-bucket tactic/tile-wave quantization, not a campaign
     #     artifact; GitLab aic-auto-collector pipelines 61692150-61692160,
@@ -90,7 +90,7 @@ frameworks:
       version: "0.30.0"
       images:
         default: "vllm/vllm-openai:v0.30.0@sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90"
-    # gemm / moe / kda / mhc move to vLLM 0.31.0 (owner decision 2026-10-30):
+    # gemm / moe / kda / mhc move to vLLM 0.31.0:
     # GLM-5.3-Flash collects these families on 0.31.0, and each collector file
     # targets exactly one release, so the families upgrade instead of carrying
     # 0.30.0 and 0.31.0 side by side. A family pin moves the family for every
@@ -106,9 +106,9 @@ frameworks:
       moe: *vllm_0310_runtime
       kda: *vllm_0310_runtime
       mhc: *vllm_0310_runtime
-    # kda family pin RETIRED (owner decision 2026-09-28): the family ran on the
+    # kda family pin RETIRED: the family ran on the
     # kimi-k3 preview image (0.1.dev19262) while the consumer's fused-decode
-    # pricing did not match 0.27's packed-decode serving path (review #1559).
+    # pricing did not match 0.27's packed-decode serving path.
     # On 0.30.0 the opharness framework-mode probe of Kimi-K3 runs the fused
     # decode kernel (kda_decode_fusion_many_heads_kernel) and FlashKDA prefill
     # (opharness findings vllm_0300_upgrade_2026_09_27), and the kda collector
@@ -118,8 +118,8 @@ frameworks:
       # default 2026-09-20 per the pin-consolidation rule: pins BELOW the
       # target version upgrade with it; the kda preview pin (an odd dev-build
       # pin) was revisited at the 0.30.0 move and retired, see above.
-      # moe: the 0.31.0 family pin above is a stock release (2026-10-30).
-      # History: NO family pin (owner decision 2026-08-02, reverting the
+      # moe: the 0.31.0 family pin above is a stock release.
+      # History: NO family pin (owner decision, reverting the
       # 2026-08-01 family-wide preview pin — a temporary preview build must
       # not own a family default; a family pin here hijacks image selection
       # for every model). ALL vllm moe collection — including K3 — runs on
@@ -165,7 +165,7 @@ frameworks:
       # model_executor/layers/sparse_attn_indexer_kpool.py to
       # models/glm5next/nvidia/sparse_indexer.py; it also carries the KPool
       # tail slot-mapping fix (v1/kv_cache_interface.py:1036-1038). Docker Hub reported the
-      # multi-arch index digest below for v0.31.0 on 2026-10-07; its
+      # multi-arch index digest below for v0.31.0; its
       # linux/arm64 child (also tag v0.31.0-aarch64; the GB300 platform
       # image, imported for collection as 3f7dd5b7...2b971.sqsh) is
       # sha256:3f7dd5b777d34d1724456ce71f87385dca288c3bb23029ab27dee358f5d2b971

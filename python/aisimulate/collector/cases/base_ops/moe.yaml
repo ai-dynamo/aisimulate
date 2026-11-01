@@ -108,7 +108,7 @@ common_case_values:
       fp8_block: {default: triton}
       # SM100/103: pinned SGLang 0.5.14 serving auto-selects flashinfer_trtllm
       # for Kimi K2/K2.5 INT4 (server_args.py:3736 -> CompressedTensorsMxInt4MoE).
-      # B200 hardware validation: 2026-07-11 Kimi-filtered moe pipeline run.
+      # B200 hardware validation: Kimi-filtered moe pipeline run.
       # SM89/SM90/SM120: the forcing block above sits under
       # `if is_sm100_supported()` (server_args.py:3684), which is capability
       # major == [10] exactly (utils/common.py:282) — so on SM89/90/120 the
@@ -124,7 +124,7 @@ common_case_values:
       # NVFP4 SM120: serving auto resolves to FLASHINFER_TRTLLM
       # (modelopt_quant.py:2317-2323 — capability (12,0) is outside the
       # (8,0)..(10,0) Marlin fallback), but the trtllm-gen batched FP4 GEMM
-      # has no SM120 kernel (RTX 6000 Pro probe 2026-07-05:
+      # has no SM120 kernel (RTX 6000 Pro probe
       # trtllm_batched_gemm_runner.cu:286 "Error occurred when running
       # GEMM"). flashinfer_cutlass is the only runnable high-level FusedMoE
       # NVFP4 path on SM120 and requires the explicit

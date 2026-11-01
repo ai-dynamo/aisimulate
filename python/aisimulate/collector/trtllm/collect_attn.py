@@ -40,7 +40,7 @@ def _deployment_tokens_per_block() -> int:
     (TRT-LLM's own KvCacheConfig default); the collector used to pin 64 here, which on
     Blackwell selects a different FMHA cubin family — the sm100 kernel names carry the page
     (fmhaSm100a…PagedKvCausalP64… vs serving's …P32…), so the sm100 attention gates
-    DIVERGED on nothing but the page while the sm90 names hide it (B200, 2026-10-04,
+    DIVERGED on nothing but the page while the sm90 names hide it (B200,
     opharness finding sm100_sglang_trtllm_gate_verdicts_2026_10_04). Ask the framework
     for its default; ``AIS_TRTLLM_TOKENS_PER_BLOCK`` is the A/B hook.
     """
@@ -107,7 +107,7 @@ def run_attention_torch(
         quant_algo = None
 
     # out_scale mirrors serving's Attention._use_quantize_output()
-    # (_torch/modules/attention.py:648-670,758-761@1.3.0rc20): an fp8-quantized
+    # (_torch/modules/attention.py:648-670,758-761): an fp8-quantized
     # model supplies o_proj.inv_input_scale; a model with no weight/activation
     # quant (``not has_any_quant(exclude_kv_cache=True)``) supplies None, fp8 KV
     # cache or not. Passing a scale is not inert: the backend allocates fp8
@@ -198,7 +198,7 @@ def run_attention_torch(
     )
 
     # Serving allocates dense-attention KV cache as CacheType.SELF
-    # (pyexecutor/_util.py:1539@1.3.0rc20); SELFKONLY is reserved for MLA
+    # (pyexecutor/_util.py:1539); SELFKONLY is reserved for MLA
     # (_util.py:1636). Regular GQA/MHA has separate K and V tensors, so both
     # TRTLLM and FlashInfer paths must benchmark the full serving layout.
     kv_cache_type = tensorrt_llm.bindings.internal.batch_manager.CacheType.SELF
@@ -260,9 +260,9 @@ def run_attention_torch(
         request_ids=request_ids,
         # Serving populates prompt_lens with the current-chunk length for
         # context requests and request.py_prompt_len for generation requests
-        # (pyexecutor/model_engine.py:3015,3180,3227,3277,3353,3760@1.3.0rc20);
+        # (pyexecutor/model_engine.py:3015,3180,3227,3277,3353,3760);
         # the field is part of the shared AttentionMetadata contract
-        # (attention_backend/interface.py:134-138@1.3.0rc20) that every
+        # (attention_backend/interface.py:134-138) that every
         # backend inherits — FlashInferAttentionMetadata does not consume it
         # directly. With chunked_prefill=False the current chunk IS the full
         # prompt, so input_seq_lens matches both phases here.

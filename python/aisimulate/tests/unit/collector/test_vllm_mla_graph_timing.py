@@ -275,7 +275,7 @@ def test_series_builds_the_module_once_and_measures_every_point_largest_first():
 def test_series_measures_the_isl_prefix_points_of_one_module_largest_total_context_first():
     """A DSA context case lists its (isl, prefix) points: one module, every point of the plan
     row measured on it, largest total context first (module build was 0.9-1.2 s/pt under the
-    campaign's 8 workers when it was amortised over one prefix only, 2026-10-29)."""
+    campaign's 8 workers when it was amortised over one prefix only)."""
     execute, events, published, calls, _ = _module_runner(reuse_frequency=4)
     assert execute(seq_len=[[8, 0], [16, 128], [16, 0], [8, 128]], prefix_len=0) == [0.015] * 4
     assert events.count("workspace init") == 1

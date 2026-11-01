@@ -21,7 +21,7 @@ Generation (decode) phase:
       only — is_sm100_supported() is capability major EXACTLY 10, so sm
       100/103 yes, sm 120 no; sglang serving auto-selects this decode kernel
       only when the model's mamba_ssm_dtype is bfloat16 — server_args.py
-      _handle_linear_attn_backend, :4884-4915 @0.5.14). This describes
+      _handle_linear_attn_backend, :4884-4915). This describes
       hypothetical consumer-serving behavior: official repository collection
       remains FP32-only until a state-dtype-keyed persisted identity/schema is
       separately approved, so it cannot currently select this lane.
@@ -46,9 +46,9 @@ Output:
 # Compatible unchanged: chunk_gated_delta_rule and
 # fused_recurrent_gated_delta_rule_packed_decode signatures/bodies
 # byte-identical; causal_conv1d_fn path and dispatch unchanged;
-# causal_conv1d_update signature byte-identical; the #1533 lane's serving
+# causal_conv1d_update signature byte-identical; the FlashInfer lane's serving
 # call site (FlashInferGDNKernel.decode's use_state_pool=True branch,
-# gdn_flashinfer.py:180-193 @0.5.14 -> :236-249 @0.5.17) is 100% identical
+# gdn_flashinfer.py:180-193 -> :236-249) is 100% identical
 # text, same argument list this collector mirrors; server_args.py's SM100+
 # auto-flip to flashinfer + bf16 hard-requirement moved :4884 -> :6027
 # (function grew from unrelated features) but is unchanged in content, now
@@ -74,9 +74,9 @@ Output:
 # byte-identical at both locations), fixed with version-conditional imports
 # mirroring collect_gemm.py's established try/except-import pattern (this
 # file had none of its own before this bump).
-# 0.5.21 since 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
 # findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
-# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+# One release per file; earlier code is `git log -- <this file>` away.
 __compat__ = "sglang==0.5.21"
 
 import gc
@@ -88,7 +88,7 @@ if TYPE_CHECKING:
     # in run_gdn_torch() below) after a version-conditional import, so a
     # static type checker needs its own declaration to resolve the call
     # sites elsewhere in this file. Pointed at the >=0.5.17 paths (MINOR 4,
-    # code review 2026-08-18): the old sglang.srt.layers.attention.fla.*/
+    # code review): the old sglang.srt.layers.attention.fla.*/
     # sglang.srt.layers.attention.mamba.causal_conv1d_triton paths this block
     # used before this bump no longer exist at 0.5.17, which would leave
     # type-checking broken on a 0.5.17-only environment. causal_conv1d_fn's
@@ -190,7 +190,7 @@ def run_gdn_context_benchmark(
                 # causal_conv1d_triton.py:373-379 at image source 49e384ce), so
                 # a cell whose packed-conv offset total_tokens * conv_channels
                 # reaches 2**31 elements wraps negative and corrupts device
-                # memory. RTX 6000 Pro memcheck (2026-07-06) pinned the invalid
+                # memory. RTX 6000 Pro memcheck pinned the invalid
                 # global write to that store at 262,144 tokens for both Qwen3.5
                 # conv widths (10,240 and 12,288); the 131,072-token cells
                 # pass. Same defect class as the ledger's
@@ -312,7 +312,7 @@ def run_gdn_context_benchmark(
                         )
 
                 else:
-                    # FlashInferGDNKernel.extend @0.5.21 (kernels/gdn_flashinfer.py:465-581):
+                    # FlashInferGDNKernel.extend (kernels/gdn_flashinfer.py:465-581):
                     # l2norm/layout prepare, exp(g) and beta as fp32, the state rows gathered
                     # (fp32 pool on SM90) and written back with index_copy_, int64 cu_seqlens,
                     # use_qk_l2norm_in_kernel=False because the prepare already normalized.
@@ -392,11 +392,11 @@ def _resolve_flashinfer_gdn_decode(mamba_ssm_dtype: str = "float32"):
     Resolve the FlashInfer bf16-state GDN decode kernel for the SM-major-10 lane.
 
     ``mamba_ssm_dtype`` is the case's model-config SSM state dtype (serving
-    default "float32" — configs/mamba_utils.py @0.5.14). Serving's own
+    default "float32" — configs/mamba_utils.py). Serving's own
     predicate for auto-selecting this backend is ``is_sm100_supported()``
     (capability major EXACTLY 10 — sm 100/103 yes, sm 120 NO) AND
     ``mamba_ssm_dtype == "bfloat16"`` (server_args.py's
-    _handle_linear_attn_backend, :4884-4915 @0.5.14; it hard-errors a
+    _handle_linear_attn_backend, :4884-4915; it hard-errors a
     non-bf16 state on that backend).
 
     Returns a ``(kernel_fn, classified_error)`` pair, at most one of which is
@@ -412,7 +412,7 @@ def _resolve_flashinfer_gdn_decode(mamba_ssm_dtype: str = "float32"):
       logging the non-serving FLA decode lane.
 
     The lazy import mirrors sglang's own guard for this kernel
-    (gdn_flashinfer.py:34-56 @0.5.14, _get_flashinfer_gdn_kernels ->
+    (gdn_flashinfer.py:34-56, _get_flashinfer_gdn_kernels ->
     gated_delta_rule_decode_pretranspose).
     """
     sm_version = get_sm_version()
@@ -576,7 +576,7 @@ def run_gdn_generation_benchmark(
     torch.set_default_device(device)
 
     dtype = torch.bfloat16
-    # Serving population @v0.5.14: configs/qwen3_next.py:294-305 builds
+    # Serving population: configs/qwen3_next.py:294-305 builds
     # Mamba2CacheParams with configs/mamba_utils.py:63-67,70-107's resolved
     # dtype; mem_cache/memory_pool.py:342-344,390-394 allocates the temporal
     # state in it, and linear/kernels/gdn_triton.py:81-92 consumes it unchanged.
@@ -628,7 +628,7 @@ def run_gdn_generation_benchmark(
             a = torch.randn(batch_size, num_v_heads, dtype=dtype, device=device)
             b = torch.randn(batch_size, num_v_heads, dtype=dtype, device=device)
             a_log = torch.zeros(num_v_heads, dtype=torch.float32, device=device)
-            # qwen3_5.py:237-239 @0.5.14 creates dt_bias with no explicit dtype
+            # qwen3_5.py:237-239 creates dt_bias with no explicit dtype
             # (model dtype); the kernel upcasts it on load
             # (fused_sigmoid_gating_recurrent.py:154-160).
             dt_bias = torch.ones(num_v_heads, dtype=dtype, device=device)
@@ -762,12 +762,12 @@ def run_gdn_generation_benchmark(
             else:
                 # Mirrors FlashInferGDNKernel.decode's
                 # use_state_pool=True branch argument-for-argument
-                # (gdn_flashinfer.py:180-193 @0.5.14 — serving selects this
+                # (gdn_flashinfer.py:180-193 — serving selects this
                 # backend only on capability major 10, where use_state_pool =
                 # sm_major >= 10 takes this branch), which is fed
                 # q/k/v split+reshaped from mixed_qkv exactly as
-                # GDNAttnBackend.forward_decode does (gdn_backend.py:348-357
-                # @0.5.14) before calling the kernel_dispatcher. The state
+                # GDNAttnBackend.forward_decode does (gdn_backend.py:348-357)
+                # before calling the kernel_dispatcher. The state
                 # pool is bf16 here, independent of the FLA lane's case dtype,
                 # because server_args.py:4884-4915 hard-requires bf16 state on
                 # this capability-major-10 backend.
@@ -905,7 +905,7 @@ def run_gdn_torch(
                 fused_recurrent_gated_delta_rule_packed_decode,
             )
 
-        # gdn_backend.py:13-16 @0.5.14 imports both conv entry points from
+        # gdn_backend.py:13-16 imports both conv entry points from
         # causal_conv1d_triton and rebinds only causal_conv1d_fn to the CUDA
         # wrapper (:34-39) — GDN decode keeps the Triton update kernel.
         # Re-verified 2026-08-18 at v0.5.17: same pattern, now at

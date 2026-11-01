@@ -86,7 +86,7 @@ model_case_values:
       # (deep_gemm_mega_moe / --moe-a2a-backend megamoe), whose fused
       # A2A+GEMM path is not represented by the DeepEP communication table.
       # A K3-scoped run activates moe only for sglang and vllm (no trtllm K3
-      # lane, review 2026-08-04; see framework_specific_op_cases below). A
+      # lane, review; see framework_specific_op_cases below). A
       # full-plan run plans these cases on every backend like any other row.
       quantization_modes: [w4a16_mxfp4, w4a8_mxfp4_mxfp8]
   mla:

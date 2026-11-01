@@ -165,7 +165,7 @@ mappings:
   - {framework: sglang, kernel_source: "sglang.kernels.ops.layernorm.mhc.hc_expand", backend: torch, source: "kernels/ops/layernorm/mhc.py:1762 x.repeat @v0.5.20"}
   - {framework: sglang, kernel_source: "sglang.kernels.ops.layernorm.mhc.hc_contract", backend: torch, source: "kernels/ops/layernorm/mhc.py:1766 mean @v0.5.20"}
 
-  # --- Kimi-K3 (#1435) labels: KDA module kernels (0.5.16) and MoE
+  # --- Kimi-K3 labels: KDA module kernels (0.5.16) and MoE
   # situ-as-silu measurement variants (0.5.14; suffix marks the activation
   # approximation, dispatch = base label).
   - {framework: sglang, kernel_source: causal_conv1d_fn_qkv3, backend: triton, source: "collector/sglang/collect_kda.py:921 (runtime import from kernels/ops/mamba/causal_conv1d_triton); kernels/ops/mamba/causal_conv1d_triton.py:18@v0.5.16 (@triton.jit _causal_conv1d_fwd_kernel — Triton reimpl. of causal-conv1d, 3-call Q/K/V sequence)"}
@@ -180,7 +180,7 @@ mappings:
   # ---------------------------------------------------------------- trtllm
   # TRT-LLM's unified backend dispatches kernels internally; the static
   # labels cannot name the kernel. trtllm_internal = true-but-coarse,
-  # accepted for now BY DECISION (PR #1345 review): future trtllm collector
+  # accepted for now BY DECISION: future trtllm collector
   # upgrades must start recording the real kernel per row (as the sglang
   # 0.5.14 upgrade did for sglang labels), then these entries get split
   # into named backends and trtllm_internal shrinks to zero.
@@ -206,8 +206,8 @@ mappings:
 
   # DeepSeek-V4 mHC module labels. The collector observes the actual
   # pre_mapping dispatch per row (AutoTuner tactic -> mhc_gemm_rms_fma_cuda /
-  # mhc_gemm_rms_dg_cuda, tensorrt_llm/_torch/modules/mhc/mhc_cuda.py:333-347
-  # @1.3.0rc20), so these labels name the real kernel family per row —
+  # mhc_gemm_rms_dg_cuda, tensorrt_llm/_torch/modules/mhc/mhc_cuda.py:333-347),
+  # so these labels name the real kernel family per row —
   # no trtllm_internal coarseness.
   - {framework: trtllm, kernel_source: trtllm_mhc_pre_fma, backend: trtllm_mhc, source: "collector/trtllm/collect_mhc_module.py (observed FMA tactic: mhc_gemm_sqrsum_fma + mhc_big_fuse CUDA kernels)"}
   - {framework: trtllm, kernel_source: trtllm_mhc_pre_dg_splitk, backend: deepgemm, source: "collector/trtllm/collect_mhc_module.py (observed dg_splitk tactic: deep_gemm tf32_hc_prenorm_gemm split-K + mhc_big_fuse)"}
@@ -216,7 +216,7 @@ mappings:
 
   # DeepSeek-V4 attention module label: the attention backend class TRT-LLM's
   # own selector returns for sparse algorithm "deepseek_v4"
-  # (get_attention_backend -> DeepseekV4TrtllmAttention @1.3.0rc23). The
+  # (get_attention_backend -> DeepseekV4TrtllmAttention). The
   # module internally dispatches indexer (DeepGEMM), sparse MLA and
   # compressor kernels not observable from one label -> trtllm_internal.
   - {framework: trtllm, kernel_source: DeepseekV4TrtllmAttention, backend: trtllm_internal, source: "collector/trtllm/collect_dsv4_attn.py (framework-selected backend class name)"}
@@ -285,7 +285,7 @@ mappings:
   # vLLM 0.30.0 merged the trtllm-gen and XQA decode metadata into FlashInferTrtllmAPIDecode (flashinfer.py:608, kernel field
   # FlashInferDecodeKernel xqa|trtllm-gen :568-572); collect_attn appends the kernel to the label. Both are TRT-LLM MHA kernels
   # (XQA = kernel_mha in the opharness sm120 records, trtllm-gen = the SM100 fmha cubins) -> trtllm_mha. The bare class label is
-  # kept for rows collected before the kernel suffix (2026-10-01).
+  # kept for rows collected before the kernel suffix.
   - {framework: vllm, kernel_source: vllm_flashinfer_flashinfertrtllmapidecode_xqa, backend: trtllm_mha, source: "collect_attn.py _dense_kernel_source (FlashInferTrtllmAPIDecode.kernel == XQA; sm120 fp8-KV decode, opharness serving record kernel_mha)"}
   - {framework: vllm, kernel_source: vllm_flashinfer_flashinfertrtllmapidecode_trtllm_gen, backend: trtllm_mha, source: "collect_attn.py _dense_kernel_source (FlashInferTrtllmAPIDecode.kernel == TRTLLM_GEN; SM100 decode)"}
   - {framework: vllm, kernel_source: vllm_flashinfer_flashinfertrtllmapidecode, backend: trtllm_mha, source: "collect_attn.py before the kernel suffix (0.30.0 rows collected 2026-09-29..10-01 on B200/RTX 5000)"}
@@ -346,7 +346,7 @@ mappings:
   - {framework: vllm, kernel_source: "vllm.model_executor.kernels.mhc.tilelang.mhc_pre_tilelang", backend: tilelang, source: "PR#1344 collect_mhc_module.py"}
   - {framework: vllm, kernel_source: "vllm.model_executor.kernels.mhc.tilelang.mhc_post_tilelang", backend: tilelang, source: "PR#1344 collect_mhc_module.py"}
   # GLM-5.3-Flash (Glm5Next) mHC labels at 0.31.0 (collector/vllm/collect_mhc_module.py
-  # _glm5next_kernel_source; kernels/mhc/tilelang.py _hc_prenorm_gemm_outputs L22-71, fused split L814-983; tilelang_kernels.py split config L67-95 (<=32 tokens) @v0.31.0).
+  # _glm5next_kernel_source; kernels/mhc/tilelang.py _hc_prenorm_gemm_outputs L22-71, fused split L814-983; tilelang_kernels.py split config L67-95 (<=32 tokens)).
   - {framework: vllm, kernel_source: "vllm.mhc_pre_tilelang[prenorm_gemm=deepgemm,norm=fused]", backend: deepgemm, source: "collector/vllm/collect_mhc_module.py (GLM)"}
   - {framework: vllm, kernel_source: "vllm.mhc_post_tilelang", backend: tilelang, source: "collector/vllm/collect_mhc_module.py (GLM)"}
   - {framework: vllm, kernel_source: "vllm.mhc_fused_post_pre_tilelang[fused_post_gemm,norm=fused]", backend: tilelang, source: "collector/vllm/collect_mhc_module.py (GLM; fused post+GEMM TileLang kernel, small token counts)"}
@@ -355,7 +355,7 @@ mappings:
   - {framework: vllm, kernel_source: "vllm.model_executor.layers.mhc.hc_contract", backend: torch, source: "vllm/model_executor/layers/mhc.py:974 @v0.31.0 (byte-identical to 0.30.0)"}
   - {framework: vllm, kernel_source: "vllm.utils.deep_gemm.fp8_fp4_paged_mqa_logits", backend: deepgemm, source: "PR#1344 collect_dsv4_attn.py"}
 
-  # --- Kimi-K3 (#1435) labels: KDA kernels from the vLLM kimi-k3 preview
+  # --- Kimi-K3 labels: KDA kernels from the vLLM kimi-k3 preview
   # build (0.1.dev19262+gb6bbf29dd; vllm.models.kimi_k3.* is not upstream —
   # absent from every public tag through v0.26.1rc0 — so the collector is the
   # citable dispatch source, corroborated by same-name public files where

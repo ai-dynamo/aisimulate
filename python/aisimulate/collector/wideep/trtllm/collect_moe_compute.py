@@ -81,7 +81,7 @@ class _SlotLoraPaddedRunner:
 
     The C++ ``FusedMoeRunner::runMoe`` grew seven trailing optionals — the
     slot-level routed-expert LoRA inputs and ``token_to_slot``
-    (cpp/tensorrt_llm/thop/moeOp.cpp:415-421@v1.3.0rc20, all defaulting to
+    (cpp/tensorrt_llm/thop/moeOp.cpp:415-421, all defaulting to
     ``nullopt`` = feature off) — but TorchBind schemas do not honor C++
     defaults and the wheel's own ``moe_op_cutlass.compute_moe`` still
     assembles the pre-growth 37-argument call, so every invocation fails
@@ -854,7 +854,7 @@ def run_moe_ep(
     # The tuned-tactic cache MUST be SM-scoped: tactic indices are positions
     # in the runner's per-arch config table, and replaying another arch's
     # indices overruns the table (hardware-observed on RTX PRO 6000
-    # 2026-07-19: SM100-tuned indices up to 40+ into SM120's size-8 table →
+    # SM100-tuned indices up to 40+ into SM120's size-8 table →
     # "vector::_M_range_check" in FusedMoeRunner.run_moe, 93/100 gate
     # failures). Pre-fix cache files without the sm prefix are dead — their
     # tuning SM is not recorded, so they are never trusted again.

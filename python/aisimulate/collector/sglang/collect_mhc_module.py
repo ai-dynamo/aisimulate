@@ -12,7 +12,7 @@ from __future__ import annotations
 # findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
 # Each architecture is additionally gated by _ARCHITECTURE_COMPAT
 # (DeepSeek-V4 on 0.5.21 via the native DeepseekV4Config).
-# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+# One release per file; earlier code is `git log -- <this file>` away.
 __compat__ = "sglang==0.5.21"
 
 import argparse
@@ -59,8 +59,8 @@ GLM5NEXT_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 # MhcRuntimeNotAuditedError (a classified failure) instead of running.
 _ARCHITECTURE_COMPAT = {
     DSV4_ARCHITECTURE: "sglang==0.5.21",
-    # GLM-5.3-Flash (0.5.20 only) retired 2026-10-30: its route is git history
-    # (main at c540ff90a (before #649)). 0.5.21 moved MHCState to layer_boundary, removed
+    # GLM-5.3-Flash (0.5.20 only) retired its route is git history
+    # (main at c540ff90a). 0.5.21 moved MHCState to layer_boundary, removed
     # ParallelState/init_torch_distributed and fuses post+pre for T<=16, so the
     # GLM path needs a port before it is re-admitted.
 }

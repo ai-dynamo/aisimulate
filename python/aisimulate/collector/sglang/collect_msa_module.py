@@ -4,7 +4,7 @@
 # MiniMax-M3 support landed in SGLang v0.5.16 (models/minimax_m3.py +
 # layers/attention/minimax_sparse_backend.py + minimax_sparse_ops/); the msa
 # family now runs on the 0.5.21 default (the v0.5.16 family pin is retired).
-# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+# One release per file; earlier code is `git log -- <this file>` away.
 __compat__ = "sglang==0.5.21"
 
 """
@@ -120,7 +120,7 @@ MSA_ARCHITECTURE = "MiniMaxM3ForCausalLM"  # AIC-canonical persisted architectur
 # MiniMaxAI/MiniMax-M3 checkpoint is a VL repo whose text_config declares
 # architectures=["MiniMaxM3SparseForCausalLM"] (HF config.json), and SGLang
 # keys every M3 code path on that name: is_minimax_sparse
-# (configs/model_config.py:136-141@v0.5.16), the model EntryClass
+# (configs/model_config.py:136-141), the model EntryClass
 # (models/minimax_m3.py:1690), the server-args override handler
 # (arg_groups/overrides.py:465), and the KV-pool / attention-backend wiring
 # (mem_cache/kv_cache_configurator.py:842-845,
@@ -179,7 +179,7 @@ def _register_minimax_m3_text_config():
     generic attribute bag: SGLang's own VL config coerces the checkpoint's
     text_config dict through CONFIG_MAPPING.get(model_type, PretrainedConfig)
     — an unknown model_type "falls back to PretrainedConfig so dict keys
-    still become real attributes" (configs/minimax_vl.py:9-23@v0.5.16), and
+    still become real attributes" (configs/minimax_vl.py:9-23), and
     the M3 modeling code reads plain attributes only. Registering a bare
     PretrainedConfig alias therefore changes HOW the config object is
     constructed, never which kernel runs (M3 dispatch keys on
@@ -290,7 +290,7 @@ def _expect(actual, expected, what: str):
 def _validate_msa_module(model_runner, attn, num_heads: int, target_tp_size: int, head_dim: int):
     """Verify the single-GPU module emulates one target-TP rank of serving.
 
-    Shapes per models/minimax_m3.py@v0.5.16: qkv_proj packs
+    Shapes per models/minimax_m3.py: qkv_proj packs
     (num_heads + 2*num_kv_heads)*head_dim (:523-533), o_proj input
     num_heads*head_dim (:535-544), index_qkv_proj packs
     (num_idx_heads + 1)*idx_head_dim with v_head_size=0 when
@@ -357,7 +357,7 @@ def load_model_runner(
 
     Serving-selected defaults are deliberately NOT overridden: the M3
     server-args handler resolves attention_backend / page_size per platform
-    (arg_groups/overrides.py:465-537@v0.5.16 — fa3 + page 128 on SM90,
+    (arg_groups/overrides.py:465-537 — fa3 + page 128 on SM90,
     fa4 + page 128 on SM100) inside ServerArgs.__post_init__
     (server_args.py:2969 _handle_model_specific_adjustments). Sole
     exception: on CC major 12 (SM120/121) that handler has no branch and
@@ -489,7 +489,7 @@ class PerfLogWriteError(RuntimeError):
 def _forward_ctx(model_runner):
     """Publish SGLang's per-forward control context, exactly as serving does
     around every model forward (model_executor/model_runner.py:1383-1386
-    @v0.5.16 _forward_raw). RadixAttention resolves the attention backend
+    _forward_raw). RadixAttention resolves the attention backend
     through it (layers/radix_attention.py get_attn_backend)."""
     from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
 
@@ -578,7 +578,7 @@ def _decode_graph_covered(model_runner, num_tokens: int) -> bool:
 
 def _decode_topk_variant(sparse_backend, max_seqlen_k: int) -> str:
     """Report which decode top-k kernel the sparse indexer selects — the
-    same gate as decode/flash_with_topk_idx.py:822-826@v0.5.16
+    same gate as decode/flash_with_topk_idx.py:822-826
     (SGLANG_OPT_USE_MINIMAX_DECODE_TOPK_RADIX && score blocks <= 4096 &&
     topk <= 32 → JIT radix select; otherwise 2-stage Triton top-k)."""
     from sglang.srt.environ import envs
@@ -603,7 +603,7 @@ def _decode_kernel_source(model_runner, use_graph: bool, actual_kv: int) -> str:
     if not hasattr(sparse, "_use_msa_decode"):
         # kernel_source records ground truth; a silent False default would
         # mislabel every decode row as triton_sparse if SGLang renames the
-        # flag (minimax_sparse_backend.py@v0.5.16 sets it in __init__).
+        # flag (minimax_sparse_backend.py sets it in __init__).
         raise RuntimeError(
             "MiniMaxSparseAttnBackend has no _use_msa_decode attribute "
             "(renamed upstream?); refusing to guess the decode kernel identity"
@@ -668,7 +668,7 @@ def _alloc_prefix_indices_compat(model_runner, batch_size: int, prefix_len: int)
     ``runtime_limits.alloc_prefix_indices`` drives the PAGED allocator's
     ``alloc_extend`` — correct on every page>1 platform (fa3/fa4 + page 128
     on SM90/SM100). At page_size==1 SGLang builds ``TokenToKVPoolAllocator``
-    instead (mem_cache/kv_cache_configurator.py:1464-1476@v0.5.16), whose
+    instead (mem_cache/kv_cache_configurator.py:1464-1476), whose
     inherited ``alloc_extend`` raises NotImplementedError("alloc_extend is
     only for paged allocator") (mem_cache/allocator/base.py:95) — the SM120
     smoke failure signature (every prefix>0 context case died there while
@@ -733,7 +733,7 @@ def _run_prefill_point(
         batch.prepare_for_extend()
     point_clock.mark("batch")
     # return_hidden_states_before_norm=False mirrors the serving worker
-    # (managers/tp_worker.py:267,548@v0.5.16).
+    # (managers/tp_worker.py:267,548).
     forward_batch = ForwardBatch.init_new(batch, model_runner, return_hidden_states_before_norm=False)
     # Serving metadata init for the eager forward (base
     # AttentionBackend.init_forward_metadata → out_graph + in_graph;
@@ -805,7 +805,7 @@ def _run_decode_point(
     captured CUDA graph exactly where serving covers the batch size with a
     decode graph. For graphed points, capture-parity metadata is built with
     in_capture=True — the decode graph runner's pre-capture call
-    (model_executor/runner/decode_cuda_graph_runner.py:942@v0.5.16) — which
+    (model_executor/runner/decode_cuda_graph_runner.py:942) — which
     fixes the sparse indexer's KV bound at max_context_len
     (minimax_sparse_backend.py:175-178) and therefore the top-k kernel
     choice, matching what serving replays.

@@ -24,9 +24,9 @@ runs the plan's rows too::
 # Requires stock SGLang 0.5.21 with its matching ``sgl-kernel`` package.
 from __future__ import annotations
 
-# 0.5.21 since 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
 # findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
-# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+# One release per file; earlier code is `git log -- <this file>` away.
 __compat__ = "sglang==0.5.21"
 
 import argparse
@@ -511,7 +511,7 @@ def _effective_prefill_chunk_size(model_runner) -> int:
     query rows (``layers/attention/dsv4/metadata.py``). On H20 the derived
     chunk (8,192) sat below the old bound (11,622), so removing it changes
     nothing on SM90; on B200 the derived chunk is 16,384 and a probe
-    (2026-07-05, bs=1, prefix=0) executed 8,192/12,288/16,384 fresh-token CSA
+    executed 8,192/12,288/16,384 fresh-token CSA
     context cells through the JIT metadata path with zero errors.
     """
     return _runtime_chunk_size(model_runner)
@@ -1122,7 +1122,7 @@ def _bench_cuda_events(
 
 
 def _resolve_local_heads(*, native_heads: int, module_heads: int | None, tp_size: int) -> int:
-    """Resolve the rank-LOCAL head count persisted as ``num_heads`` (#1429).
+    """Resolve the rank-LOCAL head count persisted as ``num_heads``.
 
     The unified convention persists the head count this rank's module actually
     runs with; consumers derive the model-native count as
@@ -1186,7 +1186,7 @@ def _log_result(
                 "mla_dtype": "bfloat16",
                 "kv_cache_dtype": kv_cache_dtype,
                 "gemm_type": gemm_type,
-                # Rank-LOCAL by the unified #1429 convention (native = num_heads * tp_size).
+                # Rank-LOCAL by the unified convention (native = num_heads * tp_size).
                 "num_heads": num_heads,
                 "batch_size": batch_size,
                 "isl": seq_len if is_prefill else 1,

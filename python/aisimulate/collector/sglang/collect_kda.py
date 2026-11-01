@@ -64,7 +64,7 @@ Output:
 # the GB300 0.5.20 image (see the GLM section below). Each KDA architecture
 # is additionally gated at runtime by _KDA_ARCHITECTURE_COMPAT, raising
 # KdaRuntimeNotAuditedError otherwise.
-# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+# One release per file; earlier code is `git log -- <this file>` away.
 __compat__ = "sglang==0.5.21"
 
 import gc
@@ -192,7 +192,7 @@ def run_kda_context_benchmark(
                 # Silicon evidence: cells with total_tokens * conv_channels in
                 # [2**31, 3*2**31) crash with cudaErrorIllegalAddress on both
                 # Hopper SM90 (2026-07 campaign coverage boundary) and SM100
-                # (B200, 2026-07-28), while every cell under this bound passes.
+                # (B200), while every cell under this bound passes.
                 # NOT relaxed for sglang 0.5.21: its causal_conv1d_triton casts the sequence
                 # offsets to tl.int64 (:95,:185), yet the >=2**31 cells still fault with
                 # cudaErrorIllegalAddress on H20 (0.5.21 smoke 2026-10-01, facts/upgrade_rc29/
@@ -527,7 +527,7 @@ def run_kda_generation_benchmark(
                 ):
                     raise RuntimeError(f"failed to persist SGLang KDA generation row to {perf_filename}")
 
-            # kda_backend.py:737-742 @0.5.21 skips the packed T=1 kernel for a layer with a
+            # kda_backend.py:737-742 skips the packed T=1 kernel for a layer with a
             # lower_bound (Kimi-K3: KDA_LOWER_BOUND); :771-786: after the conv update, q/k/v are the
             # [Q|K|V] split viewed as 1 x n x h x d, and the plain Triton decode runs
             # fused_sigmoid_gating_delta_rule_update over cu_seqlens with lower_bound.
@@ -751,7 +751,7 @@ def run_kda_verify_benchmark(
 
                     # FIXME(kernel-limit): fused_kda_decode_mtp_dspark hit
                     # cudaErrorIllegalAddress at (batch=256, draft_tokens=8,
-                    # 96 heads) on B200/SM100 (2026-07-28) while every smaller
+                    # 96 heads) on B200/SM100 while every smaller
                     # cell passed; suspected per-SM resource growth in the
                     # persistent CuTe kernel (its block-size cap is documented
                     # as shared-memory-bound, kda_backend.py:879-880).
@@ -955,8 +955,8 @@ GLM5_NEXT_KDA_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 # classified failure) instead of timing a possibly different kernel path.
 _KDA_ARCHITECTURE_COMPAT = {
     KIMI_K3_KDA_ARCHITECTURE: "sglang==0.5.21",
-    # GLM-5.3-Flash (0.5.20 only) retired 2026-10-30: its route is git history
-    # (main at c540ff90a (before #649)). On 0.5.21 serving fuses the unquantized
+    # GLM-5.3-Flash (0.5.20 only) retired its route is git history
+    # (main at c540ff90a). On 0.5.21 serving fuses the unquantized
     # qkvbfg/bfg projections (strided views), so the GLM path needs a port
     # before it is re-admitted; GLM rows raise KdaRuntimeNotAuditedError.
 }
@@ -968,7 +968,7 @@ class KdaRuntimeNotAuditedError(RuntimeError):
 
 def _kda_architecture(model_name: str) -> str:
     """GLM-5.3-Flash paths run the glm5next layer; every other KDA row runs the
-    (unchanged) Kimi-K3 layer path of this module."""
+    Kimi-K3 layer path of this module."""
     return GLM5_NEXT_KDA_ARCHITECTURE if _is_glm5_next_kda(model_name) else KIMI_K3_KDA_ARCHITECTURE
 
 
@@ -1091,7 +1091,7 @@ def run_glm5_next_kda_context(
                 # address q/k/g/v with int32 `(bos * H + i_h) * K` offsets
                 # (bos loaded from the int32 cu_seqlens that serving also
                 # passes; kernels/ops/attention/fla/kda.py:265-268,377-393,
-                # 556-607,804-850 @v0.5.20), so a step with
+                # 556-607,804-850), so a step with
                 # tokens * heads * head_dim >= 2**31 overflows. On GB300,
                 # (32 heads, batch 64, seq 32768) raised
                 # cudaErrorIllegalAddress, poisoning the worker's CUDA context

@@ -17,7 +17,7 @@ order — all collected, none modeled analytically:
                                                v1/v2 flat-vs-top_last DELTA calib
 
 The standalone FMLA sidecars (``flash_mla_with_kvcache`` as csa_attn / hca_attn)
-were removed 2026-10-15: their SDK readers were retired design placeholders with
+were removed their SDK readers were retired design placeholders with
 no query path (csa_attn never shipped data) and, as registry-only ops, they
 failed every shard plan generated from the registry.
 
@@ -34,9 +34,9 @@ c4 path (=4).
 # Requires stock SGLang 0.5.21 with its matching ``sgl-kernel`` package.
 from __future__ import annotations
 
-# 0.5.21 since 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
 # findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
-# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+# One release per file; earlier code is `git log -- <this file>` away.
 __compat__ = "sglang==0.5.21"
 
 import functools
@@ -315,7 +315,7 @@ def _bench_paged_mqa_logits(
         # is set (default True, environ.py:1570) or the query row count exceeds 11673
         # (dsv4/metadata.py:213-224, force_deep_gemm_metadata defaults False :184); the
         # DeepGEMM sched kernel is only the opt-out path. Same (seq_lens, page_size, num_sm)
-        # contract (kernels/ops/attention/dsv4/attn.py:57). H20 gate 2026-10-01: the serving
+        # contract (kernels/ops/attention/dsv4/attn.py:57). H20 gate the serving
         # decode trace carries the tiny kernel, never deep_gemm::sched::sm90_paged_mqa_logits_metadata.
         from sglang.kernels.ops.attention.dsv4.attn import get_paged_mqa_logits_metadata
     except ImportError:

@@ -54,7 +54,7 @@ def test_registry_wires_all_four_dsv4_module_ops():
         assert entry.perf_filename == perf_file
         # Pre-Blackwell rejection comes from the framework at runtime
         # (classified failure). SM120 is parked with hardware probe evidence
-        # (RTX PRO 6000 campaign 2026-08-07: 100% classified failures).
+        # (RTX PRO 6000 campaign 100% classified failures).
         assert entry.unverified is False
         assert entry.unverified_sms == (120,)
 
@@ -177,7 +177,7 @@ def test_module_cache_reuses_same_geometry_and_evicts_on_change(monkeypatch):
 
 def test_generation_geometry_matches_serving_invariant(monkeypatch):
     """position == past-seen/cached == persisted step (model_engine.py:4148,
-    4164-4169 @1.3.0rc23): the decode dummy request registers seq_len+1 beam
+    4164-4169): the decode dummy request registers seq_len+1 beam
     tokens, so all three sides of the triple are seq_len. Guards the
     off-by-one found in review (position was seq_len - 1)."""
     module = _load_module_with_torch_stub(monkeypatch)
@@ -187,7 +187,7 @@ def test_generation_geometry_matches_serving_invariant(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Constructor-level serving-parity capture (review item 5, PR #1486):
+# Constructor-level serving-parity capture:
 # stub the tensorrt_llm surface and assert the EXACT arguments handed to the
 # cache-manager constructor, add_dummy_requests and the attention Metadata
 # constructor for a context and a generation case.
@@ -302,7 +302,7 @@ def test_context_metadata_constructor_args_match_serving(monkeypatch):
     manager, metadata, captured = _run_create(
         module, monkeypatch, batch_size=bs, seq_len=sl, is_context=True, prefix_len=prefix
     )
-    # manager construction (pyexecutor/_util.py:1843-1867 @1.3.0rc23)
+    # manager construction (pyexecutor/_util.py:1843-1867)
     mk = manager.ctor_kwargs
     assert mk["num_kv_heads"] == 1 and mk["num_layers"] == 1
     assert mk["head_dim"] == 448 + 64
@@ -414,7 +414,7 @@ def _serving_oracle(bs, seq_len, prefix, is_context):
 
 
 def test_constructor_args_match_the_serving_oracle(monkeypatch):
-    """S4 (PR #1486 review): compare captured constructor arguments against
+    """S4: compare captured constructor arguments against
     the upstream-derived oracle for one context-with-prefix case and one
     ordinary decode case — the test fails when the collector diverges from
     the pinned serving semantics, not merely when its own values change."""
@@ -465,7 +465,7 @@ def test_kv_quota_is_capped_by_this_batch_s_tokens(monkeypatch, bs, sl, is_ctx, 
 @pytest.mark.parametrize("sm", [90, 100, 103])
 def test_rows_label_the_kv_cache_with_an_sdk_enum_member_name(monkeypatch, sm):
     # engine_table_view rehydrates kv_cache_dtype through KVCacheQuantMode; "bf16" raised
-    # KeyError on every SM100 DSV4 table in Full CI (2026-10-29).
+    # KeyError on every SM100 DSV4 table in Full CI.
     from aisimulate_core.quantization import KVCacheQuantMode
 
     module = _load_module_with_torch_stub(monkeypatch)

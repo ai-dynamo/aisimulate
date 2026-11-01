@@ -9,7 +9,7 @@ records the helper's ``used_cuda_graph`` flag, and layer_permissions.md allows
 a measurement-method degradation only when it is recorded in the output row.
 The sglang trtllm_mla prefill (B1) and the trtllm GDN lanes were closed on
 2026-10-11, the last four sites — trtllm mamba2 and moe, wideep moe_compute,
-network trtllm alltoall — on 2026-10-12. This test keeps the count at zero for
+network trtllm alltoall —. This test keeps the count at zero for
 every file under ``collector/``: any ``allow_graph_fail=`` other than the literal
 ``False`` (a variable could carry ``True``) is an offender. The one sound exception
 is a wrapper forwarding its own keyword-only ``allow_graph_fail=False`` parameter:

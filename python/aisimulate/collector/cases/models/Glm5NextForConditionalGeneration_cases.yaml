@@ -74,11 +74,11 @@ model_case_values:
       sglang_moe_topk_group: 1
       sglang_moe_swiglu_limit: 10.0
       # SGLang 0.5.20 auto -> flashinfer_trtllm for quant_method fp8 on SM10x
-      # (arg_groups/overrides.py:806,827,866-879 @v0.5.20: the override sits
+      # (arg_groups/overrides.py:806,827,866-879: the override sits
       # under get_platform().is_sm100). On SM90 the runner stays auto and
       # Fp8MoEMethod.create_moe_runner resolves it to TRITON without a
       # deepep/mooncake/nixl a2a backend (layers/quantization/fp8.py:1188-1210,
-      # 2501-2512 @v0.5.20). Observed SGLang 0.5.20 SM90 serving dispatch
+      # 2501-2512). Observed SGLang 0.5.20 SM90 serving dispatch
       # (H200, TP4, auto MoE runner, amd64 image b27fce60): triton fused MoE
       # fp8_w8a8 block [128, 128] with the default kernel config (no tuned
       # H200 json). The block-FP8 default config is independent of E and M
@@ -109,7 +109,7 @@ model_case_values:
       sglang_moe_swiglu_limit: 10.0
       # Serving launches --quantization modelopt_fp4 --moe-runner-backend
       # auto, which resolves to flashinfer_trtllm on SM10x
-      # (arg_groups/overrides.py:866-879 @v0.5.20; GLM NVFP4 serving
+      # (arg_groups/overrides.py:866-879; GLM NVFP4 serving
       # resolved args record moe_runner_backend 'flashinfer_trtllm').
       sglang_moe_backends:
         nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm}

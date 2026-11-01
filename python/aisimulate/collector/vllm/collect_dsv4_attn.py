@@ -65,7 +65,7 @@ from vllm.version import __version__ as vllm_version
 # CSA/HCA context/generation: 32/32; auxiliary sparse kernels: 4/4. The native framework
 # builders/selectors remain authoritative; no kernel fallback is introduced.
 # The campaign manifest still selects one exact release per run.
-# Versions are upgraded IN PLACE (owner policy 2026-09-20): this file always
+# Versions are upgraded IN PLACE: this file always
 # targets the manifest pin; prior-version code is `git log -- <this file>`
 # away and prior-version DATA stays permanent under its version key. The
 # 0.24->0.29 adaptations each carry a serving citation @0.29.0.
@@ -76,7 +76,7 @@ DEFAULT_MODEL = _DSV4_DEFAULT_MODELS[0]
 ARCHITECTURE = "DeepseekV4ForCausalLM"
 ATTN_KIND_TO_COMPRESS_RATIO = {"csa": 4, "hca": 128}
 # paged_mqa_logits (the CSA indexer scoring GEMM) is the only standalone sparse
-# sub-kernel; the hca_attn FMLA sidecar was removed 2026-10-15 (retired SDK
+# sub-kernel; the hca_attn FMLA sidecar was removed (retired SDK
 # placeholder).
 SPARSE_KERNEL_TO_ATTN_KIND = {"paged_mqa_logits": "csa"}
 SPARSE_KERNEL_TO_OP_NAME = {"paged_mqa_logits": "dsv4_paged_mqa_logits_module"}
@@ -416,7 +416,7 @@ def _build_metadata_and_bind_caches(attn_module: DeepseekV4Attention, vllm_confi
         )
         cache_dtype = getattr(spec, "cache_dtype_str", None) or "auto"
         # serving binds through each layer's bind_kv_cache
-        # (v1/worker/utils.py:622@0.29.0) — layer overrides may reshape the
+        # (v1/worker/utils.py:622) — layer overrides may reshape the
         # raw view (e.g. squeeze the H=1 dim), so never assign .kv_cache raw
         registered_layer.bind_kv_cache(
             _allocate_attention_kv_cache(
@@ -522,7 +522,7 @@ def _bench_attention_shape(
         if cache_spec is None:
             raise RuntimeError(f"DSV4 {attn_kind} layer did not register a KV-cache spec")
         architecture = hf_config.architectures[0] if hf_config.architectures else ARCHITECTURE
-        # Persisted ``num_heads`` is rank-LOCAL (unified #1429 convention);
+        # Persisted ``num_heads`` is rank-LOCAL (unified convention);
         # consumers derive native as ``num_heads * tp_size``. vllm's own
         # ``n_local_heads`` is that count — cross-check it against the config
         # so a TP-simulation regression cannot mislabel rows.

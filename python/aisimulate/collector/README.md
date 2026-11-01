@@ -460,7 +460,7 @@ raises (`allow_graph_fail=False`, the default) and the case fails classified.
   measurement-method degradation only when it is recorded in the output row.
   `tests/unit/collector/test_no_eager_graph_fallback_sites.py` pins this for
   every file under `collector/`. The last fallback sites (trtllm mamba2 and
-  moe, wideep moe_compute, network trtllm alltoall) were closed on 2026-10-12;
+  moe, wideep moe_compute, network trtllm alltoall) were closed;
   the sglang trtllm_mla prefill (B1) and the trtllm GDN lanes the day before.
 - A collector that sweeps several cells inside one task counts failed cells
   and raises a strict-completeness error at the end (GDN, mamba2), so the

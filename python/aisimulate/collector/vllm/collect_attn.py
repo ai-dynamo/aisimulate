@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Versions are upgraded IN PLACE (owner policy 2026-09-20): this file always
+# Versions are upgraded IN PLACE: this file always
 # targets the manifest pin; prior-version code is `git log -- <this file>`
 # away and prior-version DATA stays permanent under its version key. The
 # 0.24->0.29 adaptations each carry a serving citation @0.29.0.
@@ -75,7 +75,7 @@ def _dense_kernel_source(backend_name_str, impl, attn_metadata):
     if backend_name_str == "FLASHINFER":
         # FlashInfer classifies requests by query length, not by the
         # collector's phase label: with query_len <= reorder_batch_threshold
-        # (1, flashinfer.py:563 @0.24.0) an s=1 "context" batch is entirely
+        # (1, flashinfer.py:563) an s=1 "context" batch is entirely
         # decodes and metadata.prefill is None (flashinfer.py:540-546), so
         # read the portion vLLM actually populated.
         if attn_metadata.num_prefills > 0:
@@ -87,7 +87,7 @@ def _dense_kernel_source(backend_name_str, impl, attn_metadata):
         label = f"vllm_flashinfer_{type(phase_metadata).__name__}".lower()
         # 0.30 folds XQA and trtllm-gen decode into ONE metadata class,
         # FlashInferTrtllmAPIDecode, and names the kernel in its `kernel` field
-        # (flashinfer.py:568-572 FlashInferDecodeKernel, :608-611 @v0.30.0;
+        # (flashinfer.py:568-572 FlashInferDecodeKernel, :608-611;
         # decode_with_xqa / decode_with_trtllm_gen at :1997-1998). The class
         # name alone would label SM120's XQA row and SM100's trtllm-gen row
         # identically — kernel_source must name the kernel that ran.
@@ -169,7 +169,7 @@ def run_attention_torch(
     # model_executor/models/config.py:209-256) forces a UNIFORM backend across
     # its mixed 256/512 heads to avoid the FA3/FA4 mixed penalty. That policy,
     # plus the per-group validity of head-512, resolves as follows on SM90
-    # (live-engine kernel probe, 2026-09-22, gemma-4-26B-A4B + kv fp8/auto):
+    # (live-engine kernel probe, gemma-4-26B-A4B + kv fp8/auto):
     #   bf16-KV -> FLASH_ATTN (FA4 cute flash_fwd_sm90) — the bare selector
     #             already returns this, so no override is needed.
     #   fp8-KV  -> TRITON_ATTN (kernel_unified_attention). No FA/FlashInfer
@@ -245,7 +245,7 @@ def run_attention_torch(
     )
 
     # serving-same layout resolution for the single backend under test
-    # (utils.py:240-307@v0.29.0); reset cache_config after the case so the
+    # (utils.py:240-307); reset cache_config after the case so the
     # next backend re-resolves instead of inheriting ("existing wins outright")
     _supported = get_supported_kv_cache_layouts([backend_cls])
     resolve_kv_cache_layout(vllm_config, [[m.name for m in _supported]], [kv_cache_spec])
@@ -260,13 +260,13 @@ def run_attention_torch(
     # Serving allocates the per-layer cache in the RESOLVED physical layout and
     # backends read it through kv_cache.permute(*layout.layer_view_order)
     # (v1/kv_cache_layout.py KVCacheLayout.layer_view_order; flashinfer.py:2091
-    # "kv_cache_permute = kv_cache.permute(*stride_order)  # HND and contiguous"
-    # @v0.30.0). A contiguous [B, H, N, 2*D] tensor is only right for the LBHNC
+    # "kv_cache_permute = kv_cache.permute(*stride_order)  # HND and contiguous").
+    # A contiguous [B, H, N, 2*D] tensor is only right for the LBHNC
     # family (HND) that FLASH_ATTN and the SM100 trtllm-gen FlashInfer path
     # resolve (flashinfer.py:543-549); FlashInfer elsewhere resolves the NHD
     # default, whose XQA decode asserts "KV cache inner dims (block_size,
     # head_size) must be contiguous" on this HND memory (flashinfer.py:2448) —
-    # every fp8-KV GQA generation case on SM120, 2026-10-01. Lay the memory out
+    # every fp8-KV GQA generation case on SM120. Lay the memory out
     # per the resolved layout and hand the backend the same logical view.
     kv_cache = kv_cache_in_resolved_layout(
         kv_cache, vllm_config.cache_config.get_resolved_kv_cache_layout().layer_view_order
@@ -357,8 +357,8 @@ def run_attention_torch(
 
     # FIXME(kernel-limit): on SM100/SM110 the FA4 CuTe kernel rejects
     # (head_dim, head_dim_v)=(192, 192): _validate_head_dims allows 8..128,
-    # DeepSeek (192, 128), or hd256 (vllm_flash_attn/cute/interface.py:104
-    # @0.24.0), while vLLM's FlashAttentionBackend.supports_head_size claims
+    # DeepSeek (192, 128), or hd256 (vllm_flash_attn/cute/interface.py:104),
+    # while vLLM's FlashAttentionBackend.supports_head_size claims
     # any head_size <= 256 (flash_attn.py:173-179), so the selector still
     # routes BF16-KV head-dim-192 shapes to FLASH_ATTN there and forward
     # raises. Observed on B200; serving would fail identically. Re-verify on

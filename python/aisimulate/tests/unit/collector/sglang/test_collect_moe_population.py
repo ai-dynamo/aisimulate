@@ -172,7 +172,7 @@ def test_kimi_int4_population_restores_all_hopper_ep_slices():
     assert sum(len(case[1]) for case in populated) == 3078
     assert sum(len(case[1]) for case in populated if case[7] == 64) == 243
     assert sum(len(case[1]) for case in populated if case[7] == 128) == 162
-    # int4_wo opened to SM100/103 (owner decision 2026-07-11): serving
+    # int4_wo opened to SM100/103: serving
     # auto-selects flashinfer_trtllm for Kimi INT4 there (server_args.py:3736),
     # replacing the old zero-population contract.
     sm100 = _populate_gptoss_cases(
@@ -372,7 +372,7 @@ def test_case_generator_preserves_representative_sglang_moe_runtime_contracts():
     dsv4 = model_case("deepseek-ai/DeepSeek-V4-Pro")
     assert (dsv4.sglang_moe_scoring_func, dsv4.sglang_moe_has_correction_bias) == ("sqrtsoftplus", True)
     # w4a16_mxfp4 is no longer in the Pro artifact's allowed_modes (owner
-    # decision 2026-07-05); the retained native-FP4 plan is the w4a8 path.
+    # decision); the retained native-FP4 plan is the w4a8 path.
     assert get_sglang_moe_backend(dsv4, "w4a8_mxfp4_mxfp8", 100) == "flashinfer_mxfp4"
 
     llama4 = model_case("meta-llama/Llama-4-Scout-17B-16E-Instruct")
@@ -706,7 +706,7 @@ def test_runtime_rejects_misaligned_sm90_dsv4_w4a16_case():
 
 
 def test_runtime_rejects_misaligned_sm100_dsv4_w4a8_case():
-    # B200 hardware probe 2026-07-05: SGLang 0.5.14 flashinfer_mxfp4 W4A8
+    # B200 hardware probe SGLang 0.5.14 flashinfer_mxfp4 W4A8
     # weight shuffle asserts M % 128 == 0 and the TRTLLM-gen batched GEMM has
     # no config for misaligned local widths; local_inter 128/384/768/1536/3072
     # pass while 64/96/192 fail. The guard converts those framework errors
@@ -787,7 +787,7 @@ def test_framework_moe_source_comes_from_the_constructed_quant_method():
 
 
 def test_moe_population_emits_one_case_per_token_sweep():
-    """2026-10-28: SGLang nvfp4 shards took 4.4-5.8 h against 1-1.4 h for vLLM on the same
+    """SGLang nvfp4 shards took 4.4-5.8 h against 1-1.4 h for vLLM on the same
     shapes because every token point was its own case and rebuilt the framework layer.
     Cases now carry the whole sweep (vLLM/TRT-LLM layout) and dedup on the series."""
     case = _gptoss_case(tp=1, ep=1)

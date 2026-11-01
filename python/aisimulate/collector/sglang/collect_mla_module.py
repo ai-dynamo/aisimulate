@@ -22,9 +22,9 @@ Usage:
         python collect_mla_module.py --mode generation --attn-type mla
 """
 
-# 0.5.21 since 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
 # findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
-# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+# One release per file; earlier code is `git log -- <this file>` away.
 __compat__ = "sglang==0.5.21"
 
 import argparse
@@ -211,7 +211,7 @@ def _initialize_dsa_history(model_runner, attention_module, forward_batch, histo
     including partial pages, rather than exposing zeros or an earlier case's
     contents. These inputs represent no particular checkpoint distribution.
 
-    Native contracts at SGLang 0.5.21 (ported from #405's 0.5.14 @49e384ce):
+    Native contracts at SGLang 0.5.21 (ported's 0.5.14 @49e384ce):
     dsa/dsa_indexer.py:1498-1578 owns index-K quantization and opaque layout
     (its pool comes from ForwardContext, :1519); dsa_backend.py:1997-2010 writes
     latent/rotary KV using the attention layer; memory_pool.py:4570-4642 owns
@@ -595,24 +595,24 @@ def _model_native_gemm_quant(model_id: str) -> str | None:
             pass
     # ModelOpt MIXED_PRECISION export: one quantization lane per module in ``quantized_layers``.
     # Citations are file:line@release-tag under python/sglang/srt/. SGLang gates the ``config.json``
-    # ``quantization_config`` on ``quant_method`` (configs/model_config.py:1034-1044@v0.5.14), reads
+    # ``quantization_config`` on ``quant_method`` (configs/model_config.py:1034-1044), reads
     # ``compression_config`` next (:1044-1046), and parses ``hf_quant_config.json`` as ModelOpt unconditionally
     # (:1117-1123). The gate is applied to both sections here because ModelOpt writes no other ``quant_method``
     # into that file.
     # * 0.5.14, the pin: every MIXED_PRECISION export except NemotronH parses as ``w4afp8``
-    #   (configs/model_config.py:1145-1151@v0.5.14). ``modelopt_fp4`` is then rejected inside ServerArgs, so a
+    #   (configs/model_config.py:1145-1151). ``modelopt_fp4`` is then rejected inside ServerArgs, so a
     #   targeted case fails loudly: the compatibility map allows only ``modelopt`` and the check raises
-    #   (configs/model_config.py:1299-1302, 1346-1375@v0.5.14, reached from server_args.py:2533, 3497@v0.5.14).
+    #   (configs/model_config.py:1299-1302, 1346-1375, reached from server_args.py:2533, 3497).
     #   ``None`` would run W4AFp8Config, whose Fp8LinearMethod makes the BF16 attention projections block-FP8
-    #   (layers/quantization/w4afp8.py:99-104, layers/quantization/fp8.py:354-355@v0.5.14), and those rows
+    #   (layers/quantization/w4afp8.py:99-104, layers/quantization/fp8.py:354-355), and those rows
     #   would be labelled ``bfloat16``.
     # * From v0.5.15: an export with an NVFP4 or W4A16_NVFP4 lane parses as ``modelopt_mixed``
-    #   (configs/model_config.py:1153-1163@v0.5.15) and an explicit ``modelopt_fp4`` is overridden to it
-    #   (layers/quantization/modelopt_quant.py:649-654, configs/model_config.py:1466-1475@v0.5.17).
+    #   (configs/model_config.py:1153-1163) and an explicit ``modelopt_fp4`` is overridden to it
+    #   (layers/quantization/modelopt_quant.py:649-654, configs/model_config.py:1466-1475).
     # So SGLang's lane test decides here: an NVFP4 lane returns "nvfp4" (the SM guard and the ``modelopt_fp4``
     # loader mapping apply). Without one SGLang resolves the export to ``w4afp8`` (NemotronH aside at 0.5.14), a
     # path this collector lacks, so the helper raises.
-    # Re-verify these lines at every SGLang version bump. Past 0.5.14 SGLang stops rejecting ``modelopt_fp4`` and
+    # Past 0.5.14 SGLang stops rejecting ``modelopt_fp4`` and
     # overrides it to ``modelopt_mixed``, so this path goes from a loud failure to live data: re-derive the
     # ``bfloat16`` label premise (no attention lane), the ``ModelOptMixedPrecisionConfig`` methods for unlisted
     # modules and the KV cache, the section precedence including ``compression_config``, the ``quant_method`` gate,
@@ -634,7 +634,7 @@ def _model_native_gemm_quant(model_id: str) -> str | None:
             f"{model_id}: config.json compression_config must be an object, got {type(compression_cfg).__name__}"
         )
     # SGLang resolves ``quantization_config``, then ``compression_config``, then the sidecar
-    # (configs/model_config.py:1029, 1046 and 1117@v0.5.14): a checkpoint that declares
+    # (configs/model_config.py:1029, 1046 and 1117): a checkpoint that declares
     # ``compression_config`` reaches the mixed recipe only through its own ``quantization_config``,
     # never through the sidecar.
     if quant_cfg is None and compression_cfg is None and os.path.exists(quant_file):
@@ -874,7 +874,7 @@ def _patch_nsa_rope_contiguity(model_runner):
         def _make_contiguous_forward(orig):
             def _forward(positions, query, key, fused_set_kv_buffer_arg=None):
                 # by keyword: the 4th positional of forward_cuda is offsets
-                # (rotary_embedding/base.py:380-387 @0.5.21)
+                # (rotary_embedding/base.py:380-387)
                 kwargs = {} if fused_set_kv_buffer_arg is None else {"fused_set_kv_buffer_arg": fused_set_kv_buffer_arg}
                 return orig(
                     positions.contiguous(),
@@ -1864,8 +1864,8 @@ def _run_prefill(
 
         def call_attention_module():
             if ordinary_mla or attn_type == "dsa":
-                # AttentionInputs caches QKV (layer_boundary/adapters/attention.py:69-80
-                # @0.5.21); serving builds fresh inputs per layer/forward
+                # AttentionInputs caches QKV (layer_boundary/adapters/attention.py:69-80);
+                # serving builds fresh inputs per layer/forward
                 # (layer_boundary/prepare.py:179-189).
                 # Reset inside EVERY timed iteration, including warmup, so the
                 # down-projection is measured rather than reused from warmup.
@@ -2241,7 +2241,7 @@ def _run_decode(
             req.output_ids.append(0)
         if attn_type == "dsa":
             # Match the non-overlap scheduler's sampled-token handoff
-            # (scheduler.py:4588-4597, 4688-4696 @0.5.21). The synthetic next
+            # (scheduler.py:4588-4597, 4688-4696). The synthetic next
             # token is the same zero appended to each Req.
             from sglang.srt.managers.overlap_utils import RelayPayload
 

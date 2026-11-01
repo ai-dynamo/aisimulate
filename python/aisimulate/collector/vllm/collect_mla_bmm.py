@@ -9,7 +9,7 @@ NVIDIA, vLLM runs BOTH as plain bf16 ``torch.bmm`` — the fp8 BMM variants
 are ROCm/AITER-gated (``rocm_aiter_ops.triton_fp8_bmm``):
 
 - stock MLA: mla_attention.py:864 (``torch.bmm(mqa_q_nope, W_UK_T, ...)``)
-  and :1152 (``torch.bmm(x, self.W_UV, ...)``) @ 0.24-family builds;
+  and :1152 (``torch.bmm(x, self.W_UV, ...)``)-family builds;
 - Kimi-K3 custom MLA: models/kimi_k3/nvidia/mla.py:569 (BMM1 absorb) and
   :401 (W_UV projection) @ the kimi-k3 preview — same torch.bmm.
 

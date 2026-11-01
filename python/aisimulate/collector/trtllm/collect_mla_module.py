@@ -1,21 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# FIXME(kernel-limit): retired sm_exceptions rules (PR #1302).
-# DSA half VERIFIED on 1.3.0rc20/SM90 (2026-07-14): the SM90 DSA core runs
-# FlashMLA sparse kernels, whose sparse_prefill_fwd asserts
-# kv.dtype()==kBFloat16 (flashmla-src/csrc/pybind.cpp:404) — FP8-KV DSA is
-# genuinely Blackwell-only (trtllm-gen sparseMla), matching the SM90 FP8-KV
-# skip in collector/skips.py; floor VALIDATED on SM103 (2026-07-19, B300):
-# fp8-KV DSA probes pass 9/9 (DSv3.2 + GLM-5, ctx+gen, prefix 0/128). MLA half
-# RESOLVED on 1.3.0rc20/SM100 (2026-07-18, B200): FP8-KV MLA modules pass on
-# SM90 AND SM100 (trtllm-gen MLA, tokens_per_block=32) — the "fails on
-# SM100/103/120" claim is refuted for SM100, for SM103 on B300 (2026-07-19:
-# fp8-KV MLA probes 5/5, ctx+gen, prefix 0/128), and for SM120 on RTX PRO
-# 6000 (2026-07-19: fp8-KV MLA probes 4/4, ctx+gen, prefix 0/128, via the
-# framework's non-trtllm-gen dispatch); the MLA module plan times it from
-# SM89 on. SM121 remains hardware-unvalidated.
-# Never move this back into YAML.
+# FP8-KV DSA runs on the SM100 family only (trtllm-gen sparseMla): the SM90
+# DSA core runs FlashMLA sparse kernels, whose sparse_prefill_fwd asserts
+# kv.dtype()==kBFloat16 (flashmla-src/csrc/pybind.cpp), so collector/skips.py
+# leaves FP8-KV DSA out on SM90. FP8-KV MLA modules run on SM90, SM100,
+# SM103 and SM120 (trtllm-gen MLA on the SM100 family, the framework's
+# non-trtllm-gen dispatch on SM120); collector/skips.py leaves TRT-LLM MLA
+# out below SM90. SM121 is not hardware-validated.
 
 # SM100/103 DSA with fewer than 8 local heads (high-TP shards) has no
 # trtllm-gen sparse-MLA kernel: the generator requires the row dim, the local
@@ -23,8 +15,8 @@
 # same local count, so it fails identically. collector/skips.py leaves those
 # cases out; SM90 runs FlashMLA and is not affected.
 
-# 1.3.0rc20 renamed the cache-manager sparse kwargs and moved attention
-# metadata to lowered SparseMetadataParams; this module follows those APIs.
+# The DSA path uses the cache manager's sparse kwargs and the lowered
+# SparseMetadataParams attention metadata.
 __compat__ = "trtllm==1.3.0rc29"
 
 """
@@ -211,13 +203,13 @@ def _apply_gemm_type_quant(model_config, gemm_type: str, use_fp8_kv_cache: bool)
                 # Serving ALWAYS excludes these from FP8_BLOCK_SCALES: every
                 # translation of an fp8 weight_block_size checkpoint appends
                 # ["*kv_b_proj*", "*k_b_proj*", "*eh_proj"] to exclude_modules
-                # (model_config.py:481-490@1.3.0rc20, merged with the HF
+                # (model_config.py:481-490, merged with the HF
                 # modules_to_not_convert; same list at :436-440 for the
                 # TRTLLM-MoE default), because 128x128 block boundaries need
                 # not align with per-head dims (GLM-5 qk_nope_head_dim=192),
                 # and the weight loader then routes kv_b_proj through the
                 # dequant path so k_b_proj_trans stays bf16
-                # (modeling_deepseekv3.py:378-385@1.3.0rc20). Passing None
+                # (modeling_deepseekv3.py:378-385). Passing None
                 # here made k_b_proj_trans fp8 — a bmm path serving never
                 # takes for these checkpoints — which crashed every GLM
                 # fp8_block DSA context case on H20 ("Scale tensor size
@@ -370,7 +362,7 @@ def create_attention_layer(
 
     # Capture the original HF architecture *before* from_pretrained() which
     # may remap the model_type.  We return it separately because ModelConfig
-    # may be frozen (TRT-LLM >= 0.18, PR #4814) and cannot accept new attrs.
+    # may be frozen and cannot accept new attrs.
     original_architecture = _cfg_dict.get("architectures", [_cfg_dict.get("model_type", "unknown")])[0]
 
     model_config = ModelConfig.from_pretrained(
@@ -428,13 +420,13 @@ def create_attention_layer(
     # Serving applies QuantConfig.exclude_modules in
     # DecoderModelForCausalLM.__post_init__ via
     # apply_quant_config_exclude_modules() (_torch/models/
-    # modeling_utils.py:488-541@1.3.0rc20): every named module matching an
+    # modeling_utils.py:488-541): every named module matching an
     # exclusion pattern has its quant_config replaced by a fresh QuantConfig
     # carrying only kv_cache_quant_algo, before weights are (re)created.
     # This bare-layer build skips __post_init__, which left kv_b_proj
     # quantized even though every fp8 weight_block_size checkpoint
     # translation force-excludes *kv_b_proj*/*k_b_proj*
-    # (model_config.py:481-490@1.3.0rc20, GLM-5's qk_nope_head_dim=192
+    # (model_config.py:481-490, GLM-5's qk_nope_head_dim=192
     # cannot tile into 128x128 scale blocks) — so MLA.create_weights
     # (attention.py:1558,1571-1584) built an fp8 k_b_proj_trans and routed
     # the absorption bmm down a path serving never takes for these
@@ -539,10 +531,10 @@ def create_kv_cache_and_metadata(
 
     # SM90 serving forces tokens_per_block=64 for FlashMLA-eligible MLA models
     # (head_dim==576): model_config.enable_flash_mla
-    # (tensorrt_llm/_torch/model_config.py@v1.3.0rc20) plus the
+    # (tensorrt_llm/_torch/model_config.py) plus the
     # py_executor_creator.py override; the attention op enables FlashMLA only
     # for SM90 && tokens_per_block==64
-    # (cpp/tensorrt_llm/thop/attentionOp.cpp:1235@v1.3.0rc20), and its
+    # (cpp/tensorrt_llm/thop/attentionOp.cpp:1235), and its
     # 1.3.0rc20 SM90 FMHA generation fallback rejects FP8 KV cache.
     # TRT-LLM PR #10261 (>=1.3.0rc0) dropped numTokensPerPage=64 trtllm-gen MLA
     # cubins for DeepSeek-V3 dims (headDimQk=576, headDimV=512) on Blackwell;
@@ -593,7 +585,7 @@ def create_kv_cache_and_metadata(
         layer_mask=layer_mask,
         # Serving passes sparse_attention_config + pretrained_config when
         # constructing cache managers (tensorrt_llm/_torch/pyexecutor/
-        # _util.py::_create_kv_cache_manager@v1.3.0rc20); the DSA cache
+        # _util.py::_create_kv_cache_manager); the DSA cache
         # manager requires both, the dense manager swallows them via kwargs.
         sparse_attention_config=model_config.sparse_attention_config,
         pretrained_config=config,
@@ -617,7 +609,7 @@ def create_kv_cache_and_metadata(
 
     # 1.3.0rc20 metadata classes take lowered SparseMetadataParams instead of
     # the raw sparse_attention_config (tensorrt_llm/_torch/pyexecutor/
-    # model_engine.py::_set_up_attn_metadata@v1.3.0rc20).
+    # model_engine.py::_set_up_attn_metadata).
     sparse_metadata_params = (
         model_config.sparse_attention_config.to_sparse_metadata_params(pretrained_config=config)
         if model_config.sparse_attention_config is not None
@@ -643,7 +635,7 @@ def create_kv_cache_and_metadata(
         # token count only — prompt_tokens = all_prompt_tokens[begin_compute:
         # end_compute]; prompt_lengths.append(len(prompt_tokens)) — while the
         # cached prefix travels separately via num_cached_tokens_per_seq
-        # (model_engine.py:2986-3017@1.3.0rc20). kv_lens is then derived as
+        # (model_engine.py:2986-3017). kv_lens is then derived as
         # cached_token_lens + seq_lens_kv (attention_backend/trtllm.py:525),
         # so prompt_lens must NOT be inflated by the prefix: it feeds
         # host_context_lengths, which the SM100 MLA context rope kernel
@@ -656,7 +648,7 @@ def create_kv_cache_and_metadata(
         # host_context_lengths.
         prompt_lens=[seq_len_q if is_context else kv_cache_len] * batch_size,
         # Serving computes enable_context_mla_with_cached_kv = is_mla &&
-        # (cache_reuse || chunked_prefill) (model_engine.py:1762@1.3.0rc20);
+        # (cache_reuse || chunked_prefill) (model_engine.py:1762);
         # a prefix-cached context request only exists under cache reuse, so
         # mirror that state here. Without the flag the DSA indexer takes the
         # no-cache alias branch for slot_mapping_*_fullkv (dsa.py
@@ -715,14 +707,14 @@ def run_mla_module(
         "TRT-LLM MLA has no pre-Hopper FMHA kernel (collector/skips.py)"
     )
     # FIXME(kernel-limit): SM120 MLA context takes serving's dense-expand path
-    # (forward_context_default, attention.py:2015-2040@1.3.0rc20 — SM100/103
+    # (forward_context_default, attention.py:2015-2040 — SM100/103
     # route to the absorbed/trtllm-gen path instead), whose
     # maybe_compiled_copy_ of k_nope into k fails under torch-inductor
     # autotune at huge extents: h=128 cases with ~>=49k total tokens die with
     # CUDA "invalid argument" (deterministic repro 2026-07-26 on RTX PRO 6000,
     # CUDA_LAUNCH_BLOCKING=1: inductor copy kernel launched with
     # xnumel=2147483648 for b=4/s=32768/h=128). ~72/5856 context cases fail
-    # classified; run-and-record. Re-verify on the next framework version bump.
+    # classified; run-and-record.
     torch.cuda.set_device(device)
     torch_device = torch.device(device)
 

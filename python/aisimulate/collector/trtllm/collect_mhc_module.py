@@ -23,7 +23,7 @@ standalone, because the SDK's DeepSeekV4 model bills mhc_pre + attn_norm
 (ElementWise) + mhc_post as separate per-layer ops
 (src/aisimulate_core/sdk/models/deepseek_v4.py) — fusing the
 norm here would double-count it downstream. Measured on H20-3e (SM90,
-hc_mult=4, hidden 4096/7168, 2026-08-05): fused_hc = 0.80x of pre+post at
+hc_mult=4, hidden 4096/7168): fused_hc = 0.80x of pre+post at
 M=16 (decode), but 3.8-6.5x SLOWER at M=1024/8192 — on pre-SM100 the
 fused_hc tactic space is FMA-only (the tcgen05 MMA paths require SM100,
 mhc_cuda.py:_fused_hc_mma_supported) while standalone pre_mapping can take
@@ -36,7 +36,7 @@ fused path is a coordinated producer+consumer contract change; do not
 switch variants unilaterally.
 
 The shipped mhc_module_perf tables measure the unfused pre+post path on
-every SM (owner decision, 2026-08-19, PR #1486), and the rows'
+every SM, and the rows'
 kernel_source labels (trtllm_mhc_pre_* / trtllm_mhc_post_mapping) name the
 measured variant. On SM100/103 that is a deviation: serving defaults to
 fused_hc there (models/modeling_deepseekv4.py), so the table over-charges the
@@ -78,7 +78,7 @@ DEFAULT_HC_MULT = 4
 # (src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4-*_config.json:
 # hc_mult=4, hc_sinkhorn_iters=20, hc_eps=1e-6). The remaining mHC ctor
 # defaults (norm_eps/sinkhorn_eps=1e-6, post_mult_value=1.0) are the module's
-# own serving defaults (hyper_connection.py mHC.__init__ @1.3.0rc20).
+# own serving defaults (hyper_connection.py mHC.__init__).
 MHC_NUM_SITES = 2  # one decoder block runs mHC once before attention, once before FFN
 MHC_SINKHORN_ITERS = 20
 
@@ -164,8 +164,8 @@ def _observe_pre_backend(site, residual) -> str:
     """Record which GEMM+sqrsum entry the tuned pre_mapping actually invokes.
 
     ``MhcPreMappingRunner.forward`` dispatches the tactic's backend through
-    exactly one of two module-level entry points (mhc_cuda.py:333-347
-    @1.3.0rc20): ``mhc_gemm_rms_dg_cuda`` (tactics ``dg_splitk`` /
+    exactly one of two module-level entry points (mhc_cuda.py:333-347):
+    ``mhc_gemm_rms_dg_cuda`` (tactics ``dg_splitk`` /
     ``dg_nosplit``, DeepGEMM tf32) or ``mhc_gemm_rms_fma_cuda`` (``fma``,
     CUDA-core FMA). Observing the call is ground truth for ``kernel_source``
     — no assumption about autotuner cache internals.

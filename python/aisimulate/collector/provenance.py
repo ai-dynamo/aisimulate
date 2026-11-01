@@ -114,7 +114,7 @@ def derive_table_status(*, unresolved_failed_count: int, had_module_failure: boo
     """complete unless a ModuleCollectionFailure was recorded for one of the
     table's producing ops.
 
-    Owner decision (tianhaox, 2026-08-08, PR #1486): recorded per-case
+    Owner decision: recorded per-case
     failures do NOT demote a table. failure_handling.md's core doctrine is
     that a classified failure is DATA — deterministic framework limits (OOM
     at sweep extremes, kernel grid caps) land in the failure log by design,

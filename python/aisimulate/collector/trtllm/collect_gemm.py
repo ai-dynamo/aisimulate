@@ -199,7 +199,7 @@ def run_gemm(gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
     # take the DeepGEMM fp8_swap_ab_gemm path, while SM120 has its own branch
     # (per_token_quant_and_transform + torch.ops.trtllm.fp8_block_scaling_gemm)
     # and Hopper the fp8_quantize_1x128 + fp8_block_scaling_gemm pair, both
-    # labeled torch_flow (modules/linear.py:1111-1133@1.3.0rc20). The previous
+    # labeled torch_flow (modules/linear.py:1111-1133). The previous
     # sm>=100 predicate mislabeled SM120 rows as deepgemm.
     kernel_source = "deepgemm" if gemm_type == "fp8_block" and is_sm_100f(sm_version) else "torch_flow"
 

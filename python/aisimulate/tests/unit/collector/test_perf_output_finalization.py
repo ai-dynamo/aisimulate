@@ -883,7 +883,7 @@ def test_convert_without_merge_overwrites(tmp_path):
 def test_finalize_third_merge_survives_large_string_round_trip(tmp_path):
     """run -> resume -> retry-failed: the second merge writes string columns back as
     `large_string` (pandas round trip); the third finalize must still merge, not
-    overwrite (sm120 attention_generation fp8kv lost 27,303 rows this way, 2026-10-01)."""
+    overwrite (sm120 attention_generation fp8kv lost 27,303 rows this way)."""
     import pyarrow as pa
 
     perf = tmp_path / "gemm_perf.txt"
@@ -924,7 +924,7 @@ def _pandas_unavailable(monkeypatch):
 def test_finalize_merge_does_not_need_pandas(tmp_path, monkeypatch):
     """The second finalize of a shard (resume / retry-failed) merges into the
     existing parquet; it died with ``No module named 'pandas'`` on the vllm
-    image (b200 dsa_context_module job 481670367 window 2, 2026-10-12)."""
+    image (b200 dsa_context_module job 481670367 window 2)."""
     perf = tmp_path / "gemm_perf.txt"
     parquet = perf.with_suffix(".parquet")
     _write_keyed_perf_csv(perf, [("s1", 1.0), ("s2", 2.0)])

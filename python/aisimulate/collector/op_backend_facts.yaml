@@ -14,7 +14,7 @@
 # must not grow match/skip rules.
 #
 # Ownership: bootstrapped from the perf database by
-# tools/perf_database/backend_facts.py (2026-07-11). From then on it is
+# tools/perf_database/backend_facts.py. From then on it is
 # maintained deliberately: a collector-upgrade PR that changes backend
 # dispatch updates the affected entries (the tool can draft them from
 # freshly collected data; review the diff like a hand edit). Check with:

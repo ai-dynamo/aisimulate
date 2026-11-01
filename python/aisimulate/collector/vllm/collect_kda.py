@@ -50,14 +50,14 @@ Output:
 
 # The kda family runs on 0.31.0 (framework_manifest.yaml family pin,
 # 2026-10-30) for both architectures. History: Kimi-K3 ran on 0.30.0 after
-# the kimi-k3 preview pin was retired 2026-09-28: 0.30's DS-layout probe
+# the kimi-k3 preview pin was retired 0.30's DS-layout probe
 # (is_fused_kda_decode_supported, now with recurrent_state_dtype) selects
 # fused_kda_decode for the non-spec decode, and the packed conv-update +
 # recurrence pair is measured alongside as the spec-decode serving path.
 # GLM-5.3-Flash runs on stock 0.31.0 (no overlay). Each KDA architecture is
 # additionally gated at runtime by _KDA_ARCHITECTURE_COMPAT, raising
 # KdaRuntimeNotAuditedError otherwise.
-# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+# One release per file; earlier code is `git log -- <this file>` away.
 __compat__ = "vllm==0.31.0"
 
 import gc
@@ -144,7 +144,7 @@ def _log(common, latency_ms, kernel_source, perf_filename, vllm_version, device,
 def _resolve_prefill_kernel(dtype: torch.dtype):
     """Mirror serving's resolve_kda_prefill_backend on this device: FlashKDA
     when supported AND importable, else the Triton chunk kernel
-    (vllm/models/kimi_k3/nvidia/kda.py:455-495@v0.30.0 resolve_kda_prefill_backend;
+    (vllm/models/kimi_k3/nvidia/kda.py:455-495 resolve_kda_prefill_backend;
     backend "auto" never selects FlashInfer, so on SM90 the choice is FlashKDA
     or Triton). 0.30 added the recurrent-state dtype to the probe: serving
     passes get_state_dtype()[1] (kda.py:665), which
@@ -258,7 +258,7 @@ def run_kda_context_benchmark(
                 # Serving precomputes the conv metadata once per step in the
                 # KDA attention-metadata builder (KimiK3KDAMetadata subclasses
                 # GDNAttentionMetadata;
-                # vllm/models/kimi_k3/nvidia/kda_metadata.py @0.27.0 image era)
+                # vllm/models/kimi_k3/nvidia/kda_metadata.py image era)
                 # and passes it into every layer's prefill conv call
                 # (vllm/models/kimi_k3/nvidia/kda.py::_prefill_conv passes
                 # metadata=m). Omitting metadata takes the non-serving branch:
@@ -485,7 +485,7 @@ def run_kda_generation_benchmark(
 
     # 0.30 added the recurrent-state dtype to the decode probe as well: serving
     # resolves it from get_state_dtype()[1] (vllm/models/kimi_k3/nvidia/kda.py
-    # :665-680@v0.30.0, resolve_kda_decode_backend -> is_fused_kda_decode_supported
+    # 665-680, resolve_kda_decode_backend -> is_fused_kda_decode_supported
     # :157-178), float32 for the default mamba_ssm_cache_dtype "auto" — the dtype
     # of this collector's recurrent state below.
     decode_paths = _decode_paths()
@@ -797,7 +797,7 @@ def run_kda_verify_benchmark(
 # vllm/models/glm5next/nvidia/ops/third_party/kda (common/kda.py:42-51).
 # Serving routing: model_executor/models/registry.py:428-431 ->
 # glm5next/__init__.py -> common/model.py:88,303-308 (KDA layers).
-# Below, "kda.py" = vllm/models/glm5next/common/kda.py @v0.31.0 (db9527a4);
+# Below, "kda.py" = vllm/models/glm5next/common/kda.py (db9527a4);
 # gdn_attn.py / mamba_utils.py are under vllm/v1/attention/backends/ and
 # vllm/model_executor/layers/mamba/ @v0.31.0.
 #   - kda.py:127-150  _resolve_kda_prefill_backend: FlashKDA on CUDA SM9x/10x/12x
@@ -833,7 +833,7 @@ def run_kda_verify_benchmark(
 #                     (H/tp, D, D).
 #
 # 0.31.0 audit (2026-10-07, source-only: tag v0.31.0 == db9527a4 vs v0.30.0
-# ced6857a). glm5next/nvidia/kda.py@v0.30.0 moved to glm5next/common/kda.py
+# ced6857a). glm5next/nvidia/kda.py moved to glm5next/common/kda.py
 # byte-identical (sha256 37745b45..., so every kda.py line above is unchanged);
 # nvidia/ops/third_party/kda/{kernels,fused_recurrent}.py differ only in
 # docstrings; causal_conv1d.py (docstrings only), gather_initial_states.py,
@@ -882,7 +882,7 @@ class KdaRuntimeNotAuditedError(RuntimeError):
 
 def _kda_architecture(model_name: str) -> str:
     """GLM-5.3-Flash paths run the glm5next layer; every other KDA row runs the
-    (unchanged) Kimi-K3 layer path of this module."""
+    Kimi-K3 layer path of this module."""
     return GLM5_NEXT_KDA_ARCHITECTURE if _is_glm5_next_kda(model_name) else KIMI_K3_KDA_ARCHITECTURE
 
 
@@ -1220,7 +1220,7 @@ def run_glm5_next_kda_decode(
                 # (TP1 shard, 64 local heads): batch 1024 fails with
                 # "Triton Error [CUDA]: invalid argument". fused_recurrent_kda
                 # launches grid (NK, NV, N * HV)
-                # (glm5next/nvidia/ops/third_party/kda/kernels.py:98 @v0.31.0),
+                # (glm5next/nvidia/ops/third_party/kda/kernels.py:98),
                 # so N * HV = 65536 exceeds the CUDA grid z limit (65535);
                 # the packed-decode sibling splits its grid for this case
                 # (fused_recurrent.py:510-511) and this one does not. Serving

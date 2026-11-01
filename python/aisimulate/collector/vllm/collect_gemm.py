@@ -3,10 +3,8 @@
 
 # vLLM owns block-FP8 dispatch. Its FlashInfer/DeepGEMM dynamic wrapper
 # (FlashInfer for m < 32, DeepGEMM above) is selectable on SM90 only
-# (has_flashinfer_fp8_blockscale_gemm, utils/flashinfer.py:1177-1193
-# @v0.30.0, :1176-1192 @v0.31.0, body unchanged); SM10x selects DeepGEMM or
-# CUTLASS directly (see the
-# __compat__ comment below). Keep every grid M/N/K shape observable instead
+# (has_flashinfer_fp8_blockscale_gemm in utils/flashinfer.py); SM10x selects
+# DeepGEMM or CUTLASS directly (see the __compat__ comment below). Keep every grid M/N/K shape observable instead
 # of hiding a presumed M-divisibility restriction in population logic.
 
 """vLLM GEMM collector for CUDA backends.
@@ -52,11 +50,11 @@ quantized-weight preparation, and selected-kernel reporting.
 # 322-363); NVFP4 still uses CT's factory and records the selected kernel
 # (schemes/compressed_tensors_w4a4_nvfp4.py:29-31,95-141). This adds the
 # exact 0.25.0 release to the existing lane, not 0.25.1/0.26.0/0.27.0.
-# 0.30.0 source audit (2026-09-30: tag v0.30.0 == ced6857afa0e vs v0.27.1):
+# 0.30.0 source audit (tag v0.30.0 == ced6857afa0e vs v0.27.1):
 # the 2026-10 campaign tables and the baseline of the 0.31.0 audit below.
 # The gemm family runs on 0.31.0 (framework_manifest.yaml family pin,
 # 2026-10-30), so this file targets exactly 0.31.0.
-# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+# One release per file; earlier code is `git log -- <this file>` away.
 # bf16: UnquantizedLinearMethod now binds its GEMM at __init__ from
 #   kernel_config.linear_backend (layers/linear.py:169-174, apply :234-238);
 #   dispatch_unquantized_gemm (layers/utils.py:584-616) returns
@@ -173,10 +171,10 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
 
     if envs.VLLM_BATCH_INVARIANT:
         # Batch-invariant mode reroutes bf16 linears to linear_batch_invariant
-        # (vllm/model_executor/layers/linear.py:223-224 @0.24.0, :228-229
-        # @0.27.1 -- byte-identical body, 5-line shift) and per-tensor fp8 to
-        # a BF16-dequant F.linear path (fp8.py:452-486 @0.24.0, :442-476
-        # @0.27.1 -- byte-identical body, 10-line shift; re-verified
+        # (vllm/model_executor/layers/linear.py:223-224, :228-229
+        # -- byte-identical body, 5-line shift) and per-tensor fp8 to
+        # a BF16-dequant F.linear path (fp8.py:452-486, :442-476
+        # -- byte-identical body, 10-line shift; re-verified
         # 2026-08-21). At 0.30.0 the bf16 reroute is linear.py:234-237 and
         # the fp8 one fp8.py:444-477 (re-verified 2026-09-30); at 0.31.0
         # linear.py:237-238 and fp8.py:426-459 (bodies unchanged). Either way
@@ -304,7 +302,7 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
             if isinstance(selected_kernel, FlashInferFp8DeepGEMMDynamicBlockScaledKernel):
                 # SM90-only wrapper (see header). vLLM's custom op selects the
                 # same two leaf objects at scaled_mm/flashinfer.py:301-316
-                # (byte-identical 0.24.0-0.30.0; :298-313 @0.31.0, same
+                # (byte-identical 0.24.0-0.30.0; :298-313, same
                 # body): DeepGEMM for m >= 32,
                 # FlashInfer swap-AB below. Its batch-invariant branch is
                 # unreachable here — run_gemm raises on VLLM_BATCH_INVARIANT
@@ -316,7 +314,7 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
     else:
         # From 0.30.0 UnquantizedLinearMethod binds its GEMM at __init__
         # (layers/linear.py:169-174 -> layers/utils.py:584-616; :171-175 ->
-        # :602-634 @0.31.0); earlier
+        # 602-634); earlier
         # releases have no _gemm_impl and always call F.linear. Assert the
         # binding instead of assuming the label.
         from vllm.model_executor.layers.utils import default_unquantized_gemm

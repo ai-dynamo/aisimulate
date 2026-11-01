@@ -33,7 +33,7 @@ from collector.version_resolver import _check_compat
 # 2026-10-30). Each architecture is additionally gated by
 # ``_ARCHITECTURE_COMPAT`` below; an architecture that is not audited on the
 # installed release raises instead of running.
-# One release per file (owner policy 2026-09-20); earlier code is `git log -- <this file>` away.
+# One release per file; earlier code is `git log -- <this file>` away.
 __compat__ = "vllm==0.31.0"
 
 # vLLM imports stay lazy in this module so that a mismatched install fails
@@ -192,7 +192,7 @@ def _mhc_pre(residual, fn, base, scale):
     # mhc_pre_tilelang standalone only on the FIRST layer and always with
     # norm_weight=attn_norm.weight (fused-RMSNorm big_fuse variant), and every
     # subsequent layer boundary runs the fused mhc_fused_post_pre_tilelang
-    # (vllm/models/deepseek_v4/nvidia/model.py:854-890 @0.24.0). This
+    # (vllm/models/deepseek_v4/nvidia/model.py:854-890). This
     # collector measures the norm_weight=None variant because the SDK's
     # DeepSeekV4 model composes mhc_pre + attn_norm (ElementWise) + mhc_post
     # as separate per-layer ops (src/aisimulate/sdk/models/deepseek_v4.py)
@@ -329,7 +329,7 @@ def _build_glm5next_sites(text_config, *, device: str):
 
     The returned module binds the serving decoder layer's own ``hc_pre`` /
     ``hc_post`` / ``hc_fused_post_pre`` methods (glm5next/common/model.py
-    L558-620 @v0.31.0), so every
+    L558-620), so every
     kernel argument (eps values, post multiplier, Sinkhorn repeat, n_splits,
     tile_n, fused-norm weight) is the one serving passes. Parameters mirror
     ``Glm5NextDecoderLayer.__init__`` (model.py L362-405): fp32 hc fn/base/scale
@@ -461,7 +461,7 @@ def _glm5next_kernel_source(op: str, num_tokens: int, hidden_size: int, hc_mult:
         return "vllm.model_executor.layers.mhc.hc_contract"
     from vllm.utils.deep_gemm import is_deep_gemm_supported
 
-    # _hc_prenorm_gemm_outputs (kernels/mhc/tilelang.py L22-71 @v0.31.0) uses
+    # _hc_prenorm_gemm_outputs (kernels/mhc/tilelang.py L22-71) uses
     # DeepGEMM tf32_hc_prenorm_gemm when is_deep_gemm_supported() (L38), else
     # the TileLang prenorm GEMM.
     gemm = "deepgemm" if is_deep_gemm_supported() else "tilelang"
@@ -472,7 +472,7 @@ def _glm5next_kernel_source(op: str, num_tokens: int, hidden_size: int, hc_mult:
     if op == "fused_post_pre":
         from vllm.model_executor.kernels.mhc.tilelang_kernels import mhc_fused_post_pre_split_config
 
-        # mhc_fused_post_pre_tilelang (tilelang.py L814-983 @v0.31.0; branch
+        # mhc_fused_post_pre_tilelang (tilelang.py L814-983; branch
         # L893/L914-976) picks the fused post+GEMM kernel when a split config
         # exists (tilelang_kernels.py L67-95: num_tokens <= 32 and
         # hidden_size % 128 == 0), else post + prenorm GEMM.

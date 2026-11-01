@@ -251,7 +251,7 @@ python3 collector/collect.py --backend <backend> --ops <op> \
 
 Once an op's smoke/limited runs are clean, run the full retained plan through
 `tools/perf_database/collect_campaign.py`. It fixes the parameters that every
-hand-written launcher has drifted on (sm120 campaign 2026-09-30: `--keep-csv`
+hand-written launcher has drifted on (an sm120 campaign: `--keep-csv`
 skipped finalize for 13 shards; the official image lacked pyarrow):
 
 ```bash
@@ -405,7 +405,7 @@ vLLM:
 
 **Job status is not evidence.** A green harness/CI job only means the wrapper
 script exited zero — it does NOT mean data was collected. Two real false-success
-signatures (2026-07-11, sglang 0.5.14 wave-2 recollection):
+signatures:
 
 - An op's case population raised (`No SGLang MoE backend for ...`) →
   `collect_module_safe` recorded a `ModuleCollectionFailure` and the job stayed
