@@ -15,7 +15,9 @@ each. A ``collector/skips.py`` entry may name a ``dispatch`` to leave a case
 out on that kernel only. A backend whose run function takes more arguments
 than the case declares ``rows``: the run arguments for one case and its
 dispatch. Rows decide how a case runs, never whether it runs, so every case
-gives at least one row.
+gives at least one row. Where one task times several cases on one module
+build, the backend declares ``batch_rows`` instead: each row carries the cases
+it times as explicit points, and every kept case is timed by exactly one row.
 
 Planning never imports a framework, so ``--plan-only`` runs on any CPU.
 
@@ -71,8 +73,8 @@ class OpPlan:
     case_type: type
     # Every case, in run order, before whole regions are removed.
     expand: Callable[[], list]
-    # The case field that holds the dtype or quant mode.
-    dtype_field: str
+    # The case field, or fields, that hold its dtype or quant mode.
+    dtype_field: str | tuple[str, ...]
     # The case fields whose values share one module build in a worker.
     group_fields: tuple[str, ...]
     # backend -> the kernel or runner the backend measures a case on, where the
@@ -81,6 +83,20 @@ class OpPlan:
     # backend -> the run arguments for one case and its dispatch (None without
     # one), for a run function that takes more than the case.
     rows: Mapping[str, Callable[[object, int | None, str | None], list]] = MappingProxyType({})
+    # backend -> the tasks for its kept cases where one task times several of
+    # them on one module build: (row, the cases it times) pairs. A row carries
+    # its points explicitly; every kept case is timed by exactly one row.
+    batch_rows: Mapping[str, Callable[[list, int | None], list[tuple[object, tuple]]]] = MappingProxyType({})
+
+    def __post_init__(self) -> None:
+        both = sorted(set(self.batch_rows) & (set(self.rows) | set(self.dispatch)))
+        if both:
+            raise ValueError(f"a backend declares batch_rows or rows/dispatch, not both: {both}")
+
+    def dtypes(self, case) -> tuple[str, ...]:
+        """The case's dtypes, which skips.py ``dtype`` entries and the per-dtype counts read."""
+        fields = (self.dtype_field,) if isinstance(self.dtype_field, str) else self.dtype_field
+        return tuple(getattr(case, field) for field in fields)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -108,6 +124,8 @@ class Plan:
     # The backend's rows function and where it runs, applied on demand: rows may
     # build the backend's framework objects (a torch dtype), cases never do.
     to_rows: Callable[[object, int | None, str | None], list] | None = None
+    # Or the backend's batch rows: (row, the cases it times) pairs.
+    to_batch_rows: Callable[[list, int | None], list[tuple[object, tuple]]] | None = None
     sm_version: int | None = None
     where: str = ""
     # The model rows the plan left out; rows read the model profiles without them.
@@ -121,6 +139,14 @@ class Plan:
     @property
     def rows(self) -> list:
         """What the getter queues: the cases, or the backend's rows for them."""
+        if self.to_batch_rows is not None:
+            with without_models(self.skipped_models):
+                pairs = self.to_batch_rows(self.cases, self.sm_version)
+            timed = Counter(case for _row, cases in pairs for case in cases)
+            wrong = [case for case in self.cases if timed[case] != 1] + list(set(timed) - set(self.cases))
+            if wrong:
+                raise ValueError(f"{self.where} batch rows must time every kept case exactly once: {wrong[:3]}")
+            return [row for row, _cases in pairs]
         if self.to_rows is None:
             return self.cases
         runs_on = self.dispatches or [(None,)] * len(self.cases)
@@ -164,9 +190,7 @@ def plan(op: str, backend: str, sm_version: int | None) -> Plan:
         if count:
             removed_models.append(RemovedRegion(f"model={','.join(sorted(architectures))}", count, repr(entry)))
 
-    def dtypes_of(case) -> tuple[str]:
-        return (getattr(case, spec.dtype_field),)
-
+    dtypes_of = spec.dtypes
     kept, skipped = skips.split(expanded, backend, op, sm_version, dtypes_of, dispatch_entries=False)
     removed = Counter((region, repr(entry)) for _case, entry, region in skipped)
     removed_runs = Counter()
@@ -201,6 +225,7 @@ def plan(op: str, backend: str, sm_version: int | None) -> Plan:
         dispatches=dispatches,
         removed_runs=[RemovedRegion(region, count, reason) for (region, reason), count in removed_runs.items()],
         to_rows=spec.rows.get(backend),
+        to_batch_rows=spec.batch_rows.get(backend),
         sm_version=sm_version,
         where=f"{backend} {op}",
         skipped_models=skipped_models,
@@ -228,7 +253,7 @@ def summarize(op: str, op_plan: Plan, case_id: Callable[[object], str]) -> dict:
     summary = {
         "cases": len(op_plan.cases),
         "groups": len({tuple(getattr(case, field) for field in spec.group_fields) for case in op_plan.cases}),
-        "by_dtype": dict(Counter(getattr(case, spec.dtype_field) for case in op_plan.cases)),
+        "by_dtype": dict(Counter("/".join(spec.dtypes(case)) for case in op_plan.cases)),
         "removed": [dataclasses.asdict(region) for region in op_plan.removed],
     }
     if op_plan.removed_runs:

@@ -6,8 +6,9 @@
 The tests run over every entry in ``OP_PLANS``, so moving an op onto a plan
 needs no new test: each backend's getter must be the one-line plan call, the
 backends may differ only by skips.py entries that name them, every left-out
-case is counted under its entry, rows may not drop a case, and case strings
-keep the list form that case IDs use.
+case is counted under its entry, rows may not drop a case, batch rows time
+every kept case exactly once, and case strings keep the list form that case
+IDs use.
 """
 
 from __future__ import annotations
@@ -86,9 +87,7 @@ def test_backends_differ_only_by_entries_that_name_them(op, sm):
             assert skips.model_entries(backend, op, sm), (backend, sorted(missing - expanded, key=str)[:3])
 
         # ... a case entry leaves out more ...
-        def dtypes_of(case):
-            return (getattr(case, spec.dtype_field),)
-
+        dtypes_of = spec.dtypes
         _kept, skipped = skips.split(missing & expanded, backend, op, sm, dtypes_of, dispatch_entries=False)
         assert all("backend" in entry for _case, entry, _region in skipped), backend
         # ... and entries that name a dispatch leave out the rest on every kernel it runs on.
@@ -152,6 +151,38 @@ def test_rows_may_not_drop_a_case(monkeypatch):
     with pytest.raises(ValueError, match="rows dropped case"):
         _ = plan("probe", "vllm", 100).rows
     assert plan("probe", "sglang", 100).rows == [GemmCase("bfloat16", 1, 128, 128)]
+
+
+def test_batch_rows_must_time_every_kept_case_exactly_once(monkeypatch):
+    cases = [GemmCase("bfloat16", 1, 128, 128), GemmCase("bfloat16", 2, 128, 128)]
+
+    def probe(batch_rows):
+        op_plan = OpPlan(
+            GemmCase, lambda: cases, dtype_field="gemm_type", group_fields=("n", "k"), batch_rows={"vllm": batch_rows}
+        )
+        monkeypatch.setitem(OP_PLANS, "probe", op_plan)
+        return plan("probe", "vllm", 100)
+
+    assert probe(lambda kept, sm: [([[case.m for case in kept], 128, 128], tuple(kept))]).rows == [[[1, 2], 128, 128]]
+    for wrong in (
+        lambda kept, sm: [(["m=1"], (kept[0],))],
+        lambda kept, sm: [(["all"], tuple(kept)), (["m=1 again"], (kept[0],))],
+        lambda kept, sm: [(["all"], (*kept, GemmCase("fp8", 1, 128, 128)))],
+    ):
+        with pytest.raises(ValueError, match="exactly once"):
+            _ = probe(wrong).rows
+
+
+def test_a_backend_declares_batch_rows_or_rows_not_both():
+    with pytest.raises(ValueError, match="not both"):
+        OpPlan(
+            GemmCase,
+            list,
+            dtype_field="gemm_type",
+            group_fields=("n", "k"),
+            rows={"vllm": lambda case, sm, runner: [case]},
+            batch_rows={"vllm": lambda cases, sm: []},
+        )
 
 
 @pytest.mark.parametrize(
