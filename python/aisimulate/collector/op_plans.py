@@ -1370,6 +1370,97 @@ def _dsv4_module_plan(attn_kind: str, phase: str) -> OpPlan:
     )
 
 
+# --- DeepSeek-V4 sparse kernels: paged MQA logits and the CSA top-k calibration -------
+
+
+class Dsv4SparseCase(NamedTuple):
+    """One point of the CSA indexer's paged MQA logits kernel, in run_dsv4_sparse_kernel_worker's
+    (vLLM) order: batch, new tokens, cached tokens, TP, the kernel, then the checkpoint."""
+
+    batch_size: int
+    seq_len: int
+    prefix_len: int
+    tp_size: int
+    kernel: str
+    model_path: str
+
+    __str__ = __repr__ = _list_form
+
+    @property
+    def dtype(self) -> str:
+        """The kernel reads FP8 queries and an FP8 indexer cache."""
+        return "fp8"
+
+    @property
+    def variant(self) -> None:
+        """The kernel has one variant."""
+        return None
+
+
+def _expand_dsv4_paged_mqa_logits() -> list[Dsv4SparseCase]:
+    """The sparse lists of each planned checkpoint: batch x new tokens within the prefill chunk,
+    batch x (new + cached tokens) within the KV-token budget."""
+    sweep = get_dsv4_sweep()
+    return [
+        Dsv4SparseCase(batch, length, prefix, tp_size, "paged_mqa_logits", model_path)
+        for model_path in get_dsv4_models()
+        for tp_size in sweep.sparse_tp_sizes
+        for batch in sweep.sparse_batch_sizes
+        for length in sweep.sparse_input_lengths
+        if batch * length <= sweep.sparse_chunk_prefill_size
+        for prefix in sweep.sparse_past_kv_lengths
+        if batch * (length + prefix) <= sweep.sparse_max_full_sequence_length
+    ]
+
+
+class Dsv4TopkCase(NamedTuple):
+    """One CSA module point of the top-k calibration, with the top-k kernel serving runs there:
+    v1 for a prefill (it also emits the raw indices), v2 for a decode step."""
+
+    batch_size: int
+    seq_len: int
+    prefix_len: int
+    variant: str
+    model_path: str
+
+    __str__ = __repr__ = _list_form
+
+    @property
+    def tp_size(self) -> int:
+        """The top-k kernel scans each token's compressed KV whole: TP does not shard it."""
+        return 1
+
+
+def _expand_dsv4_topk_calib() -> list[Dsv4TopkCase]:
+    """The CSA module plan's points of each calibrated checkpoint, batch by batch: v1 on the
+    context points, v2 on the decode points, where one new token follows the KV length.
+
+    The calibration model is the one dsv4.calib_model_paths names (a cost policy), or a
+    targeted run's own; consumers key the DELTA per native head geometry.
+    """
+    cases = []
+    for model_path in get_dsv4_models(calib=True):
+        context = [Dsv4TopkCase(b, s, p, "v1", model_path) for b, s, p in _dsv4_points("context", model_path)]
+        decode = [Dsv4TopkCase(b, 1, kv, "v2", model_path) for b, kv, _p in _dsv4_points("generation", model_path)]
+        cases += sorted(context + decode, key=lambda case: case.batch_size)
+    return cases
+
+
+def _sglang_dsv4_kernel_rows(kernel: str) -> Callable[[list, int | None], list[tuple[list, tuple]]]:
+    def rows(cases: list, sm_version: int | None) -> list[tuple[list, tuple]]:
+        """One run_dsv4_sparse_kernel_worker task per (model, TP, batch): the checkpoint, the
+        kernel, the batch and TP, then its [prefix_len, seq_len, variant] points."""
+        tasks: dict[tuple, list] = {}
+        for case in cases:
+            tasks.setdefault((case.model_path, case.batch_size, case.tp_size), []).append(case)
+        return [
+            ([model, kernel, batch, tp_size, [[c.prefix_len, c.seq_len, c.variant] for c in members]], tuple(members))
+            for (model, batch, tp_size), members in tasks.items()
+        ]
+
+    return rows
+
+
 # --- mHC: mhc_module ---------------------------------------------------------------
 
 _DSV4_ARCHITECTURE = "DeepseekV4ForCausalLM"
@@ -1741,6 +1832,20 @@ OP_PLANS: dict[str, OpPlan] = {
     "dsv4_csa_generation_module": _dsv4_module_plan("csa", "generation"),
     "dsv4_hca_context_module": _dsv4_module_plan("hca", "context"),
     "dsv4_hca_generation_module": _dsv4_module_plan("hca", "generation"),
+    "dsv4_paged_mqa_logits_module": OpPlan(
+        Dsv4SparseCase,
+        _expand_dsv4_paged_mqa_logits,
+        dtype_field="dtype",
+        group_fields=("model_path", "tp_size", "batch_size"),
+        batch_rows={"sglang": _sglang_dsv4_kernel_rows("paged_mqa_logits")},
+    ),
+    "dsv4_csa_topk_calib": OpPlan(
+        Dsv4TopkCase,
+        _expand_dsv4_topk_calib,
+        dtype_field="variant",
+        group_fields=("model_path", "batch_size"),
+        batch_rows={"sglang": _sglang_dsv4_kernel_rows("topk")},
+    ),
     "mla_bmm_gen_pre": OpPlan(
         MlaBmmCase, _mla_bmm_expand("mla_bmm_gen_pre"), dtype_field="dtype", group_fields=MlaBmmCase._fields
     ),

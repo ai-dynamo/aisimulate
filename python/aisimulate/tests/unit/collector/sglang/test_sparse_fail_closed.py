@@ -97,8 +97,6 @@ def test_dsv4_grouped_worker_reports_every_inner_exception():
             "Callable": Callable,
             "KERNEL_TO_OP_NAME": {"paged_mqa_logits": "test_op"},
             "_bench_sparse_kernel_shape": fail_shape,
-            "_dsv4_context_derived_shapes": lambda _model: [(11, 2, 3), (22, 4, 3)],
-            "_dsv4_generation_derived_shapes": lambda _model: [],
             "_dsv4_sparse_config": lambda _model: object(),
             "_make_perf_filename": lambda _kernel, output_dir: os.path.join(output_dir, "test.txt"),
             "_write_row": lambda *_args, **_kwargs: pytest.fail("failed inner shapes must not be persisted"),
@@ -109,7 +107,7 @@ def test_dsv4_grouped_worker_reports_every_inner_exception():
     )["run_dsv4_sparse_kernel_worker"]
 
     with pytest.raises(RuntimeError) as exc_info:
-        worker("test-model", "paged_mqa_logits", 3, perf_filename="out.txt")
+        worker("test-model", "paged_mqa_logits", 3, 1, [[11, 2, None], [22, 4, None]], perf_filename="out.txt")
 
     message = str(exc_info.value)
     assert "bs=3 isl=2 past_kv=11: ValueError: first failure" in message

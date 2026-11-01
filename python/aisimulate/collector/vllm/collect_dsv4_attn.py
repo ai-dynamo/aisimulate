@@ -36,14 +36,8 @@ import torch
 from collector.case_generator import (
     _DSV4_DEFAULT_MODELS,
     _DSV4_MODULE_TP_SIZES,
-    _DSV4_SPARSE_BS_LIST,
-    _DSV4_SPARSE_ISL_LIST,
-    _DSV4_SPARSE_MAX_FULL_S,
-    _DSV4_SPARSE_PAST_KV_LIST,
-    _DSV4_SPARSE_TP_LIST_INDEXER,
     DSV4_ATTN_KINDS,
-    DSV4_SPARSE_KERNELS,
-    _selected_dsv4_models,
+    get_dsv4_sweep,
 )
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from collector.op_plans import plan_cases
@@ -83,13 +77,12 @@ ARCHITECTURE = "DeepseekV4ForCausalLM"
 ATTN_KIND_TO_COMPRESS_RATIO = {"csa": 4, "hca": 128}
 # paged_mqa_logits (the CSA indexer scoring GEMM) is the only standalone sparse
 # sub-kernel; the hca_attn FMLA sidecar was removed 2026-10-15 (retired SDK
-# placeholder, see case_generator.DSV4_SPARSE_KERNELS).
+# placeholder).
 SPARSE_KERNEL_TO_ATTN_KIND = {"paged_mqa_logits": "csa"}
 SPARSE_KERNEL_TO_OP_NAME = {"paged_mqa_logits": "dsv4_paged_mqa_logits_module"}
 SPARSE_KERNEL_TO_PERF_FILE = {"paged_mqa_logits": PerfFile.DSV4_PAGED_MQA_LOGITS_MODULE}
 MODEL_CONFIGS_DIR = Path(__file__).resolve().parents[2] / "src" / "aisimulate_core" / "model_configs"
 SUPPORTED_GEMM_TYPES = {"fp8_block"}
-MAX_SPARSE_QUERY_TOKENS = int(os.environ.get("AIC_VLLM_DSV4_SPARSE_MAX_QUERY_TOKENS", "8192"))
 
 
 def _resolve_perf_path(output_path: str | None, filename: str | None) -> str:
@@ -777,38 +770,6 @@ def _bench_sparse_kernel_shape(
     return latency
 
 
-def _build_vllm_dsv4_sparse_test_cases(kernel: str) -> list[list]:
-    if kernel not in DSV4_SPARSE_KERNELS:
-        raise ValueError(f"unknown sparse kernel={kernel}")
-    model_paths = _selected_dsv4_models()
-    if not model_paths:
-        return []
-
-    tp_list = _DSV4_SPARSE_TP_LIST_INDEXER
-    if "--smoke" in sys.argv:
-        smoke_shapes = [
-            (1, 1, 8192),
-            (1, 64, 8192),
-        ]
-        return [
-            [bs, isl, past_kv, 1, kernel, model_path] for model_path in model_paths for bs, isl, past_kv in smoke_shapes
-        ]
-
-    cases: list[list] = []
-    for model_path in model_paths:
-        for tp_size in tp_list:
-            for bs in _DSV4_SPARSE_BS_LIST:
-                for isl in _DSV4_SPARSE_ISL_LIST:
-                    if bs * isl > MAX_SPARSE_QUERY_TOKENS:
-                        continue
-                    for past_kv in _DSV4_SPARSE_PAST_KV_LIST:
-                        full_s = isl + past_kv
-                        if bs * full_s > _DSV4_SPARSE_MAX_FULL_S:
-                            continue
-                        cases.append([bs, isl, past_kv, tp_size, kernel, model_path])
-    return cases
-
-
 def run_dsv4_attn_worker(
     seq_len: int,
     batch_size: int,
@@ -881,10 +842,11 @@ def run_dsv4_sparse_kernel_worker(
     if tp_size not in _DSV4_MODULE_TP_SIZES:
         raise ValueError(f"unsupported tp_size={tp_size}")
     full_s = isl + past_kv
-    if full_s > _DSV4_SPARSE_MAX_FULL_S:
+    max_full_s = get_dsv4_sweep().sparse_max_full_sequence_length
+    if full_s > max_full_s:
         raise ValueError(
             f"{kernel} b={batch_size} isl={isl} past_kv={past_kv} has "
-            f"full_s={full_s} > max_position_embeddings={_DSV4_SPARSE_MAX_FULL_S}"
+            f"full_s={full_s} > max_position_embeddings={max_full_s}"
         )
     _init_cuda(device)
     try:
@@ -897,8 +859,8 @@ def run_dsv4_sparse_kernel_worker(
             tp_size=tp_size,
             device=device,
             perf_filename=perf_filename,
-            warming_up=3 if "--smoke" in sys.argv else 5,
-            test_ite=3 if "--smoke" in sys.argv else 10,
+            warming_up=5,
+            test_ite=10,
         )
     except (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError):
         print(f"[vllm-dsv4] OOM: {kernel} b={batch_size} isl={isl} past_kv={past_kv} tp={tp_size}")
@@ -926,7 +888,7 @@ def get_dsv4_hca_generation_test_cases():
 
 
 def get_dsv4_paged_mqa_logits_test_cases():
-    return _build_vllm_dsv4_sparse_test_cases("paged_mqa_logits")
+    return plan_cases("dsv4_paged_mqa_logits_module", "vllm", get_sm_version())
 
 
 def main() -> None:
@@ -934,7 +896,7 @@ def main() -> None:
     parser.add_argument("--model-path", default=DEFAULT_MODEL)
     parser.add_argument("--mode", choices=["context", "generation"], default="context")
     parser.add_argument("--attn-kind", choices=list(DSV4_ATTN_KINDS), default="csa")
-    parser.add_argument("--sparse-kernel", choices=list(DSV4_SPARSE_KERNELS), default=None)
+    parser.add_argument("--sparse-kernel", choices=list(SPARSE_KERNEL_TO_ATTN_KIND), default=None)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--past-kv", type=int, default=0)
     parser.add_argument("--seq-len", type=int, default=64)

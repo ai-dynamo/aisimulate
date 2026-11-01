@@ -129,17 +129,19 @@ def test_rows_are_the_plan_points_and_carry_the_context_prefix(dsv4_module, monk
     assert (forwarded["warming_up"], forwarded["test_ite"]) == (5, 10)
 
 
-@pytest.mark.parametrize("kernel", ["paged_mqa_logits"])
-def test_sparse_cases_queue_short_shapes_for_runtime_observation(dsv4_module, monkeypatch, kernel):
-    mod = dsv4_module
-    monkeypatch.setattr(sys, "argv", ["pytest"])
-    monkeypatch.setattr(mod, "_selected_dsv4_models", lambda: ("model",))
-    monkeypatch.setattr(mod, "_DSV4_SPARSE_BS_LIST", [1])
-    monkeypatch.setattr(mod, "_DSV4_SPARSE_ISL_LIST", [1])
-    monkeypatch.setattr(mod, "_DSV4_SPARSE_PAST_KV_LIST", [0])
-    monkeypatch.setattr(mod, "_DSV4_SPARSE_TP_LIST_INDEXER", [1])
+def test_sparse_rows_are_the_plan_cases_including_short_shapes(dsv4_module, monkeypatch):
+    from collector.op_plans import plan
 
-    assert mod._build_vllm_dsv4_sparse_test_cases(kernel) == [[1, 1, 0, 1, kernel, "model"]]
+    mod = dsv4_module
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "sgl-project/DeepSeek-V4-Flash-FP8")
+    monkeypatch.setattr(mod, "get_sm_version", lambda: 100)
+
+    rows = mod.get_dsv4_paged_mqa_logits_test_cases()
+
+    assert rows == plan("dsv4_paged_mqa_logits_module", "vllm", 100).cases
+    # run_dsv4_sparse_kernel_worker's arguments; the case prints as the list it replaces.
+    assert str(rows[0]) == "[1, 1, 0, 1, 'paged_mqa_logits', 'sgl-project/DeepSeek-V4-Flash-FP8']"
+    assert all(b * s <= 8192 and b * (s + p) <= 1048576 for b, s, p, *_rest in rows)
 
 
 @pytest.mark.parametrize(
@@ -196,7 +198,7 @@ def test_sparse_worker_raises_beyond_max_position_embeddings(dsv4_module, monkey
         dsv4_module, "_bench_sparse_kernel_shape", lambda **kwargs: pytest.fail("must raise before benchmarking")
     )
 
-    over_limit = dsv4_module._DSV4_SPARSE_MAX_FULL_S + 1
+    over_limit = dsv4_module.get_dsv4_sweep().sparse_max_full_sequence_length + 1
     with pytest.raises(ValueError, match="max_position_embeddings"):
         dsv4_module.run_dsv4_sparse_kernel_worker(
             1,

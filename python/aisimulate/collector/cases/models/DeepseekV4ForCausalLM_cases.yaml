@@ -244,40 +244,14 @@ model_case_values:
       - 262144
       - 524288
       - 1048575
-    module_past_kv_lengths:
-      - 0
-      - 1
-      - 4
-      - 8
-      - 16
-      - 32
-      - 64
-      - 128
-      - 256
-      - 512
-      - 1024
-      - 1536
-      - 2048
-      - 3072
-      - 4096
-      - 6144
-      - 8192
-      - 10000
-      - 10240
-      - 12288
-      - 16384
-      - 32768
-      - 65536
-      - 131072
-      - 262144
-      - 524288
-      - 1000000
-      - 1048575
     module_tp_sizes:
       - 1
       - 2
       - 4
       - 8
+    # The paged MQA logits kernel (the CSA indexer's scoring GEMM): batch x
+    # isl within sparse_chunk_prefill_size and batch x (isl + past KV) within
+    # sparse_max_full_sequence_length.
     sparse_batch_sizes:
       - 1
       - 2
@@ -354,11 +328,9 @@ framework_specific_op_cases:
       cases: all
     dsv4_hca_generation_module:
       cases: all
-    # topK DELTA calibration: one case per model. The worker reads the
-    # already-collected dsv4_csa_*_module_perf.txt in the output dir and benches
-    # exactly those (prefix, isl, batch_size) shapes, so it must run AFTER the
-    # CSA module ops (guaranteed by registry order: topk_calib is registered
-    # after the csa module entries).
+    # topK DELTA calibration on the CSA module plan's points (v1 top-k on the
+    # context points, v2 on the decode points) of the calib_model_paths
+    # checkpoint, or a targeted run's own.
     dsv4_csa_topk_calib:
       cases: all
     # paged_mqa_logits IS consumed: it is the only sparse-kernel sidecar with a

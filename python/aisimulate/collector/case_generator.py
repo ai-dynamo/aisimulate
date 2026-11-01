@@ -2459,26 +2459,18 @@ _DSV4_SUPPORTED_MODELS = tuple(
     _as_str_list(_DSV4_CONFIG["supported_model_paths"], field_name="dsv4.supported_model_paths")
 )
 DSV4_ATTN_KINDS = _dsv4_attention_kinds()
-_DSV4_MODULE_BATCH_SIZES = _as_int_list(_DSV4_CONFIG["module_batch_sizes"], field_name="dsv4.module_batch_sizes")
-_DSV4_MODULE_SEQ_LENGTHS = _as_int_list(
-    _DSV4_CONFIG["module_sequence_lengths"],
-    field_name="dsv4.module_sequence_lengths",
-)
-_DSV4_MODULE_PAST_KV_LIST = _as_int_list(
-    _DSV4_CONFIG["module_past_kv_lengths"],
-    field_name="dsv4.module_past_kv_lengths",
-)
 _DSV4_MODULE_TP_SIZES = _as_int_list(_DSV4_CONFIG["module_tp_sizes"], field_name="dsv4.module_tp_sizes")
 
 
 @dataclasses.dataclass(frozen=True)
 class Dsv4Sweep:
-    """The DeepSeek-V4 module sweeps of the op plans.
+    """The DeepSeek-V4 sweeps of the op plans.
 
     A module's context points are the shared long-context grid (mla_module_plan in
     cases/base_ops/mla_module.yaml); its decode points are the dsv4 block's module
     batch and length lists within the decode budget of
-    cases/base_ops/dsv4_attention.yaml.
+    cases/base_ops/dsv4_attention.yaml. The paged MQA logits kernel takes the
+    block's sparse lists.
     """
 
     tp_sizes: list[int]
@@ -2489,37 +2481,38 @@ class Dsv4Sweep:
     # (KV length floor, largest batch): a decode point at or above the floor
     # with a larger batch is out of budget.
     decode_batch_ladder: tuple[tuple[int, int], ...]
+    sparse_batch_sizes: list[int]
+    sparse_input_lengths: list[int]
+    sparse_past_kv_lengths: list[int]
+    sparse_chunk_prefill_size: int
+    sparse_max_full_sequence_length: int
+    sparse_tp_sizes: list[int]
 
 
 def get_dsv4_sweep() -> Dsv4Sweep:
-    """Return the DeepSeek-V4 module sweeps; a missing or malformed field raises."""
+    """Return the DeepSeek-V4 sweeps; a missing or malformed field raises."""
     budget = _required_base_common_case_values("dsv4_module_budgets")
+    sparse_tp_sizes = _required_mapping(_DSV4_CONFIG["sparse_tp_sizes"], field_name="dsv4.sparse_tp_sizes")
     return Dsv4Sweep(
         tp_sizes=_DSV4_MODULE_TP_SIZES,
         gemm_types=_as_str_list(_DSV4_CONFIG["module_gemm_types"], field_name="dsv4.module_gemm_types"),
-        generation_batch_sizes=_DSV4_MODULE_BATCH_SIZES,
-        generation_sequence_lengths=_DSV4_MODULE_SEQ_LENGTHS,
+        generation_batch_sizes=_as_int_list(_DSV4_CONFIG["module_batch_sizes"], field_name="dsv4.module_batch_sizes"),
+        generation_sequence_lengths=_as_int_list(
+            _DSV4_CONFIG["module_sequence_lengths"], field_name="dsv4.module_sequence_lengths"
+        ),
         generation_max_kv_tokens=int(budget["max_generation_kv_tokens"]),
         decode_batch_ladder=tuple((int(floor), int(max_bs)) for floor, max_bs in budget["decode_batch_ladder"]),
+        sparse_batch_sizes=_as_int_list(_DSV4_CONFIG["sparse_batch_sizes"], field_name="dsv4.sparse_batch_sizes"),
+        sparse_input_lengths=_as_int_list(_DSV4_CONFIG["sparse_input_lengths"], field_name="dsv4.sparse_input_lengths"),
+        sparse_past_kv_lengths=_as_int_list(
+            _DSV4_CONFIG["sparse_past_kv_lengths"], field_name="dsv4.sparse_past_kv_lengths"
+        ),
+        sparse_chunk_prefill_size=int(_DSV4_CONFIG["sparse_chunk_prefill_size"]),
+        sparse_max_full_sequence_length=int(_DSV4_CONFIG["sparse_max_full_sequence_length"]),
+        sparse_tp_sizes=_as_int_list(
+            sparse_tp_sizes["paged_mqa_logits"], field_name="dsv4.sparse_tp_sizes.paged_mqa_logits"
+        ),
     )
-
-
-_DSV4_SPARSE_BS_LIST = _as_int_list(_DSV4_CONFIG["sparse_batch_sizes"], field_name="dsv4.sparse_batch_sizes")
-_DSV4_SPARSE_ISL_LIST = _as_int_list(
-    _DSV4_CONFIG["sparse_input_lengths"],
-    field_name="dsv4.sparse_input_lengths",
-)
-_DSV4_SPARSE_PAST_KV_LIST = _as_int_list(
-    _DSV4_CONFIG["sparse_past_kv_lengths"],
-    field_name="dsv4.sparse_past_kv_lengths",
-)
-_DSV4_SPARSE_CHUNK_PREFILL_SIZE = int(_DSV4_CONFIG["sparse_chunk_prefill_size"])
-_DSV4_SPARSE_MAX_FULL_S = int(_DSV4_CONFIG["sparse_max_full_sequence_length"])
-_DSV4_SPARSE_TP_SIZES = _required_mapping(_DSV4_CONFIG["sparse_tp_sizes"], field_name="dsv4.sparse_tp_sizes")
-_DSV4_SPARSE_TP_LIST_INDEXER = _as_int_list(
-    _DSV4_SPARSE_TP_SIZES["paged_mqa_logits"],
-    field_name="dsv4.sparse_tp_sizes.paged_mqa_logits",
-)
 
 
 def _selected_dsv4_models() -> tuple[str, ...]:
@@ -2579,101 +2572,3 @@ def get_dsv4_models(*, calib: bool = False) -> tuple[str, ...]:
     if _DSV4_CONFIG.get("architecture") in _SKIPPED_MODELS.get():
         return ()
     return _selected_dsv4_calib_models() if calib else _selected_dsv4_models()
-
-
-def _dsv4_module_is_valid_shape(mode: str, bs: int, sl: int, past_kv: int = 0) -> bool:
-    """Return whether a DeepSeek-V4 full-module sample fits scheduler/model limits."""
-    if bs <= 0 or sl <= 0 or past_kv < 0:
-        return False
-    if mode == "context":
-        return True
-    if mode == "generation":
-        if bs * sl > 1024 * 1024:
-            return False
-        if sl >= 524288 and bs > 1:
-            return False
-        if sl >= 262144 and bs > 2:
-            return False
-        if sl >= 131072 and bs > 4:
-            return False
-        if sl >= 65536 and bs > 8:
-            return False
-        if sl >= 32768 and bs > 16:
-            return False
-        return not (sl >= 8192 and bs > 64)
-    raise ValueError(f"unsupported DeepSeek-V4 mode: {mode}")
-
-
-def get_dsv4_topk_calib_test_cases():
-    """One case per model (the topk DELTA calibration is just another member of
-    the sparse-op family — same ``[model_path, kernel]`` shape as
-    paged_mqa_logits, dispatched through ``run_dsv4_sparse_kernel_worker``).
-
-    The grid matches the CSA module data 1:1: the worker reads the
-    already-collected ``dsv4_csa_*_module_perf.txt`` and benches exactly those
-    ``(prefix, isl, batch_size)`` shapes — no separate grid is generated here.
-
-    Only the canonical calib model is eligible (``_selected_dsv4_calib_models``):
-    the calib table keys carry no model geometry, so a second model's rows
-    would silently overwrite the first's.
-    """
-    return [[model_path, "topk"] for model_path in _selected_dsv4_calib_models()]
-
-
-# The CSA indexer scoring GEMM is the only sparse sub-kernel collected standalone.
-# hca_attn / csa_attn (FMLA sidecars) were removed 2026-10-15: retired SDK
-# placeholders with no query path, and registry-only ops that failed every
-# shard plan generated from the registry.
-DSV4_SPARSE_KERNELS = ("paged_mqa_logits",)
-
-
-def _build_dsv4_sparse_test_cases(
-    kernels=DSV4_SPARSE_KERNELS,
-    bs_list=None,
-    isl_list=None,
-    past_kv_list=None,
-    tp_list_indexer=None,
-):
-    """Generate ``(bs, isl, past_kv, tp_size, kernel, model)`` tuples.
-
-    Filters mirror sglang prefill scheduler:
-      * bs x isl ≤ chunked_prefill_size = 8192   — new-token budget per chunk
-      * bs x (isl + past_kv) ≤ 1M                — model context cap
-    """
-    bs_list = list(bs_list) if bs_list is not None else list(_DSV4_SPARSE_BS_LIST)
-    isl_list = list(isl_list) if isl_list is not None else list(_DSV4_SPARSE_ISL_LIST)
-    past_kv_list = list(past_kv_list) if past_kv_list is not None else list(_DSV4_SPARSE_PAST_KV_LIST)
-    tp_list_indexer = list(tp_list_indexer) if tp_list_indexer is not None else list(_DSV4_SPARSE_TP_LIST_INDEXER)
-
-    cases = []
-    for model_path in _selected_dsv4_models():
-        for kernel in kernels:
-            for tp_size in tp_list_indexer:
-                for bs in bs_list:
-                    for isl in isl_list:
-                        if bs * isl > _DSV4_SPARSE_CHUNK_PREFILL_SIZE:
-                            continue
-                        for past_kv in past_kv_list:
-                            if bs * (isl + past_kv) > _DSV4_SPARSE_MAX_FULL_S:
-                                continue
-                            full_s = isl + past_kv
-                            if kernel == "paged_mqa_logits" and full_s < 4:
-                                continue
-                            cases.append(
-                                [
-                                    bs,
-                                    isl,
-                                    past_kv,
-                                    tp_size,
-                                    kernel,
-                                    model_path,
-                                ]
-                            )
-    return cases
-
-
-def get_dsv4_paged_mqa_logits_test_cases():
-    """One case per model. The worker derives shapes from the CSA module CSV
-    (paged_mqa_logits is the CSA indexer scoring sub-kernel), 1:1 with the
-    csa-module rows — no separate sparse sweep grid."""
-    return [[model_path, "paged_mqa_logits"] for model_path in _selected_dsv4_models()]

@@ -169,6 +169,11 @@ collector.sglang.collect_moe:
   - collector/op_plans.py
   - __model_cases__
 collector.sglang.deepseekv4_sparse_modules:
+  # Rows come from the DSV4 sparse-kernel op plans; the top-k calibration
+  # takes the CSA module plan's points.
+  - collector/cases/base_ops/dsv4_attention.yaml
+  - collector/cases/base_ops/mla_module.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.sglang.glm5_dsa_sparse_modules:
   # get_glm5_*_test_cases() calls case_generator.get_mla_module_sweep_spec.

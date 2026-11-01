@@ -7,7 +7,7 @@ import sys
 
 import pytest
 from collector import case_generator as common_test_cases
-from collector.op_plans import plan
+from collector.op_plans import plan, plan_cases
 
 pytestmark = pytest.mark.unit
 
@@ -32,12 +32,10 @@ def test_dsv4_no_filter_expands_flash_and_pro_modules_calib_stays_canonical(monk
     module_cases = plan("dsv4_csa_context_module", "sglang", 100).cases
     assert module_cases
     assert {case.model_path for case in module_cases} == {_FLASH_FP8, _PRO_FP8}
-    assert common_test_cases.get_dsv4_paged_mqa_logits_test_cases() == [
-        [_FLASH_FP8, "paged_mqa_logits"],
-        [_PRO_FP8, "paged_mqa_logits"],
-    ]
+    paged = plan("dsv4_paged_mqa_logits_module", "sglang", 100).cases
+    assert {case.model_path for case in paged} == {_FLASH_FP8, _PRO_FP8}
     capsys.readouterr()
-    assert common_test_cases.get_dsv4_topk_calib_test_cases() == [[_FLASH_FP8, "topk"]]
+    assert {case.model_path for case in plan("dsv4_csa_topk_calib", "sglang", 100).cases} == {_FLASH_FP8}
     assert "default calibration stays on" in capsys.readouterr().out
 
 
@@ -47,7 +45,7 @@ def test_dsv4_unrelated_model_filter_logs_the_skip(monkeypatch, capsys):
     is otherwise undiagnosable (#1460 review)."""
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "not-a/dsv4-model")
     monkeypatch.setattr(sys, "argv", ["pytest"])
-    assert common_test_cases.get_dsv4_topk_calib_test_cases() == []
+    assert plan("dsv4_csa_topk_calib", "sglang", 100).cases == []
     assert "is not a DSV4 model; generating no DSV4 cases" in capsys.readouterr().out
 
 
@@ -59,10 +57,10 @@ def test_dsv4_targeted_model_collects_its_own_calib(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["pytest"])
 
     assert plan("dsv4_csa_context_module", "sglang", 100).cases
-    assert common_test_cases.get_dsv4_topk_calib_test_cases() == [[_PRO, "topk"]]
+    assert {case.model_path for case in plan("dsv4_csa_topk_calib", "sglang", 100).cases} == {_PRO}
 
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", _FLASH_FP8)
-    assert common_test_cases.get_dsv4_topk_calib_test_cases() == [[_FLASH_FP8, "topk"]]
+    assert {case.model_path for case in plan("dsv4_csa_topk_calib", "sglang", 100).cases} == {_FLASH_FP8}
 
 
 @pytest.mark.parametrize("model_path", _SUPPORTED_MODELS)
@@ -107,16 +105,49 @@ def test_dsv4_module_points_follow_the_long_context_and_decode_grids(monkeypatch
     assert (2, 524288) not in decode and (8, 131072) not in decode and (128, 8192) not in decode
 
 
-def test_dsv4_sparse_smoke_cases_honor_model_filter(monkeypatch):
+def test_dsv4_paged_mqa_logits_plan_is_the_sparse_grid(monkeypatch):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", _FLASH)
     monkeypatch.setattr(sys, "argv", ["collect.py", "--smoke"])
 
-    cases = common_test_cases.get_dsv4_paged_mqa_logits_test_cases()
+    cases = plan("dsv4_paged_mqa_logits_module", "vllm", 100).cases
 
-    # Sparse kernels are now one case per model ([model_path, kernel]); the worker
-    # derives the (prefix, isl, bs) shapes 1:1 from the owning module CSV at
-    # runtime instead of a separate smoke sweep grid.
-    assert cases == [[_FLASH, "paged_mqa_logits"]]
+    # The sparse lists within the 8192-token chunk and the 1M KV-token budget, the
+    # short shapes included; --smoke samples rows in collect.py, not here.
+    sweep = common_test_cases.get_dsv4_sweep()
+    expected = {
+        (b, s, p)
+        for b in sweep.sparse_batch_sizes
+        for s in sweep.sparse_input_lengths
+        for p in sweep.sparse_past_kv_lengths
+        if b * s <= 8192 and b * (s + p) <= 1048576
+    }
+    assert {(c.batch_size, c.seq_len, c.prefix_len) for c in cases} == expected
+    assert (1, 1, 0) in expected
+    assert {(c.tp_size, c.kernel, c.model_path) for c in cases} == {(1, "paged_mqa_logits", _FLASH)}
+
+
+def test_dsv4_topk_calib_times_the_csa_module_points(monkeypatch):
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", _PRO_FP8)
+
+    calib = {
+        (c.batch_size, c.seq_len, c.prefix_len, c.variant) for c in plan("dsv4_csa_topk_calib", "sglang", 100).cases
+    }
+    context = {(c.batch_size, c.seq_len, c.prefix_len) for c in plan("dsv4_csa_context_module", "sglang", 100).cases}
+    decode = {(c.batch_size, c.seq_len) for c in plan("dsv4_csa_generation_module", "sglang", 100).cases}
+    # Prefill runs the v1 top-k, decode the v2 top-k with one new token after the KV length.
+    assert calib == {(*point, "v1") for point in context} | {(b, 1, kv, "v2") for b, kv in decode}
+
+
+def test_sglang_sparse_rows_carry_their_points_per_model_tp_and_batch(monkeypatch):
+    monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
+
+    for op, kernel in (("dsv4_paged_mqa_logits_module", "paged_mqa_logits"), ("dsv4_csa_topk_calib", "topk")):
+        op_plan = plan(op, "sglang", 90)
+        rows = plan_cases(op, "sglang", 90)
+        assert len({tuple(row[:4]) for row in rows}) == len(rows)
+        assert {row[1] for row in rows} == {kernel} and {row[3] for row in rows} == {1}
+        points = {(row[0], row[2], prefix, isl, variant) for row in rows for prefix, isl, variant in row[4]}
+        assert points == {(c.model_path, c.batch_size, c.prefix_len, c.seq_len, c.variant) for c in op_plan.cases}
 
 
 @pytest.mark.parametrize("model_path", (_FLASH_FP8, _PRO_FP8))
@@ -134,40 +165,4 @@ def test_dsv4_cases_skip_unrelated_model_filter(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["pytest"])
 
     assert plan("dsv4_csa_context_module", "sglang", 100).cases == []
-    assert common_test_cases.get_dsv4_paged_mqa_logits_test_cases() == []
-
-
-def test_sglang_sparse_modules_topk_calib_uses_canonical_model(monkeypatch, capsys):
-    """The sglang registry's topk-calib getter (deepseekv4_sparse_modules)
-    applies the same calib model policy as the shared case_generator getter:
-    default plans stay canonical (cost policy, logged), targeted runs collect
-    the selected model's own calibration (#1460 per-native calib keys)."""
-    import ast
-    from pathlib import Path
-
-    src = Path(__file__).resolve().parents[3] / "collector" / "sglang" / "deepseekv4_sparse_modules.py"
-    tree = ast.parse(src.read_text(encoding="utf-8"), filename=str(src))
-    wanted = {
-        "_dsv4_sparse_kernel_cases",
-        "get_dsv4_topk_calib_test_cases",
-        "get_dsv4_paged_mqa_logits_test_cases",
-    }
-    ns = {
-        "_dsv4_context_derived_shapes": lambda _m: [(0, 1, 1)],
-        "_dsv4_generation_derived_shapes": lambda _m: [(0, 1, 1)],
-    }
-    body = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
-    assert {n.name for n in body} == wanted
-    exec(compile(ast.Module(body=body, type_ignores=[]), str(src), "exec"), ns)
-
-    monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
-    monkeypatch.setattr(sys, "argv", ["pytest"])
-    # full/raw: sparse kernels expand both default models, calib only
-    # canonical (cost policy), with the default-plan drop logged
-    assert {c[0] for c in ns["get_dsv4_paged_mqa_logits_test_cases"]()} == {_FLASH_FP8, _PRO_FP8}
-    capsys.readouterr()
-    assert {c[0] for c in ns["get_dsv4_topk_calib_test_cases"]()} == {_FLASH_FP8}
-    assert "default calibration stays on" in capsys.readouterr().out
-    # targeted run: the selected model collects its own calibration (#1460)
-    monkeypatch.setenv("COLLECTOR_MODEL_PATH", _PRO)
-    assert ns["get_dsv4_topk_calib_test_cases"]() == [[_PRO, "topk", 1]]
+    assert plan("dsv4_paged_mqa_logits_module", "vllm", 100).cases == []
