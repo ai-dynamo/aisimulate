@@ -174,6 +174,8 @@ def test_sglang_sm90_full_structural_population_is_stable(monkeypatch):
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
 
     for phase, sweep_getter, expected in (
+        # 162/147: Llama 3.1 405B adds its TP1 context shape (128/8 @hd128);
+        # its decode shape and TP2-8 shards dedupe against existing points.
         # 161/147 after Muse Glimmer adds 4 window=2048 SM90 head configs per
         # phase (TP shards 32/2, 16/1, 8/1, 4/1 @hd128). Its window=0 shards
         # dedupe against existing base-grid points.
@@ -183,7 +185,7 @@ def test_sglang_sm90_full_structural_population_is_stable(monkeypatch):
         # and the current Qwen3.6/Gemma-4 NVIDIA profiles add two distinct
         # context/generation geometries, plus 4 context / 4 generation from
         # Step-3.7-Flash's hybrid SWA/global head shapes.
-        ("context", get_attention_context_shape_sweeps, 161),
+        ("context", get_attention_context_shape_sweeps, 162),
         ("generation", get_attention_generation_shape_sweeps, 147),
     ):
         configs = [
