@@ -213,9 +213,9 @@ DSA_MODELS = {
 
 
 def test_dsa_plan_times_the_longest_context_checkpoint_of_each_projection_gemm():
-    from collector.op_plans import _dsa_module_models
+    from collector.op_plans import _sparse_module_models
 
-    assert {spec.model_path: gemms for spec, gemms in _dsa_module_models()} == DSA_MODELS
+    assert {spec.model_path: gemms for spec, gemms in _sparse_module_models("dsa")} == DSA_MODELS
     by_model = defaultdict(set)
     for case in OP_PLANS["dsa_context_module"].expand():
         by_model[case.model_path].add(case.gemm_type)
@@ -227,7 +227,7 @@ def test_dsa_context_points_follow_chunked_prefill():
 
     sweep = get_mla_module_sweep_spec("plan")
     anchors = [0, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048575]
-    assert sweep.context_dsa_prefix_lengths == anchors
+    assert sweep.context_prefix_lengths == anchors
     max_position = {"deepseek-ai/DeepSeek-V3.2": 163840, "zai-org/GLM-5.2": 1048576}
     points = defaultdict(set)
     for case in OP_PLANS["dsa_context_module"].expand():
@@ -282,6 +282,86 @@ def test_dsa_skips_keep_each_backends_precisions(op):
             ("zai-org/GLM-5.2-FP8", "fp8_block"),
         }
         assert {case.kv_cache_dtype for case in plan(op, "sglang", sm).cases} == {"bfloat16", "fp8"}
+
+
+@pytest.mark.parametrize("op", ["msa_context_module", "msa_generation_module"])
+def test_msa_skips_keep_each_backends_precisions(op):
+    def combos(backend, sm):
+        return {(case.kv_cache_dtype, case.gemm_type) for case in plan(op, backend, sm).cases}
+
+    def gemms(*names):
+        return {(kv, gemm) for kv in ("bfloat16", "fp8") for gemm in names}
+
+    # TRT-LLM: BF16 KV only. vLLM: both KV dtypes. fp8_block from SM89, NVFP4 from SM100.
+    # SGLang: BF16 projections only, FP8 KV from SM90.
+    expected = {
+        80: ({("bfloat16", "bfloat16")}, {("bfloat16", "bfloat16")}, {("bfloat16", "bfloat16")}),
+        89: (
+            {("bfloat16", "bfloat16"), ("bfloat16", "fp8_block")},
+            gemms("bfloat16", "fp8_block"),
+            {("bfloat16", "bfloat16")},
+        ),
+        90: (
+            {("bfloat16", "bfloat16"), ("bfloat16", "fp8_block")},
+            gemms("bfloat16", "fp8_block"),
+            gemms("bfloat16"),
+        ),
+    }
+    for sm in (100, 103, 120):
+        expected[sm] = (
+            {("bfloat16", gemm) for gemm in ("bfloat16", "fp8_block", "nvfp4")},
+            gemms("bfloat16", "fp8_block", "nvfp4"),
+            gemms("bfloat16"),
+        )
+    for sm, (trtllm, vllm, sglang) in expected.items():
+        assert (combos("trtllm", sm), combos("vllm", sm), combos("sglang", sm)) == (trtllm, vllm, sglang), sm
+
+
+def test_msa_plan_times_the_model_shards_on_the_long_context_grid():
+    cases = OP_PLANS["msa_context_module"].expand()
+    assert {case.model_path for case in cases} == {"MiniMaxAI/MiniMax-M3"}
+    # MiniMax-M3's 64 heads at TP 1 to 16.
+    assert {case.num_heads for case in cases} == {64, 32, 16, 8, 4}
+    dsa = {
+        (case.batch_size, case.seq_len, case.prefix_len)
+        for case in OP_PLANS["dsa_context_module"].expand()
+        if case.model_path == "zai-org/GLM-5.2"
+    }
+    # Both 1M-context models share the long-context grid.
+    assert {(case.batch_size, case.seq_len, case.prefix_len) for case in cases} == dsa
+    decode = {(case.batch_size, case.seq_len) for case in OP_PLANS["msa_generation_module"].expand()}
+    assert {(b, s) for b in (1, 2, 4) for s in (262144, 524288, 1048575)} <= decode
+
+
+def test_trtllm_msa_stops_at_a_32k_prefix_where_it_runs_the_triton_reference():
+    def prefixes(sm):
+        return {case.prefix_len for case in plan("msa_context_module", "trtllm", sm).cases}
+
+    for sm in (89, 90, 120):
+        assert max(prefixes(sm)) == 32768
+    for sm in (100, 103):
+        assert max(prefixes(sm)) == 1048575
+    assert max(case.prefix_len for case in plan("msa_context_module", "vllm", 90).cases) == 1048575
+
+
+def test_msa_rows_carry_their_points():
+    trtllm = plan("msa_context_module", "trtllm", 100)
+    # run_msa_module_series_worker: points, then run_msa_module_worker's other fields.
+    assert {len(row) for row in trtllm.rows} == {7}
+    assert sum(len(row[0]) for row in trtllm.rows) == len(trtllm.cases)
+    # vLLM times one point per task: the case is run_msa_module_worker's fields.
+    vllm = plan("msa_generation_module", "vllm", 100)
+    assert vllm.rows == vllm.cases
+    # SGLang: one ModelRunner per context batch, or one for every decode point, with the
+    # target TP of the heads and the [batch, seq_len, prefix_len] points.
+    for op, batches in (("msa_context_module", {1, 2, 4, 8, 16, 32, 64, 128, 256}), ("msa_generation_module", {0})):
+        sglang = plan(op, "sglang", 100)
+        assert {row[1] for row in sglang.rows} == batches
+        assert {(row[2], row[7]) for row in sglang.rows} == {(64, 1), (32, 2), (16, 4), (8, 8), (4, 16)}
+        points = [tuple(point) for row in sglang.rows for point in row[8]]
+        assert sorted(points) == sorted((c.batch_size, c.seq_len, c.prefix_len) for c in sglang.cases)
+        for row in sglang.rows:
+            assert row[8] == sorted(row[8], key=lambda point: (point[2], point[0], point[1]))
 
 
 def test_sglang_dsa_dispatch_is_the_backend_serving_picks():

@@ -73,13 +73,9 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from collector.case_generator import (
-    get_mla_module_model_specs,
-    get_mla_module_precision_specs,
-    get_mla_module_sweep_spec,
-    get_msa_head_counts,
-)
+from collector.case_generator import get_mla_module_model_specs
 from collector.helper import _resolve_local_model_path, benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan, plan_cases
 from collector.registry_types import PerfFile
 from collector.vllm.utils import (
     BatchSpec,
@@ -99,25 +95,9 @@ if "minimax_m3" not in _CONFIG_REGISTRY:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _get_precision_combos(phase: str):
-    """(compute_dtype, kv_cache_dtype, gemm_type) triples for MSA, consumed
-    from the declared precision policy in cases/base_ops/mla_module.yaml
-    (mla_module_vllm module_precision_combos, attention_types [msa]) — the
-    single declaration surface for sweep density and SM floors (fp8-KV carries
-    NO SM floor for MSA, unlike the MLA/DSA combos) — serving
-    citations live on the YAML combos. Never re-implement SM gates here
-    (review 4969690316 S4)."""
-    return [
-        (spec.compute_dtype, spec.kv_cache_dtype, spec.gemm_type)
-        for spec in get_mla_module_precision_specs(
-            "vllm", phase=phase, sm_version=get_sm_version(), attention_type="msa"
-        )
-    ]
-
-
 # Native MiniMax-M3 GQA ratio: 64 q heads / 4 kv heads (bundled config
 # num_attention_heads / num_key_value_heads). Used by the TP-shard emulation
-# and by the generation-time memory-feasibility filter below.
+# and to refuse generation points whose KV cache cannot fit the device.
 _NATIVE_GQA_RATIO = 16
 _M3_HEAD_DIM = 128
 _M3_INDEX_DIM = 128
@@ -129,16 +109,6 @@ def _emulated_kv_heads(num_heads: int) -> int:
     return max(1, num_heads // _NATIVE_GQA_RATIO)
 
 
-def _device_total_memory_bytes():
-    """Live device memory for the generation-time memory-feasibility filter."""
-    try:
-        if torch.cuda.is_available():
-            return torch.cuda.get_device_properties(0).total_memory
-    except Exception:
-        pass
-    return None
-
-
 def _generation_kv_footprint_bytes(total_tokens: int, num_heads: int, kv_cache_dtype: str) -> int:
     """Lower bound of a generation case's peak device footprint.
 
@@ -147,8 +117,8 @@ def _generation_kv_footprint_bytes(total_tokens: int, num_heads: int, kv_cache_d
     storage — STR_DTYPE_TO_TORCH_DTYPE["fp8"], utils/torch_utils.py:38
     @v0.24.0) plus the indexer's key side-cache (128 elems/token, always
     bf16). Module weights, metadata, and the top-k buffer are deliberately
-    excluded so the estimate stays a provable lower bound: a case this
-    filter drops cannot fit on the device, on any platform.
+    excluded so the estimate stays a provable lower bound: a case refused on
+    it cannot fit on the device, on any platform.
     """
     kv_heads = _emulated_kv_heads(num_heads)
     main_bytes_per_elem = 1 if kv_cache_dtype == "fp8" else 2
@@ -156,102 +126,28 @@ def _generation_kv_footprint_bytes(total_tokens: int, num_heads: int, kv_cache_d
     return total_tokens * entry_bytes
 
 
-def get_context_test_cases():
-    """Context-phase test cases.
+def _kv_does_not_fit(total_tokens: int, num_heads: int, kv_cache_dtype: str, total_memory: int) -> str | None:
+    """Why a generation point's KV cache cannot fit the device, or None when it can.
 
-    Returns list of [seq_len, batch_size, num_heads, kv_cache_dtype,
-                     compute_dtype, gemm_type, prefix_len].
+    The module plans do not depend on the device, so the run refuses such a
+    point before allocating it.
     """
-    cases = []
-    sweep = get_mla_module_sweep_spec("vllm")
-    head_counts = get_msa_head_counts("vllm")  # native // tp of the declared shards, not the shared head grid
-    for compute_dtype, kv_dtype, gemm_type in _get_precision_combos("context"):
-        for num_heads in head_counts:
-            for b in sweep.context_batch_sizes:
-                for s in sweep.context_sequence_lengths:
-                    if b * s > sweep.context_max_tokens:
-                        continue
-                    if (
-                        sweep.context_large_sequence_min
-                        and s >= sweep.context_large_sequence_min
-                        and b > sweep.context_large_sequence_max_batch_size
-                    ):
-                        continue
-                    for prefix_len in sweep.context_prefix_lengths:
-                        cases.append([s, b, num_heads, kv_dtype, compute_dtype, gemm_type, prefix_len])
-    return cases
-
-
-def get_generation_test_cases():
-    """Generation-phase test cases.
-
-    Returns list of [kv_cache_len, batch_size, num_heads, kv_cache_dtype,
-                     compute_dtype, gemm_type].
-
-    Applies the one sanctioned in-collector filter (layer_permissions.md):
-    a generation-time memory-feasibility drop, size vs live device capacity
-    only, counted and logged.
-    """
-    cases = []
-    sweep = get_mla_module_sweep_spec("vllm")
-    total_memory = _device_total_memory_bytes()
-    budget = None if total_memory is None else int(total_memory * _MEMORY_BUDGET_SAFETY_FACTOR)
-    considered = 0
-    dropped = 0
-    head_counts = get_msa_head_counts("vllm")
-    for compute_dtype, kv_dtype, gemm_type in _get_precision_combos("generation"):
-        for num_heads in head_counts:
-            for b in sweep.generation_batch_sizes:
-                for s in sweep.generation_sequence_lengths:
-                    if b * s > sweep.generation_max_tokens:
-                        continue
-                    if (
-                        sweep.generation_large_sequence_min
-                        and s >= sweep.generation_large_sequence_min
-                        and b > sweep.generation_large_sequence_max_batch_size
-                    ):
-                        continue
-                    considered += 1
-                    if budget is not None and _generation_kv_footprint_bytes(b * s, num_heads, kv_dtype) > budget:
-                        dropped += 1
-                        continue
-                    cases.append([s, b, num_heads, kv_dtype, compute_dtype, gemm_type])
-    if dropped:
-        print(
-            f"msa_generation_module: dropped {dropped}/{considered} cases "
-            f"(memory budget, device={total_memory / 2**30:.0f}GiB)"
-        )
-    return cases
-
-
-def _build_module_test_cases(mode: str):
-    """Build module-level test cases for one phase.
-
-    Output test case format is positional args for run_msa_module_worker:
-    [seq_len, batch_size, num_heads, kv_cache_dtype, compute_dtype, gemm_type,
-     model_path (, prefix_len)]
-    """
-    base_cases = get_context_test_cases() if mode == "context" else get_generation_test_cases()
-    model_specs = get_mla_module_model_specs(attention_type="msa", backend="vllm")
-    cases = []
-    for model_spec in model_specs:
-        for base_case in base_cases:
-            s, b, h, kv_dtype, compute_dtype, gemm_type, *rest = base_case
-            case = [s, b, h, kv_dtype, compute_dtype, gemm_type, model_spec.model_path]
-            if rest:
-                case.append(rest[0])
-            cases.append(case)
-    return cases
+    needed = _generation_kv_footprint_bytes(total_tokens, num_heads, kv_cache_dtype)
+    allowed = int(total_memory * _MEMORY_BUDGET_SAFETY_FACTOR)
+    if needed <= allowed:
+        return None
+    return (
+        f"FIXME(kernel-limit): does not fit: the KV cache needs {needed / 2**30:.1f} GiB, "
+        f"the device allows {allowed / 2**30:.1f} GiB ({_MEMORY_BUDGET_SAFETY_FACTOR:g} of its memory)"
+    )
 
 
 def get_msa_context_module_test_cases():
-    """collect.py entrypoint for MSA context module collection."""
-    return _build_module_test_cases(mode="context")
+    return plan_cases("msa_context_module", "vllm", get_sm_version())
 
 
 def get_msa_generation_module_test_cases():
-    """collect.py entrypoint for MSA generation module collection."""
-    return _build_module_test_cases(mode="generation")
+    return plan_cases("msa_generation_module", "vllm", get_sm_version())
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -723,18 +619,25 @@ def run_msa_module(
     if kv_cache_dtype not in ("bfloat16", "fp8") or compute_dtype != "bfloat16":
         raise ValueError(
             f"MSA combos are declared with bf16 compute and bf16/fp8 KV cache at "
-            f"vllm {vllm_version} (see _get_precision_combos); "
+            f"vllm {vllm_version}; "
             f"got compute={compute_dtype}, kv={kv_cache_dtype}"
         )
+
+    is_context = "context" in perf_filename
+    prefix_len = int(prefix_len) if is_context else 0
+    phase = "context" if is_context else "generation"
+    if not is_context:
+        # The plan does not depend on the device: refuse a point whose KV cache cannot fit it.
+        reason = _kv_does_not_fit(
+            batch_size * seq_len, num_heads, kv_cache_dtype, torch.cuda.get_device_properties(device).total_memory
+        )
+        if reason is not None:
+            raise RuntimeError(reason)
 
     setup_distributed(device)
     torch.cuda.set_device(device)
     enable_engine_fused_ops()
     init_workspace_manager(torch.device(device))
-
-    is_context = "context" in perf_filename
-    prefix_len = int(prefix_len) if is_context else 0
-    phase = "context" if is_context else "generation"
     print(
         f"\n[MSA module] {phase} b={batch_size}, s={seq_len}, "
         f"prefix={prefix_len}, heads={num_heads}, gemm={gemm_type}, "
@@ -1033,73 +936,40 @@ def main():
     parser.add_argument("--quick", action="store_true")
     args = parser.parse_args()
 
-    model_specs_to_run = (
-        [spec for spec in all_model_specs if spec.model_path == args.model] if args.model else all_model_specs
-    )
-
-    for model_spec in model_specs_to_run:
-        model_path = model_spec.model_path
-        print(f"\n{'=' * 60}\nModel: {model_path}  |  Attention: MSA\n{'=' * 60}")
-
-        perf_filename = _perf_file_for(args.mode)
-
-        if args.quick:
-            run_msa_module(
-                seq_len=args.seq_len or 2048,
-                batch_size=args.batch_size or 4,
-                num_heads=args.num_heads or 64,
-                kv_cache_dtype=args.kv_cache_dtype or "bfloat16",
-                compute_dtype="bfloat16",
-                gemm_type=args.gemm_type or "bfloat16",
-                prefix_len=args.prefix_len or 0,
-                perf_filename=perf_filename,
-                model_path=model_path,
-                device=args.device,
-            )
-            continue
-
-        test_cases = get_context_test_cases() if args.mode == "context" else get_generation_test_cases()
-        if args.num_heads is not None:
-            test_cases = [tc for tc in test_cases if tc[2] == args.num_heads]
-        if args.kv_cache_dtype is not None:
-            test_cases = [tc for tc in test_cases if tc[3] == args.kv_cache_dtype]
-        if args.gemm_type is not None:
-            test_cases = [tc for tc in test_cases if tc[5] == args.gemm_type]
-        # Honor the shape options outside --quick too, so a reproduction
-        # command narrows to the named case instead of silently running the
-        # whole sweep.
-        if args.seq_len is not None:
-            test_cases = [tc for tc in test_cases if tc[0] == args.seq_len]
-        if args.batch_size is not None:
-            test_cases = [tc for tc in test_cases if tc[1] == args.batch_size]
-        if args.prefix_len is not None:
-            test_cases = [tc for tc in test_cases if (tc[6] if len(tc) > 6 else 0) == args.prefix_len]
-
+    perf_filename = _perf_file_for(args.mode)
+    if not args.quick:
+        # The full sweep is the op plan's cases; --model targets that checkpoint, as collect.py --model-path does.
+        if args.model:
+            os.environ["COLLECTOR_MODEL_PATH"] = args.model
+        test_cases = [
+            case
+            for case in plan(f"msa_{args.mode}_module", "vllm", get_sm_version()).rows
+            if (args.num_heads is None or case.num_heads == args.num_heads)
+            and (args.kv_cache_dtype is None or case.kv_cache_dtype == args.kv_cache_dtype)
+            and (args.gemm_type is None or case.gemm_type == args.gemm_type)
+            and (args.seq_len is None or case.seq_len == args.seq_len)
+            and (args.batch_size is None or case.batch_size == args.batch_size)
+            and (args.prefix_len is None or case.prefix_len == args.prefix_len)
+        ]
         print(f"Running {len(test_cases)} {args.mode} MSA module test cases...")
         num_failed = 0
-        for i, tc in enumerate(test_cases):
-            s, b, h, kv_dtype, compute, gemm, *rest = tc
+        for i, case in enumerate(test_cases):
             print(f"[{i + 1}/{len(test_cases)}]", end="")
             try:
                 run_msa_module(
-                    seq_len=s,
-                    batch_size=b,
-                    num_heads=h,
-                    kv_cache_dtype=kv_dtype,
-                    compute_dtype=compute,
-                    gemm_type=gemm,
-                    prefix_len=rest[0] if rest else 0,
+                    seq_len=case.seq_len,
+                    batch_size=case.batch_size,
+                    num_heads=case.num_heads,
+                    kv_cache_dtype=case.kv_cache_dtype,
+                    compute_dtype=case.compute_dtype,
+                    gemm_type=case.gemm_type,
+                    prefix_len=case.prefix_len,
                     perf_filename=perf_filename,
-                    model_path=model_path,
+                    model_path=case.model_path,
                     device=args.device,
                 )
-            except torch.cuda.OutOfMemoryError:
-                print(f"  OOM: b={b}, s={s}, heads={h}, gemm={gemm}, kv={kv_dtype}")
-                num_failed += 1
-                torch.cuda.empty_cache()
-                gc.collect()
             except Exception as e:
-                print(f"  FAILED: b={b}, s={s}, heads={h}, gemm={gemm}, kv={kv_dtype}: {e}")
+                print(f"  FAILED: {case}: {e}")
                 traceback.print_exc()
                 num_failed += 1
                 torch.cuda.empty_cache()
@@ -1110,6 +980,26 @@ def main():
             # non-zero so a failed run is visible without scraping the log.
             print(f"{num_failed}/{len(test_cases)} cases failed")
             sys.exit(1)
+        return
+
+    model_specs_to_run = (
+        [spec for spec in all_model_specs if spec.model_path == args.model] if args.model else all_model_specs
+    )
+    for model_spec in model_specs_to_run:
+        model_path = model_spec.model_path
+        print(f"\n{'=' * 60}\nModel: {model_path}  |  Attention: MSA\n{'=' * 60}")
+        run_msa_module(
+            seq_len=args.seq_len or 2048,
+            batch_size=args.batch_size or 4,
+            num_heads=args.num_heads or 64,
+            kv_cache_dtype=args.kv_cache_dtype or "bfloat16",
+            compute_dtype="bfloat16",
+            gemm_type=args.gemm_type or "bfloat16",
+            prefix_len=args.prefix_len or 0,
+            perf_filename=perf_filename,
+            model_path=model_path,
+            device=args.device,
+        )
 
 
 if __name__ == "__main__":

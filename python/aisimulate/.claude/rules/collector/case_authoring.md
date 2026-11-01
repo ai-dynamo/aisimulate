@@ -122,6 +122,15 @@ kernel belongs in the case or the dispatch, not in rows. A row may be an
 `{id, params}` mapping (mHC): a run records it under its `id`, and
 `--plan-only` hashes that `id`.
 
+A backend that times several cases on one module build declares
+`batch_rows` instead: tasks of (row, the cases it times). A row lists its
+points, so the worker never derives them again, and every kept case is timed
+by exactly one row. A plan does not depend on the device: the worker refuses
+a point the device cannot run, such as a prefill longer than the chunk
+serving uses there or a KV cache larger than its memory, before allocating
+it, and raises its `FIXME(kernel-limit)` reason. Ops on a plan therefore use
+no generation-time memory filter (`layer_permissions.md`).
+
 Planning imports no framework, so `--plan-only` runs on any CPU;
 `test_op_plans.py` checks that. Rows may build framework objects (MLA's
 torch or TensorRT-LLM dtypes); they are built only when the getter runs, so

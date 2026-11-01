@@ -984,12 +984,10 @@ def test_kimi_k3_scoped_run_activates_moe_for_sglang_and_vllm_only():
 def test_module_prefix_context_sweeps_are_yaml_backed():
     from collector.case_generator import get_mla_module_sweep_spec
 
-    assert get_mla_module_sweep_spec("plan").context_dsa_prefix_lengths == [
+    assert get_mla_module_sweep_spec("plan").context_prefix_lengths == [
         0, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048575
     ]  # fmt: skip
     assert 128 in get_mla_module_sweep_spec("sglang").context_prefix_lengths
-    assert get_mla_module_sweep_spec("trtllm").context_prefix_lengths == [0, 128]
-    assert get_mla_module_sweep_spec("vllm").context_prefix_lengths == [0, 128]
 
 
 def test_vllm_moe_quantization_metadata_is_yaml_backed():
@@ -1121,12 +1119,6 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
     assert sweep.top_level_head_counts == [128, 64, 32, 16, 8]
     assert sweep.module_precision_combos == [("bfloat16", "bfloat16", "bfloat16")]
 
-    trtllm_sweep = get_mla_module_sweep_spec("trtllm")
-    assert trtllm_sweep.context_batch_sizes == [1, 2, 4, 8, 16, 32, 64, 128, 256]
-    assert trtllm_sweep.context_sequence_lengths[-1] == 32768
-    assert trtllm_sweep.generation_sequence_lengths[-1] == 131072
-    assert trtllm_sweep.generation_max_tokens == 33554432
-
     assert [
         (spec.compute_dtype, spec.kv_cache_dtype, spec.gemm_type)
         for spec in get_mla_module_precision_specs("sglang", phase="context", sm_version=90)
@@ -1136,39 +1128,24 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
         ("bfloat16", "bfloat16", "fp8_block"),
         ("bfloat16", "fp8", "fp8_block"),
     ]
-    # The vLLM section declares only the MSA module's combos; the MLA and DSA
-    # module plans read the shared plan section.
-    assert [
-        (spec.compute_dtype, spec.kv_cache_dtype, spec.gemm_type)
-        for spec in get_mla_module_precision_specs("vllm", phase="generation", sm_version=90)
-    ] == [
-        ("bfloat16", "bfloat16", "bfloat16"),
-        ("bfloat16", "fp8", "bfloat16"),
-        ("bfloat16", "bfloat16", "fp8_block"),
-        ("bfloat16", "fp8", "fp8_block"),
-    ]
     assert get_mla_module_sweep_spec("sglang").context_sequence_lengths[-2:] == [8192, 16384]
 
-    vllm_sweep = get_mla_module_sweep_spec("vllm")
-    assert vllm_sweep.context_sequence_lengths[-1] == 32768
-    assert vllm_sweep.generation_sequence_lengths[-1] == 131072
-    assert vllm_sweep.generation_max_tokens == 33554432
-
     # FP8 prefill-query compute exists for the dense-MLA prefill path only: the
-    # sparse DSA builders have no prefill-query quantization concept, so the fp8
-    # compute combos are scoped attention_types: [mla] and the DSA plan does not
-    # expand them.
-    assert [
-        (spec.compute_dtype, spec.kv_cache_dtype, spec.gemm_type)
-        for spec in get_mla_module_precision_specs("plan", phase="context", attention_type="dsa")
-    ] == [
-        ("bfloat16", "bfloat16", "bfloat16"),
-        ("bfloat16", "fp8", "bfloat16"),
-        ("bfloat16", "bfloat16", "fp8_block"),
-        ("bfloat16", "fp8", "fp8_block"),
-        ("bfloat16", "bfloat16", "nvfp4"),
-        ("bfloat16", "fp8", "nvfp4"),
-    ]
+    # sparse DSA and MSA builders have no prefill-query quantization concept, so
+    # the fp8 compute combos are scoped attention_types: [mla] and the DSA and
+    # MSA plans do not expand them.
+    for attention_type in ("dsa", "msa"):
+        assert [
+            (spec.compute_dtype, spec.kv_cache_dtype, spec.gemm_type)
+            for spec in get_mla_module_precision_specs("plan", phase="context", attention_type=attention_type)
+        ] == [
+            ("bfloat16", "bfloat16", "bfloat16"),
+            ("bfloat16", "fp8", "bfloat16"),
+            ("bfloat16", "bfloat16", "fp8_block"),
+            ("bfloat16", "fp8", "fp8_block"),
+            ("bfloat16", "bfloat16", "nvfp4"),
+            ("bfloat16", "fp8", "nvfp4"),
+        ]
     assert [
         (spec.compute_dtype, spec.kv_cache_dtype, spec.gemm_type)
         for spec in get_mla_module_precision_specs("plan", phase="context", attention_type="mla")
@@ -1185,7 +1162,7 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
     ]
 
     with pytest.raises(ValueError, match="attention_type"):
-        get_mla_module_precision_specs("vllm", phase="context", sm_version=100, attention_type="dense")
+        get_mla_module_precision_specs("plan", phase="context", sm_version=100, attention_type="dense")
 
     assert {spec.model_path for spec in dsa_specs} == {
         "deepseek-ai/DeepSeek-V3.2",
@@ -1228,65 +1205,6 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
         ("dsa", "deepseek-ai/DeepSeek-V3.2", "DeepseekV32ForCausalLM"),
         ("dsa", "zai-org/GLM-5", "GlmMoeDsaForCausalLM"),
         ("msa", "MiniMaxAI/MiniMax-M3", "MiniMaxM3ForCausalLM"),
-    }
-
-
-def test_msa_precision_combos_match_declared_specs():
-    """The MSA collectors consume the YAML-declared precision policy
-    (mla_module.yaml module_precision_combos, attention_types [msa]) instead
-    of re-implementing SM gates in Python (review 4969690316 S4). Assert the
-    emitted (compute, kv, gemm) sets equal the declared specs across the SM
-    matrix, and pin the declared policy itself: trtllm is bf16-KV only with
-    fp8_block from SM89 and nvfp4 from SM100; vLLM pairs every gemm tier
-    with both KV dtypes (fp8-KV has NO SM floor for MSA — vLLM's M3 sparse
-    backend accepts an fp8 main KV cache on every SM, supported_kv_cache_
-    dtypes common/sparse_attention.py:56-62@v0.24.0)."""
-    from collector.case_generator import get_mla_module_precision_specs
-
-    def emitted(source_rel, sm, phase):
-        source_path = REPO_ROOT / source_rel
-        tree = ast.parse(source_path.read_text(), filename=str(source_path))
-        helper = next(
-            node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_get_precision_combos"
-        )
-        namespace = {
-            "get_sm_version": lambda: sm,
-            "get_mla_module_precision_specs": get_mla_module_precision_specs,
-        }
-        exec(compile(ast.Module(body=[helper], type_ignores=[]), str(source_path), "exec"), namespace)
-        return set(namespace["_get_precision_combos"](phase))
-
-    def declared(fw, sm, phase):
-        return {
-            (spec.compute_dtype, spec.kv_cache_dtype, spec.gemm_type)
-            for spec in get_mla_module_precision_specs(fw, phase=phase, sm_version=sm, attention_type="msa")
-        }
-
-    for fw, source_rel in (
-        ("trtllm", "collector/trtllm/collect_msa_module.py"),
-        ("vllm", "collector/vllm/collect_msa_module.py"),
-    ):
-        for sm in (89, 90, 100, 103, 120):
-            for phase in ("context", "generation"):
-                assert emitted(source_rel, sm, phase) == declared(fw, sm, phase), (fw, sm, phase)
-
-    trtllm_sm90 = declared("trtllm", 90, "context")
-    assert trtllm_sm90 == {
-        ("bfloat16", "bfloat16", "bfloat16"),
-        ("bfloat16", "bfloat16", "fp8_block"),
-    }
-    assert declared("trtllm", 100, "context") == trtllm_sm90 | {("bfloat16", "bfloat16", "nvfp4")}
-
-    vllm_sm89 = declared("vllm", 89, "context")
-    assert vllm_sm89 == {
-        ("bfloat16", "bfloat16", "bfloat16"),
-        ("bfloat16", "fp8", "bfloat16"),
-        ("bfloat16", "bfloat16", "fp8_block"),
-        ("bfloat16", "fp8", "fp8_block"),
-    }
-    assert declared("vllm", 100, "context") == vllm_sm89 | {
-        ("bfloat16", "bfloat16", "nvfp4"),
-        ("bfloat16", "fp8", "nvfp4"),
     }
 
 
@@ -2028,16 +1946,3 @@ def test_nvfp4_checkpoint_targets_msa_module_specs(monkeypatch):
         assert all(s.model_path == "MiniMaxAI/MiniMax-M3" for s in specs), (
             "alias rows must stay keyed to the canonical model path"
         )
-
-
-def test_msa_head_axis_derives_from_declared_shards():
-    """MSA is one fixed geometry (MiniMax-M3 64q/4kv/4idx): the collectors sweep
-    native // tp for the model row's tensor_parallel_sizes, never the shared
-    GQA-style head grid (owner decision 2026-09-29; TP 16 is the ceiling)."""
-    from collector.case_generator import get_msa_head_counts
-
-    for backend in ("vllm", "trtllm", "sglang"):
-        heads = get_msa_head_counts(backend)
-        assert heads == [64, 32, 16, 8, 4], (backend, heads)
-        # every derived shard keeps the index-head count a power of two
-        assert all((max(1, h // 16) & (max(1, h // 16) - 1)) == 0 for h in heads)

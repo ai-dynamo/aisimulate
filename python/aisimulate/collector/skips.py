@@ -53,6 +53,7 @@ _DSV4_ATTENTION_OPS = [
     "dsv4_hca_context_module",
     "dsv4_hca_generation_module",
 ]
+_MSA_MODULE_OPS = ["msa_context_module", "msa_generation_module"]
 _ATTENTION_OPS = ["attention_context", "attention_generation"]
 
 SKIPS: list[dict] = [
@@ -139,6 +140,26 @@ SKIPS: list[dict] = [
     # (runtime_limits.dsa_indexer_prefill_shape_is_supported), and the sticky CUDA
     # error fails the rest of the task.
     {"backend": "sglang", "op": ["dsa_context_module", "dsa_context_module_skip_indexer"], "seq_len": 1},
+    # TRT-LLM's MiniMax-M3 sparse attention takes a BF16 KV cache only
+    # (run_msa_module), so every FP8-KV case would fail.
+    {"backend": "trtllm", "op": _MSA_MODULE_OPS, "kv_cache_dtype": "fp8"},
+    # TRT-LLM runs MSA off SM100/103 on its Triton reference (triton_backend.py),
+    # a masked dense FP32 attention whose cost grows with isl x (isl + prefix): an
+    # isl-32768 prefill takes 18 s per forward on h200, and a longer one runs out of
+    # memory on its index scores. A 16K chunk stays within that up to a 32K prefix,
+    # so these SMs stop there.
+    {
+        "backend": "trtllm",
+        "op": "msa_context_module",
+        "sm": [80, 86, 89, 90, 120],
+        "prefix_len": lambda prefix_len: prefix_len > 32768,
+    },
+    # SGLang loads MiniMax-M3 as its BF16 checkpoint, and SGLang quantizes M3
+    # projections only to MXFP8, so the collector refuses fp8_block and nvfp4 cases.
+    {"backend": "sglang", "op": _MSA_MODULE_OPS, "gemm_type": ["fp8_block", "nvfp4"]},
+    # SGLang: FP8-KV MSA modules on SM89 were not collected before, and this keeps
+    # that coverage.
+    {"backend": "sglang", "op": _MSA_MODULE_OPS, "kv_cache_dtype": "fp8", "sm": [89]},
     # SGLang: the attention collector maps a serving backend for SM89 and newer
     # only (SGLang's default attention backend table), so every SM80/86 case
     # would fail.

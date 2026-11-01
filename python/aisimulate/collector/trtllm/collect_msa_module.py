@@ -111,12 +111,7 @@ if _REPO_ROOT not in sys.path:
 # name) (config_utils.py:493-498@1.3.0rc20), so expose the base class there
 # before registering the model_type.
 import tensorrt_llm._torch.configs as _trtllm_configs
-from collector.case_generator import (
-    get_mla_module_model_specs,
-    get_mla_module_precision_specs,
-    get_mla_module_sweep_spec,
-    get_msa_head_counts,
-)
+from collector.case_generator import get_mla_module_model_specs
 from collector.helper import (
     PeriodicGarbageCollector,
     _resolve_local_model_path,
@@ -124,6 +119,7 @@ from collector.helper import (
     get_sm_version,
     log_perf,
 )
+from collector.op_plans import plan, plan_cases
 from collector.registry_types import PerfFile
 from collector.trtllm.module_series import run_points
 
@@ -138,132 +134,23 @@ if "minimax_m3" not in _CONFIG_REGISTRY:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _get_precision_combos(phase: str):
-    """(compute_dtype, kv_cache_dtype, gemm_type) triples for MSA, consumed
-    from the declared precision policy in cases/base_ops/mla_module.yaml
-    (mla_module_trtllm module_precision_combos, attention_types [msa]) — the
-    single declaration surface for sweep density and SM floors — serving
-    citations live on the YAML combos. Never re-implement SM gates here
-    (review 4969690316 S4)."""
-    return [
-        (spec.compute_dtype, spec.kv_cache_dtype, spec.gemm_type)
-        for spec in get_mla_module_precision_specs(
-            "trtllm", phase=phase, sm_version=get_sm_version(), attention_type="msa"
-        )
-    ]
-
-
 def _msa_implementation(sm_version: int) -> str:
     """Which MiniMax-M3 sparse implementation TRT-LLM can run on this SM.
 
     "msa" = the fmha_sm100 kernels, hard-gated to the SM100 family
-    (msa_availability.py:ensure_msa_available@1.3.0rc29 raises off SM100/103,
-    SM120 included); everything else runs the Triton reference
-    (triton_backend.py). Single source of truth for the plan-time budget
-    below and the layer construction in build_msa_layer.
+    (msa_availability.py:ensure_msa_available raises off SM100/103, SM120
+    included); everything else runs the Triton reference (triton_backend.py),
+    whose long-prefix points skips.py leaves out.
     """
     return "msa" if sm_version in (100, 103) else "triton"
 
 
-def get_context_test_cases():
-    """Context-phase test cases.
-
-    Returns list of [seq_len, batch_size, num_heads, kv_cache_dtype,
-                     compute_dtype, gemm_type, prefix_len].
-    """
-    cases = []
-    sweep = get_mla_module_sweep_spec("trtllm")
-    head_counts = get_msa_head_counts("trtllm")  # native // tp of the declared shards, not the shared head grid
-    # Declared budget for the Triton reference implementation
-    # (mla_module.yaml mla_module_trtllm.context.msa_triton_max_tokens): its
-    # masked-dense FP32 prefill is quadratic per sequence (24.5 s per forward
-    # at 64 heads / isl 32768 on rtxpro6000) and OOMs at b*isl=131072, so the
-    # SMs that only have it stop at 32K tokens; fmha_sm100 keeps the shared cap.
-    sm_version = get_sm_version()
-    max_tokens = sweep.context_max_tokens
-    triton_max_tokens = sweep.context_msa_triton_max_tokens
-    if triton_max_tokens and _msa_implementation(sm_version) == "triton":
-        max_tokens = min(max_tokens, triton_max_tokens)
-    dropped_triton_budget = 0
-    for compute_dtype, kv_dtype, gemm_type in _get_precision_combos("context"):
-        for num_heads in head_counts:
-            for b in sweep.context_batch_sizes:
-                for s in sweep.context_sequence_lengths:
-                    if b * s > sweep.context_max_tokens:
-                        continue
-                    if b * s > max_tokens:
-                        dropped_triton_budget += len(sweep.context_prefix_lengths)
-                        continue
-                    if (
-                        sweep.context_large_sequence_min
-                        and s >= sweep.context_large_sequence_min
-                        and b > sweep.context_large_sequence_max_batch_size
-                    ):
-                        continue
-                    for prefix_len in sweep.context_prefix_lengths:
-                        cases.append([s, b, num_heads, kv_dtype, compute_dtype, gemm_type, prefix_len])
-    if dropped_triton_budget:
-        print(
-            f"[trtllm-msa-module-cases] context: dropped {dropped_triton_budget} cases with batch*isl > "
-            f"{max_tokens} (SM{sm_version} runs the Triton reference implementation; "
-            "mla_module_trtllm.context.msa_triton_max_tokens)"
-        )
-    return cases
-
-
-def get_generation_test_cases():
-    """Generation-phase test cases.
-
-    Returns list of [kv_cache_len, batch_size, num_heads, kv_cache_dtype,
-                     compute_dtype, gemm_type].
-    """
-    cases = []
-    sweep = get_mla_module_sweep_spec("trtllm")
-    head_counts = get_msa_head_counts("trtllm")
-    for compute_dtype, kv_dtype, gemm_type in _get_precision_combos("generation"):
-        for num_heads in head_counts:
-            for b in sweep.generation_batch_sizes:
-                for s in sweep.generation_sequence_lengths:
-                    if b * s > sweep.generation_max_tokens:
-                        continue
-                    if (
-                        sweep.generation_large_sequence_min
-                        and s >= sweep.generation_large_sequence_min
-                        and b > sweep.generation_large_sequence_max_batch_size
-                    ):
-                        continue
-                    cases.append([s, b, num_heads, kv_dtype, compute_dtype, gemm_type])
-    return cases
-
-
-def _build_module_test_cases(mode: str):
-    """Build module-level test cases for one phase.
-
-    Output test case format is positional args for run_msa_module_worker:
-    [seq_len, batch_size, num_heads, kv_cache_dtype, compute_dtype, gemm_type,
-     model_path (, prefix_len)]
-    """
-    base_cases = get_context_test_cases() if mode == "context" else get_generation_test_cases()
-    model_specs = get_mla_module_model_specs(attention_type="msa", backend="trtllm")
-    cases = []
-    for model_spec in model_specs:
-        for base_case in base_cases:
-            s, b, h, kv_dtype, compute_dtype, gemm_type, *rest = base_case
-            case = [s, b, h, kv_dtype, compute_dtype, gemm_type, model_spec.model_path]
-            if rest:
-                case.append(rest[0])
-            cases.append(case)
-    return cases
-
-
 def get_msa_context_module_test_cases():
-    """collect.py entrypoint for MSA context module collection."""
-    return _build_module_test_cases(mode="context")
+    return plan_cases("msa_context_module", "trtllm", get_sm_version())
 
 
 def get_msa_generation_module_test_cases():
-    """collect.py entrypoint for MSA generation module collection."""
-    return _build_module_test_cases(mode="generation")
+    return plan_cases("msa_generation_module", "trtllm", get_sm_version())
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -299,9 +186,8 @@ def _set_quant_config(model_config, new_qc):
 def _apply_gemm_type_quant(model_config, gemm_type: str):
     """Apply GEMM quantization to model_config.quant_config.
 
-    M3 sparse attention keeps the KV cache in bf16 (see
-    _get_precision_combos), so kv_cache_quant_algo stays None on every
-    combo. The index_q/index_k projections are built with
+    M3 sparse attention keeps the KV cache in bf16 (run_msa_module), so
+    kv_cache_quant_algo stays None on every combo. The index_q/index_k projections are built with
     ``quant_config=None`` regardless (modeling_minimaxm3.py:637-660
     @1.3.0rc20), so GEMM quant here covers qkv_proj / o_proj only —
     matching what serving quantizes for these checkpoints.
@@ -898,7 +784,7 @@ def run_msa_module(
     if kv_cache_dtype != "bfloat16" or compute_dtype != "bfloat16":
         raise ValueError(
             f"M3 sparse attention at {tensorrt_llm.__version__} is bf16-only "
-            f"(see _get_precision_combos); got compute={compute_dtype}, kv={kv_cache_dtype}"
+            f"(skips.py leaves FP8-KV cases out); got compute={compute_dtype}, kv={kv_cache_dtype}"
         )
 
     is_context = "context" in perf_filename
@@ -1201,71 +1087,58 @@ def main():
     parser.add_argument("--quick", action="store_true")
     args = parser.parse_args()
 
-    model_specs_to_run = (
-        [spec for spec in all_model_specs if spec.model_path == args.model] if args.model else all_model_specs
-    )
-
-    for model_spec in model_specs_to_run:
-        model_path = model_spec.model_path
-        print(f"\n{'=' * 60}\nModel: {model_path}  |  Attention: MSA\n{'=' * 60}")
-
-        perf_filename = _perf_file_for(args.mode)
-
-        if args.quick:
-            run_msa_module(
-                seq_len=args.seq_len or 2048,
-                batch_size=args.batch_size or 4,
-                num_heads=args.num_heads or 64,
-                kv_cache_dtype="bfloat16",
-                compute_dtype="bfloat16",
-                gemm_type=args.gemm_type or "bfloat16",
-                prefix_len=args.prefix_len,
-                perf_filename=perf_filename,
-                model_path=model_path,
-                device=args.device,
-            )
-            continue
-
-        test_cases = get_context_test_cases() if args.mode == "context" else get_generation_test_cases()
-        if args.num_heads is not None:
-            test_cases = [tc for tc in test_cases if tc[2] == args.num_heads]
-        if args.gemm_type is not None:
-            test_cases = [tc for tc in test_cases if tc[5] == args.gemm_type]
-
-        print(f"Running {len(test_cases)} {args.mode} MSA module test cases...")
+    perf_filename = _perf_file_for(args.mode)
+    if not args.quick:
+        # The full sweep is the op plan's rows; --model targets that checkpoint, as collect.py --model-path does.
+        if args.model:
+            os.environ["COLLECTOR_MODEL_PATH"] = args.model
+        rows = plan(f"msa_{args.mode}_module", "trtllm", get_sm_version()).rows
+        rows = [
+            row
+            for row in rows
+            if (args.num_heads is None or row[2] == args.num_heads)
+            and (args.gemm_type is None or row[5] == args.gemm_type)
+            and (args.batch_size is None or row[1] == args.batch_size)
+        ]
+        print(f"Running {len(rows)} {args.mode} MSA module series...")
         num_failed = 0
-        for i, tc in enumerate(test_cases):
-            s, b, h, kv_dtype, compute, gemm, *rest = tc
-            print(f"[{i + 1}/{len(test_cases)}]", end="")
+        for points, b, h, kv_dtype, compute, gemm, model_path in rows:
+            print(f"\n[MSA] {model_path} b={b} heads={h} gemm={gemm}: {len(points)}p")
             try:
-                run_msa_module(
-                    seq_len=s,
-                    batch_size=b,
-                    num_heads=h,
-                    kv_cache_dtype=kv_dtype,
-                    compute_dtype=compute,
-                    gemm_type=gemm,
-                    prefix_len=rest[0] if rest else 0,
-                    perf_filename=perf_filename,
-                    model_path=model_path,
-                    device=args.device,
+                run_msa_module_series(
+                    points, b, h, kv_dtype, compute, gemm, perf_filename, model_path=model_path, device=args.device
                 )
-            except torch.cuda.OutOfMemoryError:
-                print(f"  OOM: b={b}, s={s}, heads={h}, gemm={gemm}")
-                num_failed += 1
-                torch.cuda.empty_cache()
-                gc.collect()
             except Exception as e:
-                print(f"  FAILED: b={b}, s={s}, heads={h}, gemm={gemm}: {e}")
+                print(f"  FAILED: b={b}, heads={h}, gemm={gemm}: {e}")
                 traceback.print_exc()
                 num_failed += 1
                 torch.cuda.empty_cache()
                 gc.collect()
         if num_failed:
             # Exit non-zero so an operator (and CI) can see failures without
-            # scraping the log; per-case detail is printed above.
-            print(f"{num_failed}/{len(test_cases)} cases failed")
+            # scraping the log; per-point detail is printed above.
+            print(f"{num_failed}/{len(rows)} series failed")
             sys.exit(1)
+        return
+
+    model_specs_to_run = (
+        [spec for spec in all_model_specs if spec.model_path == args.model] if args.model else all_model_specs
+    )
+    for model_spec in model_specs_to_run:
+        model_path = model_spec.model_path
+        print(f"\n{'=' * 60}\nModel: {model_path}  |  Attention: MSA\n{'=' * 60}")
+        run_msa_module(
+            seq_len=args.seq_len or 2048,
+            batch_size=args.batch_size or 4,
+            num_heads=args.num_heads or 64,
+            kv_cache_dtype="bfloat16",
+            compute_dtype="bfloat16",
+            gemm_type=args.gemm_type or "bfloat16",
+            prefix_len=args.prefix_len,
+            perf_filename=perf_filename,
+            model_path=model_path,
+            device=args.device,
+        )
 
 
 if __name__ == "__main__":

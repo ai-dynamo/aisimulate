@@ -131,6 +131,8 @@ feasibility, under exactly these conditions:
    `<op>: dropped N/M cases (memory budget, device=<GB>)`.
 
 Anything beyond this pattern goes back to the normal rule: run it or raise.
+Ops on an op plan do not use this filter: their workers refuse such a point
+at run time (`case_authoring.md`, Op plans).
 
 ## Framework kernel limits: let them fail, skip only four cases
 

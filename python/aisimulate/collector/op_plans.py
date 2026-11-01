@@ -927,13 +927,14 @@ def _module_series(cases: list[ModuleCase]) -> list[tuple[tuple, list[ModuleCase
     return list(series.items())
 
 
-def _trtllm_module_rows(attn_type: str) -> Callable[[list, int | None], list[tuple[list, tuple]]]:
+def _trtllm_module_rows(*trailing: str) -> Callable[[list, int | None], list[tuple[list, tuple]]]:
     def rows(cases: list[ModuleCase], sm_version: int | None) -> list[tuple[list, tuple]]:
-        """One run_mla_module_series_worker task per module: its (seq_len, prefix_len) points, then the key."""
+        """One series worker task per module: its (seq_len, prefix_len) points, the key, then
+        ``trailing`` (the attention type, for the MLA module's worker)."""
         tasks = []
         for key, members in _module_series(cases):
             points = sorted(([case.seq_len, case.prefix_len] for case in members), reverse=True)
-            tasks.append(([points, *key, attn_type], tuple(members)))
+            tasks.append(([points, *key, *trailing], tuple(members)))
         return tasks
 
     return rows
@@ -1036,8 +1037,8 @@ def _shares_dsa_index(model_path: str) -> bool:
     return int(_packaged_config(model_path).get("index_topk_freq") or 1) > 1
 
 
-def _dsa_module_models() -> list[tuple[object, tuple[str, ...]]]:
-    """The DSA checkpoints the plan times, each with the projection GEMMs it stands for.
+def _sparse_module_models(attention_type: str) -> list[tuple[object, tuple[str, ...]]]:
+    """The DSA or MSA checkpoints the plan times, each with the projection GEMMs it stands for.
 
     One checkpoint stands for each (architecture, projection GEMM): the longest-context
     one whose projections run that GEMM, the first declared on a tie. A GEMM no
@@ -1045,10 +1046,10 @@ def _dsa_module_models() -> list[tuple[object, tuple[str, ...]]]:
     targeted run (COLLECTOR_MODEL_PATH) declares only its own checkpoint, which then
     stands for every GEMM.
     """
-    precisions = get_mla_module_precision_specs(_MODULE_SWEEP, attention_type="dsa")
+    precisions = get_mla_module_precision_specs(_MODULE_SWEEP, attention_type=attention_type)
     gemms = list(dict.fromkeys(precision.gemm_type for precision in precisions))
     by_architecture: dict[str, list] = {}
-    for spec in get_mla_module_model_specs(attention_type="dsa"):
+    for spec in get_mla_module_model_specs(attention_type=attention_type):
         by_architecture.setdefault(spec.architecture, []).append(spec)
     stands_for: dict[object, list[str]] = {}
     for specs in by_architecture.values():
@@ -1059,25 +1060,25 @@ def _dsa_module_models() -> list[tuple[object, tuple[str, ...]]]:
     return [(spec, tuple(gemms)) for spec, gemms in stands_for.items()]
 
 
-def _dsa_points(phase: str, sweep, max_position: int | None) -> list[tuple[int, int, int]]:
-    """The (batch, seq_len, prefix_len) points of one DSA module, batch by batch.
+def _long_context_points(phase: str, sweep, max_position: int | None) -> list[tuple[int, int, int]]:
+    """The (batch, seq_len, prefix_len) points of one DSA or MSA module, batch by batch.
 
     Context follows serving's chunked prefill (the mla_module_plan comments): at most
-    dsa_chunk_prefill_size new tokens and dsa_max_full_sequence_length KV tokens per
-    forward, prefix + seq_len within the model's context, and from dsa_long_prefix_min on
-    only the long-prefix sequence lengths. Generation is the decode grid plus the long KV
-    lengths at small batch; a KV length leaves room for the decoded token.
+    chunk_prefill_size new tokens and max_full_sequence_length KV tokens per forward,
+    prefix + seq_len within the model's context, and from long_prefix_min on only the
+    long-prefix sequence lengths. Generation is the decode grid plus the long KV lengths
+    at small batch; a KV length leaves room for the decoded token.
     """
     if phase == "context":
         return [
             (batch, length, prefix)
             for batch in sweep.context_batch_sizes
             for length in sweep.context_sequence_lengths
-            for prefix in sweep.context_dsa_prefix_lengths
-            if batch * length <= sweep.context_dsa_chunk_prefill_size
-            and batch * (length + prefix) <= sweep.context_dsa_max_full_sequence_length
+            for prefix in sweep.context_prefix_lengths
+            if batch * length <= sweep.context_chunk_prefill_size
+            and batch * (length + prefix) <= sweep.context_max_full_sequence_length
             and (max_position is None or prefix + length <= max_position)
-            and (prefix < sweep.context_dsa_long_prefix_min or length in sweep.context_dsa_long_prefix_sequence_lengths)
+            and (prefix < sweep.context_long_prefix_min or length in sweep.context_long_prefix_sequence_lengths)
         ]
     grid = {
         (batch, length)
@@ -1086,26 +1087,26 @@ def _dsa_points(phase: str, sweep, max_position: int | None) -> list[tuple[int, 
         if batch * length <= sweep.generation_max_tokens
     }
     grid |= {
-        (batch, length)
-        for batch in sweep.generation_dsa_long_kv_batch_sizes
-        for length in sweep.generation_dsa_long_kv_lengths
+        (batch, length) for batch in sweep.generation_long_kv_batch_sizes for length in sweep.generation_long_kv_lengths
     }
     return [(batch, length, 0) for batch, length in sorted(grid) if max_position is None or length < max_position]
 
 
-def _dsa_module_expand(phase: str, *, shared_index_only: bool) -> Callable[[], list[ModuleCase]]:
+def _sparse_module_expand(
+    attention_type: str, phase: str, *, shared_index_only: bool = False
+) -> Callable[[], list[ModuleCase]]:
     def expand() -> list[ModuleCase]:
-        """Every (precision, heads, point) of each DSA checkpoint, at the projection GEMMs it stands for."""
+        """Every (precision, heads, point) of each checkpoint, at the projection GEMMs it stands for."""
         sweep = get_mla_module_sweep_spec(_MODULE_SWEEP)
-        precisions = get_mla_module_precision_specs(_MODULE_SWEEP, phase=phase, attention_type="dsa")
+        precisions = get_mla_module_precision_specs(_MODULE_SWEEP, phase=phase, attention_type=attention_type)
         cases = []
-        for model, gemms in _dsa_module_models():
+        for model, gemms in _sparse_module_models(attention_type):
             if shared_index_only and not _shares_dsa_index(model.model_path):
                 continue
             # A row that declares its tensor_parallel_sizes measures only the heads those shards run.
             shards = model.tensor_parallel_sizes
             shard_heads = {model.native_num_heads // tp for tp in shards} if shards else None
-            points = _dsa_points(phase, sweep, _max_position(model.model_path))
+            points = _long_context_points(phase, sweep, _max_position(model.model_path))
             for precision in precisions:
                 if precision.gemm_type not in gemms:
                     continue
@@ -1187,11 +1188,52 @@ def _dsa_module_plan(phase: str, *, skip_indexer: bool = False) -> OpPlan:
         batch_rows.update(trtllm=_trtllm_module_rows("dsa"), vllm=_vllm_module_rows("dsa"))
     return OpPlan(
         ModuleCase,
-        _dsa_module_expand(phase, shared_index_only=skip_indexer),
+        _sparse_module_expand("dsa", phase, shared_index_only=skip_indexer),
         dtype_field=("kv_cache_dtype", "compute_dtype", "gemm_type"),
         group_fields=_MODULE_GROUP,
         dispatch={"sglang": _sglang_dsa_backend(phase)},
         batch_rows=batch_rows,
+    )
+
+
+def _sglang_msa_rows(phase: str) -> Callable[[list, int | None], list[tuple[list, tuple]]]:
+    def rows(cases: list[ModuleCase], sm_version: int | None) -> list[tuple[list, tuple]]:
+        """One run_msa_module_worker task per ModelRunner: one context batch, or every decode batch.
+
+        A row keeps the worker's positional fields (batch 0 for decode), then the target
+        TP of the heads and the [batch, seq_len, prefix_len] points, shortest prefix
+        first, so a fault at a long prefix leaves the shorter points measured.
+        """
+        native_heads = {
+            spec.model_path: spec.native_num_heads
+            for spec in get_mla_module_model_specs(attention_type="msa", apply_model_filter=False)
+        }
+        tasks: dict[tuple, list[ModuleCase]] = {}
+        for case in cases:
+            batch = case.batch_size if phase == "context" else 0
+            precision = (case.kv_cache_dtype, case.compute_dtype, case.gemm_type)
+            tasks.setdefault((batch, case.num_heads, *precision, case.model_path), []).append(case)
+        rows = []
+        for (batch, heads, kv, compute, gemm, model), members in tasks.items():
+            points = sorted(
+                ([case.batch_size, case.seq_len, case.prefix_len] for case in members), key=lambda p: (p[2], p[0], p[1])
+            )
+            rows.append(
+                ([0, batch, heads, kv, compute, gemm, model, native_heads[model] // heads, points], tuple(members))
+            )
+        return rows
+
+    return rows
+
+
+def _msa_module_plan(phase: str) -> OpPlan:
+    """An MSA module op. vLLM times one point per task (run_msa_module_worker takes the case)."""
+    return OpPlan(
+        ModuleCase,
+        _sparse_module_expand("msa", phase),
+        dtype_field=("kv_cache_dtype", "compute_dtype", "gemm_type"),
+        group_fields=_MODULE_GROUP,
+        batch_rows={"trtllm": _trtllm_module_rows(), "sglang": _sglang_msa_rows(phase)},
     )
 
 
@@ -1560,6 +1602,8 @@ OP_PLANS: dict[str, OpPlan] = {
     "dsa_generation_module": _dsa_module_plan("generation"),
     "dsa_context_module_skip_indexer": _dsa_module_plan("context", skip_indexer=True),
     "dsa_generation_module_skip_indexer": _dsa_module_plan("generation", skip_indexer=True),
+    "msa_context_module": _msa_module_plan("context"),
+    "msa_generation_module": _msa_module_plan("generation"),
     "mla_bmm_gen_pre": OpPlan(
         MlaBmmCase, _mla_bmm_expand("mla_bmm_gen_pre"), dtype_field="dtype", group_fields=MlaBmmCase._fields
     ),

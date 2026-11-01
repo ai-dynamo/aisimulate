@@ -189,7 +189,7 @@ REGISTRY: list[OpEntry] = [
         op="msa_context_module",
         module="collector.trtllm.collect_msa_module",
         get_func="get_msa_context_module_test_cases",
-        run_func="run_msa_module_worker",
+        run_func="run_msa_module_series_worker",
         perf_filename=PerfFile.MSA_CONTEXT_MODULE,
         # MiniMax-M3 MSA modules: hardware-validated on SM90 (h100/h200,
         # rc23 Triton reference path) and SM100/103 (b200/b300/gb200/gb300,
@@ -206,7 +206,7 @@ REGISTRY: list[OpEntry] = [
         op="msa_generation_module",
         module="collector.trtllm.collect_msa_module",
         get_func="get_msa_generation_module_test_cases",
-        run_func="run_msa_module_worker",
+        run_func="run_msa_module_series_worker",
         perf_filename=PerfFile.MSA_GENERATION_MODULE,
         # See msa_context_module marker rationale.
         unverified_sms=(121,),

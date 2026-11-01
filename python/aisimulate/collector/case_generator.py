@@ -626,10 +626,9 @@ class MLAModuleModelSpec:
     native_num_heads: int
     wideep_mla: bool
     # Declared real tensor-parallel shards of this model (case_authoring's
-    # model-correlated narrowing). When set, the MSA collectors derive their
-    # per-rank head axis as native_num_heads // tp instead of sweeping the
-    # shared inner_sweep_head_counts grid (owner decision 2026-09-29: MSA is
-    # one fixed geometry, MiniMax-M3 64q/4kv/4idx; TP 16 is the ceiling).
+    # model-correlated narrowing). When set, the module plans time only the
+    # per-rank heads these shards run (native_num_heads // tp) from the shared
+    # head grid.
     tensor_parallel_sizes: tuple[int, ...] | None = None
 
 
@@ -655,29 +654,17 @@ class MLAModuleSweepSpec:
     generation_large_sequence_max_batch_size: int
     generation_large_cache_tokens: int
     context_prefix_lengths: list[int]
-    # Optional MSA-specific decode budget: MSA decode coverage needs the
-    # large batch x long-kv corner (raised for the shipped MSA tables),
-    # while the shared generation.max_tokens stays the MLA/DSA collectors'
-    # memory contract (their guard tests pin it). None -> fall back to
-    # generation_max_tokens.
-    generation_msa_max_tokens: int | None = None
-    # Optional MSA context budget for the TRT-LLM Triton reference
-    # implementation (cases/base_ops/mla_module.yaml mla_module_trtllm.context
-    # .msa_triton_max_tokens): the collector applies it only where it resolves
-    # implementation="triton" (off SM100/103); fmha_sm100 systems keep
-    # context_max_tokens. None -> no extra cap.
-    context_msa_triton_max_tokens: int | None = None
-    # DSA context follows serving's chunked prefill: the new-token budget is the
-    # chunk size, and the long context enters through the prefix. From
-    # context_dsa_long_prefix_min on, only the long-prefix sequence lengths run.
-    context_dsa_chunk_prefill_size: int | None = None
-    context_dsa_max_full_sequence_length: int | None = None
-    context_dsa_prefix_lengths: list[int] | None = None
-    context_dsa_long_prefix_min: int | None = None
-    context_dsa_long_prefix_sequence_lengths: list[int] | None = None
-    # DSA decode beyond the generation grid: these KV lengths at these batches.
-    generation_dsa_long_kv_lengths: list[int] | None = None
-    generation_dsa_long_kv_batch_sizes: list[int] | None = None
+    # The long-context module ops (DSA, MSA) follow serving's chunked prefill:
+    # the new-token budget is the chunk size, and the long context enters
+    # through the prefix (context_prefix_lengths). From context_long_prefix_min
+    # on, only the long-prefix sequence lengths run.
+    context_chunk_prefill_size: int | None = None
+    context_max_full_sequence_length: int | None = None
+    context_long_prefix_min: int | None = None
+    context_long_prefix_sequence_lengths: list[int] | None = None
+    # Their decode beyond the generation grid: these KV lengths at these batches.
+    generation_long_kv_lengths: list[int] | None = None
+    generation_long_kv_batch_sizes: list[int] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -793,28 +780,6 @@ def get_mla_module_model_specs(
             )
 
     return specs
-
-
-def get_msa_head_counts(backend: str | None = None) -> list[int]:
-    """Per-rank head axis for the MSA module collectors, descending.
-
-    Derived from the declared MSA model rows: ``native_num_heads // tp`` for
-    each ``tensor_parallel_sizes`` entry (falling back to the sweep's
-    ``module_tp_sizes`` when a row declares none). MSA serves one fixed
-    geometry, so unlike GQA attention there is no shared head grid to sweep;
-    head counts no real shard produces (48/96 -> 3/6 index heads) are never
-    generated.
-    """
-    sweep = get_mla_module_sweep_spec(backend)
-    heads: set[int] = set()
-    for spec in get_mla_module_model_specs(attention_type="msa", backend=backend):
-        tp_sizes = spec.tensor_parallel_sizes or tuple(sweep.module_tp_sizes)
-        for tp in tp_sizes:
-            if spec.native_num_heads % tp == 0:
-                heads.add(spec.native_num_heads // tp)
-    if not heads:
-        raise ValueError("mla_module: no MSA model row yields a per-rank head count (check tensor_parallel_sizes)")
-    return sorted(heads, reverse=True)
 
 
 def _required_mapping(value: object, *, field_name: str) -> dict[str, object]:
@@ -983,9 +948,7 @@ def get_mla_module_sweep_spec(backend: str | None = None) -> MLAModuleSweepSpec:
         context_max_tokens=int(context["max_tokens"]),
         context_large_sequence_min=_optional_int(context.get("large_sequence_min")),
         context_large_sequence_max_batch_size=_optional_int(context.get("large_sequence_max_batch_size")),
-        context_msa_triton_max_tokens=_optional_int(context.get("msa_triton_max_tokens")),
         generation_max_tokens=int(generation["max_tokens"]),
-        generation_msa_max_tokens=_optional_int(generation.get("msa_max_tokens")),
         generation_large_sequence_min=_optional_int(generation.get("large_sequence_min")),
         generation_large_sequence_max_batch_size=_optional_int(generation.get("large_sequence_max_batch_size")),
         generation_large_cache_tokens=_optional_int(generation.get("large_cache_tokens")),
@@ -994,19 +957,16 @@ def get_mla_module_sweep_spec(backend: str | None = None) -> MLAModuleSweepSpec:
             field_name="mla_module.context.prefix_lengths",
             default=[0],
         ),
-        context_dsa_chunk_prefill_size=_optional_int(context.get("dsa_chunk_prefill_size")),
-        context_dsa_max_full_sequence_length=_optional_int(context.get("dsa_max_full_sequence_length")),
-        context_dsa_prefix_lengths=_optional_dsa_list(context, "context", "dsa_prefix_lengths"),
-        context_dsa_long_prefix_min=_optional_int(context.get("dsa_long_prefix_min")),
-        context_dsa_long_prefix_sequence_lengths=_optional_dsa_list(
-            context, "context", "dsa_long_prefix_sequence_lengths"
-        ),
-        generation_dsa_long_kv_lengths=_optional_dsa_list(generation, "generation", "dsa_long_kv_lengths"),
-        generation_dsa_long_kv_batch_sizes=_optional_dsa_list(generation, "generation", "dsa_long_kv_batch_sizes"),
+        context_chunk_prefill_size=_optional_int(context.get("chunk_prefill_size")),
+        context_max_full_sequence_length=_optional_int(context.get("max_full_sequence_length")),
+        context_long_prefix_min=_optional_int(context.get("long_prefix_min")),
+        context_long_prefix_sequence_lengths=_optional_plan_list(context, "context", "long_prefix_sequence_lengths"),
+        generation_long_kv_lengths=_optional_plan_list(generation, "generation", "long_kv_lengths"),
+        generation_long_kv_batch_sizes=_optional_plan_list(generation, "generation", "long_kv_batch_sizes"),
     )
 
 
-def _optional_dsa_list(values: dict[str, object], section: str, key: str) -> list[int] | None:
+def _optional_plan_list(values: dict[str, object], section: str, key: str) -> list[int] | None:
     return _optional_int_list(values.get(key), field_name=f"mla_module.{section}.{key}", default=[]) or None
 
 
