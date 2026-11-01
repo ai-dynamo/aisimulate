@@ -43,6 +43,7 @@ from collector import skips
 from collector.case_generator import (
     BASE_OP_CASES_DIR,
     AttentionOwner,
+    Dsv4Sweep,
     MoeCommonTestCase,
     get_attention_encoder_head_configs,
     get_attention_shapes,
@@ -53,6 +54,8 @@ from collector.case_generator import (
     get_common_moe_test_cases,
     get_compute_scale_case_specs,
     get_context_mla_case_specs,
+    get_dsv4_models,
+    get_dsv4_sweep,
     get_gemm_case_specs,
     get_gemm_type_specs,
     get_generation_mla_case_specs,
@@ -1237,6 +1240,136 @@ def _msa_module_plan(phase: str) -> OpPlan:
     )
 
 
+# --- DeepSeek-V4 attention modules: csa/hca context and generation -------------------
+
+
+class Dsv4Case(NamedTuple):
+    """One timed point of a DeepSeek-V4 attention module; each attention kind is its own op.
+
+    ``seq_len`` is the query length (context) or the KV length (generation);
+    ``prefix_len`` is the cached context behind a context point. Every backend serves
+    DeepSeek-V4 on an FP8 KV cache and computes attention in BF16, so neither is a case
+    field: the rows name them.
+    """
+
+    seq_len: int
+    batch_size: int
+    tp_size: int
+    gemm_type: str
+    model_path: str
+    attn_kind: str
+    prefix_len: int = 0
+
+    __str__ = __repr__ = _list_form
+
+
+def _dsv4_decode_points(sweep: Dsv4Sweep, max_position: int | None) -> list[tuple[int, int, int]]:
+    """The (batch, KV length, 0) decode points within the KV-token budget and the batch ladder.
+
+    A KV length leaves room for the decoded token.
+    """
+    return [
+        (batch, length, 0)
+        for batch in sweep.generation_batch_sizes
+        for length in sweep.generation_sequence_lengths
+        if batch * length <= sweep.generation_max_kv_tokens
+        and not any(length >= floor and batch > largest for floor, largest in sweep.decode_batch_ladder)
+        and (max_position is None or length < max_position)
+    ]
+
+
+def _dsv4_points(phase: str, model_path: str) -> list[tuple[int, int, int]]:
+    """The (batch, seq_len, prefix_len) points of one DeepSeek-V4 module.
+
+    Context takes the DSA and MSA modules' long-context grid; its prefix anchors keep the
+    top-k knees (512 tokens for DeepSeek-V4-Flash, 1024 for DeepSeek-V4-Pro).
+    """
+    max_position = _max_position(model_path)
+    if phase == "context":
+        return _long_context_points("context", get_mla_module_sweep_spec(_MODULE_SWEEP), max_position)
+    return _dsv4_decode_points(get_dsv4_sweep(), max_position)
+
+
+def _dsv4_expand(attn_kind: str, phase: str) -> Callable[[], list[Dsv4Case]]:
+    def expand() -> list[Dsv4Case]:
+        """Every (projection GEMM, TP shard, point) of each planned checkpoint."""
+        sweep = get_dsv4_sweep()
+        cases = []
+        for model_path in get_dsv4_models():
+            points = _dsv4_points(phase, model_path)
+            for gemm_type in sweep.gemm_types:
+                for tp_size in sweep.tp_sizes:
+                    cases += [
+                        Dsv4Case(length, batch, tp_size, gemm_type, model_path, attn_kind, prefix)
+                        for batch, length, prefix in points
+                    ]
+        return cases
+
+    return expand
+
+
+def _dsv4_series(cases: list[Dsv4Case]) -> list[tuple[tuple, list[Dsv4Case]]]:
+    """The cases grouped by the module build they share (model, kind, TP, GEMM, batch), in plan order."""
+    series: dict[tuple, list[Dsv4Case]] = {}
+    for case in cases:
+        key = (case.model_path, case.attn_kind, case.tp_size, case.gemm_type, case.batch_size)
+        series.setdefault(key, []).append(case)
+    return list(series.items())
+
+
+def _trtllm_dsv4_rows(cases: list[Dsv4Case], sm_version: int | None) -> list[tuple[list, tuple]]:
+    """One run_dsv4_attn_series_worker task per module: its (seq_len, prefix_len) points, then
+    run_dsv4_attn_worker's positional fields.
+
+    TRT-LLM serves the FP8 KV cache as the packed fp8_ds_mla pool on SM90 and as the
+    plain FP8 pool elsewhere (collect_dsv4_attn picks it per SM).
+    """
+    tasks = []
+    for (model, kind, tp_size, gemm, batch), members in _dsv4_series(cases):
+        points = sorted(([case.seq_len, case.prefix_len] for case in members), reverse=True)
+        tasks.append(([points, batch, tp_size, "fp8", "bfloat16", gemm, model, kind], tuple(members)))
+    return tasks
+
+
+def _vllm_dsv4_rows(phase: str) -> Callable[[Dsv4Case, int | None, str | None], list[list]]:
+    def rows(case: Dsv4Case, sm_version: int | None, runner: str | None) -> list[list]:
+        """run_dsv4_attn_worker's arguments, one point per task; a context point adds its prefix."""
+        row = [case.seq_len, case.batch_size, case.tp_size, "fp8", "bfloat16", case.gemm_type, case.model_path]
+        row += [case.attn_kind, None]
+        return [row + [case.prefix_len] if phase == "context" else row]
+
+    return rows
+
+
+def _sglang_dsv4_rows(cases: list[Dsv4Case], sm_version: int | None) -> list[tuple[list, tuple]]:
+    """One run_dsv4_attn_worker task per ModelRunner (model, kind, TP, GEMM, batch).
+
+    A row keeps the worker's positional fields, then its points as (prefix_len,
+    seq_lens) groups, shortest prefix first and longest seq_len first within one, so a
+    fault at a long prefix leaves the shorter points measured.
+    """
+    tasks = []
+    for (model, kind, tp_size, gemm, batch), members in _dsv4_series(cases):
+        seq_lens: dict[int, list[int]] = defaultdict(list)
+        for case in members:
+            seq_lens[case.prefix_len].append(case.seq_len)
+        points = [[prefix, sorted(lengths, reverse=True)] for prefix, lengths in sorted(seq_lens.items())]
+        tasks.append(([0, batch, tp_size, "fp8", "bfloat16", gemm, model, kind, None, points], tuple(members)))
+    return tasks
+
+
+def _dsv4_module_plan(attn_kind: str, phase: str) -> OpPlan:
+    """A DeepSeek-V4 module op. vLLM times one point per task (run_dsv4_attn_worker takes it)."""
+    return OpPlan(
+        Dsv4Case,
+        _dsv4_expand(attn_kind, phase),
+        dtype_field="gemm_type",
+        group_fields=("model_path", "attn_kind", "tp_size", "gemm_type", "batch_size"),
+        rows={"vllm": _vllm_dsv4_rows(phase)},
+        batch_rows={"trtllm": _trtllm_dsv4_rows, "sglang": _sglang_dsv4_rows},
+    )
+
+
 # --- mHC: mhc_module ---------------------------------------------------------------
 
 _DSV4_ARCHITECTURE = "DeepseekV4ForCausalLM"
@@ -1604,6 +1737,10 @@ OP_PLANS: dict[str, OpPlan] = {
     "dsa_generation_module_skip_indexer": _dsa_module_plan("generation", skip_indexer=True),
     "msa_context_module": _msa_module_plan("context"),
     "msa_generation_module": _msa_module_plan("generation"),
+    "dsv4_csa_context_module": _dsv4_module_plan("csa", "context"),
+    "dsv4_csa_generation_module": _dsv4_module_plan("csa", "generation"),
+    "dsv4_hca_context_module": _dsv4_module_plan("hca", "context"),
+    "dsv4_hca_generation_module": _dsv4_module_plan("hca", "generation"),
     "mla_bmm_gen_pre": OpPlan(
         MlaBmmCase, _mla_bmm_expand("mla_bmm_gen_pre"), dtype_field="dtype", group_fields=MlaBmmCase._fields
     ),

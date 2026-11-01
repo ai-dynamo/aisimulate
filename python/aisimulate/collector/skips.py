@@ -160,6 +160,21 @@ SKIPS: list[dict] = [
     # SGLang: FP8-KV MSA modules on SM89 were not collected before, and this keeps
     # that coverage.
     {"backend": "sglang", "op": _MSA_MODULE_OPS, "kv_cache_dtype": "fp8", "sm": [89]},
+    # TRT-LLM and vLLM did not collect DeepSeek-V4 modules with BF16 projections
+    # before (every DeepSeek-V4 checkpoint runs FP8 block-scaled ones); this keeps
+    # that coverage.
+    {"backend": ["trtllm", "vllm"], "op": _DSV4_ATTENTION_OPS, "gemm_type": "bfloat16"},
+    # SGLang loads a native DeepSeek-V4 checkpoint (deepseek-ai/*) with its FP8
+    # projections only together with its FP4 routed experts, which need Blackwell,
+    # so these modules would fail as a whole below SM100. The converted
+    # sgl-project FP8 checkpoints load there.
+    {
+        "backend": "sglang",
+        "op": _DSV4_ATTENTION_OPS,
+        "sm": [90],
+        "gemm_type": "fp8_block",
+        "model_path": lambda model_path: model_path.startswith("deepseek-ai/"),
+    },
     # SGLang: the attention collector maps a serving backend for SM89 and newer
     # only (SGLang's default attention backend table), so every SM80/86 case
     # would fail.

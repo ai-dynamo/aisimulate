@@ -175,14 +175,13 @@ model_case_values:
     # calib_model_paths (cost policy); targeted runs may collect any supported
     # model's calibration — consumers key the DELTA per native geometry (#1460).
     # nvidia/DeepSeek-V4-{Flash,Pro}-NVFP4 (AIC-1749) are deliberately NOT
-    # listed for module collection at all: the module collectors' gemm_type
-    # sweep is bfloat16/fp8_block only (case_generator.py
-    # _dsv4_module_precision_combos; collector/vllm/collect_dsv4_attn.py
-    # SUPPORTED_GEMM_TYPES), and the persisted module key carries no artifact
-    # dimension — so even a targeted run against these paths could only stamp
-    # rows with a label that misrepresents the artifact ("cases that carry
-    # the wrong identity are worse than no cases", case_authoring.md). They
-    # join supported_model_paths together with the collector gemm-label work
+    # listed for module collection at all: the module gemm_type sweep is
+    # bfloat16/fp8_block only (module_gemm_types below), and the persisted
+    # module key carries no artifact dimension — so even a targeted run
+    # against these paths could only stamp rows with a label that
+    # misrepresents the artifact ("cases that carry the wrong identity are
+    # worse than no cases", case_authoring.md). They join
+    # supported_model_paths together with the collector gemm-label work
     # tracked on AIC-1749.
     default_model_paths:
       - sgl-project/DeepSeek-V4-Flash-FP8
@@ -197,6 +196,16 @@ model_case_values:
     attention_kinds:
       - csa
       - hca
+    # The module plans (collector/op_plans.py). Projection GEMMs: fp8_block is
+    # the checkpoints' own, bfloat16 the BF16-projection modules SGLang
+    # collects (collector/skips.py keeps each backend's set). Context points
+    # follow the shared long-context grid (mla_module_plan in
+    # cases/base_ops/mla_module.yaml); decode points are module_batch_sizes x
+    # module_sequence_lengths within the decode budget of
+    # cases/base_ops/dsv4_attention.yaml.
+    module_gemm_types:
+      - bfloat16
+      - fp8_block
     module_batch_sizes:
       - 1
       - 2

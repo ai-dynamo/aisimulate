@@ -85,20 +85,28 @@ from collector.op_plans import plan, plan_cases
 try:
     from collector.sglang.runtime_limits import (
         alloc_prefix_indices,
+        kernel_limit_error,
         kv_pool_capacity_tokens,
         kv_pool_page_size,
+        over_chunk,
+        over_kv_pool,
+        refusal_summary,
+        refuse,
         required_kv_alloc_tokens,
-        required_prefill_extend_tokens,
         runtime_chunk_size,
         temporarily_chunked_alloc_extend,
     )
 except ModuleNotFoundError:  # direct-script import inside the subprocess
     from runtime_limits import (
         alloc_prefix_indices,
+        kernel_limit_error,
         kv_pool_capacity_tokens,
         kv_pool_page_size,
+        over_chunk,
+        over_kv_pool,
+        refusal_summary,
+        refuse,
         required_kv_alloc_tokens,
-        required_prefill_extend_tokens,
         runtime_chunk_size,
         temporarily_chunked_alloc_extend,
     )
@@ -877,47 +885,6 @@ def _run_decode_point(
 # Subprocess orchestration
 # ═══════════════════════════════════════════════════════════════════════
 
-_KERNEL_LIMIT = "FIXME(kernel-limit)"
-
-
-def _over_chunk(shape: tuple, chunk: int) -> str | None:
-    """Why serving would not run this prefill point as one forward on this device, or None."""
-    batch_size, seq_len, _prefix_len = shape
-    tokens = required_prefill_extend_tokens(batch_size, seq_len)
-    if tokens <= chunk:
-        return None
-    return (
-        f"{_KERNEL_LIMIT}: does not fit: {tokens} new tokens exceed the chunked_prefill_size={chunk} "
-        "SGLang uses on this device, and serving chunks this prefill"
-    )
-
-
-def _over_kv_pool(shape: tuple, page_size: int, capacity: int, is_prefill: bool) -> str | None:
-    """Why this point's KV cache cannot fit SGLang's KV pool on this device, or None."""
-    needed = required_kv_alloc_tokens(*shape, page_size, is_prefill=is_prefill)
-    if needed <= capacity:
-        return None
-    return f"{_KERNEL_LIMIT}: does not fit: the point needs {needed} KV tokens, the KV pool holds {capacity}"
-
-
-def _refuse(shapes: list, refused: dict, reason_for) -> None:
-    """Record the reason of every point not yet refused that ``reason_for`` refuses."""
-    for shape in shapes:
-        if shape not in refused:
-            reason = reason_for(shape)
-            if reason is not None:
-                refused[shape] = reason
-
-
-def _refusal_summary(refused: dict, total: int) -> str:
-    """One classified line for the points this device refused (the subprocess's last error line)."""
-    shown = "; ".join(
-        f"b={b} s={s} prefix={p}: {reason.removeprefix(f'{_KERNEL_LIMIT}: ')}"
-        for (b, s, p), reason in list(refused.items())[:3]
-    )
-    more = f"; and {len(refused) - 3} more" if len(refused) > 3 else ""
-    return f"{_KERNEL_LIMIT}: {len(refused)}/{total} point(s) refused: {shown}{more}"
-
 
 def run_msa_module(
     num_heads: int,
@@ -981,10 +948,10 @@ def run_msa_module(
         except ModuleNotFoundError:
             from deepseekv4_sparse_modules import _sglang_chunked_prefill_size
         chunk = _sglang_chunked_prefill_size()
-        _refuse(shapes, refused, lambda shape: _over_chunk(shape, chunk))
+        refuse(shapes, refused, lambda shape: over_chunk(shape, chunk))
     runnable = [shape for shape in shapes if shape not in refused]
     if not runnable:
-        raise RuntimeError(_refusal_summary(refused, len(shapes)))
+        raise RuntimeError(refusal_summary(refused, len(shapes)))
 
     # 128 is the M3 serving page on SM90/SM100 (overrides.py:502-529); page-128
     # rounding is an upper bound for any smaller resolved page. The pool SGLang
@@ -1024,14 +991,14 @@ def run_msa_module(
         if is_prefill:
             runtime_chunk = runtime_chunk_size(model_runner)
             print(f"[MSA] SGLang runtime chunked_prefill_size={runtime_chunk}")
-            _refuse(shapes, refused, lambda shape: _over_chunk(shape, runtime_chunk))
+            refuse(shapes, refused, lambda shape: over_chunk(shape, runtime_chunk))
         capacity = kv_pool_capacity_tokens(model_runner)
         if capacity is not None:
             page_size = kv_pool_page_size(model_runner)
-            _refuse(shapes, refused, lambda shape: _over_kv_pool(shape, page_size, capacity, is_prefill))
+            refuse(shapes, refused, lambda shape: over_kv_pool(shape, page_size, capacity, is_prefill))
         runnable = [shape for shape in shapes if shape not in refused]
         if not runnable:
-            raise RuntimeError(_refusal_summary(refused, len(shapes)))
+            raise RuntimeError(refusal_summary(refused, len(shapes)))
 
         attention_module = model_runner.model.model.layers[0].self_attn
         device_name = torch.cuda.get_device_name(device)
@@ -1113,7 +1080,7 @@ def run_msa_module(
             details = "\n- ".join(failures)
             raise RuntimeError(f"MSA module {phase} failed strict completeness: {summary}; failures:\n- {details}")
         if refused:
-            raise RuntimeError(_refusal_summary(refused, len(shapes)))
+            raise RuntimeError(refusal_summary(refused, len(shapes)))
     finally:
         cleanup_distributed()
         torch.cuda.empty_cache()
@@ -1183,17 +1150,10 @@ def _run_msa_subprocess(
         if stdout:
             lines = stdout.decode("utf-8", errors="replace").strip().splitlines()
             tail = "\n".join(lines[-30:])
-        # Points the device refused end the subprocess on one classified exception
-        # line, the first unindented line of its last traceback; keep its
-        # kernel-limit classification.
-        # torch.distributed prefixes each line of a rank's output with "[rankN]: ".
-        plain = [line.split("]: ", 1)[1] if line.startswith("[rank") and "]: " in line else line for line in lines]
-        tracebacks = [index for index, line in enumerate(plain) if line.startswith("Traceback ")]
-        error = (
-            next((line for line in plain[tracebacks[-1] + 1 :] if not line.startswith(" ")), "") if tracebacks else ""
-        )
-        if error.startswith(f"RuntimeError: {_KERNEL_LIMIT}"):
-            raise RuntimeError(error.removeprefix("RuntimeError: "))
+        # Keep the kernel-limit classification of points the device refused.
+        error = kernel_limit_error(lines)
+        if error is not None:
+            raise RuntimeError(error)
         raise RuntimeError(
             f"MSA module {phase} subprocess failed (exit code {returncode})\n"
             f"--- subprocess output (last 30 lines) ---\n{tail}"

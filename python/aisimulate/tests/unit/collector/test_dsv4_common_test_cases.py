@@ -7,6 +7,7 @@ import sys
 
 import pytest
 from collector import case_generator as common_test_cases
+from collector.op_plans import plan
 
 pytestmark = pytest.mark.unit
 
@@ -16,17 +17,6 @@ _PRO = "deepseek-ai/DeepSeek-V4-Pro"
 _FLASH_FP8 = "sgl-project/DeepSeek-V4-Flash-FP8"
 _PRO_FP8 = "sgl-project/DeepSeek-V4-Pro-FP8"
 _SUPPORTED_MODELS = (_FLASH, _PRO, _FLASH_FP8, _PRO_FP8)
-
-
-def test_dsv4_context_structural_manifest_owns_model_position_admission():
-    manifest = common_test_cases._dsv4_context_structural_manifest(
-        batch_size=2,
-        seq_lens=[16, 8, 1],
-        prefix_lens=[0, 8, 16],
-        max_position_embeddings=16,
-    )
-
-    assert manifest == ((0, (16, 8, 1)), (8, (8, 1)))
 
 
 def test_dsv4_no_filter_expands_flash_and_pro_modules_calib_stays_canonical(monkeypatch, capsys):
@@ -39,9 +29,9 @@ def test_dsv4_no_filter_expands_flash_and_pro_modules_calib_stays_canonical(monk
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
     monkeypatch.setattr(sys, "argv", ["pytest"])
 
-    module_cases = common_test_cases.get_dsv4_csa_context_test_cases()
+    module_cases = plan("dsv4_csa_context_module", "sglang", 100).cases
     assert module_cases
-    assert {case[6] for case in module_cases} == {_FLASH_FP8, _PRO_FP8}
+    assert {case.model_path for case in module_cases} == {_FLASH_FP8, _PRO_FP8}
     assert common_test_cases.get_dsv4_paged_mqa_logits_test_cases() == [
         [_FLASH_FP8, "paged_mqa_logits"],
         [_PRO_FP8, "paged_mqa_logits"],
@@ -68,7 +58,7 @@ def test_dsv4_targeted_model_collects_its_own_calib(monkeypatch):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", _PRO)
     monkeypatch.setattr(sys, "argv", ["pytest"])
 
-    assert common_test_cases.get_dsv4_csa_context_test_cases()
+    assert plan("dsv4_csa_context_module", "sglang", 100).cases
     assert common_test_cases.get_dsv4_topk_calib_test_cases() == [[_PRO, "topk"]]
 
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", _FLASH_FP8)
@@ -76,28 +66,45 @@ def test_dsv4_targeted_model_collects_its_own_calib(monkeypatch):
 
 
 @pytest.mark.parametrize("model_path", _SUPPORTED_MODELS)
-def test_dsv4_attn_cases_include_same_gemm_types_for_supported_models(monkeypatch, model_path):
+def test_dsv4_module_plans_keep_each_backends_projection_gemms(monkeypatch, model_path):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
-    monkeypatch.setattr(sys, "argv", ["pytest"])
-    monkeypatch.setattr(common_test_cases, "_has_native_fp4_experts", lambda: True)
 
-    cases = common_test_cases.get_dsv4_csa_context_test_cases()
-
-    assert cases
-    assert {case[5] for case in cases} == {"bfloat16", "fp8_block"}
-    assert {case[6] for case in cases} == {model_path}
+    for sm in (90, 100, 103, 120):
+        sglang = {case.gemm_type for case in plan("dsv4_csa_context_module", "sglang", sm).cases}
+        # SGLang loads a native checkpoint's FP8 projections only with its FP4
+        # experts, which need Blackwell.
+        native_below_blackwell = sm == 90 and model_path.startswith("deepseek-ai/")
+        assert sglang == ({"bfloat16"} if native_below_blackwell else {"bfloat16", "fp8_block"})
+        for backend in ("trtllm", "vllm"):
+            assert {case.gemm_type for case in plan("dsv4_csa_context_module", backend, sm).cases} == {"fp8_block"}
+    for sm in (80, 86, 89):
+        assert plan("dsv4_csa_context_module", "sglang", sm).cases == []
 
 
 @pytest.mark.parametrize("model_path", _SUPPORTED_MODELS)
-def test_dsv4_attn_cases_honor_model_filter(monkeypatch, model_path):
+def test_dsv4_module_plans_honor_model_filter(monkeypatch, model_path):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
-    monkeypatch.setattr(sys, "argv", ["pytest"])
 
-    cases = common_test_cases.get_dsv4_hca_generation_test_cases()
+    cases = plan("dsv4_hca_generation_module", "sglang", 100).cases
 
     assert cases
-    assert {case[6] for case in cases} == {model_path}
-    assert {case[7] for case in cases} == {"hca"}
+    assert {case.model_path for case in cases} == {model_path}
+    assert {case.attn_kind for case in cases} == {"hca"}
+
+
+def test_dsv4_module_points_follow_the_long_context_and_decode_grids(monkeypatch):
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", _PRO_FP8)
+
+    context = {(c.batch_size, c.seq_len, c.prefix_len) for c in plan("dsv4_csa_context_module", "vllm", 100).cases}
+    assert all(b * s <= 16384 and b * (s + p) <= 1048576 and s + p <= 1048576 for b, s, p in context)
+    # The top-k knees of DeepSeek-V4-Flash (512) and DeepSeek-V4-Pro (1024) stay prefix anchors.
+    assert {512, 1024} <= {p for _b, _s, p in context}
+    # From a 16K prefix on, only chunk-sized isl.
+    assert {s for _b, s, p in context if p >= 16384} == {1, 512, 2048, 8192, 16384}
+
+    decode = {(c.batch_size, c.seq_len) for c in plan("dsv4_csa_generation_module", "vllm", 100).cases}
+    assert (1, 1048575) in decode and (2, 262144) in decode and (4, 131072) in decode and (64, 8192) in decode
+    assert (2, 524288) not in decode and (8, 131072) not in decode and (128, 8192) not in decode
 
 
 def test_dsv4_sparse_smoke_cases_honor_model_filter(monkeypatch):
@@ -126,7 +133,7 @@ def test_dsv4_cases_skip_unrelated_model_filter(monkeypatch):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "MiniMaxAI/MiniMax-M2.5")
     monkeypatch.setattr(sys, "argv", ["pytest"])
 
-    assert common_test_cases.get_dsv4_csa_context_test_cases() == []
+    assert plan("dsv4_csa_context_module", "sglang", 100).cases == []
     assert common_test_cases.get_dsv4_paged_mqa_logits_test_cases() == []
 
 

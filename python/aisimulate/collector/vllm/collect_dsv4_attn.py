@@ -35,8 +35,6 @@ if str(REPO_ROOT) not in sys.path:
 import torch
 from collector.case_generator import (
     _DSV4_DEFAULT_MODELS,
-    _DSV4_MODULE_BATCH_SIZES,
-    _DSV4_MODULE_SEQ_LENGTHS,
     _DSV4_MODULE_TP_SIZES,
     _DSV4_SPARSE_BS_LIST,
     _DSV4_SPARSE_ISL_LIST,
@@ -47,7 +45,8 @@ from collector.case_generator import (
     DSV4_SPARSE_KERNELS,
     _selected_dsv4_models,
 )
-from collector.helper import benchmark_with_power, log_perf
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.op_plans import plan_cases
 from collector.registry_types import PerfFile
 from collector.vllm.utils import (
     BatchSpec,
@@ -90,12 +89,7 @@ SPARSE_KERNEL_TO_OP_NAME = {"paged_mqa_logits": "dsv4_paged_mqa_logits_module"}
 SPARSE_KERNEL_TO_PERF_FILE = {"paged_mqa_logits": PerfFile.DSV4_PAGED_MQA_LOGITS_MODULE}
 MODEL_CONFIGS_DIR = Path(__file__).resolve().parents[2] / "src" / "aisimulate_core" / "model_configs"
 SUPPORTED_GEMM_TYPES = {"fp8_block"}
-DEFAULT_MAX_SEQ_LEN = 65536
-MAX_SEQ_LEN = int(os.environ.get("AIC_VLLM_DSV4_MAX_SEQ_LEN", DEFAULT_MAX_SEQ_LEN))
 MAX_SPARSE_QUERY_TOKENS = int(os.environ.get("AIC_VLLM_DSV4_SPARSE_MAX_QUERY_TOKENS", "8192"))
-MAX_CONTEXT_QUERY_TOKENS = 262144
-MAX_GENERATION_KV_TOKENS = 1024 * 1024
-CONTEXT_PREFIX_ANCHORS = (0, 128, 2048, 4096)
 
 
 def _resolve_perf_path(output_path: str | None, filename: str | None) -> str:
@@ -783,79 +777,6 @@ def _bench_sparse_kernel_shape(
     return latency
 
 
-def _vllm_dsv4_attention_filter_shapes(
-    mode: str,
-    batch_sizes,
-    seq_lens,
-    prefix_anchors=CONTEXT_PREFIX_ANCHORS,
-    include_dynamic_endpoint: bool = True,
-) -> list[tuple[int, int, int]]:
-    """Enumerate vLLM DSV4 attention-module shapes.
-
-    Context bounds both fresh query tokens and total KV tokens. Generation
-    follows the DSV4 common KV budget, while still allowing bs=1 through the
-    configured max sequence length.
-    """
-    is_context = mode == "context"
-    shapes = []
-    for bs in batch_sizes:
-        for sl in seq_lens:
-            if sl > MAX_SEQ_LEN:
-                continue
-            if is_context:
-                prefixes = (*prefix_anchors, MAX_SEQ_LEN - sl) if include_dynamic_endpoint else prefix_anchors
-                prefixes = dict.fromkeys(prefixes)
-                for prefix_len in prefixes:
-                    total_seq_len = prefix_len + sl
-                    if prefix_len < 0 or total_seq_len > MAX_SEQ_LEN:
-                        continue
-                    if bs * sl > MAX_CONTEXT_QUERY_TOKENS:
-                        continue
-                    if bs * total_seq_len > MAX_GENERATION_KV_TOKENS:
-                        continue
-                    shapes.append((bs, sl, prefix_len))
-            else:
-                if bs * sl > MAX_GENERATION_KV_TOKENS:
-                    continue
-                if sl >= 524288 and bs > 1:
-                    continue
-                if sl >= 262144 and bs > 2:
-                    continue
-                if sl >= 131072 and bs > 4:
-                    continue
-                if sl >= 65536 and bs > 8:
-                    continue
-                if sl >= 32768 and bs > 16:
-                    continue
-                if sl >= 8192 and bs > 64:
-                    continue
-                shapes.append((bs, sl, 0))
-    return shapes
-
-
-def _build_dsv4_test_cases(mode: str, attn_kind: str) -> list[list]:
-    model_paths = _selected_dsv4_models()
-    if not model_paths:
-        return []
-    smoke = "--smoke" in sys.argv
-    seq_lens = [64] if smoke else list(_DSV4_MODULE_SEQ_LENGTHS)
-    prefix_anchors = (0, 128) if smoke else CONTEXT_PREFIX_ANCHORS
-    shapes = _vllm_dsv4_attention_filter_shapes(
-        mode,
-        _DSV4_MODULE_BATCH_SIZES,
-        seq_lens,
-        prefix_anchors,
-        include_dynamic_endpoint=not smoke,
-    )
-    return [
-        [seq_len, batch_size, tp_size, "fp8", "bfloat16", "fp8_block", model_path, attn_kind, None]
-        + ([prefix_len] if mode == "context" else [])
-        for model_path in model_paths
-        for tp_size in _DSV4_MODULE_TP_SIZES
-        for batch_size, seq_len, prefix_len in shapes
-    ]
-
-
 def _build_vllm_dsv4_sparse_test_cases(kernel: str) -> list[list]:
     if kernel not in DSV4_SPARSE_KERNELS:
         raise ValueError(f"unknown sparse kernel={kernel}")
@@ -932,8 +853,8 @@ def run_dsv4_attn_worker(
             gemm_type=gemm_type,
             device=device,
             perf_filename=perf_filename,
-            warming_up=3 if "--smoke" in sys.argv else 5,
-            test_ite=3 if "--smoke" in sys.argv else 10,
+            warming_up=5,
+            test_ite=10,
         )
     except (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError):
         print(f"[vllm-dsv4] OOM: {attn_kind} {mode} b={batch_size} s={seq_len} prefix={prefix_len}")
@@ -989,19 +910,19 @@ def run_dsv4_sparse_kernel_worker(
 
 
 def get_dsv4_csa_context_test_cases():
-    return _build_dsv4_test_cases("context", "csa")
+    return plan_cases("dsv4_csa_context_module", "vllm", get_sm_version())
 
 
 def get_dsv4_hca_context_test_cases():
-    return _build_dsv4_test_cases("context", "hca")
+    return plan_cases("dsv4_hca_context_module", "vllm", get_sm_version())
 
 
 def get_dsv4_csa_generation_test_cases():
-    return _build_dsv4_test_cases("generation", "csa")
+    return plan_cases("dsv4_csa_generation_module", "vllm", get_sm_version())
 
 
 def get_dsv4_hca_generation_test_cases():
-    return _build_dsv4_test_cases("generation", "hca")
+    return plan_cases("dsv4_hca_generation_module", "vllm", get_sm_version())
 
 
 def get_dsv4_paged_mqa_logits_test_cases():

@@ -66,6 +66,11 @@ collector.sglang.collect_dsv41_module:
   - src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4.1-Flash_config.json
   - __model_cases__
 collector.sglang.collect_dsv4_attn:
+  # Rows come from the DSV4 module op plans: the decode budget, the shared
+  # long-context grid and the plan itself.
+  - collector/cases/base_ops/dsv4_attention.yaml
+  - collector/cases/base_ops/mla_module.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.sglang.dsv41_attention_runner:
   # Attention-only execution reuses native timing, workload and table readers.
@@ -186,12 +191,13 @@ collector.trtllm.collect_computescale:
   - collector/op_plans.py
   - __model_cases__
 collector.trtllm.collect_dsv4_attn:
-  # Cases derive from case_generator's DSV4 model constants (module batch/
-  # seq/tp lists come from the dsv4 block of the model cases YAML) AND the
-  # base-op budget declaration (caps + decode ladder) — both must be in the
-  # closure so a budget edit changes collector_hash and the generated plan
-  # is re-attested (PR #1486 review S3).
+  # Rows come from the DSV4 module op plans: the dsv4 block of the model cases
+  # YAML, the base-op decode budget (a budget edit changes collector_hash and
+  # re-attests the generated plan, PR #1486 review S3), the shared
+  # long-context grid and the plan itself.
   - collector/cases/base_ops/dsv4_attention.yaml
+  - collector/cases/base_ops/mla_module.yaml
+  - collector/op_plans.py
   - collector/trtllm/module_series.py
   - __model_cases__
 collector.trtllm.collect_gdn:
@@ -273,6 +279,10 @@ collector.vllm.collect_kda:
   - __model_cases__
 collector.vllm.collect_dsv4_attn:
   - collector/vllm/utils.py
+  # Rows come from the DSV4 module op plans (see collector.trtllm.collect_dsv4_attn).
+  - collector/cases/base_ops/dsv4_attention.yaml
+  - collector/cases/base_ops/mla_module.yaml
+  - collector/op_plans.py
   - __model_cases__
 collector.vllm.glm53flash_attention_runner:
   # The worker probe is loaded through vLLM's general-plugin entry point.

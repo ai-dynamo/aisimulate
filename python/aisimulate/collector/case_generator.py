@@ -2365,12 +2365,10 @@ def get_common_kda_test_cases() -> list[KdaCommonTestCase]:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# DeepSeek-V4 attention test cases
+# DeepSeek-V4 attention modules and sparse kernels
 # ═══════════════════════════════════════════════════════════════════════
-# Used by ``collector.sglang.collect_dsv4_attn`` (full-module bench)
-# and ``collector.sglang.deepseekv4_sparse_modules`` (sparse kernel bench).
-# Both backends re-export the relevant ``get_*`` functions so collect.py
-# can resolve them via getattr on each per-backend module.
+# The dsv4 block of the DeepSeek-V4 model case file: the checkpoints and the
+# sweeps the op plans read (collector/op_plans.py).
 
 
 def _dedupe_strs(values: list[object]) -> list[str]:
@@ -2443,6 +2441,7 @@ def _dsv4_config() -> dict:
             "dsv4.calib_model_paths must contain exactly one canonical path"
         )
 
+    config["architecture"] = model_data.get("architecture")
     config["default_model_paths"] = default_model_paths
     config["calib_model_paths"] = calib_model_paths
     config["supported_model_paths"] = _dedupe_strs([*supported_model_paths, *default_model_paths, *calib_model_paths])
@@ -2472,24 +2471,39 @@ _DSV4_MODULE_PAST_KV_LIST = _as_int_list(
 _DSV4_MODULE_TP_SIZES = _as_int_list(_DSV4_CONFIG["module_tp_sizes"], field_name="dsv4.module_tp_sizes")
 
 
-def _dsv4_module_budgets() -> dict:
-    """Declared universal sweep budgets for the DSV4 module collectors.
+@dataclasses.dataclass(frozen=True)
+class Dsv4Sweep:
+    """The DeepSeek-V4 module sweeps of the op plans.
 
-    Declared at the BASE-OP layer (cases/base_ops/dsv4_attention.yaml —
-    op budgets are op-level facts, not model properties; case_authoring.md).
-    Unresolvable declarations fail loudly: missing or malformed budget
-    fields raise instead of defaulting.
+    A module's context points are the shared long-context grid (mla_module_plan in
+    cases/base_ops/mla_module.yaml); its decode points are the dsv4 block's module
+    batch and length lists within the decode budget of
+    cases/base_ops/dsv4_attention.yaml.
     """
-    budgets = _required_base_common_case_values("dsv4_module_budgets")
-    return {
-        "max_seq_len": int(budgets["max_seq_len"]),
-        "max_context_query_tokens": int(budgets["max_context_query_tokens"]),
-        "max_generation_kv_tokens": int(budgets["max_generation_kv_tokens"]),
-        "decode_batch_ladder": tuple((int(floor), int(max_bs)) for floor, max_bs in budgets["decode_batch_ladder"]),
-    }
+
+    tp_sizes: list[int]
+    gemm_types: list[str]
+    generation_batch_sizes: list[int]
+    generation_sequence_lengths: list[int]
+    generation_max_kv_tokens: int
+    # (KV length floor, largest batch): a decode point at or above the floor
+    # with a larger batch is out of budget.
+    decode_batch_ladder: tuple[tuple[int, int], ...]
 
 
-_DSV4_MODULE_BUDGETS = _dsv4_module_budgets()
+def get_dsv4_sweep() -> Dsv4Sweep:
+    """Return the DeepSeek-V4 module sweeps; a missing or malformed field raises."""
+    budget = _required_base_common_case_values("dsv4_module_budgets")
+    return Dsv4Sweep(
+        tp_sizes=_DSV4_MODULE_TP_SIZES,
+        gemm_types=_as_str_list(_DSV4_CONFIG["module_gemm_types"], field_name="dsv4.module_gemm_types"),
+        generation_batch_sizes=_DSV4_MODULE_BATCH_SIZES,
+        generation_sequence_lengths=_DSV4_MODULE_SEQ_LENGTHS,
+        generation_max_kv_tokens=int(budget["max_generation_kv_tokens"]),
+        decode_batch_ladder=tuple((int(floor), int(max_bs)) for floor, max_bs in budget["decode_batch_ladder"]),
+    )
+
+
 _DSV4_SPARSE_BS_LIST = _as_int_list(_DSV4_CONFIG["sparse_batch_sizes"], field_name="dsv4.sparse_batch_sizes")
 _DSV4_SPARSE_ISL_LIST = _as_int_list(
     _DSV4_CONFIG["sparse_input_lengths"],
@@ -2556,45 +2570,15 @@ def _selected_dsv4_calib_models() -> tuple[str, ...]:
     return calib
 
 
-def _has_native_fp4_experts() -> bool:
-    """True when the device has native FP4 tensor cores (Blackwell SM100+)."""
-    try:
-        import torch as _t
+def get_dsv4_models(*, calib: bool = False) -> tuple[str, ...]:
+    """The DeepSeek-V4 checkpoints a plan times, or with ``calib`` those whose top-k it calibrates.
 
-        if not _t.cuda.is_available():
-            return False
-        return _t.cuda.get_device_capability(0)[0] >= 10
-    except Exception:
-        return False
-
-
-def _dsv4_module_needs_native_fp4(model_path: str) -> bool:
-    """Return True for native DeepSeek-V4 checkpoints with FP4 routed experts."""
-    return model_path.startswith("deepseek-ai/")
-
-
-def _dsv4_module_precision_combos(phase: str, model_path: str):
-    """``(compute_dtype, kv_cache_dtype, gemm_type)`` triples.
-
-    DeepseekV4ForCausalLM rejects bfloat16 KV cache (asserts at load time),
-    so we only emit fp8 KV.  ``gemm_type`` switches projection dispatch:
-      * ``bfloat16``  — projections through cuBLASLt nvjet kernels
-      * ``fp8_block`` — fp8 block-quantised weights → DeepGEMM
-                        ``sm90_fp8_gemm_1d2d_impl`` (matches production)
-
-    ``fp8_block`` is omitted on pre-Blackwell parts only for native
-    ``deepseek-ai/*`` checkpoints; ``sgl-project/*-FP8`` checkpoints are
-    already converted for Hopper-side FP8 collection.
+    COLLECTOR_MODEL_PATH selects one; a skips.py ``model`` entry for the case
+    file's architecture leaves them all out.
     """
-    del phase
-    combos = [("bfloat16", "fp8", "bfloat16")]
-    if not _dsv4_module_needs_native_fp4(model_path) or _has_native_fp4_experts():
-        combos.append(("bfloat16", "fp8", "fp8_block"))
-    else:
-        print(
-            "[dsv4-test-cases] device lacks native FP4 experts (pre-Blackwell); omitting fp8_block from gemm_type sweep"
-        )
-    return combos
+    if _DSV4_CONFIG.get("architecture") in _SKIPPED_MODELS.get():
+        return ()
+    return _selected_dsv4_calib_models() if calib else _selected_dsv4_models()
 
 
 def _dsv4_module_is_valid_shape(mode: str, bs: int, sl: int, past_kv: int = 0) -> bool:
@@ -2618,102 +2602,6 @@ def _dsv4_module_is_valid_shape(mode: str, bs: int, sl: int, past_kv: int = 0) -
             return False
         return not (sl >= 8192 and bs > 64)
     raise ValueError(f"unsupported DeepSeek-V4 mode: {mode}")
-
-
-def _dsv4_module_filter_pairs(mode: str, batch_sizes, seq_lens):
-    """Drop ``(bs, sl)`` pairs that exceed KV pool / kernel limits.
-
-    Context (b * s):
-        ≤ 8192 — matches sglang's default ``chunked_prefill_size``.
-    Generation (b * s):
-        ≤ 1M overall, with per-sl batch caps for long contexts (sl≥8192→bs≤64,
-        sl≥32768→bs≤16, sl≥65536→bs≤8, sl≥131072→bs≤4, sl≥262144→bs≤2,
-        sl≥524288→bs==1).  Ensures bs=1 is always allowed at every sl.
-    """
-    pairs = []
-    for bs in batch_sizes:
-        for sl in seq_lens:
-            if not _dsv4_module_is_valid_shape(mode, bs, sl):
-                continue
-            pairs.append((bs, sl))
-    return pairs
-
-
-def _dsv4_context_structural_manifest(
-    batch_size: int,
-    seq_lens,
-    prefix_lens,
-    max_position_embeddings: int,
-):
-    """Expand the model-position-valid DSV4 context inner grid."""
-    manifest = []
-    for prefix_len in prefix_lens:
-        retained = tuple(
-            seq_len
-            for seq_len in seq_lens
-            if _dsv4_module_is_valid_shape("context", batch_size, seq_len, prefix_len)
-            and prefix_len + seq_len <= max_position_embeddings
-        )
-        if retained:
-            manifest.append((int(prefix_len), retained))
-    return tuple(manifest)
-
-
-def _build_dsv4_module_test_cases(mode: str, attn_kinds=DSV4_ATTN_KINDS):
-    """One case per ``(attn_kind, tp_size, gemm_type, batch_size)``.
-
-    Test case shape (9 elements; ``perf_filename`` is bound by collect.py
-    via OpEntry, NOT in the tuple)::
-
-        [0, batch_size, tp_size, kv_cache_dtype, compute_dtype, gemm_type,
-         model_path, attn_kind, attention_backend]
-
-    Each spawned subprocess builds ONE ``ModelRunner`` for ``(bs, max_sl)``
-    and sweeps every valid sl for that bs internally.
-    """
-    pairs = _dsv4_module_filter_pairs(
-        mode,
-        _DSV4_MODULE_BATCH_SIZES,
-        _DSV4_MODULE_SEQ_LENGTHS,
-    )
-    bs_set = sorted({bs for bs, _ in pairs})
-
-    cases: list[list] = []
-    for model_path in _selected_dsv4_models():
-        for attn_kind in attn_kinds:
-            for compute_dtype, kv_dtype, gemm_type in _dsv4_module_precision_combos(mode, model_path):
-                for tp_size in _DSV4_MODULE_TP_SIZES:
-                    for bs in bs_set:
-                        cases.append(
-                            [
-                                0,
-                                bs,
-                                tp_size,
-                                kv_dtype,
-                                compute_dtype,
-                                gemm_type,
-                                model_path,
-                                attn_kind,
-                                None,
-                            ]
-                        )
-    return cases
-
-
-def get_dsv4_csa_context_test_cases():
-    return _build_dsv4_module_test_cases("context", ("csa",))
-
-
-def get_dsv4_hca_context_test_cases():
-    return _build_dsv4_module_test_cases("context", ("hca",))
-
-
-def get_dsv4_csa_generation_test_cases():
-    return _build_dsv4_module_test_cases("generation", ("csa",))
-
-
-def get_dsv4_hca_generation_test_cases():
-    return _build_dsv4_module_test_cases("generation", ("hca",))
 
 
 def get_dsv4_topk_calib_test_cases():
@@ -2789,41 +2677,3 @@ def get_dsv4_paged_mqa_logits_test_cases():
     (paged_mqa_logits is the CSA indexer scoring sub-kernel), 1:1 with the
     csa-module rows — no separate sparse sweep grid."""
     return [[model_path, "paged_mqa_logits"] for model_path in _selected_dsv4_models()]
-
-
-# Backward-compatible names for older PR comments/tests while the registry and
-# persisted perf files use the upstream DeepSeek-V4 op names.
-_DSV4_FLASH_CONFIG = _DSV4_CONFIG
-_DSV4_FLASH_MODEL_PATH = _DSV4_DEFAULT_MODELS[0]
-DSV4_FLASH_ATTN_KINDS = DSV4_ATTN_KINDS
-_DSV4_FLASH_MODULE_BATCH_SIZES = _DSV4_MODULE_BATCH_SIZES
-_DSV4_FLASH_MODULE_SEQ_LENGTHS = _DSV4_MODULE_SEQ_LENGTHS
-_DSV4_FLASH_MODULE_PAST_KV_LIST = _DSV4_MODULE_PAST_KV_LIST
-_DSV4_FLASH_MODULE_TP_SIZES = _DSV4_MODULE_TP_SIZES
-_DSV4_FLASH_SPARSE_BS_LIST = _DSV4_SPARSE_BS_LIST
-_DSV4_FLASH_SPARSE_ISL_LIST = _DSV4_SPARSE_ISL_LIST
-_DSV4_FLASH_SPARSE_PAST_KV_LIST = _DSV4_SPARSE_PAST_KV_LIST
-_DSV4_FLASH_SPARSE_CHUNK_PREFILL_SIZE = _DSV4_SPARSE_CHUNK_PREFILL_SIZE
-_DSV4_FLASH_SPARSE_MAX_FULL_S = _DSV4_SPARSE_MAX_FULL_S
-_DSV4_FLASH_SPARSE_TP_LIST_INDEXER = _DSV4_SPARSE_TP_LIST_INDEXER
-DSV4_FLASH_SPARSE_KERNELS = DSV4_SPARSE_KERNELS
-_dsv4_flash_config = _dsv4_config
-
-
-def _dsv4_flash_active() -> bool:
-    return bool(_selected_dsv4_models())
-
-
-def _dsv4_flash_model_path() -> str:
-    return (_selected_dsv4_models() or _DSV4_DEFAULT_MODELS)[0]
-
-
-_dsv4_flash_module_precision_combos = _dsv4_module_precision_combos
-_dsv4_flash_module_filter_pairs = _dsv4_module_filter_pairs
-_build_dsv4_flash_module_test_cases = _build_dsv4_module_test_cases
-_build_dsv4_flash_sparse_test_cases = _build_dsv4_sparse_test_cases
-get_dsv4_flash_csa_context_test_cases = get_dsv4_csa_context_test_cases
-get_dsv4_flash_hca_context_test_cases = get_dsv4_hca_context_test_cases
-get_dsv4_flash_csa_generation_test_cases = get_dsv4_csa_generation_test_cases
-get_dsv4_flash_hca_generation_test_cases = get_dsv4_hca_generation_test_cases
-get_dsv4_flash_paged_mqa_logits_test_cases = get_dsv4_paged_mqa_logits_test_cases

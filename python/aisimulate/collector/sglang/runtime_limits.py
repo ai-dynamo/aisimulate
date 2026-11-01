@@ -218,6 +218,65 @@ def runtime_chunk_size(model_runner) -> int:
     raise RuntimeError("SGLang did not initialize server_args.chunked_prefill_size")
 
 
+# A point the device cannot run is refused with a reason that starts with this
+# classification, before anything is allocated for it.
+KERNEL_LIMIT = "FIXME(kernel-limit)"
+
+
+def over_chunk(shape: tuple, chunk: int) -> str | None:
+    """Why serving would not run this (batch, seq_len, prefix_len) prefill as one forward, or None."""
+    batch_size, seq_len, _prefix_len = shape
+    tokens = required_prefill_extend_tokens(batch_size, seq_len)
+    if tokens <= chunk:
+        return None
+    return (
+        f"{KERNEL_LIMIT}: does not fit: {tokens} new tokens exceed the chunked_prefill_size={chunk} "
+        "SGLang uses on this device, and serving chunks this prefill"
+    )
+
+
+def over_kv_pool(shape: tuple, page_size: int, capacity: int, is_prefill: bool) -> str | None:
+    """Why this (batch, seq_len, prefix_len) point's KV cache cannot fit SGLang's KV pool, or None."""
+    needed = required_kv_alloc_tokens(*shape, page_size, is_prefill=is_prefill)
+    if needed <= capacity:
+        return None
+    return f"{KERNEL_LIMIT}: does not fit: the point needs {needed} KV tokens, the KV pool holds {capacity}"
+
+
+def refuse(shapes: list, refused: dict, reason_for: Callable[[tuple], str | None]) -> None:
+    """Record the reason of every point not yet refused that ``reason_for`` refuses."""
+    for shape in shapes:
+        if shape not in refused:
+            reason = reason_for(shape)
+            if reason is not None:
+                refused[shape] = reason
+
+
+def refusal_summary(refused: dict, total: int) -> str:
+    """One classified line for the points this device refused (the subprocess's last error line)."""
+    shown = "; ".join(
+        f"b={b} s={s} prefix={p}: {reason.removeprefix(f'{KERNEL_LIMIT}: ')}"
+        for (b, s, p), reason in list(refused.items())[:3]
+    )
+    more = f"; and {len(refused) - 3} more" if len(refused) > 3 else ""
+    return f"{KERNEL_LIMIT}: {len(refused)}/{total} point(s) refused: {shown}{more}"
+
+
+def kernel_limit_error(lines: list[str]) -> str | None:
+    """The kernel-limit error a failed measurement subprocess ended on, or None.
+
+    Points the device refused end the subprocess on one classified exception line,
+    the first unindented line of its last traceback. torch.distributed prefixes
+    each line of a rank's output with "[rankN]: ".
+    """
+    plain = [line.split("]: ", 1)[1] if line.startswith("[rank") and "]: " in line else line for line in lines]
+    tracebacks = [index for index, line in enumerate(plain) if line.startswith("Traceback ")]
+    if not tracebacks:
+        return None
+    error = next((line for line in plain[tracebacks[-1] + 1 :] if not line.startswith(" ")), "")
+    return error.removeprefix("RuntimeError: ") if error.startswith(f"RuntimeError: {KERNEL_LIMIT}") else None
+
+
 def chunked_alloc_extend(orig_alloc_extend: Callable, chunk_size: int) -> Callable:
     """Wrap ``alloc_extend`` using SGLang's runtime chunk size."""
     # Lazy: keep this module importable in torch-free unit-test environments.

@@ -113,26 +113,21 @@ def _write_csv(path, header: str, rows: list[str]) -> str:
 
 def test_dsv4_test_cases_active_under_no_filter(monkeypatch):
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
-    from collector.case_generator import (
-        get_dsv4_csa_context_test_cases,
-        get_dsv4_paged_mqa_logits_test_cases,
-    )
+    from collector.case_generator import get_dsv4_paged_mqa_logits_test_cases
+    from collector.op_plans import plan
 
-    assert len(get_dsv4_csa_context_test_cases()) > 0
+    assert len(plan("dsv4_csa_context_module", "sglang", 100).cases) > 0
     assert len(get_dsv4_paged_mqa_logits_test_cases()) > 0
 
 
 def test_dsv4_test_cases_skipped_under_other_model(monkeypatch):
     """Filter to a non-V4 model → V4 ops emit zero cases (collector skips)."""
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "deepseek-ai/DeepSeek-V3")
-    from collector.case_generator import (
-        get_dsv4_csa_context_test_cases,
-        get_dsv4_csa_generation_test_cases,
-        get_dsv4_paged_mqa_logits_test_cases,
-    )
+    from collector.case_generator import get_dsv4_paged_mqa_logits_test_cases
+    from collector.op_plans import plan
 
-    assert get_dsv4_csa_context_test_cases() == []
-    assert get_dsv4_csa_generation_test_cases() == []
+    assert plan("dsv4_csa_context_module", "sglang", 100).cases == []
+    assert plan("dsv4_csa_generation_module", "sglang", 100).cases == []
     assert get_dsv4_paged_mqa_logits_test_cases() == []
 
 
@@ -145,14 +140,14 @@ def test_dsv4_test_cases_skipped_under_other_model(monkeypatch):
 )
 def test_dsv4_test_cases_active_under_v4_filter(monkeypatch, model_path):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
-    from collector.case_generator import get_dsv4_csa_context_test_cases
+    from collector.op_plans import plan
 
-    cases = get_dsv4_csa_context_test_cases()
+    cases = plan("dsv4_csa_context_module", "sglang", 100).cases
     assert len(cases) > 0
     # all cases use the caller-provided DeepSeek-V4 model path
-    assert {c[6] for c in cases} == {model_path}
+    assert {c.model_path for c in cases} == {model_path}
     # all cases for this op are CSA
-    assert {c[7] for c in cases} == {"csa"}
+    assert {c.attn_kind for c in cases} == {"csa"}
 
 
 @pytest.mark.parametrize(

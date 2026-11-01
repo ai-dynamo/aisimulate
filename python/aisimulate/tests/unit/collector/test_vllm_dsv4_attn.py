@@ -92,30 +92,22 @@ def dsv4_module(monkeypatch):
     sys.modules.pop(module_name, None)
 
 
-def test_context_cases_carry_prefix_and_obey_both_token_budgets(dsv4_module, monkeypatch):
+def test_rows_are_the_plan_points_and_carry_the_context_prefix(dsv4_module, monkeypatch):
+    from collector.op_plans import plan
+
     mod = dsv4_module
-    monkeypatch.setattr(sys, "argv", ["pytest"])
-    monkeypatch.setattr(mod, "_selected_dsv4_models", lambda: ("model",))
-    monkeypatch.setattr(mod, "_DSV4_MODULE_BATCH_SIZES", [1, 1024])
-    monkeypatch.setattr(mod, "_DSV4_MODULE_SEQ_LENGTHS", [64, mod.MAX_SEQ_LEN, mod.MAX_SEQ_LEN + 1])
-    monkeypatch.setattr(mod, "_DSV4_MODULE_TP_SIZES", [1])
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "sgl-project/DeepSeek-V4-Flash-FP8")
+    monkeypatch.setattr(mod, "get_sm_version", lambda: 100)
 
     cases = mod.get_dsv4_csa_context_test_cases()
 
-    assert cases
+    assert cases == plan("dsv4_csa_context_module", "vllm", 100).rows
     assert {len(case) for case in cases} == {10}
-    assert {case[9] for case in cases if case[0] == 64 and case[1] == 1} == {
-        0,
-        128,
-        2048,
-        4096,
-        mod.MAX_SEQ_LEN - 64,
-    }
-    assert {case[9] for case in cases if case[0] == mod.MAX_SEQ_LEN} == {0}
-    assert all(case[0] <= mod.MAX_SEQ_LEN for case in cases)
-    assert all(case[9] + case[0] <= mod.MAX_SEQ_LEN for case in cases)
-    assert all(case[1] * case[0] <= mod.MAX_CONTEXT_QUERY_TOKENS for case in cases)
-    assert all(case[1] * (case[9] + case[0]) <= mod.MAX_GENERATION_KV_TOKENS for case in cases)
+    # vLLM times the FP8 checkpoints' own projections on an FP8 KV cache.
+    assert {tuple(case[3:6]) for case in cases} == {("fp8", "bfloat16", "fp8_block")}
+    assert all(case[1] * case[0] <= 16384 for case in cases)
+    assert all(case[1] * (case[9] + case[0]) <= 1048576 for case in cases)
+    assert max(case[9] for case in cases) == 1048575
 
     task_ids = {create_test_case_id(case, "run_dsv4_attn_worker", mod.__name__) for case in cases}
     assert len(task_ids) == len(cases)
@@ -123,28 +115,18 @@ def test_context_cases_carry_prefix_and_obey_both_token_budgets(dsv4_module, mon
     generation_cases = mod.get_dsv4_csa_generation_test_cases()
     assert generation_cases
     assert {len(case) for case in generation_cases} == {9}
+    assert max(case[0] for case in generation_cases) == 1048575
 
     forwarded = {}
     monkeypatch.setattr(mod, "_init_cuda", lambda _device: None)
     monkeypatch.setattr(mod, "_bench_attention_shape", lambda **kwargs: forwarded.update(kwargs))
-    nonzero_prefix_case = next(case for case in cases if case[9] == 128)
+    nonzero_prefix_case = next(case for case in cases if case[9] == 2048)
     mod.run_dsv4_attn_worker(
         *nonzero_prefix_case,
         perf_filename="dsv4_csa_context_module_perf.txt",
     )
-    assert forwarded["prefix_len"] == 128
-
-
-def test_smoke_has_zero_and_nonzero_prefix_without_endpoint_sweep(dsv4_module, monkeypatch):
-    mod = dsv4_module
-    monkeypatch.setattr(sys, "argv", ["collect.py", "--smoke"])
-    monkeypatch.setattr(mod, "_selected_dsv4_models", lambda: ("model",))
-    monkeypatch.setattr(mod, "_DSV4_MODULE_BATCH_SIZES", [1])
-    monkeypatch.setattr(mod, "_DSV4_MODULE_TP_SIZES", [1])
-
-    cases = mod.get_dsv4_hca_context_test_cases()
-
-    assert {(case[0], case[9]) for case in cases} == {(64, 0), (64, 128)}
+    assert forwarded["prefix_len"] == 2048
+    assert (forwarded["warming_up"], forwarded["test_ite"]) == (5, 10)
 
 
 @pytest.mark.parametrize("kernel", ["paged_mqa_logits"])

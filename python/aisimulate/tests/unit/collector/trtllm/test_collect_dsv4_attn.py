@@ -46,7 +46,7 @@ def test_registry_wires_all_four_dsv4_module_ops():
     for op, (perf_file, get_func) in DSV4_MODULE_OPS.items():
         entry = entries[op]
         assert entry.module == "collector.trtllm.collect_dsv4_attn"
-        assert entry.run_func == "run_dsv4_attn_worker"
+        assert entry.run_func == "run_dsv4_attn_series_worker"
         # get_func <-> perf_filename pairing decides which population lands
         # in which table; a CSA getter wired to the HCA file would otherwise
         # pass and mislabel every row.
@@ -65,33 +65,33 @@ def test_trtllm_dsv4_plan_schedules_attention_modules():
     assert "mhc_module" in plan.selected_ops
 
 
-def test_dsv4_case_population_shape_and_budget(monkeypatch):
-    module = _load_module_with_torch_stub(monkeypatch)
+def test_dsv4_rows_are_the_plan_series(monkeypatch):
+    from collector.op_plans import plan
 
+    module = _load_module_with_torch_stub(monkeypatch)
     for mode, expected_kind, getter in (
         ("context", "csa", module.get_dsv4_csa_context_test_cases),
         ("context", "hca", module.get_dsv4_hca_context_test_cases),
         ("generation", "csa", module.get_dsv4_csa_generation_test_cases),
         ("generation", "hca", module.get_dsv4_hca_generation_test_cases),
     ):
-        cases = getter()
-        assert cases
-        ids = [case["id"] for case in cases]
-        assert len(ids) == len(set(ids)), f"duplicate ids in {mode}/{expected_kind}"
-        for case in cases:
-            params = case["params"]
-            if mode == "context":
-                sl, bs, tp, kv, comp, gemm, model, kind, prefix = params
-                assert prefix + sl <= module.MAX_SEQ_LEN
-                assert bs * sl <= module.MAX_CONTEXT_QUERY_TOKENS
-                assert bs * (prefix + sl) <= module.MAX_GENERATION_KV_TOKENS
-            else:
-                sl, bs, tp, kv, comp, gemm, model, kind = params
-                assert bs * sl <= module.MAX_GENERATION_KV_TOKENS
-            assert sl <= module.MAX_SEQ_LEN
+        rows = getter()
+        assert rows == plan(f"dsv4_{expected_kind}_{mode}_module", "trtllm", 90).rows
+        keys = [tuple(row[1:]) for row in rows]
+        assert len(keys) == len(set(keys)), f"two series share a module build in {mode}/{expected_kind}"
+        for points, bs, tp, kv, comp, gemm, _model, kind in rows:
+            # TRT-LLM times the FP8 checkpoints' own projections on an FP8 KV cache.
             assert (kv, comp, gemm) == ("fp8", "bfloat16", "fp8_block")
             assert kind == expected_kind
             assert tp in (1, 2, 4, 8)
+            assert points == sorted(points, reverse=True)
+            for sl, prefix in points:
+                if mode == "context":
+                    assert bs * sl <= 16384
+                    assert bs * (prefix + sl) <= 1048576
+                else:
+                    assert prefix == 0
+                    assert bs * sl <= 1048576
 
 
 def test_dsv4_getters_return_empty_for_unrelated_model_filter(monkeypatch, capsys):
@@ -107,24 +107,6 @@ def test_dsv4_getters_return_empty_for_unrelated_model_filter(monkeypatch, capsy
         assert getter() == []
 
     assert "is not a DSV4 model; generating no DSV4 cases" in capsys.readouterr().out
-
-
-@pytest.mark.parametrize(
-    "getter_name",
-    [
-        "get_dsv4_csa_context_test_cases",
-        "get_dsv4_hca_context_test_cases",
-        "get_dsv4_csa_generation_test_cases",
-        "get_dsv4_hca_generation_test_cases",
-    ],
-)
-def test_dsv4_getters_fail_when_budget_drops_every_selected_model_shape(monkeypatch, getter_name):
-    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "sgl-project/DeepSeek-V4-Flash-FP8")
-    module = _load_module_with_torch_stub(monkeypatch)
-    monkeypatch.setattr(module, "MAX_SEQ_LEN", 0)
-
-    with pytest.raises(RuntimeError, match="budget filter dropped every shape"):
-        getattr(module, getter_name)()
 
 
 def test_dsv4_worker_infers_mode_from_perf_filename(monkeypatch):
@@ -375,7 +357,7 @@ def test_budget_file_is_in_the_hash_closure_and_moves_both_hashes(tmp_path, monk
 
     closures = provenance.load_closures(REPO_ROOT / "collector" / "hash_closures.yaml")
     entry = closures["collector.trtllm.collect_dsv4_attn"]
-    assert "collector/cases/base_ops/dsv4_attention.yaml" in entry
+    assert {"collector/cases/base_ops/dsv4_attention.yaml", "collector/op_plans.py"} <= set(entry)
 
     # (a) content change -> collector_hash change (copy the repo surface the
     # hash walks, mutate only the budget file)
@@ -392,19 +374,21 @@ def test_budget_file_is_in_the_hash_closure_and_moves_both_hashes(tmp_path, monk
         shutil.copy(src, dst)
     h_before = provenance.collector_hash("collector.trtllm.collect_dsv4_attn", tmp_path, closures)
     budget = tmp_path / "collector/cases/base_ops/dsv4_attention.yaml"
-    budget.write_text(budget.read_text().replace("max_seq_len: 65536", "max_seq_len: 32768"))
+    budget.write_text(budget.read_text().replace("max_generation_kv_tokens: 1048576", "max_generation_kv_tokens: 1"))
     h_after = provenance.collector_hash("collector.trtllm.collect_dsv4_attn", tmp_path, closures)
     assert h_before != h_after
 
-    # (b) cap change -> different generated population (plan re-attests)
+    # (b) budget change -> different generated population (plan re-attests)
+    import dataclasses
+
+    from collector import op_plans
+
     module = _load_module_with_torch_stub(monkeypatch)
-    baseline = {c["id"] for c in module.get_dsv4_csa_context_test_cases()}
-    monkeypatch.setattr(module, "MAX_SEQ_LEN", 32768)
-    shrunk = {c["id"] for c in module.get_dsv4_csa_context_test_cases()}
-    # not a strict subset: the dynamic prefix endpoint (MAX_SEQ_LEN - sl)
-    # moves with the cap, so the shrunk plan both drops and renames cases
-    assert shrunk != baseline
-    assert len(shrunk) < len(baseline)
+    baseline = module.get_dsv4_csa_generation_test_cases()
+    sweep = op_plans.get_dsv4_sweep()
+    monkeypatch.setattr(op_plans, "get_dsv4_sweep", lambda: dataclasses.replace(sweep, generation_max_kv_tokens=65536))
+    shrunk = module.get_dsv4_csa_generation_test_cases()
+    assert sum(len(row[0]) for row in shrunk) < sum(len(row[0]) for row in baseline)
 
 
 def _serving_oracle(bs, seq_len, prefix, is_context):
@@ -490,22 +474,14 @@ def test_kv_quota_is_capped_by_this_batch_s_tokens(monkeypatch, bs, sl, is_ctx, 
     assert floor > 1_572_864  # H20 calibration: 1,048,576 tokens -> i32, 1,572,864 -> i64
 
 
-@pytest.mark.parametrize(("sm", "expected"), [(100, "fp8"), (103, "fp8"), (90, "fp8"), (120, "fp8")])
-def test_serving_kv_cache_dtype_is_an_sdk_enum_member_name(monkeypatch, sm, expected):
+@pytest.mark.parametrize("sm", [90, 100, 103, 120])
+def test_rows_label_the_kv_cache_with_an_sdk_enum_member_name(monkeypatch, sm):
     # engine_table_view rehydrates kv_cache_dtype through KVCacheQuantMode; "bf16" raised
     # KeyError on every SM100 DSV4 table in Full CI (2026-10-29).
     from aisimulate_core.quantization import KVCacheQuantMode
 
     module = _load_module_with_torch_stub(monkeypatch)
-    monkeypatch.delenv("AIS_DSV4_KV_CACHE_DTYPE", raising=False)
     monkeypatch.setattr(module, "get_sm_version", lambda: sm)
-    label = module._serving_kv_cache_dtype()
-    assert label == expected
-    assert label in KVCacheQuantMode.__members__
-
-
-@pytest.mark.parametrize(("override", "expected"), [("bf16", "bfloat16"), ("bfloat16", "bfloat16"), ("fp8", "fp8")])
-def test_serving_kv_cache_dtype_override_normalises_the_bf16_alias(monkeypatch, override, expected):
-    module = _load_module_with_torch_stub(monkeypatch)
-    monkeypatch.setenv("AIS_DSV4_KV_CACHE_DTYPE", override)
-    assert module._serving_kv_cache_dtype() == expected
+    labels = {row[3] for row in module.get_dsv4_hca_generation_test_cases()}
+    assert labels == {"fp8"}
+    assert labels <= set(KVCacheQuantMode.__members__)

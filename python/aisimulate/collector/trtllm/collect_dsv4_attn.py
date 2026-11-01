@@ -65,41 +65,11 @@ except ModuleNotFoundError:
     from helper import benchmark_with_power, get_sm_version, log_perf
 
 
+from collector.op_plans import plan_cases
+
 ARCHITECTURE = "DeepseekV4ForCausalLM"
 
-# Same geometry constants the sglang/vllm collectors read from
-# collector/cases/models/DeepseekV4ForCausalLM_cases.yaml via case_generator.
-try:
-    from case_generator import (
-        _DSV4_MODULE_BATCH_SIZES,
-        _DSV4_MODULE_BUDGETS,
-        _DSV4_MODULE_SEQ_LENGTHS,
-        _DSV4_MODULE_TP_SIZES,
-        _selected_dsv4_models,
-    )
-except ModuleNotFoundError:
-    from collector.case_generator import (
-        _DSV4_MODULE_BATCH_SIZES,
-        _DSV4_MODULE_BUDGETS,
-        _DSV4_MODULE_SEQ_LENGTHS,
-        _DSV4_MODULE_TP_SIZES,
-        _selected_dsv4_models,
-    )
-
 ATTN_KIND_TO_COMPRESS_RATIO = {"csa": 4, "hca": 128}
-
-# Universal sweep budgets are DECLARED at the base-op layer
-# (cases/base_ops/dsv4_attention.yaml, in this module's hash closure) and
-# enforced at generation time with counted drops. These are generator
-# constraints — "the op's universal math (identities, budgets)" belongs to
-# the base-op/generator layer (case_authoring.md §"Legitimate shape
-# narrowing", row 2) — NOT memory-feasibility filters; the collector only
-# reads the declared values.
-MAX_SEQ_LEN = _DSV4_MODULE_BUDGETS["max_seq_len"]
-MAX_CONTEXT_QUERY_TOKENS = _DSV4_MODULE_BUDGETS["max_context_query_tokens"]
-MAX_GENERATION_KV_TOKENS = _DSV4_MODULE_BUDGETS["max_generation_kv_tokens"]
-DECODE_BATCH_LADDER = _DSV4_MODULE_BUDGETS["decode_batch_ladder"]
-CONTEXT_PREFIX_ANCHORS = (0, 128, 2048, 4096)
 
 _MODEL_CONFIG_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -110,124 +80,24 @@ _MODEL_CONFIG_DIR = os.path.join(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Case population
+# Case population: the op plans' rows (collector/op_plans.py)
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _filter_shapes(mode: str, drops: dict[str, int] | None = None):
-    """(bs, sl, prefix) grid with the vllm collector's budget filters
-    (collector/vllm/collect_dsv4_attn.py:833-880).
-
-    Budget drops are counted per reason (layer_permissions.md memory-filter
-    rule 3: "drops are counted, never silent") — the caps are env-overridable,
-    so a misconfigured cap must be visible, not a silently-empty population.
-    """
-    drops = drops if drops is not None else {}
-
-    def _drop(reason: str) -> None:
-        drops[reason] = drops.get(reason, 0) + 1
-
-    smoke = "--smoke" in sys.argv
-    batch_sizes = [1] if smoke else _DSV4_MODULE_BATCH_SIZES
-    seq_lens = [64] if smoke else _DSV4_MODULE_SEQ_LENGTHS
-    shapes = []
-    for bs in batch_sizes:
-        for sl in seq_lens:
-            if sl > MAX_SEQ_LEN:
-                _drop("seq_len_cap")
-                continue
-            if mode == "context":
-                prefixes = (0, 128) if smoke else tuple(dict.fromkeys(CONTEXT_PREFIX_ANCHORS + (MAX_SEQ_LEN - sl,)))
-                for prefix in prefixes:
-                    if prefix < 0 or prefix + sl > MAX_SEQ_LEN:
-                        _drop("prefix_bounds")
-                        continue
-                    if bs * sl > MAX_CONTEXT_QUERY_TOKENS:
-                        _drop("context_query_tokens_cap")
-                        continue
-                    if bs * (prefix + sl) > MAX_GENERATION_KV_TOKENS:
-                        _drop("context_kv_tokens_cap")
-                        continue
-                    shapes.append((bs, sl, prefix))
-            else:
-                if bs * sl > MAX_GENERATION_KV_TOKENS:
-                    _drop("generation_kv_tokens_cap")
-                    continue
-                # Declared decode batch ladder (module_budgets).
-                if any(sl >= floor and bs > max_bs for floor, max_bs in DECODE_BATCH_LADDER):
-                    _drop("decode_batch_ladder")
-                    continue
-                shapes.append((bs, sl, 0))
-    return shapes
+def get_dsv4_csa_context_test_cases():
+    return plan_cases("dsv4_csa_context_module", "trtllm", get_sm_version())
 
 
-# Perf-row / case label of each KV pool dtype = the SDK's KVCacheQuantMode member name.
-_KV_CACHE_DTYPE_LABELS = {"bf16": "bfloat16", "bfloat16": "bfloat16", "fp8": "fp8"}
+def get_dsv4_hca_context_test_cases():
+    return plan_cases("dsv4_hca_context_module", "trtllm", get_sm_version())
 
 
-def _serving_kv_cache_dtype() -> str:
-    """KV pool dtype serving uses for DSV4: FP8 on every SM.
-
-    Hopper requires the packed fp8_ds_mla pool (see the KvCacheConfig in the run function).
-    Blackwell serves the plain FP8 pool, which is TRT-LLM's recommended DeepSeek-V4
-    configuration there (examples/models/core/deepseek_v4/README.md) and what its B200 CI
-    runs. fp8_ds_mla itself is not servable off Hopper: it needs 256-token blocks and the
-    fallback attention refuses it. The perf row spells the dtype as the SDK's
-    KVCacheQuantMode member name. AIS_DSV4_KV_CACHE_DTYPE=fp8|bfloat16 (alias bf16)
-    overrides it.
-    """
-    override = os.environ.get("AIS_DSV4_KV_CACHE_DTYPE")
-    if override:
-        return _KV_CACHE_DTYPE_LABELS.get(override, override)
-    return "fp8"
+def get_dsv4_csa_generation_test_cases():
+    return plan_cases("dsv4_csa_generation_module", "trtllm", get_sm_version())
 
 
-def _build_dsv4_test_cases(mode: str, attn_kind: str) -> list[dict]:
-    cases: list[dict] = []
-    tp_sizes = [1] if "--smoke" in sys.argv else _DSV4_MODULE_TP_SIZES
-    model_paths = _selected_dsv4_models()
-    if not model_paths:
-        return []
-    drops: dict[str, int] = {}
-    # Loop-invariant: same shape grid for every (model, tp) pair, so compute
-    # (and count drops) once. Case order is unchanged.
-    shapes = _filter_shapes(mode, drops)
-    if drops:
-        total_dropped = sum(drops.values())
-        print(
-            f"[trtllm-dsv4] {mode}/{attn_kind}: dropped {total_dropped} shape(s) at generation (budget filter): {drops}"
-        )
-    for model_path in model_paths:
-        for tp_size in tp_sizes:
-            for bs, sl, prefix in shapes:
-                params = [sl, bs, tp_size, _serving_kv_cache_dtype(), "bfloat16", "fp8_block", model_path, attn_kind]
-                case_id = f"dsv4_{attn_kind}_{mode}_b{bs}_s{sl}_tp{tp_size}_{model_path.replace('/', '_')}"
-                if mode == "context":
-                    params.append(prefix)
-                    case_id += f"_p{prefix}"
-                cases.append({"id": case_id, "params": params})
-    if not cases:
-        # Zero cases with no logged reason is a population bug
-        # (layer_permissions.md); with the reasons logged it is an explicit
-        # configuration error (e.g. an env cap set below the whole grid).
-        raise RuntimeError(f"dsv4 {mode}/{attn_kind}: budget filter dropped every shape (drops={drops})")
-    return cases
-
-
-def get_dsv4_csa_context_test_cases() -> list[dict]:
-    return _build_dsv4_test_cases("context", "csa")
-
-
-def get_dsv4_hca_context_test_cases() -> list[dict]:
-    return _build_dsv4_test_cases("context", "hca")
-
-
-def get_dsv4_csa_generation_test_cases() -> list[dict]:
-    return _build_dsv4_test_cases("generation", "csa")
-
-
-def get_dsv4_hca_generation_test_cases() -> list[dict]:
-    return _build_dsv4_test_cases("generation", "hca")
+def get_dsv4_hca_generation_test_cases():
+    return plan_cases("dsv4_hca_generation_module", "trtllm", get_sm_version())
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -407,8 +277,8 @@ def create_dsv4_attention_module(
             "The framework dispatch contract changed; re-audit against the runtime version."
         )
 
-    # The KV quant algo follows the lane: fp8 (the serving pool, see _serving_kv_cache_dtype) sets
-    # kv_cache_quant_algo=FP8 and the module runs the E4m3 FMHA cubins; a bf16 override leaves it unset
+    # The KV quant algo follows the lane: fp8 (the serving pool, op_plans._trtllm_dsv4_rows) sets
+    # kv_cache_quant_algo=FP8 and the module runs the E4m3 FMHA cubins; a bf16 lane leaves it unset
     # so the module runs the QkvBfloat16 cubins — with FP8 pinned here a bf16 pool still produced E4m3
     # kernels (B200 capture 2026-10-04).
     _apply_gemm_type_quant(model_config, "fp8_block", use_fp8_kv_cache=(kv_cache_dtype == "fp8"))
@@ -1004,7 +874,6 @@ def run_dsv4_attn_worker(
     Mode is derived from the target perf filename (same convention as the
     vllm collector, collect_dsv4_attn.py:968 @0.24.0).
     """
-    warming_up, test_ite = _worker_iterations()
     run_dsv4_attn(
         seq_len=seq_len,
         batch_size=batch_size,
@@ -1018,19 +887,11 @@ def run_dsv4_attn_worker(
         mode=_worker_mode(perf_filename),
         perf_filename=perf_filename,
         device=device,
-        warming_up=warming_up,
-        test_ite=test_ite,
     )
 
 
 def _worker_mode(perf_filename: str) -> str:
     return "context" if "context" in os.path.basename(perf_filename) else "generation"
-
-
-def _worker_iterations() -> tuple[int, int]:
-    """(warming_up, test_ite) of a worker run: fewer under --smoke."""
-    smoke = "--smoke" in sys.argv
-    return (3, 3) if smoke else (10, 6)
 
 
 def run_dsv4_attn_series(
@@ -1098,9 +959,9 @@ def run_dsv4_attn_series_worker(
     perf_filename: str,
     device: str = "cuda:0",
 ) -> None:
-    """Worker entry for one series task: run_dsv4_attn_worker's positional fields, with
-    the list of (seq_len, prefix_len) points in place of seq_len and prefix_len."""
-    warming_up, test_ite = _worker_iterations()
+    """Worker entry for one series task (op_plans._trtllm_dsv4_rows): run_dsv4_attn_worker's
+    positional fields, with the list of (seq_len, prefix_len) points in place of seq_len and
+    prefix_len."""
     run_dsv4_attn_series(
         points,
         batch_size,
@@ -1113,8 +974,6 @@ def run_dsv4_attn_series_worker(
         mode=_worker_mode(perf_filename),
         perf_filename=perf_filename,
         device=device,
-        warming_up=warming_up,
-        test_ite=test_ite,
     )
 
 
