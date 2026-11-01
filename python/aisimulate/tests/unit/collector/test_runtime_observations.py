@@ -2015,7 +2015,7 @@ def test_v031_records_must_hold_what_vllm_derives_from_them(tmp_path, case, layo
         # so the cache-hit alignment is the 2-token hash block, which is not a multiple of the 4 tokens per state of
         # the indexer spec that the scheduler keeps for the attention group (kv_cache_utils.py:806-832, :2434-2440).
         ("glm_tp4", 2, _BLOCK_SIZES),
-        # 8 tokens divide every block and are a multiple of the 4 tokens per state.
+        # 8 tokens divide the 2,176-token attention and Mamba blocks and are a multiple of the 4 tokens per state.
         ("glm_tp4", 8, None),
     ],
     ids=["divisibility", "state_alignment", "state_alignment_control"],
