@@ -130,8 +130,8 @@ def _sample(row: Mapping[str, Any], *, aggregated: bool) -> dict[str, Any]:
                 normalized[key] = _metric(worker, key)
             workers.append(normalized)
     lookups = [
-        _mapping(interval["native_prefix_cache_lookup"], "native_prefix_cache_lookup")
-        if interval.get("native_prefix_cache_lookup") is not None
+        _mapping(interval["g1_prefix_cache_lookup"], "g1_prefix_cache_lookup")
+        if interval.get("g1_prefix_cache_lookup") is not None
         else {}
         for interval in intervals
     ]

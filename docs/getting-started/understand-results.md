@@ -222,7 +222,7 @@ has Dashboard and Request timeline tabs. It contains:
 
 - Profiling and optional warmup views with request lengths, TTFT, E2E, and interactivity.
 - Resident KV occupancy, host-cache pools, running/waiting queues, completed
-  requests, preemptions, prefix reuse, native cache lookups, and prompt sources.
+  requests, preemptions, prefix reuse, G1 prefix-cache lookups, and prompt sources.
 - Executed-prefill and delivered-output throughput, with a separate
   successful-completion-accounted output view, plus speculative acceptance.
 - Conversation-level input footprint, completion status, lifecycle records,
@@ -249,7 +249,8 @@ input length per play and conversation, not a measurement of physical token
 uniqueness. Footprint and in-flight request means include arrivals at the sample
 time and exclude requests ending at that time. A single event sweep per phase
 computes these series; redraws reuse them instead of scanning all requests per sample.
-Native lookup reuse and scheduler pass reuse remain separate metrics.
+G1 prefix-cache lookup reuse measures device-cache matches and remains separate
+from scheduler pass reuse.
 
 This report presents simulated measurements only. It does not produce silicon
 accuracy scores, server logs, or power curves. `--overwrite` replaces the HTML

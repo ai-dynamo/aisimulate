@@ -1442,7 +1442,7 @@
         } else if (id === "hits") {
           traces = [
             line(
-              "Native lookup hit rate",
+              "G1 prefix-cache lookup hit rate",
               x,
               ss.map((sample) =>
                 percent(sample.lookup_hits, sample.lookup_queries),
@@ -1465,9 +1465,10 @@
               ticksuffix: "%",
             },
           });
-          note = "Separate interval denominators for each native counter";
+          note =
+            "Separate interval denominators for G1 lookups and scheduler reuse";
           foot =
-            "Native lookups, scheduler pass reuse, and first-admission attribution are distinct metrics.";
+            "G1 prefix-cache lookups measure device-cache matches; scheduler pass reuse and first-admission attribution remain separate.";
         } else if (id === "throughput") {
           let counters = ss,
             output = "Delivered output";
