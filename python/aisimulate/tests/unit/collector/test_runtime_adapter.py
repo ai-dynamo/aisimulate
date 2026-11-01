@@ -192,6 +192,17 @@ def _v031_runtime(storage, layout, blocks):
         vars(value).update(fields)
         return value
 
+    def uniform_spec(**fields):
+        # UniformTypeKVCacheSpecs overrides none of the abstract KVCacheSpec properties, which
+        # raise NotImplementedError (kv_cache_interface.py:181-191, :1233-1333).
+        def abstract(_self):
+            raise NotImplementedError
+
+        properties = dict.fromkeys(("num_heads", "tokens_per_state", "state_content_size_bytes"), property(abstract))
+        value = type("UniformTypeKVCacheSpecs", (), {"__module__": "vllm.v1.kv_cache_interface", **properties})()
+        vars(value).update(fields)
+        return value
+
     def group(names, kv_cache_spec):
         return SimpleNamespace(
             layer_names=names,
@@ -298,16 +309,11 @@ def _v031_runtime(storage, layout, blocks):
     groups = [
         group(
             attention_names,
-            spec("UniformTypeKVCacheSpecs", block_size=2176, page_size_bytes=13_045_120, kv_cache_specs=uniform),
+            uniform_spec(block_size=2176, page_size_bytes=13_045_120, kv_cache_specs=uniform),
         ),
         group(
             tails,
-            spec(
-                "UniformTypeKVCacheSpecs",
-                block_size=4,
-                page_size_bytes=789_888,
-                kv_cache_specs=dict.fromkeys(tails, tail),
-            ),
+            uniform_spec(block_size=4, page_size_bytes=789_888, kv_cache_specs=dict.fromkeys(tails, tail)),
         ),
         *(group(names, state) for names in mamba_groups),
     ]
@@ -1022,6 +1028,18 @@ def test_v031_glm_worker_record_is_complete(tmp_path, monkeypatch):
         assert scheduler["cache"]["groups"][0]["spec_page_size_bytes"] == 71_808
         assert worker["raw_cache_config"]["kv_cache_layout"] == "LBHNC"
         assert worker["raw_cache_config"]["tensor_allocations"][0]["layer_stride"] == 8_912_896
+        # A uniform group spec inherits the KVCacheSpec tokens_per_state, which raises NotImplementedError
+        # (kv_cache_interface.py:185-187), so its raw record leaves that field out. The layer specs of its
+        # group keep the value of each layer, and the raw records of other spec classes keep the field.
+        raw_groups = worker["raw_cache_config"]["groups"]
+        assert [set(group) for group in raw_groups[:2]] == [
+            {"layer_names", "spec_type", "block_size", "page_size_bytes"}
+        ] * 2
+        assert {name: spec["tokens_per_state"] for name, spec in attention["layer_specs"].items()} == {
+            name: 4 if name.endswith(".indexer") else 1 for name in attention["layer_names"]
+        }
+        assert [group["tokens_per_state"] for group in raw_groups[2:]] == [-1] * 4
+        assert scheduler["raw_cache_config"]["groups"][0]["tokens_per_state"] == 4
         assert scheduler["cache"]["prefix_caching"] == {
             "enable_prefix_caching": True,
             "mamba_cache_mode": "align",

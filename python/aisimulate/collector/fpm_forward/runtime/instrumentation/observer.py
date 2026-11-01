@@ -160,6 +160,10 @@ def _raw_cache(config: Any, *, hybrid_evidence: bool = False) -> dict:
             "dtypes",
         )
         tensor_fields += ("layers", "layer_stride")
+    # A vLLM 0.31.0 UniformTypeKVCacheSpecs inherits the abstract KVCacheSpec.tokens_per_state, which
+    # raises NotImplementedError (kv_cache_interface.py:185-187, :1233-1333). The layer specs of its
+    # cache group record the value of each layer (fpm_memory_observer.py:476-485).
+    uniform_fields = tuple(key for key in fields if key != "tokens_per_state")
     record = {
         "num_blocks": config.num_blocks,
         "groups": [
@@ -167,7 +171,11 @@ def _raw_cache(config: Any, *, hybrid_evidence: bool = False) -> dict:
                 "layer_names": list(group.layer_names),
                 "spec_type": legacy._class_name(group.kv_cache_spec),
                 **{
-                    key: _json(getattr(group.kv_cache_spec, key)) for key in fields if hasattr(group.kv_cache_spec, key)
+                    key: _json(getattr(group.kv_cache_spec, key))
+                    for key in (
+                        uniform_fields if legacy._class_name(group.kv_cache_spec) == legacy._UNIFORM_SPEC else fields
+                    )
+                    if hasattr(group.kv_cache_spec, key)
                 },
             }
             for group in config.kv_cache_groups
