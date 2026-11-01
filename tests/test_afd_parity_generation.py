@@ -93,6 +93,40 @@ def test_partial_refresh_is_atomic_and_keeps_other_case_identity(tmp_path, monke
         assert "prediction_provenance" not in actual["cases"]["selected"]["summary"]
 
 
+def test_layout_refresh_preserves_previous_generation_and_unselected_cases(tmp_path, monkeypatch):
+    fixture = {
+        "cases": {
+            name: {
+                "config": {},
+                "trace": False,
+                "expected": {"completed_requests": 1, "duration_ms": 1},
+                "generation": {"source_commit": "original"},
+            }
+            for name in ["selected", "untouched"]
+        }
+    }
+    path = tmp_path / "afd_execution_plan.json"
+    path.write_text(json.dumps(fixture))
+    monkeypatch.setattr(parity, "GOLDEN_DIR", tmp_path)
+    monkeypatch.setattr(parity, "layout_config", lambda record, directory: {})
+    monkeypatch.setattr(parity, "_verified_build", lambda manifest: {"source_commit": "new"})
+
+    def run(command, **kwargs):
+        output = Path(command[command.index("--output-dir") + 1])
+        output.mkdir()
+        (output / "prediction.json").write_text(json.dumps({"summary": {"completed_requests": 1, "duration_ms": 2}}))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(parity.subprocess, "run", run)
+    parity._refresh_layouts(["selected"], "explained change", tmp_path / "manifest")
+    result = json.loads(path.read_text())
+    assert result["cases"]["untouched"] == fixture["cases"]["untouched"]
+    selected = result["cases"]["selected"]
+    assert selected["historical_generations"] == [fixture["cases"]["selected"]["generation"]]
+    assert selected["generation"]["source_commit"] == "new"
+    assert selected["expected"]["duration_ms"] == 2
+
+
 def test_golden_job_runs_both_afd_suites_with_installed_python():
     import yaml
 

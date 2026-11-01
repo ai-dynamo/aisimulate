@@ -333,7 +333,6 @@ pub struct AfdForwardPassPerfModel {
     a_pool: PoolRuntime,
     f_pool: PoolRuntime,
     a2f: AfdTransferOp,
-    f2a: AfdTransferOp,
     f_ag: AfdFCollectiveOp,
     f_rs: AfdFCollectiveOp,
     a_combine: AfdCombineOp,
@@ -415,9 +414,9 @@ impl AfdForwardPassPerfModel {
         // confusing partition errors.
         let (architecture, shape) = pyo3::Python::with_gil(|py| {
             use pyo3::prelude::PyAnyMethods;
-            let module = py.import("aisimulate_core.sdk.models.helpers")?;
+            let module = py.import("aisimulate_core.sdk.models.afd")?;
             let info = module
-                .getattr("_get_model_info")?
+                .getattr("_get_afd_model_info")?
                 .call1((config.model.as_str(),))?;
             let architecture: Option<String> = info.get_item("architecture")?.extract()?;
             let shape = AfdModelShape {
@@ -651,7 +650,6 @@ impl AfdForwardPassPerfModel {
             token_mapping,
             fabric,
             a2f: shared_transfer(AfdTransferDirection::A2f, "afd_a2f_transfer"),
-            f2a: shared_transfer(AfdTransferDirection::F2a, "afd_f2a_transfer"),
             f_ag: shared_collective(AfdFCollectiveOp::all_gather("afd_f_node_allgather", 1.0)),
             f_rs: shared_collective(AfdFCollectiveOp::reduce_scatter(
                 "afd_f_node_reducescatter",
@@ -1851,6 +1849,49 @@ mod tests {
             );
             assert!(actual.ffn_ms > 0.0 && reference.ffn_ms > 0.0);
             assert_eq!(hetero.f_pool.engine.database().system, "b200_sxm");
+        }
+    }
+
+    #[cfg(feature = "python")]
+    #[test]
+    fn symmetric_transfer_reuse_retains_both_direction_records() {
+        let a_db = load_db("h200_sxm");
+        for (system, fixture) in [
+            ("h200_sxm", "moe_pure_h200_f_sglang.json"),
+            ("b200_sxm", "moe_hetero_b200_f_sglang.json"),
+        ] {
+            let f_db = load_db(system);
+            for layout in [AfdPipelineLayout::FourStage, AfdPipelineLayout::TwoStage] {
+                let mut config = pure_config();
+                Arc::make_mut(&mut config.topology).pipeline_layout = layout;
+                Arc::make_mut(&mut config.topology).f_pool.system = system.into();
+                Arc::make_mut(&mut config.topology).comm_overhead_factor = 1.75;
+                let model = AfdForwardPassPerfModel::from_engines(
+                    config,
+                    build_engine("moe_pure_h200_a_sglang.json", &a_db),
+                    build_engine(fixture, &f_db),
+                )
+                .unwrap();
+                for phase in [AfdPhase::Prefill, AfdPhase::Decode] {
+                    let (_, ops) = model
+                        .predict_phase_with_operations(phase, 1024, 128, 0)
+                        .unwrap();
+                    let outgoing: Vec<_> = ops
+                        .iter()
+                        .filter(|op| op.name == "afd_a2f_transfer")
+                        .collect();
+                    let incoming: Vec<_> = ops
+                        .iter()
+                        .filter(|op| op.name == "afd_f2a_transfer")
+                        .collect();
+                    assert_eq!(outgoing.len(), 1);
+                    assert_eq!(incoming.len(), 1);
+                    assert!(outgoing[0].latency_ms > 0.);
+                    assert_eq!(outgoing[0].latency_ms, incoming[0].latency_ms);
+                    assert_eq!(outgoing[0].energy_wms, incoming[0].energy_wms);
+                    assert_eq!(outgoing[0].source, incoming[0].source);
+                }
+            }
         }
     }
 

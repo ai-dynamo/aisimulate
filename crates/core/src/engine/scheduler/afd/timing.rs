@@ -81,26 +81,25 @@ impl TimingModel for AfdTimingModel {
         mean_isl: usize,
         mean_prefix: usize,
     ) -> Result<f64> {
+        let batch_size = checked_timing_u32(batch_size, "batch_size")?;
+        let mean_isl = checked_timing_u32(mean_isl, "mean_isl")?;
+        let mean_prefix = checked_timing_u32(mean_prefix, "mean_prefix")?;
         #[cfg(feature = "python")]
-        let (metrics, operations) = self.perf.predict_prefill_step_with_operations(
-            batch_size as u32,
-            mean_isl as u32,
-            mean_prefix as u32,
-        )?;
+        let (metrics, operations) =
+            self.perf
+                .predict_prefill_step_with_operations(batch_size, mean_isl, mean_prefix)?;
         #[cfg(not(feature = "python"))]
-        let metrics = self.perf.predict_prefill_step_ms(
-            batch_size as u32,
-            mean_isl as u32,
-            mean_prefix as u32,
-        )?;
+        let metrics = self
+            .perf
+            .predict_prefill_step_ms(batch_size, mean_isl, mean_prefix)?;
         let evaluation = evaluate_afd_metrics(
             &AfdPipelineKnobs {
-                total_batch_size: batch_size as u32,
+                total_batch_size: batch_size,
                 ..self.knobs
             },
             &metrics,
             AfdEvalPhase::Prefill,
-            mean_isl as u32,
+            mean_isl,
             self.osl,
         )?;
         #[cfg(feature = "python")]
@@ -183,6 +182,62 @@ mod tests {
     use crate::perfmodel::engine::spec::EngineSpec;
     use std::path::PathBuf;
     use std::sync::Arc;
+
+    #[test]
+    fn timing_conversion_checks_the_u32_boundary() {
+        assert_eq!(
+            checked_timing_u32(u32::MAX as usize, "test").unwrap(),
+            u32::MAX
+        );
+        if usize::BITS > 32 {
+            assert!(
+                checked_timing_u32(u32::MAX as usize + 1, "test")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("test")
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn timing_overflow_does_not_mutate_evidence_() {
+        let timing = provider();
+        let overflow = u32::MAX as usize + 1;
+        let before = format!("{:?}", timing.evidence_summary());
+        for (batch, isl, prefix, field) in [
+            (overflow, 1, 0, "batch_size"),
+            (1, overflow, 0, "mean_isl"),
+            (1, 1, overflow, "mean_prefix"),
+        ] {
+            assert!(
+                timing
+                    .predict_prefill_ms(batch, isl, prefix)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(field)
+            );
+        }
+        for (batch, context, field) in [
+            (overflow, 1, "batch_size"),
+            (1, overflow, "mean_context_length"),
+        ] {
+            assert!(
+                timing
+                    .predict_decode_ms(batch, 0, context, 0)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(field)
+            );
+        }
+        assert_eq!(format!("{:?}", timing.evidence_summary()), before);
+        assert!(
+            timing
+                .predict_decode_ms(1, usize::MAX, 1, usize::MAX)
+                .unwrap()
+                .is_finite()
+        );
+    }
 
     fn systems_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))

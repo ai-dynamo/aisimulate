@@ -121,7 +121,8 @@ def test_grouped_attention_uses_exact_window_and_one_layer_scaling(path):
             assert all(next(iter(emitted[i].values()))["scale_factor"] == 1 for i in template["ops"])
     if "gemma" in path:
         assert model.afd_plan["shared_inter_size"] == 2112
-        assert _get_model_info(path)["num_shared_experts"] == 1
+        assert afd._get_afd_model_info(path)["num_shared_experts"] == 1
+        assert _get_model_info(path)["num_shared_experts"] == 0
         shared = [
             op["Gemm"] for op in specs(model, "context") if "Gemm" in op and "shared_mlp_gate_up" in op["Gemm"]["name"]
         ]

@@ -4,7 +4,6 @@
 import copy
 import functools
 import logging
-import warnings
 
 import pandas as pd
 

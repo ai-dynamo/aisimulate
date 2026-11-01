@@ -490,6 +490,11 @@ def _refresh_layouts(cases: list[str], reason: str, build_manifest: Path) -> Non
                 raise ValueError(f"{case}: lifecycle/accounting field {field} changed")
         failures = diff_maps(record["expected"], summary, rtol=E2E_RTOL, exact_keys=EXACT_KEYS, require_keys=True)
         print(f"{case}: {len(failures)} changed fields", flush=True)
+        previous = record.get("generation")
+        if previous is not None:
+            history = record.setdefault("historical_generations", [])
+            if previous not in history:
+                history.append(previous)
         record["expected"] = {field: summary[field] for field in record["expected"]}
         record["modeling_change"] = reason
         record["generation"] = {

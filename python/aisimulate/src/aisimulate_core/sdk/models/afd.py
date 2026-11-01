@@ -20,6 +20,47 @@ from aisimulate_core.sdk import common
 from aisimulate_core.sdk.models.helpers import _get_model_info, _moe_source_config, power_law_distribution
 
 
+def _get_afd_model_info(model_path: str) -> dict:
+    """AFD source facts without changing the public cached model metadata."""
+    info = dict(_get_model_info(model_path))
+    if info.get("architecture") == "Gemma4ForConditionalGeneration" and info.get("num_experts") and info.get("topk"):
+        info["num_shared_experts"] = 1
+    return info
+
+
+def _resolve_afd_execution_quantization(model_config, model_path, system_spec, *, backend_name=None):
+    """Use the selected pool's hardware policy for timing and memory compilation."""
+    from aisimulate_core._native import resolve_execution_quantization
+    from aisimulate_core.sdk.models.helpers import _infer_quant_modes_from_raw_config, resolve_vllm_moe_execution_mode
+
+    for field in ("gemm", "moe"):
+        marker = f"_{field}_quant_mode_is_explicit"
+        if getattr(model_config, marker, None) is None:
+            setattr(model_config, marker, getattr(model_config, f"{field}_quant_mode") is not None)
+
+    gemm_q = model_config.gemm_quant_mode
+    moe_q = model_config.moe_quant_mode
+    if (gemm_q is None or moe_q is None) and model_path:
+        info = _get_afd_model_info(model_path)
+        architecture = info.get("architecture", "")
+        inferred = _infer_quant_modes_from_raw_config(
+            info.get("raw_config", {}),
+            architecture,
+        )
+        if gemm_q is None:
+            gemm_q = inferred.get("gemm_quant_mode")
+        if moe_q is None:
+            moe_q = resolve_vllm_moe_execution_mode(inferred.get("moe_quant_mode"), backend_name, architecture)
+
+    resolved_gemm, resolved_moe = resolve_execution_quantization(
+        json.dumps(system_spec), gemm_q.name if gemm_q is not None else None, moe_q.name if moe_q is not None else None
+    )
+    if resolved_gemm is not None:
+        model_config.gemm_quant_mode = common.GEMMQuantMode[resolved_gemm]
+    if resolved_moe is not None:
+        model_config.moe_quant_mode = common.MoEQuantMode[resolved_moe]
+
+
 class _OpKind(Enum):
     ROUTED = auto()
     SKIP = auto()
@@ -197,7 +238,7 @@ def build_afd_model(model_path, config, backend, role):
 
     if role not in ("a", "f") or backend != "sglang":
         raise ValueError("AFD pool compilation requires role a/f and SGLang")
-    info = _get_model_info(model_path)
+    info = _get_afd_model_info(model_path)
     if info["architecture"] == "DeepseekV41ForCausalLM":
         raise NotImplementedError("AFD does not support DeepSeek-V4.1")
     layout = layer_layout(info)

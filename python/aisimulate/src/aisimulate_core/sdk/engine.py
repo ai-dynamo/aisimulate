@@ -684,15 +684,14 @@ def compile_engine(
     except (ValueError, TypeError, KeyError) as exc:
         raise InvalidEngineConfigurationError(str(exc)) from exc
     if afd_pool_role is not None:
-        from aisimulate_core.sdk.models.helpers import resolve_nvfp4_for_system
+        from aisimulate_core.sdk.models.afd import _resolve_afd_execution_quantization
 
         try:
-            resolve_nvfp4_for_system(
+            _resolve_afd_execution_quantization(
                 model_config,
-                system,
                 model_path,
+                load_system_spec(system, systems_path),
                 backend_name=backend,
-                system_spec=load_system_spec(system, systems_path),
             )
         except (ValueError, RuntimeError) as exc:
             raise InvalidEngineConfigurationError(

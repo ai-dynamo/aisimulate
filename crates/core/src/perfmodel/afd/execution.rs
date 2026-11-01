@@ -733,9 +733,9 @@ impl AfdForwardPassPerfModel {
         let mut outgoing =
             self.a2f
                 .query_with_receiver_load(a_db, tokens, tp, receiver, Some(self.fabric))?;
-        let mut incoming =
-            self.f2a
-                .query_with_receiver_load(a_db, tokens, tp, receiver, Some(self.fabric))?;
+        // Both directions currently have the same payload and symmetric fabric.
+        // Keep their separate stage/evidence records without querying twice.
+        let mut incoming = outgoing.clone();
         let mut ag = self.f_ag.query_with_receiver_load(f_db, receiver)?;
         let mut rs = self.f_rs.query_with_receiver_load(f_db, receiver)?;
         ag.energy_wms *= f64::from(f_ranks);

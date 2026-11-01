@@ -455,3 +455,41 @@ def test_old_topology_mapping_inherits_node_width_and_checks_saved_counts():
     old["f_gpu_count"] = 4
     with pytest.raises(ValueError, match="f_gpu_count"):
         AFDTopology.from_mapping(old)
+
+
+def test_microbatch_filter_precedes_candidate_limit_and_keeps_equality():
+    result = enumerate_afd_topologies(
+        AFDSearchConfig(
+            total_gpus=16,
+            gpus_per_node=8,
+            is_moe=True,
+            num_experts=128,
+            batch_size_per_a_replica_candidates=(1, 3),
+            microbatch_candidates=(1, 3, 4),
+            max_candidates=3,
+        )
+    )
+    assert [(t.batch_size_per_a_replica, t.num_microbatches) for t in result.candidates] == [(1, 1), (3, 1), (3, 3)]
+    assert result.generated_count == 3
+    assert result.rejection_counts["microbatch_geometry"] == 3
+
+
+def test_all_invalid_microbatches_report_geometry_rejections():
+    with pytest.raises(AFDInfeasible) as error:
+        enumerate_afd_topologies(
+            AFDSearchConfig(
+                total_gpus=16,
+                gpus_per_node=8,
+                is_moe=True,
+                num_experts=128,
+                batch_size_per_a_replica_candidates=(1,),
+                microbatch_candidates=(2, 3),
+            )
+        )
+    assert error.value.category == AFDReasonCategory.NO_FEASIBLE_TOPOLOGY
+    assert error.value.provenance["rejection_counts"]["microbatch_geometry"] == 2
+
+
+def test_pinned_microbatch_geometry_rejects_at_construction():
+    with pytest.raises(AFDInfeasible, match="num_microbatches cannot exceed"):
+        _topology(batch_size_per_a_replica=1, num_microbatches=3)

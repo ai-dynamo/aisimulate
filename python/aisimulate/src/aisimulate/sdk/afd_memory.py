@@ -21,10 +21,10 @@ from aisimulate.sdk.models import (
     get_model,
     resolve_context_fmha_by_data,
     resolve_dsv4_moe_arch,
-    resolve_nvfp4_for_system,
 )
 from aisimulate_core.sdk.errors import InvalidEngineConfigurationError
 from aisimulate_core.sdk.memory import kv_cache_budget_bytes
+from aisimulate_core.sdk.models.afd import _resolve_afd_execution_quantization
 from aisimulate_core.sdk.perf_database import get_database_view, get_latest_database_version
 
 
@@ -145,9 +145,7 @@ def _build_pool(
         )
     resolve_dsv4_moe_arch(model_config, model_path, system_name=system, backend_name=backend_name)
     try:
-        resolve_nvfp4_for_system(
-            model_config, system, model_path, backend_name=backend_name, system_spec=database.system_spec
-        )
+        _resolve_afd_execution_quantization(model_config, model_path, database.system_spec, backend_name=backend_name)
     except (ValueError, RuntimeError) as exc:
         label = "A" if is_a_pool else "F"
         raise InvalidEngineConfigurationError(

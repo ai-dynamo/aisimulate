@@ -242,3 +242,5 @@ Historical comparisons and host-cost measurements belong under
 <!-- Heterogeneous AFD/fabric behavior adapted and modified from
 https://github.com/LPhgh/aisimulate/tree/af56328c4ba7ffa1b8c42c8375244568c2e7bb8c
 Original paths and Apache-2.0 attribution: root THIRD_PARTY_NOTICES.md. -->
+
+AFD-only source metadata and precision resolution leave ordinary model and legacy CLI policies unchanged. Gemma4 MoE shared-branch metadata is derived on a copy for AFD consumers. AFD compilation and memory checks share the Rust capability policy using each pool’s selected hardware spec.

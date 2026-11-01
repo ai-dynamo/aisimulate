@@ -108,10 +108,10 @@ def test_unsupported_geometry_raises_not_implemented(changes, match):
     ],
 )
 def test_model_gate_uses_source_features(shape, match, monkeypatch):
-    from aisimulate_core.sdk.models import helpers
+    from aisimulate_core.sdk.models import afd
 
     monkeypatch.setattr(
-        helpers,
+        afd,
         "_get_model_info",
         lambda model: dict(
             layers=48,
@@ -127,9 +127,9 @@ def test_model_gate_uses_source_features(shape, match, monkeypatch):
 
 
 def test_missing_source_facts_are_not_defaulted_to_supported(monkeypatch):
-    from aisimulate_core.sdk.models import helpers
+    from aisimulate_core.sdk.models import afd
 
-    monkeypatch.setattr(helpers, "_get_model_info", lambda model: dict(layers=48, num_experts=128, topk=8))
+    monkeypatch.setattr(afd, "_get_model_info", lambda model: dict(layers=48, num_experts=128, topk=8))
     with pytest.raises(ValueError, match="num_shared_experts"):
         validate_afd_model("test/model")
     validate_afd_model_shape(48, 128, 8, 0, 48)

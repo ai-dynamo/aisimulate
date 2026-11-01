@@ -3407,7 +3407,12 @@ def test_detokenization_requires_capability_and_offline_replay() -> None:
 def test_detokenization_rejects_afd() -> None:
     engine = EngineReplayRunnerFactory(runtime=RecordingRuntime()).capabilities()
     detokenization = {"workers": 1, "base_ms": 1.0, "per_output_ms": 0.0}
-    afd = replace(_detokenization_deployment(detokenization, 1), deployment_mode="afd")
+    deployment = _detokenization_deployment(detokenization, 1)
+    afd = replace(
+        deployment,
+        agg_engine_args={**deployment.agg_engine_args, "afd": {}},
+        parallel_config={"aggregated": {"schema_version": 2}},
+    )
     with pytest.raises(ValueError, match="engine.detokenization is unsupported for AFD"):
         engine.require_compatible(_spec(deployment=afd))
 

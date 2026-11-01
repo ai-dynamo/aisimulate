@@ -36,10 +36,9 @@ _SOURCE = "aisimulate.sweeper.afd_parallel.enumerate_afd_topologies"
 
 def validate_afd_model(model: str) -> dict[str, Any]:
     """Validate cached source metadata before preparing performance databases."""
-    from aisimulate_core.sdk.models.afd import layer_layout
-    from aisimulate_core.sdk.models.helpers import _get_model_info
+    from aisimulate_core.sdk.models.afd import _get_afd_model_info, layer_layout
 
-    info = _get_model_info(model)
+    info = _get_afd_model_info(model)
     required = ("layers", "num_experts", "topk", "num_shared_experts", "num_moe_layers")
     missing = [name for name in required if name not in info]
     if missing:
@@ -170,6 +169,15 @@ class AFDTopology:
             raise AFDInfeasible(
                 AFDReasonCategory.INVALID_TOPOLOGY,
                 f"is_moe must be a boolean, got {self.is_moe!r}",
+            )
+        if self.num_microbatches > self.batch_size_per_a_replica:
+            raise AFDInfeasible(
+                AFDReasonCategory.INVALID_TOPOLOGY,
+                "num_microbatches cannot exceed batch_size_per_a_replica",
+                provenance={
+                    "num_microbatches": self.num_microbatches,
+                    "batch_size_per_a_replica": self.batch_size_per_a_replica,
+                },
             )
         _positive_finite("comm_overhead_factor", self.comm_overhead_factor)
 
@@ -537,6 +545,7 @@ def enumerate_afd_topologies(config: AFDSearchConfig) -> AFDEnumeration:
     rejections = {
         AFDReasonCategory.GPU_BUDGET.value: 0,
         "af_ratio": 0,
+        "microbatch_geometry": 0,
         AFDReasonCategory.EXPERT_DIVISIBILITY.value: 0,
     }
     if config.pinned_topologies:
@@ -604,6 +613,9 @@ def enumerate_afd_topologies(config: AFDSearchConfig) -> AFDEnumeration:
                 for batch_size_per_a_replica in config.batch_size_per_a_replica_candidates:
                     for ep in ep_candidates:
                         for num_microbatches in config.microbatch_candidates:
+                            if num_microbatches > batch_size_per_a_replica:
+                                rejections["microbatch_geometry"] += 1
+                                continue
                             candidates.append(
                                 AFDTopology(
                                     n_a_nodes=n_a_nodes,
