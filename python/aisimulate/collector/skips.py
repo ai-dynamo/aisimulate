@@ -113,11 +113,6 @@ SKIPS: list[dict] = [
     # quantization config), so a quant mode the checkpoint does not plan would time
     # the checkpoint's own MoE under another label.
     {"backend": "sglang", "op": "moe_ep", "own_quant": False},
-    # TRT-LLM's wide-EP runner builds synthetic weights from the shape alone, and
-    # moe_expert_compute_perf has no model column, so a build that an earlier model
-    # plans would time the same kernels again and stack a second row under the same
-    # key, whose loaded value then depends on row order.
-    {"backend": "trtllm", "op": "moe_ep", "repeated_build": True},
     # TRT-LLM: the wide-EP fp8_block grouped GEMM is DeepGEMM-backed even under the
     # CUTLASS runner, and on SM89 every case fails in the DeepGEMM compiler (L40S).
     {"backend": "trtllm", "op": "moe_ep", "dtype": "fp8_block", "sm": [89]},

@@ -521,12 +521,29 @@ def test_moe_ep_skips_keep_each_backends_builds(sm):
     assert all(case.moe_type == "fp8_block" and case.own_quant for case in sglang.cases)
     assert all(not case.use_eplb and case.num_slots == case.num_experts for case in sglang.cases)
     assert bool(sglang.cases) == (sm >= 89)
-    # TRT-LLM times each build once, fp8_block from SM90 and nvfp4 from SM100.
-    assert not any(case.repeated_build for case in trtllm.cases)
-    builds = [case._replace(model_name="", own_quant=False) for case in trtllm.cases]
-    assert len(builds) == len(set(builds))
+    # TRT-LLM times fp8_block from SM90 and nvfp4 from SM100.
     modes = {case.moe_type for case in trtllm.cases}
     assert modes == ({"fp8_block", "nvfp4"} if sm >= 100 else {"fp8_block"} if sm == 90 else set())
+
+
+def test_moe_ep_keeps_one_case_per_table_key_owned_by_a_checkpoint_that_plans_it():
+    from collector.case_generator import get_common_moe_test_cases, is_wideep_moe_model, moe_model_allows_quantization
+
+    cases = OP_PLANS["moe_ep"].expand()
+    keys = [case._replace(model_name="", own_quant=False) for case in cases]
+    assert len(keys) == len(set(keys))
+    models_of = defaultdict(set)
+    for layer in get_common_moe_test_cases():
+        if is_wideep_moe_model(layer.model_name) and layer.tp == 1 and layer.ep > 1:
+            models_of[(layer.hidden_size, layer.inter_size, layer.topk, layer.num_experts)].add(layer.model_name)
+    shared = [case for case in cases if len(models_of[case[1:5]]) > 1]
+    assert shared
+    for case in shared:
+        if not case.own_quant:
+            planning = [
+                model for model in models_of[case[1:5]] if moe_model_allows_quantization("sglang", model, case.moe_type)
+            ]
+            assert not planning, (case, planning)
 
 
 def test_moe_ep_rows_keep_each_backends_run_arguments():

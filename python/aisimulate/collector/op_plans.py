@@ -535,8 +535,6 @@ class MoeEpCase(NamedTuple):
     power_law_alphas: tuple[float, ...]
     # moe_type is a quant mode the model's checkpoint plans.
     own_quant: bool
-    # An earlier model plans the same build over the same draws.
-    repeated_build: bool
 
     __str__ = __repr__ = _list_form
 
@@ -551,7 +549,10 @@ def _expand_moe_ep() -> list[MoeEpCase]:
 
     EPLB runs off (``num_slots == num_experts``), on with the same slots, and on
     with the 288-slot redundant layout where it holds every expert. Slots shard
-    evenly over the EP ranks. Ordered by model, quant mode, EP size and layout.
+    evenly over the EP ranks. ``moe_expert_compute_perf`` has no model column, so
+    models whose builds write the same key share one case, owned by the first
+    model whose checkpoint plans the quant mode, else by the first model.
+    Ordered by model, quant mode, EP size and layout.
     """
     sweeps: dict[str, dict[int, dict]] = {}
     for layer in get_common_moe_test_cases():
@@ -564,7 +565,6 @@ def _expand_moe_ep() -> list[MoeEpCase]:
             sweep["num_tokens"].add(tuple(layer.num_tokens_list))
             sweep["alphas"].add(layer.power_law_alpha)
     cases = []
-    owners: dict[tuple, str] = {}
     for model_name in sorted(sweeps):
         first = next(iter(sweeps[model_name].values()))["layer"]
         planned = moe_planned_modes(model_name, first.quantization_modes)
@@ -582,17 +582,15 @@ def _expand_moe_ep() -> list[MoeEpCase]:
                         continue
                     build = (moe_type, layer.hidden_size, layer.inter_size, layer.topk, layer.num_experts, ep)
                     build += (use_eplb, num_slots, num_tokens, tuple(sorted(sweep["alphas"])))
-                    owner = owners.setdefault(build, model_name)
-                    cases.append(
-                        MoeEpCase(
-                            *build[:6],
-                            model_name,
-                            *build[6:],
-                            own_quant=moe_type in planned,
-                            repeated_build=owner != model_name,
-                        )
-                    )
-    return cases
+                    cases.append(MoeEpCase(*build[:6], model_name, *build[6:], own_quant=moe_type in planned))
+    owners: dict[MoeEpCase, MoeEpCase] = {}
+    for case in cases:
+        key = case._replace(model_name="", own_quant=False)
+        owner = owners.setdefault(key, case)
+        if case.own_quant and not owner.own_quant:
+            owners[key] = case
+    kept = set(owners.values())
+    return [case for case in cases if case in kept]
 
 
 def _sglang_moe_ep_rows(case: MoeEpCase, sm_version: int | None, runner: str | None) -> list[list]:

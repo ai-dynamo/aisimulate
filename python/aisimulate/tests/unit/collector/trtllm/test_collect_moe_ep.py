@@ -207,8 +207,8 @@ def test_sm120_collects_both_quants_and_every_eplb_layout(monkeypatch):
 def test_full_population_times_each_build_once_across_models(monkeypatch):
     # model_name is provenance only for this synthetic runner (run_moe_ep builds
     # the simulator from the shape arguments; the persisted key has no model
-    # column), so a build an earlier model plans is left out under the
-    # repeated_build entry: the first model in name order times it.
+    # column), so models whose builds write the same key share one case, owned
+    # by the first checkpoint that plans the quant mode.
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
     from collector.op_plans import OP_PLANS
 
@@ -219,8 +219,7 @@ def test_full_population_times_each_build_once_across_models(monkeypatch):
         for row in rows
     ]
     assert len(runtime_identities) == len(set(runtime_identities))
-    repeated = [region for region in op_plan.removed if region.region == "repeated_build=True"]
-    assert repeated and repeated[0].cases > 0
+    assert {region.region for region in op_plan.removed} == {"dtype=nvfp4"}
     planned = {case.model_name for case in OP_PLANS["moe_ep"].expand()}
     assert {"deepseek-ai/DeepSeek-V3", "moonshotai/Kimi-K2-Instruct"} <= planned  # incl. the 384-expert family
     for row in rows:

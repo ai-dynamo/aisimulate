@@ -76,12 +76,14 @@ def _stage_counts(backend: str = "sglang") -> dict[str, int]:
     ep_only = [case for case in wideep if case.tp == 1 and case.ep > 1]
     quantized = [case for case in ep_only if moe_model_allows_quantization(backend, case.model_name, "fp8_block")]
     unique = {(case.model_name, case.ep) for case in quantized}
+    keys = {(case.hidden_size, case.inter_size, case.topk, case.num_experts, case.ep) for case in quantized}
     return {
         "recipes": len(recipes),
         "wideep_declared": len(wideep),
         "ep_only": len(ep_only),
         "quant_allowed": len(quantized),
         "unique_invocations": len(unique),
+        "unique_keys": len(keys),
     }
 
 
@@ -104,6 +106,7 @@ def test_deepseek_v3_population_counts_per_stage(monkeypatch):
         # simulates EP on one GPU and sweeps distributions internally, so
         # (model, ep) is the whole invocation identity.
         "unique_invocations": 8,
+        "unique_keys": 8,
     }
 
     cases = _rows()
@@ -203,9 +206,11 @@ def test_full_population_covers_every_declared_wideep_model(monkeypatch):
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
     counts = _stage_counts()
     cases = _rows()
-    assert counts["unique_invocations"] == len(cases) == 62
-    # Dedup is not a no-op: the raw stage carries 186 recipes for 62 invocations.
+    # Dedup is not a no-op: the raw stage carries 186 recipes for 62 (model, ep)
+    # invocations, and models whose builds write the same table key share one.
     assert counts["quant_allowed"] == 186
+    assert counts["unique_invocations"] == 62
+    assert counts["unique_keys"] == len(cases) == 46
     # Every case is a valid EP shard of its declared expert count, tied to the
     # model whose checkpoint the subprocess loads.
     for local_experts, ep_size, _hidden, _inter, _topk, num_experts, num_slots, quant, model in cases:
@@ -214,9 +219,10 @@ def test_full_population_covers_every_declared_wideep_model(monkeypatch):
         assert ep_size > 1
         assert quant == "fp8_block"
         assert isinstance(model, str) and model
-    # F14 registry surface: every declared wideep model family reaches the
-    # plan under its own identity — including families whose shape arguments
-    # collide — so no case can load another model's checkpoint.
+    # F14 registry surface: moe_expert_compute_perf has no model column, so
+    # models whose builds write the same key share one case, owned by the first
+    # checkpoint that plans fp8_block. Each case loads its own model's
+    # checkpoint, and every declared key is collected.
     from collector.case_generator import (
         get_common_moe_test_cases,
         is_wideep_moe_model,
@@ -232,12 +238,9 @@ def test_full_population_covers_every_declared_wideep_model(monkeypatch):
         and moe_model_allows_quantization("sglang", recipe.model_name, "fp8_block")
     }
     case_models = {case[8] for case in cases}
-    assert case_models == declared_models
+    assert case_models < declared_models
     assert len(case_models) >= 2, "the full path must span at least two model families"
-    # Cross-model shape collisions exist — without the model argument those
-    # cases would share task identity (and a default checkpoint).
-    assert len({tuple(case[:8]) for case in cases}) < len(cases)
-    assert len({tuple(case) for case in cases}) == len(cases)
+    assert len({tuple(case[:8]) for case in cases}) == len(cases)
 
 
 # ---------------------------------------------------------------------------
