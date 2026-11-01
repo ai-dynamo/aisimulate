@@ -216,8 +216,18 @@ aisimulate predict --config examples/cli/agentic-profile.yaml \
 
 This flag enables telemetry capture internally, including request details;
 neither `--capture-telemetry` nor `--capture-per-request` is required.
-`--telemetry-sample-interval-ms` still controls sampling. The same offline
-vLLM/SGLang engine paths listed above are supported. Rendering runs after replay
+The output flags can be used as follows:
+
+| Flags | Additional outputs |
+| --- | --- |
+| `--capture-telemetry` | Telemetry JSONL files and the manifest in `prediction.json`; no HTML |
+| `--export-html` | The same telemetry outputs plus `report.html` |
+| Both flags | The same outputs as `--export-html` alone |
+
+`--capture-per-request` separately adds the profiling-only `requests.jsonl`.
+`--telemetry-sample-interval-ms` controls sampling with either output flag.
+The same offline vLLM/SGLang engine paths listed above are supported.
+Rendering runs after replay
 under the existing CLI resource supervisor and does not change native summary
 metrics. Completed telemetry remains available even if HTML rendering fails.
 Aborted preparation also produces a dashboard when native telemetry is available.
