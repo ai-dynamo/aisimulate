@@ -123,11 +123,11 @@ SKIPS: list[dict] = [
     # serving picks, which it maps for SM89 and newer only.
     {"backend": "sglang", "op": ["mla_context", "mla_generation"], "dtype": "bfloat16", "sm": [80, 86]},
     # MLA modules: of the two backends that time them, only vLLM takes FP8 prefill
-    # queries. It needs device capability family 100 for them
+    # queries, and only on device capability family 100
     # (backend_supports_prefill_query_quantization in
-    # vllm/model_executor/layers/attention/mla_attention.py); SM120 keeps the
-    # FP8-compute cases collected before.
-    {"op": "mla_context_module", "compute_dtype": "fp8", "sm": [89, 90]},
+    # vllm/model_executor/layers/attention/mla_attention.py). Elsewhere vLLM falls
+    # back to BF16 queries, which the collector refuses to record as FP8.
+    {"op": "mla_context_module", "compute_dtype": "fp8", "sm": [89, 90, 120]},
     # TRT-LLM's MLA attention takes BF16 inputs and computes in FP8 by itself when
     # the KV cache is FP8 (mFP8ContextMLA in thop/attentionOp.cpp); its FP8-KV rows
     # record that, so an FP8-compute case has no kernel of its own to time.
