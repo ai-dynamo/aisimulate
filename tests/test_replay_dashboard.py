@@ -5,7 +5,10 @@
 
 import copy
 import json
+import subprocess
+import sys
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
@@ -296,6 +299,57 @@ def test_writer_is_standalone_safe_and_atomic(tmp_path, capture):
         write_replay_dashboard(tmp_path, {}, capture)
     assert path.read_text(encoding="utf-8") == original
     assert list(tmp_path.iterdir()) == [path]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file permissions and umask")
+@pytest.mark.parametrize("umask", [0o002, 0o022, 0o077])
+def test_writer_honors_output_file_umask(tmp_path, capture, umask):
+    report = tmp_path / "report.html"
+    report.write_text("previous report", encoding="utf-8")
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json, sys\n"
+            "from pathlib import Path\n"
+            "from aisimulate.replay.dashboard import write_replay_dashboard\n"
+            "write_replay_dashboard(Path(sys.argv[1]), {}, json.load(sys.stdin))\n",
+            str(tmp_path),
+        ],
+        input=json.dumps(capture),
+        text=True,
+        capture_output=True,
+        check=True,
+        umask=umask,
+    )
+    assert report.stat().st_mode & 0o777 == 0o666 & ~umask
+    assert "plotly.js v" in report.read_text(encoding="utf-8")
+    assert list(tmp_path.iterdir()) == [report]
+
+
+def test_writer_preserves_report_and_cleans_temporary_on_publication_failure(tmp_path, capture, monkeypatch):
+    report = tmp_path / "report.html"
+    report.write_text("previous report", encoding="utf-8")
+
+    def fail_replace(source, target):
+        raise OSError("publication failed")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    with pytest.raises(OSError, match="publication failed"):
+        write_replay_dashboard(tmp_path, {}, capture)
+    assert report.read_text(encoding="utf-8") == "previous report"
+    assert list(tmp_path.iterdir()) == [report]
+
+
+def test_writer_leaves_existing_temporary_file_on_name_collision(tmp_path, capture, monkeypatch):
+    identifier = UUID(int=0)
+    temporary = tmp_path / f".report-{identifier.hex}.tmp"
+    temporary.write_text("another writer", encoding="utf-8")
+    monkeypatch.setattr("aisimulate.replay.dashboard.uuid4", lambda: identifier)
+    with pytest.raises(FileExistsError):
+        write_replay_dashboard(tmp_path, {}, capture)
+    assert temporary.read_text(encoding="utf-8") == "another writer"
+    assert list(tmp_path.iterdir()) == [temporary]
 
 
 def test_regeneration_uses_only_manifest_streams_and_checks_counts(tmp_path, capture):

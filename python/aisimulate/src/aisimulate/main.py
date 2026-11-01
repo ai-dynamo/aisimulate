@@ -251,17 +251,22 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         if any(not isinstance(record, dict) for record in records):
             raise RuntimeError("per-request records must be JSON mappings")
         write_requests(root, records)
-    dashboard_path = None
-    if args.export_html:
-        dashboard_path = write_replay_dashboard(
-            root, native, telemetry, config=config.model_dump(mode="json", exclude_none=True)
-        )
     phases = result.report.metadata.get("agentic_phases")
-    if isinstance(phases, dict) and phases.get("phase") == "aborted":
+    preparation_aborted = isinstance(phases, dict) and phases.get("phase") == "aborted"
+    if preparation_aborted:
         sys.stderr.write(
             f"ERROR: agentic preparation aborted: {phases.get('failure_reason') or 'preparation did not complete'}; "
             f"saved full report to: {report_path}\n"
         )
+    dashboard_path = None
+    if args.export_html:
+        try:
+            dashboard_path = write_replay_dashboard(
+                root, native, telemetry, config=config.model_dump(mode="json", exclude_none=True)
+            )
+        except (ValueError, OSError) as exc:
+            raise RuntimeError(f"HTML dashboard rendering failed; native outputs saved to {root}: {exc}") from exc
+    if preparation_aborted:
         return 1
     write_prediction_stdout(
         sys.stdout,

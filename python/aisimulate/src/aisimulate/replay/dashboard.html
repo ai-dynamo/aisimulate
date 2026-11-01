@@ -1118,6 +1118,54 @@
           );
         return activeSeriesByPhase.get(state.stage);
       }
+      function completionOutputSamples(requests, observations) {
+        const completed = [];
+        for (const request of requests) {
+          if (request.terminal_status !== "completed") continue;
+          const time = request.terminal_time_ms;
+          if (finite(time))
+            completed.push({ time, output: request.output_length });
+        }
+        completed.sort((a, b) => a.time - b.time);
+        const tokens = [0],
+          missing = [0];
+        for (const request of completed) {
+          const valid = finite(request.output);
+          tokens.push(tokens.at(-1) + (valid ? request.output : 0));
+          missing.push(missing.at(-1) + (valid ? 0 : 1));
+        }
+        const upperBound = (time) => {
+          let low = 0,
+            high = completed.length;
+          while (low < high) {
+            const middle = (low + high) >>> 1;
+            if (completed[middle].time <= time) low = middle + 1;
+            else high = middle;
+          }
+          return low;
+        };
+        return observations.map((sample) => {
+          // Independent bounds preserve gaps, overlaps and the native (start, end] interval.
+          const start = upperBound(sample.start * 1000),
+            end = upperBound(sample.t * 1000);
+          return {
+            ...sample,
+            output_tokens:
+              missing[end] !== missing[start]
+                ? null
+                : tokens[end] - tokens[start],
+          };
+        });
+      }
+      const completionSeriesByPhase = new Map();
+      function completionSeries() {
+        if (!completionSeriesByPhase.has(state.stage))
+          completionSeriesByPhase.set(
+            state.stage,
+            completionOutputSamples(rows(), samples()),
+          );
+        return completionSeriesByPhase.get(state.stage);
+      }
       function throughput(samples, key) {
         return samples.map((sample, index) => {
           if (!finite(sample[key])) return null;
@@ -1473,19 +1521,7 @@
           let counters = ss,
             output = "Delivered output";
           if (state.modes.throughput === "completion") {
-            counters = ss.map((sample) => {
-              const completed = r.filter(
-                (row) =>
-                  row.terminal_status === "completed" &&
-                  finite(row.terminal_time_ms) &&
-                  row.terminal_time_ms > sample.start * 1000 &&
-                  row.terminal_time_ms <= sample.t * 1000,
-              );
-              const output = completed.every((row) => finite(row.output_length))
-                ? completed.reduce((total, row) => total + row.output_length, 0)
-                : null;
-              return { ...sample, output_tokens: output };
-            });
+            counters = completionSeries();
             output = "Output at completion";
           }
           traces = [

@@ -11,8 +11,8 @@ import math
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Any
+from uuid import uuid4
 
 import plotly
 from plotly.offline import get_plotlyjs
@@ -344,10 +344,10 @@ def write_replay_dashboard(
     root.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
-        with NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=root, prefix=".report-", suffix=".tmp", delete=False
-        ) as out:
-            temporary = Path(out.name)
+        candidate = root / f".report-{uuid4().hex}.tmp"
+        # Exclusive creation honors the caller's umask, as other replay outputs do.
+        with candidate.open("x", encoding="utf-8") as out:
+            temporary = candidate
             out.write(document)
         target = root / "report.html"
         temporary.replace(target)

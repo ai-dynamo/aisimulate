@@ -230,10 +230,14 @@ The same offline vLLM/SGLang engine paths listed above are supported.
 Rendering runs after replay
 under the existing CLI resource supervisor and does not change native summary
 metrics. Completed telemetry remains available even if HTML rendering fails.
-Aborted preparation also produces a dashboard when native telemetry is available.
+Rendering failures report the saved output directory and return exit code 1.
+Aborted preparation also produces a dashboard when native telemetry is available;
+its diagnostic remains visible even if rendering fails.
 
 Open `report.html` directly in a browser. Data, JavaScript, and the Plotly
-license are embedded; no server or network access is needed. The dashboard
+license are embedded; no server or network access is needed. The report is
+published atomically with normal file permissions under the process umask,
+matching the other output files. The dashboard
 has Dashboard and Request timeline tabs. It contains:
 
 - Profiling and optional warmup views with request lengths, TTFT, E2E, and interactivity.
@@ -265,6 +269,9 @@ input length per play and conversation, not a measurement of physical token
 uniqueness. Footprint and in-flight request means include arrivals at the sample
 time and exclude requests ending at that time. A single event sweep per phase
 computes these series; redraws reuse them instead of scanning all requests per sample.
+Completion-accounted output throughput also indexes successful request terminal
+times once per phase and reuses interval totals on redraw. It counts completions
+strictly after each interval's start and through its end, inclusive.
 G1 prefix-cache lookup reuse measures device-cache matches and remains separate
 from scheduler pass reuse.
 

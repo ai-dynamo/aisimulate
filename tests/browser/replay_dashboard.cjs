@@ -89,6 +89,24 @@ function activeReference(requests, observations) {
   return result;
 }
 
+function completionReference(requests, observations) {
+  return observations.map((sample) => {
+    const completed = requests.filter(
+      (row) =>
+        row.terminal_status === "completed" &&
+        finite(row.terminal_time_ms) &&
+        row.terminal_time_ms > sample.start * 1000 &&
+        row.terminal_time_ms <= sample.t * 1000,
+    );
+    return {
+      ...sample,
+      output_tokens: completed.every((row) => finite(row.output_length))
+        ? completed.reduce((sum, row) => sum + row.output_length, 0)
+        : null,
+    };
+  });
+}
+
 async function main() {
   assert.ok(
     process.argv[2],
@@ -395,18 +413,156 @@ async function main() {
       },
     );
     await check(
-      "active series cache preserves phase clocks across theme and phase redraws",
+      "completion counters preserve interval edges, gaps, overlaps and unavailable lengths",
+      async () => {
+        const requests = [
+          [120000, 1],
+          [121000, 2],
+          [121000, 3],
+          [121001, 4],
+          [122000, 0],
+          [123000, null],
+          [124000, Infinity],
+          [125000, undefined],
+          [126000, 8],
+          [127000, 16, "failed"],
+          [127000, 32, "cancelled"],
+          [127000, 64, "incomplete"],
+          [null, 128],
+          [Infinity, 256],
+        ].map(
+          ([
+            terminal_time_ms,
+            output_length,
+            terminal_status = "completed",
+          ]) => ({
+            terminal_time_ms,
+            output_length,
+            terminal_status,
+          }),
+        );
+        const observations = [
+          [119, 120],
+          [120, 121],
+          [121, 121],
+          [121, 122],
+          [120.5, 121.001],
+          [122, 123],
+          [123, 124],
+          [124, 125],
+          [125, 128],
+          [126, 128],
+          [122.1, 122.9],
+        ].map(([start, t]) => ({
+          start,
+          t,
+          duration: t - start,
+          prefill_tokens: 10,
+        }));
+        const actual = await page.evaluate(
+          ({ requests, observations }) =>
+            completionOutputSamples(requests, observations),
+          {
+            requests: requests.reverse(),
+            observations: observations.reverse(),
+          },
+        );
+        assert.deepEqual(actual, completionReference(requests, observations));
+        assert.deepEqual(
+          actual.map((sample) => sample.output_tokens).reverse(),
+          [1, 5, 0, 4, 9, null, null, null, 8, 0, 0],
+        );
+        assert.deepEqual(
+          await page.evaluate(
+            (observations) => completionOutputSamples([], observations),
+            observations,
+          ),
+          completionReference([], observations),
+        );
+      },
+    );
+    await check(
+      "completion counters inspect 100k requests once for 3600 samples",
+      async () => {
+        const performanceResult = await page.evaluate(() => {
+          let statusReads = 0,
+            timeReads = 0,
+            outputReads = 0;
+          const requests = Array.from({ length: 100000 }, (_, index) => ({
+            get terminal_status() {
+              statusReads++;
+              return "completed";
+            },
+            get terminal_time_ms() {
+              timeReads++;
+              return 900000 + (100000 - index) * 36;
+            },
+            get output_length() {
+              outputReads++;
+              return 1;
+            },
+          }));
+          const observations = Array.from({ length: 3600 }, (_, index) => ({
+            start: 900 + index,
+            t: 901 + index,
+          }));
+          const started = performance.now();
+          const result = completionOutputSamples(requests, observations);
+          return {
+            elapsed_ms: performance.now() - started,
+            status_reads: statusReads,
+            time_reads: timeReads,
+            output_reads: outputReads,
+            samples: result.length,
+            total_output: result.reduce(
+              (sum, sample) => sum + sample.output_tokens,
+              0,
+            ),
+          };
+        });
+        assert.equal(performanceResult.samples, 3600);
+        for (const key of [
+          "status_reads",
+          "time_reads",
+          "output_reads",
+          "total_output",
+        ])
+          assert.equal(performanceResult[key], 100000, key);
+        assert.ok(
+          performanceResult.elapsed_ms < 5000,
+          JSON.stringify(performanceResult),
+        );
+        await fs.writeFile(
+          path.join(output, "completion-series-performance.json"),
+          JSON.stringify(performanceResult, null, 2),
+        );
+      },
+    );
+    await check(
+      "series caches preserve phase clocks across theme and phase redraws",
       async () => {
         const original = await page.evaluate(() => {
           globalThis.cachedSeriesBeforeRedraw = activeSeries();
+          globalThis.cachedCompletionBeforeRedraw = completionSeries();
           return activeSeries();
         });
         assert.deepEqual(original, activeReference(profile, samples));
+        assert.deepEqual(
+          await page.evaluate(() => completionSeries()),
+          completionReference(profile, samples),
+        );
         await page.locator("#theme").click();
         await ready();
         assert.equal(
           await page.evaluate(
             () => activeSeries() === globalThis.cachedSeriesBeforeRedraw,
+          ),
+          true,
+        );
+        assert.equal(
+          await page.evaluate(
+            () =>
+              completionSeries() === globalThis.cachedCompletionBeforeRedraw,
           ),
           true,
         );
@@ -424,6 +580,17 @@ async function main() {
             ),
           );
           assert.equal(await page.evaluate(() => activeSeriesByPhase.size), 2);
+          assert.deepEqual(
+            await page.evaluate(() => completionSeries()),
+            completionReference(
+              preparation,
+              report.samples.filter((sample) => sample.phase === "preparation"),
+            ),
+          );
+          assert.equal(
+            await page.evaluate(() => completionSeriesByPhase.size),
+            2,
+          );
           await stage("profile");
           assert.deepEqual(await page.evaluate(() => activeSeries()), original);
         }
@@ -435,8 +602,16 @@ async function main() {
           ),
           true,
         );
+        assert.equal(
+          await page.evaluate(
+            () =>
+              completionSeries() === globalThis.cachedCompletionBeforeRedraw,
+          ),
+          true,
+        );
         await page.evaluate(() => {
           delete globalThis.cachedSeriesBeforeRedraw;
+          delete globalThis.cachedCompletionBeforeRedraw;
         });
       },
     );

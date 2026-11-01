@@ -483,11 +483,15 @@ def test_export_html_native_cli_preserves_metrics_and_overwrite(tmp_path, capfd)
     capfd.readouterr()
 
 
-def test_html_failure_preserves_native_outputs(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("error_type", [OSError, ValueError])
+@pytest.mark.parametrize("aborted", [False, True])
+def test_html_failure_preserves_native_outputs(tmp_path, monkeypatch, capsys, error_type, aborted):
     class TelemetryRunner(_Runner):
         def run(self, *args, **kwargs):
             report = super().run(*args, **kwargs)
             report.metadata["native_report"]["telemetry"] = _telemetry_payload()
+            if aborted:
+                report.metadata["agentic_phases"] = {"phase": "aborted", "failure_reason": "warmup deadline"}
             return report
 
     def fail_render(root, prediction, telemetry, *, config):
@@ -496,7 +500,7 @@ def test_html_failure_preserves_native_outputs(tmp_path, monkeypatch, capsys):
         assert "artifacts" in prediction["telemetry"]
         assert len(telemetry["requests"]) == 3
         assert config["engine"]["model"]
-        raise OSError("dashboard disk failure")
+        raise error_type("dashboard rendering failure")
 
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(TelemetryRunner()))
     monkeypatch.setattr(cli, "write_replay_dashboard", fail_render)
@@ -507,7 +511,13 @@ def test_html_failure_preserves_native_outputs(tmp_path, monkeypatch, capsys):
         cli.main(["predict", "-c", str(path), "--output-dir", str(output), "--export-html", "--capture-per-request"])
         == 1
     )
-    assert "dashboard disk failure" in capsys.readouterr().err
+    stderr = capsys.readouterr().err
+    assert "HTML dashboard rendering failed" in stderr
+    assert f"native outputs saved to {output}" in stderr
+    assert "dashboard rendering failure" in stderr
+    assert f"{path}:" not in stderr
+    assert "usage:" not in stderr
+    assert ("agentic preparation aborted: warmup deadline" in stderr) is aborted
     assert json.loads((output / "prediction.json").read_text())["summary"]["completed_requests"] == 1
     assert all((output / f"telemetry-{stream}.jsonl").is_file() for stream in ("requests", "samples", "lifecycle"))
     assert not (output / "report.html").exists()
