@@ -652,7 +652,7 @@ fn split_pass(
         same_timestamp_retry,
         output_signals,
         admissions,
-        native_prefix_cache_lookup,
+        g1_prefix_cache_lookup,
         pressure_events,
         lifecycle_events,
         mocker_metrics,
@@ -677,7 +677,7 @@ fn split_pass(
             .collect(),
         pressure_events,
         kv_events: start_kv,
-        native_prefix_cache_lookup,
+        g1_prefix_cache_lookup,
     };
     let completion = PassCompletionEffects {
         outputs: output_signals

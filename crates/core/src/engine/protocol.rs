@@ -409,14 +409,14 @@ pub struct CommandEffects {
     pub suppressed_pending_output: bool,
 }
 
-/// Native G1 prefix-cache lookup observations at scheduler pass start.
+/// G1 prefix-cache lookup observations at scheduler pass start.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct PrefixCacheLookupCounts {
     pub query_count: u64,
-    /// Known sequence tokens submitted to native G1 prefix lookup, including
+    /// Known sequence tokens submitted to G1 prefix-cache lookup, including
     /// repeated admission attempts and recomputation after preemption.
     pub queried_tokens: u64,
-    /// Native lookup matches before scheduler recomputation clipping or G2
+    /// G1 lookup matches before scheduler recomputation clipping or G2
     /// attribution. These are not first-admission request reuse counters.
     pub matched_tokens: u64,
 }
@@ -426,15 +426,15 @@ impl PrefixCacheLookupCounts {
         self.query_count = self
             .query_count
             .checked_add(other.query_count)
-            .ok_or_else(|| anyhow::anyhow!("native prefix lookup query counter overflow"))?;
+            .ok_or_else(|| anyhow::anyhow!("G1 prefix-cache lookup query counter overflow"))?;
         self.queried_tokens = self
             .queried_tokens
             .checked_add(other.queried_tokens)
-            .ok_or_else(|| anyhow::anyhow!("native prefix lookup token counter overflow"))?;
+            .ok_or_else(|| anyhow::anyhow!("G1 prefix-cache lookup token counter overflow"))?;
         self.matched_tokens = self
             .matched_tokens
             .checked_add(other.matched_tokens)
-            .ok_or_else(|| anyhow::anyhow!("native prefix lookup match counter overflow"))?;
+            .ok_or_else(|| anyhow::anyhow!("G1 prefix-cache lookup match counter overflow"))?;
         Ok(())
     }
 
@@ -478,10 +478,10 @@ pub struct PassStartEffects {
     pub admissions: Vec<Admission>,
     pub pressure_events: Vec<PressureEvent>,
     pub kv_events: Vec<KvEvent>,
-    /// Native vLLM G1 lookup attempts at this pass's admission boundary.
+    /// vLLM G1 prefix-cache lookup attempts at this pass's admission boundary.
     /// Absent for other backends or when prefix caching is disabled. Counters
     /// alone do not imply model work or scheduler progress.
-    pub native_prefix_cache_lookup: Option<PrefixCacheLookupCounts>,
+    pub g1_prefix_cache_lookup: Option<PrefixCacheLookupCounts>,
 }
 
 /// Decode/verification work contributing to acceptance-length telemetry.

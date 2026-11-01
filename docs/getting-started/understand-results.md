@@ -168,13 +168,15 @@ The exports provide the following inputs for warmup and profiling views:
 | Queue depth | `prefill_scheduler_metrics` / `decode_scheduler_metrics`: `running_requests`, `waiting_requests`, worker/rank; plus `router_pending_*_requests` |
 | KV use | Scheduler `active_blocks`, `inactive_blocks`, `total_blocks`, `active_cache_usage`, `physical_cache_usage`; grouped caches use `kv_cache_used_bytes` / `kv_cache_capacity_bytes` |
 | Prefill/decode throughput | `traffic.committed_prefill_tokens` / `traffic.delivered_output_tokens`, divided by `traffic.duration_s` |
-| Prefix lookup reuse | Role interval `native_prefix_cache_lookup`: `matched_tokens`, `queried_tokens`, `query_count`; actual retries count, even if admission later blocks |
+| Prefix lookup reuse | Role interval `g1_prefix_cache_lookup`: `matched_tokens`, `queried_tokens`, `query_count`; actual retries count, even if admission later blocks |
 | Prompt token sources | `traffic.first_admission`: `hbm_reused_tokens`, `host_reused_tokens`, `uncached_tokens`; distinct from executed work and readmission recomputation |
 | Host KV use | `host_caches`: block/byte occupancy and capacity; `dp_rank_local` caches are sampled per attention-DP rank, while shared pools appear once per ownership domain |
 | Speculative acceptance | `traffic.avg_accept_length`, weighted by `accept_length_forward_count`; measured before output-limit truncation |
 
-SGLang's pass-local cache-hit/total counters and native lookup counters describe
-different populations. Router overlap and averages of per-request hit ratios
+G1 denotes the device cache. Its lookup counters are summed across workers and
+ranks within each role and sampling interval.
+SGLang's pass-local cache-hit/total counters and G1 prefix-cache lookup counters
+describe different populations. Router overlap and averages of per-request hit ratios
 are not substitutes for either. Missing metrics remain unavailable, and a zero
 query denominator is not a measured zero-percent hit rate. An absent host tier
 is not evidence that an unmodeled host metric was measured as zero.

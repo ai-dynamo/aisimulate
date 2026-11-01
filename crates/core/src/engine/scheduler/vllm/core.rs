@@ -669,7 +669,7 @@ pub(crate) struct VllmCore {
     destination_reservation_attempts: usize,
     lifecycle_events: Vec<SchedulerLifecycleEvent>,
     pressure_events: Vec<PressureEvent>,
-    native_prefix_cache_lookup: Option<crate::engine::PrefixCacheLookupCounts>,
+    g1_prefix_cache_lookup: Option<crate::engine::PrefixCacheLookupCounts>,
     retain_local_hashes: bool,
     emit_token_ids: bool,
     native_host_offload: Option<VllmHostOffloadAdapter>,
@@ -921,7 +921,7 @@ impl VllmCore {
             destination_reservation_attempts: 0,
             lifecycle_events: Vec::new(),
             pressure_events: Vec::new(),
-            native_prefix_cache_lookup: None,
+            g1_prefix_cache_lookup: None,
             retain_local_hashes,
             emit_token_ids,
             native_host_offload,
@@ -1872,7 +1872,7 @@ impl VllmCore {
     ) -> anyhow::Result<EnginePassResult> {
         #[cfg(test)]
         let requests_before = self.state.requests.len();
-        self.native_prefix_cache_lookup = (self.args.engine_type == EngineType::Vllm
+        self.g1_prefix_cache_lookup = (self.args.engine_type == EngineType::Vllm
             && self.args.enable_prefix_caching)
             .then(Default::default);
         let retry_epoch_before = self
@@ -2082,7 +2082,7 @@ impl VllmCore {
                     .expect("waiting request missing from state");
                 let mut cost = request.sequence.prefill_cost(&self.kv_manager);
                 if request.sequence.sequence.enable_prefix_caching()
-                    && let Some(counts) = &mut self.native_prefix_cache_lookup
+                    && let Some(counts) = &mut self.g1_prefix_cache_lookup
                 {
                     counts.record(request.sequence.len(), cost.cached_tokens)?;
                 }
@@ -2452,7 +2452,7 @@ impl VllmCore {
             completed_requests: requests_before.saturating_sub(self.state.requests.len()),
             output_signals,
             admissions,
-            native_prefix_cache_lookup: self.native_prefix_cache_lookup.take(),
+            g1_prefix_cache_lookup: self.g1_prefix_cache_lookup.take(),
             pressure_events: std::mem::take(&mut self.pressure_events),
             lifecycle_events: std::mem::take(&mut self.lifecycle_events),
             mocker_metrics: self.mocker_metrics(),
@@ -2751,7 +2751,7 @@ impl VllmCore {
                 None => {
                     let cost = request.sequence.prefill_cost(&self.kv_manager);
                     if request.sequence.sequence.enable_prefix_caching()
-                        && let Some(counts) = &mut self.native_prefix_cache_lookup
+                        && let Some(counts) = &mut self.g1_prefix_cache_lookup
                     {
                         counts.record(request.sequence.len(), cost.cached_tokens)?;
                     }
@@ -4316,7 +4316,7 @@ mod state_cache_tests {
         let mut scheduled = FxHashMap::default();
         let (mut count, mut isl, mut prefix) = (0, 0, 0);
         let mut preempted = false;
-        core.native_prefix_cache_lookup = Some(Default::default());
+        core.g1_prefix_cache_lookup = Some(Default::default());
         let outcome = core.schedule_request(
             id,
             false,
@@ -4336,7 +4336,7 @@ mod state_cache_tests {
         assert_eq!(core.state.requests[&id].num_computed_tokens, 9);
         assert_eq!(prefix, 8);
         assert_eq!(
-            core.native_prefix_cache_lookup,
+            core.g1_prefix_cache_lookup,
             Some(crate::engine::PrefixCacheLookupCounts {
                 query_count: 1,
                 queried_tokens: 16,

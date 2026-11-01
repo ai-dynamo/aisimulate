@@ -67,8 +67,8 @@ pub struct ReplaySchedulerMetricsSnapshot {
 /// interval; retired rank gauge rows are intentionally not retained.
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize)]
 pub struct ReplaySchedulerIntervalMetrics {
-    /// Actual native G1 lookup calls, including retries that do not admit work.
-    pub native_prefix_cache_lookup: Option<crate::engine::PrefixCacheLookupCounts>,
+    /// Actual G1 prefix-cache lookup calls, including retries that do not admit work.
+    pub g1_prefix_cache_lookup: Option<crate::engine::PrefixCacheLookupCounts>,
     /// SGLang scheduler cache-hit tokens observed in the interval.
     /// Backends without an equivalent pass-local metric report zero.
     pub cache_hit_tokens: u64,
@@ -85,13 +85,13 @@ impl ReplaySchedulerIntervalMetrics {
             || self.cache_total_tokens != 0
             || self.preemptions != 0
             || self
-                .native_prefix_cache_lookup
+                .g1_prefix_cache_lookup
                 .is_some_and(|counts| counts.query_count != 0)
     }
 
     pub(crate) fn checked_add_assign(&mut self, other: Self) -> anyhow::Result<()> {
-        if let Some(counts) = other.native_prefix_cache_lookup {
-            self.native_prefix_cache_lookup
+        if let Some(counts) = other.g1_prefix_cache_lookup {
+            self.g1_prefix_cache_lookup
                 .get_or_insert_with(Default::default)
                 .checked_add_assign(counts)?;
         }
@@ -932,13 +932,12 @@ mod tests {
         };
         row.sample.prefill_scheduler_metrics = vec![grouped.clone(), linear.clone()];
         row.sample.decode_scheduler_metrics = vec![linear, grouped];
-        row.sample
-            .prefill_interval_metrics
-            .native_prefix_cache_lookup = Some(crate::engine::PrefixCacheLookupCounts {
-            query_count: 1,
-            queried_tokens: 8,
-            matched_tokens: 0,
-        });
+        row.sample.prefill_interval_metrics.g1_prefix_cache_lookup =
+            Some(crate::engine::PrefixCacheLookupCounts {
+                query_count: 1,
+                queried_tokens: 8,
+                matched_tokens: 0,
+            });
         row.sample.decode_interval_metrics.cache_total_tokens = 8;
         for measured_hits in [0, 4] {
             row.sample.decode_interval_metrics.cache_hit_tokens = measured_hits;
@@ -952,7 +951,7 @@ mod tests {
             );
             assert_eq!(value["decode_interval_metrics"]["cache_total_tokens"], 8);
             assert_eq!(
-                value["prefill_interval_metrics"]["native_prefix_cache_lookup"]["matched_tokens"],
+                value["prefill_interval_metrics"]["g1_prefix_cache_lookup"]["matched_tokens"],
                 0
             );
             for (name, grouped_index, linear_index) in [

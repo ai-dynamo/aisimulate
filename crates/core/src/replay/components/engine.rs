@@ -955,7 +955,7 @@ where
                     telemetry[rank.dp_rank as usize]
                         .interval
                         .checked_add_assign(ReplaySchedulerIntervalMetrics {
-                            native_prefix_cache_lookup: rank.effects.native_prefix_cache_lookup,
+                            g1_prefix_cache_lookup: rank.effects.g1_prefix_cache_lookup,
                             ..ReplaySchedulerIntervalMetrics::default()
                         })?;
                 }
@@ -1982,7 +1982,7 @@ mod tests {
     }
 
     #[test]
-    fn native_lookup_observations_do_not_make_a_blocked_worker_progress() {
+    fn g1_lookup_observations_do_not_make_a_blocked_worker_progress() {
         for capture in [false, true] {
             let config = ReplayEngineConfig {
                 rank: EngineConfig {
@@ -2034,7 +2034,7 @@ mod tests {
                 assert_eq!(component.in_flight(), 1);
                 let (_, interval) = component.take_telemetry_snapshot().unwrap();
                 assert_eq!(
-                    interval.native_prefix_cache_lookup,
+                    interval.g1_prefix_cache_lookup,
                     capture.then_some(crate::engine::PrefixCacheLookupCounts {
                         query_count: 1,
                         queried_tokens: 8,

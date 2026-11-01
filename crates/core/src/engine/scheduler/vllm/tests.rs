@@ -53,7 +53,7 @@ fn prefix_cache_args() -> MockEngineArgs {
 }
 
 #[test]
-fn native_prefix_lookup_counts_raw_hits_before_recomputation_clipping() {
+fn g1_prefix_lookup_counts_raw_hits_before_recomputation_clipping() {
     let mut core = VllmCore::new(prefix_cache_args());
     let request = |id, output| DirectRequest {
         uuid: Some(Uuid::from_u128(id)),
@@ -64,7 +64,7 @@ fn native_prefix_lookup_counts_raw_hits_before_recomputation_clipping() {
     core.receive(request(82_001, 0));
     let cold = core.try_execute_hidden_pass(0.0).unwrap();
     assert_eq!(
-        cold.native_prefix_cache_lookup,
+        cold.g1_prefix_cache_lookup,
         Some(crate::engine::PrefixCacheLookupCounts {
             query_count: 1,
             queried_tokens: 8,
@@ -74,7 +74,7 @@ fn native_prefix_lookup_counts_raw_hits_before_recomputation_clipping() {
     core.receive(request(82_002, 2));
     let hit = core.try_execute_hidden_pass(0.0).unwrap();
     assert_eq!(
-        hit.native_prefix_cache_lookup,
+        hit.g1_prefix_cache_lookup,
         Some(crate::engine::PrefixCacheLookupCounts {
             query_count: 1,
             queried_tokens: 8,
@@ -84,11 +84,11 @@ fn native_prefix_lookup_counts_raw_hits_before_recomputation_clipping() {
     assert_eq!(hit.admissions[0].reused_input_tokens, 4);
     // The next decode uses existing request state, not another prefix lookup.
     let decode = core.try_execute_hidden_pass(0.0).unwrap();
-    assert_eq!(decode.native_prefix_cache_lookup, Some(Default::default()));
+    assert_eq!(decode.g1_prefix_cache_lookup, Some(Default::default()));
 }
 
 #[test]
-fn native_prefix_lookup_counts_each_effect_free_admission_retry() {
+fn g1_prefix_lookup_counts_each_effect_free_admission_retry() {
     let mut args = prefix_cache_args();
     args.enable_chunked_prefill = false;
     args.max_num_batched_tokens = Some(4);
@@ -105,7 +105,7 @@ fn native_prefix_lookup_counts_each_effect_free_admission_retry() {
         assert!(retry.output_signals.is_empty());
         assert_eq!(retry.end_ms, 0.0);
         assert_eq!(
-            retry.native_prefix_cache_lookup,
+            retry.g1_prefix_cache_lookup,
             Some(crate::engine::PrefixCacheLookupCounts {
                 query_count: 1,
                 queried_tokens: 8,
@@ -118,7 +118,7 @@ fn native_prefix_lookup_counts_each_effect_free_admission_retry() {
 #[rstest]
 #[case::disabled(EngineType::Vllm, false)]
 #[case::trtllm(EngineType::Trtllm, true)]
-fn native_prefix_lookup_unavailable_outside_vllm_prefix_cache(
+fn g1_prefix_lookup_unavailable_outside_vllm_prefix_cache(
     #[case] engine_type: EngineType,
     #[case] caching: bool,
 ) {
@@ -134,7 +134,7 @@ fn native_prefix_lookup_unavailable_outside_vllm_prefix_cache(
     assert_eq!(
         core.try_execute_hidden_pass(0.0)
             .unwrap()
-            .native_prefix_cache_lookup,
+            .g1_prefix_cache_lookup,
         None
     );
 }
