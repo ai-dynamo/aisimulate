@@ -708,32 +708,9 @@ def run_mla_module(
     ``dry_run`` False skips the checking forward before timing: a series has
     already run it for an earlier point of this seq_len (module_series).
     """
-    # FIXME(kernel-limit): DeepGEMM's sparse-attention API (the DSA fp8
-    # lightning indexer both DSA phases route through) hard-asserts
-    # "Unsupported architecture" off the datacenter SMs — RTX Blackwell is
-    # rejected (_deps/deepgemm-src/csrc/apis/attention.hpp:203 context /
-    # :259 generation @1.3.0rc20). Hardware-observed on RTX PRO 6000
-    # (SM120) 2026-07-25: smoke 0/8 across gemm bf16/nvfp4/fp8_block and
-    # bf16/fp8 KV; fp8_block context cases additionally die by async IMA +
-    # SIGABRT at KV-cache teardown instead of the catchable assert. Fail
-    # closed with a cited, classified raise before model construction
-    # (Gemma4 dense-attention precedent in collect_attn.py) instead of
-    # paying construction + a CUDA-level abort per case. Re-verify against
-    # deepgemm's supported-arch set on the next framework version bump.
-    # FIXME(re-verify): NOT re-verified at 1.3.0rc29, and the source no longer
-    # supports it. rc29 pins DeepGEMM 8b1392b (3rdparty/fetch_content.json),
-    # whose attention.hpp dispatches SM120 for both indexer phases
-    # (sm120_mqa_logits :205-212, sm120_paged_mqa_logits :414-418; heads
-    # 16/32/64). Until an SM120 rc29 run decides it, the raise stays and
-    # keeps its unprefixed message, so the failure log reports it as
-    # unexpected instead of an accepted kernel limit.
-    if attn_type == "dsa" and get_sm_version() >= 120:
-        raise ValueError(
-            f"DeepGEMM sparse-attention indexer has no RTX Blackwell kernel; DSA "
-            f"modules are unsupported on SM{get_sm_version()} "
-            f"(deepgemm attention.hpp:203/:259 'Unsupported architecture' @1.3.0rc20)"
-        )
-    # collector/skips.py leaves SM80-89 out: AttentionOp aborts there on every case.
+    # collector/skips.py leaves out SM80-89, where AttentionOp aborts on every case,
+    # and SM120 DSA, which TRT-LLM runs only on the packed fp8_ds_mla KV pool that
+    # this module does not build.
     assert attn_type != "mla" or get_sm_version() >= 90, (
         "TRT-LLM MLA has no pre-Hopper FMHA kernel (collector/skips.py)"
     )

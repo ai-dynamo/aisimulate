@@ -154,8 +154,15 @@ SKIPS: list[dict] = [
     {"backend": "vllm", "op": ["mla_context_module", "mla_generation_module"], "kv_cache_dtype": "fp8", "sm": [89]},
     # TRT-LLM's DSA attention reads an FP8 KV cache in the trtllm-gen sparse MLA
     # kernels of the SM100 family, and FP8-KV cases were not collected on SM90
-    # before. SM120 keeps the FP8-KV cases collected before.
+    # before.
     {"backend": "trtllm", "op": ["dsa_context_module", "dsa_generation_module"], "kv_cache_dtype": "fp8", "sm": [90]},
+    # TRT-LLM runs DSA and DeepSeek-V4 sparse MLA on SM120 only on the packed
+    # fp8_ds_mla KV pool: TrtllmAttention refuses any other pool ("requires
+    # kv_cache_config.dtype='fp8_ds_mla'", attention/backends/trtllm.py). The DSA
+    # module builds BF16 and FP8 pools, and the DeepSeek-V4 module builds fp8_ds_mla
+    # on SM90 only, so every case fails, as an RTX PRO 6000 run of the DSA modules
+    # showed.
+    {"backend": "trtllm", "op": ["dsa_context_module", "dsa_generation_module", *_DSV4_ATTENTION_OPS], "sm": [120]},
     # DSA modules on SM100/103 run trtllm-gen sparse-MLA kernels, which start at 8
     # query heads per rank (TRT-LLM's StoreSmemP.h tile, FlashInfer's
     # trtllm_fmha_kernel_launcher.cu), so fewer heads per rank fail on every case,

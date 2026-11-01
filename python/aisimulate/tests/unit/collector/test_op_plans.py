@@ -276,11 +276,14 @@ def test_dsa_skips_keep_each_backends_precisions(op):
 
     gemms = {"bfloat16", "fp8_block", "nvfp4"}
     both_kv = {(kv, gemm) for kv in ("bfloat16", "fp8") for gemm in gemms}
-    # TRT-LLM: FP8 KV from the SM100 family on; vLLM: both KV dtypes; NVFP4 from SM100.
+    # TRT-LLM: FP8 KV from the SM100 family on, and nothing on SM120, where it needs the
+    # fp8_ds_mla pool; vLLM: both KV dtypes; NVFP4 from SM100.
     assert combos("trtllm", 90) == {("bfloat16", "bfloat16"), ("bfloat16", "fp8_block")}
     assert combos("vllm", 90) == {pair for pair in both_kv if pair[1] != "nvfp4"}
-    for sm in (100, 103, 120):
+    for sm in (100, 103):
         assert combos("trtllm", sm) == combos("vllm", sm) == both_kv
+    assert combos("vllm", 120) == both_kv
+    assert combos("trtllm", 120) == set()
     # SGLang times each checkpoint on its own projection GEMM, with no NVFP4 projections.
     for sm in (90, 100):
         assert {(case.model_path, case.gemm_type) for case in plan(op, "sglang", sm).cases} == {

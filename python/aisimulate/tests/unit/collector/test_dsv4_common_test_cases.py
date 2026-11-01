@@ -70,8 +70,10 @@ def test_dsv4_module_plans_keep_each_backends_projection_gemms(monkeypatch, mode
         # experts, which need Blackwell.
         native_below_blackwell = sm == 90 and model_path.startswith("deepseek-ai/")
         assert sglang == ({"bfloat16"} if native_below_blackwell else {"bfloat16", "fp8_block"})
-        for backend in ("trtllm", "vllm"):
-            assert {case.gemm_type for case in plan("dsv4_csa_context_module", backend, sm).cases} == {"fp8_block"}
+        assert {case.gemm_type for case in plan("dsv4_csa_context_module", "vllm", sm).cases} == {"fp8_block"}
+        # TRT-LLM needs the fp8_ds_mla pool on SM120, which the module builds on SM90 only.
+        trtllm = {case.gemm_type for case in plan("dsv4_csa_context_module", "trtllm", sm).cases}
+        assert trtllm == (set() if sm == 120 else {"fp8_block"})
     for sm in (80, 86, 89):
         assert plan("dsv4_csa_context_module", "sglang", sm).cases == []
 
