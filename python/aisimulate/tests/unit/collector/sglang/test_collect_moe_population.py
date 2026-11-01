@@ -394,7 +394,7 @@ def test_case_generator_preserves_representative_sglang_moe_runtime_contracts():
 
 def test_sm120_population_gates_w4a8_and_keeps_w4a16_marlin():
     # SGLang's w4a8_mxfp4_mxfp8 runner has no verified SM120 pin
-    # (G-sglang-moe-runner-unpinned), so the plan leaves that region out on
+    # (collector/skips.py), so the plan leaves that region out on
     # SM120 while the w4a16_mxfp4 slice runs on Marlin.
     populated = _populate_gptoss_cases(
         [_gptoss_case(tp=1, ep=1)],

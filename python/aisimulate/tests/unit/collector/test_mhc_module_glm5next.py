@@ -57,7 +57,7 @@ def _planned_rows(monkeypatch, backend: str, model_path: str | None = None) -> l
 def test_trtllm_plans_the_dsv4_sites_only(monkeypatch):
     tokens = _token_counts()
     cases = _planned_rows(monkeypatch, "trtllm")
-    # G-trtllm-mhc-glm5next-not-served: the module API is DeepSeek-V4's.
+    # skips.py: TRT-LLM cannot serve GLM-5.3-Flash; the module API is DeepSeek-V4's.
     assert [case["id"] for case in cases] == [
         f"mhc_{site}_hs{hidden}_hcm4_{t}" for hidden in (4096, 7168) for site in ("pre", "post") for t in tokens
     ]
@@ -70,7 +70,7 @@ def test_vllm_plans_the_glm_call_sites_only(monkeypatch):
     cases = _planned_rows(monkeypatch, "vllm")
     ids = [case["id"] for case in cases]
     assert len(ids) == len(set(ids))
-    # G-vllm-mhc-dsv4-shared-key: DeepSeek-V4 rows would share GLM's key.
+    # skips.py: DeepSeek-V4 rows would share GLM's key.
     assert all(case["id"].startswith("mhc_glm5next_") for case in cases)
     assert {tuple(case["params"]) for case in cases} == {
         (site, t, 4096, 4, GLM, GLM_MODEL) for site in vllm.GLM5NEXT_VLLM_OPS for t in tokens
@@ -88,7 +88,7 @@ def test_vllm_targeted_glm_plan_is_glm_only(monkeypatch, model_path):
 
 def test_sglang_plans_one_row_per_dsv4_site_and_model(monkeypatch):
     cases = _planned_rows(monkeypatch, "sglang")
-    # G-sglang-mhc-glm5next-not-ported: GLM has no route for the pinned SGLang.
+    # skips.py: GLM has no route in the SGLang mHC collector.
     assert [case["params"] for case in cases] == [
         ["pre", "deepseek-ai/DeepSeek-V4-Flash"],
         ["post", "deepseek-ai/DeepSeek-V4-Flash"],

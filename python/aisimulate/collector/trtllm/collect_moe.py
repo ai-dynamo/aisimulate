@@ -286,7 +286,7 @@ def _run_moe_case(
     dtype = torch.bfloat16
     quant_group_size = 128
     quant_algo = None
-    # int4_wo: G-trtllm-moe-int4-wo-no-implementation (a backend gap on every SM, never queued).
+    # int4_wo: collector/skips.py skips it on every SM (no TRT-LLM implementation), so it is never queued.
     if moe_type == "fp8_block":
         quant_algo = QuantAlgo.FP8_BLOCK_SCALES
     elif moe_type == "w4afp8":

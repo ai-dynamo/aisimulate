@@ -14,7 +14,7 @@ are ROCm/AITER-gated (``rocm_aiter_ops.triton_fp8_bmm``):
   :401 (W_UV projection) @ the kimi-k3 preview — same torch.bmm.
 
 The lane therefore collects the ``bfloat16`` dtype only: the plan leaves the
-fp8 region out (G-vllm-mla-bmm-fp8-not-served in collector/notes/vllm.yaml). Until this collector existed,
+fp8 region out (collector/skips.py). Until this collector existed,
 vLLM MLA-BMM queries fell back to the trtllm tables (the SDK's
 "low-fidelity fallback rows for mla_bmm_perf" warning).
 """

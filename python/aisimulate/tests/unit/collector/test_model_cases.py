@@ -570,7 +570,7 @@ def test_kimi_moe_quantization_is_artifact_specific(monkeypatch):
         "group_size": 32
     }
     # SGLang pins the int4 runner on SM89/90/120 (Marlin) and SM100/103
-    # (flashinfer_trtllm), not on SM80 (G-sglang-moe-runner-unpinned).
+    # (flashinfer_trtllm), not on SM80 (collector/skips.py).
     assert _planned_moe_modes(monkeypatch, "sglang", "moonshotai/Kimi-K2.5", 90) == {"int4_wo"}
     assert _planned_moe_modes(monkeypatch, "sglang", "moonshotai/Kimi-K2.5", 100) == {"int4_wo"}
     assert _planned_moe_modes(monkeypatch, "sglang", "moonshotai/Kimi-K2.5", 80) == set()
@@ -708,7 +708,7 @@ def test_gptoss_mxfp4_modes_are_additive_on_blackwell(monkeypatch):
         assert _planned_moe_modes(monkeypatch, backend, model_path, 90) == {"w4a16_mxfp4"}, backend
         assert _planned_moe_modes(monkeypatch, backend, model_path, 100) == {"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"}, backend
     # SM120: SGLang has no verified w4a8 runner pin and vLLM serves MXFP4 there
-    # without MXFP8 activations (G-sglang-moe-runner-unpinned, G-vllm-moe-w4a8-mxfp4-sm120).
+    # without MXFP8 activations (both in collector/skips.py).
     assert _planned_moe_modes(monkeypatch, "sglang", model_path, 120) == {"w4a16_mxfp4"}
     assert _planned_moe_modes(monkeypatch, "vllm", model_path, 120) == {"w4a16_mxfp4"}
 
@@ -717,7 +717,7 @@ def test_gptoss_mxfp4_modes_are_additive_on_blackwell(monkeypatch):
 def test_dsv4_native_w4a8_mode_is_planned_from_sm100(monkeypatch, backend):
     model_path = "deepseek-ai/DeepSeek-V4-Flash"
 
-    # The trtllm-gen MXFP4 x MXFP8 kernel starts at SM100 (capabilities.yaml floor).
+    # The trtllm-gen MXFP4 x MXFP8 kernel starts at SM100 (collector/skips.py).
     assert _planned_moe_modes(monkeypatch, backend, model_path, 90) == set()
     assert _planned_moe_modes(monkeypatch, backend, model_path, 100) == {"w4a8_mxfp4_mxfp8"}
     assert _planned_moe_modes(monkeypatch, backend, model_path, 103) == {"w4a8_mxfp4_mxfp8"}
@@ -1486,7 +1486,7 @@ def test_vllm_024_schedules_consumed_dsv4_modules_only():
         "dsv4_hca_generation_module",
         "dsv4_paged_mqa_logits_module",  # consumed by the SDK CP chunk walk; shipped for vllm 0.24/0.25
         "gemm",
-        "mhc_module",  # SDK queries mhc pre/post on every backend; scheduled again 2026-10-11
+        # No mhc_module: collector/skips.py leaves DeepSeek-V4 out of vLLM's mHC table.
         "moe",
     ]
     registered_ops = {entry.op for entry in REGISTRY}
@@ -1576,8 +1576,10 @@ def test_vllm_024_model_plans_only_schedule_representable_attention_paths():
     for model_path in models_with_unrepresentable_vllm_attention:
         assert build_collection_case_plan(backend="vllm", model_path=model_path).ops == ["gemm", "moe"]
         assert build_collection_case_plan(backend="vllm_xpu", model_path=model_path).ops == ["gemm", "moe"]
-        for backend in ("sglang", "trtllm"):
-            assert build_collection_case_plan(backend=backend, model_path=model_path).ops == legacy_plan
+        assert build_collection_case_plan(backend="sglang", model_path=model_path).ops == legacy_plan
+        # collector/skips.py: TRT-LLM cannot serve MiMo-V2-Flash, so a model run plans nothing.
+        expected_trtllm = [] if model_path == "XiaomiMiMo/MiMo-V2-Flash" else legacy_plan
+        assert build_collection_case_plan(backend="trtllm", model_path=model_path).ops == expected_trtllm
 
 
 def test_compute_scale_is_selected_only_for_static_fp8_artifact():

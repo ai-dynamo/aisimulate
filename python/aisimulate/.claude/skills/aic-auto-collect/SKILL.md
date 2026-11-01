@@ -346,9 +346,9 @@ Fix policy:
   4. Verify the real API in source. Do not trust Python's "Did you mean" suggestions blindly.
   5. Patch the collector in place for the target release (one release per file: `.claude/rules/collector/layer_permissions.md`, "Version contract").
 - For API changes, upgrade the collector in place and pin `__compat__` to exactly the target release.
-- For a dtype or op the GPU cannot run at all (FP4/NVFP4 below SM100, FP8 below SM89), add a `capabilities.yaml` floor or a quant-axis `min_sm`. If the hardware can run the dtype but this backend's collector cannot, for the whole (op, dtype) on that SM, add a `backend_gaps` entry with a guard note. Never filter in collector code with `get_sm_version()`.
+- For a dtype or op the GPU cannot run at all (FP4/NVFP4 below SM100, FP8 below SM89), or a whole block this backend cannot run or a model it cannot serve, add an entry to `collector/skips.py` with the reason as a comment (or a quant-axis `min_sm`). Never filter in collector code with `get_sm_version()`.
 - For a shape or dimension boundary that one framework rejects, per-rank sizes such as `inter_size // tp` included, change nothing: the cases fail and are recorded. Count failures per consumer key and name the unavailable keys in the PR.
-- Add a guard only when a case would mismeasure, hang or kill the worker, or waste significant time. It raises in the worker and cites a `G-` note (`.claude/rules/collector/layer_permissions.md`).
+- Add a worker guard only when a case would mismeasure, hang or kill the worker, or waste significant time, and the check needs the running kernel. It raises with a `FIXME(kernel-limit):` message and a comment that says why (`.claude/rules/collector/layer_permissions.md`).
 - For CUDA-fatal errors, the worker restarts and the failure is already recorded; do not add skips.
 - Preserve data quality. Do not reduce benchmark repetitions or broad test dimensions just to pass.
 - Keep shared test-case generators deterministic when unit tests depend on them. Put runtime availability probes in backend collector wrappers when the skip is caused by a partially installed framework package.
@@ -583,7 +583,7 @@ PR body checklist:
 - Row counts by backend/version and perf file count.
 - Collector errors fixed.
 - Failure counts per consumer key, the unavailable keys, and the comparison with the previous run of the same backend/version.
-- Capability floors and notes added, changed or retired (`collector/notes/`), with `verified_on` moved for the new pin.
+- `collector/skips.py` entries added, changed or deleted, and deviation notes (`collector/notes/`) with `verified_on` moved for the new pin.
 - Whether measured values change; when they do, a before/after diff of the affected ops on one system per SM generation.
 - Validation commands and results.
 - Remaining risks.

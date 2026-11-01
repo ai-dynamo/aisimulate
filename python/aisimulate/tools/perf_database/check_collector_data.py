@@ -43,8 +43,8 @@ Eight rules:
   a valid status and a non-empty attempted-case plan; schema-v1 tables retain
   the original single-event empty-plan guard.
 - **R8 notes**: every `collector/notes/<backend>.yaml` matches the closed note
-  schema (unique `D-`/`G-` ids, catalog tables, known systems, a `direction`
-  for a deviation and a `reason` for a guard), and no note that covers the
+  schema (unique `D-` deviation ids, catalog tables, known systems and a
+  `direction`), and no note that covers the
   pinned version has a `verified_on` behind the pin of a table it covers. R8
   reads the notes, the catalog and the manifest, not the data tree under
   check, so it runs even when the data root is missing.
@@ -388,15 +388,13 @@ def check_r7_attested_case_plan(data_root: Path, version_dirs: list[tuple[str, s
 
 NOTES_DIR_DEFAULT = REPO_ROOT / "collector" / "notes"
 NOTES_SCHEMA_VERSION = 1
-NOTE_ID_PREFIX = {"deviation": "D-", "guard": "G-"}
 NOTE_DIRECTIONS = ("over", "under", "unknown")
-NOTE_GUARD_REASONS = ("mismeasure", "hang", "expensive")
 _NOTE_KEYS = frozenset(
-    ("id", "kind", "summary", "direction", "reason", "scope", "verified_on", "sources", "retire_via", "approved_by")
+    ("id", "kind", "summary", "direction", "scope", "verified_on", "sources", "retire_via", "approved_by")
 )
 _NOTE_REQUIRED = ("id", "kind", "summary", "scope", "verified_on", "sources")
 _NOTE_SCOPE_KEYS = {"tables", "systems", "versions"}
-_NOTE_ID_RE = re.compile(r"[DG]-[a-z0-9][a-z0-9-]*")
+_NOTE_ID_RE = re.compile(r"D-[a-z0-9][a-z0-9-]*")
 
 
 def _version(value: object) -> Version | None:
@@ -432,23 +430,17 @@ def _check_note(
 
     note_id, kind = note["id"], note["kind"]
     label = f"{where} {note_id}"
-    if not isinstance(kind, str) or kind not in NOTE_ID_PREFIX:
-        failures.append(f"{label}: kind must be deviation or guard, got {kind!r}")
-    elif not (isinstance(note_id, str) and _NOTE_ID_RE.fullmatch(note_id) and note_id.startswith(NOTE_ID_PREFIX[kind])):
-        failures.append(f"{label}: a {kind} id is {NOTE_ID_PREFIX[kind]}<backend>-<slug> in lowercase, digits, hyphens")
+    if kind != "deviation":
+        failures.append(f"{label}: kind must be deviation, got {kind!r}")
+    if not (isinstance(note_id, str) and _NOTE_ID_RE.fullmatch(note_id)):
+        failures.append(f"{label}: a deviation id is D-<backend>-<slug> in lowercase, digits, hyphens")
     if isinstance(note_id, str):
         if note_id in seen_ids:
             failures.append(f"{label}: duplicate id, first defined at {seen_ids[note_id]}")
         else:
             seen_ids[note_id] = where
-    if kind == "deviation" and note.get("direction") not in NOTE_DIRECTIONS:
+    if note.get("direction") not in NOTE_DIRECTIONS:
         failures.append(f"{label}: a deviation needs direction: {' | '.join(NOTE_DIRECTIONS)}")
-    if kind == "guard" and note.get("reason") not in NOTE_GUARD_REASONS:
-        failures.append(f"{label}: a guard needs reason: {' | '.join(NOTE_GUARD_REASONS)}")
-    if kind != "deviation" and "direction" in note:
-        failures.append(f"{label}: direction applies only to a deviation")
-    if kind != "guard" and "reason" in note:
-        failures.append(f"{label}: reason applies only to a guard")
     for key in ("summary", "retire_via", "approved_by"):
         if key in note and not (isinstance(note[key], str) and note[key].strip()):
             failures.append(f"{label}: {key} must be a non-empty string")

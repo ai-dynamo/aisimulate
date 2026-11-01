@@ -1625,7 +1625,7 @@ def _failure_group(task) -> str | None:
     the task carries neither a model nor a dtype attribute (e.g. positional
     tuple cases).
     """
-    from collector.capabilities import case_dtypes
+    from collector.skips import case_dtypes
 
     model = getattr(task, "model_name", None) or getattr(task, "model_path", None) or ""
     dtypes = ",".join(case_dtypes(task))
@@ -2540,10 +2540,12 @@ def collect_ops(
                 run_func = functools.partial(run_func, **dict(collection["run_kwargs"]))
 
             def get_func_with_limit(get_func=get_func, op=collection["type"]):
-                from collector.capabilities import filter_cases
+                from collector import skips
+                from collector.case_generator import without_models
 
-                cases = _get_test_cases_for_model(get_func, model_path)
-                cases, _dropped = filter_cases(cases, op=op, sm_version=sm_version)
+                with without_models(skips.models(backend, op, sm_version)):
+                    cases = _get_test_cases_for_model(get_func, model_path)
+                cases, _skipped = skips.filter_cases(cases, backend=backend, op=op, sm_version=sm_version)
                 if case_filters:
                     before_count = len(cases)
                     cases = [case for case in cases if any(fragment in str(case) for fragment in case_filters)]
@@ -6535,10 +6537,10 @@ def main():
     elif args.model_path:
         logger.info(f"Legacy model filter active: collecting only for '{args.model_path}'")
 
-    # Hardware capability floor target: explicit --sm / --gpu wins, otherwise
-    # detect from the local device (None on XPU -> filter is permissive).
-    from collector.capabilities import detect_sm_version
+    # The SM collector/skips.py applies to: explicit --sm / --gpu wins, otherwise
+    # detect from the local device (None on XPU: only entries without an sm apply).
     from collector.model_cases import resolve_sm_version
+    from collector.skips import detect_sm_version
 
     sm_version = (
         case_plan.sm_version
@@ -6547,7 +6549,7 @@ def main():
     )
     if sm_version is None:
         sm_version = detect_sm_version()
-    logger.info(f"Hardware capability floors target SM version: {sm_version}")
+    logger.info(f"Skips target SM version: {sm_version}")
 
     resume_options = {
         "resume": args.resume,

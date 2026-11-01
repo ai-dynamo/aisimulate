@@ -288,7 +288,7 @@ def test_vllm_sm90_repository_moe_getter_excludes_unconsumable_dsv4_cases(monkey
     }
 
     # Every row plans its checkpoint's quant modes on every backend; vLLM
-    # leaves out tp>1 with ep>1 (G-vllm-moe-tp-and-ep). The count moves only
+    # leaves out tp>1 with ep>1 (collector/skips.py). The count moves only
     # with the model rows or the shared grid.
     assert len(cases) == 2265
     assert sum(len(case[1]) for case in cases) == 61155
@@ -364,7 +364,7 @@ def test_nemotron_moe_plans_the_vllm_latent_and_the_outer_width_everywhere(
         cases = plan("moe", backend, 90).cases
         assert {case.hidden_size for case in cases} == hidden_sizes
         assert {case.moe_type for case in cases} == {moe_type}
-    # SGLang has no per-tensor fp8 path (G-sglang-moe-fp8-not-collected).
+    # SGLang has no per-tensor fp8 path (collector/skips.py).
     sglang = plan("moe", "sglang", 90).cases
     assert {(case.moe_type, case.hidden_size) for case in sglang} == (
         set() if moe_type == "fp8" else {(moe_type, hidden_size) for hidden_size in hidden_sizes}
@@ -380,9 +380,10 @@ def test_vllm_moe_plan_leaves_out_tensor_and_expert_parallel_together(monkeypatc
 
     assert all(tp == 1 or ep == 1 for tp, ep in topologies)
     assert any(tp > 1 for tp, ep in topologies) and any(ep > 1 for tp, ep in topologies)
-    assert [(region.region, region.reason) for region in vllm.removed] == [
-        ("parallel=tp_ep", "backend gap G-vllm-moe-tp-and-ep")
-    ]
+    from collector.skips import SKIPS
+
+    tp_ep = next(entry for entry in SKIPS if entry.get("parallel") == "tp_ep")
+    assert [(region.region, region.reason) for region in vllm.removed] == [("parallel=tp_ep", repr(tp_ep))]
 
 
 def test_common_moe_population_can_declare_a_required_ep_world(monkeypatch):

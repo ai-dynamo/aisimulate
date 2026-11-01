@@ -53,7 +53,7 @@ model_case_values:
       wideep: true
       # Native-FP4 checkpoint: MXFP4 routed experts, served with MXFP8
       # activations (trtllm-gen) on the SM100 family. The label's floor is
-      # SM100 (capabilities.yaml); below it serving runs the experts as W4A16,
+      # SM100 (collector/skips.py); below it serving runs the experts as W4A16,
       # a different label this row does not plan.
       quantization_modes: [w4a8_mxfp4_mxfp8]
     - model_path: sgl-project/DeepSeek-V4-Flash-FP8

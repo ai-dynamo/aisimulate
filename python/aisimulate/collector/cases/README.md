@@ -5,7 +5,7 @@ collector as a flat op list. The whole declaration surface is:
 
 ```text
 plan cases = dedup( expand(base_ops sweep grids) ∪ expand(model_case_values shapes) )
-runnable   = plan cases ∩ hardware capability floors  −  backend gaps  −  hang denylist
+runnable   = plan cases  −  what collector/skips.py skips
 ```
 
 There is intentionally no per-case selector or exception rule engine. Cases
@@ -21,12 +21,8 @@ See `.claude/rules/collector/failure_handling.md` for the escalation rules.
   activated.
 - `models/<architecture>_cases.yaml`: architecture-specific op activation,
   model path aliases, and model shape values.
-- `capabilities.yaml`: positive hardware floors (dtype/op → min SM) and
-  `backend_gaps` (a whole (op, dtype) region one backend's collector cannot
-  run on given SMs, citing a guard note), applied when cases are generated.
-  No shapes, no framework versions, no other per-backend nesting.
-- `denylist.yaml`: cases that hang or kill the node (substring match, dated,
-  with reason). Ordinary crashes never go here.
+- `../skips.py`: the one list of cases a collection leaves out (see
+  "Skipped Cases" below).
 
 ## Model Case Files
 
@@ -151,8 +147,8 @@ checkpoint's modes in `quantization_modes`, the same for every backend; a row
 that declares none plans every mode. Quant-sensitive checkpoint artifacts use
 separate model rows even when all geometry fields are identical.
 `framework_quantization.<backend>` holds only a backend's `module_config` (and
-vllm_xpu's own policy). SM floors are `capabilities.yaml` `dtype_min_sm`; a
-mode or layout one backend cannot run on an SM is a `backend_gaps` entry.
+vllm_xpu's own policy). A mode an SM or one backend cannot run is an entry in
+`collector/skips.py`.
 
 Artifact-keyed vLLM MoE rows also require a checked-in
 `src/aisimulate_core/model_configs/<org>--<model>_config.json`. The collector
@@ -162,9 +158,8 @@ download.
 When frameworks invoke different routed-expert geometry for the same artifact
 (vLLM routes Nemotron-H experts through a latent width), declare one row per
 geometry; every backend plans both. A MoE row may not declare `frameworks`.
-vLLM cannot run routed experts with TP and EP both above 1, so the plan leaves
-the MoE region `parallel: tp_ep` out for vLLM (a `backend_gaps` entry,
-G-vllm-moe-tp-and-ep).
+vLLM cannot run routed experts with TP and EP both above 1, so
+`collector/skips.py` leaves `parallel: tp_ep` out of vLLM's MoE plan.
 
 `include_base: true` means "include the small universal base set" declared by
 base-file `model_ops` (currently dense attention and GEMM). Use an explicit
@@ -173,51 +168,32 @@ framework-only recipes, and artifact-keyed `model_specific_base_ops` when one
 concrete checkpoint needs an op (e.g. the static-FP8 Qwen3 artifact opting
 into `compute_scale`).
 
-## Capability Floors
+## Skipped Cases
 
-`capabilities.yaml` holds positive hardware facts, plus the whole regions one
-backend's collector cannot run:
+`collector/skips.py` is the one place that keeps cases out of a collection.
+Each entry names what it skips (`backend`, `op`, `sm`, `model`, `dtype` or any
+case field), and the comment above it says why:
 
-```yaml
-dtype_min_sm:
-  fp8: 89
-  fp8_block: 89
-  nvfp4: 100
-op_min_sm:
-  dsa_context_module: 90
-backend_gaps:
-  - backend: sglang
-    op: gemm
-    dtype: fp8_block
-    sm: [89, 120]
-    note: G-sglang-gemm-fp8-block-deepgemm-only
+```python
+# SGLang: the collector times fp8_block GEMMs through DeepGEMM, which has no
+# SM89 or SM120 kernel, so every case would fail.
+{"backend": "sglang", "op": "gemm", "dtype": "fp8_block", "sm": [89, 120]},
+# TRT-LLM cannot serve MiMo-V2-Flash: it registers no model class for it.
+{"backend": "trtllm", "model": "MiMoV2FlashForCausalLM"},
 ```
 
-An op plan (`OP_PLANS` in `collector/op_plans.py`) applies both when it
-expands, one region at a time, and `collect.py --plan-only --sm N` reports
-what it left out and why. For other ops, `collector/capabilities.py` filters
-generated cases by typed field access (`moe_type`, `gemm_type`, `dtype`,
-`kv_cache_dtype`, FP8 flags) before queueing. Unknown dtypes and unknown ops
-are permissive: the table encodes known facts, never guesses. A
-`backend_gaps` entry covers a whole region of an op plan on listed SMs (a
-dtype, or another region field the plan declares) and names a guard note in
-`collector/notes/<backend>.yaml`. Shape-level kernel limits and
-framework-version gaps do NOT belong here; they are runtime observations.
+Add an entry only when the cases would be mismeasured, would hang, would fail
+as a whole block, or come from a model the backend cannot serve; edit or
+delete it when the reason stops being true. Everything else runs, and its
+failures are recorded and compared with the previous run.
 
-## Denylist
-
-`denylist.yaml` is for cases that hang or kill the node — the only failure
-mode that fail-fast + failure log cannot handle:
-
-```yaml
-entries:
-  - contains: "tp=32, ep=16"
-    reason: "sglang moe_ep tp=32 deadlocks in NCCL init on 0.5.10"
-    added: 2026-07-04
-```
-
-Keep entries dated; re-audit on every framework version bump and delete
-entries that no longer reproduce.
+An op plan (`OP_PLANS` in `collector/op_plans.py`) applies the list when it
+expands, and `collect.py --plan-only --sm N` reports what it left out under
+which entry. For other ops, `collect.py` applies it around the getter and to
+the generated cases before queueing (typed fields such as `moe_type`,
+`gemm_type`, `dtype`, `kv_cache_dtype` and the FP8 flags). A `model` entry
+drops that model's rows before cases are merged, so a shape another model
+also needs is still collected.
 
 ## Running Subsets (healing)
 

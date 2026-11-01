@@ -9,11 +9,14 @@ model-specific dimensions, and these helpers mechanically expand them into the
 legacy tuple/dataclass shapes consumed by collector modules.
 """
 
+import contextlib
+import contextvars
 import copy
 import dataclasses
 import functools
 import itertools
 import os
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Optional
 
@@ -611,6 +614,21 @@ def _get_model_path_filter() -> str | None:
     return val if val else None
 
 
+# Case-file architectures whose model rows the current plan leaves out
+# (``model`` entries in collector/skips.py).
+_SKIPPED_MODELS: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar("skipped_models", default=frozenset())
+
+
+@contextlib.contextmanager
+def without_models(architectures: Iterable[str]):
+    """Leave these case files' model rows out of every planned model row read inside the block."""
+    token = _SKIPPED_MODELS.set(frozenset(architectures))
+    try:
+        yield
+    finally:
+        _SKIPPED_MODELS.reset(token)
+
+
 @functools.lru_cache(maxsize=1)
 def _load_model_cases_data() -> tuple[dict, ...]:
     data = []
@@ -658,7 +676,10 @@ def _model_case_matches_path(value: dict, model_path: str) -> bool:
 
 def _model_case_values(op_name: str, *, apply_model_filter: bool = True) -> list[dict]:
     values = []
+    skipped = _SKIPPED_MODELS.get() if apply_model_filter else frozenset()
     for data in _load_model_cases_data():
+        if data.get("architecture") in skipped:
+            continue
         # Carry the model file's architecture onto every expanded case dict so
         # downstream model-family checks use config-derived metadata (the
         # architecture in the cases YAML mirrors config.json's
@@ -688,7 +709,10 @@ def _model_case_values(op_name: str, *, apply_model_filter: bool = True) -> list
 
 def _framework_specific_model_case_values(op_name: str, backend: str, *, apply_model_filter: bool = True) -> list[dict]:
     values = []
+    skipped = _SKIPPED_MODELS.get() if apply_model_filter else frozenset()
     for data in _load_model_cases_data():
+        if data.get("architecture") in skipped:
+            continue
         framework_values = data.get("framework_specific_model_case_values", {})
         if not isinstance(framework_values, dict):
             raise TypeError("framework_specific_model_case_values must be a mapping")

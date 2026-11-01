@@ -279,7 +279,7 @@ def get_context_attention_test_cases():
     test_cases = []
 
     # FP8 KV-cache cases follow the FP8 hardware floor (SM89+, Ada — see
-    # cases/capabilities.yaml dtype_min_sm.fp8). SGLang 0.5.14 puts no SM
+    # collector/skips.py). SGLang 0.5.14 puts no SM
     # gate on --kv-cache-dtype fp8_e4m3 (server_args.py:596-600) and the
     # flashinfer backend passes kv_cache_dtype straight into its plan calls
     # (flashinfer_backend.py:1151, 1377-1397); any backend-level rejection

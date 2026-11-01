@@ -5,9 +5,9 @@
 
 The tests run over every entry in ``OP_PLANS``, so moving an op onto a plan
 needs no new test: each backend's getter must be the one-line plan call, the
-backends may differ only by declared backend gaps, only whole regions are left
-out, rows may not drop a case, and case strings keep the list form that case
-IDs use.
+backends may differ only by skips.py entries that name them, every left-out
+case is counted under its entry, rows may not drop a case, and case strings
+keep the list form that case IDs use.
 """
 
 from __future__ import annotations
@@ -23,7 +23,8 @@ from collections import Counter
 from pathlib import Path
 
 import pytest
-from collector.capabilities import region_reason
+from collector import skips
+from collector.case_generator import without_models
 from collector.op_plans import OP_PLANS, GemmCase, OpPlan, plan, summarize
 from collector.provenance import case_plan_hash
 
@@ -39,9 +40,9 @@ def _full_plan(monkeypatch):
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
 
 
-def _region(op: str, case) -> dict:
-    spec = OP_PLANS[op]
-    return {"dtype": getattr(case, spec.dtype_field), **{field: getattr(case, field) for field in spec.region_fields}}
+def _entry(**keys) -> dict:
+    """The skips.py entry with these keys and values."""
+    return next(entry for entry in skips.SKIPS if all(entry.get(key) == value for key, value in keys.items()))
 
 
 def _registered_ops(backend: str) -> list[str]:
@@ -70,24 +71,37 @@ def test_getter_is_the_one_line_plan_call(backend, entry):
 
 @pytest.mark.parametrize("op", sorted(OP_PLANS))
 @pytest.mark.parametrize("sm", SMS)
-def test_backends_differ_only_by_declared_backend_gaps(op, sm):
+def test_backends_differ_only_by_entries_that_name_them(op, sm):
+    spec = OP_PLANS[op]
     plans = {backend: plan(op, backend, sm) for backend in BACKENDS}
     union = set().union(*(set(op_plan.cases) for op_plan in plans.values()))
     for backend, op_plan in plans.items():
-        for case in union - set(op_plan.cases):
-            removal = region_reason(op, _region(op, case), backend, sm)
-            assert removal is not None and removal[1].startswith("backend gap G-"), (backend, case)
+        missing = union - set(op_plan.cases)
+        if not missing:
+            continue
+        with without_models(skips.models(backend, op, sm)):
+            expanded = set(spec.expand())
+        # A model entry leaves the case out before cases merge ...
+        if missing - expanded:
+            assert skips.model_entries(backend, op, sm), (backend, sorted(missing - expanded, key=str)[:3])
+        # ... and a case entry leaves out the rest.
+        _kept, skipped = skips.split(
+            missing & expanded, backend, op, sm, lambda case: (getattr(case, spec.dtype_field),)
+        )
+        assert {case for case, _entry, _region in skipped} == missing & expanded, backend
+        assert all("backend" in entry for _case, entry, _region in skipped), backend
 
 
 @pytest.mark.parametrize("op", sorted(OP_PLANS))
 @pytest.mark.parametrize("backend", BACKENDS)
-def test_only_whole_regions_are_left_out(op, backend):
+def test_every_left_out_case_is_counted_under_its_entry(op, backend):
     expanded = OP_PLANS[op].expand()
+    entries = {repr(entry) for entry in skips.SKIPS}
     for sm in SMS:
         op_plan = plan(op, backend, sm)
         assert len(op_plan.cases) + sum(region.cases for region in op_plan.removed) == len(expanded)
         for region in op_plan.removed:
-            assert region.reason.startswith(("op ", "dtype ", "backend gap G-")), region
+            assert region.reason in entries, region
 
 
 @pytest.mark.parametrize("op", sorted(OP_PLANS))
@@ -143,11 +157,11 @@ def test_gemm_floors_remove_whole_dtypes(sm, dtypes):
     assert sorted({case.gemm_type for case in plan("gemm", "vllm", sm).cases}) == dtypes
 
 
-def test_gemm_sglang_fp8_block_gap_covers_only_sm89_and_sm120():
+def test_gemm_sglang_fp8_block_skip_covers_only_sm89_and_sm120():
     for sm in (89, 120):
         removed = plan("gemm", "sglang", sm).removed
         assert [(region.region, region.reason) for region in removed if region.region == "dtype=fp8_block"] == [
-            ("dtype=fp8_block", "backend gap G-sglang-gemm-fp8-block-deepgemm-only")
+            ("dtype=fp8_block", repr(_entry(backend="sglang", op="gemm")))
         ]
     for sm in (90, 100, 103):
         assert "fp8_block" in {case.gemm_type for case in plan("gemm", "sglang", sm).cases}
@@ -162,7 +176,7 @@ def test_summary_counts_per_dtype_and_hashes_the_planned_ids():
     assert summary["by_dtype"] == {"bfloat16": shapes, "fp8": shapes, "nvfp4": shapes}
     assert summary["groups"] == len({(case.gemm_type, case.n, case.k) for case in op_plan.cases})
     assert summary["removed"] == [
-        {"region": "dtype=fp8_block", "cases": shapes, "reason": "backend gap G-sglang-gemm-fp8-block-deepgemm-only"}
+        {"region": "dtype=fp8_block", "cases": shapes, "reason": repr(_entry(backend="sglang", op="gemm"))}
     ]
     assert summary["plan_hash"] == case_plan_hash([f"sglang.gemm:run_gemm:{case}" for case in op_plan.cases])
     assert "rows" not in summary
@@ -191,7 +205,8 @@ def test_plan_only_reports_op_plans_and_writes_the_table(tmp_path, monkeypatch):
     gemm = plans["gemm"]
     shapes = gemm["by_dtype"]["bfloat16"]
     assert gemm["by_dtype"] == {"bfloat16": shapes, "fp8": shapes, "fp8_block": shapes}
-    assert gemm["removed"] == [{"region": "dtype=nvfp4", "cases": shapes, "reason": "dtype nvfp4 requires SM>=100"}]
+    nvfp4 = repr(_entry(dtype=["nvfp4", "w4a8_mxfp4_mxfp8"]))
+    assert gemm["removed"] == [{"region": "dtype=nvfp4", "cases": shapes, "reason": nvfp4}]
     rows = (tmp_path / "vllm_sm89_gemm.csv").read_text().splitlines()
     assert rows[0] == "gemm_type,m,n,k"
     assert len(rows) == 1 + gemm["cases"]
@@ -224,17 +239,6 @@ for op in OP_PLANS:
         [sys.executable, "-c", script], cwd=PKG_ROOT, env=env, capture_output=True, text=True, timeout=300
     )
     assert result.returncode == 0, result.stderr[-2000:]
-
-
-@pytest.mark.parametrize("op", sorted(OP_PLANS))
-def test_region_fields_are_few_categories(op):
-    """A backend gap names a whole region: dtype or a categorical field, never a shape axis."""
-    spec = OP_PLANS[op]
-    for field in spec.region_fields:
-        assert field in spec.case_type._fields or isinstance(getattr(spec.case_type, field, None), property), field
-        values = {getattr(case, field) for backend in BACKENDS for case in plan(op, backend, 100).cases}
-        assert all(isinstance(value, str) for value in values), (field, values)
-        assert len(values) <= 8, (field, values)
 
 
 def test_moe_plan_reports_the_runner_sglang_picks_on_each_sm():

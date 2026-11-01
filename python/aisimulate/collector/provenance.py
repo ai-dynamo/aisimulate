@@ -34,7 +34,7 @@ SHARED_CORE: tuple[str, ...] = (
     "collector/helper.py",
     "collector/case_generator.py",
     "collector/model_cases.py",
-    "collector/capabilities.py",
+    "collector/skips.py",
     "collector/version_resolver.py",
 )
 

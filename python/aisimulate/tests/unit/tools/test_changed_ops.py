@@ -89,7 +89,7 @@ PROVENANCE_PY = """SHARED_CORE = (
     "collector/helper.py",
     "collector/case_generator.py",
     "collector/model_cases.py",
-    "collector/capabilities.py",
+    "collector/skips.py",
     "collector/version_resolver.py",
 )
 """
@@ -101,7 +101,7 @@ PROVENANCE_PY_WITH_EXTRA_SHARED_FILE = """SHARED_CORE = (
     "collector/helper.py",
     "collector/case_generator.py",
     "collector/model_cases.py",
-    "collector/capabilities.py",
+    "collector/skips.py",
     "collector/version_resolver.py",
     "collector/extra_shared.py",
 )
@@ -231,7 +231,7 @@ def _default_files() -> dict[str, str]:
         "collector/helper.py": "# helper v1\n",
         "collector/case_generator.py": "# case_generator v1\n",
         "collector/model_cases.py": "# model_cases v1\n",
-        "collector/capabilities.py": "# capabilities v1\n",
+        "collector/skips.py": "# skips v1\n",
         "collector/version_resolver.py": "# version_resolver v1\n",
         "collector/sglang/collect_gemm.py": "# collect_gemm v1\n",
         "collector/sglang/collect_attn.py": "# collect_attn v1\n",
@@ -583,7 +583,7 @@ class TestSharedBackendDirDisambiguation:
             "collector/helper.py": "# helper v1\n",
             "collector/case_generator.py": "# case_generator v1\n",
             "collector/model_cases.py": "# model_cases v1\n",
-            "collector/capabilities.py": "# capabilities v1\n",
+            "collector/skips.py": "# skips v1\n",
             "collector/version_resolver.py": "# version_resolver v1\n",
             "collector/trtllm/collect_moe.py": "# collect_moe v1\n",
             "collector/wideep_trtllm/collect_moe.py": "# wideep collect_moe v1\n",

@@ -117,17 +117,14 @@ Case files (see `cases/README.md` for the full authoring guide):
 ```text
 cases/base_ops/<op>.yaml               — shared sweep recipes (interpolation grid)
 cases/models/<architecture>_cases.yaml — op activation + model shape values
-cases/capabilities.yaml                — hardware floors (dtype/op -> min SM) and backend gaps
-cases/denylist.yaml                    — hang/node-killer cases only
 model_cases.py                         — resolves which ops a model plan collects
-capabilities.py                        — generation-time capability/denylist filter
+skips.py                               — the one list of cases a collection leaves out
 ```
 
-The plan is one equation: cases = dedup(base grid ∪ model shapes), then
-intersected with hardware capability floors, minus backend gaps and the hang
-denylist. For an op with an op plan (`OP_PLANS` in `op_plans.py`), `--plan-only`
-with `--sm` or `--gpu` also prints case counts per dtype and the regions left
-out; `--plan-table DIR` writes one CSV row per case.
+The plan is one equation: cases = dedup(base grid ∪ model shapes), minus what
+`skips.py` skips. For an op with an op plan (`OP_PLANS` in `op_plans.py`),
+`--plan-only` with `--sm` or `--gpu` also prints case counts per dtype and what
+was left out under which entry; `--plan-table DIR` writes one CSV row per case.
 
 TRT-LLM MLA precision and GPT-OSS TP profile collection evidence is recorded
 in [the September 17 campaign](trtllm/gym-profiles-20260917.md).
@@ -236,8 +233,8 @@ and `collection_summary_<backend>.json` with a classification and a
 group failing is a fix-me signal (collector bug, unverified combo, framework
 gap), not something to tolerate or auto-skip. Missing points are tolerated
 downstream by interpolation and fallback. Escalation rules — when a failure
-deserves a denylist entry, a registry `unverified` marker, or a capability
-floor — live in `.claude/rules/collector/failure_handling.md`.
+deserves a `skips.py` entry or a registry `unverified` marker — live in
+`.claude/rules/collector/failure_handling.md`.
 
 `--gpu <type>` resolves the SM version from
 `src/aisimulate_core/systems/<gpu>.yaml`; use `--sm <version>` on an

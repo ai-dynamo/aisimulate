@@ -536,10 +536,13 @@ class TestR8Notes:
     def test_valid_deviation_passes(self, mod, tmp_path):
         assert _check_notes(mod, tmp_path, [_note()]) == []
 
-    def test_valid_guard_passes(self, mod, tmp_path):
-        guard = _note(id="G-vllm-example", kind="guard", reason="mismeasure")
-        del guard["direction"]
-        assert _check_notes(mod, tmp_path, [guard]) == []
+    def test_a_note_is_a_deviation(self, mod, tmp_path):
+        guard = _note(id="G-vllm-example", kind="guard")
+        failures = _check_notes(mod, tmp_path, [guard])
+        assert failures == [
+            "notes/vllm.yaml[0] G-vllm-example: kind must be deviation, got 'guard'",
+            "notes/vllm.yaml[0] G-vllm-example: a deviation id is D-<backend>-<slug> in lowercase, digits, hyphens",
+        ]
 
     def test_missing_notes_dir_passes(self, mod, tmp_path):
         family_map = mod.load_family_map(REAL_CATALOG)
@@ -562,21 +565,17 @@ class TestR8Notes:
         assert len(failures) == 1
         assert "duplicate id, first defined at notes/vllm.yaml[0]" in failures[0]
 
-    def test_id_prefix_follows_kind(self, mod, tmp_path):
-        failures = _check_notes(mod, tmp_path, [_note(kind="guard", reason="hang", direction=None)])
-        assert any("a guard id is G-<backend>-<slug>" in failure for failure in failures)
+    def test_id_is_a_deviation_id(self, mod, tmp_path):
+        failures = _check_notes(mod, tmp_path, [_note(id="D-vLLM_example")])
+        assert failures == [
+            "notes/vllm.yaml[0] D-vLLM_example: a deviation id is D-<backend>-<slug> in lowercase, digits, hyphens"
+        ]
 
     def test_deviation_needs_direction(self, mod, tmp_path):
         note = _note()
         del note["direction"]
         failures = _check_notes(mod, tmp_path, [note])
         assert failures == ["notes/vllm.yaml[0] D-vllm-example: a deviation needs direction: over | under | unknown"]
-
-    def test_guard_needs_reason(self, mod, tmp_path):
-        guard = _note(id="G-vllm-example", kind="guard")
-        del guard["direction"]
-        failures = _check_notes(mod, tmp_path, [guard])
-        assert failures == ["notes/vllm.yaml[0] G-vllm-example: a guard needs reason: mismeasure | hang | expensive"]
 
     def test_unknown_table_and_system_are_named(self, mod, tmp_path):
         failures = _check_notes(mod, tmp_path, [_note(scope={"tables": ["nope_perf"], "systems": ["h999"]})])

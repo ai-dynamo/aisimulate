@@ -153,17 +153,17 @@ population path. If a later design decision removes either side, delete the
 orphan. Do not retain speculative aliases, phase selectors, compatibility
 modes, or one-time audit scaffolding.
 
-## Step 5: Filter only whole regions; let the rest run
+## Step 5: Skip only through collector/skips.py; let the rest run
 
 A queued case has two legal collector outcomes: execute it, or raise
 (`layer_permissions.md`). Follow the failure principle in `overview.md`:
 
-- **Whole regions that cannot run** (an SM without a dtype, an op that needs
-  a newer SM) leave the plan at expansion, through a `capabilities.yaml` floor
-  or a quant-axis `min_sm` / cited `max_sm_exclusive`. When the hardware can
-  run a dtype but this backend's collector cannot, add a `backend_gaps` entry
-  with a guard note. Never filter them in a getter or with a hard-coded SM
-  check. GEMM and MoE are the reference: their getters are one line that
+- **Cases that cannot or should not run** (an SM without a dtype, a block
+  this backend cannot run, a model it cannot serve) get an entry in
+  `collector/skips.py` with the reason as the comment above it, or a
+  quant-axis `min_sm` / cited `max_sm_exclusive`. Never filter them in a
+  getter or with a hard-coded SM check. GEMM and MoE are the reference: their
+  getters are one line that
   calls the shared op plan (`case_authoring.md`, "Op plans"); a backend
   whose run function needs more arguments declares `rows` there, and the
   kernel or runner the plan picks goes in `dispatch` (MoE: SGLang's runner
@@ -173,13 +173,12 @@ A queued case has two legal collector outcomes: execute it, or raise
   framework's own limit fails and is recorded. Do not prune it and do not
   narrow a shared grid for one framework. Count the failures per consumer key
   and name the unavailable keys.
-- **A guard** is legal only when the case would mismeasure, hang, or waste
-  significant time. It raises in the worker and cites a `G-` note in
-  `collector/notes/<backend>.yaml`.
+- **A worker guard** is legal only when the case would mismeasure, hang, or
+  waste significant time and the check needs the running kernel. It raises
+  with a `FIXME(kernel-limit):` message and a comment that says why.
 - The other auditable homes stay: registry `unverified`/`unverified_sms`
-  markers, the hang denylist, declared model correlations, the
-  memory-feasibility filter, and deduplication backed by a proven invocation
-  or key duplicate (Step 2).
+  markers, declared model correlations, the memory-feasibility filter, and
+  deduplication backed by a proven invocation or key duplicate (Step 2).
 
 An op with no production consumer stays registry-only or explicitly
 experimental instead of joining default model plans. Keep shared generators
@@ -207,7 +206,7 @@ unsupported input.
   op's registry/public getter; testing only a shared case generator is not
   sufficient.
 - Count generator recipes, raw getter tasks, scheduled tasks (after
-  capability floors, registry maturity markers, and the denylist),
+  `collector/skips.py` and registry maturity markers),
   token-expanded benchmark invocations, and unique persisted keys separately.
 - For every deduplication, record stage-local before/after, unique invocation,
   and unique persisted-key counts using repository-owned inputs. Name the
@@ -217,8 +216,8 @@ unsupported input.
 - When a runtime or subprocess expands an inner sweep, compare its quantization
   and SM policy with the outer getter. Test both sides of every changed hardware
   gate and assert that unsupported precision labels are absent.
-- Apply model plan selection, capability floors, registry maturity markers,
-  and the denylist before reporting a count as the final scheduled queue; raw
+- Apply model plan selection, `collector/skips.py` and registry maturity
+  markers before reporting a count as the final scheduled queue; raw
   getter counts are not final plan counts.
 - Assert invocation IDs and persisted keys have no unexplained duplicates.
 - Assert required consumer query keys are covered.

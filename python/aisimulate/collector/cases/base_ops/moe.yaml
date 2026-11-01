@@ -77,9 +77,8 @@ common_case_values:
     # The quant-mode axis every CUDA backend plans. A model row that declares
     # quantization_modes plans only those (its checkpoint's quantization); a
     # row that declares none plans every mode below. allowed_model_paths keeps
-    # a checkpoint-specific format to the models that ship it. SM floors are
-    # capabilities.yaml dtype_min_sm; a mode one backend cannot run on an SM is
-    # a capabilities.yaml backend_gaps entry.
+    # a checkpoint-specific format to the models that ship it. A mode an SM or
+    # one backend cannot run is an entry in collector/skips.py.
     quantization_modes:
     - name: bfloat16
     - name: fp8

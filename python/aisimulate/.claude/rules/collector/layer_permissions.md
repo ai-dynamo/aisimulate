@@ -18,7 +18,7 @@ the vocabulary (Pin, Plan, Record, Note, Rule) and the failure principle.
 
 ```text
 plan cases = dedup( expand(base_ops sweep grids) ∪ expand(model_case_values shapes) )
-runnable   = plan cases ∩ hardware capability floors  −  backend gaps  −  hang denylist
+runnable   = plan cases  −  what collector/skips.py skips
 result     = perf rows  +  classified failure records   (failure is DATA, not a defect)
 ```
 
@@ -28,10 +28,9 @@ result     = perf rows  +  classified failure records   (failure is DATA, not a 
 |---|---|---|
 | `cases/base_ops/*.yaml` | sweep density/ranges; axis-level `min_sm` on quant/precision modes; quant-mode-level `max_sm_exclusive` **iff** the entry carries a serving-dispatch citation (file:line at the pinned framework version) showing the framework itself excludes the platform — re-verified on every version bump like `FIXME(kernel-limit)` | per-model special cases; shape exclusion rules; `max_sm_exclusive` without a citation or below the quant-mode axis |
 | `cases/models/*_cases.yaml` | model structural shapes, correlated tuples, artifact/quant policy, op activation (`cases: all`) | selectors, match rules, a second generator recipe |
-| `cases/capabilities.yaml` | positive dtype/op → min-SM floors (hardware facts); `backend_gaps`: a whole region of an op plan on listed SMs that one backend's collector cannot run, citing a guard note. A region is a dtype or another region field the op plan declares (MoE `parallel`: tp, ep or tp_ep; mHC `architecture`) | any region finer than a declared region field on an SM; shape axes; framework-version conditions; other per-backend nesting |
+| `collector/skips.py` | one entry per reason, naming what it skips (`backend`, `op`, `sm`, `model`, `dtype` or a case field), with the reason as the comment above it: cases that would mismeasure, hang, fail as a whole block, or come from a model the backend cannot serve | an entry without a reason; skipping scattered failures |
 | `<backend>/registry.py` | version routing (`VersionRoute`); maturity markers `unverified=True` (op × backend) and `unverified_sms=(...)` (op × backend × SM) | any shape-level information |
 | `collect_*.py` collector code | **dispatch**: pick kernel path by SM/version, record `kernel_source`; runtime probe → **raise a classified exception**; **memory-feasibility filter** (see below) | silent `continue`/skip of a queued case; any other case filtering; patching code so one shape passes |
-| `cases/denylist.yaml` | cases that HANG or kill the node (dated, with reason) | ordinary crashes — those belong to the failure log |
 | executor (`collect.py`) | — mechanism is off-limits during case-fixing tasks | changing checkpoint/case-ID/failure-classification logic to make a case pass |
 | failure records (`errors_*.json`, summary) | append-only observation | feeding failures back into ANY declaration layer as new rules |
 
@@ -45,9 +44,8 @@ result     = perf rows  +  classified failure records   (failure is DATA, not a 
   failure record.
 
 A collector has exactly two legal responses to a queued case: **execute it, or
-raise**. "Whether it runs" is decided only outside the collector, in three
-auditable places: capability floors and backend gaps (generation time),
-registry `unverified` markers, and the hang denylist.
+raise**. "Whether it runs" is decided only outside the collector, in two
+auditable places: `collector/skips.py` and registry `unverified` markers.
 
 ## Kernel/backend selection: framework truth, never your guess
 
@@ -134,7 +132,7 @@ feasibility, under exactly these conditions:
 
 Anything beyond this pattern goes back to the normal rule: run it or raise.
 
-## Framework kernel limits: let them fail, guard only three cases
+## Framework kernel limits: let them fail, skip only four cases
 
 A framework kernel limit (a backend × SM constraint with a shape flavor, such
 as "Blackwell attention rejects GQA ratio >= 32 unless divisible by 32") is
@@ -143,33 +141,23 @@ runs, fails, lands in the failure log, and the next run is compared with this
 one. Do not write a probe, a guard or a YAML rule for it, and never express
 it in YAML.
 
-A guard is legal only when running the case would:
+Leaving cases out is legal only when running them would:
 
 1. **mismeasure**: succeed on a different kernel than the framework selects
    in serving, producing a wrongly labeled row;
-2. **hang** or kill the worker; or
-3. **waste significant time**, such as a full module load per case before the
-   failure.
+2. **hang** or kill the worker;
+3. **fail as a whole block** or **waste significant time**, such as a full
+   module load per case before the failure; or
+4. time a model the backend **cannot serve**.
 
-Such a guard raises in the worker before the expensive step, never at plan
-time, so the case stays queued and its failure is recorded on every run. Its
-message starts with `FIXME(kernel-limit):` (the failure classifier keys on
-that prefix) and names its guard note, `G-<backend>-<slug>` in
-`collector/notes/<backend>.yaml`. The note carries the evidence (a framework
-source line, or a reproducible failing run whose passing rows bound the
-guarded envelope) and `verified_on`, so R8 forces a re-check at every pin
-bump.
-
-When the guarded set is a whole (op, dtype) region on an SM, such as a dtype
-the backend's collector has no kernel for there, do not raise per case:
-declare it in `capabilities.yaml` `backend_gaps` with the same kind of guard
-note (reason `expensive`). The plan then leaves the region out and
-`--plan-only` reports it with the note id. Example:
-`G-sglang-gemm-fp8-block-deepgemm-only`.
-
-Existing `FIXME(kernel-limit)` raises without a guard note are legacy. When a
-change touches one, delete it if it guards none of the three cases above, or
-give it a guard note.
+Put such cases in `collector/skips.py`, with the reason (and its evidence: a
+framework source line or a failing run) as the comment above the entry. The
+plan then leaves them out and `--plan-only` reports them under the entry. A
+guard that needs the running kernel may raise in the worker instead, before
+the expensive step; its message starts with `FIXME(kernel-limit):` (the
+failure classifier keys on that prefix) and the comment beside it says why.
+When a change touches an existing `FIXME(kernel-limit)` raise, delete it if it
+guards none of the cases above.
 
 ## Version contract: one release per collector file
 
@@ -247,8 +235,9 @@ rule. Anything outside a note's scope is an ordinary violation.
 2. **Mechanism changes need explicit human approval.** The executor, case
    generator engine, failure classification, and case-ID format are mechanism.
    Propose changes; do not fold them into a "fix this case" task.
-3. **Inexpressibility is the guardrail.** The YAML schemas here deliberately
+3. **Inexpressibility is the guardrail.** The case YAML schemas deliberately
    cannot express shape conditions or version predicates. Do not extend the
-   schemas to allow them.
+   schemas to allow them; a case that must not run goes in
+   `collector/skips.py` with its reason.
 4. **A test that only works with `-m unit` unmarked is invisible to CI.** Mark
    new collector tests `pytest.mark.unit`.

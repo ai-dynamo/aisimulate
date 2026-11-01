@@ -66,8 +66,8 @@ def _select_default_mla_backend() -> str:
     """The MLA attention backend SGLang serving picks for DeepSeek V3 on this SM.
 
     trtllm_mla on SM100/103 (the DeepSeek special case), fa3 on Hopper, triton
-    on SM89/120. SM80/86 have no mapping (G-sglang-mla-backend-unmapped); the
-    plan leaves them out.
+    on SM89/120. SM80/86 have no mapping; collector/skips.py leaves them out
+    of the plan.
     """
     sm_version = get_sm_version()
     if sm_version in {100, 103} and _cuda_version_at_least(12, 8):
@@ -76,7 +76,7 @@ def _select_default_mla_backend() -> str:
         return "fa3"
     if sm_version in {89, 90, 100, 103, 120}:
         return "triton"
-    raise ValueError(f"No SGLang MLA backend mapping for SM{sm_version} (G-sglang-mla-backend-unmapped)")
+    raise ValueError(f"No SGLang MLA backend mapping for SM{sm_version}")
 
 
 def _mla_compute_dtype(backend: str, kv_cache_dtype: torch.dtype) -> str:

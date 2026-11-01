@@ -85,15 +85,18 @@ def test_mla_compute_label_rejects_unaudited_backend(kv_dtype):
 @pytest.mark.unit
 @pytest.mark.parametrize("op", ["mla_context", "mla_generation"])
 def test_sglang_mla_plan_declares_the_unmapped_platforms(op):
-    # SM80/86 have no backend mapping: the plan leaves them out as a declared
-    # backend gap, reported with its note, never as a silent empty getter.
+    # SM80/86 have no backend mapping: the plan leaves them out under their
+    # skips.py entry, reported, never as a silent empty getter.
     from collector.op_plans import plan
+    from collector.skips import SKIPS
 
+    unmapped = next(entry for entry in SKIPS if entry.get("op") == ["mla_context", "mla_generation"])
+    fp8 = next(entry for entry in SKIPS if entry.get("dtype") == ["fp8", "fp8_static", "fp8_block"])
     sm80 = plan(op, "sglang", 80)
     assert sm80.cases == []
     assert [(region.region, region.reason) for region in sm80.removed] == [
-        ("dtype=bfloat16", "backend gap G-sglang-mla-backend-unmapped"),
-        ("dtype=fp8", "dtype fp8 requires SM>=89"),
+        ("dtype=bfloat16", repr(unmapped)),
+        ("dtype=fp8", repr(fp8)),
     ]
     # The triton platforms plan fp8 KV like every other backend; a failure is recorded.
     for sm in (89, 120):
@@ -103,15 +106,15 @@ def test_sglang_mla_plan_declares_the_unmapped_platforms(op):
 @pytest.mark.unit
 def test_dsa_module_family_op_floors_cover_skip_indexer_variants():
     # The skip-indexer variants run the same SM90+ sparse attention kernel
-    # family as the full DSA modules; the capability floor must cover all
-    # four so sub-SM90 platforms drop them with a logged reason.
-    from collector.capabilities import _load_capabilities
+    # family as the full DSA modules; skips.py must cover all four so sub-SM90
+    # platforms drop them with a logged reason.
+    from collector.skips import filter_cases
 
-    _, op_min_sm = _load_capabilities()
     for op in (
         "dsa_context_module",
         "dsa_generation_module",
         "dsa_context_module_skip_indexer",
         "dsa_generation_module_skip_indexer",
     ):
-        assert op_min_sm.get(op) == 90
+        assert filter_cases([[1]], "sglang", op, 89)[0] == []
+        assert filter_cases([[1]], "sglang", op, 90)[0] == [[1]]

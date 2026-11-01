@@ -4,9 +4,9 @@
 """Op plans: one case list per op, shared by every CUDA backend.
 
 An op plan expands the op's cases once from ``cases/`` YAML, the same for
-every backend. :func:`plan` then leaves out only whole regions: the
-``capabilities.yaml`` floors and backend gaps (:func:`capabilities.region_reason`).
-A case inside a kept region always runs; if it fails, the failure is recorded.
+every backend. :func:`plan` then leaves out what ``collector/skips.py`` skips
+for the backend and SM. Every other case runs; if it fails, the failure is
+recorded.
 
 Where the plan picks the kernel or runner a backend measures a case on (the
 one serving selects, Rule 2), the op declares it in ``dispatch``. A backend
@@ -31,7 +31,7 @@ from collections.abc import Callable, Mapping
 from types import MappingProxyType
 from typing import NamedTuple
 
-from collector.capabilities import region_reason
+from collector import skips
 from collector.case_generator import (
     BASE_OP_CASES_DIR,
     MoeCommonTestCase,
@@ -52,6 +52,7 @@ from collector.case_generator import (
     get_shared_base_op_case_specs,
     moe_model_layer,
     moe_planned_modes,
+    without_models,
 )
 
 # Plan logs go to the collector log, never stdout: --plan-only prints JSON there.
@@ -69,9 +70,6 @@ class OpPlan:
     dtype_field: str
     # The case fields whose values share one module build in a worker.
     group_fields: tuple[str, ...]
-    # Other categorical case fields (or properties derived from them) a
-    # capabilities.yaml backend gap may name, besides dtype. Never a shape axis.
-    region_fields: tuple[str, ...] = ()
     # backend -> the kernel or runner the backend measures a case on, where the
     # plan picks it.
     dispatch: Mapping[str, Callable[[object, int | None], str]] = MappingProxyType({})
@@ -82,7 +80,10 @@ class OpPlan:
 
 @dataclasses.dataclass(frozen=True)
 class RemovedRegion:
-    """A whole region a plan leaves out, how many cases it holds, and why."""
+    """What a plan leaves out (``dtype=fp8_block``, ``model=<architecture>``), how many cases, and why.
+
+    ``reason`` is the skips.py entry that left the cases out.
+    """
 
     region: str
     cases: int
@@ -124,26 +125,33 @@ class Plan:
 
 
 def plan(op: str, backend: str, sm_version: int | None) -> Plan:
-    """Expand an op's shared cases and leave out the whole regions this backend cannot run on this SM."""
-    spec = OP_PLANS[op]
-    reasons: dict[tuple, tuple[str, str] | None] = {}
-    kept = []
-    removed: Counter[tuple[str, str]] = Counter()
-    for case in spec.expand():
-        region = {"dtype": getattr(case, spec.dtype_field)}
-        region.update((field, getattr(case, field)) for field in spec.region_fields)
-        key = tuple(region.values())
-        if key not in reasons:
-            reasons[key] = region_reason(op, region, backend, sm_version)
-        if reasons[key] is None:
-            kept.append(case)
-        else:
-            removed[reasons[key]] += 1
+    """Expand an op's shared cases and leave out what ``skips.SKIPS`` skips for this backend on this SM.
 
+    A ``model`` entry drops the model's rows before cases are merged, so a case
+    another model also needs stays; the plan reports how many cases each such
+    entry removes on its own.
+    """
+    spec = OP_PLANS[op]
+    model_entries = skips.model_entries(backend, op, sm_version)
+    skipped_models = skips.models(backend, op, sm_version)
+    with without_models(skipped_models):
+        expanded = spec.expand()
+    removed_models = []
+    for entry, architectures in model_entries:
+        with without_models(skipped_models - architectures):
+            count = len(spec.expand()) - len(expanded)
+        if count:
+            removed_models.append(RemovedRegion(f"model={','.join(sorted(architectures))}", count, repr(entry)))
+
+    kept, skipped = skips.split(expanded, backend, op, sm_version, lambda case: (getattr(case, spec.dtype_field),))
+    removed = Counter((region, repr(entry)) for _case, entry, region in skipped)
     dispatch = spec.dispatch.get(backend)
     return Plan(
         cases=kept,
-        removed=[RemovedRegion(region, count, reason) for (region, reason), count in removed.items()],
+        removed=[
+            *(RemovedRegion(region, count, reason) for (region, reason), count in removed.items()),
+            *removed_models,
+        ],
         dispatches=[dispatch(case, sm_version) for case in kept] if dispatch is not None else [],
         to_rows=spec.rows.get(backend),
         sm_version=sm_version,
@@ -808,7 +816,6 @@ OP_PLANS: dict[str, OpPlan] = {
         dtype_field="moe_type",
         # Every case builds its own layer.
         group_fields=MoeCase._fields,
-        region_fields=("parallel",),
         dispatch={"sglang": _sglang_moe_runner},
         rows={"sglang": _sglang_moe_rows, "trtllm": _trtllm_moe_rows},
     ),
@@ -850,7 +857,6 @@ OP_PLANS: dict[str, OpPlan] = {
         _expand_mhc,
         dtype_field="dtype",
         group_fields=MhcCase._fields,
-        region_fields=("architecture",),
         rows={"sglang": _sglang_mhc_rows, "trtllm": _trtllm_mhc_rows, "vllm": _vllm_mhc_rows},
     ),
 }

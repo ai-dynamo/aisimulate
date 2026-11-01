@@ -102,19 +102,19 @@ def test_glm5_sparse_smoke_samples_each_batch_across_its_full_shape_range():
 
 
 def test_glm5_sparse_platform_gating_lives_outside_the_getter():
-    """The getter itself carries no SM predicate: pre-Hopper is dropped by the
-    op_min_sm capability floors and SM120 is parked by registry maturity
-    markers, so both stay auditable declaration-layer decisions."""
-    from collector.capabilities import _load_capabilities
+    """The getter itself carries no SM predicate: pre-Hopper is dropped by
+    collector/skips.py and SM120 is parked by registry maturity markers, so
+    both stay auditable declaration-layer decisions."""
     from collector.sglang.registry import REGISTRY
+    from collector.skips import filter_cases
 
     source = SOURCE_PATH.read_text(encoding="utf-8")
     assert "not in {90, 100, 103}" not in source
 
-    _, op_min_sm = _load_capabilities()
     glm5_ops = ("glm5_mqa_logits_module", "glm5_topk_module", "glm5_dsa_attn_module")
     for op in glm5_ops:
-        assert op_min_sm.get(op) == 90
+        assert filter_cases([[1]], "sglang", op, 89)[0] == []
+        assert filter_cases([[1]], "sglang", op, 90)[0] == [[1]]
     markers = {entry.op: entry.unverified_sms for entry in REGISTRY if entry.op in glm5_ops}
     assert markers == dict.fromkeys(glm5_ops, (120,))
 
@@ -124,17 +124,17 @@ def test_dsv4_sparse_platform_gating_lives_outside_the_getter():
     HCA/CSA FMLA sidecar ops were parked unverified until 2026-10-15 and are now
     removed outright (retired SDK placeholders that failed every registry-generated
     shard plan), so only the indexer scoring kernel and the topk calibration remain."""
-    from collector.capabilities import _load_capabilities
     from collector.sglang.registry import REGISTRY
+    from collector.skips import filter_cases
 
     dsv4_source = (REPO_ROOT / "collector" / "sglang" / "deepseekv4_sparse_modules.py").read_text(encoding="utf-8")
     assert "_dsv4_sparse_kernel_supported" not in dsv4_source
     assert "_dsv4_topk_kernel_supported" not in dsv4_source
 
-    _, op_min_sm = _load_capabilities()
     floors = ("dsv4_paged_mqa_logits_module", "dsv4_csa_topk_calib")
     for op in floors:
-        assert op_min_sm.get(op) == 90
+        assert filter_cases([[1]], "sglang", op, 89)[0] == []
+        assert filter_cases([[1]], "sglang", op, 90)[0] == [[1]]
     by_op = {entry.op: entry for entry in REGISTRY}
     assert by_op["dsv4_paged_mqa_logits_module"].unverified_sms == (120,)
     assert by_op["dsv4_csa_topk_calib"].unverified_sms == (120,)

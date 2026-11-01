@@ -117,26 +117,21 @@ instead of assuming every raw loader uses the same merge algorithm.
 
 ## Collector notes
 
-A collector note records one known fact about collected tables that the rows
-cannot express. Code, data and docs cite the note by its id instead of
+A collector note records a **deviation** the rows cannot express: the table
+measures a different path than serving runs, for example an unfused kernel
+where serving fuses. Code, data and docs cite the note by its id instead of
 restating it. Notes live in `python/aisimulate/collector/notes/<backend>.yaml`,
 one file per framework in the collector manifest, as a `schema_version: 1`
-mapping with a `notes` list. A note has one of two kinds:
-
-- A **deviation** (`D-` id): the table measures a different path than serving
-  runs, for example an unfused kernel where serving fuses.
-- A **guard** (`G-` id): collector code refuses a case because running it would
-  measure the wrong kernel, hang, or waste significant time. A `backend_gaps`
-  entry in `collector/cases/capabilities.yaml` cites a guard note when a whole
-  (op, dtype) region is left out of one backend's plan.
+mapping with a `notes` list. Cases a collection leaves out are not notes: they
+are entries in `python/aisimulate/collector/skips.py`, with the reason as a
+comment.
 
 | Field | Required | Meaning |
 |---|---|---|
-| `id` | yes | `D-<backend>-<slug>` or `G-<backend>-<slug>`, unique across all notes |
-| `kind` | yes | `deviation` or `guard` |
-| `summary` | yes | What differs or is refused, in plain words |
-| `direction` | deviations | Effect on predicted latency: `over`, `under` or `unknown` |
-| `reason` | guards | `mismeasure`, `hang` or `expensive` |
+| `id` | yes | `D-<backend>-<slug>`, unique across all notes |
+| `kind` | yes | `deviation` |
+| `summary` | yes | What differs, in plain words |
+| `direction` | yes | Effect on predicted latency: `over`, `under` or `unknown` |
 | `scope.tables` | yes | Table names from the op catalog |
 | `scope.systems` | yes | `all`, or a list of system names |
 | `scope.versions` | no | `all` (the default), or a list of framework versions |

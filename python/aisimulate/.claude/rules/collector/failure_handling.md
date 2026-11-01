@@ -21,8 +21,8 @@ is the operating procedure.
 
 - Every worker failure is recorded in `errors_<module>.json` and
   `collection_summary_<backend>.json` with a classification: `kernel_limit`
-  when the message starts with `FIXME(kernel-limit)` (a guard with a guard
-  note, see layer_permissions.md), otherwise `unexpected`. Each record carries the
+  when the message starts with `FIXME(kernel-limit)` (a guard, see
+  layer_permissions.md), otherwise `unexpected`. Each record carries the
   case parameters, exception type/message, and a `(model, dtype)` group
   label. The summary aggregates `errors_by_group`; a group with many failures
   is logged as a fix-me warning.
@@ -38,15 +38,14 @@ is the operating procedure.
 ```text
 case failed
 ├─ Is it recorded & classified in the failure log?  → yes → DONE (default path)
-├─ Would it SUCCEED on the wrong kernel?            → fail closed: guard + guard note
-│    (layer_permissions.md "Framework kernel limits")
-├─ Does it HANG or kill the node?                   → denylist.yaml entry (dated + reason)
+├─ Would it SUCCEED on the wrong kernel?            → collector/skips.py entry, reason as
+│    a comment (layer_permissions.md "Framework kernel limits")
+├─ Does it HANG or kill the node?                   → collector/skips.py entry, reason as a comment
 ├─ Whole (op × backend) never debugged?             → registry OpEntry unverified=True
 ├─ Not validated on THIS SM only?                   → registry OpEntry unverified_sms=(sm,)
-├─ Physically impossible on this hardware?          → capabilities.yaml positive floor
-│    (dtype doesn't exist below SM X — NOT "this framework version lacks a kernel")
-├─ A whole (op, dtype) fails on an SM for one backend → capabilities.yaml backend_gaps
-│    because its collector has no kernel there?        entry + guard note
+├─ Physically impossible on this hardware?          → collector/skips.py entry with the SMs
+├─ A whole block fails for one backend, or the       → collector/skips.py entry, reason as
+│    backend cannot serve the model?                   a comment
 ├─ Out of memory?                                   → treat as unclassified until it
 │    reproduces on a clean GPU; if real, the collector's generation-time memory
 │    filter may exclude it (see layer_permissions.md — the one sanctioned filter)
@@ -59,8 +58,8 @@ case failed
                                                       re-check the dispatch/skip rule
 ```
 
-Framework-version gaps (an rc that crashes on some shape, a backend that has
-no SM120 recipe yet) deliberately have NO home in YAML. They fail, the log
+Scattered framework gaps (an rc that crashes on some shape) deliberately
+have NO home in `collector/skips.py`. They fail, the log
 explains them grouped by (model, dtype), and the next version bump re-tests
 them for free. A fully-failing group burns some GPU time — that cost is the
 intended pressure to actually fix it (mark unverified, fix the collector, or
@@ -92,5 +91,5 @@ before resetting a worker after a fatal CUDA error.
 - Re-check a failure with a targeted run of the affected cases (`--ops`,
   `--model-path`, `--case-filter`), never a full collection.
 - Failure records are observations. Do not machine-translate them into
-  denylist/capability entries — each escalation above requires the specific
+  `collector/skips.py` entries — each escalation above requires the specific
   evidence named in the tree.
