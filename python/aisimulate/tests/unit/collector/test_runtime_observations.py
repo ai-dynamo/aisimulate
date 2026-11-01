@@ -2007,6 +2007,42 @@ def test_v031_records_must_hold_what_vllm_derives_from_them(tmp_path, case, layo
 
 
 @pytest.mark.parametrize(
+    "layout,unit,diagnostic",
+    [
+        # 48 tokens divide none of the 64-token blocks of the groups in prefix caching (kv_cache_utils.py:799-805).
+        ("mamba_hybrid", 48, _BLOCK_SIZES),
+        # 2 tokens divide the 2,176-token attention and Mamba blocks. The Mamba blocks are larger than the hash block,
+        # so the cache-hit alignment is the 2-token hash block, which is not a multiple of the 4 tokens per state of
+        # the indexer spec that the scheduler keeps for the attention group (kv_cache_utils.py:806-832, :2434-2440).
+        ("glm_tp4", 2, _BLOCK_SIZES),
+        # 8 tokens divide every block and are a multiple of the 4 tokens per state.
+        ("glm_tp4", 8, None),
+    ],
+    ids=["divisibility", "state_alignment", "state_alignment_control"],
+)
+def test_v031_prefix_match_unit_must_fit_the_scheduler_cache_groups(tmp_path, layout, unit, diagnostic):
+    path, launches = observation_fixture(tmp_path, layout=layout)
+
+    def edit(record):
+        if record["phase"] != "prefill":
+            return
+        # Every prefill process resolves the unit, and both copies of the hash block size of every prefill scheduler
+        # take it (kv_cache_utils.py:797-798).
+        record["resolved_config"]["cache_config"]["prefix_match_unit"] = unit
+        if record["kind"] == "scheduler":
+            record["cache"]["hash_block_size"] = record["cache"]["prefix_caching"]["hash_block_size"] = unit
+
+    _mutate(path, edit)
+    result = validate_observations(path, launches)["tp2"]
+    if diagnostic is None:
+        assert result["status"] == "complete", result["diagnostics"]
+        assert _evidence(result) == (True, "align", unit)
+        return
+    assert result["status"] == "incomplete"
+    assert result["diagnostics"] == [f"tp2: {diagnostic}"]
+
+
+@pytest.mark.parametrize(
     "specs,prefix_caching,unit,expected",
     [
         (["FullAttentionSpec", "FullAttentionSpec"], True, None, 32),
@@ -2033,6 +2069,49 @@ def test_v031_scheduler_hash_block_size_follows_its_cache_groups(specs, prefix_c
         "resolved_config": {"cache_config": {"enable_prefix_caching": prefix_caching, "prefix_match_unit": unit}},
     }
     assert runtime_observations._scheduler_hash_block_size(record) == expected
+
+
+@pytest.mark.parametrize(
+    "specs,unit,expected",
+    [
+        # A SlidingWindowMLASpec group takes part in prefix caching unless it replays a bounded window
+        # (kv_cache_interface.py:949-951), which no record holds. A 64-token unit divides the 64-token full-attention
+        # block, so vLLM starts unless the 96-token group takes part (kv_cache_utils.py:792-805).
+        ([("SlidingWindowMLASpec", 96, 1), ("FullAttentionSpec", 64, 1)], 64, True),
+        # A 48-token unit does not divide the 64-token block, whichever groups take part.
+        ([("SlidingWindowMLASpec", 96, 1), ("FullAttentionSpec", 64, 1)], 48, False),
+        # Without the 96-token group no group takes part, and the unit must divide every block, so a 64-token unit
+        # fails either way.
+        ([("SlidingWindowMLASpec", 96, 1), ("KpoolTailSpec", 4, 1)], 64, False),
+        # 3 tokens per state do not divide the 64-token scheduler block (kv_cache_utils.py:806-832). vLLM starts unless
+        # the SlidingWindowMLASpec group that holds them takes part.
+        ([("SlidingWindowMLASpec", 64, 3), ("FullAttentionSpec", 64, 1)], None, True),
+        # The full-attention group that holds them always takes part.
+        ([("FullAttentionSpec", 64, 3), ("SlidingWindowMLASpec", 64, 1)], None, False),
+    ],
+    ids=[
+        "bounded_replay_unit",
+        "unit_fails_either_way",
+        "unit_without_other_groups",
+        "bounded_replay_alignment",
+        "alignment_fails_either_way",
+    ],
+)
+def test_v031_scheduler_hash_block_size_fits_its_cache_groups(specs, unit, expected):
+    groups = [
+        {
+            "spec_type": _V031_SPEC + spec,
+            "block_size_tokens": block,
+            "layer_specs": {f"layer.{index}": {"spec_type": _V031_SPEC + spec, "tokens_per_state": tokens}},
+        }
+        for index, (spec, block, tokens) in enumerate(specs)
+    ]
+    blocks = [block for _, block, _ in specs]
+    record = {
+        "cache": {"groups": groups, "block_size": math.lcm(*blocks), "hash_block_size": unit or math.gcd(*blocks)},
+        "resolved_config": {"cache_config": {"enable_prefix_caching": True, "prefix_match_unit": unit}},
+    }
+    assert runtime_observations._scheduler_hash_block_size_fits(record) is expected
 
 
 @pytest.mark.parametrize("spec", ["MLAAttentionSpec", "MambaSpec"])

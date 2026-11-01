@@ -948,6 +948,51 @@ def _scheduler_hash_block_size(record: dict[str, Any]) -> Any:
     return math.gcd(*(caching or blocks))
 
 
+def _scheduler_hash_block_size_fits(record: dict[str, Any]) -> bool:
+    """Whether vLLM 0.31.0 starts with the hash block size of a scheduler and its cache groups.
+
+    The engine core resolves the block sizes before it builds the scheduler (engine/core.py:164-176). With several
+    groups that hash in prefix_match_unit tokens or in a GCD, resolve_kv_cache_block_sizes raises unless two rules hold
+    (v1/core/kv_cache_utils.py:785-832). The hash block size divides the block size of every group that takes part in
+    prefix caching, or of every group when none does (:792-805). A GCD always does, so only a unit can break this rule.
+    The cache-hit alignment is a multiple of every int tokens_per_state above 1 of a spec in prefix caching
+    (:806-832). At the decode context parallel size of 1 that every accepted record has, the alignment is the hash
+    block size when a Mamba group has a larger block, else the scheduler block size. The scheduler record holds the
+    groups that vLLM reads, in which a uniform group keeps only its first inner spec (:2434-2440). A
+    SlidingWindowMLASpec group may or may not take part, so a rule fails here only when it fails either way.
+    """
+    cache, settings = record["cache"], record["resolved_config"]["cache_config"]
+    groups, hash_block = cache["groups"], cache["hash_block_size"]
+    if (
+        len(groups) == 1
+        or not settings.get("enable_prefix_caching")
+        or any(
+            group["spec_type"] == _MAMBA_SPEC and group["state"].get("mamba_cache_mode") != "align" for group in groups
+        )
+    ):
+        return True
+    unknown = _SPEC_MODULE + "SlidingWindowMLASpec"
+    caching = [group for group in groups if group["spec_type"] not in {*_NO_PREFIX_CACHING_SPECS, unknown}]
+    if settings.get("prefix_match_unit") is not None:
+        if caching:
+            fits = all(group["block_size_tokens"] % hash_block == 0 for group in caching)
+        else:
+            # Without a group that surely takes part, the unit fits when it divides the block of a SlidingWindowMLASpec
+            # group that takes part alone, or every block when no group takes part.
+            fits = any(
+                group["block_size_tokens"] % hash_block == 0 for group in groups if group["spec_type"] == unknown
+            ) or all(group["block_size_tokens"] % hash_block == 0 for group in groups)
+        if not fits:
+            return False
+    partial = any(group["spec_type"] == _MAMBA_SPEC and group["block_size_tokens"] > hash_block for group in groups)
+    alignment = hash_block if partial else cache["block_size"]
+    return all(
+        not isinstance(tokens, int) or tokens <= 1 or alignment % tokens == 0
+        for group in caching
+        for tokens in (spec.get("tokens_per_state") for spec in group["layer_specs"].values())
+    )
+
+
 def _phase_prefix_caching(
     phase: str, workers: dict[tuple[int, int], dict[str, Any]], schedulers: dict[int, dict[str, Any]]
 ) -> dict[str, Any] | None:
@@ -1029,9 +1074,13 @@ def _phase_prefix_caching(
                 raise ValueError("runtime prefix-caching evidence contradicts the resolved cache settings")
             # The scheduler block size is the LCM of the block sizes of the scheduler's cache groups, which a decode
             # context parallel size of 1 leaves unscaled (v1/core/kv_cache_utils.py:761-770, engine/core.py:164-176).
+            # vLLM also refuses to start unless the hash block size fits those groups
+            # (v1/core/kv_cache_utils.py:792-832).
             hash_block = _scheduler_hash_block_size(record)
-            if cache["block_size"] != math.lcm(*(group["block_size_tokens"] for group in cache["groups"])) or (
-                hash_block is not None and canonical_json(cache["hash_block_size"]) != canonical_json(hash_block)
+            if (
+                cache["block_size"] != math.lcm(*(group["block_size_tokens"] for group in cache["groups"]))
+                or (hash_block is not None and canonical_json(cache["hash_block_size"]) != canonical_json(hash_block))
+                or not _scheduler_hash_block_size_fits(record)
             ):
                 raise ValueError("scheduler block sizes contradict its cache groups")
     return {
