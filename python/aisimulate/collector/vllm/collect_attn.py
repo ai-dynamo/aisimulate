@@ -9,8 +9,10 @@
 __compat__ = "vllm==0.31.0"
 
 import os
+from functools import cache
 
 import torch
+from collector.attention_memory import filter_attention_cases
 from collector.case_generator import (
     get_attention_context_shape_sweeps,
     get_attention_generation_shape_sweeps,
@@ -29,6 +31,7 @@ from collector.vllm.utils import (
 )
 from vllm.config import set_current_vllm_config
 from vllm.platforms import current_platform
+from vllm.utils.flashinfer import use_trtllm_attention
 from vllm.utils.import_utils import resolve_obj_by_qualname
 from vllm.utils.torch_utils import set_random_seed
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
@@ -429,6 +432,52 @@ def run_attention_torch(
     )
 
 
+@cache
+def _attention_memory_backend(num_heads, num_kv_heads, head_dim, fp8):
+    selector = AttentionSelectorConfig(
+        head_size=head_dim,
+        dtype=torch.bfloat16,
+        kv_cache_dtype="fp8" if fp8 else "auto",
+        block_size=None,
+        use_mla=False,
+        has_sink=False,
+        use_sparse=False,
+        use_mm_prefix=False,
+    )
+    backend = resolve_obj_by_qualname(current_platform.get_attn_backend_cls(None, selector, num_heads=num_heads))
+    return backend.get_name(), framework_kv_block_size(backend)
+
+
+def _attention_memory_bytes(case):
+    b, s, n, kv, d, fp8, context, _window = case
+    total = s if context else s + 1
+    tokens = b * (s if context else 1)
+    # Selection failures belong to the worker's classified failure log.
+    try:
+        backend, page = _attention_memory_backend(n, kv, d, fp8)
+    except (ValueError, NotImplementedError):
+        backend, page = "", 64
+    cache_tokens = max(8192, 1 + b * ((total + page - 1) // page)) * page
+    cache = cache_tokens * kv * d * 2 * (1 if fp8 else 2)
+    # Per-request tensors + concatenated Q/K/V + output. History K/V and
+    # their temporary concatenations coexist; layout conversion can retain
+    # original, merged and reordered cache allocations (see run_attention_torch).
+    inputs = tokens * n * d * (7 if fp8 else 6) + 8 * b * total * kv * d
+    workspace = 4 << 30
+    if backend == "FLASHINFER":
+        q_dtype = current_platform.fp8_dtype() if fp8 and get_sm_version() in (90, 100, 103) else torch.bfloat16
+        # v0.31 flashinfer.py:1368-1381 asks this native dispatch helper.
+        # The wrapper workspace scales with Q, while the TRTLLM API uses
+        # the fixed VLLM_FLASHINFER_WORKSPACE_BUFFER_SIZE buffer (:109-115).
+        native = use_trtllm_attention(n, kv, tokens, total, 1, "fp8" if fp8 else "auto", q_dtype, context)
+        configured = int(os.getenv("VLLM_FLASHINFER_WORKSPACE_BUFFER_SIZE", str(394 << 20)))
+        workspace = max(workspace, configured)
+        if not native:
+            workspace += max(configured, max(8192, tokens) * n * d * 16)
+    metadata = 64 * b * total + 32 * cache_tokens
+    return inputs + 3 * cache + metadata + workspace
+
+
 def get_context_attention_test_cases(if_unit_test=False):
     test_cases = []
 
@@ -488,29 +537,12 @@ def get_context_attention_test_cases(if_unit_test=False):
                             ]
                         )
 
-    return test_cases
+    return filter_attention_cases(test_cases, _attention_memory_bytes, torch.cuda, "vllm attention")
 
 
-def _generation_target_sequence_lengths(batch_sizes, sequence_lengths, num_heads, head_dim, max_tokens, shape_sweep):
-    b_s_dict = {}
-    s_b_dict = {}
-    for s in sequence_lengths:
-        max_b = max_tokens * 128 // head_dim // s // num_heads
-        for b in batch_sizes:
-            if b > max_b:
-                break
-            if s not in s_b_dict:
-                s_b_dict[s] = {b}
-            else:
-                s_b_dict[s].add(b)
-    for s, b_set in s_b_dict.items():
-        if len(b_set) < int(shape_sweep["min_batch_options_per_sequence"]):
-            continue
-        for b in b_set:
-            if b not in b_s_dict:
-                b_s_dict[b] = {s - 1}
-            b_s_dict[b].add(s - 1)
-    return b_s_dict
+def _generation_target_sequence_lengths(batch_sizes, sequence_lengths, max_tokens):
+    # Tokens bound campaign density; the actual tensor footprint controls memory.
+    return {b: {s - 1 for s in sequence_lengths if b * s <= max_tokens} for b in sorted(batch_sizes)}
 
 
 def get_generation_attention_test_cases():
@@ -523,7 +555,6 @@ def get_generation_attention_test_cases():
     for shape_sweep in get_attention_generation_shape_sweeps("vllm"):
         batch_sizes = [int(value) for value in shape_sweep["batch_sizes"]]
         sequence_lengths = [int(value) for value in shape_sweep["sequence_lengths"]]
-        min_drop_batch = int(shape_sweep["drop_largest_sequence_for_batch_at_least"])
 
         for head_config in get_attention_head_configs(shape_sweep, phase="generation"):
             n = head_config.num_heads
@@ -537,15 +568,10 @@ def get_generation_attention_test_cases():
             b_s_dict = _generation_target_sequence_lengths(
                 batch_sizes,
                 sequence_lengths,
-                n,
-                head_dim,
                 int(shape_sweep[max_tokens_key]),
-                shape_sweep,
             )
             for b, s_list_limited in b_s_dict.items():
                 target_s_list = sorted(s_list_limited)
-                if b >= min_drop_batch:
-                    target_s_list = target_s_list[:-1]
                 for s in target_s_list:
                     for is_fp8_kv_cache in kv_cache_dtype_list:
                         test_cases.append(
@@ -560,7 +586,7 @@ def get_generation_attention_test_cases():
                                 window_size,
                             ]
                         )
-    return test_cases
+    return filter_attention_cases(test_cases, _attention_memory_bytes, torch.cuda, "vllm attention")
 
 
 if __name__ == "__main__":

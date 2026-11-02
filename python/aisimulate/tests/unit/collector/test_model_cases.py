@@ -10,8 +10,10 @@ import subprocess
 import sys
 from itertools import pairwise
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from collector.attention_memory import filter_attention_cases
 from collector.case_generator import (
     get_attention_context_shape_sweeps,
     get_attention_head_configs,
@@ -878,6 +880,9 @@ def test_default_vllm_context_grid_covers_published_qwen_prefills(monkeypatch, m
         "get_attention_context_shape_sweeps": get_attention_context_shape_sweeps,
         "get_attention_head_configs": get_attention_head_configs,
         "get_sm_version": lambda: 103,
+        "torch": SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)),
+        "filter_attention_cases": filter_attention_cases,
+        "_attention_memory_bytes": None,
     }
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)
     cases = namespace["get_context_attention_test_cases"]()

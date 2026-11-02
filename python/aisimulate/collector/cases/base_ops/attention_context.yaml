@@ -41,6 +41,9 @@ all_frameworks_op_cases:
       - 10240
       - 12288
       - 16384
+      - 24576
+      - 32768
+      - 40960
       - 262144
       query_head_counts:
       - 1
@@ -64,8 +67,8 @@ all_frameworks_op_cases:
       head_dims:
       - 128
       - 256
-      max_tokens_self_attention: 65536
-      max_tokens_grouped_query_attention: 131072
+      max_tokens_self_attention: 655360
+      max_tokens_grouped_query_attention: 655360
       max_batch_size_self_attention: 128
       max_kv_elements: 2147483647
       precision_cases:
@@ -158,31 +161,6 @@ framework_specific_op_cases:
     attention_context:
       cases:
       - id: base_attention_context_shape_sweep
-        # Cached-prefill queries use full-sequence anchors, so their table
-        # footprint can exceed the serving scheduler's new-token budget.
-        sequence_lengths:
-        - 1
-        - 16
-        - 32
-        - 64
-        - 128
-        - 256
-        - 512
-        - 1024
-        - 1536
-        - 2048
-        - 3072
-        - 4096
-        - 6144
-        - 8192
-        - 10240
-        - 12288
-        - 16384
-        - 24576
-        - 32768
-        - 40960
-        - 262144
-        max_tokens_grouped_query_attention: 655360
         query_head_counts:
         - 1
         - 2
@@ -221,6 +199,8 @@ framework_specific_op_cases:
     attention_context:
       cases:
       - id: base_attention_context_shape_sweep
+        max_tokens_self_attention: 65536
+        max_tokens_grouped_query_attention: 131072
         batch_sizes:
         - 1
         - 2

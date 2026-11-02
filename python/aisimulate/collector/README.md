@@ -39,26 +39,46 @@ measurement does not construct the full model's hybrid-cache allocator.
 Dense attention remains a CUDA-graph microbenchmark including KV writes,
 even though serving prefill may execute at a different graph boundary.
 
-The default vLLM context-attention sweep includes 24,576, 32,768 and 40,960
-token anchors and permits up to 655,360 batch-times-sequence tokens for
-grouped-query attention (previously 131,072). Agentic conversations accumulate
-history across turns: a small new chunk can attend to a much longer cached
-prefix. The existing timing table looks up the full sequence length, then
-scales full causal attention by `(full_length² - prefix_length²) / full_length²`.
-Consequently, full-sequence anchors above the serving scheduler's new-token
-budget are needed to reduce extrapolation. This coverage is enabled by default
-for vLLM; it does not add an agentic mode, a prefix-length axis or cached-tail
-measurements. Other frameworks retain their existing dense-context sweep limits.
+The shared vLLM, SGLang and TRT-LLM context-attention defaults include
+24,576, 32,768 and 40,960-token anchors and allow 655,360 batch-times-sequence
+tokens for both MHA and grouped-query attention. This also admits the existing
+262,144-token anchor at batches 1 and 2, and larger batches at shorter lengths.
+Agentic conversations accumulate cached history: the dense timing lookup uses
+full sequence length, then scales causal attention by
+`(full_length² - prefix_length²) / full_length²`. Full-sequence anchors therefore
+need to exceed the serving scheduler's new-token budget. Coverage is always on;
+it does not add a prefix axis or measure cached-tail kernels separately.
 
-The additional anchors cost GPU time. The original 95-case Qwen collection
-used 52.751 seconds of collector wall time; its 18 added anchors were not
-timed separately. A separate B300 qualification of this collector measured a
-batch-1, 262,144-token GQA prefill at 132.734 ms per forward and 4.461 seconds
-inside the collector call (11.357 seconds including isolated process startup).
-All eight prefill/decode qualification cases passed in a 139-second one-GPU
-allocation. See the [qualification evidence](../../../benchmarks/evidence/collector/agentic-20261101/README.md)
-for exact source, image, shapes, costs and limits. These probes do not qualify
-the full default grid or establish its marginal collection cost.
+Dense decode adds 262,144, 524,288 and 1,048,576-token total-sequence anchors
+(the stored past-history `step` is one less). `max_mha_tokens_per_step` and
+`max_xqa_tokens_per_step` now limit aggregate batch-times-sequence tokens to
+16,777,216 for both families (including the existing one-head, dimension-64
+MHA coverage). Query-head/dimension weighting and the
+four-batch minimum/largest-anchor pruning are removed: a long history remains
+useful even when only batch 1 fits. XPU retains its original grid and limits.
+
+Before queueing, each dense collector compares its estimated peak against 90%
+of the collecting GPU's total memory. The backend-specific estimates cover
+Q/K/V, output, packed/layout-conversion copies, paged cache, history seeds,
+metadata and a workspace reserve. vLLM also accounts for the selected
+FlashInfer wrapper's query-dependent workspace, which its native TRTLLM API
+path does not allocate. CPU-only planning retains all declared cases. These
+are conservative admission estimates, not native allocation guarantees;
+allocator fragmentation and larger backend workspaces can still fail at run
+time. The existing context `max_kv_elements` guard remains a separate indexing
+limit, so not every shape that fits GPU memory is admitted. Queued cases execute
+or report a failure; the worker never silently drops a planned case.
+
+The original 95-case Qwen collection took 52.751 seconds of collector wall time;
+its 18 added anchors were not timed separately. Earlier B300 qualification
+measured a batch-1, 262,144-token GQA prefill at 132.734 ms per forward and
+4.461 seconds inside the collector call (11.357 seconds with process startup).
+Those eight vLLM probes passed in a 139-second allocation. They qualify that
+prior collector revision, not the newly expanded three-framework grids.
+Current collection counts, incremental cost estimates and GPU qualification
+status belong in the PR description; raw campaign evidence remains local.
+Case-count scaling is only a planning estimate: long-history initialization,
+quadratic prefill and workspace growth can make new cases much slower.
 
 The SGLang attention-module collector targets 0.5.21 and admits batches
 between serving capture buckets when graph padding is enabled. It captures
