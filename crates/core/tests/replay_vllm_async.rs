@@ -106,13 +106,20 @@ fn record(report: &ReplayReport, id: u128) -> &PerRequestRecord {
 }
 
 #[test]
-fn a_request_waiting_only_for_freed_blocks_is_admitted_when_they_are_freed() {
-    // R (24 tokens) prefills until 100 and finishes in its decode pass at
-    // 110. W (16 tokens) arrives at 50 and fits only in R's blocks. vLLM frees
-    // them after deciding the pass at 110, which has no other work, so it
-    // decides again at once and admits W at 110.
-    let report = run(engine(10), &[(1, 24, 2, 0.0), (2, 16, 2, 50.0)]);
-    assert_eq!(record(&report, 2).first_admit_ms, Some(110.0));
+fn arrivals_after_the_last_running_request_get_its_blocks_at_once() {
+    // R (24 tokens) prefills until 100 and finishes in its decode pass at 110.
+    // Requests 2 and 3 arrive during that pass, so vLLM had already decided
+    // the pass at 110, which has nothing to run. That empty step frees R's
+    // blocks, and vLLM then admits both at 110, though request 3 (16 tokens)
+    // fits only in R's blocks.
+    let report = run(
+        engine(10),
+        &[(1, 24, 2, 0.0), (2, 4, 2, 105.0), (3, 16, 2, 106.0)],
+    );
+    assert_eq!(
+        [2, 3].map(|id| record(&report, id).first_admit_ms),
+        [Some(110.0); 2]
+    );
 }
 
 #[test]

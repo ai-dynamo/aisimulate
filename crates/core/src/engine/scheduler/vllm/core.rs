@@ -2129,14 +2129,16 @@ impl VllmCore {
             // at `next_decision_ms` if it followed the previous one back to
             // back, and a request arriving at that instant is too late. A
             // committed batch without other work runs no forward, so the
-            // arrivals then run in this pass.
+            // arrivals then run at once. While a pass is in flight, that empty
+            // step processes it first, so this pass stays empty and replay
+            // decides again at the same instant.
             let arrived_after_decision = if self.args.launch.is_some() {
                 previous_in_flight && arrival_ms >= self.next_decision_ms
             } else {
                 admissible_from_pass > self.passes_executed
             };
             if !admit_queued_arrivals && arrived_after_decision {
-                if !scheduled.is_empty() {
+                if !scheduled.is_empty() || previous_in_flight {
                     stopped_at_queued_arrival = true;
                     break;
                 }
@@ -2488,11 +2490,9 @@ impl VllmCore {
         self.free_finished(finished_in_flight);
         // `launch`: vLLM returns the previous pass's outputs, then decides the
         // next pass, once it has launched this pass and the previous pass has
-        // ended. A pass made only of arrivals that came after vLLM's decision
-        // for it follows an empty step, which returned those outputs at once.
+        // ended.
         let previous_returned_ms = self.args.launch.and_then(|launch| {
-            let back_to_back = previous_in_flight && !admit_queued_arrivals;
-            let decision_ms = if back_to_back {
+            let decision_ms = if previous_in_flight {
                 self.next_decision_ms
             } else {
                 now_ms
@@ -2500,7 +2500,7 @@ impl VllmCore {
             let launch_end_ms =
                 self.launch_end_ms(&launch, &scheduled, decision_ms, compute_start_ms, end_ms);
             self.next_decision_ms = launch_end_ms.max(now_ms);
-            back_to_back.then_some(self.next_decision_ms)
+            previous_in_flight.then_some(self.next_decision_ms)
         });
         if (!scheduled.is_empty() || !output_signals.is_empty())
             && let Some(adapter) = self.native_host_offload.as_mut()
