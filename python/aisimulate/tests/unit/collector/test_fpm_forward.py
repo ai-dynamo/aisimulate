@@ -3522,7 +3522,7 @@ def test_v41_reader_rejects_unqualified_graph_or_missing_execution_mode(tmp_path
     identity = ("c" * 64, "full", "hbm_tp_sharded", "text")
     cell = SimpleNamespace(execution_identity=identity)
     payload = {"execution_identity": dict(zip(EXECUTION_COLUMNS, identity, strict=True)), "execution_mode": mode}
-    with pytest.raises(ValueError, match="verified eager"):
+    with pytest.raises(ValueError, match="unaudited execution mode"):
         _validate_execution_provenance(cell, payload, tmp_path / "rank.json")
 
 

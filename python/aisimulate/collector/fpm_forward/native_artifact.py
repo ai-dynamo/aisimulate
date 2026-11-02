@@ -211,14 +211,22 @@ def select_native_measurements(collection: NativeCollection, *, cell_id: str) ->
 
 
 def _validate_execution_provenance(cell: FPMCell, payload: dict[str, Any], path: Path) -> dict[str, Any] | None:
-    """Config-bound curves require engine evidence for execution and real input."""
+    """Config-bound curves require engine evidence for execution and real input.
+
+    Each audited execution mode has its own producer contract: ``eager`` is the DeepSeek V4.1 producer's and
+    ``native_graph_policy`` the GLM-5.3-Flash producer's. A mode that no contract audits is refused, never read as
+    one of them.
+    """
     if not cell.execution_identity[0]:
         return None
+    mode = payload.get("execution_mode")
+    if mode == "native_graph_policy":
+        return _validate_glm_provenance(cell, payload, path)
+    if mode != "eager":
+        raise ValueError(f"native execution identity cell has an unaudited execution mode: {mode!r}: {path}")
     expected = dict(zip(EXECUTION_COLUMNS, cell.execution_identity, strict=True))
     if payload.get("execution_identity") != expected:
         raise ValueError(f"native execution identity differs from the frozen V4.1 cell: {path}")
-    if payload.get("execution_mode") != "eager":
-        raise ValueError(f"V4.1 native data requires verified eager execution: {path}")
     evidence = payload.get("input_provenance")
     if not isinstance(evidence, dict) or evidence.get("source") != "tokenizer_text":
         raise ValueError(f"V4.1 native result requires tokenizer-generated text provenance: {path}")
@@ -235,6 +243,100 @@ def _validate_execution_provenance(cell: FPMCell, payload: dict[str, Any], path:
         raise ValueError(f"V4.1 native input corpus must contain multiple tokenizer-generated tokens: {path}")
     if counts[1] > counts[0]:
         raise ValueError(f"V4.1 native input corpus token counts are inconsistent: {path}")
+    return evidence
+
+
+def _same(value: object, expected: object) -> bool:
+    """Equality that does not let 1, 1.0 and True stand in for one another."""
+    return type(value) is type(expected) and value == expected
+
+
+def _is_hex(value: object, digits: int) -> bool:
+    return isinstance(value, str) and re.fullmatch(rf"[0-9a-f]{{{digits}}}", value) is not None
+
+
+def _validate_glm_provenance(cell: FPMCell, payload: dict[str, Any], path: Path) -> dict[str, Any]:
+    """Require the evidence that the GLM-5.3-Flash vLLM producer writes beside its graph-timed measurements.
+
+    The producer builds every prefix and decode state from seeded tokens through vLLM's own scheduler, repeats each
+    point and keeps the evidence of the repetitions in a sidecar file next to the artifact. A refusal names the first
+    item that is absent or malformed. The caller has already checked that the rows are mappings with mapping points.
+    """
+
+    def lacks(field: str) -> ValueError:
+        return ValueError(f"native GLM-5.3-Flash result lacks valid {field}: {path}")
+
+    if payload.get("execution_identity") != dict(zip(EXECUTION_COLUMNS, cell.execution_identity, strict=True)):
+        raise lacks("execution_identity")
+    evidence = payload.get("input_provenance")
+    if not isinstance(evidence, dict):
+        raise lacks("input_provenance")
+    if not _same(evidence.get("source"), "seeded_tokens"):
+        raise lacks("input_provenance.source")
+    for key in ("generator", "sampling"):
+        if not isinstance(evidence.get(key), str) or not evidence[key]:
+            raise lacks(f"input_provenance.{key}")
+    # The generator version is an integer in the producer's record, like the seed and the token count.
+    for key in ("generator_version", "seed", "count"):
+        if type(evidence.get(key)) is not int:
+            raise lacks(f"input_provenance.{key}")
+    for key in ("tokenizer_json_sha256", "token_ids_sha256"):
+        if not _is_hex(evidence.get(key), 64):
+            raise lacks(f"input_provenance.{key}")
+    if not _is_hex(evidence.get("tokenizer_revision"), 40):
+        raise lacks("input_provenance.tokenizer_revision")
+    if not _same(evidence.get("chunk_start_alignment"), 4):
+        raise lacks("input_provenance.chunk_start_alignment")
+
+    # The sidecar is bound by its name, its digest and its record count, one record per measured point.
+    sidecar = path.with_name(f"{path.stem}.repetitions.jsonl")
+    manifest = evidence.get("repetition_evidence_manifest")
+    raw = sidecar.read_bytes() if sidecar.is_file() else None
+    if (
+        not isinstance(manifest, dict)
+        or raw is None
+        or not _same(manifest.get("schema_version"), 1)
+        or manifest.get("file") != sidecar.name
+        or manifest.get("sha256") != hashlib.sha256(raw).hexdigest()
+        or manifest.get("records") != len(raw.splitlines())
+        or manifest.get("records") != len(payload["results"])
+    ):
+        raise lacks("repetition_evidence_manifest")
+
+    kvwarm = payload.get("kvwarm")
+    kvwarm = kvwarm if isinstance(kvwarm, dict) else {}
+    expected_kvwarm = (
+        ("enabled", True),
+        ("warm_eligible", True),
+        ("skip_reason", None),
+        ("method", "native_prefix_cache_real_seed"),
+        ("state_protocol", "glm53flash_prefix_cache_real_seed_v1"),
+    )
+    if any(not _same(kvwarm.get(key), value) for key, value in expected_kvwarm):
+        raise lacks("kvwarm")
+    if not _same(payload.get("timing_boundary"), "dynamo_vllm_instrumented_scheduler_fpm_wall_time"):
+        raise lacks("timing_boundary")
+    serving = payload.get("serving_config")
+    serving = serving if isinstance(serving, dict) else {}
+    for key, value in (("enable_prefix_caching", True), ("async_scheduling", False)):
+        if not _same(serving.get(key), value):
+            raise lacks(f"serving_config.{key}")
+    producer = payload.get("producer")
+    if not isinstance(producer, dict) or not _is_hex(producer.get("runtime_source_manifest_sha256"), 64):
+        raise lacks("producer.runtime_source_manifest_sha256")
+
+    for row in payload["results"]:
+        point = row["point"]
+        if not _is_hex(row.get("repetition_evidence_sha256"), 64):
+            raise lacks("repetition_evidence_sha256")
+        if point.get("point_type") == "decode":
+            regime = "real_kv"
+        elif _require_int(point, "total_kv_read_tokens") > 0:
+            regime = "real_prefix"
+        else:
+            regime = "not_applicable"
+        if row.get("kv_seed_regime") != regime:
+            raise lacks("kv_seed_regime")
     return evidence
 
 
@@ -332,6 +434,18 @@ def _validate_token_streams(payload: dict[str, Any], path: Path) -> None:
         expected_prompt = expected_seed + (0 if decode else _require_int(point, "total_prefill_tokens"))
         if prompt_total != expected_prompt:
             raise ValueError(f"V4.1 token-stream prompt history differs from the measured point: {path}")
+
+
+def _without_sidecar_names(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Input evidence without the file names of its sidecar manifests, which differ per rank.
+
+    The rest of each manifest, such as its digest and its record count, still has to agree across ranks.
+    """
+    sidecar_manifests = ("token_stream_manifest", "repetition_evidence_manifest")
+    return {
+        key: {name: item for name, item in value.items() if name != "file"} if key in sidecar_manifests else value
+        for key, value in evidence.items()
+    }
 
 
 def _validate_collector_provenance(
@@ -548,15 +662,11 @@ def validate_native_collection(
         if any(not isinstance(row, dict) or not isinstance(row.get("point"), dict) for row in rows):
             raise ValueError(f"native result has malformed result points: {path}")
         evidence = _validate_execution_provenance(cell, payload, path)
-        if evidence is not None:
+        if evidence is not None and payload.get("execution_mode") == "eager":
             _validate_token_streams(payload, path)
         if input_provenance is None:
             input_provenance = evidence
-        elif {k: v for k, v in evidence.items() if k != "token_stream_manifest"} != {
-            k: v for k, v in input_provenance.items() if k != "token_stream_manifest"
-        } or {k: v for k, v in evidence["token_stream_manifest"].items() if k != "file"} != {
-            k: v for k, v in input_provenance["token_stream_manifest"].items() if k != "file"
-        }:
+        elif _without_sidecar_names(evidence) != _without_sidecar_names(input_provenance):
             raise ValueError(f"native DP ranks disagree on input provenance: {path}")
         expected = coverage.get("expected_points")
         if (

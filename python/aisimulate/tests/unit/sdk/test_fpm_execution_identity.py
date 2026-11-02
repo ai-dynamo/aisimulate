@@ -67,7 +67,7 @@ def test_native_v41_requires_measured_execution_and_text_evidence():
     for mode in (None, "cuda_graph"):
         corrupt = copy.deepcopy(payload)
         corrupt["execution_mode"] = mode
-        with pytest.raises(ValueError, match="verified eager execution"):
+        with pytest.raises(ValueError, match="unaudited execution mode"):
             _validate_execution_provenance(cell, corrupt, Path("artifact"))
     corrupt = copy.deepcopy(payload)
     corrupt["execution_identity"]["execution_profile"] = "decoder_bounded"
