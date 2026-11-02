@@ -218,7 +218,7 @@ needs `prefix_match_unit` equal to `block_size`.
   only states inside the prompt, each key on its own. `simple_cpu_v0_32` stores
   a state only when all its keys fit, and otherwise drops it without a retry;
   vLLM stores each group's block while room remains.
-- A lookup resumes at the deepest block boundary, at most
+- A lookup resumes at the deepest block boundary within the prompt, at most
   `(len - 1) // block_size` blocks, where G1 and G2 hold the attention prefix
   and G2 holds every key of the state there. A state missing one key is not a
   hit. The load restores both, and the restored state is the first pass's
