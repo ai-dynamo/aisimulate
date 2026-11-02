@@ -433,7 +433,21 @@ def run_attention_torch(
 
 
 @cache
-def _attention_memory_backend(num_heads, num_kv_heads, head_dim, fp8):
+def _attention_memory_backend(num_heads, num_kv_heads, head_dim, fp8, window_size):
+    # Native dispatch reads the current attention config (v0.31
+    # utils/flashinfer.py:617-638). Use the runtime's config factory; batch
+    # and history do not affect the static decode choice. A collection campaign
+    # fixes the device/environment; cache its geometry and precision settings.
+    config = create_vllm_config(
+        model_name=os.path.join(os.path.dirname(__file__), "fake_hf_model"),
+        block_size=None,
+        num_gpu_blocks=8192,
+        use_fp8_kv_cache=fp8,
+        sliding_window=window_size if window_size > 0 else None,
+        head_dim=head_dim,
+        num_heads=num_heads,
+        num_kv_heads=num_kv_heads,
+    )
     selector = AttentionSelectorConfig(
         head_size=head_dim,
         dtype=torch.bfloat16,
@@ -444,19 +458,32 @@ def _attention_memory_backend(num_heads, num_kv_heads, head_dim, fp8):
         use_sparse=False,
         use_mm_prefix=False,
     )
-    backend = resolve_obj_by_qualname(current_platform.get_attn_backend_cls(None, selector, num_heads=num_heads))
-    return backend.get_name(), framework_kv_block_size(backend)
+    with set_current_vllm_config(config):
+        # Unsupported backend selection still belongs to the worker's failure
+        # log. Configuration/dispatch errors must propagate from planning.
+        try:
+            backend = resolve_obj_by_qualname(
+                current_platform.get_attn_backend_cls(None, selector, num_heads=num_heads)
+            )
+            page = framework_kv_block_size(backend)
+        except (ValueError, NotImplementedError):
+            return "", 64, False
+        native_decode = False
+        if backend.get_name() == "FLASHINFER":
+            # v0.31 flashinfer.py:813-845 selects decode statically, without
+            # use_trtllm_attention's older batch<=256 preference.
+            native_decode = can_use_trtllm_attention(num_heads, num_kv_heads, is_prefill=False)
+            if native_decode and (get_sm_version() == 90 or get_sm_version() // 10 == 12):
+                supported = resolve_obj_by_qualname("vllm.v1.attention.backends.flashinfer._is_xqa_head_dim_supported")
+                native_decode = supported(head_dim)
+    return backend.get_name(), page, native_decode
 
 
 def _attention_memory_bytes(case):
-    b, s, n, kv, d, fp8, context, _window = case
+    b, s, n, kv, d, fp8, context, window = case
     total = s if context else s + 1
     tokens = b * (s if context else 1)
-    # Selection failures belong to the worker's classified failure log.
-    try:
-        backend, page = _attention_memory_backend(n, kv, d, fp8)
-    except (ValueError, NotImplementedError):
-        backend, page = "", 64
+    backend, page, native_decode = _attention_memory_backend(n, kv, d, fp8, window)
     cache_tokens = max(8192, 1 + b * ((total + page - 1) // page)) * page
     cache = cache_tokens * kv * d * 2 * (1 if fp8 else 2)
     # Per-request tensors + concatenated Q/K/V + output. History K/V and
@@ -472,12 +499,7 @@ def _attention_memory_bytes(case):
         if context and s > 1:
             native = use_trtllm_attention(n, kv, tokens, total, 1, "fp8" if fp8 else "auto", q_dtype, True)
         else:
-            # v0.31 flashinfer.py:813-845 chooses decode statically for graph
-            # capture, without the older helper's batch<=256 preference.
-            native = can_use_trtllm_attention(n, kv, is_prefill=False)
-            if native and (get_sm_version() == 90 or get_sm_version() // 10 == 12):
-                supported = resolve_obj_by_qualname("vllm.v1.attention.backends.flashinfer._is_xqa_head_dim_supported")
-                native = supported(d)
+            native = native_decode
         configured = int(os.getenv("VLLM_FLASHINFER_WORKSPACE_BUFFER_SIZE", str(394 << 20)))
         workspace = max(workspace, configured)
         if not native:

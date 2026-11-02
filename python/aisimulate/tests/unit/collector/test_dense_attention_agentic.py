@@ -5,6 +5,8 @@
 
 import ast
 import os
+from contextlib import contextmanager
+from functools import cache
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -50,7 +52,7 @@ def collector_functions(backend, memory_gib=None):
         "current_platform": SimpleNamespace(fp8_dtype=lambda: "fp8"),
         "filter_attention_cases": filter_attention_cases,
         "_deployment_tokens_per_block": lambda: 32,
-        "_attention_memory_backend": lambda *_args: ("FLASHINFER", 16),
+        "_attention_memory_backend": lambda *_args: ("FLASHINFER", 16, True),
         "use_trtllm_attention": lambda *_args: True,
         "can_use_trtllm_attention": lambda *_args, **_kwargs: True,
     }
@@ -135,9 +137,68 @@ def test_vllm_large_batch_decode_uses_static_native_dispatch():
     ns["use_trtllm_attention"] = lambda *_args: pytest.fail("prefill selector used for decode")
     case = [512, 32767, 32, 1, 128, False, False, 0]
     native = ns["_attention_memory_bytes"](case)
-    ns["can_use_trtllm_attention"] = lambda *_args, **_kwargs: False
+    ns["_attention_memory_backend"] = lambda *_args: ("FLASHINFER", 16, False)
     wrapper = ns["_attention_memory_bytes"](case)
     assert wrapper - native == 8192 * 32 * 128 * 16
+
+
+@pytest.mark.parametrize("dispatch_error", [AssertionError, ValueError])
+def test_vllm_planning_native_dispatch_has_current_runtime_config(dispatch_error):
+    ns = collector_functions("vllm", 268)
+    path = ROOT / "collector/vllm/collect_attn.py"
+    node = next(n for n in ast.parse(path.read_text()).body if getattr(n, "name", None) == "_attention_memory_backend")
+    active_config = None
+    calls = []
+
+    @contextmanager
+    def set_config(config):
+        nonlocal active_config
+        previous, active_config = active_config, config
+        try:
+            yield
+        finally:
+            active_config = previous
+
+    def native_decode(n, kv, *, is_prefill):
+        assert active_config is not None, "Current vLLM config is not set"
+        assert (active_config.num_heads, active_config.num_kv_heads, active_config.head_dim) == (32, 1, 128)
+        assert active_config.block_size is None
+        assert not active_config.use_fp8_kv_cache
+        assert not is_prefill
+        calls.append((n, kv, active_config.sliding_window))
+        return True
+
+    def select_backend(*_args, **_kwargs):
+        assert active_config is not None, "Current vLLM config is not set"
+        return "fake.backend"
+
+    ns.update(
+        __file__=str(path),
+        cache=cache,
+        create_vllm_config=lambda **kwargs: SimpleNamespace(**kwargs),
+        set_current_vllm_config=set_config,
+        AttentionSelectorConfig=lambda **kwargs: SimpleNamespace(**kwargs),
+        resolve_obj_by_qualname=lambda _name: SimpleNamespace(get_name=lambda: "FLASHINFER"),
+        framework_kv_block_size=lambda _backend: 16,
+        current_platform=SimpleNamespace(get_attn_backend_cls=select_backend),
+        can_use_trtllm_attention=native_decode,
+        use_trtllm_attention=lambda *_args: pytest.fail("prefill selector used for decode"),
+    )
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), ns)
+    for window in (0, 128):
+        for b in (1, 512):
+            assert ns["_attention_memory_bytes"]([b, 32767, 32, 1, 128, False, False, window]) > 0
+            assert active_config is None
+    assert calls == [(32, 1, None), (32, 1, 128)]
+
+    def broken_native_dispatch(*_args, **_kwargs):
+        raise dispatch_error("native configuration failure")
+
+    ns["can_use_trtllm_attention"] = broken_native_dispatch
+    ns["_attention_memory_backend"].cache_clear()
+    with pytest.raises(dispatch_error, match="native configuration failure"):
+        ns["_attention_memory_bytes"]([1, 32767, 32, 1, 128, False, False, 0])
+    assert active_config is None
 
 
 @pytest.mark.parametrize(
