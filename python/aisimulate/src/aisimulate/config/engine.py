@@ -251,11 +251,24 @@ def manual_block_bytes(block_size: int | None, bytes_per_token: int | str) -> in
     return block_bytes
 
 
+def _omit_default_checkpoint_switches(self, handler: Any) -> dict[str, Any]:
+    # Keep the existing state_cache shape unless a checkpoint switch is on.
+    payload = handler(self)
+    for name in ("prefill_checkpoint", "junction_checkpoints"):
+        if payload.get(name) is False:
+            payload.pop(name)
+    return payload
+
+
 class StateCacheConfig(StrictModel):
     """One complete state copy per rank; token pool geometry lives on kv_cache."""
 
     bytes_per_request: PositiveU64
     num_speculative_states: PositiveU64 | None = None
+    prefill_checkpoint: StrictBool = False
+    junction_checkpoints: StrictBool = False
+
+    _omit_checkpoint_switches = model_serializer(mode="wrap")(_omit_default_checkpoint_switches)
 
     def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
         block_bytes = manual_block_bytes(block_size, bytes_per_token)
@@ -277,8 +290,12 @@ class StateCachePredictionConfig(StrictModel):
 
     bytes_per_request: PositiveU64 | None = None
     num_speculative_states: PositiveU64 | None = None
+    prefill_checkpoint: StrictBool = False
+    junction_checkpoints: StrictBool = False
     mamba_cache_dtype: MambaCacheDtype = "auto"
     indexer_cache_dtype: IndexerCacheDtype = "auto"
+
+    _omit_checkpoint_switches = model_serializer(mode="wrap")(_omit_default_checkpoint_switches)
 
     def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
         if self.bytes_per_request is None:
@@ -335,6 +352,12 @@ class KvCachePredictionConfig(StrictModel):
             if not infer_state and (self.block_size is None or self.block_size % self.prefix_match_unit):
                 raise ValueError("prefix_match_unit must be a positive divisor of block_size")
         if self.state_cache is not None:
+            if self.prefix_match_unit is None and (
+                self.state_cache.prefill_checkpoint or self.state_cache.junction_checkpoints
+            ):
+                raise ValueError(
+                    "state_cache.prefill_checkpoint and junction_checkpoints require an explicit prefix_match_unit"
+                )
             if self.capacity.type != "fixed":
                 raise ValueError("state_cache requires fixed capacity (blocks or bytes)")
             if self.host_offload is not None:
@@ -389,6 +412,9 @@ class SchemeSpeculationConfig(StrictModel):
     draft_config: dict[str, Any] | None = None
     expected_accepted_tokens: NonNegativeFloat
     seed: Annotated[int, Field(strict=True, ge=0, le=0xFFFF_FFFF_FFFF_FFFF)] = 42
+    # vLLM speculative_config.disable_eagle_block_drop: prefix-cache hits keep
+    # their last matched block.
+    disable_eagle_block_drop: StrictBool = False
     _num_speculative_tokens: int = PrivateAttr(default=0)
 
     @model_validator(mode="after")
@@ -411,7 +437,17 @@ class SchemeSpeculationConfig(StrictModel):
         return self._num_speculative_tokens
 
     def cost_config(self) -> dict[str, Any]:
-        return self.model_dump(exclude={"expected_accepted_tokens", "seed"}, exclude_none=True)
+        return self.model_dump(
+            exclude={"expected_accepted_tokens", "seed", "disable_eagle_block_drop"}, exclude_none=True
+        )
+
+    @model_serializer(mode="wrap")
+    def _omit_default_block_drop(self, handler: Any) -> dict[str, Any]:
+        # Keep the existing descriptor shape unless the switch is on.
+        payload = handler(self)
+        if payload.get("disable_eagle_block_drop") is False:
+            payload.pop("disable_eagle_block_drop")
+        return payload
 
 
 SpeculationConfig = NgramSpeculationConfig | SchemeSpeculationConfig

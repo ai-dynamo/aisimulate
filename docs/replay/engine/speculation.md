@@ -33,6 +33,7 @@ verification round, including draft operations for schemes that model them.
 | `engine.speculation.num_speculative_tokens` | Required for flat ngram input | fixed | Integer from 1 to 5. |
 | `engine.speculation.acceptance_rates` | Required for flat ngram input | fixed | Exactly one conditional acceptance probability per draft token, each in `[0, 1]`. |
 | `engine.speculation.seed` | `42` | fixed | Unsigned 64-bit sampling seed. |
+| `engine.speculation.disable_eagle_block_drop` | `false` | Rejected | Registered schemes only. Prefix-cache hits keep their last matched block; see [prefix caching](#prefix-caching). |
 | `engine.nextn` | `0` (off) | fixed | MTP/EAGLE draft tokens, 0 to 5. For a measured SD-round FPM profile, must equal its recorded draft depth. |
 | `engine.nextn_accepted` | Unset | fixed | Required when `nextn > 0`. Expected accepted **draft** tokens per round, excluding the base token, in `[0, nextn]`. |
 
@@ -109,6 +110,30 @@ Grouped caches, G2/G3 offload, sub-block state-cache `prefix_match_unit`, AFD/EP
 TensorRT-LLM, and optional Dynamo-stack execution are outside this generic
 replay path. Functional replay does not establish AgentX prediction accuracy,
 model quality, or measured hardware speedup; see [feature support](../features.md).
+
+### Prefix caching
+
+vLLM drops the last matched block from every prefix-cache hit of an EAGLE-like
+method, MTP included, and recomputes it so the drafter sees fresh hidden
+states. Replay applies the same drop. vLLM's
+`speculative_config.disable_eagle_block_drop` turns it off; set the same switch
+on the speculation block:
+
+```yaml
+engine:
+  speculation:
+    kind: mtp
+    params: {depth: 3}
+    expected_accepted_tokens: 1.5
+    disable_eagle_block_drop: true
+```
+
+Hits then follow the non-speculative rules: a hit is capped at
+`(len - 1) // block_size` blocks, and a hybrid model's state is retained at the
+prompt's last full block. A follow-up whose previous prompt ended mid-block
+resumes at that block instead of one block earlier. Speculative scratch states
+and burst scheduling are unchanged. The switch is not part of the cost
+configuration. This follows vLLM 43b4aaea.
 
 <a id="prompt-lookup-ngram"></a>
 <a id="prompt-lookup-ngram-speculative-decoding"></a>

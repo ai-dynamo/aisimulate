@@ -938,6 +938,8 @@ mod speculative_scheduling {
                 .state_cache(Some(crate::engine::StateCacheConfig {
                     bytes_per_request: 16,
                     num_speculative_states: None,
+                    prefill_checkpoint: false,
+                    junction_checkpoints: false,
                 }))
                 .build()
                 .unwrap(),

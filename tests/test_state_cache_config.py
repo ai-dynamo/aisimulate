@@ -745,3 +745,41 @@ def test_speculative_states_do_not_multiply_inferred_state_geometry():
     raw["engine"].update(nextn=1, nextn_accepted=1.0)
     with pytest.raises(ValidationError, match="requires explicit bytes_per_request"):
         CorePredictionConfig.model_validate(raw)
+
+
+MTP = {"kind": "mtp", "params": {"depth": 3}, "expected_accepted_tokens": 2.12}
+
+
+def test_hybrid_prefix_cache_switches_reach_native_rank(forbid_estimators):
+    state = {**STATE, "num_speculative_states": 3, "prefill_checkpoint": True, "junction_checkpoints": True}
+    raw = _public(timing="default", state_cache=state, prefix_match_unit=64, capacity={"type": "fixed", "blocks": 32})
+    raw["engine"]["speculation"] = {**MTP, "disable_eagle_block_drop": True}
+    config = CorePredictionConfig.model_validate(raw)
+    config = CorePredictionConfig.model_validate_json(config.model_dump_json())
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(prediction_to_replay_spec(config))
+    rank = runtime.execution_spec["spec"]["engine"]["rank"]
+    assert rank["state_cache"] == state
+    assert rank["disable_eagle_block_drop"] is True
+
+
+def test_hybrid_prefix_cache_switches_default_off(forbid_estimators):
+    raw = _public(timing="default", prefix_match_unit=64)
+    raw["engine"]["speculation"] = MTP
+    config = CorePredictionConfig.model_validate(raw)
+    # Configs that do not use the switches keep their descriptor and rank.
+    engine = config.model_dump(mode="json")["engine"]
+    assert "disable_eagle_block_drop" not in engine["speculation"]
+    assert engine["workers"]["aggregated"]["kv_cache"]["state_cache"] == {
+        **STATE,
+        "num_speculative_states": None,
+        "mamba_cache_dtype": "auto",
+        "indexer_cache_dtype": "auto",
+    }
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(prediction_to_replay_spec(config))
+    rank = runtime.execution_spec["spec"]["engine"]["rank"]
+    assert rank["state_cache"] == STATE
+    assert "disable_eagle_block_drop" not in rank
+    with pytest.raises(ValidationError, match="require an explicit prefix_match_unit"):
+        KvCachePredictionConfig.model_validate({**KV, "state_cache": {**STATE, "junction_checkpoints": True}})

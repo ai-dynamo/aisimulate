@@ -8,6 +8,9 @@
 //! https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/single_type_kv_cache_manager.py
 //! Speculative scratch ownership also adapts MambaManager at vLLM
 //! db9527a46873454610df6dbedf79a36d6bf1a7f6 (same source path and license).
+//! The same-pass wait is MambaManager's at the v0.29.0 revision above; internal
+//! prefill checkpoints follow it at vLLM
+//! 43b4aaea3e40e20ef53ce2bfecfa1b72060bf2b5 (same source path and license).
 //! See the root THIRD_PARTY_NOTICES.md.
 //!
 //! Completed boundaries publish the existing working blocks: registration costs
@@ -45,13 +48,26 @@ pub(crate) struct StateRequest {
     snapshot_hash: Option<SequenceHash>,
     snapshot_step: u64,
     snapshot_owned: bool,
+    // Internal prefill checkpoint copy reserved for this pass (vLLM's
+    // `num_prefill_checkpoint_blocks`); published or released at finalize.
+    pub(crate) checkpoint: Vec<BlockCopyId>,
+    // Published internal checkpoint, discarded if this pass is retracted.
+    checkpoint_published: Vec<BlockCopyId>,
+    checkpoint_step: u64,
 }
 
 pub(crate) struct StateCacheManager {
     pub(crate) blocks_per_state: usize,
     pub(crate) speculative_blocks: usize,
+    /// MTP applies vLLM's trailing-block drop; false under
+    /// `disable_eagle_block_drop`.
     pub(crate) mtp_enabled: bool,
     pub(crate) align_block_size: Option<usize>,
+    /// vLLM 43b4aaea Mamba2 internal prefill checkpoints (align mode).
+    pub(crate) prefill_checkpoint: bool,
+    /// vLLM v0.29.0's block-aligned shared-prefix junction states and
+    /// same-pass wait.
+    pub(crate) junction_checkpoints: bool,
     // Preserve insertion order for deterministic LRU release. A cancelled
     // request takes its own entries; holes disappear at the next begin_step.
     step_copy_holds: Vec<Option<BlockCopyId>>,
@@ -67,6 +83,8 @@ impl StateCacheManager {
             speculative_blocks: 0,
             mtp_enabled,
             align_block_size: None,
+            prefill_checkpoint: false,
+            junction_checkpoints: false,
             step_copy_holds: Vec::new(),
             published_this_step: FxHashSet::default(),
             step: 0,
@@ -88,6 +106,76 @@ impl StateCacheManager {
     pub(crate) fn has_snapshot(&self, pool: &VllmBlockPool, prefix: SequenceHash) -> bool {
         !self.published_this_step.contains(&prefix)
             && self.keys(prefix).all(|key| pool.key_hit(key).is_some())
+    }
+
+    /// Whether a lookup sees this snapshot. vLLM's Mamba finder does not skip
+    /// states cached by this step's scheduling; the allocation of a request
+    /// that hits one fails instead (`get_num_blocks_to_allocate` returns
+    /// num_gpu_blocks + 1), so the request waits a step for that state rather
+    /// than taking an older one. `junction_checkpoints` turns that rule on;
+    /// without it, same-step states stay hidden, as before.
+    pub(crate) fn lookup_snapshot(&self, pool: &VllmBlockPool, prefix: SequenceHash) -> bool {
+        if self.junction_checkpoints {
+            self.keys(prefix).all(|key| pool.key_hit(key).is_some())
+        } else {
+            self.has_snapshot(pool, prefix)
+        }
+    }
+
+    /// The hit is a state published by this step (see [`Self::lookup_snapshot`]).
+    pub(crate) fn defers_same_step_hit(&self, prefix: SequenceHash) -> bool {
+        self.junction_checkpoints && self.published_this_step.contains(&prefix)
+    }
+
+    /// Whether lookups and retention follow vLLM's EAGLE trailing-block drop
+    /// (`use_eagle_block_drop`). Speculative scratch capacity is independent of
+    /// this rule.
+    pub(crate) fn speculative_drop(&self) -> bool {
+        self.speculative_blocks > 0 && self.mtp_enabled
+    }
+
+    /// Reserve the transient internal-checkpoint copy for this pass.
+    pub(crate) fn allocate_checkpoint(
+        &self,
+        pool: &mut VllmBlockPool,
+        state: &mut StateRequest,
+        reservation: &mut BlockReservation,
+    ) {
+        assert!(
+            state.checkpoint.is_empty(),
+            "one internal checkpoint per pass"
+        );
+        state.checkpoint = (0..self.blocks_per_state)
+            .map(|_| pool.allocate_private(reservation))
+            .collect();
+    }
+
+    /// Publish this pass's internal checkpoint (vLLM 43b4aaea MambaManager's
+    /// checkpoint column, cached by `cache_blocks`). The copy stays owned until
+    /// the request's next allocation, like vLLM's `remove_skipped_blocks`
+    /// retiring it.
+    pub(crate) fn publish_checkpoint(
+        &mut self,
+        pool: &mut VllmBlockPool,
+        state: &mut StateRequest,
+        hash: Option<SequenceHash>,
+    ) {
+        let copies = std::mem::take(&mut state.checkpoint);
+        let Some(hash) = hash else {
+            for id in copies {
+                pool.release(id);
+            }
+            return;
+        };
+        for (&id, key) in copies.iter().zip(self.keys(hash)) {
+            pool.cache_private_key(id, key);
+        }
+        self.published_this_step.insert(hash);
+        state.checkpoint_published.clone_from(&copies);
+        state.checkpoint_step = self.step;
+        for &id in &copies {
+            self.hold_previous(state, id);
+        }
     }
 
     pub(crate) fn release_previous(&self, pool: &mut VllmBlockPool, state: &mut StateRequest) {
@@ -280,11 +368,14 @@ impl StateCacheManager {
     pub(crate) fn preempt(&mut self, pool: &mut VllmBlockPool, state: &mut StateRequest) {
         // First release working refs, then discard any checkpoint belonging to
         // the retracted pass (it may alias those very same working blocks).
-        let pending = if state.snapshot_step == self.step {
+        let mut pending = if state.snapshot_step == self.step {
             state.snapshot.clone()
         } else {
             Vec::new()
         };
+        if state.checkpoint_step == self.step {
+            pending.append(&mut state.checkpoint_published);
+        }
         self.release(pool, state);
         for id in pending {
             pool.discard_inactive_state(id);
@@ -317,6 +408,10 @@ impl StateCacheManager {
             pool.release(id);
         }
         state.working_cached = false;
+        for id in state.checkpoint.drain(..) {
+            pool.release(id);
+        }
+        state.checkpoint_published.clear();
         // Published checkpoints remain reclaimable cross-request cache entries.
         state.snapshot.clear();
         state.snapshot_hash = None;

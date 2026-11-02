@@ -1914,6 +1914,8 @@ def _materialize_engine_role(
             rank["aic_nextn_accept_rates"] = ",".join(str(rate) for rate in speculation.acceptance_rates)
         else:
             rank["aic_nextn_accepted"] = speculation.expected_accepted_tokens
+            if speculation.disable_eagle_block_drop:
+                rank["disable_eagle_block_drop"] = True
         rank["aic_mtp_seed"] = speculation.seed
 
     kind = speculation.kind if speculation is not None else canonical_kind

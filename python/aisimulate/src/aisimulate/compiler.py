@@ -791,6 +791,10 @@ def _worker_engine_args(
         payload["state_cache"] = {"bytes_per_request": cache.state_cache.bytes_per_request}
         if cache.state_cache.num_speculative_states is not None:
             payload["state_cache"]["num_speculative_states"] = cache.state_cache.num_speculative_states
+        # Default-off switches stay absent so existing specs remain byte-identical.
+        for flag in ("prefill_checkpoint", "junction_checkpoints"):
+            if getattr(cache.state_cache, flag):
+                payload["state_cache"][flag] = True
         payload["kv_cache_bytes_per_token"] = cache.bytes_per_token
     if capacity.type == "fixed":
         if capacity.blocks is not None:

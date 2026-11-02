@@ -592,6 +592,17 @@ pub struct StateCacheConfig {
     /// Private scratch states retained for speculative verification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub num_speculative_states: Option<usize>,
+    /// Export the prompt's last full-block state from inside the final
+    /// prefill chunk instead of cutting the chunk at that block (vLLM
+    /// 43b4aaea Mamba2 `num_prefill_checkpoint_blocks = 1`). Align mode only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prefill_checkpoint: bool,
+    /// Stop a chunk at the block-aligned end of a deeper attention hit, cache
+    /// the state there, and wait one pass for a state published in the same
+    /// pass: vLLM v0.29.0's `shared_prefix_boundary` rules, which the default
+    /// model omits.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub junction_checkpoints: bool,
 }
 
 impl StateCacheConfig {
@@ -691,6 +702,10 @@ pub struct EngineConfig {
     /// Base seed for deterministic worker-local MTP acceptance sampling.
     #[serde(default = "default_aic_mtp_seed")]
     pub aic_mtp_seed: u64,
+    /// vLLM `speculative_config.disable_eagle_block_drop`: MTP keeps the
+    /// non-speculative prefix-cache rules (no trailing-block drop).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disable_eagle_block_drop: bool,
     /// Scheduler role.
     pub worker_type: WorkerType,
     /// Decode preemption victim order.
@@ -790,6 +805,8 @@ struct EngineConfigWire {
     aic_nextn_accept_rates: Option<String>,
     #[serde(default = "default_aic_mtp_seed")]
     aic_mtp_seed: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    disable_eagle_block_drop: bool,
     #[serde(default)]
     worker_type: WorkerType,
     #[serde(default)]
@@ -868,6 +885,7 @@ impl<'de> Deserialize<'de> for EngineConfig {
             aic_nextn: wire.aic_nextn,
             aic_nextn_accept_rates: wire.aic_nextn_accept_rates,
             aic_mtp_seed: wire.aic_mtp_seed,
+            disable_eagle_block_drop: wire.disable_eagle_block_drop,
             worker_type: wire.worker_type,
             preemption_mode: wire.preemption_mode,
             emit_kv_events: wire.emit_kv_events,
@@ -915,6 +933,7 @@ impl Default for EngineConfig {
             aic_nextn: None,
             aic_nextn_accept_rates: None,
             aic_mtp_seed: default_aic_mtp_seed(),
+            disable_eagle_block_drop: false,
             worker_type: WorkerType::Aggregated,
             preemption_mode: PreemptionMode::Lifo,
             emit_kv_events: false,
@@ -997,6 +1016,11 @@ impl EngineConfig {
                     || self.aic_nextn.is_none()
                     || state_cache.num_speculative_states.is_some(),
                 "sub-block prefix_match_unit does not support speculative decoding"
+            );
+            ensure!(
+                self.prefix_match_unit.is_some()
+                    || !(state_cache.prefill_checkpoint || state_cache.junction_checkpoints),
+                "state_cache.prefill_checkpoint and junction_checkpoints require an explicit prefix_match_unit (align mode)"
             );
             let bytes_per_token = self
                 .kv_cache_bytes_per_token
@@ -1102,6 +1126,10 @@ impl EngineConfig {
             ensure!(
                 self.aic_nextn_accept_rates.is_none(),
                 "aic_nextn_accept_rates requires aic_nextn"
+            );
+            ensure!(
+                !self.disable_eagle_block_drop,
+                "disable_eagle_block_drop requires aic_nextn"
             );
         }
         if self.backend == Backend::Sglang {
@@ -1352,6 +1380,42 @@ mod tests {
     }
 
     #[test]
+    fn hybrid_prefix_cache_switches_default_off_and_validate() {
+        let config: EngineConfig = serde_json::from_value(state_cache_config_json()).unwrap();
+        let encoded = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            encoded["state_cache"],
+            serde_json::json!({"bytes_per_request": 1500})
+        );
+        assert!(encoded.get("disable_eagle_block_drop").is_none());
+
+        let mut checkpoints = config.clone();
+        checkpoints
+            .state_cache
+            .as_mut()
+            .unwrap()
+            .junction_checkpoints = true;
+        assert!(
+            checkpoints
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("require an explicit prefix_match_unit")
+        );
+        checkpoints.prefix_match_unit = Some(checkpoints.block_size);
+        checkpoints.validate().unwrap();
+
+        let mut drop = config;
+        drop.disable_eagle_block_drop = true;
+        assert!(
+            drop.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("disable_eagle_block_drop requires aic_nextn")
+        );
+    }
+
+    #[test]
     fn state_cache_alignment_validates_and_round_trips() {
         let mut input = state_cache_config_json();
         input["prefix_match_unit"] = serde_json::json!(16);
@@ -1499,6 +1563,8 @@ mod tests {
             StateCacheConfig {
                 bytes_per_request: usize::MAX,
                 num_speculative_states: None,
+                prefill_checkpoint: false,
+                junction_checkpoints: false,
             }
             .state_blocks(2, 1)
             .unwrap(),

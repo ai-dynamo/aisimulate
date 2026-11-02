@@ -1262,6 +1262,8 @@ fn speculative_state_capacity_is_atomic_and_survives_slot_turnover() {
         Some(crate::engine::StateCacheConfig {
             bytes_per_request: 8,
             num_speculative_states: Some(2),
+            prefill_checkpoint: false,
+            junction_checkpoints: false,
         }),
         Some(1),
         true,
@@ -1309,6 +1311,8 @@ fn mtp_fine_prefix_uses_earlier_state_and_later_attention_tail() {
         Some(crate::engine::StateCacheConfig {
             bytes_per_request: 6,
             num_speculative_states: Some(3),
+            prefill_checkpoint: false,
+            junction_checkpoints: false,
         }),
         Some(1),
         true,

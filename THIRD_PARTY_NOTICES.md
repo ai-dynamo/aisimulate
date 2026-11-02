@@ -253,7 +253,8 @@ The repository-root files `crates/core/src/engine/scheduler/vllm/core.rs`,
 `crates/core/src/engine/kv_manager/g1_manager.rs`,
 and `crates/core/src/engine/kv_manager/state_cache_tests.rs` adapt the align-mode
 prefill split, state-slot turnover/copy lifetimes and default checkpoint-retention
-behavior from vLLM v0.29.0,
+behavior from vLLM v0.29.0, and, when `junction_checkpoints` is set, its
+shared-prefix junction stop, junction retention and same-pass wait, from
 immutable commit `98dff2a81d747d1dba01a47f939f48c3526d4206`:
 
 - https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/sched/scheduler.py
@@ -264,8 +265,9 @@ immutable commit `98dff2a81d747d1dba01a47f939f48c3526d4206`:
 Copyright contributors to the vLLM project. Licensed under Apache-2.0:
 https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/LICENSE
 
-These are modified Rust simulation adaptations, restricted to no internal
-prefill checkpoints, no speculative decoding and no periodic retention.
+These are modified Rust simulation adaptations without periodic retention.
+Speculative scratch states and internal prefill checkpoints follow the later
+revisions named in the sections below.
 The identified upstream revision has no root NOTICE file. The repository's
 Apache-2.0 LICENSE supplies the license text; no upstream source file is vendored.
 
@@ -1705,3 +1707,24 @@ The modified tests in `state_cache_tests.rs` and the scheduler use synthetic
 fixtures derived from the same lookup and retention rules.
 The shared-pool geometry in `crates/core/src/perfmodel/fpm/resources.rs`
 adapts `vllm/v1/core/kv_cache_utils.py` at that revision.
+
+## vLLM Mamba2 prefill checkpoints and the EAGLE drop switch
+
+The internal prefill checkpoints in repository-root
+`crates/core/src/engine/kv_manager/{state_cache_manager,vllm_backend}.rs` and
+`crates/core/src/engine/scheduler/vllm/core.rs`, the
+`disable_eagle_block_drop` switch, and the tests in
+`crates/core/src/engine/scheduler/vllm/hybrid_prefix_tests.rs` (which also cover
+the v0.29.0 junction rules above) adapt vLLM at commit
+`43b4aaea3e40e20ef53ce2bfecfa1b72060bf2b5`:
+
+- https://github.com/vllm-project/vllm/blob/43b4aaea3e40e20ef53ce2bfecfa1b72060bf2b5/vllm/v1/kv_cache_interface.py
+- https://github.com/vllm-project/vllm/blob/43b4aaea3e40e20ef53ce2bfecfa1b72060bf2b5/vllm/v1/core/sched/scheduler.py
+- https://github.com/vllm-project/vllm/blob/43b4aaea3e40e20ef53ce2bfecfa1b72060bf2b5/vllm/v1/core/single_type_kv_cache_manager.py
+- https://github.com/vllm-project/vllm/blob/43b4aaea3e40e20ef53ce2bfecfa1b72060bf2b5/vllm/config/speculative.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/43b4aaea3e40e20ef53ce2bfecfa1b72060bf2b5/LICENSE
+
+These are modified Rust simulation adaptations; no upstream source file is
+vendored.

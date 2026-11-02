@@ -47,7 +47,7 @@ pub(crate) use g1_manager::{
 };
 pub(crate) use grouped::GroupedKvPool;
 pub(crate) use sglang_backend::SglangKvManager;
-pub(crate) use vllm_backend::BlockRequestLease;
+pub(crate) use vllm_backend::{BlockRequestLease, mamba_prefill_checkpoint};
 
 #[cfg(test)]
 pub(crate) use vllm_backend::{apply_mtp_prefix_recompute, apply_prefix_recompute};

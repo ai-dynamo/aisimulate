@@ -211,6 +211,15 @@ impl G1Manager {
         self
     }
 
+    pub(crate) fn prefix_junction(
+        &self,
+        sequence: &RequestSequence,
+        lease: &BlockRequestLease,
+        cached_tokens: usize,
+    ) -> Option<usize> {
+        self.inner.prefix_junction(sequence, lease, cached_tokens)
+    }
+
     pub(crate) fn allocate_native(
         &mut self,
         owner: Uuid,

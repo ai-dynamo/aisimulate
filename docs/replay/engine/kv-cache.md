@@ -422,6 +422,8 @@ This gives eight 1024-byte blocks. Each request's state takes two blocks
 |---|---|---|
 | `state_cache.bytes_per_request` | Inferred | State bytes per request per rank. When set, `block_size` and numeric `bytes_per_token` must also be set. |
 | `state_cache.num_speculative_states` | Unset | Explicit full-state scratch copies per request. Must match positive `nextn`. Requires numeric state bytes and token geometry. |
+| `state_cache.prefill_checkpoint` | `false` | The final prefill chunk exports the prompt's last full-block state from inside its forward (vLLM's `num_prefill_checkpoint_blocks = 1`). Needs an explicit `prefix_match_unit`. |
+| `state_cache.junction_checkpoints` | `false` | A prefill stops at the end of a deeper attention hit and keeps the state there for requests sharing that prefix; a lookup waits one pass for a state published in the same pass. vLLM's default since v0.29.0. Needs an explicit `prefix_match_unit`. |
 | `state_cache.mamba_cache_dtype` | `auto` | Kimi K3 only. `auto` (model dtype), `float16` or `float32`. Used when bytes are inferred. |
 | `state_cache.indexer_cache_dtype` | `auto` | DeepSeek V4 only. `auto` (vLLM's FP8), `fp8` or `mxfp4`; vLLM supports `mxfp4` only on Blackwell datacenter GPUs. Used when bytes are inferred. |
 | `prefix_match_unit` | Unset (`block_size`) | Positive divisor of `block_size`. Lets prefixes match at a finer granularity than the physical block. |
@@ -468,6 +470,23 @@ assumptions: vLLM sends the raw convolution and recurrent state (about 8% less
 than the padded `bytes_per_request` for Kimi K3 at TP8), transfers it after all
 but the last prompt token and recomputes that token on the decode worker. Replay
 transfers the state for the whole prompt and does not model the recompute.
+
+Two align-mode behaviors of vLLM are opt-in. Both need an explicit
+`prefix_match_unit` and default to `false`, which keeps the earlier model:
+
+- **`prefill_checkpoint`** is vLLM's `num_prefill_checkpoint_blocks = 1`, which
+  vLLM 43b4aaea sets for Mamba2 layers. When the final prefill chunk starts on a
+  block boundary and spans at least one block before
+  `c = (P - 1) // block_size * block_size`, the chunk runs to the prompt end and
+  its forward exports the state at `c` into one extra state reserved for that
+  pass. Without it the chunk stops at `c`, which costs one more pass.
+- **`junction_checkpoints`** is vLLM's default since v0.29.0, which the earlier
+  model omits. When a lookup's attention hit runs deeper than its deepest state
+  (`shared_prefix_boundary`), the prefill stops at that block-aligned position
+  and keeps the state there; a sibling sharing the prefix then resumes from it.
+  A lookup that would resume from a state published in the same pass waits one
+  pass, as vLLM's allocation does. Without the switch, such states stay hidden
+  and the lookup falls back to an older state.
 
 Supported: aggregated and P/D vLLM, fixed `capacity`, `predict --stack engine`;
 inferred geometry for Kimi K3 and DeepSeek V4 at PP=1.
