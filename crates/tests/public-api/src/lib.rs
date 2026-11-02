@@ -1215,6 +1215,11 @@ mod tests {
         let limits: DeploymentLimits = config.deployment_limits.unwrap();
         assert_eq!(limits.num_gpus, DeploymentLimit::Known(4));
         assert_eq!(limits.max_num_seqs.known(), None);
+        // Limits may be added: downstream code sets fields on the default.
+        let mut built = DeploymentLimits::default();
+        built.num_gpus = DeploymentLimit::Known(4);
+        built.max_kv_tokens = DeploymentLimit::Known(65536);
+        assert_eq!(built, limits);
         let model = ForwardPassPerfModel::best_available(config.clone()).unwrap();
         let topology = serde_json::to_value(model.deployment_topology().unwrap()).unwrap();
         assert_eq!(topology["tp"], UNKNOWN_IDENTITY);
