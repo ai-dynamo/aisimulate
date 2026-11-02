@@ -895,11 +895,11 @@ impl VllmCore {
             adapter.set_hybrid(blocks_per_state);
             kv_manager.record_state_handoffs();
         }
-        if native_host_offload
+        if let Some(order) = native_host_offload
             .as_ref()
-            .is_some_and(VllmHostOffloadAdapter::holds_store_sources)
+            .and_then(VllmHostOffloadAdapter::store_source_hold)
         {
-            kv_manager.hold_native_store_sources();
+            kv_manager.hold_native_store_sources(order);
         }
         if !args.kv_cache_groups.is_empty() {
             kv_manager.set_grouped_cache(GroupedKvPool::new(

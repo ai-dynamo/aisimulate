@@ -192,18 +192,25 @@ eviction rules G2 follows:
 | | `offloading_v0_24` (default) | `offloading_v0_32` | `simple_cpu_v0_32` |
 | --- | --- | --- | --- |
 | vLLM connector | `OffloadingConnector`, vLLM 0.24 | `OffloadingConnector` with the CPU backend, vLLM v0.32.0 | `SimpleCPUOffloadConnector` in eager mode, vLLM v0.32.0 |
-| Stored blocks | Prompt blocks as they are computed, after any blocks loaded from G2 | The same; a finishing request also offers prompt blocks it could not store earlier | Every block one pass after it is computed, from block 0: blocks served from G1 or loaded from G2, and blocks filled during decode. A finishing request stores the rest. |
+| Stored blocks | Prompt blocks as they are computed, after any blocks loaded from G2 | The same; a finishing request also offers prompt blocks it could not store earlier | Every block one pass after it is computed, decode blocks included, scanned from block 0 at each admission; blocks already in G2, such as those just loaded, are skipped. A finishing request stores the rest. |
 | Eviction order | Least recently used. Each lookup and store makes the prompt's resident blocks the newest, its first block newest of all. | Least recently used by rank. A block is ranked when its store starts; a finishing request re-ranks every block it stored, offered or loaded, its first block newest. | First in, first out by store completion. A completed load or a dropped lookup pin makes its blocks the newest; a block already in G2 is not refreshed. |
 | A hit whose store is in flight | Defers the request | Defers the request | Misses |
 | A hit another request is loading | Defers the request | Defers the request | Both requests load it |
 | The request's own store in flight | Defers its lookup | Defers its lookup | Does not defer |
 | A hit before its load | Not pinned | Not pinned | Pinned until the request loads it or looks it up again |
-| G1 blocks being copied | Freed with their request; a new owner waits for the copy | The same | Held until the copy completes |
+| G1 blocks being copied | Freed with their request; a new owner waits for the copy | The same | Held until the copy completes, then freed first block first |
 | A preemption | Waits for the preempted request's stores | The same | Waits for every transfer in flight |
 
 vLLM main has changed some of these rules since v0.32.0; each profile follows
-the version it names. After a preemption, `simple_cpu_v0_32` loads only prompt
-blocks from G2 and recomputes the request's output blocks, which vLLM reloads.
+the version it names. The model also differs from vLLM v0.32.0 here:
+
+- `offloading_v0_32` offers and re-ranks a finishing request's blocks when the
+  request finishes. vLLM does both in its next step, after that step's other
+  stores.
+- A `simple_cpu_v0_32` store that does not fit waits for the next pass, while
+  vLLM stores the blocks that fit.
+- After a preemption, `simple_cpu_v0_32` loads only prompt blocks from G2 and
+  recomputes the request's output blocks, which vLLM reloads.
 
 <a id="hybrid-g2"></a>
 
@@ -228,6 +235,7 @@ needs `prefix_match_unit` equal to `block_size`.
 - G1 keeps the blocks a hybrid G2 is copying until the copy completes, as
   SimpleCPU does. For `offloading_v0_32` this is a simplification: vLLM fences
   the copied blocks' reuse instead, and replay does not fence state blocks.
+  Replay then frees them tail first, as vLLM frees a finished request's blocks.
 
 MTP (`kind: mtp`) runs with a hybrid G2 when
 [`disable_eagle_block_drop`](speculation.md#prefix-caching) is set.

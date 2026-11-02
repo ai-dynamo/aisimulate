@@ -43,7 +43,8 @@ mod vllm_backend;
 mod vllm_firewall_tests;
 
 pub(crate) use g1_manager::{
-    DestinationReservation, G1Manager, NativeAllocation, SourceReuseDependency, StateHandoff,
+    DestinationReservation, G1Manager, NativeAllocation, SourceReleaseOrder, SourceReuseDependency,
+    StateHandoff,
 };
 pub(crate) use grouped::GroupedKvPool;
 pub(crate) use sglang_backend::SglangKvManager;

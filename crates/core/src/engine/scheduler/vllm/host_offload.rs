@@ -48,8 +48,8 @@ use crate::engine::host_offload::{
     StoreOutcome, TransferId,
 };
 use crate::engine::kv_manager::{
-    BlockRequestLease, DestinationReservation, G1Acquire, G1Manager, SourceReuseDependency,
-    StateHandoff,
+    BlockRequestLease, DestinationReservation, G1Acquire, G1Manager, SourceReleaseOrder,
+    SourceReuseDependency, StateHandoff,
 };
 use crate::engine::{G2Connector, HostOffloadObserver, KvHintSource, NativeHostOffloadConfig};
 
@@ -406,12 +406,19 @@ impl VllmHostOffloadAdapter {
     }
 
     /// Whether a store keeps a reference on the G1 blocks it copies until the
-    /// copy completes: a cluster-shared pool, like Mooncake Store and LMCache
-    /// MP, or SimpleCPU, which touches its GPU source blocks for the copy. A
-    /// hybrid G2 does too, as state allocations are not fenced behind a
-    /// pending copy.
-    pub(super) fn holds_store_sources(&self) -> bool {
-        self.shared || self.connector == G2Connector::SimpleCpuV032 || self.hybrid.is_some()
+    /// copy completes, and the order it frees them in: a cluster-shared pool,
+    /// like Mooncake Store and LMCache MP, or SimpleCPU, which touches its GPU
+    /// source blocks for the copy. A hybrid G2 holds them too, as state
+    /// allocations are not fenced behind a pending copy, and frees them tail
+    /// first, as vLLM frees a finished request's blocks.
+    pub(super) fn store_source_hold(&self) -> Option<SourceReleaseOrder> {
+        if self.connector == G2Connector::SimpleCpuV032 {
+            Some(SourceReleaseOrder::HeadFirst)
+        } else if self.shared || self.hybrid.is_some() {
+            Some(SourceReleaseOrder::TailFirst)
+        } else {
+            None
+        }
     }
 
     /// G1 has a state cache: lookups, loads and stores carry recurrent states.
@@ -908,13 +915,30 @@ impl VllmHostOffloadAdapter {
                 .zip(missing_indices.iter().copied())
                 .all(|(hash, index)| HostBlockKey::new(hash) == request.prompt_keys[index])
         );
-        match tier.prepare_store(
-            self.host.id(),
-            uuid,
-            &request.prompt_keys[start..end],
-            request.prompt_meta.as_deref().map(|meta| &meta[start..end]),
-            now_ms,
-        ) {
+        // The offloading connectors protect every block they offer from
+        // eviction. SimpleCPU's `get_new_blocks` protects none, so it offers
+        // only the missing blocks.
+        let simple_keys;
+        let simple_meta;
+        let (keys, meta) = if self.connector == G2Connector::SimpleCpuV032 {
+            simple_keys = missing_indices
+                .iter()
+                .map(|index| request.prompt_keys[*index])
+                .collect::<Vec<_>>();
+            simple_meta = request.prompt_meta.as_deref().map(|meta| {
+                missing_indices
+                    .iter()
+                    .map(|index| meta[*index].clone())
+                    .collect::<Vec<_>>()
+            });
+            (simple_keys.as_slice(), simple_meta.as_deref())
+        } else {
+            (
+                &request.prompt_keys[start..end],
+                request.prompt_meta.as_deref().map(|meta| &meta[start..end]),
+            )
+        };
+        match tier.prepare_store(self.host.id(), uuid, keys, meta, now_ms) {
             StoreOutcome::AlreadyPresent => request.next_store_block = end,
             StoreOutcome::RetryCapacity { .. } => {}
             StoreOutcome::Prepared {
@@ -1031,7 +1055,8 @@ impl VllmHostOffloadAdapter {
     /// blocks computed since its last store (`request_finished_all_groups`).
     /// `offloading_v0_32` offers its remaining prompt blocks (`_build_store_jobs`
     /// takes `finished_req_ids`), then re-ranks every block the request stored,
-    /// offered or loaded, its first block newest (`on_request_finished`).
+    /// offered or loaded, its first block newest (`on_request_finished`). vLLM
+    /// does both in its next step, after that step's other stores.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn finish_request(
         &mut self,
@@ -1622,7 +1647,7 @@ mod tests {
         };
         let (mut adapter, mut peer) = (join(), join());
         let mut manager = G1Manager::new_with_caching(1, 4, KvEventPublishers::default(), 0, true);
-        manager.hold_native_store_sources();
+        manager.hold_native_store_sources(SourceReleaseOrder::TailFirst);
         let source_id = Uuid::from_u128(6);
         let (_, source_lease, source_host) =
             stored(&mut adapter, &mut manager, source_id, vec![1, 2, 3, 4], 0.0);
@@ -2666,16 +2691,102 @@ mod tests {
     }
 
     #[test]
+    fn simple_cpu_stores_do_not_protect_the_request_s_own_copies() {
+        // SimpleCPU takes CPU blocks from its free queue's head
+        // (`get_new_blocks`) without protecting any, so a request admitted
+        // with p0 and p1 from G1 evicts its own oldest copy, p0, to store p1.
+        let mut adapter = connector_adapter(G2Connector::SimpleCpuV032, 3);
+        let mut manager = G1Manager::new_with_caching(4, 4, KvEventPublishers::default(), 0, true);
+        let id = Uuid::from_u128(1);
+        let (mut sequence, mut lease, mut host) = request(id, (1..=8).collect());
+        assert!(matches!(
+            manager.allocate_native(id, &mut lease, 8, 0),
+            NativeAllocation::Ready { .. }
+        ));
+        manager.finalize_native_computed_prefix(id, 0, 8, &mut sequence, &mut lease);
+        let (_, _, other) = request(Uuid::from_u128(2), (11..=18).collect());
+        let mut now = 0.0;
+        for key in [
+            host.prompt_keys[0],
+            other.prompt_keys[0],
+            other.prompt_keys[1],
+        ] {
+            now = seed_host(&mut adapter, key);
+        }
+        let evictions = Arc::new(EvictionCapture::default());
+        adapter.set_observer(evictions.clone());
+        adapter.on_admitted(&mut host, 8, 4);
+        adapter.observe_completed_blocks(id, &mut host, &lease, 8, 8, 4, &mut manager, now);
+        assert_eq!(evictions.take(), [host.prompt_keys[0]]);
+    }
+
+    #[test]
+    fn simple_cpu_rescans_an_admitted_request_from_block_0() {
+        // On admission SimpleCPU scans from block 0 and counts the reused
+        // prefix as computed, so a block served from G1 that G2 evicted is
+        // stored in the request's first pass, even after a load. A stores a0
+        // and a1; X's stores evict a0 from G2 and its blocks evict a1 from G1,
+        // so B (A's prompt plus a block) reuses a0 from G1 and loads a1.
+        let mut args = connector_args(G2Connector::SimpleCpuV032);
+        args.num_gpu_blocks = 4;
+        args.native_host_offload = Some(
+            NativeHostOffloadConfig::new(3)
+                .with_bandwidths(0.0, 0.0)
+                .with_connector(G2Connector::SimpleCpuV032),
+        );
+        let mut core = VllmCore::new_with_worker_rank(args, 0, 0, 0, true, None).unwrap();
+        let mut now_ms = 0.0;
+        let mut b_admission = None;
+        for (id, tokens) in [(1, 1..=8), (2, 11..=18), (3, 1..=12)] {
+            let uuid = Uuid::from_u128(id);
+            core.receive(DirectRequest {
+                tokens: tokens.collect(),
+                max_output_tokens: 3,
+                uuid: Some(uuid),
+                arrival_timestamp_ms: Some(now_ms),
+                ..Default::default()
+            });
+            while !core.is_empty() {
+                let pass = core.execute_pass(&mut TraceCollector::default(), now_ms);
+                now_ms = pass.end_ms;
+                core.complete_engine_boundary(now_ms);
+                if id == 3
+                    && let Some(admission) = pass
+                        .admissions
+                        .iter()
+                        .find(|admission| admission.uuid == uuid)
+                {
+                    b_admission = Some((
+                        admission
+                            .cache_tier_attribution
+                            .map(|tiers| tiers.host_reused_input_tokens),
+                        host_stored(pass.kv_events.into_iter().chain(core.drain_kv_events())),
+                    ));
+                }
+            }
+        }
+        let (_, _, a) = request(Uuid::nil(), (1..=8).collect());
+        assert_eq!(
+            b_admission,
+            Some((Some(4), vec![a.prompt_keys[0].sequence_hash()]))
+        );
+    }
+
+    #[test]
     fn simple_cpu_holds_a_finished_request_s_blocks_until_their_copy_completes() {
+        use crate::engine::{KvEventData, KvEventTier};
         // SimpleCPU touches the GPU blocks it copies (manager.py
-        // `_prepare_eager_store_specs`) and frees them when the copy completes
-        // (`_process_store_completion`); the offloading connector frees them
-        // with the request and fences their next owner.
-        for (connector, held) in [
-            (G2Connector::SimpleCpuV032, 2),
-            (G2Connector::OffloadingV032, 0),
+        // `_prepare_eager_store_specs`) and frees them in block order when the
+        // copy completes (`_process_store_completion`); the offloading
+        // connector frees them with the request, tail first, and fences their
+        // next owner.
+        let (_, _, blocks) = request(Uuid::nil(), (1..=8).collect());
+        for (connector, held, evicted) in [
+            (G2Connector::SimpleCpuV032, 2, blocks.prompt_keys[0]),
+            (G2Connector::OffloadingV032, 0, blocks.prompt_keys[1]),
         ] {
             let mut args = connector_args(connector);
+            args.num_gpu_blocks = 3;
             args.native_host_offload = Some(
                 NativeHostOffloadConfig::new(16)
                     .with_bandwidths(1.0, 1.0)
@@ -2697,12 +2808,33 @@ mod tests {
                 held,
                 "{connector:?}"
             );
-            core.process_internal_work(core.next_internal_deadline_ms().unwrap());
+            let now_ms = core.next_internal_deadline_ms().unwrap();
+            core.process_internal_work(now_ms);
             assert_eq!(
                 core.mocker_metrics().active_decode_blocks,
                 0,
                 "{connector:?}"
             );
+            // A two-block request takes the free block and evicts the oldest
+            // freed one.
+            core.receive(DirectRequest {
+                tokens: (11..=18).collect(),
+                max_output_tokens: 1,
+                uuid: Some(Uuid::from_u128(2)),
+                arrival_timestamp_ms: Some(now_ms),
+                ..Default::default()
+            });
+            let pass = core.execute_pass(&mut TraceCollector::default(), now_ms);
+            let removed = pass
+                .kv_events
+                .into_iter()
+                .filter(|event| event.tier == KvEventTier::Device)
+                .flat_map(|event| match event.data {
+                    KvEventData::Removed { block_hashes } => block_hashes,
+                    KvEventData::Stored(_) => Vec::new(),
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(removed, [evicted.sequence_hash()], "{connector:?}");
         }
     }
 
