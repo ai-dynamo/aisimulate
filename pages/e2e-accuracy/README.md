@@ -676,6 +676,12 @@ Initial coverage is explicitly selected in the reviewed private HF catalog
   The public dataset link is intentionally **coming soon**. TODO: add its public
   HF URL after migration; never expose the private cache URL in the dashboard.
 
+GLM uses the recorded AgentX corpus, its live-trajectory warmup/snapshot, and a
+one-hour profiling run per point. It has no 4K/32K, cold/warm, or repeat sweep.
+Each Qwen run is a finite cohort of eight measured requests per lane: 8, 32, or
+128 requests at 1, 4, or 16 lanes. Its detail selectors choose one of 12 runs per
+concurrency; the concurrency summary still covers all 12.
+
 One table contains both sources, tagged beneath each model name. Model rows are
 expanded by default and remain collapsible. Concurrency rows open details; Qwen has exactly three such
 rows, combining all prompt/cache variants and repeats. Detail selectors default
@@ -763,6 +769,10 @@ remain inspectable by their row labels without inventing an interval.
 GLM server counters distinguish processed tokens from client output. Qwen's
 recorded stream timestamps and counts enable client-delivered output comparisons;
 cache snapshots do not establish continuous scheduler or cache observations.
+Charts without usable silicon observations explicitly label the prediction-only
+view. Input/output histograms describe AISim requests; their In-flight mode
+compares recorded silicon and AISim observations. The conversation footprint
+proxy also uses the retained silicon reference.
 
 The reviewed input configuration's `prediction_database_version` selects SGLang
 0.5.21 and vLLM 0.31.0 for this cohort, independently of measured framework

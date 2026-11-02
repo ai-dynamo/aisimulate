@@ -228,6 +228,11 @@ async def check():
                 )
                 await expect(frame.locator("#plot-reference_ttft .plotly")).to_have_count(1)
                 await expect(frame.locator("#plot-reference_tpot .plotly")).to_have_count(1)
+                assert await frame.locator("#plot-footprint").evaluate(
+                    "plot => plot.data.some(trace => trace.name.includes('Silicon'))"
+                )
+                await expect(frame.locator("#note-cache")).to_contain_text("Silicon reference unavailable")
+                await expect(frame.locator("#note-input")).to_contain_text("select In-flight")
                 await expect(frame.locator("#scores-reference_ttft")).to_contain_text("Request MAPE 20%")
                 await frame.locator('[data-expand="reference_ttft"]').click()
                 await expect(frame.locator("#expanded-scores")).to_contain_text("Request MAPE 20%")

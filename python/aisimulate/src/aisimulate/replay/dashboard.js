@@ -531,6 +531,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
         return [...options.values()];
       }
       function comparisonKey(id) {
+        if (id === "footprint") return "unique";
         if (id === "input" || id === "output") return state.modes[id] === "inflight" ? id + "_inflight" : null;
         if (id === "interactivity") return `interactivity_p${state.percentiles.interactivity}`;
         if (id === "latency") return `latency_${state.modes.latency}_p${state.percentiles.latency}`;
@@ -553,13 +554,14 @@ window.AISimReplay = { mount(root, report, options = {}) {
         const c = comparedPhase()?.charts.find(c=>c.id === comparisonKey(id));
         if (!c) return null;
         const labels = [...new Set(c.series.map(s=>s.label))];
+        const hasSilicon = c.series.some(s=>s.origin === "silicon" && s.y.some(finite));
         const traces = c.series.map(s=>({name:`${s.label} · ${s.origin === "silicon" ? "Silicon" : "AISim"}`, x:s.x,y:s.y,
           type:s.kind === "bar" ? "bar" : "scatter",mode:"lines",connectgaps:false,
           line:{color:sourceColor(s.origin),dash:(s.origin === "silicon"?["solid","dash","longdash"]:["dot","dashdot","longdashdot"])[labels.indexOf(s.label)%3],shape:s.step?"hv":"linear"},
           marker:{color:sourceColor(s.origin)},
           hovertemplate:`%{x}<br>%{y:,.3f} ${esc(c.unit)}<extra>%{fullData.name}</extra>`}));
-        return {traces,axes:layout(c.unit,{barmode:"group"}),note:c.note,
-          foot:c.foot + " Silicon: blue. AISim: yellow. Line patterns distinguish metrics. Phase origins are recorded independently; no clock fitting.",
+        return {traces,axes:layout(c.unit,{barmode:"group"}),note:(hasSilicon ? "" : "Silicon reference unavailable for this metric in the selected phase. ") + c.note,
+          foot:c.foot + (hasSilicon ? " Silicon: blue. AISim: yellow. Line patterns distinguish metrics." : " AISim prediction only.") + " Phase origins are recorded independently; no clock fitting.",
           empty:traces.some(t=>t.y.some(finite))?null:"No comparable observations in this phase."};
       }
       function chart(id) {
@@ -1004,6 +1006,8 @@ window.AISimReplay = { mount(root, report, options = {}) {
           foot =
             "Includes zero-output and failed terminal records. Unfinished requests without terminal records are not counted.";
         }
+        if (report.comparison && (id === "input" || id === "output") && state.modes[id] === "distribution")
+          note += " AISim-only descriptive histogram; select In-flight for silicon versus AISim.";
         if (!empty && !traces.some((trace) => trace.y?.some(finite)))
           empty =
             "N/A · no observations for this metric in the selected phase.";
