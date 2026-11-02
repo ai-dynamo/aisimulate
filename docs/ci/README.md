@@ -578,7 +578,10 @@ rotation configuration stops delivery. See the
 The daily E2E branch matrix also evaluates the reviewed AgentX catalog. Each branch
 uses its exact wheel and the same single resolved HF revision as InfX. Two bounded
 CPU shards run one replay at a time; no new GPU measurements are collected.
-Native request/sample/lifecycle telemetry is required. Older wheels retain explicit
+Native request/sample/lifecycle telemetry is required. The reviewed catalog config
+pins prediction database versions separately from measured framework versions;
+there is no automatic substitution with the current database slot. Each result
+records selected op-data checksums from its wheel. Older wheels retain explicit
 unsupported or failed outcomes rather than inheriting main's predictions.
 
 Private outputs use the existing encrypted-artifact helper and seven-day retention.
@@ -587,7 +590,10 @@ summaries, lazy detail payloads, and provenance; preview artifacts use
 `e2e-agentx-preview-<branch-key>` and cannot enter production Pages. Qualification
 requires the complete catalog cohort and matching evaluated wheel, driver, and HF
 revisions. The Pages publisher independently validates the trusted producer and
-public field allowlist. Numerical accuracy remains advisory.
+public field allowlist, including comparison series, scores and opaque request
+pairs. Curve scores are reconciled against their published numerical series.
+Historical AgentX payloads retain their original driver digest closure. Numerical
+accuracy remains advisory.
 
 AgentX contract tests share the E2E forward-pass-engine, replay, infra, and
 maintainer ownership in `.github/codeowners/areas.yaml`.

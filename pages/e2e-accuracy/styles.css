@@ -773,3 +773,12 @@ dialog::backdrop { background: #0009; }
 
 .agentx-table [data-agentx-href] { cursor: pointer; }
 .agentx-table [data-agentx-href]:hover, .agentx-table [data-agentx-href]:focus-visible { background: var(--surface-hover, rgba(128,128,128,.12)); }
+.source-tag { display:table; border:1px solid var(--border); border-radius:4px; padding:2px 7px; margin:5px 0; font-size:11px; font-weight:500; color:var(--muted); }
+.agentx-identity .source-tag { display:inline-block; margin-right:8px; }
+.agentx-point-title { font-size:20px; margin:12px 0; overflow-wrap:anywhere; }
+.agentx-back { font-size:13px; }
+.agentx-notes { padding-left:22px; line-height:1.8; }
+.provenance code { overflow-wrap:anywhere; }
+.provenance svg { vertical-align:middle; }
+.theme-control select { background:var(--panel); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:5px; }
+.agentx-method { margin-top:20px; }

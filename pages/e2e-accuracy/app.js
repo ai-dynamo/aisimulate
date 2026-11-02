@@ -30,7 +30,6 @@ const identityLine = document.getElementById("identity-line");
 const scopeClaim = document.getElementById("scope-claim");
 const provenanceContent = document.getElementById("provenance-content");
 const errorBanner = document.getElementById("error-banner");
-const themeToggle = document.getElementById("theme-toggle");
 const branchSelect = document.getElementById("branch-select");
 const branchStatus = document.getElementById("branch-status");
 const downloadJson = document.getElementById("download-json");
@@ -316,22 +315,6 @@ function toggleWorkload(row) {
   focusData("workloadKey", key);
 }
 
-function updateThemeControl() {
-  const dark = document.documentElement.dataset.theme !== "light";
-  themeToggle.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme");
-}
-
-themeToggle.addEventListener("click", () => {
-  const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
-  document.documentElement.dataset.theme = next;
-  try {
-    localStorage.setItem("sm-theme", next);
-  } catch (_) {
-    // Keep the toggle usable when the browser blocks persistent storage.
-  }
-  updateThemeControl();
-});
-
 document.querySelectorAll(".sort-button").forEach((button) => {
   button.addEventListener("click", () => {
     const key = button.dataset.sort;
@@ -369,8 +352,6 @@ matrixBody.addEventListener("keydown", (event) => {
   event.preventDefault();
   toggleWorkload(row);
 });
-
-updateThemeControl();
 
 initialize().catch(showError);
 

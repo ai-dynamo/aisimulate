@@ -109,6 +109,7 @@
 /tests/test_pages_site.py                                @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_release_fpe.py                               @ai-dynamo/aisimulate-infra-codeowners
 /tests/e2e_accuracy_source/                              @ai-dynamo/aisimulate-infra-codeowners
+/tests/test_agentx_curves.py                             @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_agentx_accuracy.py                           @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_ci_qualification.py                          @ai-dynamo/aisimulate-infra-codeowners
 /tests/test_e2e_accuracy_ui.mjs                          @ai-dynamo/aisimulate-infra-codeowners
@@ -191,6 +192,7 @@
 /crates/core/src/perfmodel/                              @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.github/                              @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/e2e_accuracy_source/                              @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_agentx_curves.py                             @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_shared_g2_cli.py                             @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/tests/perfmodel/                            @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.gitignore                            @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain

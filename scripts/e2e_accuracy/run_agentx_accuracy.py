@@ -15,6 +15,7 @@ from pathlib import Path
 from huggingface_hub import hf_hub_download
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.e2e_accuracy.agentx_comparison import build as build_comparison
 from scripts.e2e_accuracy.agentx_contract import (
     IDENTITY,
     INDEX,
@@ -43,7 +44,7 @@ def fetch(revision, output):
     for name, entry in paths.items():
         # Only replay inputs are needed in daily CI; full raw evidence stays in HF.
         if not any(
-            entry in [run["artifacts"].get(k) for k in ("trace", "config", "observations", "overrides")]
+            entry in [run["artifacts"].get(k) for k in ("trace", "config", "observations", "overrides", "comparison")]
             for run in catalog["runs"]
         ):
             continue
@@ -318,6 +319,14 @@ def run_one(root, run, directory, timeout):
         )
         for pair in scores["pairs"]:
             pair.update(ttft_ms_ape=None, tpot_ms_ape=None)
+    if report and "comparison" in run["artifacts"]:
+        report["comparison"] = build_comparison(
+            read(artifact(root, run, "comparison")),
+            report,
+            read(directory / "dashboard.json"),
+            scores,
+            outcome["outcome"] == "completed",
+        )
     worker = config["engine"]["workers"]["aggregated"]
     settings = {
         "Estimation": "op_level",
@@ -339,6 +348,7 @@ def run_one(root, run, directory, timeout):
         **{key: outcome.get(key) for key in ("outcome", "reason", "prediction_backend_version")},
         "cache_alignment": cache_alignment,
         "report": report,
+        "op_data": outcome.get("op_data", []),
     }
     validate_result(result)
     (directory / "result.json").write_bytes(canonical(result))

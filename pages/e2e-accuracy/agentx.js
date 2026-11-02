@@ -61,17 +61,14 @@ window.AgentX = (() => {
       if (!loaded) { target.innerHTML = '<p role="status">No AgentX evaluation is available for this branch.</p>'; return; }
       const {data,entry} = loaded;
       target.innerHTML = `<p class="evidence-brief">${esc(branch)} · evaluated ${esc(data.snapshot.commit_sha.slice(0,12))} · ${esc(data.snapshot.completed_at)}${entry.last_update?.status === "failed" ? " · Update failed; showing previous results" : ""}${data.snapshot.preview ? " · Preview" : ""}</p>` +
-        [["agentx","AgentX"],["self_collected","Self-collected"]].map(([category,label]) => {
-          const runs = data.runs.filter(r => r.category === category), models = [...new Set(runs.map(r=>r.model))];
-          return `<section class="agentx-category"><h2>${label}</h2><div class="table-scroll"><table class="agentx-table"><thead>${headings}</thead><tbody>${models.map((model,index) => {
-            const points = runs.filter(r=>r.model===model), first=points[0], id=`ax-${category}-${index}`;
-            return `<tr class="agentx-model"><th><button type="button" data-agentx-expand="${id}" aria-expanded="false">▸ ${esc(model)}</button></th><td>${esc(first.hardware)} · ${esc(first.backend)}<small>${esc(first.precision)} · TP${first.tensor_parallel}</small></td>${cells(aggregate(points))}</tr>` +
-              [...new Set(points.map(r=>r.lanes))].sort((a,b)=>a-b).map(lanes => {
-                const matches=points.filter(r=>r.lanes===lanes), point=matches[0], failed=matches.filter(r=>r.outcome!=="completed").length;
-                return `<tr data-agentx-parent="${id}" data-agentx-href="${esc(pointUrl(point,branch))}" tabindex="0" aria-label="${lanes} lanes: open details" hidden><th><a href="${esc(pointUrl(point,branch))}">${lanes} lane${lanes===1?"":"s"} ↗</a><small>${matches.length} run${matches.length===1?"":"s"}${failed?` · ${failed} unavailable`:""}</small></th><td>${source(point)}</td>${cells(aggregate(matches))}</tr>`;
-              }).join("");
-          }).join("")}</tbody></table></div></section>`;
-        }).join("") + `<details><summary>Metrics and provenance</summary><p>Point columns average each run’s absolute percentage error equally. Throughput is output tokens/s. Request columns average individual matched request errors, with equal weight per request. Every measured request remains in coverage; preparation and warmup are excluded. Undefined errors remain unavailable. No shape metrics or timing corrections.</p><p>Silicon revision: ${esc(data.snapshot.dataset_revision)}<br>Evaluated commit: ${esc(data.snapshot.commit_sha)}</p></details>`;
+        `<div class="table-scroll"><table class="agentx-table"><thead>${headings}</thead><tbody>${[...new Set(data.runs.map(r=>JSON.stringify([r.category,r.model,r.hardware,r.backend,r.precision,r.tensor_parallel])))].map((key,index) => {
+          const points=data.runs.filter(r=>JSON.stringify([r.category,r.model,r.hardware,r.backend,r.precision,r.tensor_parallel])===key), first=points[0], id=`ax-model-${index}`;
+          return `<tr class="agentx-model"><th><button type="button" data-agentx-expand="${id}" aria-expanded="true">▾ ${esc(first.model)}</button><small class="source-tag">${first.category==="agentx"?"AgentX official":"Self-collected"}</small></th><td>${esc(first.hardware)} · ${esc(first.backend)}<small>${esc(first.precision)} · TP${first.tensor_parallel}</small></td>${cells(aggregate(points))}</tr>` +
+            [...new Set(points.map(r=>r.lanes))].sort((a,b)=>a-b).map(lanes=>{
+              const matches=points.filter(r=>r.lanes===lanes), point=matches[0], failed=matches.filter(r=>r.outcome!=="completed").length;
+              return `<tr data-agentx-parent="${id}" data-agentx-href="${esc(pointUrl(point,branch))}" tabindex="0" aria-label="${lanes} lanes: open details"><th><a href="${esc(pointUrl(point,branch))}">${lanes} lane${lanes===1?"":"s"} ↗</a><small>${matches.length} run${matches.length===1?"":"s"}${failed?` · ${failed} unavailable`:""}</small></th><td>${source(point)}</td>${cells(aggregate(matches))}</tr>`;
+            }).join("");
+        }).join("")}</tbody></table></div><details class="agentx-method"><summary>Metrics and provenance</summary>${methodology()}${provenance(data.snapshot,data.runs)}</details>`;
       target.querySelectorAll("[data-agentx-href]").forEach(row => {
         row.addEventListener("click", event => { if (!event.target.closest("a,button")) location.href=row.dataset.agentxHref; });
         row.addEventListener("keydown", event => { if (event.key === "Enter" && event.target === row) location.href=row.dataset.agentxHref; });
@@ -87,63 +84,64 @@ window.AgentX = (() => {
     }
   }
 
+  const githubIcon = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38v-1.49c-2.23.48-2.69-.95-2.69-.95-.36-.92-.89-1.17-.89-1.17-.73-.5.06-.49.06-.49.8.06 1.22.82 1.22.82.71 1.22 1.87.87 2.33.67.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.65 7.65 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.74.54 1.49v2.21c0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>`;
+  function methodology() {
+    return `<ul class="agentx-notes"><li>Point errors average each run’s absolute percentage error equally across repeats and variants.</li><li>Request MAPE gives each valid, uniquely matched request equal weight. All measured requests remain in accounting.</li><li>Throughput is output tokens/s within the benchmark’s measured boundary, including between-turn delays.</li><li>Preparation and warmup are unscored. Missing measurements and zero denominators remain unavailable. No shape metrics or timing calibration.</li></ul>`;
+  }
+  function provenance(snapshot,runs) {
+    return `<ul class="agentx-notes provenance"><li>${githubIcon} <strong>AISim repository commit:</strong> <a href="https://github.com/ai-dynamo/aisimulate/commit/${esc(snapshot.commit_sha)}" target="_blank" rel="noopener"><code>${esc(snapshot.commit_sha)}</code></a></li><li><span role="img" aria-label="Hugging Face">🤗</span> <strong>Silicon dataset revision:</strong> <code>${esc(snapshot.dataset_revision)}</code></li><li><strong>Measured framework:</strong> ${[...new Set(runs.map(r=>`${r.backend} ${r.measured_backend_version}`))].map(esc).join("; ")}</li><li><strong>Prediction database:</strong> ${[...new Set(runs.map(r=>`${r.backend} ${r.prediction_backend_version||"unavailable"}`))].map(esc).join("; ")}</li><li><strong>Evaluated:</strong> ${esc(snapshot.completed_at)}${snapshot.preview?" · Preview":""}</li><li><strong>Wheel SHA256:</strong> <code>${esc(snapshot.wheel_sha256)}</code></li>${[...new Map(runs.flatMap(r=>(r.op_data||[]).map(d=>[d.file,d]))).values()].map(d=>`<li>${githubIcon} <strong>Op data:</strong> <a href="https://github.com/ai-dynamo/aisimulate/blob/${esc(snapshot.commit_sha)}/python/aisimulate/src/aisimulate_core/systems/data/${esc(d.file)}">${esc(d.file)}</a><br><code>${esc(d.sha256)}</code></li>`).join("")}</ul>`;
+  }
   async function detail() {
-    const root=document.getElementById("agentx-point"), params=new URL(location.href).searchParams;
-    const branch=params.get("branch")||"main";
+    const root=document.getElementById("agentx-point"), params=new URL(location.href).searchParams, branch=params.get("branch")||"main";
+    let renderer;
     try {
+      const catalog=await json("./branches.json"), branchSelect=document.getElementById("branch-select");
+      branchSelect.innerHTML=catalog.branches.map(e=>`<option value="${esc(e.branch)}">${esc(e.branch)}</option>`).join("");
+      branchSelect.value=branch;branchSelect.disabled=false;
+      branchSelect.addEventListener("change",()=>{const url=new URL(location.href);url.searchParams.set("branch",branchSelect.value);location.href=url;});
+      document.getElementById("back").href=`../?${new URLSearchParams({tab:"agentx",branch})}`;
       const loaded=await summary(branch,"./");
       if(!loaded) throw new Error("No AgentX evidence is available for this branch.");
       const runs=loaded.data.runs.filter(r=>r.category===params.get("category") && r.model===params.get("model") && r.lanes===Number(params.get("lanes")));
       if(!runs.length) throw new Error("This concurrency was not evaluated.");
-      const group=aggregate(runs), first=runs[0];
-      document.getElementById("back").href=`../?${new URLSearchParams({tab:"agentx",branch})}`;
+      const group=aggregate(runs),first=runs[0];
       document.getElementById("point-title").textContent=`${first.model} · ${first.lanes} lane${first.lanes===1?"":"s"}`;
-      root.innerHTML=`<p>${esc(first.hardware)} · ${esc(first.backend)} · ${esc(first.precision)} · TP${first.tensor_parallel} · ${source(first)}</p><h2>Concurrency summary · all workload variants and repeats</h2><div class="table-scroll"><table class="agentx-table"><thead>${headings}</thead><tbody><tr><th>${first.lanes} lane${first.lanes===1?"":"s"}</th><td>${esc(first.hardware)} · ${esc(first.backend)}</td>${cells(group)}</tr></tbody></table></div><div id="variant-controls" class="filter-toolbar"></div><div id="selected-run"></div>`;
+      root.innerHTML=`<p class="agentx-identity"><span class="source-tag">${first.category==="agentx"?"AgentX official":"Self-collected"}</span> ${esc(first.hardware)} · ${esc(first.backend)} · ${esc(first.precision)} · TP${first.tensor_parallel} · ${source(first)}</p><div id="variant-controls" class="filter-toolbar"></div><p id="selected-run-label" class="evidence-brief"></p><div id="selected-run"></div>`;
       const controls=document.getElementById("variant-controls");
+      controls.hidden=first.category!=="self_collected";
       if(first.category==="self_collected") {
         controls.innerHTML=`<label>Initial prompt<select id="length"><option value="4096">4K</option><option value="32768">32K</option></select></label><label>Initial cache<select id="cache"><option value="cold">Cold</option><option value="warm">Warm</option></select></label><label>Repeat<select id="repeat"><option>0</option><option>1</option><option>2</option></select></label>`;
-        for(const [key, fallback] of [["length","4096"],["cache","cold"],["repeat","0"]]) {
-          const select=document.getElementById(key), value=params.get(key)||fallback;
-          select.value=[...select.options].some(o=>o.value===value)?value:fallback;
+        for(const [key,fallback] of [["length","4096"],["cache","cold"],["repeat","0"]]) {
+          const select=document.getElementById(key),value=params.get(key)||fallback;select.value=[...select.options].some(o=>o.value===value)?value:fallback;
         }
       }
-      let detailGeneration=0;
+      const fragment=await fetch("./dashboard-body.html").then(r=>{if(!r.ok)throw new Error("Replay assets unavailable.");return r.text();});
+      let generation=0;
       async function select() {
-        const version=++detailGeneration;
-        const length=document.getElementById("length")?.value, cache=document.getElementById("cache")?.value, repeat=document.getElementById("repeat")?.value;
-        const run=first.category==="agentx"?first:runs.find(r=>r.initial_input_tokens===Number(length) && r.cache_state===cache && r.repeat===Number(repeat));
-        if(!run) return;
-        const url=new URL(location.href);
-        if(length) for(const [key,value] of Object.entries({length,cache,repeat})) url.searchParams.set(key,value);
-        history.replaceState(null,"",url);
-        const target=document.getElementById("selected-run");
-        target.innerHTML='<p role="status">Loading selected run…</p>';
-        if(!/^details\/[a-z0-9-]+\.json$/.test(run.detail_path)) throw new Error("Invalid detail path.");
-        const point=await json(loaded.base+run.detail_path);
-        if(version!==detailGeneration)return;
-        if(point.id!==run.id || point.snapshot.commit_sha!==loaded.data.snapshot.commit_sha) throw new Error("Point provenance mismatch.");
-        const variant=first.category==="agentx"?"Observed outputs":`${Number(length).toLocaleString()} tokens · ${cache} · repeat ${repeat}`;
-        const comparisons=metrics.map(metric=>`<tr><th>${{ttft_ms:"Mean TTFT (ms)",tpot_ms:"Mean TPOT (ms/token)",output_tokens_s:"Output tokens/s"}[metric]}</th><td>${fmt(point.silicon[metric],"")}</td><td>${fmt(point.prediction[metric],"")}</td><td>${fmt(point.point_errors[metric])}</td></tr>`).join("");
-        target.innerHTML=`<h2>Selected run · ${esc(variant)}</h2><p>${esc(point.outcome)}${point.reason?` · ${esc(point.reason.replaceAll("_"," "))}`:""} · ${point.coverage.matched||0} / ${point.coverage.measured} matched measured requests</p><div class="table-scroll"><table><thead><tr><th>Metric</th><th>Silicon</th><th>AISim</th><th>Point error</th></tr></thead><tbody>${comparisons}</tbody></table></div><p>Request TTFT MAPE: ${fmt(point.request_errors.ttft_ms.mape)} (n=${point.request_errors.ttft_ms.count}) · Request TPOT MAPE: ${fmt(point.request_errors.tpot_ms.mape)} (n=${point.request_errors.tpot_ms.count})</p><details><summary>Request comparisons and coverage</summary><p>${Object.entries(point.coverage).map(([k,v])=>`${esc(k.replaceAll("_"," "))}: ${v}`).join(" · ")}</p><div class="table-scroll agentx-pairs"><table><thead><tr><th>Request</th><th>Status</th><th>Silicon TTFT</th><th>AISim TTFT</th><th>TTFT error</th><th>Silicon TPOT</th><th>AISim TPOT</th><th>TPOT error</th></tr></thead><tbody>${point.pairs.map(p=>`<tr><td>${p.request}</td><td>${esc(p.status.replaceAll("_"," "))}${p.input_length_matches===false?" · different input length":""}</td>${["silicon_ttft_ms","predicted_ttft_ms","ttft_ms_ape","silicon_tpot_ms","predicted_tpot_ms","tpot_ms_ape"].map(k=>`<td>${fmt(p[k],k.endsWith("ape")?"%":"")}</td>`).join("")}</tr>`).join("")}</tbody></table></div></details><details><summary>Configuration, provenance, and limitations</summary><dl>${point.config_summary.map(item=>`<dt>${esc(item.name)}</dt><dd>${esc(item.value ?? "Unavailable")}</dd>`).join("")}</dl><p>Measured backend: ${esc(point.measured_backend_version)} · prediction database: ${esc(point.prediction_backend_version||"unavailable")}<br>Evaluated commit: ${esc(point.snapshot.commit_sha)}<br>Silicon revision: ${esc(point.snapshot.dataset_revision)}<br>Generated: ${esc(point.snapshot.completed_at)}</p><p>${point.boundary==="complete_finite_cohort"?"Finite measured cohort, including between-turn delays; preparation excluded.":"Successful profiling cohort; silicon and replay may progress through different requests during the fixed window."} Request comparisons require a unique successful match and equal output lengths. Matching source IDs does not imply identical prompts or cache history. Missing and zero-denominator errors remain unavailable. Accuracy is advisory; no timing correction is applied.</p></details>${point.report?'<iframe id="replay-frame" title="Replay timeline, latency, throughput, and cache details" class="agentx-replay"></iframe>':'<p>Native replay charts are unavailable for this outcome.</p>'}`;
-        if(point.report) {
-          const data=loaded.base.replace(/^\.\//,"")+run.detail_path;
-          const state=new URLSearchParams(location.hash.slice(1));
-          const stage=state.get("stage")==="preparation"?"preparation":"profile";
-          const view=state.get("view")==="timeline"?"timeline":"point";
-          document.getElementById("replay-frame").src=`./replay.html?${new URLSearchParams({data})}#view=${view}&stage=${stage}&variant=observed`;
-        }
+        const version=++generation,length=document.getElementById("length")?.value,cache=document.getElementById("cache")?.value,repeat=document.getElementById("repeat")?.value;
+        const run=first.category==="agentx"?first:runs.find(r=>r.initial_input_tokens===Number(length)&&r.cache_state===cache&&r.repeat===Number(repeat));
+        if(!run)throw new Error("Selected workload is unavailable.");
+        const url=new URL(location.href);if(length)for(const [key,value] of Object.entries({length,cache,repeat}))url.searchParams.set(key,value);history.replaceState(null,"",url);
+        const target=document.getElementById("selected-run");renderer?.destroy();target.innerHTML='<p role="status">Loading selected run…</p>';
+        if(!/^details\/[a-z0-9-]+\.json$/.test(run.detail_path))throw new Error("Invalid detail path.");
+        const point=await json(loaded.base+run.detail_path);if(version!==generation)return;
+        if(point.id!==run.id||JSON.stringify(point.snapshot)!==JSON.stringify(loaded.data.snapshot))throw new Error("Point provenance mismatch.");
+        document.getElementById("selected-run-label").textContent=`Selected run · ${first.category==="agentx"?"Observed outputs":`${Number(length).toLocaleString()} tokens · ${cache} · repeat ${repeat}`} · ${point.outcome}${point.reason?" · "+point.reason.replaceAll("_"," "):""}`;
+        const comparisons=metrics.map(m=>`<tr><th>${{ttft_ms:"Mean TTFT (ms)",tpot_ms:"Mean TPOT (ms/token)",output_tokens_s:"Output tokens/s"}[m]}</th><td>${fmt(point.silicon[m],"")}</td><td>${fmt(point.prediction[m],"")}</td><td>${fmt(point.point_errors[m])}</td></tr>`).join("");
+        const accuracy=`<h2>Concurrency summary · all variants and repeats</h2><p>${runs.length} runs · ${first.lanes} lanes. Each request has equal weight in request MAPE.</p><div class="table-scroll"><table class="agentx-table"><thead>${headings}</thead><tbody><tr><th>${first.lanes} lanes</th><td>${esc(first.hardware)} · ${esc(first.backend)}</td>${cells(group)}</tr></tbody></table></div><h2>Selected run accuracy</h2><div class="table-scroll"><table><thead><tr><th>Metric</th><th>Silicon</th><th>AISim</th><th>Point error</th></tr></thead><tbody>${comparisons}</tbody></table></div><ul>${["ttft_ms","tpot_ms"].map(m=>`<li>Request ${m==="ttft_ms"?"TTFT":"TPOT"} MAPE: ${fmt(point.request_errors[m].mape)} · n=${point.request_errors[m].count}</li>`).join("")}</ul><h3>Request accounting</h3><ul>${Object.entries(point.coverage).map(([k,v])=>`<li>${esc(k.replaceAll("_"," "))}: ${v.toLocaleString()}</li>`).join("")}</ul><details><summary>All measured request comparisons</summary><div class="table-scroll agentx-pairs"><table><thead><tr><th>Request</th><th>Status</th><th>Silicon TTFT</th><th>AISim TTFT</th><th>TTFT error</th><th>Silicon TPOT</th><th>AISim TPOT</th><th>TPOT error</th></tr></thead><tbody>${point.pairs.map(p=>`<tr><td>${p.request}</td><td>${esc(p.status.replaceAll("_"," "))}${p.input_length_matches===false?" · different input length":""}</td>${["silicon_ttft_ms","predicted_ttft_ms","ttft_ms_ape","silicon_tpot_ms","predicted_tpot_ms","tpot_ms_ape"].map(k=>`<td>${fmt(p[k],k.endsWith("ape")?"%":"")}</td>`).join("")}</tr>`).join("")}</tbody></table></div></details>`;
+        const evidence=`<h2>Metrics and provenance</h2>${methodology()}${provenance(point.snapshot,[point])}<h2>Measured configuration</h2><ul>${point.config_summary.map(item=>`<li><strong>${esc(item.name)}:</strong> ${esc(item.value??"Unavailable")}</li>`).join("")}</ul><h2>Sources and limitations</h2><ul><li>${source(point)}</li><li>${point.boundary==="complete_finite_cohort"?"Finite measured cohort, including between-turn delays.":"Fixed profiling admission window; silicon and replay may progress through different requests."}</li><li>Request comparison requires a unique successful match and equal output lengths. Source identity does not establish identical prompts or cache history.</li><li>Curve MAPE uses covered, positive silicon observations on a one-second phase grid. Curve smoothing is described per chart. Zero and missing values are counted; preparation remains unscored.</li><li>Accuracy is advisory. No timing calibration is applied.</li></ul>`;
+        target.innerHTML=`<div class="replay-dashboard embedded ${document.documentElement.dataset.theme==="light"?"light":""}">${fragment}</div>`;
+        const state=new URLSearchParams(location.hash.slice(1)),view=state.get("view"),stage=state.get("stage")==="preparation"?"preparation":"profile";
+        const report=point.report||{metadata:{},prediction:{},telemetry:{completion_status:point.outcome},phases:{profile:{}},requests:[],samples:[],lifecycle:[]};
+        report.reference={pairs:point.pairs};
+        renderer=AISimReplay.mount(target.firstElementChild,report,{accuracy,evidence,scoring:point.outcome==="completed",view:["timeline","accuracy","evidence"].includes(view)?view:"dashboard",stage,
+          onState:s=>{const u=new URL(location.href);u.hash=new URLSearchParams({view:s.view==="dashboard"?"point":s.view,stage:s.stage,variant:"observed"});history.replaceState(null,"",u);}});
       }
-      controls.addEventListener("change",()=>select().catch(error=>document.getElementById("selected-run").textContent=error.message));
+      controls.addEventListener("change",()=>select().catch(e=>document.getElementById("selected-run").textContent=e.message));
+      window.addEventListener("aisim-theme",()=>renderer?.render());
+      window.addEventListener("hashchange",()=>{if(!renderer)return;const hash=new URLSearchParams(location.hash.slice(1));renderer.state.view=["timeline","accuracy","evidence"].includes(hash.get("view"))?hash.get("view"):"dashboard";renderer.state.stage=hash.get("stage")==="preparation"?"preparation":"profile";renderer.render();});
       await select();
-    } catch(error) { root.innerHTML=`<p role="alert">${esc(error.message)}</p>`; }
+    }catch(error){root.innerHTML=`<p role="alert">${esc(error.message)}</p>`;}
   }
-  window.addEventListener("message", event => {
-    const frame=document.getElementById("replay-frame"), state=event.data?.agentxReplayState;
-    if(event.origin!==location.origin || event.source!==frame?.contentWindow || !state) return;
-    if(!["preparation","profile"].includes(state.stage) || !["dashboard","timeline"].includes(state.view)) return;
-    const url=new URL(location.href);
-    url.hash=new URLSearchParams({view:state.view==="timeline"?"timeline":"point",stage:state.stage,variant:"observed"});
-    history.replaceState(null,"",url);
-  });
   return {load,detail,aggregate};
 })();

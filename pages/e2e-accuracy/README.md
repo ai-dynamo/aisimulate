@@ -676,7 +676,8 @@ Initial coverage is explicitly selected in the reviewed private HF catalog
   The public dataset link is intentionally **coming soon**. TODO: add its public
   HF URL after migration; never expose the private cache URL in the dashboard.
 
-Model rows expand. Concurrency rows open details; Qwen has exactly three such
+One table contains both sources, tagged beneath each model name. Model rows are
+expanded by default and remain collapsible. Concurrency rows open details; Qwen has exactly three such
 rows, combining all prompt/cache variants and repeats. Detail selectors default
 to 4K, cold, repeat 0 and persist in the URL. The selected run is labeled separately
 from the concurrency summary. Branches retain their own evidence, including
@@ -720,20 +721,51 @@ numerical projections and approved source links enter the public payload.
 
 The trusted Pages publisher checks the producer workflow and qualification job,
 branch ancestry, checksums, safe paths, allowed fields, and overview/detail
-agreement. Detail JSON loads on demand. `replay.html` uses the shared native replay
-renderer and one Plotly asset; no reference report HTML is copied. Optional
-`report.reference.pairs` adds silicon/prediction distributions and reference values
-in request inspection; ordinary replay exports omit it and retain their behavior.
+agreement. Detail JSON loads on demand. The shared native renderer mounts directly
+inside the site header and theme, without an iframe. Dashboard, Request timeline,
+Accuracy, and Evidence tabs preserve their state in the URL. Accuracy separates
+all-variant concurrency summaries from the selected run; Qwen selectors stay
+visible. System/Light/Dark preferences are shared with the overview.
+
+Optional `report.comparison` (`aisimulate.agentx.comparison.v1`) contains only
+qualified numerical series, scores, phase-aligned requests and opaque joins.
+Historical payloads without it remain readable and show unavailable comparisons.
+Ordinary replay exports embed the same CSS, JavaScript and body template into one
+offline HTML file. Pages serves these assets and Plotly once.
+
+Curve MAPE uses positive silicon values at covered integer-second ticks in the
+common phase span, independently aligned to each recorded phase origin. Counter
+rebinning conserves counts; gauges preserve their measured interval meaning.
+Time series use trailing 50-second windows where labeled; latency percentiles use
+rolling 50-request or cumulative observations. Zoom never changes scoring.
+Missing intervals and zero denominators remain explicit. Preparation is unscored.
+Request MAPE is separate and retains the overview's equal-request denominators.
+Paired timelines include measured failures and unmatched requests. Unsupported
+metrics and descriptive distributions display N/A with a reason. Untimed requests
+remain inspectable by their row labels without inventing an interval.
+
+GLM server counters distinguish processed tokens from client output. Qwen's
+recorded stream timestamps and counts enable client-delivered output comparisons;
+cache snapshots do not establish continuous scheduler or cache observations.
+
+The reviewed input configuration's `prediction_database_version` selects SGLang
+0.5.21 and vLLM 0.31.0 for this cohort, independently of measured framework
+versions. This is evaluator metadata, removed before compiling CorePredictionConfig.
+The wheel must contain the selected data; missing versions remain unsupported.
+The public payload records relevant Parquet checksums and the wheel checksum.
+GitHub repository commits and HF silicon revisions have distinct labels; private
+HF revisions are never public links.
 
 Validation:
 
 ```bash
-python -m pytest -c /dev/null tests/test_agentx_accuracy.py -q
+python -m pytest -c /dev/null tests/test_agentx_accuracy.py tests/test_agentx_curves.py -q
 python scripts/pages/check_agentx_browser.py
 ```
 
 Public rollout requires a complete 42-replay preview and review/promotion of the
-private dataset candidate. Failed/unsupported outcomes remain in complete campaign
+private dataset candidate, plus op-data dependencies #664, #665, and #666 landing.
+Failed/unsupported outcomes remain in complete campaign
 accounting; accuracy is advisory. Source intake lives in `aisim-hf-dataset-ci`.
 
 The initial CPU preview completed all 42 replays using wheel source commit

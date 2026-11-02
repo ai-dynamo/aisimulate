@@ -3,7 +3,9 @@
 """Isolated exact-wheel replay process; all outputs remain private until scored."""
 
 import argparse
+import hashlib
 import importlib
+import importlib.resources
 import json
 import time
 from pathlib import Path
@@ -25,10 +27,21 @@ def predict(config_path, output):
         return {"outcome": "unsupported", "reason": "replay_telemetry_unavailable"}
     config = json.loads(config_path.read_text())
     engine = config["engine"]
-    version = database.get_latest_database_version(system=engine["hardware"], backend=engine["backend"])
+    version = config.pop("prediction_database_version", None) or database.get_latest_database_version(
+        system=engine["hardware"], backend=engine["backend"]
+    )
     if not version:
         return {"outcome": "unsupported", "reason": "database_unavailable"}
     engine["backend_version"] = version
+    data_root = importlib.resources.files("aisimulate_core") / "systems/data"
+    relative = (
+        f"b300_sxm/sparse_attention/sglang/{version}/dsa_generation_module_perf.parquet"
+        if engine["backend"] == "sglang"
+        else f"b300_sxm/attention/vllm/{version}/context_attention_perf.parquet"
+    )
+    data_file = data_root / relative
+    if not data_file.is_file():
+        return {"outcome": "unsupported", "reason": "database_unavailable", "prediction_backend_version": version}
     parsed = api.CorePredictionConfig.model_validate(config)
     spec = compiler.prediction_to_replay_spec(parsed)
     factory = api.EngineReplayRunnerFactory()
@@ -50,11 +63,17 @@ def predict(config_path, output):
     (output / "config.json").write_text(json.dumps(config, allow_nan=False))
     payload = dashboard.build_replay_dashboard_data(native, native["telemetry"], config=config)
     (output / "dashboard.json").write_text(json.dumps(payload, allow_nan=False))
+    op_data = (
+        [{"file": relative, "sha256": hashlib.sha256(data_file.read_bytes()).hexdigest()}]
+        if data_file.is_file()
+        else []
+    )
     return {
         "outcome": "completed",
         "reason": None,
         "prediction_backend_version": version,
         "wall_seconds": time.monotonic() - started,
+        "op_data": op_data,
     }
 
 

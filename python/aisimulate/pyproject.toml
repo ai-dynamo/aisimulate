@@ -123,7 +123,9 @@ abi3 = true
 features = ["extension-module"]
 exclude = ["**/__pycache__/**", "**/*.pyc"]
 include = [
-    "src/aisimulate/replay/dashboard.html",
+    "src/aisimulate/replay/dashboard*.html",
+    "src/aisimulate/replay/dashboard.css",
+    "src/aisimulate/replay/dashboard.js",
     "src/aisimulate/replay/plotly-js-LICENSE.txt",
     "src/aisimulate/legacy_cli/*.yaml",
     "src/aisimulate/legacy_cli/exps/*.yaml",
