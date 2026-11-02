@@ -11,11 +11,13 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .sweeper.afd_parallel import AFDTopology
-from .sweeper.provider import JSONValue
-from .sweeper.replay import REPLAY_SPEC_API_VERSION, ReplaySpec, canonical_json
+from aisimulate_core._native import validate_afd_routing_location
 
-AFD_QUALIFICATION_SCHEMA_VERSION = 1
+from .sweeper.afd_parallel import AFD_SCHEMA_VERSION, AFDTopology, validate_afd_model
+from .sweeper.provider import JSONValue
+from .sweeper.replay import REPLAY_SPEC_API_VERSION, ReplaySpec, canonical_json, resolve_afd_replay_identity
+
+AFD_QUALIFICATION_SCHEMA_VERSION = 2
 AFD_REPLAY_SPEC_FILENAME = "afd-replay-spec.json"
 AFD_QUALIFICATION_FILENAME = "afd-qualification.json"
 
@@ -30,161 +32,129 @@ def _mapping(value: Any, path: str) -> Mapping[str, Any]:
     return value
 
 
-def _positive_int(value: Any, path: str) -> int:
-    if type(value) is not int or value < 1:
-        raise AFDQualificationError(f"{path} must be a positive integer")
-    return value
-
-
-def _topology_from_deployment(spec: ReplaySpec) -> tuple[AFDTopology, Mapping[str, Any]]:
+def build_afd_qualification(spec: ReplaySpec, *, memory: Mapping[str, Any] | None = None) -> dict[str, JSONValue]:
+    """Validate every role's reproducible contract; serving accuracy is separate."""
+    if type(spec.api_version) is not int or spec.api_version != REPLAY_SPEC_API_VERSION:
+        raise AFDQualificationError(f"unsupported ReplaySpec API version {spec.api_version}")
     deployment = spec.backend_deployment
-    if deployment.deployment_mode not in {"afd", "afd+pd"}:
-        raise AFDQualificationError("AFD qualification artifacts require deployment_mode 'afd' or 'afd+pd'")
     if deployment.encoder is not None or spec.workload.get("images") is not None:
-        raise AFDQualificationError("AFD qualification does not support analytical EPD encoder pools or images")
-    if spec.api_version != REPLAY_SPEC_API_VERSION:
-        raise AFDQualificationError(f"ReplaySpec API version {spec.api_version!r} is not supported")
-    if not deployment.backend or not deployment.backend_version:
-        raise AFDQualificationError("AFD artifacts require resolved backend and backend_version")
-
-    raw_topology = _mapping(deployment.parallel_config.get("afd"), "parallel_config.afd")
-    topology_fields = {
-        "n_a_nodes",
-        "n_f_nodes",
-        "gpus_per_node",
-        "tp_a",
-        "a_batch_size",
-        "f_moe_ep_size",
-        "num_microbatches",
-        "pipeline_model",
-        "phase",
-        "combined_with_pd",
-        "comm_overhead_factor",
-        "boundary_on_attn",
-        "is_moe",
-        "num_experts",
-    }
-    missing = topology_fields - set(raw_topology)
-    if missing:
-        raise AFDQualificationError(f"parallel_config.afd is missing required fields {sorted(missing)}")
-    topology = AFDTopology(**{name: raw_topology[name] for name in topology_fields})
-    if raw_topology.get("ffn_tp") != topology.ffn_tp:
-        raise AFDQualificationError("parallel_config.afd.ffn_tp is inconsistent with the F pool")
-    if topology.adapter_topology != deployment.deployment_mode:
-        raise AFDQualificationError("parallel_config.afd topology mode does not match deployment_mode")
-
-    provenance = _mapping(
-        deployment.parallel_config.get("afd_provenance"),
-        "parallel_config.afd_provenance",
-    )
-    expected_topology = topology.provenance()
-    if json.loads(canonical_json(provenance.get("topology"))) != json.loads(canonical_json(expected_topology)):
-        raise AFDQualificationError("parallel_config.afd_provenance.topology does not match the concrete topology")
-    if provenance.get("mode") != deployment.deployment_mode:
-        raise AFDQualificationError("parallel_config.afd_provenance.mode does not match deployment_mode")
-    return topology, provenance
-
-
-def _validate_measurements(spec: ReplaySpec, topology: AFDTopology) -> Mapping[str, Any]:
-    metadata = _mapping(
-        spec.backend_deployment.performance_model_metadata.get("afd"),
-        "performance_model_metadata.afd",
-    )
-    if metadata.get("measurement_required") is not False:
-        raise AFDQualificationError("AFD qualification requires resolved layer measurements")
-    measurements = metadata.get("measurements")
-    if not isinstance(measurements, list) or not measurements:
-        raise AFDQualificationError("performance_model_metadata.afd.measurements must not be empty")
-    phases: set[str] = set()
-    for index, value in enumerate(measurements):
-        measurement = _mapping(value, f"performance_model_metadata.afd.measurements[{index}]")
-        phase = measurement.get("phase")
-        if phase not in {"prefill", "decode"}:
-            raise AFDQualificationError(f"AFD measurement {index} has invalid phase {phase!r}")
-        phases.add(str(phase))
-    expected_phases = {"prefill", "decode"} if topology.phase.value == "both" else {topology.phase.value}
-    if phases != expected_phases or len(measurements) != len(expected_phases):
-        raise AFDQualificationError("AFD measurements do not cover each configured phase exactly once")
-    return metadata
-
-
-def _companion_plan(
-    spec: ReplaySpec,
-    provenance: Mapping[str, Any],
-) -> dict[str, JSONValue] | None:
+        raise AFDQualificationError("AFD qualification rejects encoder pools and images")
+    if not deployment.has_afd or deployment.deployment_mode not in {"agg", "disagg"}:
+        raise AFDQualificationError("qualification requires an aggregated or P/D deployment containing AFD roles")
+    if deployment.backend != "sglang" or not deployment.backend_version:
+        raise AFDQualificationError("AFD artifacts require sglang and a resolved backend_version")
+    expected_roles = ("aggregated",) if deployment.deployment_mode == "agg" else ("prefill", "decode")
+    if set(deployment.afd_roles) - set(expected_roles):
+        raise AFDQualificationError("AFD role is outside the configured deployment topology")
+    try:
+        spec = resolve_afd_replay_identity(spec)
+    except ValueError as error:
+        raise AFDQualificationError(str(error)) from error
     deployment = spec.backend_deployment
-    role = provenance.get("companion_role")
-    if deployment.deployment_mode == "afd":
-        if role is not None or provenance.get("companion") is not None:
-            raise AFDQualificationError("pure AFD cannot contain a P/D companion")
-        return None
-    if role not in {"prefill", "decode"}:
-        raise AFDQualificationError("AFD+P/D requires one prefill or decode companion")
+    plans, total_gpus, source_models = {}, 0, {}
+    for role in expected_roles:
+        raw = getattr(deployment, "agg_engine_args" if role == "aggregated" else f"{role}_engine_args")
+        raw = _mapping(raw, f"{role}.engine_args")
+        count = getattr(deployment, "num_workers" if role == "aggregated" else f"num_{role}_workers")
+        if type(count) is not int or count < 1:
+            raise AFDQualificationError(f"{role} worker count must be positive")
+        if role not in deployment.afd_roles:
+            prefix = "" if role == "aggregated" else f"{role}_"
+            values = [deployment.parallel_config.get(prefix + k, 1) for k in ("tp", "pp", "attention_dp")]
+            if any(type(v) is not int or v < 1 for v in values):
+                raise AFDQualificationError(f"invalid ordinary {role} GPU geometry")
+            gpus = count * values[0] * values[1] * values[2]
+            plans[role] = {"type": "monolithic", "workers": count, "gpu_accounting": {"total_gpus": gpus}}
+        else:
+            provenance = _mapping(deployment.parallel_config.get(role), f"parallel_config.{role}")
+            schema = provenance.get("schema_version")
+            if type(schema) is not int or schema != AFD_SCHEMA_VERSION:
+                raise AFDQualificationError(f"unsupported {role} AFD topology schema; expected {AFD_SCHEMA_VERSION}")
+            topology = AFDTopology.from_mapping(
+                {k: v for k, v in _mapping(raw.get("afd"), f"{role}.afd").items() if k != "chunked_prefill_size"}
+            )
+            validate_afd_routing_location(topology.routing_location)
+            expected = topology.provenance()
+            saved_topology = AFDTopology.from_mapping(_mapping(provenance.get("topology"), f"{role}.topology"))
+            if saved_topology != topology or provenance.get("gpu_accounting") != expected["gpu_accounting"]:
+                raise AFDQualificationError(f"{role} provenance does not match concrete topology/GPU accounting")
+            metadata = _mapping(deployment.performance_model_metadata.get(role), f"performance_model_metadata.{role}")
+            if metadata.get("provider") not in ("afd", "aic-afd") or metadata.get("measurement_required") is not False:
+                raise AFDQualificationError(f"{role} requires the native afd provider")
+            if metadata["provider"] == "aic-afd":
+                metadata = {**metadata, "provider": "afd"}
+            if AFDTopology.from_mapping(_mapping(metadata.get("config"), f"{role}.config")) != topology:
+                raise AFDQualificationError(f"{role} model identity disagrees with topology")
+            model = metadata.get("model")
+            if not isinstance(model, str) or not model:
+                raise AFDQualificationError(f"{role} requires source model identity")
+            if model not in source_models:
+                source_models[model] = validate_afd_model(model)
+            if source_models[model]["num_experts"] != topology.num_experts:
+                raise AFDQualificationError(f"{role} expert count disagrees with source model")
+            if count != 1:
+                raise AFDQualificationError(f"{role} AFD pool requires one logical worker")
+            gpus = topology.total_gpus
+            plans[role] = {
+                "type": "afd",
+                "workers": 1,
+                **expected,
+                "performance_model": dict(metadata),
+                "memory": {
+                    "phase": "both" if role == "aggregated" else role,
+                    "validation": "required_at_native_provider_construction",
+                },
+                "qualification": {"status": "qualified_for_replay_contract"},
+            }
+            from aisimulate_core.sdk.models.afd import layer_layout
+            from aisimulate_core.sdk.models.helpers import _moe_source_config
 
-    prefix = f"{role}_"
-    workers = deployment.num_prefill_workers if role == "prefill" else deployment.num_decode_workers
-    engine_args = deployment.prefill_engine_args if role == "prefill" else deployment.decode_engine_args
-    if workers < 1 or engine_args is None:
-        raise AFDQualificationError(f"AFD+P/D {role} companion is not fully materialized")
-    names = ("tp", "pp", "attention_dp", "moe_tp", "moe_ep", "strategy", "replicas")
-    missing = [name for name in names if f"{prefix}{name}" not in deployment.parallel_config]
-    if missing:
-        raise AFDQualificationError(f"AFD+P/D {role} companion is missing parallel fields {missing}")
-    parallel = {name: deployment.parallel_config[f"{prefix}{name}"] for name in names}
-    if _positive_int(parallel["replicas"], f"parallel_config.{prefix}replicas") != workers:
-        raise AFDQualificationError(f"AFD+P/D {role} worker count does not match its parallel config")
-    companion_gpus = (
-        _positive_int(parallel["tp"], f"parallel_config.{prefix}tp")
-        * _positive_int(parallel["pp"], f"parallel_config.{prefix}pp")
-        * _positive_int(parallel["attention_dp"], f"parallel_config.{prefix}attention_dp")
-        * workers
-    )
-    return {
-        "role": str(role),
-        "workers": workers,
-        "gpus": companion_gpus,
-        "parallelism": parallel,
-        "engine_args": dict(engine_args),
-    }
-
-
-def build_afd_qualification(spec: ReplaySpec) -> dict[str, JSONValue]:
-    """Build and validate a logical A/F pool plan for analytical replay.
-
-    The artifact deliberately records that native launch generation is not
-    implemented. It is a reproducibility and release-qualification contract,
-    not a Kubernetes or shell deployment manifest.
-    """
-
-    topology, provenance = _topology_from_deployment(spec)
-    measurement_metadata = _validate_measurements(spec, topology)
-    companion = _companion_plan(spec, provenance)
-    accounting = _mapping(provenance.get("gpu_accounting"), "afd_provenance.gpu_accounting")
-    expected_companion_gpus = 0 if companion is None else int(companion["gpus"])
-    expected_accounting = {
-        "attention_gpus": topology.attention_gpus,
-        "ffn_gpus": topology.ffn_gpus,
-        "companion_gpus": expected_companion_gpus,
-        "total_gpus": topology.total_gpus + expected_companion_gpus,
-    }
-    if dict(accounting) != expected_accounting:
-        raise AFDQualificationError(
-            "parallel_config.afd_provenance.gpu_accounting is inconsistent with the worker pools"
-        )
-
-    replay_json = canonical_json(spec)
-    replay_sha256 = hashlib.sha256(replay_json.encode("utf-8")).hexdigest()
-    deployment = spec.backend_deployment
+            info = source_models[model]
+            layout = layer_layout(info)
+            raw = _moe_source_config(info)
+            shared_width = int(
+                raw.get("shared_expert_intermediate_size")
+                or raw.get("moe_shared_expert_intermediate_size")
+                or info["num_shared_experts"] * info["moe_inter_size"]
+            )
+            if info.get("architecture") == "Gemma4ForConditionalGeneration":
+                shared_width = info["inter_size"]
+            plans[role]["execution"] = {
+                "attention_tp": topology.a_tp_size,
+                "attention_dp": topology.a_replica_count,
+                "dense_pool": "a",
+                "dense_tp": topology.a_tp_size,
+                "shared_pool": "a",
+                "shared_tp": 1,
+                "shared_intermediate_size": shared_width,
+                "shared_token_dp": topology.a_tp_size,
+                "shared_stage": "a",
+                "return_restore_stage": "f_to_a",
+                "sender_ranks": topology.a_gpu_count,
+                "sender_tokens": "balanced_rank_slices",
+                "f_receiver_rank": "f_node * f_gpus_per_node + a_rank % f_gpus_per_node",
+                "layer_plan": "source_order",
+                "layers": [
+                    {"attention": a, "ffn": "routed" if m else "dense", "dsa_indexer": indexer}
+                    for a, m, indexer in layout
+                ],
+            }
+            if memory is not None:
+                resolved = _mapping(memory.get(role), f"afd_memory.{role}")
+                if resolved.get("status") != "fits" or resolved.get("phase") != (
+                    "both" if role == "aggregated" else role
+                ):
+                    raise AFDQualificationError(f"{role} requires a successful matching native memory check")
+                plans[role]["memory"] = dict(resolved)
+        total_gpus += gpus
+    replay_sha256 = hashlib.sha256(canonical_json(spec).encode("utf-8")).hexdigest()
     return {
         "schema_version": AFD_QUALIFICATION_SCHEMA_VERSION,
         "kind": "aisimulate.afd.qualification",
         "qualification": {
-            "status": "qualified_for_analytical_replay",
-            "execution": "analytical_foreground",
+            "status": "qualified_for_replay_contract",
             "native_deployment_supported": False,
-            "native_deployment_reason": (
-                "AISimulate does not provide a physical AFD serving adapter or launch renderer"
-            ),
+            "native_deployment_reason": "AISimulate does not provide a physical AFD serving adapter or launch renderer",
         },
         "identity": {
             "replay_spec_api_version": spec.api_version,
@@ -194,36 +164,10 @@ def build_afd_qualification(spec: ReplaySpec) -> dict[str, JSONValue]:
             "deployment_mode": deployment.deployment_mode,
         },
         "deployment_plan": {
-            "routing": {
-                "stages": ["attention", "ffn"],
-                "boundary_on_attention": topology.boundary_on_attn,
-                "phase": topology.phase.value,
-                "combined_with_pd": topology.combined_with_pd,
-            },
-            "pools": {
-                "attention": {
-                    "nodes": topology.n_a_nodes,
-                    "workers": topology.attention_workers,
-                    "gpus": topology.attention_gpus,
-                    "tensor_parallel_size": topology.tp_a,
-                    "batch_size_per_worker": topology.a_batch_size,
-                },
-                "ffn": {
-                    "nodes": topology.n_f_nodes,
-                    "workers": topology.ffn_workers,
-                    "gpus": topology.ffn_gpus,
-                    "tensor_parallel_size": topology.ffn_tp,
-                    "moe_expert_parallel_size": topology.f_moe_ep_size,
-                },
-                "companion": companion,
-            },
-            "gpu_accounting": expected_accounting,
-            "launch": {
-                "supported": False,
-                "arguments": None,
-            },
+            "roles": plans,
+            "gpu_accounting": {"total_gpus": total_gpus},
+            "launch": {"supported": False, "arguments": None},
         },
-        "performance_model": dict(measurement_metadata),
         "workload": json.loads(canonical_json(spec.workload)),
         "goal": json.loads(canonical_json(spec.goal)),
         "concurrency": spec.concurrency,
@@ -231,22 +175,19 @@ def build_afd_qualification(spec: ReplaySpec) -> dict[str, JSONValue]:
     }
 
 
-def write_afd_qualification_artifacts(root: Path, spec: ReplaySpec) -> tuple[Path, Path] | None:
-    """Write AFD replay and qualification artifacts, or return ``None`` for other modes."""
-
-    if spec.backend_deployment.deployment_mode not in {"afd", "afd+pd"}:
+def write_afd_qualification_artifacts(
+    root: Path, spec: ReplaySpec, *, memory: Mapping[str, Any] | None = None
+) -> tuple[Path, Path] | None:
+    """Write role-indexed AFD contract artifacts after validating the entire deployment."""
+    if not spec.backend_deployment.has_afd:
         return None
-    qualification = build_afd_qualification(spec)
-    replay_path = root / AFD_REPLAY_SPEC_FILENAME
+    qualification = build_afd_qualification(spec, memory=memory)
+    spec = resolve_afd_replay_identity(spec)
+    replay_path, qualification_path = root / AFD_REPLAY_SPEC_FILENAME, root / AFD_QUALIFICATION_FILENAME
     replay_path.write_text(
-        json.dumps(json.loads(canonical_json(spec)), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+        json.dumps(json.loads(canonical_json(spec)), indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    qualification_path = root / AFD_QUALIFICATION_FILENAME
-    qualification_path.write_text(
-        json.dumps(qualification, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    qualification_path.write_text(json.dumps(qualification, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return replay_path, qualification_path
 
 

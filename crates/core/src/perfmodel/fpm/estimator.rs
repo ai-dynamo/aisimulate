@@ -13,6 +13,8 @@ use crate::AicError;
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EstimatorConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub afd: Option<AfdEstimatorConfig>,
     pub features: RegressionFeatureWeights,
     pub op_level: OpLevelConfig,
     pub fpm_interpolation: FpmInterpolationConfig,
@@ -107,6 +109,25 @@ impl StateSnapshotConfig {
         self.sha256 = Some(actual);
         Ok(())
     }
+}
+
+/// Explicit AFD replay pricing controls. Absence retains workload-derived pricing.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AfdEstimatorConfig {
+    pub frozen_decode_identity: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct AfdDecodeWorkload {
+    source_type: Option<String>,
+    trace_path: Option<String>,
+    #[serde(default = "default_random_range_ratio")]
+    random_range_ratio: f64,
+}
+
+fn default_random_range_ratio() -> f64 {
+    1.0
 }
 
 /// How a learned model adapts after construction.
@@ -1168,6 +1189,38 @@ impl EstimatorConfig {
         }
     }
 
+    /// Resolve AFD decode pricing from serialized configuration and workload facts.
+    /// This runs once during role preparation, never during decode queries.
+    pub fn resolve_afd_decode_identity(
+        &self,
+        workload: serde_json::Value,
+    ) -> Result<bool, AicError> {
+        let workload: AfdDecodeWorkload = serde_json::from_value(workload).map_err(|error| {
+            AicError::InvalidEngineConfig(format!("invalid AFD decode workload: {error}"))
+        })?;
+        let ratio = workload.random_range_ratio;
+        if !ratio.is_finite() || ratio <= 0.0 || ratio > 1.0 {
+            return Err(AicError::InvalidEngineConfig(
+                "random_range_ratio must be finite and in (0.0, 1.0]".into(),
+            ));
+        }
+        let placeholder_lengths = workload.trace_path.is_some()
+            || workload
+                .source_type
+                .as_deref()
+                .is_some_and(|kind| kind != "synthetic");
+        let explicit = self
+            .afd
+            .as_ref()
+            .and_then(|config| config.frozen_decode_identity);
+        if placeholder_lengths && explicit == Some(true) {
+            return Err(AicError::InvalidEngineConfig(
+                "afd.frozen_decode_identity=true is unsupported for trace/session/agentic traffic: reference ISL/OSL may be placeholders; use false or omit the setting".into(),
+            ));
+        }
+        Ok(explicit.unwrap_or(!placeholder_lengths && ratio == 1.0))
+    }
+
     pub(crate) fn resolve_defaults(&mut self) {
         if self.fpm_regression.fit.kind == RegressionFitKind::Spline {
             self.fpm_regression
@@ -1882,6 +1935,81 @@ mod tests {
                 );
                 assert_eq!(config.validate().is_ok(), ramp != Some(8));
             }
+        }
+    }
+
+    #[test]
+    fn afd_decode_identity_preserves_defaults_and_explicit_overrides() {
+        let default = EstimatorConfig::default();
+        assert!(serde_json::to_value(&default).unwrap().get("afd").is_none());
+        for (workload, frozen) in [
+            (serde_json::json!({}), true),
+            (
+                serde_json::json!({"source_type": "synthetic", "random_range_ratio": 1.0}),
+                true,
+            ),
+            (serde_json::json!({"random_range_ratio": 0.5}), false),
+            (serde_json::json!({"trace_path": "requests.jsonl"}), false),
+            (
+                serde_json::json!({"source_type": "synthetic-session"}),
+                false,
+            ),
+            (serde_json::json!({"source_type": "agentic"}), false),
+        ] {
+            assert_eq!(
+                default
+                    .resolve_afd_decode_identity(workload.clone())
+                    .unwrap(),
+                frozen
+            );
+            for explicit in [None, Some(true), Some(false)] {
+                let config: EstimatorConfig = serde_json::from_value(serde_json::json!({
+                    "afd": {"frozen_decode_identity": explicit},
+                }))
+                .unwrap();
+                let trace_like = workload.get("trace_path").is_some()
+                    || workload
+                        .get("source_type")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|kind| kind != "synthetic");
+                if trace_like && explicit == Some(true) {
+                    let error = config
+                        .resolve_afd_decode_identity(workload.clone())
+                        .unwrap_err();
+                    assert!(error.to_string().contains("use false or omit"));
+                } else {
+                    assert_eq!(
+                        config
+                            .resolve_afd_decode_identity(workload.clone())
+                            .unwrap(),
+                        explicit.unwrap_or(frozen)
+                    );
+                }
+                let saved = serde_json::to_value(&config).unwrap();
+                assert_eq!(
+                    serde_json::from_value::<EstimatorConfig>(saved).unwrap(),
+                    config
+                );
+            }
+        }
+        for invalid in [
+            serde_json::json!(0),
+            serde_json::json!(1),
+            serde_json::json!("false"),
+        ] {
+            assert!(
+                serde_json::from_value::<EstimatorConfig>(serde_json::json!({
+                    "afd": {"frozen_decode_identity": invalid},
+                }))
+                .is_err()
+            );
+        }
+        for workload in [
+            serde_json::json!({"random_range_ratio": 0}),
+            serde_json::json!({"random_range_ratio": 2}),
+            serde_json::json!({"random_range_ratio": true}),
+        ] {
+            assert!(default.resolve_afd_decode_identity(workload).is_err());
         }
     }
 

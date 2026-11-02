@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .afd_parallel import AFDParallelConfig
+from .afd_parallel import AFDTopology
 from .config import ENGINE_MODEL_CONTROL_FIELDS, SearchSpace
 from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 
@@ -90,47 +90,26 @@ def _shape_fields(shape: ParallelShape) -> dict[str, Any]:
 
 def _unroll_parallel(
     deployment_mode: str,
-    parallel_config: ReplicaParallelConfig | DisaggParallelConfig | AFDParallelConfig,
+    parallel_config: ReplicaParallelConfig | DisaggParallelConfig | AFDTopology,
 ) -> dict[str, Any]:
-    if deployment_mode in {"afd", "afd+pd"}:
-        if not isinstance(parallel_config, AFDParallelConfig):
-            raise TypeError(f"{deployment_mode} deployment_mode needs an AFDParallelConfig")
-        if parallel_config.topology.adapter_topology != deployment_mode:
-            raise TypeError(
-                f"AFD topology advertises {parallel_config.topology.adapter_topology!r}, not {deployment_mode!r}"
-            )
-        out = {
-            "afd": parallel_config.topology.provenance()["topology"],
-            "afd_provenance": parallel_config.provenance(),
-            "afd_phase": parallel_config.topology.phase.value,
-            "afd_companion_role": parallel_config.companion_role,
-            "used_gpus": parallel_config.total_gpus,
-        }
-        if parallel_config.companion is not None:
-            role = parallel_config.companion_role
-            assert role is not None
-            for key, value in _shape_fields(parallel_config.companion.shape).items():
-                out[f"{role}_{key}"] = value
-            out[f"{role}_replicas"] = parallel_config.companion.replicas
-        return out
-    if deployment_mode == "agg":
-        if not isinstance(parallel_config, ReplicaParallelConfig):
-            raise TypeError("agg deployment_mode needs a ReplicaParallelConfig")
-        out = _shape_fields(parallel_config.shape)
-        out["replicas"] = parallel_config.replicas
-        out["used_gpus"] = parallel_config.total_gpus
-        return out
-    if not isinstance(parallel_config, DisaggParallelConfig):
+    if deployment_mode == "agg" and not isinstance(parallel_config, (ReplicaParallelConfig, AFDTopology)):
+        raise TypeError("agg deployment_mode needs a ReplicaParallelConfig or AFDTopology")
+    if deployment_mode == "disagg" and not isinstance(parallel_config, DisaggParallelConfig):
         raise TypeError("disagg deployment_mode needs a DisaggParallelConfig")
-    out = {}
-    for role, rc in (
-        ("prefill", parallel_config.prefill),
-        ("decode", parallel_config.decode),
-    ):
-        for key, value in _shape_fields(rc.shape).items():
-            out[f"{role}_{key}"] = value
-        out[f"{role}_replicas"] = rc.replicas
-    out["used_gpus"] = parallel_config.total_gpus
+    roles = (
+        (("aggregated", parallel_config),)
+        if deployment_mode == "agg"
+        else (("prefill", parallel_config.prefill), ("decode", parallel_config.decode))
+    )
+    out = {"used_gpus": parallel_config.total_gpus}
+    for role, config in roles:
+        prefix = "" if role == "aggregated" else f"{role}_"
+        if isinstance(config, AFDTopology):
+            out.setdefault("afd_roles", {})[role] = config.provenance()["topology"]
+            out[f"{prefix}replicas"] = 1
+        else:
+            out.update({f"{prefix}{k}": v for k, v in _shape_fields(config.shape).items()})
+            out[f"{prefix}replicas"] = config.replicas
     return out
 
 
@@ -138,7 +117,7 @@ def unroll_sample(
     *,
     search_space: SearchSpace,
     selection: dict[str, Any],
-    parallel_config: ReplicaParallelConfig | DisaggParallelConfig | AFDParallelConfig,
+    parallel_config: ReplicaParallelConfig | DisaggParallelConfig | AFDTopology,
 ) -> dict[str, Any]:
     """Expand a backend selection and its projected parallel configuration."""
     mode = selection["deployment_mode"]
@@ -163,13 +142,38 @@ def unroll_sample(
     elif mode == "disagg":
         searched = _PREFILL_SEARCHED + _DECODE_SEARCHED
         pinned = _PREFILL_PINNED + _DECODE_PINNED
-    elif mode == "afd+pd":
-        companion_role = sample["afd_companion_role"]
-        searched = _DECODE_SEARCHED if companion_role == "decode" else _PREFILL_SEARCHED
-        pinned = _DECODE_PINNED if companion_role == "decode" else _PREFILL_PINNED
     else:
-        searched = ()
-        pinned = ()
+        raise ValueError(f"unsupported deployment mode {mode!r}")
+    afd_roles = sample.get("afd_roles", {})
+    searched = tuple(
+        k for k in searched if ("aggregated" if k.startswith("agg_") else k.split("_", 1)[0]) not in afd_roles
+    )
+    pinned = tuple(k for k in pinned if ("aggregated" if k.startswith("agg_") else k.split("_", 1)[0]) not in afd_roles)
+    for role in afd_roles:
+        raw = search_space.afd_roles[role]
+        sample.setdefault("afd_worker_settings", {})[role] = {
+            k: raw[k] for k in ("context_length", "startup_seconds") if k in raw
+        }
+        if raw["afd"].get("chunked_prefill_size") is not None:
+            sample["afd_roles"][role]["chunked_prefill_size"] = raw["afd"]["chunked_prefill_size"]
+    if afd_roles:
+        sample["estimator"] = {
+            k: getattr(search_space, k)
+            for k in (
+                "database_mode",
+                "systems_paths",
+                "transfer_policy",
+                "estimation_mode",
+                "fallback_policy",
+                "estimator_config",
+            )
+            if getattr(search_space, k) is not None
+        }
+        sample["quant"] = {
+            k: getattr(search_space, k)
+            for k in ("gemm_quant_mode", "moe_quant_mode", "fmha_quant_mode", "kvcache_quant_mode", "comm_quant_mode")
+            if getattr(search_space, k) is not None
+        }
     for key in searched:
         sample[key] = selection[key]
     for key in pinned:

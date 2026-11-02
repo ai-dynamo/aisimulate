@@ -902,12 +902,12 @@ def test_replay_spec_version_is_checked_before_runner_creation(monkeypatch):
     class IncompatibleFactory(_FakeRunnerFactory):
         def capabilities(self):
             return RunnerCapabilities(
-                replay_spec_api_version=2,
+                replay_spec_api_version=3,
                 supported_backend_topologies=(("*", "*"),),
             )
 
     factory = IncompatibleFactory()
-    with pytest.raises(ValueError, match="runner version 2"):
+    with pytest.raises(ValueError, match="runner version 3"):
         _run_sweep(
             _config(),
             runner_factory=factory,

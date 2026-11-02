@@ -34,6 +34,31 @@ def resolve_systems_paths(configured: list[str] | None) -> tuple[str, ...]:
     return tuple(_resolve_forward_pass_systems_paths(tuple(configured or ())))
 
 
+def resolve_afd_backend_version(
+    backend: str, requested: str | None, systems: tuple[tuple[str, tuple[str, ...]], ...]
+) -> str:
+    """Pin one version across the actual A/F and ordinary role data roots."""
+    if requested is not None and requested not in {"current", "previous", "next"}:
+        # Each pool's canonical constructor validates literal availability.
+        return requested
+    from aisimulate_core.sdk.perf_database import resolve_query_version
+
+    from .kv_estimate import resolve_backend_version
+
+    versions = {
+        resolve_query_version(system, backend, requested, systems_paths=list(roots))
+        if requested is not None
+        else resolve_backend_version(system, backend, systems_paths=list(roots))
+        for system, roots in systems
+    }
+    if len(versions) != 1:
+        raise ForwardPassEstimatorResolutionError(
+            "backend version alias or defaults resolve differently across AFD/P/D hardware; "
+            "specify one common literal engine.backend_version"
+        )
+    return versions.pop()
+
+
 _DEFAULT_BLOCK_SIZE = {"vllm": 64, "sglang": 1, "trtllm": 32}
 
 
@@ -54,6 +79,36 @@ class ForwardPassEstimatorResolver:
     def __init__(self, search_space: SearchSpace) -> None:
         self._search_space = search_space
         self._resolved: dict[str, ForwardPassEstimatorSpec] = {}
+        self._afd_versions: dict[tuple, str] = {}
+
+    def resolve_afd_version(self, sample: dict[str, Any], resolved: dict[str, ForwardPassEstimatorSpec]) -> str:
+        """Resolve pool aliases once per hardware/root identity, before replay."""
+        space = self._search_space
+        backend = sample["backend"]
+        requested = space.requested_backend_version(backend)
+        systems = set()
+        roles = ("aggregated",) if sample["deployment_mode"] == "agg" else ("prefill", "decode")
+        for role in roles:
+            if role in sample["afd_roles"]:
+                topology = sample["afd_roles"][role]
+                roots = resolve_systems_paths(space.systems_paths)
+                systems.update(
+                    (topology.get(name) or sample["hardware_sku"], roots) for name in ("a_system", "f_system")
+                )
+            else:
+                legacy = "agg" if role == "aggregated" else role
+                systems.add(
+                    (_role_hardware_sku(sample, legacy), resolve_systems_paths(space.systems_paths_for(legacy)))
+                )
+        key = (backend, requested, tuple(sorted(systems)))
+        if key not in self._afd_versions:
+            self._afd_versions[key] = resolve_afd_backend_version(backend, requested, key[2])
+        version = self._afd_versions[key]
+        if any(spec.backend_version != version for spec in resolved.values()):
+            raise ForwardPassEstimatorResolutionError(
+                "Core resolved inconsistent backend versions across AFD/P/D roles"
+            )
+        return version
 
     def _request(self, sample: dict[str, Any], role: str) -> ForwardPassPerfModelConfig:
         backend = str(sample["backend"])
@@ -198,9 +253,13 @@ class ForwardPassEstimatorResolver:
     def resolve_candidate(self, sample: dict[str, Any]) -> dict[str, ForwardPassEstimatorSpec]:
         """Resolve every concrete engine role before replay trial execution."""
 
-        if sample["deployment_mode"] not in {"agg", "disagg"} or self._search_space.encoder is not None:
+        mode = sample["deployment_mode"]
+        if mode not in {"agg", "disagg"} or self._search_space.encoder is not None:
             return {}
-        roles = ("agg",) if sample["deployment_mode"] == "agg" else ("prefill", "decode")
+        roles = ("agg",) if mode == "agg" else ("prefill", "decode")
+        roles = tuple(
+            role for role in roles if ("aggregated" if role == "agg" else role) not in sample.get("afd_roles", {})
+        )
         resolved = {
             role: self._resolve(self._request(sample, role), role)
             for role in roles

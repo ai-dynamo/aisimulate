@@ -268,50 +268,8 @@ def build_backend_deployment(
     mode = sample["deployment_mode"]
     if encoder is not None and mode not in {"agg", "disagg"}:
         raise ValueError("encoder pools support only agg/disagg language deployments; AFD is unsupported")
-    if mode in {"afd", "afd+pd"}:
-        parallel_config = {
-            "afd": sample["afd"],
-            "afd_provenance": sample["afd_provenance"],
-        }
-        performance_model_metadata = {
-            "afd": {
-                "provider": "unresolved",
-                "measurement_required": True,
-                "config": sample["afd"],
-                "provenance": sample["afd_provenance"],
-            }
-        }
-        afd_common = {
-            "deployment_mode": mode,
-            "backend": sample["backend"],
-            "backend_version": backend_version,
-            "parallel_config": parallel_config,
-            "performance_model_metadata": performance_model_metadata,
-        }
-        if mode == "afd":
-            return BackendDeploymentSpec(**afd_common)
-
-        companion_role = sample["afd_companion_role"]
-        if companion_role not in {"prefill", "decode"}:
-            raise ValueError("afd+pd requires one prefill or decode companion")
-        prefix = f"{companion_role}_"
-        for suffix in ("tp", "pp", "attention_dp", "moe_tp", "moe_ep", "strategy", "replicas"):
-            parallel_config[f"{prefix}{suffix}"] = sample[f"{prefix}{suffix}"]
-        performance_model_metadata[companion_role] = _performance_model_metadata(
-            sample, companion_role, backend_version=backend_version
-        )
-        companion_args = _engine_args_payload(sample, companion_role, backend_version=backend_version)
-        if companion_role == "prefill":
-            return BackendDeploymentSpec(
-                prefill_engine_args=companion_args,
-                num_prefill_workers=int(sample["prefill_replicas"]),
-                **afd_common,
-            )
-        return BackendDeploymentSpec(
-            decode_engine_args=companion_args,
-            num_decode_workers=int(sample["decode_replicas"]),
-            **afd_common,
-        )
+    if sample.get("afd_roles"):
+        return _build_afd_roles_deployment(sample, backend_version, forward_pass_estimators, encoder)
 
     common = {
         "forward_pass_estimators": forward_pass_estimators,
@@ -399,4 +357,97 @@ def build_backend_deployment(
         num_prefill_workers=int(sample["prefill_replicas"]),
         num_decode_workers=int(sample["decode_replicas"]),
         **common,
+    )
+
+
+def _build_afd_roles_deployment(sample, backend_version, estimators, encoder):
+    from .afd_parallel import AFDTopology
+
+    if encoder is not None:
+        raise ValueError("AFD roles reject encoder pools")
+    mode = sample["deployment_mode"]
+    roles = ("aggregated",) if mode == "agg" else ("prefill", "decode")
+    parallel, metadata, kwargs = {}, {}, {}
+    transfer = sample.get("kv_transfer_bytes_per_token")
+    if transfer == "auto" and "prefill" in sample["afd_roles"]:
+        topology = sample["afd_roles"]["prefill"]
+        transfer = estimate_kv_bytes_per_token(
+            sample["model_name"],
+            tp_size=topology["a_tp_size"],
+            pp_size=1,
+            moe_tp_size=1,
+            moe_ep_size=1,  # Per-request A-replica geometry, not the F-pool width.
+            kvcache_quant_mode=sample.get("kvcache_quant_mode"),
+        )
+    sample = {**sample, "kv_transfer_bytes_per_token": transfer}
+    for role in roles:
+        legacy = "agg" if role == "aggregated" else role
+        prefix = _role_prefix(legacy)
+        if role in sample["afd_roles"]:
+            topology = dict(sample["afd_roles"][role])
+            settings = sample.get("afd_worker_settings", {}).get(role, {})
+            identity = AFDTopology.from_mapping({k: v for k, v in topology.items() if k != "chunked_prefill_size"})
+            parallel[role] = {"type": "afd", **identity.provenance()}
+            parallel[f"{prefix}replicas"] = 1
+            metadata[role] = {
+                "provider": "afd",
+                "measurement_required": False,
+                "config": identity.provenance()["topology"],
+                "provenance": identity.provenance(),
+                "model": sample["model_name"],
+                "hardware": sample["hardware_sku"],
+                "context_length": settings.get("context_length") or sample.get("context_length"),
+                "nextn": sample.get("aic_nextn") or 0,
+                **{
+                    k: sample[k]
+                    for k in ("quant", "estimator", "nextn_accepted", "attention_backend", "moe_kernel_source")
+                    if sample.get(k) is not None
+                },
+            }
+            raw = {
+                "afd": topology,
+                "aic_model_path": sample["model_name"],
+                "startup_time": settings.get("startup_seconds", 0),
+            }
+            if transfer is not None:
+                if transfer == "auto":
+                    # The source is ordinary; use its already resolved transfer geometry.
+                    transfer = _engine_args_payload(
+                        sample,
+                        "prefill",
+                        backend_version=backend_version,
+                        forward_pass_estimator=estimators.get("prefill"),
+                    )["kv_transfer_bytes_per_token"]
+                raw["kv_transfer_bytes_per_token"] = transfer
+                raw["kv_transfer_timing_mode"] = sample.get("kv_transfer_timing_mode", "destination_missing")
+                if sample.get("kv_transfer_bandwidth") is not None:
+                    raw["kv_transfer_bandwidth"] = sample["kv_transfer_bandwidth"]
+            count = 1
+        else:
+            parallel.update(
+                {
+                    f"{prefix}{k}": sample[f"{prefix}{k}"]
+                    for k in ("tp", "pp", "attention_dp", "moe_tp", "moe_ep", "strategy", "replicas")
+                }
+            )
+            estimator = estimators.get(legacy)
+            metadata[role] = (
+                {"provider": "aic", "config": deepcopy(estimator.config), "selection": deepcopy(estimator.diagnostics)}
+                if estimator
+                else _performance_model_metadata(sample, legacy, backend_version=backend_version)
+            )
+            raw = _engine_args_payload(
+                sample, legacy, backend_version=backend_version, forward_pass_estimator=estimator
+            )
+            count = int(sample[f"{prefix}replicas"])
+        kwargs["agg_engine_args" if role == "aggregated" else f"{role}_engine_args"] = raw
+        kwargs["num_workers" if role == "aggregated" else f"num_{role}_workers"] = count
+    return BackendDeploymentSpec(
+        deployment_mode=mode,
+        backend=sample["backend"],
+        backend_version=backend_version,
+        parallel_config=parallel,
+        performance_model_metadata=metadata,
+        forward_pass_estimators=estimators,
+        **kwargs,
     )

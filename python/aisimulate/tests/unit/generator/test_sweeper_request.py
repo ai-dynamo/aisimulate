@@ -298,14 +298,14 @@ def test_candidate_gpu_count_must_match_lowered_topology():
         )
 
 
-@pytest.mark.parametrize("mode", ["afd", "afd+pd"])
+@pytest.mark.parametrize("mode", ["agg", "disagg"])
 def test_afd_candidate_rejects_native_generation_with_analytical_artifact_path(mode):
     with pytest.raises(
         SweeperCandidateError,
         match="aisimulate predict.*afd-replay-spec.json.*afd-qualification.json",
     ):
         from_sweeper_candidate(
-            {"config": {"deployment_mode": mode}},
+            {"config": {"deployment_mode": mode, "afd_roles": {"aggregated" if mode == "agg" else "decode": {}}}},
             model_facts=ModelFacts(is_moe=False),
         )
 

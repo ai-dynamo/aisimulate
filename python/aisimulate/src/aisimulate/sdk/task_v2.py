@@ -35,7 +35,7 @@ import dataclasses
 import logging
 import math
 import warnings
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -139,7 +139,7 @@ _REMOVED_AFD_TASK_KEYS = frozenset(
     }
 )
 _AFD_MIGRATION_HINT = (
-    "Use `aisimulate recommend` with an `engine.afd` block, then `aisimulate predict`. "
+    "Use `aisimulate recommend` with an `workers.<role>.afd` block, then `aisimulate predict`. "
     "See docs/aic-backward-compatibility/migration.md#afd-translation."
 )
 _warned_removed_afd_keys = False
@@ -415,124 +415,6 @@ def build_disagg_parallel_lists(
         raise ValueError(f"Invalid backend: {backend_name}")
 
     return prefill_cfg, decode_cfg
-
-
-# ---------------------------------------------------------------------------
-# Frozen legacy AIC AFD topology enumeration, retained as the parity oracle
-# for aisimulate.sweeper.afd_parallel.enumerate_afd_topologies.  Test-only;
-# not part of the public API.
-# ---------------------------------------------------------------------------
-
-
-def _is_valid_afd_moe_ep_size(f_moe_ep_size: int, tp_f: int, num_experts: int) -> bool:
-    return (
-        f_moe_ep_size >= 1
-        and f_moe_ep_size <= tp_f
-        and tp_f % f_moe_ep_size == 0
-        and (num_experts <= 0 or (f_moe_ep_size <= num_experts and num_experts % f_moe_ep_size == 0))
-    )
-
-
-def build_afd_parallel_lists(
-    total_gpus: int,
-    gpus_per_node: int,
-    is_moe: bool,
-    num_experts: int = 0,
-    *,
-    search_config: Mapping[str, Any] | None = None,
-) -> list[tuple[int, int, int, int, int, str]]:
-    """Enumerate AFD candidate topologies (frozen legacy AIC implementation).
-
-    Retained as the parity oracle for
-    :func:`aisimulate.sweeper.afd_parallel.enumerate_afd_topologies`;
-    not part of the public API.
-
-    Returns a list of ``(n_a_nodes, n_f_nodes, tp_a, f_moe_ep_size,
-    num_microbatches, pipeline_model)`` tuples.
-
-    Candidates satisfy the hard constraints:
-    * GPU budget -- ``(n_a_nodes + n_f_nodes) * gpus_per_node <= total_gpus``
-    * ``tp_a`` divides ``gpus_per_node``
-    * ``f_moe_ep_size`` divides ``tp_f = n_f_nodes * gpus_per_node``
-    * ``num_experts % f_moe_ep_size == 0`` when known
-    """
-    if gpus_per_node < 1 or total_gpus < 1:
-        return []
-
-    total_nodes = total_gpus // gpus_per_node
-    if total_nodes < 2:
-        return []
-
-    search = dict(search_config or {})
-    tp_a_candidates = search.get("tp_a_list")
-    if tp_a_candidates is None:
-        tp_a_candidates = sorted({d for d in (1, 2, 4, gpus_per_node) if d >= 1 and gpus_per_node % d == 0})
-    else:
-        tp_a_candidates = sorted({int(tp) for tp in tp_a_candidates if gpus_per_node % int(tp) == 0})
-
-    microbatch_candidates = list(search.get("microbatch_list") or [2, 3, 4])
-    pipeline_candidates = list(search.get("pipeline_model_list") or ["optimistic", "conservative"])
-    f_moe_ep_size_list = search.get("f_moe_ep_size_list")
-    max_af_ratio = float(search.get("max_af_ratio", 4.0))
-    max_candidates = int(search.get("max_candidates", 10_000))
-    candidate_overflow = str(search.get("candidate_overflow", "error"))
-    if max_candidates < 1:
-        raise ValueError(f"afd_config.search.max_candidates must be >= 1, got {max_candidates}.")
-    if candidate_overflow not in {"error", "truncate"}:
-        raise ValueError("afd_config.search.candidate_overflow must be 'error' or 'truncate'.")
-
-    candidates: list[tuple[int, int, int, int, int, str]] = []
-    for n_a_nodes in range(1, total_nodes):
-        for n_f_nodes in range(1, total_nodes - n_a_nodes + 1):
-            if n_a_nodes / n_f_nodes > max_af_ratio:
-                continue
-            tp_f = n_f_nodes * gpus_per_node
-            if is_moe:
-                raw_ep_candidates = f_moe_ep_size_list or [1, 2, "n_f_nodes", "tp_f"]
-                resolved_ep_candidates: set[int] = set()
-                for ep in raw_ep_candidates:
-                    if ep == "n_f_nodes":
-                        resolved_ep_candidates.add(n_f_nodes)
-                    elif ep == "tp_f":
-                        resolved_ep_candidates.add(tp_f)
-                    else:
-                        resolved_ep_candidates.add(int(ep))
-                ep_candidates = sorted(
-                    ep for ep in resolved_ep_candidates if _is_valid_afd_moe_ep_size(ep, tp_f, num_experts)
-                )
-            else:
-                ep_candidates = [1]
-            for tp_a in tp_a_candidates:
-                for f_moe_ep_size in ep_candidates:
-                    for num_microbatches in microbatch_candidates:
-                        for pipeline_model in pipeline_candidates:
-                            # Skip optimistic + mb < 3: the K=3 pipeline
-                            # requires num_microbatches >= 2 + t_c/max(t_a,
-                            # t_f), which is >= 3 whenever t_c > 0 (the
-                            # normal case).  mb=2 + optimistic always degrades
-                            # to conservative, producing a duplicate of the
-                            # mb=2 + conservative candidate and a flood of
-                            # per-stride warnings.
-                            if pipeline_model == "optimistic" and num_microbatches < 3:
-                                continue
-                            candidates.append(
-                                (n_a_nodes, n_f_nodes, tp_a, f_moe_ep_size, num_microbatches, pipeline_model)
-                            )
-    if len(candidates) > max_candidates:
-        message = (
-            f"AFD topology enumeration produced {len(candidates)} candidates, "
-            f"exceeding max_candidates={max_candidates}."
-        )
-        if candidate_overflow == "truncate":
-            logger.warning("%s Truncating deterministically to the first %d candidates.", message, max_candidates)
-            candidates = candidates[:max_candidates]
-        else:
-            raise ValueError(
-                f"{message} Narrow the AFD search, increase search_config['max_candidates'], "
-                "or set search_config['candidate_overflow']='truncate'."
-            )
-    logger.info("AFD topology enumeration candidate count: %d", len(candidates))
-    return candidates
 
 
 # ---------------------------------------------------------------------------

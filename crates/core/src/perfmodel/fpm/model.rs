@@ -822,6 +822,14 @@ impl ForwardPassPerfModel {
         let mut failures = Vec::new();
         let mut last_error = None;
         for mode in config.candidate_modes() {
+            if config.afd_pool_role.is_some() && mode != EstimationMode::OpLevel {
+                return Err(last_error.unwrap_or_else(|| {
+                    AicError::NotImplemented(
+                    "AFD pools cannot select whole-forward estimators; op_level preparation failed"
+                        .into(),
+                )
+                }));
+            }
             if mode == EstimationMode::OpLevel && registered == Some(false) {
                 let error = AicError::UnsupportedModel(format!(
                     "op-level timing requires a registered architecture for {:?}",

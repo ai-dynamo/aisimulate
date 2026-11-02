@@ -180,6 +180,7 @@ class OptimizationConfig(StrictModel):
         "pareto",
     ] = "throughput"
     hardware: str | None = None
+    max_topology_candidates: PositiveStrictInt = 10_000
     strict_sla: bool = Field(default=False, strict=True)
     constraints: CandidateConstraints = Field(default_factory=CandidateConstraints)
 
@@ -264,6 +265,12 @@ ENGINE_MODEL_CONTROL_FIELDS = (
     "fmha_quant_mode",
     "comm_quant_mode",
 )
+
+# Kernel selectors consumed by the native AFD per-pool models.
+AFD_KERNEL_CONTROL_FIELDS = ("attention_backend", "moe_kernel_source")
+
+# Pool-shaping controls not consumed by native AFD models.
+AFD_UNSUPPORTED_MODEL_CONTROLS = frozenset({"enable_eplb", "wideep_num_slots", "moe_backend"})
 
 
 def is_active_engine_model_control(name: str, value: Any) -> bool:

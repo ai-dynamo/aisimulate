@@ -1,9 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Modified native port; original paths and license: root THIRD_PARTY_NOTICES.md.
+# Source: https://github.com/LPhgh/aisimulate/tree/af56328c4ba7ffa1b8c42c8375244568c2e7bb8c
 
 """Build the per-branch candidate space the sampler searches over.
 
-A *branch* is one **deployment_mode** (agg / disagg / afd / afd+pd) — one Vizier study
+A *branch* is one **deployment_mode** (agg / disagg) — one Vizier study
 each, since the modes have structurally different parallel configs. ``backend`` is NOT a
 branch: it is a searched categorical knob within the study. For each mode we take the
 **union** of every configured backend's KV-feasible parallel configs
@@ -16,21 +18,24 @@ runner are dropped from the backend knob.
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass, field
+from bisect import bisect_left, bisect_right
+from dataclasses import dataclass, field, replace
+from heapq import merge
 from typing import Any
+
+from aisimulate_core._native import validate_afd_attention_tp, validate_afd_routing_location
 
 from .afd_parallel import (
     AFDInfeasible,
-    AFDParallelConfig,
     AFDReasonCategory,
     AFDSearchConfig,
     AFDTopology,
     enumerate_afd_topologies,
+    validate_afd_model,
 )
 from .config import ENGINE_MODEL_CONTROL_FIELDS, SmartSearchConfig
 from .kv_estimate import NoPerfDatabase, resolve_backend_version
 from .model_hw import (
-    ModelHardware,
     NoViableParallelConfig,
     _profile_parallel_configs,
     parallel_configs_for,
@@ -44,7 +49,7 @@ class RunnerIncompatibleError(NoViableParallelConfig):
     """No configured backend/topology pair is supported by the Replay runner."""
 
 
-_ParallelConfig = ReplicaParallelConfig | DisaggParallelConfig | AFDParallelConfig
+_ParallelConfig = ReplicaParallelConfig | DisaggParallelConfig | AFDTopology
 
 _AGG_ENGINE = ("agg_max_num_batched_tokens", "agg_max_num_seqs")
 _PREFILL_ENGINE = (
@@ -114,7 +119,7 @@ def _parallel_leaf_values(config: _ParallelConfig) -> dict[str, int]:
 
     if isinstance(config, ReplicaParallelConfig):
         return role_values("", config)
-    if isinstance(config, AFDParallelConfig):
+    if isinstance(config, AFDTopology):
         raise TypeError("AFD branches use one finite flat topology domain")
     return {
         **role_values("prefill_", config.prefill),
@@ -140,10 +145,8 @@ def _parallel_role(config: _ParallelConfig, role: str) -> ReplicaParallelConfig:
         if role != "agg":
             raise ValueError(f"aggregated parallel config has no {role!r} role")
         return config
-    if isinstance(config, AFDParallelConfig):
-        if config.companion is None or config.companion_role != role:
-            raise ValueError(f"AFD parallel config has no {role!r} companion")
-        return config.companion
+    if isinstance(config, AFDTopology):
+        raise ValueError("AFD topology has no ordinary parallel role")
     return config.prefill if role == "prefill" else config.decode
 
 
@@ -223,18 +226,21 @@ def _fpm_parallel_configs(search_space, deployment_mode: str):
 def branch_knob_choices(search_space, deployment_mode: str) -> dict[str, list[Any]]:
     """Backend-owned atomic knobs for one deployment branch."""
     names = _engine_knobs(deployment_mode)
-    if deployment_mode == "afd+pd":
-        names = _DECODE_ENGINE if search_space.afd_phase == "prefill" else _PREFILL_ENGINE
+    names = tuple(
+        name
+        for name in names
+        if ("aggregated" if name.startswith("agg_") else name.split("_", 1)[0]) not in search_space.afd_roles
+    )
     choices = {name: list(getattr(search_space, name)) for name in names}
     if deployment_mode == "agg":
         roles = ("agg",)
     elif deployment_mode == "disagg":
         roles = ("prefill", "decode")
-    elif deployment_mode == "afd+pd":
-        roles = ("decode",) if search_space.afd_phase == "prefill" else ("prefill",)
     else:
         roles = ()
     for role in roles:
+        if ("aggregated" if role == "agg" else role) in search_space.afd_roles:
+            continue
         for suffix in _ROLE_OPTIONAL_ENGINE:
             name = f"{role}_{suffix}"
             value = getattr(search_space, name)
@@ -252,16 +258,14 @@ def _runner_supports_parallel_config(
 
     if capabilities is None:
         return True
-    if isinstance(config, AFDParallelConfig):
-        return config.companion is None or capabilities.supports_attention_dp("disagg", config.companion.shape.dp)
     if deployment_mode != "disagg":
         return True
     if not isinstance(config, DisaggParallelConfig):
         return False
     return capabilities.supports_attention_dp(
         deployment_mode,
-        config.prefill.shape.dp,
-        config.decode.shape.dp,
+        config.prefill.shape.dp if isinstance(config.prefill, ReplicaParallelConfig) else 1,
+        config.decode.shape.dp if isinstance(config.decode, ReplicaParallelConfig) else 1,
     )
 
 
@@ -395,202 +399,150 @@ def _heterogeneous_disagg_configs(
     return configs
 
 
-def _pinned_afd_topology(
-    raw: dict[str, Any],
-    *,
-    search_space,
-    model_hardware: ModelHardware,
-    combined_with_pd: bool,
-) -> AFDTopology:
-    values = dict(raw)
-    values.setdefault("f_moe_ep_size", 1)
-    values.setdefault("num_microbatches", 3)
-    values.setdefault("pipeline_model", search_space.afd_pipeline_model_candidates[0])
-    values.setdefault("comm_overhead_factor", search_space.afd_comm_overhead_factor)
-    values.setdefault("boundary_on_attn", search_space.afd_boundary_on_attn)
-    values.update(
-        {
-            "gpus_per_node": model_hardware.gpus_per_node,
-            "phase": search_space.afd_phase,
-            "combined_with_pd": combined_with_pd,
-            "is_moe": model_hardware.is_moe,
-            "num_experts": model_hardware.num_experts,
-        }
-    )
-    return AFDTopology(**values)
-
-
-def _afd_branch(
-    config: SmartSearchConfig,
-    deployment_mode: str,
-    *,
-    max_seq_len: int | None,
-    runner_capabilities: RunnerCapabilities | None,
-    skip_warnings: list[str],
-) -> BranchSpace | None:
-    """Build one complete, finite AFD topology domain for the generic sampler."""
+def _afd_roles_branch(config, mode, max_seq_len, runner_capabilities):
+    """Compose independently enumerated roles without materializing a Cartesian product."""
+    from ..recommend import _choices
 
     ss = config.search_space
-    if config.workload.kv_load_ratio is not None or config.workload.load_search_field == "kv_load_ratio":
-        raise AFDInfeasible(
-            AFDReasonCategory.INVALID_TOPOLOGY,
-            "AFD search does not yet expose scheduler-visible KV capacity; use an absolute traffic load",
-        )
-
-    model_hardware = resolve_model_hardware(ss.model_name, ss.hardware_sku, backend=ss.backend[0])
-    combined_with_pd = deployment_mode == "afd+pd"
-    pinned = tuple(
-        _pinned_afd_topology(
-            raw,
-            search_space=ss,
-            model_hardware=model_hardware,
-            combined_with_pd=combined_with_pd,
-        )
-        for raw in ss.afd_pinned_topologies
-    )
-    topology_domain = enumerate_afd_topologies(
-        AFDSearchConfig(
-            total_gpus=ss.gpu_budget,
-            min_gpu_budget=None if combined_with_pd else ss.min_gpu_budget,
-            gpus_per_node=model_hardware.gpus_per_node,
-            is_moe=model_hardware.is_moe,
-            num_experts=model_hardware.num_experts,
-            pinned_topologies=pinned,
-            tp_a_candidates=tuple(ss.afd_tp_a_candidates or ()),
-            a_batch_size_candidates=tuple(ss.afd_batch_size_candidates or (128,)),
-            f_moe_ep_size_candidates=tuple(ss.afd_f_moe_ep_size_candidates or ()),
-            microbatch_candidates=tuple(ss.afd_microbatch_candidates),
-            pipeline_model_candidates=tuple(ss.afd_pipeline_model_candidates),
-            phase=ss.afd_phase,
-            combined_with_pd=combined_with_pd,
-            comm_overhead_factor=ss.afd_comm_overhead_factor,
-            boundary_on_attn=ss.afd_boundary_on_attn,
-            max_af_ratio=ss.afd_max_af_ratio,
-            max_candidates=ss.afd_max_candidates,
-        )
-    )
-
-    pinned_companions = tuple(_replica_from_dict(raw) for raw in ss.afd_companion_parallel_configs)
-    support: dict[AFDParallelConfig, set[str]] = {}
-    runner_incompatible: list[str] = []
-    companion_role = "decode" if ss.afd_phase == "prefill" else "prefill"
-    for backend in ss.backend:
-        if runner_capabilities is not None and not runner_capabilities.supports_backend_topology(
-            backend, deployment_mode
-        ):
-            runner_incompatible.append(backend)
-            continue
-        if not combined_with_pd:
-            candidates = (AFDParallelConfig(topology=topology) for topology in topology_domain.candidates)
-        else:
-            try:
-                legal_companions = parallel_configs_for(
-                    ss.model_name,
-                    ss.hardware_sku,
-                    gpu_budget=ss.gpu_budget,
-                    deployment_mode="agg",
-                    backend=backend,
-                    backend_version=ss.requested_backend_version(backend),
-                    min_gpu_budget=None,
-                    max_seq_len=max_seq_len,
-                    role_runtime={"agg": _role_runtime(ss, backend, companion_role)},
-                    role_max_seq_len=(
-                        {"agg": getattr(ss, f"{companion_role}_context_length") or max_seq_len}
-                        if getattr(ss, f"{companion_role}_context_length") is not None or max_seq_len is not None
-                        else None
-                    ),
-                )
-            except (NoPerfDatabase, NoViableParallelConfig):
-                continue
-            legal_set = set(legal_companions)
-            companion_domain = pinned_companions or tuple(legal_companions)
-            candidates = (
-                AFDParallelConfig(topology=topology, companion=companion)
-                for topology in topology_domain.candidates
-                for companion in companion_domain
-                if companion in legal_set
-                and topology.total_gpus + companion.total_gpus <= ss.gpu_budget
-                and (ss.min_gpu_budget is None or topology.total_gpus + companion.total_gpus >= ss.min_gpu_budget)
-            )
-        for candidate in candidates:
-            if _runner_supports_parallel_config(runner_capabilities, deployment_mode, candidate):
-                support.setdefault(candidate, set()).add(backend)
-                if len(support) > ss.afd_max_candidates:
-                    raise AFDInfeasible(
-                        AFDReasonCategory.CANDIDATE_LIMIT,
-                        f"AFD combined domain exceeds afd_max_candidates={ss.afd_max_candidates}; "
-                        "narrow the topology or companion domain",
-                        provenance={"generated_count": len(support), "count_is_lower_bound": True},
+    backend = "sglang"
+    if runner_capabilities is not None and not runner_capabilities.supports_backend_topology(backend, mode):
+        raise RunnerIncompatibleError(f"runner does not support {backend}/{mode}")
+    if runner_capabilities is not None and "afd" not in runner_capabilities.supported_worker_types:
+        raise RunnerIncompatibleError("runner does not support AFD worker type")
+    roles = ("aggregated",) if mode == "agg" else ("prefill", "decode")
+    domains, provenance = {}, {}
+    facts_cache = {}
+    for role in roles:
+        if role in ss.afd_roles:
+            afd = ss.afd_roles[role]["afd"]
+            validate_afd_routing_location(afd["routing_location"])
+            for tp in _choices(afd.get("tp_a"), default=[1]):
+                validate_afd_attention_tp(tp)
+    validate_afd_model(ss.model_name)
+    for role in roles:
+        legacy_role = "agg" if role == "aggregated" else role
+        if role in ss.afd_roles:
+            afd = ss.afd_roles[role]["afd"]
+            systems = (afd.get("a_system") or ss.hardware_sku, afd.get("f_system") or ss.hardware_sku)
+            for system in (ss.hardware_sku, *systems):
+                if system not in facts_cache:
+                    facts_cache[system] = resolve_model_hardware(
+                        ss.model_name, system, backend=backend, systems_paths=ss.systems_paths
                     )
+            facts = facts_cache[systems[0]]
+            domain = enumerate_afd_topologies(
+                AFDSearchConfig(
+                    total_gpus=ss.gpu_budget,
+                    gpus_per_node=facts.gpus_per_node,
+                    f_gpus_per_node=facts_cache[systems[1]].gpus_per_node,
+                    is_moe=facts.is_moe,
+                    num_experts=facts.num_experts,
+                    a_tp_size_candidates=tuple(_choices(afd.get("tp_a"), default=[])),
+                    batch_size_per_a_replica_candidates=tuple(_choices(afd["a_batch_size"], default=[])),
+                    f_moe_ep_size_candidates=tuple(_choices(afd.get("f_moe_ep_size"), default=[])),
+                    microbatch_candidates=tuple(_choices(afd["num_microbatches"], default=[2, 3, 4])),
+                    pipeline_layout=afd["pipeline_layout"],
+                    comm_overhead_factor=afd["comm_overhead_factor"],
+                    routing_location=afd["routing_location"],
+                    max_af_ratio=afd["max_af_ratio"],
+                    max_candidates=ss.max_topology_candidates,
+                    min_gpu_budget=ss.min_gpu_budget if mode == "agg" else None,
+                )
+            )
+            domains[role] = tuple(replace(t, a_system=systems[0], f_system=systems[1]) for t in domain.candidates)
+            provenance[role] = dict(domain.provenance)
+        else:
+            entries = ss.parallel_custom_configs_by_mode.get(mode, {}).get(legacy_role, [])
+            pinned = [_replica_from_dict(entry) for entry in entries] if entries else None
+            domain = parallel_configs_for(
+                ss.model_name,
+                ss.hardware_sku_for(legacy_role),
+                backend=backend,
+                backend_version=ss.requested_backend_version(backend),
+                deployment_mode="agg",
+                worker_type=legacy_role,
+                gpu_budget=ss.gpu_budget,
+                min_gpu_budget=None,
+                max_seq_len=max_seq_len,
+                role_runtime={"agg": _role_runtime(ss, backend, legacy_role)},
+                role_max_seq_len={"agg": getattr(ss, f"{legacy_role}_context_length") or max_seq_len}
+                if legacy_role != "agg"
+                else None,
+                **_engine_memory_kwargs(ss),
+                **_estimator_root_kwargs(ss, legacy_role),
+                **({"candidate_configs": pinned} if pinned else {}),
+            )
+            if pinned:
+                pinned_set = set(pinned)
+                domain = [c for c in domain if c in pinned_set]
+            choices = ss.parallel_independent_by_mode.get(mode, {})
+            bounds = ss.parallel_independent_log_ranges_by_mode.get(mode, {})
+            prefix = "" if mode == "agg" else f"{role}_"
+            domains[role] = tuple(
+                c
+                for c in domain
+                if all(
+                    bounds[name][0] <= value <= bounds[name][1]
+                    if name in bounds
+                    else choices.get(name) is None or value in choices[name]
+                    for name, value in ((prefix + k, v) for k, v in _parallel_leaf_values(c).items())
+                )
+            )
+            if pinned and set(pinned) - set(domains[role]):
+                raise NoViableParallelConfig(f"{role} pinned shape is infeasible")
+    support = {}
 
-    unsupported_topologies = [
-        topology for topology in pinned if not any(candidate.topology == topology for candidate in support)
-    ]
-    unsupported_companions = [
-        companion
-        for companion in pinned_companions
-        if not any(candidate.companion == companion for candidate in support)
-    ]
-    if unsupported_topologies or unsupported_companions:
-        raise NoViableParallelConfig(
-            f"deployment_mode={deployment_mode!r}: pinned AFD topology or companion has no legal, "
-            "runner-compatible candidate within the GPU budget; "
-            f"unsupported_topologies={unsupported_topologies}, unsupported_companions={unsupported_companions}"
-        )
+    def add(candidate):
+        if _runner_supports_parallel_config(runner_capabilities, mode, candidate):
+            support[candidate] = frozenset({backend})
+            if len(support) > ss.max_topology_candidates:
+                raise AFDInfeasible(
+                    AFDReasonCategory.CANDIDATE_LIMIT,
+                    f"combined topology domain exceeds max_topology_candidates={ss.max_topology_candidates}",
+                )
+
+    if mode == "agg":
+        for candidate in domains["aggregated"]:
+            add(candidate)
+    else:
+        buckets = {}
+        for index, candidate in enumerate(domains["decode"]):
+            buckets.setdefault(candidate.total_gpus, []).append(index)
+        gpu_counts = sorted(buckets)
+        for prefill in domains["prefill"]:
+            start = bisect_left(gpu_counts, max(0, (ss.min_gpu_budget or 0) - prefill.total_gpus))
+            stop = bisect_right(gpu_counts, ss.gpu_budget - prefill.total_gpus)
+            # Merge original domain ordinals to preserve stable P-major / D-minor ordering.
+            for index in merge(*(buckets[g] for g in gpu_counts[start:stop])):
+                add(DisaggParallelConfig(prefill=prefill, decode=domains["decode"][index]))
     if not support:
-        skip_warnings.append(
-            f"smart-sweep: deployment_mode={deployment_mode!r} skipped — no configured backend has a viable "
-            f"AFD candidate within gpu_budget={ss.gpu_budget}"
-            + (f"; runner-incompatible backends={runner_incompatible}" if runner_incompatible else ""),
-        )
-        return None
-
-    knob_choices = branch_knob_choices(ss, deployment_mode)
-    viable_backends = set().union(*support.values())
-    knob_choices["backend"] = [backend for backend in dict.fromkeys(ss.backend) if backend in viable_backends]
+        raise NoViableParallelConfig("no viable AFD role composition within GPU budget")
+    knobs = branch_knob_choices(ss, mode)
+    knobs["backend"] = [backend]
     if config.workload.load_choices is not None:
-        knob_choices["traffic_load"] = list(config.workload.load_choices)
-    float_ranges: dict[str, tuple[float, float]] = {}
-    log_float_ranges: set[str] = set()
-    integer_ranges: dict[str, tuple[int, int]] = {}
-    log_integer_ranges: set[str] = set()
-    active_roles = {companion_role} if combined_with_pd else set()
-    for name, bounds in ss.engine_float_ranges.items():
-        if name.split("_", 1)[0] in active_roles:
-            float_ranges[name] = (float(bounds[0]), float(bounds[1]))
-            if name in ss.engine_log_ranges:
-                log_float_ranges.add(name)
-    for name, bounds in ss.engine_integer_log_ranges.items():
-        if name.split("_", 1)[0] in active_roles:
-            knob_choices.pop(name, None)
-            integer_ranges[name] = (int(bounds[0]), int(bounds[1]))
-            log_integer_ranges.add(name)
+        knobs["traffic_load"] = list(config.workload.load_choices)
+    ordinary_roles = {"agg" if role == "aggregated" else role for role in roles if role not in ss.afd_roles}
+    # Continuous domains are stored separately from discrete knob choices.
+    floats = {k: tuple(v) for k, v in ss.engine_float_ranges.items() if k.split("_", 1)[0] in ordinary_roles}
+    integers = {k: tuple(v) for k, v in ss.engine_integer_log_ranges.items() if k in knobs}
+    for name in integers:
+        knobs.pop(name, None)
     if config.workload.load_range is not None:
-        float_ranges["traffic_load"] = (
-            float(config.workload.load_range[0]),
-            float(config.workload.load_range[1]),
-        )
-        if config.workload.load_log_scale:
-            log_float_ranges.add("traffic_load")
-
+        floats["traffic_load"] = tuple(config.workload.load_range)
     return BranchSpace(
-        deployment_mode=deployment_mode,
+        deployment_mode=mode,
         parallel_configs=tuple(support),
-        supported_backends={candidate: frozenset(backends) for candidate, backends in support.items()},
-        knob_choices=knob_choices,
+        supported_backends=support,
+        knob_choices=knobs,
         gpu_budget=ss.gpu_budget,
-        float_ranges=float_ranges,
-        integer_ranges=integer_ranges,
-        log_float_ranges=frozenset(log_float_ranges),
-        log_integer_ranges=frozenset(log_integer_ranges),
-        log_discrete_choices=frozenset(name for name in ss.engine_log_discrete if name in knob_choices),
         flat_parallel_choices=True,
-        domain_provenance={
-            "afd": dict(topology_domain.provenance),
-            "generated_topologies": topology_domain.generated_count,
-            "candidate_count": len(support),
-            "complete": True,
-        },
+        float_ranges=floats,
+        integer_ranges=integers,
+        log_float_ranges=frozenset(k for k in ss.engine_log_ranges if k in floats)
+        | (frozenset({"traffic_load"}) if config.workload.load_log_scale and "traffic_load" in floats else frozenset()),
+        log_integer_ranges=frozenset(integers),
+        log_discrete_choices=frozenset(k for k in ss.engine_log_discrete if k in knobs),
+        domain_provenance={"roles": provenance, "candidate_count": len(support), "complete": True},
     )
 
 
@@ -633,37 +585,10 @@ def enumerate_branches(
         for mode, backends in runner_incompatibilities.items()
         if backends
     )
-
-    # Dedupe modes (preserving order): a repeated deployment_mode would yield duplicate
-    # branches and hence colliding Vizier study_ids (one study per mode).
     for deployment_mode in deployment_modes:
-        if deployment_mode in {"afd", "afd+pd"}:
-            if runner_incompatibilities[deployment_mode] == unique_backends:
-                if all_runner_incompatible:
-                    raise RunnerIncompatibleError(
-                        "no configured backend/topology is supported by the Replay runner; "
-                        f"{runner_incompatibility_details}"
-                    )
-                message = (
-                    f"deployment_mode={deployment_mode!r}: no runner-compatible AFD candidate; "
-                    f"runner-incompatible backends={list(runner_incompatibilities[deployment_mode])}"
-                )
-                if ss.afd_pinned_topologies or ss.afd_companion_parallel_configs:
-                    raise NoViableParallelConfig(message)
-                skipped.append(deployment_mode)
-                skip_warnings.append(f"smart-sweep: {message}")
-                continue
-            branch = _afd_branch(
-                config,
-                deployment_mode,
-                max_seq_len=max_seq_len,
-                runner_capabilities=runner_capabilities,
-                skip_warnings=skip_warnings,
-            )
-            if branch is None:
-                skipped.append(deployment_mode)
-            else:
-                branches.append(branch)
+        active = ("aggregated",) if deployment_mode == "agg" else ("prefill", "decode")
+        if any(role in ss.afd_roles for role in active):
+            branches.append(_afd_roles_branch(config, deployment_mode, max_seq_len, runner_capabilities))
             continue
         # Pinned configs (if any) are parsed once, then validated per backend; otherwise
         # each backend contributes its full enumerated menu.

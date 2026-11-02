@@ -16,7 +16,7 @@ from typing import Any
 from .capacity import resolve_model_context_length
 from .config.cli import CorePredictionConfig, CoreRecommendationConfig
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS
-from .config.engine import resolve_block_size
+from .config.engine import is_afd_worker, resolve_block_size
 from .config.traffic import TrafficPredictionConfig
 from .config_adapter import (
     CompiledSweepProvider,
@@ -25,7 +25,6 @@ from .config_adapter import (
 )
 from .output_adapter import RecommendationOutputAdapter, RecommendationOutputContext, resolve_output_callbacks
 from .resources import GuardedRunnerFactory, discover_host, resolve_budget
-from .sweeper.afd_perfmodel import AFDPerformanceModel
 from .sweeper.config import SmartSearchConfig
 from .sweeper.provider import InfeasibleCandidate, SweepContext
 from .sweeper.replay import ReplayOutputRequirements, ReplaySpec, RunnerFactory
@@ -40,7 +39,6 @@ def run_recommendation(
     runner_factory: RunnerFactory,
     providers: Mapping[str, SimulationConfigAdapter] | None = None,
     output_configs: Mapping[str, Mapping[str, Any]] | None = None,
-    afd_performance_model: AFDPerformanceModel | None = None,
     show_progress: bool = True,
     output_requirements: ReplayOutputRequirements | None = None,
 ) -> SweepResult:
@@ -54,7 +52,6 @@ def run_recommendation(
         runner_factory=runner_factory,
         providers=providers,
         output_configs=output_configs,
-        afd_performance_model=afd_performance_model,
         show_progress=show_progress,
         output_requirements=output_requirements,
     )
@@ -72,7 +69,6 @@ def _run_recommendation(
     providers: Mapping[str, SimulationConfigAdapter] | None = None,
     output_configs: Mapping[str, Mapping[str, Any]] | None = None,
     output_adapters: Mapping[str, RecommendationOutputAdapter] | None = None,
-    afd_performance_model: AFDPerformanceModel | None = None,
     show_progress: bool = True,
     output_requirements: ReplayOutputRequirements | None = None,
 ) -> SweepResult:
@@ -142,7 +138,6 @@ def _run_recommendation(
         prediction_config_factory=lambda sample, spec: _candidate_prediction(
             config, sample, spec, adapter_sections=adapter_sections
         ),
-        afd_performance_model=afd_performance_model,
     )
     output_callbacks = resolve_output_callbacks(
         output_configs or {},
@@ -180,11 +175,6 @@ def recommendation_to_sweeper(
     optimization = config.optimization
     mode_values = _choices(engine.get("mode"), default=["aggregated", "disaggregated"])
     modes = [_legacy_mode(str(value)) for value in mode_values]
-    afd = engine.get("afd")
-    if modes == ["afd"]:
-        if not isinstance(afd, dict):
-            raise ValueError("engine.mode='afd' requires engine.afd")
-        modes = ["afd+pd" if afd["combined_with_pd"] else "afd"]
     backend_values = _choices(engine.get("backend"), default=["vllm", "sglang"])
     model = engine.get("model")
     if not isinstance(model, str) or not model:
@@ -252,9 +242,7 @@ def recommendation_to_sweeper(
             if name in raw.get("timing", {})
         }
         for role, raw in workers.items()
-        if role in {"aggregated", "prefill", "decode"}
-        and not set(modes) & {"afd", "afd+pd"}
-        and workers.get("encoder") is None
+        if role in {"aggregated", "prefill", "decode"} and raw.get("type") != "afd" and workers.get("encoder") is None
     }
     if engine.get("speculation") is not None:
         search_space["speculation"] = deepcopy(engine["speculation"])
@@ -263,26 +251,9 @@ def recommendation_to_sweeper(
             search_space[f"{role}_context_length"] = workers[role]["context_length"]
         if workers.get(role, {}).get("hardware") is not None:
             search_space[f"{role}_hardware_sku"] = workers[role]["hardware"]
-    if isinstance(afd, dict):
-        search_space.update(_afd_search_space(afd))
-        if modes == ["afd+pd"]:
-            companion_role = "decode" if afd["phase"] == "prefill" else "prefill"
-            workers.setdefault(companion_role, {})
-            kind, value = _parallel_entries(companion_role, workers[companion_role])
-            if kind == "flat":
-                search_space["afd_companion_parallel_configs"] = [_legacy_parallel(entry) for entry in value]
-            elif kind == "independent":
-                raise ValueError(
-                    f"engine.workers.{companion_role}.parallelism supports preset=default or a concrete "
-                    "preset list for AFD recommendations"
-                )
-    search_space.update(
-        _role_search_space(
-            workers,
-            modes,
-            afd_phase=afd.get("phase") if isinstance(afd, dict) else None,
-        )
-    )
+    search_space["afd_roles"] = {role: deepcopy(raw) for role, raw in workers.items() if raw.get("type") == "afd"}
+    search_space["max_topology_candidates"] = optimization.max_topology_candidates
+    search_space.update(_role_search_space(workers, modes))
     search_space.update(_native_vl_search_space(config, workers))
     if engine.get("workers", {}).get("encoder") is not None:
         encoder = workers["encoder"]
@@ -310,7 +281,9 @@ def recommendation_to_sweeper(
         independent_parallel,
         independent_parallel_log_ranges,
         custom_parallel,
-    ) = _parallel_config_choices(workers, modes)
+    ) = _parallel_config_choices(
+        {role: ({} if raw.get("type") == "afd" else raw) for role, raw in workers.items()}, modes
+    )
     if pinned_parallel:
         search_space["parallel_configs_by_mode"] = pinned_parallel
     if flat_modes:
@@ -395,35 +368,9 @@ def _legacy_mode(mode: str) -> str:
     return {"aggregated": "agg", "disaggregated": "disagg"}.get(mode, mode)
 
 
-def _afd_search_space(afd: dict[str, Any]) -> dict[str, Any]:
-    result: dict[str, Any] = {
-        "afd_phase": afd["phase"],
-        "afd_batch_size_candidates": [int(value) for value in _choices(afd["a_batch_size"], default=[])],
-        "afd_microbatch_candidates": [int(value) for value in _choices(afd.get("num_microbatches"), default=[2, 3, 4])],
-        "afd_pipeline_model_candidates": [
-            str(value)
-            for value in _choices(
-                afd.get("pipeline_model"),
-                default=["optimistic", "conservative"],
-            )
-        ],
-        "afd_comm_overhead_factor": afd.get("comm_overhead_factor", 1.0),
-        "afd_boundary_on_attn": afd.get("boundary_on_attn", True),
-        "afd_max_af_ratio": afd.get("max_af_ratio", 4.0),
-        "afd_max_candidates": afd.get("max_candidates", 10_000),
-    }
-    if afd.get("tp_a") is not None:
-        result["afd_tp_a_candidates"] = [int(value) for value in _choices(afd["tp_a"], default=[])]
-    if afd.get("f_moe_ep_size") is not None:
-        result["afd_f_moe_ep_size_candidates"] = _choices(afd["f_moe_ep_size"], default=[])
-    return result
-
-
 def _role_search_space(
     workers: dict[str, Any],
     modes: list[str],
-    *,
-    afd_phase: str | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "engine_float_ranges": {},
@@ -433,16 +380,8 @@ def _role_search_space(
     }
     specifications = (
         ("aggregated", "agg", "agg" in modes),
-        (
-            "prefill",
-            "prefill",
-            "disagg" in modes or ("afd+pd" in modes and afd_phase == "decode"),
-        ),
-        (
-            "decode",
-            "decode",
-            "disagg" in modes or ("afd+pd" in modes and afd_phase == "prefill"),
-        ),
+        ("prefill", "prefill", "disagg" in modes or "prefill" in modes),
+        ("decode", "decode", "disagg" in modes or "decode" in modes),
     )
     for public_role, legacy_role, required in specifications:
         raw = workers.get(public_role)
@@ -450,6 +389,8 @@ def _role_search_space(
             continue
         if not isinstance(raw, dict):
             raise ValueError(f"engine.workers.{public_role} is required")
+        if raw.get("type") == "afd":
+            continue
         scheduler = raw.get("scheduler") or {}
         if not isinstance(scheduler, dict):
             raise ValueError(f"engine.workers.{public_role}.scheduler must be a mapping")
@@ -554,7 +495,7 @@ def _native_vl_search_space(config: CoreRecommendationConfig, workers: dict[str,
     for public_role, role in (("aggregated", "agg"), ("prefill", "prefill")):
         worker = getattr(config.engine.workers, public_role)
         raw = workers.get(public_role) if isinstance(workers, dict) else None
-        if worker is None or not isinstance(raw, dict):
+        if worker is None or is_afd_worker(worker) or not isinstance(raw, dict):
             continue
         source = config.traffic.source if config.traffic is not None else None
         images = getattr(source, "images", None)
@@ -951,17 +892,13 @@ def _candidate_prediction(
 ) -> dict[str, Any]:
     deployment = replay_spec.backend_deployment
     engine: dict[str, Any] = {
-        "mode": (
-            "aggregated"
-            if deployment.deployment_mode == "agg"
-            else "afd"
-            if deployment.deployment_mode in {"afd", "afd+pd"}
-            else "disaggregated"
-        ),
+        "mode": ("aggregated" if deployment.deployment_mode == "agg" else "disaggregated"),
         "model": sample["model_name"],
         "hardware": sample["hardware_sku"],
         "backend": sample["backend"],
-        "backend_version": sample.get("backend_version") or None,
+        # Save the concrete deployment identity, including AFD roles whose
+        # sampled topology does not itself carry a backend-version field.
+        "backend_version": deployment.backend_version or sample.get("backend_version") or None,
         "context_length": sample.get("context_length") or "max",
         "workers": {},
     }
@@ -975,7 +912,7 @@ def _candidate_prediction(
     if sample.get("aic_nextn"):
         engine["nextn"] = sample["aic_nextn"]
     raw_engine = source.engine.model_dump(mode="python", exclude_none=True)
-    if deployment.forward_pass_estimators:
+    if deployment.forward_pass_estimators or deployment.has_afd:
         for name in (
             "database_mode",
             "transfer_policy",
@@ -992,35 +929,42 @@ def _candidate_prediction(
         from .config.epd import encoder_prediction_fields
 
         engine["workers"]["encoder"] = encoder_prediction_fields(deployment.encoder)
-    if deployment.deployment_mode in {"afd", "afd+pd"}:
-        raw_afd = sample.get("afd")
-        if not isinstance(raw_afd, dict):
-            raise InfeasibleCandidate("AFD candidate omitted its concrete topology")
-        engine["afd"] = {
-            name: raw_afd[name]
-            for name in (
-                "phase",
-                "combined_with_pd",
-                "n_a_nodes",
-                "n_f_nodes",
-                "tp_a",
-                "a_batch_size",
-                "f_moe_ep_size",
-                "num_microbatches",
-                "pipeline_model",
-                "comm_overhead_factor",
-                "boundary_on_attn",
-            )
-        }
-        roles = (str(sample["afd_companion_role"]),) if deployment.deployment_mode == "afd+pd" else ()
-    else:
-        roles = ("agg",) if deployment.deployment_mode == "agg" else ("prefill", "decode")
+    roles = ("agg",) if deployment.deployment_mode == "agg" else ("prefill", "decode")
     for role in roles:
         prefix = "" if role == "agg" else f"{role}_"
         public_role = "aggregated" if role == "agg" else role
         raw_worker = (
             raw_engine.get("workers", {}).get(public_role, {}) if isinstance(raw_engine.get("workers"), dict) else {}
         )
+        if public_role in sample.get("afd_roles", {}):
+            raw_afd = sample["afd_roles"][public_role]
+            afd = {
+                name: raw_afd[name]
+                for name in (
+                    "n_a_nodes",
+                    "n_f_nodes",
+                    "a_tp_size",
+                    "batch_size_per_a_replica",
+                    "f_moe_ep_size",
+                    "num_microbatches",
+                    "pipeline_layout",
+                    "comm_overhead_factor",
+                    "routing_location",
+                    "a_system",
+                    "f_system",
+                )
+                if name in raw_afd and raw_afd[name] is not None
+            }
+            afd["tp_a"] = afd.pop("a_tp_size")
+            afd["a_batch_size"] = afd.pop("batch_size_per_a_replica")
+            if raw_worker.get("afd", {}).get("chunked_prefill_size") is not None:
+                afd["chunked_prefill_size"] = raw_worker["afd"]["chunked_prefill_size"]
+            engine["workers"][public_role] = {
+                "type": "afd",
+                "afd": afd,
+                **{k: raw_worker[k] for k in ("context_length", "startup_seconds") if k in raw_worker},
+            }
+            continue
         block_size = resolve_block_size(sample["backend"], sample[f"{role}_block_size"])
         memory_fraction = sample[f"{role}_gpu_memory_utilization"]
         if memory_fraction is None:

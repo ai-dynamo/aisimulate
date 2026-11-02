@@ -7,8 +7,10 @@
 
 from __future__ import annotations
 
+import ast
 import importlib
 import importlib.resources
+import inspect
 import json
 import pickle
 import sys
@@ -19,8 +21,48 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "validate_afd_attention_tp",
+        "resolve_afd_parallelism",
+        "validate_afd_model_shape",
+        "resolve_afd_decode_identity",
+        "resolve_execution_quantization",
+    ],
+)
+def test_native_afd_stub_matches_runtime_signature(name):
+    from aisimulate_core import _native
+
+    declarations = ast.parse(Path(_native.__file__).with_suffix(".pyi").read_text())
+    declaration = next(node for node in declarations.body if isinstance(node, ast.FunctionDef) and node.name == name)
+    positional = declaration.args.posonlyargs + declaration.args.args
+    defaults = [inspect.Parameter.empty] * (len(positional) - len(declaration.args.defaults)) + [
+        ast.literal_eval(default) for default in declaration.args.defaults
+    ]
+    expected = [
+        inspect.Parameter(
+            arg.arg,
+            inspect.Parameter.POSITIONAL_ONLY
+            if index < len(declaration.args.posonlyargs)
+            else inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            default=default,
+        )
+        for index, (arg, default) in enumerate(zip(positional, defaults, strict=True))
+    ]
+    expected.extend(
+        inspect.Parameter(
+            arg.arg,
+            inspect.Parameter.KEYWORD_ONLY,
+            default=inspect.Parameter.empty if default is None else ast.literal_eval(default),
+        )
+        for arg, default in zip(declaration.args.kwonlyargs, declaration.args.kw_defaults, strict=True)
+    )
+    assert inspect.signature(getattr(_native, name)) == inspect.Signature(expected)
+
+
 CORE_SDK_LEAF_MODULES = [
-    "afd_partition",
     "attention_lanes",
     "backends.base_backend",
     "backends.factory",
@@ -47,6 +89,7 @@ CORE_SDK_LEAF_MODULES = [
     "memory.kimi_k3",
     "memory.kv_cache",
     "memory.state",
+    "models.afd",
     "models.base",
     "models.blocks.moe",
     "models.blocks.vit",
@@ -71,7 +114,6 @@ CORE_SDK_LEAF_MODULES = [
     "models.qwen3vl",
     "models.step3p7",
     "models.vit_ops",
-    "operations.afd_transfer",
     "operations.attention",
     "operations.base",
     "operations.communication",
@@ -332,6 +374,8 @@ def test_operations_baseline_exports_survive() -> None:
     baseline = {
         # (Mamba2 removed deliberately: the deprecated composite's window
         #  closed with the deprecation-cleanup PR.)
+        # (AFDTransfer/AFDCombine excluded: the AFD comm ops are native Rust
+        #  `Op` variants — schema 22 — not Python ops.)
         "FPMForwardOp",
         "Mamba2Kernel",
         "GDNKernel",
@@ -344,8 +388,6 @@ def test_operations_baseline_exports_survive() -> None:
         "GenerationMLA",
         "CustomAllReduce",
         "MoEAllToAll",
-        "AFDTransfer",
-        "AFDCombine",
         "Embedding",
         "ElementWise",
         "P2P",
