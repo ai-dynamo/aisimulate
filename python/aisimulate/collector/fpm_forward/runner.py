@@ -1409,8 +1409,9 @@ def _cell_generator_overrides(
         # native runtime initialization avoids measuring a different engine.
         model_args.extend(["--trust-remote-code", "--reasoning-parser=glm45"])
     if architecture == "Glm5NextForConditionalGeneration":
-        # The GLM-5.3-Flash FPM producer loads the text decoder only (docs/glm53flash-fpm.md:70-73),
-        # so a runtime probe measures the cache capacity of the deployment that collection uses.
+        # The GLM-5.3-Flash FPM producer loads the text decoder only (see the engine arguments of the vLLM producer
+        # section in docs/glm53flash-fpm.md), so a runtime probe measures the cache capacity of the deployment that
+        # collection uses.
         model_args.append("--language-model-only")
     env = [
         {"name": FPM_ENGINE_BENCHMARK_OUTPUT_ENV, "value": f"{FPM_RESULTS_DIR}/benchmark.json"},

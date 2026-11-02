@@ -1492,7 +1492,8 @@ def test_glm5next_launch_loads_the_language_model_only(tmp_path, architecture):
     assert (plan.capability.architecture == "Glm5NextForConditionalGeneration") == (architecture is not None)
     for cell in plan.cells:
         args = runner._cell_generator_overrides(plan, cell, {})["params"]["agg"]["extra_cli_args"]
-        # GLM probes and collection load the text decoder only (docs/glm53flash-fpm.md:70-73).
+        # GLM probes and collection load the text decoder only (see the engine arguments of the vLLM producer section
+        # in docs/glm53flash-fpm.md).
         assert ("--language-model-only" in args) == (architecture is not None)
 
 

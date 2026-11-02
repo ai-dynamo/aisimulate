@@ -1750,6 +1750,35 @@ def test_config_init_to_plan_replay_preserves_full_topology_without_source_files
     assert json.loads((plan / "fpm-model-profile.json").read_text()) == request.fpm_profile.model_dump(mode="json")
 
 
+def test_plan_says_who_generates_the_points_of_a_glm_5_3_flash_collection(tmp_path):
+    from collector.fpm_forward.glm53flash_points import GLM_ARCHITECTURE
+
+    from aisimulate.support.plan import create_plan
+
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    assert cli.main(_args(output, source, resources)) == 0
+    request = SupportRequest.from_yaml(output)
+    glm = request.model_copy(
+        update={"fpm_profile": request.fpm_profile.model_copy(update={"architecture": GLM_ARCHITECTURE})}
+    )
+    # Every other model keeps the text that leaves the exact points to the runtime.
+    assert create_plan(request, tmp_path / "ordinary")["fpm"]["sampling"] == (
+        "Dynamo self-benchmark generates the prefill/decode grid from CUDA graph sizes and the reviewed "
+        "runtime limits. The new-token budget, per-request context, scheduler sequence bound and total KV "
+        "capacity are separate quantities. Exact points resolve at runtime; validation traffic and SLAs "
+        "do not change these collection settings. Smoke and limited runs do not publish formal FPM data."
+    )
+    # The GLM-5.3-Flash collection plan freezes a list that the planner generates, so its count is known at plan time.
+    assert create_plan(glm, tmp_path / "glm")["fpm"]["sampling"] == (
+        "The GLM-5.3-Flash producer measures a point list that the collection plan generates from the "
+        "reviewed runtime limits and the accepted profile's hash block size and cache capacity. The new-token "
+        "budget, per-request context, scheduler sequence bound and total KV capacity are separate quantities. "
+        "The list is frozen into the plan, so the point count is fixed at plan time; validation traffic and "
+        "SLAs do not change these collection settings. Smoke and limited runs do not publish formal FPM data."
+    )
+
+
 # Issue #475: the packaged GLM-5.3-Flash config mixes linear-attention and sparse-attention layers, so config.json
 # cannot establish its cache geometry. Intake reports it as pending the runtime probe instead of asking for bytes.
 _GLM = Path(__file__).parents[2] / "src/aisimulate_core/model_configs/zai-org--GLM-5.3-Flash_config.json"

@@ -27,6 +27,9 @@ from .fpm import fpm_cli_args
 from .schema import SupportRequest
 
 _LOCK_NAME = ".support.lock"
+# The collection plan of this architecture freezes a point list that the planner generates. Planning must not import
+# the collector, so the name repeats collector.fpm_forward.glm53flash_points.GLM_ARCHITECTURE, and a test compares them.
+_GLM_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 
 
 def request_id(request: SupportRequest) -> str:
@@ -452,6 +455,14 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
             plan["prerequisites"][0].update(
                 status="runtime_memory_resolved",
                 detail=f"Observed cache capacity and {geometry} are bound to this deployment and runtime envelope.",
+            )
+        if request.fpm_profile.architecture == _GLM_ARCHITECTURE:
+            plan["fpm"]["sampling"] = (
+                "The GLM-5.3-Flash producer measures a point list that the collection plan generates from the "
+                "reviewed runtime limits and the accepted profile's hash block size and cache capacity. The new-token "
+                "budget, per-request context, scheduler sequence bound and total KV capacity are separate quantities. "
+                "The list is frozen into the plan, so the point count is fixed at plan time; validation traffic and "
+                "SLAs do not change these collection settings. Smoke and limited runs do not publish formal FPM data."
             )
         plan["outputs"]["fpm_model_profile"] = str(root / "fpm-model-profile.json")
     role_only = request.worker_type in {"prefill", "decode"}
