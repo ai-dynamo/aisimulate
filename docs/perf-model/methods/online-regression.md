@@ -651,13 +651,15 @@ with one constant in `fit.linear` that configuration requires whenever
   for a rank's `n` scheduled requests: the longest sequence over the KV splits
   FlashInfer's TensorRT-LLM decode kernel gives each request
   (`numCtasPerSeqKv` in
-  [`fmhaKernels.cuh`](https://github.com/flashinfer-ai/flashinfer/blob/946200de1ae94fc93fdd0926f0a13afd1fa7f0f1/include/flashinfer/trtllm/fmha/fmhaKernels.cuh#L663-L666),
+  [`fmhaKernels.cuh`](https://github.com/flashinfer-ai/flashinfer/blob/946200de1ae94fc93fdd0926f0a13afd1fa7f0f1/include/flashinfer/trtllm/fmha/fmhaKernels.cuh),
   v0.7.0.post1). `max_kv_splits` is the GPU's SM count over the kernel's CTAs
-  per request.
+  per request. `n` and the longest sequence count every scheduled request,
+  including prefill requests, which vLLM runs in the context kernel rather than
+  the decode kernel.
 - `eager` is 1 when a rank schedules more tokens, `sum_i extend_i`, than
   `max_cudagraph_capture_size`, and 0 otherwise. vLLM runs such a pass without
   a CUDA graph (`dispatch` in
-  [`cudagraph_utils.py`](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/worker/gpu/cudagraph_utils.py#L518-L548),
+  [`cudagraph_utils.py`](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/worker/gpu/cudagraph_utils.py),
   v0.32.0).
 
 Each attention-DP rank runs its own kernel and graph, so both axes are computed
@@ -670,7 +672,7 @@ estimator_config:
     fit:
       linear:
         feature_axes: [E, P2, F, logN, longest_split, eager]
-        max_kv_splits: 66                # for example, 132 SMs / 2 CTAs per request
+        max_kv_splits: 74                # for example, 148 SMs / 2 CTAs per request
         max_cudagraph_capture_size: 512
 ```
 
