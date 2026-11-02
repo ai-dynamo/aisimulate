@@ -672,9 +672,9 @@ impl HostTier {
         if let Some(free) = plan.free.checked_sub(1) {
             plan.free = free;
         } else {
-            // The LRU holds exactly the resident, unpinned blocks, so each
-            // block past the cursor is a candidate; earlier ones are victims
-            // or protected.
+            // Outside a ranked tier, which is never planned on, the LRU holds
+            // exactly the resident, unpinned blocks, so each block past the
+            // cursor is a candidate; earlier ones are victims or protected.
             // Planning borrows the tier immutably, so the cursor node stays
             // linked until the plan is applied.
             let Some((node, victim)) = self

@@ -910,7 +910,8 @@ impl VllmHostOffloadAdapter {
     /// blocks computed since its last store (`request_finished_all_groups`).
     /// `offloading_v0_32` offers its remaining prompt blocks (`_build_store_jobs`
     /// takes `finished_req_ids`), then re-ranks every block the request stored,
-    /// offered or loaded, its first block newest (`on_request_finished`).
+    /// offered or loaded, its first block newest (`on_request_finished`). vLLM
+    /// does both in its next step, after that step's other stores.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn finish_request(
         &mut self,
