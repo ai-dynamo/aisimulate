@@ -729,6 +729,8 @@ visible. System/Light/Dark preferences are shared with the overview.
 Manual theme choices on FPM and feature-support pages also set this shared override.
 AgentX availability is independent of InfX; InfX snapshot labels do not appear on
 the AgentX branch selector.
+Model summary rows use the overview's full-width tinted background and brighter
+text. Concurrency subrows use the page surface, with the same hover/focus accent.
 
 Optional `report.comparison` (`aisimulate.agentx.comparison.v1`) contains only
 qualified numerical series, scores, phase-aligned requests and opaque joins.
