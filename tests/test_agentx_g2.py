@@ -226,6 +226,24 @@ def test_agentic_invalid_configuration_matrix_rejects_python_and_native(role, fa
         _runtime.run_replay_json(json.dumps(payload))
 
 
+def test_agentic_g2_accepts_mtp_for_a_hybrid_model_with_the_drop_off() -> None:
+    """Both API boundaries accept MTP with G2 for a state cache with disable_eagle_block_drop."""
+    config = _config("agentx-g2-local.yaml")
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(config))
+    payload = _materialize_engine_execution_spec(spec, trace_block_size=4, record_per_request=True)
+    for target in (spec.backend_deployment.agg_engine_args, payload["spec"]["engine"]["rank"]):
+        target.update(
+            num_gpu_blocks=16,
+            state_cache={"bytes_per_request": 1_000_000},
+            prefix_match_unit=4,
+            aic_nextn=1,
+            disable_eagle_block_drop=True,
+        )
+        target["native_host_offload"]["connector"] = "simple_cpu_v0_32"
+    EngineReplayRunnerFactory().capabilities().require_compatible(spec)
+    _runtime.run_replay_json(json.dumps(payload))
+
+
 def test_agentic_g2_runs_on_several_aggregated_workers_with_private_pools() -> None:
     """Each aggregated worker owns a dp_rank_local G2, so both checks accept several workers."""
     config = _config("agentx-g2-local.yaml")

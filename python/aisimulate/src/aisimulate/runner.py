@@ -22,7 +22,7 @@ from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfM
 
 from .capacity import materialize_aic_num_gpu_blocks, reject_pipeline_parallelism
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
-from .config.engine import StateCacheConfig, _validate_replay_estimation_mode
+from .config.engine import StateCacheConfig, _validate_hybrid_host_offload, _validate_replay_estimation_mode
 from .power import normalize_power_summary, power_metadata
 from .sweeper.afd_engine import AFDForegroundEngine
 from .sweeper.afd_parallel import AFDPhase, AFDTopology
@@ -1921,8 +1921,15 @@ def _materialize_engine_role(
     kind = speculation.kind if speculation is not None else canonical_kind
     if kind not in (None, "none"):
         supported = {"vllm"} if kind == "ngram" else {"vllm", "sglang"}
-        if backend not in supported or rank.get("native_host_offload") is not None:
+        host_offload = rank.get("native_host_offload")
+        if backend not in supported or (host_offload is not None and kind != "mtp"):
             raise ValueError(f"{kind} speculation requires a supported backend without host_offload")
+        # Replay does not model the EAGLE block drop hiding the last block, and
+        # the state, that a host load restored.
+        if host_offload is not None and (
+            rank.get("state_cache") is None or rank.get("disable_eagle_block_drop") is not True
+        ):
+            raise ValueError("mtp speculation with host_offload requires state_cache and disable_eagle_block_drop")
     if rank.get("async_scheduling") is not None and not isinstance(rank["async_scheduling"], bool):
         raise ValueError(f"engine provider {role} async_scheduling must be a boolean")
     if kind == "ngram":
@@ -2124,10 +2131,13 @@ def _manual_state_cache(rank: Mapping[str, JSONValue], backend: str, role: str) 
         raise ValueError("sub-block prefix_match_unit does not support speculative decoding")
     if backend != "vllm" or role not in ("aggregated", "prefill", "decode"):
         raise ValueError("state_cache requires backend=vllm and an aggregated, prefill or decode G1 worker")
-    if rank.get("native_host_offload") is not None:
-        raise ValueError("state_cache supports G1 only; native_host_offload is not supported")
+    host = rank.get("native_host_offload")
+    if isinstance(host, dict):
+        _validate_hybrid_host_offload(
+            host.get("connector", "offloading_v0_24"), rank.get("prefix_match_unit"), rank.get("block_size")
+        )
     if rank.get("g3_offload") is not None:
-        raise ValueError("state_cache supports G1 only; g3_offload is not supported")
+        raise ValueError("state_cache does not support g3_offload")
     # Only prefill and decode roles transfer KV.
     transfer = ("kv_transfer_bytes_per_token", "kv_transfer_bandwidth") if role == "aggregated" else ()
     conflicts = [

@@ -106,7 +106,7 @@ follow the [cost-model contract](../../perf-model/configuration.md#speculative-d
 an explicit FPM request with `fallback_policy: deny` fails, while an allowed
 fallback can select OP without discarding the scheme.
 
-Grouped caches, G2/G3 offload, sub-block state-cache `prefix_match_unit`, AFD/EPD,
+Grouped caches, G3 offload, G2 except MTP for a [hybrid G2](kv-cache.md#hybrid-g2), sub-block state-cache `prefix_match_unit`, AFD/EPD,
 TensorRT-LLM, and optional Dynamo-stack execution are outside this generic
 replay path. Functional replay does not establish AgentX prediction accuracy,
 model quality, or measured hardware speedup; see [feature support](../features.md).
@@ -134,6 +134,11 @@ prompt's last full block. A follow-up whose previous prompt ended mid-block
 resumes at that block instead of one block earlier. Speculative scratch states
 and burst scheduling are unchanged. The switch is not part of the cost
 configuration. This follows vLLM 43b4aaea.
+
+With a `state_cache`, the switch also lets `kind: mtp` run with G2; see
+[hybrid models](kv-cache.md#hybrid-g2). Without either, MTP with G2 is
+rejected: replay does not model the drop hiding the last block that a G2 load
+restored.
 
 <a id="prompt-lookup-ngram"></a>
 <a id="prompt-lookup-ngram-speculative-decoding"></a>
@@ -228,8 +233,10 @@ when benchmarking tiny token budgets.
 HBM-only agentic MTP/EAGLE replay is supported by the offline engine stack,
 including aggregated and P/D configurations supported by the selected backend.
 This is functional replay, not a claim of AgentX hardware accuracy.
-Rejected with MTP: grouped caches, G2/G3 offload, and state-cache prefix matching
-with `prefix_match_unit` smaller than `block_size`. Full-block alignment is supported.
+Rejected with MTP: grouped caches, G3 offload, G2 (except a
+[hybrid G2](kv-cache.md#hybrid-g2) with `disable_eagle_block_drop`), and
+state-cache prefix matching with `prefix_match_unit` smaller than `block_size`.
+Full-block alignment is supported.
 Combinations accepted by the
 timing model are not necessarily supported by Replay; see
 [feature support](../features.md).

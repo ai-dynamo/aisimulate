@@ -204,6 +204,32 @@ eviction rules G2 follows:
 vLLM main has changed some of these rules since v0.32.0; each profile follows
 the version it names.
 
+<a id="hybrid-g2"></a>
+
+### Hybrid models (state cache)
+
+With [`state_cache`](#state-cache), the two v0.32.0 profiles also keep recurrent
+states, so a follow-up whose state left G1 can resume from host memory. This
+needs `prefix_match_unit` equal to `block_size`.
+
+- A state goes to G2 when G1 publishes it, before the pass's blocks, as one key
+  per state block, for example one per Mamba group. `offloading_v0_32` stores
+  only states inside the prompt, each key on its own. `simple_cpu_v0_32` stores
+  a state's keys together and drops the state, without a retry, when G2 has no
+  room.
+- A lookup resumes at the deepest block boundary, at most
+  `(len - 1) // block_size` blocks, where G1 and G2 hold the attention prefix
+  and G2 holds every key of the state there. A state missing one key is not a
+  hit. The load restores both, and the restored state is the first pass's
+  input.
+- `offloading_v0_32` re-ranks the states a finishing request stored, offered or
+  loaded together with its blocks.
+- G1 keeps the blocks a hybrid G2 is copying until the copy completes, as
+  SimpleCPU does.
+
+MTP (`kind: mtp`) runs with a hybrid G2 when
+[`disable_eagle_block_drop`](speculation.md#prefix-caching) is set.
+
 <a id="g2-scope"></a>
 <a id="g2-ownership"></a>
 
@@ -235,8 +261,11 @@ and shared bandwidths; otherwise the run is rejected. In `recommend` with
 ### Supported
 
 G2 supports vLLM aggregated and token-only disaggregated workers with prefix
-caching and any `attention_data`. It is rejected with SGLang, TensorRT-LLM,
-native MTP, ngram speculation, `state_cache`, and Belady eviction.
+caching and any `attention_data`. A `state_cache` needs a v0.32.0 profile; see
+[hybrid models](#hybrid-g2). MTP takes G2 only for a hybrid G2 with
+`disable_eagle_block_drop`: replay does not model the EAGLE block drop hiding
+the last block that a G2 load restored. G2 is rejected with SGLang,
+TensorRT-LLM, other speculation and Belady eviction.
 
 For shared pools, the report's `g2_domains` gives capacity and resident blocks.
 Workers that publish KV events report G2 changes with `"tier": "host_pinned"`;
@@ -498,8 +527,8 @@ Omitting the field preserves the existing state model.
 This explicit mode models full-state scratch storage, not ReplaySSM or
 RecoverSSM rings or temporary records.
 
-Rejected: `recommend`, G2/G3 offload, and speculative sub-block matching without
-an explicit full-state scratch count.
+Rejected: `recommend`, G3 offload, G2 except as a [hybrid G2](#hybrid-g2), and
+speculative sub-block matching without an explicit full-state scratch count.
 
 ## Other cache modes
 
@@ -527,7 +556,8 @@ an explicit full-state scratch count.
 AgentX snapshot, warmup and continuous-profile traffic supports G2 on vLLM with
 one aggregated worker, one prefill and one decode worker, or several aggregated
 workers that each own a `dp_rank_local` G2. All need `attention_data: 1`, static
-workers and no speculative decoding. Either G2 scope works with one worker per
+workers and no speculative decoding, except MTP for a [hybrid G2](#hybrid-g2).
+Either G2 scope works with one worker per
 role; G3 is not supported. `kvcr` is accepted; it pulls only when a router hint
 names a peer worker. Results are qualified `functional_only`.
 

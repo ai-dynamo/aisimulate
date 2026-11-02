@@ -17,7 +17,7 @@ use super::vllm_backend::{
     DestinationReservation as VllmDestinationReservation,
     StoreSourceSnapshot as VllmStoreSourceSnapshot, VllmAcquire, VllmKvManager,
 };
-pub(crate) use super::vllm_backend::{NativeAllocation, SourceReuseDependency};
+pub(crate) use super::vllm_backend::{NativeAllocation, SourceReuseDependency, StateHandoff};
 use super::{AllocationRequirement, DestinationReservationMode, G1Acquire, GroupedKvPool};
 
 fn into_g1_acquire<T>(outcome: VllmAcquire<T>) -> G1Acquire<T> {
@@ -300,14 +300,48 @@ impl G1Manager {
         lease: &BlockRequestLease,
         g1_prefix_blocks: usize,
         transferred_suffix: &[crate::engine::common::hashing::SequenceHash],
+        restores_state: bool,
     ) -> G1Acquire<DestinationReservation> {
         into_g1_acquire(self.inner.reserve_external_prefix_lease(
             owner,
             lease,
             g1_prefix_blocks,
             transferred_suffix,
+            restores_state,
         ))
         .map(|inner| DestinationReservation { inner })
+    }
+
+    /// Queue newly published states for a host tier.
+    pub(crate) fn record_state_handoffs(&mut self) {
+        self.inner.record_state_handoffs();
+    }
+
+    pub(crate) fn take_state_handoffs(&mut self) -> Vec<StateHandoff> {
+        self.inner.take_state_handoffs()
+    }
+
+    pub(crate) fn take_state_handoffs_of(&mut self, owner: Uuid) -> Vec<StateHandoff> {
+        self.inner.take_state_handoffs_of(owner)
+    }
+
+    /// Blocks of one recurrent state, when G1 has a state cache.
+    pub(crate) fn blocks_per_state(&self) -> Option<usize> {
+        self.inner.blocks_per_state()
+    }
+
+    pub(crate) fn state_handoff_is_live(&self, handoff: &StateHandoff) -> bool {
+        self.inner.state_handoff_is_live(handoff)
+    }
+
+    pub(crate) fn attach_state_handoff_dependency(
+        &mut self,
+        handoff: &StateHandoff,
+        slots: &[usize],
+        dependency: SourceReuseDependency,
+    ) -> bool {
+        self.inner
+            .attach_state_handoff_dependency(handoff, slots, dependency)
     }
 
     pub(crate) fn native_destination_pending_dependencies(

@@ -780,6 +780,12 @@ impl VllmBlockPool {
         }
     }
 
+    /// Whether `id` is still a cached copy of state key `key`. A copy whose
+    /// request was preempted in the pass that published it is gone.
+    pub(crate) fn holds_state_key(&self, id: BlockCopyId, key: CacheKey) -> bool {
+        self.copies.contains_key(id) && self.state_key(id) == Some(key)
+    }
+
     pub(crate) fn is_private(&self, id: BlockCopyId) -> bool {
         self.copies
             .get(id)

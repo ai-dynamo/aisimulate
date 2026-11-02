@@ -1002,14 +1002,24 @@ impl EngineConfig {
                 self.backend == Backend::Vllm,
                 "state_cache is supported only for backend=vllm"
             );
-            ensure!(
-                self.native_host_offload.is_none(),
-                "state_cache does not support native_host_offload in the G1-only implementation"
-            );
+            if let Some(host) = &self.native_host_offload {
+                // vLLM's CPU connectors hit a hybrid model at block boundaries
+                // (Mamba align mode); vLLM 0.24's connector stores no states.
+                ensure!(
+                    self.prefix_match_unit == Some(self.block_size),
+                    "state_cache with native_host_offload requires prefix_match_unit equal to block_size"
+                );
+                ensure!(
+                    host.connector != G2Connector::OffloadingV024,
+                    "state_cache with native_host_offload requires connector offloading_v0_32 or simple_cpu_v0_32"
+                );
+            }
             ensure!(
                 self.g3_offload.is_none(),
-                "state_cache does not support g3_offload in the G1-only implementation"
+                "state_cache does not support g3_offload"
             );
+            // A KVCR pull carries no recurrent state.
+            ensure!(self.kvcr.is_none(), "state_cache does not support kvcr");
             ensure!(
                 self.prefix_match_unit.is_none()
                     || self.prefix_match_unit == Some(self.block_size)
@@ -1255,9 +1265,12 @@ impl EngineConfig {
                 self.enable_prefix_caching,
                 "native_host_offload requires enable_prefix_caching=true"
             );
+            // Replay does not model the EAGLE block drop hiding the last block,
+            // and the state, that a host load restored.
             ensure!(
-                self.aic_nextn.is_none(),
-                "native_host_offload does not support aic_nextn in the initial implementation"
+                self.aic_nextn.is_none()
+                    || (self.state_cache.is_some() && self.disable_eagle_block_drop),
+                "native_host_offload with aic_nextn requires state_cache and disable_eagle_block_drop"
             );
             let kv_bytes_per_token = self.kv_cache_bytes_per_token.ok_or_else(|| {
                 anyhow::anyhow!(
@@ -1942,8 +1955,11 @@ mod tests {
                 "enable_prefix_caching=true",
             ),
             (
-                |config| config.aic_nextn = Some(1),
-                "does not support aic_nextn",
+                |config| {
+                    config.aic_nextn = Some(1);
+                    config.disable_eagle_block_drop = true;
+                },
+                "native_host_offload with aic_nextn requires state_cache and disable_eagle_block_drop",
             ),
             (
                 |config| {
@@ -1973,6 +1989,62 @@ mod tests {
                     .unwrap();
                 },
                 "g3_offload requires host_offload.connector=offloading_v0_24",
+            ),
+        ];
+        for &(mutate, expected) in cases {
+            assert_invalid_host_config(mutate, expected);
+        }
+    }
+
+    /// A hybrid G2 under MTP: a state cache at block granularity, a vLLM 0.32
+    /// connector and the EAGLE block drop off.
+    fn hybrid_mtp_host_config(config: &mut EngineConfig) {
+        config.native_host_offload.as_mut().unwrap().connector = G2Connector::SimpleCpuV032;
+        config.state_cache = Some(StateCacheConfig {
+            bytes_per_request: 1500,
+            num_speculative_states: None,
+            prefill_checkpoint: false,
+            junction_checkpoints: false,
+        });
+        config.prefix_match_unit = Some(config.block_size);
+        config.aic_nextn = Some(3);
+        config.disable_eagle_block_drop = true;
+    }
+
+    #[test]
+    fn state_cache_with_g2_needs_block_boundaries_a_v0_32_connector_and_no_block_drop() {
+        let mut config = native_host_offload_config();
+        hybrid_mtp_host_config(&mut config);
+        config.validate().unwrap();
+        let cases: &[InvalidHostConfigCase] = &[
+            (
+                |config| {
+                    hybrid_mtp_host_config(config);
+                    config.prefix_match_unit = None;
+                },
+                "state_cache with native_host_offload requires prefix_match_unit equal to block_size",
+            ),
+            (
+                |config| {
+                    hybrid_mtp_host_config(config);
+                    config.native_host_offload.as_mut().unwrap().connector =
+                        G2Connector::OffloadingV024;
+                },
+                "state_cache with native_host_offload requires connector offloading_v0_32 or simple_cpu_v0_32",
+            ),
+            (
+                |config| {
+                    hybrid_mtp_host_config(config);
+                    config.disable_eagle_block_drop = false;
+                },
+                "native_host_offload with aic_nextn requires state_cache and disable_eagle_block_drop",
+            ),
+            (
+                |config| {
+                    hybrid_mtp_host_config(config);
+                    config.kvcr = Some(KvcrConfig::default());
+                },
+                "state_cache does not support kvcr",
             ),
         ];
         for &(mutate, expected) in cases {

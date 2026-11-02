@@ -326,6 +326,11 @@ eviction order of the CPU cache, how long a store holds its G1 source blocks,
 what a preemption waits for, and the engine step that submits the stores of a
 finished request.
 
+With a state cache, the same profiles also keep recurrent states, following the
+same files: the connectors' hybrid lookup and their stores of the states the
+scheduler hands off, with the G1 side in
+`crates/core/src/engine/kv_manager/{g1_manager,state_cache_manager,vllm_backend}.rs`.
+
 The speculative scheduling/progress corrections in repository-root files
 `crates/core/src/engine/scheduler/vllm/{core,policy,tests}.rs` and
 `crates/core/src/engine/common/speculative.rs` are independently written,

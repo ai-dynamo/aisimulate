@@ -7,7 +7,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use super::{HostOffloadObservation, HostOffloadObservationData, HostOffloadObserver};
-use crate::engine::common::hashing::SequenceHash;
+use crate::engine::common::hashing::{SequenceHash, compute_next_sequence_hash};
 use crate::engine::offload_lru::Lru;
 use crate::engine::offload_transfer::{self, Direction, FairTransfers, Link};
 use crate::engine::{KvBlock, KvEventData, StoredBlocks};
@@ -27,6 +27,14 @@ impl HostBlockKey {
 
     pub(crate) const fn sequence_hash(self) -> SequenceHash {
         self.0
+    }
+
+    /// Slot `slot` (one per Mamba KV cache group) of the recurrent state at
+    /// the block boundary whose sequence hash is `prefix`, chained like a
+    /// child block of that prefix.
+    pub(crate) fn state(prefix: SequenceHash, slot: usize) -> Self {
+        const STATE_TAG: u64 = 0x5354_4154_455f_4b45; // "STATE_KE"
+        Self(compute_next_sequence_hash(prefix, STATE_TAG + slot as u64))
     }
 }
 

@@ -276,8 +276,9 @@ fn validate_public_agentic_engine(
         );
         for role in &roles {
             ensure!(
-                role.rank.aic_nextn.is_none(),
-                "agentic host offload requires speculative decoding disabled"
+                role.rank.aic_nextn.is_none()
+                    || (role.rank.state_cache.is_some() && role.rank.disable_eagle_block_drop),
+                "agentic host offload requires speculative decoding disabled, except MTP with state_cache and disable_eagle_block_drop"
             );
             ensure!(
                 role.rank.backend == Backend::Vllm,

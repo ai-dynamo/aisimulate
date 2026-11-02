@@ -123,10 +123,24 @@ def test_manual_geometry_rejects_invalid_unsigned_integers(field, value):
         ({"block_size": None}, "explicit positive block_size"),
         ({"bytes_per_token": "auto"}, "explicit positive bytes_per_token"),
         ({"capacity": {"type": "default"}}, "requires fixed"),
-        ({"host_offload": {"num_host_blocks": 8}}, "G1 only"),
+        # A state cache with G2 needs block-sized matching and a vLLM 0.32 connector.
+        ({"host_offload": {"num_host_blocks": 8}}, "prefix_match_unit equal to block_size"),
+        ({"prefix_match_unit": 64, "host_offload": {"num_host_blocks": 8}}, "connector offloading_v0_32"),
         (
-            {"host_offload": {"num_host_blocks": 8}, "g3_offload": {"scope": "worker_local", "num_g3_blocks": 8}},
-            "G1 only",
+            {
+                "prefix_match_unit": 64,
+                "host_offload": {"num_host_blocks": 8, "connector": "simple_cpu_v0_32"},
+                "g3_offload": {"scope": "worker_local", "num_g3_blocks": 8},
+            },
+            "g3_offload",
+        ),
+        (
+            {
+                "prefix_match_unit": 64,
+                "host_offload": {"num_host_blocks": 8, "connector": "simple_cpu_v0_32"},
+                "kvcr": {},
+            },
+            "kvcr",
         ),
         ({"state_cache": {"bytes_per_request": 1500, "tokens_per_block": 64}}, "Extra inputs"),
     ],
@@ -783,3 +797,28 @@ def test_hybrid_prefix_cache_switches_default_off(forbid_estimators):
     assert "disable_eagle_block_drop" not in rank
     with pytest.raises(ValidationError, match="require an explicit prefix_match_unit"):
         KvCachePredictionConfig.model_validate({**KV, "state_cache": {**STATE, "junction_checkpoints": True}})
+
+
+def test_hybrid_g2_under_mtp_reaches_the_native_rank(forbid_estimators):
+    host = {"num_host_blocks": 64, "connector": "simple_cpu_v0_32"}
+    raw = _public(timing="default", prefix_match_unit=64, host_offload=host, capacity={"type": "fixed", "blocks": 32})
+    raw["engine"]["speculation"] = {**MTP, "disable_eagle_block_drop": True}
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    )
+    rank = runtime.execution_spec["spec"]["engine"]["rank"]
+    assert rank["state_cache"] == STATE
+    assert rank["native_host_offload"]["connector"] == "simple_cpu_v0_32"
+    assert (rank["aic_nextn"], rank["disable_eagle_block_drop"]) == (3, True)
+
+
+@pytest.mark.parametrize("state_cache, drop_off", [(None, True), (STATE, False)])
+def test_mtp_with_g2_needs_a_state_cache_and_the_drop_off(state_cache, drop_off):
+    host = {"num_host_blocks": 8, "connector": "simple_cpu_v0_32"}
+    raw = _public(timing="default", state_cache=state_cache, prefix_match_unit=64, host_offload=host)
+    if state_cache is None:
+        del raw["engine"]["workers"]["aggregated"]["kv_cache"]["prefix_match_unit"]
+    raw["engine"]["speculation"] = {**MTP, "disable_eagle_block_drop": drop_off}
+    with pytest.raises(ValidationError, match="requires state_cache and disable_eagle_block_drop"):
+        CorePredictionConfig.model_validate(raw)

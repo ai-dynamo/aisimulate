@@ -251,6 +251,15 @@ def manual_block_bytes(block_size: int | None, bytes_per_token: int | str) -> in
     return block_bytes
 
 
+def _validate_hybrid_host_offload(connector: str, prefix_match_unit: int | None, block_size: int | None) -> None:
+    # vLLM's CPU connectors hit a hybrid model at block boundaries; vLLM 0.24's
+    # connector stores no states.
+    if prefix_match_unit is None or (block_size is not None and prefix_match_unit != block_size):
+        raise ValueError("state_cache with host_offload requires prefix_match_unit equal to block_size")
+    if connector == "offloading_v0_24":
+        raise ValueError("state_cache with host_offload requires connector offloading_v0_32 or simple_cpu_v0_32")
+
+
 def _omit_default_checkpoint_switches(self, handler: Any) -> dict[str, Any]:
     # Keep the existing state_cache shape unless a checkpoint switch is on.
     payload = handler(self)
@@ -361,9 +370,11 @@ class KvCachePredictionConfig(StrictModel):
             if self.capacity.type != "fixed":
                 raise ValueError("state_cache requires fixed capacity (blocks or bytes)")
             if self.host_offload is not None:
-                raise ValueError("state_cache supports G1 only; host_offload is not supported")
+                _validate_hybrid_host_offload(self.host_offload.connector, self.prefix_match_unit, self.block_size)
             if self.g3_offload is not None:
-                raise ValueError("state_cache supports G1 only; g3_offload is not supported")
+                raise ValueError("state_cache does not support g3_offload")
+            if self.kvcr is not None:
+                raise ValueError("state_cache does not support kvcr")
         if infer_state:
             # Capacity and prefix alignment use the backend's resolved block size.
             return self
@@ -1357,7 +1368,12 @@ def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> Non
         if worker is None:
             continue
         if worker.kv_cache.host_offload is not None:
-            raise ValueError(f"{kind} speculation does not support host_offload")
+            if kind != "mtp":
+                raise ValueError(f"{kind} speculation does not support host_offload")
+            # Replay does not model the EAGLE block drop hiding the last block,
+            # and the state, that a host load restored.
+            if worker.kv_cache.state_cache is None or not engine.speculation.disable_eagle_block_drop:
+                raise ValueError("mtp speculation with host_offload requires state_cache and disable_eagle_block_drop")
         if kind == "ngram" and worker.timing.forward_model != "op_level":
             raise ValueError(f"{kind} speculation requires op_level timing")
         if kind != "ngram" and worker.kv_cache.capacity.type != "fixed":
@@ -1552,7 +1568,7 @@ def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
             )
         supported = role == "aggregated" if engine.mode == "aggregated" else engine.mode == "disaggregated"
         if engine.backend != "vllm" or not supported:
-            raise ValueError("state_cache requires backend=vllm and mode=aggregated or disaggregated (G1 only)")
+            raise ValueError("state_cache requires backend=vllm and mode=aggregated or disaggregated")
     # Both roles run the same hybrid model, and decode resumes from the transferred state.
     if engine.mode == "disaggregated" and roles and roles != ["prefill", "decode"]:
         raise ValueError("disaggregated state_cache must be set on both prefill and decode workers")

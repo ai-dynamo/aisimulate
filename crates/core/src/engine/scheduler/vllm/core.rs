@@ -861,7 +861,7 @@ impl VllmCore {
                     .expect("normalized MTP acceptance rates");
             SpeculativeDecodeSampler::new(rates, args.aic_mtp_seed.wrapping_add(seed_offset))
         });
-        let native_host_offload = args
+        let mut native_host_offload = args
             .native_host_offload
             .as_ref()
             .map(|config| {
@@ -888,6 +888,12 @@ impl VllmCore {
             args.aic_nextn.is_some() && !args.disable_eagle_block_drop,
         )
         .with_prefix_match_unit(args.prefix_match_unit);
+        if let (Some(adapter), Some(blocks_per_state)) =
+            (native_host_offload.as_mut(), kv_manager.blocks_per_state())
+        {
+            adapter.set_hybrid(blocks_per_state);
+            kv_manager.record_state_handoffs();
+        }
         if native_host_offload
             .as_ref()
             .is_some_and(VllmHostOffloadAdapter::holds_store_sources)
@@ -972,6 +978,11 @@ impl VllmCore {
     #[cfg(test)]
     pub(crate) fn connector_waiting_selections(&self) -> usize {
         self.state.connector_waiting_selections()
+    }
+
+    #[cfg(test)]
+    pub(super) fn host_offload(&self) -> Option<&VllmHostOffloadAdapter> {
+        self.native_host_offload.as_ref()
     }
 
     #[cfg(test)]
@@ -1592,7 +1603,66 @@ impl VllmCore {
             request.host_offload.as_deref_mut(),
         ) {
             let now_ms = adapter.current_time_ms();
+            // vLLM takes a pass's state hand-offs before a request can finish
+            // in it, so one finishing in its publishing pass still offers them.
+            for handoff in self.kv_manager.take_state_handoffs_of(uuid) {
+                adapter.store_state_handoff(
+                    &handoff,
+                    host,
+                    request.sequence.num_input_tokens(),
+                    self.args.block_size,
+                    &mut self.kv_manager,
+                    now_ms,
+                );
+            }
             adapter.finish_request(
+                uuid,
+                host,
+                &request.sequence.lease,
+                request.num_computed_tokens,
+                request.sequence.num_input_tokens(),
+                self.args.block_size,
+                &mut self.kv_manager,
+                now_ms,
+            );
+        }
+    }
+
+    /// Offer this pass's state hand-offs, then its computed blocks, to G2:
+    /// vLLM stores a step's boundary hand-offs before its blocks.
+    fn store_pass_blocks(&mut self, scheduled: &FxHashMap<Uuid, ScheduledWork>, now_ms: f64) {
+        let Some(adapter) = self.native_host_offload.as_mut() else {
+            return;
+        };
+        let (running, requests) = (&self.state.running, &mut self.state.requests);
+        for handoff in self.kv_manager.take_state_handoffs() {
+            let Some(request) = requests.get_mut(&handoff.owner) else {
+                continue;
+            };
+            let Some(host) = request.host_offload.as_deref_mut() else {
+                continue;
+            };
+            adapter.store_state_handoff(
+                &handoff,
+                host,
+                request.sequence.num_input_tokens(),
+                self.args.block_size,
+                &mut self.kv_manager,
+                now_ms,
+            );
+        }
+        for uuid in running
+            .iter()
+            .copied()
+            .filter(|uuid| scheduled.contains_key(uuid))
+        {
+            let Some(request) = requests.get_mut(&uuid) else {
+                continue;
+            };
+            let Some(host) = request.host_offload.as_deref_mut() else {
+                continue;
+            };
+            adapter.observe_completed_blocks(
                 uuid,
                 host,
                 &request.sequence.lease,
@@ -2119,13 +2189,21 @@ impl VllmCore {
                 {
                     counts.record(request.sequence.len(), cost.cached_tokens)?;
                 }
-                // vLLM records shared_prefix_boundary at every lookup from waiting.
-                let junction = self.kv_manager.prefix_junction(
-                    &request.sequence.sequence,
-                    &request.sequence.lease,
-                    cost.cached_tokens,
-                );
-                request.sequence.lease.set_junction(junction);
+                // vLLM records shared_prefix_boundary at every lookup from waiting
+                // and keeps it across a connector load, whose post-load path skips
+                // the lookup.
+                if !request
+                    .host_offload
+                    .as_deref()
+                    .is_some_and(VllmHostRequestState::has_activated_load)
+                {
+                    let junction = self.kv_manager.prefix_junction(
+                        &request.sequence.sequence,
+                        &request.sequence.lease,
+                        cost.cached_tokens,
+                    );
+                    request.sequence.lease.set_junction(junction);
+                }
                 if let (Some(adapter), Some(host)) = (
                     self.native_host_offload.as_mut(),
                     request.host_offload.as_deref_mut(),
@@ -2366,30 +2444,15 @@ impl VllmCore {
                 !stopped_at_queued_arrival && !self.state.waiting_members.is_empty();
         }
 
-        if let Some(adapter) = self.native_host_offload.as_mut() {
-            let (running, requests) = (&self.state.running, &mut self.state.requests);
-            for uuid in running
-                .iter()
-                .copied()
-                .filter(|uuid| scheduled.contains_key(uuid))
-            {
-                let Some(request) = requests.get_mut(&uuid) else {
-                    continue;
-                };
-                let Some(host) = request.host_offload.as_deref_mut() else {
-                    continue;
-                };
-                adapter.observe_completed_blocks(
-                    uuid,
-                    host,
-                    &request.sequence.lease,
-                    request.num_computed_tokens,
-                    request.sequence.num_input_tokens(),
-                    self.args.block_size,
-                    &mut self.kv_manager,
-                    now_ms,
-                );
-            }
+        // A hybrid G2 stores after emission, where replay reserves draft-token
+        // slots (vLLM does so while scheduling): a request preempted for them
+        // retracts the states its pass published, so it must not offer them.
+        let store_after_emission = self
+            .native_host_offload
+            .as_ref()
+            .is_some_and(VllmHostOffloadAdapter::is_hybrid);
+        if !store_after_emission {
+            self.store_pass_blocks(&scheduled, now_ms);
         }
 
         let compute_start_ms = self
@@ -2430,6 +2493,9 @@ impl VllmCore {
             prefill,
             &mut decode_acceptance,
         )?;
+        if store_after_emission {
+            self.store_pass_blocks(&scheduled, now_ms);
+        }
         // Emit the terminal signals for the requests the gate rejected above
         // (see the gate comment for why this can't be done inline).
         for uuid in rejected_uuids {

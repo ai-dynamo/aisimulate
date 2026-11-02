@@ -153,19 +153,20 @@ impl StateCacheManager {
     /// Publish this pass's internal checkpoint (vLLM 43b4aaea MambaManager's
     /// checkpoint column, cached by `cache_blocks`). The copy stays owned until
     /// the request's next allocation, like vLLM's `remove_skipped_blocks`
-    /// retiring it.
+    /// retiring it. Returns the published copies, for the host tier's boundary
+    /// hand-off.
     pub(crate) fn publish_checkpoint(
         &mut self,
         pool: &mut VllmBlockPool,
         state: &mut StateRequest,
         hash: Option<SequenceHash>,
-    ) {
+    ) -> Option<Vec<BlockCopyId>> {
         let copies = std::mem::take(&mut state.checkpoint);
         let Some(hash) = hash else {
             for id in copies {
                 pool.release(id);
             }
-            return;
+            return None;
         };
         for (&id, key) in copies.iter().zip(self.keys(hash)) {
             pool.cache_private_key(id, key);
@@ -176,6 +177,7 @@ impl StateCacheManager {
         for &id in &copies {
             self.hold_previous(state, id);
         }
+        Some(copies)
     }
 
     pub(crate) fn release_previous(&self, pool: &mut VllmBlockPool, state: &mut StateRequest) {
@@ -309,16 +311,18 @@ impl StateCacheManager {
         self.published_this_step.insert(hash);
     }
 
+    /// Returns the copies an align-mode checkpoint published, for the host
+    /// tier's boundary hand-off.
     pub(crate) fn commit(
         &mut self,
         pool: &mut VllmBlockPool,
         state: &mut StateRequest,
         computed_tokens: usize,
         checkpoint_hash: Option<SequenceHash>,
-    ) {
+    ) -> Option<Vec<BlockCopyId>> {
         assert!(computed_tokens >= state.computed_tokens);
         if computed_tokens == state.computed_tokens || state.working.is_empty() {
-            return;
+            return None;
         }
         Self::debug_assert_working_cached(pool, state);
         assert!(
@@ -330,16 +334,10 @@ impl StateCacheManager {
             // is released separately at its native lifetime boundary.
             state.computed_tokens = computed_tokens;
             if let Some(hash) = checkpoint_hash {
-                for (&id, key) in state.working.iter().zip(self.keys(hash)) {
-                    pool.cache_private_key(id, key);
-                }
-                state.working_cached = true;
-                state.snapshot.clone_from(&state.working);
-                state.snapshot_hash = Some(hash);
-                state.snapshot_step = self.step;
-                self.published_this_step.insert(hash);
+                self.publish_working(pool, state, hash);
+                return Some(state.working.clone());
             }
-            return;
+            return None;
         }
         if state.snapshot_owned {
             for &id in &state.snapshot {
@@ -348,9 +346,7 @@ impl StateCacheManager {
             state.snapshot_owned = false;
         }
         state.computed_tokens = computed_tokens;
-        let Some(hash) = checkpoint_hash else {
-            return;
-        };
+        let hash = checkpoint_hash?;
         for id in state.snapshot.drain(..) {
             pool.discard_inactive_state(id);
         }
@@ -359,6 +355,24 @@ impl StateCacheManager {
         }
         state.working_cached = true;
         // This is a non-owning alias: the request holds only its working refs.
+        state.snapshot.clone_from(&state.working);
+        state.snapshot_hash = Some(hash);
+        state.snapshot_step = self.step;
+        self.published_this_step.insert(hash);
+        None
+    }
+
+    /// Cache the working state as the align-mode snapshot at `hash`.
+    pub(crate) fn publish_working(
+        &mut self,
+        pool: &mut VllmBlockPool,
+        state: &mut StateRequest,
+        hash: SequenceHash,
+    ) {
+        for (&id, key) in state.working.iter().zip(self.keys(hash)) {
+            pool.cache_private_key(id, key);
+        }
+        state.working_cached = true;
         state.snapshot.clone_from(&state.working);
         state.snapshot_hash = Some(hash);
         state.snapshot_step = self.step;
