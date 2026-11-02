@@ -2730,8 +2730,11 @@ def test_weka_client_requires_explicit_runner_capability_and_reaches_native():
     }
     capabilities = EngineReplayRunnerFactory().capabilities()
     assert capabilities.supports_weka_client
-    with pytest.raises(ValueError, match="does not support weka_client"):
-        replace(capabilities, supports_weka_client=False).require_compatible(_spec(workload=workload))
+    unsupported = replace(capabilities, supports_weka_client=False)
+    with pytest.raises(ValueError, match="does not support weka_client 'agentx'"):
+        unsupported.require_compatible(_spec(workload=workload))
+    # Every runner replays the recorded timing.
+    unsupported.require_compatible(_spec(workload={**workload, "weka_client": "recorded"}))
     runtime = RecordingRuntime()
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload=workload))
     assert runtime.execution_spec["traffic"]["weka_client"] == "agentx"

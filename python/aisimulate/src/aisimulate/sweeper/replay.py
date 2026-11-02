@@ -616,8 +616,8 @@ class RunnerCapabilities:
                 raise ValueError("weka_client requires Weka input")
             if weka_client not in {"recorded", "agentx"}:
                 raise ValueError("weka_client must be 'recorded' or 'agentx'")
-            if not self.supports_weka_client:
-                raise ValueError("runner does not support weka_client; use --stack engine")
+            if weka_client == "agentx" and not self.supports_weka_client:
+                raise ValueError("runner does not support weka_client 'agentx'; use --stack engine")
         agentic_lanes = spec.workload.get("agentic_lanes")
         if agentic_lanes is not None:
             if type(agentic_lanes) is not int or agentic_lanes <= 0:

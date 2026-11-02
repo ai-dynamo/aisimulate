@@ -3741,7 +3741,8 @@ mod tests {
         let path = directory.path().join("trace.json");
         // m0 (outer 0) runs until 2.0. The flattened chain (outer 1 and 2) and
         // subagent s both start before then and end before m1 (outer 4).
-        // Subagent t starts after m1 ends.
+        // Subagent t and a second flattened chain (outer 6), forked from m1,
+        // start after m1 ends and end before m2 (outer 7).
         write_trace(
             &path,
             serde_json::json!([
@@ -3755,6 +3756,7 @@ mod tests {
                 {"t":2.5,"type":"subagent","agent_id":"t","subagent_type":"Explore","duration_ms":100,"status":"completed","requests":[
                     {"t":2.6,"type":"s","model":"model","in":4,"out":1,"hash_ids":[8],"api_time":0.05}
                 ]},
+                {"t":2.8,"type":"s","model":"model","in":12,"out":1,"hash_ids":[1,2,9],"api_time":0.1},
                 {"t":3.0,"type":"s","model":"model","in":16,"out":1,"hash_ids":[1,2,5,6]}
             ]),
         );
@@ -3782,6 +3784,17 @@ mod tests {
         assert_eq!(
             edges(&rows, "outer:5:inner:0"),
             [("outer:4".into(), Completion, 100.0, Spawn)]
+        );
+        // Outer 6 has the same spawning and joining turns as subagent t, but
+        // flattened chains form their own groups: it starts as m1 returns. The
+        // recorded timing would start it 700 ms after m1 returns, and a group
+        // shared with t 300 ms after.
+        assert_eq!(
+            edges(&rows, "outer:6"),
+            [
+                ("outer:4".into(), Completion, 0.0, ReplayBarrier),
+                ("outer:4".into(), Completion, 0.0, Spawn),
+            ]
         );
     }
 

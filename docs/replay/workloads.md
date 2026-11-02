@@ -253,7 +253,13 @@ default), AISimulate picks `relative` for the whole corpus if any child request
 is earlier than its subagent marker, and `absolute` otherwise. The chosen basis
 is reported as `weka_nested_timestamp_basis`.
 
+A Weka corpus can name several source models. Replay runs every request on
+`engine.model` and records the source models and target under
+`agentic_model_projection`.
+
 <a id="weka-client"></a>
+
+### Weka client
 
 `traffic.source.client` chooses whose replay of the corpus AISimulate follows.
 With `recorded` (the default), a subagent starts at its recorded offset from
@@ -262,11 +268,12 @@ and the streams of a play share their whole common hash prefix. `agentx`
 follows the AgentX client, the AIPerf fork in the
 [behavioral reference](agentic/continuous-profiles.md#behavioral-reference):
 
-- Every subagent and flattened chain is a child of the main conversation. The
-  spawning turn is the latest main turn listed before the child; the joining
-  turn is the first main turn listed after it that starts at or after the
-  child's recorded end. Subagents with the same spawning and joining turns form
-  one group, and so do flattened chains.
+- Every subagent and flattened chain is a child of the main conversation. A
+  flattened chain is a conversation that the trace lists among its top-level
+  requests. The spawning turn is the latest main turn listed before the child;
+  the joining turn is the first main turn listed after it that starts at or
+  after the child's recorded end. Subagents with the same spawning and joining
+  turns form one group, and so do flattened chains.
 - A group starts when its spawning turn returns, and each child starts at its
   offset from the group's earliest start. A group that started before the
   spawning turn's recorded end starts with that turn instead, each child at its
@@ -282,12 +289,8 @@ follows the AgentX client, the AIPerf fork in the
   chat-template header tokens. Corpora that declare tool or system tokens are
   rejected.
 
-The engine stack supports the option. Other runners must advertise
-`supports_weka_client`, or they reject it.
-
-A Weka corpus can name several source models. Replay runs every request on
-`engine.model` and records the source models and target under
-`agentic_model_projection`.
+Every runner accepts `recorded`. A runner accepts `agentx` only if it
+advertises `supports_weka_client`, as the engine stack does.
 
 <a id="agentic-load-controls"></a>
 

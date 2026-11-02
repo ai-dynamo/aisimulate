@@ -216,6 +216,7 @@ Every `Workload` field:
 | `load_type` | `str \| None` | `None` | Explicit traffic load kind passed to replay; must be `"trace_timestamps"` when `agentic_lanes` or `agentic_snapshot` is set. |
 | `trace_path` | `str \| None` | `None` | Path to a replay trace. Its presence selects the trace shape and **forbids** all synthetic fields. |
 | `trace_format` | `str` | `"mooncake"` | Replay-ready trace schema. A runner may validate supported formats. |
+| `weka_client` | `Literal["recorded", "agentx"] \| None` | `None` | [Weka client](../replay/workloads.md#weka-client) whose replay to follow; `None` selects `recorded`. Requires `source_type: trace`, `trace_path`, and `trace_format: weka`. |
 | `arrival_speedup_ratio` | `float` | `1.0` | Scales the trace's inter-arrival times (open-loop trace only). `>1` speeds arrivals up. |
 | `agentic_lanes` | `int \| None` | `None` | Positive number of client play lanes for `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay; does not cap concurrent child requests. Requires `source_type: trace`, `trace_path`, and `load_type: trace_timestamps`, with no `replay_concurrency`. |
 | `agentic_snapshot` | `AgenticSnapshotOptions \| None` | `None` (unset) | Optional object with required unsigned 64-bit `seed` (`0` through `2^64 - 1`) and the optional import fields below. Requires positive `agentic_lanes`, `source_type: trace`, `trace_path`, and `load_type: trace_timestamps`, with no `replay_concurrency`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. |
@@ -253,7 +254,7 @@ cuts for matched comparisons. The live warmup policy follows the pinned referenc
 request-count contract, not byte-exact HTTP prompt parity; see the
 [profile limits](../replay/workloads.md#agentic-profile). Injected runners must advertise
 `supports_agentic_profile`, plus `supports_agentic_live_warmup` for `live_trajectory_v1` and
-`supports_weka_client` for `weka_client`; unsupported runners fail validation.
+`supports_weka_client` for `weka_client: agentx`; unsupported runners fail validation.
 
 ## Validation (`Workload._validate_workload`)
 
