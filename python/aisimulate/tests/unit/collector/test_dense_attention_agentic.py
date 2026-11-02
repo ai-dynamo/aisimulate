@@ -138,3 +138,17 @@ def test_vllm_large_batch_decode_uses_static_native_dispatch():
     ns["can_use_trtllm_attention"] = lambda *_args, **_kwargs: False
     wrapper = ns["_attention_memory_bytes"](case)
     assert wrapper - native == 8192 * 32 * 128 * 16
+
+
+@pytest.mark.parametrize(
+    "shape,context,observed_peak",
+    [([1, 262144, 4, 4, 128], True, 10239893504), ([1, 1048575, 32, 32, 128], False, 43006588416)],
+)
+def test_sglang_native_mha_estimate_covers_both_workspace_allocations(monkeypatch, shape, context, observed_peak):
+    # B300, SGLang 0.5.21: both native workspace buffers
+    # remain live. These measured peaks exposed the missing second reserve.
+    monkeypatch.delenv("SGLANG_FLASHINFER_WORKSPACE_SIZE", raising=False)
+    ns = collector_functions("sglang", 268)
+    case = shape + [False, False, context, 0, 128, -1, None, False, None, "trtllm_mha", None]
+    native = ns["_attention_memory_bytes"](case)
+    assert native >= observed_peak

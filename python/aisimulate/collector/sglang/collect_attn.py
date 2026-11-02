@@ -295,6 +295,11 @@ def _attention_memory_bytes(case):
     page_tables = 4 * request_capacity * ((max(32768, total) + page - 1) // page)
     metadata = 64 * b * total + 2 * tokens * n * vd + page_tables
     workspace = max(4 << 30, int(os.getenv("SGLANG_FLASHINFER_WORKSPACE_SIZE", "0")))
+    if backend == "trtllm_mha":
+        # v0.5.21 trtllm_mha_backend.py:194-196 retains its superclass's
+        # flashinfer_workspace, then :294-301 allocates a separate zeroed
+        # workspace. Both can be the collector's 4GiB floor simultaneously.
+        workspace *= 2
     return cache + inputs + metadata + workspace
 
 

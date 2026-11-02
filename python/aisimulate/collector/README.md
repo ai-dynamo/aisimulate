@@ -62,7 +62,9 @@ of the collecting GPU's total memory. The backend-specific estimates cover
 Q/K/V, output, packed/layout-conversion copies, paged cache, history seeds,
 metadata and a workspace reserve. vLLM also accounts for the selected
 FlashInfer wrapper's query-dependent workspace, which its native TRTLLM API
-path does not allocate. CPU-only planning retains all declared cases. These
+path does not allocate. SGLang TRTLLM-MHA retains both its inherited FlashInfer
+workspace and its own native workspace; admission reserves both. CPU-only
+planning retains all declared cases. These
 are conservative admission estimates, not native allocation guarantees;
 allocator fragmentation and larger backend workspaces can still fail at run
 time. The existing context `max_kv_elements` ceiling also remains in effect,
