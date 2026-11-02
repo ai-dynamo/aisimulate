@@ -161,13 +161,14 @@ padding makes `sum_prefill_tokens` slightly larger than Σ extend).
 
 The feature space is a fixed 135-name ABI; an artifact lists the names it reads
 (a preset), and only those are computed into the vector it consumes. The `req_*` and
-`slot*` names are NaN when a step has no usable per-request lists. Three presets exist:
+`slot*` names are NaN when a step has no usable per-request lists. The presets are:
 
 | Preset | Slots | Source |
 | --- | --- | --- |
 | `v1` | 21 aggregates + their `log1p` and derived ratios | stock FPM v1, no lists needed |
-| `atomic5` (default for decode workers) | n, Σp, max p, min p, Σp²: the atomic set of a decode step (§3.1) | per-request lists |
-| `atomic10` (default for prefill and aggregated workers) | n, Σe, max e, min e, Σp, max p, min p, Σe·p, Σe², Σp²: the atomic set of the 18 (§3.1) | per-request lists |
+| `fpm5` (default for every worker type) | the 17 `v1` aggregates computable from the five FPM v1 counts and sums, without the variance terms | stock FPM v1, no lists or variances needed |
+| `atomic5` | n, Σp, max p, min p, Σp²: the atomic set of a decode step (§3.1) | per-request lists |
+| `atomic10` | n, Σe, max e, min e, Σp, max p, min p, Σe·p, Σe², Σp²: the atomic set of the 18 (§3.1) | per-request lists |
 | `sglang18` | the 18 per-request features below; the set the atomic ones were derived from, kept for comparison and for prefill models that must extrapolate across workloads | per-request lists |
 | `hisim` | `req_batch_size` + 32 request slots × (present, past, extend), requests sorted by past descending | per-request lists |
 
@@ -210,8 +211,10 @@ train/test pair, so decode uses the 5. Prefill: the 10 atomic features are equal
 in-distribution (every same-workload cell within 0.05 pp), so prefill uses the 10. The one
 caveat: a GBDT cannot form products, and when the training workload differs from the
 simulated one the missing derived axis n · Σe costs 2–35 pp on cross-workload pairs
-(§8.8 b); for that train with `--features sglang18`. The shipped defaults are the atomic
-sets: `atomic5` for decode workers, `atomic10` for prefill and aggregated workers.
+(§8.8 b); for that train with `--features sglang18`. The atomic sets are explicit
+opt-ins (`--features atomic5` for decode workers, `--features atomic10` for prefill and
+aggregated workers); the shipped default is the aggregate `fpm5` set, which trains on any
+FPM stream.
 
 | role | atomic features | count | vs 18 features |
 | --- | --- | --- | --- |
@@ -278,8 +281,9 @@ Reading the tables:
   versus 4.6–5.3 µs. The feature build is a few hundred nanoseconds; the time is the
   400-tree walk, and trees fitted on fewer axes are not shallower.
 
-The shipped defaults are the atomic sets (`atomic5` decode, `atomic10` prefill /
-aggregated); `--features sglang18` selects the 18. Raw output:
+The atomic sets (`atomic5` decode, `atomic10` prefill / aggregated) are explicit
+`--features` choices; `--features sglang18` selects the 18. The shipped default is the
+aggregate `fpm5` set, which needs no request lists. Raw output:
 `feature_ablation_*.txt` and `estimator_latency_by_feature_set.csv` in the playground
 `reports/`.
 
@@ -817,14 +821,15 @@ Four findings support this:
    (LongBench-trained → ShareGPT 29 % → 69 %), because the trees cannot rebuild n · Σe
    (§3.1, §8.8 b). For a model trained on the traffic it will simulate, 10 is the set.
 
-The atomic sets are the trainer's default features (`atomic5` for `--worker-type decode`,
-`atomic10` otherwise). The tree size is set on the command line:
+These measurements used the atomic sets (`--features atomic5` for `--worker-type decode`,
+`--features atomic10` otherwise), which are explicit options; the trainer's default is
+the aggregate `fpm5` set. The tree size is set on the command line:
 
 ```
-# decode (features default to atomic5)
---max-iter 100 --learning-rate 0.2 --max-leaf-nodes 7
-# prefill (features default to atomic10)
---max-iter 100 --learning-rate 0.2 --max-leaf-nodes 15
+# decode
+--features atomic5 --max-iter 100 --learning-rate 0.2 --max-leaf-nodes 7
+# prefill
+--features atomic10 --max-iter 100 --learning-rate 0.2 --max-leaf-nodes 15
 ```
 
 The CLI's tree-size defaults (600 trees, lr 0.05, 31 leaves) are unchanged. What follows

@@ -46,6 +46,35 @@ model = RustForwardPassPerfModel.best_available(config)
 print(model.diagnostics()["provenance"])
 ```
 
+### Per-iteration queries
+
+`estimate_forward_pass_time_ms(metrics_by_rank)` prices one iteration from its
+per-attention-DP-rank `ForwardPassMetrics` list. Every estimator handles that
+list itself: native models price each rank and take the maximum, correction
+uses the heaviest rank, and regression and learned models use joint cross-rank
+features. A rank is prefill work only when it schedules fresh prefill tokens
+(`sum_prefill_tokens > 0`) and decode work when it schedules decode requests.
+
+`estimate_forward_pass_detailed(metrics_by_rank)` returns the same latency with
+its composition. Native estimators record one `ranks` entry per input rank, with
+its uncorrected `latency_ms` (an iteration that schedules no work on any rank
+returns no entries); `max_rank`, `native_latency_ms` and
+`correction_factor` explain the reduction. Whole-model FPM ranks carry their
+direct lookups in `queries` (see [Direct FPM query evidence](api/python.md#direct-fpm-query-evidence)).
+Operation-graph ranks (op-level models and DeepSeek-V4.1 stage graphs) carry
+`operations` instead: name-folded entries with `name`, `latency_ms`,
+`energy_wms`, `source` and `details` (SOL comparison or its unavailable reason,
+and executed measurement substitutions), the same type as
+[static phase diagnostics](api/python.md#static-phase-diagnostics). A
+prefill-only or decode-only rank reports the operations of that phase at the
+rank's shape. A mixed rank folds every operation that its composition prices:
+the combined non-attention pass, context attention at the prefill shape and
+decode attention at the decode shape. A stage-graph rank reports the stage
+children that it prices. Each rank's entries sum to its latency, before online
+correction; reporting them does not change any estimate. The field is additive,
+omitted when empty, and absent for whole-model FPM. Learned and regression
+estimators have no rank entries.
+
 ### Engine identity controls
 
 Canonical JSON/YAML requires string values for text fields. Numeric-looking YAML
@@ -197,8 +226,11 @@ KV length `s`, use `num_decode_requests = B*v` and
 `sum_decode_kv_tokens = B*v*s`. Their ratio remains `s`; the query does not apply
 the width again. `predict_decode_latency_total()` wraps the same counters.
 `static_phase_latency()` instead takes the real request batch and applies the
-configured verification width internally. This OP telemetry convention is
-distinct from the [STP FPM speculative approximation](methods/whole-forward.md#estimate-speculative-decode-from-an-stp-fpm):
+configured verification width internally. Here `s` is the attention length
+including the current token: static decode evaluates one step at
+`input_tokens + 1`, so `static_phase_latency(batch_size=B, input_tokens=s-1,
+output_tokens=2, prefill=False)` prices the same step as the packed counters.
+This OP telemetry convention is distinct from the [STP FPM speculative approximation](methods/whole-forward.md#estimate-speculative-decode-from-an-stp-fpm):
 that per-query `draft_length` option takes logical decode request counts and
 total past KV, widens the former and preserves the latter.
 
@@ -212,6 +244,20 @@ STP FPM can estimate pure speculative decode via the query-only `draft_length`
 option without setting `speculation` or `nextn`. Explicit measured
 [speculative-round profiles](methods/whole-forward.md#recorded-speculative-round-identity)
 have their own identity contract.
+
+The two FPM speculative paths keep separate query rules:
+
+- **Path 1** scales an ordinary STP FPM estimate by the empirical
+  `draft_length` formula and accepts decode-only ranks. As in every rank
+  dispatch, a rank is prefill work only when it schedules fresh prefill tokens
+  (`sum_prefill_tokens > 0`). A fully prefix-cached prefill record is therefore
+  decode-only.
+- **Path 2**, a measured end-to-end SD-round profile, rejects `draft_length`
+  because its measurements already include speculative decoding: "a measured
+  speculative-round profile already includes speculative decoding; omit
+  draft_length". Without the option it prices one attention-DP rank. A mixed
+  rank costs its measured prefill plus a full measured decode round, not a
+  marginal decode share, because the measured rounds have no pass baseline.
 
 The legacy hybrid route, `forward_model="fpm"` with materialized OP draft
 operations, is deprecated and emits a construction warning. Existing hybrid
