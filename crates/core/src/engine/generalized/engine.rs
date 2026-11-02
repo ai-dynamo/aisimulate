@@ -391,6 +391,41 @@ impl<C: RankEngine> GeneralizedMockerEngine<C> {
         })
     }
 
+    /// Earliest held-output release across ranks (see
+    /// [`RankEngine::next_emission_ms`]).
+    pub fn next_emission_ms(&self) -> Option<f64> {
+        if self.poisoned.is_some() {
+            return None;
+        }
+        self.ranks
+            .iter()
+            .filter_map(RankEngine::next_emission_ms)
+            .min_by(f64::total_cmp)
+    }
+
+    /// Release every rank's held outputs due at `now_ms`, in rank order, even
+    /// while a pass is in flight.
+    pub fn take_due_emissions(
+        &mut self,
+        now_ms: f64,
+    ) -> Result<EngineEffects<C::PassCompletionEffects>> {
+        self.ensure_healthy()?;
+        validate_time(now_ms, "emission time")?;
+        let mut effects = Vec::new();
+        for dp_rank in 0..self.ranks.len() {
+            let due = self.ranks[dp_rank]
+                .take_due_emissions(now_ms)
+                .with_context(|| format!("releasing outputs of attention-DP rank {dp_rank}"));
+            if let Some(due) = due.map_err(|error| self.poison(error))? {
+                effects.push(RankEffects {
+                    dp_rank: dp_rank as u32,
+                    effects: due,
+                });
+            }
+        }
+        Ok(EngineEffects { by_rank: effects })
+    }
+
     /// Earliest valid internal-work deadline across all ranks.
     pub fn next_internal_deadline_ms(&self) -> Option<f64> {
         if self.poisoned.is_some() || self.pending_pass.is_some() {

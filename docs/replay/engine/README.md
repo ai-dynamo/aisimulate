@@ -188,9 +188,11 @@ engine:
 ```
 
 Each worker has `workers` detokenizer servers, shared by its attention-DP
-ranks, and each request belongs to one of them. When a pass ends, each server
-takes the outputs of that pass that belong to it as one job, after the jobs it
-has taken before. A job takes `base_ms + per_output_us × outputs`, where an
+ranks, and each request belongs to one of them. When the engine returns a
+pass's outputs, at the pass end or, with vLLM's
+[`launch`](workers.md#vllm-pass-launch), once the next pass is launched, each
+server takes the outputs of that pass that belong to it as one job, after the
+jobs it has taken before. A job takes `base_ms + per_output_us × outputs`, where an
 output is one request's new tokens in the pass, and the client receives every
 output of the job when it ends.
 

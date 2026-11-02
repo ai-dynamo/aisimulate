@@ -47,6 +47,7 @@ engine:
 | `workers.<role>.scheduler.prefill_schedule_interval` | `1` | predict only | vLLM only. See [vLLM prefill schedule interval](#vllm-prefill-schedule-interval). |
 | `workers.<role>.scheduler.prefill_decode_interval` | `0` | predict only | SGLang only. See [SGLang prefill/decode interval](#sglang-prefilldecode-interval). |
 | `workers.<role>.scheduler.async_scheduling` | vLLM's default: on, off with ngram drafts | predict only | vLLM only. Boolean. `true` is rejected with ngram drafts. See [vLLM async scheduling](#vllm-async-scheduling). |
+| `workers.aggregated.scheduler.launch` | Unset | predict only | vLLM only, with async scheduling, on one-GPU workers (`tensor`, `pipeline`, `attention_data` and `prefill_context` of 1) and `--stack engine`. `{decode_ms, piecewise_ms, eager_ms, max_cudagraph_capture_size, eager_queue_fraction}`: CPU launch costs measured on the deployment. Outputs leave once the next pass is launched, and an arrival joins the first pass decided after it. See [vLLM pass launch](#vllm-pass-launch). |
 | `workers.{aggregated,prefill}.host_loop` | `false` | fixed | SGLang only; `aggregated` in aggregated mode, `prefill` in disaggregated mode. Each pass is one overlap-scheduler iteration. Implied by `frontend` and `host_profile`. See [SGLang host loop, frontend and vision](#sglang-host-loop-frontend-and-vision). |
 | `workers.{aggregated,prefill}.frontend` | Unset | fixed | Ordered `stages`, each `{workers, service_ms, concurrency_scale}`, plus optional `measured_for` (model, frontend, feature transport and image shape the stages were measured on). Exclusive with `host_profile`. Unset together with `host_profile`, a worker with images encodes them on the GPU and prices no frontend stage, so its TTFT starts at the scheduler. |
 | `workers.{aggregated,prefill}.host_profile` | Unset | fixed | `{path, frontend}` with `frontend` `python` (SGLang's default HTTP server with its `TokenizerManager`) or `rust` (the embedded Rust server, `SGLANG_RUST_SERVER=1`, whose Rust extensions are built from an SGLang source tree). Frontend stages from a host cost table written by `python -m aisimulate.vl.collect`; a relative `path` resolves against the working directory of `collect` and `predict` alike. The table describes SGLang's CPU image-processor path (`--image-processor-backend pil`); SGLang 0.5.19's default `auto` on a GPU host runs the fast torchvision processor on the serving GPU, which is not priced, so a deployment matches its table only when launched with that flag. No table is read or measured unless this field is set. |
@@ -199,10 +200,10 @@ With async scheduling, a busy vLLM engine keeps two batches committed: one
 running and the next queued behind it. When the running batch finishes, vLLM
 processes its outputs, reads the requests that have arrived, and commits
 another batch. Replay assumes that this happens before a client can react to
-those outputs; it does not model when outputs reach the client. The earliest
-batch a request may join is therefore the first one committed after it
-arrives, and sequence limits, the token budget or KV capacity can delay it
-further:
+those outputs; without [`launch`](#vllm-pass-launch) it does not model when
+outputs reach the client. The earliest batch a request may join is therefore
+the first one committed after it arrives, and sequence limits, the token
+budget or KV capacity can delay it further:
 
 - A request that arrives while a pass runs skips the pass already queued and
   joins the one after it.
@@ -252,6 +253,62 @@ in vLLM
 [v0.30.0](https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/core/sched/scheduler.py),
 the first release that stops the allocation instead of preempting such a
 request.
+
+<a id="vllm-pass-launch"></a>
+
+### vLLM pass launch
+
+Each iteration of vLLM's async engine loop decides a pass, launches it on the
+GPU, then waits for the previous pass's sampled tokens and returns that pass's
+outputs. `launch` models when this happens from the CPU time each launch
+takes, so that:
+
+- a pass's outputs reach the client once the next pass is launched, never
+  before the pass ends. Without `launch` they leave at the pass end, which is
+  too early when a short decode pass is followed by a pass with a long launch;
+- an arrival joins the first pass decided after it. vLLM decides a pass once
+  it has launched the previous one and the pass before that has ended, so a
+  request that arrives early in a long pass can join the next pass, while
+  counting passes would make it skip the pass already queued.
+
+```yaml
+engine:
+  backend: vllm
+  workers:
+    aggregated:
+      scheduler:
+        launch:
+          decode_ms: 5
+          piecewise_ms: 50
+          eager_ms: 150
+          max_cudagraph_capture_size: 512
+          eager_queue_fraction: 0.4
+```
+
+A launch takes `decode_ms` for a pass without prefill, `piecewise_ms` for a
+pass with prefill and at most `max_cudagraph_capture_size` scheduled tokens
+(vLLM's option of that name), and `eager_ms` for a larger pass, which runs
+eager. An eager pass launches many kernels, so once the CUDA launch queue is
+full its launch ends no earlier than `eager_queue_fraction` of the way through
+the pass. A launch never ends after its pass. An engine that was idle decides
+a pass when a request arrives.
+
+Measure the launch costs on your own deployment, for example from an Nsight
+Systems trace of the engine core: the time from `schedule()` to the end of
+`sample_tokens()` for each kind of pass, and for eager passes how far the GPU
+has got when that launch ends. They depend mostly on the model, the engine
+version and the host CPU; the values above are only an illustration.
+
+`launch` needs aggregated vLLM workers with async scheduling and one GPU each
+(`tensor`, `pipeline`, `attention_data` and `prefill_context` of 1): only then
+does vLLM run its uniprocess executor, which launches a pass inside the engine
+loop. With more GPUs its multiprocess executor returns a pass's outputs
+independently of the next launch. `launch` moves no pass. With
+[response detokenization](README.md#detokenization), a pass's outputs start
+detokenizing when vLLM returns them. Only offline replay (`--stack engine`)
+releases the outputs a rank holds, so other runners reject `launch`. Behavior
+follows `EngineCore.step_with_batch_queue` in vLLM
+[v0.30.0](https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/engine/core.py).
 
 <a id="sglang-prefilldecode-interval"></a>
 

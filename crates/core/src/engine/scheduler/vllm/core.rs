@@ -45,8 +45,8 @@ use crate::engine::scheduler::{
 };
 use crate::engine::trace::TraceCollector;
 use crate::engine::{
-    CacheTierAttribution, DecodeAcceptance, G2Scope, HandoffId, KvHintSource, PrefillTotals,
-    PressureEvent, PressureKind, PressureState, modeled_duration_ms,
+    CacheTierAttribution, DecodeAcceptance, G2Scope, HandoffId, KvHintSource, PassLaunchConfig,
+    PrefillTotals, PressureEvent, PressureKind, PressureState, modeled_duration_ms,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +70,9 @@ pub(crate) struct VllmRequestState {
     /// First pass, counted by `VllmCore::passes_executed`, that may admit the
     /// request: vLLM had already committed the passes before it on arrival.
     admissible_from_pass: u64,
+    /// `launch`: when the request reached the engine. vLLM decides a pass
+    /// with the requests that arrived before that decision.
+    arrival_ms: f64,
     is_decode_handoff: bool,
     pub(crate) num_computed_tokens: usize,
     /// Cleared on preemption: recomputation has no draft IDs to verify.
@@ -690,6 +693,9 @@ pub(crate) struct VllmCore {
     /// Requests the pass in flight runs, sorted, when vLLM defers freeing their
     /// blocks until that pass ends: async scheduling with a CPU tier.
     in_flight_requests: Vec<Uuid>,
+    /// `launch`: when vLLM decides the pass after the latest one, if that pass
+    /// follows it back to back.
+    next_decision_ms: f64,
 }
 
 struct HeldVllmPrefill {
@@ -943,6 +949,7 @@ impl VllmCore {
             last_pass_end_ms: None,
             finished_in_flight: Vec::new(),
             in_flight_requests: Vec::new(),
+            next_decision_ms: 0.0,
         })
     }
 
@@ -1050,7 +1057,11 @@ impl VllmCore {
                 let admissible_from_pass =
                     self.first_pass_admitting_arrival(!allow_destination_admission);
                 Ok(SchedulerCommandEffects::new(
-                    SchedulerCommandResult::Submitted(self.submit(request, admissible_from_pass)?),
+                    SchedulerCommandResult::Submitted(self.submit(
+                        request,
+                        admissible_from_pass,
+                        command_now_ms.unwrap_or_default(),
+                    )?),
                 ))
             }
             SchedulerCommand::CancelRequest { request_id } => {
@@ -1083,7 +1094,11 @@ impl VllmCore {
                 let admissible_from_pass =
                     self.first_pass_admitting_arrival(!allow_destination_admission);
                 let submitted = self
-                    .submit(request, admissible_from_pass)
+                    .submit(
+                        request,
+                        admissible_from_pass,
+                        command_now_ms.unwrap_or_default(),
+                    )
                     .expect("prevalidated handoff request must submit");
                 Ok(SchedulerCommandEffects::new(
                     SchedulerCommandResult::Submitted(submitted),
@@ -1416,6 +1431,7 @@ impl VllmCore {
         &mut self,
         mut request: DirectRequest,
         admissible_from_pass: u64,
+        arrival_ms: f64,
     ) -> anyhow::Result<Uuid> {
         let uuid = request.uuid.unwrap_or_else(Uuid::new_v4);
         request.uuid = Some(uuid);
@@ -1425,6 +1441,7 @@ impl VllmCore {
         let waiting_order = self.allocate_waiting_order();
         let mut request = self.make_request_state(request, RequestStatus::Waiting, waiting_order);
         request.admissible_from_pass = admissible_from_pass;
+        request.arrival_ms = arrival_ms;
         self.state.insert_waiting(uuid, request);
         if let Some(request) = self.state.requests.get(&uuid) {
             request.debug_assert_progress(uuid);
@@ -1504,6 +1521,7 @@ impl VllmCore {
             status,
             waiting_order,
             admissible_from_pass: 0,
+            arrival_ms: 0.0,
             is_decode_handoff: false,
             num_computed_tokens: 0,
             drafts_ready: false,
@@ -2084,7 +2102,7 @@ impl VllmCore {
                 .as_ref()
                 .map(|_| self.request_prefill_reservation_blocks(uuid))
                 .unwrap_or_default();
-            let (reject_before_admission, admission_stage, admissible_from_pass) = {
+            let (reject_before_admission, admission_stage, admissible_from_pass, arrival_ms) = {
                 let request = self
                     .state
                     .requests
@@ -2097,12 +2115,21 @@ impl VllmCore {
                             .accepts_sequence_length(request.sequence.len()),
                     admission.stage_for(request.prompt_is_prebuilt()),
                     request.admissible_from_pass,
+                    request.arrival_ms,
                 )
             };
             // vLLM committed this pass before the request arrived; FCFS keeps
-            // later arrivals behind it. A committed batch without other work
-            // runs no forward, so the arrivals then run in this pass.
-            if !admit_queued_arrivals && admissible_from_pass > self.passes_executed {
+            // later arrivals behind it. With `launch`, vLLM decided this pass
+            // at `next_decision_ms` if it followed the previous one back to
+            // back, and a request arriving at that instant is too late. A
+            // committed batch without other work runs no forward, so the
+            // arrivals then run in this pass.
+            let arrived_after_decision = if self.args.launch.is_some() {
+                previous_in_flight && arrival_ms >= self.next_decision_ms
+            } else {
+                admissible_from_pass > self.passes_executed
+            };
+            if !admit_queued_arrivals && arrived_after_decision {
                 if !scheduled.is_empty() {
                     stopped_at_queued_arrival = true;
                     break;
@@ -2453,6 +2480,22 @@ impl VllmCore {
         // processes the pass in flight at once and decides again.
         let decide_again = previous_in_flight && scheduled.is_empty();
         self.free_finished(finished_in_flight);
+        // `launch`: vLLM returns the previous pass's outputs, then decides the
+        // next pass, once it has launched this pass and the previous pass has
+        // ended. A pass made only of arrivals that came after vLLM's decision
+        // for it follows an empty step, which returned those outputs at once.
+        let previous_returned_ms = self.args.launch.and_then(|launch| {
+            let back_to_back = previous_in_flight && !admit_queued_arrivals;
+            let decision_ms = if back_to_back {
+                self.next_decision_ms
+            } else {
+                now_ms
+            };
+            let launch_end_ms =
+                self.launch_end_ms(&launch, &scheduled, decision_ms, compute_start_ms, end_ms);
+            self.next_decision_ms = launch_end_ms.max(now_ms);
+            back_to_back.then_some(self.next_decision_ms)
+        });
         if (!scheduled.is_empty() || !output_signals.is_empty())
             && let Some(adapter) = self.native_host_offload.as_mut()
         {
@@ -2524,7 +2567,36 @@ impl VllmCore {
                 .unwrap_or_default(),
             fpm: Some(fpm),
             decode_acceptance,
+            previous_returned_ms,
         })
+    }
+
+    /// `launch`: when the CPU finishes launching a pass vLLM decided at
+    /// `decision_ms`. A launch never ends after its pass: the GPU waits for it.
+    fn launch_end_ms(
+        &self,
+        launch: &PassLaunchConfig,
+        scheduled: &FxHashMap<Uuid, ScheduledWork>,
+        decision_ms: f64,
+        start_ms: f64,
+        end_ms: f64,
+    ) -> f64 {
+        if scheduled.is_empty() {
+            return decision_ms;
+        }
+        let prefill = scheduled
+            .values()
+            .any(|work| work.prompt_tokens > 0 || work.total_tokens > work.draft_tokens + 1);
+        let tokens: usize = scheduled.values().map(|work| work.total_tokens).sum();
+        let launch_end_ms = if !prefill {
+            decision_ms + launch.decode_ms
+        } else if tokens <= launch.max_cudagraph_capture_size {
+            decision_ms + launch.piecewise_ms
+        } else {
+            (decision_ms + launch.eager_ms)
+                .max(start_ms + launch.eager_queue_fraction * (end_ms - start_ms))
+        };
+        launch_end_ms.min(end_ms)
     }
 
     fn drop_request_at(

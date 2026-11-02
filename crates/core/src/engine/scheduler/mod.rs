@@ -249,6 +249,10 @@ pub(crate) struct EnginePassResult {
     /// Forward pass metrics snapshot for this iteration.
     pub(crate) fpm: Option<ForwardPassSnapshot>,
     pub(crate) decode_acceptance: DecodeAcceptance,
+    /// vLLM `launch`: when the engine loop returns the previous pass's
+    /// outputs, after launching this pass. `None` when the previous pass's
+    /// outputs left at its end.
+    pub(crate) previous_returned_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
