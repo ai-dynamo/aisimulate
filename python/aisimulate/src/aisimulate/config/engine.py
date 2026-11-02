@@ -254,7 +254,7 @@ def manual_block_bytes(block_size: int | None, bytes_per_token: int | str) -> in
 def _validate_hybrid_host_offload(connector: str, prefix_match_unit: int | None, block_size: int | None) -> None:
     # vLLM's CPU connectors hit a hybrid model at block boundaries; vLLM 0.24's
     # connector stores no states.
-    if prefix_match_unit is None or (block_size is not None and prefix_match_unit != block_size):
+    if prefix_match_unit is None or block_size not in (None, prefix_match_unit):
         raise ValueError("state_cache with host_offload requires prefix_match_unit equal to block_size")
     if connector == "offloading_v0_24":
         raise ValueError("state_cache with host_offload requires connector offloading_v0_32 or simple_cpu_v0_32")
@@ -361,16 +361,18 @@ class KvCachePredictionConfig(StrictModel):
             if not infer_state and (self.block_size is None or self.block_size % self.prefix_match_unit):
                 raise ValueError("prefix_match_unit must be a positive divisor of block_size")
         if self.state_cache is not None:
-            if self.prefix_match_unit is None and (
-                self.state_cache.prefill_checkpoint or self.state_cache.junction_checkpoints
+            # Inferred geometry checks the unit against the resolved block_size.
+            block_size = None if infer_state else self.block_size
+            if self.prefix_match_unit is None and self.state_cache.junction_checkpoints:
+                raise ValueError("state_cache.junction_checkpoints requires an explicit prefix_match_unit")
+            if self.state_cache.prefill_checkpoint and (
+                self.prefix_match_unit is None or block_size not in (None, self.prefix_match_unit)
             ):
-                raise ValueError(
-                    "state_cache.prefill_checkpoint and junction_checkpoints require an explicit prefix_match_unit"
-                )
+                raise ValueError("state_cache.prefill_checkpoint requires prefix_match_unit equal to block_size")
             if self.capacity.type != "fixed":
                 raise ValueError("state_cache requires fixed capacity (blocks or bytes)")
             if self.host_offload is not None:
-                _validate_hybrid_host_offload(self.host_offload.connector, self.prefix_match_unit, self.block_size)
+                _validate_hybrid_host_offload(self.host_offload.connector, self.prefix_match_unit, block_size)
             if self.g3_offload is not None:
                 raise ValueError("state_cache does not support g3_offload")
             if self.kvcr is not None:

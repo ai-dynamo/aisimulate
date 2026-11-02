@@ -2133,8 +2133,10 @@ def _manual_state_cache(rank: Mapping[str, JSONValue], backend: str, role: str) 
         raise ValueError("state_cache requires backend=vllm and an aggregated, prefill or decode G1 worker")
     host = rank.get("native_host_offload")
     if isinstance(host, dict):
+        # Inferred geometry checks the unit against the resolved block_size.
+        block_size = rank.get("block_size") if state_cache.bytes_per_request is not None else None
         _validate_hybrid_host_offload(
-            host.get("connector", "offloading_v0_24"), rank.get("prefix_match_unit"), rank.get("block_size")
+            host.get("connector", "offloading_v0_24"), rank.get("prefix_match_unit"), block_size
         )
     if rank.get("g3_offload") is not None:
         raise ValueError("state_cache does not support g3_offload")

@@ -594,7 +594,8 @@ pub struct StateCacheConfig {
     pub num_speculative_states: Option<usize>,
     /// Export the prompt's last full-block state from inside the final
     /// prefill chunk instead of cutting the chunk at that block (vLLM
-    /// 43b4aaea Mamba2 `num_prefill_checkpoint_blocks = 1`). Align mode only.
+    /// 43b4aaea Mamba2 `num_prefill_checkpoint_blocks = 1`). Needs
+    /// `prefix_match_unit` equal to `block_size`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub prefill_checkpoint: bool,
     /// Stop a chunk at the block-aligned end of a deeper attention hit, cache
@@ -1028,9 +1029,14 @@ impl EngineConfig {
                 "sub-block prefix_match_unit does not support speculative decoding"
             );
             ensure!(
-                self.prefix_match_unit.is_some()
-                    || !(state_cache.prefill_checkpoint || state_cache.junction_checkpoints),
-                "state_cache.prefill_checkpoint and junction_checkpoints require an explicit prefix_match_unit (align mode)"
+                self.prefix_match_unit.is_some() || !state_cache.junction_checkpoints,
+                "state_cache.junction_checkpoints requires an explicit prefix_match_unit (align mode)"
+            );
+            // A sub-block checkpoint would have no cached attention page to
+            // resume from.
+            ensure!(
+                !state_cache.prefill_checkpoint || self.prefix_match_unit == Some(self.block_size),
+                "state_cache.prefill_checkpoint requires prefix_match_unit equal to block_size"
             );
             let bytes_per_token = self
                 .kv_cache_bytes_per_token
@@ -1413,10 +1419,20 @@ mod tests {
                 .validate()
                 .unwrap_err()
                 .to_string()
-                .contains("require an explicit prefix_match_unit")
+                .contains("requires an explicit prefix_match_unit")
         );
         checkpoints.prefix_match_unit = Some(checkpoints.block_size);
         checkpoints.validate().unwrap();
+        checkpoints.state_cache.as_mut().unwrap().prefill_checkpoint = true;
+        checkpoints.validate().unwrap();
+        checkpoints.prefix_match_unit = Some(checkpoints.block_size / 2);
+        assert!(
+            checkpoints
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("prefill_checkpoint requires prefix_match_unit equal to block_size")
+        );
 
         let mut drop = config;
         drop.disable_eagle_block_drop = true;

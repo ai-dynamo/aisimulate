@@ -691,6 +691,14 @@ def test_auto_state_validates_capacity_and_prefix_after_resolution(auto_k3_paylo
         prediction_to_replay_spec(config)
 
 
+def test_prefill_checkpoint_matches_the_resolved_block_size(auto_k3_payload, forbid_estimators):
+    # 64 is a requested page size that resolves to 768-token blocks.
+    kv = auto_k3_payload["engine"]["workers"]["aggregated"]["kv_cache"]
+    kv.update(block_size=64, prefix_match_unit=768, state_cache={"prefill_checkpoint": True})
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(auto_k3_payload))
+    assert spec.backend_deployment.agg_engine_args["block_size"] == 768
+
+
 def test_auto_state_matches_manual_partial_prefix_replay(auto_k3_payload, forbid_estimators):
     payload = auto_k3_payload
     payload["engine"]["context_length"] = 32768
@@ -795,8 +803,11 @@ def test_hybrid_prefix_cache_switches_default_off(forbid_estimators):
     rank = runtime.execution_spec["spec"]["engine"]["rank"]
     assert rank["state_cache"] == STATE
     assert "disable_eagle_block_drop" not in rank
-    with pytest.raises(ValidationError, match="require an explicit prefix_match_unit"):
+    with pytest.raises(ValidationError, match="requires an explicit prefix_match_unit"):
         KvCachePredictionConfig.model_validate({**KV, "state_cache": {**STATE, "junction_checkpoints": True}})
+    checkpoint = {**KV, "state_cache": {**STATE, "prefill_checkpoint": True}, "prefix_match_unit": 32}
+    with pytest.raises(ValidationError, match="prefill_checkpoint requires prefix_match_unit equal to block_size"):
+        KvCachePredictionConfig.model_validate(checkpoint)
 
 
 def test_hybrid_g2_under_mtp_reaches_the_native_rank(forbid_estimators):
