@@ -22,7 +22,7 @@ from collector.fpm_forward.types import ParallelTopology
 
 from aisimulate_core.fpm_profile import FpmResourceProfile
 
-from .test_fpm_forward import _args, _mixed_attention_config
+from .test_fpm_forward import _MODEL_CONFIGS, _args, _mixed_attention_config
 from .test_fpm_profile_collection import _plan, _profile, no_models_or_timing_data  # noqa: F401
 from .test_fpm_runner import _cell, _native_payload, _write_provenance
 
@@ -1696,7 +1696,7 @@ def test_bounded_sample_of_a_saved_glm_plan_is_an_explicit_list(tmp_path):
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")
-def test_glm_collection_cells_render_the_producer_launch(tmp_path, monkeypatch):
+def test_glm_collection_cells_render_the_producer_launch(tmp_path):
     from collector.fpm_forward.runtime_probe import RuntimeProbePlan
 
     plan = _glm_plan(tmp_path)
@@ -1731,17 +1731,6 @@ def test_glm_collection_cells_render_the_producer_launch(tmp_path, monkeypatch):
             assert "DYN_FPM_GLM53FLASH_PREFIX_MATCH_UNIT" not in env
             assert {name: env.get(name) for name in producer_env} == producer_env
 
-    # Collection bound to the accepted probe passes the launch revision of the probe. Memory observation requests
-    # synchronous decode scheduling itself, and the flag is not repeated.
-    with monkeypatch.context() as patch:
-        launch_facts = {"identity": {"model_revision": "a" * 40}}
-        patch.setattr(planner.FPMCollectionPlan, "runtime_launch", property(lambda _plan: launch_facts))
-        patch.setattr(runner, "_observe_runtime_memory", lambda _plan, _cell: True)
-        for cell in plan.cells:
-            args, env = launch(plan, cell)
-            assert args.count("--no-async-scheduling") == 1
-            assert env["DYN_FPM_TOKENIZER_REVISION"] == "a" * 40
-
     with pytest.raises(ValueError) as error:
         launch(replace(plan, options=replace(plan.options, warmup_iterations=5)), plan.cells[0])
     assert str(error.value) == (
@@ -1771,6 +1760,187 @@ def test_glm_collection_cells_render_the_producer_launch(tmp_path, monkeypatch):
         assert "--language-model-only" in args
         assert {"--benchmark-points-file", "--cudagraph-metrics"}.isdisjoint(args)
         assert set(producer_env).isdisjoint(env)
+
+
+def _probe_backed_glm_plan(tmp_path):
+    """The GLM-5.3-Flash collection plan of guided collection, bound to the accepted runtime probe.
+
+    The planner gets the inputs of the onboarding collector command: the case plan of the Hub ID, whose packaged
+    configuration is FP8 with 128 x 128 weight blocks, the limits of the request, a stand-in vLLM 0.31.0
+    instrumentation bundle, the TP 4 probe launch on GB300 with a stand-in Kubernetes deployment, and the profile that
+    the probe import accepts, with the cache resources that the probe measured. Return the plan and the deployment
+    inputs that it was planned with.
+    """
+    from collector.model_cases import build_collection_case_plan
+
+    from .test_fpm_glm53flash_prefix_seed import LOADED_REVISION
+    from .test_runtime_instrumentation import _manifest
+    from .test_runtime_observations import glm_tp4_cache_groups
+
+    model, system = "zai-org/GLM-5.3-Flash", "gb300"
+    manifest, declaration = _manifest(tmp_path)
+    declaration["runtime"]["version"] = "0.31.0"
+    manifest.write_text(json.dumps(declaration))
+    config = tmp_path / "config.json"
+    config.write_bytes((_MODEL_CONFIGS / "zai-org--GLM-5.3-Flash_config.json").read_bytes())
+    topology = {"tp": 4, "pp": 1, "dp": 1, "moe_tp": 4, "moe_ep": 1, "cp": 1}
+    precision = {
+        "gemm_quant_mode": "fp8_block",
+        "moe_quant_mode": "fp8_block",
+        "fmha_quant_mode": "fp8",
+        "comm_quant_mode": "half",
+    }
+    profile = {
+        "schema_version": 1,
+        "model": model,
+        "model_revision": LOADED_REVISION,
+        "architecture": "Glm5NextForConditionalGeneration",
+        "context_length": 1_048_576,
+        "num_experts": 288,
+        "provenance": "Collector test declaration; not a measured memory qualification.",
+        "deployments": [
+            {
+                "system": system,
+                "backend": "vllm",
+                "backend_version": "0.31.0",
+                **{name: topology[name] for name in ("tp", "dp", "moe_tp", "moe_ep")},
+                **precision,
+                "kv_cache_dtype": "fp8",
+                "resources": {
+                    "runtime_memory": {
+                        "kv_cache_bytes": 180_218_332_800,
+                        "gpu_memory_utilization": 0.9,
+                        "max_model_len": 1_048_576,
+                        "provenance": "Runtime probe capacity of GLM-5.3-Flash at TP 4, declared for this test.",
+                        "enable_prefix_caching": True,
+                        "mamba_cache_mode": "align",
+                        "hash_block_size_tokens": 2176,
+                    },
+                    "cache_layout": "grouped",
+                    "cache_groups": glm_tp4_cache_groups(),
+                    "max_num_tokens": 8192,
+                    "max_batch_size": 256,
+                    "provenance": "Runtime probe resources of GLM-5.3-Flash at TP 4, declared for this test.",
+                },
+            }
+        ],
+    }
+    image = "example/vllm-runtime@sha256:" + "a" * 64
+    launch = {
+        "identity": {
+            "model": model,
+            "model_revision": LOADED_REVISION,
+            "model_kind": "moe",
+            "framework": "vllm",
+            "framework_version": "0.31.0",
+            "runtime_framework_version": "0.31.0",
+            "gpu": system,
+            "interconnect": "nvlink",
+        },
+        "topology": topology,
+        "precision": {**precision, "kvcache_quant_mode": "fp8"},
+        "collection": {
+            "max_model_len": 1_048_576,
+            "max_num_batched_tokens": 8192,
+            "max_num_seqs": 256,
+            "gpu_memory_utilization": 0.9,
+            "prefill_cudagraph_policy": "runtime",
+            "warmup_iterations": 0,
+        },
+        "model_config": {"path": str(config), "sha256": hashlib.sha256(config.read_bytes()).hexdigest()},
+        "deployment": {"executor": "kubernetes", "image": image},
+    }
+    argv = [
+        "--model-path",
+        model,
+        "--gpu",
+        system,
+        "--fpm-max-gpus",
+        "4",
+        "--fpm-gpu-counts",
+        "4",
+        "--fpm-parallel-presets",
+        "pure_tp",
+        "--fpm-max-model-len",
+        "1048576",
+        "--fpm-max-num-batched-tokens",
+        "8192",
+        "--fpm-max-num-seqs",
+        "256",
+        "--fpm-max-prefill-isl",
+        "8192",
+        "--fpm-max-prefill-batch-size",
+        "256",
+        "--fpm-prefill-cudagraph-policy",
+        "runtime",
+        "--fpm-gpu-memory-utilization",
+        "0.9",
+        "--fpm-warmup-iterations",
+        "0",
+        "--fpm-weight-quantizations",
+        "fp8_block",
+        "--fpm-kv-cache-dtypes",
+        "fp8",
+    ]
+    overrides = {"K8sConfig": {"k8s_image": image}}
+    case_plan = build_collection_case_plan(backend="vllm", model_path=model, gpu_type=system)
+    plan = planner.build_collection_plan(
+        backend="vllm",
+        model_path=model,
+        system=system,
+        selected_ops=set(case_plan.selected_ops),
+        options=FPMCollectionOptions.from_args(cli._parser().parse_args(argv)),
+        model_architecture=case_plan.model_architecture,
+        has_model_cases=bool(case_plan.model_cases_paths),
+        fpm_profile=profile,
+        collector_config={"runtime_backend_version": "0.31.0", "aic_database_version": "0.31.0"},
+        generator_overrides=overrides,
+        runtime_instrumentation=str(manifest),
+        runtime_launch=launch,
+        runtime_configuration="gb300-tp4",
+    )
+    return plan, overrides
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_probe_backed_glm_collection_renders_the_producer_launch(tmp_path):
+    plan, _overrides = _probe_backed_glm_plan(tmp_path)
+    revision = plan.runtime_launch["identity"]["model_revision"]
+    assert re.fullmatch(r"[0-9a-f]{40}", revision)
+    assert (plan.runtime_backend_version, plan.options.benchmark_points_origin) == ("0.31.0", "glm53flash_grid_v1")
+    adapter = Path(runner.__file__).parent / "runtime/glm53flash/runtime-paths.json"
+    producer_env = {
+        "DYN_FPM_GLM53FLASH_REAL_KV": "1",
+        "DYN_FPM_GLM53FLASH_PREFIX_SEED": "1",
+        "DYN_FPM_BENCH_COLLECT_IMBALANCED": "1",
+        "DYN_FPM_GLM53FLASH_MEASURED_CONTEXT": "131072",
+        # The producer reads the tokenizer and configuration of the revision that the engine loads.
+        "DYN_FPM_TOKENIZER_REVISION": revision,
+        "PYTHONPATH": "/tmp/fpm-bench:" + json.loads(adapter.read_text())["python_path"],
+        "AISIMULATE_RUNTIME_CONTEXT": "/tmp/fpm-bench/runtime-probe-context.json",
+        "AISIMULATE_RUNTIME_INSTRUMENTATION": "/tmp/fpm-bench/runtime-instrumentation/manifest.json",
+        "AISIMULATE_RUNTIME_OBSERVATION_DIR": "/results",
+    }
+    for cell in plan.cells:
+        for smoke in (False, True):
+            overrides = runner._cell_generator_overrides(plan, cell, {}, smoke=smoke)
+            args = overrides["params"]["agg"]["extra_cli_args"]
+            env = {item["name"]: item["value"] for item in overrides["K8sConfig"]["extra_env"]}
+            assert args.count("--revision") == 1
+            assert args[args.index("--revision") + 1] == revision
+            # Formal collection runs the classes of the probe's instrumentation, not the vLLM 0.27.0 memory observer.
+            assert args.count("--worker-cls") == args.count("--scheduler-cls") == 1
+            assert args[args.index("--worker-cls") + 1] == "fpm_runtime_instrumentation.ObservedWorker"
+            assert args[args.index("--scheduler-cls") + 1] == (
+                "fpm_runtime_instrumentation.ObservedInstrumentedScheduler"
+            )
+            assert not any(argument.startswith(("fpm_memory_worker.", "fpm_memory_scheduler.")) for argument in args)
+            # Memory observation and the producer both require synchronous scheduling, and each phase has it once.
+            assert args.count("--no-async-scheduling") == 1
+            assert "--cudagraph-metrics" in args
+            assert args[args.index("--benchmark-warmup-iterations") + 1] == "0"
+            assert args[args.index("--benchmark-points-file") + 1] == "/tmp/fpm-bench/benchmark-points.json"
+            assert {name: env.get(name) for name in producer_env} == producer_env
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")

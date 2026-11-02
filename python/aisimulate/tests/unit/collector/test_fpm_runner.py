@@ -1609,6 +1609,50 @@ def test_run_collection_stages_the_glm_adapter_files(monkeypatch, tmp_path):
         )
 
 
+def test_formal_glm_run_stages_the_full_point_list(monkeypatch, tmp_path):
+    from .test_fpm_runtime_memory import _probe_backed_glm_plan
+
+    plan, _overrides = _probe_backed_glm_plan(tmp_path)
+    staged, receipts, checkpoint = _staged_run(monkeypatch, tmp_path / "run", plan, smoke=False)
+
+    full = plan.options.benchmark_points_json.encode()
+    full_sha256 = hashlib.sha256(full).hexdigest()
+    assert full_sha256 == plan.options.benchmark_points_sha256
+    assert checkpoint["plan_sha256"] == plan.sha256
+    campaign = tmp_path / "run" / "artifacts" / plan.sha256[:16]
+    for cell in plan.cells:
+        # The cell stages the producer, the probe's instrumentation and the whole frozen list, not the smoke subset.
+        adapter = {"sitecustomize.py", "glm53flash_prefix_scheduler.py", "runtime-source-sha256.json"}
+        instrumentation = {
+            "runtime-instrumentation.zip",
+            "runtime-probe-context.json",
+            "fpm_runtime_instrumentation.py",
+        }
+        assert adapter | instrumentation | {POINTS_FILENAME} <= set(staged[cell.cell_id])
+        listed = (campaign / "cells" / cell.cell_id / POINTS_FILENAME).read_bytes()
+        assert listed == full
+        assert (len(json.loads(listed)["prefill"]), len(json.loads(listed)["decode"])) == (496, 96)
+        entry = checkpoint["cells"][cell.cell_id]
+        assert entry["status"] == "passed"
+        # The collector's own check of the staged file records the digest of the full list.
+        assert receipts[cell.cell_id] == {
+            "plan_sha256": plan.sha256,
+            "cell_id": cell.cell_id,
+            "attempt_id": entry["attempt_id"],
+            "sha256": full_sha256,
+            "phase": "after",
+        }
+        assert (entry["benchmark_points_sha256"], entry["requested_point_count"], entry["benchmark_points_origin"]) == (
+            full_sha256,
+            {"prefill": 496, "decode": 96}[cell.workload_kind],
+            "glm53flash_grid_v1",
+        )
+        assert "smoke_manifest" not in entry
+    # Both phases archive their runtime observations under the one formal attempt of the probe's configuration.
+    index = json.loads((campaign / "runtime-observations.json").read_text())
+    assert index["configurations"][plan.runtime_configuration]["attempts"][0]["status"] == "captured"
+
+
 def test_non_glm_cells_keep_their_launch_and_staging(monkeypatch, tmp_path):
     from aisimulate_core.sdk.deepseek_v41 import MODEL_REVISION
 
