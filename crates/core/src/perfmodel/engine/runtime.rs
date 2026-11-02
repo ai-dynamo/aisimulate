@@ -3670,6 +3670,7 @@ impl Engine {
                 ctx_tokens,
                 gen_tokens,
                 new_tokens_per_req.max(1),
+                n_prefill,
                 prefix_per_req,
                 sched.sum_prefill_kv_tokens,
                 kv_per_req,
@@ -8222,22 +8223,28 @@ pub(crate) mod tests {
         }
 
         // Observed-FPM rank dispatch shares the same phase classification.
+        // Context attention prices the pass's own requests at their integer
+        // mean, also when the count does not divide the prefill tokens.
         let (new_tokens, kv) = (3072_u32, 8192_u32);
-        let got = crate::session::get_mix_step_ops(
-            &ctx_ops,
-            &gen_ops,
-            &db,
-            2 * new_tokens,
-            generation,
-            new_tokens,
-            prefix,
-            2 * prefix,
-            kv,
-            generation,
-            |_, _, _, _, _, _| {},
-        )
-        .unwrap();
-        let want = sol(&ctx_attn, 2, new_tokens, prefix) + sol(&gen_attn, generation, kv, 0);
-        assert!(close(got, want), "{got} != {want}");
+        for (requests, remainder) in [(2_u32, 0_u32), (3, 2)] {
+            let got = crate::session::get_mix_step_ops(
+                &ctx_ops,
+                &gen_ops,
+                &db,
+                requests * new_tokens + remainder,
+                generation,
+                new_tokens,
+                requests,
+                prefix,
+                requests * prefix,
+                kv,
+                generation,
+                |_, _, _, _, _, _| {},
+            )
+            .unwrap();
+            let want =
+                sol(&ctx_attn, requests, new_tokens, prefix) + sol(&gen_attn, generation, kv, 0);
+            assert!(close(got, want), "{requests} requests: {got} != {want}");
+        }
     }
 }
