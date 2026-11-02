@@ -524,8 +524,8 @@ def test_sidecar_carries_the_design_5_table_fields(tmp_path):
 
 
 def test_sidecar_status_stays_complete_when_cases_failed(tmp_path):
-    # Recorded per-case failures are DATA, not a demotion (owner decision
-    # 2026-08-08, failure_handling.md / design doc §5): derive_table_status
+    # Recorded per-case failures are DATA, not a demotion (owner decision,
+    # failure_handling.md / design doc §5): derive_table_status
     # demotes only on a ModuleCollectionFailure, and a module-level death
     # never reaches this writer (dying runs do not finalize a sidecar).
     from collector import provenance

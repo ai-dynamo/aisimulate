@@ -146,8 +146,8 @@ class OpEntry:
     # inferred the mode from a "skip_indexer" perf_filename that no collector
     # ever wrote, and --resume finalization (which trusts the declared table)
     # raised "open checkpoint event has no regular staging table" on every
-    # skip_indexer shard (b200_sxm sglang 0.5.21, GitLab job 469988017,
-    # 2026-10-05). A tuple of (name, value) pairs keeps the entry hashable.
+    # skip_indexer shard (b200_sxm sglang 0.5.21, GitLab job 469988017).
+    # A tuple of (name, value) pairs keeps the entry hashable.
     run_kwargs: tuple[tuple[str, Any], ...] = ()
 
     def __post_init__(self) -> None:

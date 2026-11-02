@@ -129,9 +129,9 @@ def _run_prefill_conv_token_major(
 # 634 prefill `out=`, :906 decode `out=`; rc20 :335/:403/:629) and
 # neither kernel allocates one when it is missing — ssd_chunk_scan.py:667
 # `assert out.shape == x.shape` and selective_state_update.py `out.dim()`
-# (rc20 :85, rc29 same) both fail on None. The collector omitted `out` until
-# 2026-10-12, so every scan/state-update cell raised and the per-cell except
-# dropped the lane: no shipped mamba2 table has those rows.
+# (rc20 :85, rc29 same) both fail on None. Older collectors omitted `out`,
+# so every scan/state-update cell raised and the per-cell except dropped the
+# lane: no shipped mamba2 table has those rows.
 
 # Decode SSM state update: serving picks FlashInfer's kernel or TRT-LLM's own
 # Triton kernel per layer geometry — Mamba2Mixer.__init__ (mamba2_mixer.py:
@@ -242,7 +242,7 @@ def run_mamba2_context_benchmark(
 
     # Every cell is timed under CUDA-graph replay; a failed capture raises
     # (benchmark_with_power default allow_graph_fail=False) and the cell is
-    # counted as failed below. Until 2026-10-12 allow_graph_fail=True timed the
+    # counted as failed below. Older collectors set allow_graph_fail=True, timed the
     # Python launch loop eagerly and shipped that floor as the kernel latency,
     # and the per-cell `except` dropped a failed kernel lane with no failure
     # record: every shipped mamba2 table (rc20, all eight systems) and the rc29

@@ -127,7 +127,7 @@ model_case_values:
       sglang_moe_has_correction_bias: true
       wideep: true
       # Real ModelOpt export (nvidia/DeepSeek-V4-Flash-NVFP4, verified via its
-      # published config.json/hf_quant_config.json, AIC-1749): quant_algo
+      # published config.json/hf_quant_config.json): quant_algo
       # MIXED_PRECISION, routed-expert layers at NVFP4 (moe_quant_algo
       # NVFP4), attention/shared-experts/head/mtp excluded. This is a new,
       # quant-distinct artifact row (case_authoring.md) — never merged into
@@ -172,15 +172,14 @@ model_case_values:
     # platform-native collection uses targeted deepseek-ai/* runs. The first
     # entry is the canonical artifact (manual-CLI default model).
     # collector/skips.py keeps the top-k calibration on the Flash artifact.
-    # nvidia/DeepSeek-V4-{Flash,Pro}-NVFP4 (AIC-1749) are deliberately NOT
+    # nvidia/DeepSeek-V4-{Flash,Pro}-NVFP4 are deliberately NOT
     # listed for module collection at all: the module gemm_type sweep is
     # bfloat16/fp8_block only (module_gemm_types below), and the persisted
     # module key carries no artifact dimension — so even a targeted run
     # against these paths could only stamp rows with a label that
     # misrepresents the artifact ("cases that carry the wrong identity are
     # worse than no cases", case_authoring.md). They join
-    # supported_model_paths together with the collector gemm-label work
-    # tracked on AIC-1749.
+    # supported_model_paths together with the collector gemm-label work.
     default_model_paths:
       - sgl-project/DeepSeek-V4-Flash-FP8
       - sgl-project/DeepSeek-V4-Pro-FP8

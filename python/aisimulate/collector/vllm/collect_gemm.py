@@ -15,11 +15,10 @@ from `case_generator.py`; this file handles vLLM config contexts, distributed se
 quantized-weight preparation, and selected-kernel reporting.
 """
 
-# Verified 2026-08-21 against vLLM v0.24.0 and v0.27.1 tags (source clones,
-# no runtime GPU available in this environment) for AIC-1782 Task V1. Every
+# Verified against the vLLM v0.24.0 and v0.27.1 tags (source clones). Every
 # framework surface this collector touches is either byte-identical or a
 # pure line-number shift between the two tags -- no version branching is
-# needed, unlike the sglang gemm precedent (AIC-1762 Task 4c/4d), where the
+# needed, unlike the sglang gemm precedent, where the
 # same call shape silently dispatched to a different kernel at the newer
 # pin. Checked: vllm.envs.VLLM_BATCH_INVARIANT (unchanged flag; its two
 # reroute sites shifted line-only, see the guard's comment below);
@@ -51,9 +50,9 @@ quantized-weight preparation, and selected-kernel reporting.
 # (schemes/compressed_tensors_w4a4_nvfp4.py:29-31,95-141). This adds the
 # exact 0.25.0 release to the existing lane, not 0.25.1/0.26.0/0.27.0.
 # 0.30.0 source audit (tag v0.30.0 == ced6857afa0e vs v0.27.1):
-# the 2026-10 campaign tables and the baseline of the 0.31.0 audit below.
-# The gemm family runs on 0.31.0 (framework_manifest.yaml family pin,
-# 2026-10-30), so this file targets exactly 0.31.0.
+# the shipped 0.30.0 tables and the baseline of the 0.31.0 audit below.
+# The gemm family runs on 0.31.0 (framework_manifest.yaml family pin),
+# so this file targets exactly 0.31.0.
 # One release per file; earlier code is `git log -- <this file>` away.
 # bf16: UnquantizedLinearMethod now binds its GEMM at __init__ from
 #   kernel_config.linear_backend (layers/linear.py:169-174, apply :234-238);
@@ -83,7 +82,7 @@ quantized-weight preparation, and selected-kernel reporting.
 #   selects FlashInferCuteDsl (:115-123), SM12x FlashInferCutlass (:183-197).
 # Byte-identical helpers: scaled_fp4_quant (_custom_ops.py:1525-1600),
 #   per_block_cast_to_fp8 (utils/deep_gemm.py:737-756).
-# 0.31.0 audit (2026-10-07, source-only: tag v0.31.0 == db9527a46873 vs
+# 0.31.0 audit (source-only: tag v0.31.0 == db9527a46873 vs
 # v0.30.0 ced6857afa0e; stock image, no overlay). Python dispatch for every
 # lane is unchanged; only line numbers and non-CUDA branches moved.
 # bf16: UnquantizedLinearMethod.__init__ binds dispatch_unquantized_gemm(
@@ -174,9 +173,8 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
         # (vllm/model_executor/layers/linear.py:223-224, :228-229
         # -- byte-identical body, 5-line shift) and per-tensor fp8 to
         # a BF16-dequant F.linear path (fp8.py:452-486, :442-476
-        # -- byte-identical body, 10-line shift; re-verified
-        # 2026-08-21). At 0.30.0 the bf16 reroute is linear.py:234-237 and
-        # the fp8 one fp8.py:444-477 (re-verified 2026-09-30); at 0.31.0
+        # -- byte-identical body, 10-line shift). At 0.30.0 the bf16
+        # reroute is linear.py:234-237 and the fp8 one fp8.py:444-477; at 0.31.0
         # linear.py:237-238 and fp8.py:426-459 (bodies unchanged). Either way
         # the kernel_source values recorded below would not be ground truth.
         raise RuntimeError("VLLM_BATCH_INVARIANT is set; gemm kernel_source recording assumes default dispatch")

@@ -375,7 +375,7 @@ def create_msa_attention_layer(
     # divide sparse_num_index_heads (=4) — MiniMaxM3SparseConfig
     # validation (sparse/minimax_m3/metadata.py:113 via backend.py:1052).
     # The sweep grid's num_heads=128 rows derive kv=8 and
-    # fail fast at construction (hardware-observed on SM90 2026-08-06,
+    # fail fast at construction (hardware-observed on SM90,
     # smoke 3/3 failures all this class). Serving can never reach kv>4
     # (native 64q/4kv, TP>=1), so these rows stay classified failures per
     # layer_permissions.md (no generation-side filtering). Re-verify on
@@ -609,7 +609,7 @@ def create_kv_cache_and_metadata(
     # ENTIRE index-K pool every forward (msa_utils.cache_view_to_msa_paged
     # called from msa_indexer.select_blocks:147), so the measured
     # latency carries a term linear in the pool pages this budget allocates
-    # (~35 ns/page measured on B200 2026-08-08; 92% of the gen b=256 kv=65536
+    # (~35 ns/page measured on B200; 92% of the gen b=256 kv=65536
     # point). Serving pays the same copy over its own (memory-budget-sized)
     # pool, so this is framework truth in kind but collector-sized in
     # magnitude — keep this factor stable across campaigns for comparability.

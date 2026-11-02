@@ -29,8 +29,8 @@ from collector.version_resolver import _check_compat
 # builders/selectors remain authoritative; no kernel fallback is introduced.
 # The campaign manifest still selects one exact release per run.
 #
-# The mhc family runs on 0.31.0 (framework_manifest.yaml family pin,
-# 2026-10-30). Each architecture is additionally gated by
+# The mhc family runs on 0.31.0 (framework_manifest.yaml family pin).
+# Each architecture is additionally gated by
 # ``_ARCHITECTURE_COMPAT`` below; an architecture that is not audited on the
 # installed release raises instead of running.
 # One release per file; earlier code is `git log -- <this file>` away.
@@ -98,7 +98,7 @@ _ARCHITECTURE_COMPAT = {
 # requires EP and TP>1 and DP>1 (vllm/config/parallel.py:718-735). Rows carry
 # no TP dimension; pure-TP (TP1/2/4) serving reads the same num_tokens rows.
 #
-# 0.31.0 audit (2026-10-07, source-only: tag v0.31.0 == db9527a4 vs v0.30.0
+# 0.31.0 audit (source-only: tag v0.31.0 == db9527a4 vs v0.30.0
 # ced6857a): glm5next/nvidia/model.py moved to glm5next/common/model.py; the
 # only diff on the decoder layer is one added Glm5NextMLP kwarg (L358), so
 # every model.py line above is the 0.30.0 line +1 with identical content

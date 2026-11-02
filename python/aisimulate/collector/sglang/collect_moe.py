@@ -9,8 +9,7 @@ owns SGLang kernel compatibility, server-args mocking, routing-logit synthesis,
 rank-local workload construction, quantized weight setup, and perf logging.
 """
 
-# Verified 2026-08-18 against sglang v0.5.14 and v0.5.17 tags (source clones,
-# no runtime GPU available in this environment) for AIC-1762 Task 4c/4d.
+# Verified against the sglang v0.5.14 and v0.5.17 tags (source clones).
 # Compatible unchanged: is_hip; fused_moe() (triton path, byte-identical
 # signature); override_config; MoeRunnerBackend/RoutingMethodType enums
 # (RenormalizeNaive retained -- labeled "Qwen3" in-source); FusedMoE.__init__,
@@ -46,9 +45,9 @@ rank-local workload construction, quantized weight setup, and perf logging.
 # 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
 # findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
 # One release per file; earlier code is `git log -- <this file>` away.
-# 0.5.20 audit (2026-09-30; source tag v0.5.20 == 94602c9c2b7c vs v0.5.17,
-# source-only). 0.5.18/0.5.19
-# were never verified and are carved out with != (same caveat as above).
+# 0.5.20 audit (source tag v0.5.20 == 94602c9c2b7c vs v0.5.17, source-only).
+# 0.5.18/0.5.19 were never verified and are carved out with != (same caveat
+# as above).
 # Unchanged vs 0.5.17: ServerArgs/set_global_server_args_for_scheduler
 # (server_args.py:195,635; publish() now runs resolve_once(), which returns
 # early for model_path="dummy", arg_groups/pipeline.py:121); get_server_args
@@ -102,7 +101,7 @@ from unittest.mock import MagicMock
 import sglang.srt.server_args as _server_args_module
 import torch
 
-# Verified 2026-08-18 (first real-GPU 0.5.17 run crashed here: AttributeError:
+# The first real-GPU 0.5.17 run crashed here (AttributeError:
 # module 'sglang.srt.server_args' has no attribute '_global_server_args').
 # 0.5.14: a bare module global (server_args.py:7180). 0.5.17: gone
 # from server_args.py entirely, moved into the RuntimeContext singleton
@@ -502,7 +501,7 @@ def benchmark_config(
 def _patch_framework_moe_parallel(*, moe_tp_size: int, moe_ep_size: int):
     """Patch the SGLang helpers cached by framework MoE backends.
 
-    Re-verified 2026-08-18 at v0.5.17: every patched name is still a plain
+    Re-verified at v0.5.17: every patched name is still a plain
     per-module ``from X import Y`` binding, and ``layer.py``/``standard.py``
     now read parallel sizes as ``get_parallel().moe_ep_size/.moe_ep_rank/
     .moe_tp_size/.moe_tp_rank`` attributes -- exactly this function's
@@ -570,8 +569,7 @@ def _patch_framework_moe_parallel(*, moe_tp_size: int, moe_ep_size: int):
 @contextmanager
 def _pin_moe_runner_backend(backend: MoeRunnerBackend):
     """Pin SGLang's fused-MoE runner-backend selection for the ``with``
-    block, across SGLang's two pinning mechanisms (traced 2026-08-18,
-    AIC-1762 Task 4d).
+    block, across SGLang's two pinning mechanisms.
 
     SGLang 0.5.14: a bare module global, ``sglang.srt.layers.moe.utils.
     MOE_RUNNER_BACKEND`` (utils.py:249), read by
@@ -639,8 +637,8 @@ def _pin_moe_runner_backend(backend: MoeRunnerBackend):
 @contextmanager
 def _pin_flashinfer_mxfp4_moe_precision(value: str | None):
     """Pin ``flashinfer_mxfp4_moe_precision`` for the ``with`` block, across
-     SGLang's two server_args mechanisms (found 2026-08-18, first real-GPU
-     0.5.17 run: this line crashed identically to the ``_global_server_args``
+     SGLang's two server_args mechanisms (the first real-GPU
+     0.5.17 run crashed on this line identically to the ``_global_server_args``
      setup-time access, same root cause -- see the module-level comment above
      ``_server_args_module`` for the full 0.5.14/0.5.17 trace).
 
@@ -1240,8 +1238,8 @@ def _raise_if_unverified_moe_lane(moe_type: str) -> str:
     # * w4a8_mxfp4_mxfp8 (DSV4 FP4 experts, SM100-only): not re-verified.
     if not verified and _check_compat("sglang>=0.5.21,<0.5.22", installed_version):
         verified = moe_type in ("int4_wo", "w4a16_mxfp4") and get_sm_version() in (89, 90)
-        # SM100/103 w4a16_mxfp4 re-verified on 0.5.21 from the B200 identity probes (2026-10-04,
-        # benchmarks/evidence/collector/op-probe-2026-10/: results/sm100/sglang-0.5.21.yaml
+        # SM100/103 w4a16_mxfp4 re-verified on 0.5.21 from the B200 identity probes
+        # (benchmarks/evidence/collector/op-probe-2026-10/: results/sm100/sglang-0.5.21.yaml
         # + results/retests/sm100/sglang-0.5.21.moe_auto.yaml):
         # openai/gpt-oss-120b and gpt-oss-20b serve with Mxfp4MoEMethod -> MoeRunnerBackend.FLASHINFER_MXFP4
         # (kernel family trtllm_gen_moe) under the default render AND under an explicit AUTO, i.e. the
@@ -1256,13 +1254,13 @@ def _raise_if_unverified_moe_lane(moe_type: str) -> str:
         if not verified and moe_type == "w4a8_mxfp4_mxfp8" and get_sm_version() in (100, 103):
             verified = True
         # int4_wo on SM100/103: the source reading above ("SM100 auto moved to Triton") is contradicted
-        # by the B200 identity records of the same day, which the guard update (fd07bf6b, done on SM90)
+        # by the B200 identity records, which the guard update (fd07bf6b, done on SM90)
         # never consumed: moonshotai/Kimi-K2.5 (compressed-tensors W4A16) serves on B200 / 0.5.21 as
         # CompressedTensorsFusedMoE -> trtllm_gen_moe under the default render
         # (results/sm100/sglang-0.5.21.yaml) AND as moe_runner FLASHINFER_TRTLLM under an explicit AUTO
         # (results/retests/sm100/sglang-0.5.21.moe_auto.yaml), i.e. the flashinfer_trtllm declaration the
         # SM100/103 cases carry still matches serving. Hardware evidence outranks the source claim
-        # (harness rule: no claim from reading code). Re-opened 2026-10-06 after the b200_sxm shard run
+        # (harness rule: no claim from reading code). Re-opened after the b200_sxm shard run
         # (GitLab job 469988017) rejected all 3,078 int4_wo cases on this guard alone.
         if not verified and moe_type == "int4_wo" and get_sm_version() in (100, 103):
             verified = True

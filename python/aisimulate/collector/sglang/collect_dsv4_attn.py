@@ -1275,7 +1275,7 @@ def run_dsv4_mla_module(
     # (mem_cache/allocator/swa.py:99-108, size + page_size entries, not priced by the
     # configurator) then needs ~15 GiB that the sizing already handed to the pools
     # (OOM in SWATokenToKVPoolAllocator.__init__, kv_cache_configurator.py:2080,
-    # H20 2026-10-01). Serving never meets this corner because weights leave far
+    # on H20). Serving never meets this corner because weights leave far
     # less free memory; the collector sizes the pool to what the planned shapes
     # allocate instead. sglang treats the value as an upper bound only
     # (kv_cache_configurator.py:2269-2277 _apply_token_constraints: min(profiled,

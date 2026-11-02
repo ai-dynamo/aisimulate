@@ -14,7 +14,7 @@ schema_version: 2
 frameworks:
   sglang:
     source_repo: "https://github.com/sgl-project/sglang.git"
-    # 2026-10-01 (H20/sm90 upgrade audit, benchmarks/evidence/collector/op-probe-2026-10/findings.yaml
+    # H20/sm90 upgrade audit (benchmarks/evidence/collector/op-probe-2026-10/findings.yaml
     # hopper_sglang_collector_port_0514_to_0521_2026_10_01): default pin moved
     # 0.5.14 -> 0.5.21 (newest release tag). Both tags resolve to the same
     # multi-arch index digest, as the 0.5.17 model pins below do. The former
@@ -39,9 +39,9 @@ frameworks:
     # one model's entire run and leaves every other model's resolution (and
     # every other op's family/default resolution) unchanged.
     #
-    # Qwen3.8-2.4T model pins (0.5.17) folded into the 0.5.21 default
-    # 2026-10-30 per the pin-consolidation rule (pins below the target version
-    # upgrade with it): the 0.5.21 tables already carry the Qwen3.8 MoE and GDN
+    # Qwen3.8-2.4T model pins (0.5.17) folded into the 0.5.21 default per
+    # the pin-consolidation rule (pins below the target version upgrade with
+    # it): the 0.5.21 tables already carry the Qwen3.8 MoE and GDN
     # shapes from the unfiltered campaign, and the op-probe serving matrix boots
     # Qwen3.8-2.4T-A95B on SM90/SM100 and -FP8 on SM90 under 0.5.21
     # (benchmarks/evidence/collector/op-probe-2026-10). The 0.5.17 tables stay
@@ -53,16 +53,15 @@ frameworks:
     # has no single model identity and therefore uses the framework/family
     # runtime; run these model-pinned campaigns separately at their declared
     # runtime rather than mixing them into an unfiltered invocation.
-    # GLM-5.3-Flash SGLang 0.5.20 model pin retired 2026-10-30 (owner decision:
-    # one release per collector file; 0.5.20 is below the 0.5.21 target). The
-    # 0.5.20 tables stay under their version key; re-collect them from
-    # main at c540ff90a. Moving the lane to 0.5.21 needs the GLM
-    # attention runner, KDA, mHC and GEMM ports listed in the 2026-10-30
-    # source audit, then a re-collection.
+    # GLM-5.3-Flash SGLang 0.5.20 model pin retired (one release per collector
+    # file; 0.5.20 is below the 0.5.21 target). The 0.5.20 tables stay under
+    # their version key; re-collect them from main at c540ff90a. Moving the
+    # lane to 0.5.21 needs the GLM attention runner, KDA, mHC and GEMM ports,
+    # then a re-collection.
     models: {}
   trtllm:
     source_repo: "https://github.com/NVIDIA/TensorRT-LLM.git"
-    # 2026-10-02 (H20/sm90 upgrade audit, benchmarks/evidence/collector/op-probe-2026-10/findings.yaml
+    # H20/sm90 upgrade audit (benchmarks/evidence/collector/op-probe-2026-10/findings.yaml
     # hopper_trtllm_collector_pin_rc20_to_rc29_2026_10_02): default pin moved
     # 1.3.0rc20 -> 1.3.0rc29 (newest release container). The rc23 moe /
     # sparse_attention / msa family pins are retired: every trtllm registry op
@@ -115,12 +114,12 @@ frameworks:
     # follows 0.30's is_flashkda_supported contract — so kda resolves to the
     # default 0.30.0 like every other vllm op.
       # mla / mla_bmm family pins (0.27.0) were folded into the 0.29.0
-      # default 2026-09-20 per the pin-consolidation rule: pins BELOW the
+      # default per the pin-consolidation rule: pins BELOW the
       # target version upgrade with it; the kda preview pin (an odd dev-build
       # pin) was revisited at the 0.30.0 move and retired, see above.
       # moe: the 0.31.0 family pin above is a stock release.
-      # History: NO family pin (owner decision, reverting the
-      # 2026-08-01 family-wide preview pin — a temporary preview build must
+      # History: NO family pin (owner decision, reverting a
+      # family-wide preview pin — a temporary preview build must
       # not own a family default; a family pin here hijacks image selection
       # for every model). ALL vllm moe collection — including K3 — runs on
       # the stock v0.24.0 default image: K3 SITU cases use the
@@ -134,7 +133,7 @@ frameworks:
       # their honest runtime version column. Retire the approximation when
       # upstream wires SITU into a quantized-activation kernel (kernel
       # class flips) — re-audit at every tag bump.
-      # (2026-08-02 audit note kept for the preview image: the kimi-k3
+      # (Audit note kept for the preview image: the kimi-k3
       # tag's amd64 image is IDENTICAL to the pin digest —
       # 0.1.dev19262+gb6bbf29dd, no deep_gemm; the earlier "drift to
       # sha256:d61e062d" observation was the manifest list's arm64 entry,
@@ -145,7 +144,7 @@ frameworks:
     # family pins and the framework default for every op in that run.
     #
     # Qwen3.8-2.4T model pins (0.27.1) folded into the 0.30.0 default
-    # 2026-10-30 per the pin-consolidation rule: v0.30.0 registers
+    # per the pin-consolidation rule: v0.30.0 registers
     # Qwen3_5MoeForCausalLM, the 0.30.0 tables already carry the Qwen3.8 MoE
     # and GDN shapes, and the op-probe serving matrix boots -FP8 (SM90) and
     # nvidia's NVFP4 checkpoint (SM90/SM100) under 0.30.0

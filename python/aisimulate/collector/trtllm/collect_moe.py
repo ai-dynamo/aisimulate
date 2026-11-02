@@ -666,7 +666,7 @@ def _run_moe_case(
         # SM100-tuned fp8 cache replayed on SM120 →
         # "vector::_M_range_check: __n (which is 29) >= this->size() (which is
         # 21)" in FusedMoeRunner.run_moe; same failure family as the wideep
-        # collector's 2026-07-19 fix in collect_moe_compute.py). Pre-fix cache
+        # collector's fix in collect_moe_compute.py). Pre-fix cache
         # files without the sm prefix are dead — their tuning SM is not
         # recorded, so they are never trusted again.
         cache_path = (
@@ -773,7 +773,7 @@ def _run_moe_case(
         # CUDA-graph timing is mandatory: a failed capture raises
         # (benchmark_with_power default allow_graph_fail=False) and the case
         # fails classified. The moe row has no column that could record an
-        # eager-timed measurement, and the fallback used until 2026-10-12
+        # eager-timed measurement, and the former eager fallback
         # shipped the Python launch-loop floor as kernel latency.
         with benchmark_with_power(
             device=device,

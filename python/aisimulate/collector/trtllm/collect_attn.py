@@ -81,7 +81,7 @@ def run_attention_torch(
         raise ValueError(f"Unsupported TRT-LLM dense attention backend: {attn_backend_name}")
     # if XQA JIT is enabled, the context phase will also trigger XQA prepare which causes the error
     # with specifc q/kv head and seq setting.
-    # NOTE (1.3.0rc23, verified 2026-09-24): this env no longer exists in the
+    # NOTE (verified at 1.3.0rc23): this env no longer exists in the
     # binaries (only TRTLLM_FORCE_XQA / TRTLLM_XQA_BLOCKS_PER_SEQUENCE do).
     # XQA vs MMHA for decode is the op's own heuristic ("JIT XQA is not
     # used: maybe no performance gain" at short KV; XQA selected at long KV) —
@@ -291,7 +291,7 @@ def run_attention_torch(
         "attention_sinks": sinks,
         "out_scale": out_scale,
     }
-    # FIXME(kernel-limit): H20 campaign 2026-10-02 (1.3.0rc29, TRTLLM backend,
+    # FIXME(kernel-limit): H20 campaign (1.3.0rc29, TRTLLM backend,
     # attention/backends/fmha/fallback.py:122): the context FMHA faults with
     # cudaErrorIllegalAddress exactly when the LAST sequence's packed Q/O byte
     # offset (batch-1) * input_len * num_heads * head_dim * 2 >= 2**31 —

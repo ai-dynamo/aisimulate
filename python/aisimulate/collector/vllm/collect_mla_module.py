@@ -1282,7 +1282,7 @@ def run_mla_module(
         # and return (query, None). GLM-5.x's default rope (RotaryEmbedding) accepts key=None
         # natively and is left on serving's exact call: wrapping it too handed vLLM's own rope
         # kernel a contiguous key with the wrong head stride -> out-of-bounds in-place writes,
-        # the GLM-5.2 fp8-KV illegal-address / stall family (2026-10-14, see
+        # the GLM-5.2 fp8-KV illegal-address / stall family (see
         # _strided_throwaway_copy). Kernels and labels unchanged either way. Drop the shim once
         # vLLM's :534 call or DeepseekScalingRotaryEmbedding accepts key=None.
         _patched, _left = _install_rope_missing_key_shims(attn_module)

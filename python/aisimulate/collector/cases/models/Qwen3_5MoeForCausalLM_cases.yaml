@@ -90,8 +90,8 @@ model_case_values:
       # (confirmed by reading Qwen3_5MoeForConditionalGeneration_cases.yaml
       # in full) -- that precedent claim does not hold.
       #
-      # Traced at v0.27.1 anyway for the record (AIC-1782 Task V2,
-      # 2026-08-21; tag v0.27.1, commit 6e448d0ea9bf3d88d898b65449ca6dc2aec170ac),
+      # Traced at v0.27.1 anyway for the record (tag v0.27.1, commit
+      # 6e448d0ea9bf3d88d898b65449ca6dc2aec170ac),
       # head_dim=256, GQA 64q/4kv, no sink/sliding-window. Mechanism:
       # get_attn_backend_cls (platforms/cuda.py:397-492) ->
       # get_valid_backends (:359-394) -> _get_backend_priorities (:83-163,
@@ -200,7 +200,7 @@ model_case_values:
       # framework's own dispatch path" (layer_permissions.md) -- so there
       # is nothing to pin or declare here; kernel_source is recorded
       # dynamically at collection time, never predicted in YAML. Traced at
-      # v0.27.1 anyway for the record (AIC-1782 Task V2), no
+      # v0.27.1 anyway for the record, no
       # explicit flags, this model's shape (silu-gated, dp_size=1):
       #   bfloat16 (quant_config=None -> UnquantizedFusedMoEMethod):
       #   select_unquantized_moe_backend (fused_moe/oracle/unquantized.py:
@@ -262,7 +262,7 @@ model_case_values:
       sglang_moe_routing_method_type: RenormalizeNaive
       # The checkpoint is bfloat16 natively and block-fp8
       # (weight_block_size=[128,128]) as its -FP8 alias; it ships no
-      # per-tensor fp8 or nvfp4 experts (AIC-1782).
+      # per-tensor fp8 or nvfp4 experts.
       quantization_modes: [bfloat16, fp8_block]
     # NVFP4 collection fixture (ModelOpt experts-only recipe: routed-expert
     # linears only, other components at source precision; collector-only id, no
@@ -289,7 +289,7 @@ model_case_values:
       sglang_moe_routing_method_type: RenormalizeNaive
       sglang_moe_backends:
         nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
-      # vLLM (AIC-1782, traced at v0.27.1): no packaged HF config exists for
+      # vLLM (traced at v0.27.1): no packaged HF config exists for
       # this model_path, so collect_moe.py's _load_model_moe_config raises and
       # its vLLM cases fail until one is added under
       # src/aisimulate_core/model_configs (outside collector/). Its nvfp4
@@ -313,7 +313,7 @@ model_case_values:
     # to be divisible by tensor parallel size", qwen35.py:55-60) -- matching
     # the 397B/122B precedent (same num_k_heads=16).
     #
-    # AIC-1782 Task V2: same "no case-schema map" situation as moe:/
+    # Same "no case-schema map" situation as moe:/
     # attention: above -- collect_gdn.py records kernel_source dynamically
     # (context conv = literal "causal_conv1d_fn"; decode conv = literal
     # "causal_conv1d_update"; decode scan = literal

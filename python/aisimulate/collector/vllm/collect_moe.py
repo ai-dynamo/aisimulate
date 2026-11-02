@@ -7,9 +7,9 @@ Shared MoE cases come from YAML. Every quantization mode is built through
 ``FusedMoE`` so vLLM owns routing, TP/EP sharding, weight post-processing, and
 backend selection exactly as it does for model execution.
 
-Runtime: stock vLLM v0.24.0 (owner decision, reverting the
-2026-08-01 family-wide preview pin — a temporary build must not own a
-family default). K3 SITU cases collect on stock via the owner-approved
+Runtime: the stock vLLM release the manifest pins for the moe family (a
+temporary preview build must not own a family default). K3 SITU cases
+collect on stock via the owner-approved
 situ-as-silu Marlin approximation: serving truth for the
 ct-mxfp4+situ checkpoint is MarlinExperts W4A16 on every SM (the preview
 build's CUTLASS activation whitelist rejects SITU), so the collector
@@ -22,8 +22,7 @@ trtllm-gen SITU mapping), the serving kernel class changes and this
 approximation must be retired.
 """
 
-# Verified 2026-08-21 against vLLM v0.24.0 and v0.27.1 tags (source clones,
-# no runtime GPU available in this environment) for AIC-1782 Task V1.
+# Verified against the vLLM v0.24.0 and v0.27.1 tags (source clones).
 # Compatible unchanged for the bf16/fp8_block/nvfp4 target lanes -- and their
 # shared construction path, which every lane (including fp8/w4a16_mxfp4/
 # w4a8_mxfp4_mxfp8/int4_wo) goes through: FusedMoE's full constructor kwarg
@@ -107,7 +106,7 @@ approximation must be retired.
 # Known non-parity: the gate GEMM and shared expert are separate ops.
 # (FlashInfer lanes are timed on the autotuned tactic like serving; see
 # helper.flashinfer_autotuned.)
-# 0.31.0 audit (2026-10-07, source-only: tag v0.31.0 == db9527a4 vs v0.30.0
+# 0.31.0 audit (source-only: tag v0.31.0 == db9527a4 vs v0.30.0
 # ced6857a; no releases in between). The moe family runs on 0.31.0
 # (framework_manifest.yaml family pin), so this file targets
 # exactly 0.31.0. One release per file; earlier code is `git log -- <this file>` away.
@@ -523,8 +522,8 @@ def run_moe_torch(
             # priority list (fused_moe/oracle/mxfp4.py:584-602) — TRITON
             # matmul_ogs on SM90, as the gpt-oss-120b serving probe shows —
             # while the generic Mxfp4Config resolves to Mxfp4MoEMethod -> MARLIN
-            # (path_diff moe_mxfp4 vs gpt-oss-120b was diverged on exactly this,
-            # 2026-09-23). Mirror the framework's own override here
+            # (path_diff moe_mxfp4 vs gpt-oss-120b diverged on exactly this).
+            # Mirror the framework's own override here
             # (GptOssMxfp4Config, quantization/mxfp4.py:110).
             model_cfg = _load_model_moe_config(model_name)
             quant_config = Mxfp4Config()

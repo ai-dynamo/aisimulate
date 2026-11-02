@@ -48,9 +48,8 @@ Output:
     kda_perf.txt — same column layout as the sglang kda collector.
 """
 
-# The kda family runs on 0.31.0 (framework_manifest.yaml family pin,
-# 2026-10-30) for both architectures. History: Kimi-K3 ran on 0.30.0 after
-# the kimi-k3 preview pin was retired 0.30's DS-layout probe
+# The kda family runs on 0.31.0 (framework_manifest.yaml family pin)
+# for both architectures. For Kimi-K3, the DS-layout probe
 # (is_fused_kda_decode_supported, now with recurrent_state_dtype) selects
 # fused_kda_decode for the non-spec decode, and the packed conv-update +
 # recurrence pair is measured alongside as the spec-decode serving path.
@@ -832,7 +831,7 @@ def run_kda_verify_benchmark(
 #                     (mamba_ssm_cache_dtype auto), shapes (3P/tp, d_conv-1) /
 #                     (H/tp, D, D).
 #
-# 0.31.0 audit (2026-10-07, source-only: tag v0.31.0 == db9527a4 vs v0.30.0
+# 0.31.0 audit (source-only: tag v0.31.0 == db9527a4 vs v0.30.0
 # ced6857a). glm5next/nvidia/kda.py moved to glm5next/common/kda.py
 # byte-identical (sha256 37745b45..., so every kda.py line above is unchanged);
 # nvidia/ops/third_party/kda/{kernels,fused_recurrent}.py differ only in
@@ -871,7 +870,7 @@ GLM5_NEXT_KDA_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 # replicates; any other installed release raises KdaRuntimeNotAuditedError (a
 # classified failure) instead of timing a possibly different kernel path.
 _KDA_ARCHITECTURE_COMPAT = {
-    KIMI_K3_KDA_ARCHITECTURE: "vllm==0.31.0",  # 0.30.0 route -> git history; GPU smoke 2026-10-30
+    KIMI_K3_KDA_ARCHITECTURE: "vllm==0.31.0",
     GLM5_NEXT_KDA_ARCHITECTURE: "vllm==0.31.0",
 }
 

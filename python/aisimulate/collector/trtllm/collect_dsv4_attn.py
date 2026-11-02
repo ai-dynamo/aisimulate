@@ -111,7 +111,7 @@ def get_dsv4_hca_generation_test_cases():
 # creation + fp8 post-processing) that dominated the 42s/case cost — the
 # per-case KV cache manager, metadata, CUDA-graph capture and benchmark are
 # untouched, and reusing one module across batches is exactly what serving
-# does. Owner-approved perf change 2026-08-09.
+# does.
 _MODULE_CACHE: dict = {}
 # Lower bound on the per-case KV token quota (see create_dsv4_kv_cache_and_metadata).
 _KV_POOL_MIN_TOKENS = 2 * 1024 * 1024
@@ -280,7 +280,7 @@ def create_dsv4_attention_module(
     # The KV quant algo follows the lane: fp8 (the serving pool, op_plans._trtllm_dsv4_rows) sets
     # kv_cache_quant_algo=FP8 and the module runs the E4m3 FMHA cubins; a bf16 lane leaves it unset
     # so the module runs the QkvBfloat16 cubins — with FP8 pinned here a bf16 pool still produced E4m3
-    # kernels (B200 capture 2026-10-04).
+    # kernels (B200 capture).
     _apply_gemm_type_quant(model_config, "fp8_block", use_fp8_kv_cache=(kv_cache_dtype == "fp8"))
 
     # Provenance: print the RESOLVED kernel-selection knobs (same auto-build
@@ -316,7 +316,7 @@ def create_dsv4_attention_module(
         # _is_fused_q_fp8_quant_enabled: "fp8_ds_mla does not use the fused Q FP8 path").
         # Without it the module takes the fused path, hands the footer-scale cache a
         # strided raw latent and mla_rope_inplace rejects it ("data must be contiguous",
-        # H20 ctx capture 2026-10-01) — a path serving never runs on Hopper.
+        # H20 ctx capture) — a path serving never runs on Hopper.
         model_config.extra_attrs["kv_cache_dtype"] = "fp8_ds_mla"
 
     aux_stream = torch.cuda.Stream(device=device)
@@ -483,7 +483,7 @@ def create_dsv4_kv_cache_and_metadata(
     # collector-computed main-KV-shaped byte cap under-counted on V2 (the
     # byte quota spans main KV + SWA + compressor/indexer caches) and made
     # large-KV shapes fail dummy-request allocation ("Request ID not found in
-    # IndexMapper", B200 smoke round 1 2026-08-06) — hence the token cap below
+    # IndexMapper", B200 smoke) — hence the token cap below
     # is handed to the manager's own arithmetic, never computed here.
     free_bytes, _ = torch.cuda.mem_get_info(torch.device(device))
     # Pool size is a per-case cost, not a measurement input: the manager

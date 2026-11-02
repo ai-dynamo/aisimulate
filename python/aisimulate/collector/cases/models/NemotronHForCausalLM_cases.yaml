@@ -116,7 +116,7 @@ model_case_values:
         nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
       # vLLM reads this checkpoint's packaged HF config
       # (model_configs/nvidia--NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4_config.json,
-      # added in its own human-approved commit). AIC-1743/AIC-1748.
+      # added in its own human-approved commit).
       quantization_modes: [nvfp4]
     - model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
       hidden_size: 4096
@@ -135,7 +135,7 @@ model_case_values:
       sglang_moe_backends:
         nvfp4: {100: flashinfer_trtllm, 103: flashinfer_trtllm, 120: flashinfer_cutlass}
       # vLLM: its FlashInfer NVFP4 path was limited to top-k <= 10
-      # (AIC-1743/AIC-1748, not re-checked at 0.31.0), so these topk=22
+      # (not re-checked at 0.31.0), so these topk=22
       # cases may fail on vLLM; a failure is recorded.
       quantization_modes: [nvfp4]
     - model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4

@@ -10,8 +10,7 @@ recurrent kernel. Both phases use the production packed-QKV convolution width.
 Input/output projection GEMMs remain covered by the GEMM collector.
 """
 
-# Verified 2026-08-21 against vLLM v0.24.0 and v0.27.1 tags (source clones,
-# no runtime GPU available in this environment) for AIC-1782 Task V1.
+# Verified against the vLLM v0.24.0 and v0.27.1 tags (source clones).
 # Compatible unchanged: ChunkGatedDeltaRule.__init__ / _resolve_gdn_prefill_backend
 # (byte-identical body, incl. the flashinfer/cutedsl/triton selection logic;
 # the only diff is 0.24.0's extra nvidia-cutlass-dsl-libs-cu13 disk-hash gate
@@ -314,7 +313,7 @@ def run_gdn_context_benchmark(
             # chunk_delta_h.py:349 -> index.py:34 -- relocated from
             # vllm.model_executor.layers.fla.ops to
             # vllm.third_party.flash_linear_attention.ops at 0.27.1,
-            # re-verified present at both versions, AIC-1782 Task V1) at its
+            # re-verified present at both versions) at its
             # largest num_tokens sub-points (~1M total tokens;
             # smaller sub-points record normally) — reproduced in isolation
             # on a clean RTX PRO 6000 Blackwell GPU at 0.24.0; all 8 Qwen3.5

@@ -130,7 +130,7 @@ REGISTRY: list[OpEntry] = [
     # SAME dsa_*_module table as the full op, tagged by an op_name
     # "_skip_indexer" suffix (that is what the SDK reads), so the entry declares
     # that shared table and selects the mode with run_kwargs — the executor
-    # binds skip_indexer=True to run_func. (Until 2026-10-06 the entry declared
+    # binds skip_indexer=True to run_func. (Before this, the entry declared
     # a dsa_*_skip_indexer_perf.txt table nobody wrote and the worker sniffed
     # the mode from that filename; --resume finalization trusted the
     # declaration and failed every skip_indexer shard: job 469988017.)
@@ -142,9 +142,9 @@ REGISTRY: list[OpEntry] = [
         perf_filename=PerfFile.DSA_CONTEXT_MODULE,
         run_kwargs=(("skip_indexer", True),),
         # Hardware-validated on SM100, on SM103 via the B300 probe
-        # (2026-07-13, pipeline 57747474: 8,506 rows, skip_indexer
+        # (pipeline 57747474: 8,506 rows, skip_indexer
         # trtllm+flashmla buckets clean, 1 error), and on SM90 via the
-        # h100/h200 probe collections (2026-08-14..15, pipelines
+        # h100/h200 probe collections (pipelines
         # 62700025 + 62872230: 67,532 context + 4,896 generation rows,
         # fa3/flashmla_kv/flashmla_sparse buckets clean; failures were
         # 24 init-OOM tasks on the 80 GB h100 and 12 guarded 1M-prefix
@@ -332,7 +332,7 @@ REGISTRY: list[OpEntry] = [
         # Kimi-K3 KDA kernels exist only on the sglang kimi-k3 branch; debugged
         # on Hopper (SM90), B200 (SM100) and B300 (SM103), then verified on
         # L40S/SM89 and RTX Pro 6000/SM120 via full-grid probe runs
-        # (2026-08-01, aic-auto-collector jobs 381312863/381312864: 1074 and
+        # (aic-auto-collector jobs 381312863/381312864: 1074 and
         # 1085 clean rows; SM89 needs the fused-decode SM90 gate in
         # collect_kda.py — the JIT kernel's mbarrier PTX rejects sm_89).
         unverified_sms=(80,),

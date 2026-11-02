@@ -41,8 +41,7 @@ Output:
     gdn_perf.txt - Performance data for GDN Conv1D + scan operations
 """
 
-# Verified 2026-08-18 against sglang v0.5.14 and v0.5.17 tags (source clones,
-# no runtime GPU available in this environment) for AIC-1762 Task 4c/4d.
+# Verified against the sglang v0.5.14 and v0.5.17 tags (source clones).
 # Compatible unchanged: chunk_gated_delta_rule and
 # fused_recurrent_gated_delta_rule_packed_decode signatures/bodies
 # byte-identical; causal_conv1d_fn path and dispatch unchanged;
@@ -199,7 +198,7 @@ def run_gdn_context_benchmark(
                 # the CUDA context and aborts every remaining sweep cell.
                 # NOT relaxed for sglang 0.5.21: its causal_conv1d_triton casts the sequence
                 # offsets to tl.int64 (:95,:185), yet the >=2**31 cells still fault with
-                # cudaErrorIllegalAddress on H20 (0.5.21 smoke 2026-10-01, facts/upgrade_rc29/
+                # cudaErrorIllegalAddress on H20 (0.5.21 smoke, facts/upgrade_rc29/
                 # sgl_smoke_r6) — silicon evidence keeps the guard; the int32 arithmetic is
                 # elsewhere in the kernel's per-block view strides.
                 if total_tokens * conv_channels >= 2**31:
@@ -443,7 +442,7 @@ def _sglang_gdn_lanes_0521():
     """Feature-probe the sglang>=0.5.21 GDN lane surface (None on older runtimes).
 
     0.5.21 moved the GDN backend to srt/layers/attention/linear/gdn_backend.py and
-    changed what serving runs inside the GDN role (H20 serving golden 2026-10-01,
+    changed what serving runs inside the GDN role (H20 serving golden,
     results/pathdiff/sm90/sglang-0.5.21/gdn_{ctx,gen}_Qwen3.5-0.8B.json):
       * prefill: attention_registry.py:425-430 asks flashinfer_gdn_prefill_default
         (gdn_backend.py:188-234) and, when it answers "flashinfer", the extend path
@@ -890,8 +889,8 @@ def run_gdn_torch(
         # sglang 0.5.17 relocated these two from
         # sglang.srt.layers.attention.fla.* to the new top-level
         # sglang.kernels.ops.attention.fla.* package; both function bodies
-        # are byte-identical at the new location (verified 2026-08-18
-        # against the v0.5.14/v0.5.17 tags directly). Try the new
+        # are byte-identical at the new location (verified against the
+        # v0.5.14/v0.5.17 tags directly). Try the new
         # (>=0.5.17) location first since that's where sglang's own code
         # now imports them from.
         try:
@@ -908,7 +907,7 @@ def run_gdn_torch(
         # gdn_backend.py:13-16 imports both conv entry points from
         # causal_conv1d_triton and rebinds only causal_conv1d_fn to the CUDA
         # wrapper (:34-39) — GDN decode keeps the Triton update kernel.
-        # Re-verified 2026-08-18 at v0.5.17: same pattern, now at
+        # Re-verified at v0.5.17: same pattern, now at
         # gdn_backend.py:6-8 (import) / :38-43 (rebind). causal_conv1d_fn's
         # own module path is unaffected by the 0.5.17 kernel reorg;
         # causal_conv1d_update moved the same way as the two fla imports

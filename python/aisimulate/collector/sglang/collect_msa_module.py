@@ -672,7 +672,7 @@ def _alloc_prefix_indices_compat(model_runner, batch_size: int, prefix_len: int)
     inherited ``alloc_extend`` raises NotImplementedError("alloc_extend is
     only for paged allocator") (mem_cache/allocator/base.py:95) — the SM120
     smoke failure signature (every prefix>0 context case died there while
-    prefix==0 and decode passed; 2026-08-09). Serving never calls
+    prefix==0 and decode passed). Serving never calls
     ``alloc_extend`` at page 1: extend batches take the token branch
     ``alloc_token_slots`` → ``allocator.alloc(N)``
     (mem_cache/allocation.py:350-351 in alloc_for_extend, :146

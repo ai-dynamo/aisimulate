@@ -3,7 +3,7 @@
 """collect_attn.kv_cache_in_resolved_layout: the collector's paged KV cache must be laid out
 in the layout the framework RESOLVED for the backend under test, not a fixed HND.
 
-Origin: SM120 collection 2026-10-01 — FlashInfer resolves NHD outside SM100 and its XQA
+Origin: an SM120 collection — FlashInfer resolves NHD outside SM100 and its XQA
 decode asserted on the collector's contiguous [B, H, N, 2D] memory for every fp8-KV GQA
 generation case (20,458 failures); SM100 (HND) and FLASH_ATTN never noticed.
 The helper is pure torch, so the test imports it through ast, without vLLM."""

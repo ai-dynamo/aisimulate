@@ -10,8 +10,7 @@ available. The case plan is shared with the other backends
 selection, quantization helpers, and perf logging.
 """
 
-# Verified 2026-08-17 against sglang v0.5.14 and v0.5.17 tags (source clones,
-# no runtime GPU available in this environment) for Task 4c/AIC-1762. Checked:
+# Verified against the sglang v0.5.14 and v0.5.17 tags (source clones). Checked:
 # sgl_kernel.fp8_scaled_mm/sgl_per_token_quant_fp8 (byte-identical call shape,
 # moved wheel-internal path only); flashinfer fp4_quantize/mm_fp4 (sglang's
 # own call sites into flashinfer unchanged across its flashinfer_python pin
@@ -43,7 +42,7 @@ selection, quantization helpers, and perf logging.
 # findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
 # One release per file; earlier code is `git log -- <this file>` away.
 # The SGLang 0.5.20 fork (collect_gemm_0520.py, serving-built linear layers)
-# retired with the 0.5.20 lane 2026-10-30; it is git history (main at c540ff90a).
+# retired with the 0.5.20 lane; it is git history (main at c540ff90a).
 # Where this table times a different path than SGLang serving (the direction of
 # each error is unknown):
 # - bf16 on SM100/103: serving resolves the auto bf16 GEMM backend to CuTe DSL.
@@ -100,14 +99,14 @@ from sglang.srt.layers.deep_gemm_wrapper import (
 
 # sglang 0.5.17 relocated this module from srt/layers/quantization/ to the new
 # top-level sglang.kernels.ops package; sglang_per_token_group_quant_fp8's own
-# SIGNATURE is otherwise unchanged (verified 2026-08-17, both v0.5.14 and
+# SIGNATURE is otherwise unchanged (verified at both the v0.5.14 and
 # v0.5.17 tags: x, group_size, eps=1e-10, column_major_scales=False,
 # scale_tma_aligned=False, scale_ue8m0=False, fuse_silu_and_mul=False,
 # masked_m=None -- 0.5.17 additionally drops an unused enable_v2 kwarg this
 # collector never passes). Try the new (>=0.5.17) location first since sglang
 # fp8.py itself now imports from there.
 #
-# CORRECTED 2026-08-18 (code review): the signature match above does NOT mean
+# CORRECTION: the signature match above does NOT mean
 # the invoked KERNEL is unchanged -- for this collector's exact call
 # (group_size=128, column_major_scales=True, scale_tma_aligned=True,
 # scale_ue8m0=DEEPGEMM_SCALE_UE8M0), the two pinned versions dispatch
@@ -188,7 +187,7 @@ def _prepare_fp8_block_weights(N, K, device, ue8m0):  # noqa: N803
     SGLang serving performs in
     ``Fp8LinearMethod.process_weights_after_loading_block_quant``
     (sglang/srt/layers/quantization/fp8.py:538-563, pinned v0.5.14 clone;
-    re-verified 2026-08-17 at v0.5.17: same method now at fp8.py:648, which
+    re-verified at v0.5.17: same method now at fp8.py:648, which
     calls the extracted helper ``requant_block_scale_ue8m0_for_deepgemm``
     (fp8_utils.py:1538-1568) -- it still delegates to
     ``requant_weight_ue8m0_inplace`` unchanged, so the semantics this
@@ -253,7 +252,7 @@ def run_gemm(gemm_type, batch_size, N, K, *, perf_filename, device="cuda:0"):  #
         # source 49e384ce): "auto" resolves to flashinfer_cutedsl (mm_fp4
         # backend "cute-dsl") when is_sm100_supported() (major 10 -> SM100 and
         # SM103), marlin on SM80-89, and flashinfer_cutlass (mm_fp4 backend
-        # "cutlass") otherwise, which is the SM120 path. Re-verified 2026-08-17
+        # "cutlass") otherwise, which is the SM120 path. Re-verified
         # against the v0.5.14 and v0.5.17 tags directly: byte-identical body,
         # now at fp4_utils.py:149-163 (v0.5.14 tag) / fp4_utils.py:145-159
         # (v0.5.17) -- this dispatch mapping is unchanged.

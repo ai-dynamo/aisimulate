@@ -692,7 +692,7 @@ def power_monitoring_only(device, measure_power: bool | None = None):
 
 
 # Set to 0/false to time FlashInfer-backed kernels on FlashInfer's untuned default
-# tactic (the pre-2026-10-27 behavior). Default on.
+# tactic. Default on.
 FLASHINFER_AUTOTUNE_ENV = "COLLECTOR_FLASHINFER_AUTOTUNE"
 FLASHINFER_AUTOTUNE_BUDGET_ENV = "COLLECTOR_FLASHINFER_AUTOTUNE_BUDGET"
 FLASHINFER_AUTOTUNE_BUDGET_FLASHINFER = "flashinfer"
@@ -3311,8 +3311,8 @@ def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa, pc):
     # the finalizer then casts power metrics to double and replaces nulls with
     # the repository's 0.0 unavailable-measurement sentinel. Order-insensitive
     # (the merge realigns column order below); Arrow metadata is ignored
-    # (parquets written by the pandas-based merges before 2026-10-12 carry
-    # pandas metadata).
+    # (parquets written by the older pandas-based merges carry pandas
+    # metadata).
     # `string` and `large_string` are one logical type: pyarrow.csv infers
     # `string`, but a parquet that went through one of those pandas merges
     # comes back as `large_string`, so the THIRD finalize of a table (run ->

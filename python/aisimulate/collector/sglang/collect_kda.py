@@ -59,7 +59,7 @@ Output:
 # kda_backend.py with the same Triton lanes — chunk_kda, fused_recurrent_kda_
 # packed_decode / fused_sigmoid_gating_delta_rule_update, kda_fused_decode,
 # causal_conv1d_fn/update — kda_backend.py:6-34, kernels/kda_triton.py:109-237;
-# H20 smoke 2026-10-01, 91 cells ok, the remaining 21 are the >=2**31 conv
+# H20 smoke: 91 cells ok, the remaining 21 are the >=2**31 conv
 # guard cells). 0.5.20 added GLM-5.3-Flash (glm5_next) KDA, audited against
 # the GB300 0.5.20 image (see the GLM section below). Each KDA architecture
 # is additionally gated at runtime by _KDA_ARCHITECTURE_COMPAT, raising
@@ -195,7 +195,7 @@ def run_kda_context_benchmark(
                 # (B200), while every cell under this bound passes.
                 # NOT relaxed for sglang 0.5.21: its causal_conv1d_triton casts the sequence
                 # offsets to tl.int64 (:95,:185), yet the >=2**31 cells still fault with
-                # cudaErrorIllegalAddress on H20 (0.5.21 smoke 2026-10-01, facts/upgrade_rc29/
+                # cudaErrorIllegalAddress on H20 (0.5.21 smoke, facts/upgrade_rc29/
                 # sgl_smoke_r6) — silicon evidence keeps the guard; the int32 arithmetic is
                 # elsewhere in the kernel's per-block view strides.
                 if total_tokens * conv_channels >= 2**31:
@@ -435,7 +435,7 @@ def run_kda_generation_benchmark(
             # c6ad1f26), and the JIT compiles lazily at first call
             # (kernels/ops/attention/kda_fused_decode.py:42-51). Below SM90
             # that call raises (ptxas rejects mbarrier.try_wait.parity:
-            # "requires .target sm_90 or higher", L40S/SM89 2026-08-01), so
+            # "requires .target sm_90 or higher", seen on L40S/SM89), so
             # the covered 12-head cells fail CLASSIFIED here — the same
             # crash serving hits; substituting the Triton pair would be an
             # invented fallback (layer_permissions.md).

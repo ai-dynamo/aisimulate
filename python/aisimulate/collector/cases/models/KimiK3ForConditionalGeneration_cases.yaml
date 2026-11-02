@@ -152,8 +152,8 @@ framework_specific_model_case_values:
 
 # moe is activated per-framework (NOT all_frameworks): K3 has no trtllm
 # serving lane, and an all-frameworks activation made a K3-scoped trtllm run
-# plan moe and expand it to zero cases with no logged drop (review
-# 2026-08-04; case_authoring.md forbids silent zero expansions).
+# plan moe and expand it to zero cases with no logged drop
+# (case_authoring.md forbids silent zero expansions).
 framework_specific_op_cases:
   vllm:
     moe:

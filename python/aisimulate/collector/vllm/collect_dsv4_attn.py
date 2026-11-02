@@ -379,7 +379,7 @@ def _make_builder(backend, spec, prefix, vllm_config, common, *, device: str):
     v1/worker/block_table.py:29-49), so builders assume
     table.shape[1] == width — the family-100 decode path copies the table into
     a width-sized expanded buffer (indexer.py:609,745) and crashes on narrower
-    tables (found on B300 2026-09-20 in the mla 029 lane; same contract here).
+    tables (found on B300 in the mla 029 lane; same contract here).
     Zero-pad our ceil(seq/block)-column table to the width.
     """
     builder_cls = backend.get_builder_cls()

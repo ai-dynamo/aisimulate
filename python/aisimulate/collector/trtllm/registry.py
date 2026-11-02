@@ -148,7 +148,7 @@ REGISTRY: list[OpEntry] = [
     # (mla.py forward_*_sparse_mla "DeepSeek-V4 is not supported on
     # pre-blackwell GPUs") — those platforms fail into the
     # classified log per observe-don't-predict.
-    # SM120 probe (RTX PRO 6000, 1.3.0rc23, campaign 2026-08-07): 100% of
+    # SM120 probe (RTX PRO 6000, 1.3.0rc23): 100% of
     # cases fail from case 0 (~5.4s/case classified errors with SIGABRT
     # worker resets), matching the DeepGEMM sparse-attention "Unsupported
     # architecture" family limit already documented for DSA in

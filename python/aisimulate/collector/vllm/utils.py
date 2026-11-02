@@ -120,7 +120,7 @@ def create_common_attn_metadata(
     # passes seq_lens + seq_lens_cpu_upper_bound (no private *_cpu fields — the
     # 0.29 `_seq_lens_cpu` / `_num_computed_tokens_cpu` were removed in 0.30;
     # computed-token counts derive from seq_lens and query_start_loc inside the
-    # dataclass). Version bump 2026-09-27 (opharness upgrade_op vllm 0.30.0).
+    # dataclass).
     del num_computed_tokens_cpu
     return CommonAttentionMetadata(
         query_start_loc=query_start_loc,
@@ -666,8 +666,8 @@ def framework_kv_block_size(backend_cls, *, cache_backend_cls=None, user_block_s
     ``backend_cls`` when the measured layer is that first layer — and the kernel
     page is ``select_common_block_size(cache_block_size, [backend])``
     (v1/worker/utils.py: the manager size when every backend accepts it, else the
-    largest explicit size that divides it). The former per-SM table (removed) was the owner's
-    2026-09-30 interim; the B200 re-run showed it is not
+    largest explicit size that divides it). The former per-SM table (removed) was an
+    interim; the B200 re-run showed it is not
     equivalent: with mla=32 the bf16 DSA cell selected the TRT-LLM FMHA sparse
     cubin while serving ran FA-cute (page 64) — the page is a per-(backend, kv
     dtype, head shape) decision, so it must come from the backend the case

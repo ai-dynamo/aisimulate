@@ -1611,7 +1611,7 @@ def _classify_exception(error: BaseException) -> str:
     deterministic framework limit (message starts with FIXME(kernel-limit) —
     divisibility guards, missing kernels, unsupported head ranges). These are
     expected on every rerun and must be counted apart from ``unexpected``
-    failures (pipeline summaries matched message text by hand until 2026-10-08).
+    failures.
     """
     return "kernel_limit" if str(error).lstrip().startswith(KERNEL_LIMIT_PREFIX) else "unexpected"
 
@@ -2354,10 +2354,10 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
             # nothing able to make progress. The orphaned ids are recorded in
             # the error report (WorkerOrphanedTask) for the summary and the
             # harness, but NOT in the failed ledger: nothing ran them, so a
-            # plain --resume must queue them again. 2026-10-11, b200 vllm
-            # dsa_context_module: 8,950 orphans written as failed were re-run
-            # by --resume-retry-failed behind the poison shapes that had
-            # stalled the op, which stalled it again.
+            # plain --resume must queue them again. Written as failed, a b200
+            # vllm dsa_context_module run's 8,950 orphans were re-run by
+            # --resume-retry-failed behind the poison shapes that had stalled
+            # the op, which stalled it again.
             if all(p is None for p in processes) and len(accounted) < len(task_infos):
                 while not error_queue.empty():
                     error = error_queue.get()
@@ -2994,7 +2994,7 @@ def _git_collector_ref(repo_root: Path) -> str:
 
     ``AISIM_COLLECTOR_REF`` (legacy ``AIC_COLLECTOR_REF``) wins when set: the
     framework images carry no git, so pipelines that check the collector out
-    by SHA pass it in (every b200 shard run of 2026-10-05 recorded 'unknown').
+    by SHA pass it in; without it every shard run records 'unknown'.
     """
     forced = (os.environ.get("AISIM_COLLECTOR_REF") or os.environ.get("AIC_COLLECTOR_REF") or "").strip()
     if forced:

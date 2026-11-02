@@ -691,8 +691,8 @@ def _agree_graph_capturable(func, label, device) -> None:
     every rank raises, the run loop records the classified failure and all
     ranks skip the case together — the agreement the loop already performs for
     measured cases. The moe_a2a row has no column that could record an
-    eager-timed measurement, so the eager fallback used until 2026-10-12 is
-    gone (layer_permissions.md: measurement-method degradation is allowed only
+    eager-timed measurement, so there is no eager fallback
+    (layer_permissions.md: measurement-method degradation is allowed only
     when recorded in the output row).
     """
     import torch

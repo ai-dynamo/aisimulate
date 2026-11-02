@@ -8,7 +8,7 @@
 # capable image or put a matching SGLang source tree on PYTHONPATH.
 from __future__ import annotations
 
-# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
+# 0.5.21 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image;
 # findings hopper_sglang_collector_port_0514_to_0521_2026_10_01).
 # Each architecture is additionally gated by _ARCHITECTURE_COMPAT
 # (DeepSeek-V4 on 0.5.21 via the native DeepseekV4Config).

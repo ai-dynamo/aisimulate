@@ -228,7 +228,7 @@ def _apply_gemm_type_quant(model_config, gemm_type: str, use_fp8_kv_cache: bool)
                 # config keeps the checkpoint's/fp8_block group_size=128 and 1.3.0rc29
                 # NVFP4LinearMethod.resolve_scaling_vector_size rejects module construction
                 # ("supports NVFP4 scale blocks of (16,) elements, but the checkpoint declares
-                # group_size=128" — B200 smoke 2026-10-04; nvfp4 is a platform floor on Hopper).
+                # group_size=128" — B200 smoke; nvfp4 is a platform floor on Hopper).
                 group_size=16,
                 kv_cache_quant_algo=kv_algo,
                 exclude_modules=None,
@@ -480,8 +480,8 @@ def create_attention_layer(
 # the config with fixed max_num_tokens / max_seq_len, so one layer serves every
 # (batch, seq, prefix) of its key exactly as serving reuses one module. The
 # per-case KV cache manager, metadata, dry run, CUDA-graph capture and timing are
-# untouched. Same pattern as collect_dsv4_attn._cached_dsv4_attention_module
-# (owner-approved perf change 2026-08-09); b300 base run (job 471159002):
+# untouched. Same pattern as collect_dsv4_attn._cached_dsv4_attention_module.
+# A b300 base run (job 471159002) measured
 # dsa_context_module 1.2-2.4 GPU-s and dsa_generation_module 1.8 GPU-s per
 # one-row case, most of it this build. At most one layer is retained.
 _LAYER_CACHE: dict = {}
@@ -643,7 +643,7 @@ def create_kv_cache_and_metadata(
         # AttentionOp::enqueueContext) uses to walk the new-tokens-sized
         # dense q/latent input. Passing prefix+seq here made that kernel
         # read prefix tokens past the input (compute-sanitizer-verified OOB
-        # on B200 2026-07-19, every prefix>0 DSA context case); SM90 was
+        # on B200, every prefix>0 DSA context case); SM90 was
         # blind to it only because FlashMLA doesn't walk the dense input by
         # host_context_lengths.
         prompt_lens=[seq_len_q if is_context else kv_cache_len] * batch_size,
@@ -711,7 +711,7 @@ def run_mla_module(
     # route to the absorbed/trtllm-gen path instead), whose
     # maybe_compiled_copy_ of k_nope into k fails under torch-inductor
     # autotune at huge extents: h=128 cases with ~>=49k total tokens die with
-    # CUDA "invalid argument" (deterministic repro 2026-07-26 on RTX PRO 6000,
+    # CUDA "invalid argument" (deterministic repro on RTX PRO 6000,
     # CUDA_LAUNCH_BLOCKING=1: inductor copy kernel launched with
     # xnumel=2147483648 for b=4/s=32768/h=128). ~72/5856 context cases fail
     # classified; run-and-record.
@@ -820,7 +820,7 @@ def run_mla_module(
         _trtllm_utils._model_extra_attrs.attrs["attention_metadata"] = weakref.ref(attn_metadata)
 
         # FIXME(kernel-limit): same 32-bit per-sequence offset boundary as
-        # collect_attn.py (H20 campaign 2026-10-02, rc29): DeepSeek-V3 context cells
+        # collect_attn.py (H20 campaign, rc29): DeepSeek-V3 context cells
         # with (batch-1) * input_len * local_heads * 192 * 2 >= 2**31 (tp1: 81920+
         # total tokens) fault with cudaErrorIllegalAddress while the TP-sharded rows
         # of the same (batch, seq) pass. Unverified against the kernel source; left
