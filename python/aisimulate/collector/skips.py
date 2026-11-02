@@ -101,6 +101,20 @@ SKIPS: list[dict] = [
     # runs only on explicit request), so these cases would time a path serving
     # does not take.
     {"backend": "vllm", "op": "moe", "dtype": "w4a8_mxfp4_mxfp8", "sm": [120]},
+    # vLLM's collector builds the MXFP8-activation MoE path for the DeepSeek-V4
+    # fp4-expert checkpoints only and rejects every other packaged config, and
+    # vLLM serves the other MXFP4 checkpoints with BF16 activations by default,
+    # so these cases fail at construction on every run.
+    {
+        "backend": "vllm",
+        "op": "moe",
+        "dtype": "w4a8_mxfp4_mxfp8",
+        "model_name": lambda model_name: not model_name.startswith("deepseek-ai/DeepSeek-V4"),
+    },
+    # vLLM's MoE collector reads a packaged HF config for every model, and none
+    # is packaged for this NVFP4 alias, so its cases fail at construction on
+    # every run.
+    {"backend": "vllm", "op": "moe", "model_name": "RadixArk/Qwen3.8-2.4T-A95B-NVFP4"},
     # Large-EP MoE (moe_ep): SGLang's collector drives DeepEPMoE with FP8
     # activations on the DeepGEMM runner, so block-scaled FP8 is the one quant
     # mode it times. This keeps the coverage collected before.

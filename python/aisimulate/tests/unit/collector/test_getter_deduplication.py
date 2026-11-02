@@ -383,7 +383,7 @@ def test_vllm_moe_plan_leaves_out_tensor_and_expert_parallel_together(monkeypatc
     from collector.skips import SKIPS
 
     tp_ep = next(entry for entry in SKIPS if entry.get("parallel") == "tp_ep")
-    assert [(region.region, region.reason) for region in vllm.removed] == [("parallel=tp_ep", repr(tp_ep))]
+    assert ("parallel=tp_ep", repr(tp_ep)) in [(region.region, region.reason) for region in vllm.removed]
 
 
 def test_common_moe_population_can_declare_a_required_ep_world(monkeypatch):

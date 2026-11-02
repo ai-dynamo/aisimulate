@@ -209,3 +209,17 @@ def test_a_model_run_plans_no_op_its_backend_skips(monkeypatch):
     dsv4 = build_collection_case_plan(backend="vllm", model_path="deepseek-ai/DeepSeek-V4-Flash", sm_version=100).ops
     assert "mhc_module" not in dsv4
     assert "moe" in dsv4
+
+
+def test_vllm_plans_mxfp8_activation_moe_for_deepseek_v4_only(monkeypatch):
+    monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
+    for sm in (100, 103):
+        cases = plan("moe", "vllm", sm).cases
+        mxfp8 = {case.model_name for case in cases if case.moe_type == "w4a8_mxfp4_mxfp8"}
+        assert mxfp8 == {"deepseek-ai/DeepSeek-V4-Flash", "deepseek-ai/DeepSeek-V4-Pro"}, (sm, mxfp8)
+        assert "RadixArk/Qwen3.8-2.4T-A95B-NVFP4" not in {case.model_name for case in cases}
+    # The same checkpoints keep their MXFP4 x BF16 cases, and SGLang keeps both.
+    vllm = {case.model_name for case in plan("moe", "vllm", 100).cases if case.moe_type == "w4a16_mxfp4"}
+    assert {"openai/gpt-oss-120b", "openai/gpt-oss-20b", "moonshotai/Kimi-K3"} <= vllm
+    sglang = {case.model_name for case in plan("moe", "sglang", 100).cases if case.moe_type == "w4a8_mxfp4_mxfp8"}
+    assert {"openai/gpt-oss-120b", "moonshotai/Kimi-K3"} <= sglang

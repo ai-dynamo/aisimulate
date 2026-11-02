@@ -677,13 +677,16 @@ def test_deepseek_minimax_and_nemotron_moe_quantization_is_artifact_specific():
 def test_gptoss_mxfp4_modes_are_additive_on_blackwell(monkeypatch):
     model_path = "openai/gpt-oss-120b"
 
-    for backend in ("sglang", "trtllm", "vllm"):
+    for backend in ("sglang", "trtllm"):
         assert _planned_moe_modes(monkeypatch, backend, model_path, 90) == {"w4a16_mxfp4"}, backend
         assert _planned_moe_modes(monkeypatch, backend, model_path, 100) == {"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"}, backend
-    # SM120: SGLang has no verified w4a8 runner pin and vLLM serves MXFP4 there
-    # without MXFP8 activations (both in collector/skips.py).
+    # SM120: SGLang has no verified w4a8 runner pin (collector/skips.py).
     assert _planned_moe_modes(monkeypatch, "sglang", model_path, 120) == {"w4a16_mxfp4"}
-    assert _planned_moe_modes(monkeypatch, "vllm", model_path, 120) == {"w4a16_mxfp4"}
+    # vLLM serves gpt-oss MXFP4 experts with BF16 activations on every SM, and
+    # its collector builds the MXFP8-activation path for DeepSeek-V4 only
+    # (collector/skips.py).
+    for sm in (90, 100, 103, 120):
+        assert _planned_moe_modes(monkeypatch, "vllm", model_path, sm) == {"w4a16_mxfp4"}, sm
 
 
 @pytest.mark.parametrize("backend", ["sglang", "trtllm", "vllm"])
