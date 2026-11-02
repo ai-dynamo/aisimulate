@@ -776,7 +776,7 @@ dialog::backdrop { background: #0009; }
 [data-agentx-parent] th { padding-left:28px; }
 .agentx-replay { width:100%; height:1500px; border:0; margin-top:24px; }
 
-.source-tag { display:table; border:1px solid var(--border); border-radius:4px; padding:2px 7px; margin:5px 0; font-size:11px; font-weight:500; color:var(--muted); }
+.source-tag, .agentx-table .source-tag { display:table; width:fit-content; border-radius:20px; padding:3px 9px; margin:5px 0; background:#078bd3; font-size:11px; font-weight:650; color:white; }
 .agentx-identity .source-tag { display:inline-block; margin-right:8px; }
 .agentx-point-title { font-size:20px; margin:12px 0; overflow-wrap:anywhere; }
 .agentx-back { font-size:13px; }
