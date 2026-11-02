@@ -471,6 +471,8 @@ sample from the most populated cell when the store exceeds its budget.
 | `estimator_config.fpm_regression.fit.linear.non_negative` | `true` | `false` permits signed slopes; the intercept is always free. |
 | `estimator_config.fpm_regression.fit.linear.update_policy` | `{kind: always}` | `error_threshold` defers coefficient publication until recent prediction errors exceed its tolerances. |
 | `estimator_config.fpm_regression.fit.linear.feature_set` | Absent | `fpm5` fits the 17 cross-rank aggregates of the learned `fpm5` preset instead of `feature_axes`, which must keep its default. Requires `sampling.max_observations >= 18` and a positive `fit.singular_ridge_scale`. Omitted from serialization when absent. |
+| `estimator_config.fpm_regression.fit.linear.max_kv_splits` | Absent | KV splits the decode-attention kernel gives a request that runs alone: the GPU's SM count over the kernel's CTAs per request. Required when `feature_axes` or `sampling.axes` selects `longest_split`. Omitted from serialization when absent. See [engine-constant axes](methods/online-regression.md#engine-constant-axes). |
+| `estimator_config.fpm_regression.fit.linear.max_cudagraph_capture_size` | Absent | The most scheduled tokens a rank runs in a CUDA graph, as vLLM's knob of this name. Required when `feature_axes` or `sampling.axes` selects `eager`. Omitted from serialization when absent. |
 
 `feature_set: fpm5` fits the same named aggregates as the learned
 `--features fpm5` preset: active-rank, request and token counts and sums,

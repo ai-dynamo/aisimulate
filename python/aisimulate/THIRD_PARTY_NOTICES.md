@@ -1683,5 +1683,7 @@ independently written regression features that model two behavioral rules:
 
 No upstream source or test fixture is copied. The axes are modified
 simplifications: the kernel's split cap and tile choice and the CUDA-graph
-padding are not modeled. The Apache-2.0 license text is included in this
+padding are not modeled, and `longest_split` counts every scheduled request,
+including prefill requests, which vLLM runs in the context kernel rather
+than the decode kernel. The Apache-2.0 license text is included in this
 repository as `LICENSE`.

@@ -427,8 +427,7 @@ fn request_features_are_explicit_and_projection_failures_do_not_mutate_store() {
 }
 
 /// The `longest_split` and `eager` constants: 66 KV splits for a request
-/// running alone (132 SMs over 2 CTAs per request), and CUDA graphs up to 512
-/// scheduled tokens.
+/// running alone, and CUDA graphs up to 512 scheduled tokens.
 fn gpu_constants() -> feature_axes::AxisConstants {
     feature_axes::AxisConstants::of(&RegressionFitConfig {
         linear: Some(LinearFitConfig {
