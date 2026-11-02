@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import re
@@ -1485,10 +1486,9 @@ def test_pending_memory_rejects_conflicting_runtime_policy(flag):
 
 @pytest.mark.parametrize("architecture", ["Glm5NextForConditionalGeneration", None])
 @pytest.mark.usefixtures("no_models_or_timing_data")
-def test_glm5next_launch_loads_the_language_model_only(architecture):
-    plan = _pending_plan()
-    if architecture is not None:
-        plan = replace(plan, capability=replace(plan.capability, architecture=architecture))
+def test_glm5next_launch_loads_the_language_model_only(tmp_path, architecture):
+    # A GLM-5.3-Flash collection plan carries the point list that the planner generates.
+    plan = _glm_plan(tmp_path) if architecture is not None else _pending_plan()
     assert (plan.capability.architecture == "Glm5NextForConditionalGeneration") == (architecture is not None)
     for cell in plan.cells:
         args = runner._cell_generator_overrides(plan, cell, {})["params"]["agg"]["extra_cli_args"]
@@ -1692,6 +1692,129 @@ def test_bounded_sample_of_a_saved_glm_plan_is_an_explicit_list(tmp_path):
     # A sample of a plan without an origin changes only its list, as before.
     _source, listed, bounded, _full = samples(_pending_plan())
     assert bounded.options == listed
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_glm_collection_cells_render_the_producer_launch(tmp_path, monkeypatch):
+    from collector.fpm_forward.runtime_probe import RuntimeProbePlan
+
+    plan = _glm_plan(tmp_path)
+    assert (plan.options.warmup_iterations, plan.options.vllm_max_model_len) == (0, 1_048_576)
+    assert getattr(plan, "probe_sampling", None) is None
+    producer_env = {
+        "DYN_FPM_GLM53FLASH_REAL_KV": "1",
+        "DYN_FPM_GLM53FLASH_PREFIX_SEED": "1",
+        "DYN_FPM_BENCH_COLLECT_IMBALANCED": "1",
+        # The plan has no probe launch, so the revision is the one of the accepted profile.
+        "DYN_FPM_TOKENIZER_REVISION": "collector-test-snapshot",
+        # The deepest measured context, which a 1,048,576-token runtime context holds with its seven extra positions.
+        "DYN_FPM_GLM53FLASH_MEASURED_CONTEXT": "131072",
+        "PYTHONPATH": "/tmp/fpm-bench:/opt/glm53flash-dynamo",
+    }
+
+    def launch(plan, cell, smoke=False):
+        overrides = runner._cell_generator_overrides(plan, cell, {}, smoke=smoke)
+        env = {item["name"]: item["value"] for item in overrides["K8sConfig"]["extra_env"]}
+        return overrides["params"]["agg"]["extra_cli_args"], env
+
+    for cell in plan.cells:
+        for smoke in (False, True):
+            args, env = launch(plan, cell, smoke)
+            assert {"--language-model-only", "--cudagraph-metrics"} <= set(args)
+            # The producer requires synchronous scheduling. Prefill has the flag already, so each phase has it once.
+            assert args.count("--no-async-scheduling") == 1
+            assert args[args.index("--benchmark-warmup-iterations") + 1] == "0"
+            assert args[args.index("--benchmark-points-file") + 1] == "/tmp/fpm-bench/benchmark-points.json"
+            # The native hash block stays the prefix-match unit of the producer.
+            assert not any(argument.startswith("--prefix-match-unit") for argument in args)
+            assert "DYN_FPM_GLM53FLASH_PREFIX_MATCH_UNIT" not in env
+            assert {name: env.get(name) for name in producer_env} == producer_env
+
+    # Collection bound to the accepted probe passes the launch revision of the probe. Memory observation requests
+    # synchronous decode scheduling itself, and the flag is not repeated.
+    with monkeypatch.context() as patch:
+        launch_facts = {"identity": {"model_revision": "a" * 40}}
+        patch.setattr(planner.FPMCollectionPlan, "runtime_launch", property(lambda _plan: launch_facts))
+        patch.setattr(runner, "_observe_runtime_memory", lambda _plan, _cell: True)
+        for cell in plan.cells:
+            args, env = launch(plan, cell)
+            assert args.count("--no-async-scheduling") == 1
+            assert env["DYN_FPM_TOKENIZER_REVISION"] == "a" * 40
+
+    with pytest.raises(ValueError) as error:
+        launch(replace(plan, options=replace(plan.options, warmup_iterations=5)), plan.cells[0])
+    assert str(error.value) == (
+        "GLM-5.3-Flash collection requires warmup_iterations 0. The producer runs its own warm-ups"
+    )
+    listless = replace(
+        plan.options, benchmark_points_json=None, benchmark_points_sha256=None, benchmark_points_origin=None
+    )
+    with pytest.raises(ValueError) as error:
+        launch(replace(plan, options=listless), plan.cells[0])
+    assert str(error.value) == (
+        "GLM-5.3-Flash collection requires a frozen point list; plan with the accepted runtime probe"
+    )
+
+    # A runtime probe of the same deployment measures the generic grid, with any global warm-up.
+    probe = RuntimeProbePlan(
+        "gb300-tp4",
+        json.dumps({"identity": {"model": plan.model_path, "model_revision": "a" * 40}}),
+        replace(listless, warmup_iterations=5),
+        plan.capability,
+        plan.cells,
+        SimpleNamespace(manifest={"runtime": {"version": "0.31.0"}}),
+        plan.sha256,
+    )
+    for cell in probe.cells:
+        args, env = launch(probe, cell)
+        assert "--language-model-only" in args
+        assert {"--benchmark-points-file", "--cudagraph-metrics"}.isdisjoint(args)
+        assert set(producer_env).isdisjoint(env)
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_glm_smoke_stages_the_four_point_subset(tmp_path):
+    plan = _glm_plan(tmp_path)
+    frozen = json.loads(plan.options.benchmark_points_json)
+
+    def staged(name, cell, smoke):
+        directory = tmp_path / name
+        directory.mkdir()
+        [path] = runner._stage_points_file(plan, directory, cell=cell, smoke=smoke)
+        assert path == directory / runner.POINTS_FILENAME
+        return path.read_bytes()
+
+    for cell in plan.cells:
+        subset = staged(f"smoke-{cell.workload_kind}", cell, True)
+        # One 64-token request without a prefix and after one hash block of prefix, and the decode of one and of two
+        # requests at the smallest context of the list above one hash block.
+        assert json.loads(subset) == {
+            "schema_version": 3,
+            "prefill": [
+                {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0},
+                {"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 2176},
+            ],
+            "decode": [
+                {"batch_size": 1, "total_kv_read_tokens": 4096},
+                {"batch_size": 2, "total_kv_read_tokens": 8192},
+            ],
+        }
+        # The smoke measures points of the frozen list, so smoke and formal collection share one plan hash.
+        for phase in ("prefill", "decode"):
+            assert all(point in frozen[phase] for point in json.loads(subset)[phase])
+        assert runner._configured_sampling_metadata(plan, cell, smoke=True) == {
+            "benchmark_points_sha256": hashlib.sha256(subset).hexdigest(),
+            "requested_point_count": 2,
+            "smoke_manifest": "glm53flash_grid_v1_smoke",
+        }
+        full = staged(f"formal-{cell.workload_kind}", cell, False)
+        assert full.decode() == plan.options.benchmark_points_json
+        assert len(json.loads(full)["prefill"]) == 496
+        assert runner._configured_sampling_metadata(plan, cell, smoke=False) == {
+            "benchmark_points_sha256": plan.options.benchmark_points_sha256,
+            "requested_point_count": {"prefill": 496, "decode": 96}[cell.workload_kind],
+            "benchmark_points_origin": "glm53flash_grid_v1",
+        }
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")

@@ -20,8 +20,11 @@ import collector.fpm_forward.runner as fpm_runner
 import pytest
 from collector.fpm_forward.config import FPMCollectionOptions, PrefillSamplingProfile
 from collector.fpm_forward.model_capability import ResolvedModelConfig, load_model_config
+from collector.fpm_forward.native_artifact import COLLECTOR_PROVENANCE_FILENAME
 from collector.fpm_forward.planner import BackendPolicy, FPMCell, build_collection_plan
 from collector.fpm_forward.runner import (
+    POINTS_FILENAME,
+    POINTS_RECEIPT_FILENAME,
     REMOTE_EXIT_MARKER,
     REMOTE_WORKDIR,
     KubernetesCellRunner,
@@ -1498,6 +1501,205 @@ def test_run_collection_stages_owned_runtime_files(monkeypatch, tmp_path, pendin
         assert "prefill_requested_new_token_axis_count" not in checkpoint["cells"][cell.cell_id]
     assert checkpoint["cells"][cell.cell_id]["measured_new_token_axis_count"] == 2
     assert "database" not in checkpoint
+
+
+def _staged_run(monkeypatch, root: Path, plan, *, smoke: bool):
+    """Run every cell of ``plan`` on an in-process cluster.
+
+    Return the names that each cell stages, the point-list receipt that each cell records after execution, and the
+    checkpoint. The receipt comes from the collector's own in-container check of the staged list.
+    """
+    staged, receipts = {}, {}
+
+    def render_cell(*args, **_kwargs):
+        cell_dir = args[2]
+        (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
+        for name in ("run.sh", "fpm_env.sh", "collector-runtime-env.sh"):
+            (cell_dir / name).write_text("#!/bin/sh\n")
+
+    class FakeResource:
+        def __init__(self, _manifest, cell_dir):
+            self.cell_dir = cell_dir
+            self.results = root / "remote" / cell_dir.name
+
+        def apply(self):
+            pass
+
+        def wait_ready(self, _expected_nodes):
+            return ["pod-0"]
+
+        def stage(self, _pods, files):
+            staged[self.cell_dir.name] = [path.name for path in files]
+
+        def prepare_attempt(self, _pods, **_kwargs):
+            self.results.mkdir(parents=True, exist_ok=True)
+
+        def _exec_checked(self, _pod, command, *, timeout):
+            local = [str(self.cell_dir / POINTS_FILENAME), str(self.results / POINTS_RECEIPT_FILENAME)]
+            return subprocess.run(
+                [sys.executable, *command[1:-2], *local], check=True, capture_output=True, text=True, timeout=timeout
+            )
+
+        def execute(self, _pods):
+            pass
+
+        def collect(self, _pods, *, require_benchmark=True):
+            raw = self.cell_dir / "raw" / "pod-0"
+            raw.mkdir(parents=True)
+            (raw / COLLECTOR_PROVENANCE_FILENAME).write_text("{}")
+            receipt = self.results / POINTS_RECEIPT_FILENAME
+            if receipt.exists():
+                shutil.copy2(receipt, raw / POINTS_RECEIPT_FILENAME)
+                receipts[self.cell_dir.name] = json.loads(receipt.read_text())
+
+        def cleanup(self):
+            pass
+
+    monkeypatch.setattr(fpm_runner, "_render_cell", render_cell)
+    monkeypatch.setattr(fpm_runner, "KubernetesCellRunner", FakeResource)
+    monkeypatch.setattr(
+        fpm_runner, "_runtime_collection_summary", lambda *_args, **_kwargs: {"measured_point_count": 2}
+    )
+    errors = run_collection(
+        plan,
+        generator_overrides={},
+        checkpoint_dir=str(root / "checkpoints"),
+        artifact_root=str(root / "artifacts"),
+        resume=False,
+        retry_failed=False,
+        smoke=smoke,
+        cell_limit=len(plan.cells),
+        publish_database=False,
+    )
+    assert errors == []
+    checkpoint = json.loads((root / "checkpoints" / f"fpm_forward{'_smoke' if smoke else ''}.json").read_text())
+    return staged, receipts, checkpoint
+
+
+def test_run_collection_stages_the_glm_adapter_files(monkeypatch, tmp_path):
+    from collector.fpm_forward.glm53flash_points import glm_smoke_subset
+
+    from .test_fpm_runtime_memory import _glm_plan
+
+    plan = _glm_plan(tmp_path)
+    staged, receipts, checkpoint = _staged_run(monkeypatch, tmp_path / "run", plan, smoke=True)
+
+    _, _, subset_sha256 = glm_smoke_subset(json.loads(plan.options.benchmark_points_json), 2176)
+    assert set(staged) == {cell.cell_id for cell in plan.cells}
+    # Smoke runs under the plan hash of formal collection.
+    assert checkpoint["plan_sha256"] == plan.sha256
+    for cell in plan.cells:
+        names = staged[cell.cell_id]
+        adapter = {"sitecustomize.py", "glm53flash_prefix_scheduler.py", "runtime-source-sha256.json", "LICENSE"}
+        assert adapter | {"benchmark-points.json"} <= set(names)
+        assert {"dsv41_scheduler.py", "fpm_text.txt"}.isdisjoint(names)
+        entry = checkpoint["cells"][cell.cell_id]
+        assert entry["status"] == "passed"
+        assert receipts[cell.cell_id] == {
+            "plan_sha256": plan.sha256,
+            "cell_id": cell.cell_id,
+            "attempt_id": entry["attempt_id"],
+            "sha256": subset_sha256,
+            "phase": "after",
+        }
+        assert (entry["benchmark_points_sha256"], entry["requested_point_count"], entry["smoke_manifest"]) == (
+            subset_sha256,
+            2,
+            "glm53flash_grid_v1_smoke",
+        )
+
+
+def test_non_glm_cells_keep_their_launch_and_staging(monkeypatch, tmp_path):
+    from aisimulate_core.sdk.deepseek_v41 import MODEL_REVISION
+
+    # The launch and staging of the base revision f33438fe, for the default cells of this module and for DeepSeek
+    # V4.1 cells.
+    runtime = [
+        "--distributed-executor-backend",
+        "mp",
+        "--distributed-timeout-seconds",
+        "1800",
+        "--no-enable-log-requests",
+    ]
+    graphs = {
+        "cudagraph_capture_sizes": [1, 2, 4, *range(8, 256, 8), *range(256, 512, 16), *range(512, 2049, 32)],
+        "max_cudagraph_capture_size": 2048,
+    }
+    timing = ["--benchmark-timeout", "10800", "--benchmark-mode"]
+    limits = ["--benchmark-warmup-iterations", "3", "--max-model-len", "-1"]
+    grid = {
+        "prefill": [
+            *timing,
+            "prefill",
+            *limits,
+            "--compilation-config",
+            json.dumps(graphs, separators=(",", ":")),
+            "--prefill-max-new-token-samples",
+            "199",
+            "--prefill-max-kv-read-token-samples",
+            "29",
+            "--max-num-batched-tokens",
+            "8192",
+        ],
+        "decode": [*timing, "decode", *limits],
+    }
+    model = {
+        "default": ["--trust-remote-code", "--reasoning-parser=glm45"],
+        "v41": ["--language-model-only", "--tokenizer-mode=deepseek_v41", '--engram-config={"cpu_offload":false}'],
+    }
+    adapter_env = {
+        "default": [],
+        "v41": [
+            ("DYN_FPM_DSV41_REAL_KV", "1"),
+            ("DYN_FPM_INPUT_TEXT", "/tmp/fpm-bench/fpm_text.txt"),
+            ("DYN_FPM_TOKENIZER_REVISION", MODEL_REVISION),
+            ("PYTHONPATH", "/tmp/fpm-bench:/opt/dsv41-dynamo/components/src"),
+        ],
+    }
+    adapter_files = {
+        "default": [],
+        "v41": [
+            "fpm_text.txt",
+            "LICENSE",
+            "README.md",
+            "dsv41_scheduler.py",
+            "runtime-paths.json",
+            "runtime-source-sha256.json",
+            "sitecustomize.py",
+        ],
+    }
+    for kind in ("default", "v41"):
+        for phase in ("prefill", "decode"):
+            cell = _cell(phase=phase)
+            if kind == "v41":
+                cell = dataclasses.replace(cell, execution_identity=("0" * 64, "full", "hbm_tp_sharded", "text"))
+            plan = _plan(cell)
+            if kind == "v41":
+                plan.capability = SimpleNamespace(architecture="DeepseekV41ForCausalLM")
+                plan.options.decoder_replay = False
+            overrides = _cell_generator_overrides(plan, cell, {})
+            workload = ["--no-async-scheduling"] if phase == "prefill" else []
+            # V4.1 decode keeps its own token budget for the engine.
+            budget = ["--max-num-batched-tokens", "8192"] if (kind, phase) == ("v41", "decode") else []
+            assert overrides["params"]["agg"]["extra_cli_args"] == [
+                *runtime,
+                *workload,
+                *model[kind],
+                *budget,
+                *grid[phase],
+            ]
+            assert [(item["name"], item["value"]) for item in overrides["K8sConfig"]["extra_env"]] == [
+                ("DYN_FPM_BENCHMARK_OUTPUT_PATH", "/results/benchmark.json"),
+                ("FPM_RUN_ID", cell.cell_id),
+                *adapter_env[kind],
+                ("FPM_READINESS_TIMEOUT_SECONDS", "900"),
+                ("DYN_BENCH_KV_WARMUP", "on"),
+                ("DYN_BENCH_PREFILL_REAL_SEED", "on"),
+            ]
+            staged, receipts, _checkpoint = _staged_run(monkeypatch, tmp_path / kind / phase, plan, smoke=False)
+            runtime_files = ["run.sh", "fpm_env.sh", "collector-runtime-env.sh", "fpm_exec.sh", "preflight.py"]
+            assert staged == {cell.cell_id: [*runtime_files, *adapter_files[kind]]}
+            assert receipts == {}
 
 
 def test_partial_formal_run_is_campaign_incomplete_not_database_failure(monkeypatch, tmp_path):
