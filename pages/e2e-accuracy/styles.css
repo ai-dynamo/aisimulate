@@ -785,3 +785,18 @@ dialog::backdrop { background: #0009; }
 .provenance svg { vertical-align:middle; }
 .theme-control select { background:var(--panel); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:5px; }
 .agentx-method { margin-top:20px; }
+#profile-accuracy h2 { margin:20px 0 12px; font-size:18px; }
+#profile-accuracy > p { margin:0 0 12px; color:var(--muted); font-size:12px; }
+#profile-accuracy .table-scroll { border:1px solid var(--border); border-radius:8px; }
+#profile-accuracy thead th { background:color-mix(in srgb, var(--elevated) 50%, var(--panel)); }
+#profile-accuracy tbody th { background:transparent; color:var(--text); font-weight:600; }
+#profile-accuracy tbody tr:last-child > * { border-bottom:0; }
+#profile-accuracy .agentx-table th:nth-child(n+3), #profile-accuracy .agentx-table td:nth-child(n+3) { text-align:right; }
+#profile-accuracy .agentx-run-table { min-width:640px; table-layout:fixed; }
+#profile-accuracy .agentx-run-table th:first-child { width:32%; }
+#profile-accuracy .agentx-run-table thead th:not(:first-child), #profile-accuracy .agentx-run-table td { text-align:right; }
+#profile-accuracy .agentx-run-table td { color:var(--text); font-size:13px; }
+#profile-accuracy .agentx-run-table small { display:block; margin-top:3px; color:var(--muted); font-size:11px; font-weight:400; }
+#profile-accuracy .comparison-source-dot { display:inline-block; width:8px; height:8px; margin-right:6px; border-radius:50%; }
+#profile-accuracy .comparison-source-dot.silicon { background:var(--silicon); }
+#profile-accuracy .comparison-source-dot.aisim { background:var(--aisim); }

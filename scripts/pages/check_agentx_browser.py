@@ -213,6 +213,14 @@ async def check():
                 )
                 await expect(frame.locator("#profile-accuracy")).to_be_visible()
                 await expect(frame.locator("#profile-accuracy")).to_contain_text("Selected run accuracy · Profile")
+                await expect(frame.locator(".agentx-run-table thead th")).to_have_text(
+                    ["Metric", "Silicon", "AISim", "Point error", "Request MAPE"]
+                )
+                await expect(frame.locator(".agentx-run-table tbody tr")).to_have_count(3)
+                await expect(frame.locator(".agentx-run-table tbody tr").last.locator("td").last).to_contain_text(
+                    "Not applicable"
+                )
+                await expect(frame.locator("#profile-accuracy ul")).to_have_count(0)
                 await expect(frame).not_to_contain_text("Request accounting")
                 await expect(frame).not_to_contain_text("All measured request comparisons")
                 assert await frame.evaluate(

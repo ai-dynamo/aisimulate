@@ -735,8 +735,10 @@ the AgentX branch selector.
 Model summary rows use the overview's full-width tinted background and brighter
 text. Concurrency subrows use the page surface, with the same hover/focus accent.
 Source labels use compact, padded blue pills sized to their text, like the NEW badge.
-Comparison plots and request timelines use yellow for silicon and blue for AISim.
+Comparison plots and request timelines use blue for silicon and yellow for AISim.
 Line patterns distinguish multiple metrics; failed timeline requests keep a red outline.
+The selected-run table places request MAPE and its scored-request count beside
+point error for each latency metric. Output-throughput request MAPE is not applicable.
 The beta support-matrix notice appears only on the AgentX overview. Self-collected
 evidence is labeled “AISim self-collected dataset: coming soon.”
 

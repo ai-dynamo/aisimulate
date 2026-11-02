@@ -11,8 +11,8 @@
         --grid: #24272b;
         --accent: #ffb432;
         --blue: #528de0;
-        --silicon: #facc15;
-        --aisim: #528de0;
+        --silicon: #528de0;
+        --aisim: #facc15;
         --cyan: #18b7ce;
         --red: #ef5959;
         --green: #50b377;
@@ -39,8 +39,8 @@
         --muted: #606770;
         --grid: #e8eaed;
         --accent: #b66f00;
-        --silicon: #ca8a04;
-        --aisim: #2563eb;
+        --silicon: #2563eb;
+        --aisim: #ca8a04;
       }.replay-dashboard button,
 .replay-dashboard input,
 .replay-dashboard select {
