@@ -73,6 +73,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+from collector.attention_memory import filter_attention_cases
 from collector.case_generator import (
     get_mla_module_model_specs,
     get_mla_module_precision_specs,
@@ -80,6 +81,7 @@ from collector.case_generator import (
     get_msa_head_counts,
 )
 from collector.helper import _resolve_local_model_path, benchmark_with_power, get_sm_version, log_perf
+from collector.module_memory import module_footprint_bytes, validate_module_position
 from collector.registry_types import PerfFile
 from collector.vllm.utils import (
     BatchSpec,
@@ -241,7 +243,18 @@ def _build_module_test_cases(mode: str):
             if rest:
                 case.append(rest[0])
             cases.append(case)
-    return cases
+    return filter_attention_cases(
+        cases,
+        lambda case: module_footprint_bytes(
+            case,
+            backend="vllm",
+            attention_type="msa",
+            is_context=mode == "context",
+            page_size=128,
+        ),
+        torch.cuda,
+        f"msa_{mode}_module",
+    )
 
 
 def get_msa_context_module_test_cases():
@@ -390,7 +403,13 @@ def _create_msa_attention_module(
         block_size=block_size,
         num_gpu_blocks=1 + _ceil_div(max_seq_len + 1, block_size) * max_batch_size,
         max_num_seqs=max_batch_size,
-        max_num_batched_tokens=max(max_batch_size * max_seq_len, 131072) if is_context else max_batch_size,
+        # Scheduling buffers index newly computed tokens; cached prefix only
+        # enlarges max_model_len and KV blocks (nvidia/model.py:796-803@dd10e03f9).
+        max_num_batched_tokens=(
+            max(max_batch_size * (query_len if query_len is not None else max_seq_len), 131072)
+            if is_context
+            else max_batch_size
+        ),
         # Serving's global --kv-cache-dtype: use_fp8_kv_cache=True sets
         # cache_config.cache_dtype "fp8" (= fp8_e4m3 on CUDA, config/cache.py
         # :75-78@v0.24.0), False leaves "auto" (model dtype, bf16). The module
@@ -733,6 +752,7 @@ def run_msa_module(
     init_workspace_manager(torch.device(device))
 
     is_context = "context" in perf_filename
+    validate_module_position(model_path, prefix_len + seq_len if is_context else seq_len + 1)
     prefix_len = int(prefix_len) if is_context else 0
     phase = "context" if is_context else "generation"
     print(
@@ -747,7 +767,7 @@ def run_msa_module(
         num_heads=num_heads,
         gemm_type=gemm_type,
         kv_cache_dtype=kv_cache_dtype,
-        max_seq_len=prefix_len + seq_len,
+        max_seq_len=prefix_len + seq_len + (0 if is_context else 1),
         max_batch_size=batch_size,
         is_context=is_context,
         device=device,

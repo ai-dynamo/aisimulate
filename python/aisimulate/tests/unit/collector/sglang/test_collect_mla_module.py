@@ -9,7 +9,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from collector.helper import PhaseClock, render_phase_totals, run_measurement_subprocess
+
+from collector.helper import PhaseClock, create_test_case_id, render_phase_totals, run_measurement_subprocess
 
 
 @pytest.fixture(autouse=True)
@@ -35,6 +36,7 @@ def _mock_helper_imports(monkeypatch):
         get_device_capability=lambda *_a, **_kw: (9, 0),
         get_device_name=lambda *_a, **_kw: "Fake GPU",
         is_available=lambda: False,
+        current_device=lambda: 0,
         set_device=lambda *_a, **_kw: None,
     )
     fake_torch.randn = lambda *_a, **_kw: None
@@ -121,11 +123,11 @@ class TestGetBackends:
 
 class TestGetContextTestCases:
     def test_memory_guard(self):
-        """No test case exceeds batch_size * seq_len > 128K."""
+        """MLA full-history context honors its separate 1M-token budget."""
         mod = _import_module()
         with patch.object(mod, "get_sm_version", return_value=90):
             for case in mod.get_context_test_cases("mla"):
-                assert case[0] * case[1] <= 128 * 1024
+                assert case[0] * case[1] <= 1048576
 
     def test_large_seq_guard(self):
         """seq_len >= 8192 only with batch_size <= 8."""
@@ -145,11 +147,311 @@ class TestGetContextTestCases:
 
 class TestGetGenerationTestCases:
     def test_memory_guard(self):
-        """No test case exceeds batch_size * seq_len > 256K."""
+        """The generation grid respects its declared token budget."""
         mod = _import_module()
+        budget = mod.get_mla_module_sweep_spec("sglang").generation_max_tokens
         with patch.object(mod, "get_sm_version", return_value=90):
             for case in mod.get_generation_test_cases("dsa"):
-                assert case[0] * case[1] <= 256 * 1024
+                assert case[0] * case[1] <= budget
+
+
+@pytest.mark.unit
+class TestAgenticGenerationCoverage:
+    def test_grid_preserves_old_shapes_and_prefill_batches(self):
+        mod = _import_module()
+        sweep = mod.get_mla_module_sweep_spec("sglang")
+        with patch.object(mod, "get_sm_version", return_value=90):
+            cases = mod.get_generation_test_cases("dsa")
+        pairs = {(case[1], case[0]) for case in cases}
+        old_batches = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+        old_lengths = [1, *[2**power for power in range(2, 18)]]
+        old_pairs = {(b, s) for b in old_batches for s in old_lengths if b * s <= 262144}
+        agentic_lengths = old_lengths + [262144, 393216, 524288, 655360, 720896]
+        assert old_pairs <= pairs
+        assert {(b, s) for b in [4, 8, 16, 32, 52] for s in agentic_lengths} <= pairs
+        assert sweep.context_batch_sizes == old_batches
+        assert sweep.generation_msa_max_tokens == 33554432
+
+    @pytest.mark.parametrize(("past_kv", "capacity"), [(15, 64), (16, 64), (15, 63)])
+    def test_decode_bounds_report_errors_before_request_allocation(self, monkeypatch, capsys, past_kv, capacity):
+        mod = _import_module()
+        imports = {
+            "sglang.srt.layers.layer_boundary.adapters.attention": ["AttentionInputs", "get_attn_tp_context"],
+            "sglang.srt.managers.schedule_batch": ["Req", "ScheduleBatch"],
+            "sglang.srt.mem_cache.cache_init_params": ["CacheInitParams"],
+            "sglang.srt.mem_cache.chunk_cache": ["ChunkCache"],
+            "sglang.srt.model_executor.forward_batch_info": ["ForwardBatch"],
+            "sglang.srt.model_executor.runner": ["model_capture_mode"],
+            "sglang.srt.sampling.sampling_params": ["SamplingParams"],
+            "sglang.srt.speculative.spec_info": ["SpeculativeAlgorithm"],
+            "sglang.srt.utils": ["BumpAllocator"],
+        }
+        for name, attributes in imports.items():
+            native = types.ModuleType(name)
+            native.__dict__.update({attribute: object() for attribute in attributes})
+            monkeypatch.setitem(sys.modules, name, native)
+        requests = []
+
+        def request(**kwargs):
+            requests.append(kwargs)
+            raise ValueError("request construction reached")
+
+        sys.modules["sglang.srt.managers.schedule_batch"].Req = request
+        sys.modules["sglang.srt.sampling.sampling_params"].SamplingParams = types.SimpleNamespace
+        monkeypatch.setattr(mod, "_import_sglang_forward_context", lambda: (None, None))
+        monkeypatch.setattr(mod.torch, "OutOfMemoryError", MemoryError, raising=False)
+        monkeypatch.setattr(mod.torch.cuda, "OutOfMemoryError", MemoryError, raising=False)
+        monkeypatch.setattr(
+            mod.torch, "randint", lambda *_: types.SimpleNamespace(tolist=lambda: [0] * past_kv), raising=False
+        )
+        pool = types.SimpleNamespace(clear=lambda: None, page_size=64, available_size=lambda: capacity)
+        runner = types.SimpleNamespace(
+            model_config=types.SimpleNamespace(context_len=16), req_to_token_pool=pool, token_to_kv_pool_allocator=pool
+        )
+        assert not mod._run_decode(
+            runner,
+            None,
+            1,
+            past_kv,
+            8,
+            1,
+            1,
+            "cuda",
+            None,
+            None,
+            "dsa",
+            "test",
+            "GlmMoeDsaForCausalLM",
+            "dsa",
+            "0.5.21",
+            "Fake GPU",
+            "bfloat16",
+            "fp8",
+            "bfloat16",
+            8,
+        )
+        error = capsys.readouterr().err
+        if past_kv == 16:
+            assert not requests
+            assert "past_kv + 1=17 exceeds model context length=16" in error
+        elif capacity < 64:
+            assert not requests
+            assert "requires 64 KV tokens, exceeding actual pool capacity=63" in error
+        else:
+            assert len(requests) == 1
+            assert "request construction reached" in error
+
+    def test_explicit_generation_batches_do_not_inject_batch_one(self, monkeypatch):
+        mod = _import_module()
+        monkeypatch.setattr(
+            mod, "get_generation_test_cases", lambda attn_type: [[720896, 52, 8, "fp8", "bfloat16", "bfloat16"]]
+        )
+        monkeypatch.setattr(
+            mod,
+            "get_mla_module_sweep_spec",
+            lambda backend: types.SimpleNamespace(
+                generation_batch_sizes=[4, 8, 16, 32, 52], context_prefix_lengths=[1048575]
+            ),
+        )
+        monkeypatch.setattr(mod, "_model_max_position_embeddings", lambda model: 1048576)
+        assert mod._generation_manifest("dsa", 8, "fp8", "bfloat16", "bfloat16", "test") == ((52, 720896, 0),)
+
+
+@pytest.mark.unit
+class TestGenerationMemoryManifest:
+    def test_mla_context_manifest_accepts_local_model_config(self, monkeypatch, tmp_path):
+        mod = _import_module()
+        config = mod.module_model_config("deepseek-ai/DeepSeek-V3")
+        (tmp_path / "config.json").write_text(json.dumps(config))
+        monkeypatch.setenv("SGLANG_TEST_NUM_LAYERS", "2")
+        monkeypatch.setenv("SGLANG_LOAD_FORMAT", "dummy")
+        monkeypatch.setattr(mod.torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(
+            mod.torch.cuda,
+            "get_device_properties",
+            lambda _: types.SimpleNamespace(total_memory=180 * 2**30),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            mod, "get_context_test_cases", lambda _: [[40960, 1, 8, "bfloat16", "bfloat16", "bfloat16"]]
+        )
+        monkeypatch.setattr(mod, "_filter_cases_from_env", lambda cases, **_: cases)
+        assert mod._mla_context_manifest(8, "bfloat16", "bfloat16", "bfloat16", str(tmp_path)) == ((1, 40960, 0),)
+
+    @pytest.mark.parametrize(
+        "attn_type,kv_dtype,backend,expected",
+        [
+            ("mla", "bfloat16", None, 2304),
+            ("dsa", "bfloat16", None, 2568),
+            ("dsa", "fp8", "trtllm", 1416),
+            ("dsa", "fp8", "flashmla_kv", 1576),
+        ],
+    )
+    def test_native_pool_bytes_across_loaded_layers(self, monkeypatch, attn_type, kv_dtype, backend, expected):
+        mod = _import_module()
+        monkeypatch.setenv("SGLANG_TEST_NUM_LAYERS", "2")
+        monkeypatch.setenv("SGLANG_LOAD_FORMAT", "dummy")
+        assert mod._estimated_generation_kv_bytes_per_token("zai-org/GLM-5.2", attn_type, kv_dtype, backend) == expected
+
+    @pytest.mark.parametrize("layers,load_format", [("0", "dummy"), ("2", "auto")])
+    def test_untrimmed_runner_uses_full_layer_count(self, monkeypatch, layers, load_format):
+        mod = _import_module()
+        monkeypatch.setenv("SGLANG_TEST_NUM_LAYERS", layers)
+        monkeypatch.setenv("SGLANG_LOAD_FORMAT", load_format)
+        assert mod._estimated_generation_kv_bytes_per_token("zai-org/GLM-5.2", "dsa", "bfloat16", None) == 78 * 1284
+
+    @pytest.mark.parametrize("device_gib,expected_count", [(80, 1), (180, 2), (268.59375, 2)])
+    def test_expanded_grid_drops_only_device_memory_shapes(self, monkeypatch, capsys, device_gib, expected_count):
+        mod = _import_module()
+        monkeypatch.setenv("SGLANG_TEST_NUM_LAYERS", "2")
+        monkeypatch.setenv("SGLANG_LOAD_FORMAT", "dummy")
+        monkeypatch.setattr(mod.torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(
+            mod.torch.cuda,
+            "get_device_properties",
+            lambda _: types.SimpleNamespace(total_memory=device_gib * 2**30),
+            raising=False,
+        )
+        # Explicit expanded fixture: the large cell needs 80.29 GiB of KV
+        # allocation alone, including fresh-token and padding pages.
+        monkeypatch.setattr(
+            mod,
+            "get_generation_test_cases",
+            lambda _: [
+                [720896, 1, 8, "bfloat16", "bfloat16", "bfloat16"],
+                [131072, 256, 8, "bfloat16", "bfloat16", "bfloat16"],
+            ],
+        )
+        monkeypatch.setattr(
+            mod,
+            "get_mla_module_sweep_spec",
+            lambda _: types.SimpleNamespace(
+                generation_batch_sizes=[256],
+                context_prefix_lengths=[],
+            ),
+        )
+        manifest = mod._generation_manifest("dsa", 8, "bfloat16", "bfloat16", "bfloat16", "deepseek-ai/DeepSeek-V3.2")
+        assert len(manifest) == expected_count
+        assert manifest[0] == (1, 720896, 0)  # context bounds are NOT a planning filter
+        output = capsys.readouterr().out
+        assert ("dropped 1/2 shapes (memory budget" in output) == (device_gib == 80)
+
+    @pytest.mark.parametrize("device_gib", [80, 180, 268.59375])
+    def test_glm_fp8_long_decode_grid_fits_planning_budget(self, monkeypatch, device_gib):
+        mod = _import_module()
+        monkeypatch.setenv("SGLANG_TEST_NUM_LAYERS", "2")
+        monkeypatch.setenv("SGLANG_LOAD_FORMAT", "dummy")
+        monkeypatch.setattr(mod.torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(
+            mod.torch.cuda,
+            "get_device_properties",
+            lambda _: types.SimpleNamespace(total_memory=int(device_gib * 2**30)),
+            raising=False,
+        )
+        manifest = mod._generation_manifest("dsa", 8, "fp8", "bfloat16", "bfloat16", "nvidia/GLM-5.2-NVFP4", "trtllm")
+        assert len(manifest) == len(set(manifest)) == 250
+        assert (52, 720896, 0) in manifest
+
+    def test_no_cuda_preserves_plan_without_estimating(self, monkeypatch):
+        mod = _import_module()
+        monkeypatch.setattr(mod, "_estimated_generation_kv_bytes_per_token", lambda *_: pytest.fail("no device"))
+        assert mod._generation_manifest("mla", 8, "bfloat16", "bfloat16", "bfloat16", "unknown")
+
+    def test_generation_getters_bind_nonempty_manifests(self):
+        mod = _import_module()
+        for getter in (mod.get_dsa_generation_module_test_cases, mod.get_wideep_mla_generation_test_cases):
+            cases = getter()
+            assert cases
+            assert all(len(case) == 12 and case[11] for case in cases)
+
+    def test_manifest_changes_task_identity(self):
+        mod = _import_module()
+        case = mod.get_dsa_generation_module_test_cases()[0]
+        smaller = [*case[:11], case[11][:-1]]
+        assert create_test_case_id(case, "generation", mod.__name__) != create_test_case_id(
+            smaller, "generation", mod.__name__
+        )
+
+    def test_cli_resolves_generation_manifest_before_dispatch(self, monkeypatch):
+        mod = _import_module()
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "collect_mla_module",
+                "--mode",
+                "generation",
+                "--attn-type",
+                "dsa",
+                "--model",
+                "test",
+                "--num-heads",
+                "8",
+            ],
+        )
+        monkeypatch.setattr(mod, "_get_precision_combos", lambda _: [("bfloat16", "fp8", "bfloat16")])
+        manifest = ((52, 131072, 0),)
+        monkeypatch.setattr(mod, "_generation_manifest", lambda *_: manifest)
+        dispatched = []
+        monkeypatch.setattr(mod, "run_mla_module", lambda **kw: dispatched.append(kw["inner_manifest"]))
+        mod.main()
+        assert dispatched == [manifest]
+
+    def test_empty_manifests_are_not_queued(self, monkeypatch, capsys):
+        mod = _import_module()
+        monkeypatch.setattr(mod, "_generation_manifest", lambda *_: ())
+        assert mod.get_dsa_generation_module_test_cases() == []
+        assert mod.get_wideep_mla_generation_test_cases() == []
+        assert "empty generation manifest; group not queued" in capsys.readouterr().out
+
+    def test_worker_executes_manifest_without_replanning(self, monkeypatch):
+        mod = _import_module()
+        monkeypatch.setattr(mod, "get_generation_test_cases", lambda *_: pytest.fail("must not rebuild queued plan"))
+        monkeypatch.setattr(
+            mod, "_filter_cases_from_env", lambda *_a, **_kw: pytest.fail("must not filter queued plan")
+        )
+        monkeypatch.setenv("AIC_DSA_CONTEXT_BATCH_SIZES", "1")
+        monkeypatch.setattr(mod, "cleanup_distributed", lambda: None)
+        monkeypatch.setattr(mod, "load_model_runner", lambda **_: object())
+        captured = []
+        monkeypatch.setattr(mod, "run_attention_torch", lambda **kw: captured.extend(kw["test_cases"]) or len(captured))
+        manifest = ((52, 131072, 0), (1, 720896, 0))
+        mod.run_mla_module("dsa", 8, "test", "fp8", "bfloat16", "bfloat16", False, 0, inner_manifest=manifest)
+        assert captured == [(52, 131072, False, 0), (1, 720896, False, 0)]
+        with pytest.raises(RuntimeError, match="nonempty planned inner manifest"):
+            mod.run_mla_module("dsa", 8, "test", "fp8", "bfloat16", "bfloat16", False, 0)
+
+    def test_generation_manifest_reaches_subprocess(self, monkeypatch):
+        mod = _import_module()
+        captured = {}
+
+        def run_child(argv, **_kwargs):
+            call = ast.Expression(ast.parse(argv[2]).body[-1].value)
+            eval(
+                compile(call, "<mla-subprocess>", "eval"), {"run_mla_module": lambda *_args, **kw: captured.update(kw)}
+            )
+            return 0, b""
+
+        monkeypatch.setattr(mod, "run_measurement_subprocess", run_child)
+        manifest = ((52, 131072, 0),)
+        mod.run_mla_module_worker(
+            0,
+            0,
+            8,
+            "fp8",
+            "bfloat16",
+            "bfloat16",
+            "test",
+            "dsa",
+            None,
+            8,
+            "trtllm",
+            manifest,
+            perf_filename="dsa_generation_module_perf.txt",
+            skip_indexer=True,
+        )
+        assert captured["inner_manifest"] == manifest
+        assert captured["skip_indexer"] is True
 
 
 class TestDsaContextPrefixShape:
@@ -190,6 +492,7 @@ class TestDsaRuntimeLimits:
         assert required_swa_kv_alloc_tokens(2, 256, 0, 256, 128, is_prefill=False) == 1024
 
 
+@pytest.mark.unit
 class TestDsaCudaGraph:
     def test_generation_cuda_graph_uses_max_batch_tokens(self):
         mod = _import_module()
@@ -203,19 +506,54 @@ class TestDsaCudaGraph:
 
         assert mod._generation_cuda_graph_enabled_for_tokens(runner, 256)
         assert not mod._generation_cuda_graph_enabled_for_tokens(runner, 257)
+        assert not mod._generation_cuda_graph_enabled_for_tokens(runner, 0)
 
     def test_generation_cuda_graph_uses_explicit_batch_list(self):
         mod = _import_module()
         runner = types.SimpleNamespace(
             server_args=types.SimpleNamespace(
+                disable_cuda_graph_padding=True,
                 cuda_graph_config=types.SimpleNamespace(
                     decode=types.SimpleNamespace(backend="cudagraphs", bs=[1, 4, 16], max_bs=None)
-                )
+                ),
             )
         )
 
         assert mod._generation_cuda_graph_enabled_for_tokens(runner, 4)
         assert not mod._generation_cuda_graph_enabled_for_tokens(runner, 8)
+        assert not mod._generation_cuda_graph_enabled_for_tokens(runner, 17)
+
+    @pytest.mark.parametrize("batch_size", [4, 8, 16, 32, 52])
+    def test_agentx_batches_use_exact_shape_graph_with_default_bucket_coverage(self, batch_size):
+        mod = _import_module()
+        capture_bs = [1, 2, 4, 8, 12, *range(16, 257, 8)]
+        assert 52 not in capture_bs
+        runner = types.SimpleNamespace(
+            server_args=types.SimpleNamespace(
+                disable_cuda_graph_padding=False,
+                cuda_graph_config=types.SimpleNamespace(
+                    decode=types.SimpleNamespace(backend="cudagraphs", bs=capture_bs, max_bs=256)
+                ),
+            )
+        )
+        assert mod._generation_cuda_graph_enabled_for_tokens(runner, batch_size)
+        assert not mod._generation_cuda_graph_enabled_for_tokens(runner, 257)
+
+    @pytest.mark.parametrize("disable_padding", [False, True])
+    def test_generation_cuda_graph_uses_native_resolved_arguments(self, monkeypatch, disable_padding):
+        mod = _import_module()
+        native = types.ModuleType("sglang.srt.arg_groups.model_override_base")
+        native.resolving_view = lambda _: types.SimpleNamespace(
+            cuda_graph_config=types.SimpleNamespace(
+                decode=types.SimpleNamespace(backend="cudagraphs", bs=[48, 56], max_bs=56)
+            ),
+            disable_cuda_graph_padding=disable_padding,
+        )
+        monkeypatch.setitem(sys.modules, native.__name__, native)
+        runner = types.SimpleNamespace(server_args=types.SimpleNamespace())
+        assert mod._generation_cuda_graph_enabled_for_tokens(runner, 52) is not disable_padding
+        assert mod._generation_cuda_graph_enabled_for_tokens(runner, 56)
+        assert not mod._generation_cuda_graph_enabled_for_tokens(runner, 57)
 
     def test_generation_cuda_graph_can_be_disabled(self):
         mod = _import_module()
@@ -348,7 +686,7 @@ class TestBuildModuleTestCases:
             cases = mod._build_module_test_cases("dsa", "generation")
 
         assert cases
-        assert calls == [("sglang", "generation", 89)]
+        assert set(calls) == {("sglang", "generation", 89)}
 
     def test_full_dsa_sweep_canonicalizes_consumer_equivalent_checkpoints(self):
         mod = _import_module()
@@ -405,12 +743,12 @@ class TestBuildModuleTestCases:
         assert cases
         assert {case[6] for case in cases} == {"nvidia/GLM-5-NVFP4"}
 
-    def test_format_length_11(self):
-        """Each DSA module case includes target TP and prefill backend."""
+    def test_generation_case_format(self):
+        """Each DSA decode task includes target TP, backend and exact manifest."""
         mod = _import_module()
         with patch.object(mod, "get_sm_version", return_value=90):
             for case in mod._build_module_test_cases("dsa", "generation"):
-                assert len(case) == 11
+                assert len(case) == 12
                 assert case[7] == "dsa"
                 assert case[8] is None  # DSA backend resolved at runtime
                 assert case[9] in {1, 2, 4, 8}
@@ -607,12 +945,13 @@ class TestGetMlaBackendList:
 
 
 class TestBuildWideepMlaTestCases:
-    def test_format_length_10(self):
+    def test_context_format_includes_exact_manifest(self):
         """Each wideep MLA test case has 9 elements (6 + model_path + attn_type + backend)."""
         mod = _import_module()
         with patch.object(mod, "get_sm_version", return_value=90):
             for case in mod._build_wideep_mla_test_cases("context"):
-                assert len(case) == 9
+                assert len(case) == 12
+                assert case[11]
                 assert case[7] == "mla"
 
     def test_context_filename(self):
@@ -655,6 +994,37 @@ class TestBuildWideepMlaTestCases:
 
 @pytest.mark.unit
 class TestFailClosedOrchestration:
+    @pytest.mark.parametrize("chunk_override, expected_capacity", [(None, 81920), (131072, 131072)])
+    def test_context_executes_exact_planned_manifest(self, monkeypatch, chunk_override, expected_capacity):
+        mod = _import_module()
+        manifest = ((1, 24576, 0), (2, 40960, 0))
+
+        def unexpected(*_args, **_kwargs):
+            raise AssertionError("A queued manifest must not be expanded or filtered again")
+
+        captured = {}
+        runner = {}
+        monkeypatch.setattr(mod, "get_context_test_cases", unexpected)
+        monkeypatch.setattr(mod, "_filter_cases_from_env", unexpected)
+        monkeypatch.setattr(mod, "cleanup_distributed", lambda: None)
+        monkeypatch.setattr(mod, "load_model_runner", lambda **kwargs: runner.update(kwargs) or object())
+        monkeypatch.setattr(mod, "run_attention_torch", lambda **kwargs: captured.update(kwargs) or 2)
+        mod.run_mla_module(
+            "mla",
+            8,
+            "deepseek-ai/DeepSeek-V3",
+            "bfloat16",
+            "bfloat16",
+            "bfloat16",
+            True,
+            0,
+            attention_backend="fa3",
+            inner_manifest=manifest,
+            chunked_prefill_size=chunk_override,
+        )
+        assert captured["test_cases"] == [(b, s, True, p) for b, s, p in manifest]
+        assert runner["chunked_prefill_size"] == expected_capacity
+
     def test_empty_case_list_raises_before_model_load(self, monkeypatch):
         mod = _import_module()
         monkeypatch.setattr(mod, "get_context_test_cases", lambda _attn_type: [])

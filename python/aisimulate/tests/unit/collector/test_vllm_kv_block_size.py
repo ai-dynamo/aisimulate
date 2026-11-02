@@ -73,3 +73,11 @@ def test_first_layer_backend_is_the_default_cache_backend(kv_block_size):
     flash_attn = _backend(16, 32, 64)
     assert kv_block_size(flash_attn) == 16
     assert kv_block_size(_backend(64)) == 64
+
+
+def test_flashinfer_large_page_support_keeps_default_kernel_page(kv_block_size):
+    # v0.31.0 db9527a4, flashinfer.py:430-449: Blackwell GQA exposes large
+    # pages too. They do not change the default preference from 16. This
+    # checks isolated dense attention, not hybrid model manager-page sizing.
+    flashinfer_blackwell_gqa = _backend(16, 32, 64, 128, 256, 512, 1024)
+    assert kv_block_size(flashinfer_blackwell_gqa) == 16

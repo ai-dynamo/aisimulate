@@ -228,7 +228,7 @@ def test_targeted_msa_getters_keep_prefixes_and_worker_tuple_compatibility(monke
     context_cases = module.get_msa_context_module_test_cases()
     generation_cases = module.get_msa_generation_module_test_cases()
 
-    assert {case[7] for case in context_cases} == {0, 128}
+    assert {0, 128, 4096, 16384, 32768, 65536, 131072, 262144, 524288, 1048575} == {case[7] for case in context_cases}
     assert generation_cases
     assert {case[6] for case in context_cases + generation_cases} == {MODEL_PATH}
 

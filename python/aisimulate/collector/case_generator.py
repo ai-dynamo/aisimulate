@@ -764,6 +764,8 @@ class MLAModuleSweepSpec:
     context_dsa_chunk_prefill_size: int | None = None
     context_dsa_max_full_sequence_length: int | None = None
     context_dsa_prefix_lengths: list[int] | None = None
+    mla_context_sequence_lengths: list[int] | None = None
+    context_mla_max_tokens: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1067,6 +1069,12 @@ def get_mla_module_sweep_spec(backend: str | None = None) -> MLAModuleSweepSpec:
         module_tp_sizes=module_tp_sizes,
         module_precision_combos=precision_combos,
         context_max_tokens=int(context["max_tokens"]),
+        context_mla_max_tokens=_optional_int(context.get("mla_max_tokens")),
+        mla_context_sequence_lengths=_optional_int_list(
+            values.get("mla_context_sequence_lengths"),
+            field_name="mla_module.mla_context_sequence_lengths",
+            default=context_sequence_lengths,
+        ),
         context_large_sequence_min=_optional_int(context.get("large_sequence_min")),
         context_large_sequence_max_batch_size=_optional_int(context.get("large_sequence_max_batch_size")),
         context_msa_triton_max_tokens=_optional_int(context.get("msa_triton_max_tokens")),

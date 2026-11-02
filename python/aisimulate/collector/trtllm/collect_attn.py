@@ -20,6 +20,7 @@ import os
 
 import tensorrt_llm
 import torch
+from collector.attention_memory import filter_attention_cases
 from collector.case_generator import (
     get_attention_context_shape_sweeps,
     get_attention_generation_shape_sweeps,
@@ -562,6 +563,24 @@ def _int_list(values):
     return [int(value) for value in values]
 
 
+def _attention_memory_bytes(case):
+    b, s, n, kv, d, window, fp8, fp8_context, context, backend = case
+    page = _deployment_tokens_per_block()
+    synthetic_length = max(s + 2, window + 2 if window > 0 else 0)
+    # Matches KvCacheConfig.max_tokens and CacheType.SELF in run_attention_torch.
+    cache_tokens = ((synthetic_length - 1) // page + 1) * page * b * 2
+    cache = cache_tokens * kv * d * 2 * (1 if fp8 else 2)
+    tokens = b * (s if context else 1)
+    qkv = tokens * (n + 2 * kv) * d * 2
+    packed = qkv if backend == "TRTLLM" else 0
+    output = tokens * n * d * (1 if fp8_context or (fp8 and not context) else 2)
+    # Native RoPE/output temporaries and graph-owned output remain in addition
+    # to QKV; reserve workspace separately from the 10% device headroom.
+    temporary = qkv + output
+    metadata = 64 * b * synthetic_length
+    return cache + qkv + packed + 2 * output + temporary + metadata + (4 << 30)
+
+
 def get_context_attention_test_cases():
     has_fp8 = get_sm_version() > 86
     test_cases = []
@@ -645,29 +664,12 @@ def get_context_attention_test_cases():
                             ]
                         )
 
-    return test_cases
+    return filter_attention_cases(test_cases, _attention_memory_bytes, torch.cuda, "trtllm attention")
 
 
-def _generation_target_sequence_lengths(batch_sizes, sequence_lengths, num_heads, max_tokens, shape_sweep):
-    b_s_dict = {}
-    s_b_dict = {}
-    for s in sequence_lengths:
-        max_b = max_tokens // s // num_heads
-        for b in batch_sizes:
-            if b > max_b:
-                break
-            if s not in s_b_dict:
-                s_b_dict[s] = {b}
-            else:
-                s_b_dict[s].add(b)
-    for s, b_set in s_b_dict.items():
-        if len(b_set) < int(shape_sweep["min_batch_options_per_sequence"]):
-            continue
-        for b in b_set:
-            if b not in b_s_dict:
-                b_s_dict[b] = {s - 1}
-            b_s_dict[b].add(s - 1)
-    return b_s_dict
+def _generation_target_sequence_lengths(batch_sizes, sequence_lengths, max_tokens):
+    # Tokens bound campaign density; the actual tensor footprint controls memory.
+    return {b: {s - 1 for s in sequence_lengths if b * s <= max_tokens} for b in sorted(batch_sizes)}
 
 
 def get_generation_attention_test_cases():
@@ -677,7 +679,6 @@ def get_generation_attention_test_cases():
     for shape_sweep in get_attention_generation_shape_sweeps("trtllm"):
         batch_sizes = _int_list(shape_sweep["batch_sizes"])
         sequence_lengths = _int_list(shape_sweep["sequence_lengths"])
-        min_drop_batch = int(shape_sweep["drop_largest_sequence_for_batch_at_least"])
 
         for head_config in get_attention_head_configs(shape_sweep, phase="generation", backend="trtllm"):
             n = head_config.num_heads
@@ -689,9 +690,7 @@ def get_generation_attention_test_cases():
             b_s_dict = _generation_target_sequence_lengths(
                 batch_sizes,
                 sequence_lengths,
-                n,
                 int(shape_sweep[max_tokens_key]),
-                shape_sweep,
             )
             # The XQA precheck is a TRTLLM-kernel init constraint; flashinfer-
             # routed configs never run it.
@@ -706,8 +705,6 @@ def get_generation_attention_test_cases():
                     continue
             for b, s_list_limited in b_s_dict.items():
                 target_s_list = sorted(s_list_limited)
-                if b >= min_drop_batch:
-                    target_s_list = target_s_list[:-1]
                 for s in target_s_list:
                     for precision_case in shape_sweep["precision_cases"]:
                         use_fp8_kv_cache = bool(precision_case["fp8_kv_cache"])
@@ -716,7 +713,7 @@ def get_generation_attention_test_cases():
                         test_cases.append(
                             [b, s, n, n_kv, h, attention_window_size, use_fp8_kv_cache, False, False, attn_backend]
                         )
-    return test_cases
+    return filter_attention_cases(test_cases, _attention_memory_bytes, torch.cuda, "trtllm attention")
 
 
 if __name__ == "__main__":

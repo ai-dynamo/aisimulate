@@ -210,6 +210,28 @@ The full Apache-2.0 license text is reproduced in `LICENSE`. This section
 records provenance for NVIDIA-authored predecessor code; it is not a claim
 that Dynamo is owned by an unaffiliated third party.
 
+## SGLang decode-graph eligibility and cache planning
+
+The graph-eligibility, request-bound checks and cache planning in `collector/sglang/collect_mla_module.py` and
+its synthetic regressions in `tests/unit/collector/sglang/test_collect_mla_module.py`
+adapt SGLang 0.5.21 at immutable commit
+`e00930c5489053f26d86b179cee0d087f846acbb`:
+`python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py:714-719`
+`python/sglang/srt/arg_groups/cuda_graph_hook.py:649-657`, and
+`python/sglang/srt/managers/tokenizer_manager.py:1290-1330`, and
+`python/sglang/srt/mem_cache/kv_cache_configurator.py:2264-2280,2572-2627`,
+`python/sglang/srt/mem_cache/memory_pool.py:4395-4464,4869-4958`, and
+`python/sglang/srt/mem_cache/index_key_cache.py:13-39`.
+NVIDIA modified the check for isolated module collection: padding-enabled
+serving eligibility selects an exact-shape module graph, not a padded serving
+bucket. Cache planning applies the native layout arithmetic to exclude
+physically infeasible cases before queueing. The native runtime and prefill
+policy remain unchanged.
+
+Source: https://github.com/sgl-project/sglang/tree/e00930c5489053f26d86b179cee0d087f846acbb
+Copyright 2023-2026 SGLang Team and contributors. Licensed under Apache-2.0:
+https://github.com/sgl-project/sglang/blob/e00930c5489053f26d86b179cee0d087f846acbb/LICENSE
+
 ## SGLang feed-forward/decode composition and quantization exclusions
 
 The dense-prefix composition and exclusion resolver in `src/aisimulate_core/sdk/models/deepseek_v32.py` and their regression fixtures in `tests/unit/sdk/models/test_deepseek_v32_dense.py` and `tests/unit/sdk/models/test_large_ep_model_graphs.py` adapt and modify the tensor-parallel communication and packed-linear selection behavior from SGLang revision `02c5a855aceb968c310e6fbc6632270e26edc84b`. Original source paths are `python/sglang/srt/models/deepseek_v2.py`, `python/sglang/srt/layers/communicator.py`, `python/sglang/srt/layers/quantization/modelopt_quant.py`, and `python/sglang/srt/layers/quantization/utils.py`. The adaptation models operator composition and projection precision without importing the serving runtime or its GPU dependencies.
@@ -339,6 +361,25 @@ The following files are derived from vLLM's attention test utilities at tag
 
 Upstream source:
 https://github.com/vllm-project/vllm/blob/v0.11.0/tests/v1/attention/utils.py
+
+The vLLM 0.31 attention collector integration in `collector/vllm/collect_attn.py`
+and `collector/vllm/utils.py` adapts (with modifications) the metadata and KV
+view contracts from vLLM commit `db9527a46873454610df6dbedf79a36d6bf1a7f6`:
+
+- `vllm/v1/worker/utils.py`
+- `vllm/v1/worker/gpu/attn_utils.py`
+- `vllm/v1/attention/backend.py`
+- `vllm/v1/attention/backends/flashinfer.py`
+- `vllm/v1/attention/backends/utils.py`
+- `vllm/model_executor/models/config.py` and `vllm/v1/attention/backends/flash_attn.py`
+- `vllm/v1/attention/backends/fa_utils.py`
+
+Source: https://github.com/vllm-project/vllm/tree/db9527a46873454610df6dbedf79a36d6bf1a7f6
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/LICENSE
+NVIDIA modified the integration for standalone operator collection, preserving
+framework backend selection and the existing perf-row schema. No upstream
+serving implementation is vendored.
 
 The Gemma 4 visual-mask behavior and replicated multimodal adapter in
 `src/aiconfigurator_core/sdk/models/gemma4.py` and

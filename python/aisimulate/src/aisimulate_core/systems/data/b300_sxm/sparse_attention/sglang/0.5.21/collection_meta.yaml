@@ -37,7 +37,7 @@ tables:
       rows: 19710
       status: complete
   dsa_generation_module_perf:
-    rows: 6120
+    rows: 6620
     status: complete
     collections:
     - collector_ref: ee219cc60e13e9f60db50b63f13bab536c598781
@@ -52,6 +52,28 @@ tables:
       collected_at: '2026-10-08'
       rows: 2464
       status: complete
+    - collector_ref: 0bba6709ed4ef3a0fcae878d2ad2fb61bbd11a04
+      collector_hash: sha256:da3ffe2ecaf850e18c082c3f0e7a218ae93150ac9e2b6ef2942e3c4365dee4e6
+      case_plan_hash: sha256:9657dad4b6bda474f3e6eb0bd463ccc54b8d3870d43f31a47414e0128c0813bc
+      collected_at: '2026-11-02'
+      rows: 250
+      status: complete
+      runtime:
+        framework: sglang
+        version: 0.5.21
+        image: lmsysorg/sglang:v0.5.21
+        image_digest: sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+    - collector_ref: 0bba6709ed4ef3a0fcae878d2ad2fb61bbd11a04
+      collector_hash: sha256:da3ffe2ecaf850e18c082c3f0e7a218ae93150ac9e2b6ef2942e3c4365dee4e6
+      case_plan_hash: sha256:4c84107fcf115fd4099931bbad0cfb1bbc5dc69430e60f3cebc6d38ef594ad99
+      collected_at: '2026-11-02'
+      rows: 250
+      status: complete
+      runtime:
+        framework: sglang
+        version: 0.5.21
+        image: lmsysorg/sglang:v0.5.21
+        image_digest: sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
   dsv4_csa_context_module_perf:
     rows: 47456
     status: complete

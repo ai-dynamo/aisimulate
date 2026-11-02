@@ -4,12 +4,15 @@
 # Versions are upgraded IN PLACE (owner policy 2026-09-20): this file always
 # targets the manifest pin; prior-version code is `git log -- <this file>`
 # away and prior-version DATA stays permanent under its version key. The
-# 0.24->0.29 adaptations each carry a serving citation @0.29.0.
-__compat__ = "vllm==0.30.0"
+# 0.31 attention-family pin uses the native page/layout/dispatch paths below.
+# Upstream audit: vLLM db9527a46873454610df6dbedf79a36d6bf1a7f6.
+__compat__ = "vllm==0.31.0"
 
 import os
+from functools import cache
 
 import torch
+from collector.attention_memory import filter_attention_cases
 from collector.case_generator import (
     get_attention_context_shape_sweeps,
     get_attention_generation_shape_sweeps,
@@ -28,6 +31,7 @@ from collector.vllm.utils import (
 )
 from vllm.config import set_current_vllm_config
 from vllm.platforms import current_platform
+from vllm.utils.flashinfer import can_use_trtllm_attention, use_trtllm_attention
 from vllm.utils.import_utils import resolve_obj_by_qualname
 from vllm.utils.torch_utils import set_random_seed
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
@@ -147,6 +151,10 @@ def run_attention_torch(
         block_size=block_size,
         num_gpu_blocks=8192,
         max_num_seqs=batch_size,
+        # One collector call represents the full prefill, including shapes
+        # above a serving scheduler's new-token budget. Size native builder
+        # buffers for that call (flashinfer.py:721-723 @v0.31.0).
+        max_num_batched_tokens=max(8192, batch_spec.compute_num_tokens()),
         use_fp8_kv_cache=use_fp8_kv_cache,
         sliding_window=window_size if window_size > 0 else None,
         head_dim=head_dim,
@@ -166,29 +174,13 @@ def run_attention_torch(
         use_sparse=False,
         use_mm_prefix=False,
     )
-    # Backend selection for head_dim > 256 mirrors the framework's own
-    # heterogeneous-head-dim policy. head_dim > 256 is reachable only from
-    # Gemma-4 (global layers, global_head_dim=512), whose model-level config
-    # hook (Gemma4Config.verify_and_update_config,
-    # model_executor/models/config.py:209-256) forces a UNIFORM backend across
-    # its mixed 256/512 heads to avoid the FA3/FA4 mixed penalty. That policy,
-    # plus the per-group validity of head-512, resolves as follows on SM90
-    # (live-engine kernel probe, 2026-09-22, gemma-4-26B-A4B + kv fp8/auto):
-    #   bf16-KV -> FLASH_ATTN (FA4 cute flash_fwd_sm90) — the bare selector
-    #             already returns this, so no override is needed.
-    #   fp8-KV  -> TRITON_ATTN (kernel_unified_attention). No FA/FlashInfer
-    #             path compiles fp8+head512 on SM90, so the uniform-backend
-    #             policy lands on Triton. The bare platform selector, lacking
-    #             the model-level heterogeneous-head context, instead picks
-    #             FlashInfer (whose SM90 fp8+head512 JIT cannot compile) — the
-    #             attention fp8 collection failures. Force the serving backend.
-    # This is not a per-model special case: it reproduces the framework's own
-    # config-hook branch keyed on head_dim, with the metadata-parity citation.
-    selected_backend = None
-    if head_dim > 256 and use_fp8_kv_cache:
-        selected_backend = AttentionBackendEnum.TRITON_ATTN
+    # v0.31.0 model_executor/models/config.py:217-222,242-255 uses per-layer
+    # FA3/FA4 selection for Gemma4 FP8 KV on SM90. The native FlashAttention
+    # selector admits head512 FP8 via FA4 (flash_attn.py:476-490), replacing
+    # the older forced-Triton workaround. Let native selection choose both
+    # prefill and generation backends for this layer's geometry.
     backend_path = current_platform.get_attn_backend_cls(
-        selected_backend,
+        None,
         attn_selector_config,
         num_heads=num_heads,
     )
@@ -196,7 +188,11 @@ def run_attention_torch(
     backend_name_str = backend_cls.get_name()
     backend_name = AttentionBackendEnum[backend_name_str]
 
-    # the page the framework would run THIS backend with (asked, not tabled)
+    # Native v0.31.0: CacheConfig.DEFAULT_BLOCK_SIZE=16 (config/cache.py:71),
+    # FlashInfer supports 16 (flashinfer.py:430-449), and get_preferred_block_size
+    # preserves it (backend.py:154-162). Thus the isolated Qwen n=4/kv=1/d=256
+    # case uses page 16 without an override. Full-model hybrid manager-page
+    # alignment is separate (platforms/interface.py:699-702).
     block_size = framework_kv_block_size(backend_cls)
     vllm_config.cache_config.block_size = block_size
 
@@ -359,14 +355,12 @@ def run_attention_torch(
     # Output buffer is always BF16 — the impl dequantises internally.
     output = torch.empty_like(query_vllm)
 
-    # FIXME(kernel-limit): on SM100/SM110 the FA4 CuTe kernel rejects
-    # (head_dim, head_dim_v)=(192, 192): _validate_head_dims allows 8..128,
-    # DeepSeek (192, 128), or hd256 (vllm_flash_attn/cute/interface.py:104
-    # @0.24.0), while vLLM's FlashAttentionBackend.supports_head_size claims
-    # any head_size <= 256 (flash_attn.py:173-179), so the selector still
-    # routes BF16-KV head-dim-192 shapes to FLASH_ATTN there and forward
-    # raises. Observed on B200; serving would fail identically. Re-verify on
-    # the next vLLM bump.
+    # FIXME(kernel-limit): v0.31.0 source recheck retains the FA4 SM100/SM110
+    # rejection of (192,192): flash-attention@9cd61de3, flash_attn/cute/
+    # interface.py:112-128. That dependency is pinned in vLLM's cmake/
+    # external_projects/vllm_flash_attn.cmake:42. The vLLM selector still
+    # accepts head192 (flash_attn.py:421-427); keep the native failure visible.
+    # Historical B200 failure is not a GPU qualification of this revision.
     def run():
         if not backend_cls.forward_includes_kv_cache_update:
             impl.do_kv_cache_update(
@@ -438,6 +432,82 @@ def run_attention_torch(
     )
 
 
+@cache
+def _attention_memory_backend(num_heads, num_kv_heads, head_dim, fp8, window_size):
+    # Native dispatch reads the current attention config (v0.31
+    # utils/flashinfer.py:617-638). Use the runtime's config factory; batch
+    # and history do not affect the static decode choice. A collection campaign
+    # fixes the device/environment; cache its geometry and precision settings.
+    config = create_vllm_config(
+        model_name=os.path.join(os.path.dirname(__file__), "fake_hf_model"),
+        block_size=None,
+        num_gpu_blocks=8192,
+        use_fp8_kv_cache=fp8,
+        sliding_window=window_size if window_size > 0 else None,
+        head_dim=head_dim,
+        num_heads=num_heads,
+        num_kv_heads=num_kv_heads,
+    )
+    selector = AttentionSelectorConfig(
+        head_size=head_dim,
+        dtype=torch.bfloat16,
+        kv_cache_dtype="fp8" if fp8 else "auto",
+        block_size=None,
+        use_mla=False,
+        has_sink=False,
+        use_sparse=False,
+        use_mm_prefix=False,
+    )
+    with set_current_vllm_config(config):
+        # Unsupported backend selection still belongs to the worker's failure
+        # log. Configuration/dispatch errors must propagate from planning.
+        try:
+            backend = resolve_obj_by_qualname(
+                current_platform.get_attn_backend_cls(None, selector, num_heads=num_heads)
+            )
+            page = framework_kv_block_size(backend)
+        except (ValueError, NotImplementedError):
+            return "", 64, False
+        native_decode = False
+        if backend.get_name() == "FLASHINFER":
+            # v0.31 flashinfer.py:813-845 selects decode statically, without
+            # use_trtllm_attention's older batch<=256 preference.
+            native_decode = can_use_trtllm_attention(num_heads, num_kv_heads, is_prefill=False)
+            if native_decode and (get_sm_version() == 90 or get_sm_version() // 10 == 12):
+                supported = resolve_obj_by_qualname("vllm.v1.attention.backends.flashinfer._is_xqa_head_dim_supported")
+                native_decode = supported(head_dim)
+    return backend.get_name(), page, native_decode
+
+
+def _attention_memory_bytes(case):
+    b, s, n, kv, d, fp8, context, window = case
+    total = s if context else s + 1
+    tokens = b * (s if context else 1)
+    backend, page, native_decode = _attention_memory_backend(n, kv, d, fp8, window)
+    cache_tokens = max(8192, 1 + b * ((total + page - 1) // page)) * page
+    cache = cache_tokens * kv * d * 2 * (1 if fp8 else 2)
+    # Per-request tensors + concatenated Q/K/V + output. History K/V and
+    # their temporary concatenations coexist; layout conversion can retain
+    # original, merged and reordered cache allocations (see run_attention_torch).
+    inputs = tokens * n * d * (7 if fp8 else 6) + 8 * b * total * kv * d
+    workspace = 4 << 30
+    if backend == "FLASHINFER":
+        q_dtype = current_platform.fp8_dtype() if fp8 and get_sm_version() in (90, 100, 103) else torch.bfloat16
+        # v0.31 flashinfer.py:1368-1381 asks this native dispatch helper.
+        # The wrapper workspace scales with Q, while the TRTLLM API uses
+        # the fixed VLLM_FLASHINFER_WORKSPACE_BUFFER_SIZE buffer (:109-115).
+        if context and s > 1:
+            native = use_trtllm_attention(n, kv, tokens, total, 1, "fp8" if fp8 else "auto", q_dtype, True)
+        else:
+            native = native_decode
+        configured = int(os.getenv("VLLM_FLASHINFER_WORKSPACE_BUFFER_SIZE", str(394 << 20)))
+        workspace = max(workspace, configured)
+        if not native:
+            workspace += max(configured, max(8192, tokens) * n * d * 16)
+    metadata = 64 * b * total + 32 * cache_tokens
+    return inputs + 3 * cache + metadata + workspace
+
+
 def get_context_attention_test_cases(if_unit_test=False):
     test_cases = []
 
@@ -497,29 +567,12 @@ def get_context_attention_test_cases(if_unit_test=False):
                             ]
                         )
 
-    return test_cases
+    return filter_attention_cases(test_cases, _attention_memory_bytes, torch.cuda, "vllm attention")
 
 
-def _generation_target_sequence_lengths(batch_sizes, sequence_lengths, num_heads, head_dim, max_tokens, shape_sweep):
-    b_s_dict = {}
-    s_b_dict = {}
-    for s in sequence_lengths:
-        max_b = max_tokens * 128 // head_dim // s // num_heads
-        for b in batch_sizes:
-            if b > max_b:
-                break
-            if s not in s_b_dict:
-                s_b_dict[s] = {b}
-            else:
-                s_b_dict[s].add(b)
-    for s, b_set in s_b_dict.items():
-        if len(b_set) < int(shape_sweep["min_batch_options_per_sequence"]):
-            continue
-        for b in b_set:
-            if b not in b_s_dict:
-                b_s_dict[b] = {s - 1}
-            b_s_dict[b].add(s - 1)
-    return b_s_dict
+def _generation_target_sequence_lengths(batch_sizes, sequence_lengths, max_tokens):
+    # Tokens bound campaign density; the actual tensor footprint controls memory.
+    return {b: {s - 1 for s in sequence_lengths if b * s <= max_tokens} for b in sorted(batch_sizes)}
 
 
 def get_generation_attention_test_cases():
@@ -532,7 +585,6 @@ def get_generation_attention_test_cases():
     for shape_sweep in get_attention_generation_shape_sweeps("vllm"):
         batch_sizes = [int(value) for value in shape_sweep["batch_sizes"]]
         sequence_lengths = [int(value) for value in shape_sweep["sequence_lengths"]]
-        min_drop_batch = int(shape_sweep["drop_largest_sequence_for_batch_at_least"])
 
         for head_config in get_attention_head_configs(shape_sweep, phase="generation"):
             n = head_config.num_heads
@@ -546,15 +598,10 @@ def get_generation_attention_test_cases():
             b_s_dict = _generation_target_sequence_lengths(
                 batch_sizes,
                 sequence_lengths,
-                n,
-                head_dim,
                 int(shape_sweep[max_tokens_key]),
-                shape_sweep,
             )
             for b, s_list_limited in b_s_dict.items():
                 target_s_list = sorted(s_list_limited)
-                if b >= min_drop_batch:
-                    target_s_list = target_s_list[:-1]
                 for s in target_s_list:
                     for is_fp8_kv_cache in kv_cache_dtype_list:
                         test_cases.append(
@@ -569,7 +616,7 @@ def get_generation_attention_test_cases():
                                 window_size,
                             ]
                         )
-    return test_cases
+    return filter_attention_cases(test_cases, _attention_memory_bytes, torch.cuda, "vllm attention")
 
 
 if __name__ == "__main__":

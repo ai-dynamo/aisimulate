@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from typing import NamedTuple
 
 import torch
+from collector.attention_memory import filter_attention_cases
 from collector.case_generator import (
     get_attention_context_shape_sweeps,
     get_attention_generation_shape_sweeps,
@@ -275,6 +276,33 @@ def _int_list(values):
     return [int(value) for value in values]
 
 
+def _attention_memory_bytes(case):
+    b, s, n, kv, d, fp8, fp8_context, context, _window, vd, _runtime_window, _chunk, sink, _scale, backend, _arch = case
+    vd = d if vd is None else vd
+    total = s if context else s + 1
+    tokens = b * (s if context else 1)
+    backend = backend or default_attention_backend(get_sm_version(), sink)
+    page = 64 if backend == "trtllm_mha" else 1
+    cache_tokens = ((b * total + page - 1) // page + 1) * page
+    cache = cache_tokens * kv * (d + vd) * (1 if fp8 else 2)
+    # BF16 history seeds remain alive through measurement; prefill retains
+    # Q/K/V and output, plus any FP8 cast while replacing the input tensors.
+    inputs = 2 * b * total * kv * (d + vd) + 2 * tokens * n * (d + vd)
+    if fp8_context or fp8:
+        inputs += tokens * (n * d + kv * (d + vd))
+    # ReqToTokenPool, token matrix, history locations/casts and graph outputs.
+    request_capacity = max(512, b)
+    page_tables = 4 * request_capacity * ((max(32768, total) + page - 1) // page)
+    metadata = 64 * b * total + 2 * tokens * n * vd + page_tables
+    workspace = max(4 << 30, int(os.getenv("SGLANG_FLASHINFER_WORKSPACE_SIZE", "0")))
+    if backend == "trtllm_mha":
+        # v0.5.21 trtllm_mha_backend.py:194-196 retains its superclass's
+        # flashinfer_workspace, then :294-301 allocates a separate zeroed
+        # workspace. Both can be the collector's 4GiB floor simultaneously.
+        workspace *= 2
+    return cache + inputs + metadata + workspace
+
+
 def get_context_attention_test_cases():
     test_cases = []
 
@@ -341,29 +369,12 @@ def get_context_attention_test_cases():
                             ]
                         )
 
-    return test_cases
+    return filter_attention_cases(test_cases, _attention_memory_bytes, torch.cuda, "sglang attention")
 
 
-def _generation_target_sequence_lengths(batch_sizes, sequence_lengths, num_heads, head_dim, max_tokens, shape_sweep):
-    b_s_dict = {}
-    s_b_dict = {}
-    for s in sequence_lengths:
-        max_b = max_tokens // s // num_heads * 128 // head_dim
-        for b in sorted(batch_sizes):
-            if b > max_b:
-                break
-            if s not in s_b_dict:
-                s_b_dict[s] = {b}
-            else:
-                s_b_dict[s].add(b)
-    for s, b_set in s_b_dict.items():
-        if len(b_set) < int(shape_sweep["min_batch_options_per_sequence"]):
-            continue
-        for b in b_set:
-            if b not in b_s_dict:
-                b_s_dict[b] = {s - 1}
-            b_s_dict[b].add(s - 1)
-    return b_s_dict
+def _generation_target_sequence_lengths(batch_sizes, sequence_lengths, max_tokens):
+    # Tokens bound campaign density; the actual tensor footprint controls memory.
+    return {b: {s - 1 for s in sequence_lengths if b * s <= max_tokens} for b in sorted(batch_sizes)}
 
 
 def get_generation_attention_test_cases():
@@ -377,7 +388,6 @@ def get_generation_attention_test_cases():
     for shape_sweep in get_attention_generation_shape_sweeps("sglang"):
         batch_sizes = _int_list(shape_sweep["batch_sizes"])
         sequence_lengths = _int_list(shape_sweep["sequence_lengths"])
-        min_drop_batch = int(shape_sweep["drop_largest_sequence_for_batch_at_least"])
         for head_config in get_attention_head_configs(
             shape_sweep,
             phase="generation",
@@ -396,15 +406,10 @@ def get_generation_attention_test_cases():
             b_s_dict = _generation_target_sequence_lengths(
                 batch_sizes,
                 sequence_lengths,
-                n,
-                head_dim,
                 max_tokens,
-                shape_sweep,
             )
             for b, s_list_limited in b_s_dict.items():
                 target_s_list = sorted(s_list_limited)
-                if b >= min_drop_batch:
-                    target_s_list = target_s_list[:-1]
                 for s in target_s_list:
                     for precision_case in shape_sweep["precision_cases"]:
                         use_fp8_kv_cache = bool(precision_case["fp8_kv_cache"])
@@ -430,7 +435,7 @@ def get_generation_attention_test_cases():
                                 head_config.architecture,
                             ]
                         )
-    return test_cases
+    return filter_attention_cases(test_cases, _attention_memory_bytes, torch.cuda, "sglang attention")
 
 
 def default_attention_backend(sm_version: int, has_attention_sink: bool) -> str | None:
@@ -619,6 +624,9 @@ def run_attention_torch(
         attention_chunk_size=attention_chunk_size,
         attn_backend_name=attn_backend_name,
     )
+    # Native backend metadata uses max_running_requests to size request buffers
+    # (trtllm_mha_backend.py:382,402 @0.5.21), including declared batches >512.
+    model_runner.max_running_requests = max(model_runner.max_running_requests, batch_size)
     model_runner.kv_cache_dtype = kvtype
     # sglang>=0.5.21 backends ask the runner which backend serves each phase
     # (model_runner.py:1020-1021 resolved.prefill/decode; flashinfer_backend.py:331-332

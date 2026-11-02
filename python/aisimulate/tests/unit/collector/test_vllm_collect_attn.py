@@ -67,12 +67,21 @@ class BatchSpec:
     seq_lens: list[int]
     query_lens: list[int]
 
+    def compute_num_tokens(self):
+        return sum(self.query_lens)
+
 
 @pytest.mark.parametrize("use_fp8_kv_cache", [False, True])
-def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_kv_cache):
+@pytest.mark.parametrize(
+    "is_context_phase,batch_size,input_len,head_dim",
+    [(False, 2, 64, 256), (True, 1, 16, 256), (True, 16, 40960, 256), (False, 1, 64, 512)],
+)
+def test_dense_phases_use_full_runtime_shape_and_production_call_order(
+    use_fp8_kv_cache, is_context_phase, batch_size, input_len, head_dim
+):
     calls, events = {}, []
     slot_mapping = object()
-    history_slot_mapping = SimpleNamespace(numel=lambda: 128)
+    history_slot_mapping = SimpleNamespace(numel=lambda: 0 if is_context_phase else 128)
 
     torch = SimpleNamespace(
         bfloat16=BF16,
@@ -88,6 +97,7 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
             return FP8
 
         def get_attn_backend_cls(self, _backend, selector, *, num_heads):
+            calls["selected_backend"] = _backend
             calls["selector"] = selector
             calls["selector_num_heads"] = num_heads
             return "fake.backend"
@@ -168,7 +178,7 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
         "get_attention_backend": lambda _backend: (Builder, Impl),
         "benchmark_with_power": benchmark,
         "log_perf": lambda **kwargs: calls.setdefault("log", kwargs),
-        "vllm_version": "0.24.0",
+        "vllm_version": "0.31.0",
         # 1d0492eb: the page is asked from the framework per backend (collect_attn:201
         # -> utils.framework_kv_block_size); the test pins the same 16
         "framework_kv_block_size": lambda _backend_cls: 16,
@@ -184,26 +194,35 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
     with ExitStack() as stack:
         run(
             stack,
-            batch_size=2,
-            input_len=64,
-            num_heads=8,
-            num_kv_heads=2,
-            head_dim=128,
+            batch_size=batch_size,
+            input_len=input_len,
+            num_heads=4,
+            num_kv_heads=1,
+            head_dim=head_dim,
             use_fp8_kv_cache=use_fp8_kv_cache,
-            is_context_phase=False,
-            perf_filename="generation_attention_perf.txt",
+            is_context_phase=is_context_phase,
+            perf_filename="context_attention_perf.txt" if is_context_phase else "generation_attention_perf.txt",
         )
 
-    assert calls["batch"] == BatchSpec(seq_lens=[65, 65], query_lens=[1, 1])
-    assert calls["config"]["max_model_len"] == 65
+    query_len = input_len if is_context_phase else 1
+    runtime_len = input_len if is_context_phase else input_len + 1
+    assert calls["batch"] == BatchSpec(seq_lens=[runtime_len] * batch_size, query_lens=[query_len] * batch_size)
+    assert calls["config"]["max_model_len"] == runtime_len
+    assert calls["config"]["max_num_batched_tokens"] >= batch_size * query_len
+    assert calls["config"]["block_size"] is None
+    assert calls["selector"].block_size is None
+    # v0.31 native selection owns head512 FP8 too; no forced Triton lane.
+    assert calls["selected_backend"] is None
+    assert config.cache_config.block_size == 16
     assert calls["selector"].kv_cache_dtype == ("fp8" if use_fp8_kv_cache else "auto")
-    assert calls["log"]["item_list"][0]["isl"] == 1
-    assert calls["log"]["item_list"][0]["step"] == 64
+    assert calls["log"]["item_list"][0]["isl"] == query_len
+    assert calls["log"]["item_list"][0]["step"] == (0 if is_context_phase else input_len)
     assert calls["log"]["kernel_source"] == "vllm_flash_attn_fa3"
     assert calls["kv_layout_order"] == (0, 1, 2, 3)  # cache_config.get_resolved_kv_cache_layout()
-    assert [event[0] for event in events] == ["update", "update", "forward", "update", "forward"]
-    assert events[0][5] is history_slot_mapping
-    for update, forward in zip(events[1::2], events[2::2], strict=True):
+    if not is_context_phase:
+        assert events.pop(0)[5] is history_slot_mapping
+    assert [event[0] for event in events] == ["update", "forward", "update", "forward"]
+    for update, forward in zip(events[::2], events[1::2], strict=True):
         assert update[1:5] == (forward[1], forward[3], forward[4], forward[5])
         assert update[5] is slot_mapping
 
@@ -220,9 +239,9 @@ def test_dense_kv_cache_history_slots_follow_block_table(randomize_blocks):
     create_cache = _load_function(UTILS_SOURCE, "create_kv_cache_and_block_mappings", namespace)
     metadata = SimpleNamespace(
         num_reqs=2,
-        seq_lens_cpu=torch.tensor([70, 5], dtype=torch.int32),
+        seq_lens_cpu_upper_bound=torch.tensor([70, 5], dtype=torch.int32),
         query_start_loc_cpu=torch.tensor([0, 1, 2], dtype=torch.int32),
-        num_computed_tokens_cpu=torch.tensor([69, 4], dtype=torch.int32),
+        compute_num_computed_tokens=lambda: torch.tensor([69, 4], dtype=torch.int32),
         block_table_tensor=torch.full((2, 2), -1, dtype=torch.int32),
         slot_mapping=torch.full((2,), -1, dtype=torch.long),
     )
@@ -277,9 +296,9 @@ def test_mla_fp8_history_uses_framework_cache_writer():
     }
     create_cache = _load_function(UTILS_SOURCE, "create_and_prepopulate_kv_cache_mla", namespace)
     metadata = SimpleNamespace(
-        seq_lens_cpu=torch.tensor([3], dtype=torch.int32),
+        seq_lens_cpu_upper_bound=torch.tensor([3], dtype=torch.int32),
         query_start_loc_cpu=torch.tensor([0, 1], dtype=torch.int32),
-        num_computed_tokens_cpu=torch.tensor([2], dtype=torch.int32),
+        compute_num_computed_tokens=lambda: torch.tensor([2], dtype=torch.int32),
         block_table_tensor=torch.full((1, 1), -1, dtype=torch.int32),
         slot_mapping=torch.full((1,), -1, dtype=torch.long),
     )
@@ -361,6 +380,17 @@ def test_dense_kernel_source_flashinfer_raises_when_both_portions_missing():
 
     with pytest.raises(RuntimeError, match="neither a prefill nor a decode portion"):
         source("FLASHINFER", impl=None, attn_metadata=metadata)
+
+
+@pytest.mark.parametrize("kernel", ["xqa", "trtllm-gen"])
+def test_flashinfer_decode_source_preserves_native_kernel_choice(kernel):
+    # v0.31.0 flashinfer.py:572-576,2058-2066: one metadata type contains
+    # distinct XQA and TRTLLM-GEN native dispatches.
+    source = _load_function(ATTN_SOURCE, "_dense_kernel_source", {})
+    decode = _FIDecode()
+    decode.kernel = SimpleNamespace(value=kernel)
+    metadata = SimpleNamespace(num_prefills=0, prefill=None, decode=decode)
+    assert source("FLASHINFER", None, metadata) == f"vllm_flashinfer__fidecode_{kernel.replace('-', '_')}"
 
 
 @pytest.mark.parametrize(

@@ -15,8 +15,11 @@ from dataclasses import dataclass
 
 import tensorrt_llm
 import torch
+
+from collector.attention_memory import filter_attention_cases
 from collector.case_generator import get_context_mla_case_specs, get_generation_mla_case_specs
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.module_memory import standalone_mla_footprint_bytes
 
 # trtllm >=1.3.0rc29 moved _torch.attention_backend.* -> _torch.attention.backends.* and
 # _torch.modules.fused_moe -> _torch.moe.fused_moe (the old package root is a deprecation shim
@@ -130,7 +133,12 @@ def _build_mla_test_cases(case_specs, *, dtype_list):
                 existing = cases_by_physical_key.get(physical_key)
                 if existing is None or tp_size < existing[6]:
                     cases_by_physical_key[physical_key] = list(case)
-    return list(cases_by_physical_key.values())
+    return filter_attention_cases(
+        list(cases_by_physical_key.values()),
+        lambda case: standalone_mla_footprint_bytes(case, backend="trtllm"),
+        torch.cuda,
+        "mla",
+    )
 
 
 # Copied from transformers v4.57.1:
@@ -234,6 +242,12 @@ def run_mla(
             f"{'3240' if is_context_phase else '3234'} assert @1.3.0rc29)"
         )
     scenario = Scenario()
+    if input_len + (0 if is_context_phase else 1) > scenario.max_position_embeddings:
+        raise ValueError(
+            "FIXME(kernel-limit): standalone TRT-LLM MLA uses the fixed DeepSeek Scenario RoPE table "
+            f"(collector/trtllm/collect_mla.py:Scenario); required length exceeds "
+            f"max_position_embeddings={scenario.max_position_embeddings}. Re-verify on a native collector upgrade."
+        )
     q_lora_rank = scenario.q_lora_rank
     kv_lora_rank = scenario.kv_lora_rank
     qk_nope_head_dim = scenario.qk_nope_head_dim

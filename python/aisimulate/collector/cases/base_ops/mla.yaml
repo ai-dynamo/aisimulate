@@ -34,7 +34,14 @@ common_case_values:
     - 10240
     - 12288
     - 16384
+    - 24576
     - 32768
+    - 40960
+    - 65536
+    - 131072
+    - 262144
+    - 524288
+    - 1048576
     generation_batch_sizes:
     - 1
     - 2
@@ -65,9 +72,12 @@ common_case_values:
     - 32768
     - 65536
     - 131072
+    - 262144
+    - 524288
+    - 1048576
     kv_cache_block_sizes:
     - 64
-    max_context_tokens: 65536
+    max_context_tokens: 1048576
     max_generation_tokens: 16777216
     constraints:
     - 'context: batch_size * sequence_length <= max_context_tokens'

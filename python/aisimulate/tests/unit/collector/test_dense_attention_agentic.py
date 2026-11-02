@@ -1,0 +1,215 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Run the native collector getters without importing GPU-only frameworks."""
+
+import ast
+import os
+from contextlib import contextmanager
+from functools import cache
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from collector.attention_memory import filter_attention_cases
+from collector.case_generator import (
+    get_attention_context_shape_sweeps,
+    get_attention_generation_shape_sweeps,
+    get_attention_head_configs,
+)
+
+pytestmark = pytest.mark.unit
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def collector_functions(backend, memory_gib=None):
+    path = ROOT / "collector" / backend / "collect_attn.py"
+    names = {
+        "_int_list",
+        "_skip_trtllm_sm120_fp8_context_fmha",
+        "_generation_target_sequence_lengths",
+        "get_context_attention_test_cases",
+        "get_generation_attention_test_cases",
+        "_attention_memory_bytes",
+        "default_attention_backend",
+    }
+    nodes = [
+        node for node in ast.parse(path.read_text()).body if isinstance(node, ast.FunctionDef) and node.name in names
+    ]
+    cuda = SimpleNamespace(
+        is_available=lambda: memory_gib is not None,
+        current_device=lambda: 0,
+        get_device_properties=lambda _device: SimpleNamespace(total_memory=int(memory_gib * 2**30)),
+    )
+    ns = {
+        "os": os,
+        "tensorrt_llm": SimpleNamespace(__version__="1.3.0rc29"),
+        "get_sm_version": lambda: 103,
+        "get_attention_context_shape_sweeps": get_attention_context_shape_sweeps,
+        "get_attention_generation_shape_sweeps": get_attention_generation_shape_sweeps,
+        "get_attention_head_configs": get_attention_head_configs,
+        "torch": SimpleNamespace(cuda=cuda, bfloat16="bf16"),
+        "current_platform": SimpleNamespace(fp8_dtype=lambda: "fp8"),
+        "filter_attention_cases": filter_attention_cases,
+        "_deployment_tokens_per_block": lambda: 32,
+        "_attention_memory_backend": lambda *_args: ("FLASHINFER", 16, True),
+        "use_trtllm_attention": lambda *_args: True,
+        "can_use_trtllm_attention": lambda *_args, **_kwargs: True,
+    }
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec"), ns)
+    return ns
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+def test_shared_context_anchors_and_budgets_reach_actual_getters(monkeypatch, backend):
+    monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
+    cases = collector_functions(backend)["get_context_attention_test_cases"]()
+    gqa = {(c[0], c[1]) for c in cases if c[2:5] == [4, 1, 128]}
+    mha = {(c[0], c[1]) for c in cases if c[2:5] == [4, 4, 128]}
+    for pairs in (gqa, mha):
+        assert {(16, s) for s in (24576, 32768, 40960)} <= pairs
+        assert {(1, 262144), (2, 262144)} <= pairs
+        assert (4, 262144) not in pairs
+    assert all(c[0] * c[1] <= 655360 for c in cases)
+    assert all(c[0] * c[1] * c[3] * c[4] * 2 < 2147483647 for c in cases)
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+def test_decode_keeps_long_histories_and_largest_batch_anchor(monkeypatch, backend):
+    monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
+    cases = collector_functions(backend)["get_generation_attention_test_cases"]()
+    pairs = {(c[0], c[1] + 1) for c in cases if c[2:5] == [32, 1, 128]}
+    assert {(1, s) for s in (65536, 131072, 262144, 524288, 1048576)} <= pairs
+    assert (256, 65536) in pairs
+    assert (32, 1048576) not in pairs
+    assert all(c[0] * (c[1] + 1) <= 16777216 for c in cases)
+
+
+def test_xpu_declarations_keep_their_previous_limits():
+    context = get_attention_context_shape_sweeps("vllm_xpu")[0]
+    generation = get_attention_generation_shape_sweeps("vllm_xpu")[0]
+    assert context["max_tokens_self_attention"] == 65536
+    assert context["max_tokens_grouped_query_attention"] == 131072
+    assert max(context["sequence_lengths"]) == 16384
+    assert max(generation["sequence_lengths"]) == 131072
+    assert generation["min_batch_options_per_sequence"] == 4
+    assert generation["drop_largest_sequence_for_batch_at_least"] == 256
+
+
+def test_memory_admission_uses_device_capacity_and_logs_drops(capsys):
+    ns = collector_functions("trtllm", 80)
+    # QKV, packed QKV and output exceed an 80GiB GPU; Blackwell retains it.
+    case = [16, 40960, 96, 1, 256, 0, False, False, True, "TRTLLM"]
+    estimate = ns["_attention_memory_bytes"]
+    assert 80 * 2**30 < estimate(case) < 268 * 2**30 * 0.9
+    assert filter_attention_cases([case], estimate, ns["torch"].cuda, "trtllm attention") == []
+    assert "dropped 1/1 cases" in capsys.readouterr().out
+    assert filter_attention_cases([case], estimate, collector_functions("trtllm", 268)["torch"].cuda, "attention") == [
+        case
+    ]
+    assert filter_attention_cases([case], estimate, collector_functions("trtllm")["torch"].cuda, "attention") == [case]
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+def test_memory_filter_is_applied_by_actual_getters(monkeypatch, backend):
+    monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
+    ns = collector_functions(backend, 80)
+    for name in ("get_context_attention_test_cases", "get_generation_attention_test_cases"):
+        cases = ns[name]()
+        assert cases
+        assert all(ns["_attention_memory_bytes"](c) <= 80 * 2**30 * 0.9 for c in cases)
+
+
+def test_vllm_workspace_estimate_distinguishes_native_and_wrapper_paths():
+    ns = collector_functions("vllm", 268)
+    case = [16, 40960, 96, 1, 256, False, True, 0]
+    native = ns["_attention_memory_bytes"](case)
+    ns["use_trtllm_attention"] = lambda *_args: False
+    wrapper = ns["_attention_memory_bytes"](case)
+    assert wrapper - native == 16 * 40960 * 96 * 256 * 16
+    assert native < 268 * 2**30 * 0.9 < wrapper
+
+
+def test_vllm_large_batch_decode_uses_static_native_dispatch():
+    ns = collector_functions("vllm", 268)
+    # Runtime decode selection remains native above the old 256-token
+    # preference threshold in use_trtllm_attention.
+    ns["use_trtllm_attention"] = lambda *_args: pytest.fail("prefill selector used for decode")
+    case = [512, 32767, 32, 1, 128, False, False, 0]
+    native = ns["_attention_memory_bytes"](case)
+    ns["_attention_memory_backend"] = lambda *_args: ("FLASHINFER", 16, False)
+    wrapper = ns["_attention_memory_bytes"](case)
+    assert wrapper - native == 8192 * 32 * 128 * 16
+
+
+@pytest.mark.parametrize("dispatch_error", [AssertionError, ValueError])
+def test_vllm_planning_native_dispatch_has_current_runtime_config(dispatch_error):
+    ns = collector_functions("vllm", 268)
+    path = ROOT / "collector/vllm/collect_attn.py"
+    node = next(n for n in ast.parse(path.read_text()).body if getattr(n, "name", None) == "_attention_memory_backend")
+    active_config = None
+    calls = []
+
+    @contextmanager
+    def set_config(config):
+        nonlocal active_config
+        previous, active_config = active_config, config
+        try:
+            yield
+        finally:
+            active_config = previous
+
+    def native_decode(n, kv, *, is_prefill):
+        assert active_config is not None, "Current vLLM config is not set"
+        assert (active_config.num_heads, active_config.num_kv_heads, active_config.head_dim) == (32, 1, 128)
+        assert active_config.block_size is None
+        assert not active_config.use_fp8_kv_cache
+        assert not is_prefill
+        calls.append((n, kv, active_config.sliding_window))
+        return True
+
+    def select_backend(*_args, **_kwargs):
+        assert active_config is not None, "Current vLLM config is not set"
+        return "fake.backend"
+
+    ns.update(
+        __file__=str(path),
+        cache=cache,
+        create_vllm_config=lambda **kwargs: SimpleNamespace(**kwargs),
+        set_current_vllm_config=set_config,
+        AttentionSelectorConfig=lambda **kwargs: SimpleNamespace(**kwargs),
+        resolve_obj_by_qualname=lambda _name: SimpleNamespace(get_name=lambda: "FLASHINFER"),
+        framework_kv_block_size=lambda _backend: 16,
+        current_platform=SimpleNamespace(get_attn_backend_cls=select_backend),
+        can_use_trtllm_attention=native_decode,
+        use_trtllm_attention=lambda *_args: pytest.fail("prefill selector used for decode"),
+    )
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), ns)
+    for window in (0, 128):
+        for b in (1, 512):
+            assert ns["_attention_memory_bytes"]([b, 32767, 32, 1, 128, False, False, window]) > 0
+            assert active_config is None
+    assert calls == [(32, 1, None), (32, 1, 128)]
+
+    def broken_native_dispatch(*_args, **_kwargs):
+        raise dispatch_error("native configuration failure")
+
+    ns["can_use_trtllm_attention"] = broken_native_dispatch
+    ns["_attention_memory_backend"].cache_clear()
+    with pytest.raises(dispatch_error, match="native configuration failure"):
+        ns["_attention_memory_bytes"]([1, 32767, 32, 1, 128, False, False, 0])
+    assert active_config is None
+
+
+@pytest.mark.parametrize(
+    "shape,context,observed_peak",
+    [([1, 262144, 4, 4, 128], True, 10239893504), ([1, 1048575, 32, 32, 128], False, 43006588416)],
+)
+def test_sglang_native_mha_estimate_covers_both_workspace_allocations(monkeypatch, shape, context, observed_peak):
+    # B300, SGLang 0.5.21: both native workspace buffers
+    # remain live. These measured peaks exposed the missing second reserve.
+    monkeypatch.delenv("SGLANG_FLASHINFER_WORKSPACE_SIZE", raising=False)
+    ns = collector_functions("sglang", 268)
+    case = shape + [False, False, context, 0, 128, -1, None, False, None, "trtllm_mha", None]
+    native = ns["_attention_memory_bytes"](case)
+    assert native >= observed_peak

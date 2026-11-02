@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from collector.attention_memory import filter_attention_cases
 from collector.case_generator import (
     AttentionHeadConfig,
     get_attention_context_shape_sweeps,
@@ -22,7 +23,12 @@ def _load_collector_function(name, namespace):
     source_path = REPO_ROOT / "collector" / "sglang" / "collect_attn.py"
     tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
     function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name)
-    loaded = dict(namespace)
+    loaded = {
+        "torch": SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)),
+        "filter_attention_cases": filter_attention_cases,
+        "_attention_memory_bytes": None,
+        **namespace,
+    }
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), loaded)
     return loaded[name]
 

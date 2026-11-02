@@ -31,6 +31,97 @@ and `triton` backends; an unknown backend raises instead of receiving a BF16 lab
 Legacy Blackwell rows labeled `bfloat16/fp8` need fresh measurements with the
 correct label; do not copy their timings into a second precision key.
 
+The vLLM dense-attention family targets 0.31.0. Page size comes from the
+selected backend's native preference and compatibility rules; there is no
+collector page-size override. For the Qwen3.5 BF16 TP8 local attention geometry,
+the native FlashInfer path selects 16-token pages. This isolated attention
+measurement does not construct the full model's hybrid-cache allocator.
+Dense attention remains a CUDA-graph microbenchmark including KV writes,
+even though serving prefill may execute at a different graph boundary.
+
+The shared vLLM, SGLang and TRT-LLM context-attention defaults include
+24,576, 32,768 and 40,960-token anchors and allow 655,360 batch-times-sequence
+tokens for both MHA and grouped-query attention. This also admits the existing
+262,144-token anchor at batches 1 and 2, and larger batches at shorter lengths.
+Agentic conversations accumulate cached history: the dense timing lookup uses
+full sequence length, then scales causal attention by
+`(full_length² - prefix_length²) / full_length²`. Full-sequence anchors therefore
+need to exceed the serving scheduler's new-token budget. Coverage is always on;
+it does not add a prefix axis or measure cached-tail kernels separately.
+
+Dense decode adds 262,144, 524,288 and 1,048,576-token total-sequence anchors
+(the stored past-history `step` is one less). `max_mha_tokens_per_step` and
+`max_xqa_tokens_per_step` now limit aggregate batch-times-sequence tokens to
+16,777,216 for both families (including the existing one-head, dimension-64
+MHA coverage). Query-head/dimension weighting and the
+four-batch minimum/largest-anchor pruning are removed: a long history remains
+useful even when only batch 1 fits. XPU retains its original grid and limits.
+
+Before queueing, each dense collector compares its estimated peak against 90%
+of the collecting GPU's total memory. The backend-specific estimates cover
+Q/K/V, output, packed/layout-conversion copies, paged cache, history seeds,
+metadata and a workspace reserve. vLLM also accounts for the selected
+FlashInfer wrapper's query-dependent workspace, which its native TRTLLM API
+path does not allocate. Native vLLM planning dispatch uses the runtime's
+configuration factory and current-config context. SGLang TRTLLM-MHA retains
+both its inherited FlashInfer workspace and its own native workspace;
+admission reserves both. CPU-only
+planning retains all declared cases. These
+are conservative admission estimates, not native allocation guarantees;
+allocator fragmentation and larger backend workspaces can still fail at run
+time. The existing context `max_kv_elements` ceiling also remains in effect,
+so not every shape that fits GPU memory is admitted; its removal needs a
+separate native indexing audit. Queued cases execute
+or report a failure; the worker never silently drops a planned case.
+
+The original 95-case Qwen collection took 52.751 seconds of collector wall time;
+its 18 added anchors were not timed separately. Earlier B300 qualification
+measured a batch-1, 262,144-token GQA prefill at 132.734 ms per forward and
+4.461 seconds inside the collector call (11.357 seconds with process startup).
+Those eight vLLM probes passed in a 139-second allocation. They qualify that
+prior collector revision, not the newly expanded three-framework grids.
+Relative to main `e6b1fe2`, the SM103 dense grids add 39,218 vLLM, 38,785
+SGLang and 46,464 TRT-LLM cases before memory admission. At an assumed five
+steady-state seconds per added case, that is 54.47, 53.87 and 64.53 GPU-hours.
+This is an arithmetic planning scenario, not a measured forecast or bound;
+long-history initialization, quadratic prefill and workspace growth can make
+new cases much slower. It excludes module grids, queue and cold worker setup.
+The measured two-group GLM/SGLang campaign took 1.213 GPU-hours for 500 rows;
+its added 96 shapes per group accounted for about 30.1 minutes per group,
+mostly history seeding. That is within-run attribution, not a controlled
+before/after comparison. Current native qualification and fuller cost estimates
+are reported in PR #664; raw campaign evidence remains local.
+
+MLA has a separate full-history context axis,
+`common_case_values.mla_module.mla_context_sequence_lengths`, and a
+`context.mla_max_tokens` budget. This lets dense MLA cover long sequences
+without turning DSA/MSA's chunked new-token inputs into monolithic prefill.
+Sparse context coverage expands the cached-prefix axis instead. Standalone MLA
+also gains longer context and decode anchors. Module capacity must cover both
+query tokens and cached history; a declared shape alone does not establish that
+a native backend or the model's positional limit supports it.
+
+Generic attention coverage does not establish complete AgentX coverage for
+model-specific sparse families. DeepSeek-V4/V4.1 and GLM-5.3-Flash have separate
+history/concurrency grids and need their own native qualification. Fused MoE
+may need more computed-token anchors when attention DP aggregates multiple
+ranks. GEMM, quantization and recurrent GDN/KDA/Mamba operations use newly
+computed tokens; cached conversation history alone does not justify increasing
+those token axes. Audit the actual queried shapes before enlarging them.
+
+Campaign provenance must identify the immutable collector checkout used for the
+run. Export its full commit SHA as `AISIM_COLLECTOR_REF` and verify that raw
+`collection_meta.yaml` records that SHA, the runtime image digest and the plan
+hash before packaging measurements. Rebasing a data PR does not change its
+measurement source. If a historical sidecar reports `unknown`, preserve the
+raw artifact and document the verified original source using job records and
+its matching collector-code hash; never replace it with the new PR head.
+
+The SGLang attention-module collector targets 0.5.21 and admits batches
+between serving capture buckets when graph padding is enabled. It captures
+the actual module shape; serving may execute a padded bucket. See the
+[SGLang collector guide](sglang/README.md) for memory planning and timing limits.
+
 Before collecting the data, make sure you own the whole node and no interfierence happens.
 Next, please enable persistent-mode and lock frequency of the node. Make sure the cooling system of the node is working well.
 ```bash
