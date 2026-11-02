@@ -1008,8 +1008,11 @@ impl VllmHostOffloadAdapter {
             if missing.is_empty() {
                 return;
             }
+            // Like its block stores, SimpleCPU protects none of the state's
+            // present slots from eviction.
+            let missing_keys = missing.iter().map(|&slot| keys[slot]).collect::<Vec<_>>();
             if let StoreOutcome::Prepared { transfer_id, .. } =
-                tier.prepare_store(self.host.id(), handoff.owner, &keys, None, now_ms)
+                tier.prepare_store(self.host.id(), handoff.owner, &missing_keys, None, now_ms)
             {
                 assert!(kv_manager.attach_state_handoff_dependency(
                     handoff,
