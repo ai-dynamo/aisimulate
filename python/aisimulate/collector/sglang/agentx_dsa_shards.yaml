@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# Select two module groups; the current grid expands to 250 pairs per shard.
+# Select two SGLang 0.5.21 module groups; the grid expands to 250 pairs per shard.
 # Historical source 3d41164034624251209588ee0284694e86a13bd8 used 110.
 # Auto-collector campaign plan. Each job must also receive
 # AISIM_MODEL_FILTER=nvidia/GLM-5.2-NVFP4 and AISIM_SHARDS_PER_JOB=1.

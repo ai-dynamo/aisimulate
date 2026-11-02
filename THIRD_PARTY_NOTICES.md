@@ -210,35 +210,23 @@ The full Apache-2.0 license text is reproduced in `LICENSE`. This section
 records provenance for NVIDIA-authored predecessor code; it is not a claim
 that Dynamo is owned by an unaffiliated third party.
 
-## SGLang 0.5.20 attention-module collector compatibility
+## SGLang decode-graph eligibility
 
-The runtime adapters, request setup and decode-graph eligibility in
-`collector/sglang/collect_mla_module.py`, with regression tests under
-`tests/unit/collector/sglang/` in `test_collect_mla_module.py`,
-`test_dsa_history.py` and `test_dsa_measurement_boundary.py`, adapt and modify
-SGLang serving contracts at immutable commit
-`94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (v0.5.20). The source paths under
-`python/sglang/srt/` are:
+The graph-eligibility and request-bound checks in `collector/sglang/collect_mla_module.py` and
+its synthetic regressions in `tests/unit/collector/sglang/test_collect_mla_module.py`
+adapt SGLang 0.5.21 at immutable commit
+`e00930c5489053f26d86b179cee0d087f846acbb`:
+`python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py:714-719`
+`python/sglang/srt/arg_groups/cuda_graph_hook.py:649-657`, and
+`python/sglang/srt/managers/tokenizer_manager.py:1290-1330`, and
+`python/sglang/srt/mem_cache/kv_cache_configurator.py:2264-2280`.
+NVIDIA modified the check for isolated module collection: padding-enabled
+serving eligibility selects an exact-shape module graph, not a padded serving
+bucket. The native runtime and prefill policy remain unchanged.
 
-- `arg_groups/overrides.py` and `arg_groups/cuda_graph_hook.py`
-- `runtime_context.py` and `distributed/parallel_state_wrapper.py`
-- `managers/schedule_batch.py`, `managers/overlap_utils.py`,
-  `managers/tp_worker.py` and `managers/scheduler.py`
-- `model_executor/model_runner.py` and
-  `model_executor/runner/decode_cuda_graph_runner.py`
-
-The version-specific index-cache quantization import calls the native kernel
-at `python/sglang/kernels/ops/attention/dsa/triton_kernel.py` in that revision.
-These adaptations retain the existing collector's historical-cache seeding,
-native projection and forward-input contracts. They use the framework's own
-runtime APIs for standalone module measurements and exact-shape decode graph
-capture; no upstream serving implementation is vendored.
-
-Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+Source: https://github.com/sgl-project/sglang/tree/e00930c5489053f26d86b179cee0d087f846acbb
 Copyright 2023-2026 SGLang Team and contributors. Licensed under Apache-2.0:
-https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
-The upstream tree has no root NOTICE file. Modified for AISimulate collection;
-the new regression fixtures are synthetic and contain no external data.
+https://github.com/sgl-project/sglang/blob/e00930c5489053f26d86b179cee0d087f846acbb/LICENSE
 
 ## SGLang feed-forward/decode composition and quantization exclusions
 
@@ -379,6 +367,8 @@ view contracts from vLLM commit `db9527a46873454610df6dbedf79a36d6bf1a7f6`:
 - `vllm/v1/attention/backend.py`
 - `vllm/v1/attention/backends/flashinfer.py`
 - `vllm/v1/attention/backends/utils.py`
+- `vllm/model_executor/models/config.py` and `vllm/v1/attention/backends/flash_attn.py`
+- `vllm/v1/attention/backends/fa_utils.py`
 
 Source: https://github.com/vllm-project/vllm/tree/db9527a46873454610df6dbedf79a36d6bf1a7f6
 Copyright contributors to the vLLM project. Licensed under Apache-2.0:

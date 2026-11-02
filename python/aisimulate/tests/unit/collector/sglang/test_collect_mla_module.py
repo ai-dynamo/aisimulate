@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
 from collector.helper import PhaseClock, render_phase_totals, run_measurement_subprocess
 
 
@@ -154,136 +155,10 @@ class TestGetGenerationTestCases:
 
 
 @pytest.mark.unit
-class TestSglang0520ModuleSetup:
-    @pytest.mark.parametrize("modern", [False, True])
-    def test_model_runner_uses_serving_initialization_contract(self, monkeypatch, modern):
-        mod = _import_module()
-        calls = []
-        runner_args = {}
-
-        def install(name, **attrs):
-            module = types.ModuleType(name)
-            module.__dict__.update(attrs)
-            monkeypatch.setitem(sys.modules, name, module)
-
-        class ServerArgs(types.SimpleNamespace):
-            def __init__(self, **kwargs):
-                super().__init__(mem_fraction_static=None if modern else 0.8, max_prefill_tokens=16384, **kwargs)
-
-        if modern:
-            ServerArgs.resolve_once = lambda self: None
-
-        def publish(args, *, role):
-            calls.append(("publish", role))
-
-        def initializer(name):
-            def initialize(*args):
-                calls.append((name, len(args)))
-
-            return initialize
-
-        def model_runner(**kwargs):
-            runner_args.update(kwargs)
-            return types.SimpleNamespace(alloc_memory_pool=lambda: None, init_attention_backends=lambda: None)
-
-        install("sglang.srt.server_args", ServerArgs=ServerArgs)
-        install("sglang.srt.entrypoints.engine", _set_envs_and_config=initializer("env"))
-        install("sglang.srt.layers.moe", initialize_moe_config=initializer("moe"))
-        install("sglang.srt.layers.quantization.fp4_utils", initialize_fp4_gemm_config=initializer("fp4"))
-        install("sglang.srt.layers.quantization.fp8_utils", initialize_fp8_gemm_config=initializer("fp8"))
-        install("sglang.srt.layers.quantization.unquant", initialize_bf16_gemm_config=initializer("bf16"))
-        install("sglang.srt.runtime_context", publish=publish)
-        install(
-            "sglang.srt.arg_groups.overrides",
-            resolving_view=lambda args: types.SimpleNamespace(mem_fraction_static=0.9),
-        )
-        install(
-            "sglang.srt.distributed.parallel_state_wrapper",
-            ParallelState=types.SimpleNamespace(trivial=lambda **kwargs: ("trivial", kwargs)),
-        )
-        install("sglang.srt.model_executor.model_runner", ModelRunner=model_runner)
-        install(
-            "sglang.srt.configs.model_config",
-            ModelConfig=types.SimpleNamespace(
-                from_server_args=lambda args: types.SimpleNamespace(
-                    hf_config=types.SimpleNamespace(architectures=["GlmMoeDsaForCausalLM"])
-                )
-            ),
-        )
-        install("sglang.srt.utils", suppress_other_loggers=lambda: None)
-        monkeypatch.setattr(mod, "_model_native_gemm_quant", lambda model: None)
-        monkeypatch.setattr(mod, "_module_model_architecture", lambda model: "GlmMoeDsaForCausalLM")
-        monkeypatch.setattr(mod, "_resolve_local_model_path", lambda model: model)
-        monkeypatch.setattr(mod, "_patch_nsa_rope_contiguity", lambda runner: None)
-        monkeypatch.setattr(mod, "_validate_dsa_tp_module_shapes", lambda *args: None)
-
-        mod.load_model_runner("test", 8, "fp8", "dsa", target_tp_size=8)
-
-        if modern:
-            assert calls == [("publish", "scheduler"), ("env", 1), ("moe", 0), ("fp8", 0), ("fp4", 0), ("bf16", 0)]
-            assert runner_args["ps"] == ("trivial", {"gpu_id": 0})
-            assert "tp_rank" not in runner_args
-            assert runner_args["mem_fraction_static"] == 0.9
-        else:
-            assert calls == [("env", 1), ("moe", 1), ("fp8", 1), ("fp4", 1)]
-            assert runner_args["tp_rank"] == 0
-            assert runner_args["tp_size"] == 1
-            assert "ps" not in runner_args
-            assert runner_args["mem_fraction_static"] == 0.8
-
-    @pytest.mark.parametrize("modern", [False, True])
-    def test_request_range_keeps_prefix_and_extend_lengths(self, modern):
-        mod = _import_module()
-        values = []
-        if modern:
-            req = types.SimpleNamespace(set_extend_range=lambda start, end: values.append((start, end)))
-        else:
-            req = types.SimpleNamespace(set_extend_input_len=lambda length: values.append(length))
-        mod._set_request_extend_range(req, 384000, 384004)
-        assert values == ([(384000, 384004)] if modern else [4])
-        if not modern:
-            assert req.fill_len == 384004
-
-    @pytest.mark.parametrize("modern", [False, True])
-    def test_forward_batch_uses_target_forward_flag(self, monkeypatch, modern):
-        mod = _import_module()
-        captured = {}
-        fake_forward = types.ModuleType("sglang.srt.model_executor.forward_batch_info")
-        fake_forward.ForwardBatch = types.SimpleNamespace(
-            init_new=lambda batch, runner, **kwargs: captured.update(kwargs) or batch
-        )
-        monkeypatch.setitem(sys.modules, fake_forward.__name__, fake_forward)
-        args = types.SimpleNamespace(resolve_once=lambda: None) if modern else types.SimpleNamespace()
-        runner = types.SimpleNamespace(server_args=args)
-        batch = object()
-        assert mod._init_module_forward_batch(batch, runner) is batch
-        assert captured == ({"return_hidden_states_before_norm": False} if modern else {})
-
-    @pytest.mark.parametrize("modern", [False, True])
-    def test_native_input_relay_uses_runtime_specific_cpu_length_contract(self, monkeypatch, modern):
-        mod = _import_module()
-        calls = []
-        fake = types.ModuleType("sglang.srt.managers.overlap_utils")
-        fake.FutureMap = lambda **kwargs: calls.append(kwargs) or object()
-        fake.decide_needs_cpu_seq_lens = lambda *args: calls.append(args) or True
-        monkeypatch.setitem(sys.modules, fake.__name__, fake)
-        args = types.SimpleNamespace(resolve_once=lambda: None) if modern else types.SimpleNamespace()
-        runner = types.SimpleNamespace(server_args=args, attn_backend=object(), req_to_token_pool=object())
-        batch = types.SimpleNamespace(device="cuda", spec_algorithm=object())
-        relay = mod._dsa_forward_input_relay(runner, batch)
-        assert mod._dsa_forward_input_relay(runner, batch) is relay
-        assert calls[0] == (([runner.attn_backend],) if modern else (args, [runner.attn_backend]))
-        assert calls[1] == dict(
-            device="cuda",
-            spec_algo=batch.spec_algorithm,
-            req_to_token_pool=runner.req_to_token_pool,
-            needs_cpu_seq_lens=True,
-        )
-        assert len(calls) == 2
-
+class TestAgenticGenerationCoverage:
     @pytest.mark.parametrize("attn_type", ["mla", "dsa"])
     @pytest.mark.parametrize("model", ["deepseek-ai/DeepSeek-V3.2", "zai-org/GLM-5", "nvidia/GLM-5.2-NVFP4"])
-    def test_generation_preserves_old_grid_and_bounds_long_anchors(self, monkeypatch, attn_type, model):
+    def test_generation_preserves_old_grid_and_long_anchors(self, monkeypatch, attn_type, model):
         mod = _import_module()
         max_position = mod._model_max_position_embeddings(model)
         assert max_position is not None
@@ -297,7 +172,8 @@ class TestSglang0520ModuleSetup:
         )
         mod.run_mla_module(attn_type, 8, model, "fp8", "bfloat16", "bfloat16", False, 0)
         pairs = {(batch, length) for batch, length, _, _ in captured}
-        assert all(length + 1 <= max_position for _, length in pairs)
+        # Out-of-context declarations stay visible; the worker reports errors.
+        assert (1, 720896) in pairs
         old_batches = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
         old_lengths = [1, *[2**power for power in range(2, 18)]]
         assert {
@@ -308,14 +184,74 @@ class TestSglang0520ModuleSetup:
             assert {(batch, length) for batch in [4, 8, 16, 32, 52] for length in target_lengths}.issubset(pairs)
         assert (52, 131072) in pairs
 
-    def test_modern_prefill_fails_before_legacy_runtime_setup(self, monkeypatch):
+    @pytest.mark.parametrize(("past_kv", "capacity"), [(15, 64), (16, 64), (15, 63)])
+    def test_decode_bounds_report_errors_before_request_allocation(self, monkeypatch, capsys, past_kv, capacity):
         mod = _import_module()
-        fake = types.ModuleType("sglang.srt.server_args")
-        fake.ServerArgs = type("ServerArgs", (), {"resolve_once": lambda self: None})
-        monkeypatch.setitem(sys.modules, fake.__name__, fake)
-        monkeypatch.setattr(mod.torch.cuda, "set_device", lambda *_: pytest.fail("must reject before CUDA setup"))
-        with pytest.raises(mod.MeasurementBoundaryError, match="0.5.20 DSA prefill"):
-            mod.run_mla_module("dsa", 8, "test", "fp8", "bfloat16", "bfloat16", True, 0)
+        imports = {
+            "sglang.srt.layers.layer_boundary.adapters.attention": ["AttentionInputs", "get_attn_tp_context"],
+            "sglang.srt.managers.schedule_batch": ["Req", "ScheduleBatch"],
+            "sglang.srt.mem_cache.cache_init_params": ["CacheInitParams"],
+            "sglang.srt.mem_cache.chunk_cache": ["ChunkCache"],
+            "sglang.srt.model_executor.forward_batch_info": ["ForwardBatch"],
+            "sglang.srt.model_executor.runner": ["model_capture_mode"],
+            "sglang.srt.sampling.sampling_params": ["SamplingParams"],
+            "sglang.srt.speculative.spec_info": ["SpeculativeAlgorithm"],
+            "sglang.srt.utils": ["BumpAllocator"],
+        }
+        for name, attributes in imports.items():
+            native = types.ModuleType(name)
+            native.__dict__.update({attribute: object() for attribute in attributes})
+            monkeypatch.setitem(sys.modules, name, native)
+        requests = []
+
+        def request(**kwargs):
+            requests.append(kwargs)
+            raise ValueError("request construction reached")
+
+        sys.modules["sglang.srt.managers.schedule_batch"].Req = request
+        sys.modules["sglang.srt.sampling.sampling_params"].SamplingParams = types.SimpleNamespace
+        monkeypatch.setattr(mod, "_import_sglang_forward_context", lambda: (None, None))
+        monkeypatch.setattr(mod.torch, "OutOfMemoryError", MemoryError, raising=False)
+        monkeypatch.setattr(mod.torch.cuda, "OutOfMemoryError", MemoryError, raising=False)
+        monkeypatch.setattr(
+            mod.torch, "randint", lambda *_: types.SimpleNamespace(tolist=lambda: [0] * past_kv), raising=False
+        )
+        pool = types.SimpleNamespace(clear=lambda: None, page_size=64, available_size=lambda: capacity)
+        runner = types.SimpleNamespace(
+            model_config=types.SimpleNamespace(context_len=16), req_to_token_pool=pool, token_to_kv_pool_allocator=pool
+        )
+        assert not mod._run_decode(
+            runner,
+            None,
+            1,
+            past_kv,
+            8,
+            1,
+            1,
+            "cuda",
+            None,
+            None,
+            "dsa",
+            "test",
+            "GlmMoeDsaForCausalLM",
+            "dsa",
+            "0.5.21",
+            "Fake GPU",
+            "bfloat16",
+            "fp8",
+            "bfloat16",
+            8,
+        )
+        error = capsys.readouterr().err
+        if past_kv == 16:
+            assert not requests
+            assert "past_kv + 1=17 exceeds model context length=16" in error
+        elif capacity < 64:
+            assert not requests
+            assert "requires 64 KV tokens, exceeding actual pool capacity=63" in error
+        else:
+            assert len(requests) == 1
+            assert "request construction reached" in error
 
     def test_explicit_generation_batches_do_not_inject_batch_one(self, monkeypatch):
         mod = _import_module()
@@ -426,6 +362,22 @@ class TestDsaCudaGraph:
         )
         assert mod._generation_cuda_graph_enabled_for_tokens(runner, batch_size)
         assert not mod._generation_cuda_graph_enabled_for_tokens(runner, 257)
+
+    @pytest.mark.parametrize("disable_padding", [False, True])
+    def test_generation_cuda_graph_uses_native_resolved_arguments(self, monkeypatch, disable_padding):
+        mod = _import_module()
+        native = types.ModuleType("sglang.srt.arg_groups.model_override_base")
+        native.resolving_view = lambda _: types.SimpleNamespace(
+            cuda_graph_config=types.SimpleNamespace(
+                decode=types.SimpleNamespace(backend="cudagraphs", bs=[48, 56], max_bs=56)
+            ),
+            disable_cuda_graph_padding=disable_padding,
+        )
+        monkeypatch.setitem(sys.modules, native.__name__, native)
+        runner = types.SimpleNamespace(server_args=types.SimpleNamespace())
+        assert mod._generation_cuda_graph_enabled_for_tokens(runner, 52) is not disable_padding
+        assert mod._generation_cuda_graph_enabled_for_tokens(runner, 56)
+        assert not mod._generation_cuda_graph_enabled_for_tokens(runner, 57)
 
     def test_generation_cuda_graph_can_be_disabled(self):
         mod = _import_module()

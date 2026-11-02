@@ -31,18 +31,13 @@ and `triton` backends; an unknown backend raises instead of receiving a BF16 lab
 Legacy Blackwell rows labeled `bfloat16/fp8` need fresh measurements with the
 correct label; do not copy their timings into a second precision key.
 
-For vLLM dense attention, `AISIM_VLLM_ATTENTION_BLOCK_SIZE` selects the kernel
-page size (default `64`). For the Qwen3.5 BF16 TP8 hybrid-cache campaign, use
-`AISIM_VLLM_ATTENTION_BLOCK_SIZE=16`: vLLM splits its 528-token allocator
-blocks into supported 16-token kernel pages. The collector validates the page
-with the framework, uses its native cache-layout resolver and view builder on
-vLLM 0.31.0, and retains the legacy path on 0.24/0.25. Its dispatch log records
-the resolved backend, kernel source, page size, layout and cache shape.
-Page size is campaign provenance, not a table key; do not merge measurements
-from different page-size campaigns. Dense attention remains a CUDA-graph
-microbenchmark including KV writes, even though serving prefill attention may
-execute eagerly at a piecewise-graph boundary. One-token context cases follow
-the framework's decode path and retain their actual decode kernel label.
+The vLLM dense-attention family targets 0.31.0. Page size comes from the
+selected backend's native preference and compatibility rules; there is no
+collector page-size override. For the Qwen3.5 BF16 TP8 local attention geometry,
+the native FlashInfer path selects 16-token pages. This isolated attention
+measurement does not construct the full model's hybrid-cache allocator.
+Dense attention remains a CUDA-graph microbenchmark including KV writes,
+even though serving prefill may execute at a different graph boundary.
 
 The default vLLM context-attention sweep includes 24,576, 32,768 and 40,960
 token anchors and permits up to 655,360 batch-times-sequence tokens for
@@ -57,11 +52,11 @@ measurements. Other frameworks retain their existing dense-context sweep limits.
 
 The SGLang attention-module collector also expands decode coverage by default:
 batch 52 and five longer history anchors through 720,896 tokens supplement the
-existing grid. Cases remain bounded by the model's position limit. The 0.5.20
-compatibility path uses native runtime and input-relay APIs and mirrors serving
-decode-graph eligibility, including batches between capture buckets. See the
-[SGLang collector guide](sglang/README.md) for runtime pins and the separate
-qualification limits for decode and prefill.
+existing grid. Decode requests beyond the model's position limit fail explicitly.
+The collector targets SGLang 0.5.21 and admits batches between serving capture buckets when
+graph padding is enabled. It captures the actual module shape; serving may
+execute a padded bucket. See the [SGLang collector guide](sglang/README.md) for
+coverage and qualification limits.
 
 Before collecting the data, make sure you own the whole node and no interfierence happens.
 Next, please enable persistent-mode and lock frequency of the node. Make sure the cooling system of the node is working well.

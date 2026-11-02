@@ -407,15 +407,25 @@ def test_vllm_model_pin_mismatch_error_names_the_model_scoped_image():
 
 
 def test_vllm_unknown_model_id_falls_back_to_default_resolution():
-    baseline = require_collector_runtime("vllm", "0.30.0", requested_ops={"attention_context"}, wideep_ops=set())
+    baseline = require_collector_runtime("vllm", "0.31.0", requested_ops={"attention_context"}, wideep_ops=set())
     unmatched = require_collector_runtime(
         "vllm",
-        "0.30.0",
+        "0.31.0",
         requested_ops={"attention_context"},
         wideep_ops=set(),
         model_path="some-org/not-a-pinned-model",
     )
     assert unmatched == baseline
+
+
+def test_vllm_dense_attention_family_shares_exact_runtime_for_both_phases():
+    context = resolve_op_runtime("vllm", "attention_context")
+    generation = resolve_op_runtime("vllm", "attention_generation")
+    assert context == generation
+    assert context.version == "0.31.0"
+    assert context.source_commit == "db9527a46873454610df6dbedf79a36d6bf1a7f6"
+    assert context.image() == resolve_op_runtime("vllm", "gemm").image()
+    assert resolve_op_runtime("vllm", "encoder_attention").version == "0.30.0"
 
 
 def test_real_manifest_models_section_does_not_break_validate_resolution():

@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026 SGLang Team
 # SPDX-License-Identifier: Apache-2.0
+# NVIDIA modifications adapt native decode graph eligibility for module collection.
 
 """
 MLA Module Collector for SGLang — unified MLA and DSA benchmarking.
@@ -47,6 +49,7 @@ import types
 from importlib.metadata import version as get_version
 
 import torch
+
 from collector.sglang.runtime_compat import resolved_arg  # 0.5.21: derived server args live behind the resolving view
 
 try:
@@ -233,21 +236,19 @@ def _dsa_skip_indexer_enabled(attn_type: str, model_path: str) -> bool:
 
 
 def _generation_cuda_graph_enabled_for_tokens(model_runner, num_tokens: int) -> bool:
-    """Match SGLang decode CUDA graph coverage for the decode microbench.
-
-    SGLang captures decode CUDA graphs for batch sizes up to
-    server_args.cuda_graph_max_bs (or the resolved cuda_graph_bs list); mirror
-    that coverage using sglang's own settings -- no AIC env override -- so the
-    decode benchmark uses graph timing exactly where serve would.
-    """
+    """Use SGLang's graph eligibility for an exact-shape module capture."""
     decode_config = resolved_arg(model_runner.server_args, "cuda_graph_config").decode
-    if decode_config.backend == "disabled":
+    if decode_config.backend == "disabled" or num_tokens <= 0:
         return False
     capture_bs = decode_config.bs
-    if capture_bs:
-        return int(num_tokens) in set(capture_bs)
-    max_bs = decode_config.max_bs or 256
-    return 0 < int(num_tokens) <= int(max_bs)
+    if capture_bs and resolved_arg(model_runner.server_args, "disable_cuda_graph_padding", False):
+        return num_tokens in capture_bs
+    # v0.5.21 @e00930c5 runner/decode_cuda_graph_runner.py:714-719 accepts
+    # batches through max_bs with padding. Its default buckets bracket 52
+    # with 48/56 (arg_groups/cuda_graph_hook.py:649-657); this microbenchmark
+    # captures the exact requested shape instead of replaying a padded bucket.
+    max_bs = max(capture_bs) if capture_bs else decode_config.max_bs or 256
+    return num_tokens <= max_bs
 
 
 def _initialize_dsa_history(model_runner, attention_module, forward_batch, history_length: int) -> None:
@@ -2433,8 +2434,22 @@ def _run_decode(
     point_clock = PhaseClock()
 
     try:
+        # Match request admission at v0.5.21 @e00930c5 tokenizer_manager.py:
+        # 1290-1330. This point executes one new token after the past KV.
+        context_length = model_runner.model_config.context_len
+        if seq_length + 1 > context_length:
+            raise ValueError(f"Decode past_kv + 1={seq_length + 1} exceeds model context length={context_length}")
         model_runner.req_to_token_pool.clear()
         model_runner.token_to_kv_pool_allocator.clear()
+        # v0.5.21 @e00930c5 mem_cache/kv_cache_configurator.py:2264-2280
+        # clamps max_total_tokens to profiled capacity. Fail oversized points
+        # against the actual cleared pool rather than silently dropping them.
+        capacity = _kv_pool_capacity_tokens(model_runner)
+        required_tokens = required_kv_alloc_tokens(
+            batch_size, seq_length, 0, kv_pool_page_size(model_runner), is_prefill=False
+        )
+        if capacity is not None and required_tokens > capacity:
+            raise ValueError(f"Decode requires {required_tokens} KV tokens, exceeding actual pool capacity={capacity}")
 
         reqs = []
         for i in range(batch_size):
@@ -2836,9 +2851,8 @@ def run_mla_module(
                         cases.append((bs, seq_len, ip, _ceil))
     elif attn_type == "dsa":
         # Generation (decode): the perf "step" is the past-KV length (logged as
-        # seq_length here, prefix stays 0). The base generation sweep stops at
-        # 131072, so high-context decode (e.g. GLM-5 up to 202752, GLM-5.2 up to
-        # 1M) would EXTRAPOLATE. Mirror ctx's prefix coverage: extend the KV-length
+        # seq_length here, prefix stays 0). Mirror ctx's prefix coverage beyond
+        # the declared generation anchors: extend the KV-length
         # grid with ctx's context_prefix_lengths plus the hardcoded DSA
         # max_position ceilings (_DSA_CEILING_MAX_POSITIONS) minus 1 (= last valid
         # KV position), capped below to < this model's max_position. High-context
@@ -2849,11 +2863,11 @@ def run_mla_module(
         _max_pos = _model_max_position_embeddings(model_path)
         cases = [(bs, seq_len, ip, 0) for bs, seq_len, ip in base_cases]
         _have = {(bs, sl) for bs, sl, _ in base_cases}
-        _extra_kv = set(_sweep.context_prefix_lengths)
+        _extra_kv = set(_sweep.context_prefix_lengths) if 1 in _sweep.generation_batch_sizes else set()
         # Only extend with the hardcoded DSA max_position ceilings when this
         # model's context limit is known; otherwise (unknown model) we would add
         # ~1M-KV shapes and risk OOM / wasted collection. Mirrors the context path.
-        if _max_pos is not None:
+        if _max_pos is not None and 1 in _sweep.generation_batch_sizes:
             for _cover_pos in _DSA_CEILING_MAX_POSITIONS:
                 _extra_kv.add(_cover_pos - 1)
         for _sl in sorted(_extra_kv):

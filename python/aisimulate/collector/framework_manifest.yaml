@@ -107,6 +107,11 @@ frameworks:
       moe: *vllm_0310_runtime
       kda: *vllm_0310_runtime
       mhc: *vllm_0310_runtime
+      # Qwen BF16 attention recollection: 95 B300 prefill rows at source
+      # 13e15164522c495af025cfb4d683c7dd06666328, pipeline 77828291.
+      # This pins both dense phases; that historical, explicit-page-16 run
+      # does not qualify the broader default grid or this reconciled source.
+      attention: *vllm_0310_runtime
     # kda family pin RETIRED (owner decision 2026-09-28): the family ran on the
     # kimi-k3 preview image (0.1.dev19262) while the consumer's fused-decode
     # pricing did not match 0.27's packed-decode serving path (review #1559).

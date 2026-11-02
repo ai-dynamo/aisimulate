@@ -23,25 +23,32 @@ The collected performance data can be used for performance modeling, scheduling 
 
 ## Requirements
 
-- Stock SGLang collectors: v0.5.14
+- Stock SGLang collectors: v0.5.21
 
 ```bash
-docker run -itd --shm-size 32g --gpus all --ipc=host --network=host --name sglang lmsysorg/sglang:v0.5.14-cu130
+docker run -itd --shm-size 32g --gpus all --ipc=host --network=host --name sglang lmsysorg/sglang:v0.5.21-cu130
 ```
 
 - WideEP MoE collector: the independent v0.5.10 image declared in
-  `../framework_manifest.yaml`; WideEP MLA is not registered for stock v0.5.14.
+  `../framework_manifest.yaml`; WideEP MLA is not registered for stock v0.5.21.
 - DeepSeek model config (or use dummy weights)
 
 ## GLM AgentX decode coverage
 
 The default MLA/DSA decode grid keeps the existing batches and lengths, adds
 batch `52` and past-KV anchors `262144, 393216, 524288, 655360, 720896`, and
-raises its token budget to `37486592` (`52 * 720896`). Each model still requires
-`past_KV + 1 <= max_position_embeddings`. Existing prefill batches and prefix
+raises its token budget to `37486592` (`52 * 720896`). A decode point beyond the
+runtime model context (`past_KV + 1 > context_len`) reports an error; it is not
+removed from the planned grid. Existing prefill batches and prefix
 coverage are preserved. MSA shares the expanded axes but retains its separate
 `33554432` budget. These are broader defaults for all affected models and
 precisions, not a restriction to the GLM campaign.
+
+SGLang 0.5.21 [caps the requested KV pool at profiled capacity](https://github.com/sgl-project/sglang/blob/e00930c5489053f26d86b179cee0d087f846acbb/python/sglang/srt/mem_cache/kv_cache_configurator.py#L2264).
+Each decode point checks its page-rounded requirement against that actual pool
+before allocating requests. Oversized points remain visible failures and fail
+the group's completeness check. No device-aware planning filter is added here;
+the expanded grid still needs GPU qualification across supported hardware.
 
 For GLM-5.2, each DSA variant now plans **250 distinct batch/past-KV pairs** per
 head/precision combination, compared with 154 previously. All old pairs remain.
@@ -49,37 +56,37 @@ The historical AgentX campaign's 110 pairs per variant are a subset: batches
 `4, 8, 16, 32, 52` across the 22 declared generation lengths. Both full-indexer
 and skip-indexer measurements use `isl=1`, `step=past_KV`.
 
-`nvidia/GLM-5.2-NVFP4` has an exact SGLang 0.5.20 model pin in
-[framework_manifest.yaml](../framework_manifest.yaml), including source
-[`94602c9c2b7cbdb8efd5c52802dac6a1c180089e`](https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e)
-and image digest. The module collector adapts its published runtime context,
-resolved arguments, trivial parallel state, request ranges, native sampled-token
-relay and forward metadata. The default 0.5.14 path remains available.
-**0.5.20 DSA prefill raises `MeasurementBoundaryError`** until its native prefill
-graph boundary is adapted; it does not silently collect eager substitutes.
+`nvidia/GLM-5.2-NVFP4` uses the default SGLang **0.5.21** runtime and pinned
+image in [framework_manifest.yaml](../framework_manifest.yaml). The module
+collector keeps the 0.5.21 runtime setup, native input relay, projection and
+cache-history handling. Its existing prefill policy is unchanged: DSA prefill
+is measured eagerly, and one-token prefill extensions remain excluded pending
+native graph support. This expansion changes decode coverage and graph
+eligibility; it adds no earlier-runtime compatibility path.
 
 Decode uses an exact-shape module CUDA graph when the requested batch is within
 the serving graph coverage. Batch 52 is eligible between the serving buckets 48
-and 56; the microbenchmark captures 52 directly. Disabling graph padding requires
-explicit bucket membership. This follows the
-[native decode eligibility check](https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py#L675).
+and 56; the microbenchmark captures 52 directly. Serving may execute the padded
+56-request bucket, whose padding overhead is not included in the row keyed 52.
+Disabling graph padding requires explicit bucket membership. This follows the
+[native decode eligibility check](https://github.com/sgl-project/sglang/blob/e00930c5489053f26d86b179cee0d087f846acbb/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py#L714).
 
 Historical GPU evidence is from collector source
 [`3d41164034624251209588ee0284694e86a13bd8`](https://github.com/ai-dynamo/aisimulate/commit/3d41164034624251209588ee0284694e86a13bd8),
 parent pipeline **77726488**, child **77726600**, Slurm jobs **135871/135872**:
-110 rows per variant on B300, TP8 local geometry (8 heads), FP8 KV, BF16 attention
-projections, TRTLLM DSA backend. That source predates the newer native QKV
+110 rows per variant on B300 with SGLang 0.5.20, TP8 local geometry (8 heads),
+FP8 KV, BF16 attention projections, TRTLLM DSA backend. That source predates the newer native QKV
 projection and initialized cache-history measurement fixes retained here.
-Therefore those 220 rows validate the historical recipe, **not the combined
-collector or its broader defaults**. Current integration checks are CPU contract
-tests; new timing claims require recollection. Native MTP verification and
-multi-rank communication were not measured.
+Those 220 rows are historical evidence; they do not qualify this expanded
+0.5.21 collector. Current integration checks are CPU contract tests; new timing
+claims require recollection. Native MTP verification and multi-rank
+communication were not measured.
 
 [agentx_dsa_shards.yaml](agentx_dsa_shards.yaml) selects the two corresponding
 module/precision groups. Its current default sweep produces 250 pairs per shard;
 use the immutable historical source to reproduce the original 110-pair scope.
 For auto-collector, set `AISIM_MODEL_FILTER=nvidia/GLM-5.2-NVFP4`,
-`AISIM_FRAMEWORKS=sglang:0.5.20`, `AISIM_SYSTEMS=b300_sxm`, `AISIM_GPU_NUM=1`,
+`AISIM_FRAMEWORKS=sglang:0.5.21`, `AISIM_SYSTEMS=b300_sxm`, `AISIM_GPU_NUM=1`,
 `AISIM_SHARDS_PER_JOB=1` and `CREATE_GITHUB_PR=0`, and pin both source and image.
 Each shard uses one GPU with TP8 local dimensions. Check complete row identities
 and collection failures before publishing; planned coverage is not evidence of
@@ -92,7 +99,7 @@ Stock diagnostics and the independent WideEP MoE collector use these modes:
 ### Mode 1: Direct Diagnostic Execution
 
 Run scripts directly with command-line arguments for single GPU diagnostics.
-The MLA command exercises the stock 0.5.14 module implementation; it is not a
+The MLA command exercises the stock 0.5.21 module implementation; it is not a
 registered or accepted WideEP MLA collector:
 
 ```bash
@@ -115,7 +122,7 @@ cd /path/to/collector/
 # Run all stock SGLang operators
 python collect.py --backend sglang
 
-# Run stock DSA module operators in the v0.5.14 container
+# Run stock DSA module operators in the v0.5.21 container
 python collect.py --backend sglang --ops dsa_context_module dsa_generation_module
 
 # Run the large-EP MoE compute operator separately in the v0.5.10 container
@@ -155,7 +162,7 @@ files as parquet, and each file is then published to the family selected by
 
 Modify `output_path` in each direct script to your desired staging location:
 ```python
-output_path = "/aiconfigurator/collector_output/h100_sxm/sglang/0.5.14/"
+output_path = "/aiconfigurator/collector_output/h100_sxm/sglang/0.5.21/"
 ```
 
 
