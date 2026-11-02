@@ -988,9 +988,10 @@ def test_missing_model_sidecar_keeps_primary_config_evidence_unresolved(tmp_path
 def _hub_loaded_config(campaign, monkeypatch, *, commit, text_commit):
     """Load the campaign's model by Hub ID through a config that forwards like vLLM 0.31.0 Glm5NextConfig.
 
-    Once ``text_config`` is set, Glm5NextConfig reads every instance or class attribute of its text
-    config from the text config, and writes the instance attributes there, except the keys of
-    ``_UNMIRRORED_KEYS``. ``_commit_hash`` is not one of them (transformers_utils/configs/glm5_next.py:385-420).
+    Once ``text_config`` is set, Glm5NextConfig reads each key of the text config's instance dictionary,
+    or of the text config class's own dictionary, from the text config. It writes the keys of that
+    instance dictionary there. Both rules skip the keys of ``_UNMIRRORED_KEYS``, and ``_commit_hash``
+    is not one of them (transformers_utils/configs/glm5_next.py:385-420).
     The base-class constructor runs first, so the top-level config keeps the ``_commit_hash`` that
     transformers gives it (:350-366). huggingface_hub is not installed in the test environment, so a
     stand-in module answers the cache lookups. Returns the cached config.json and the lookups.

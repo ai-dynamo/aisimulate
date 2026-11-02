@@ -596,7 +596,7 @@ def _layer_views(
             offset += item * math.prod(shape)
     # The worker views a layer with the storage block of an MLA spec that has one (the indexer), a Mamba layer
     # with the group block, and every other layer with the runner's kernel block of the group
-    # (worker/utils.py:449-450, :500-502; runtime/instrumentation/observer.py:285-297). Both native runners give a
+    # (worker/utils.py:449-450, :500-502; runtime/instrumentation/observer.py:294-306). Both native runners give a
     # Mamba group its block as its kernel block (worker/utils.py:483-487, :500-502).
     if spec.get("spec_type") in _MLA_SPECS and spec.get("storage_block_size") is not None:
         kernel = spec["storage_block_size"]
@@ -716,7 +716,7 @@ def _physical_views(
     ):
         raise ValueError("scheduler permanent reservation IDs do not account for usable blocks")
     strided = runtime_memory._layer_strided(cache)
-    # A vLLM 0.31.0 scheduler reserves only the null block (runtime/instrumentation/observer.py:437-443).
+    # A vLLM 0.31.0 scheduler reserves only the null block (runtime/instrumentation/observer.py:446-452).
     if strided and reserved != [scheduled["null_block_id"]]:
         raise ValueError("additional initialized reservations lack an audited permanent-reservation mapping")
     groups = runtime_memory._normalized_groups(cache, scheduled, page)
@@ -753,7 +753,7 @@ def _physical_views(
             if storage_dtype != precision and not (storage_dtype == "torch.uint8" and precision == "fp8"):
                 raise ValueError("cache group dtype contradicts requested KV precision")
         # Only the sparse MLA indexer stores its tokens in blocks other than the cache block
-        # (runtime/instrumentation/observer.py:228-234). In every group that a supported record can hold, every layer
+        # (runtime/instrumentation/observer.py:237-243). In every group that a supported record can hold, every layer
         # spec has the group's block size (kv_cache_interface.py:1297-1300, :1312-1313).
         if strided and any(
             spec.get("storage_block_size") is not None
@@ -791,7 +791,7 @@ def _physical_views(
         raise ValueError("physical layer tensor/allocation coverage is incomplete")
     if strided:
         # The runner's kernel block of every group, which the worker records before any view
-        # (runtime/instrumentation/observer.py:346-350).
+        # (runtime/instrumentation/observer.py:355-359).
         runner = cache.get("model_runner")
         kernels = runner.get("kernel_block_sizes") if isinstance(runner, dict) else None
         if not isinstance(kernels, list) or len(kernels) != len(cache["groups"]):
@@ -799,7 +799,7 @@ def _physical_views(
         for kernel in kernels:
             _positive(kernel, "kernel block size")
         # The observer reads that list only from the two audited native runners
-        # (runtime/instrumentation/observer.py:337-342).
+        # (runtime/instrumentation/observer.py:346-351).
         if runner.get("class") not in (
             "vllm.v1.worker.gpu_model_runner.GPUModelRunner",
             "vllm.v1.worker.gpu.model_runner.GPUModelRunner",
@@ -1068,7 +1068,7 @@ def _phase_prefix_caching(
                     f"cache group block size contradicts the resolved Mamba block size: {group['layer_names']}"
                 )
     # Each process reads this evidence from the cache config that it resolved
-    # (runtime/instrumentation/observer.py:484-493). The launch-setting comparisons leave those resolved settings
+    # (runtime/instrumentation/observer.py:493-502). The launch-setting comparisons leave those resolved settings
     # out, so the evidence must equal them.
     if strided:
         names = ("enable_prefix_caching", "mamba_cache_mode")
@@ -1079,7 +1079,7 @@ def _phase_prefix_caching(
             ):
                 raise ValueError("runtime prefix-caching evidence contradicts the resolved cache settings")
         # A scheduler copies its own block size and hash block size into the evidence
-        # (runtime/instrumentation/observer.py:491-492).
+        # (runtime/instrumentation/observer.py:500-501).
         sizes = ("block_size", "hash_block_size")
         for record in schedulers.values():
             cache = record["cache"]
