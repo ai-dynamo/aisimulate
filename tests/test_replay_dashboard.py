@@ -14,6 +14,7 @@ import pytest
 
 from aisimulate.output import write_prediction_report, write_telemetry
 from aisimulate.replay.dashboard import (
+    _script_json,
     build_replay_dashboard_data,
     render_replay_dashboard,
     write_replay_dashboard,
@@ -298,6 +299,24 @@ def test_writer_is_standalone_safe_and_atomic(tmp_path, capture):
     with pytest.raises(ValueError, match="finite"):
         write_replay_dashboard(tmp_path, {}, capture)
     assert path.read_text(encoding="utf-8") == original
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_writer_streams_requests_in_chunks(tmp_path, capture, monkeypatch):
+    row = capture["requests"][0]
+    capture["requests"] = [
+        {**row, "uuid": f"request-{index}", "request_id": f"</script>\u2028{index}"} for index in range(5)
+    ]
+    monkeypatch.setattr("aisimulate.replay.dashboard._REQUEST_CHUNK", 2)
+    path = write_replay_dashboard(tmp_path, {}, capture)
+    document = path.read_text(encoding="utf-8")
+    payload = document.split('<script id="report-data" type="application/json">', 1)[1].split("</script>", 1)[0]
+    assert payload.strip() == _script_json(build_replay_dashboard_data({}, capture))
+    # A request failing after earlier chunks were written keeps the published report.
+    capture["requests"][-1]["phase"] = "invalid"
+    with pytest.raises(ValueError, match="request.phase"):
+        write_replay_dashboard(tmp_path, {}, capture)
+    assert path.read_text(encoding="utf-8") == document
     assert list(tmp_path.iterdir()) == [path]
 
 

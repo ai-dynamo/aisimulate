@@ -45,6 +45,16 @@ sum to its estimate of the pass. The default `None` prices the prefill with
 whole-model FPM interpolation, corrected as one mixed iteration when the model
 is tuned. Any other timing it serves, including operation-level timing,
 measured SD-round profiles and MTP drafts, returns `None`.
+`TimingModel::predict_iteration_ms(&[RankWork])` comes first: it prices one
+attention-DP group pass from every rank's `RankWork`, in DP-rank order with
+idle ranks included, and returns `IterationMs`, the shared duration every rank
+takes from its compute start under the prefill speedup. Schedulers ask only
+while `decode_speedup_ratio` is 1 and some rank computes model work; otherwise,
+and when the provider returns the default `None`, each rank prices its own
+work with the phase methods above. The `ais` provider answers through the
+canonical multi-rank `ForwardPassMetrics` query, so the phase methods serve
+only the passes it declines; see
+[engine replay timing](../../perf-model/configuration.md#engine-replay-timing).
 `TimingModel::predict_vision_ms(&[VisionShape])`
 prices one vision-encoder batch; the default returns `None`, and a rank with
 image work then rejects it rather than treating the encoder as free. The `ais`

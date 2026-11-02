@@ -111,13 +111,17 @@ a missing/non-finite report metric or no qualifying latency samples rejects the 
 
 `goal.target: min_gpus` selects the smallest qualifying configuration found by the sweep.
 It always enforces the configured aggregate-mean latency bounds, even when `strict_sla` is
-false. For fixed synthetic request-rate traffic, also set a positive `goal.min_goodput_rps`:
-the measured `goodput_request_throughput_rps` must meet that floor. This metric counts only
-requests satisfying the per-request SLA, divided by the complete replay duration, including
+false. Open-loop traffic also needs a positive `goal.min_goodput_rps`: a synthetic request or
+session rate, or trace timestamps without agentic lanes. Under open-loop arrivals, latency bounds
+alone can pass a deployment that falls behind, for example when only ITL is bounded; the floor
+rejects it. The measured `goodput_request_throughput_rps` must meet that floor. This metric counts
+only requests satisfying the per-request SLA, divided by the complete replay duration, including
 startup and drain. Choose the measurement duration and offered traffic explicitly; offering
-exactly the required rate can fall below the floor on a short run. The floor must not exceed
-the offered rate. Missing rate evidence fails closed; raw throughput or offered rate is never
-substituted. Fixed synthetic concurrency needs no rate floor, but may specify one.
+exactly the required rate can fall below the floor on a short run. The floor must not exceed the
+offered request rate; a session rate offers its turns per session as requests. Trace timestamps
+set their own rate, which validation does not read, so a floor above it rejects every candidate.
+Missing rate evidence fails closed; raw throughput or offered rate is never substituted.
+Closed-loop traffic (fixed concurrency or agentic lanes) needs no rate floor, but may specify one.
 
 The optimizer observes `-used_gpus` for qualifying candidates and infeasibility for latency or
 load failures. Final selection applies the same constraints to the full candidate pool before
@@ -126,9 +130,18 @@ E2E latency, and a deterministic configuration key. GPU count is provisioned top
 not time-averaged usage. A finite trial budget establishes the smallest qualifying configuration
 found, not a global optimum. No qualifying candidate produces an empty selection.
 
-This target supports standalone AISimulate static engine pools with fixed synthetic request-rate
-or concurrency traffic. Dynamo integration is not supported. It rejects adapters, traces, sessions,
-candidate-relative KV load, and searched load domains. Analytical EPD supports concurrency plus aggregate latency only, without a rate floor.
+This target supports static engine pools, either engine-only or behind the Dynamo Router
+(`--stack dynamo` with a `router` section, Sweeper adapter `dynamo.router`), with synthetic
+request, synthetic session, or trace traffic at one fixed absolute load. Sessions and traces can
+reuse prompt prefixes, so prefix caching and KV-aware routing can change which candidates qualify.
+The Router adds no GPUs, so the counted GPUs remain the candidate's provisioned `used_gpus`. The
+optimizer observes the same `-used_gpus` for every qualifying candidate with a given GPU count, so
+Router selections steer the search only through feasibility; pin the Router policy or keep its
+domains small enough for the trial budget to cover the smallest pools. The Dynamo Planner
+(`dynamo.planner`) is rejected because autoscaling makes the provisioned GPU count time-varying.
+Other adapters, candidate-relative KV load, and searched load domains are also rejected, because
+every candidate must serve the same load. Analytical EPD supports concurrency plus aggregate
+latency only, without a rate floor.
 `min_gpus` cannot be a Pareto objective, and `min_goodput_rps` is only accepted with this target.
 
 In the CLI, use `optimization.target: min_gpus` and
