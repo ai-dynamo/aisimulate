@@ -76,8 +76,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.choices["predict"].epilog = (
         "AgentX replay: use weka, agentic_mooncake, or agentic Dynamo traces with "
         "trace_timestamps and positive agentic_lanes. The offline engine stack supports "
-        "aggregated and P/D vLLM/SGLang with HBM-only KV cache, plus vLLM G2 on a static "
-        "single aggregated worker or 1P1D, with DP1 on every role and speculative decoding disabled for G2. "
+        "aggregated and P/D vLLM/SGLang with HBM-only KV cache, plus vLLM G2 on static "
+        "aggregated or P/D pools of any size, with DP1 on every role and speculative decoding disabled for G2. "
         "HBM-only AgentX supports speculative decoding with explicit acceptance assumptions. "
         "agentic_snapshot selects seeded starts; agentic_warmup primes saved prefixes; "
         "agentic_profile enables duration controls on the offline engine stack; "

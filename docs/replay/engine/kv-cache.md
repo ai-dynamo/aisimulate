@@ -471,10 +471,14 @@ Rejected: `recommend`, G2/G3 offload, and speculative decoding with sub-block
 ## Agentic traffic with G2
 
 AgentX snapshot, warmup and continuous-profile traffic supports G2 on vLLM with
-one aggregated worker, or one prefill and one decode worker, all with
-`attention_data: 1`, static workers and no speculative decoding. Either G2 scope
-works; G3 is not supported. `kvcr` is accepted, but with one rank per role there
-is no peer, so it stays idle. Results are qualified `functional_only`.
+aggregated or prefill/decode pools of any size, all with `attention_data: 1`,
+static workers and no speculative decoding. Either G2 scope works; G3 is not
+supported. Each worker publishes its G2 residency as native `HostPinned` KV
+events, so a KV-aware placement policy can follow a G2-resident prefix to its
+owner, or to any replica of a `cluster_shared` pool. Snapshot and profile plays
+use play-local token identities, so G1 and G2 hits never cross a recycled play.
+`kvcr` is accepted but is not part of the AgentX qualification. Results are
+qualified `functional_only`.
 
 Two small offline fixtures use fixed timing and need no GPU:
 

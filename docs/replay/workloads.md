@@ -290,7 +290,7 @@ workers and HBM-only KV cache, including
 [speculative decoding](engine/speculation.md) with explicit acceptance
 assumptions; ngram requires vLLM. vLLM additionally
 supports [G2 host offload](engine/kv-cache.md#agentic-g2) with static workers,
-either one aggregated worker or 1P1D, `attention_data: 1` on every role and
+aggregated or P/D with any worker count, `attention_data: 1` on every role and
 speculative decoding disabled. TensorRT-LLM, G3 offload and online
 P/D are rejected. Results are qualified `functional_only`, not hardware
 accuracy. [Start an AgentX simulation](agentic/quickstart.md) walks through a
