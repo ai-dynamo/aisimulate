@@ -285,10 +285,10 @@ engine:
           eager_queue_fraction: 0.4
 ```
 
-A launch takes `decode_ms` for a pass without prefill, `piecewise_ms` for a
-pass with prefill and at most `max_cudagraph_capture_size` scheduled tokens
-(vLLM's option of that name), and `eager_ms` for a larger pass, which runs
-eager. An eager pass launches many kernels, so once the CUDA launch queue is
+A pass with more than `max_cudagraph_capture_size` scheduled tokens (vLLM's
+option of that name) runs eager, with or without prefill, and its launch takes
+`eager_ms`. A smaller pass takes `piecewise_ms` with prefill and `decode_ms`
+without. An eager pass launches many kernels, so once the CUDA launch queue is
 full its launch ends no earlier than `eager_queue_fraction` of the way through
 the pass. A launch never ends after its pass. An engine that was idle decides
 a pass when a request arrives.

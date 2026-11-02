@@ -2590,17 +2590,17 @@ impl VllmCore {
         if scheduled.is_empty() {
             return decision_ms;
         }
-        let prefill = scheduled
-            .values()
-            .any(|work| work.prompt_tokens > 0 || work.total_tokens > work.draft_tokens + 1);
         let tokens: usize = scheduled.values().map(|work| work.total_tokens).sum();
-        let launch_end_ms = if !prefill {
-            decision_ms + launch.decode_ms
-        } else if tokens <= launch.max_cudagraph_capture_size {
-            decision_ms + launch.piecewise_ms
-        } else {
+        let launch_end_ms = if tokens > launch.max_cudagraph_capture_size {
             (decision_ms + launch.eager_ms)
                 .max(start_ms + launch.eager_queue_fraction * (end_ms - start_ms))
+        } else if scheduled
+            .values()
+            .any(|work| work.prompt_tokens > 0 || work.total_tokens > work.draft_tokens + 1)
+        {
+            decision_ms + launch.piecewise_ms
+        } else {
+            decision_ms + launch.decode_ms
         };
         launch_end_ms.min(end_ms)
     }

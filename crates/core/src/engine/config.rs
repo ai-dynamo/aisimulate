@@ -555,12 +555,13 @@ impl NativeHostOffloadConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PassLaunchConfig {
-    /// From deciding a decode-only pass to the end of its launch, in ms.
+    /// From deciding a pass without prefill and with at most
+    /// `max_cudagraph_capture_size` scheduled tokens to the end of its launch,
+    /// in ms.
     pub decode_ms: f64,
-    /// The same for a pass with prefill and at most
-    /// `max_cudagraph_capture_size` scheduled tokens (piecewise CUDA graphs).
+    /// The same for such a pass with prefill (piecewise CUDA graphs).
     pub piecewise_ms: f64,
-    /// The same for a larger pass with prefill, which runs eager.
+    /// The same for a larger pass, which runs eager with or without prefill.
     pub eager_ms: f64,
     /// vLLM's `max_cudagraph_capture_size`.
     pub max_cudagraph_capture_size: usize,

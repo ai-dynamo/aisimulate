@@ -198,6 +198,18 @@ fn held_outputs_leave_before_those_of_the_pass_that_releases_them() {
 }
 
 #[test]
+fn a_decode_pass_above_the_graph_limit_launches_eager() {
+    // A, B and C prefill until 100, and A's last token comes from the decode
+    // pass that ends at 110. With a one-token graph limit the two-token decode
+    // pass after it runs eager: vLLM decided it at 100 and launches it for
+    // 50 ms, so A's last token leaves when that pass ends at 120, not at 110.
+    let mut config = launch(engine(64), [2.0, 20.0, 50.0], 0.0);
+    config.launch.as_mut().unwrap().max_cudagraph_capture_size = 1;
+    let report = run(config, &[(1, 3, 2, 0.0), (2, 3, 3, 0.0), (3, 3, 3, 0.0)]);
+    assert_eq!(record(&report, 1).last_token_ms, Some(120.0));
+}
+
+#[test]
 fn detokenization_starts_when_vllm_returns_the_outputs() {
     // A 1 ms detokenizer takes A's last token when vLLM returns it at 160.
     let launched = replayer(
