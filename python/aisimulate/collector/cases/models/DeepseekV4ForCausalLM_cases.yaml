@@ -325,8 +325,7 @@ framework_specific_op_cases:
     dsv4_hca_generation_module:
       cases: all
     # topK DELTA calibration on the CSA module plan's points (v1 top-k on the
-    # context points, v2 on the decode points) of each planned checkpoint;
-    # collector/skips.py leaves DeepSeek-V4-Pro out.
+    # context points, v2 on the decode points) of each planned checkpoint.
     dsv4_csa_topk_calib:
       cases: all
     # paged_mqa_logits IS consumed: it is the only sparse-kernel sidecar with a

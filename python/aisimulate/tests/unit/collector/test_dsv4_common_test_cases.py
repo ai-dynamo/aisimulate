@@ -19,10 +19,9 @@ _PRO_FP8 = "sgl-project/DeepSeek-V4-Pro-FP8"
 _SUPPORTED_MODELS = (_FLASH, _PRO, _FLASH_FP8, _PRO_FP8)
 
 
-def test_dsv4_no_filter_expands_flash_and_pro_modules_calib_stays_on_flash(monkeypatch):
-    """Full plans expand both default artifacts for the module and sparse ops, whose
-    tables key the model geometry, while a commented skips.py entry keeps the top-k
-    calibration on the Flash artifact."""
+def test_dsv4_no_filter_expands_flash_and_pro_for_every_op(monkeypatch):
+    """Full plans expand both default artifacts for the module and sparse ops and the
+    top-k calibration, whose tables key the model geometry."""
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
     monkeypatch.setattr(sys, "argv", ["pytest"])
 
@@ -32,8 +31,8 @@ def test_dsv4_no_filter_expands_flash_and_pro_modules_calib_stays_on_flash(monke
     paged = plan("dsv4_paged_mqa_logits_module", "sglang", 100).cases
     assert {case.model_path for case in paged} == {_FLASH_FP8, _PRO_FP8}
     calib = plan("dsv4_csa_topk_calib", "sglang", 100)
-    assert {case.model_path for case in calib.cases} == {_FLASH_FP8}
-    assert [region.region for region in calib.removed] == [f"model_path={_PRO_FP8}"]
+    assert {case.model_path for case in calib.cases} == {_FLASH_FP8, _PRO_FP8}
+    assert calib.removed == []
 
 
 def test_dsv4_unrelated_model_filter_logs_the_skip(monkeypatch, capsys):
