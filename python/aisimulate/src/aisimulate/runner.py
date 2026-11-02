@@ -1941,6 +1941,9 @@ def _materialize_engine_role(
         if nextn > 5:
             raise ValueError(f"engine provider {role} aic_nextn must be in 1..=5")
         rank["aic_nextn"] = nextn
+    # Checked here: engine.speculation sets the draft depth only above.
+    if state_cache is not None and state_cache.num_speculative_states not in (None, nextn):
+        raise ValueError("state_cache.num_speculative_states must match positive aic_nextn")
 
     accept_rates = _pop_alias(
         rank,
@@ -2110,8 +2113,6 @@ def _manual_state_cache(rank: Mapping[str, JSONValue], backend: str, role: str) 
     if raw is None:
         return None
     state_cache = StateCacheConfig.model_validate(raw)
-    if state_cache.num_speculative_states is not None and state_cache.num_speculative_states != rank.get("aic_nextn"):
-        raise ValueError("state_cache.num_speculative_states must match positive aic_nextn")
     if (
         rank.get("prefix_match_unit") is not None
         and rank["prefix_match_unit"] != rank.get("block_size")
