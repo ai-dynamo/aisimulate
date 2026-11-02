@@ -799,13 +799,16 @@ def build_collection_plan(
         engram_cpu_offload=False,
         input_modality="text",
     )
-    if execution[0] and not options.enforce_eager:
+    # Eager timing and the shared text corpus belong to DeepSeek V4.1 alone. GLM-5.3-Flash also has an execution
+    # identity, but its producer requires the runtime's CUDA graph policy and seeds its own tokens.
+    eager_required = capability.architecture == "DeepseekV41ForCausalLM"
+    if eager_required and not options.enforce_eager:
         raise ValueError("V4.1 FPM collection currently requires --fpm-enforce-eager; graph timing is not qualified")
-    if options.enforce_eager and not execution[0]:
+    if options.enforce_eager and not eager_required:
         raise ValueError("explicit eager FPM collection is currently qualified only for DeepSeek V4.1")
     input_text_sha256 = (
         hashlib.sha256((Path(__file__).parent / "runtime" / "fpm_text.txt").read_bytes()).hexdigest()
-        if execution[0]
+        if eager_required
         else ""
     )
     candidate_topologies = enumerate_fpm_topologies(

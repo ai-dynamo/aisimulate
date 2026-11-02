@@ -3554,19 +3554,70 @@ def test_v41_auto_eager_rejects_capture_requests(graph_args):
         options.resolve_model_execution("DeepseekV41ForCausalLM")
 
 
-@pytest.mark.parametrize("v41,eager", [(True, False), (False, True)])
-def test_explicit_eager_collection_admission(v41, eager, monkeypatch):
-    from collector.fpm_forward import planner
-
-    monkeypatch.setattr(planner, "execution_identity", lambda *args, **kwargs: ("c" * 64 if v41 else "",))
-    with pytest.raises(ValueError, match="eager"):
+def test_explicit_eager_collection_admission():
+    with pytest.raises(ValueError) as error:
         build_collection_plan(
             backend="vllm",
             model_path="nvidia/GLM-5.2-NVFP4",
             system="b200_sxm",
             selected_ops={"dsa_context_module", "dsa_generation_module"},
-            options=FPMCollectionOptions.from_args(_args(fpm_enforce_eager=eager)),
+            options=FPMCollectionOptions.from_args(_args(fpm_enforce_eager=True)),
         )
+    assert str(error.value) == "explicit eager FPM collection is currently qualified only for DeepSeek V4.1"
+
+
+def test_glm_plan_accepts_graph_timing_and_refuses_eager(tmp_path):
+    architecture = "Glm5NextForConditionalGeneration"
+    path = _mixed_attention_config(tmp_path, architecture, True)
+
+    def build(**overrides):
+        return build_collection_plan(
+            backend="vllm",
+            model_path=str(path),
+            system="b200_sxm",
+            selected_ops={"attention_context", "attention_generation"},
+            options=FPMCollectionOptions.from_args(_args(**overrides)),
+            model_architecture=architecture,
+            has_model_cases=False,
+            model_config_path=str(path),
+            collector_config={"aic_database_version": "0.27.0"},
+        )
+
+    plan = build()
+
+    assert plan.options.enforce_eager is False
+    assert "enforce_eager" not in plan.to_dict()["options"]
+    digest = plan.cells[0].execution_identity[0]
+    assert len(digest) == 64
+    assert set(digest) <= set("0123456789abcdef")
+    # GLM seeds its own tokens, so its cells do not depend on the DeepSeek V4.1 text corpus.
+    assert {cell.input_text_sha256 for cell in plan.cells} == {""}
+    with pytest.raises(ValueError) as error:
+        build(fpm_enforce_eager=True)
+    assert str(error.value) == "explicit eager FPM collection is currently qualified only for DeepSeek V4.1"
+
+
+def test_deepseek_v41_plan_keeps_its_eager_rule():
+    def build(**overrides):
+        return build_collection_plan(
+            backend="vllm",
+            model_path="deepseek-ai/DeepSeek-V4.1-Flash",
+            system="b200_sxm",
+            selected_ops={"attention_context", "attention_generation"},
+            options=FPMCollectionOptions.from_args(_args(**overrides)),
+            model_architecture="DeepseekV41ForCausalLM",
+            has_model_cases=False,
+            collector_config={"aic_database_version": "0.27.0"},
+        )
+
+    corpus = Path(__file__).parents[3] / "collector/fpm_forward/runtime/fpm_text.txt"
+    plan = build(fpm_enforce_eager=True)
+
+    assert plan.options.enforce_eager is True
+    assert plan.to_dict()["options"]["enforce_eager"] is True
+    assert {cell.input_text_sha256 for cell in plan.cells} == {hashlib.sha256(corpus.read_bytes()).hexdigest()}
+    with pytest.raises(ValueError, match="DeepSeek V4.1 requires eager execution"):
+        build()
 
 
 @pytest.mark.parametrize("corruption", ["missing", "tampered", "fake", "seed", "path", "coverage"])
