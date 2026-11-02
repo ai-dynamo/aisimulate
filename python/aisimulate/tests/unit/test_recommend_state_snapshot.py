@@ -595,6 +595,7 @@ def planner_snapshots(tmp_path_factory) -> dict[str, Path]:
         "unready": save("unready", _planner("aggregated", kinds=("decode",))),
         "nextn": save("nextn", _planner("decode", kinds=("decode",), nextn=1)),
         "sglang-nextn": save("sglang-nextn", _planner("decode", kinds=("decode",), backend="sglang", nextn=1)),
+        "nextn-agg": save("nextn-agg", _planner("aggregated", nextn=1)),
         "no-kv": save(
             "no-kv", _planner("decode", kinds=("decode",), deployment_limits={**_LIMITS, "max_kv_tokens": "unknown"})
         ),
@@ -900,6 +901,17 @@ def test_an_sglang_aggregated_planner_snapshot_needs_no_locally_mixed_store(plan
     # pass, so the same telemetry cannot price its role.
     with pytest.raises((ValidationError, ValueError), match=r"without a ready contains_locally_mixed workload store"):
         _space(_planner_request(planner_snapshots["vllm-pure"], mode="aggregated"))
+
+
+def test_a_vllm_planner_snapshot_fitted_with_mtp_is_recommended_and_replayed_at_its_nextn(planner_snapshots):
+    # The snapshot pins nextn 1; the engine supplies the accepted draft tokens.
+    raw = _planner_request(planner_snapshots["nextn-agg"], mode="aggregated")
+    raw["engine"].update(nextn=1, nextn_accepted=0.5)
+    result = _planner_run(raw)
+    assert result.counts.feasible == 1, [record.reason for record in result.candidates]
+    [candidate] = result.selected_candidates
+    assert candidate.prediction_config["engine"]["nextn"] == 1
+    assert _replay(candidate.prediction_config).metrics["mean_tpot_ms"] == candidate.metrics["mean_tpot_ms"]
 
 
 def test_an_aggregated_planner_snapshot_with_attention_dp_needs_its_cross_rank_store(planner_snapshots):
