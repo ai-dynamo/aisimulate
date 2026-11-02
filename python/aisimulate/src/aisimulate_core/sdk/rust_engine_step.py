@@ -134,9 +134,9 @@ class ForwardPassPerfModelConfig:
     arrays ``scheduled_requests.extend_lengths`` and ``past_kv_lengths``;
     both must have one entry per scheduled request. Their sums may differ from
     aggregate token counters because backends use different counting conventions.
-    Fitted or sampled, the ``longest_split`` and ``eager`` axes also need
-    ``fit.linear.max_kv_splits`` and ``fit.linear.max_cudagraph_capture_size``
-    respectively.
+    Fitted or sampled, the ``longest_split`` and ``eager`` axes also need a
+    positive ``fit.linear.max_kv_splits`` and
+    ``fit.linear.max_cudagraph_capture_size`` respectively.
 
     ``fit.kind`` defaults to ``"standardized_nnls"`` (alias ``"linear"``).
     Set ``{"fpm_regression": {"fit": {"kind": "spline"}}}`` to use learned

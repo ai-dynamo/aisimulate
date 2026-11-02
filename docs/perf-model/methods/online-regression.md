@@ -644,8 +644,8 @@ the spline fit and retention axes remain `[attention, moe]`.
 Token and KV sums cannot tell a batch holding one very long sequence from a
 batch of equal contexts with the same totals, and a pass above the CUDA-graph
 capture limit runs eagerly. Two request-list axes model these effects, each
-with one constant in `fit.linear` that configuration requires whenever
-`feature_axes` or `sampling.axes` selects the axis:
+with one positive constant in `fit.linear` that configuration requires
+whenever `feature_axes` or `sampling.axes` selects the axis:
 
 - `longest_split` is `max_i(past_i + extend_i) / max(1, floor(max_kv_splits / n))`
   for a rank's `n` scheduled requests: the longest sequence over the KV splits
