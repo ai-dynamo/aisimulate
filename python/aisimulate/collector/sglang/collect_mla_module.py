@@ -3065,6 +3065,13 @@ def run_mla_module(
             f"model={model_path}, heads={head_num}, kv={kv_cache_dtype}, gemm={gemm_type}"
         )
 
+    if is_prefill and attn_type == "mla" and inner_manifest and chunked_prefill_size is None:
+        # Dense MLA is queried at the complete sequence. Configure native
+        # prefill capacity for the planned one-shot forwards instead of keeping
+        # the serving default chunk (16K on Blackwell), which rejects them.
+        # Explicit diagnostic overrides and the measured DSA path are unchanged.
+        chunked_prefill_size = max(bs * seq_len for bs, seq_len, _, _ in cases)
+
     max_total_tokens = None
     if cases:
         max_total_tokens = max(

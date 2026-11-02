@@ -78,6 +78,11 @@ TRT-LLM/vLLM MSA now include 4K through 1M prefix anchors, and their decode
 axes reach 1,048,575 cached tokens. SGLang's existing DSA/MSA history coverage
 and measured GLM decode execution path remain unchanged.
 
+For an exact dense-MLA context manifest, SGLang sizes its native prefill chunk
+capacity from the largest planned query-token batch. This permits full-history
+module forwards beyond the default serving chunk; an explicit chunk override
+still takes precedence. DSA keeps its existing chunked-prefill configuration.
+
 The standalone MLA adapters share the expanded `mla.yaml` grid. SGLang's
 mock runner now advertises the actual case length. TRT-LLM's standalone
 harness still uses its fixed DeepSeek Scenario RoPE capacity (163,840); larger

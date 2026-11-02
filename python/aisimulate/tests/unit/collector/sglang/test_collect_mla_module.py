@@ -975,7 +975,8 @@ class TestBuildWideepMlaTestCases:
 
 @pytest.mark.unit
 class TestFailClosedOrchestration:
-    def test_context_executes_exact_planned_manifest(self, monkeypatch):
+    @pytest.mark.parametrize("chunk_override, expected_capacity", [(None, 81920), (131072, 131072)])
+    def test_context_executes_exact_planned_manifest(self, monkeypatch, chunk_override, expected_capacity):
         mod = _import_module()
         manifest = ((1, 24576, 0), (2, 40960, 0))
 
@@ -983,10 +984,11 @@ class TestFailClosedOrchestration:
             raise AssertionError("A queued manifest must not be expanded or filtered again")
 
         captured = {}
+        runner = {}
         monkeypatch.setattr(mod, "get_context_test_cases", unexpected)
         monkeypatch.setattr(mod, "_filter_cases_from_env", unexpected)
         monkeypatch.setattr(mod, "cleanup_distributed", lambda: None)
-        monkeypatch.setattr(mod, "load_model_runner", lambda **_kwargs: object())
+        monkeypatch.setattr(mod, "load_model_runner", lambda **kwargs: runner.update(kwargs) or object())
         monkeypatch.setattr(mod, "run_attention_torch", lambda **kwargs: captured.update(kwargs) or 2)
         mod.run_mla_module(
             "mla",
@@ -999,8 +1001,10 @@ class TestFailClosedOrchestration:
             0,
             attention_backend="fa3",
             inner_manifest=manifest,
+            chunked_prefill_size=chunk_override,
         )
         assert captured["test_cases"] == [(b, s, True, p) for b, s, p in manifest]
+        assert runner["chunked_prefill_size"] == expected_capacity
 
     def test_empty_case_list_raises_before_model_load(self, monkeypatch):
         mod = _import_module()
