@@ -229,9 +229,29 @@ follows `EngineCore.step_with_batch_queue` and `VllmConfig.max_concurrent_batche
 in vLLM
 [v0.28.0](https://github.com/vllm-project/vllm/tree/2cf0a6915ce544dc493a0990f2ea38d81601128a).
 Pipeline parallelism deepens vLLM's batch queue, but engine replay does not
-model it. Replay also reserves no capacity for the queued batch, so under KV
-pressure its admission and preemption can differ from vLLM's. AFD companion
-workers do not model async scheduling and reject `true`.
+model it. AFD companion workers do not model async scheduling and reject
+`true`.
+
+Under KV pressure, async scheduling also changes when blocks are freed and
+which requests can be preempted:
+
+- vLLM frees a finished request's blocks when it processes the outputs of the
+  pass the request finished in, after it has committed the next pass. Blocks
+  that a request frees in pass k therefore first serve pass k+2. A pass with no
+  work lets vLLM process the previous pass at once, so replay then commits
+  another pass at the same instant.
+- With a CPU tier (`kv_cache.host_offload`), vLLM does not free the blocks of a
+  request that the pass in flight runs until that pass ends, so it does not
+  preempt that request. A running request that needs its blocks waits for the
+  next pass instead.
+
+vLLM defers the same frees for a P/D connector that consumes KV (`kv_role`
+`kv_consumer` or `kv_both`). Replay does not model a P/D connector's role, so
+it applies the second rule only with a CPU tier. These rules follow `Scheduler`
+in vLLM
+[v0.30.0](https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/core/sched/scheduler.py),
+the first release that stops the allocation instead of preempting such a
+request.
 
 <a id="sglang-prefilldecode-interval"></a>
 

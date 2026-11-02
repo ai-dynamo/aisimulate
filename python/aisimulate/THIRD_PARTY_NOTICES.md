@@ -331,6 +331,23 @@ in virtual time, which committed batch an arriving request can join while the
 engine core keeps a queue of `max_concurrent_batches`; it does not reproduce
 asynchronous worker execution. That revision has no root NOTICE file.
 
+The async-scheduling block frees and preemption rules in repository-root file
+`crates/core/src/engine/scheduler/vllm/core.rs` are an independently written,
+modified Rust simulation adaptation of behavioral contracts at vLLM tag
+`v0.30.0` (commit `ced6857afa0ea7b2e3f0846a62e1394e90f15607`):
+
+- https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/core/sched/scheduler.py
+- https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/engine/core.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/LICENSE
+
+No upstream method bodies or test fixtures are copied. The adaptation models,
+in virtual time, when a finished request's blocks return to the pool and which
+running request may be preempted while a pass is in flight; it does not
+reproduce asynchronous worker execution. That revision has no root NOTICE
+file.
+
 The following files are derived from vLLM's attention test utilities at tag
 `v0.11.0` (commit `b8b302cde434df8c9289a2b465406b47ebab1c2d`):
 

@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright contributors to the vLLM project.
 // Modified Rust simulation of vLLM b3563fc65ae0f5359802593d78e7ea097e1fed31
-// scheduling contracts and of the v0.28.0 (2cf0a6915ce544dc493a0990f2ea38d81601128a)
-// async-scheduling batch queue; immutable sources and license: THIRD_PARTY_NOTICES.md.
+// scheduling contracts, of the v0.28.0 (2cf0a6915ce544dc493a0990f2ea38d81601128a)
+// async-scheduling batch queue and of the v0.30.0
+// (ced6857afa0ea7b2e3f0846a62e1394e90f15607) async block frees; immutable sources
+// and license: THIRD_PARTY_NOTICES.md.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -680,6 +682,14 @@ pub(crate) struct VllmCore {
     prefill_capacity_bound: bool,
     passes_executed: u64,
     belady_oracle: Option<BeladyOracle>,
+    /// End of the latest pass that ran work, with async scheduling.
+    last_pass_end_ms: Option<f64>,
+    /// Requests that finished in the latest pass. vLLM frees their blocks when
+    /// it processes that pass's outputs, after it has formed the next pass.
+    finished_in_flight: Vec<HeldVllmPrefill>,
+    /// Requests the pass in flight runs, sorted, when vLLM defers freeing their
+    /// blocks until that pass ends: async scheduling with a CPU tier.
+    in_flight_requests: Vec<Uuid>,
 }
 
 struct HeldVllmPrefill {
@@ -930,6 +940,9 @@ impl VllmCore {
             attention_dp_size: 1,
             prefill_capacity_bound: false,
             passes_executed: 0,
+            last_pass_end_ms: None,
+            finished_in_flight: Vec::new(),
+            in_flight_requests: Vec::new(),
         })
     }
 
@@ -1556,6 +1569,12 @@ impl VllmCore {
             request,
         };
         match self.source_holds.complete_source(uuid, payload) {
+            // vLLM frees a finished request's blocks when it processes the
+            // pass's outputs; with async scheduling that comes after it has
+            // formed the next pass.
+            SourceCompletion::Release(payload) if self.args.max_concurrent_batches > 1 => {
+                self.finished_in_flight.push(payload);
+            }
             SourceCompletion::Release(payload) => {
                 self.cleanup_completed_prefill(payload);
             }
@@ -1582,6 +1601,16 @@ impl VllmCore {
         } = payload;
         self.kv_manager
             .finish_native(request_id, request.sequence.lease);
+    }
+
+    fn free_finished(&mut self, finished: Vec<HeldVllmPrefill>) {
+        if finished.is_empty() {
+            return;
+        }
+        for payload in finished {
+            self.cleanup_completed_prefill(payload);
+        }
+        self.bump_capacity_generation();
     }
 
     #[cfg(test)]
@@ -1644,11 +1673,16 @@ impl VllmCore {
     }
 
     pub(crate) fn complete_engine_boundary(&mut self, now_ms: f64) {
-        let Some(adapter) = self.native_host_offload.as_mut() else {
-            return;
-        };
-        let progress = adapter.complete_engine_boundary(&mut self.kv_manager, now_ms);
-        self.apply_host_progress(progress);
+        if let Some(adapter) = self.native_host_offload.as_mut() {
+            let progress = adapter.complete_engine_boundary(&mut self.kv_manager, now_ms);
+            self.apply_host_progress(progress);
+        }
+        // With nothing to schedule, vLLM's next step is empty and it processes
+        // this pass's outputs at once.
+        if !self.is_ready() {
+            let finished = std::mem::take(&mut self.finished_in_flight);
+            self.free_finished(finished);
+        }
     }
 
     fn apply_host_progress(&mut self, progress: HostTransferProgress) {
@@ -1881,6 +1915,16 @@ impl VllmCore {
             .and_then(|a| a.retry_epoch());
         self.kv_manager.begin_step();
         self.state.compact_running();
+        // With async scheduling vLLM forms this pass while the previous one
+        // runs, and processes the previous pass's outputs only afterwards,
+        // unless that pass ran nothing or ended before now.
+        let previous_in_flight = self.last_pass_end_ms == Some(now_ms);
+        if !previous_in_flight {
+            let finished = std::mem::take(&mut self.finished_in_flight);
+            self.free_finished(finished);
+            self.in_flight_requests.clear();
+        }
+        let finished_in_flight = std::mem::take(&mut self.finished_in_flight);
         let mut token_budget = self.args.max_num_batched_tokens.unwrap_or(usize::MAX);
         let cadence_step = self.wave_step.is_multiple_of(
             u64::try_from(self.args.prefill_schedule_interval)
@@ -2403,6 +2447,12 @@ impl VllmCore {
             });
         }
         let end_ms = forward_time.end_ms(compute_start_ms);
+        // vLLM processes the outputs of the pass in flight once it has formed
+        // this one, so the blocks of the requests that pass finished serve the
+        // next pass. A decision that formed nothing is an empty step: vLLM then
+        // processes the pass in flight at once and decides again.
+        let decide_again = previous_in_flight && scheduled.is_empty();
+        self.free_finished(finished_in_flight);
         if (!scheduled.is_empty() || !output_signals.is_empty())
             && let Some(adapter) = self.native_host_offload.as_mut()
         {
@@ -2433,17 +2483,24 @@ impl VllmCore {
         }
         committed_requests.sort_unstable();
         committed_requests.dedup();
+        if self.args.max_concurrent_batches > 1 {
+            self.last_pass_end_ms = (!committed_requests.is_empty()).then_some(end_ms);
+            if self.native_host_offload.is_some() {
+                self.in_flight_requests.clone_from(&committed_requests);
+            }
+        }
         self.passes_executed += 1;
         self.state.debug_assert_invariants();
         Ok(EnginePassResult {
             committed_requests,
             end_ms,
-            same_timestamp_retry: if retry_epoch_before.is_some()
-                && end_ms == now_ms
-                && self.native_host_offload.as_ref().is_some_and(|a| {
-                    a.retry_epoch() != retry_epoch_before
-                        || a.next_deadline().is_some_and(|d| d <= now_ms)
-                }) {
+            same_timestamp_retry: if (decide_again && end_ms == now_ms)
+                || (retry_epoch_before.is_some()
+                    && end_ms == now_ms
+                    && self.native_host_offload.as_ref().is_some_and(|a| {
+                        a.retry_epoch() != retry_epoch_before
+                            || a.next_deadline().is_some_and(|d| d <= now_ms)
+                    })) {
                 crate::engine::generalized::SameTimestampRetry::Retry
             } else {
                 crate::engine::generalized::SameTimestampRetry::NotApplicable
@@ -2556,6 +2613,12 @@ impl VllmCore {
             break;
         }
         let selected = selected?;
+        // vLLM does not free the blocks of a request the pass in flight runs
+        // until that pass ends (async scheduling with a CPU tier), so it does
+        // not preempt such a request: the allocation stops instead.
+        if self.in_flight_requests.binary_search(&selected).is_ok() {
+            return None;
+        }
         let state_before = self.pressure_state();
         let request_active_blocks_before = self
             .state
