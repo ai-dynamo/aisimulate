@@ -153,13 +153,13 @@ The request must follow these rules:
 
 Plan the collection from the accepted runtime probe. The planner generates the
 point list from `max_num_tokens`, `max_batch_size` and `context_length` of the
-resolved request. A limit that the request leaves unset takes the accepted
-profile's bound. The planner takes `hash_block_size_tokens` and the cache
-capacity from the accepted profile, and it refuses a profile without the hash
-block. The planner freezes the list into the collection plan, so the plan hash
-covers it. The producer divides each total evenly. Every request of a point
-therefore has the same new tokens, prefix and decode context. These are the
-axes:
+resolved request. When the request leaves `max_num_tokens` or `max_batch_size`
+unset, that limit takes the accepted profile's bound. The planner takes
+`hash_block_size_tokens` and the cache capacity from the accepted profile, and
+it refuses a profile without the hash block. The planner freezes the list into
+the collection plan, so the plan hash covers it. The producer divides each
+total evenly. Every request of a point therefore has the same new tokens,
+prefix and decode context. These are the axes:
 
 - Prefill new tokens per request: the powers of two from 4 to the token budget,
   every whole hash block up to the budget, and the budget itself. The list caps
