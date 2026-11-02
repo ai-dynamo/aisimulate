@@ -565,6 +565,31 @@ def test_restore_never_adopts_tables_parsed_from_a_later_data_generation(tmp_pat
 
 
 @pytest.mark.integration
+def test_restore_never_shares_tables_that_parsed_after_the_data_changed_back(tmp_path):
+    from aisimulate_core.sdk.operations import clear_all_op_caches
+
+    queries = _queries()
+    root = _systems_copy(tmp_path / "systems", "h200_sxm")
+    original = {path: path.read_bytes() for path in root.rglob("*.parquet")}
+    model = RustForwardPassPerfModel.best_available(_op_level_config(root))
+    expected = _bits(model, queries)
+    model.save_state_snapshot(tmp_path / "snap")
+    del model
+    clear_all_op_caches()
+    # A restored model's tables parse on first query, here after the data changed.
+    restored = RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "snap")
+    _scale_gemm_latency(root, 2.0)
+    changed = _bits(restored, queries)
+    assert changed != expected
+    # The saved data is back: a later restore reads it, not the live restored tables.
+    for path, data in original.items():
+        path.write_bytes(data)
+    clear_all_op_caches()
+    assert _bits(RustForwardPassPerfModel.best_available(state_snapshot=tmp_path / "snap"), queries) == expected
+    assert _bits(restored, queries) == changed
+
+
+@pytest.mark.integration
 def test_data_dir_with_parent_components_restores_by_reference_but_cannot_be_packed(tmp_path):
     root = _systems_copy(tmp_path / "systems", "h200_sxm")
     (root / "data" / "b200_sxm").mkdir()

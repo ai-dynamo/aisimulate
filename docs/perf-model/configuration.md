@@ -620,8 +620,10 @@ non-UTF-8 names. A native model fingerprints its data when the process first
 loads that systems root; later constructions reuse that result. Performance
 tables that another engine in the process parsed before then are not shared
 with the model, so it reads the fingerprinted data; restoration does the same
-after its check, unless this process already loaded the same data, whose
-tables were parsed after that load and stay shared.
+after its check. Only tables an earlier restoration in the process loaded from
+the same data stay shared, and only while no fingerprinted file or directory
+has been written since, even back to its original bytes: tables parse on
+first query, so they could otherwise hold rows from data changed in between.
 `save_state_snapshot` fingerprints the data again and fails if it changed
 since it was loaded; restart the process to save a model of the current data. Pass
 `include_perf_db=True` (Rust: `StateSnapshotOptions { include_perf_db: true }`)

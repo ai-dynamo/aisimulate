@@ -1046,16 +1046,17 @@ fn restore_verified(
         .fpm_interpolation
         .fpm_parquet_path
         .as_deref();
-    let native_root = match (&manifest.native, base.systems_paths.as_slice()) {
-        (None, _) => None,
+    let (native_root, data_stamp) = match (&manifest.native, base.systems_paths.as_slice()) {
+        (None, _) => (None, None),
         (Some(native), [root]) => {
-            if perf_db::current(root, &base.system, parquet)? != native.perf_db {
+            let (current, stamp) = perf_db::current(root, &base.system, parquet)?;
+            if current != native.perf_db {
                 return Err(invalid(format!(
                     "performance data under {} differs from the snapshot fingerprint",
                     root.display()
                 )));
             }
-            Some(root.clone())
+            (Some(root.clone()), Some(stamp))
         }
         (Some(_), _) => {
             return Err(invalid(
@@ -1129,9 +1130,9 @@ fn restore_verified(
             )));
         }
         // The data matched before this model loaded and only verified tables
-        // stayed shared, so later restores of the same data may share these.
-        if let Some(root) = &native_root {
-            perf_db::verified(root, &base.system, parquet, engine.database());
+        // stayed shared, so later restores of untouched data may share these.
+        if let (Some(root), Some(stamp)) = (&native_root, data_stamp) {
+            perf_db::verified(root, &base.system, parquet, engine.database(), stamp);
         }
     }
     model.install_state(state.state)?;

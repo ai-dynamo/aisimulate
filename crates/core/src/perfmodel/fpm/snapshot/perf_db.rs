@@ -31,8 +31,11 @@
 //! process ([`loaded`]); saving recomputes it and fails if the data changed
 //! since. Tables that other engines parsed before the fingerprint stop being
 //! shared then, because the shared table memo is keyed by paths, not content.
-//! For the same reason a restore shares only tables an earlier restore read
-//! right after verifying the same data ([`current`], [`verified`]).
+//! For the same reason a restore shares only tables an earlier restore loaded
+//! right after verifying the same data, and only while no fingerprinted entry
+//! has been written since ([`current`], [`verified`]): table families parse
+//! on first query, so equal content alone would admit files that changed and
+//! changed back after that restore.
 //! Packing copies exactly the fingerprinted entries, preserving relative
 //! paths, so a packed root resolves tables exactly like the original.
 
@@ -86,6 +89,8 @@ struct Entry {
     label: String,
     absolute: PathBuf,
     kind: EntryKind,
+    /// [`stamp`] of the entry, and of the link itself for a symlink.
+    stamp: String,
 }
 
 impl Entry {
@@ -102,6 +107,43 @@ impl Entry {
 struct Inventory {
     data_dir: String,
     entries: Vec<Entry>,
+}
+
+/// What changes whenever an entry is written, replaced or retargeted, even
+/// back to its original bytes: its identity, size, and modification and
+/// status change times. The status change time cannot be set back.
+#[cfg(unix)]
+fn stamp(metadata: &std::fs::Metadata) -> String {
+    use std::os::unix::fs::MetadataExt;
+    format!(
+        "{}:{} {} {}.{} {}.{}",
+        metadata.dev(),
+        metadata.ino(),
+        metadata.len(),
+        metadata.mtime(),
+        metadata.mtime_nsec(),
+        metadata.ctime(),
+        metadata.ctime_nsec()
+    )
+}
+
+/// Without a status change time a rewrite can restore every field read here,
+/// so these stamps never match ([`DataStamp::matches`]).
+#[cfg(not(unix))]
+fn stamp(metadata: &std::fs::Metadata) -> String {
+    format!("{} {:?}", metadata.len(), metadata.modified().ok())
+}
+
+/// The stamps of every input a fingerprint covers, taken before their
+/// contents were hashed. Matching stamps mean no entry was written, replaced,
+/// added or removed in between.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DataStamp(String);
+
+impl DataStamp {
+    fn matches(&self, other: &Self) -> bool {
+        cfg!(unix) && self == other
+    }
 }
 
 fn hash_file(path: &Path) -> Result<(u64, String), AicError> {
@@ -138,24 +180,28 @@ fn yaml_data_dir(root: &Path, system: &str) -> Result<String, AicError> {
 
 /// Classify one directory entry like the loader sees it: symlinks are
 /// followed and an unresolvable one is recorded but never read.
-fn classify(path: &Path) -> Result<Option<EntryKind>, AicError> {
+fn classify(path: &Path) -> Result<Option<(EntryKind, String)>, AicError> {
     let link = std::fs::symlink_metadata(path).map_err(|error| io_error(path, error))?;
-    let metadata = if link.file_type().is_symlink() {
+    let (metadata, stamped) = if link.file_type().is_symlink() {
         match std::fs::metadata(path) {
-            Ok(metadata) => metadata,
+            Ok(metadata) => {
+                let stamped = format!("{} -> {}", stamp(&link), stamp(&metadata));
+                (metadata, stamped)
+            }
             Err(_) => {
                 let target = std::fs::read_link(path).map_err(|error| io_error(path, error))?;
-                return Ok(Some(EntryKind::Dangling { target }));
+                return Ok(Some((EntryKind::Dangling { target }, stamp(&link))));
             }
         }
     } else {
-        link
+        let stamped = stamp(&link);
+        (link, stamped)
     };
     Ok(if metadata.is_dir() {
-        Some(EntryKind::Dir)
+        Some((EntryKind::Dir, stamped))
     } else if metadata.is_file() {
         let (size, sha256) = hash_file(path)?;
-        Some(EntryKind::File { size, sha256 })
+        Some((EntryKind::File { size, sha256 }, stamped))
     } else {
         None
     })
@@ -187,7 +233,7 @@ fn walk(dir: &Path, label: &str, depth: usize, out: &mut Vec<Entry>) -> Result<(
     }
     for (name, path) in listed_children(dir)? {
         let child = format!("{label}/{name}");
-        let Some(kind) = classify(&path)? else {
+        let Some((kind, stamp)) = classify(&path)? else {
             continue;
         };
         let directory = kind == EntryKind::Dir;
@@ -195,6 +241,7 @@ fn walk(dir: &Path, label: &str, depth: usize, out: &mut Vec<Entry>) -> Result<(
             label: child.clone(),
             absolute: path.clone(),
             kind,
+            stamp,
         });
         if directory {
             walk(&path, &child, depth + 1, out)?;
@@ -207,7 +254,7 @@ fn inventory(root: &Path, system: &str) -> Result<Inventory, AicError> {
     let data_dir = yaml_data_dir(root, system)?;
     let mut entries = Vec::new();
     for (name, path) in listed_children(root)? {
-        let Some(kind) = classify(&path)? else {
+        let Some((kind, stamp)) = classify(&path)? else {
             continue;
         };
         // Top-level directories (other systems, profiles) are not inputs.
@@ -216,6 +263,7 @@ fn inventory(root: &Path, system: &str) -> Result<Inventory, AicError> {
                 label: name,
                 absolute: path,
                 kind,
+                stamp,
             });
         }
     }
@@ -250,6 +298,7 @@ fn inventory(root: &Path, system: &str) -> Result<Inventory, AicError> {
             label,
             absolute: data_path,
             kind: EntryKind::Absent,
+            stamp: String::new(),
         }),
         Err(error) => return Err(io_error(&data_path, error)),
         Ok(metadata) if metadata.is_dir() => {
@@ -257,6 +306,7 @@ fn inventory(root: &Path, system: &str) -> Result<Inventory, AicError> {
                 label: label.clone(),
                 absolute: data_path.clone(),
                 kind: EntryKind::Dir,
+                stamp: stamp(&metadata),
             });
             walk(&data_path, &label, 0, &mut entries)?;
         }
@@ -271,19 +321,32 @@ fn inventory(root: &Path, system: &str) -> Result<Inventory, AicError> {
     Ok(Inventory { data_dir, entries })
 }
 
-fn external_fpm(path: Option<&Path>) -> Result<Option<ExternalFpmData>, AicError> {
+/// The external parquet's data and the [`stamp`]s of the files it read.
+fn external_fpm(path: Option<&Path>) -> Result<(Option<ExternalFpmData>, String), AicError> {
     let Some(path) = path else {
-        return Ok(None);
+        return Ok((None, String::new()));
     };
+    let stamp_of = |path: &Path| {
+        std::fs::metadata(path)
+            .map(|metadata| stamp(&metadata))
+            .map_err(|error| io_error(path, error))
+    };
+    let mut stamped = stamp_of(path)?;
+    let sha256 = hash_file(path)?.1;
     let sidecar = path.with_extension("metadata.json");
-    Ok(Some(ExternalFpmData {
-        sha256: hash_file(path)?.1,
-        sidecar_sha256: if sidecar.is_file() {
-            Some(hash_file(&sidecar)?.1)
-        } else {
-            None
-        },
-    }))
+    let sidecar_sha256 = if sidecar.is_file() {
+        stamped = format!("{stamped} {}", stamp_of(&sidecar)?);
+        Some(hash_file(&sidecar)?.1)
+    } else {
+        None
+    };
+    Ok((
+        Some(ExternalFpmData {
+            sha256,
+            sidecar_sha256,
+        }),
+        stamped,
+    ))
 }
 
 fn summarize(
@@ -316,8 +379,27 @@ pub(crate) fn fingerprint(
     system: &str,
     fpm_parquet: Option<&Path>,
 ) -> Result<PerfDbFingerprint, AicError> {
+    observe(root, system, fpm_parquet).map(|(fingerprint, _)| fingerprint)
+}
+
+/// [`fingerprint`] the data and stamp the entries it read.
+fn observe(
+    root: &Path,
+    system: &str,
+    fpm_parquet: Option<&Path>,
+) -> Result<(PerfDbFingerprint, DataStamp), AicError> {
     let inventory = inventory(root, system)?;
-    Ok(summarize(system, &inventory, external_fpm(fpm_parquet)?))
+    let (external, external_stamp) = external_fpm(fpm_parquet)?;
+    let mut stamps: String = inventory
+        .entries
+        .iter()
+        .map(|entry| format!("{} {}\n", entry.label, entry.stamp))
+        .collect();
+    stamps.push_str(&format!("external {external_stamp}\n"));
+    Ok((
+        summarize(system, &inventory, external),
+        DataStamp(sha256_hex(stamps.as_bytes())),
+    ))
 }
 
 /// The load-time fingerprint shared by a process's estimators.
@@ -328,12 +410,13 @@ pub(crate) type LoadedFingerprint = Arc<Result<PerfDbFingerprint, String>>;
 #[derive(Default)]
 struct Loaded {
     fingerprint: OnceLock<LoadedFingerprint>,
-    /// Tables restored estimators read right after the data was fingerprinted
-    /// again and still matched `fingerprint`. Only these stay shared across a
-    /// restore: the shared table memo is keyed by paths, so any other live
+    /// Tables restored estimators loaded right after the data was
+    /// fingerprinted again and still matched `fingerprint`, with the stamp of
+    /// that data. Only these stay shared across a restore, and only while the
+    /// stamp holds: the shared table memo is keyed by paths, so any other live
     /// tables for the root may have been parsed from another generation of
-    /// its files.
-    verified: Mutex<Vec<Weak<PerfTables>>>,
+    /// its files, and these parse their families on first query.
+    verified: Mutex<Vec<(Weak<PerfTables>, DataStamp)>>,
 }
 
 /// The process-wide load-time state for one root, system and external
@@ -379,54 +462,64 @@ pub(crate) fn loaded(root: &Path, system: &str, fpm_parquet: Option<&Path>) -> L
 /// fingerprint, so the load that follows does not hash the same data again.
 ///
 /// Shared tables stop being shared unless a restore already verified them
-/// against this same data ([`verified`]). Any other tables for the root may
-/// have been parsed while its files held other data: an estimator loaded
-/// after the load-time fingerprint reuses it without hashing again. Repeated
-/// restores of unchanged data, such as one per replayed candidate, therefore
-/// parse the tables once and reuse them afterwards.
+/// against this same data and no entry was written since ([`verified`]).
+/// Their families parse on first query, possibly long after that restore,
+/// so equal content alone would admit files that changed and changed back in
+/// between. Any other tables for the root may have been parsed while its
+/// files held other data: an estimator loaded after the load-time
+/// fingerprint reuses it without hashing again. Repeated restores of
+/// untouched data, such as one per replayed candidate, therefore parse the
+/// tables once and reuse them afterwards.
+///
+/// Returns the stamp of the data to pass to [`verified`].
 pub(crate) fn current(
     root: &Path,
     system: &str,
     fpm_parquet: Option<&Path>,
-) -> Result<PerfDbFingerprint, AicError> {
+) -> Result<(PerfDbFingerprint, DataStamp), AicError> {
     let loaded = loaded_cell(root, system, fpm_parquet);
-    let current = fingerprint(root, system, fpm_parquet)?;
+    let (current, stamp) = observe(root, system, fpm_parquet)?;
     let unchanged = loaded
         .fingerprint
         .get()
         .is_some_and(|loaded| loaded.as_ref().as_ref() == Ok(&current));
-    let keep: Vec<_> = if unchanged {
-        let verified = loaded.verified.lock().unwrap_or_else(|e| e.into_inner());
-        verified.iter().filter_map(Weak::upgrade).collect()
-    } else {
-        Vec::new()
+    let keep: Vec<_> = {
+        let mut verified = loaded.verified.lock().unwrap_or_else(|e| e.into_inner());
+        // A written entry never regains its stamp, so the others never match again.
+        verified.retain(|(tables, known)| tables.strong_count() > 0 && known.matches(&stamp));
+        if unchanged {
+            verified
+                .iter()
+                .filter_map(|(tables, _)| tables.upgrade())
+                .collect()
+        } else {
+            Vec::new()
+        }
     };
     unshare_tables(root, system, &keep);
     loaded
         .fingerprint
         .get_or_init(|| Arc::new(Ok(current.clone())));
-    Ok(current)
+    Ok((current, stamp))
 }
 
-/// Record that a restore read `database`'s tables right after [`current`]
-/// found the data under `root` unchanged from its load-time fingerprint, so
-/// later restores of the same data may share them.
+/// Record that a restore loaded `database`'s tables right after [`current`]
+/// found the data under `root`, stamped `stamp`, unchanged from its load-time
+/// fingerprint, so later restores may share them while the stamp holds.
 pub(crate) fn verified(
     root: &Path,
     system: &str,
     fpm_parquet: Option<&Path>,
     database: &PerfDatabase,
+    stamp: DataStamp,
 ) {
     let loaded = loaded_cell(root, system, fpm_parquet);
     let mut verified = loaded.verified.lock().unwrap_or_else(|e| e.into_inner());
     let tables = database.tables_arc();
-    verified.retain(|known| known.strong_count() > 0);
-    if !verified
-        .iter()
-        .any(|known| std::ptr::eq(known.as_ptr(), Arc::as_ptr(tables)))
-    {
-        verified.push(Arc::downgrade(tables));
-    }
+    verified.retain(|(known, _)| {
+        known.strong_count() > 0 && !std::ptr::eq(known.as_ptr(), Arc::as_ptr(tables))
+    });
+    verified.push((Arc::downgrade(tables), stamp));
 }
 
 /// Copy the fingerprinted systems inputs into the stage. Returns the packed
@@ -570,7 +663,7 @@ mod tests {
         // Before any load, the restore check's result is the load-time value.
         let fresh = dir.path().join("fresh");
         systems(&fresh);
-        let checked = current(&fresh, "h200_sxm", None).unwrap();
+        let (checked, _) = current(&fresh, "h200_sxm", None).unwrap();
         std::fs::write(gemm(&fresh), b"changed").unwrap();
         assert_eq!(loaded(&fresh, "h200_sxm", None).as_ref(), &Ok(checked));
         // After a load, a later check reports the disk but keeps what was loaded.
@@ -578,9 +671,32 @@ mod tests {
         systems(&used);
         let first = loaded(&used, "h200_sxm", None);
         std::fs::write(gemm(&used), b"changed").unwrap();
-        let now = current(&used, "h200_sxm", None).unwrap();
+        let (now, _) = current(&used, "h200_sxm", None).unwrap();
         assert_ne!(first.as_ref(), &Ok(now));
         assert!(Arc::ptr_eq(&loaded(&used, "h200_sxm", None), &first));
+    }
+
+    #[test]
+    fn stamps_change_when_data_changes_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("systems");
+        systems(&root);
+        let parquet = dir.path().join("reviewed.parquet");
+        std::fs::write(&parquet, b"rows").unwrap();
+        let observed = || observe(&root, "h200_sxm", Some(&parquet)).unwrap();
+        let (base, stamp) = observed();
+        assert_eq!(observed().1.matches(&stamp), cfg!(unix));
+        // Coarse file clocks tick every few milliseconds.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let gemm = root.join("data/h200_sxm/vllm/1.0/gemm_perf.parquet");
+        for path in [&gemm, &parquet] {
+            let bytes = std::fs::read(path).unwrap();
+            std::fs::write(path, b"other").unwrap();
+            std::fs::write(path, &bytes).unwrap();
+            let (again, touched) = observed();
+            assert_eq!(again, base);
+            assert!(!touched.matches(&stamp));
+        }
     }
 
     #[test]
