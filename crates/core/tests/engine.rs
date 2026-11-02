@@ -2617,9 +2617,7 @@ impl TimingModel for IterationTiming {
             return Ok(None);
         }
         let busiest = ranks.iter().map(Self::rank_ms).fold(0.0, f64::max);
-        Ok(Some(IterationMs {
-            total_ms: self.overhead_ms + busiest,
-        }))
+        Ok(Some(IterationMs::new(self.overhead_ms + busiest)))
     }
 }
 
