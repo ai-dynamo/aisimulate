@@ -726,6 +726,7 @@ inside the site header and theme, without an iframe. Dashboard, Request timeline
 Accuracy, and Evidence tabs preserve their state in the URL. Accuracy separates
 all-variant concurrency summaries from the selected run; Qwen selectors stay
 visible. System/Light/Dark preferences are shared with the overview.
+Manual theme choices on FPM and feature-support pages also set this shared override.
 
 Optional `report.comparison` (`aisimulate.agentx.comparison.v1`) contains only
 qualified numerical series, scores, phase-aligned requests and opaque joins.
