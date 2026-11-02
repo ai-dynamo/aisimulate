@@ -53,6 +53,23 @@ pub(crate) struct HostTierConfig {
     /// Aggregate `(D2H, H2D)` caps of a cluster-shared pool in decimal GB/s.
     /// `None` selects one private owner with FIFO lanes.
     pub(crate) shared_gbps: Option<(f64, f64)>,
+    pub(crate) policy: HostPolicy,
+}
+
+/// Where a block enters the eviction order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HostPolicy {
+    /// Blocks that become evictable together, by a completed store or a
+    /// released pin, become the newest in key order.
+    CohortLru,
+    /// Blocks become the newest when their last pin drops, in the order they
+    /// are released: a CPU block pool's free queue.
+    FreeQueue,
+    /// A block is ranked when its store is admitted and keeps its rank while
+    /// pending or pinned; only [`HostTier::touch`] re-ranks it. Victims are the
+    /// lowest-ranked resident, unpinned blocks. External reservations (G3,
+    /// KVCR) are not planned on such a tier.
+    Ranked,
 }
 
 /// One owner's access link. Zero bandwidth is instantaneous.
@@ -149,7 +166,8 @@ enum EntryState {
 struct Entry {
     state: EntryState,
     load_pins: u32,
-    /// This block's [`Lru`] node while it is resident and unpinned.
+    /// This block's [`Lru`] node while it is resident and unpinned, or while
+    /// it is present in a [`HostPolicy::Ranked`] tier.
     lru_slot: Option<NonZeroU32>,
     /// Filled by a KVCR peer fetch rather than a local store.
     kvcr_origin: bool,
@@ -272,9 +290,11 @@ pub(crate) struct HostTier {
     entries: FxHashMap<HostBlockKey, Entry>,
     /// Includes pinned residents; pending destinations count only in `entries`.
     resident_blocks: usize,
-    /// Resident, currently unpinned blocks. Blocks a framework operation makes
-    /// evictable together are one cohort because vLLM exposes no stable policy
-    /// order within its Python-set completion cohort.
+    /// Resident, currently unpinned blocks, or every present block of a
+    /// [`HostPolicy::Ranked`] tier. Under [`HostPolicy::CohortLru`], blocks a
+    /// framework operation makes evictable together are one cohort because
+    /// vLLM exposes no stable policy order within its Python-set completion
+    /// cohort.
     lru: Lru,
     transfers: FxHashMap<TransferId, Transfer>,
     transport: Transport,
@@ -567,19 +587,16 @@ impl HostTier {
 
         let transfer_id = self.allocate_transfer_id();
         for key in &missing {
-            assert!(
-                self.entries
-                    .insert(
-                        *key,
-                        Entry {
-                            state: EntryState::PendingStore { transfer_id },
-                            load_pins: 0,
-                            lru_slot: None,
-                            kvcr_origin: false,
-                        },
-                    )
-                    .is_none()
-            );
+            let mut entry = Entry {
+                state: EntryState::PendingStore { transfer_id },
+                load_pins: 0,
+                lru_slot: None,
+                kvcr_origin: false,
+            };
+            if self.config.policy == HostPolicy::Ranked {
+                self.lru.touch(&mut entry.lru_slot, *key);
+            }
+            assert!(self.entries.insert(*key, entry).is_none());
         }
         if kind == Kind::Store {
             self.observe(HostOffloadObservation {
@@ -819,8 +836,9 @@ impl HostTier {
         );
         let transfer = self.transfers.remove(&id).unwrap();
         for key in transfer.blocks {
-            let entry = self.entries.remove(&key).unwrap();
+            let mut entry = self.entries.remove(&key).unwrap();
             assert_eq!(entry.load_pins, 0);
+            self.lru.remove(&mut entry.lru_slot);
             self.meta.remove(&key);
         }
         if let Some(client) = self.clients.get_mut(&transfer.client) {
@@ -844,7 +862,7 @@ impl HostTier {
         }
     }
 
-    /// Hold resident `keys` outside the LRU until [`Self::unpin_external`]. The
+    /// Hold resident `keys` out of eviction until [`Self::unpin_external`]. The
     /// caller must have just seen each one report [`Lookup::Hit`].
     pub(crate) fn pin_external(&mut self, keys: &[HostBlockKey]) {
         for key in keys {
@@ -857,7 +875,9 @@ impl HostTier {
                 .load_pins
                 .checked_add(1)
                 .expect("host pin count overflow");
-            self.lru.remove(&mut entry.lru_slot);
+            if self.config.policy != HostPolicy::Ranked {
+                self.lru.remove(&mut entry.lru_slot);
+            }
         }
     }
 
@@ -985,19 +1005,25 @@ impl HostTier {
     }
 
     /// Apply framework-defined recency order. Not-ready or pinned blocks are
-    /// outside vLLM's evictable LRU and ignore ordinary touches.
+    /// outside vLLM's evictable LRU and ignore ordinary touches, except in a
+    /// ranked tier, which re-ranks every present block.
     pub(crate) fn touch(&mut self, key: HostBlockKey) {
         if let Some(entry) = self.entries.get_mut(&key)
-            && entry.state == EntryState::Resident
-            && entry.load_pins == 0
+            && (self.config.policy == HostPolicy::Ranked
+                || entry.state == EntryState::Resident && entry.load_pins == 0)
         {
             self.lru.touch(&mut entry.lru_slot, key);
         }
     }
 
-    /// Make blocks that became evictable together the newest, in key order.
+    /// Make blocks that became evictable together the newest: in key order,
+    /// or in release order for a free queue. A ranked tier keeps their ranks.
     fn touch_cohort(&mut self, keys: &mut [HostBlockKey]) {
-        keys.sort_unstable();
+        match self.config.policy {
+            HostPolicy::CohortLru => keys.sort_unstable(),
+            HostPolicy::FreeQueue => {}
+            HostPolicy::Ranked => return,
+        }
         for key in keys {
             let entry = self
                 .entries
@@ -1037,7 +1063,7 @@ impl HostTier {
                 .entries
                 .get_mut(key)
                 .expect("validated host load source disappeared");
-            if entry.load_pins == 0 {
+            if entry.load_pins == 0 && self.config.policy != HostPolicy::Ranked {
                 self.lru.remove(&mut entry.lru_slot);
             }
             entry.load_pins = entry
@@ -1288,6 +1314,11 @@ impl HostTier {
         self.transfers.contains_key(&transfer_id)
     }
 
+    /// Stores `client` prepared that the next engine boundary submits.
+    pub(crate) fn has_prepared_stores(&self, client: u64) -> bool {
+        !self.clients[&client].prepared_stores.is_empty()
+    }
+
     pub(crate) fn has_pending_work(&self, client: u64) -> bool {
         !self.clients[&client].done.is_empty()
             || self.has_queued_events(client)
@@ -1478,6 +1509,7 @@ pub(crate) mod tests {
             capacity_blocks,
             block_bytes: 1_000_000,
             shared_gbps: None,
+            policy: HostPolicy::CohortLru,
         })
         .unwrap();
         tier.register(
@@ -2137,6 +2169,7 @@ pub(crate) mod tests {
             capacity_blocks,
             block_bytes: 1_000_000,
             shared_gbps: Some((shared_gbps, shared_gbps)),
+            policy: HostPolicy::CohortLru,
         })
         .unwrap();
         for client in [A, B] {
@@ -2505,5 +2538,60 @@ pub(crate) mod tests {
         );
         tier.subscribe(A);
         assert_eq!(tier.take_events(A), [stored(None, 0, &[(2, 7), (1, 8)])]);
+    }
+
+    fn policy_tier(capacity_blocks: usize, policy: HostPolicy) -> HostTier {
+        let mut tier = tier(capacity_blocks);
+        tier.config.policy = policy;
+        tier
+    }
+
+    fn load(tier: &mut HostTier, blocks: &[HostBlockKey], at_ms: f64) -> f64 {
+        let LoadOutcome::Queued(transfer_id) =
+            tier.schedule_load(C, request_id(), blocks, at_ms, at_ms)
+        else {
+            panic!("test host load must hit")
+        };
+        let deadline = tier.transfer_deadline(transfer_id).unwrap();
+        tier.tick(C, deadline);
+        deadline
+    }
+
+    #[test]
+    fn free_queue_frees_blocks_in_release_order() {
+        // SimpleCPU's CPU block pool frees a completed store's blocks, and a
+        // finished load's blocks, in list order at the newest end of its free
+        // queue; the default tier orders each cohort by key.
+        let (a, b, c) = (key(3), key(1), key(2));
+        for (policy, stored, loaded) in [
+            (HostPolicy::FreeQueue, [a, b, c], [b, a, c]),
+            (HostPolicy::CohortLru, [b, c, a], [b, c, a]),
+        ] {
+            let mut tier = policy_tier(4, policy);
+            let now = make_resident(&mut tier, &[a, b, c], 0.0);
+            assert_eq!(tier.lru_order(), stored, "{policy:?}");
+            load(&mut tier, &[a, c], now);
+            assert_eq!(tier.lru_order(), loaded, "{policy:?}");
+        }
+    }
+
+    #[test]
+    fn ranked_tier_keeps_a_rank_across_a_load_until_touched() {
+        // vLLM 0.32 `LRUCachePolicy`: a block is ranked at its store, keeps
+        // the rank while a load pins it, and only a touch re-ranks it.
+        let mut tier = policy_tier(3, HostPolicy::Ranked);
+        let (a, b, c, d) = (key(1), key(2), key(3), key(4));
+        let mut now = 0.0;
+        for block in [a, b, c] {
+            now = make_resident(&mut tier, &[block], now);
+        }
+        now = load(&mut tier, &[a], now);
+        assert_eq!(tier.lru_order(), [a, b, c]);
+        // A request's blocks touched last to first: its first block is newest.
+        tier.touch(c);
+        tier.touch(a);
+        assert_eq!(tier.lru_order(), [b, c, a]);
+        make_resident(&mut tier, &[d], now);
+        assert!(!tier.is_resident(b) && tier.is_resident(a));
     }
 }

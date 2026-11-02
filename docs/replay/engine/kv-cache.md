@@ -166,6 +166,7 @@ aisimulate predict --stack engine --config host-offload-prediction.yaml --captur
 | `latency_to_first_byte_ms` | `0.0` | Fixed delay before each transfer starts moving bytes. |
 | `shared_d2h_bandwidth_gbps` | `80.0` | Total GPU→host bandwidth of the pool. `cluster_shared` only. |
 | `shared_h2d_bandwidth_gbps` | `80.0` | Total host→GPU bandwidth of the pool. `cluster_shared` only. |
+| `connector` | `offloading_v0_24` | vLLM connector whose rules G2 follows: `offloading_v0_24`, `offloading_v0_32` or `simple_cpu_eager`. The last two need `dp_rank_local` and no `g3_offload` or `kvcr`; see [connector profiles](#g2-connector-profiles). |
 
 `recommend` keeps `host_offload` fixed; its size and bandwidth are not searched.
 
@@ -180,6 +181,26 @@ aisimulate predict --stack engine --config host-offload-prediction.yaml --captur
 - G1 blocks that are still being copied to G2 are not overwritten.
 - A decode rank with G2 admits requests whose P/D handoff has arrived before
   other waiting requests, as vLLM's FCFS scheduler does.
+
+<a id="g2-connector-profiles"></a>
+
+### Connector profiles
+
+`connector` picks the vLLM CPU-offload connector whose store, lookup and
+eviction rules G2 follows:
+
+| | `offloading_v0_24` (default) | `offloading_v0_32` | `simple_cpu_eager` |
+| --- | --- | --- | --- |
+| vLLM connector | `OffloadingConnector`, vLLM 0.24 | `OffloadingConnector` with the CPU backend, vLLM v0.32.0 | `SimpleCPUOffloadConnector` in eager mode, vLLM v0.32.0 |
+| Stored blocks | Prompt blocks as they are computed, after any blocks loaded from G2 | The same; a finishing request also offers prompt blocks it could not store earlier | Every block one pass after it is computed, from block 0: blocks served from G1 or loaded from G2, and blocks filled during decode. A finishing request stores the rest. |
+| Eviction order | Least recently used. Each lookup and store makes the prompt's resident blocks the newest, its first block newest of all. | Least recently used by rank. A block is ranked when its store starts; a finishing request re-ranks every block it stored, offered or loaded, its first block newest. | First in, first out by store completion. A completed load or a dropped lookup pin makes its blocks the newest; a block already in G2 is not refreshed. |
+| A hit whose store is in flight | Defers the request | Defers the request | Misses |
+| A hit another request is loading | Defers the request | Defers the request | Both requests load it |
+| The request's own store in flight | Defers its lookup | Defers its lookup | Does not defer |
+| A hit before its load | Not pinned | Not pinned | Pinned until the request loads it or looks it up again |
+
+vLLM main has changed some of these rules since v0.32.0; each profile follows
+the version it names.
 
 <a id="g2-scope"></a>
 <a id="g2-ownership"></a>
@@ -263,8 +284,8 @@ read/write jobs and bytes, evictions, resident blocks and
 `cross_worker_read_blocks` (blocks read by a worker other than the writer).
 
 Supported: aggregated vLLM with `attention_data: 1`, prefix caching, and either
-G2 scope; fixed or Planner-scaled workers. Rejected: `recommend`, P/D, and
-native MTP.
+G2 scope; fixed or Planner-scaled workers. Rejected: `recommend`, P/D,
+native MTP, and a `host_offload.connector` other than `offloading_v0_24`.
 
 When a request's prefix is larger than G2 can hold, restores can keep evicting
 each other. If the rank makes no progress for 1,024 consecutive restore rounds,
@@ -361,7 +382,7 @@ KVCR supports vLLM aggregated workers with any `attention_data`, and pulls
 between the prefill ranks of P/D. Workers may be fixed or Planner-scaled; a
 draining worker is removed only after every pull from or into it has landed and
 been taken by its target. Rejected: missing or `cluster_shared` `host_offload`,
-`g3_offload` together with `kvcr`, `kvcr` on the decode role, `parallelism.pipeline` above 1,
+a `host_offload.connector` other than `offloading_v0_24`, `g3_offload` together with `kvcr`, `kvcr` on the decode role, `parallelism.pipeline` above 1,
 `parallelism.prefill_context` above 1 (native `prefill_context_parallel_size`), and `recommend`.
 Everything G2 rejects is rejected too, including SGLang and TensorRT-LLM.
 

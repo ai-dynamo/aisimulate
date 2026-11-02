@@ -1,16 +1,34 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! vLLM `OffloadingConnector` behavior over the framework-neutral host tier.
+//! vLLM CPU-offload connector behavior over the framework-neutral host tier.
 //!
-//! Pinned vLLM 0.24 applies ordinary resident touches in exact reverse logical
-//! order. Store and load completion keys, however, travel through Python sets;
-//! their within-completion order is process/version dependent and is not a
-//! stable framework contract. The host tier therefore gives each completion
-//! cohort one recency epoch and uses logical identity only as a deterministic
+//! The default profile is vLLM 0.24's `OffloadingConnector`. It applies
+//! ordinary resident touches in exact reverse logical order. Store and load
+//! completion keys, however, travel through Python sets; their
+//! within-completion order is process/version dependent and is not a stable
+//! framework contract. The host tier therefore gives each completion cohort
+//! one recency epoch and uses logical identity only as a deterministic
 //! tie-break inside that epoch.
+//!
+//! Two vLLM 0.32.0 profiles ([`HostConnectorProfile`]) change these rules:
+//!
+//! - `offloading_v0_32`, `OffloadingConnector` with the CPU backend: lookups
+//!   and stores touch nothing; a block is ranked when its store is admitted;
+//!   a finishing request offers its remaining prompt blocks and re-ranks every
+//!   block it stored, offered or loaded, its first block newest
+//!   (`vllm/v1/kv_offload/cpu/policies/lru.py`).
+//! - `simple_cpu_eager`, `SimpleCPUOffloadConnector` in eager mode
+//!   (`vllm/v1/simple_kv_offload/manager.py`): every block computed before the
+//!   current pass is stored from a per-request cursor that starts at block 0,
+//!   decode blocks included, and a finishing request stores the rest; a block
+//!   whose store is in flight misses; a hit stays pinned until the request
+//!   loads it or looks up again; peers load the same block at once; a block
+//!   becomes the newest when its last pin drops (a completed store, a released
+//!   load or lookup pin), the CPU block pool's free queue.
 
 use rustc_hash::FxHashMap;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -24,7 +42,9 @@ use crate::engine::host_offload::{
 use crate::engine::kv_manager::{
     BlockRequestLease, DestinationReservation, G1Acquire, G1Manager, SourceReuseDependency,
 };
-use crate::engine::{HostOffloadObserver, KvHintSource, NativeHostOffloadConfig};
+use crate::engine::{
+    HostConnectorProfile, HostOffloadObserver, KvHintSource, NativeHostOffloadConfig,
+};
 
 struct LoadingPrefix {
     transfer_id: TransferId,
@@ -88,6 +108,8 @@ impl RestoreRounds {
 /// Request-local connector cursor and transient load ownership.
 pub(super) struct VllmHostRequestState {
     owner: Uuid,
+    /// One key per complete prompt block; `simple_cpu_eager` appends the keys
+    /// of blocks completed during decode as it stores them.
     prompt_keys: Vec<HostBlockKey>,
     /// Router identities, retained only for `HostPinned` residency events.
     prompt_meta: Option<Vec<HostBlockMeta>>,
@@ -99,6 +121,14 @@ pub(super) struct VllmHostRequestState {
     latest_store: Option<TransferId>,
     load: Option<LoadState>,
     first_admission_recorded: bool,
+    /// `simple_cpu_eager`: tokens computed before the latest pass, the prefix
+    /// the store may copy.
+    confirmed_tokens: usize,
+    /// `simple_cpu_eager`: keys the latest lookup hit, pinned until the load.
+    lookup_pin: Option<Vec<HostBlockKey>>,
+    /// `offloading_v0_32`: blocks stored, offered or loaded, re-ranked when
+    /// the request finishes.
+    accessed_blocks: BTreeSet<usize>,
 }
 
 impl VllmHostRequestState {
@@ -144,6 +174,34 @@ impl VllmHostRequestState {
             latest_store: None,
             load: None,
             first_admission_recorded: false,
+            confirmed_tokens: 0,
+            lookup_pin: None,
+            accessed_blocks: BTreeSet::new(),
+        }
+    }
+
+    /// Append the keys (and router identities) of blocks the lease completed
+    /// past the known ones, up to `blocks`.
+    fn extend_keys(&mut self, lease: &BlockRequestLease, blocks: usize) {
+        while self.prompt_keys.len() < blocks {
+            let index = self.prompt_keys.len();
+            let Some(hash) = lease.sequence_hash(index) else {
+                return;
+            };
+            if let Some(meta) = &mut self.prompt_meta {
+                let Some(tokens_hash) = lease.local_hash(index) else {
+                    return;
+                };
+                meta.push(HostBlockMeta {
+                    parent: index
+                        .checked_sub(1)
+                        .map(|parent| self.prompt_keys[parent].sequence_hash()),
+                    tokens_hash,
+                    position: index,
+                    session_id: lease.session_id.as_deref().map(Arc::<str>::from),
+                });
+            }
+            self.prompt_keys.push(HostBlockKey::new(hash));
         }
     }
 
@@ -209,11 +267,14 @@ pub(super) struct HostTransferProgress {
 pub(super) struct VllmHostOffloadAdapter {
     host: HostClient,
     shared: bool,
+    connector: HostConnectorProfile,
     /// The rank publishes G2 residency as `HostPinned` KV events.
     publishes_residency: bool,
     g3: Option<super::g3_offload::VllmG3OffloadAdapter>,
     kvcr: Option<super::kvcr::VllmKvcrAdapter>,
     load_epoch: u64,
+    /// Keys being loaded, which defer a peer's lookup. SimpleCPU loads a block
+    /// into several requests at once, so it tracks none.
     load_by_key: FxHashMap<HostBlockKey, TransferId>,
     compute_not_before_ms: f64,
     /// Present only for detailed artifact capture. Ordinary runs neither retain
@@ -290,6 +351,7 @@ impl VllmHostOffloadAdapter {
         Ok(Self {
             host,
             shared,
+            connector: config.connector,
             publishes_residency: subscribe,
             g3: None,
             kvcr: None,
@@ -298,6 +360,10 @@ impl VllmHostOffloadAdapter {
             compute_not_before_ms: 0.0,
             observer: None,
         })
+    }
+
+    fn tracks_loads(&self) -> bool {
+        self.connector != HostConnectorProfile::SimpleCpuEager
     }
 
     /// A cluster-shared pool: router metadata is retained and D2H completion
@@ -336,21 +402,35 @@ impl VllmHostOffloadAdapter {
         }
         let Self {
             host,
+            connector,
             g3,
             kvcr,
             load_by_key,
             ..
         } = self;
+        let simple = *connector == HostConnectorProfile::SimpleCpuEager;
         let mut tier = host.lock();
+        // SimpleCPU drops the previous lookup's pin before looking up again.
+        if let Some(pinned) = request.lookup_pin.take() {
+            tier.unpin_external(&pinned);
+        }
         if let Some(transfer_id) = request.latest_store {
-            if tier.has_transfer(transfer_id) {
+            if !tier.has_transfer(transfer_id) {
+                request.latest_store = None;
+            } else if !simple {
+                // The offloading connectors wait for the request's own stores.
                 return HostLookup::Deferred;
             }
-            request.latest_store = None;
         }
 
         debug_assert_eq!(g1_cost.cached_tokens % block_size, 0);
         let base_g1_blocks = g1_cost.cached_tokens / block_size;
+        // SimpleCPU must recompute at least the last token.
+        let end = if simple {
+            ((sequence.len() - 1) / block_size).min(request.prompt_keys.len())
+        } else {
+            request.prompt_keys.len()
+        };
         let outcome = if base_g1_blocks >= request.prompt_keys.len() {
             if let Some(g3) = g3 {
                 g3.release(request.owner);
@@ -396,9 +476,11 @@ impl VllmHostOffloadAdapter {
         } else {
             let mut matched = 0usize;
             let mut deferred = false;
-            for key in request.prompt_keys[base_g1_blocks..].iter().copied() {
+            for key in request.prompt_keys[base_g1_blocks..end].iter().copied() {
                 match tier.lookup(key) {
                     Lookup::Hit => deferred |= load_by_key.contains_key(&key),
+                    // SimpleCPU registers a block only when its store completes.
+                    Lookup::Pending { .. } if simple => break,
                     Lookup::Pending { .. } => deferred = true,
                     Lookup::Miss => break,
                 }
@@ -419,10 +501,23 @@ impl VllmHostOffloadAdapter {
             }
         };
 
-        // vLLM passes this ordered logical list after lookup to
-        // LRUCachePolicy.touch(), which explicitly iterates it in reverse.
-        for key in request.prompt_keys.iter().rev().copied() {
-            tier.touch(key);
+        match connector {
+            // vLLM 0.24 passes this ordered logical list after lookup to
+            // LRUCachePolicy.touch(), which explicitly iterates it in reverse.
+            HostConnectorProfile::OffloadingV024 => {
+                for key in request.prompt_keys.iter().rev().copied() {
+                    tier.touch(key);
+                }
+            }
+            HostConnectorProfile::OffloadingV032 => {}
+            // SimpleCPU pins its hit until the request loads it or looks up
+            // again.
+            HostConnectorProfile::SimpleCpuEager => {
+                if let HostLookup::Hit(hit) = &outcome {
+                    tier.pin_external(&hit.keys);
+                    request.lookup_pin = Some(hit.keys.clone());
+                }
+            }
         }
         outcome
     }
@@ -481,13 +576,24 @@ impl VllmHostOffloadAdapter {
                     return StartLoad::Retry;
                 }
             };
+        // The load holds the hit now.
+        if let Some(pinned) = request.lookup_pin.take() {
+            tier.unpin_external(&pinned);
+        }
         if let Some(kvcr) = &self.kvcr {
             kvcr.note_loaded(tier.take_kvcr_origin(&hit.keys));
         }
         drop(tier);
 
-        for key in &hit.keys {
-            assert!(self.load_by_key.insert(*key, transfer_id).is_none());
+        if self.tracks_loads() {
+            for key in &hit.keys {
+                assert!(self.load_by_key.insert(*key, transfer_id).is_none());
+            }
+        }
+        if self.connector == HostConnectorProfile::OffloadingV032 {
+            request
+                .accessed_blocks
+                .extend(hit.base_g1_blocks..hit.base_g1_blocks + hit.keys.len());
         }
         if let Some(g3) = &mut self.g3 {
             g3.release(uuid);
@@ -554,8 +660,10 @@ impl VllmHostOffloadAdapter {
             else {
                 continue;
             };
-            for key in &blocks {
-                assert_eq!(self.load_by_key.remove(key), Some(transfer_id));
+            if self.tracks_loads() {
+                for key in &blocks {
+                    assert_eq!(self.load_by_key.remove(key), Some(transfer_id));
+                }
             }
             loads.push(CompletedLoad { uuid, transfer_id });
         }
@@ -631,6 +739,7 @@ impl VllmHostOffloadAdapter {
 
     /// Advance the persistent store cursor and return first-admission tier attribution.
     pub(super) fn on_admitted(
+        &self,
         request: &mut VllmHostRequestState,
         reused_tokens: usize,
         block_size: usize,
@@ -648,6 +757,12 @@ impl VllmHostOffloadAdapter {
             Some(LoadState::Loading(_)) => panic!("loading request cannot be admitted"),
             None => (reused_tokens, 0),
         };
+        if self.connector == HostConnectorProfile::SimpleCpuEager {
+            // SimpleCPU scans every admitted request from block 0, a loaded or
+            // preempted one included; its reused prefix is already computed.
+            request.next_store_block = 0;
+            request.confirmed_tokens = reused_tokens;
+        }
         if request.first_admission_recorded {
             None
         } else {
@@ -656,7 +771,9 @@ impl VllmHostOffloadAdapter {
         }
     }
 
-    /// Prepare one prompt-only, missing-only, per-request write-through cohort.
+    /// Prepare one missing-only, per-request write-through cohort: the prompt
+    /// blocks computed so far, or for SimpleCPU every block computed before
+    /// this pass (vLLM stores a step's blocks when the next step is scheduled).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn observe_completed_blocks(
         &mut self,
@@ -669,13 +786,29 @@ impl VllmHostOffloadAdapter {
         kv_manager: &mut G1Manager,
         now_ms: f64,
     ) {
-        let eligible_blocks = computed_tokens.min(prompt_tokens) / block_size;
-        let end = eligible_blocks.min(request.prompt_keys.len());
+        let end = if self.connector == HostConnectorProfile::SimpleCpuEager {
+            let confirmed_blocks =
+                std::mem::replace(&mut request.confirmed_tokens, computed_tokens) / block_size;
+            request.extend_keys(lease, confirmed_blocks);
+            confirmed_blocks.min(request.prompt_keys.len())
+        } else {
+            (computed_tokens.min(prompt_tokens) / block_size).min(request.prompt_keys.len())
+        };
         if end <= request.next_store_block {
             return;
         }
         let start = request.next_store_block;
         let mut tier = self.host.lock();
+        if self.connector == HostConnectorProfile::OffloadingV032 {
+            // `prepare_store` records the blocks it is offered, except those
+            // still being stored, even when the store fails.
+            request.accessed_blocks.extend((start..end).filter(|index| {
+                !matches!(
+                    tier.lookup(request.prompt_keys[*index]),
+                    Lookup::Pending { .. }
+                )
+            }));
+        }
         let missing_indices = (start..end)
             .filter(|index| matches!(tier.lookup(request.prompt_keys[*index]), Lookup::Miss))
             .collect::<Vec<_>>();
@@ -734,9 +867,67 @@ impl VllmHostOffloadAdapter {
                 }
                 request.latest_store = Some(transfer_id);
                 request.next_store_block = end;
-                for key in request.prompt_keys.iter().rev().copied() {
-                    tier.touch(key);
+                // Only vLLM 0.24 touches the prompt after a store.
+                if self.connector == HostConnectorProfile::OffloadingV024 {
+                    for key in request.prompt_keys.iter().rev().copied() {
+                        tier.touch(key);
+                    }
                 }
+            }
+        }
+    }
+
+    /// The connector's work when a request leaves the scheduler, before its
+    /// G1 blocks are released. SimpleCPU drops its lookup pin and stores the
+    /// blocks computed since its last store. `offloading_v0_32` offers its
+    /// remaining prompt blocks, then re-ranks every block the request stored,
+    /// offered or loaded, its first block newest.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn finish_request(
+        &mut self,
+        uuid: Uuid,
+        request: &mut VllmHostRequestState,
+        lease: &BlockRequestLease,
+        computed_tokens: usize,
+        prompt_tokens: usize,
+        block_size: usize,
+        kv_manager: &mut G1Manager,
+        now_ms: f64,
+    ) {
+        match self.connector {
+            HostConnectorProfile::OffloadingV024 => {}
+            HostConnectorProfile::OffloadingV032 => {
+                self.observe_completed_blocks(
+                    uuid,
+                    request,
+                    lease,
+                    computed_tokens,
+                    prompt_tokens,
+                    block_size,
+                    kv_manager,
+                    now_ms,
+                );
+                let mut tier = self.host.lock();
+                for index in request.accessed_blocks.iter().rev() {
+                    tier.touch(request.prompt_keys[*index]);
+                }
+            }
+            HostConnectorProfile::SimpleCpuEager => {
+                if let Some(pinned) = request.lookup_pin.take() {
+                    self.host.lock().unpin_external(&pinned);
+                }
+                // Everything computed is confirmed once the request leaves.
+                request.confirmed_tokens = computed_tokens;
+                self.observe_completed_blocks(
+                    uuid,
+                    request,
+                    lease,
+                    computed_tokens,
+                    prompt_tokens,
+                    block_size,
+                    kv_manager,
+                    now_ms,
+                );
             }
         }
     }
@@ -793,8 +984,10 @@ impl VllmHostOffloadAdapter {
         let LoadState::Loading(load) = load else {
             return false;
         };
-        for key in &load.keys {
-            assert_eq!(self.load_by_key.remove(key), Some(load.transfer_id));
+        if self.tracks_loads() {
+            for key in &load.keys {
+                assert_eq!(self.load_by_key.remove(key), Some(load.transfer_id));
+            }
         }
         assert!(self.host.lock().cancel_load(
             self.host.id(),
@@ -822,6 +1015,14 @@ impl VllmHostOffloadAdapter {
 
     pub(super) fn current_time_ms(&self) -> f64 {
         self.host.lock().current_time_ms()
+    }
+
+    /// Stores a request prepared when it left between passes. Only the 0.32
+    /// connectors store at request finish; an engine boundary submits the
+    /// stores, as vLLM keeps stepping while a connector has stores pending.
+    pub(super) fn has_unsubmitted_stores(&self) -> bool {
+        self.connector != HostConnectorProfile::OffloadingV024
+            && self.host.lock().has_prepared_stores(self.host.id())
     }
 
     pub(super) fn has_work(&self) -> bool {
@@ -2075,5 +2276,302 @@ mod tests {
         ));
         assert_eq!(registry.lock().unwrap().stats().loaded_blocks, 0);
         assert_eq!(target.host.lock().take_kvcr_origin(&host.prompt_keys), 1);
+    }
+
+    fn connector_adapter(
+        connector: HostConnectorProfile,
+        capacity_blocks: usize,
+    ) -> VllmHostOffloadAdapter {
+        VllmHostOffloadAdapter::new(
+            &NativeHostOffloadConfig::new(capacity_blocks)
+                .with_bandwidths(1.0, 1.0)
+                .with_connector(connector),
+            4,
+            250_000,
+            None,
+            false,
+        )
+        .unwrap()
+    }
+
+    fn connector_args(connector: HostConnectorProfile) -> MockEngineArgs {
+        MockEngineArgs::builder()
+            .num_gpu_blocks(16)
+            .block_size(4)
+            .enable_prefix_caching(true)
+            .kv_cache_bytes_per_token(Some(250_000))
+            .native_host_offload(Some(
+                NativeHostOffloadConfig::new(16)
+                    .with_bandwidths(0.0, 0.0)
+                    .with_connector(connector),
+            ))
+            .speedup_ratio(0.0)
+            .build()
+            .unwrap()
+    }
+
+    /// Hashes of the `HostPinned` blocks stored among `events`.
+    fn host_stored(events: impl IntoIterator<Item = crate::engine::KvEvent>) -> Vec<u64> {
+        use crate::engine::{KvEventData, KvEventTier};
+        events
+            .into_iter()
+            .filter(|event| event.tier == KvEventTier::HostPinned)
+            .flat_map(|event| match event.data {
+                KvEventData::Stored(stored) => stored.blocks,
+                KvEventData::Removed { .. } => Vec::new(),
+            })
+            .map(|block| block.block_hash)
+            .collect()
+    }
+
+    /// The G2 blocks each pass stored while one request of `prompt` and
+    /// `output` tokens ran to completion.
+    fn host_stores_per_pass(
+        connector: HostConnectorProfile,
+        prompt: Vec<u32>,
+        output: usize,
+    ) -> Vec<Vec<u64>> {
+        let mut core =
+            VllmCore::new_with_worker_rank(connector_args(connector), 0, 0, 0, true, None).unwrap();
+        core.receive(DirectRequest {
+            tokens: prompt,
+            max_output_tokens: output,
+            uuid: Some(Uuid::from_u128(1)),
+            arrival_timestamp_ms: Some(0.0),
+            ..Default::default()
+        });
+        let mut now_ms = 0.0;
+        let mut stores = Vec::new();
+        while !core.is_empty() {
+            let pass = core.execute_pass(&mut TraceCollector::default(), now_ms);
+            now_ms = pass.end_ms;
+            core.complete_engine_boundary(now_ms);
+            stores.push(host_stored(
+                pass.kv_events.into_iter().chain(core.drain_kv_events()),
+            ));
+        }
+        stores
+    }
+
+    #[test]
+    fn simple_cpu_stores_every_computed_block_one_pass_later() {
+        // Eager SimpleCPU stores the blocks computed before the pass it is
+        // scheduling, decode blocks included, and a finishing request's last
+        // blocks at its finish (manager.py `_prepare_eager_store_specs`,
+        // `_queue_finished_eager_store`). The offloading connector stores the
+        // prompt as each pass computes it.
+        let prompt = (1..=8).collect::<Vec<u32>>();
+        let (_, _, host) = request(Uuid::nil(), prompt.clone());
+        let prompt_blocks = host
+            .prompt_keys
+            .iter()
+            .map(|key| key.sequence_hash())
+            .collect::<Vec<_>>();
+        // Nine passes compute the KV of tokens 0..16. The prompt blocks are
+        // stored in pass 2; block 2 fills in pass 5 and is stored in pass 6;
+        // block 3 fills in the last pass and is stored at the finish.
+        let simple = host_stores_per_pass(HostConnectorProfile::SimpleCpuEager, prompt.clone(), 9);
+        assert_eq!(
+            simple.iter().map(Vec::len).collect::<Vec<_>>(),
+            [0, 2, 0, 0, 0, 1, 0, 0, 1]
+        );
+        assert_eq!(simple[1], prompt_blocks);
+        let offloading = host_stores_per_pass(HostConnectorProfile::OffloadingV032, prompt, 9);
+        assert_eq!(offloading[0], prompt_blocks);
+        assert_eq!(offloading.concat(), prompt_blocks);
+    }
+
+    #[test]
+    fn a_hit_whose_store_is_in_flight_misses_for_simple_cpu_and_defers_offloading() {
+        // SimpleCPU registers a block in its CPU pool only when the copy
+        // completes; the offloading connector reports `HIT_PENDING` and defers
+        // the request, as it does while the request's own store is in flight.
+        for (connector, deferred) in [
+            (HostConnectorProfile::SimpleCpuEager, false),
+            (HostConnectorProfile::OffloadingV032, true),
+        ] {
+            let mut adapter = connector_adapter(connector, 4);
+            let manager = G1Manager::new_with_caching(4, 4, KvEventPublishers::default(), 0, true);
+            let (sequence, lease, mut writer) = request(Uuid::from_u128(1), vec![1, 2, 3, 4, 5]);
+            let (_, _, mut reader) = request(Uuid::from_u128(2), vec![1, 2, 3, 4, 5]);
+            let StoreOutcome::Prepared { transfer_id, .. } =
+                adapter
+                    .host
+                    .lock()
+                    .prepare_store(C, writer.owner, &writer.prompt_keys, None, 0.0)
+            else {
+                panic!("the block was absent")
+            };
+            writer.latest_store = Some(transfer_id);
+            for host in [&mut reader, &mut writer] {
+                let outcome = adapter.lookup(
+                    host,
+                    &sequence,
+                    &raw_cost(&manager, &sequence, &lease),
+                    4,
+                    0.0,
+                );
+                assert_eq!(
+                    (
+                        matches!(outcome, HostLookup::Deferred),
+                        matches!(outcome, HostLookup::Miss)
+                    ),
+                    (deferred, !deferred),
+                    "{connector:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn simple_cpu_pins_a_hit_until_the_request_loads_it_or_looks_up_again() {
+        // `get_num_new_matched_tokens` pins the CPU hit and drops the previous
+        // pin; `update_state_after_alloc` hands the blocks to the load. A
+        // prompt ending on a block boundary keeps its last block to compute.
+        let mut adapter = connector_adapter(HostConnectorProfile::SimpleCpuEager, 2);
+        let mut manager = G1Manager::new_with_caching(4, 4, KvEventPublishers::default(), 0, true);
+        let id = Uuid::from_u128(1);
+        let (sequence, lease, mut host) = request(id, vec![1, 2, 3, 4, 5]);
+        let key = host.prompt_keys[0];
+        let now = seed_host(&mut adapter, key);
+        let (boundary, boundary_lease, mut boundary_host) = request(id, vec![1, 2, 3, 4]);
+        assert!(matches!(
+            adapter.lookup(
+                &mut boundary_host,
+                &boundary,
+                &raw_cost(&manager, &boundary, &boundary_lease),
+                4,
+                now,
+            ),
+            HostLookup::Miss
+        ));
+        for _ in 0..2 {
+            let cost = raw_cost(&manager, &sequence, &lease);
+            assert!(matches!(
+                adapter.lookup(&mut host, &sequence, &cost, 4, now),
+                HostLookup::Hit(_)
+            ));
+            assert_eq!(adapter.host.lock().pins(key), 1);
+        }
+        let cost = raw_cost(&manager, &sequence, &lease);
+        let HostLookup::Hit(hit) = adapter.lookup(&mut host, &sequence, &cost, 4, now) else {
+            panic!("the pinned block must hit")
+        };
+        assert!(matches!(
+            adapter.start_load(id, &mut host, &lease, hit, &mut manager, now),
+            StartLoad::Queued
+        ));
+        assert_eq!(adapter.host.lock().pins(key), 1, "only the load holds it");
+    }
+
+    #[test]
+    fn simple_cpu_loads_a_block_into_two_requests_at_once() {
+        // A SimpleCPU load only references the CPU blocks
+        // (`update_state_after_alloc`); the offloading connector defers a
+        // request whose hit another request is loading.
+        for (connector, concurrent) in [
+            (HostConnectorProfile::SimpleCpuEager, true),
+            (HostConnectorProfile::OffloadingV032, false),
+        ] {
+            let mut adapter = connector_adapter(connector, 2);
+            let mut manager =
+                G1Manager::new_with_caching(4, 4, KvEventPublishers::default(), 0, true);
+            let mut requests = [1, 2].map(|id| request(Uuid::from_u128(id), vec![1, 2, 3, 4, 5]));
+            let now = seed_host(&mut adapter, requests[0].2.prompt_keys[0]);
+            let outcomes = requests.each_mut().map(|(sequence, lease, host)| {
+                let cost = raw_cost(&manager, sequence, lease);
+                match adapter.lookup(host, sequence, &cost, 4, now) {
+                    HostLookup::Hit(hit) => matches!(
+                        adapter.start_load(host.owner, host, lease, hit, &mut manager, now),
+                        StartLoad::Queued
+                    ),
+                    HostLookup::Deferred => false,
+                    HostLookup::Miss => panic!("the seeded block must hit"),
+                }
+            });
+            assert_eq!(outcomes, [true, concurrent], "{connector:?}");
+        }
+    }
+
+    #[test]
+    fn offloading_v0_32_evicts_a_finished_prefix_tail_first() {
+        use crate::engine::{KvEventData, KvEventTier};
+        // When a request finishes, the 0.32 offloading connector re-ranks its
+        // blocks with the first one newest (lru.py `on_request_finished`), so
+        // the next eviction takes the tail of A's prefix. SimpleCPU's free
+        // queue takes its head, the block stored first.
+        let (a, x, y) = (
+            [1, 2, 3, 4, 5, 6, 7, 8, 9],
+            [11, 12, 13, 14, 15],
+            [21, 22, 23, 24, 25],
+        );
+        let (_, _, a_host) = request(Uuid::nil(), a.to_vec());
+        let [a0, a1] = [0, 1].map(|index| a_host.prompt_keys[index].sequence_hash());
+        for (connector, evicted) in [
+            (HostConnectorProfile::OffloadingV032, a1),
+            (HostConnectorProfile::SimpleCpuEager, a0),
+        ] {
+            let (events, _) = served_kv_events(
+                Some(
+                    NativeHostOffloadConfig::new(3)
+                        .with_bandwidths(1.0, 1.0)
+                        .with_connector(connector),
+                ),
+                &[&[&a], &[&x], &[&y]],
+            );
+            let removed = events
+                .iter()
+                .flatten()
+                .filter(|event| event.tier == KvEventTier::HostPinned)
+                .filter_map(|event| match &event.data {
+                    KvEventData::Removed { block_hashes } => Some(block_hashes.clone()),
+                    KvEventData::Stored(_) => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(removed, [vec![evicted]], "{connector:?}");
+        }
+    }
+
+    #[test]
+    fn a_request_cancelled_between_passes_still_stores_its_blocks() {
+        use crate::engine::scheduler::SchedulerCommand;
+        // SimpleCPU stores a leaving request's computed blocks, and vLLM keeps
+        // stepping while that store is pending: an otherwise idle rank runs a
+        // pass to submit it.
+        let mut core = VllmCore::new_with_worker_rank(
+            connector_args(HostConnectorProfile::SimpleCpuEager),
+            0,
+            0,
+            0,
+            true,
+            None,
+        )
+        .unwrap();
+        let id = Uuid::from_u128(1);
+        let prompt = (1..=8).collect::<Vec<u32>>();
+        core.receive(DirectRequest {
+            tokens: prompt.clone(),
+            max_output_tokens: 16,
+            uuid: Some(id),
+            arrival_timestamp_ms: Some(0.0),
+            ..Default::default()
+        });
+        let pass = core.execute_pass(&mut TraceCollector::default(), 0.0);
+        core.complete_engine_boundary(pass.end_ms);
+        core.drain_kv_events();
+        core.apply_command(SchedulerCommand::CancelRequest { request_id: id })
+            .unwrap();
+        assert!(core.is_empty() && core.is_ready());
+        let pass = core.execute_pass(&mut TraceCollector::default(), pass.end_ms);
+        core.complete_engine_boundary(pass.end_ms);
+        let (_, _, host) = request(Uuid::nil(), prompt);
+        assert_eq!(
+            host_stored(pass.kv_events.into_iter().chain(core.drain_kv_events())),
+            host.prompt_keys
+                .iter()
+                .map(|key| key.sequence_hash())
+                .collect::<Vec<_>>()
+        );
+        assert!(!core.is_ready() && core.is_drained());
     }
 }

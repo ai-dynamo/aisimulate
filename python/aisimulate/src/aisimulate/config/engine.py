@@ -189,6 +189,8 @@ class HostOffloadConfig(StrictModel):
     shared_d2h_bandwidth_gbps: NonNegativeFloat = 80.0
     shared_h2d_bandwidth_gbps: NonNegativeFloat = 80.0
     latency_to_first_byte_ms: NonNegativeFloat = 0.0
+    # vLLM connector whose store, lookup and eviction rules G2 follows.
+    connector: Literal["offloading_v0_24", "offloading_v0_32", "simple_cpu_eager"] = "offloading_v0_24"
 
     @field_validator("scope", mode="before")
     @classmethod
@@ -199,11 +201,23 @@ class HostOffloadConfig(StrictModel):
             )
         return value
 
+    @model_validator(mode="after")
+    def _validate_connector(self) -> HostOffloadConfig:
+        if self.connector != "offloading_v0_24" and self.scope != "dp_rank_local":
+            raise ValueError("host_offload.connector other than offloading_v0_24 requires scope dp_rank_local")
+        return self
+
     @model_serializer(mode="wrap")
     def _omit_default_scope_controls(self, handler: Any) -> dict[str, Any]:
         # Keep the pre-scope descriptor shape unless these controls are used.
         payload = handler(self)
-        for name in ("scope", "shared_d2h_bandwidth_gbps", "shared_h2d_bandwidth_gbps", "latency_to_first_byte_ms"):
+        for name in (
+            "scope",
+            "shared_d2h_bandwidth_gbps",
+            "shared_h2d_bandwidth_gbps",
+            "latency_to_first_byte_ms",
+            "connector",
+        ):
             if payload.get(name) == type(self).model_fields[name].default:
                 payload.pop(name)
         return payload
@@ -290,8 +304,12 @@ class KvCachePredictionConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_g3(self):
-        if self.g3_offload is not None and self.host_offload is None:
+        if self.g3_offload is None:
+            return self
+        if self.host_offload is None:
             raise ValueError("g3_offload requires host_offload")
+        if self.host_offload.connector != "offloading_v0_24":
+            raise ValueError("g3_offload requires host_offload.connector=offloading_v0_24")
         return self
 
     @model_validator(mode="after")
@@ -300,6 +318,8 @@ class KvCachePredictionConfig(StrictModel):
             return self
         if self.host_offload is None or self.host_offload.scope != "dp_rank_local":
             raise ValueError("kvcr requires host_offload with scope dp_rank_local")
+        if self.host_offload.connector != "offloading_v0_24":
+            raise ValueError("kvcr requires host_offload.connector=offloading_v0_24")
         if self.g3_offload is not None:
             raise ValueError("kvcr cannot be combined with g3_offload")
         return self

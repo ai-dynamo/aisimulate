@@ -1547,10 +1547,11 @@ impl VllmCore {
                 self.args.kv_transfer_timing_mode,
             )
         });
-        let request = self
+        let mut request = self
             .state
             .take_completed(&uuid)
             .expect("completed request must remain scheduler-owned");
+        self.finish_host_request(uuid, &mut request);
         let payload = HeldVllmPrefill {
             request_id: uuid,
             request,
@@ -1584,6 +1585,27 @@ impl VllmCore {
             .finish_native(request_id, request.sequence.lease);
     }
 
+    /// The G2 connector's work when a request finishes or is dropped, before
+    /// its G1 blocks are released or held for a P/D handoff.
+    fn finish_host_request(&mut self, uuid: Uuid, request: &mut VllmRequestState) {
+        if let (Some(adapter), Some(host)) = (
+            self.native_host_offload.as_mut(),
+            request.host_offload.as_deref_mut(),
+        ) {
+            let now_ms = adapter.current_time_ms();
+            adapter.finish_request(
+                uuid,
+                host,
+                &request.sequence.lease,
+                request.num_computed_tokens,
+                request.sequence.num_input_tokens(),
+                self.args.block_size,
+                &mut self.kv_manager,
+                now_ms,
+            );
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn source_is_held(&self, handoff_id: HandoffId) -> bool {
         self.source_holds.is_held(handoff_id)
@@ -1608,6 +1630,15 @@ impl VllmCore {
             || !self.state.waiting_members.is_empty()
             || self.state.has_ready_connector_waiter()
             || self.destination_retry_ready
+            || self.has_unsubmitted_host_stores()
+    }
+
+    /// G2 stores a request prepared when it left between passes; the next
+    /// (possibly empty) pass submits them.
+    fn has_unsubmitted_host_stores(&self) -> bool {
+        self.native_host_offload
+            .as_ref()
+            .is_some_and(VllmHostOffloadAdapter::has_unsubmitted_stores)
     }
 
     #[allow(dead_code)]
@@ -1626,7 +1657,10 @@ impl VllmCore {
     }
 
     pub(crate) fn waiting_for_external_command(&self) -> bool {
-        self.is_empty() && !self.is_drained() && !self.destination_retry_ready
+        self.is_empty()
+            && !self.is_drained()
+            && !self.destination_retry_ready
+            && !self.has_unsubmitted_host_stores()
     }
 
     pub(crate) fn next_internal_deadline_ms(&self) -> Option<f64> {
@@ -2512,10 +2546,11 @@ impl VllmCore {
             || self.kv_manager.num_active_blocks() < active_blocks_before;
         self.source_holds.remove_request(uuid);
         self.active_destination_handoffs.remove_request(uuid);
-        let request = self
+        let mut request = self
             .state
             .take_completed(&uuid)
             .expect("request drop must remove the scheduler-owned request");
+        self.finish_host_request(uuid, &mut request);
         self.kv_manager.finish_native(uuid, request.sequence.lease);
         if capacity_improved {
             self.bump_capacity_generation();
@@ -2975,7 +3010,7 @@ impl VllmCore {
                 .cached_prefix_tokens
                 .get_or_insert(cached_prefix_tokens);
             let attribution = request.host_offload.as_deref_mut().and_then(|host| {
-                VllmHostOffloadAdapter::on_admitted(
+                self.native_host_offload.as_ref()?.on_admitted(
                     host,
                     cached_prefix_tokens,
                     self.args.block_size,
