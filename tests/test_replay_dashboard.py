@@ -301,6 +301,15 @@ def test_writer_is_standalone_safe_and_atomic(tmp_path, capture):
     assert list(tmp_path.iterdir()) == [path]
 
 
+def test_writer_streams_requests_in_chunks(tmp_path, capture, monkeypatch):
+    row = capture["requests"][0]
+    capture["requests"] = [{**row, "uuid": f"request-{index}", "request_id": f"</script>{index}"} for index in range(5)]
+    monkeypatch.setattr("aisimulate.replay.dashboard._REQUEST_CHUNK", 2)
+    document = write_replay_dashboard(tmp_path, {}, capture).read_text(encoding="utf-8")
+    payload = document.split('<script id="report-data" type="application/json">', 1)[1].split("</script>", 1)[0]
+    assert json.loads(payload) == build_replay_dashboard_data({}, capture)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file permissions and umask")
 @pytest.mark.parametrize("umask", [0o002, 0o022, 0o077])
 def test_writer_honors_output_file_umask(tmp_path, capture, umask):
