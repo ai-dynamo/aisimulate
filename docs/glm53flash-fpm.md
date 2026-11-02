@@ -95,6 +95,98 @@ Environment:
 | `DYN_FPM_TOKENIZER_REVISION` | checkpoint revision |
 | `DYN_FPM_GLM53FLASH_DECODE_CONTEXTS` | optional `[[batch, total, [contexts...]], ...]` with the per-request decode split |
 
+## Guided onboarding collection
+
+`aisimulate onboard collect-fpm` runs the producer above as the runtime adapter
+for GLM-5.3-Flash collection. The
+[self-service guide](perf-model/fpm-self-service/implementation.md) describes
+the workflow. The collector renders the producer launch for each prefill and
+decode phase of a `Glm5NextForConditionalGeneration` collection, formal or
+smoke. A runtime probe of the same deployment keeps Dynamo's generic grid and
+does not run the producer.
+
+Both phases get `--language-model-only`, `--cudagraph-metrics`,
+`--no-async-scheduling`, `--benchmark-warmup-iterations 0` and
+`--benchmark-points-file` for the staged point list. The request sets
+`--max-model-len`, `--max-num-batched-tokens` and `--max-num-seqs`. The
+collector passes no `--prefix-match-unit`. It also sets these variables:
+
+| Variable | Value |
+|---|---|
+| `DYN_FPM_GLM53FLASH_REAL_KV` | `1` |
+| `DYN_FPM_GLM53FLASH_PREFIX_SEED` | `1` |
+| `DYN_FPM_BENCH_COLLECT_IMBALANCED` | `1` |
+| `DYN_FPM_TOKENIZER_REVISION` | launch revision of the accepted probe, else the model revision of the accepted profile |
+| `DYN_FPM_GLM53FLASH_MEASURED_CONTEXT` | the smaller of `131072` and the runtime context minus 7 |
+| `PYTHONPATH` | `/tmp/fpm-bench:/opt/glm53flash-dynamo` |
+
+`DYN_FPM_GLM53FLASH_PREFIX_MATCH_UNIT` stays unset, so the native hash block of
+the engine is the prefix unit. The planner refuses a hash block that is not a
+multiple of 4. The producer still checks every prefill chunk start.
+
+The container needs one overlay directory at `/opt/glm53flash-dynamo`. A Slurm
+run can mount it with `--container-mount`. The collector uses that path unless
+the deployment environment declares its own `PYTHONPATH`. The overlay is a
+composite of two parts. The first part is the `dynamo` files of the
+`ai-dynamo 1.6.0.dev20261010` build, whose scheduler file
+`runtime-source-sha256.json` pins. The second part is the `collector`,
+`aisimulate_core` and `aisimulate` packages of the AISimulate checkout that
+plans the collection. The producer imports them.
+
+The request must follow these rules:
+
+- `collection.warmup_iterations` is 0. The producer runs its own warm-ups and
+  refuses a global warm-up. Set it before the runtime probe, because the
+  collector refuses a collection whose count differs from the accepted probe.
+- The runtime context is at least the measured context plus 7. The runtime
+  context is `search.context_length`, and a larger value is accepted. The
+  collector sets the measured context to the smaller of 131,072 and the runtime
+  context minus 7.
+- The token budget `max_num_tokens` is a multiple of 4.
+- `identity.model_revision` is the 40-hex revision of the loaded checkpoint. The
+  revision rule above applies, with its checkpoint lookup for a folder launch
+  and for a launch by Hub ID.
+
+Plan the collection from the accepted runtime probe. The planner generates the
+point list from `max_num_tokens`, `max_batch_size` and `context_length` of the
+request. It takes `hash_block_size_tokens` and the cache capacity from the
+accepted profile, and it refuses a profile without the hash block. The planner
+freezes the list into the collection plan, so the plan hash covers it. The
+producer divides each total evenly. Every request of a point therefore has the
+same new tokens, prefix and decode context. These are the axes:
+
+- Prefill new tokens per request: the powers of two from 4 to the token budget,
+  every whole hash block up to the budget, and the budget itself. The list caps
+  the budget at 8,192.
+- Prefill requests per batch: the powers of two up to the smallest of 32,
+  `max_batch_size` and the number of requests whose new tokens fit the budget,
+  and that smallest value itself.
+- Prefill prefix per request, in whole hash blocks: 0, the powers of two, and
+  the largest number that keeps prefix and new tokens within the measured
+  context.
+- Decode context per request: the powers of two from 4 to the measured context,
+  and the measured context itself.
+- Decode requests per batch: the powers of two up to the smaller of 32 and
+  `max_batch_size`, and that value itself.
+
+The planner drops a point that does not fit the accepted cache capacity. It
+refuses a plan with no prefill point or no decode point. At TP 4 with 2,176-token
+hash blocks, 8,192 tokens, 256 sequences and a 1,048,576-token context, the
+list has 496 prefill points and 96 decode points.
+
+The smoke measures four points of this list. It runs under the plan hash of
+formal collection and keeps its own campaign directory. The prefill points are
+one request with 64 new tokens, once without a prefix and once after one hash
+block of prefix. The decode points are one request and two requests, each at the
+smallest context of the list above one hash block. A direct `collector --fpm`
+call can pass its own manifest with `--fpm-benchmark-points-file`. The collector
+refuses that file together with `--smoke`.
+
+Cached prefill rows and decode rows publish the regime `real_kv`, the only
+regime that the consumer accepts for them. A prefill row without a prefix
+publishes `n/a`. The native artifacts keep the `real_prefix` stamp for cached
+prefill.
+
 ## SGLang client
 
 `python/aisimulate/collector/fpm_forward/sglang_native_fpm.py` launches stock
