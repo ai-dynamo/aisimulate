@@ -9,6 +9,8 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from scripts.e2e_accuracy.agentx_comparison import validate as validate_comparison
+
 INPUT_SCHEMA = "aisimulate.agentx.inputs.v1"
 SUMMARY_SCHEMA = "aisimulate.agentx.accuracy.v1"
 INDEX = "catalog/e2e/agentx.json"
@@ -41,6 +43,9 @@ def driver_digest(read_file=None):
     root = Path(__file__).resolve().parents[2]
     read_file = read_file or (lambda name: (root / name).read_bytes())
     names = ("agentx_contract.py", "agentx_predict.py", "run_agentx_accuracy.py", "run_e2e_accuracy.py")
+    # Validate historical producers with their original four-file closure.
+    if b'"agentx_comparison.py"' in read_file("scripts/e2e_accuracy/agentx_contract.py"):
+        names += ("agentx_comparison.py", "agentx_curves.py")
     return hashlib.sha256(
         canonical({name: hashlib.sha256(read_file("scripts/e2e_accuracy/" + name)).hexdigest() for name in names})
     ).hexdigest()
@@ -359,9 +364,16 @@ def validate_public(value):
         "name",
         "value",
         "cache_alignment",
+        "comparison",
+        "op_data",
+        "file",
+        "sha256",
     }
 
     def walk(item, key=None):
+        if key == "comparison":
+            validate_comparison(item)
+            return
         if isinstance(item, dict):
             if set(item) - allowed:
                 raise ValueError("Unexpected public AgentX fields: " + str(sorted(set(item) - allowed)))
@@ -406,7 +418,16 @@ def validate_report(report):
     """Numerical telemetry only; containers and free-form text are not interchangeable."""
     if report is None:
         return
-    if set(report) != {"schema", "metadata", "prediction", "telemetry", "phases", "requests", "samples", "lifecycle"}:
+    if set(report) - {"comparison"} != {
+        "schema",
+        "metadata",
+        "prediction",
+        "telemetry",
+        "phases",
+        "requests",
+        "samples",
+        "lifecycle",
+    }:
         raise ValueError("Invalid AgentX replay report")
     if report["schema"] != "aisimulate.replay.dashboard.v1" or report["prediction"] != {}:
         raise ValueError("Unsupported public replay schema")
@@ -544,8 +565,17 @@ def validate_result(run):
         "pairs",
         "report",
     }
-    if set(run) != expected or run["outcome"] not in {"completed", "failed", "unsupported"}:
+    if set(run) - {"op_data"} != expected or run["outcome"] not in {"completed", "failed", "unsupported"}:
         raise ValueError("Invalid AgentX result fields")
+    for item in run.get("op_data", []):
+        if (
+            set(item) != {"file", "sha256"}
+            or not re.fullmatch(r"[a-z0-9_./-]+\.parquet", item["file"])
+            or ".." in item["file"]
+            or item["file"].startswith("/")
+            or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"])
+        ):
+            raise ValueError("Invalid op-data identity")
     for field in ("silicon", "prediction", "point_errors"):
         if set(run[field]) != set(METRICS) or any(v is not None and not finite(v) for v in run[field].values()):
             raise ValueError("Invalid AgentX point metrics")
@@ -606,4 +636,9 @@ def validate_result(run):
         if item["value"] is not None and type(item["value"]) not in (str, int, float, bool):
             raise ValueError("Configuration must contain scalar settings")
     validate_report(run["report"])
+    if run["report"] and run["report"].get("comparison"):
+        comparison = run["report"]["comparison"]
+        for metric in ("ttft_ms", "tpot_ms"):
+            if comparison["phases"]["profile"]["request_scores"][metric] != run["request_errors"][metric]:
+                raise ValueError("Chart and overview request scores disagree")
     return run

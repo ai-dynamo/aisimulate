@@ -1,0 +1,139 @@
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0 -->
+<header class="topbar">
+      <div class="topinner">
+        <div class="brand">AISim<span>ulate</span><small>Replay</small></div>
+        <div class="topright">
+          <button id="theme" aria-label="Toggle light theme">☾</button>
+        </div>
+      </div>
+    </header>
+    <main>
+      <div class="subnav">
+        <strong>Inference Performance</strong><span>Replay dashboard</span
+        ><span class="badge">SIMULATED METRICS</span>
+      </div>
+      <div class="heading">
+        <h1 id="run-title">AISimulate replay</h1>
+        <span class="meta" id="run-meta"></span>
+      </div>
+      <section class="selection" aria-label="Replay summary">
+        <div class="stats" id="stats"></div>
+        <p class="hint" id="cohort-note"></p>
+      </section>
+      <nav class="segments main-tabs" role="tablist" aria-label="Detail view">
+        <button
+          role="tab"
+          id="tab-dashboard"
+          aria-controls="view-dashboard"
+          data-view="dashboard"
+          aria-selected="true"
+        >
+          Dashboard
+        </button>
+        <button
+          role="tab"
+          id="tab-timeline"
+          aria-controls="view-timeline"
+          data-view="timeline"
+          aria-selected="false"
+        >
+          Request timeline
+        </button>
+      </nav>
+      <div class="stagebar" id="stagebar">
+        <span>Stage</span>
+        <div class="segments" role="tablist" aria-label="Replay stage">
+          <button
+            id="stage-profile"
+            role="tab"
+            aria-selected="true"
+            data-stage="profile"
+          >
+            Profiling</button
+          ><button
+            id="stage-preparation"
+            role="tab"
+            aria-selected="false"
+            data-stage="preparation"
+          >
+            Warmup
+          </button>
+        </div>
+        <span id="stage-count"></span
+        ><span class="clock" id="clock-note"></span>
+      </div>
+      <section
+        id="view-dashboard"
+        role="tabpanel"
+        aria-labelledby="tab-dashboard"
+      >
+        <div class="grid" id="chart-grid"></div>
+      </section>
+      <section
+        id="view-timeline"
+        role="tabpanel"
+        aria-labelledby="tab-timeline"
+        hidden
+      >
+        <div class="timeline-toolbar">
+          <div class="segments" aria-label="Timeline grouping">
+            <button data-group="conversation" aria-pressed="true">
+              By conversation</button
+            ><button data-group="worker" aria-pressed="false">By worker</button>
+          </div>
+          <input
+            id="request-search"
+            type="search"
+            aria-label="Filter requests, conversations, or workers"
+            placeholder="Filter requests, conversations, or workers…"
+          />
+        </div>
+        <p id="timeline-summary" class="hint"></p>
+        <div class="timeline-panel">
+          <div class="hint">
+            Scroll horizontally through time · click an interval or row label
+            for details
+          </div>
+          <div class="legend">
+            <span
+              ><i class="dot" style="background: var(--blue)"></i
+              >Completed</span
+            ><span
+              ><i class="dot" style="background: var(--purple)"></i
+              >Incomplete</span
+            ><span
+              ><i class="dot" style="background: var(--red)"></i>Other terminal
+              status</span
+            >
+          </div>
+          <div
+            id="timeline-plot"
+            tabindex="0"
+            role="region"
+            aria-label="Scrollable request timeline"
+          ></div>
+        </div>
+      </section>
+      <footer>
+        Native AISimulate replay telemetry · Virtual simulation time ·
+        Self-contained offline report
+      </footer>
+    </main>
+    <dialog id="chart-dialog" aria-labelledby="expanded-title">
+      <div class="dialog-head">
+        <h2 id="expanded-title"></h2>
+        <button aria-label="Close expanded chart" data-close>×</button>
+      </div>
+      <div id="expanded-scores" class="score-badges"></div>
+      <p id="expanded-note" class="hint"></p>
+      <div id="expanded-plot" class="dialog-plot"></div>
+      <p id="expanded-foot" class="hint"></p>
+    </dialog>
+    <dialog id="request-dialog" aria-labelledby="request-title">
+      <div class="dialog-head">
+        <h2 id="request-title">Request details</h2>
+        <button aria-label="Close request details" data-close>×</button>
+      </div>
+      <div id="request-details"></div>
+    </dialog>

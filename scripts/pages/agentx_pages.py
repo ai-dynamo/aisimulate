@@ -4,7 +4,6 @@
 
 import argparse
 import hashlib
-import html
 import io
 import re
 import subprocess
@@ -236,47 +235,9 @@ def prepare(repo, output):
 def write_assets(repo, destination):
     """One shared Plotly asset and the existing replay renderer, from trusted main."""
     source = repo / "python/aisimulate/src/aisimulate/replay"
-    template = (source / "dashboard.html").read_text()
-    template = template.replace(
-        "<script>\n      __PLOTLY_JS__;\n    </script>", '<script src="./plotly.min.js"></script>'
-    )
-    if "__PLOTLY_JS__" in template:
-        raise ValueError("Replay template Plotly boundary changed")
-    template = template.replace("__PLOTLY_LICENSE__", html.escape((source / "plotly-js-LICENSE.txt").read_text()))
-    template = template.replace("__REPORT_DATA_JSON__", "null")
-    start = template.index('    <script>\n      "use strict";')
-    template = template[:start] + template[start:].replace("<script>", '<script type="module">', 1)
-    template = template.replace(
-        'const report = JSON.parse(\n        document.getElementById("report-data").textContent,\n      );',
-        """const dataPath = new URL(location.href).searchParams.get("data") || "";
-      if (!/^branches\\/[0-9a-f]{16}\\/details\\/[a-z0-9-]+\\.json$/.test(dataPath))
-        throw new Error("Invalid replay data path");
-      const response = await fetch("./" + dataPath);
-      if (!response.ok) throw new Error("Replay data unavailable");
-      const point = await response.json();
-      const report = point.report;
-      if (!report) throw new Error("Replay telemetry unavailable");
-      report.reference = {pairs: point.pairs};
-      try { document.body.classList.toggle("light", localStorage.getItem("sm-theme") === "light"); } catch (_) {}""",
-    )
-    template = template.replace(
-        "      render();\n    </script>",
-        """      const hash = new URLSearchParams(location.hash.slice(1));
-      state.view = hash.get("view") === "timeline" ? "timeline" : "dashboard";
-      if (hash.get("stage") === "preparation" && report.phases.preparation) state.stage = "preparation";
-      document.addEventListener("click", event => {
-        if (event.target.closest("[data-stage],[data-view]")) queueMicrotask(() => parent.postMessage(
-          {agentxReplayState: {view: state.view, stage: state.stage}}, location.origin));
-      });
-      window.addEventListener("message", event => {
-        if (event.origin !== location.origin || !["dark", "light"].includes(event.data?.agentxTheme)) return;
-        document.body.classList.toggle("light", event.data.agentxTheme === "light"); render();
-      });
-      render();
-    </script>""",
-    )
     destination.mkdir(parents=True, exist_ok=True)
-    (destination / "replay.html").write_text(template)
+    for name in ("dashboard.js", "dashboard.css", "dashboard-body.html"):
+        (destination / name).write_bytes((source / name).read_bytes())
     (destination / "plotly.min.js").write_text(get_plotlyjs())
     (destination / "PLOTLY-LICENSE.txt").write_text((source / "plotly-js-LICENSE.txt").read_text())
 

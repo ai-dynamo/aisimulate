@@ -875,7 +875,7 @@ class LegacySnapshotTest(unittest.TestCase):
             (dataset / "b200_sxm.csv").write_text("Model,Status\nexample/model,PASS\n")
         replay = Path("python/aisimulate/src/aisimulate/replay")
         (self.repository / replay).mkdir(parents=True, exist_ok=True)
-        for name in ("dashboard.html", "plotly-js-LICENSE.txt"):
+        for name in ("dashboard.html", "dashboard-body.html", "dashboard.js", "dashboard.css", "plotly-js-LICENSE.txt"):
             shutil.copyfile(ROOT / replay / name, self.repository / replay / name)
         copy_feature_sources(self.repository)
         self.dataset = self.repository / PAGES.SYSTEMS_ROOT / "support_matrix"
