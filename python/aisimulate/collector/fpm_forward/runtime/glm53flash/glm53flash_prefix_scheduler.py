@@ -95,7 +95,7 @@ MEASUREMENT_REPEATS = 10
 MAX_REJECTED_REPETITIONS = 10
 MAX_BATCH = 32
 MAX_CONTEXT = 131072
-# Positions that vLLM keeps beyond the deepest measured forward for the seed and output lifecycle of its request.
+# The context headroom that the producer has always required, in positions beyond the deepest measured context.
 CONTEXT_HEADROOM = 7
 MAX_NEW = 8192
 STAGE_TIMEOUT_SECONDS = 1800.0
@@ -167,9 +167,9 @@ def glm_pinned_model(raw_config: dict, revision: str) -> tuple[str, str]:
 def glm_context_policy(max_model_len: int, measured: int) -> dict:
     """Context limits of one run. The runtime context is the configured ``max_model_len``.
 
-    The deepest measured decode needs ``CONTEXT_HEADROOM`` positions beyond its context, or the native scheduler ends
-    its request first. A larger runtime context holds them too, so a run can configure the context that a deployment
-    serves and measure a lower limit.
+    The runtime context must be at least the measured context plus ``CONTEXT_HEADROOM`` positions, the headroom that
+    the producer has always required. A larger runtime context also meets this rule, so a run can configure the
+    context that a deployment serves and measure a lower limit.
     """
     if max_model_len < measured + CONTEXT_HEADROOM:
         raise ValueError("GLM vLLM runtime context must be at least the measured context plus seven internal positions")
