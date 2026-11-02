@@ -3013,4 +3013,27 @@ mod tests {
             assert_eq!(checkpoint(&prompts[1]), Lookup::Miss, "{connector:?}");
         }
     }
+
+    #[test]
+    fn offloading_v0_32_re_ranks_a_finished_request_s_states_with_its_blocks() {
+        // At finish the 0.32 connector re-ranks the request's keys with its
+        // head newest (lru.py `on_request_finished`), ordered by end position
+        // with Mamba groups first (`order_request_keys`). A 10-token prompt
+        // stores blocks 0 and 1 and its prefill checkpoint at 8, so eviction
+        // takes the tail block first, then the state, then the head.
+        let mut core = VllmCore::new(hybrid_args(G2Connector::OffloadingV032, 16));
+        core.receive(DirectRequest {
+            tokens: (0..10).collect(),
+            max_output_tokens: 1,
+            uuid: Some(Uuid::from_u128(1)),
+            arrival_timestamp_ms: Some(0.0),
+            ..Default::default()
+        });
+        run_to_idle(&mut core, &mut 0.0);
+        let (_, _, host) = request(Uuid::nil(), (0..10).collect());
+        let [head, tail] = [host.prompt_keys[0], host.prompt_keys[1]];
+        let state = |slot| HostBlockKey::state(tail.sequence_hash(), slot);
+        let tier = core.host_offload().unwrap().host.lock();
+        assert_eq!(tier.lru_order(), [tail, state(1), state(0), head]);
+    }
 }
