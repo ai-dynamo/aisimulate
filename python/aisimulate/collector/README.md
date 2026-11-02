@@ -31,6 +31,17 @@ and `triton` backends; an unknown backend raises instead of receiving a BF16 lab
 Legacy Blackwell rows labeled `bfloat16/fp8` need fresh measurements with the
 correct label; do not copy their timings into a second precision key.
 
+The default vLLM context-attention sweep includes 24,576, 32,768 and 40,960
+token anchors and permits up to 655,360 batch-times-sequence tokens for
+grouped-query attention (previously 131,072). Agentic conversations accumulate
+history across turns: a small new chunk can attend to a much longer cached
+prefix. The existing timing table looks up the full sequence length, then
+scales full causal attention by `(full_length² - prefix_length²) / full_length²`.
+Consequently, full-sequence anchors above the serving scheduler's new-token
+budget are needed to reduce extrapolation. This coverage is enabled by default
+for vLLM; it does not add an agentic mode, a prefix-length axis or cached-tail
+measurements. Other frameworks retain their existing dense-context sweep limits.
+
 Before collecting the data, make sure you own the whole node and no interfierence happens.
 Next, please enable persistent-mode and lock frequency of the node. Make sure the cooling system of the node is working well.
 ```bash

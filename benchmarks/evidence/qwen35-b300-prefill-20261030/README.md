@@ -51,6 +51,29 @@ performance table is added or replaced.
   Kernel page size 16 is distinct from the target serving hybrid allocator/APC
   block size 528. No power measurement is provided.
 
+## Default collection coverage
+
+The vLLM context grid now includes 24,576, 32,768 and 40,960-token anchors
+and raises the GQA batch-times-sequence budget from 131,072 to 655,360.
+This is enabled by default for all vLLM geometries. Other frameworks retain
+their current dense-context grids. The collector runtime repairs are in
+[#664](https://github.com/ai-dynamo/aisimulate/pull/664); the 95 published rows
+retain their original collector source and do not qualify that newer code.
+
+- The historical Qwen plan grew from 77 to 95 cases. Its full run took
+  52.751 seconds through parquet output, including 26.3 seconds of worker
+  execution. CI took 143.5 seconds, excluding queue time.
+- The broader SM103 default grid grows from 54,468 to 68,656 attempts
+  (+26.05%). Across the eight default NVIDIA systems, excluding RTX, it adds
+  106,410 attempts. Applying the historical B300 rate uniformly gives
+  `106410 * 52.751 / 95 / 3600 = 16.4` extra GPU-hours, before retries and
+  CI setup. This is a planning proxy, not measured fleet runtime or an upper
+  bound; other hardware, shapes and precisions can cost substantially more.
+- The higher budget also admits the existing 262,144-token GQA anchor.
+  Its full-causal query-key work is 256 times that at 16,384 tokens. These
+  cases are outside the 95-row campaign; their incremental runtime and
+  feasibility have not been measured. Planned coverage is not GPU validation.
+
 ## Loading and limits
 
 - With vLLM 0.31 requested and `attention_backend=flashinfer`, existing consumer

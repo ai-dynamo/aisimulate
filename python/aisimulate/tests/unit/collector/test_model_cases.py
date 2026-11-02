@@ -12,7 +12,9 @@ from itertools import pairwise
 from pathlib import Path
 
 import pytest
+
 from collector.case_generator import (
+    get_attention_context_shape_sweeps,
     get_attention_head_configs,
     get_gemm_case_specs,
     get_moe_quantization_specs,
@@ -858,6 +860,54 @@ def test_attention_shape_specs_are_yaml_backed_with_backend_overrides():
     assert vllm_xpu_context["kv_head_options"] == [1, 2, 4, 8]
     assert vllm_generation["mha_query_head_counts"][-1] == 64
     assert vllm_generation["xqa_query_head_counts"][-1] == 64
+
+
+@pytest.mark.parametrize("model_path", [None, "Qwen/Qwen3.5-397B-A17B"])
+def test_default_vllm_context_grid_covers_published_qwen_prefills(monkeypatch, model_path):
+    if model_path is None:
+        monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
+    else:
+        monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
+    source_path = REPO_ROOT / "collector/vllm/collect_attn.py"
+    tree = ast.parse(source_path.read_text(), filename=str(source_path))
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "get_context_attention_test_cases"
+    )
+    namespace = {
+        "get_attention_context_shape_sweeps": get_attention_context_shape_sweeps,
+        "get_attention_head_configs": get_attention_head_configs,
+        "get_sm_version": lambda: 103,
+    }
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)
+    cases = namespace["get_context_attention_test_cases"]()
+    qwen_pairs = {(case[0], case[1]) for case in cases if case[2:] == [4, 1, 256, False, True, 0]}
+    published_lengths = [
+        16,
+        32,
+        64,
+        128,
+        256,
+        512,
+        1024,
+        1536,
+        2048,
+        3072,
+        4096,
+        6144,
+        8192,
+        10240,
+        12288,
+        16384,
+        24576,
+        32768,
+        40960,
+    ]
+    assert set(itertools.product([1, 2, 4, 8, 16], published_lengths)) <= qwen_pairs
+    # The larger budget also admits this existing anchor; it remains unmeasured.
+    assert (1, 262144) in qwen_pairs
+    assert (4, 262144) not in qwen_pairs
 
 
 def test_gemm_common_cases_expand_from_base_op_yaml_shape_specs():
