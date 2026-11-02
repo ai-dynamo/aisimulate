@@ -888,8 +888,9 @@ impl VllmCore {
             args.aic_nextn.is_some() && !args.disable_eagle_block_drop,
         )
         .with_prefix_match_unit(args.prefix_match_unit);
-        if let (Some(adapter), Some(blocks_per_state)) =
-            (native_host_offload.as_mut(), kv_manager.blocks_per_state())
+        let blocks_per_state = kv_manager.state_blocks_per_request();
+        if let Some(adapter) = native_host_offload.as_mut()
+            && blocks_per_state > 0
         {
             adapter.set_hybrid(blocks_per_state);
             kv_manager.record_state_handoffs();

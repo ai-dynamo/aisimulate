@@ -530,13 +530,6 @@ impl VllmKvManager {
         taken
     }
 
-    /// Blocks of one recurrent state, when G1 has a state cache.
-    pub(crate) fn blocks_per_state(&self) -> Option<usize> {
-        self.state_cache
-            .as_ref()
-            .map(|manager| manager.blocks_per_state)
-    }
-
     /// Validate a hand-off's source copies and attach the store transfer that
     /// reads them. `slots` selects the state slots the host tier stores.
     /// False when the request lost them since publication (preempted in the
@@ -1315,17 +1308,16 @@ impl VllmKvManager {
         let computed_state_hash = lease.state_hash(computed_after, self.block_size);
         // A pass that crossed its planned internal checkpoint publishes the
         // state there (vLLM 43b4aaea MambaManager checkpoint column).
-        let lease_checkpoint_position = lease
+        let checkpoint_position = lease
             .prefill_checkpoint
             .take()
             .filter(|&position| computed_before < position && position < computed_after)
             .filter(|_| {
                 publish_state && self.enable_prefix_caching && sequence.enable_prefix_caching()
             });
-        let checkpoint_hash = lease_checkpoint_position
-            .and_then(|position| lease.state_hash(position, self.block_size));
+        let checkpoint_hash =
+            checkpoint_position.and_then(|position| lease.state_hash(position, self.block_size));
         let junction = lease.junction;
-        let checkpoint_position = lease_checkpoint_position;
         if let (Some(manager), Some(state)) = (&mut self.state_cache, &mut lease.state) {
             if !state.checkpoint.is_empty()
                 && let Some(copies) =

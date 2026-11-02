@@ -325,11 +325,6 @@ impl G1Manager {
         self.inner.take_state_handoffs_of(owner)
     }
 
-    /// Blocks of one recurrent state, when G1 has a state cache.
-    pub(crate) fn blocks_per_state(&self) -> Option<usize> {
-        self.inner.blocks_per_state()
-    }
-
     pub(crate) fn state_handoff_is_live(&self, handoff: &StateHandoff) -> bool {
         self.inner.state_handoff_is_live(handoff)
     }

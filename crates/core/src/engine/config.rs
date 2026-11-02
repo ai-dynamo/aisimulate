@@ -1008,11 +1008,11 @@ impl EngineConfig {
                 // (Mamba align mode); vLLM 0.24's connector stores no states.
                 ensure!(
                     self.prefix_match_unit == Some(self.block_size),
-                    "state_cache with native_host_offload requires prefix_match_unit equal to block_size"
+                    "state_cache with host_offload requires prefix_match_unit equal to block_size"
                 );
                 ensure!(
                     host.connector != G2Connector::OffloadingV024,
-                    "state_cache with native_host_offload requires connector offloading_v0_32 or simple_cpu_v0_32"
+                    "state_cache with host_offload requires host_offload.connector=offloading_v0_32 or simple_cpu_v0_32"
                 );
             }
             ensure!(
@@ -1609,7 +1609,7 @@ mod tests {
             (
                 "native_host_offload",
                 serde_json::json!({"num_host_blocks": 8}),
-                "native_host_offload",
+                "host_offload",
             ),
             (
                 "g3_offload",
@@ -2038,7 +2038,7 @@ mod tests {
                     hybrid_mtp_host_config(config);
                     config.prefix_match_unit = None;
                 },
-                "state_cache with native_host_offload requires prefix_match_unit equal to block_size",
+                "state_cache with host_offload requires prefix_match_unit equal to block_size",
             ),
             (
                 |config| {
@@ -2046,7 +2046,7 @@ mod tests {
                     config.native_host_offload.as_mut().unwrap().connector =
                         G2Connector::OffloadingV024;
                 },
-                "state_cache with native_host_offload requires connector offloading_v0_32 or simple_cpu_v0_32",
+                "state_cache with host_offload requires host_offload.connector=offloading_v0_32 or simple_cpu_v0_32",
             ),
             (
                 |config| {

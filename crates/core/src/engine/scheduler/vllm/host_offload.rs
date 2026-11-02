@@ -959,7 +959,6 @@ impl VllmHostOffloadAdapter {
     /// hand-off does. SimpleCPU stores the missing slots together and drops
     /// the hand-off when the pool is full; `offloading_v0_32` stores each slot
     /// as its own job, and only inside the prompt.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn store_state_handoff(
         &mut self,
         handoff: &StateHandoff,

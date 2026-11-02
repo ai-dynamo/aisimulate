@@ -257,7 +257,9 @@ def _validate_hybrid_host_offload(connector: str, prefix_match_unit: int | None,
     if prefix_match_unit is None or block_size not in (None, prefix_match_unit):
         raise ValueError("state_cache with host_offload requires prefix_match_unit equal to block_size")
     if connector == "offloading_v0_24":
-        raise ValueError("state_cache with host_offload requires connector offloading_v0_32 or simple_cpu_v0_32")
+        raise ValueError(
+            "state_cache with host_offload requires host_offload.connector=offloading_v0_32 or simple_cpu_v0_32"
+        )
 
 
 def _omit_default_checkpoint_switches(self, handler: Any) -> dict[str, Any]:
@@ -375,8 +377,6 @@ class KvCachePredictionConfig(StrictModel):
                 _validate_hybrid_host_offload(self.host_offload.connector, self.prefix_match_unit, block_size)
             if self.g3_offload is not None:
                 raise ValueError("state_cache does not support g3_offload")
-            if self.kvcr is not None:
-                raise ValueError("state_cache does not support kvcr")
         if infer_state:
             # Capacity and prefix alignment use the backend's resolved block size.
             return self

@@ -125,7 +125,7 @@ def test_manual_geometry_rejects_invalid_unsigned_integers(field, value):
         ({"capacity": {"type": "default"}}, "requires fixed"),
         # A state cache with G2 needs block-sized matching and a vLLM 0.32 connector.
         ({"host_offload": {"num_host_blocks": 8}}, "prefix_match_unit equal to block_size"),
-        ({"prefix_match_unit": 64, "host_offload": {"num_host_blocks": 8}}, "connector offloading_v0_32"),
+        ({"prefix_match_unit": 64, "host_offload": {"num_host_blocks": 8}}, "connector=offloading_v0_32"),
         (
             {
                 "prefix_match_unit": 64,
@@ -133,14 +133,6 @@ def test_manual_geometry_rejects_invalid_unsigned_integers(field, value):
                 "g3_offload": {"scope": "worker_local", "num_g3_blocks": 8},
             },
             "g3_offload",
-        ),
-        (
-            {
-                "prefix_match_unit": 64,
-                "host_offload": {"num_host_blocks": 8, "connector": "simple_cpu_v0_32"},
-                "kvcr": {},
-            },
-            "kvcr",
         ),
         ({"state_cache": {"bytes_per_request": 1500, "tokens_per_block": 64}}, "Extra inputs"),
     ],
