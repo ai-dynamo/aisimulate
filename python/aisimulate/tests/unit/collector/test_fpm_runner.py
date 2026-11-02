@@ -3535,6 +3535,55 @@ def test_runtime_default_path_is_adapter_owned():
     assert env["FPM_READINESS_TIMEOUT_SECONDS"] == "900"
 
 
+def test_startup_environment_activates_the_runtime_adapter_before_preflight(tmp_path):
+    from aisimulate_core.sdk.deepseek_v41 import MODEL_REVISION
+
+    from .test_fpm_runtime_memory import _glm_plan
+
+    # fpm_exec.sh sources this file before preflight.py. Preflight checks that the source-checked GLM-5.3-Flash
+    # scheduler replaced the native one only when it sees the activation flag, and the scheduler import in the
+    # producer's sitecustomize.py requires the prefix-seed flag.
+    adapter_lines = {
+        "default": [],
+        "v41": [
+            "export DYN_FPM_DSV41_REAL_KV=1",
+            "export DYN_FPM_INPUT_TEXT=/tmp/fpm-bench/fpm_text.txt",
+            f"export DYN_FPM_TOKENIZER_REVISION={MODEL_REVISION}",
+            "export PYTHONPATH=/tmp/fpm-bench:/opt/dsv41-dynamo/components/src",
+        ],
+        "glm": [
+            "export DYN_FPM_GLM53FLASH_REAL_KV=1",
+            "export DYN_FPM_GLM53FLASH_PREFIX_SEED=1",
+            "export DYN_FPM_TOKENIZER_REVISION=collector-test-snapshot",
+            "export PYTHONPATH=/tmp/fpm-bench:/opt/glm53flash-dynamo",
+        ],
+    }
+    glm = _glm_plan(tmp_path)
+    for kind, lines in adapter_lines.items():
+        for phase in ("prefill", "decode"):
+            if kind == "glm":
+                plan, cell = glm, next(item for item in glm.cells if item.workload_kind == phase)
+            else:
+                cell = _cell(phase=phase)
+                if kind == "v41":
+                    cell = dataclasses.replace(cell, execution_identity=("0" * 64, "full", "hbm_tp_sharded", "text"))
+                plan = _plan(cell)
+                if kind == "v41":
+                    plan.capability = SimpleNamespace(architecture="DeepseekV41ForCausalLM")
+                    plan.options.decoder_replay = False
+            directory = tmp_path / kind / phase
+            directory.mkdir(parents=True)
+            fpm_runner._write_runtime_environment(directory, _cell_generator_overrides(plan, cell, {}))
+            # The default and V4.1 files are the ones of the base revision f33438fe.
+            assert (directory / fpm_runner.RUNTIME_ENV_FILENAME).read_text().splitlines() == [
+                "# Generated Collector startup environment; engine settings remain in run.sh.",
+                *lines,
+                "export FPM_READINESS_TIMEOUT_SECONDS=900",
+                "export DYN_BENCH_KV_WARMUP=on",
+                "export DYN_BENCH_PREFILL_REAL_SEED=on",
+            ]
+
+
 @pytest.mark.parametrize("transport", ["kubernetes", "slurm"])
 @pytest.mark.parametrize("phase", ["prefill", "decode"])
 @pytest.mark.parametrize(

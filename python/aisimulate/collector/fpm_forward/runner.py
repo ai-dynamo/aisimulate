@@ -1486,7 +1486,12 @@ def _cell_generator_overrides(
         # given, reads the tokenizer and the configuration of the checkpoint at the revision that the engine loads,
         # and measures up to the context that the list was generated for.
         launch = getattr(plan, "runtime_launch", None)
-        revision = launch["identity"]["model_revision"] if launch is not None else plan.fpm_profile.model_revision
+        fpm_profile = getattr(plan, "fpm_profile", None)
+        if launch is None and fpm_profile is None:
+            raise ValueError(
+                "GLM-5.3-Flash collection requires a probe launch or an FPM profile that names the model revision"
+            )
+        revision = launch["identity"]["model_revision"] if launch is not None else fpm_profile.model_revision
         env.extend(
             {"name": name, "value": value}
             for name, value in {
@@ -1693,6 +1698,10 @@ def _write_runtime_environment(cell_dir: Path, overrides: dict[str, Any]) -> Non
         FPM_FINALIZATION_TIMEOUT_ENV,
         "PYTHONPATH",
         "DYN_FPM_DSV41_REAL_KV",
+        # Preflight checks the GLM-5.3-Flash scheduler activation only under its flag, and the scheduler import
+        # through the producer's sitecustomize.py requires the prefix-seed flag.
+        "DYN_FPM_GLM53FLASH_REAL_KV",
+        "DYN_FPM_GLM53FLASH_PREFIX_SEED",
         "DYN_FPM_INPUT_TEXT",
         "DYN_FPM_TOKENIZER_REVISION",
         "AISIMULATE_RUNTIME_CONTEXT",

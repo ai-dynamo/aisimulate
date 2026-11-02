@@ -1817,6 +1817,40 @@ def test_glm_smoke_stages_the_four_point_subset(tmp_path):
         }
 
 
+def test_glm_collection_without_a_model_revision_is_refused(tmp_path):
+    architecture = "Glm5NextForConditionalGeneration"
+    path = _mixed_attention_config(tmp_path, architecture, True)
+    points = tmp_path / "points.json"
+    points.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "prefill": [{"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0}],
+                "decode": [{"batch_size": 1, "total_kv_read_tokens": 4096}],
+            }
+        )
+    )
+    # Direct collector use with a user point list, and with neither an accepted probe launch nor an FPM profile.
+    plan = planner.build_collection_plan(
+        backend="vllm",
+        model_path=str(path),
+        system="b200_sxm",
+        selected_ops={"attention_context", "attention_generation"},
+        options=FPMCollectionOptions.from_args(_args(fpm_benchmark_points_file=str(points), fpm_warmup_iterations=0)),
+        model_architecture=architecture,
+        has_model_cases=False,
+        model_config_path=str(path),
+        collector_config={"aic_database_version": "0.27.0"},
+    )
+    assert (plan.runtime_launch, plan.fpm_profile) == (None, None)
+    for cell in plan.cells:
+        with pytest.raises(ValueError) as error:
+            runner._cell_generator_overrides(plan, cell, {})
+        assert str(error.value) == (
+            "GLM-5.3-Flash collection requires a probe launch or an FPM profile that names the model revision"
+        )
+
+
 @pytest.mark.usefixtures("no_models_or_timing_data")
 def test_saved_plan_identity_reads_immutable_facts_without_model_resolution():
     plan = _plan(_profile())
