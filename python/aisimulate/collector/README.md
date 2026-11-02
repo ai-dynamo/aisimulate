@@ -80,10 +80,17 @@ measured a batch-1, 262,144-token GQA prefill at 132.734 ms per forward and
 4.461 seconds inside the collector call (11.357 seconds with process startup).
 Those eight vLLM probes passed in a 139-second allocation. They qualify that
 prior collector revision, not the newly expanded three-framework grids.
-Current collection counts, incremental cost estimates and GPU qualification
-status belong in the PR description; raw campaign evidence remains local.
-Case-count scaling is only a planning estimate: long-history initialization,
-quadratic prefill and workspace growth can make new cases much slower.
+Relative to main `e6b1fe2`, the SM103 dense grids add 39,218 vLLM, 38,785
+SGLang and 46,464 TRT-LLM cases before memory admission. At an assumed five
+steady-state seconds per added case, that is 54.47, 53.87 and 64.53 GPU-hours.
+This is an arithmetic planning scenario, not a measured forecast or bound;
+long-history initialization, quadratic prefill and workspace growth can make
+new cases much slower. It excludes module grids, queue and cold worker setup.
+The measured two-group GLM/SGLang campaign took 1.213 GPU-hours for 500 rows;
+its added 96 shapes per group accounted for about 30.1 minutes per group,
+mostly history seeding. That is within-run attribution, not a controlled
+before/after comparison. Current native qualification and fuller cost estimates
+are reported in PR #664; raw campaign evidence remains local.
 
 MLA has a separate full-history context axis,
 `common_case_values.mla_module.mla_context_sequence_lengths`, and a
