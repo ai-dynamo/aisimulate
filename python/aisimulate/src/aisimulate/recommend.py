@@ -235,11 +235,14 @@ def recommendation_to_sweeper(
     ):
         if name in engine:
             search_space[name] = deepcopy(engine[name])
+    # Only controls the caller set: a role timed by a state snapshot takes an
+    # omitted control from the snapshot, while an explicit default such as
+    # enable_eplb=false must agree with it. The Sweeper has the same defaults.
     search_space.update(
         {
             name: deepcopy(engine[name])
             for name in (*ENGINE_MODEL_CONTROL_FIELDS, "enable_chunked_prefill", "nextn_accepted")
-            if name in engine
+            if name in engine and name in config.engine.model_fields_set
         }
     )
     if engine.get("nextn"):

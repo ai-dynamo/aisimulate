@@ -912,7 +912,9 @@ pipeline, attention-data and MoE parallelism, its KV block size, the
 engine-wide quantization and model controls and the MTP depth (`nextn`) are
 taken from the snapshot; omit them, or give values that include the saved
 ones. A conflicting explicit value fails configuration validation and names
-the snapshot's value. Replicas, scheduler limits (`max_batched_tokens`,
+the snapshot's value; an explicit default such as `enable_eplb: false` or
+`moe_backend: default` conflicts with a snapshot saved with EPLB or another
+MoE backend. Replicas, scheduler limits (`max_batched_tokens`,
 `max_sequences`), KV memory, prefix caching and the other roles are still
 searched. Scheduler limits are not capped at the snapshot's correction grid:
 outside the observed region a fixed correction applies factor 1.0 and a

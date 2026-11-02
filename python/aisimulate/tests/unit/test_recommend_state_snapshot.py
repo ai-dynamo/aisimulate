@@ -613,6 +613,11 @@ def planner_snapshots(tmp_path_factory) -> dict[str, Path]:
         "prefill-unknown-kv": save(
             "prefill-unknown-kv", _planner("prefill", kinds=("prefill",), kvcache_quant_mode="unknown")
         ),
+        # Engine model controls a request may omit or spell inactive.
+        "moe-controls": save(
+            "moe-controls",
+            _planner("decode", kinds=("decode",), backend="sglang", enable_eplb=True, moe_backend="deepep_moe"),
+        ),
         # A regression whose identity is known pins it like a native snapshot.
         "known": save(
             "known",
@@ -796,6 +801,54 @@ def test_unknown_hardware_takes_the_engine_and_known_regression_identity_is_pinn
     known = _space(_planner_request(planner_snapshots["known"], decode_parallelism={"preset": False, "replicas": 1}))
     assert known.backend_version == "0.19.0"
     assert known.parallel_independent_by_mode["disagg"]["decode_tp"] == [1]
+
+
+@pytest.mark.parametrize(
+    ("name", "explicit", "saved"), [("enable_eplb", False, True), ("moe_backend", "default", "deepep_moe")]
+)
+def test_omitted_engine_controls_take_the_snapshot_and_explicit_defaults_must_agree(
+    planner_snapshots, name, explicit, saved
+):
+    raw = _planner_request(planner_snapshots["moe-controls"])
+    raw["engine"]["backend"] = "sglang"
+    assert getattr(_space(raw), name) == saved
+    raw["engine"][name] = explicit
+    with pytest.raises((ValidationError, ValueError), match=rf"engine.{name}={explicit!r} conflicts"):
+        _space(raw)
+    raw["engine"][name] = saved
+    assert getattr(_space(raw), name) == saved
+    # A snapshot that saved the inactive value accepts either spelling.
+    for value in (None, explicit):
+        raw = _planner_request(planner_snapshots["decode"])
+        if value is not None:
+            raw["engine"][name] = value
+        assert getattr(_space(raw), name) == (SearchSpace.model_fields[name].default if value is None else value)
+
+
+def test_the_supervised_recommendation_sees_which_engine_controls_the_caller_set(planner_snapshots, monkeypatch):
+    import pickle
+
+    from aisimulate import supervision
+
+    seen = {}
+
+    def worker(command, **_):
+        with (Path(command[-1]) / "input.pickle").open("rb") as source:
+            pickle.load(source)
+            raw, _ = pickle.load(source)
+        seen["space"] = recommendation_to_sweeper(CoreRecommendationConfig.model_validate(raw)).search_space
+        return {"status": "failed", "reason": "converted"}
+
+    monkeypatch.setattr(supervision, "run_process", worker)
+    raw = _planner_request(planner_snapshots["moe-controls"])
+    del raw["engine"]["backend"]
+    with pytest.raises(RuntimeError, match="converted"):
+        _planner_run(raw)
+    assert (seen["space"].backend, seen["space"].enable_eplb, seen["space"].moe_backend) == (
+        ["sglang"],
+        True,
+        "deepep_moe",
+    )
 
 
 def test_an_sglang_aggregated_planner_snapshot_needs_no_locally_mixed_store(planner_snapshots):

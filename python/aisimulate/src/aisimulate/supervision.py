@@ -514,7 +514,10 @@ def supervised_recommendation(config, kwargs):
                 if main_path and not Path(main_path).is_file():
                     preparation.pop("init_main_from_path")
                 pickle.dump(preparation, target)
-                pickle.dump((config.model_dump(mode="json"), kwargs), target)
+                # Only the fields the caller set: the worker validates them
+                # again, and recommendation_to_sweeper tells omitted settings
+                # from explicit defaults by the fields set.
+                pickle.dump((config.model_dump(mode="json", exclude_unset=True), kwargs), target)
             except (TypeError, AttributeError, pickle.PicklingError) as exc:
                 raise ValueError("supervised recommendation requires pickleable factories and providers") from exc
         report = run_process(
