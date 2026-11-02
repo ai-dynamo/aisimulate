@@ -112,14 +112,30 @@ def load_tool(name: str):
     return module
 
 
-def package_reports(reports: Path, expected: dict, wheel_sha: str, shards: list, destination: Path) -> None:
+def required_probes(source_root: Path, branch: str) -> list[dict]:
+    """Keep sentinel versions with the source whose inventory is being probed."""
+    manifest = source_root / ".github/fpe-required-probes.json"
+    try:
+        content = manifest.read_text()
+    except FileNotFoundError:
+        # These releases predate the manifest. Freeze their original sentinels;
+        # a missing manifest on any newer source must fail rather than drift.
+        if branch not in {"release/0.12.0", "release/0.12.1"}:
+            raise ValueError(f"missing required FPE probe manifest for {branch}: {manifest}") from None
+        content = (ROOT / ".github/fpe-required-probes-0.12.json").read_text()
+    return json.loads(content)["probes"]
+
+
+def package_reports(
+    reports: Path, expected: dict, wheel_sha: str, shards: list, destination: Path, *, source_root: Path
+) -> None:
     qualifier = load_tool("qualify_fpe_support_matrix")
     report = qualifier.qualify(
         reports,
         expected_shards=shards,
         expected_sha=expected["source_sha"],
         expected_wheel_sha256=wheel_sha,
-        required_probes=json.loads((ROOT / ".github/fpe-required-probes.json").read_text())["probes"],
+        required_probes=required_probes(source_root, expected["source_branch"]),
     )
     report.update(expected)
     destination.mkdir(parents=True)
@@ -188,7 +204,14 @@ def main() -> None:
     if json.loads(receipt_path.read_text()) != receipt:
         raise ValueError("release wheel does not match its source/tooling provenance")
     if args.action == "package":
-        package_reports(args.reports, expected, wheel_sha, json.loads(args.shards.read_text()), args.destination)
+        package_reports(
+            args.reports,
+            expected,
+            wheel_sha,
+            json.loads(args.shards.read_text()),
+            args.destination,
+            source_root=args.source_root,
+        )
         return
     verify_installed_wheel(wheel)
     sys.path.insert(0, str(prepare_harness(args.source_root, args.harness_dir)))

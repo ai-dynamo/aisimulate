@@ -159,8 +159,7 @@ def test_installed_bytes_and_active_imports_must_belong_to_release_wheel(tmp_pat
         RELEASE.verify_installed_wheel(wheel, distribution=dist)
 
 
-def reports(root):
-    required = json.loads((ROOT / ".github/fpe-required-probes.json").read_text())["probes"]
+def reports(root, required):
     groups = defaultdict(list)
     for probe in required:
         row = {
@@ -210,15 +209,25 @@ def reports(root):
     return [{"system": s, "backend": b} for s, b in sorted(groups)]
 
 
-def test_complete_release_reports_produce_publishable_ci_artifact(tmp_path):
+@pytest.mark.parametrize("branch", ["main", "release/0.12.0", "release/0.12.1", "release/0.13.0"])
+def test_complete_release_reports_produce_publishable_ci_artifact(tmp_path, branch):
+    manifest_name = "fpe-required-probes.json" if branch == "main" else "fpe-required-probes-0.12.json"
+    manifest = (ROOT / ".github" / manifest_name).read_text()
+    required = json.loads(manifest)["probes"]
+    source_root = tmp_path / "source"
+    if branch not in {"release/0.12.0", "release/0.12.1"}:
+        path = source_root / ".github/fpe-required-probes.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(manifest)
+    expected = {**IDENTITY, "source_branch": branch}
     source = tmp_path / "reports"
-    shards = reports(source)
+    shards = reports(source, required)
     destination = tmp_path / "web"
-    RELEASE.package_reports(source, IDENTITY, WHEEL, shards, destination)
+    RELEASE.package_reports(source, expected, WHEEL, shards, destination, source_root=source_root)
     qualification = json.loads((destination / "fpe-qualification.json").read_text())
     assert qualification["source_sha"] == SHA
     assert qualification["tooling_sha"] == TOOLING
-    assert qualification["source_branch"] == "release/0.12.0"
+    assert qualification["source_branch"] == branch
     assert qualification["required_probe_count"] == 4
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w") as archive:
@@ -240,11 +249,65 @@ def test_complete_release_reports_produce_publishable_ci_artifact(tmp_path):
 
 def test_incomplete_release_cannot_produce_a_web_artifact(tmp_path):
     source = tmp_path / "reports"
-    shards = reports(source)
+    required = json.loads((ROOT / ".github/fpe-required-probes-0.12.json").read_text())["probes"]
+    shards = reports(source, required)
     next(source.rglob("fpe_support_matrix.json")).unlink()
     destination = tmp_path / "web"
     with pytest.raises(ValueError, match="missing shards"):
-        RELEASE.package_reports(source, IDENTITY, WHEEL, shards, destination)
+        RELEASE.package_reports(source, IDENTITY, WHEEL, shards, destination, source_root=tmp_path / "source")
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("branch", ["release/0.12.0", "release/0.12.1", "release/0.13.0"])
+def test_source_manifest_takes_precedence_over_current_and_legacy_baselines(tmp_path, branch):
+    source_root = tmp_path / "source"
+    path = source_root / ".github/fpe-required-probes.json"
+    path.parent.mkdir(parents=True)
+    legacy = (ROOT / ".github/fpe-required-probes-0.12.json").read_text()
+    source_probes = json.loads(legacy)["probes"]
+    # A smaller authored source manifest also proves that the loader did not
+    # silently use the four-entry compatibility baseline on 0.12 branches.
+    source_probes = [probe for probe in source_probes if probe["backend"] == "trtllm"]
+    path.write_text(json.dumps({"schema_version": 1, "probes": source_probes}))
+    assert {probe["backend_version"] for probe in source_probes} == {"1.3.0rc23"}
+    tooling_root = tmp_path / "tooling"
+    (tooling_root / ".github").mkdir(parents=True)
+    current = [{**probe, "backend_version": "1.3.0rc29"} for probe in source_probes]
+    (tooling_root / ".github/fpe-required-probes.json").write_text(json.dumps({"probes": current}))
+    (tooling_root / ".github/fpe-required-probes-0.12.json").write_text(legacy)
+    with patch.object(RELEASE, "ROOT", tooling_root):
+        assert RELEASE.required_probes(source_root, branch) == source_probes
+
+
+@pytest.mark.parametrize("branch", ["main", "release/0.13.0", "release/0.14.0", "release/0.12.2"])
+def test_missing_source_manifest_fails_outside_pre_manifest_releases(tmp_path, branch):
+    with pytest.raises(ValueError, match="missing required FPE probe manifest"):
+        RELEASE.required_probes(tmp_path, branch)
+
+
+@pytest.mark.parametrize("branch", ["release/0.12.0", "release/0.12.1"])
+@pytest.mark.parametrize(
+    "manifest,error",
+    [("", ValueError), ("not json", ValueError), ("{}", KeyError), ('{"probes": []}', ValueError)],
+)
+def test_bad_or_empty_source_manifest_never_falls_back(tmp_path, branch, manifest, error):
+    source_root = tmp_path / "source"
+    path = source_root / ".github/fpe-required-probes.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(manifest)
+    destination = tmp_path / "web"
+    required = json.loads((ROOT / ".github/fpe-required-probes-0.12.json").read_text())["probes"]
+    report_root = tmp_path / "reports"
+    shards = reports(report_root, required)
+    with pytest.raises(error):
+        RELEASE.package_reports(
+            report_root,
+            {**IDENTITY, "source_branch": branch},
+            WHEEL,
+            shards,
+            destination,
+            source_root=source_root,
+        )
     assert not destination.exists()
 
 

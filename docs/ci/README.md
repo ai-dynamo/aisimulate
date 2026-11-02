@@ -81,6 +81,11 @@ starts after the staged-wheel smoke tests succeed. Release qualification process
 branches sequentially, with up to 20 shard jobs within each release.
 Each release uses the commit SHA recorded at the start of the run, even if its
 branch receives new commits while the checks are running.
+Required FPE probes come from that source checkout's
+`.github/fpe-required-probes.json`, so a newer main baseline cannot invalidate
+an older release. The pre-manifest `release/0.12.0` and `release/0.12.1` branches
+use the frozen [0.12 baseline](../../.github/fpe-required-probes-0.12.json).
+A missing baseline on any other source fails qualification.
 Pages requires a successful completed nightly; the optional GitLab security
 job is skipped when disabled and must succeed when enabled.
 
@@ -334,6 +339,14 @@ table are relative to `python/aisimulate/` unless marked repository-root.
 | `cli-build` | Build-marked `tests/e2e/cli/`; recommendation E2E runs separately within group 1 | Four disjoint groups, four workers each; recommendation runs serially |
 | `support-matrix` | Build-marked `tests/e2e/support_matrix/` | One job, pytest automatic worker count |
 | `tools-build` | Build-marked `tests/e2e/tools/`; installed FPM verification reuses the wheel | One job, pytest automatic worker count |
+
+The `support-matrix` shard includes the required native FPE probes from
+`.github/fpe-required-probes.json`. Each identity must exist in the live matrix
+inventory and have a topology passing prefill, decode start, decode end, and
+mixed probes through the same qualifier used by nightly. These tests reuse the
+application wheel and keep all topologies for the small sentinel set; the full
+model/system/backend matrix remains in nightly. Update the baseline together
+with query-version changes so a retired version cannot silently leave coverage.
 
 Unit and CLI groups use pytest-split's `least_duration` partitioning. Every
 group is scheduled when application tests are selected. Integration coverage
