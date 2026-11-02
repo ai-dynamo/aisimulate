@@ -426,13 +426,15 @@ impl VllmHostOffloadAdapter {
 
         debug_assert_eq!(g1_cost.cached_tokens % block_size, 0);
         let base_g1_blocks = g1_cost.cached_tokens / block_size;
-        // SimpleCPU must recompute at least the last token.
+        // SimpleCPU must recompute at least the last token. G2 loads only
+        // prompt blocks, so a preempted request recomputes its stored output
+        // blocks, which vLLM reloads.
         let end = if simple {
-            ((sequence.len() - 1) / block_size).min(request.prompt_keys.len())
+            ((sequence.len() - 1) / block_size).min(sequence.num_input_tokens() / block_size)
         } else {
             request.prompt_keys.len()
         };
-        let outcome = if base_g1_blocks >= request.prompt_keys.len() {
+        let outcome = if base_g1_blocks >= end {
             if let Some(g3) = g3 {
                 g3.release(request.owner);
             }
@@ -2575,6 +2577,41 @@ mod tests {
                 "{connector:?}"
             );
         }
+    }
+
+    #[test]
+    fn simple_cpu_recomputes_a_preempted_request_s_stored_output_blocks() {
+        // Q and P decode in step and fill an 8-block G1 at their fifth block,
+        // so P is preempted, and Q's next blocks evict P's released tail. P's
+        // stored decode block 2 is then a G2 hit, but G2 loads only prompt
+        // blocks; vLLM reloads it too (manager.py `get_num_new_matched_tokens`).
+        let mut args = connector_args(G2Connector::SimpleCpuV032);
+        args.num_gpu_blocks = 8;
+        let mut core = VllmCore::new_with_worker_rank(args, 0, 0, 0, true, None).unwrap();
+        let (q, p) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        for (uuid, first, output) in [(q, 100, 14), (p, 200, 16)] {
+            core.receive(DirectRequest {
+                tokens: (first..first + 8).collect(),
+                max_output_tokens: output,
+                uuid: Some(uuid),
+                arrival_timestamp_ms: Some(0.0),
+                ..Default::default()
+            });
+        }
+        let mut now_ms = 0.0;
+        let mut preemptions = 0;
+        let mut outputs = FxHashMap::<Uuid, usize>::default();
+        while !core.is_empty() {
+            let pass = core.execute_pass(&mut TraceCollector::default(), now_ms);
+            now_ms = pass.end_ms;
+            core.complete_engine_boundary(now_ms);
+            preemptions = pass.mocker_metrics.vllm_preemptions_total;
+            for signal in pass.output_signals {
+                *outputs.entry(signal.uuid).or_default() += 1;
+            }
+        }
+        assert_eq!(preemptions, 1);
+        assert_eq!((outputs[&q], outputs[&p]), (14, 16));
     }
 
     #[test]
