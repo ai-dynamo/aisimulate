@@ -101,6 +101,9 @@ def glm_point_manifest(
         for batch in batch_sizes(min(MAX_BATCH, decode_batch_limit))
         if fits(batch, context)
     ]
+    # A phase without a point leaves its cells nothing to measure, so the plan is refused before any GPU work.
+    if not prefill or not decode:
+        raise ValueError("GLM-5.3-Flash collection has no feasible point for the accepted cache capacity")
     return _manifest({"schema_version": 3, "prefill": prefill, "decode": decode})
 
 

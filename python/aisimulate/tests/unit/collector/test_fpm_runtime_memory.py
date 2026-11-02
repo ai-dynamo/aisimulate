@@ -1657,6 +1657,44 @@ def test_saved_glm_plan_reloads_with_its_generated_point_list(tmp_path):
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")
+def test_bounded_sample_of_a_saved_glm_plan_is_an_explicit_list(tmp_path):
+    from collector.fpm_forward.repeatability import _subset_plan, load_repeatability_source
+
+    points = {
+        "schema_version": 3,
+        "prefill": [{"batch_size": 1, "total_prefill_tokens": 64, "total_kv_read_tokens": 0}],
+        "decode": [],
+    }
+
+    def samples(plan):
+        campaign = tmp_path / "fpm-artifacts" / plan.sha256[:16]
+        runner._atomic_json(campaign / "collection-plan.json", plan.to_dict())
+        source = load_repeatability_source(campaign)
+        prefill = next(cell for cell in source.cells if cell.workload_kind == "prefill")
+        selected = {"cell_id": prefill.cell_id, "benchmark_points": points}
+        bounded = _subset_plan(source, selected)
+        assert json.loads(bounded.options.benchmark_points_json) == points
+        # The source options with only the list replaced.
+        listed = replace(
+            source.options,
+            benchmark_points_json=bounded.options.benchmark_points_json,
+            benchmark_points_sha256=bounded.options.benchmark_points_sha256,
+        )
+        return source, listed, bounded, _subset_plan(source, selected, comparison_mode="full_grid")
+
+    # A bounded sample measures points that the generator did not choose, so its list is explicit. A full-grid
+    # sample measures the generated list itself.
+    source, listed, bounded, full = samples(_glm_plan(tmp_path))
+    assert source.options.benchmark_points_origin == "glm53flash_grid_v1"
+    assert bounded.options == replace(listed, benchmark_points_origin=None)
+    assert bounded.to_dict()["point_generation"]["source"] == "frozen_explicit_manifest"
+    assert full.options == source.options
+    # A sample of a plan without an origin changes only its list, as before.
+    _source, listed, bounded, _full = samples(_pending_plan())
+    assert bounded.options == listed
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
 def test_saved_plan_identity_reads_immutable_facts_without_model_resolution():
     plan = _plan(_profile())
     saved = plan.to_dict()

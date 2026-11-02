@@ -5,10 +5,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+from types import SimpleNamespace
 
 import pytest
 from collector.fpm_forward.config import _freeze_benchmark_points
-from collector.fpm_forward.glm53flash_points import glm_point_manifest, glm_smoke_subset
+from collector.fpm_forward.glm53flash_points import (
+    CHUNK_ALIGN,
+    MAX_BATCH,
+    MAX_CONTEXT,
+    MAX_NEW,
+    glm_measured_context,
+    glm_point_manifest,
+    glm_smoke_subset,
+)
+
+from .test_fpm_glm53flash_prefix_seed import load_producer
 
 pytestmark = pytest.mark.unit
 
@@ -121,6 +132,26 @@ def test_capacity_rule_drops_points_beyond_the_accepted_capacity():
     assert len(decode) == 67
     assert {"batch_size": 1, "total_kv_read_tokens": 131072} in decode
     assert {"batch_size": 2, "total_kv_read_tokens": 262144} not in decode
+
+
+def test_capacity_without_a_feasible_point_is_refused():
+    # Five usable blocks: every request needs one attention block and one block in each of the five state groups.
+    with pytest.raises(ValueError) as error:
+        glm_point_manifest(**{**_TP4, "kv_cache_bytes": 6 * 13_045_120})
+    assert str(error.value) == "GLM-5.3-Flash collection has no feasible point for the accepted cache capacity"
+
+
+def test_copied_limits_match_the_producer(monkeypatch):
+    producer = load_producer(monkeypatch)
+
+    assert (CHUNK_ALIGN, MAX_BATCH, MAX_NEW, MAX_CONTEXT) == (
+        producer.CHUNK_ALIGN,
+        producer.MAX_BATCH,
+        producer.MAX_NEW,
+        producer.MAX_CONTEXT,
+    )
+    # The measured context keeps the producer's headroom below the runtime context.
+    assert glm_measured_context(SimpleNamespace(vllm_max_model_len=4096)) == 4096 - producer.CONTEXT_HEADROOM
 
 
 @pytest.mark.parametrize("field,value", [("token_budget", 8190), ("hash_block_size", 2178)])

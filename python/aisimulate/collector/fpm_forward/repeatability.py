@@ -415,6 +415,8 @@ def _subset_plan(
         source.options,
         benchmark_points_json=canonical,
         benchmark_points_sha256=_canonical_hash(selected["benchmark_points"]),
+        # A bounded sample is not the list that a generator produced, so it is labeled and staged as an explicit list.
+        benchmark_points_origin=None,
     )
     if comparison_mode == "full_grid":
         options = source.options
