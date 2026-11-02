@@ -825,9 +825,7 @@ def _estimated_generation_kv_bytes_per_token(model_path: str, attn_type: str, kv
     Index sharing may elide consumer-layer buffers; counting all layers is an
     upper bound. The timed skip-indexer variant loads the same native pools.
     """
-    config_file = os.path.join(_MODEL_CONFIG_DIR, f"{model_path.replace('/', '--')}_config.json")
-    with open(config_file) as f:
-        config = json.load(f)
+    config = module_model_config(model_path)
     layers = int(os.environ.get("SGLANG_TEST_NUM_LAYERS", "2"))
     if layers <= 0 or os.environ.get("SGLANG_LOAD_FORMAT", "dummy") != "dummy":
         layers = int(config["num_hidden_layers"])

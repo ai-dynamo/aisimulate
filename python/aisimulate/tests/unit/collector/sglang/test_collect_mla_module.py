@@ -259,6 +259,25 @@ class TestAgenticGenerationCoverage:
 
 @pytest.mark.unit
 class TestGenerationMemoryManifest:
+    def test_mla_context_manifest_accepts_local_model_config(self, monkeypatch, tmp_path):
+        mod = _import_module()
+        config = mod.module_model_config("deepseek-ai/DeepSeek-V3")
+        (tmp_path / "config.json").write_text(json.dumps(config))
+        monkeypatch.setenv("SGLANG_TEST_NUM_LAYERS", "2")
+        monkeypatch.setenv("SGLANG_LOAD_FORMAT", "dummy")
+        monkeypatch.setattr(mod.torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(
+            mod.torch.cuda,
+            "get_device_properties",
+            lambda _: types.SimpleNamespace(total_memory=180 * 2**30),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            mod, "get_context_test_cases", lambda _: [[40960, 1, 8, "bfloat16", "bfloat16", "bfloat16"]]
+        )
+        monkeypatch.setattr(mod, "_filter_cases_from_env", lambda cases, **_: cases)
+        assert mod._mla_context_manifest(8, "bfloat16", "bfloat16", "bfloat16", str(tmp_path)) == ((1, 40960, 0),)
+
     @pytest.mark.parametrize(
         "attn_type,kv_dtype,backend,expected",
         [

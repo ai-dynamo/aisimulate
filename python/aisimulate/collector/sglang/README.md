@@ -82,6 +82,7 @@ For an exact dense-MLA context manifest, SGLang sizes its native prefill chunk
 capacity from the largest planned query-token batch. This permits full-history
 module forwards beyond the default serving chunk; an explicit chunk override
 still takes precedence. DSA keeps its existing chunked-prefill configuration.
+Memory planning resolves the same bundled or local model config as execution.
 
 The standalone MLA adapters share the expanded `mla.yaml` grid. SGLang's
 mock runner now advertises the actual case length. TRT-LLM's standalone
