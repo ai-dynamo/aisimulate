@@ -600,3 +600,139 @@ def test_malformed_native_regime_remains_json_reportable(quality_case, regime):
     assert not report["ready_for_full_collection"]
     assert _decode(report)["rank_diagnostics"][0]["regime_counts"]["invalid"] == 1
     assert json.loads(json.dumps(report, sort_keys=True))["status"] == "blocked"
+
+
+def _glm_smoke(tmp_path, monkeypatch):
+    """Write the smoke campaign of a probe-backed GLM-5.3-Flash collection plan, as a vLLM 0.31.0 runtime fills it.
+
+    Each cell has its generated launch, the producer's rank artifact of the smoke points and one execution record per
+    TP rank, which the execution observer writes from a stand-in vLLM 0.31.0 configuration of that launch. The rank
+    artifacts have no measurement protocol, benchmark measurement or warm-up evidence, because the producer's scheduler
+    base, ai-dynamo 1.6.0.dev20261010, writes none. The profile names no probe provenance, so readiness does not bind
+    the runtime memory to probe observations here. Return the request and the onboarding root.
+    """
+    from types import SimpleNamespace
+
+    from collector.fpm_forward.config import with_kv_warmup_defaults
+    from collector.fpm_forward.runtime import fpm_memory_observer as observer
+
+    from aisimulate.support.schema import SupportRequest
+
+    from .collector.test_fpm_glm53flash_native_collection import (
+        DECODE_POINTS,
+        PREFILL_CACHED,
+        PREFILL_COLD,
+        glm_native_payload,
+        write_glm_rank,
+    )
+    from .collector.test_fpm_runner import _write_provenance
+    from .collector.test_fpm_runtime_memory import _probe_backed_glm_plan, _typed, _vllm_config
+
+    plan, overrides = _probe_backed_glm_plan(tmp_path)
+    revision = plan.runtime_launch["identity"]["model_revision"]
+    root = tmp_path / "onboarding"
+    campaign = root / "fpm-artifacts" / plan.sha256[:16] / "smoke"
+    runner._atomic_json(campaign / "collection-plan.json", plan.to_dict())
+    runner._atomic_json(campaign / "generator-overrides.json", with_kv_warmup_defaults(overrides))
+    config = _vllm_config(tp=4, dp=1)
+    config.model_config = SimpleNamespace(
+        model=plan.model_path,
+        revision=revision,
+        dtype="torch.bfloat16",
+        quantization="fp8",
+        max_model_len=plan.options.vllm_max_model_len,
+        enforce_eager=False,
+        # transformers stores the commit of the loaded configuration on the configuration object.
+        hf_config=SimpleNamespace(_commit_hash=revision),
+    )
+    config.quant_config = _typed("vllm.model_executor.layers.quantization.fp8", "Fp8Config")
+    vars(config.quant_config).update(activation_scheme="dynamic", weight_block_size=[128, 128])
+    vars(config.cache_config).update(
+        cache_dtype="fp8_e4m3",
+        num_gpu_blocks_override=None,
+        block_size=2176,
+        mamba_cache_mode="align",
+        prefix_match_unit=None,
+    )
+    vars(config.scheduler_config).update(max_num_batched_tokens=8192, max_num_seqs=256)
+    vars(config.parallel_config).update(
+        enable_expert_parallel=False, enable_eplb=False, data_parallel_size_local=1, data_parallel_external_lb=False
+    )
+    group = SimpleNamespace(
+        backend=type("ResolvedBackend", (), {"__module__": "actual.runtime"}),
+        layer_names=["model.layers.3.self_attn.attn"],
+        kv_cache_group_id=0,
+    )
+    worker = SimpleNamespace(vllm_config=config, model_runner=SimpleNamespace(attn_groups=[[group]]))
+    points = {"prefill": [PREFILL_COLD, PREFILL_CACHED], "decode": DECODE_POINTS}
+    checkpoint = {"schema": runner.CHECKPOINT_SCHEMA, "plan_sha256": plan.sha256, "cells": {}}
+    for cell in plan.cells:
+        directory = campaign / "cells" / cell.cell_id
+        pod = directory / "raw" / "pod-0"
+        pod.mkdir(parents=True)
+        runner._render_cell(plan, cell, directory, overrides, smoke=True)
+        attempt = f"smoke-{cell.workload_kind}"
+        _write_provenance(
+            pod / "collector-provenance.json", cell_id=cell.cell_id, plan_sha256=plan.sha256, attempt_id=attempt
+        )
+        provenance = json.loads((pod / "collector-provenance.json").read_text())
+        provenance["runtime"]["backend_version"] = "0.31.0"
+        (pod / "collector-provenance.json").write_text(json.dumps(provenance))
+        payload = glm_native_payload(cell.workload_kind, points=points[cell.workload_kind])
+        # The producer records the revision that the engine loaded and the runtime context of the launch.
+        payload["input_provenance"]["tokenizer_revision"] = revision
+        payload["context_policy"]["runtime_context_length"] = plan.options.vllm_max_model_len
+        write_glm_rank(pod, payload)
+        with monkeypatch.context() as patch:
+            patch.setattr(observer, "RESULTS_DIR", pod)
+            patch.setattr(observer.importlib.metadata, "version", lambda _name: "0.31.0")
+            for name in ("FPM_EXECUTION_OUTPUT_DIR", "FPM_EXECUTION_PROVENANCE_FILE"):
+                patch.delenv(name, raising=False)
+            for tp_rank in range(cell.topology.tp):
+                observer.observe_execution(worker, dp_rank=0, tp_rank=tp_rank, pp_rank=0)
+        checkpoint["cells"][cell.cell_id] = {"status": "passed", "attempt_id": attempt}
+    runner._atomic_json(root / "fpm-checkpoint" / "fpm_forward_smoke.json", checkpoint)
+    request = SupportRequest.model_validate(
+        {
+            "identity": plan.runtime_launch["identity"],
+            "search": {
+                "tensor_parallel": 4,
+                "attention_data_parallel": 1,
+                "moe_tensor_parallel": 4,
+                "moe_expert_parallel": 1,
+                "context_length": 1_048_576,
+            },
+            "collection": {
+                "max_num_tokens": 8192,
+                "max_batch_size": 256,
+                "prefill_cudagraph_policy": "runtime",
+                "gpu_memory_utilization": 0.9,
+                "warmup_iterations": 0,
+            },
+            "fpm_profile": plan.to_dict()["fpm_profile"],
+        }
+    )
+    return request, root
+
+
+def test_readiness_qualifies_a_glm_smoke_of_producer_artifacts(tmp_path, monkeypatch):
+    request, root = _glm_smoke(tmp_path, monkeypatch)
+    report = assess_readiness(request, root, root / "fpm-checkpoint")
+    assert report["blockers"] == []
+    assert report["ready_for_full_collection"]
+    cells = {item["cell"]["workload_kind"]: item for item in report["selected_cells"]}
+    # The cold prefill point has no KV to label. The cached prefill and the decode points were seeded with real KV.
+    assert cells["prefill"]["formal_regime_counts"] == {"n/a": 1, "real_kv": 1}
+    assert cells["decode"]["formal_regime_counts"] == {"real_kv": 2}
+    legacy = {
+        "measurement evidence: legacy artifact has no measurement protocol",
+        "measurement evidence: rank 0: per-sample execution and warmup evidence is unreported",
+    }
+    for item in cells.values():
+        assert (item["campaign"], item["status"], item["blockers"]) == ("smoke", "ready", [])
+        assert item["kvwarm"]["method"] == "native_prefix_cache_real_seed"
+        # vLLM 0.31.0 execution is audited, and the observed configuration agrees with the plan and its launch.
+        assert item["execution"]["failures"] == []
+        assert [reason for reason in item["execution"]["missing_evidence"] if "unaudited" in reason] == []
+        # The absent measurement evidence of the scheduler base is reported, and it does not block.
+        assert legacy <= set(item["execution"]["missing_evidence"])
