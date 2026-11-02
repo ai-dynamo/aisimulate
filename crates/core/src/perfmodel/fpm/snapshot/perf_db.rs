@@ -31,18 +31,20 @@
 //! process ([`loaded`]); saving recomputes it and fails if the data changed
 //! since. Tables that other engines parsed before the fingerprint stop being
 //! shared then, because the shared table memo is keyed by paths, not content.
+//! For the same reason a restore shares only tables an earlier restore read
+//! right after verifying the same data ([`current`], [`verified`]).
 //! Packing copies exactly the fingerprinted entries, preserving relative
 //! paths, so a packed root resolves tables exactly like the original.
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use serde::{Deserialize, Serialize};
 
 use super::{Stage, invalid, io_error, normalized_absolute, sha256_hex};
 use crate::AicError;
-use crate::perfmodel::perf_database::unshare_tables;
+use crate::perfmodel::perf_database::{PerfDatabase, PerfTables, unshare_tables};
 
 pub(crate) const METHOD: &str = "systems_tree_sha256_v1";
 pub(crate) const PACKED_SYSTEMS_DIR: &str = "perf_db/systems";
@@ -321,17 +323,25 @@ pub(crate) fn fingerprint(
 /// The load-time fingerprint shared by a process's estimators.
 pub(crate) type LoadedFingerprint = Arc<Result<PerfDbFingerprint, String>>;
 
-/// The process-wide load-time fingerprint cell for one root, system and
-/// external parquet. Each key has its own cell, so concurrent first loads
-/// hash the data once without holding the map lock while hashing.
-fn loaded_cell(
-    root: &Path,
-    system: &str,
-    fpm_parquet: Option<&Path>,
-) -> Arc<OnceLock<LoadedFingerprint>> {
+/// The process-wide load-time fingerprint of one root, system and external
+/// parquet, and the shared tables known to hold the data it describes.
+#[derive(Default)]
+struct Loaded {
+    fingerprint: OnceLock<LoadedFingerprint>,
+    /// Tables restored estimators read right after the data was fingerprinted
+    /// again and still matched `fingerprint`. Only these stay shared across a
+    /// restore: the shared table memo is keyed by paths, so any other live
+    /// tables for the root may have been parsed from another generation of
+    /// its files.
+    verified: Mutex<Vec<Weak<PerfTables>>>,
+}
+
+/// The process-wide load-time state for one root, system and external
+/// parquet. Each key has its own cell, so concurrent first loads hash the
+/// data once without holding the map lock while hashing.
+fn loaded_cell(root: &Path, system: &str, fpm_parquet: Option<&Path>) -> Arc<Loaded> {
     type Key = (PathBuf, String, Option<PathBuf>);
-    static LOADED: OnceLock<Mutex<HashMap<Key, Arc<OnceLock<LoadedFingerprint>>>>> =
-        OnceLock::new();
+    static LOADED: OnceLock<Mutex<HashMap<Key, Arc<Loaded>>>> = OnceLock::new();
     let normal = |path: &Path| normalized_absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let key = (normal(root), system.to_owned(), fpm_parquet.map(normal));
     Arc::clone(
@@ -352,36 +362,71 @@ fn loaded_cell(
 /// Tables another engine parsed before this fingerprint are no longer shared,
 /// so the estimator loading next reads what was fingerprinted.
 pub(crate) fn loaded(root: &Path, system: &str, fpm_parquet: Option<&Path>) -> LoadedFingerprint {
-    Arc::clone(loaded_cell(root, system, fpm_parquet).get_or_init(|| {
-        let fingerprint = fingerprint(root, system, fpm_parquet).map_err(|error| error.to_string());
-        unshare_tables(root, system);
-        Arc::new(fingerprint)
-    }))
+    Arc::clone(
+        loaded_cell(root, system, fpm_parquet)
+            .fingerprint
+            .get_or_init(|| {
+                let fingerprint =
+                    fingerprint(root, system, fpm_parquet).map_err(|error| error.to_string());
+                unshare_tables(root, system, &[]);
+                Arc::new(fingerprint)
+            }),
+    )
 }
 
 /// Fingerprint `root` as it is now, before a restore loads it. When this
 /// process has not loaded the root yet, the result is also its load-time
 /// fingerprint, so the load that follows does not hash the same data again.
-/// Tables parsed before that are no longer shared, so the restored estimator
-/// reads the data that matched the snapshot. Once this process has loaded the
-/// root, its shared tables were parsed after that load-time fingerprint, so
-/// they stay shared while the data still matches it; repeated restores, such
-/// as one per replayed candidate, then reuse the parsed tables.
+///
+/// Shared tables stop being shared unless a restore already verified them
+/// against this same data ([`verified`]). Any other tables for the root may
+/// have been parsed while its files held other data: an estimator loaded
+/// after the load-time fingerprint reuses it without hashing again. Repeated
+/// restores of unchanged data, such as one per replayed candidate, therefore
+/// parse the tables once and reuse them afterwards.
 pub(crate) fn current(
     root: &Path,
     system: &str,
     fpm_parquet: Option<&Path>,
 ) -> Result<PerfDbFingerprint, AicError> {
-    let cell = loaded_cell(root, system, fpm_parquet);
+    let loaded = loaded_cell(root, system, fpm_parquet);
     let current = fingerprint(root, system, fpm_parquet)?;
-    let unchanged = cell
+    let unchanged = loaded
+        .fingerprint
         .get()
         .is_some_and(|loaded| loaded.as_ref().as_ref() == Ok(&current));
-    if !unchanged {
-        unshare_tables(root, system);
-    }
-    cell.get_or_init(|| Arc::new(Ok(current.clone())));
+    let keep: Vec<_> = if unchanged {
+        let verified = loaded.verified.lock().unwrap_or_else(|e| e.into_inner());
+        verified.iter().filter_map(Weak::upgrade).collect()
+    } else {
+        Vec::new()
+    };
+    unshare_tables(root, system, &keep);
+    loaded
+        .fingerprint
+        .get_or_init(|| Arc::new(Ok(current.clone())));
     Ok(current)
+}
+
+/// Record that a restore read `database`'s tables right after [`current`]
+/// found the data under `root` unchanged from its load-time fingerprint, so
+/// later restores of the same data may share them.
+pub(crate) fn verified(
+    root: &Path,
+    system: &str,
+    fpm_parquet: Option<&Path>,
+    database: &PerfDatabase,
+) {
+    let loaded = loaded_cell(root, system, fpm_parquet);
+    let mut verified = loaded.verified.lock().unwrap_or_else(|e| e.into_inner());
+    let tables = database.tables_arc();
+    verified.retain(|known| known.strong_count() > 0);
+    if !verified
+        .iter()
+        .any(|known| std::ptr::eq(known.as_ptr(), Arc::as_ptr(tables)))
+    {
+        verified.push(Arc::downgrade(tables));
+    }
 }
 
 /// Copy the fingerprinted systems inputs into the stage. Returns the packed

@@ -1128,6 +1128,11 @@ fn restore_verified(
                 selected.as_deref().unwrap_or(Path::new("?")).display()
             )));
         }
+        // The data matched before this model loaded and only verified tables
+        // stayed shared, so later restores of the same data may share these.
+        if let Some(root) = &native_root {
+            perf_db::verified(root, &base.system, parquet, engine.database());
+        }
     }
     model.install_state(state.state)?;
     if let Some(learned) = &manifest.learned {
