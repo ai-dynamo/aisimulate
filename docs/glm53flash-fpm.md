@@ -44,9 +44,10 @@ The experimental B300 key is `b300-vllm-fp8-tp4`. Default materialization is blo
 
 `python/aisimulate/collector/fpm_forward/runtime/glm53flash/` contains the
 producer. It is staged next to `fpm_exec.sh` and `preflight.py` and runs with
-the pinned Dynamo `InstrumentedScheduler` overlay on `PYTHONPATH`. The overlay
-is the `ai-dynamo 1.6.0.dev20261010` build, whose scheduler file equals
-`ai-dynamo/dynamo@395f0240`, and `runtime-source-sha256.json` pins that file.
+the pinned Dynamo `InstrumentedScheduler` overlay on `PYTHONPATH`. The first
+part of the overlay below is the `ai-dynamo 1.6.0.dev20261010` build, whose
+scheduler file equals `ai-dynamo/dynamo@395f0240`, and
+`runtime-source-sha256.json` pins that file.
 
 - `sitecustomize.py` checks the installed vLLM/Dynamo sources against
   `runtime-source-sha256.json` before the scheduler loads. It then replaces
@@ -122,7 +123,10 @@ collector passes no `--prefix-match-unit`. It also sets these variables:
 
 `DYN_FPM_GLM53FLASH_PREFIX_MATCH_UNIT` stays unset, so the native hash block of
 the engine is the prefix unit. The planner refuses a hash block that is not a
-multiple of 4. The producer still checks every prefill chunk start.
+multiple of 4. The producer still checks every prefill chunk start. In guided
+collection, a decode point seeds `(c - 2) // hash_block * hash_block` tokens,
+not the `4 * floor((c - 2) / 4)` of the launch above with
+`--prefix-match-unit 4`.
 
 The container needs one overlay directory at `/opt/glm53flash-dynamo`. A Slurm
 run can mount it with `--container-mount`. The collector uses that path unless
@@ -149,11 +153,13 @@ The request must follow these rules:
 
 Plan the collection from the accepted runtime probe. The planner generates the
 point list from `max_num_tokens`, `max_batch_size` and `context_length` of the
-request. It takes `hash_block_size_tokens` and the cache capacity from the
-accepted profile, and it refuses a profile without the hash block. The planner
-freezes the list into the collection plan, so the plan hash covers it. The
-producer divides each total evenly. Every request of a point therefore has the
-same new tokens, prefix and decode context. These are the axes:
+resolved request. A limit that the request leaves unset takes the accepted
+profile's bound. The planner takes `hash_block_size_tokens` and the cache
+capacity from the accepted profile, and it refuses a profile without the hash
+block. The planner freezes the list into the collection plan, so the plan hash
+covers it. The producer divides each total evenly. Every request of a point
+therefore has the same new tokens, prefix and decode context. These are the
+axes:
 
 - Prefill new tokens per request: the powers of two from 4 to the token budget,
   every whole hash block up to the budget, and the budget itself. The list caps
@@ -170,9 +176,11 @@ same new tokens, prefix and decode context. These are the axes:
   `max_batch_size`, and that value itself.
 
 The planner drops a point that does not fit the accepted cache capacity. It
-refuses a plan with no prefill point or no decode point. At TP 4 with 2,176-token
+refuses a plan with no prefill point or no decode point. At TP4 with 2,176-token
 hash blocks, 8,192 tokens, 256 sequences and a 1,048,576-token context, the
-list has 496 prefill points and 96 decode points.
+list has 496 prefill points and 96 decode points. That needs an accepted cache
+of at least 2,113 pool blocks (the profile's `kv_cache_bytes` divided by its
+largest `page_size_bytes`).
 
 The smoke measures four points of this list. It runs under the plan hash of
 formal collection and keeps its own campaign directory. The prefill points are
