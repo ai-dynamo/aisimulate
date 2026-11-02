@@ -82,9 +82,8 @@ def _source(request: SupportRequest) -> dict[str, Any]:
 
 def _collection_controls(cells, deployment):
     """Separate recorded collection controls for memory-only review, without editing plans."""
-    from collector.fpm_forward.planner import BackendPolicy
-
     from aisimulate.generator.builders.fpm_builder import _benchmark_wait_timeout_seconds
+    from collector.fpm_forward.planner import BackendPolicy
 
     compared_cells, changes = [], []
     for cell in cells:

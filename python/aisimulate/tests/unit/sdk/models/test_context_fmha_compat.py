@@ -259,6 +259,7 @@ def test_trtllm_mla_uses_the_checkpoint_kv_when_unset(fake_model_info):
         {"forward_model": "fpm"},
         {"architecture": "Qwen3ForCausalLM"},
         {"architecture": "DeepseekV32ForCausalLM"},
+        {"from_data": True},
     ],
 )
 def test_trtllm_mla_mapping_leaves_other_paths(fake_model_info, override):
@@ -266,6 +267,8 @@ def test_trtllm_mla_mapping_leaves_other_paths(fake_model_info, override):
     fmha = override.get("fmha", common.FMHAQuantMode.bfloat16)
     mc = _mc(fmha, forward_model=override.get("forward_model", "op_level"))
     mc.kvcache_quant_mode = override.get("kv", common.KVCacheQuantMode.fp8)
+    # A bfloat16 the Task's data fallback chose stays: the tables it consulted have no fp8 slice.
+    mc._fmha_quant_mode_from_data = override.get("from_data")
     helpers.resolve_trtllm_mla_compute(
         mc, "local-mla", override.get("backend", "trtllm"), {"gpu": {"sm_version": override.get("sm", 100)}}
     )

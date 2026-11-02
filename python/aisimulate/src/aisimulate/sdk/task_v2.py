@@ -1195,6 +1195,7 @@ class Task:
 
         self._fmha_explicit = fmha_explicit
         self._kvcache_explicit = kvcache_explicit
+        self._fmha_from_data: dict[str, bool] = {}
 
     def _apply_fmha_data_fallback(self) -> None:
         """Data-driven FMHA resolution (second half of quant resolution).
@@ -1278,6 +1279,7 @@ class Task:
             if fp8_hits >= bf16_hits or bf16_hits == 0:
                 continue  # fp8 data present, or nothing safe to fall back to
             self._set_role_attr(role, "fmha_quant_mode", common.FMHAQuantMode.bfloat16)
+            self._fmha_from_data[role] = True
             missing = [op for op, modes in supported.items() if modes and common.FMHAQuantMode.fp8.name not in modes]
             field = "fmha_quant_mode" if self.serving_mode == "agg" else f"{role}_fmha_quant_mode"
             logger.warning(
@@ -2025,6 +2027,7 @@ class Task:
             system=self._role_attr(role, "system_name"),
         )
         model_config._gemm_quant_mode_is_explicit = self._gemm_quant_mode_explicit_by_role.get(role, False)
+        model_config._fmha_quant_mode_from_data = self._fmha_from_data.get(role, False)
         if parallel is not None:
             required_phases = tuple(dict.fromkeys((*self._role_phases(role), *self._required_large_ep_phases(role))))
             resolve_model_config_moe_comm(

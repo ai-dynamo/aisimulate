@@ -930,6 +930,15 @@ def test_trtllm_large_ep_context_fmha_falls_back_when_only_the_module_table_has_
     assert t.fmha_quant_mode == common.FMHAQuantMode.bfloat16
     fallback = [r.message for r in caplog.records if "falling back to bfloat16 FMHA" in r.message]
     assert len(fallback) == 1 and "has no 'context_mla_granular' perf data" in fallback[0]
+    # The estimate path re-runs the TRT-LLM resolver on the built ModelConfig (inference_session):
+    # a bfloat16 the data fallback chose must survive it, or the fp8 lookup it would cause misses.
+    from aisimulate_core.sdk.models.helpers import resolve_trtllm_mla_compute
+    from aisimulate_core.sdk.perf_database import load_system_spec
+
+    mc = t.build_model_config(role="agg")
+    assert mc._fmha_quant_mode_from_data is True
+    resolve_trtllm_mla_compute(mc, t.model_path, "trtllm", load_system_spec("gb200"))
+    assert mc.fmha_quant_mode == common.FMHAQuantMode.bfloat16
 
 
 def test_nextn_never_auto_enabled(caplog):

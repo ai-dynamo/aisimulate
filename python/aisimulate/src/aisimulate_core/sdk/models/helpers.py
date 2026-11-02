@@ -1335,9 +1335,14 @@ def resolve_trtllm_mla_compute(
     See ``trtllm_mla_runs_fp8``: TRT-LLM runs FP8 there whatever is requested,
     so an explicit bfloat16 is resolved to the precision it runs. An unset FMHA
     is left to the checkpoint inference, which already picks FP8 for an FP8 KV
-    cache. Whole-model FPM identities remain caller-owned.
+    cache. Whole-model FPM identities remain caller-owned, and so is a bfloat16
+    the Task's data-driven fallback chose because the reachable context table
+    has no fp8 slice: resolving it to fp8 again would look up rows that do not
+    exist (``_fmha_quant_mode_from_data``).
     """
     if model_config.forward_model == "fpm" or model_config.fmha_quant_mode != common.FMHAQuantMode.bfloat16:
+        return
+    if getattr(model_config, "_fmha_quant_mode_from_data", False):
         return
     if backend_name != "trtllm":
         return
