@@ -273,6 +273,10 @@ impl ReplayRoleFactory {
         self.factory.can_have_internal_deadlines()
     }
 
+    pub(crate) fn can_hold_outputs(&self) -> bool {
+        self.factory.can_hold_outputs()
+    }
+
     pub(crate) fn reset_timing_evidence(&self) -> anyhow::Result<()> {
         self.factory.reset_timing_evidence()
     }

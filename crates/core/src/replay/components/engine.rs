@@ -1182,6 +1182,9 @@ where
     /// Earliest instant at which a worker releases outputs it held past their
     /// pass (vLLM `launch`). Not masked by a pass in flight.
     pub(crate) fn next_emission_ms(&self) -> Option<f64> {
+        if !self.factory.can_hold_outputs() {
+            return None;
+        }
         self.workers
             .iter()
             .filter_map(Option::as_ref)
