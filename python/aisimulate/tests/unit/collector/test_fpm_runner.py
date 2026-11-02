@@ -1612,7 +1612,7 @@ def test_run_collection_stages_the_glm_adapter_files(monkeypatch, tmp_path):
 def test_non_glm_cells_keep_their_launch_and_staging(monkeypatch, tmp_path):
     from aisimulate_core.sdk.deepseek_v41 import MODEL_REVISION
 
-    # The launch and staging of the base revision f33438fe, for the default cells of this module and for DeepSeek
+    # The launch and staging before the GLM-5.3-Flash adapter, for the default cells of this module and for DeepSeek
     # V4.1 cells.
     runtime = [
         "--distributed-executor-backend",
@@ -3574,7 +3574,7 @@ def test_startup_environment_activates_the_runtime_adapter_before_preflight(tmp_
             directory = tmp_path / kind / phase
             directory.mkdir(parents=True)
             fpm_runner._write_runtime_environment(directory, _cell_generator_overrides(plan, cell, {}))
-            # The default and V4.1 files are the ones of the base revision f33438fe.
+            # The default and V4.1 files are the ones from before the GLM-5.3-Flash adapter.
             assert (directory / fpm_runner.RUNTIME_ENV_FILENAME).read_text().splitlines() == [
                 "# Generated Collector startup environment; engine settings remain in run.sh.",
                 *lines,

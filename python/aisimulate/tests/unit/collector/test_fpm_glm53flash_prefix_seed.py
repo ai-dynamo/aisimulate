@@ -32,8 +32,7 @@ PRODUCER = (
 MANIFEST = PRODUCER.with_name("runtime-source-sha256.json")
 FP8_MODEL, NVFP4_MODEL = "zai-org/GLM-5.3-Flash", "nvidia/GLM-5.3-Flash-NVFP4"
 FP8_PIN, NVFP4_PIN = "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a", "09b04e5e74bca08ca8549fc736d4cdd8624bfde3"
-# A revision that is no pin. The snapshot of zai-org/GLM-5.3-Flash on oci-aga is at this revision, and its files equal
-# the pinned FP8 files.
+# A revision that is not a pin, whose files equal the pinned FP8 files.
 LOADED_REVISION = "04c4e9e95c5da8862dced7e5056455116f83a7e0"
 
 
@@ -427,7 +426,7 @@ def test_publication_enrichment_needs_only_the_fpm_measurement(monkeypatch, tmp_
     assert output["results"][0]["kv_seed_regime"] == "not_applicable"
 
 
-def test_dynamo_runtime_pins_match_the_stage3_overlay():
+def test_dynamo_runtime_pins_match_the_ai_dynamo_1_6_0_dev20261010_build():
     pins = json.loads(MANIFEST.read_text())
     # The ai-dynamo 1.6.0.dev20261010 build carries these four files of ai-dynamo/dynamo@395f0240.
     expected = {
