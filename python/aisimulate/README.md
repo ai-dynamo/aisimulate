@@ -106,6 +106,8 @@ generator SDK; see the
   — engine, performance-model, and memory contracts.
 - [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/)
   — forward-pass estimator coverage.
+- [Feature Support Matrix](https://ai-dynamo.org/aisimulate/feature-support-matrix/)
+  — serving techniques replayed per engine.
 - [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/) and
   [FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/)
   — published accuracy evidence.

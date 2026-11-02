@@ -1259,6 +1259,18 @@ and does not relicense model weights, producer code or their upstream projects.
 - Copyright 2012–2026 Plotly, Inc.; MIT license preserved in the bundled header
   and `pages/fpm-accuracy/assets/PLOTLY-LICENSE.txt`. The Pages build copies both.
 
+## Plotly.js (replay dashboard)
+
+- The replay HTML renderer embeds the unmodified Plotly.js bundle supplied by
+  the installed `plotly` Python dependency, preserving its version and copyright
+  header. No Plotly.js source is vendored in the Python renderer.
+- `python/aisimulate/src/aisimulate/replay/plotly-js-LICENSE.txt` is an unmodified
+  copy of the MIT license from https://github.com/plotly/plotly.js/blob/v3.4.0/LICENSE
+  (immutable release tag `v3.4.0`, original path `LICENSE`). It is packaged and
+  embedded in generated `report.html` files.
+- Copyright (c) 2012–2026 Plotly, Inc. The dashboard template and telemetry
+  transformations are AISimulate code; they do not modify Plotly.js.
+
 
 ## vLLM Kimi KDA state sizing
 

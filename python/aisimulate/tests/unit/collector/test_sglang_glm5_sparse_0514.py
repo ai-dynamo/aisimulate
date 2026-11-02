@@ -58,10 +58,10 @@ def test_glm5_flash_mla_keeps_the_production_topk_width():
     assert "if k % 64" not in source
 
 
-def test_glm5_sparse_collector_is_pinned_to_sglang_0514_dsa_api():
+def test_glm5_sparse_collector_uses_the_dsa_fuse_topk_switch_not_the_nsa_spelling():
+    # the file pin itself is enforced by test_stock_collectors_are_exactly_pinned_to_their_resolved_runtime
     source = SOURCE_PATH.read_text(encoding="utf-8")
 
-    assert '__compat__ = "sglang==0.5.14"' in source
     assert "SGLANG_DSA_FUSE_TOPK" in source
     assert "SGLANG_NSA_FUSE_TOPK" not in source
 
@@ -120,9 +120,10 @@ def test_glm5_sparse_platform_gating_lives_outside_the_getter():
 
 
 def test_dsv4_sparse_platform_gating_lives_outside_the_getter():
-    """Same contract for the DSV4 sparse sub-kernel family; the flash_mla-less
-    HCA/CSA collectors are parked whole-op unverified instead of silently
-    enumerating zero cases."""
+    """Same contract for the DSV4 sparse sub-kernel family. The flash_mla-less
+    HCA/CSA FMLA sidecar ops were parked unverified until 2026-10-15 and are now
+    removed outright (retired SDK placeholders that failed every registry-generated
+    shard plan), so only the indexer scoring kernel and the topk calibration remain."""
     from collector.capabilities import _load_capabilities
     from collector.sglang.registry import REGISTRY
 
@@ -131,11 +132,10 @@ def test_dsv4_sparse_platform_gating_lives_outside_the_getter():
     assert "_dsv4_topk_kernel_supported" not in dsv4_source
 
     _, op_min_sm = _load_capabilities()
-    floors = ("dsv4_paged_mqa_logits_module", "dsv4_hca_attn_module", "dsv4_csa_attn_module", "dsv4_csa_topk_calib")
+    floors = ("dsv4_paged_mqa_logits_module", "dsv4_csa_topk_calib")
     for op in floors:
         assert op_min_sm.get(op) == 90
     by_op = {entry.op: entry for entry in REGISTRY}
     assert by_op["dsv4_paged_mqa_logits_module"].unverified_sms == (120,)
     assert by_op["dsv4_csa_topk_calib"].unverified_sms == (120,)
-    assert by_op["dsv4_hca_attn_module"].unverified is True
-    assert by_op["dsv4_csa_attn_module"].unverified is True
+    assert not {"dsv4_hca_attn_module", "dsv4_csa_attn_module"} & set(by_op)

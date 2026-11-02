@@ -979,6 +979,10 @@ struct GroupConfig {
     own_ms: Vec<f64>,
     /// The group price; `None` models a provider without iteration pricing.
     group_ms: Option<f64>,
+    /// Ranks that price their own pass instead of leaving it to the group.
+    self_priced: Vec<bool>,
+    /// Whether an idle rank can describe its work for the group price.
+    describes_idle: bool,
     fail_pricing: bool,
     priced: Rc<RefCell<Vec<Vec<RankWork>>>>,
     log: Rc<RefCell<Vec<String>>>,
@@ -992,6 +996,8 @@ struct GroupRank {
     compute_delay_ms: f64,
     own_ms: f64,
     group_ms: Option<f64>,
+    self_priced: bool,
+    describes_idle: bool,
     fail_pricing: bool,
     priced: Rc<RefCell<Vec<Vec<RankWork>>>>,
     log: Rc<RefCell<Vec<String>>>,
@@ -1016,6 +1022,8 @@ impl RankEngine for GroupRank {
             compute_delay_ms: config.compute_delay_ms[rank],
             own_ms: config.own_ms[rank],
             group_ms: config.group_ms,
+            self_priced: config.self_priced[rank],
+            describes_idle: config.describes_idle,
             fail_pricing: config.fail_pricing,
             priced: Rc::clone(&config.priced),
             log: Rc::clone(&config.log),
@@ -1051,6 +1059,14 @@ impl RankEngine for GroupRank {
             .borrow_mut()
             .push(format!("schedule:{}", self.dp_rank));
         self.ready = false;
+        if self.self_priced {
+            return Ok(ScheduledPass::Priced(RankPass {
+                end_ms: now_ms + self.compute_delay_ms + self.own_ms,
+                same_timestamp_retry: SameTimestampRetry::NotApplicable,
+                start_effects: (),
+                pending: (),
+            }));
+        }
         self.scheduled_at_ms = Some(now_ms);
         // Distinct decode batches identify each rank's work.
         Ok(ScheduledPass::Unpriced(RankWork {
@@ -1068,7 +1084,7 @@ impl RankEngine for GroupRank {
     }
 
     fn idle_pass_work(&self) -> Option<RankWork> {
-        Some(RankWork::idle(self.dp_rank))
+        self.describes_idle.then(|| RankWork::idle(self.dp_rank))
     }
 
     fn price_group_pass(&self, ranks: &[RankWork]) -> Result<Option<IterationMs>> {
@@ -1126,10 +1142,12 @@ impl RankEngine for GroupRank {
 
 fn group_config(ready: Vec<bool>, compute_delay_ms: Vec<f64>, own_ms: Vec<f64>) -> GroupConfig {
     GroupConfig {
+        self_priced: vec![false; ready.len()],
         ready,
         compute_delay_ms,
         own_ms,
         group_ms: Some(10.0),
+        describes_idle: true,
         fail_pricing: false,
         priced: Rc::default(),
         log: Rc::default(),
@@ -1210,6 +1228,43 @@ fn attention_dp_without_a_group_price_keeps_each_ranks_own_price() -> Result<()>
         [3.0, 8.0]
     );
     assert_eq!(started.end_ms, 8.0);
+    Ok(())
+}
+
+#[test]
+fn a_self_priced_rank_or_an_undescribed_idle_rank_keeps_each_ranks_own_price() -> Result<()> {
+    let ends = |started: &EnginePassStarted<()>| {
+        started
+            .by_rank
+            .iter()
+            .map(|rank| (rank.dp_rank, rank.rank_end_ms))
+            .collect::<Vec<_>>()
+    };
+    // Rank 0 prices its own pass; rank 1 leaves its pass to the group.
+    let mut config = group_config(vec![true, true], vec![0.0, 0.0], vec![3.0, 8.0]);
+    config.self_priced = vec![true, false];
+    let (priced, log) = (Rc::clone(&config.priced), Rc::clone(&config.log));
+    let started = group_engine(config)?
+        .execute_pass(0.0)?
+        .expect("both ranks are ready");
+    assert!(priced.borrow().is_empty());
+    assert_eq!(
+        log.borrow().as_slice(),
+        ["schedule:0", "schedule:1", "resolve:1"]
+    );
+    assert_eq!(ends(&started), [(0, 3.0), (1, 8.0)]);
+
+    // An idle rank that cannot describe its work also keeps the group
+    // from pricing the pass.
+    let mut config = group_config(vec![true, false], vec![0.0, 0.0], vec![3.0, 8.0]);
+    config.describes_idle = false;
+    let (priced, log) = (Rc::clone(&config.priced), Rc::clone(&config.log));
+    let started = group_engine(config)?
+        .execute_pass(0.0)?
+        .expect("rank 0 is ready");
+    assert!(priced.borrow().is_empty());
+    assert_eq!(log.borrow().as_slice(), ["schedule:0", "resolve:0"]);
+    assert_eq!(ends(&started), [(0, 3.0)]);
     Ok(())
 }
 

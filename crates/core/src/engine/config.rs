@@ -1860,7 +1860,7 @@ mod tests {
     }
 
     #[test]
-    fn kvcr_requires_private_g2_and_rejects_unsupported_combinations() {
+    fn kvcr_requires_per_rank_g2_and_rejects_unsupported_combinations() {
         let base = || EngineConfig {
             kvcr: Some(KvcrConfig::default()),
             ..native_host_offload_config()

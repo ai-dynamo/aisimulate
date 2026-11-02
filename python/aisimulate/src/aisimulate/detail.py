@@ -54,7 +54,7 @@ def prediction_summary(native: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in summary.items()
-        if key not in {"memory_diagnostics", "power_diagnostics", "performance_diagnostics", "details"}
+        if key not in {"memory_diagnostics", "power_diagnostics", "performance_diagnostics", "details", "telemetry"}
     }
 
 

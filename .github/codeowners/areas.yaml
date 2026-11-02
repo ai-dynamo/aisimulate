@@ -62,6 +62,8 @@ areas:
       - tests/test_output_adapter_context.py
       - tests/test_power_diagnostics.py
       - tests/test_unified_cli.py
+      - tests/test_replay_dashboard.py
+      - tests/browser/
       - tests/test_ngram_cli.py
       - tests/test_unified_traffic_runtime.py
       - tests/test_power_contract.py
@@ -263,6 +265,10 @@ shared:
     owners: [replay, forward-pass-engine, maintainers]
   - glob: tests/test_unified_cli.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_replay_dashboard.py
+    owners: [replay, maintainers]
+  - glob: tests/browser/
+    owners: [replay, maintainers]
   - glob: tests/test_ngram_cli.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_unified_traffic_runtime.py

@@ -1,33 +1,33 @@
 {
   "schema_version": 1,
-  "description": "Required native FPE sentinels, not certification of every reported combination or predictive accuracy. Each identity requires one topology passing all four phases.",
+  "description": "Required native FPE sentinels, not certification of every reported combination or predictive accuracy. Resolve current through the verified selected-source wheel before probing and record the concrete versions. Each resolved identity requires one topology passing all four phases.",
   "probes": [
     {
       "model": "Qwen/Qwen3-32B",
       "system": "b200_sxm",
       "backend": "vllm",
-      "backend_version": "0.24.0",
+      "backend_version": "current",
       "forward_model": "op_level"
     },
     {
       "model": "Qwen/Qwen3-32B",
       "system": "b200_sxm",
       "backend": "sglang",
-      "backend_version": "0.5.14",
+      "backend_version": "current",
       "forward_model": "op_level"
     },
     {
       "model": "Qwen/Qwen3-32B",
       "system": "b200_sxm",
       "backend": "trtllm",
-      "backend_version": "1.3.0rc23",
+      "backend_version": "current",
       "forward_model": "op_level"
     },
     {
       "model": "deepseek-ai/DeepSeek-R1",
       "system": "b200_sxm",
       "backend": "trtllm",
-      "backend_version": "1.3.0rc23",
+      "backend_version": "current",
       "forward_model": "op_level"
     }
   ]

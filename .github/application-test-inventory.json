@@ -9,6 +9,7 @@
   "optional_collection_skips": {
     "tests/unit/collector/test_dsv4_megamoe_workload.py": "real torch required for tensor operations",
     "tests/unit/collector/test_helper_moe_distribution.py": "real torch required for tensor operations",
-    "tests/unit/collector/test_sglang_moe_ep_routing.py": "real torch required for tensor operations"
+    "tests/unit/collector/test_sglang_moe_ep_routing.py": "real torch required for tensor operations",
+    "tests/unit/collector/test_vllm_attn_kv_cache_layout.py": "real torch required for tensor operations"
   }
 }

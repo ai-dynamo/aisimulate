@@ -18,8 +18,10 @@ group is failing, it should be FIXED, not silently tolerated.
 ## What happens automatically (no action needed)
 
 - Every worker failure is recorded in `errors_<module>.json` and
-  `collection_summary_<backend>.json` with `classification: "unexpected"`,
-  the case parameters, exception type/message, and a `(model, dtype)` group
+  `collection_summary_<backend>.json` with a classification: `kernel_limit`
+  when the message starts with `FIXME(kernel-limit)` (a cited guard, see
+  layer_permissions.md), otherwise `unexpected`. Each record carries the
+  case parameters, exception type/message, and a `(model, dtype)` group
   label. The summary aggregates `errors_by_group`; a group with many failures
   is logged as a fix-me warning.
 - CUDA-fatal errors reset the worker process; the task is already recorded

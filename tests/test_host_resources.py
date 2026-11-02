@@ -862,18 +862,18 @@ def test_unqualified_estimate_requires_supervision_and_serial_admission(monkeypa
     assert plan["estimate"]["estimated_peak_bytes"] is None
 
 
-@pytest.mark.parametrize("trace_format", ["mooncake", "agentic_mooncake"])
-def test_profile_trace_storage_is_rejected_before_parser_allocates_scalars(tmp_path, host, monkeypatch, trace_format):
-    trace = tmp_path / "oversized.jsonl"
-    with trace.open("wb") as stream:
-        stream.truncate(128 * resources.MIB)  # Sparse sentinel; no large allocation.
-    monkeypatch.setattr(resources.ijson, "parse", lambda *a, **kw: pytest.fail("must refuse before parsing"))
-    # Profile replays keep the storage model; finite replays observe their peak instead.
-    workload = {"trace_path": str(trace), "trace_format": trace_format, "agentic_profile": {}}
-    plan = build_plan(workload, stack="engine", host=host)
+def test_snapshot_lower_bound_omits_prompts_it_may_not_dispatch(tmp_path, monkeypatch, host):
+    trace = tmp_path / "large-prompt.jsonl"
+    trace.write_text(json.dumps({"input_length": 10**12, "output_length": 1, "hash_ids": [1]}) + "\n")
+    finite = {"trace_path": str(trace), "trace_format": "agentic_mooncake"}
+    _supervised(monkeypatch)
+    plan = build_plan(finite, stack="engine", host=host)
     assert plan["status"] == "resource_limited"
-    assert plan["estimate"]["estimated_peak_bytes"] > plan["budget"]["memory_limit_bytes"]
-    assert "before metadata parsing" in plan["estimate"]["reason"]
+    assert "lower bound" in plan["reason"]
+    # A snapshot expands prompts only for selected plays after their cuts, so
+    # this prompt may never be allocated; its retained arrays fit.
+    for load in ({"agentic_snapshot": {"seed": 1}}, {"agentic_snapshot": {"seed": 1}, "agentic_profile": {}}):
+        assert build_plan({**finite, **load}, stack="engine", host=host)["status"] == "admitted"
 
 
 @pytest.mark.parametrize(
@@ -1078,11 +1078,16 @@ def test_unknown_peak_wave_reserves_arrays_after_child_rss(monkeypatch, host, ex
 
 @pytest.mark.parametrize("warmup", [False, True])
 @pytest.mark.parametrize("trace_format", ["agentic_mooncake", "weka", "dynamo"])
-def test_snapshot_and_warmup_keep_previous_accounting(tmp_path, warmup, trace_format):
+def test_snapshot_warmup_and_profile_use_the_finite_trace_bound(tmp_path, monkeypatch, host, warmup, trace_format):
     from aisimulate.recommend import recommendation_to_sweeper
 
     trace = tmp_path / "agentic.jsonl"
-    trace.write_text(json.dumps({"input_length": 4, "output_length": 1, "hash_ids": [1]}) + "\n")
+    if trace_format == "weka":
+        trace.write_text(json.dumps({"block_size": 4, "requests": [{"type": "s", "in": 4, "out": 1}]}))
+    elif trace_format == "dynamo":
+        trace.write_text(json.dumps(_dynamo_row()))
+    else:
+        trace.write_text(json.dumps({"input_length": 4, "output_length": 1, "hash_ids": [1]}) + "\n")
     raw = _config()
     raw["traffic"] = {
         "source": {"type": "trace", "format": trace_format, "paths": [str(trace)], "block_size": 4},
@@ -1101,17 +1106,23 @@ def test_snapshot_and_warmup_keep_previous_accounting(tmp_path, warmup, trace_fo
     # Native Weka snapshot/warmup accounting has its own peak-model tests.
     stacks = ("dynamo",) if trace_format == "weka" else ("engine", "dynamo")
     for stack in stacks:
+        # Lanes replay plays of one loaded corpus, so they add no corpus copies.
         estimate = estimate_workload(bounds, stack=stack)
-        assert estimate.allocation_model == "trace-json-metadata-v1"
-        assert estimate.estimated_peak_bytes is not None
+        assert estimate.allocation_model == "trace-observed-peak-v1"
+        assert estimate.estimated_peak_bytes is None
         assert estimate_workload(concrete, stack=stack) == estimate
-    ordinary = {key: value for key, value in bounds.items() if key not in {"agentic_snapshot", "agentic_warmup"}}
-    if trace_format == "weka":
-        trace.write_text(json.dumps({"block_size": 4, "requests": [{"type": "s", "in": 4, "out": 1}]}))
-    elif trace_format == "dynamo":
-        trace.write_text(json.dumps(_dynamo_row()))
-    for stack in stacks:
-        assert estimate_workload(ordinary, stack=stack).estimated_peak_bytes is None
+        # A profile starts from the same snapshot, but its peak grows with its duration.
+        profile = estimate_workload({**bounds, "agentic_profile": {}}, stack=stack)
+        assert profile.allocation_model == "agentic-profile-unqualified-v1"
+        assert profile.estimated_peak_bytes is None
+        assert profile.lower_bound_bytes == estimate.lower_bound_bytes > 0
+    # A completed snapshot replay's peak sizes later waves of the same trace.
+    _supervised(monkeypatch)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    factory = GuardedRunnerFactory(object(), "dynamo", ResourceConfig())
+    spec = SimpleNamespace(workload=concrete, concurrency=None)
+    factory.record_peak(spec, GB)
+    assert factory.admit_wave([spec, spec])["reserved_bytes"] == [3 * GB // 2] * 2
 
 
 @pytest.mark.parametrize("layout", ["json", "jsonl", "directory"])

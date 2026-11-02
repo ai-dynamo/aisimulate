@@ -309,6 +309,11 @@ goldens establish numerical stability; hardware accuracy is supported by the
 specific measured configurations in the
 [accuracy evidence](../../README.md#accuracy-evidence).
 
+The macOS platform-wheel and daily README jobs use the ARM64 `macos-15` runner.
+This replaces `macos-14`, which GitHub is
+[retiring on November 2, 2026](https://github.com/actions/runner-images/issues/13518).
+The wheel deployment target remains macOS 11.0.
+
 Each platform-wheel job verifies installed package/native-extension identity,
 then runs `recommend` and feeds the generated YAML to `predict` from an unrelated
 temporary directory with isolated Python. The fixed-timing fixture requires all
