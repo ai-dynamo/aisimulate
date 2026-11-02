@@ -157,6 +157,21 @@ class TestGetGenerationTestCases:
 
 @pytest.mark.unit
 class TestAgenticGenerationCoverage:
+    def test_grid_preserves_old_shapes_and_prefill_batches(self):
+        mod = _import_module()
+        sweep = mod.get_mla_module_sweep_spec("sglang")
+        with patch.object(mod, "get_sm_version", return_value=90):
+            cases = mod.get_generation_test_cases("dsa")
+        pairs = {(case[1], case[0]) for case in cases}
+        old_batches = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+        old_lengths = [1, *[2**power for power in range(2, 18)]]
+        old_pairs = {(b, s) for b in old_batches for s in old_lengths if b * s <= 262144}
+        agentic_lengths = old_lengths + [262144, 393216, 524288, 655360, 720896]
+        assert old_pairs <= pairs
+        assert {(b, s) for b in [4, 8, 16, 32, 52] for s in agentic_lengths} <= pairs
+        assert sweep.context_batch_sizes == old_batches
+        assert sweep.generation_msa_max_tokens == 33554432
+
     @pytest.mark.parametrize(("past_kv", "capacity"), [(15, 64), (16, 64), (15, 63)])
     def test_decode_bounds_report_errors_before_request_allocation(self, monkeypatch, capsys, past_kv, capacity):
         mod = _import_module()
@@ -266,7 +281,7 @@ class TestGenerationMemoryManifest:
         monkeypatch.setenv("SGLANG_LOAD_FORMAT", load_format)
         assert mod._estimated_generation_kv_bytes_per_token("zai-org/GLM-5.2", "dsa", "bfloat16", None) == 78 * 1284
 
-    @pytest.mark.parametrize("device_gib,expected_count", [(80, 1), (268, 2)])
+    @pytest.mark.parametrize("device_gib,expected_count", [(80, 1), (180, 2), (268.59375, 2)])
     def test_expanded_grid_drops_only_device_memory_shapes(self, monkeypatch, capsys, device_gib, expected_count):
         mod = _import_module()
         monkeypatch.setenv("SGLANG_TEST_NUM_LAYERS", "2")
@@ -301,6 +316,22 @@ class TestGenerationMemoryManifest:
         assert manifest[0] == (1, 720896, 0)  # context bounds are NOT a planning filter
         output = capsys.readouterr().out
         assert ("dropped 1/2 shapes (memory budget" in output) == (device_gib == 80)
+
+    @pytest.mark.parametrize("device_gib", [80, 180, 268.59375])
+    def test_glm_fp8_long_decode_grid_fits_planning_budget(self, monkeypatch, device_gib):
+        mod = _import_module()
+        monkeypatch.setenv("SGLANG_TEST_NUM_LAYERS", "2")
+        monkeypatch.setenv("SGLANG_LOAD_FORMAT", "dummy")
+        monkeypatch.setattr(mod.torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(
+            mod.torch.cuda,
+            "get_device_properties",
+            lambda _: types.SimpleNamespace(total_memory=int(device_gib * 2**30)),
+            raising=False,
+        )
+        manifest = mod._generation_manifest("dsa", 8, "fp8", "bfloat16", "bfloat16", "nvidia/GLM-5.2-NVFP4", "trtllm")
+        assert len(manifest) == len(set(manifest)) == 250
+        assert (52, 720896, 0) in manifest
 
     def test_no_cuda_preserves_plan_without_estimating(self, monkeypatch):
         mod = _import_module()

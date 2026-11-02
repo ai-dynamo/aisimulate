@@ -66,6 +66,39 @@ and 56; the microbenchmark captures 52 directly. Serving may execute the padded
 Disabling graph padding requires explicit bucket membership. This follows the
 [native decode eligibility check](https://github.com/sgl-project/sglang/blob/e00930c5489053f26d86b179cee0d087f846acbb/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py#L714).
 
+## GLM AgentX decode coverage
+
+The default MLA/DSA grid preserves existing batches and lengths, adds batch
+`52` and past-KV lengths `262144, 393216, 524288, 655360, 720896`, and raises
+the token budget to `37486592` (`52 * 720896`). Prefill batches and prefixes
+are unchanged. MSA shares the axes but keeps its `33554432` budget. These
+defaults cover all affected models and precisions; model-context violations
+remain visible runtime errors.
+
+GLM-5.2 declares **250 raw batch/past-KV pairs** per head/precision combination,
+up from 154, before device-memory admission. All old pairs and the historical
+110-pair AgentX grid remain covered. Full-indexer and skip-indexer measurements
+both use `isl=1`, `step=past_KV`. CPU capacity tests retain the FP8-KV grid,
+including `52 * 720896`, on 80 GiB, B200-size and B300-size devices. The BF16
+`256 * 131072` cell needs about 80.29 GiB of cache and is rejected on an
+80 GiB device. These checks do not establish runtime fit or timing accuracy.
+
+[agentx_dsa_shards.yaml](agentx_dsa_shards.yaml) selects the two SGLang 0.5.21
+module groups with TP8 local geometry, FP8 KV and BF16 attention projections.
+For auto-collector, use `AISIM_MODEL_FILTER=nvidia/GLM-5.2-NVFP4`,
+`AISIM_FRAMEWORKS=sglang:0.5.21`, `AISIM_SYSTEMS=b300_sxm`, `AISIM_GPU_NUM=1`,
+`AISIM_SHARDS_PER_JOB=1`, and `CREATE_GITHUB_PR=0`, with an exact collector SHA
+and pinned image. Each shard uses one GPU; validate complete row identities
+and failure counts before publishing.
+
+Historical source
+[`3d41164034624251209588ee0284694e86a13bd8`](https://github.com/ai-dynamo/aisimulate/commit/3d41164034624251209588ee0284694e86a13bd8)
+produced 110 rows per variant on B300/SGLang 0.5.20 (parent pipeline 77726488,
+child 77726600, Slurm jobs 135871/135872). It predates native projection and
+cache-history fixes. Those 220 rows do not qualify the current 0.5.21 collector;
+new timing claims require recollection. Native MTP and multi-rank communication
+remain outside this module benchmark.
+
 ## Execution Modes
 
 Stock diagnostics and the independent WideEP MoE collector use these modes:
