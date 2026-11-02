@@ -185,6 +185,19 @@ fn a_pass_outputs_leave_once_the_next_pass_is_launched() {
 }
 
 #[test]
+fn held_outputs_leave_before_those_of_the_pass_that_releases_them() {
+    // A decodes until 120, and its last token comes from the pass that also
+    // prefills B, from 120 to 230. vLLM decided that eager pass at 110, and
+    // its 150 ms launch lasts until the pass ends, so A's third token, held
+    // since 120, and its last token both leave at 230, in that order.
+    let report = run(
+        launch(engine(64), [2.0, 20.0, 150.0], 0.0),
+        &[(1, 8, 4, 0.0), (2, 32, 1, 105.0)],
+    );
+    assert_eq!(record(&report, 1).last_token_ms, Some(230.0));
+}
+
+#[test]
 fn detokenization_starts_when_vllm_returns_the_outputs() {
     // A 1 ms detokenizer takes A's last token when vLLM returns it at 160.
     let launched = replayer(

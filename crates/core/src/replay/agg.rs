@@ -1194,6 +1194,9 @@ where
             let released = self.placement.advance_clock(self.now_ms)?;
             changed |= !released.is_empty();
             self.dispatch_placements(released)?;
+            // Outputs held from an earlier pass leave before those of a pass
+            // that completes now.
+            changed |= self.apply_due_emissions()?;
             let completed = self.apply_worker_completions()?;
             changed |= completed;
             if completed {
@@ -1201,7 +1204,6 @@ where
                 changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;
             }
             changed |= self.release_received_terminals()?;
-            changed |= self.apply_due_emissions()?;
             changed |= self.apply_worker_ready_events()?;
             changed |= self.admission.flush_agentic_runtime_feedback(self.now_ms)?;
             changed |= self.finish_agentic_preparation()?;
