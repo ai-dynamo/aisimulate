@@ -731,6 +731,8 @@ AgentX availability is independent of InfX; InfX snapshot labels do not appear o
 the AgentX branch selector.
 Model summary rows use the overview's full-width tinted background and brighter
 text. Concurrency subrows use the page surface, with the same hover/focus accent.
+The beta support-matrix notice appears only on the AgentX overview. Self-collected
+evidence is labeled “AISim self-collected dataset: coming soon.”
 
 Optional `report.comparison` (`aisimulate.agentx.comparison.v1`) contains only
 qualified numerical series, scores, phase-aligned requests and opaque joins.

@@ -185,6 +185,9 @@ async def check():
                 await expect(page.locator(".agentx-beta a")).to_have_attribute(
                     "href", "../feature-support-matrix/#agentx"
                 )
+                await expect(page.locator(".agentx-beta")).to_have_text(
+                    "Beta · check the AgentX feature support matrix ↗."
+                )
                 table = page.locator(".agentx-table")
                 await expect(table.locator("tr[data-agentx-parent]:visible")).to_have_count(9)
                 await expect(table.locator("thead th")).to_have_count(8)
@@ -195,9 +198,10 @@ async def check():
                 await expect(table.locator("tr[data-agentx-parent]:visible")).to_have_count(6)
                 await page.keyboard.press("Enter")
                 await expect(table.locator("tr[data-agentx-parent]:visible")).to_have_count(9)
-                await expect(table).to_contain_text("Public dataset: coming soon")
+                await expect(table).to_contain_text("AISim self-collected dataset: coming soon")
                 assert "huggingface.co" not in await table.inner_html()
                 await table.locator("tr[data-agentx-parent]").nth(6).locator("a").first.click()
+                await expect(page.locator(".agentx-beta")).to_have_count(0)
                 await expect(page.locator("#length")).to_have_value("4096")
                 await expect(page.locator("#cache")).to_have_value("cold")
                 await expect(page.locator("#repeat")).to_have_value("0")

@@ -29,7 +29,7 @@ window.AgentX = (() => {
   const headings = `<tr><th scope="col">Model / concurrency</th><th scope="col">Hardware / backend</th><th scope="col">Point TPOT error</th><th scope="col">Point TTFT error</th><th scope="col">Point output-throughput error</th><th scope="col">Request TTFT MAPE</th><th scope="col">Request TPOT MAPE</th><th scope="col">Matched / measured</th></tr>`;
   function source(run) {
     return run.category === "agentx" ? `<a href="${esc(run.benchmark_url)}" target="_blank" rel="noopener">AgentX benchmark ↗</a> · <a href="${esc(run.source_run_url)}" target="_blank" rel="noopener">Source run ↗</a>` :
-      "Public dataset: coming soon"; // TODO: link the public self-collected E2E HF dataset after migration.
+      "AISim self-collected dataset: coming soon"; // TODO: link the public self-collected E2E HF dataset after migration.
   }
   function pointUrl(run, branch) {
     const params = new URLSearchParams({branch,category:run.category,model:run.model,lanes:run.lanes});
