@@ -1615,14 +1615,14 @@ class Sweeper:
                     ),
                 )
                 candidate_records.append(record)
-                if on_candidate is not None:
-                    # Detach: on_candidate must not be able to mutate the ledger
-                    # entry that SweepResult is built from.
-                    on_candidate(record.model_copy(deep=True))
                 if resource_aware:
                     from ..supervision import checkpoint
 
                     checkpoint("candidate_completed", record.model_dump(mode="json"))
+                if on_candidate is not None:
+                    # Detach: on_candidate must not be able to mutate the ledger
+                    # entry that SweepResult is built from.
+                    on_candidate(record.model_copy(deep=True))
                 if candidate is not None:
                     record_id_by_candidate_object[id(candidate)] = record.candidate_id
                 best = _best()

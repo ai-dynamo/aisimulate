@@ -55,6 +55,9 @@ receive a deep copy of their event data, and every callback executes
 synchronously on the search path. Return promptly; failure aborts the
 recommendation through `OutputAdapterExecutionError`. A subscription returning
 another type is invalid.
+`on_candidate` receives records in candidate-ledger order: each batch's
+pre-replay rejections, then its replays in suggestion order, whichever parallel
+replay finishes first.
 Callbacks and final `write()` may run on different adapter instances, so their
 contract does not provide shared in-memory state.
 

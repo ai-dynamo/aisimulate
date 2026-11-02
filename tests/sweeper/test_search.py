@@ -503,6 +503,42 @@ def test_suggestion_order_releases_each_result_once_earlier_ones_finish():
         list(search_mod._in_suggestion_order(todo, finish([1, 0])))
 
 
+def test_resource_aware_candidates_are_checkpointed_then_reported_in_suggestion_order(monkeypatch):
+    branch = _branch(_pc())
+    _stub(monkeypatch, branch)
+    events = []
+
+    class ResourceFactory(_FakeRunnerFactory):
+        def admit_wave(self, specs):
+            raise AssertionError("scheduler boundary is replaced below")
+
+    def last_spec_first(specs, *, factory, **kwargs):
+        runner = factory.create(0)
+        for index in reversed(range(len(specs))):
+            yield index, search_mod._run_replay_detailed(specs[index], runner)
+
+    monkeypatch.setattr("aisimulate.resource_scheduler.evaluate_waves", last_spec_first)
+    monkeypatch.setattr(
+        "aisimulate.supervision.checkpoint", lambda event, value: events.append((event, value["score"]))
+    )
+
+    Sweeper(runner_factory=ResourceFactory(), sampler_factory=_FakeSampler, show_progress=False).run(
+        _config(parallel_evals=3),
+        top_n=None,
+        on_candidate=lambda record: events.append(("on_candidate", record.score)),
+    )
+
+    # The evidence for each candidate is written before any adapter code runs.
+    assert events == [
+        ("candidate_completed", 256.0),
+        ("on_candidate", 256.0),
+        ("candidate_completed", 512.0),
+        ("on_candidate", 512.0),
+        ("candidate_completed", 768.0),
+        ("on_candidate", 768.0),
+    ]
+
+
 def test_timed_out_wave_is_gated_and_pool_is_replaced(monkeypatch):
     branch = _branch(_pc())
     _stub(monkeypatch, branch)

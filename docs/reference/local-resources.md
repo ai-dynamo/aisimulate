@@ -91,14 +91,15 @@ A sudden jump past the supervisor limit stops the entire execution tree.
 termination outcome. Fields that could not be observed because resource discovery
 failed are null. Errors loading configuration, applying overrides, or validating
 the core schema preserve existing artifacts, including with `--overwrite`.
-`execution-events.jsonl` checkpoints
-recorded candidates and batch decisions so evidence survives a supervisor interruption. A completed
-sweep writes `recommendation.json` and selected prediction files as usual, and
-exits with status 3 if any candidates were resource-limited. If the entire tree
-is stopped, the event log contains the candidates recorded so far; it is not a finalized
-recommendation. Candidates are recorded in suggestion order, so up to `optimizer.parallelism − 1`
-completed candidates still waiting for an earlier one in their batch can be missing.
-The Python API returns partial sweep results for individual candidate refusals, or raises `ResourceLimitError` with bounded partial events
+`execution-events.jsonl` checkpoints recorded candidates and batch decisions so
+evidence survives a supervisor interruption. A completed sweep writes
+`recommendation.json` and selected prediction files as usual, and exits with
+status 3 if any candidates were resource-limited. If the entire tree is stopped,
+the event log contains the candidates recorded so far; it is not a finalized
+recommendation. Replays are recorded in suggestion order, so the log can miss up
+to `optimizer.parallelism − 1` finished replays still waiting for an earlier one
+in their batch. The Python API returns partial sweep results for individual
+candidate refusals, or raises `ResourceLimitError` with bounded partial events
 when the supervisor stops the whole tree. Host evidence is available through
 `result.execution_resources` and excluded from the portable result fingerprint.
 Use a new output directory or `--overwrite` to replace known outputs.
