@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import hashlib
-import json
+import importlib.util
 import os
 from pathlib import Path
 
@@ -17,16 +17,22 @@ from tools.support_matrix.fpe_support_matrix import (
     run_probe_plans,
     write_outputs,
 )
-from tools.support_matrix.qualify_fpe_support_matrix import IDENTITY, qualify
+from tools.support_matrix.qualify_fpe_support_matrix import qualify
 
 pytestmark = [pytest.mark.e2e, pytest.mark.build, pytest.mark.support_matrix]
 
 ROOT = Path(__file__).resolve().parents[5]
-REQUIRED_PROBES = json.loads((ROOT / ".github/fpe-required-probes.json").read_text())["probes"]
-assert REQUIRED_PROBES, "The nightly FPE required-probe manifest must not be empty"
-assert len({tuple(probe[key] for key in IDENTITY) for probe in REQUIRED_PROBES}) == len(REQUIRED_PROBES), (
-    "The nightly FPE required-probe manifest must not contain duplicate identities"
-)
+
+
+def _release_tooling():
+    spec = importlib.util.spec_from_file_location("run_release_fpe", ROOT / "scripts/fpe/run_release_fpe.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+RELEASE = _release_tooling()
+REQUIRED_SELECTORS = RELEASE.required_probe_selectors()
 
 # These temporary reports test qualification behavior, not release provenance.
 TEST_SOURCE_SHA = "0" * 40
@@ -42,14 +48,33 @@ def wheel_sha256() -> str:
     return hashlib.sha256(b"local-fpe-sentinel-test-without-wheel-provenance").hexdigest()
 
 
+@pytest.fixture(scope="module")
+def required_probes(wheel_sha256):
+    from tools.support_matrix.support_matrix import SupportMatrix, perf_database
+
+    receipt = {
+        "schema_version": 1,
+        "source_branch": "main",
+        "source_sha": TEST_SOURCE_SHA,
+        "tooling_sha": TEST_SOURCE_SHA,
+        "wheel_sha256": wheel_sha256,
+    }
+    plan = RELEASE.discover_required_probes(
+        SupportMatrix().generate_combinations(), receipt, perf_database.resolve_query_version
+    )
+    return plan["probes"]
+
+
 @pytest.mark.parametrize(
-    "probe",
-    REQUIRED_PROBES,
-    ids=lambda probe: "-".join(
-        (probe["model"].rsplit("/", 1)[-1], probe["system"], probe["backend"], probe["backend_version"])
-    ),
+    "probe_index",
+    range(len(REQUIRED_SELECTORS)),
+    ids=[
+        "-".join((probe["model"].rsplit("/", 1)[-1], probe["system"], probe["backend"], probe["backend_version"]))
+        for probe in REQUIRED_SELECTORS
+    ],
 )
-def test_required_native_fpe_sentinel(probe, tmp_path, monkeypatch, wheel_sha256):
+def test_required_native_fpe_sentinel(probe_index, required_probes, tmp_path, monkeypatch, wheel_sha256):
+    probe = required_probes[probe_index]
     plans = build_probe_plans(
         models={probe["model"]},
         systems={probe["system"]},
@@ -57,11 +82,7 @@ def test_required_native_fpe_sentinel(probe, tmp_path, monkeypatch, wheel_sha256
         backend_versions={probe["backend_version"]},
         forward_models=(probe["forward_model"],),
     )
-    assert plans, (
-        f"Required nightly FPE sentinel is absent from the live probe inventory: {probe}. "
-        "Keep .github/fpe-required-probes.json synchronized with query_versions.yaml "
-        "and the curated model inventory."
-    )
+    assert plans, f"No native FPE plans were generated for the resolved required sentinel: {probe}"
 
     workload = ProbeWorkload()
     results, metrics = run_probe_plans(
