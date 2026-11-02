@@ -480,6 +480,29 @@ use play-local token identities, so G1 and G2 hits never cross a recycled play.
 `kvcr` is accepted but is not part of the AgentX qualification. Results are
 qualified `functional_only`.
 
+A `cluster_shared` pool under AgentX follows this contract:
+
+- **Ownership and discovery.** The replay deployment owns one pool. Every
+  participating rank, across replicas and P/D roles, joins it; the first
+  participant fixes layout, capacity, and shared bandwidth, and capacity is
+  counted once in `g2_domains`. A block becomes visible when its D2H store
+  completes, and the pool publishes a `HostPinned` store to every subscribed
+  rank. Pool-wide LRU eviction publishes the matching removal to every rank.
+- **Identity.** Conversations of one play share G2 prefixes. Snapshot and
+  profile plays use play-local token identities and a distinct `cache_id`, so
+  equal source prompts in recycled plays occupy separate entries and never hit
+  each other.
+- **Contention.** Concurrent restores of the same entries count residency once
+  and split the pool's directional bandwidth max-min fairly, deterministically
+  from the replay clock.
+- **Stale entries.** If a placement scored residency that is evicted before the
+  request is admitted, the request recomputes the missing prefix. Its routing
+  overlap then exceeds the realized `host_reused_input_tokens`.
+- **Membership.** AgentX G2 requires static pools, so worker failure and
+  ownership handoff are outside its support boundary.
+- **Disabling sharing.** `scope: dp_rank_local` reproduces the private-G2
+  result exactly, even when shared-only bandwidth fields remain set.
+
 Two small offline fixtures use fixed timing and need no GPU:
 
 ```bash

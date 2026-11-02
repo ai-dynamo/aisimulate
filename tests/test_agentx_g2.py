@@ -148,6 +148,30 @@ def test_weka_g2_runs_on_multiple_replicas(name) -> None:
     assert report.get("g2_domains", []) == single.get("g2_domains", [])
 
 
+def test_weka_shared_g2_contract_across_replicas() -> None:
+    config = _config("agentx-g2-shared-pd.yaml")
+    for worker in config["engine"]["workers"].values():
+        worker["parallelism"] = {**worker["parallelism"], "replicas": 2}
+    shared = _run(config)
+    # Four participants join one deployment-owned pool, counted once.
+    assert [domain["capacity_blocks"] for domain in shared["g2_domains"]] == [8]
+    assert shared["completed_requests"] == _run(_config("agentx-g2-shared-pd.yaml"))["completed_requests"]
+
+    disabled, private = copy.deepcopy(config), copy.deepcopy(config)
+    for worker in disabled["engine"]["workers"].values():
+        worker["kv_cache"]["host_offload"] = {**worker["kv_cache"]["host_offload"], "scope": "dp_rank_local"}
+    for worker in private["engine"]["workers"].values():
+        offload = dict(worker["kv_cache"]["host_offload"], scope="dp_rank_local")
+        for field in ("shared_d2h_bandwidth_gbps", "shared_h2d_bandwidth_gbps"):
+            offload.pop(field, None)
+        worker["kv_cache"]["host_offload"] = offload
+    disabled_report, private_report = _run(disabled), _run(private)
+    # Disabling sharing reproduces private G2 even with shared-only fields left set.
+    assert "g2_domains" not in disabled_report or not disabled_report["g2_domains"]
+    assert disabled_report["per_request"] == private_report["per_request"]
+    assert disabled_report["committed_prefill_tokens"] == private_report["committed_prefill_tokens"]
+
+
 @pytest.mark.parametrize("field,value", [("num_host_blocks", 16), ("shared_h2d_bandwidth_gbps", 2)])
 def test_weka_g2_rejects_inconsistent_shared_pool(field, value) -> None:
     config = _config("agentx-g2-shared-pd.yaml")
