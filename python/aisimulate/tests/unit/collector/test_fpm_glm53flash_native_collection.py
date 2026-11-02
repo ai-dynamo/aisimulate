@@ -14,12 +14,17 @@ import functools
 import hashlib
 import json
 import re
+import shutil
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from collector import glm53flash_attention_tokens as seeded
+from collector.fpm_forward import database
+from collector.fpm_forward.capabilities import GENERIC_RUNTIME_TEMPLATE_ID
 from collector.fpm_forward.native_artifact import (
+    NativeCollection,
     _expected_scheduled,
     select_native_measurements,
     validate_native_collection,
@@ -237,6 +242,38 @@ def _validate(tmp_path: Path, cell: FPMCell):
     return validate_native_collection(
         cell, tmp_path / "raw", expected_plan_sha256=PLAN_SHA256, expected_attempt_id=ATTEMPT_ID
     )
+
+
+def _glm_plan(template_id: str = GENERIC_RUNTIME_TEMPLATE_ID) -> SimpleNamespace:
+    """The parts of a collection plan that publication reads, for the GLM-5.3-Flash checkpoint."""
+    return SimpleNamespace(
+        sha256=PLAN_SHA256,
+        aic_revision="test-revision",
+        model_path=GLM_MODEL,
+        system="gb300",
+        backend="vllm",
+        options=SimpleNamespace(warmup_iterations=0),
+        capability=SimpleNamespace(
+            support_level="native_runtime", template_id=template_id, template_version=1, aic_database_version="0.31.0"
+        ),
+    )
+
+
+def _restamp(measurement, stamps: list[str], regime: str):
+    """The measurement of a point that carries ``stamps`` and whose row reports ``regime``."""
+    return replace(
+        measurement, point={**measurement.point, "sample_reasons": ["explicit", *stamps]}, kv_seed_regime=regime
+    )
+
+
+def _publish(monkeypatch, tmp_path: Path, cell: FPMCell, collection: NativeCollection, plan=None) -> list[dict]:
+    """Publish ``collection`` as if the native validator had returned it.
+
+    The validator refuses artifacts that the producer never writes, such as a GLM decode artifact with a warm-up
+    skip. A test starts from a collection that the validator accepted and changes it, to reach the publication rules.
+    """
+    monkeypatch.setattr(database, "validate_native_collection", lambda *_args, **_kwargs: collection)
+    return database.aggregate_cell(plan or _glm_plan(), cell, tmp_path, expected_attempt_id=ATTEMPT_ID)
 
 
 def test_glm_producer_artifact_validates_and_selects_its_points(tmp_path):
@@ -485,3 +522,164 @@ def test_glm_producer_dp_ranks_must_agree_on_input_provenance(tmp_path, tamper):
     artifacts[1].write_text(json.dumps(payloads[1]))
     with pytest.raises(ValueError, match="native DP ranks disagree on input provenance"):
         _validate(tmp_path, cell)
+
+
+REAL_KV_REFUSAL = "execution-identity cells require real KV measurements for cached prefill and decode, got {}"
+# Dynamo skips the decode warm-up of a pure tensor-parallel MoE model and stamps every point as a fake fallback.
+WARMUP_SKIP = {"enabled": True, "warm_eligible": False, "skip_reason": "moe_tp_balanced_by_construction"}
+
+
+def test_glm_producer_rows_publish_real_regimes(tmp_path):
+    rows = {}
+    for phase, points in (("prefill", [PREFILL_COLD, PREFILL_CACHED]), ("decode", DECODE_POINTS)):
+        cell = glm_cell(phase)
+        write_glm_rank(_pod(tmp_path / phase, cell), glm_native_payload(phase, points=points))
+        rows[phase] = database.aggregate_cell(_glm_plan(), cell, tmp_path / phase, expected_attempt_id=ATTEMPT_ID)
+    assert [(row["total_kv_read_tokens"], row["kv_seed_regime"]) for row in rows["prefill"]] == [
+        (0, "n/a"),
+        (2176, "real_kv"),
+    ]
+    assert [(row["total_kv_read_tokens"], row["kv_seed_regime"]) for row in rows["decode"]] == [
+        (4096, "real_kv"),
+        (8192, "real_kv"),
+    ]
+    for row in [*rows["prefill"], *rows["decode"]]:
+        assert row["model_template_id"] == GENERIC_RUNTIME_TEMPLATE_ID
+        assert row["execution_profile"] == "full"
+        assert tuple(row[name] for name in EXECUTION_COLUMNS) == glm_identity()
+
+
+@pytest.mark.parametrize(
+    ("stamps", "regime", "template_id", "published"),
+    [
+        # The native row reports real_prefix, and publication labels the same prefix real_kv.
+        pytest.param(["prefill_real_seed"], "real_prefix", GENERIC_RUNTIME_TEMPLATE_ID, "real_kv", id="real-seed"),
+        pytest.param(["prefill_fake_prefix"], "fake_prefix", GENERIC_RUNTIME_TEMPLATE_ID, None, id="fake-prefix"),
+        # The DeepSeek V4.1 adapter stamps real KV on every point, cached prefill included. Its plans have their own
+        # template, and a point with this stamp keeps the label that it had before the prefix stamps counted.
+        pytest.param(["kvwarm_real_kv"], "real_kv", "deepseek_v41_text_native", "real_kv", id="real-kv"),
+        pytest.param(
+            ["prefill_real_seed", "kvwarm_real_kv"], "real_kv", "deepseek_v41_text_native", "real_kv", id="both"
+        ),
+    ],
+)
+def test_execution_identity_cached_prefill_accepts_real_prefix_stamp(
+    tmp_path, monkeypatch, stamps, regime, template_id, published
+):
+    cell = glm_cell("prefill")
+    write_glm_rank(_pod(tmp_path, cell), glm_native_payload("prefill", points=[PREFILL_COLD, PREFILL_CACHED]))
+    valid = _validate(tmp_path, cell)
+    cold, cached = valid.points
+    collection = replace(valid, points=(cold, _restamp(cached, stamps, regime)))
+    plan = _glm_plan(template_id)
+    if published is None:
+        with pytest.raises(ValueError) as error:
+            _publish(monkeypatch, tmp_path, cell, collection, plan)
+        assert str(error.value) == REAL_KV_REFUSAL.format(regime)
+    else:
+        rows = _publish(monkeypatch, tmp_path, cell, collection, plan)
+        assert [row["kv_seed_regime"] for row in rows] == ["n/a", published]
+
+
+@pytest.mark.parametrize("kvwarm", [None, WARMUP_SKIP], ids=["no-warmup-block", "warmup-skip"])
+def test_cached_prefill_regime_follows_its_stamp_not_the_decode_warmup_block(tmp_path, monkeypatch, kvwarm):
+    cell = glm_cell("prefill")
+    write_glm_rank(_pod(tmp_path, cell), glm_native_payload("prefill", points=[PREFILL_COLD, PREFILL_CACHED]))
+    collection = replace(_validate(tmp_path, cell), kvwarm_meta=kvwarm)
+    rows = _publish(monkeypatch, tmp_path, cell, collection)
+    assert [row["kv_seed_regime"] for row in rows] == ["n/a", "real_kv"]
+
+
+def test_cached_prefill_with_the_real_kv_stamp_follows_the_warmup_block(tmp_path, monkeypatch):
+    """No adapter writes both stamps. A point with the real-KV stamp is classified by the warm-up block, as before."""
+    cell = glm_cell("prefill")
+    write_glm_rank(_pod(tmp_path, cell), glm_native_payload("prefill", points=[PREFILL_COLD, PREFILL_CACHED]))
+    valid = _validate(tmp_path, cell)
+    cold, cached = valid.points
+    both = _restamp(cached, ["prefill_real_seed", "kvwarm_real_kv"], "real_prefix")
+    collection = replace(valid, points=(cold, both), kvwarm_meta=WARMUP_SKIP)
+    with pytest.raises(ValueError) as error:
+        _publish(monkeypatch, tmp_path, cell, collection)
+    assert str(error.value) == REAL_KV_REFUSAL.format("skip:moe_tp_balanced_by_construction")
+
+
+def test_glm_identity_decode_without_real_kv_is_refused(tmp_path, monkeypatch):
+    cell = glm_cell("decode")
+    write_glm_rank(_pod(tmp_path, cell), glm_native_payload("decode", points=DECODE_POINTS))
+    valid = _validate(tmp_path, cell)
+    fallback = tuple(_restamp(measurement, ["kvwarm_fake_fallback"], "fake_fallback") for measurement in valid.points)
+    skipped = replace(valid, kvwarm_meta=WARMUP_SKIP, points=fallback)
+    with pytest.raises(ValueError) as error:
+        _publish(monkeypatch, tmp_path, cell, skipped)
+    assert str(error.value) == REAL_KV_REFUSAL.format("skip:moe_tp_balanced_by_construction")
+
+
+def test_glm_decode_artifact_with_a_warmup_skip_is_refused_at_validation(tmp_path):
+    cell = glm_cell("decode")
+    fallback_points = [{**point, "sample_reasons": ["explicit", "kvwarm_fake_fallback"]} for point in DECODE_POINTS]
+    payload = glm_native_payload("decode", points=fallback_points)
+    payload["kvwarm"] = dict(WARMUP_SKIP)
+    for row in payload["results"]:
+        row["kv_seed_regime"] = "fake_fallback"
+    write_glm_rank(_pod(tmp_path, cell), payload)
+    with pytest.raises(ValueError, match="native GLM-5.3-Flash result lacks valid kvwarm"):
+        database.aggregate_cell(_glm_plan(), cell, tmp_path, expected_attempt_id=ATTEMPT_ID)
+
+
+def test_published_glm_pair_loads_through_the_rust_fpm_loader(tmp_path):
+    """The loader refuses a cached prefill or decode row of a cell with an execution identity unless it is real_kv."""
+    import aisimulate_core
+    from aisimulate_core.sdk.rust_engine_step import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    plan = _glm_plan()
+    plan.backend_version = "glm-published-pair"
+    rows = []
+    for phase, points in (("prefill", [PREFILL_COLD, PREFILL_CACHED]), ("decode", DECODE_POINTS)):
+        # The loader selects cells by the quantization that the SDK resolves for the checkpoint.
+        cell = replace(
+            glm_cell(phase),
+            weight_quantization="fp8_block",
+            gemm_quant_mode="fp8_block",
+            moe_quant_mode="fp8_block",
+            fmha_quant_mode="bfloat16",
+        )
+        write_glm_rank(_pod(tmp_path / phase, cell), glm_native_payload(phase, points=points))
+        rows += database.aggregate_cell(plan, cell, tmp_path / phase, expected_attempt_id=ATTEMPT_ID)
+    systems = tmp_path / "systems"
+    database.write_formal_database(plan, rows, systems_root=systems / "data")
+    system_file = f"{plan.system}.yaml"
+    shutil.copyfile(Path(aisimulate_core.__file__).parent / "systems" / system_file, systems / system_file)
+    engine = dict(
+        schema_version=1,
+        model_name=GLM_MODEL,
+        system_name=plan.system,
+        backend=plan.backend,
+        backend_version=plan.backend_version,
+        systems_path=str(systems),
+        enable_shared_layer=False,
+        strict_provenance=True,
+        tp_size=1,
+        pp_size=1,
+        moe_tp_size=1,
+        moe_ep_size=1,
+        attention_dp_size=1,
+        database_mode="SILICON",
+        forward_model="fpm",
+    )
+    model = RustForwardPassPerfModel.best_available(
+        ForwardPassPerfModelConfig.from_legacy_engine_config(engine, "aggregated")
+    )
+    # Each published point is a measured coordinate, so the model returns its latency.
+    for row in rows:
+        decode = row["workload_kind"] == "decode"
+        scheduled = dict(
+            num_prefill_requests=0 if decode else row["batch_size"],
+            num_decode_requests=row["batch_size"] if decode else 0,
+            sum_prefill_tokens=row["total_prefill_tokens"],
+            sum_prefill_kv_tokens=0 if decode else row["total_kv_read_tokens"],
+            sum_decode_kv_tokens=row["total_kv_read_tokens"] if decode else 0,
+            var_prefill_length=0.0,
+            var_decode_kv_tokens=0.0,
+        )
+        fpm = dict(version=1, wall_time=1.0, scheduled_requests=scheduled)
+        assert model.estimate_forward_pass_time_ms(fpm) == pytest.approx(row["latency_ms"])

@@ -3509,8 +3509,12 @@ def test_v41_cached_prefill_requires_real_computed_state(tmp_path, marker):
     if marker == "kvwarm_real_kv":
         assert aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")[0]["kv_seed_regime"] == "real_kv"
     else:
-        with pytest.raises(ValueError, match="requires real_kv"):
+        regime = {"kvwarm_fake_fallback": "fake_fallback", None: "legacy"}[marker]
+        with pytest.raises(ValueError) as error:
             aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+        assert str(error.value) == (
+            f"execution-identity cells require real KV measurements for cached prefill and decode, got {regime}"
+        )
 
 
 @pytest.mark.parametrize("mode", [None, "PIECEWISE", "FULL", False])

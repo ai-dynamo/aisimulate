@@ -14,6 +14,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 from collector.fpm_forward import planner, runner, runtime_memory
+from collector.fpm_forward.capabilities import GENERIC_RUNTIME_TEMPLATE_ID
 from collector.fpm_forward.runtime import fpm_memory_observer as observer
 from collector.fpm_forward.types import ParallelTopology
 
@@ -1557,6 +1558,34 @@ def test_historical_v10_plan_keeps_hash_and_reaches_native_aggregation(tmp_path)
         assert row["source_plan_sha256"] == frozen.sha256
         assert tuple(row[name] for name in EXECUTION_COLUMNS) == LEGACY_EXECUTION_IDENTITY
     assert fixture.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    "template_id", [None, GENERIC_RUNTIME_TEMPLATE_ID], ids=["template-of-the-plan", "generic-runtime-template"]
+)
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_non_glm_plans_keep_the_approved_moe_tp_skip(tmp_path, template_id):
+    from collector.fpm_forward import database
+
+    plan = _pending_plan()
+    if template_id is not None:
+        plan = replace(plan, capability=replace(plan.capability, template_id=template_id))
+    # A warm-up skip is refused for the strategies that require the warm-up, so the cell takes the tp strategy.
+    decode = next(cell for cell in plan.cells if cell.workload_kind == "decode" and cell.topology.dp == 1)
+    cell = replace(decode, parallel_strategy="tp")
+    assert not cell.execution_identity[0]
+    unit = tmp_path / "raw/node0000"
+    unit.mkdir(parents=True)
+    provenance_path = unit / "collector-provenance.json"
+    _write_provenance(provenance_path, cell_id=cell.cell_id, plan_sha256=plan.sha256, attempt_id="attempt")
+    provenance = json.loads(provenance_path.read_text())
+    provenance["runtime"]["backend_version"] = plan.runtime_backend_version
+    provenance_path.write_text(json.dumps(provenance))
+    payload = _native_payload(phase="decode", rank=0, dp=1)
+    payload["kvwarm"] = {"enabled": True, "warm_eligible": False, "skip_reason": "moe_tp_balanced_by_construction"}
+    (unit / "benchmark.json").write_text(json.dumps(payload))
+    rows = database.aggregate_cell(plan, cell, tmp_path, expected_attempt_id="attempt")
+    assert [row["kv_seed_regime"] for row in rows] == ["skip:moe_tp_balanced_by_construction"]
 
 
 @pytest.mark.parametrize("schema_version", [10, 11])
