@@ -553,15 +553,14 @@ window.AISimReplay = { mount(root, report, options = {}) {
       function comparisonChart(id) {
         const c = comparedPhase()?.charts.find(c=>c.id === comparisonKey(id));
         if (!c) return null;
-        const labels = [...new Set(c.series.map(s=>s.label))];
         const hasSilicon = c.series.some(s=>s.origin === "silicon" && s.y.some(finite));
         const traces = c.series.map(s=>({name:`${s.label} · ${s.origin === "silicon" ? "Silicon" : "AISim"}`, x:s.x,y:s.y,
           type:s.kind === "bar" ? "bar" : "scatter",mode:"lines",connectgaps:false,
-          line:{color:sourceColor(s.origin),dash:(s.origin === "silicon"?["solid","dash","longdash"]:["dot","dashdot","longdashdot"])[labels.indexOf(s.label)%3],shape:s.step?"hv":"linear"},
+          line:{color:sourceColor(s.origin),dash:id === "source" && s.metric === "miss" ? "dot" : "solid",shape:s.step?"hv":"linear"},
           marker:{color:sourceColor(s.origin)},
           hovertemplate:`%{x}<br>%{y:,.3f} ${esc(c.unit)}<extra>%{fullData.name}</extra>`}));
         return {traces,axes:layout(c.unit,{barmode:"group"}),note:(hasSilicon ? "" : "Silicon reference unavailable for this metric in the selected phase. ") + c.note,
-          foot:c.foot + (hasSilicon ? " Silicon: blue. AISim: yellow. Line patterns distinguish metrics." : " AISim prediction only.") + " Phase origins are recorded independently; no clock fitting.",
+          foot:c.foot + (hasSilicon ? " Silicon: blue. AISim: yellow." : " AISim prediction only.") + (id === "source" ? " Cache hits: solid. Cache misses: dotted." : "") + " Phase origins are recorded independently; no clock fitting.",
           empty:traces.some(t=>t.y.some(finite))?null:"No comparable observations in this phase."};
       }
       function chart(id) {
@@ -652,7 +651,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
                   [0, Math.max(...bins) * 1.03],
                   shade,
                   {
-                    line: { color: shade, width: 1, dash: "dot" },
+                    line: { color: shade, width: 1, dash: "solid" },
                     hoverinfo: "skip",
                   },
                 ),
@@ -925,7 +924,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
                 {
                   stackgroup: "source",
                   fillcolor: shade,
-                  line: { width: 0, color: shade },
+                  line: { width: 2, color: shade, dash: key === "miss" ? "dot" : "solid" },
                 },
               ),
             );
@@ -1184,7 +1183,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
         const workerControl = root.querySelector('[data-group="worker"]');
         workerControl.disabled = true;
         workerControl.title = "Silicon worker placement is unavailable";
-        root.querySelector("#view-timeline .legend").innerHTML = '<span><i class="dot" style="background:var(--silicon)"></i>Silicon · solid</span><span><i class="dot" style="background:var(--aisim)"></i>AISim · dashed</span><span>Failed · red outline</span>';
+        root.querySelector("#view-timeline .legend").innerHTML = '<span><i class="dot" style="background:var(--silicon)"></i>Silicon</span><span><i class="dot" style="background:var(--aisim)"></i>AISim</span><span>Failed · red outline</span>';
         const byId = new Map(all.map(r=>[r.uuid,r])), used = new Set(), pairs = [];
         for (const row of [...all.filter(r=>r.origin==="silicon"),...all.filter(r=>r.origin!=="silicon")]) {
           if (used.has(row.uuid)) continue;
@@ -1193,7 +1192,7 @@ window.AISimReplay = { mount(root, report, options = {}) {
           if (!state.search || pair.some(r=>[r.request_id,r.uuid,r.group_id,r.origin,r.terminal_status].join(" ").toLowerCase().includes(state.search))) pairs.push(pair);
         }
         const end = Math.max(data.native_duration_s,data.silicon_duration_s,1);
-        $("timeline-summary").innerHTML = `${all.filter(r=>r.origin==="silicon").length} silicon requests · ${all.filter(r=>r.origin==="simulated").length} AISim requests · ${pairs.length} matched or unmatched rows · ${all.filter(r=>!finite(r.arrival_time_ms)||!finite(r.terminal_time_ms)).length} untimed requests (inspect by row label). Blue solid: silicon; yellow dashed: AISim. Preparation is unscored.<div class="score-badges">${Object.entries(data.request_scores).map(([m,s])=>`<span class="score-badge">${m.replace("_ms", "").toUpperCase()} Request MAPE ${fmt(s.mape)}${finite(s.mape)?"%":""} · n=${s.count}</span>`).join("")}</div>`;
+        $("timeline-summary").innerHTML = `${all.filter(r=>r.origin==="silicon").length} silicon requests · ${all.filter(r=>r.origin==="simulated").length} AISim requests · ${pairs.length} matched or unmatched rows · ${all.filter(r=>!finite(r.arrival_time_ms)||!finite(r.terminal_time_ms)).length} untimed requests (inspect by row label). Blue: silicon; yellow: AISim. Preparation is unscored.<div class="score-badges">${Object.entries(data.request_scores).map(([m,s])=>`<span class="score-badge">${m.replace("_ms", "").toUpperCase()} Request MAPE ${fmt(s.mape)}${finite(s.mape)?"%":""} · n=${s.count}</span>`).join("")}</div>`;
         $("timeline-plot").dataset.requestCount = String(all.length);
         const axis = Array.from({length:7},(_,i)=>`<span class="timeline-tick" style="left:${i/6*100}%;transform:translateX(${i===0?0:i===6?-100:-50}%)">${fmt(end*i/6,end<60?1:0)}s</span>`).join("");
         const content = pairs.map(pair=>{

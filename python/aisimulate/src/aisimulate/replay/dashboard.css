@@ -474,7 +474,7 @@
 .replay-dashboard .comparison-row .conversation-id { color:var(--muted); }
 .replay-dashboard .comparison-row .timeline-interval { height:7px; background:var(--silicon); }
 .replay-dashboard .comparison-row .timeline-interval::before { inset:-1px 0; }
-.replay-dashboard .comparison-row [data-origin="simulated"] { background:color-mix(in srgb, var(--aisim) 20%, transparent); border:2px dashed var(--aisim); }
+.replay-dashboard .comparison-row [data-origin="simulated"] { background:var(--aisim); }
 .replay-dashboard .comparison-row [data-status="failed"] { outline:2px solid var(--red); outline-offset:1px; }
 .replay-dashboard.embedded { --bg:inherit; --panel:inherit; --border:inherit; --text:inherit; --muted:inherit; --accent:inherit; --raised:var(--elevated); --grid:var(--border); font:inherit; }
 .replay-dashboard.embedded .main-tabs { margin-top:12px; }

@@ -742,8 +742,9 @@ the AgentX branch selector.
 Model summary rows use the overview's full-width tinted background and brighter
 text. Concurrency subrows use the page surface, with the same hover/focus accent.
 Source labels use compact, padded blue pills sized to their text, like the NEW badge.
-Comparison plots and request timelines use blue for silicon and yellow for AISim.
-Line patterns distinguish multiple metrics; failed timeline requests keep a red outline.
+Comparison plots and request timelines use solid blue for silicon and solid yellow
+for AISim. Only Cumulative prompt token sources uses dotted lines, for cache misses;
+cache hits use solid lines. Failed timeline requests keep a red outline.
 Plots and expanded charts show compact MAPE badges without the comparison coverage
 and exclusions accordion. The numerical payload retains the coverage and exclusion counts.
 The comparison timeline fits the full phase into the panel, with a compact
