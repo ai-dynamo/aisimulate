@@ -831,13 +831,30 @@ impl VllmHostOffloadAdapter {
                 .zip(missing_indices.iter().copied())
                 .all(|(hash, index)| HostBlockKey::new(hash) == request.prompt_keys[index])
         );
-        match tier.prepare_store(
-            self.host.id(),
-            uuid,
-            &request.prompt_keys[start..end],
-            request.prompt_meta.as_deref().map(|meta| &meta[start..end]),
-            now_ms,
-        ) {
+        // The offloading connectors protect every block they offer from
+        // eviction. SimpleCPU's `get_new_blocks` protects none, so it offers
+        // only the missing blocks.
+        let simple_keys;
+        let simple_meta;
+        let (keys, meta) = if self.connector == G2Connector::SimpleCpuV032 {
+            simple_keys = missing_indices
+                .iter()
+                .map(|index| request.prompt_keys[*index])
+                .collect::<Vec<_>>();
+            simple_meta = request.prompt_meta.as_deref().map(|meta| {
+                missing_indices
+                    .iter()
+                    .map(|index| meta[*index].clone())
+                    .collect::<Vec<_>>()
+            });
+            (simple_keys.as_slice(), simple_meta.as_deref())
+        } else {
+            (
+                &request.prompt_keys[start..end],
+                request.prompt_meta.as_deref().map(|meta| &meta[start..end]),
+            )
+        };
+        match tier.prepare_store(self.host.id(), uuid, keys, meta, now_ms) {
             StoreOutcome::AlreadyPresent => request.next_store_block = end,
             StoreOutcome::RetryCapacity { .. } => {}
             StoreOutcome::Prepared {
@@ -2502,6 +2519,36 @@ mod tests {
             });
             assert_eq!(outcomes, [true, concurrent], "{connector:?}");
         }
+    }
+
+    #[test]
+    fn simple_cpu_stores_do_not_protect_the_request_s_own_copies() {
+        // SimpleCPU takes CPU blocks from its free queue's head
+        // (`get_new_blocks`) without protecting any, so a request admitted
+        // with p0 and p1 from G1 evicts its own oldest copy, p0, to store p1.
+        let mut adapter = connector_adapter(G2Connector::SimpleCpuV032, 3);
+        let mut manager = G1Manager::new_with_caching(4, 4, KvEventPublishers::default(), 0, true);
+        let id = Uuid::from_u128(1);
+        let (mut sequence, mut lease, mut host) = request(id, (1..=8).collect());
+        assert!(matches!(
+            manager.allocate_native(id, &mut lease, 8, 0),
+            NativeAllocation::Ready { .. }
+        ));
+        manager.finalize_native_computed_prefix(id, 0, 8, &mut sequence, &mut lease);
+        let (_, _, other) = request(Uuid::from_u128(2), (11..=18).collect());
+        let mut now = 0.0;
+        for key in [
+            host.prompt_keys[0],
+            other.prompt_keys[0],
+            other.prompt_keys[1],
+        ] {
+            now = seed_host(&mut adapter, key);
+        }
+        let evictions = Arc::new(EvictionCapture::default());
+        adapter.set_observer(evictions.clone());
+        adapter.on_admitted(&mut host, 8, 4);
+        adapter.observe_completed_blocks(id, &mut host, &lease, 8, 8, 4, &mut manager, now);
+        assert_eq!(evictions.take(), [host.prompt_keys[0]]);
     }
 
     #[test]

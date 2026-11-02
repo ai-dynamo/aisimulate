@@ -204,6 +204,8 @@ eviction rules G2 follows:
 vLLM main has changed some of these rules since v0.32.0; each profile follows
 the version it names. After a preemption, `simple_cpu_v0_32` loads only prompt
 blocks from G2 and recomputes the request's output blocks, which vLLM reloads.
+A `simple_cpu_v0_32` store that does not fit waits for the next pass, while
+vLLM stores the blocks that fit.
 
 <a id="g2-scope"></a>
 <a id="g2-ownership"></a>
