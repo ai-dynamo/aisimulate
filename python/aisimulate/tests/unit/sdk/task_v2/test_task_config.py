@@ -888,29 +888,45 @@ def test_large_ep_trtllm_context_fmha_capability_uses_granular_table(caplog):
 
 
 def test_trtllm_large_ep_context_fmha_falls_back_when_only_the_module_table_has_fp8(monkeypatch, caplog):
-    """The negative case of the test above: the granular context_mla table has no fp8 slice while the
-    fused regime's module table has one. The inferred fp8 falls back to bfloat16, and the warning names
-    the granular key, because the merged list's module-only fp8 rows cannot serve the large-EP path."""
+    """The negative case of the test above, through the real table selection: the granular
+    context_mla table carries only a bfloat16 fmha slice under the fp8 KV cache while the module
+    table keeps its fp8 slice. The inferred fp8 falls back to bfloat16, and the warning names the
+    granular key, because the merged list's module-only fp8 rows cannot serve the large-EP path."""
     import logging
 
     from aisimulate.sdk import common
+    from aisimulate.sdk.perf_database import get_database
 
-    supported = {"context_mla": ["fp8", "bfloat16"], "context_mla_granular": ["bfloat16"]}
-    monkeypatch.setattr(Task, "_context_fmha_supported_modes", lambda self, role, ctx_op=None: supported[ctx_op])
-    monkeypatch.setattr(
-        Task,
-        "_reachable_attention_op_keys",
-        lambda self, role: [("context_mla", "generation_mla"), ("context_mla_granular", "generation_mla")],
-    )
+    class GranularWithoutFp8:
+        """The real gb200 TRT-LLM database with its granular context_mla table cut down to bfloat16 fmha."""
+
+        def __init__(self, database):
+            self._database = database
+
+        def __getattr__(self, name):
+            return getattr(self._database, name)
+
+        @property
+        def _context_mla_data(self):
+            real = self._database._context_mla_data
+            bf16 = next(k for k in real if getattr(k, "name", str(k)) == "bfloat16")
+            kv_bf16 = next(k for k in real[bf16] if getattr(k, "name", str(k)) == "bfloat16")
+            return {bf16: {common.KVCacheQuantMode.fp8: real[bf16][kv_bf16]}}
+
+    database = GranularWithoutFp8(get_database("gb200", "trtllm", "1.3.0rc29"))
+    monkeypatch.setattr(Task, "_try_load_role_database", lambda self, role: database)
     with caplog.at_level(logging.WARNING):
         t = Task(
             serving_mode="agg",
             model_path="deepseek-ai/DeepSeek-V3",
             system_name="gb200",
             backend_name="trtllm",
+            backend_version="1.3.0rc29",
             gemm_quant_mode=common.GEMMQuantMode.nvfp4,
             moe_quant_mode=common.MoEQuantMode.nvfp4,
         )
+    assert t._context_fmha_supported_modes("agg", "context_mla_granular") == ["bfloat16"]
+    assert t._context_fmha_supported_modes("agg", "context_mla") == ["bfloat16", "fp8"]
     assert t.fmha_quant_mode == common.FMHAQuantMode.bfloat16
     fallback = [r.message for r in caplog.records if "falling back to bfloat16 FMHA" in r.message]
     assert len(fallback) == 1 and "has no 'context_mla_granular' perf data" in fallback[0]

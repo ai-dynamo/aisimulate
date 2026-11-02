@@ -119,8 +119,9 @@ For GEMM, the `plans` block of that output gives the retained count per dtype
 and each region left out with its reason.
 
 For each operation, record raw and retained task counts, physical-key counts,
-model/artifact coverage, dtype counts, and the regions `--plan-only` lists under `removed`. Quant-sensitive
-artifacts remain separate when the checkpoint changes the executed kernel.
+model/artifact coverage, dtype counts, and the regions `--plan-only` lists under
+`removed` and `removed_runs`. Quant-sensitive artifacts remain separate when the
+checkpoint changes the executed kernel.
 Verify that every required model emits at least one executable case; a
 successful empty plan is a failure.
 
