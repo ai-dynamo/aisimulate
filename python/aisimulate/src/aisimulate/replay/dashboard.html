@@ -935,6 +935,12 @@
         { id: "acceptance", title: "Speculative acceptance length" },
         { id: "completion", title: "Request completion status" },
       ];
+      // Optional numerical references supplied by the qualified accuracy publisher.
+      // Ordinary replay exports do not add comparison cards.
+      if (report.reference?.pairs) specs.unshift(
+        { id: "reference_ttft", title: "TTFT distribution · silicon / AISim" },
+        { id: "reference_tpot", title: "TPOT distribution · silicon / AISim" },
+      );
       function segments(id, options, selected, kind = "mode") {
         return (
           '<div class="segments">' +
@@ -1233,7 +1239,23 @@
           foot = "",
           axes = layout(),
           empty = null;
-        if (id === "input" || id === "output") {
+        if (id === "reference_ttft" || id === "reference_tpot") {
+          const metric = id === "reference_ttft" ? "ttft_ms" : "tpot_ms";
+          const pairs = report.reference.pairs.filter(p => finite(p[metric + "_ape"]));
+          const values = pairs.flatMap(p => [p["silicon_" + metric], p["predicted_" + metric]]);
+          const maximum = values.reduce((a, b) => Math.max(a, b), 0);
+          const width = (maximum || 1) / 32;
+          if (state.stage !== "profile" || !pairs.length) empty = "No scored silicon comparisons in this phase.";
+          traces = [["silicon", "Silicon", orange], ["predicted", "AISim", blue]].map(([key, name, color]) => {
+            const counts = Array(32).fill(0);
+            pairs.forEach(p => counts[Math.min(31, Math.floor(p[key + "_" + metric] / width))]++);
+            return {type: "bar", name, x: counts.map((_, i) => (i + 0.5) * width), y: counts,
+              marker: {color}, hovertemplate: "%{x:.2f} ms · %{y} requests<extra>%{fullData.name}</extra>"};
+          });
+          axes = layout("Requests", {xaxis: {title: metric === "ttft_ms" ? "TTFT (ms)" : "TPOT (ms/token)"}, barmode: "group"});
+          note = "Successful, uniquely matched requests with equal recorded output lengths";
+          foot = `${pairs.length} scored pairs; exclusions and denominators are listed above the replay dashboard.`;
+        } else if (id === "input" || id === "output") {
           const key = id === "input" ? "input_length" : "output_length",
             values = r.map((row) => row[key]).filter(finite);
           if (state.modes[id] === "inflight") {
@@ -1878,6 +1900,14 @@
             fmt(row.first_admission_reused_input_tokens, 0) + " tokens",
           ],
         ];
+        const reference = report.reference?.pairs?.find(pair => pair.request_id === row.request_id);
+        if (reference) details.push(
+          ["Silicon match", reference.status],
+          ["Silicon TTFT", fmt(reference.silicon_ttft_ms) + " ms"],
+          ["Silicon TPOT", fmt(reference.silicon_tpot_ms) + " ms/token"],
+          ["Request TTFT error", fmt(reference.ttft_ms_ape) + "%"],
+          ["Request TPOT error", fmt(reference.tpot_ms_ape) + "%"],
+        );
         const events = (report.lifecycle || []).filter((event) =>
           row.uuid && event.request_uuid
             ? event.request_uuid === row.uuid

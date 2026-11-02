@@ -74,7 +74,12 @@ SPDX-License-Identifier: Apache-2.0
       <nav class="accuracy-tabs" aria-label="Accuracy views">
         <button id="tab-overview" type="button" aria-pressed="true">Overview(op-based)</button>
         <button id="tab-details" type="button" aria-pressed="false">Details(op-based)</button>
+        <button id="tab-agentx" type="button" aria-pressed="false">AgentX <span class="agentx-new">NEW</span></button>
       </nav>
+      <section id="agentx-view" hidden aria-label="AgentX accuracy">
+        <p class="agentx-beta">Beta · coverage is limited to evaluated workloads. See the <a href="../feature-support-matrix/#agentx">AgentX feature support matrix ↗</a>.</p>
+        <div id="agentx-content"></div>
+      </section>
       <p id="evidence-brief" class="evidence-brief" role="status">Loading evidence…</p>
       <label class="topology-control">Decoding
         <select id="decoding-select">
@@ -187,6 +192,7 @@ SPDX-License-Identifier: Apache-2.0
       <div class="error-banner" id="error-banner" role="alert" hidden></div>
     </main>
 
+    <script src="./agentx.js" defer></script>
     <script src="./app.js" defer></script>
   </body>
 </html>

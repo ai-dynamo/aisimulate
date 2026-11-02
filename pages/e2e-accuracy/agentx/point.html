@@ -1,0 +1,14 @@
+<!doctype html>
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+     SPDX-License-Identifier: Apache-2.0 -->
+<html lang="en" data-theme="dark">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AgentX · point details</title><link rel="stylesheet" href="../styles.css">
+<script>try { document.documentElement.dataset.theme=localStorage.getItem("sm-theme")||"dark"; } catch (_) {}</script>
+</head>
+<body><header class="top-header"><div class="shell top-header-inner"><a id="back" href="../?tab=agentx">← AgentX overview</a><h1 id="point-title">Point details</h1><button id="point-theme" type="button">Switch theme</button></div></header>
+<main class="shell dashboard"><p class="agentx-beta">Beta · coverage is limited to evaluated workloads. <a href="../../feature-support-matrix/#agentx">Feature support matrix ↗</a></p><div id="agentx-point" role="region" aria-label="AgentX point details">Loading…</div></main>
+<script src="../agentx.js"></script><script>
+AgentX.detail();
+document.getElementById("point-theme").addEventListener("click",()=>{const theme=document.documentElement.dataset.theme==="light"?"dark":"light";document.documentElement.dataset.theme=theme;try{localStorage.setItem("sm-theme",theme);}catch(_){}const frame=document.getElementById("replay-frame");if(frame)frame.contentWindow.postMessage({agentxTheme:theme},location.origin);});
+</script></body></html>
