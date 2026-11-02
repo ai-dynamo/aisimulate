@@ -338,7 +338,8 @@ def test_archive_rejects_duplicate_paths_and_symlink():
                 archive.writestr(info, "target")
             else:
                 archive.writestr("summary.json", "{}")
-                archive.writestr("summary.json", "{}")
+                with pytest.warns(UserWarning, match="Duplicate name"):
+                    archive.writestr("summary.json", "{}")
         with pytest.raises(ValueError):
             unpack(stream.getvalue())
 

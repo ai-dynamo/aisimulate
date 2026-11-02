@@ -760,7 +760,7 @@ HF revisions are never public links.
 Validation:
 
 ```bash
-python -m pytest -c /dev/null tests/test_agentx_accuracy.py tests/test_agentx_curves.py -q
+python -m pytest -c /dev/null -p no:cacheprovider -W error tests/test_agentx_accuracy.py tests/test_agentx_curves.py -q
 python scripts/pages/check_agentx_browser.py
 ```
 
