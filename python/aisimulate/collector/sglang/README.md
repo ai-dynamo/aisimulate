@@ -71,8 +71,8 @@ Disabling graph padding requires explicit bucket membership. This follows the
 
 `mla_module.yaml` declares a shared dense-MLA context sequence axis
 (`mla_context_sequence_lengths`) and token budget (`context.mla_max_tokens`).
-They cover full-history queries through 1,048,576 tokens on vLLM, SGLang and
-TRT-LLM. Sparse modules retain their existing new-token/chunk axes; their
+They declare full-history queries through 1,048,576 tokens on vLLM, SGLang
+and TRT-LLM; native model and backend limits still apply. Sparse modules retain their existing new-token/chunk axes; their
 cached histories use the prefix and decode axes instead. TRT-LLM DSA and
 TRT-LLM/vLLM MSA now include 4K through 1M prefix anchors, and their decode
 axes reach 1,048,575 cached tokens. SGLang's existing DSA/MSA history coverage
@@ -90,45 +90,23 @@ Admission uses 90% of the collecting GPU's total memory. Single-layer
 TRT-LLM/vLLM estimates count page-rounded caches, cached source tensors and
 visible attention activations and top-k buffers; TRT-LLM estimates also include
 DSA logits tiles and MSA index-score buffers. Its MSA collector retains the
-native double-pool allocation and spare pages. SGLang estimates all loaded KV layers. The native
-workspace, model weights, allocator fragmentation and backend limits can still
+native double-pool allocation and spare pages. SGLang estimates all loaded KV
+layers. The native workspace, model weights, allocator fragmentation and backend limits can still
 reject an admitted case. CPU coverage and memory-boundary tests establish the
 plan only; new long-history paths require GPU qualification. The larger
 context budget also admits larger batches at existing shorter anchors, so
 collection-cost estimates must count those cells as well as new lengths.
 
-## GLM AgentX decode coverage
+## Long-history decode defaults
 
-The default MLA/DSA grid preserves existing batches and lengths, adds batch
+The shared MLA/DSA grid preserves existing batches and lengths, adds batch
 `52` and past-KV lengths `262144, 393216, 524288, 655360, 720896`, and raises
-the token budget to `37486592` (`52 * 720896`). Prefill batches and prefixes
-are unchanged. MSA shares the axes but keeps its `33554432` budget. These
-defaults cover all affected models and precisions; model-context violations
-remain visible runtime errors.
-
-GLM-5.2 declares **250 raw batch/past-KV pairs** per head/precision combination,
-up from 154, before device-memory admission. All old pairs and the historical
-110-pair AgentX grid remain covered. Full-indexer and skip-indexer measurements
-both use `isl=1`, `step=past_KV`. CPU capacity tests retain the FP8-KV grid,
-including `52 * 720896`, on 80 GiB, B200-size and B300-size devices. The BF16
-`256 * 131072` cell needs about 80.29 GiB of cache and is rejected on an
-80 GiB device. These checks do not establish runtime fit or timing accuracy.
-
-[agentx_dsa_shards.yaml](agentx_dsa_shards.yaml) selects the two SGLang 0.5.21
-module groups with TP8 local geometry, FP8 KV and BF16 attention projections.
-For auto-collector, use `AISIM_MODEL_FILTER=nvidia/GLM-5.2-NVFP4`,
-`AISIM_FRAMEWORKS=sglang:0.5.21`, `AISIM_SYSTEMS=b300_sxm`, `AISIM_GPU_NUM=1`,
-`AISIM_SHARDS_PER_JOB=1`, and `CREATE_GITHUB_PR=0`, with an exact collector SHA
-and pinned image. Each shard uses one GPU; validate complete row identities
-and failure counts before publishing.
-
-Historical source
-[`3d41164034624251209588ee0284694e86a13bd8`](https://github.com/ai-dynamo/aisimulate/commit/3d41164034624251209588ee0284694e86a13bd8)
-produced 110 rows per variant on B300/SGLang 0.5.20 (parent pipeline 77726488,
-child 77726600, Slurm jobs 135871/135872). It predates native projection and
-cache-history fixes. Those 220 rows do not qualify the current 0.5.21 collector;
-new timing claims require recollection. Native MTP and multi-rank communication
-remain outside this module benchmark.
+the aggregate token budget to `37486592` (`52 * 720896`). MSA shares those
+SGLang history axes but keeps its `33554432` budget. These defaults apply to
+all declared models and precisions. Model-context violations remain visible
+runtime errors, and a plan admitted by the memory estimate still needs native
+GPU qualification. Model-specific campaigns and packaged measurements are
+maintained separately from these shared collector defaults.
 
 ## Execution Modes
 

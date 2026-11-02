@@ -65,8 +65,9 @@ FlashInfer wrapper's query-dependent workspace, which its native TRTLLM API
 path does not allocate. CPU-only planning retains all declared cases. These
 are conservative admission estimates, not native allocation guarantees;
 allocator fragmentation and larger backend workspaces can still fail at run
-time. The existing context `max_kv_elements` guard remains a separate indexing
-limit, so not every shape that fits GPU memory is admitted. Queued cases execute
+time. The existing context `max_kv_elements` ceiling also remains in effect,
+so not every shape that fits GPU memory is admitted; its removal needs a
+separate native indexing audit. Queued cases execute
 or report a failure; the worker never silently drops a planned case.
 
 The original 95-case Qwen collection took 52.751 seconds of collector wall time;
@@ -79,6 +80,31 @@ Current collection counts, incremental cost estimates and GPU qualification
 status belong in the PR description; raw campaign evidence remains local.
 Case-count scaling is only a planning estimate: long-history initialization,
 quadratic prefill and workspace growth can make new cases much slower.
+
+MLA has a separate full-history context axis,
+`common_case_values.mla_module.mla_context_sequence_lengths`, and a
+`context.mla_max_tokens` budget. This lets dense MLA cover long sequences
+without turning DSA/MSA's chunked new-token inputs into monolithic prefill.
+Sparse context coverage expands the cached-prefix axis instead. Standalone MLA
+also gains longer context and decode anchors. Module capacity must cover both
+query tokens and cached history; a declared shape alone does not establish that
+a native backend or the model's positional limit supports it.
+
+Generic attention coverage does not establish complete AgentX coverage for
+model-specific sparse families. DeepSeek-V4/V4.1 and GLM-5.3-Flash have separate
+history/concurrency grids and need their own native qualification. Fused MoE
+may need more computed-token anchors when attention DP aggregates multiple
+ranks. GEMM, quantization and recurrent GDN/KDA/Mamba operations use newly
+computed tokens; cached conversation history alone does not justify increasing
+those token axes. Audit the actual queried shapes before enlarging them.
+
+Campaign provenance must identify the immutable collector checkout used for the
+run. Export its full commit SHA as `AISIM_COLLECTOR_REF` and verify that raw
+`collection_meta.yaml` records that SHA, the runtime image digest and the plan
+hash before packaging measurements. Rebasing a data PR does not change its
+measurement source. If a historical sidecar reports `unknown`, preserve the
+raw artifact and document the verified original source using job records and
+its matching collector-code hash; never replace it with the new PR head.
 
 The SGLang attention-module collector targets 0.5.21 and admits batches
 between serving capture buckets when graph padding is enabled. It captures
