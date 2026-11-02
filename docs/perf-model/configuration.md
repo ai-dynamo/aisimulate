@@ -487,7 +487,7 @@ serving its last fit when a refit cannot produce a usable one, for example when
 multi-rank traffic first activates more aggregates than it has retained rows.
 `sampling.axes` still selects
 retention coordinates, and `update_policy` and `non_negative` keep their
-meaning. `rebuild_interval` has no effect because every fit already uses the
+meaning. `rebuild_interval` must stay `null` because every fit already uses the
 exact retained rows. See [online regression](methods/online-regression.md#fpm5-aggregate-features).
 
 | Correction field | Default | Behavior |
