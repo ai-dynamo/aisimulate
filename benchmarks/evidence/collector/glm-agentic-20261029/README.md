@@ -80,3 +80,28 @@ native extension; no native rebuild or new GPU collection was required.
 
 These checks establish collection coverage and data integrity. They do not
 establish full-model serving accuracy, prefill coverage, or cross-version reuse.
+
+
+## Default coverage and collection cost
+
+The default SGLang MLA/DSA generation sweep now adds batch 52 and five history
+anchors through 720,896 tokens, with a 37,486,592 total-token budget. This moves
+coverage declarations from PR #664 into the data PR; the expansion remains
+always on. It applies to all models using these axes. Prefill batches stay
+unchanged; MSA shares the expanded axes but keeps its 33,554,432-token budget.
+The memory-planning fix in #664 is required before this expanded sweep is used.
+
+GLM-5.2 has 250 raw batch/history pairs per geometry and precision, up from 154.
+Device-memory admission can reduce the queued plan. The historical 220-row
+campaign is a subset and does not qualify every new shape or SGLang 0.5.21.
+
+- Measured historical runtime: approximately 143 seconds per collector and
+  425 seconds for the two parallel CI jobs, excluding queue time.
+- Before the new memory filter, the six default SM90+ systems add 23,136 DSA
+  attempts. Using the historical B300 rate uniformly gives
+  `23136 * 285.139 / 220 / 3600 = 8.3` additional GPU-hours.
+- Eight default NVIDIA systems add 3,636 MSA shapes under its existing memory
+  filter; their incremental runtime is unmeasured.
+- These are planning scenarios, not measured fleet runtime or upper bounds.
+  Different hardware, geometries, setup and failures can increase cost. The
+  original incremental anchors were not timed separately.
