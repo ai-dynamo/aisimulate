@@ -267,8 +267,8 @@ note = "G3 is rejected; KVCR stays idle without router hints."
 [[sections.rows]]
 name = "Speculative decoding"
 doc = "replay/engine/speculation.md#mtp"
-cells = ["limited:HBM only", "limited:HBM only", "not_supported"]
-note = "MTP and EAGLE-family schemes with KV kept in GPU memory."
+cells = ["limited", "limited:HBM only", "not_supported"]
+note = "MTP and EAGLE-family schemes with KV kept in GPU memory; vLLM also runs MTP on a hybrid G2 with disable_eagle_block_drop."
 
 [[sections.rows]]
 name = "KV-aware routing, Planner"

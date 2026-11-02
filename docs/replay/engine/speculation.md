@@ -115,7 +115,8 @@ model quality, or measured hardware speedup; see [feature support](../features.m
 
 vLLM drops the last matched block from every prefix-cache hit of an EAGLE-like
 method, MTP included, and recomputes it so the drafter sees fresh hidden
-states. Replay applies the same drop. vLLM's
+states. Replay applies the same drop; a `state_cache` with `prefix_match_unit`
+applies it only with `state_cache.num_speculative_states`. vLLM's
 `speculative_config.disable_eagle_block_drop` turns it off; set the same switch
 on the speculation block:
 
@@ -136,9 +137,11 @@ and burst scheduling are unchanged. The switch is not part of the cost
 configuration. This follows vLLM 43b4aaea.
 
 With a `state_cache`, the switch also lets `kind: mtp` run with G2; see
-[hybrid models](kv-cache.md#hybrid-g2). Without either, MTP with G2 is
-rejected: replay does not model the drop hiding the last block that a G2 load
-restored.
+[hybrid models](kv-cache.md#hybrid-g2). Without the state cache or the switch,
+MTP with G2 is rejected: replay does not model the drop hiding the last block
+that a G2 load restored. For a `state_cache` with `prefix_match_unit` and no
+`num_speculative_states`, G1 hits are the same with or without the switch, so
+lifting this rejection is its only effect.
 
 <a id="prompt-lookup-ngram"></a>
 <a id="prompt-lookup-ngram-speculative-decoding"></a>
@@ -234,7 +237,8 @@ HBM-only agentic MTP/EAGLE replay is supported by the offline engine stack,
 including aggregated and P/D configurations supported by the selected backend.
 This is functional replay, not a claim of AgentX hardware accuracy.
 Rejected with MTP: grouped caches, G3 offload, G2 (except a
-[hybrid G2](kv-cache.md#hybrid-g2) with `disable_eagle_block_drop`), and
+[hybrid G2](kv-cache.md#hybrid-g2) with `engine.speculation.disable_eagle_block_drop`;
+legacy `nextn` cannot set the switch), and
 state-cache prefix matching with `prefix_match_unit` smaller than `block_size`.
 Full-block alignment is supported.
 Combinations accepted by the

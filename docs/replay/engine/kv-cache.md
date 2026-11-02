@@ -215,8 +215,8 @@ needs `prefix_match_unit` equal to `block_size`.
 - A state goes to G2 when G1 publishes it, before the pass's blocks, as one key
   per state block, for example one per Mamba group. `offloading_v0_32` stores
   only states inside the prompt, each key on its own. `simple_cpu_v0_32` stores
-  a state's keys together and drops the state, without a retry, when G2 has no
-  room.
+  a state only when all its keys fit, and otherwise drops it without a retry;
+  vLLM stores each group's block while room remains.
 - A lookup resumes at the deepest block boundary, at most
   `(len - 1) // block_size` blocks, where G1 and G2 hold the attention prefix
   and G2 holds every key of the state there. A state missing one key is not a
@@ -225,7 +225,8 @@ needs `prefix_match_unit` equal to `block_size`.
 - `offloading_v0_32` re-ranks the states a finishing request stored, offered or
   loaded together with its blocks.
 - G1 keeps the blocks a hybrid G2 is copying until the copy completes, as
-  SimpleCPU does.
+  SimpleCPU does. For `offloading_v0_32` this is a simplification: vLLM fences
+  the copied blocks' reuse instead, and replay does not fence state blocks.
 
 MTP (`kind: mtp`) runs with a hybrid G2 when
 [`disable_eagle_block_drop`](speculation.md#prefix-caching) is set.
@@ -450,9 +451,9 @@ This gives eight 1024-byte blocks. Each request's state takes two blocks
 | Knob | Default | Rules |
 |---|---|---|
 | `state_cache.bytes_per_request` | Inferred | State bytes per request per rank. When set, `block_size` and numeric `bytes_per_token` must also be set. |
-| `state_cache.num_speculative_states` | Unset | Explicit full-state scratch copies per request. Must match positive `nextn`. Requires numeric state bytes and token geometry. |
+| `state_cache.num_speculative_states` | Unset | Explicit full-state scratch copies per request. Must match the draft depth, from positive `nextn` or `engine.speculation`. Requires numeric state bytes and token geometry. |
 | `state_cache.prefill_checkpoint` | `false` | The final prefill chunk exports the prompt's last full-block state from inside its forward (vLLM's `num_prefill_checkpoint_blocks = 1`). Needs `prefix_match_unit` equal to `block_size`. |
-| `state_cache.junction_checkpoints` | `false` | A prefill stops at the end of a deeper attention hit and keeps the state there for requests sharing that prefix; a lookup waits one pass for a state published in the same pass. vLLM's default since v0.29.0. Needs an explicit `prefix_match_unit`. |
+| `state_cache.junction_checkpoints` | `false` | A prefill stops at the end of a deeper attention hit and keeps the state there for requests sharing that prefix; a lookup waits one pass for a state published in the same pass. vLLM's default at v0.29.0, the revision the align model follows. Needs an explicit `prefix_match_unit`. |
 | `state_cache.mamba_cache_dtype` | `auto` | Kimi K3 only. `auto` (model dtype), `float16` or `float32`. Used when bytes are inferred. |
 | `state_cache.indexer_cache_dtype` | `auto` | DeepSeek V4 only. `auto` (vLLM's FP8), `fp8` or `mxfp4`; vLLM supports `mxfp4` only on Blackwell datacenter GPUs. Used when bytes are inferred. |
 | `prefix_match_unit` | Unset (`block_size`) | Positive divisor of `block_size`. Lets prefixes match at a finer granularity than the physical block. |
@@ -510,10 +511,11 @@ keeps the earlier model. `junction_checkpoints` needs an explicit
   `c = (P - 1) // block_size * block_size`, the chunk runs to the prompt end and
   its forward exports the state at `c` into one extra state reserved for that
   pass. Without it the chunk stops at `c`, which costs one more pass.
-- **`junction_checkpoints`** is vLLM's default since v0.29.0, which the earlier
-  model omits. When a lookup's attention hit runs deeper than its deepest state
-  (`shared_prefix_boundary`), the prefill stops at that block-aligned position
-  and keeps the state there; a sibling sharing the prefix then resumes from it.
+- **`junction_checkpoints`** is vLLM's default at v0.29.0, the revision the
+  align model follows; the earlier model omits it. When a lookup's attention
+  hit runs deeper than its deepest state (`shared_prefix_boundary`), the
+  prefill stops at that block-aligned position and keeps the state there; a
+  sibling sharing the prefix then resumes from it.
   A lookup that would resume from a state published in the same pass waits one
   pass, as vLLM's allocation does. Without the switch, such states stay hidden
   and the lookup falls back to an older state.
@@ -522,7 +524,8 @@ Supported: aggregated and P/D vLLM, fixed `capacity`, `predict --stack engine`;
 inferred geometry for Kimi K3 and DeepSeek V4 at PP=1.
 Speculative decoding supports `prefix_match_unit` equal to `block_size`.
 For sub-block matching, supply `state_cache.num_speculative_states` equal to
-positive `nextn`. Each scratch copy consumes the same padded pages as the
+the draft depth, from positive `nextn` or `engine.speculation`.
+Each scratch copy consumes the same padded pages as the
 working state. The pool must fit these copies plus one token page.
 Omitting the field preserves the existing state model.
 This explicit mode models full-state scratch storage, not ReplaySSM or

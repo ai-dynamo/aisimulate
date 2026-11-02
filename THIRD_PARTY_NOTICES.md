@@ -260,6 +260,7 @@ immutable commit `98dff2a81d747d1dba01a47f939f48c3526d4206`:
 - https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/sched/scheduler.py
 - https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/single_type_kv_cache_manager.py
 - https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/kv_cache_manager.py
+- https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/kv_cache_coordinator.py
 - https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/worker/mamba_utils.py
 
 Copyright contributors to the vLLM project. Licensed under Apache-2.0:
@@ -326,10 +327,16 @@ eviction order of the CPU cache, how long a store holds its G1 source blocks,
 what a preemption waits for, and the engine step that submits the stores of a
 finished request.
 
-With a state cache, the same profiles also keep recurrent states, following the
-same files: the connectors' hybrid lookup and their stores of the states the
-scheduler hands off, with the G1 side in
+With a state cache, the same profiles also keep recurrent states: the
+connectors' hybrid lookup and their stores of the states the scheduler hands
+off, with the G1 side in
 `crates/core/src/engine/kv_manager/{g1_manager,state_cache_manager,vllm_backend}.rs`.
+These follow the connector files above and, at the same commit, the boundary
+hand-off, its drain and the hybrid hit in:
+
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/single_type_kv_cache_manager.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/kv_cache_manager.py
+- https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/kv_cache_coordinator.py
 
 The speculative scheduling/progress corrections in repository-root files
 `crates/core/src/engine/scheduler/vllm/{core,policy,tests}.rs` and
