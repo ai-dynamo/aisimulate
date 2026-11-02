@@ -2905,6 +2905,31 @@ mod tests {
         panic!("the rank did not go idle");
     }
 
+    /// Run each `(id, prompt, output)` turn to idle on one core. Returns the
+    /// admissions of each turn.
+    fn run_turns(
+        args: MockEngineArgs,
+        turns: &[(u128, std::ops::Range<u32>, usize)],
+    ) -> Vec<Vec<(usize, usize, usize)>> {
+        let mut core = VllmCore::new(args);
+        let mut now = 0.0;
+        let admissions = turns
+            .iter()
+            .map(|(id, tokens, output)| {
+                core.receive(DirectRequest {
+                    tokens: tokens.clone().collect(),
+                    max_output_tokens: *output,
+                    uuid: Some(Uuid::from_u128(*id)),
+                    arrival_timestamp_ms: Some(now),
+                    ..Default::default()
+                });
+                run_to_idle(&mut core, &mut now)
+            })
+            .collect();
+        assert_eq!(core.kv_manager.num_active_blocks(), 0);
+        admissions
+    }
+
     #[test]
     fn a_follow_up_restores_attention_and_state_from_g2() {
         // A one-token turn finishes in the pass whose prefill checkpoint
@@ -2913,23 +2938,25 @@ mod tests {
         // evicts the turn from G1, and the follow-up loads blocks 0..5 and
         // that state.
         for connector in [G2Connector::SimpleCpuV032, G2Connector::OffloadingV032] {
-            let mut core = VllmCore::new(hybrid_args(connector, 16));
-            let mut now = 0.0;
             let turns = [(1, 0..22, 1), (2, 1000..1040, 1), (3, 0..30, 2)];
-            let mut admissions = Vec::new();
-            for (id, tokens, output) in turns {
-                core.receive(DirectRequest {
-                    tokens: tokens.collect(),
-                    max_output_tokens: output,
-                    uuid: Some(Uuid::from_u128(id)),
-                    arrival_timestamp_ms: Some(now),
-                    ..Default::default()
-                });
-                admissions = run_to_idle(&mut core, &mut now);
-            }
-            assert_eq!(admissions, [(20, 0, 20)], "{connector:?}");
-            assert_eq!(core.kv_manager.num_active_blocks(), 0, "{connector:?}");
+            let admissions = run_turns(hybrid_args(connector, 16), &turns);
+            assert_eq!(admissions[2], [(20, 0, 20)], "{connector:?}");
         }
+    }
+
+    #[test]
+    fn a_restored_state_brings_its_speculative_blocks_to_admission() {
+        // The load allocates the restored state's speculative blocks, so the
+        // follow-up's admission charges only its new slot (vLLM 43b4aaea's
+        // MambaManager adds them only for a request without blocks): 3 token
+        // blocks, 2 for the slot and 2 for the checkpoint fit the 7 free.
+        let mut args = hybrid_args(G2Connector::SimpleCpuV032, 20);
+        args.aic_nextn = Some(3);
+        args.aic_nextn_accept_rates = Some("1,1,1".to_string());
+        args.disable_eagle_block_drop = true;
+        args.state_cache.as_mut().unwrap().num_speculative_states = Some(3);
+        let turns = [(1, 0..22, 1), (2, 1000..1040, 1), (3, 0..30, 2)];
+        assert_eq!(run_turns(args, &turns)[2], [(20, 0, 20)]);
     }
 
     #[test]

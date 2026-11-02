@@ -838,7 +838,13 @@ impl VllmKvManager {
                                     .is_some_and(|hit| !hit.is_active),
                         )
                 });
-        manager.blocks_per_state + manager.speculative_blocks + inactive_source_blocks
+        // A state restored from G2 landed with its speculative blocks; vLLM
+        // adds them only for a request that holds no blocks yet.
+        let held = lease
+            .state
+            .as_ref()
+            .map_or(0, |state| state.speculative.len());
+        manager.blocks_per_state + manager.speculative_blocks - held + inactive_source_blocks
     }
 
     /// Atomically allocate the native lease through `cumulative_tokens`.
