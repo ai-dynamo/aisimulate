@@ -64,25 +64,32 @@ fn spec(engine: ReplayEngineConfig) -> ReplaySpec {
     }
 }
 
-/// A replayer of `(id, prompt tokens, outputs, arrival)` requests.
-fn replayer(engine: EngineConfig, requests: &[(u128, u32, usize, f64)]) -> Replayer {
-    let spec = spec(ReplayEngineConfig {
-        rank: engine,
+/// A request with `(id, prompt tokens, outputs, arrival)`.
+fn request(&(id, prompt, outputs, arrival_ms): &(u128, u32, usize, f64)) -> DirectRequest {
+    DirectRequest {
+        tokens: (0..prompt).map(|token| token + id as u32 * 1000).collect(),
+        max_output_tokens: outputs,
+        uuid: Some(Uuid::from_u128(id)),
+        arrival_timestamp_ms: Some(arrival_ms),
         ..Default::default()
-    });
-    let requests = requests
-        .iter()
-        .map(|&(id, prompt, outputs, arrival_ms)| DirectRequest {
-            tokens: (0..prompt).map(|token| token + id as u32 * 1000).collect(),
-            max_output_tokens: outputs,
-            uuid: Some(Uuid::from_u128(id)),
-            arrival_timestamp_ms: Some(arrival_ms),
-            ..Default::default()
-        })
-        .collect::<VecDeque<_>>();
-    Replayer::new(spec, ReplayEngineFactory::new())
+    }
+}
+
+fn replay_requests(engine: ReplayEngineConfig, requests: VecDeque<DirectRequest>) -> Replayer {
+    Replayer::new(spec(engine), ReplayEngineFactory::new())
         .unwrap()
         .with_runtime_input(ReplayRuntimeInput::Requests(requests))
+}
+
+/// A replayer of `(id, prompt tokens, outputs, arrival)` requests.
+fn replayer(engine: EngineConfig, requests: &[(u128, u32, usize, f64)]) -> Replayer {
+    replay_requests(
+        ReplayEngineConfig {
+            rank: engine,
+            ..Default::default()
+        },
+        requests.iter().map(request).collect(),
+    )
 }
 
 fn run(engine: EngineConfig, requests: &[(u128, u32, usize, f64)]) -> ReplayReport {
@@ -106,6 +113,34 @@ fn a_request_waiting_only_for_freed_blocks_is_admitted_when_they_are_freed() {
     // decides again at once and admits W at 110.
     let report = run(engine(10), &[(1, 24, 2, 0.0), (2, 16, 2, 50.0)]);
     assert_eq!(record(&report, 2).first_admit_ms, Some(110.0));
+}
+
+#[test]
+fn every_attention_dp_rank_frees_finished_blocks_after_the_next_decision() {
+    // On rank 0, X and R prefill until 100, and W (16 tokens), arriving at 50,
+    // fits only in R's blocks. R finishes in its decode pass, which ends at
+    // 110, but rank 1's prefill of Y holds the group pass until 200. Rank 0
+    // decides its pass at 200 before it frees R's blocks, as a single rank
+    // would, so that pass decodes only X and W is admitted at 210.
+    let requests = [
+        ((1, 8, 4, 0.0), 0),
+        ((2, 24, 2, 0.0), 0),
+        ((3, 16, 2, 50.0), 0),
+        ((4, 8, 1, 50.0), 1),
+    ]
+    .iter()
+    .map(|(fields, rank)| DirectRequest {
+        preferred_dp_rank: Some(*rank),
+        ..request(fields)
+    })
+    .collect();
+    let two_ranks = ReplayEngineConfig {
+        dp_size: 2,
+        rank: engine(10),
+        ..Default::default()
+    };
+    let report = replay_requests(two_ranks, requests).run().unwrap();
+    assert_eq!(record(&report, 3).first_admit_ms, Some(210.0));
 }
 
 /// A prefills from 0 to 100 and decodes until 110 and 120; B (32 tokens)

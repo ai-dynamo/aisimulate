@@ -685,8 +685,12 @@ pub(crate) struct VllmCore {
     prefill_capacity_bound: bool,
     passes_executed: u64,
     belady_oracle: Option<BeladyOracle>,
-    /// End of the latest pass that ran work, with async scheduling.
+    /// With async scheduling, the boundary that completed the latest pass
+    /// that ran work: attention-DP ranks complete a pass together, at the end
+    /// of its slowest rank.
     last_pass_end_ms: Option<f64>,
+    /// Whether the pass awaiting its boundary ran work, with async scheduling.
+    pass_ran_work: bool,
     /// Requests that finished in the latest pass. vLLM frees their blocks when
     /// it processes that pass's outputs, after it has formed the next pass.
     finished_in_flight: Vec<HeldVllmPrefill>,
@@ -947,6 +951,7 @@ impl VllmCore {
             prefill_capacity_bound: false,
             passes_executed: 0,
             last_pass_end_ms: None,
+            pass_ran_work: false,
             finished_in_flight: Vec::new(),
             in_flight_requests: Vec::new(),
             next_decision_ms: 0.0,
@@ -1691,6 +1696,7 @@ impl VllmCore {
     }
 
     pub(crate) fn complete_engine_boundary(&mut self, now_ms: f64) {
+        self.last_pass_end_ms = std::mem::take(&mut self.pass_ran_work).then_some(now_ms);
         if let Some(adapter) = self.native_host_offload.as_mut() {
             let progress = adapter.complete_engine_boundary(&mut self.kv_manager, now_ms);
             self.apply_host_progress(progress);
@@ -2527,7 +2533,7 @@ impl VllmCore {
         committed_requests.sort_unstable();
         committed_requests.dedup();
         if self.args.max_concurrent_batches > 1 {
-            self.last_pass_end_ms = (!committed_requests.is_empty()).then_some(end_ms);
+            self.pass_ran_work = !committed_requests.is_empty();
             if self.native_host_offload.is_some() {
                 self.in_flight_requests.clone_from(&committed_requests);
             }
