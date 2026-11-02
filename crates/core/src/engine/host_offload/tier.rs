@@ -1310,6 +1310,15 @@ impl HostTier {
         self.transfers.get(&transfer_id)?.deadline
     }
 
+    /// When the last submitted private-lane transfer of `client` completes.
+    pub(crate) fn last_deadline(&self, client: u64) -> Option<f64> {
+        self.transfers
+            .values()
+            .filter(|transfer| transfer.client == client)
+            .filter_map(|transfer| transfer.deadline)
+            .max_by(f64::total_cmp)
+    }
+
     pub(crate) fn has_transfer(&self, transfer_id: TransferId) -> bool {
         self.transfers.contains_key(&transfer_id)
     }

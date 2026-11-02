@@ -190,7 +190,7 @@ class HostOffloadConfig(StrictModel):
     shared_h2d_bandwidth_gbps: NonNegativeFloat = 80.0
     latency_to_first_byte_ms: NonNegativeFloat = 0.0
     # vLLM connector whose store, lookup and eviction rules G2 follows.
-    connector: Literal["offloading_v0_24", "offloading_v0_32", "simple_cpu_eager"] = "offloading_v0_24"
+    connector: Literal["offloading_v0_24", "offloading_v0_32", "simple_cpu_v0_32"] = "offloading_v0_24"
 
     @field_validator("scope", mode="before")
     @classmethod
@@ -1454,6 +1454,10 @@ def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:
     for role, worker in configured:
         if not worker.kv_cache.prefix_caching:
             raise ValueError("host_offload requires prefix_caching=true")
+        if worker.kv_cache.host_offload.connector != "offloading_v0_24" and role != "aggregated":
+            raise ValueError(
+                "host_offload.connector other than offloading_v0_24 is supported only for the aggregated worker"
+            )
         if worker.kv_cache.g3_offload is not None and (role != "aggregated" or worker.parallelism.attention_data != 1):
             raise ValueError("g3_offload is supported only for the aggregated worker with attention_data=1")
         if worker.kv_cache.kvcr is not None and role == "decode":

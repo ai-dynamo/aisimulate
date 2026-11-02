@@ -159,7 +159,7 @@ name = "G2 local"
 detail = "Host memory per DP rank"
 doc = "replay/engine/kv-cache.md#g2-scope"
 cells = ["limited", "not_supported", "not_supported", "na", "na", "na"]
-note = "Requires prefix caching; generic speculation schemes are rejected. Follows vLLM 0.24's OffloadingConnector, or vLLM 0.32's OffloadingConnector or eager SimpleCPUOffloadConnector (no G3 or KVCR)."
+note = "Requires prefix caching; generic speculation schemes are rejected. Follows vLLM 0.24's OffloadingConnector or, on an aggregated worker, vLLM 0.32's OffloadingConnector or eager SimpleCPUOffloadConnector (no G3 or KVCR)."
 
 [[sections.rows]]
 name = "G2 shared"

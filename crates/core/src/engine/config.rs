@@ -432,6 +432,29 @@ impl TryFrom<String> for G2Scope {
     }
 }
 
+/// vLLM CPU-offload connector a native G2 follows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum G2Connector {
+    /// `OffloadingConnector` as of vLLM 0.24.
+    #[default]
+    #[serde(rename = "offloading_v0_24")]
+    OffloadingV024,
+    /// `OffloadingConnector` as of vLLM 0.32.0: prompt-only stores, recency
+    /// ranked at store and re-ranked when a request finishes.
+    #[serde(rename = "offloading_v0_32")]
+    OffloadingV032,
+    /// `SimpleCPUOffloadConnector` in eager mode as of vLLM 0.32.0: every
+    /// computed block stored, evicted in the CPU block pool's free-queue order.
+    #[serde(rename = "simple_cpu_v0_32")]
+    SimpleCpuV032,
+}
+
+impl G2Connector {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 const DEFAULT_SHARED_HOST_OFFLOAD_BANDWIDTH_GBPS: f64 = 80.0;
 
 fn default_shared_host_offload_bandwidth_gbps() -> f64 {
@@ -489,31 +512,8 @@ pub struct NativeHostOffloadConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kv_layout_id: Option<String>,
     /// vLLM connector whose rules the tier follows.
-    #[serde(default, skip_serializing_if = "HostConnectorProfile::is_default")]
-    pub connector: HostConnectorProfile,
-}
-
-/// vLLM CPU-offload connector a native G2 follows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum HostConnectorProfile {
-    /// `OffloadingConnector` as of vLLM 0.24.
-    #[default]
-    #[serde(rename = "offloading_v0_24")]
-    OffloadingV024,
-    /// `OffloadingConnector` as of vLLM 0.32.0: prompt-only stores, recency
-    /// ranked at store and re-ranked when a request finishes.
-    #[serde(rename = "offloading_v0_32")]
-    OffloadingV032,
-    /// `SimpleCPUOffloadConnector` in eager mode as of vLLM 0.32.0: every
-    /// computed block stored, evicted in the CPU block pool's free-queue order.
-    #[serde(rename = "simple_cpu_eager")]
-    SimpleCpuEager,
-}
-
-impl HostConnectorProfile {
-    fn is_default(&self) -> bool {
-        *self == Self::default()
-    }
+    #[serde(default, skip_serializing_if = "G2Connector::is_default")]
+    pub connector: G2Connector,
 }
 
 impl NativeHostOffloadConfig {
@@ -527,7 +527,7 @@ impl NativeHostOffloadConfig {
             shared_h2d_bandwidth_gbps: DEFAULT_SHARED_HOST_OFFLOAD_BANDWIDTH_GBPS,
             latency_to_first_byte_ms: 0.0,
             kv_layout_id: None,
-            connector: HostConnectorProfile::OffloadingV024,
+            connector: G2Connector::OffloadingV024,
         }
     }
 
@@ -537,7 +537,7 @@ impl NativeHostOffloadConfig {
         self
     }
 
-    pub const fn with_connector(mut self, connector: HostConnectorProfile) -> Self {
+    pub const fn with_connector(mut self, connector: G2Connector) -> Self {
         self.connector = connector;
         self
     }
@@ -1201,6 +1201,12 @@ impl EngineConfig {
                 self.backend == Backend::Vllm,
                 "native_host_offload is supported only for backend=vllm"
             );
+            // A held P/D source reaches the connector's finish hook only after
+            // its transfer, while vLLM finishes it before.
+            ensure!(
+                host_offload.connector.is_default() || self.worker_type == WorkerType::Aggregated,
+                "native_host_offload.connector other than offloading_v0_24 is supported only for worker_type=aggregated"
+            );
             ensure!(
                 self.enable_prefix_caching,
                 "native_host_offload requires enable_prefix_caching=true"
@@ -1861,15 +1867,23 @@ mod tests {
                     config.native_host_offload = Some(
                         NativeHostOffloadConfig::new(8)
                             .cluster_shared("tp1")
-                            .with_connector(HostConnectorProfile::SimpleCpuEager),
+                            .with_connector(G2Connector::SimpleCpuV032),
                     )
                 },
                 "connector other than offloading_v0_24 requires scope dp_rank_local",
             ),
             (
                 |config| {
+                    config.worker_type = WorkerType::Prefill;
                     config.native_host_offload.as_mut().unwrap().connector =
-                        HostConnectorProfile::OffloadingV032;
+                        G2Connector::SimpleCpuV032;
+                },
+                "connector other than offloading_v0_24 is supported only for worker_type=aggregated",
+            ),
+            (
+                |config| {
+                    config.native_host_offload.as_mut().unwrap().connector =
+                        G2Connector::OffloadingV032;
                     config.g3_offload = serde_json::from_value(serde_json::json!(
                         {"scope": "worker_local", "num_g3_blocks": 1}
                     ))
@@ -1889,7 +1903,7 @@ mod tests {
             serde_json::json!({"num_host_blocks": 8, "connector": "offloading_v0_32"}),
         )
         .unwrap();
-        assert_eq!(config.connector, HostConnectorProfile::OffloadingV032);
+        assert_eq!(config.connector, G2Connector::OffloadingV032);
         assert_eq!(
             serde_json::to_value(&config).unwrap()["connector"],
             "offloading_v0_32"
@@ -1968,7 +1982,7 @@ mod tests {
             (
                 |config| {
                     config.native_host_offload.as_mut().unwrap().connector =
-                        HostConnectorProfile::SimpleCpuEager
+                        G2Connector::SimpleCpuV032
                 },
                 "kvcr requires host_offload.connector=offloading_v0_24",
             ),

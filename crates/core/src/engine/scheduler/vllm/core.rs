@@ -890,10 +890,8 @@ impl VllmCore {
         .with_prefix_match_unit(args.prefix_match_unit);
         if native_host_offload
             .as_ref()
-            .is_some_and(VllmHostOffloadAdapter::is_shared)
+            .is_some_and(VllmHostOffloadAdapter::holds_store_sources)
         {
-            // Like Mooncake Store and LMCache MP, a shared-pool store keeps a
-            // reference on the G1 blocks it copies until the copy completes.
             kv_manager.hold_native_store_sources();
         }
         if !args.kv_cache_groups.is_empty() {
@@ -1547,11 +1545,10 @@ impl VllmCore {
                 self.args.kv_transfer_timing_mode,
             )
         });
-        let mut request = self
+        let request = self
             .state
             .take_completed(&uuid)
             .expect("completed request must remain scheduler-owned");
-        self.finish_host_request(uuid, &mut request);
         let payload = HeldVllmPrefill {
             request_id: uuid,
             request,
@@ -1579,14 +1576,16 @@ impl VllmCore {
     fn cleanup_completed_prefill(&mut self, payload: HeldVllmPrefill) {
         let HeldVllmPrefill {
             request_id,
-            request,
+            mut request,
         } = payload;
+        self.finish_host_request(request_id, &mut request);
         self.kv_manager
             .finish_native(request_id, request.sequence.lease);
     }
 
     /// The G2 connector's work when a request finishes or is dropped, before
-    /// its G1 blocks are released or held for a P/D handoff.
+    /// its G1 blocks are released: vLLM calls the connector's
+    /// `request_finished` from `Scheduler._free_request`, which frees them.
     fn finish_host_request(&mut self, uuid: Uuid, request: &mut VllmRequestState) {
         if let (Some(adapter), Some(host)) = (
             self.native_host_offload.as_mut(),

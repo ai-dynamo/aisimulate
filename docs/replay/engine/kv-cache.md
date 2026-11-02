@@ -166,7 +166,7 @@ aisimulate predict --stack engine --config host-offload-prediction.yaml --captur
 | `latency_to_first_byte_ms` | `0.0` | Fixed delay before each transfer starts moving bytes. |
 | `shared_d2h_bandwidth_gbps` | `80.0` | Total GPU→host bandwidth of the pool. `cluster_shared` only. |
 | `shared_h2d_bandwidth_gbps` | `80.0` | Total host→GPU bandwidth of the pool. `cluster_shared` only. |
-| `connector` | `offloading_v0_24` | vLLM connector whose rules G2 follows: `offloading_v0_24`, `offloading_v0_32` or `simple_cpu_eager`. The last two need `dp_rank_local` and no `g3_offload` or `kvcr`; see [connector profiles](#g2-connector-profiles). |
+| `connector` | `offloading_v0_24` | vLLM connector whose rules G2 follows: `offloading_v0_24`, `offloading_v0_32` or `simple_cpu_v0_32`. The last two need the aggregated worker, `dp_rank_local` and no `g3_offload` or `kvcr`; see [connector profiles](#g2-connector-profiles). |
 
 `recommend` keeps `host_offload` fixed; its size and bandwidth are not searched.
 
@@ -189,7 +189,7 @@ aisimulate predict --stack engine --config host-offload-prediction.yaml --captur
 `connector` picks the vLLM CPU-offload connector whose store, lookup and
 eviction rules G2 follows:
 
-| | `offloading_v0_24` (default) | `offloading_v0_32` | `simple_cpu_eager` |
+| | `offloading_v0_24` (default) | `offloading_v0_32` | `simple_cpu_v0_32` |
 | --- | --- | --- | --- |
 | vLLM connector | `OffloadingConnector`, vLLM 0.24 | `OffloadingConnector` with the CPU backend, vLLM v0.32.0 | `SimpleCPUOffloadConnector` in eager mode, vLLM v0.32.0 |
 | Stored blocks | Prompt blocks as they are computed, after any blocks loaded from G2 | The same; a finishing request also offers prompt blocks it could not store earlier | Every block one pass after it is computed, from block 0: blocks served from G1 or loaded from G2, and blocks filled during decode. A finishing request stores the rest. |
@@ -198,6 +198,8 @@ eviction rules G2 follows:
 | A hit another request is loading | Defers the request | Defers the request | Both requests load it |
 | The request's own store in flight | Defers its lookup | Defers its lookup | Does not defer |
 | A hit before its load | Not pinned | Not pinned | Pinned until the request loads it or looks it up again |
+| G1 blocks being copied | Freed with their request; a new owner waits for the copy | The same | Held until the copy completes |
+| A preemption | Waits for the preempted request's stores | The same | Waits for every transfer in flight |
 
 vLLM main has changed some of these rules since v0.32.0; each profile follows
 the version it names.
