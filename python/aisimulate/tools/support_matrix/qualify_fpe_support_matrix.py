@@ -42,16 +42,6 @@ STATUSES = {
 }
 
 
-def required_probe_identities(required_probes: list[dict[str, str]]) -> set[tuple[str, ...]]:
-    """Validate the complete required list using the nightly qualification identity."""
-    if not required_probes:
-        raise ValueError("required probes must not be empty")
-    required = {tuple(p[k] for k in IDENTITY) for p in required_probes}
-    if len(required) != len(required_probes):
-        raise ValueError("required probes must be unique")
-    return required
-
-
 def qualify(
     root: Path,
     *,
@@ -67,7 +57,11 @@ def qualify(
     expected = {(s["system"], s["backend"]) for s in expected_shards}
     if not expected or len(expected) != len(expected_shards):
         raise ValueError("expected shards must be nonempty and unique")
-    required = required_probe_identities(required_probes)
+    if not required_probes:
+        raise ValueError("required probes must not be empty")
+    required = {tuple(p[k] for k in IDENTITY) for p in required_probes}
+    if len(required) != len(required_probes):
+        raise ValueError("required probes must be unique")
     found: set[tuple[str, str]] = set()
     qualified: set[tuple] = set()
     counts: Counter = Counter()

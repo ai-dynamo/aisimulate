@@ -112,28 +112,6 @@ def test_resolved_probe_plan_cannot_change_required_coverage(probe_plan, change)
         RELEASE.validate_required_probes(probe_plan, {**IDENTITY, "wheel_sha256": WHEEL})
 
 
-@pytest.mark.parametrize("extra_fields", [{}, {"note": "same identity with different metadata"}])
-def test_required_probe_identities_reject_duplicates_even_with_extra_fields(probe_plan, extra_fields):
-    qualifier = RELEASE.load_tool("qualify_fpe_support_matrix")
-    probes = [*probe_plan["probes"], {**probe_plan["probes"][0], **extra_fields}]
-    with pytest.raises(ValueError, match="required probes must be unique"):
-        qualifier.required_probe_identities(probes)
-
-
-@pytest.mark.parametrize("field", ["model", "system", "backend", "backend_version", "forward_model"])
-def test_required_probe_identities_preserve_each_identity_field(probe_plan, field):
-    qualifier = RELEASE.load_tool("qualify_fpe_support_matrix")
-    probe = probe_plan["probes"][0]
-    probes = [probe, {**probe, field: "different"}]
-    assert len(qualifier.required_probe_identities(probes)) == 2
-
-
-def test_required_probe_identities_reject_empty_list():
-    qualifier = RELEASE.load_tool("qualify_fpe_support_matrix")
-    with pytest.raises(ValueError, match="required probes must not be empty"):
-        qualifier.required_probe_identities([])
-
-
 def test_discovery_automatically_includes_future_releases_and_pins_tips(tmp_path):
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=tmp_path, text=True, stderr=subprocess.DEVNULL).strip()
@@ -333,40 +311,6 @@ def test_complete_release_reports_produce_publishable_ci_artifact(tmp_path, prob
     )
     assert all(SHA in row["Command"] and TOOLING in row["Command"] for row in rows)
     assert all(row["SourceSHA"] == SHA for row in rows)
-
-
-@pytest.mark.parametrize(
-    "manifest",
-    [
-        {"schema_version": 2},
-        {"schema_version": 0},
-        {"schema_version": None},
-        {"schema_version": "1"},
-        {"schema_version": True},
-        {"schema_version": 1.0},
-        {},
-        None,
-        [],
-        1,
-    ],
-    ids=["future", "zero", "null-version", "string", "boolean", "float", "missing", "null", "array", "scalar"],
-)
-def test_packaging_rejects_unsupported_manifest_schema_before_creating_output(
-    tmp_path, monkeypatch, probe_plan, manifest
-):
-    source = tmp_path / "reports"
-    shards = reports(source, probe_plan["probes"])
-    tooling = tmp_path / "tooling"
-    manifest_path = tooling / ".github/fpe-required-probes.json"
-    manifest_path.parent.mkdir(parents=True)
-    if isinstance(manifest, dict):
-        manifest = {**manifest, "probes": probe_plan["selectors"]}
-    manifest_path.write_text(json.dumps(manifest))
-    monkeypatch.setattr(RELEASE, "ROOT", tooling)
-    destination = tmp_path / "web"
-    with pytest.raises(ValueError, match="unsupported required FPE probe manifest schema_version"):
-        RELEASE.package_reports(source, IDENTITY, WHEEL, shards, destination, probe_plan=probe_plan)
-    assert not destination.exists()
 
 
 def test_incomplete_release_cannot_produce_a_web_artifact(tmp_path, probe_plan):

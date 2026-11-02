@@ -336,7 +336,8 @@ table are relative to `python/aisimulate/` unless marked repository-root.
 | `tools-build` | Build-marked `tests/e2e/tools/`; installed FPM verification reuses the wheel | One job, pytest automatic worker count |
 
 The `support-matrix` shard includes the required native FPE probes from
-`.github/fpe-required-probes.json`. Each identity must exist in the live matrix
+`.github/fpe-required-probes.json`. Resolved identities must be unique under the
+nightly qualifier's identity fields. Each identity must exist in the live matrix
 inventory and have a topology passing prefill, decode start, decode end, and
 mixed probes through the same qualifier used by nightly. These tests reuse the
 application wheel and keep all topologies for the small sentinel set; the full

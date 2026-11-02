@@ -17,7 +17,7 @@ from tools.support_matrix.fpe_support_matrix import (
     run_probe_plans,
     write_outputs,
 )
-from tools.support_matrix.qualify_fpe_support_matrix import qualify, required_probe_identities
+from tools.support_matrix.qualify_fpe_support_matrix import IDENTITY, qualify
 
 pytestmark = [pytest.mark.e2e, pytest.mark.build, pytest.mark.support_matrix]
 
@@ -63,7 +63,8 @@ def required_probes(wheel_sha256):
         SupportMatrix().generate_combinations(), receipt, perf_database.resolve_query_version
     )
     # Each case qualifies one probe; enforce the nightly's whole-list contract first.
-    required_probe_identities(plan["probes"])
+    identities = {tuple(probe[key] for key in IDENTITY) for probe in plan["probes"]}
+    assert len(identities) == len(plan["probes"]), "required FPE probe identities must be unique"
     return plan["probes"]
 
 
